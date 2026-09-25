@@ -171,6 +171,6 @@ pub fn publish(
     Ok(())
 }
 
-pub fn status(peer: &StatePeer, error: Option<String>) -> serde_json::Value {
+pub fn status(peer: &StatePeer, error: Option<&str>) -> serde_json::Value {
     serde_json::json!({"application_state":if error.is_some(){"incomplete"}else{"admitted"}, "room":peer.room(), "records":peer.rows(), "error":error})
 }

@@ -144,7 +144,7 @@ impl Drop for RelayClient {
 /// Failure modes.
 #[derive(Debug, thiserror::Error)]
 pub enum ClientError {
-    /// TLS no_application_protocol: the only permitted state-only fallback.
+    /// TLS `no_application_protocol`: the only permitted state-only fallback.
     #[error("relay protocol unsupported")]
     UnsupportedProtocol,
     /// Iroh dial / bi-stream.
@@ -164,11 +164,11 @@ pub enum ClientError {
     PrivateTransportClosed,
 }
 
-fn classify_connect_error(error: iroh::endpoint::ConnectError) -> ClientError {
+fn classify_connect_error(error: &iroh::endpoint::ConnectError) -> ClientError {
     use iroh::endpoint::{ConnectError, ConnectingError, ConnectionError, TransportErrorCode};
-    let connection = match &error {
-        ConnectError::Connection { source, .. } => Some(source),
-        ConnectError::Connecting {
+    let connection = match error {
+        ConnectError::Connection { source, .. }
+        | ConnectError::Connecting {
             source: ConnectingError::ConnectionError { source, .. },
             ..
         } => Some(source),
@@ -325,7 +325,7 @@ impl RelayClient {
         let conn = endpoint
             .connect(relay_addr, generation.management_alpn())
             .await
-            .map_err(classify_connect_error)?;
+            .map_err(|error| classify_connect_error(&error))?;
         let (mut send, mut recv) = conn
             .open_bi()
             .await
@@ -530,7 +530,7 @@ impl RelayClient {
         let conn = endpoint
             .connect(relay_addr, generation.discovery_alpn())
             .await
-            .map_err(classify_connect_error)?;
+            .map_err(|error| classify_connect_error(&error))?;
         let (mut send, mut recv) = conn
             .open_bi()
             .await
@@ -877,6 +877,14 @@ impl RelayClient {
         .await
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one ordered protocol state machine; splitting it would scatter the invariants each step relies on"
+    )]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the session pump owns every channel end and connection handle it multiplexes"
+    )]
     async fn connect_version(
         endpoint: Endpoint,
         relay_addr: EndpointAddr,
@@ -893,7 +901,7 @@ impl RelayClient {
         let conn = endpoint
             .connect(relay_addr, protocol.alpn())
             .await
-            .map_err(classify_connect_error)?;
+            .map_err(|error| classify_connect_error(&error))?;
         let (mut send, mut recv) = conn
             .open_bi()
             .await
@@ -1051,10 +1059,9 @@ impl RelayClient {
                                 break;
                             }
                         }
-                        ClientEvent::Inbound(Ok(None) | Err(_)) => break,
-                        ClientEvent::Action(_) => {
-                            unreachable!("v1 pump only selects state and inbound events")
-                        }
+                        // The v1 pump only selects state and inbound events;
+                        // an action event ends it rather than guessing.
+                        ClientEvent::Inbound(Ok(None) | Err(_)) | ClientEvent::Action(_) => break,
                     }
                 }
             }
@@ -1184,7 +1191,8 @@ impl RelayClient {
             ));
         }
         crate::transport_v2::encode(&frame).map_err(|e| ClientError::Codec(e.to_string()))?;
-        tx.try_send(frame).map_err(private_send_error)
+        tx.try_send(frame)
+            .map_err(|error| private_send_error(&error))
     }
 
     /// Receive authenticated source evidence from this exact relay session.
@@ -1251,7 +1259,7 @@ impl RelayClient {
     }
 }
 
-fn private_send_error<T>(error: tokio::sync::mpsc::error::TrySendError<T>) -> ClientError {
+fn private_send_error<T>(error: &tokio::sync::mpsc::error::TrySendError<T>) -> ClientError {
     match error {
         tokio::sync::mpsc::error::TrySendError::Full(_) => {
             ClientError::Codec("private queue full".into())
@@ -1336,10 +1344,8 @@ where
                     return false;
                 }
             }
-            ClientEvent::Action(None) => return false,
-            ClientEvent::Inbound(_) => {
-                unreachable!("v2 writer only selects outbound events")
-            }
+            // The v2 writer only selects outbound events; fail closed otherwise.
+            ClientEvent::Action(None) | ClientEvent::Inbound(_) => return false,
         }
     }
 }
@@ -1433,39 +1439,36 @@ async fn next_v2_outbound_event(
     cooperative_yield(&mut schedule.events_since_yield).await;
     poll_fn(|cx| {
         for offset in 0..2 {
-            let lane = (schedule.next_lane + offset) % 2;
-            match lane {
-                0 => {
-                    if let Poll::Ready(state) = poll_queued(states, cx) {
-                        schedule.state_prefix = schedule.state_prefix.saturating_sub(1);
-                        schedule.next_lane = 1;
-                        return Poll::Ready(ClientEvent::State(state));
+            let lane = schedule.next_lane.wrapping_add(offset) % 2;
+            if lane == 0 {
+                if let Poll::Ready(state) = poll_queued(states, cx) {
+                    schedule.state_prefix = schedule.state_prefix.saturating_sub(1);
+                    schedule.next_lane = 1;
+                    return Poll::Ready(ClientEvent::State(state));
+                }
+            } else {
+                if schedule.pending_action.is_none() && !schedule.actions_closed {
+                    match poll_queued(actions, cx) {
+                        Poll::Ready(Some(action)) => {
+                            // Snapshot only the already-queued state prefix.
+                            // Later refills cannot extend this barrier.
+                            schedule.state_prefix =
+                                if matches!(action, EnvelopeV2::EnableActions { .. }) {
+                                    states.len()
+                                } else {
+                                    0
+                                };
+                            schedule.pending_action = Some(action);
+                        }
+                        Poll::Ready(None) => schedule.actions_closed = true,
+                        Poll::Pending => {}
                     }
                 }
-                _ => {
-                    if schedule.pending_action.is_none() && !schedule.actions_closed {
-                        match poll_queued(actions, cx) {
-                            Poll::Ready(Some(action)) => {
-                                // Snapshot only the already-queued state prefix.
-                                // Later refills cannot extend this barrier.
-                                schedule.state_prefix =
-                                    if matches!(action, EnvelopeV2::EnableActions { .. }) {
-                                        states.len()
-                                    } else {
-                                        0
-                                    };
-                                schedule.pending_action = Some(action);
-                            }
-                            Poll::Ready(None) => schedule.actions_closed = true,
-                            Poll::Pending => {}
-                        }
-                    }
-                    if schedule.state_prefix == 0
-                        && let Some(action) = schedule.pending_action.take()
-                    {
-                        schedule.next_lane = 0;
-                        return Poll::Ready(ClientEvent::Action(Some(action)));
-                    }
+                if schedule.state_prefix == 0
+                    && let Some(action) = schedule.pending_action.take()
+                {
+                    schedule.next_lane = 0;
+                    return Poll::Ready(ClientEvent::Action(Some(action)));
                 }
             }
         }
@@ -1496,6 +1499,10 @@ fn poll_queued<T>(
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::similar_names,
+    reason = "paired test fixtures are named after the roles they mirror"
+)]
 mod scheduling_tests {
     use super::*;
 
@@ -1751,17 +1758,20 @@ mod scheduling_tests {
         let encoded_subscribe =
             crate::transport_v2::encode_state(&Envelope::Subscribe { workspace_id }, true).unwrap();
         let encoded_enable = crate::transport_v2::encode(&enable).unwrap();
-        let frames = frames.lock().unwrap();
-        let subscribe_position = frames
-            .iter()
-            .position(|frame| frame == &encoded_subscribe)
-            .unwrap();
-        let enable_position = frames
-            .iter()
-            .position(|frame| frame == &encoded_enable)
-            .unwrap();
+        let (subscribe_position, enable_position) = {
+            let frames = frames.lock().unwrap();
+            (
+                frames
+                    .iter()
+                    .position(|frame| frame == &encoded_subscribe)
+                    .unwrap(),
+                frames
+                    .iter()
+                    .position(|frame| frame == &encoded_enable)
+                    .unwrap(),
+            )
+        };
         assert!(subscribe_position < enable_position);
-        drop(frames);
 
         drop(relay_write);
         assert!(
@@ -1875,7 +1885,7 @@ mod scheduling_tests {
             .into();
             assert_eq!(
                 matches!(
-                    super::classify_connect_error(error),
+                    super::classify_connect_error(&error),
                     super::ClientError::UnsupportedProtocol
                 ),
                 code == 120
@@ -1883,7 +1893,7 @@ mod scheduling_tests {
         }
         let error: ConnectError = ConnectionError::TimedOut.into();
         assert!(!matches!(
-            super::classify_connect_error(error),
+            super::classify_connect_error(&error),
             super::ClientError::UnsupportedProtocol
         ));
     }
@@ -1905,12 +1915,12 @@ mod scheduling_tests {
         let (sender, receiver) = mpsc::channel(1);
         sender.try_send(action()).unwrap();
         assert!(matches!(
-            private_send_error(sender.try_send(action()).unwrap_err()),
+            private_send_error(&sender.try_send(action()).unwrap_err()),
             ClientError::Codec(message) if message == "private queue full"
         ));
         drop(receiver);
         assert!(matches!(
-            private_send_error(sender.try_send(action()).unwrap_err()),
+            private_send_error(&sender.try_send(action()).unwrap_err()),
             ClientError::PrivateTransportClosed
         ));
     }
@@ -1930,7 +1940,7 @@ mod scheduling_tests {
             let result = std::pin::Pin::new(&mut self.inner).poll_read(cx, buf);
             if result.is_ready() {
                 self.count.fetch_add(
-                    buf.filled().len() - before,
+                    buf.filled().len().saturating_sub(before),
                     std::sync::atomic::Ordering::SeqCst,
                 );
             }

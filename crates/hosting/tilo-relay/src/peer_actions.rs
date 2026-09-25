@@ -29,6 +29,10 @@ pub struct DirectedAction {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "public serde wire enum; boxing would change every constructor and match in dependent crates"
+)]
 pub enum ActionMessage {
     /// Disposable canonical agent read; never a durable business invocation.
     AgentReadV1 {
@@ -167,6 +171,10 @@ impl ActionMessage {
         }
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one ordered protocol state machine; splitting it would scatter the invariants each step relies on"
+    )]
     pub fn validate(&self) -> bool {
         let Ok(json) = serde_json::to_value(self) else {
             return false;
@@ -302,14 +310,14 @@ fn bounded_json(value: &serde_json::Value, depth: usize, remaining: &mut usize) 
     if depth > 32 || *remaining == 0 {
         return false;
     }
-    *remaining -= 1;
+    *remaining = (*remaining).saturating_sub(1);
     match value {
         serde_json::Value::Array(values) => values
             .iter()
-            .all(|value| bounded_json(value, depth + 1, remaining)),
+            .all(|value| bounded_json(value, depth.saturating_add(1), remaining)),
         serde_json::Value::Object(values) => values
             .values()
-            .all(|value| bounded_json(value, depth + 1, remaining)),
+            .all(|value| bounded_json(value, depth.saturating_add(1), remaining)),
         _ => true,
     }
 }
@@ -478,6 +486,10 @@ mod agent_read_codec_tests {
     const HOST: &str = "11111111-1111-4111-8111-111111111111";
     const INVOCATION: &str = "22222222-2222-4222-8222-222222222222";
 
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "test helper keeps the call shape of the fixtures it builds"
+    )]
     fn request(body: Value) -> Value {
         json!({"type":"agent_read_v1","host":HOST,"invocation":INVOCATION,"request":body})
     }

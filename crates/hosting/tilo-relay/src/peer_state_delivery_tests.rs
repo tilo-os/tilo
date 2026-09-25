@@ -1,4 +1,12 @@
 //! Real persisted activation queues checked at the final writer boundary.
+#![allow(
+    clippy::significant_drop_tightening,
+    reason = "relays, fixtures and guards deliberately stay alive until each test ends"
+)]
+#![allow(
+    clippy::too_many_lines,
+    reason = "each test spells out one end-to-end scenario"
+)]
 use super::private_transport_tests::certified_device;
 use super::*;
 use crate::store::shell_selection_tests::{producer_frame, producer_metadata};
@@ -161,22 +169,22 @@ async fn writer_boundary(
     let current_envelope = (*delivery.envelope).clone();
     if replace {
         let mut subscribed = vec![id];
-        handle_inbound_frame(
+        Box::pin(handle_inbound_frame(
             Envelope::Unsubscribe { workspace_id: id },
             &recipient,
             &session,
             &mut subscribed,
             &mut wire,
-        )
+        ))
         .await
         .unwrap();
-        handle_inbound_frame(
+        Box::pin(handle_inbound_frame(
             Envelope::Subscribe { workspace_id: id },
             &recipient,
             &session,
             &mut subscribed,
             &mut wire,
-        )
+        ))
         .await
         .unwrap();
         assert!(!live.load(Ordering::SeqCst));
@@ -256,24 +264,24 @@ async fn writer_boundary(
 
 #[tokio::test]
 async fn selected_writer_fences_source_invalidation_before_first_frame() {
-    writer_boundary(0, false, true, true).await;
+    Box::pin(writer_boundary(0, false, true, true)).await;
 }
 #[tokio::test]
 async fn selected_writer_fences_source_invalidation_between_frames() {
-    writer_boundary(1, false, true, true).await;
+    Box::pin(writer_boundary(1, false, true, true)).await;
 }
 #[tokio::test]
 async fn selected_writer_preserves_same_connection_replacement() {
-    writer_boundary(0, true, true, true).await;
+    Box::pin(writer_boundary(0, true, true, true)).await;
 }
 #[tokio::test]
 async fn ordinary_writer_preserves_same_connection_replacement() {
-    writer_boundary(0, true, false, false).await;
+    Box::pin(writer_boundary(0, true, false, false)).await;
 }
 
 #[tokio::test]
 async fn selected_writer_drops_old_lease_after_resubscription() {
-    writer_boundary(0, true, true, false).await;
+    Box::pin(writer_boundary(0, true, true, false)).await;
 }
 
 #[tokio::test]
@@ -430,7 +438,7 @@ async fn replay_catchup_keeps_selected_activation_pair_without_repeating_baselin
     );
 
     let mut wire = Vec::new();
-    finish_replay_write(
+    Box::pin(finish_replay_write(
         ReplayWrite {
             ticket: replay,
             reply: None,
@@ -441,7 +449,7 @@ async fn replay_catchup_keeps_selected_activation_pair_without_repeating_baselin
         &std::sync::atomic::AtomicUsize::new(1),
         &mut private_rx,
         &mut wire,
-    )
+    ))
     .await
     .unwrap();
     let mut reader = crate::transport_v2::SessionReader::new(wire.as_slice(), true);
@@ -449,7 +457,7 @@ async fn replay_catchup_keeps_selected_activation_pair_without_repeating_baselin
     let ready = loop {
         match reader.read_next().await.unwrap() {
             Some(crate::transport_v2::EnvelopeV2::State(envelope @ Envelope::Delta { .. })) => {
-                frames.push(envelope)
+                frames.push(envelope);
             }
             Some(crate::transport_v2::EnvelopeV2::State(Envelope::Ready {
                 pending_deltas,

@@ -1,5 +1,12 @@
 //! Loopback-only real Iroh packet relay + certified qOS relay/1 fixture.
 //! Credentials are test-only, returned in response bodies, never URLs or logs.
+#![allow(
+    clippy::indexing_slicing,
+    clippy::too_many_lines,
+    clippy::similar_names,
+    clippy::significant_drop_tightening,
+    reason = "loopback fixture: it indexes JSON objects it builds itself, and the relay must outlive every client it serves"
+)]
 #[path = "browser-peer-harness/replica.rs"]
 mod replica;
 use anyhow::{Context, Result, bail};
@@ -296,18 +303,19 @@ async fn main() -> Result<()> {
             _ = tokio::signal::ctrl_c() => break,
             inbound = session.recv(), if connected.load(Ordering::Relaxed) => {
                 match inbound {
-                    Some(Inbound::Ready { .. }) => {},
-                    Some(inbound) => {
+                    // This fixture has no remote-action host; relayed frames are ignored.
+                    Some(Inbound::Ready { .. } | Inbound::RemoteAction { .. }) => {},
+                    Some(inbound @ (Inbound::Delta { .. } | Inbound::Presence { .. })) => {
                         received.fetch_add(1, Ordering::Relaxed);
                         let (origin, bytes) = match inbound {
                             Inbound::Delta { author, data } => (qos_peer_state::TransportOrigin::RelayDelta(author), data),
                             Inbound::Presence { author, payload } => (qos_peer_state::TransportOrigin::UntrustedPresence(author), payload),
-                            Inbound::Ready { .. } => unreachable!(),
+                            Inbound::Ready { .. } | Inbound::RemoteAction { .. } => continue,
                         };
                         let result = postcard::from_bytes(&bytes).map_err(anyhow::Error::from)
                             .and_then(|message| replica::handle(&mut application, &native.key, origin, message))
                             .and_then(|messages| replica::publish(&session, messages));
-                        *app_status.write().map_err(|_|anyhow::anyhow!("status unavailable"))? = replica::status(&application, result.err().map(|error|error.to_string()));
+                        *app_status.write().map_err(|_|anyhow::anyhow!("status unavailable"))? = replica::status(&application, result.err().map(|error|error.to_string()).as_deref());
                     }
                     None => { connected.store(false, Ordering::Relaxed); }
                 }
@@ -322,7 +330,7 @@ async fn main() -> Result<()> {
                                 .map_err(anyhow::Error::msg).and_then(|messages|replica::publish(&session, messages))
                         } else { Err(anyhow::anyhow!("unknown native command; use writer-insert <text>")) };
                         match &result { Ok(()) => println!("Native Writer action committed and published"), Err(error) => eprintln!("Native control rejected: {error}") }
-                        *app_status.write().map_err(|_|anyhow::anyhow!("status unavailable"))? = replica::status(&application, result.err().map(|error|error.to_string()));
+                        *app_status.write().map_err(|_|anyhow::anyhow!("status unavailable"))? = replica::status(&application, result.err().map(|error|error.to_string()).as_deref());
                     }
                 }
             }

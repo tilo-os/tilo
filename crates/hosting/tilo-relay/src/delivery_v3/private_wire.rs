@@ -26,6 +26,9 @@ impl PrivateOperation {
             Self::AgentRead => "/peer/v3/reads",
         }
     }
+    /// # Errors
+    ///
+    /// Returns `WireError` if the inputs violate this operation's bounds or invariants.
     pub fn from_target(method: &str, target: &str) -> Result<Self, WireError> {
         [
             Self::Catalogue,
@@ -206,7 +209,7 @@ impl<'de> serde::de::DeserializeSeed<'de> for JsonBudget<'_> {
         if self.depth > 32 || *self.remaining == 0 {
             return Err(serde::de::Error::custom("private JSON budget"));
         }
-        *self.remaining -= 1;
+        *self.remaining = (*self.remaining).saturating_sub(1);
         d.deserialize_any(self)
     }
 }
@@ -236,7 +239,7 @@ impl<'de> serde::de::Visitor<'de> for JsonBudget<'_> {
     fn visit_seq<A: serde::de::SeqAccess<'de>>(self, mut a: A) -> Result<(), A::Error> {
         while a
             .next_element_seed(JsonBudget {
-                depth: self.depth + 1,
+                depth: self.depth.saturating_add(1),
                 remaining: self.remaining,
             })?
             .is_some()
@@ -246,19 +249,22 @@ impl<'de> serde::de::Visitor<'de> for JsonBudget<'_> {
     fn visit_map<A: serde::de::MapAccess<'de>>(self, mut a: A) -> Result<(), A::Error> {
         while a
             .next_key_seed(JsonBudget {
-                depth: self.depth + 1,
+                depth: self.depth.saturating_add(1),
                 remaining: self.remaining,
             })?
             .is_some()
         {
             a.next_value_seed(JsonBudget {
-                depth: self.depth + 1,
+                depth: self.depth.saturating_add(1),
                 remaining: self.remaining,
             })?;
         }
         Ok(())
     }
 }
+/// # Errors
+///
+/// Returns `WireError` if the value violates its wire bounds or cannot be serialized.
 pub fn encode_request(
     op: PrivateOperation,
     scope: PrivateScope,
@@ -270,6 +276,9 @@ pub fn encode_request(
     }
     encode(op.request_kind(), action)
 }
+/// # Errors
+///
+/// Returns `WireError` if the input is not a canonical encoding within this type's bounds.
 pub fn decode_request(
     op: PrivateOperation,
     scope: PrivateScope,
@@ -311,14 +320,12 @@ fn response_check(
         update,
         ..
     } = &action.message
-    {
-        if update
+        && (update
             .as_ref()
             .is_some_and(|value| value.invocation() != *invocation)
-            || matches!(&request.message, ActionMessage::InvokeBound { host: expected, .. } if expected != host)
-        {
-            return Err(WireError::Scope);
-        }
+            || matches!(&request.message, ActionMessage::InvokeBound { host: expected, .. } if expected != host))
+    {
+        return Err(WireError::Scope);
     }
     if let (
         ActionMessage::AgentReadV1 {
@@ -333,18 +340,19 @@ fn response_check(
             response,
         },
     ) = (&request.message, &action.message)
-    {
-        if host != rh
+        && (host != rh
             || invocation != ri
             || !crate::agent_reads::matches_request(read, response)
             || binding.agent.room != request.room.to_string()
-            || binding.agent.device != hex::encode(request.source)
-        {
-            return Err(WireError::Scope);
-        }
+            || binding.agent.device != hex::encode(request.source))
+    {
+        return Err(WireError::Scope);
     }
     Ok(())
 }
+/// # Errors
+///
+/// Returns `WireError` if the value violates its wire bounds or cannot be serialized.
 pub fn encode_response(
     op: PrivateOperation,
     request: &DirectedAction,
@@ -353,6 +361,9 @@ pub fn encode_response(
     response_check(op, request, action)?;
     encode(op.response_kind(), action)
 }
+/// # Errors
+///
+/// Returns `WireError` if the input is not a canonical encoding within this type's bounds.
 pub fn decode_response(
     op: PrivateOperation,
     request: &DirectedAction,
@@ -364,6 +375,10 @@ pub fn decode_response(
 }
 /// Decode one inert private event. The consumer must still match the retained
 /// request ID, invocation and operation; decoding never authenticates a sender.
+///
+/// # Errors
+///
+/// Returns `WireError` if the input is not a canonical encoding within this type's bounds.
 pub fn decode_event(
     scope: PrivateScope,
     host: Uuid,

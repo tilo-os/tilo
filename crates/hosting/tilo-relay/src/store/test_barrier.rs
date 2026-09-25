@@ -1,4 +1,8 @@
 //! Test-only, one-shot barriers scoped to an exact temporary store and operation.
+#![allow(
+    clippy::significant_drop_tightening,
+    reason = "relays, fixtures and guards deliberately stay alive until each test ends"
+)]
 use std::{
     collections::HashMap,
     path::{Path, PathBuf},
@@ -63,7 +67,8 @@ pub(crate) fn pause(root: &Path, operation: &'static str) {
         .unwrap()
         .remove(&(root.to_path_buf(), operation));
     if let Some(gate) = gate {
-        if let Some(reached) = gate.reached.lock().unwrap().take() {
+        let reached = gate.reached.lock().unwrap().take();
+        if let Some(reached) = reached {
             let _ = reached.send(());
         }
         let mut released = gate.released.lock().unwrap();

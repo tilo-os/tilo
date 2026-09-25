@@ -92,7 +92,14 @@ async fn live_coedit_fans_out_through_host() {
 
     let state = tempfile::tempdir().unwrap();
     let host_dev = user.enrol("home-server", DeviceCapabilities::host());
-    let host = spawn_relay_on(state.path(), &user, host_dev, &[WS], &members).await;
+    let host = Box::pin(spawn_relay_on(
+        state.path(),
+        &user,
+        host_dev,
+        &[WS],
+        &members,
+    ))
+    .await;
     let addr = host.node_addr();
 
     // Both peers connect and join the workspace's co-edit session.
@@ -276,7 +283,14 @@ async fn never_both_online_coedit_converges_through_host() {
     // ---- Host boots; A joins, co-edits, and leaves. B has NEVER
     //      connected. ----
     let host1_dev = user.enrol("home-server", DeviceCapabilities::host());
-    let host1 = spawn_relay_on(&state_root, &user, host1_dev, &[WS], &members).await;
+    let host1 = Box::pin(spawn_relay_on(
+        &state_root,
+        &user,
+        host1_dev,
+        &[WS],
+        &members,
+    ))
+    .await;
     let addr1 = host1.node_addr();
 
     // Shared durable coverage serves B even though it has never connected.
@@ -292,7 +306,14 @@ async fn never_both_online_coedit_converges_through_host() {
     );
 
     let host2_dev = user.enrol("home-server-2", DeviceCapabilities::host());
-    let host2 = spawn_relay_on(&state_root, &user, host2_dev, &[WS], &members).await;
+    let host2 = Box::pin(spawn_relay_on(
+        &state_root,
+        &user,
+        host2_dev,
+        &[WS],
+        &members,
+    ))
+    .await;
     let addr2 = host2.node_addr();
 
     // ---- B connects for the very first time, to the restarted host. ----

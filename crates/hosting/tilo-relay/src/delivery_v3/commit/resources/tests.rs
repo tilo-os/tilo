@@ -1,7 +1,9 @@
 use super::*;
 use automerge::resource_limits::{NativeAllocationSet, NativeAllowance};
+use qos_peer_state::transport::Retention;
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::{Cell, RefCell};
+use std::collections::BTreeMap;
 
 fn work(bytes: usize) -> (NativeAllowance, NativeWorkTurn) {
     let allowance = NativeAllowance::new(bytes).unwrap();
@@ -36,8 +38,8 @@ fn populated() -> DeliveryLedgerV1 {
             ReplayCommit {
                 owner_generation: n.into(),
                 previous: (n > 1).then(|| CommitRef {
-                    sequence: u64::from(n - 1),
-                    digest: [n - 1; 32],
+                    sequence: u64::from(n.saturating_sub(1)),
+                    digest: [n.saturating_sub(1); 32],
                 }),
                 digest: [n; 32],
                 publications: publications.clone(),
@@ -107,7 +109,7 @@ fn check(m: &mut Meter) {
 fn allocate(bytes: usize) {
     let _ = METER.try_with(|cell| {
         if let Some(mut m) = cell.get() {
-            m.live += bytes;
+            m.live = m.live.saturating_add(bytes);
             m.peak = m.peak.max(m.live);
             check(&mut m);
             cell.set(Some(m));
@@ -205,7 +207,7 @@ fn commit_resources_pool_keeps_original_credit_through_fork_pin_and_final_alloca
     let bytes = pool.encode(1 << 20).unwrap();
     let (credit, turn) = work(2 << 20);
     let baseline = credit.retained_bytes();
-    let (_, m) = measured(&credit, || {
+    let ((), m) = measured(&credit, || {
         let held = HeldPublicationPool::decode(&bytes, 1 << 20, &turn).unwrap();
         let pointer = held.pool().resolve(&id).unwrap().as_ptr();
         let backing = held.pool().retained_allocation_bytes(&id).unwrap();
@@ -264,6 +266,10 @@ fn commit_resources_exhaustion_refuses_without_heap_or_partial_credit() {
     assert_eq!(m.peak, 0);
     drop(occupied);
 }
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "test helper keeps the call shape of the fixtures it builds"
+)]
 fn error_key(error: CommitError) -> (&'static str, &'static str) {
     match error {
         CommitError::Invalid(s) => ("invalid", s),
@@ -292,7 +298,7 @@ fn commit_resources_preserves_legacy_canonical_and_error_semantics() {
     trailing.push(0);
     cases.push(trailing);
     // Store generation is fixed sixteen bytes; a nonminimal high-water varint is rejected.
-    let mut nonminimal = canonical.clone();
+    let mut nonminimal = canonical;
     nonminimal.splice(17..18, [0x98, 0]);
     cases.push(nonminimal);
     for bytes in cases {
@@ -578,7 +584,6 @@ fn commit_resources_peer_budget_pin_keeps_original_credit_after_operation_seals(
     let next_work = turn.work().unwrap();
     let extra = next_work.reserve_output(7).unwrap();
     drop(extra);
-    drop(next_work);
     drop(turn);
     assert_eq!(credit.available_bytes(), 0);
     let retained = credit.retained_bytes();

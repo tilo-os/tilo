@@ -1,5 +1,6 @@
 //! Ordered, bounded state work. The owner awaits publication before dequeuing
 //! its successor; callers only wait on receipts and cannot cancel admitted work.
+use crate::store::bounded::Invariant;
 use crate::store::replay::{Step, WorkLimit};
 use crate::{
     store::{StoreError, WorkspaceStore},
@@ -113,7 +114,7 @@ fn next_normal_job(sequence: &AtomicU64) -> Result<u64, StoreError> {
         .fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
             current.checked_add(1)
         })
-        .map(|previous| previous + 1)
+        .map(|previous| previous.saturating_add(1))
         .map_err(|_| error("state job sequence exhausted"))
 }
 
@@ -170,7 +171,9 @@ impl State {
     }
     pub(crate) fn would_materialize(&self, bytes: &[u8]) -> bool {
         self.doc.as_ref().is_some_and(
-            |current| matches!(current.clone().load_incremental(bytes), Ok(n) if n > 0),
+            |current| {
+                matches!(tilo_automerge::ApplyIncoming::load_incoming(&mut current.clone(), bytes), Ok(n) if n > 0)
+            },
         )
     }
     pub(crate) fn materialize(&mut self, bytes: &[u8]) -> bool {
@@ -178,7 +181,8 @@ impl State {
             return false;
         };
         let mut candidate = current.clone();
-        if !matches!(candidate.load_incremental(bytes), Ok(n) if n > 0) {
+        if !matches!(tilo_automerge::ApplyIncoming::load_incoming(&mut candidate, bytes), Ok(n) if n > 0)
+        {
             return false;
         }
         let saved = candidate.save();
@@ -222,18 +226,28 @@ pub(crate) async fn handle(workspace: &SharedWorkspace) -> Persistence {
     })
 }
 
-fn initial_budgets(_runtime: &crate::workspace::WorkspaceRuntime) -> AdmissionBudgets {
+#[cfg_attr(
+    not(test),
+    expect(unused_variables, reason = "only test builds read per-runtime budgets")
+)]
+fn initial_budgets(runtime: &crate::workspace::WorkspaceRuntime) -> AdmissionBudgets {
     #[cfg(test)]
-    if let Some(budgets) = test_budgets()
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .remove(_runtime.store.root())
     {
-        return budgets;
+        let budgets = test_budgets()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(runtime.store.root());
+        if let Some(budgets) = budgets {
+            return budgets;
+        }
     }
     AdmissionBudgets::global()
 }
 
+#[expect(
+    clippy::significant_drop_tightening,
+    reason = "the owner state is shared with the spawned owner task; the local Arc clone holds no lock"
+)]
 fn start(
     runtime: &mut crate::workspace::WorkspaceRuntime,
     budgets: AdmissionBudgets,
@@ -275,7 +289,7 @@ pub(crate) fn isolated_test_workers() -> Arc<Semaphore> {
 
 #[cfg(test)]
 pub(crate) fn isolate_test_admission_with_workers(
-    runtime: &mut crate::workspace::WorkspaceRuntime,
+    runtime: &crate::workspace::WorkspaceRuntime,
     workers: Arc<Semaphore>,
 ) {
     assert!(
@@ -304,6 +318,10 @@ fn test_budgets() -> &'static Mutex<std::collections::HashMap<std::path::PathBuf
     BUDGETS.get_or_init(|| Mutex::new(std::collections::HashMap::new()))
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "one ordered protocol state machine; splitting it would scatter the invariants each step relies on"
+)]
 async fn run_owner(
     mut rx: mpsc::Receiver<NormalJob>,
     mut replay_rx: mpsc::Receiver<ReplayJob>,
@@ -323,15 +341,21 @@ async fn run_owner(
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             let result = (|| {
-                if startup.is_none() {
-                    startup = Some(state.store.start_work_reclamation()?);
-                }
-                startup.as_mut().unwrap().step(WorkLimit::default())
+                let cursor = match startup.take() {
+                    Some(cursor) => cursor,
+                    None => state.store.start_work_reclamation()?,
+                };
+                startup.insert(cursor).step(WorkLimit::default())
             })();
             (startup, result)
         })
         .await;
-        let (cursor, result) = result.expect("startup worker panicked");
+        // A worker that cannot be acquired or that panicked ends this owner,
+        // failing every queued job instead of retrying without a worker.
+        let Ok((cursor, result)) = result else {
+            tracing::error!("workspace startup reclamation worker unavailable");
+            return;
+        };
         startup = cursor;
         match result {
             Ok(Step::Done(())) => break,
@@ -386,17 +410,18 @@ async fn run_owner(
             })
             .await;
             if matches!(has_basis, Ok(Ok(true))) {
-                pending_replay.as_mut().unwrap().prerequisite = None;
+                if let Some(job) = pending_replay.as_mut() {
+                    job.prerequisite = None;
+                }
                 waiting_prerequisite = false;
             }
         }
         let work = if waiting_prerequisite && normal_open {
-            match rx.recv().await {
-                Some(job) => Work::Normal(job),
-                None => {
-                    normal_open = false;
-                    Work::Idle
-                }
+            if let Some(job) = rx.recv().await {
+                Work::Normal(job)
+            } else {
+                normal_open = false;
+                Work::Idle
             }
         } else if prefer_normal && normal_open {
             match rx.try_recv() {
@@ -405,23 +430,26 @@ async fn run_owner(
                     normal_open = false;
                     Work::Idle
                 }
-                Err(mpsc::error::TryRecvError::Empty) => match pending_replay.take() {
-                    Some(job) => Work::Replay(job),
-                    None => tokio::select! {
-                        biased;
-                        job = rx.recv(), if normal_open => match job { Some(job) => Work::Normal(job), None => { normal_open = false; Work::Idle } },
-                        job = replay_rx.recv(), if replay_open => match job { Some(job) => Work::QueueReplay(job), None => { replay_open = false; Work::Idle } },
-                        _ = idle.tick() => Work::Idle,
-                    },
-                },
+                Err(mpsc::error::TryRecvError::Empty) => {
+                    if let Some(job) = pending_replay.take() {
+                        Work::Replay(job)
+                    } else {
+                        tokio::select! {
+                            biased;
+                            job = rx.recv(), if normal_open => if let Some(job) = job { Work::Normal(job) } else { normal_open = false; Work::Idle },
+                            job = replay_rx.recv(), if replay_open => if let Some(job) = job { Work::QueueReplay(job) } else { replay_open = false; Work::Idle },
+                            _ = idle.tick() => Work::Idle,
+                        }
+                    }
+                }
             }
         } else if let Some(job) = pending_replay.take() {
             Work::Replay(job)
         } else if normal_open || replay_open {
             tokio::select! {
                 biased;
-                job = replay_rx.recv(), if replay_open => match job { Some(job) => Work::QueueReplay(job), None => { replay_open = false; Work::Idle } },
-                job = rx.recv(), if normal_open => match job { Some(job) => Work::Normal(job), None => { normal_open = false; Work::Idle } },
+                job = replay_rx.recv(), if replay_open => if let Some(job) = job { Work::QueueReplay(job) } else { replay_open = false; Work::Idle },
+                job = rx.recv(), if normal_open => if let Some(job) = job { Work::Normal(job) } else { normal_open = false; Work::Idle },
                 _ = idle.tick() => Work::Idle,
             }
         } else {
@@ -452,17 +480,21 @@ async fn run_owner(
             let mut discard = None;
             loop {
                 let path = root.clone();
-                let (next, result) = blocking(workers.clone(), move || {
+                let Ok((next, result)) = blocking(workers.clone(), move || {
                     let result = (|| {
-                        if discard.is_none() {
-                            discard = Some(crate::store::replay::WorkDiscard::new(path)?);
-                        }
-                        discard.as_mut().unwrap().step(WorkLimit::default())
+                        let cursor = match discard.take() {
+                            Some(cursor) => cursor,
+                            None => crate::store::replay::WorkDiscard::new(path)?,
+                        };
+                        discard.insert(cursor).step(WorkLimit::default())
                     })();
                     (discard, result)
                 })
                 .await
-                .expect("retention disposal worker panicked");
+                else {
+                    tracing::error!("retention disposal worker unavailable");
+                    return;
+                };
                 discard = next;
                 match result {
                     Ok(Step::Done(())) => break,
@@ -485,11 +517,11 @@ async fn run_owner(
             loop {
                 let lineage = lineage.clone();
                 let staged = staged.clone();
-                let (next, result) = blocking(workers.clone(), move || {
+                let Ok((next, result)) = blocking(workers.clone(), move || {
                     let result = (|| {
                         if discard.is_none() {
                             discard =
-                                crate::store::retained::CheckpointDiscard::new(lineage, staged)?;
+                                crate::store::retained::CheckpointDiscard::new(&lineage, staged)?;
                         }
                         match discard.as_mut() {
                             Some(discard) => discard.step(WorkLimit::default()),
@@ -499,7 +531,10 @@ async fn run_owner(
                     (discard, result)
                 })
                 .await
-                .expect("checkpoint stage disposal worker panicked");
+                else {
+                    tracing::error!("checkpoint stage disposal worker unavailable");
+                    return;
+                };
                 discard = next;
                 match result {
                     Ok(Step::Done(())) => break,
@@ -582,11 +617,11 @@ impl Persistence {
             bytes,
             preparation,
             move |state, prepared| {
-                operation.take().expect("single-step operation")(
-                    state,
-                    prepared.take().expect("preparation"),
-                )
-                .map(Step::Done)
+                let operation = operation
+                    .take()
+                    .invariant("single-step operation already ran")?;
+                let prepared = prepared.take().invariant("preparation already consumed")?;
+                operation(state, prepared).map(Step::Done)
             },
             completion,
         )
@@ -614,11 +649,11 @@ impl Persistence {
             bytes,
             preparation,
             move |state, prepared| {
-                operation.take().expect("single-step operation")(
-                    state,
-                    prepared.take().expect("preparation"),
-                )
-                .map(Step::Done)
+                let operation = operation
+                    .take()
+                    .invariant("single-step operation already ran")?;
+                let prepared = prepared.take().invariant("preparation already consumed")?;
+                operation(state, prepared).map(Step::Done)
             },
             completion,
         )
@@ -627,6 +662,10 @@ impl Persistence {
 
     /// Keep the admitted transaction's owner position across fixed quanta, but
     /// return the global blocking worker before awaiting the next quantum.
+    #[expect(
+        clippy::significant_drop_tightening,
+        reason = "the admission permits move into the job; the lint does not see the move"
+    )]
     pub(crate) fn submit_resumable<P, PF, T, F, C, CF>(
         &self,
         bytes: usize,
@@ -675,6 +714,10 @@ impl Persistence {
 
     /// Durable state and replay apply capacity-driven backpressure instead of
     /// turning a healthy replay burst into a connection error.
+    #[expect(
+        clippy::significant_drop_tightening,
+        reason = "the admission permits move into the job; the lint does not see the move"
+    )]
     pub(crate) async fn submit_resumable_wait<P, PF, T, F, C, CF>(
         &self,
         bytes: usize,
@@ -789,6 +832,10 @@ impl Persistence {
 
     /// Replay capture and cleanup reserve bounded admission inside the existing
     /// global totals so queued mutation input cannot strand a fresh subscriber.
+    #[expect(
+        clippy::significant_drop_tightening,
+        reason = "the admission permits move into the job; the lint does not see the move"
+    )]
     pub(crate) async fn submit_replay_resumable_wait<P, PF, T, F, C, CF>(
         &self,
         capture: bool,
@@ -973,6 +1020,14 @@ pub(crate) async fn blocking<T: Send + 'static>(
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "relays, fixtures and guards deliberately stay alive until each test ends"
+)]
+#[allow(
+    clippy::too_many_lines,
+    reason = "each test spells out one end-to-end scenario"
+)]
 mod tests {
     use super::*;
 
@@ -1235,13 +1290,13 @@ mod tests {
         let _normal_message_hold = budgets
             .normal_messages
             .clone()
-            .acquire_many_owned(NORMAL_MESSAGES as u32)
+            .acquire_many_owned(u32::try_from(NORMAL_MESSAGES).unwrap())
             .await
             .unwrap();
         let _normal_byte_hold = budgets
             .normal_bytes
             .clone()
-            .acquire_many_owned(NORMAL_BYTES as u32)
+            .acquire_many_owned(u32::try_from(NORMAL_BYTES).unwrap())
             .await
             .unwrap();
         let tmp = tempfile::tempdir().unwrap();
@@ -1401,7 +1456,7 @@ mod tests {
             .unwrap();
         drop(normal_tx);
         drop(replay_tx);
-        run_owner(normal_rx, replay_rx, state).await;
+        Box::pin(run_owner(normal_rx, replay_rx, state)).await;
         assert_eq!(*order.lock().unwrap(), ["normal-basis", "replay-capture"]);
     }
 
@@ -1450,7 +1505,7 @@ mod tests {
         }
         drop(normal_tx);
         drop(replay_tx);
-        run_owner(normal_rx, replay_rx, state).await;
+        Box::pin(run_owner(normal_rx, replay_rx, state)).await;
         assert_eq!(
             *order.lock().unwrap(),
             [

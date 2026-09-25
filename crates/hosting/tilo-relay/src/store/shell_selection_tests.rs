@@ -1,4 +1,12 @@
 //! Store/replay regressions over public real-owner and signed synthetic inputs.
+#![allow(
+    clippy::similar_names,
+    reason = "paired test fixtures are named after the roles they mirror"
+)]
+#![allow(
+    clippy::too_many_lines,
+    reason = "each test spells out one end-to-end scenario"
+)]
 use super::shell_proof_tests::{binding, fixture, metadata, parts};
 use super::*;
 use crate::{coedit::CoeditPayload, transport::Envelope};
@@ -61,7 +69,10 @@ fn admit_frames_with_origin(
     retained: bool,
 ) -> StatePeer {
     let now = web_time::SystemTime::UNIX_EPOCH
-        + web_time::Duration::from_nanos(meta["now_ns"].as_u64().unwrap());
+        .checked_add(web_time::Duration::from_nanos(
+            meta["now_ns"].as_u64().unwrap(),
+        ))
+        .unwrap();
     let mut peer = StatePeer::restore(
         &fs::read(initial).unwrap(),
         meta["room"].as_str().unwrap(),
@@ -213,10 +224,10 @@ fn retain_frame(store: &WorkspaceStore, bytes: &[u8]) {
     };
     match CoeditPayload::decode(&delta).unwrap() {
         CoeditPayload::Checkpoint { channel, .. } => {
-            store.retain_checkpoint(&channel, bytes).unwrap()
+            store.retain_checkpoint(&channel, bytes).unwrap();
         }
         CoeditPayload::RetainedDelta { channel, .. } => {
-            store.retain_delta(&channel, 1, bytes).unwrap()
+            store.retain_delta(&channel, 1, bytes).unwrap();
         }
     }
 }
@@ -440,8 +451,7 @@ fn shell_selection_interrupted_gc_preserves_historical_proof_until_retirement_is
         .map(|lineage| {
             retained::current(&lineage.unwrap().path())
                 .unwrap()
-                .map(|active| fs::read_dir(active).unwrap().count())
-                .unwrap_or(0)
+                .map_or(0, |active| fs::read_dir(active).unwrap().count())
         })
         .sum::<usize>();
     assert!(
@@ -507,7 +517,9 @@ fn synthetic_owner() -> (
         signature: [0; 64],
     };
     tilo_user_identity::sign_device_cert(&mut cert, &root).unwrap();
-    let now = web_time::SystemTime::UNIX_EPOCH + web_time::Duration::from_secs(2000);
+    let now = web_time::SystemTime::UNIX_EPOCH
+        .checked_add(web_time::Duration::from_secs(2000))
+        .unwrap();
     let room = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
     let mut peer = StatePeer::new(
         room,
@@ -535,6 +547,10 @@ fn synthetic_owner() -> (
     .unwrap();
     (key, RetentionAuthority::new(room, cert).unwrap(), peer, now)
 }
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "test helper keeps the call shape of the fixtures it builds"
+)]
 fn synthetic_signed(
     key: &ed25519_dalek::SigningKey,
     room: &str,
@@ -980,7 +996,7 @@ fn selected_shell_replay_pins_survive_later_selection_and_activation_budget_is_o
             .unwrap();
         while let Some(frame) = batch.front() {
             frames.push(frame.clone());
-            batch.pop_written()
+            batch.pop_written();
         }
         if batch.eof {
             break;
@@ -1098,7 +1114,7 @@ fn initial_shell_basis_replays_independent_reversed_author_tails_in_exact_sequen
         branch.set_actor(automerge::ActorId::from(vec![i + 90]));
         let heads = branch.get_heads();
         branch
-            .put(automerge::ROOT, format!("tail-{i}"), i as u64)
+            .put(automerge::ROOT, format!("tail-{i}"), u64::from(i))
             .unwrap();
         branch.commit();
         let bytes: Vec<u8> = branch
@@ -1106,7 +1122,7 @@ fn initial_shell_basis_replays_independent_reversed_author_tails_in_exact_sequen
             .iter()
             .flat_map(|c| c.raw_bytes().to_vec())
             .collect();
-        expected.load_incremental(&bytes).unwrap();
+        tilo_automerge::ApplyIncoming::load_incoming(&mut expected, &bytes).unwrap();
         tails.push(synthetic_signed(
             &key,
             authority.room(),
@@ -1243,7 +1259,7 @@ fn reopened_shell_basis_replays_dependent_tails_cumulatively_in_signed_sequence_
             .unwrap()
             .unwrap()
             .0
-            .to_str(),
+            .as_str(),
         Some("T1")
     );
     assert_eq!(
@@ -1252,7 +1268,7 @@ fn reopened_shell_basis_replays_dependent_tails_cumulatively_in_signed_sequence_
             .unwrap()
             .unwrap()
             .0
-            .to_str(),
+            .as_str(),
         Some("T2")
     );
 }
@@ -1278,7 +1294,7 @@ fn initial_shell_conflict_or_t2_without_t1_remains_unselected() {
             }
             let heads = branch.get_heads();
             branch
-                .put(automerge::ROOT, format!("case-{i}"), i as u64)
+                .put(automerge::ROOT, format!("case-{i}"), u64::from(i))
                 .unwrap();
             branch.commit();
             let bytes = branch

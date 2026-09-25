@@ -148,9 +148,9 @@ pub fn valid_result(
 pub fn matches_request(request: &AgentRequest, response: &AgentResponse) -> bool {
     valid_request(request)
         && match (request, response) {
-            (_, AgentResponse::Error { .. }) => true,
-            (AgentRequest::Capabilities { .. }, AgentResponse::Capabilities { .. }) => true,
-            (AgentRequest::List { .. }, AgentResponse::List { .. }) => true,
+            (_, AgentResponse::Error { .. })
+            | (AgentRequest::Capabilities { .. }, AgentResponse::Capabilities { .. })
+            | (AgentRequest::List { .. }, AgentResponse::List { .. }) => true,
             (
                 AgentRequest::Conversation {
                     agent_id: expected, ..

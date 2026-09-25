@@ -218,6 +218,10 @@ impl WorkspaceStore {
     /// Install a locally supplied shell pin before handing this store to the
     /// ordered persistence owner. Persisted bytes are a conflict fence, never an
     /// independent source of trust; `open` remains unbound until this call.
+    ///
+    /// # Errors
+    ///
+    /// Returns `StoreError` if the inputs violate this operation's bounds or invariants.
     pub fn bind_shell_authority(
         &mut self,
         authority: qos_peer_state::retained_proof::RetentionAuthority,

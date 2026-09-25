@@ -21,6 +21,10 @@
     clippy::unreachable,
     reason = "in a test these are the assertion, not a hazard"
 )]
+#![allow(
+    clippy::significant_drop_tightening,
+    reason = "relays, fixtures and guards deliberately stay alive until each test ends"
+)]
 
 use std::time::Duration;
 
@@ -160,12 +164,12 @@ async fn offline_peer_gets_queued_deltas_on_reconnect() {
     let a = user.enrol("laptop", DeviceCapabilities::primary());
     let b = user.enrol("phone", DeviceCapabilities::member());
 
-    let relay = spawn_relay(
+    let relay = Box::pin(spawn_relay(
         &user,
         relay_dev,
         &[5],
         &[a.device_pubkey(), b.device_pubkey()],
-    )
+    ))
     .await;
     let addr = relay.relay.node_addr();
 

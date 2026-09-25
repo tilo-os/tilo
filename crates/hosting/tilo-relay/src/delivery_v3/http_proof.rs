@@ -48,6 +48,10 @@ pub struct Request<'a> {
 impl<'a> Request<'a> {
     /// Validate exact uppercase method and canonical raw target without rewriting.
     /// The same immutable body must be passed onward to the business owner.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ProofError` if the inputs violate this operation's bounds or invariants.
     pub fn new(method: &str, exact_target: &'a str, body: &'a [u8]) -> Result<Self, ProofError> {
         let method = match method {
             "GET" => Method::Get,
@@ -85,8 +89,8 @@ fn unreserved(byte: u8) -> bool {
 }
 fn upper_hex(byte: u8) -> Option<u8> {
     match byte {
-        b'0'..=b'9' => Some(byte - b'0'),
-        b'A'..=b'F' => Some(byte - b'A' + 10),
+        b'0'..=b'9' => byte.checked_sub(b'0'),
+        b'A'..=b'F' => byte.checked_sub(b'A' - 10),
         _ => None,
     }
 }
@@ -97,10 +101,13 @@ fn validate_target(target: &str) -> Result<(), ProofError> {
     let (path, query) = target
         .split_once('?')
         .map_or((target, None), |(p, q)| (p, Some(q)));
-    if path.len() > MAX_PATH_BYTES || !path.starts_with('/') {
+    if path.len() > MAX_PATH_BYTES {
         return Err(ProofError::Target);
     }
-    for segment in path[1..].split('/') {
+    let Some(segments) = path.strip_prefix('/') else {
+        return Err(ProofError::Target);
+    };
+    for segment in segments.split('/') {
         if segment.is_empty() || matches!(segment, "." | "..") || !segment.bytes().all(unreserved) {
             return Err(ProofError::Target);
         }
@@ -121,22 +128,21 @@ fn validate_target(target: &str) -> Result<(), ProofError> {
                 return Err(ProofError::Target);
             }
             previous = Some(name);
-            let bytes = value.as_bytes();
-            let mut offset = 0;
-            while offset < bytes.len() {
-                if unreserved(bytes[offset]) {
-                    offset += 1;
+            let mut rest = value.as_bytes();
+            while let Some((&first, tail)) = rest.split_first() {
+                if unreserved(first) {
+                    rest = tail;
                     continue;
                 }
-                if bytes[offset] != b'%' || offset + 2 >= bytes.len() {
+                let [b'%', high, low, tail @ ..] = rest else {
                     return Err(ProofError::Target);
-                }
-                let byte = (upper_hex(bytes[offset + 1]).ok_or(ProofError::Target)? << 4)
-                    | upper_hex(bytes[offset + 2]).ok_or(ProofError::Target)?;
+                };
+                let byte = (upper_hex(*high).ok_or(ProofError::Target)? << 4)
+                    | upper_hex(*low).ok_or(ProofError::Target)?;
                 if unreserved(byte) || byte == b'%' || byte.is_ascii_control() {
                     return Err(ProofError::Target);
                 }
-                offset += 3;
+                rest = tail;
             }
         }
     }
@@ -161,6 +167,10 @@ pub struct RequestProof {
 impl RequestProof {
     /// Sign with the existing custody key and a fresh nonce. Caller-supplied
     /// session parameters are inert; admission derives them independently.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ProofError` if the value cannot be canonically encoded.
     pub fn sign(
         session_id: [u8; 16],
         session_digest: [u8; 32],
@@ -190,6 +200,10 @@ impl RequestProof {
         self.wire.session_id
     }
     /// Encode canonical bounded proof bytes. Do not log these bytes.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ProofError` if the value violates its wire bounds or cannot be serialized.
     pub fn encode(&self) -> Result<Vec<u8>, ProofError> {
         validate_wire(&self.wire)?;
         let mut buffer = [0; MAX_PROOF_BYTES];
@@ -198,6 +212,10 @@ impl RequestProof {
             .map_err(|_| ProofError::Codec)
     }
     /// Decode a complete canonical bounded proof without admission or cache effects.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ProofError` if the input is not a canonical encoding within this type's bounds.
     pub fn decode(bytes: &[u8]) -> Result<Self, ProofError> {
         if bytes.len() > MAX_PROOF_BYTES {
             return Err(ProofError::Codec);
@@ -220,8 +238,8 @@ fn validate_wire(wire: &ProofWire) -> Result<(), ProofError> {
     if wire
         .expires_at_ns
         .checked_sub(wire.issued_at_ns)
-        .filter(|n| *n > 0 && *n <= LIFETIME_NS)
-        .is_none()
+        .as_ref()
+        .is_none_or(|n| !(*n > 0 && *n <= LIFETIME_NS))
         || wire.expires_at_ns.checked_add(TOLERANCE_NS).is_none()
     {
         return Err(ProofError::Lifetime);
@@ -231,6 +249,10 @@ fn validate_wire(wire: &ProofWire) -> Result<(), ProofError> {
 
 /// Pure digest helper for the custody owner's already verified handshake inputs.
 /// Arbitrary inputs yield an inert digest, never verified session evidence.
+///
+/// # Errors
+///
+/// Returns `ProofError` if the value cannot be canonically encoded.
 pub fn session_binding_digest(
     binding: &Binding,
     session_id: [u8; 16],
@@ -253,26 +275,25 @@ fn request_digest(
     session_digest: [u8; 32],
     request: &Request<'_>,
 ) -> Result<[u8; 32], ProofError> {
-    let mut buffer = [0; MAX_TARGET_BYTES + 256];
     let body_digest = *blake3::hash(request.body).as_bytes();
-    let bytes = postcard::to_slice(
-        &(
-            wire.protocol,
-            wire.session_id,
-            session_digest,
-            request.method,
-            request.target,
-            body_digest,
-            wire.nonce,
-            wire.issued_at_ns,
-            wire.expires_at_ns,
-        ),
-        &mut buffer,
-    )
+    let bytes = postcard::to_allocvec(&(
+        wire.protocol,
+        wire.session_id,
+        session_digest,
+        request.method,
+        request.target,
+        body_digest,
+        wire.nonce,
+        wire.issued_at_ns,
+        wire.expires_at_ns,
+    ))
     .map_err(|_| ProofError::Codec)?;
+    if bytes.len() > MAX_TARGET_BYTES + 256 {
+        return Err(ProofError::Codec);
+    }
     let mut hash = blake3::Hasher::new();
     hash.update(REQUEST_DOMAIN);
-    hash.update(bytes);
+    hash.update(&bytes);
     Ok(*hash.finalize().as_bytes())
 }
 
@@ -287,6 +308,10 @@ pub struct HttpSessionAdmission {
 }
 impl HttpSessionAdmission {
     /// Consume the verified session and require current native HTTPS authority.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ProofError` if the inputs violate this operation's bounds or invariants.
     pub fn new(
         session: VerifiedSession,
         current: &VerificationContext<'_>,
@@ -319,6 +344,10 @@ impl HttpSessionAdmission {
     /// immutable request, cursor, source, session/carrier generation, deadline
     /// and cancellation state, and recheck current native authorization and
     /// filtering on every page. This check alone authorizes no continuation.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ProofError` if the value fails validation or verification.
     pub fn revalidate(
         &mut self,
         current: &VerificationContext<'_>,
@@ -337,6 +366,10 @@ impl HttpSessionAdmission {
     /// Atomically revalidate, verify and record one proof before returning a witness.
     /// Shared handlers must lock this same owner for the complete synchronous call.
     /// Native authorization/commit scheduling must not bypass its own authority.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ProofError` if the resource budget refuses the allocation or the input is invalid.
     pub fn admit<'a>(
         &'a mut self,
         proof: &RequestProof,

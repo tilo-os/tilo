@@ -35,6 +35,10 @@
     clippy::unreachable,
     reason = "in a test these are the assertion, not a hazard"
 )]
+#![allow(
+    clippy::significant_drop_tightening,
+    reason = "relays, fixtures and guards deliberately stay alive until each test ends"
+)]
 
 use std::time::Duration;
 
@@ -140,7 +144,7 @@ async fn p2_returns_and_drains(
     // must still arrive exactly once.
     let mut got_delta = false;
     let mut ready = false;
-    let mut redelivered = 0;
+    let mut redelivered = 0_u32;
     while !(ready && got_delta) {
         let env = tokio::time::timeout(Duration::from_secs(3), c2_r1_again.recv())
             .await
@@ -152,7 +156,7 @@ async fn p2_returns_and_drains(
                 got_delta = true;
             }
             Envelope::Delta { delta, .. } if delta == b"via-relay1" => {
-                redelivered += 1;
+                redelivered = redelivered.saturating_add(1);
                 assert_eq!(redelivered, 1, "an already-delivered delta repeated");
             }
             Envelope::Ready {
@@ -175,8 +179,8 @@ async fn peer_can_dial_multiple_relays_and_pending_stays_local() {
 
     let members = vec![p1.device_pubkey(), p2.device_pubkey()];
 
-    let relay1 = spawn_relay(&user, relay_dev_1, &[3], &members).await;
-    let relay2 = spawn_relay(&user, relay_dev_2, &[3], &members).await;
+    let relay1 = Box::pin(spawn_relay(&user, relay_dev_1, &[3], &members)).await;
+    let relay2 = Box::pin(spawn_relay(&user, relay_dev_2, &[3], &members)).await;
 
     // Peers dial relay1 first — verify they can both dial and
     // fan-out works via relay1.
@@ -273,7 +277,7 @@ async fn client_falls_over_to_reachable_relay() {
     let user = TestUser::fresh("Alice");
     let relay_dev = user.enrol("home-server", DeviceCapabilities::host());
     let a = user.enrol("laptop", DeviceCapabilities::primary());
-    let relay = spawn_relay(&user, relay_dev, &[7], &[a.device_pubkey()]).await;
+    let relay = Box::pin(spawn_relay(&user, relay_dev, &[7], &[a.device_pubkey()])).await;
     let real_addr = relay.relay.node_addr();
 
     // Ghost address: a randomly-generated node id nobody listens on.

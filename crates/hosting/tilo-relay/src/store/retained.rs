@@ -8,6 +8,7 @@
 //! queue entry is covered merely because its filename or timestamp is older.
 
 use super::{RETAINED_DIR, StoreError, WorkspaceStore};
+use crate::store::bounded::Invariant;
 use crate::{coedit::CoeditPayload, transport::Envelope};
 use automerge::ReadDoc;
 use std::{
@@ -195,19 +196,22 @@ struct Record {
 
 impl Record {
     fn read(path: PathBuf) -> Result<Self, StoreError> {
-        Self::from_bytes(path.clone(), fs::read(path)?)
+        Ok(Self::from_bytes(path.clone(), fs::read(path)?))
     }
     fn read_for_proof(path: PathBuf) -> Result<Self, StoreError> {
         let bytes = super::replay::frame_bytes(&path)?.unwrap_or_default();
-        Self::from_bytes(path, bytes)
+        Ok(Self::from_bytes(path, bytes))
     }
-    fn from_bytes(path: PathBuf, bytes: Vec<u8>) -> Result<Self, StoreError> {
+    fn from_bytes(path: PathBuf, bytes: Vec<u8>) -> Self {
         #[cfg(test)]
         RECORD_BYTES.with(|counter| {
             let (live, peak) = counter.get();
-            counter.set((live + bytes.len(), peak.max(live + bytes.len())));
+            counter.set((
+                live.saturating_add(bytes.len()),
+                peak.max(live.saturating_add(bytes.len())),
+            ));
         });
-        Ok(Self { path, bytes })
+        Self { path, bytes }
     }
 }
 #[cfg(test)]
@@ -215,7 +219,7 @@ impl Drop for Record {
     fn drop(&mut self) {
         RECORD_BYTES.with(|counter| {
             let (live, peak) = counter.get();
-            counter.set((live - self.bytes.len(), peak));
+            counter.set((live.saturating_sub(self.bytes.len()), peak));
         });
     }
 }
@@ -411,11 +415,15 @@ enum RetainPhase {
     Inspect(fs::File),
     Stage(fs::File),
     Commit,
-    Collect(GenerationGc),
+    Collect(Box<GenerationGc>),
     Done,
 }
 /// Owner must retain this transaction's ordered position across every step.
 /// Drop only closes handles: abandoned staging files are reclaimed separately.
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "independent step-machine flags of one resumable retention pass"
+)]
 pub(crate) struct RetainBuild {
     lineage: PathBuf,
     active: PathBuf,
@@ -451,20 +459,21 @@ pub(crate) struct CheckpointDiscard {
     entries: Option<super::bounded::DirectoryCursor>,
 }
 impl CheckpointDiscard {
-    pub(crate) fn new(lineage: PathBuf, staged: PathBuf) -> Result<Option<Self>, StoreError> {
-        if current(&lineage)?.as_ref() == Some(&staged) {
+    pub(crate) fn new(lineage: &Path, staged: PathBuf) -> Result<Option<Self>, StoreError> {
+        if current(lineage)?.as_ref() == Some(&staged) {
             return Ok(None);
         }
-        if staged.parent() != Some(lineage.as_path()) {
+        if staged.parent() != Some(lineage) {
             return Err(invalid("checkpoint stage is outside its retained lineage"));
         }
+        let entries = match super::bounded::DirectoryCursor::open(&staged) {
+            Ok(entries) => Some(entries),
+            Err(StoreError::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => None,
+            Err(error) => return Err(error),
+        };
         Ok(Some(Self {
-            root: staged.clone(),
-            entries: match super::bounded::DirectoryCursor::open(&staged) {
-                Ok(entries) => Some(entries),
-                Err(StoreError::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => None,
-                Err(error) => return Err(error),
-            },
+            root: staged,
+            entries,
         }))
     }
     pub(crate) fn step(
@@ -513,11 +522,11 @@ impl CheckpointStage {
     pub(crate) fn projected_generation(&self) -> &Path {
         self.build.staged.as_deref().unwrap_or(&self.build.active)
     }
-    pub(crate) fn lineage_name(&self) -> &std::ffi::OsStr {
+    pub(crate) fn lineage_name(&self) -> Result<&std::ffi::OsStr, StoreError> {
         self.build
             .lineage
             .file_name()
-            .expect("retained lineage name")
+            .ok_or_else(|| invalid("retained lineage has no name"))
     }
     pub(crate) fn written(&self) -> u64 {
         self.build.written
@@ -552,14 +561,23 @@ impl CheckpointStage {
     /// before `finish_gc` may retire any prior generation.
     pub(crate) fn promote(&mut self) -> Result<(), StoreError> {
         if matches!(self.build.phase, RetainPhase::Commit) {
-            let staged = self.build.staged.as_ref().unwrap().clone();
+            let staged = self
+                .build
+                .staged
+                .as_ref()
+                .invariant("staged missing")?
+                .clone();
             sync_dir(&staged)?;
             durable_write(
                 &self.build.lineage.join("CURRENT"),
-                staged.file_name().unwrap().as_encoded_bytes(),
+                staged
+                    .file_name()
+                    .invariant("staged missing")?
+                    .as_encoded_bytes(),
             )?;
             self.build.written = self.build.bytes.len() as u64;
-            self.build.phase = RetainPhase::Collect(GenerationGc::new(self.build.lineage.clone())?);
+            self.build.phase =
+                RetainPhase::Collect(Box::new(GenerationGc::new(self.build.lineage.clone())?));
         }
         Ok(())
     }
@@ -596,7 +614,7 @@ impl RetainBuild {
     pub(crate) fn publication_on_error(&self) -> Option<super::shell_selection::Publication> {
         self.selection
             .as_ref()
-            .and_then(|selection| selection.publication_on_error())
+            .and_then(super::shell_selection::Selection::publication_on_error)
     }
     #[allow(
         dead_code,
@@ -611,11 +629,17 @@ impl RetainBuild {
         &self.sorter.stats
     }
     pub(crate) fn selection_stats(&self) -> Option<&super::bounded::WorkStats> {
-        self.selection.as_ref().map(|selection| selection.stats())
+        self.selection
+            .as_ref()
+            .map(super::shell_selection::Selection::stats)
     }
     pub(crate) fn selected_obsolete(&self) -> bool {
         self.selected_obsolete
     }
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one ordered protocol state machine; splitting it would scatter the invariants each step relies on"
+    )]
     pub(crate) fn step(
         &mut self,
         limit: super::bounded::WorkLimit,
@@ -648,7 +672,8 @@ impl RetainBuild {
                     return Ok(Step::More);
                 }
                 for _ in 0..limit.record_entries() {
-                    self.sorter.stats.last_step_work += 1;
+                    self.sorter.stats.last_step_work =
+                        self.sorter.stats.last_step_work.saturating_add(1);
                     let Some(entry) = entries.next() else {
                         self.phase = RetainPhase::Sort;
                         return Ok(Step::More);
@@ -685,13 +710,16 @@ impl RetainBuild {
             }
             RetainPhase::Inspect(file) => {
                 for _ in 0..limit.record_entries() {
-                    self.sorter.stats.last_step_work += 1;
+                    self.sorter.stats.last_step_work =
+                        self.sorter.stats.last_step_work.saturating_add(1);
                     let Some(meta) = read_meta(file)? else {
                         if self.duplicate && self.continuity.is_none() {
                             self.phase = if self.staged_only {
                                 RetainPhase::Done
                             } else {
-                                RetainPhase::Collect(GenerationGc::new(self.lineage.clone())?)
+                                RetainPhase::Collect(Box::new(GenerationGc::new(
+                                    self.lineage.clone(),
+                                )?))
                             };
                         } else if self.continuity.is_none()
                             && self.checkpoint
@@ -707,8 +735,9 @@ impl RetainBuild {
                                 &self.lineage,
                                 "checkpoint-stage-after-allocation",
                             )?;
-                            self.phase =
-                                RetainPhase::Stage(fs::File::open(self.sorted.as_ref().unwrap())?);
+                            self.phase = RetainPhase::Stage(fs::File::open(
+                                self.sorted.as_ref().invariant("sorted missing")?,
+                            )?);
                         } else if self.staged_only {
                             // Preserve opaque/unproved history exactly in an
                             // inactive generation. The live generation is not
@@ -722,8 +751,9 @@ impl RetainBuild {
                                 "checkpoint-stage-after-allocation",
                             )?;
                             self.staged_append = true;
-                            self.phase =
-                                RetainPhase::Stage(fs::File::open(self.sorted.as_ref().unwrap())?);
+                            self.phase = RetainPhase::Stage(fs::File::open(
+                                self.sorted.as_ref().invariant("sorted missing")?,
+                            )?);
                         } else {
                             let next = self
                                 .last
@@ -755,7 +785,7 @@ impl RetainBuild {
                         .sorter
                         .stats
                         .peak_frame_bytes
-                        .max(record.bytes.len() + self.bytes.len());
+                        .max(record.bytes.len().saturating_add(self.bytes.len()));
                     if self.checkpoint {
                         // Preserve reviewed proof verbatim; hold only this prior record.
                         let old_key = checkpoint_key(&record.bytes, self.workspace);
@@ -773,7 +803,8 @@ impl RetainBuild {
             }
             RetainPhase::Stage(file) => {
                 for _ in 0..limit.record_entries() {
-                    self.sorter.stats.last_step_work += 1;
+                    self.sorter.stats.last_step_work =
+                        self.sorter.stats.last_step_work.saturating_add(1);
                     let Some(meta) = read_meta(file)? else {
                         if self.staged_append {
                             let next = self
@@ -783,7 +814,7 @@ impl RetainBuild {
                             let path = self
                                 .staged
                                 .as_ref()
-                                .unwrap()
+                                .invariant("staged missing")?
                                 .join(format!("{next:016x}.delta"));
                             if let Some(receipt) = &self.continuity {
                                 super::continuity::account_validation(
@@ -803,10 +834,10 @@ impl RetainBuild {
                         .sorter
                         .stats
                         .peak_frame_bytes
-                        .max(record.bytes.len() + self.bytes.len());
+                        .max(record.bytes.len().saturating_add(self.bytes.len()));
                     let destination = if self.staged_append {
                         Some(
-                            self.staged.as_ref().unwrap().join(
+                            self.staged.as_ref().invariant("staged missing")?.join(
                                 record
                                     .path
                                     .file_name()
@@ -817,7 +848,7 @@ impl RetainBuild {
                         let path = self
                             .staged
                             .as_ref()
-                            .unwrap()
+                            .invariant("staged missing")?
                             .join(format!("{:016x}.delta", self.survivors));
                         increment(&mut self.survivors)?;
                         Some(path)
@@ -839,14 +870,18 @@ impl RetainBuild {
                 }
             }
             RetainPhase::Commit => {
-                let staged = self.staged.as_ref().unwrap();
+                let staged = self.staged.as_ref().invariant("staged missing")?;
                 sync_dir(staged)?;
                 durable_write(
                     &self.lineage.join("CURRENT"),
-                    staged.file_name().unwrap().as_encoded_bytes(),
+                    staged
+                        .file_name()
+                        .invariant("staged missing")?
+                        .as_encoded_bytes(),
                 )?;
                 self.written = self.bytes.len() as u64;
-                self.phase = RetainPhase::Collect(GenerationGc::new(self.lineage.clone())?);
+                self.phase =
+                    RetainPhase::Collect(Box::new(GenerationGc::new(self.lineage.clone())?));
             }
             RetainPhase::Collect(gc) => {
                 if let Step::Done(()) = gc.step(limit)? {
@@ -867,7 +902,7 @@ impl RetainBuild {
                                 incoming,
                             )?);
                         }
-                        match self.selection.as_mut().unwrap().step(limit)? {
+                        match self.selection.as_mut().invariant("selection missing")?.step(limit)? {
                             Step::More => return Ok(Step::More),
                             Step::Done(super::shell_selection::SelectionOutcome::Published(
                                 publication,
@@ -889,7 +924,7 @@ impl RetainBuild {
                 }
                 return Ok(Step::Done(super::shell_selection::RetainOutcome {
                     written: self.written,
-                    publication: self.publication.clone().unwrap(),
+                    publication: self.publication.clone().invariant("publication missing")?,
                 }));
             }
         }
@@ -1073,7 +1108,7 @@ impl WorkspaceStore {
             out.extend(
                 records(&active)?
                     .into_iter()
-                    .map(|entry| entry.bytes.clone()),
+                    .map(|mut entry| std::mem::take(&mut entry.bytes)),
             );
         }
         Ok(out)
@@ -1133,7 +1168,7 @@ pub(super) mod tests {
         let mut bytes = bytes.to_vec();
         if outer {
             bytes.extend_from_slice(b"fixture extension");
-            let length = (bytes.len() - 4) as u32;
+            let length = u32::try_from(bytes.len().checked_sub(4).unwrap()).unwrap();
             bytes[..4].copy_from_slice(&length.to_le_bytes());
         } else {
             let mut envelope = crate::transport::decode(&bytes[4..]).unwrap();
@@ -1167,7 +1202,7 @@ pub(super) mod tests {
             "unproved enclosing bytes must survive collection"
         );
         assert!(
-            replay == vec![unproved.clone(), later.clone()],
+            replay == vec![unproved, later.clone()],
             "unproved checkpoints must preserve opaque receipt order"
         );
         let incoming = wrapper_suffix(&later, outer);
@@ -1424,7 +1459,7 @@ pub(super) mod tests {
             Some(&second),
             "proven replacement checkpoint must precede uncovered tails"
         );
-        document.merge(&mut branch).unwrap();
+        tilo_automerge::ApplyIncoming::merge_incoming(&mut document, &mut branch).unwrap();
         let store = WorkspaceStore::open(tmp.path(), 7, false).unwrap();
         let mut recovered = automerge::AutoCommit::new();
         for bytes in store.load_retained().unwrap() {
@@ -1433,7 +1468,7 @@ pub(super) mod tests {
                 CoeditPayload::Checkpoint { body, .. }
                 | CoeditPayload::RetainedDelta { body, .. } => body,
             };
-            recovered.load_incremental(&body).unwrap();
+            tilo_automerge::ApplyIncoming::load_incoming(&mut recovered, &body).unwrap();
         }
         assert_eq!(
             recovered.get_heads(),
@@ -1499,9 +1534,9 @@ pub(super) mod tests {
 
     #[test]
     fn failed_generation_commit_reopens_old_checkpoint_and_tail_then_resumes() {
+        use automerge::transaction::Transactable;
         let tmp = tempfile::tempdir().unwrap();
         let store = WorkspaceStore::open(tmp.path(), 7, false).unwrap();
-        use automerge::transaction::Transactable;
         let mut document = automerge::AutoCommit::new();
         document.put(automerge::ROOT, "old", 1).unwrap();
         let old = frame(true, document.save(), 1);
@@ -1619,7 +1654,7 @@ pub(super) mod tests {
             fs::write(staged.join(format!("{index:02}.delta")), b"staged").unwrap();
         }
 
-        let mut discard = CheckpointDiscard::new(lineage.clone(), staged.clone())
+        let mut discard = CheckpointDiscard::new(&lineage, staged.clone())
             .unwrap()
             .unwrap();
         let mut quanta = 0;
@@ -1645,7 +1680,7 @@ pub(super) mod tests {
         fs::write(staged.join("checkpoint.delta"), b"selected").unwrap();
         fs::write(lineage.join("CURRENT"), staged_name.as_bytes()).unwrap();
         assert!(
-            CheckpointDiscard::new(lineage.clone(), staged.clone())
+            CheckpointDiscard::new(&lineage, staged.clone())
                 .unwrap()
                 .is_none()
         );
@@ -1653,7 +1688,7 @@ pub(super) mod tests {
 
         fs::remove_file(lineage.join("CURRENT")).unwrap();
         fs::create_dir(lineage.join("CURRENT")).unwrap();
-        assert!(CheckpointDiscard::new(lineage, staged.clone()).is_err());
+        assert!(CheckpointDiscard::new(&lineage, staged.clone()).is_err());
         assert!(
             staged.join("checkpoint.delta").exists(),
             "an unreadable CURRENT must preserve the candidate"

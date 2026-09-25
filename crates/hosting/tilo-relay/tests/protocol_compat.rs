@@ -6,6 +6,14 @@
 //! release tag after the Tilo rename (`cc0a1901`), so the transient
 //! `qos-relay/2` + Tilo-domain pair was not a deployed wire contract.
 
+#![allow(
+    clippy::significant_drop_tightening,
+    reason = "relays, fixtures and guards deliberately stay alive until each test ends"
+)]
+#![allow(
+    clippy::too_many_lines,
+    reason = "each test spells out one end-to-end scenario"
+)]
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 

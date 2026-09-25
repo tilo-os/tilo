@@ -119,6 +119,10 @@ pub(super) fn reserved_slot(name: &str) -> Option<u64> {
 fn hex_name(value: &str, len: usize) -> bool {
     value.len() == len && value.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
+#[expect(
+    clippy::case_sensitive_file_extension_comparisons,
+    reason = "store-generated names use exact lowercase suffixes; any other casing is foreign data"
+)]
 fn location(store: &WorkspaceStore, raw: &Path, receipt: &Receipt) -> Option<PathBuf> {
     let relative = raw.strip_prefix(store.root()).ok()?;
     if relative
@@ -211,8 +215,8 @@ fn association(
 // logical length. Reserve that overlap conservatively, including enum storage.
 pub(super) fn account_validation(stats: &mut super::bounded::WorkStats, len: usize) {
     let overhead = std::mem::size_of::<Envelope>()
-        + std::mem::size_of::<crate::coedit::CoeditPayload>()
-        + std::mem::size_of::<qos_peer_state::NeighbourMsg>();
+        .saturating_add(std::mem::size_of::<crate::coedit::CoeditPayload>())
+        .saturating_add(std::mem::size_of::<qos_peer_state::NeighbourMsg>());
     stats.peak_frame_bytes = stats
         .peak_frame_bytes
         .max(len.saturating_mul(5).saturating_add(overhead));
@@ -228,7 +232,7 @@ pub(super) fn load_measured(
 }
 #[cfg(test)]
 fn load(store: &WorkspaceStore, raw: &Path) -> Result<Option<Receipt>, StoreError> {
-    load_measured(store, raw, &mut Default::default())
+    load_measured(store, raw, &mut super::bounded::WorkStats::default())
 }
 
 /// The marker is durable BEFORE the caller publishes a new raw append. An
@@ -333,7 +337,13 @@ fn copy(
     source: &Path,
     destination: &Path,
 ) -> Result<Option<Receipt>, StoreError> {
-    copy_measured(store, source, destination, &mut Default::default(), 0)
+    copy_measured(
+        store,
+        source,
+        destination,
+        &mut super::bounded::WorkStats::default(),
+        0,
+    )
 }
 
 /// Return true for captured marked data even when identities no longer match:
@@ -380,7 +390,7 @@ pub(super) fn cleanup_pending(
 mod tests {
     use super::*;
     use crate::store::{
-        bounded::Step,
+        bounded::{Step, WorkLimit},
         replay::{ReplayBudget, ReplayId, ReplayLimits},
     };
 
@@ -463,7 +473,7 @@ mod tests {
                 .unwrap()
                 .with_continuity(Some(receipt));
             loop {
-                if matches!(build.step(Default::default()).unwrap(), Step::Done(_)) {
+                if matches!(build.step(WorkLimit::default()).unwrap(), Step::Done(_)) {
                     break;
                 }
             }
@@ -486,7 +496,7 @@ mod tests {
         .unwrap();
         let mut snapshot = loop {
             if let Step::Done(snapshot) = store
-                .capture_replay_step(&mut build, Default::default())
+                .capture_replay_step(&mut build, WorkLimit::default())
                 .unwrap()
             {
                 break snapshot;
@@ -495,7 +505,7 @@ mod tests {
         loop {
             if matches!(
                 store
-                    .prepare_replay_step(&mut snapshot, Default::default())
+                    .prepare_replay_step(&mut snapshot, WorkLimit::default())
                     .unwrap(),
                 Step::Done(_)
             ) {
@@ -668,7 +678,7 @@ mod tests {
             .unwrap()
             .with_continuity(Some(receipt));
         loop {
-            match build.step(Default::default()) {
+            match build.step(WorkLimit::default()) {
                 Ok(Step::More) => {}
                 Err(_) => break,
                 Ok(Step::Done(_)) => panic!("marker failure did not interrupt raw publication"),
@@ -708,7 +718,7 @@ mod tests {
             .unwrap()
             .with_continuity(Some(receipt));
         loop {
-            if matches!(stage.step(Default::default()).unwrap(), Step::Done(_)) {
+            if matches!(stage.step(WorkLimit::default()).unwrap(), Step::Done(_)) {
                 break;
             }
         }
@@ -744,7 +754,7 @@ mod tests {
             .unwrap()
             .with_continuity(Some(receipt));
         loop {
-            if matches!(stage.step(Default::default()).unwrap(), Step::Done(_)) {
+            if matches!(stage.step(WorkLimit::default()).unwrap(), Step::Done(_)) {
                 break;
             }
         }
@@ -796,7 +806,7 @@ mod tests {
         assert!(
             fixture
                 .store
-                .cleanup_replay_step(&mut snapshot, Default::default())
+                .cleanup_replay_step(&mut snapshot, WorkLimit::default())
                 .is_err()
         );
         assert!(!source.exists(), "raw must disappear before marker unlink");
@@ -814,7 +824,7 @@ mod tests {
             if matches!(
                 fixture
                     .store
-                    .cleanup_replay_step(&mut snapshot, Default::default())
+                    .cleanup_replay_step(&mut snapshot, WorkLimit::default())
                     .unwrap(),
                 Step::Done(())
             ) {
@@ -843,7 +853,7 @@ mod tests {
             if matches!(
                 fixture
                     .store
-                    .cleanup_replay_step(&mut snapshot, Default::default())
+                    .cleanup_replay_step(&mut snapshot, WorkLimit::default())
                     .unwrap(),
                 Step::Done(())
             ) {
@@ -860,7 +870,7 @@ mod tests {
         let mut latest = None;
         for sequence in 1..=160 {
             let (_, envelope, bytes, receipt) =
-                fixture.frame(vec![sequence as u8; 64 * 1024], sequence);
+                fixture.frame(vec![u8::try_from(sequence).unwrap(); 64 * 1024], sequence);
             largest = largest.max(bytes.len());
             fixture
                 .store
@@ -875,7 +885,7 @@ mod tests {
         let mut snapshot = loop {
             let step = fixture
                 .store
-                .capture_replay_step(&mut build, Default::default())
+                .capture_replay_step(&mut build, WorkLimit::default())
                 .unwrap();
             if let Step::Done(snapshot) = step {
                 break snapshot;
@@ -887,7 +897,7 @@ mod tests {
         loop {
             let step = fixture
                 .store
-                .prepare_replay_step(&mut snapshot, Default::default())
+                .prepare_replay_step(&mut snapshot, WorkLimit::default())
                 .unwrap();
             let stats = snapshot.stats();
             assert!(stats.peak_metadata_entries <= super::super::bounded::RUN_ENTRIES + 1);

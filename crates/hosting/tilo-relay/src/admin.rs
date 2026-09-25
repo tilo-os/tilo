@@ -363,7 +363,7 @@ fn cmd_home_peer_remove(identity_root: PathBuf, device: &str, service: &str) -> 
         )?),
         label: "Removed".into(),
         files_ready: false,
-        services: Default::default(),
+        services: tilo_relay_protocol::ServiceCapabilities::default(),
         decommissioned: false,
     });
     println!("{}", serde_json::to_string(&response)?);
@@ -493,7 +493,7 @@ fn persist_fleet_revocation(
         entry
             .get("revoked_device_public_key")
             .and_then(serde_json::Value::as_array)
-            .map(|bytes| {
+            .is_none_or(|bytes| {
                 bytes
                     .iter()
                     .filter_map(serde_json::Value::as_u64)
@@ -504,7 +504,6 @@ fn persist_fleet_revocation(
                         .map(|byte| u64::from(*byte))
                         .collect::<Vec<_>>()
             })
-            .unwrap_or(true)
     });
     revocations.push(serde_json::to_value(revocation)?);
     atomic_file::write_with_mode(&path, &serde_json::to_vec_pretty(&fleet)?, 0o600)?;

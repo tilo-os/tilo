@@ -1,3 +1,7 @@
+#![allow(
+    clippy::too_many_lines,
+    reason = "each test spells out one end-to-end scenario"
+)]
 use super::*;
 use ed25519_dalek::{Signer, SigningKey};
 fn certificate(key: &SigningKey) -> DeviceCert {
@@ -185,7 +189,10 @@ fn onboarding_closed_operations_bounds_and_no_declared_length_allocation() {
     .into_iter()
     .enumerate()
     {
-        assert_eq!(postcard::to_stdvec(&op).unwrap(), [index as u8]);
+        assert_eq!(
+            postcard::to_stdvec(&op).unwrap(),
+            [u8::try_from(index).unwrap()]
+        );
         assert_eq!(
             OnboardingOperation::from_target("POST", op.path()).unwrap(),
             op

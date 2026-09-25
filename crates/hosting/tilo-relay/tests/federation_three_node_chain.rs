@@ -118,9 +118,9 @@ async fn delta_traverses_relay_chain_via_anti_entropy() {
     let b = user.enrol("phone", DeviceCapabilities::member());
     let members = vec![a.device_pubkey(), b.device_pubkey()];
 
-    let r1 = spawn_relay(&user, r1_dev, &[WS], &members).await;
-    let r2 = spawn_relay(&user, r2_dev, &[WS], &members).await;
-    let r3 = spawn_relay(&user, r3_dev, &[WS], &members).await;
+    let r1 = Box::pin(spawn_relay(&user, r1_dev, &[WS], &members)).await;
+    let r2 = Box::pin(spawn_relay(&user, r2_dev, &[WS], &members)).await;
+    let r3 = Box::pin(spawn_relay(&user, r3_dev, &[WS], &members)).await;
 
     // Wire the CHAIN only: R1<->R2 and R2<->R3. R1 and R3 never federate
     // directly, so R2 is the sole bridge.

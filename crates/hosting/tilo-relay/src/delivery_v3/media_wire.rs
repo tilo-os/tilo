@@ -55,10 +55,10 @@ pub struct BootstrapResponse {
     pub version: u8,
     /// Exact retained signed request, including nonce.
     pub request: BootstrapRequest,
-    /// Canonical DeviceCert postcard bytes, at most 4096 bytes.
+    /// Canonical `DeviceCert` postcard bytes, at most 4096 bytes.
     #[serde(with = "grant_bytes")]
     pub host_certificate: Vec<u8>,
-    /// Exact canonical TransportHint postcard bytes, at most 24 KiB.
+    /// Exact canonical `TransportHint` postcard bytes, at most 24 KiB.
     #[serde(with = "hint_bytes")]
     pub hint: Vec<u8>,
     /// Owner-stored descriptor generation, never a store-generation substitute.
@@ -74,6 +74,10 @@ pub struct BootstrapResponse {
 }
 impl BootstrapRequest {
     /// Validate structural bounds only.
+    ///
+    /// # Errors
+    ///
+    /// Returns `WireError` if the value fails validation or verification.
     pub fn validate(&self) -> Result<(), WireError> {
         if self.version != 1 {
             return Err(WireError::Invalid);
@@ -85,6 +89,10 @@ impl BootstrapRequest {
         text(&self.room, 128)
     }
     /// Exact typed bootstrap signing digest; creates no verified authority.
+    ///
+    /// # Errors
+    ///
+    /// Returns `WireError` if the value cannot be canonically encoded.
     pub fn signing_digest(&self) -> Result<[u8; 32], WireError> {
         self.validate()?;
         digest(
@@ -103,6 +111,10 @@ impl BootstrapRequest {
 }
 impl BootstrapResponse {
     /// Validate structural bounds only.
+    ///
+    /// # Errors
+    ///
+    /// Returns `WireError` if the value fails validation or verification.
     pub fn validate(&self) -> Result<(), WireError> {
         self.request.validate()?;
         if self.version != 1
@@ -120,6 +132,10 @@ impl BootstrapResponse {
         grant_limit(&self.host_certificate)
     }
     /// Exact typed governor response digest; creates no verified authority.
+    ///
+    /// # Errors
+    ///
+    /// Returns `WireError` if the value cannot be canonically encoded.
     pub fn signing_digest(&self) -> Result<[u8; 32], WireError> {
         self.validate()?;
         digest(
@@ -138,7 +154,7 @@ impl BootstrapResponse {
     }
 }
 mod hint_bytes {
-    use super::*;
+    use super::{Deserializer, Serialize, de};
     pub fn serialize<S: serde::Serializer>(v: &[u8], s: S) -> Result<S::Ok, S::Error> {
         serde_bytes::Bytes::new(v).serialize(s)
     }
@@ -332,6 +348,10 @@ pub enum ChallengeTranscript {
 }
 impl ChallengeTranscript {
     /// Reconstruct the exact historical domain-separated inner digest.
+    ///
+    /// # Errors
+    ///
+    /// Returns `WireError` if the value cannot be canonically encoded.
     pub fn signing_digest(&self) -> Result<[u8; 32], WireError> {
         self.validate()?;
         match self {
@@ -384,13 +404,17 @@ impl ChallengeTranscript {
         }
     }
     /// Structural limits only; callers must validate retained operation and authority.
+    ///
+    /// # Errors
+    ///
+    /// Returns `WireError` if the value fails validation or verification.
     pub fn validate(&self) -> Result<(), WireError> {
         match self {
             Self::Native(v) => {
                 v.request.validate(false)?;
                 if v.epoch == 0 || v.membership_generation == 0 {
                     return Err(WireError::Invalid);
-                };
+                }
                 common_challenge(
                     &v.audience,
                     v.host,
@@ -438,10 +462,17 @@ pub struct PublisherInventory {
 }
 impl PublisherInventory {
     /// Validate count, identities and canonical ordering without granting scope.
+    ///
+    /// # Errors
+    ///
+    /// Returns `WireError` if the value fails validation or verification.
     pub fn validate(&self) -> Result<(), WireError> {
         if self.revision == 0
             || self.namespaces.len() > 7
-            || self.namespaces.windows(2).any(|v| v[0] >= v[1])
+            || self
+                .namespaces
+                .windows(2)
+                .any(|pair| matches!(pair, [left, right] if left >= right))
         {
             return Err(WireError::Invalid);
         }
@@ -497,6 +528,10 @@ pub struct MediaContext {
 }
 impl MediaContext {
     /// Structural bounds only; decoding is not current owner evidence.
+    ///
+    /// # Errors
+    ///
+    /// Returns `WireError` if the value fails validation or verification.
     pub fn validate(&self) -> Result<(), WireError> {
         if self.version != 1
             || self.workspace == 0
@@ -532,11 +567,19 @@ pub struct SignedChallenge {
 }
 impl SignedChallenge {
     /// Digest the native owner signs; not a generic browser signing API.
+    ///
+    /// # Errors
+    ///
+    /// Returns `WireError` if the value cannot be canonically encoded.
     pub fn signing_digest(&self) -> Result<[u8; 32], WireError> {
         self.validate()?;
         digest(CHALLENGE_DOMAIN, &(&self.context, &self.transcript))
     }
     /// Validate bounded fields. Identity/cross-context authorization belongs to the client.
+    ///
+    /// # Errors
+    ///
+    /// Returns `WireError` if the value fails validation or verification.
     pub fn validate(&self) -> Result<(), WireError> {
         self.context.validate()?;
         self.transcript.validate()?;
@@ -578,14 +621,27 @@ pub struct SignedPresence {
 }
 impl SignedPresence {
     /// Digest under the distinct presence domain.
+    ///
+    /// # Errors
+    ///
+    /// Returns `WireError` if the value cannot be canonically encoded.
     pub fn signing_digest(&self) -> Result<[u8; 32], WireError> {
         self.validate()?;
         digest(PRESENCE_DOMAIN, &self.context)
     }
     /// Presence never extends past fifteen seconds from issue.
+    ///
+    /// # Errors
+    ///
+    /// Returns `WireError` if the value fails validation or verification.
     pub fn validate(&self) -> Result<(), WireError> {
         self.context.validate()?;
-        if self.context.expires_at_ns - self.context.issued_at_ns > 15_000_000_000 {
+        if self
+            .context
+            .expires_at_ns
+            .saturating_sub(self.context.issued_at_ns)
+            > 15_000_000_000
+        {
             return Err(WireError::Invalid);
         }
         Ok(())
@@ -600,7 +656,7 @@ pub struct ControlRequest {
     /// Closed control operation.
     pub command: ControlCommand,
 }
-/// Inert commands, always subject to current HTTPS RequestProof admission.
+/// Inert commands, always subject to current HTTPS `RequestProof` admission.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ControlCommand {
     /// Native operation challenge; Join generation zero reserves a generation.
@@ -645,7 +701,7 @@ pub enum ControlCommand {
         /// Existing relay session.
         session_id: [u8; 32],
     },
-    /// Observe exact authorized inventory; heartbeat uses GrantOperation.
+    /// Observe exact authorized inventory; heartbeat uses `GrantOperation`.
     Presence {
         /// Existing relay session.
         session_id: [u8; 32],
@@ -667,6 +723,10 @@ impl ControlCommand {
 }
 impl ControlRequest {
     /// Check only wire shape; native admission remains required.
+    ///
+    /// # Errors
+    ///
+    /// Returns `WireError` if the value fails validation or verification.
     pub fn validate(&self) -> Result<(), WireError> {
         if self.version != 1 {
             return Err(WireError::Invalid);
@@ -704,6 +764,10 @@ pub struct ControlReply {
 }
 /// Closed native control results.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "public wire result; boxing would change every constructor and match in dependent crates"
+)]
 pub enum ControlResult {
     /// Native-signed complete challenge.
     Challenge(SignedChallenge),
@@ -759,6 +823,10 @@ pub enum MediaCode {
 }
 impl ControlReply {
     /// Structural bounds, not proof of native authority.
+    ///
+    /// # Errors
+    ///
+    /// Returns `WireError` if the value fails validation or verification.
     pub fn validate(&self) -> Result<(), WireError> {
         if self.version != 1 {
             return Err(WireError::Invalid);
@@ -783,6 +851,10 @@ impl ControlReply {
 }
 impl GrantRequest {
     /// Validate shape; zero generation is allowed only for a Join reservation.
+    ///
+    /// # Errors
+    ///
+    /// Returns `WireError` if the value fails validation or verification.
     pub fn validate(&self, reservation: bool) -> Result<(), WireError> {
         nonzero(self.device)?;
         nonzero(self.participation_id)?;
@@ -803,11 +875,19 @@ impl GrantRequest {
 }
 impl SignedGrant {
     /// Existing purpose-one native grant digest.
+    ///
+    /// # Errors
+    ///
+    /// Returns `WireError` if the value cannot be canonically encoded.
     pub fn signing_digest(&self) -> Result<[u8; 32], WireError> {
         self.validate()?;
         digest(MEDIA_PROOF_DOMAIN, &(1_u8, &self.metadata))
     }
     /// Validate bounded metadata, not the governor signature.
+    ///
+    /// # Errors
+    ///
+    /// Returns `WireError` if the value fails validation or verification.
     pub fn validate(&self) -> Result<(), WireError> {
         let m = &self.metadata;
         if self.version != 1 || m.epoch == 0 || m.membership_generation == 0 {
@@ -842,6 +922,10 @@ pub struct RelaySubmission {
 }
 impl RelaySubmission {
     /// Only structural validation, not relay admission.
+    ///
+    /// # Errors
+    ///
+    /// Returns `WireError` if the value fails validation or verification.
     pub fn validate(&self) -> Result<(), WireError> {
         if self.version != 1 {
             return Err(WireError::Invalid);
@@ -854,14 +938,23 @@ macro_rules! codec {
     ($ty:ty,$cap:expr) => {
         impl $ty {
             /// Canonical encoding after checking all structural bounds.
+            ///
+            /// # Errors
+            ///
+            /// Returns `WireError` if the value violates its wire bounds or cannot be serialized.
             pub fn encode(&self) -> Result<Vec<u8>, WireError> {
                 self.validate()?;
-                let mut out = [0u8; $cap];
-                postcard::to_slice(self, &mut out)
-                    .map(|b| b.to_vec())
-                    .map_err(|_| WireError::Codec)
+                let out = postcard::to_allocvec(self).map_err(|_| WireError::Codec)?;
+                if out.len() > $cap {
+                    return Err(WireError::Codec);
+                }
+                Ok(out)
             }
             /// Reject outer size before parsing, bounded fields before copies, and noncanonical tails.
+            ///
+            /// # Errors
+            ///
+            /// Returns `WireError` if the input is not a canonical encoding within this type's bounds.
             pub fn decode(bytes: &[u8]) -> Result<Self, WireError> {
                 if bytes.is_empty() || bytes.len() > $cap {
                     return Err(WireError::Codec);
@@ -885,6 +978,10 @@ codec!(SignedGrant, MAX_GRANT_BYTES);
 codec!(RelaySubmission, 129);
 /// Generate an ephemeral nonce using the existing secure entropy provider.
 /// This creates no signing identity and conveys no authority.
+///
+/// # Errors
+///
+/// Returns `WireError` if the inputs violate this operation's bounds or invariants.
 pub fn fresh_nonce() -> Result<[u8; 32], WireError> {
     let mut nonce = [0; 32];
     getrandom::fill(&mut nonce).map_err(|_| WireError::Entropy)?;
@@ -892,6 +989,10 @@ pub fn fresh_nonce() -> Result<[u8; 32], WireError> {
     Ok(nonce)
 }
 /// Digest bounded canonical grant bytes for the existing relay proof tuple.
+///
+/// # Errors
+///
+/// Returns `WireError` if the value cannot be canonically encoded.
 pub fn grant_digest(bytes: &[u8]) -> Result<[u8; 32], WireError> {
     grant_limit(bytes)?;
     Ok(*blake3::hash(bytes).as_bytes())
@@ -979,7 +1080,7 @@ fn text512<'de, D: Deserializer<'de>>(d: D) -> Result<String, D::Error> {
     bounded_text::<D, 512>(d)
 }
 mod grant_bytes {
-    use super::*;
+    use super::{Deserializer, Serialize, de, grant_limit};
     pub fn serialize<S: serde::Serializer>(v: &[u8], s: S) -> Result<S::Ok, S::Error> {
         serde_bytes::Bytes::new(v).serialize(s)
     }
@@ -1014,7 +1115,7 @@ fn inventory<'de, D: Deserializer<'de>>(d: D) -> Result<Vec<MediaNamespace>, D::
                 if out.len() == 7 {
                     return Err(de::Error::custom("publisher count"));
                 }
-                out.push(v)
+                out.push(v);
             }
             Ok(out)
         }

@@ -1,5 +1,10 @@
+#![allow(
+    clippy::too_many_lines,
+    reason = "each test spells out one end-to-end scenario"
+)]
 use super::*;
 use ed25519_dalek::{Signer, SigningKey};
+use uuid::Uuid;
 fn split(s: [u8; 64]) -> [[u8; 32]; 2] {
     [s[..32].try_into().unwrap(), s[32..].try_into().unwrap()]
 }
@@ -107,7 +112,7 @@ fn handoff_signed_pinned_range_and_exact_governance_retention() {
         manifest_digest: manifest.manifest_digest().unwrap(),
         device: manifest.device,
         offset: 0,
-        length: bytes.len() as u32,
+        length: u32::try_from(bytes.len()).unwrap(),
         nonce: [10; 32],
         issued_at_ns: 100,
         expires_at_ns: 999,

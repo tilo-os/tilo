@@ -36,6 +36,10 @@ pub enum WorkspaceHostMode {
 
 /// Verified relay-authentication scope derived only from signed hint + authority data.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "public trust mode chosen once per join; boxing would change its constructors in dependent crates"
+)]
 pub enum WorkspaceHostTrust {
     /// Existing dedicated-host authentication remains capability-gated.
     CertifiedHost,
@@ -139,6 +143,10 @@ pub struct IrohWorkspaceHostHintV1 {
 
 impl IrohWorkspaceHostHintV1 {
     /// Sign this opaque address payload and its distinct Iroh service key with the host device.
+    ///
+    /// # Errors
+    ///
+    /// Returns `WorkspaceJoinError` if the inputs violate this operation's bounds or invariants.
     pub fn transport_hint(
         &self,
         host_key: &ed25519_dalek::SigningKey,
@@ -156,6 +164,10 @@ impl IrohWorkspaceHostHintV1 {
     }
 
     /// Parse and verify a signed Iroh workspace-host hint.
+    ///
+    /// # Errors
+    ///
+    /// Returns `WorkspaceJoinError` if the inputs violate this operation's bounds or invariants.
     pub fn from_transport_hint(hint: &TransportHint) -> Result<Self, WorkspaceJoinError> {
         if hint.kind != TRANSPORT_IROH_WORKSPACE_HOST_ENDPOINT_ADDR_V1 {
             return Err(WorkspaceJoinError::Protocol(
@@ -184,6 +196,10 @@ impl IrohWorkspaceHostHintV1 {
     /// This is the restart-safe path for an already persisted `TransportHint`. The trust token
     /// cannot be derived from the public payload struct alone because this method first verifies
     /// the host signature and its exact service-key binding.
+    ///
+    /// # Errors
+    ///
+    /// Returns `WorkspaceJoinError` if the value fails validation or verification.
     pub fn authenticate_transport_hint(
         hint: &TransportHint,
     ) -> Result<(Self, WorkspaceHostTrust), WorkspaceJoinError> {
@@ -193,6 +209,14 @@ impl IrohWorkspaceHostHintV1 {
     }
 
     /// Require an inspected invitation to name this exact governed host scope.
+    ///
+    /// # Errors
+    ///
+    /// Returns `WorkspaceJoinError` if the value fails validation or verification.
+    #[expect(
+        clippy::suspicious_operation_groupings,
+        reason = "the grant is checked against this host's governing authority, not a field of the grant itself"
+    )]
     pub fn validate_invitation(
         &self,
         grant: &qos_peer_state::join::InviteGrant,
@@ -224,6 +248,14 @@ impl IrohWorkspaceHostHintV1 {
     }
 
     /// Require a returned bootstrap to preserve the signed host/governor scope.
+    ///
+    /// # Errors
+    ///
+    /// Returns `WorkspaceJoinError` if the value fails validation or verification.
+    #[expect(
+        clippy::suspicious_operation_groupings,
+        reason = "the grant is checked against this host's governing authority, not a field of the grant itself"
+    )]
     pub fn validate_bootstrap(
         &self,
         bootstrap: &JoinBootstrap,
@@ -396,6 +428,10 @@ impl WorkspaceJoinClient {
     }
 
     /// Send one bounded typed request over a fresh bidirectional stream.
+    ///
+    /// # Errors
+    ///
+    /// Returns `WorkspaceJoinError` if the request cannot be sent or its reply is rejected.
     pub async fn request(
         &self,
         address: iroh::EndpointAddr,
@@ -440,6 +476,10 @@ impl WorkspaceJoinClient {
     }
 
     /// Verify and inspect an invitation through its issuing host without consuming it.
+    ///
+    /// # Errors
+    ///
+    /// Returns `WorkspaceJoinError` if the request cannot be sent or its reply is rejected.
     pub async fn inspect(
         &self,
         address: iroh::EndpointAddr,
@@ -455,6 +495,10 @@ impl WorkspaceJoinClient {
     }
 
     /// Run challenge, device proof of possession, and invitation redemption.
+    ///
+    /// # Errors
+    ///
+    /// Returns `WorkspaceJoinError` if the request cannot be sent or its reply is rejected.
     pub async fn redeem(
         &self,
         address: iroh::EndpointAddr,
@@ -498,6 +542,10 @@ impl WorkspaceJoinClient {
     }
 
     /// Verify the signed host/service binding and redeem through its exact pinned address.
+    ///
+    /// # Errors
+    ///
+    /// Returns `WorkspaceJoinError` if the request cannot be sent or its reply is rejected.
     pub async fn redeem_hint(
         &self,
         hint: &TransportHint,
@@ -530,6 +578,10 @@ impl WorkspaceJoinClient {
     }
 
     /// Refresh bootstrap state for an already admitted member without reusing an invitation.
+    ///
+    /// # Errors
+    ///
+    /// Returns `WorkspaceJoinError` if the request cannot be sent or its reply is rejected.
     #[allow(
         clippy::too_many_arguments,
         reason = "membership proof inputs remain explicit so no caller-supplied identity can hide in an options bag"
@@ -580,6 +632,10 @@ impl WorkspaceJoinClient {
     }
 
     /// Verify the signed host/service binding and refresh through its exact pinned address.
+    ///
+    /// # Errors
+    ///
+    /// Returns `WorkspaceJoinError` if the request cannot be sent or its reply is rejected.
     #[allow(
         clippy::too_many_arguments,
         reason = "verified hint plus explicit membership proof inputs preserve the transport trust boundary"
@@ -657,9 +713,11 @@ mod tests {
     use qos_peer_state::join::{JoinTransportRequest, JoinTransportResponse};
     use std::sync::{Arc, Mutex};
 
+    type CapturedRequest = ([u8; 32], JoinTransportRequest);
+
     #[derive(Clone, Debug, Default)]
     struct Capture {
-        requests: Arc<Mutex<Vec<([u8; 32], JoinTransportRequest)>>>,
+        requests: Arc<Mutex<Vec<CapturedRequest>>>,
     }
 
     impl WorkspaceJoinService for Capture {

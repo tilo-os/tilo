@@ -147,6 +147,10 @@ pub struct Transcript {
 }
 impl Transcript {
     /// Canonical bounded bytes; encoding does not authenticate this value.
+    ///
+    /// # Errors
+    ///
+    /// Returns `AuthError` if the value violates its wire bounds or cannot be serialized.
     pub fn encode(&self) -> Result<Vec<u8>, AuthError> {
         encode(self)
     }
@@ -162,11 +166,19 @@ pub struct ServerProof {
     pub signature: [u8; 64],
 }
 impl ServerProof {
-    /// Bounded canonical proof bytes for the ServerHello frame.
+    /// Bounded canonical proof bytes for the `ServerHello` frame.
+    ///
+    /// # Errors
+    ///
+    /// Returns `AuthError` if the value violates its wire bounds or cannot be serialized.
     pub fn encode(&self) -> Result<Vec<u8>, AuthError> {
         encode(self)
     }
     /// Decode only canonical, complete, bounded wire values; not authentication.
+    ///
+    /// # Errors
+    ///
+    /// Returns `AuthError` if the input is not a canonical encoding within this type's bounds.
     pub fn decode(bytes: &[u8]) -> Result<Self, AuthError> {
         decode(bytes)
     }
@@ -182,11 +194,19 @@ pub struct ClientProof {
     pub signature: [u8; 64],
 }
 impl ClientProof {
-    /// Bounded canonical proof bytes for the ClientProof frame.
+    /// Bounded canonical proof bytes for the `ClientProof` frame.
+    ///
+    /// # Errors
+    ///
+    /// Returns `AuthError` if the value violates its wire bounds or cannot be serialized.
     pub fn encode(&self) -> Result<Vec<u8>, AuthError> {
         encode(self)
     }
     /// Decode only canonical, complete, bounded wire values; not authentication.
+    ///
+    /// # Errors
+    ///
+    /// Returns `AuthError` if the input is not a canonical encoding within this type's bounds.
     pub fn decode(bytes: &[u8]) -> Result<Self, AuthError> {
         decode(bytes)
     }
@@ -219,6 +239,10 @@ pub trait Authority {
     /// Require exact current roster certificates and an admitted role for this
     /// workspace/host. Implement under the native owner's admission boundary;
     /// a cached historical retention proof cannot satisfy this contract.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the value fails validation or verification.
     fn authorize(
         &self,
         binding: &Binding,
@@ -266,6 +290,10 @@ pub struct Challenge {
 impl Challenge {
     /// Check current authorization and issue a fresh mutually scoped challenge.
     /// The host signing key must match the independently certified host pin.
+    ///
+    /// # Errors
+    ///
+    /// Returns `AuthError` if the inputs violate this operation's bounds or invariants.
     pub fn issue(
         context: &VerificationContext<'_>,
         client_nonce: [u8; 32],
@@ -304,6 +332,10 @@ impl Challenge {
 
     /// Consume the challenge on success or failure; recheck current authority
     /// and both proofs before constructing the opaque verified session.
+    ///
+    /// # Errors
+    ///
+    /// Returns `AuthError` if the inputs violate this operation's bounds or invariants.
     pub fn finish(
         self,
         client: &ClientProof,
@@ -341,6 +373,10 @@ pub struct VerifiedHost {
 }
 impl VerifiedHost {
     /// Sign the verified full transcript with the exact enrolled device key.
+    ///
+    /// # Errors
+    ///
+    /// Returns `AuthError` if the value fails validation or verification.
     pub fn client_proof(self, device_key: &SigningKey) -> Result<ClientProof, AuthError> {
         if device_key.verifying_key().to_bytes() != self.transcript.binding.device {
             return Err(AuthError::KeyMismatch);
@@ -354,6 +390,10 @@ impl VerifiedHost {
 
 /// Verify a host proof without relying on TLS alone or any legacy nonce domain.
 /// The caller must independently verify TLS and bootstrap authority first.
+///
+/// # Errors
+///
+/// Returns `AuthError` if the value fails validation or verification.
 pub fn verify_server(
     expected: &ClientExpectations<'_>,
     expected_client_nonce: [u8; 32],
@@ -429,6 +469,10 @@ impl VerifiedSession {
     }
     /// Fail after expiry, revocation, certificate/roster changes or boot/scope
     /// replacement. Call under the actual admission/replay owner's boundary.
+    ///
+    /// # Errors
+    ///
+    /// Returns `AuthError` if the value fails validation or verification.
     pub fn revalidate(&self, context: &VerificationContext<'_>) -> Result<(), AuthError> {
         if &self.device != context.credentials.device || &self.host != context.credentials.host {
             return Err(AuthError::Scope);
@@ -654,8 +698,8 @@ pub(super) fn validate_origin(origin: &str) -> Result<(), AuthError> {
             .map_or((authority, None), |(host, port)| (host, Some(port)));
         (Some(host), port)
     };
-    if let Some(host) = host {
-        if host.len() > 253
+    if let Some(host) = host
+        && (host.len() > 253
             || host.split('.').any(|part| {
                 part.is_empty()
                     || part.len() > 63
@@ -664,18 +708,16 @@ pub(super) fn validate_origin(origin: &str) -> Result<(), AuthError> {
                     || !part
                         .bytes()
                         .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
-            })
-        {
-            return Err(AuthError::InvalidBinding);
-        }
+            }))
+    {
+        return Err(AuthError::InvalidBinding);
     }
-    if let Some(port) = port {
-        if port.is_empty()
+    if let Some(port) = port
+        && (port.is_empty()
             || !port.bytes().all(|b| b.is_ascii_digit())
-            || port.parse::<u16>().ok().filter(|p| *p != 0).is_none()
-        {
-            return Err(AuthError::InvalidBinding);
-        }
+            || port.parse::<u16>().ok().as_ref().is_none_or(|p| *p == 0))
+    {
+        return Err(AuthError::InvalidBinding);
     }
     Ok(())
 }
@@ -1105,11 +1147,12 @@ mod tests {
         ));
     }
 
-    /// MULTI_GROUP_REPLAY_V1 compatibility matrix: the optional transcript
+    /// `MULTI_GROUP_REPLAY_V1` compatibility matrix: the optional transcript
     /// extension is granted only when both sides know it; either old side
     /// yields exactly the descriptor product contract (one group per page).
     #[test]
     fn multi_group_extension_negotiates_only_between_new_peers() {
+        const KNOWN: u64 = super::super::capabilities::KNOWN_DATA;
         use super::super::capabilities::{
             MULTI_GROUP_REPLAY_V1, PRODUCT_DATA_V1, client_allowed, handshake_policy, page_bounds,
         };
@@ -1120,7 +1163,6 @@ mod tests {
             client_allowed(descriptor),
         );
         let old_client = (descriptor, descriptor, descriptor);
-        const KNOWN: u64 = super::super::capabilities::KNOWN_DATA;
         for ((requested, supported, allowed), host, expected) in [
             (
                 new_client,
@@ -1239,7 +1281,7 @@ mod tests {
         let mut trailing = bytes.clone();
         trailing.push(0);
         assert!(ServerProof::decode(&trailing).is_err());
-        let mut overlong = bytes.clone();
+        let mut overlong = bytes;
         overlong.splice(0..1, [0x83, 0]);
         assert!(ServerProof::decode(&overlong).is_err());
         assert!(ServerProof::decode(&vec![0; 8193]).is_err());

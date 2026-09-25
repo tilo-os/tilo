@@ -15,6 +15,10 @@ impl PublicationPayload {
 impl PublicationPool {
     /// Actual retained allocation for this immutable payload, including its Arc
     /// control/data allocation and Vec backing capacity. No reference count multiplier.
+    ///
+    /// # Errors
+    ///
+    /// Returns `CommitError` if the resource budget refuses the allocation or the input is invalid.
     pub fn retained_allocation_bytes(&self, id: &Digest) -> Result<usize, CommitError> {
         let bytes = self
             .wire
@@ -24,6 +28,10 @@ impl PublicationPool {
         bytes.retained_allocation_bytes()
     }
     /// Pin one existing allocation without copying payload or map metadata.
+    ///
+    /// # Errors
+    ///
+    /// Returns `CommitError` if the resource budget refuses the allocation or the input is invalid.
     pub fn pin(&self, id: &Digest) -> Result<PublicationPayload, CommitError> {
         self.wire
             .payloads

@@ -13,6 +13,10 @@
     clippy::unreachable,
     reason = "test assertions and isolated fixture keys"
 )]
+#![allow(
+    clippy::significant_drop_tightening,
+    reason = "relays, fixtures and guards deliberately stay alive until each test ends"
+)]
 
 use getrandom::{SysRng, rand_core::UnwrapErr};
 use std::process::{Command, Stdio};
@@ -30,7 +34,7 @@ use crate::common::client_endpoint;
 const FILE_WORKSPACE: u64 = 42;
 
 fn wait_for_file(path: &std::path::Path, what: &str) {
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now().checked_add(Duration::from_secs(5)).unwrap();
     while !path.is_file() {
         assert!(
             Instant::now() < deadline,

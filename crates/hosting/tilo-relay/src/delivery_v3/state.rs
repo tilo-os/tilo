@@ -34,6 +34,10 @@ pub struct StateItemChunk<'a> {
 }
 impl<'a> StateItemChunk<'a> {
     /// Construct a bounded upload range.
+    ///
+    /// # Errors
+    ///
+    /// Returns `StateError` if the inputs violate this operation's bounds or invariants.
     pub fn new(
         delivery: DeliveryId,
         input_digest: Digest,
@@ -53,6 +57,10 @@ impl<'a> StateItemChunk<'a> {
         Ok(value)
     }
     /// Decode a canonical upload range borrowing the original payload.
+    ///
+    /// # Errors
+    ///
+    /// Returns `StateError` if the input is not a canonical encoding within this type's bounds.
     pub fn decode(bytes: &'a [u8]) -> Result<Self, StateError> {
         if bytes.len() > MAX_FRAME_PAYLOAD_BYTES {
             return Err(StateError::Oversized);
@@ -68,6 +76,10 @@ impl<'a> StateItemChunk<'a> {
         Ok(value)
     }
     /// Return the checked payload size without allocating.
+    ///
+    /// # Errors
+    ///
+    /// Returns `StateError` if the value violates its wire bounds or cannot be serialized.
     pub fn encoded_len(&self) -> Result<usize, StateError> {
         if self.bytes.len() > MAX_FRAME_PAYLOAD_BYTES {
             return Err(StateError::Oversized);
@@ -90,6 +102,10 @@ impl<'a> StateItemChunk<'a> {
         Ok(length)
     }
     /// Encode a validated upload payload.
+    ///
+    /// # Errors
+    ///
+    /// Returns `StateError` if the value violates its wire bounds or cannot be serialized.
     pub fn encode(&self) -> Result<Vec<u8>, StateError> {
         self.encoded_len()?;
         postcard::to_stdvec(self).map_err(|_| StateError::Codec)
@@ -116,6 +132,10 @@ impl<'a> StateItemChunk<'a> {
     }
 }
 /// Encode exact opaque cursor bytes for the canonical URL envelope.
+///
+/// # Errors
+///
+/// Returns `StateError` if the value violates its wire bounds or cannot be serialized.
 pub fn encode_cursor_url(raw: &[u8]) -> Result<String, StateError> {
     if raw.len() > MAX_CURSOR_BYTES {
         return Err(StateError::Oversized);
@@ -126,12 +146,16 @@ pub fn encode_cursor_url(raw: &[u8]) -> Result<String, StateError> {
     Ok(hex::encode(raw))
 }
 /// Decode a canonical URL envelope without authenticating its opaque cursor.
+///
+/// # Errors
+///
+/// Returns `StateError` if the input is not a canonical encoding within this type's bounds.
 pub fn decode_cursor_url(text: &str) -> Result<CursorToken, StateError> {
     if text.len() > MAX_CURSOR_URL_BYTES {
         return Err(StateError::Oversized);
     }
     if text.is_empty()
-        || text.len() % 2 != 0
+        || !text.len().is_multiple_of(2)
         || !text
             .bytes()
             .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
@@ -140,10 +164,10 @@ pub fn decode_cursor_url(text: &str) -> Result<CursorToken, StateError> {
     }
     // Reject malformed or oversized envelopes before creating owned cursor bytes.
     let mut raw = [0; MAX_CURSOR_BYTES];
-    let raw = &mut raw[..text.len() / 2];
+    let raw = raw.get_mut(..text.len() / 2).ok_or(StateError::Oversized)?;
     hex::decode_to_slice(text, raw).map_err(|_| StateError::Invalid)?;
     #[cfg(test)]
-    TOKEN_OWNED_COPIES.with(|count| count.set(count.get() + 1));
+    TOKEN_OWNED_COPIES.with(|count| count.set(count.get().saturating_add(1)));
     CursorToken::from_bytes(raw).map_err(|_| StateError::Invalid)
 }
 
@@ -156,10 +180,10 @@ impl postcard::ser_flavors::Flavor for ExactPayload<'_> {
         self.try_extend(&[byte])
     }
     fn try_extend(&mut self, bytes: &[u8]) -> postcard::Result<()> {
-        if !self.0.starts_with(bytes) {
+        let Some(rest) = self.0.strip_prefix(bytes) else {
             return Err(postcard::Error::SerializeBufferFull);
-        }
-        self.0 = &self.0[bytes.len()..];
+        };
+        self.0 = rest;
         Ok(())
     }
     fn finalize(self) -> postcard::Result<()> {
@@ -249,6 +273,10 @@ pub struct StateAdmission {
 }
 impl StateAdmission {
     /// Construct a newly accepted durable result.
+    ///
+    /// # Errors
+    ///
+    /// Returns `StateError` if the value fails validation or verification.
     pub fn accepted(
         delivery: DeliveryId,
         input_digest: Digest,
@@ -267,6 +295,10 @@ impl StateAdmission {
         )
     }
     /// Construct an exact previously accepted durable result.
+    ///
+    /// # Errors
+    ///
+    /// Returns `StateError` if the resource budget refuses the allocation or the input is invalid.
     pub fn duplicate(
         delivery: DeliveryId,
         input_digest: Digest,
@@ -342,23 +374,29 @@ impl StateAdmission {
             committed,
             ..
         } = &self.outcome
-        {
-            if operations.is_empty()
+            && (operations.is_empty()
                 || operations.len() > MAX_ADMITTED_OPERATIONS
                 || committed.sequence == 0
-                || operations.iter().collect::<BTreeSet<_>>().len() != operations.len()
-            {
-                return Err(StateError::Invalid);
-            }
+                || operations.iter().collect::<BTreeSet<_>>().len() != operations.len())
+        {
+            return Err(StateError::Invalid);
         }
         Ok(())
     }
     /// Encode a validated canonical payload.
+    ///
+    /// # Errors
+    ///
+    /// Returns `StateError` if the value violates its wire bounds or cannot be serialized.
     pub fn encode(&self) -> Result<Vec<u8>, StateError> {
         self.validate()?;
         encode(self)
     }
     /// Decode an exact bounded canonical payload.
+    ///
+    /// # Errors
+    ///
+    /// Returns `StateError` if the input is not a canonical encoding within this type's bounds.
     pub fn decode(b: &[u8]) -> Result<Self, StateError> {
         let v: Self = decode(b)?;
         v.validate()?;
@@ -384,7 +422,7 @@ fn operations<'de, D: Deserializer<'de>>(d: D) -> Result<Vec<Digest>, D::Error> 
                 if out.len() == MAX_ADMITTED_OPERATIONS {
                     return Err(de::Error::custom("too many operations"));
                 }
-                out.push(v)
+                out.push(v);
             }
             Ok(out)
         }
@@ -430,6 +468,10 @@ impl EventChunk {
         reason = "Keep the event identity, source and byte-range fields explicit at construction"
     )]
     /// Construct a range after validating offset and encoded-size bounds.
+    ///
+    /// # Errors
+    ///
+    /// Returns `StateError` if the inputs violate this operation's bounds or invariants.
     pub fn new(
         committed: CommitRef,
         ordinal: u32,
@@ -470,11 +512,19 @@ impl EventChunk {
         }
     }
     /// Encode a validated canonical event chunk.
+    ///
+    /// # Errors
+    ///
+    /// Returns `StateError` if the value violates its wire bounds or cannot be serialized.
     pub fn encode(&self) -> Result<Vec<u8>, StateError> {
         self.validate()?;
         encode(self)
     }
     /// Decode an exact bounded canonical event chunk.
+    ///
+    /// # Errors
+    ///
+    /// Returns `StateError` if the input is not a canonical encoding within this type's bounds.
     pub fn decode(b: &[u8]) -> Result<Self, StateError> {
         let v: Self = decode(b)?;
         v.validate()?;
@@ -529,6 +579,10 @@ pub struct CommitBoundary {
 }
 impl CommitBoundary {
     /// Construct a complete committed boundary.
+    ///
+    /// # Errors
+    ///
+    /// Returns `StateError` if the inputs violate this operation's bounds or invariants.
     pub fn new(
         consumer: ConsumerId,
         authorization_view: Digest,
@@ -563,11 +617,19 @@ impl CommitBoundary {
         }
     }
     /// Encode a validated canonical boundary.
+    ///
+    /// # Errors
+    ///
+    /// Returns `StateError` if the value violates its wire bounds or cannot be serialized.
     pub fn encode(&self) -> Result<Vec<u8>, StateError> {
         self.validate()?;
         encode(self)
     }
     /// Decode an exact bounded canonical boundary.
+    ///
+    /// # Errors
+    ///
+    /// Returns `StateError` if the input is not a canonical encoding within this type's bounds.
     pub fn decode(b: &[u8]) -> Result<Self, StateError> {
         let v: Self = decode(b)?;
         v.validate()?;
@@ -623,10 +685,18 @@ impl CursorAck {
         &self.cursor
     }
     /// Encode a canonical ACK.
+    ///
+    /// # Errors
+    ///
+    /// Returns `StateError` if the value violates its wire bounds or cannot be serialized.
     pub fn encode(&self) -> Result<Vec<u8>, StateError> {
         encode(self)
     }
     /// Decode an exact bounded canonical ACK.
+    ///
+    /// # Errors
+    ///
+    /// Returns `StateError` if the input is not a canonical encoding within this type's bounds.
     pub fn decode(b: &[u8]) -> Result<Self, StateError> {
         let v: Self = decode(b)?;
         if v.version != VERSION {
@@ -669,6 +739,10 @@ impl SnapshotRequired {
         }
     }
     /// Encode a validated canonical reset instruction.
+    ///
+    /// # Errors
+    ///
+    /// Returns `StateError` if the value violates its wire bounds or cannot be serialized.
     pub fn encode(&self) -> Result<Vec<u8>, StateError> {
         if self.store_generation == [0; 16] {
             return Err(StateError::Invalid);
@@ -676,6 +750,10 @@ impl SnapshotRequired {
         encode(self)
     }
     /// Decode an exact bounded canonical reset instruction.
+    ///
+    /// # Errors
+    ///
+    /// Returns `StateError` if the input is not a canonical encoding within this type's bounds.
     pub fn decode(b: &[u8]) -> Result<Self, StateError> {
         let v: Self = decode(b)?;
         if v.version != VERSION || v.store_generation == [0; 16] {
@@ -699,6 +777,10 @@ pub fn canonical_item_digest(bytes: &[u8]) -> Digest {
 }
 
 /// Commit to the exact ordered visible event identifiers.
+///
+/// # Errors
+///
+/// Returns `StateError` if the value cannot be canonically encoded.
 pub fn visible_order_digest(events: &[(u32, Digest)]) -> Result<Digest, StateError> {
     if events.len() > MAX_ADMITTED_OPERATIONS {
         return Err(StateError::Oversized);
@@ -728,7 +810,9 @@ fn decode<T: for<'de> Deserialize<'de> + Serialize>(b: &[u8]) -> Result<T, State
     Ok(v)
 }
 mod token_bytes {
-    use super::*;
+    #[cfg(test)]
+    use super::TOKEN_OWNED_COPIES;
+    use super::{CursorToken, Deserializer, MAX_CURSOR_BYTES, Serialize, de};
     pub fn serialize<S: serde::Serializer>(v: &CursorToken, s: S) -> Result<S::Ok, S::Error> {
         serde_bytes::Bytes::new(v.as_bytes()).serialize(s)
     }
@@ -744,7 +828,7 @@ mod token_bytes {
                     return Err(E::custom("cursor too large"));
                 }
                 #[cfg(test)]
-                TOKEN_OWNED_COPIES.with(|count| count.set(count.get() + 1));
+                TOKEN_OWNED_COPIES.with(|count| count.set(count.get().saturating_add(1)));
                 CursorToken::from_bytes(b).map_err(E::custom)
             }
             fn visit_bytes<E: de::Error>(self, b: &[u8]) -> Result<Self::Value, E> {
@@ -752,7 +836,7 @@ mod token_bytes {
                     return Err(E::custom("cursor too large"));
                 }
                 #[cfg(test)]
-                TOKEN_OWNED_COPIES.with(|count| count.set(count.get() + 1));
+                TOKEN_OWNED_COPIES.with(|count| count.set(count.get().saturating_add(1)));
                 CursorToken::from_bytes(b).map_err(E::custom)
             }
         }

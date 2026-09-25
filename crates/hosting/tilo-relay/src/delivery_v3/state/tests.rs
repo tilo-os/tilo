@@ -155,7 +155,7 @@ fn state_decoders_reject_truncation_trailing_and_forged_counts() {
     for end in 0..bytes.len() {
         assert!(StateAdmission::decode(&bytes[..end]).is_err());
     }
-    let mut trailing = bytes.clone();
+    let mut trailing = bytes;
     trailing.push(0);
     assert!(StateAdmission::decode(&trailing).is_err());
 

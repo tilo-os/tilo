@@ -190,16 +190,28 @@ impl DeliveryLedgerV1 {
     /// };
     /// assert!(unknown.encode().is_err());
     /// ```
+    ///
+    /// # Errors
+    ///
+    /// Returns `CommitError` if the value violates its wire bounds or cannot be serialized.
     pub fn encode(&self) -> Result<Vec<u8>, CommitError> {
         self.validate()?;
         encode_bounded(self, MAX_LEDGER_BYTES)
     }
     /// Exact canonical encoded byte length, validated and counted without an output allocation.
+    ///
+    /// # Errors
+    ///
+    /// Returns `CommitError` if the value violates its wire bounds or cannot be serialized.
     pub fn encoded_len(&self) -> Result<usize, CommitError> {
         self.validate()?;
         encoded_size(self, MAX_LEDGER_BYTES)
     }
     /// Decode a complete bounded canonical ledger. The result is still untrusted.
+    ///
+    /// # Errors
+    ///
+    /// Returns `CommitError` if the input is not a canonical encoding within this type's bounds.
     pub fn decode(bytes: &[u8]) -> Result<Self, CommitError> {
         if bytes.len() > MAX_LEDGER_BYTES {
             return Err(CommitError::Quota);
@@ -219,6 +231,10 @@ impl DeliveryLedgerV1 {
     }
     /// Structural consistency only; native admission, policy and actual file
     /// durability must be established by the existing owning transaction.
+    ///
+    /// # Errors
+    ///
+    /// Returns `CommitError` if the value fails validation or verification.
     pub fn validate(&self) -> Result<(), CommitError> {
         if self.version != 1 || self.store_generation == [0; 16] {
             return Err(CommitError::Invalid("version or store incarnation"));
@@ -336,6 +352,7 @@ pub struct PublicationPool {
 impl PublicationPool {
     /// Fork candidate map metadata while sharing immutable retained byte allocations.
     /// New insertions affect only the fork. Map/encode overlap needs host accounting.
+    #[must_use]
     pub fn fork(&self) -> Self {
         Self {
             wire: self.wire.clone(),
@@ -346,6 +363,10 @@ impl PublicationPool {
 
     /// Set the owner's reserved payload-byte budget, no greater than host policy.
     /// This does not reserve memory or select a native aggregate storage limit.
+    ///
+    /// # Errors
+    ///
+    /// Returns `CommitError` if the inputs violate this operation's bounds or invariants.
     pub fn new(limit: usize) -> Result<Self, CommitError> {
         if limit == 0 || limit > MAX_HOST_BYTES {
             return Err(CommitError::Quota);
@@ -362,6 +383,10 @@ impl PublicationPool {
     /// Preserve opaque original publication bytes once. The caller must establish
     /// their canonical message semantics/native admission before owner commit.
     /// Pressure and conflicting identities never alter already retained entries.
+    ///
+    /// # Errors
+    ///
+    /// Returns `CommitError` if the resource budget refuses the allocation or the input is invalid.
     pub fn intern(&mut self, bytes: &[u8]) -> Result<Digest, CommitError> {
         if bytes.is_empty() || bytes.len() > MAX_ENVELOPE_BYTES {
             return Err(CommitError::Quota);
@@ -388,11 +413,15 @@ impl PublicationPool {
         Ok(id)
     }
     /// Resolve the exact original bytes without a queue-position dependency.
+    ///
+    /// # Errors
+    ///
+    /// Returns `CommitError` if the inputs violate this operation's bounds or invariants.
     pub fn resolve(&self, id: &Digest) -> Result<&[u8], CommitError> {
         self.wire
             .payloads
             .get(id)
-            .map(|bytes| bytes.as_slice())
+            .map(resources::PayloadBacking::as_slice)
             .ok_or(CommitError::MissingPayload)
     }
     /// Number of unique retained payloads, independent of reference multiplicity.
@@ -406,6 +435,10 @@ impl PublicationPool {
     /// Retained payload backing capacity, excluding map and Arc metadata.
     /// Each backing is counted once within this pool, independent of Arc clones.
     /// The caller must not add this again for a fork sharing the same payloads.
+    ///
+    /// # Errors
+    ///
+    /// Returns `CommitError` if the resource budget refuses the allocation or the input is invalid.
     pub fn retained_payload_capacity(&self) -> Result<usize, CommitError> {
         // Only intern/decode construct entries: intern allocates for an absent
         // content digest; decode verifies unique digest keys and allocates once
@@ -422,6 +455,10 @@ impl PublicationPool {
     }
     /// Encode only after checking the complete output size without allocating it.
     /// The caller reserves this additional encoded buffer separately from the pool.
+    ///
+    /// # Errors
+    ///
+    /// Returns `CommitError` if the value violates its wire bounds or cannot be serialized.
     pub fn encode(&self, max_encoded_bytes: usize) -> Result<Vec<u8>, CommitError> {
         if max_encoded_bytes > MAX_HOST_BYTES {
             return Err(CommitError::Quota);
@@ -429,6 +466,10 @@ impl PublicationPool {
         encode_bounded(&self.wire, max_encoded_bytes)
     }
     /// Exact canonical output length without allocating an encoded buffer.
+    ///
+    /// # Errors
+    ///
+    /// Returns `CommitError` if the value violates its wire bounds or cannot be serialized.
     pub fn encoded_len(&self, max_encoded_bytes: usize) -> Result<usize, CommitError> {
         if max_encoded_bytes > MAX_HOST_BYTES {
             return Err(CommitError::Quota);
@@ -437,6 +478,10 @@ impl PublicationPool {
     }
     /// Validate all borrowed payload digests/lengths and the aggregate payload
     /// budget before allocating any owned payload buffer. Map metadata is bounded.
+    ///
+    /// # Errors
+    ///
+    /// Returns `CommitError` if the input is not a canonical encoding within this type's bounds.
     pub fn decode(bytes: &[u8], limit: usize) -> Result<Self, CommitError> {
         let mut pool = Self::new(limit)?;
         // At most 32 digest bytes plus a ten-byte length per bounded map entry,
@@ -474,6 +519,10 @@ impl PublicationPool {
     }
     /// Derive reference counts from queue/baseline roots plus replay/snapshot
     /// roots, rejecting every dangling reference. Counts confer no GC authority.
+    ///
+    /// # Errors
+    ///
+    /// Returns `CommitError` if the resource budget refuses the allocation or the input is invalid.
     pub fn reference_counts(
         &self,
         roots: &[PublicationRef],
@@ -636,10 +685,10 @@ impl postcard::ser_flavors::Flavor for Exact<'_> {
         self.try_extend(&[byte])
     }
     fn try_extend(&mut self, bytes: &[u8]) -> postcard::Result<()> {
-        if !self.0.starts_with(bytes) {
+        let Some(rest) = self.0.strip_prefix(bytes) else {
             return Err(postcard::Error::SerializeBufferFull);
-        }
-        self.0 = &self.0[bytes.len()..];
+        };
+        self.0 = rest;
         Ok(())
     }
     fn finalize(self) -> postcard::Result<()> {

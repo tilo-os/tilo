@@ -1,13 +1,21 @@
+#![allow(
+    clippy::similar_names,
+    reason = "paired test fixtures are named after the roles they mirror"
+)]
+#![allow(
+    clippy::too_many_lines,
+    reason = "each test spells out one end-to-end scenario"
+)]
 use super::*;
 use crate::store::shell_selection_tests::{producer_frame, producer_metadata};
 fn retained(store: &WorkspaceStore, bytes: &[u8]) {
     let (_, payload) = retained::payload(bytes, store.workspace_id).unwrap();
     match payload {
         CoeditPayload::Checkpoint { channel, .. } => {
-            store.retain_checkpoint(&channel, bytes).unwrap()
+            store.retain_checkpoint(&channel, bytes).unwrap();
         }
         CoeditPayload::RetainedDelta { channel, .. } => {
-            store.retain_delta(&channel, 1, bytes).unwrap()
+            store.retain_delta(&channel, 1, bytes).unwrap();
         }
     }
 }
@@ -81,7 +89,7 @@ fn changed_snapshot_frame(raw: &[u8], change: &str) -> Vec<u8> {
             let NeighbourMsg::AppDocument { envelope, .. } = &mut message else {
                 panic!()
             };
-            envelope.seq += 1;
+            envelope.seq = envelope.seq.saturating_add(1);
             body = postcard::to_allocvec(&message).unwrap();
         }
         "kind" => {}
@@ -529,7 +537,7 @@ fn unchanged_all_covered_projected_prefix_suppresses_and_switches_current() {
         .iter()
         .map(|stage| {
             (
-                stage.lineage_name().to_os_string(),
+                stage.lineage_name().unwrap().to_os_string(),
                 stage.projected_generation().to_path_buf(),
             )
         })
@@ -606,6 +614,10 @@ fn serial_suppressed_prefix_rejected_cut_requires_coherent_release_or_replay() {
 fn rejected_checkpoint_fixture(serial: bool) {
     use automerge::transaction::Transactable;
 
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "test helper keeps the call shape of the fixtures it builds"
+    )]
     fn signed(
         key: &ed25519_dalek::SigningKey,
         room: &str,
@@ -674,7 +686,9 @@ fn rejected_checkpoint_fixture(serial: bool) {
         signature: [0; 64],
     };
     tilo_user_identity::sign_device_cert(&mut cert, &root_key).unwrap();
-    let now = web_time::SystemTime::UNIX_EPOCH + web_time::Duration::from_secs(2000);
+    let now = web_time::SystemTime::UNIX_EPOCH
+        .checked_add(web_time::Duration::from_secs(2000))
+        .unwrap();
     let room = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
     let mut owner = qos_peer_state::StatePeer::new(
         room,
@@ -706,7 +720,7 @@ fn rejected_checkpoint_fixture(serial: bool) {
     let qos_peer_state::NeighbourMsg::AppDocument { envelope, .. } = &cp1[1] else {
         panic!()
     };
-    let next_sequence = envelope.seq + 1;
+    let next_sequence = envelope.seq.saturating_add(1);
 
     // The prospective checkpoint admits branch A at next_sequence. A signed
     // concurrent branch-B tail at that same sequence is below its floor and
@@ -838,7 +852,7 @@ fn rejected_checkpoint_fixture(serial: bool) {
         .iter()
         .map(|stage| {
             (
-                stage.lineage_name().to_os_string(),
+                stage.lineage_name().unwrap().to_os_string(),
                 stage.projected_generation().to_path_buf(),
             )
         })
@@ -937,7 +951,8 @@ fn projected_checkpoint_prefix_exposes_the_route_count_cutoff() {
         }
 
         let root_key = ed25519_dalek::SigningKey::from_bytes(&[41; 32]);
-        let key = ed25519_dalek::SigningKey::from_bytes(&[document_count as u8; 32]);
+        let key =
+            ed25519_dalek::SigningKey::from_bytes(&[u8::try_from(document_count).unwrap(); 32]);
         let mut cert = tilo_user_identity::DeviceCert {
             user_public_key: root_key.verifying_key().to_bytes(),
             device_public_key: key.verifying_key().to_bytes(),
@@ -1054,7 +1069,7 @@ fn projected_checkpoint_prefix_exposes_the_route_count_cutoff() {
             .iter()
             .map(|stage| {
                 (
-                    stage.lineage_name().to_os_string(),
+                    stage.lineage_name().unwrap().to_os_string(),
                     stage.projected_generation().to_path_buf(),
                 )
             })
@@ -1433,7 +1448,7 @@ fn selected_switch_failure_keeps_previous_durable_basis_and_retires_no_input() {
     let mut count = 0;
     while let Some(meta) = read_meta(&mut plan).unwrap() {
         assert!(store.root.join(meta.source).exists());
-        count += 1
+        count += 1;
     }
     assert!(count > 0);
     fs::rename(moved, &selector.staged).unwrap();

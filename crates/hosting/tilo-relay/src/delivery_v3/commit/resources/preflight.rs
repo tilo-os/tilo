@@ -1,6 +1,12 @@
 //! Closed, allocation-free shape decoding. Only fixed native codec fields and
 //! borrowed bytes are admitted here; arbitrary custom Deserialize is excluded.
-use super::*;
+use super::{
+    AdmissionRecord, CommitError, CommitRef, ConsumerId, ConsumerState, DeliveryLedgerV1,
+    Deserialize, Deserializer, Digest, DurableAdmissionKind, MAX_ADMISSIONS, MAX_CONSUMERS,
+    MAX_HOST_BYTES, MAX_LEDGER_BYTES, MAX_PINS, MAX_REFERENCES, PhantomData, PublicationPool,
+    PublicationRef, ReceiptKey, ReplayCommit, ResourceError, SnapshotPin, StoreGeneration, de,
+    layout,
+};
 use layout::{Vectors, add, tree};
 
 trait Shape {
@@ -38,7 +44,7 @@ impl<'de, T: Deserialize<'de>> Deserialize<'de> for Sequence<T> {
                 let mut len = 0;
                 while len < MAX_REFERENCES {
                     match input.next_element::<T>()? {
-                        Some(_) => len += 1,
+                        Some(_) => len = len.saturating_add(1),
                         None => {
                             return Ok(Sequence {
                                 vectors: Vectors::pushed::<T>(len)
@@ -107,7 +113,7 @@ impl<'de, K: Deserialize<'de> + Ord, S: Deserialize<'de> + Shape, const MAX: usi
                                 .map_err(|_| de::Error::custom("allocation overflow"))?,
                         )
                         .map_err(|_| de::Error::custom("allocation overflow"))?;
-                    result.len += 1;
+                    result.len = result.len.saturating_add(1);
                     previous = Some(key);
                 }
                 Ok(result)

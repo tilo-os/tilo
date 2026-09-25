@@ -3,7 +3,7 @@ use super::WorkspaceJoinError;
 use qos_peer_state::join::TransportHint;
 use tilo_user_identity::DeviceCert;
 
-/// Kind bound by the existing TransportHint signing domain.
+/// Kind bound by the existing `TransportHint` signing domain.
 pub const TRANSPORT_DELIVERY_ORIGIN_V1: &str = "qos-delivery-origin-v1";
 /// An independently pinned origin locator, never descriptor/session authority.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -26,6 +26,10 @@ impl DeliveryOriginLocatorV1 {
     }
     /// Sign inert discovery bytes with the named host key. Installation is the
     /// caller's private native responsibility, not a property of this utility.
+    ///
+    /// # Errors
+    ///
+    /// Returns `WorkspaceJoinError` if the inputs violate this operation's bounds or invariants.
     pub fn transport_hint(
         &self,
         host: &DeviceCert,
@@ -46,6 +50,10 @@ impl DeliveryOriginLocatorV1 {
     /// Verify exact pinned certificate and signed discovery bytes. The caller
     /// must derive the pin from independently/currently verified invitation
     /// state; this does not perform current roster or revocation authorization.
+    ///
+    /// # Errors
+    ///
+    /// Returns `WorkspaceJoinError` if the inputs violate this operation's bounds or invariants.
     pub fn from_transport_hint(
         hint: &TransportHint,
         expected_host: &DeviceCert,

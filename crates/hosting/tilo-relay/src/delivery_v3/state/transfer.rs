@@ -20,6 +20,10 @@ pub struct FlowCredit {
 }
 impl FlowCredit {
     /// Construct after checking the bounded inert fields.
+    ///
+    /// # Errors
+    ///
+    /// Returns `StateError` if the inputs violate this operation's bounds or invariants.
     pub fn new(
         delivery: DeliveryId,
         digest: Digest,
@@ -49,11 +53,19 @@ impl FlowCredit {
         Ok(())
     }
     /// Encode the exact canonical wire representation.
+    ///
+    /// # Errors
+    ///
+    /// Returns `StateError` if the value violates its wire bounds or cannot be serialized.
     pub fn encode(&self) -> Result<Vec<u8>, StateError> {
         self.validate()?;
         super::encode(self)
     }
     /// Decode exact bounded canonical bytes; no authority is granted.
+    ///
+    /// # Errors
+    ///
+    /// Returns `StateError` if the input is not a canonical encoding within this type's bounds.
     pub fn decode(bytes: &[u8]) -> Result<Self, StateError> {
         let value: Self = super::decode(bytes)?;
         value.validate()?;
@@ -88,6 +100,10 @@ pub struct SnapshotChunk<'a> {
 }
 impl<'a> SnapshotChunk<'a> {
     /// Construct after checking the bounded inert fields.
+    ///
+    /// # Errors
+    ///
+    /// Returns `StateError` if the inputs violate this operation's bounds or invariants.
     pub fn new(
         pin: [u8; 16],
         manifest: Digest,
@@ -119,11 +135,19 @@ impl<'a> SnapshotChunk<'a> {
         Ok(())
     }
     /// Encode the exact canonical wire representation.
+    ///
+    /// # Errors
+    ///
+    /// Returns `StateError` if the value violates its wire bounds or cannot be serialized.
     pub fn encode(&self) -> Result<Vec<u8>, StateError> {
         self.validate()?;
         super::encode(self)
     }
     /// Decode exact bounded canonical bytes; no authority is granted.
+    ///
+    /// # Errors
+    ///
+    /// Returns `StateError` if the input is not a canonical encoding within this type's bounds.
     pub fn decode(bytes: &'a [u8]) -> Result<Self, StateError> {
         if bytes.len() > super::MAX_FRAME_PAYLOAD_BYTES {
             return Err(StateError::Oversized);
@@ -158,7 +182,7 @@ impl<'a> SnapshotChunk<'a> {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 /// Inert family tag; actual native admission still validates canonical bytes.
 pub enum TransferKind {
-    /// Canonical governance SyncResp bytes.
+    /// Canonical governance `SyncResp` bytes.
     Governance,
     /// Canonical application document bytes.
     State,
@@ -173,6 +197,10 @@ pub struct TransferRecordHeader {
 }
 impl TransferRecordHeader {
     /// Construct after checking the bounded inert fields.
+    ///
+    /// # Errors
+    ///
+    /// Returns `StateError` if the inputs violate this operation's bounds or invariants.
     pub fn new(
         ordinal: u32,
         kind: TransferKind,
@@ -202,6 +230,10 @@ impl TransferRecordHeader {
         bytes
     }
     /// Decode exact bounded canonical bytes; no authority is granted.
+    ///
+    /// # Errors
+    ///
+    /// Returns `StateError` if the input is not a canonical encoding within this type's bounds.
     pub fn decode(bytes: &[u8]) -> Result<Self, StateError> {
         let bytes: &[u8; 45] = bytes.try_into().map_err(|_| StateError::Codec)?;
         let kind = match bytes[4] {
@@ -210,10 +242,10 @@ impl TransferRecordHeader {
             _ => return Err(StateError::Invalid),
         };
         Self::new(
-            u32::from_le_bytes(bytes[..4].try_into().unwrap()),
+            u32::from_le_bytes(bytes[..4].try_into().map_err(|_| StateError::Codec)?),
             kind,
-            u64::from_le_bytes(bytes[5..13].try_into().unwrap()),
-            bytes[13..].try_into().unwrap(),
+            u64::from_le_bytes(bytes[5..13].try_into().map_err(|_| StateError::Codec)?),
+            bytes[13..].try_into().map_err(|_| StateError::Codec)?,
         )
     }
     /// Return the original visible publication ordinal.
@@ -243,6 +275,10 @@ pub struct VisibleOrder {
 }
 impl VisibleOrder {
     /// Construct after checking the bounded inert fields.
+    ///
+    /// # Errors
+    ///
+    /// Returns `StateError` if the inputs violate this operation's bounds or invariants.
     pub fn new(expected: u32) -> Result<Self, StateError> {
         if expected > MAX_TRANSFER_ITEMS {
             return Err(StateError::Oversized);
@@ -251,7 +287,7 @@ impl VisibleOrder {
         hasher.update(b"tilo-delivery-v3-visible-order-v1\0");
         let mut buffer = [0; 10];
         let bytes =
-            postcard::to_slice(&(expected as u64), &mut buffer).map_err(|_| StateError::Codec)?;
+            postcard::to_slice(&u64::from(expected), &mut buffer).map_err(|_| StateError::Codec)?;
         hasher.update(bytes);
         Ok(Self {
             hasher,
@@ -262,6 +298,10 @@ impl VisibleOrder {
         })
     }
     /// Append one strictly increasing original ordinal and digest.
+    ///
+    /// # Errors
+    ///
+    /// Returns `StateError` if the resource budget refuses the allocation or the input is invalid.
     pub fn push(&mut self, ordinal: u32, digest: Digest) -> Result<(), StateError> {
         if self.failed
             || self.seen >= self.expected
@@ -275,10 +315,14 @@ impl VisibleOrder {
         self.hasher.update(bytes);
         self.hasher.update(&digest);
         self.last = Some(ordinal);
-        self.seen += 1;
+        self.seen = self.seen.saturating_add(1);
         Ok(())
     }
     /// Finish only after exactly the declared item count.
+    ///
+    /// # Errors
+    ///
+    /// Returns `StateError` if the inputs violate this operation's bounds or invariants.
     pub fn finish(self) -> Result<Digest, StateError> {
         if self.failed || self.seen != self.expected {
             return Err(StateError::Invalid);
@@ -320,6 +364,10 @@ pub struct SnapshotRequest {
 }
 impl SnapshotRequest {
     /// Construct after checking the bounded inert fields.
+    ///
+    /// # Errors
+    ///
+    /// Returns `StateError` if the inputs violate this operation's bounds or invariants.
     pub fn new(operation: SnapshotOperation) -> Result<Self, StateError> {
         let value = Self {
             version: 1,
@@ -336,14 +384,17 @@ impl SnapshotRequest {
             pin,
             manifest_digest,
         } = &self.operation
+            && (*pin == [0; 16] || *manifest_digest == [0; 32])
         {
-            if *pin == [0; 16] || *manifest_digest == [0; 32] {
-                return Err(StateError::Invalid);
-            }
+            return Err(StateError::Invalid);
         }
         Ok(())
     }
     /// Decode exact bounded canonical bytes; no authority is granted.
+    ///
+    /// # Errors
+    ///
+    /// Returns `StateError` if the input is not a canonical encoding within this type's bounds.
     pub fn decode(bytes: &[u8]) -> Result<Self, StateError> {
         if bytes.len() > 8192 {
             return Err(StateError::Oversized);
@@ -353,6 +404,10 @@ impl SnapshotRequest {
         Ok(value)
     }
     /// Encode the exact canonical wire representation.
+    ///
+    /// # Errors
+    ///
+    /// Returns `StateError` if the value violates its wire bounds or cannot be serialized.
     pub fn encode(&self) -> Result<Vec<u8>, StateError> {
         self.validate()?;
         let bytes = super::encode(self)?;
@@ -395,7 +450,7 @@ pub struct ManifestIssue {
     pub item_count: u32,
     /// Exact stream bytes including fixed record headers.
     pub stream_bytes: u64,
-    /// Fixed240KiB transport chunk width.
+    /// `Fixed240KiB` transport chunk width.
     pub chunk_size: u32,
     #[serde(deserialize_with = "bounded_digests")]
     /// Ordered complete chunk digests, bounded to1105.
@@ -460,7 +515,7 @@ impl ManifestIssue {
         }
         if self.item_count == 0
             || self.item_count > MAX_TRANSFER_ITEMS
-            || self.chunk_size != SNAPSHOT_CHUNK_BYTES as u32
+            || self.chunk_size as usize != SNAPSHOT_CHUNK_BYTES
             || self.chunk_digests.len() > MAX_SNAPSHOT_CHUNKS as usize
         {
             return Err(StateError::Oversized);
@@ -490,14 +545,23 @@ pub struct SignedSnapshotManifest {
 }
 impl SignedSnapshotManifest {
     /// Check only exact chunk integrity; callers still require current native authorization.
+    ///
+    /// # Errors
+    ///
+    /// Returns `StateError` if the value fails validation or verification.
+    #[expect(
+        clippy::suspicious_operation_groupings,
+        reason = "the chunk names its signed manifest by digest, which the holder keeps beside the issue"
+    )]
     pub fn validate_chunk(&self, chunk: &SnapshotChunk<'_>) -> Result<(), StateError> {
         let issue = &self.issue;
-        let offset = u64::from(chunk.index) * u64::from(issue.chunk_size);
+        let offset = u64::from(chunk.index).saturating_mul(u64::from(issue.chunk_size));
         let expected = issue
             .stream_bytes
             .checked_sub(offset)
             .ok_or(StateError::Invalid)?
             .min(u64::from(issue.chunk_size));
+        // The chunk names the signed manifest by digest, which this holder keeps.
         if chunk.pin != issue.pin
             || chunk.manifest != self.digest
             || chunk.bytes.len() as u64 != expected
@@ -529,6 +593,10 @@ impl SignedSnapshotManifest {
 }
 impl SnapshotManifest {
     /// Sign validated inert manifest claims using the certified host key.
+    ///
+    /// # Errors
+    ///
+    /// Returns `StateError` if the inputs violate this operation's bounds or invariants.
     pub fn issue(
         issue: ManifestIssue,
         key: &ed25519_dalek::SigningKey,
@@ -546,13 +614,18 @@ impl SnapshotManifest {
         if length > MAX_MANIFEST_BYTES - 64 {
             return Err(StateError::Oversized);
         }
-        let mut bytes = vec![0; length + 64];
-        postcard::to_slice(&claims, &mut bytes[..length]).map_err(|_| StateError::Codec)?;
-        let signature = key.sign(&manifest_digest(&bytes[..length])).to_bytes();
-        bytes[length..].copy_from_slice(&signature);
+        let mut bytes = vec![0; length.saturating_add(64)];
+        let (claim_bytes, signature_bytes) = bytes.split_at_mut(length);
+        postcard::to_slice(&claims, claim_bytes).map_err(|_| StateError::Codec)?;
+        let signature = key.sign(&manifest_digest(claim_bytes)).to_bytes();
+        signature_bytes.copy_from_slice(&signature);
         Ok(Self(bytes))
     }
     /// Retain bounded signed bytes without authenticating or authorizing them.
+    ///
+    /// # Errors
+    ///
+    /// Returns `StateError` if the input is not a canonical encoding within this type's bounds.
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, StateError> {
         if bytes.len() <= 64 || bytes.len() > MAX_MANIFEST_BYTES {
             return Err(StateError::Oversized);
@@ -560,6 +633,10 @@ impl SnapshotManifest {
         Ok(Self(bytes.to_vec()))
     }
     /// Verify exact canonical claims, host signature and expiry; current native authority remains required.
+    ///
+    /// # Errors
+    ///
+    /// Returns `StateError` if the value fails validation or verification.
     pub fn authenticate(
         &self,
         key: &ed25519_dalek::VerifyingKey,
@@ -572,11 +649,15 @@ impl SnapshotManifest {
     /// Authenticate retained bytes without asserting current time. Returned signed
     /// claims are timeless inert evidence, never current native authority. A native
     /// owner must separately match its actual live pin and freshly authorize use.
+    ///
+    /// # Errors
+    ///
+    /// Returns `StateError` if the value fails validation or verification.
     pub fn authenticate_retained(
         &self,
         key: &ed25519_dalek::VerifyingKey,
     ) -> Result<SignedSnapshotManifest, StateError> {
-        let (bytes, signature) = self.0.split_at(self.0.len() - 64);
+        let (bytes, signature) = self.0.split_at(self.0.len().saturating_sub(64));
         let signature = ed25519_dalek::Signature::from_bytes(
             signature.try_into().map_err(|_| StateError::Codec)?,
         );
@@ -624,7 +705,7 @@ fn bounded_digests<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<Digest>
                 if values.len() == cap {
                     return Err(serde::de::Error::custom("digest count mismatch"));
                 }
-                values.push(value)
+                values.push(value);
             }
             Ok(values)
         }

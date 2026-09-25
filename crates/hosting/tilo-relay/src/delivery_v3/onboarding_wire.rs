@@ -27,6 +27,9 @@ impl OnboardingOperation {
             Self::MembershipComplete => "/peer/v3/join/membership-complete",
         }
     }
+    /// # Errors
+    ///
+    /// Returns `WireError` if the inputs violate this operation's bounds or invariants.
     pub fn from_target(method: &str, target: &str) -> Result<Self, WireError> {
         [
             Self::Inspect,
@@ -121,6 +124,9 @@ fn current(issued: u64, expires: u64, now: u64) -> Result<(), WireError> {
     }
 }
 impl OnboardingScope<'_> {
+    /// # Errors
+    ///
+    /// Returns `WireError` if the value fails validation or verification.
     pub fn validate(&self) -> Result<(), WireError> {
         super::auth::validate_origin(self.origin).map_err(|_| WireError::Invalid)?;
         if self.host == [0; 32] || self.root == [0; 32] || self.room.is_nil() {
@@ -166,10 +172,10 @@ impl postcard::ser_flavors::Flavor for Exact<'_> {
         self.try_extend(&[b])
     }
     fn try_extend(&mut self, b: &[u8]) -> postcard::Result<()> {
-        if !self.0.starts_with(b) {
+        let Some(rest) = self.0.strip_prefix(b) else {
             return Err(postcard::Error::SerializeBufferFull);
-        }
-        self.0 = &self.0[b.len()..];
+        };
+        self.0 = rest;
         Ok(())
     }
     fn finalize(self) -> postcard::Result<()> {
@@ -240,15 +246,24 @@ impl<'a> OnboardingRequest<'a> {
         }
         Ok(())
     }
+    /// # Errors
+    ///
+    /// Returns `WireError` if the input is not a canonical encoding within this type's bounds.
     pub fn decode(bytes: &'a [u8]) -> Result<Self, WireError> {
         let value: Self = canonical(bytes, MAX_REQUEST_BYTES)?;
         value.validate()?;
         Ok(value)
     }
+    /// # Errors
+    ///
+    /// Returns `WireError` if the value violates its wire bounds or cannot be serialized.
     pub fn encode(&self) -> Result<Vec<u8>, WireError> {
         self.validate()?;
         encode(self, MAX_REQUEST_BYTES)
     }
+    /// # Errors
+    ///
+    /// Returns `WireError` if the value cannot be canonically encoded.
     pub fn signing_digest(&self) -> Result<[u8; 32], WireError> {
         self.validate()?;
         digest(
@@ -265,16 +280,26 @@ impl<'a> OnboardingRequest<'a> {
             ),
         )
     }
+    /// # Errors
+    ///
+    /// Returns `WireError` if the value cannot be canonically encoded.
     pub fn request_digest(&self) -> Result<[u8; 32], WireError> {
         self.validate()?;
         digest(b"tilo-delivery-v3-onboarding-request-id\0", self)
     }
+    /// # Errors
+    ///
+    /// Returns `WireError` if the inputs violate this operation's bounds or invariants.
     pub fn device_certificate(&self) -> Result<DeviceCert, WireError> {
         certificate_preflight(self.certificate)?;
         postcard::from_bytes(self.certificate).map_err(|_| WireError::Codec)
     }
     /// Verifies exact transport possession only. Caller owns certificate trust,
     /// current invitation/membership and non-evicting replay admission.
+    ///
+    /// # Errors
+    ///
+    /// Returns `WireError` if the value fails validation or verification.
     pub fn verify_device_signature(
         &self,
         expected: OnboardingScope<'_>,
@@ -326,15 +351,24 @@ impl<'a> OnboardingResponse<'a> {
         }
         Ok(())
     }
+    /// # Errors
+    ///
+    /// Returns `WireError` if the input is not a canonical encoding within this type's bounds.
     pub fn decode(bytes: &'a [u8]) -> Result<Self, WireError> {
         let value: Self = canonical(bytes, MAX_RESPONSE_BYTES)?;
         value.validate()?;
         Ok(value)
     }
+    /// # Errors
+    ///
+    /// Returns `WireError` if the value violates its wire bounds or cannot be serialized.
     pub fn encode(&self) -> Result<Vec<u8>, WireError> {
         self.validate()?;
         encode(self, MAX_RESPONSE_BYTES)
     }
+    /// # Errors
+    ///
+    /// Returns `WireError` if the value cannot be canonically encoded.
     pub fn signing_digest(&self) -> Result<[u8; 32], WireError> {
         self.validate()?;
         digest(
@@ -355,6 +389,10 @@ impl<'a> OnboardingResponse<'a> {
     }
     /// Uses the independently pinned request host. The authenticated boot is
     /// returned as inert data; native appointment and bootstrap admission remain external.
+    ///
+    /// # Errors
+    ///
+    /// Returns `WireError` if the value fails validation or verification.
     pub fn verify_host_signature(
         &self,
         request: &OnboardingRequest<'_>,

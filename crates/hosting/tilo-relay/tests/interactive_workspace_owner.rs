@@ -7,6 +7,14 @@
     clippy::panic,
     reason = "in a test these are the assertion, not a hazard"
 )]
+#![allow(
+    clippy::significant_drop_tightening,
+    reason = "relays, fixtures and guards deliberately stay alive until each test ends"
+)]
+#![allow(
+    clippy::too_many_lines,
+    reason = "each test spells out one end-to-end scenario"
+)]
 
 use iroh::endpoint::presets;
 use qos_peer_state::GovernedAccess;

@@ -19,6 +19,10 @@
     clippy::unreachable,
     reason = "in a test these are the assertion, not a hazard"
 )]
+#![allow(
+    clippy::significant_drop_tightening,
+    reason = "relays, fixtures and guards deliberately stay alive until each test ends"
+)]
 
 use tilo_relay::RelayClient;
 use tilo_user_identity::{
@@ -36,12 +40,12 @@ async fn peer_from_different_user_is_rejected() {
     let bob_intruder = bob.enrol("stranger-laptop", DeviceCapabilities::primary());
 
     // Alice's relay, membership Alice's laptop.
-    let relay = spawn_relay(
+    let relay = Box::pin(spawn_relay(
         &alice,
         alice_relay_dev,
         &[1],
         &[alice_ws_member.device_pubkey()],
-    )
+    ))
     .await;
     let relay_addr = relay.relay.node_addr();
 

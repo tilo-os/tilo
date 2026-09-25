@@ -1,4 +1,4 @@
-//! PIPELINED_POLL_V1 event poll targets: a consumer may keep several held
+//! `PIPELINED_POLL_V1` event poll targets: a consumer may keep several held
 //! event polls outstanding as one ordered chain, so a long round trip no
 //! longer leaves the host without a poll to answer after every page.
 //!
@@ -40,6 +40,10 @@ pub struct ChainPoll {
 }
 
 /// Poll target for `mode=chain`.
+///
+/// # Errors
+///
+/// Returns `state::StateError` if the inputs violate this operation's bounds or invariants.
 pub fn chain_target(cursor: &[u8], poll: ChainPoll) -> Result<String, state::StateError> {
     Ok(format!(
         "/peer/v3/events?chain={:016x}&cursor={}&index={}&mode=chain",

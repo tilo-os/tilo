@@ -33,7 +33,9 @@ impl Mailbox {
             workspace_id,
             workspace,
             source,
-            deadline: std::time::Instant::now() + std::time::Duration::from_secs(3),
+            deadline: std::time::Instant::now()
+                .checked_add(std::time::Duration::from_secs(3))
+                .unwrap_or_else(std::time::Instant::now),
         });
     }
 }
@@ -41,6 +43,14 @@ impl Request {
     /// Runs a synchronous actual-owner turn only while the original subscription
     /// remains current. The caller must additionally check its current governed
     /// certificate and exact room Read permission before refreshing.
+    ///
+    /// # Errors
+    ///
+    /// Returns `String` if the request cannot be sent or its reply is rejected.
+    #[expect(
+        clippy::significant_drop_tightening,
+        reason = "the runtime guard is held so the refresh request and its checkpoint request observe one roster"
+    )]
     pub async fn execute<T>(
         self,
         turn: impl FnOnce(u64, &tilo_user_identity::DeviceCert) -> Result<T, String>,

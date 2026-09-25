@@ -14,6 +14,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::net::SocketAddr;
 use std::path::PathBuf;
 
+use tilo_relay_protocol::config::CheckpointPrefixRecovery;
 use tilo_relay_protocol::{
     ComputeAccelerator, DeviceMeshProfile, DeviceRole, HomePeerRegistration, MetricsSnapshot,
     PeerRelayConfig, PowerAvailability, ProcessLease, RelayConfig, ReplicationIntent,
@@ -206,7 +207,7 @@ fn relay_config_toml_encoding() {
                 replication: ReplicationIntent::FullWorkspace,
                 admitted_users: vec!["cd".repeat(32)],
                 shell_authority: None,
-                checkpoint_prefix_recovery: Default::default(),
+                checkpoint_prefix_recovery: CheckpointPrefixRecovery::default(),
             },
             WorkspaceBinding {
                 id: 42,
@@ -214,7 +215,7 @@ fn relay_config_toml_encoding() {
                 replication: selected_resources(),
                 admitted_users: Vec::new(),
                 shell_authority: None,
-                checkpoint_prefix_recovery: Default::default(),
+                checkpoint_prefix_recovery: CheckpointPrefixRecovery::default(),
             },
         ],
         peer_relays: vec![PeerRelayConfig {
@@ -293,7 +294,7 @@ fn legacy_workspace_binding_toml_still_parses() {
             replication: ReplicationIntent::WorkspaceOnly,
             admitted_users: Vec::new(),
             shell_authority: None,
-            checkpoint_prefix_recovery: Default::default(),
+            checkpoint_prefix_recovery: CheckpointPrefixRecovery::default(),
         }
     );
 }

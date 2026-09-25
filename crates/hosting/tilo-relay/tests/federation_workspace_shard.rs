@@ -17,6 +17,10 @@
     clippy::unreachable,
     reason = "in a test these are the assertion, not a hazard"
 )]
+#![allow(
+    clippy::significant_drop_tightening,
+    reason = "relays, fixtures and guards deliberately stay alive until each test ends"
+)]
 
 use std::time::Duration;
 
@@ -35,8 +39,8 @@ async fn sharded_topology_isolates_per_workspace() {
 
     // Relay1 hosts workspace 20 only; relay2 hosts workspace 21
     // only — non-overlapping shards.
-    let relay1 = spawn_relay(&user, relay_dev_1, &[20], &members).await;
-    let relay2 = spawn_relay(&user, relay_dev_2, &[21], &members).await;
+    let relay1 = Box::pin(spawn_relay(&user, relay_dev_1, &[20], &members)).await;
+    let relay2 = Box::pin(spawn_relay(&user, relay_dev_2, &[21], &members)).await;
 
     // Federate anyway — the intersection is empty.
     relay1

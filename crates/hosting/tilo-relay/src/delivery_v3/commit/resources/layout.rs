@@ -1,5 +1,5 @@
 //! Requested-layout bounds for the pinned standard-library implementations.
-use super::*;
+use super::ResourceError;
 use std::alloc::Layout;
 
 pub(super) fn add(a: usize, b: usize) -> Result<usize, ResourceError> {
@@ -9,7 +9,7 @@ fn mul(a: usize, b: usize) -> Result<usize, ResourceError> {
     a.checked_mul(b).ok_or(ResourceError::Capacity)
 }
 /// BTreeMap/BTreeSet B=6, CAPACITY=11, as in the existing pinned native
-/// resource_limits/retained.rs model. At most n+1 allocated nodes, each bounded
+/// `resource_limits/retained.rs` model. At most n+1 allocated nodes, each bounded
 /// by an internal node. Padding each field to maximum alignment bounds every
 /// repr(Rust) field ordering; no private offset is assumed. Fresh empty maps
 /// allocate nothing. Counts are concrete typed entries, never encoded bytes.
@@ -29,7 +29,9 @@ pub(super) fn tree<K, V>(len: usize) -> Result<usize, ResourceError> {
         mul(11, size_of::<V>())?,
         mul(12, size_of::<usize>())?,
     ] {
-        let padded = add(field, alignment - 1)? & !(alignment - 1);
+        // `align_of` is always a nonzero power of two.
+        let mask = alignment.saturating_sub(1);
+        let padded = add(field, mask)? & !mask;
         node = add(node, padded)?;
     }
     mul(add(len, 1)?, node)

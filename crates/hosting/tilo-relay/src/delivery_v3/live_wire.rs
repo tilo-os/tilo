@@ -1,6 +1,6 @@
-//! Bounded inert LIVE_V1 wire values: ephemeral multiplayer state (presence,
+//! Bounded inert `LIVE_V1` wire values: ephemeral multiplayer state (presence,
 //! cursors, selections, drags, text previews) and early forwarding of signed
-//! durable changes, carried as MoQ Draft 21 tracks beside voice.
+//! durable changes, carried as `MoQ` Draft 21 tracks beside voice.
 //!
 //! Live frames are never durable and never authority. The durable delivery
 //! carrier (state upload, replay, cursors) stays the only source of truth; a
@@ -14,11 +14,11 @@ use tilo_user_identity::canonical::signing_digest;
 pub const MEDIA_LIVE_V1: u64 = 2;
 /// Exact WebTransport path of the live relay on the host's QUIC endpoint.
 pub const LIVE_WEBTRANSPORT_PATH: &str = "/moq/v21/live";
-/// WebTransport subprotocol; identical to voice (MoQ Draft 21).
+/// WebTransport subprotocol; identical to voice (`MoQ` Draft 21).
 pub const LIVE_PROTOCOL: &str = "moqt-21";
 /// Proof-required HTTPS route that issues a [`SignedLiveGrant`] to a data session.
 pub const LIVE_GRANT_TARGET: &str = "/peer/v3/live/grant";
-/// First MoQ namespace tuple component of every live track.
+/// First `MoQ` namespace tuple component of every live track.
 pub const LIVE_NAMESPACE_ROOT: &str = "tilo-live";
 /// Latest-value datagram track for presence, cursors, selections and drags.
 pub const PRESENCE_TRACK: &str = "presence";
@@ -108,7 +108,7 @@ impl LiveNamespace {
             publisher,
         }
     }
-    /// MoQ namespace tuple components in order.
+    /// `MoQ` namespace tuple components in order.
     pub fn components(&self) -> [String; 3] {
         [
             LIVE_NAMESPACE_ROOT.into(),
@@ -147,6 +147,10 @@ pub struct LiveGrantRequest {
 }
 impl LiveGrantRequest {
     /// Structural bounds only.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the value fails validation or verification.
     pub fn validate(&self) -> Result<()> {
         if self.version != 1
             || self.room.is_empty()
@@ -198,6 +202,10 @@ pub struct SignedLiveGrant {
 }
 impl SignedLiveGrant {
     /// Structural bounds and lifetime shape, not signature or roster.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the value fails validation or verification.
     pub fn validate(&self) -> Result<()> {
         let m = &self.metadata;
         m.request.validate()?;
@@ -211,20 +219,28 @@ impl SignedLiveGrant {
             || !m.audience.ends_with(LIVE_WEBTRANSPORT_PATH)
             || m.expires_at_ns
                 .checked_sub(m.issued_at_ns)
-                .filter(|n| *n > 0 && *n <= GRANT_LIFETIME_NS)
-                .is_none()
+                .as_ref()
+                .is_none_or(|n| !(*n > 0 && *n <= GRANT_LIFETIME_NS))
         {
             return Err(LiveWireError::Invalid);
         }
         Ok(())
     }
     /// Domain-separated digest the host signs.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the value cannot be canonically encoded.
     pub fn signing_digest(&self) -> Result<[u8; 32]> {
         self.validate()?;
         signing_digest(LIVE_GRANT_DOMAIN, &(self.version, &self.metadata))
             .map_err(|_| LiveWireError::Codec)
     }
     /// Host signs structurally valid claims.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the value cannot be canonically encoded.
     pub fn sign(metadata: LiveGrantMetadata, host: &ed25519_dalek::SigningKey) -> Result<Self> {
         use ed25519_dalek::Signer;
         let mut grant = Self {
@@ -233,14 +249,19 @@ impl SignedLiveGrant {
             signature: [[0; 32]; 2],
         };
         let signature = host.sign(&grant.signing_digest()?).to_bytes();
+        let (low, high) = signature.split_at(32);
         grant.signature = [
-            signature[..32].try_into().unwrap(),
-            signature[32..].try_into().unwrap(),
+            low.try_into().map_err(|_| LiveWireError::Codec)?,
+            high.try_into().map_err(|_| LiveWireError::Codec)?,
         ];
         Ok(grant)
     }
     /// Verifies the host signature and that `now_ns` lies within the grant
     /// lifetime. Roster, membership generation and audience remain the relay's checks.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the value fails validation or verification.
     pub fn verify(&self, host: &ed25519_dalek::VerifyingKey, now_ns: u64) -> Result<()> {
         if host.to_bytes() != self.metadata.host
             || now_ns < self.metadata.issued_at_ns
@@ -339,6 +360,8 @@ pub enum DragPhase {
     Cancel,
 }
 
+/// A live drag: the object, its phase, the pointer position and an optional anchor.
+pub type LiveDrag = (LiveObject, DragPhase, [f32; 2], Option<[f32; 2]>);
 /// Latest-value presence and interaction state (datagram track).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -354,7 +377,7 @@ pub struct PresenceFrame {
     /// Text selection as (anchor, head).
     pub selection: Option<(LiveAnchor, LiveAnchor)>,
     /// Object being dragged/resized: object, phase, x, y, optional width/height.
-    pub drag: Option<(LiveObject, DragPhase, [f32; 2], Option<[f32; 2]>)>,
+    pub drag: Option<LiveDrag>,
 }
 impl PresenceFrame {
     fn validate(&self) -> Result<()> {
@@ -475,6 +498,10 @@ macro_rules! codec {
     ($ty:ty, $cap:expr) => {
         impl $ty {
             /// Canonical encoding after checking all structural bounds.
+            ///
+            /// # Errors
+            ///
+            /// Returns an error if the value violates its wire bounds or cannot be serialized.
             pub fn encode(&self) -> Result<Vec<u8>> {
                 self.validate()?;
                 let mut out = vec![0u8; $cap];
@@ -485,6 +512,10 @@ macro_rules! codec {
                 Ok(out)
             }
             /// Reject outer size before parsing and noncanonical encodings.
+            ///
+            /// # Errors
+            ///
+            /// Returns an error if the input is not a canonical encoding within this type's bounds.
             pub fn decode(bytes: &[u8]) -> Result<Self> {
                 if bytes.is_empty() || bytes.len() > $cap {
                     return Err(LiveWireError::Codec);
@@ -523,7 +554,7 @@ fn preview_text<'de, D: Deserializer<'de>>(d: D) -> std::result::Result<String, 
     bounded_text::<D, MAX_PREVIEW_TEXT_BYTES>(d)
 }
 mod object_bytes {
-    use super::*;
+    use super::{Deserialize, Deserializer, MAX_OBJECT_ID_BYTES, Serialize, de};
     pub fn serialize<S: serde::Serializer>(v: &[u8], s: S) -> std::result::Result<S::Ok, S::Error> {
         serde_bytes::Bytes::new(v).serialize(s)
     }
@@ -643,7 +674,7 @@ pub fn bounded_display_text(text: &str, max: usize) -> String {
         .chars()
         .map(|ch| if ch.is_control() { ' ' } else { ch })
     {
-        if out.len() + ch.len_utf8() > max {
+        if out.len().saturating_add(ch.len_utf8()) > max {
             break;
         }
         out.push(ch);
@@ -653,6 +684,10 @@ pub fn bounded_display_text(text: &str, max: usize) -> String {
 
 impl AgentActivity {
     /// Structural bounds of every field and of the encoded JSON.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the value fails validation or verification.
     pub fn validate(&self) -> Result<()> {
         if self.v != 1 || !AGENT_ACTIVITY_STATES.contains(&self.state.as_str()) {
             return Err(LiveWireError::Invalid);
@@ -671,6 +706,10 @@ impl AgentActivity {
         Ok(())
     }
     /// Compact JSON within [`MAX_PREVIEW_TEXT_BYTES`].
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the value violates its wire bounds or cannot be serialized.
     pub fn to_json(&self) -> Result<String> {
         self.validate()?;
         let json = serde_json::to_string(self).map_err(|_| LiveWireError::Codec)?;
@@ -680,6 +719,10 @@ impl AgentActivity {
         Ok(json)
     }
     /// Strict bounded parse (unknown fields rejected).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the input is not a canonical encoding within this type's bounds.
     pub fn from_json(text: &str) -> Result<Self> {
         if text.is_empty() || text.len() > MAX_PREVIEW_TEXT_BYTES {
             return Err(LiveWireError::Codec);
@@ -689,6 +732,10 @@ impl AgentActivity {
         Ok(value)
     }
     /// The activity preview frame (one insert at the fixed anchor).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the value violates its wire bounds or cannot be serialized.
     pub fn to_frame(&self, seq: u64) -> Result<OpsFrame> {
         Ok(OpsFrame::Preview {
             seq,
@@ -703,6 +750,10 @@ impl AgentActivity {
     }
     /// Parse an activity preview frame: exactly one insert at the fixed anchor
     /// on the activity record. Returns `(seq, activity)`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the input is not a canonical encoding within this type's bounds.
     pub fn from_frame(frame: &OpsFrame) -> Result<(u64, Self)> {
         let OpsFrame::Preview { seq, record, ops } = frame else {
             return Err(LiveWireError::Invalid);

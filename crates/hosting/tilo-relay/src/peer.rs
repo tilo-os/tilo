@@ -10,6 +10,7 @@
 
 pub mod sync_refresh;
 
+use crate::store::bounded::Invariant;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -20,6 +21,7 @@ use crate::auth::AuthenticatedPeer;
 use crate::peer_actions::{ActionMessage, DirectedAction, UnavailableReason};
 use crate::persistence::{ReplayAdvance, ReplayHandle, ReplayTicket, WrittenBatch};
 use crate::store::StoreError;
+use crate::store::bounded::WorkLimit;
 use crate::store::replay::Step;
 use crate::transport::Envelope;
 use crate::transport_v2::{ActionCapability, EnvelopeV2, SessionReader};
@@ -99,6 +101,10 @@ fn checkpoint_prefix_post_first_promotion_fault(
 }
 
 #[cfg(not(feature = "test-support"))]
+#[expect(
+    clippy::unnecessary_wraps,
+    reason = "matches the fallible test-support fault hook it stands in for"
+)]
 fn checkpoint_prefix_post_first_promotion_fault(
     _root: &std::path::Path,
 ) -> Result<(), crate::store::StoreError> {
@@ -298,6 +304,14 @@ where
 }
 
 // Shared stream driver also exercised with a deterministic in-memory wire.
+#[expect(
+    clippy::too_many_lines,
+    reason = "one ordered protocol state machine; splitting it would scatter the invariants each step relies on"
+)]
+#[expect(
+    clippy::significant_drop_tightening,
+    reason = "the session context is borrowed by the concurrent reader and writer futures, and permits move into the backlog; the lint does not see those uses"
+)]
 async fn run_peer_stream<R, W>(
     peer: AuthenticatedPeer,
     read: R,
@@ -388,7 +402,9 @@ where
                     let mut prefix_budgets = vec![inbound_budget];
                     for _ in 1..prefix_len {
                         let Some((EnvelopeV2::State(next), budget)) = backlog.pop_front() else {
-                            unreachable!("eligible checkpoint prefix changed while draining")
+                            return Err(PeerError::Io(std::io::Error::other(
+                                "eligible checkpoint prefix changed while draining",
+                            )));
                         };
                         prefix.push(next);
                         prefix_budgets.push(Some(budget));
@@ -410,7 +426,8 @@ where
                                 handle_envelope(&peer, env, &session, &mut subscribed, &mut ticket)
                                     .await
                             } else {
-                                let mut envelopes = Vec::with_capacity(prefix.len() + 1);
+                                let mut envelopes =
+                                    Vec::with_capacity(prefix.len().saturating_add(1));
                                 envelopes.push(env);
                                 envelopes.extend(prefix);
                                 handle_delta_prefix(
@@ -548,14 +565,14 @@ where
                 continue;
             }
             if let Some(batch) = active.take() {
-                finish_replay_write(
+                Box::pin(finish_replay_write(
                     batch,
                     &peer,
                     &session,
                     &pending_replays,
                     &mut private_rx,
                     &mut write,
-                )
+                ))
                 .await?;
                 private_burst = 0;
                 continue;
@@ -640,7 +657,8 @@ fn finish_peer_outcome(
     device: &[u8; 32],
 ) -> Result<(), PeerError> {
     match outcome {
-        Err(PeerError::Superseded) => Ok(()),
+        // A superseded session is a normal handover, not a failure.
+        Ok(()) | Err(PeerError::Superseded) => Ok(()),
         Err(error) => {
             metrics.inc_subscriber_dropped();
             tracing::warn!(
@@ -650,7 +668,6 @@ fn finish_peer_outcome(
             );
             Err(error)
         }
-        Ok(()) => Ok(()),
     }
 }
 
@@ -768,8 +785,8 @@ fn eligible_checkpoint_prefix<'a>(
         if total_bytes.saturating_add(frame_bytes) > RETENTION_PREFIX_BYTE_CAP {
             break;
         }
-        total_bytes += frame_bytes;
-        total += 1;
+        total_bytes = total_bytes.saturating_add(frame_bytes);
+        total = total.saturating_add(1);
     }
     total
 }
@@ -838,10 +855,10 @@ fn buffered_retention_prefix_with_limits<'a>(
         let current = (*workspace_id, *author_device_public_key);
         match group {
             Some(expected) if expected != current => {
-                shape.stop_reason = if expected.0 != current.0 {
-                    "workspace_change"
-                } else {
+                shape.stop_reason = if expected.0 == current.0 {
                     "author_change"
+                } else {
+                    "workspace_change"
                 };
                 break;
             }
@@ -854,12 +871,14 @@ fn buffered_retention_prefix_with_limits<'a>(
             shape.stop_reason = "byte_cap";
             break;
         }
-        shape.frames += 1;
-        shape.input_bytes += bytes;
+        shape.frames = shape.frames.saturating_add(1);
+        shape.input_bytes = shape.input_bytes.saturating_add(bytes);
         channels.insert(channel);
         match kind {
-            crate::coedit::RetentionKind::Checkpoint => shape.checkpoints += 1,
-            crate::coedit::RetentionKind::Delta => shape.deltas += 1,
+            crate::coedit::RetentionKind::Checkpoint => {
+                shape.checkpoints = shape.checkpoints.saturating_add(1);
+            }
+            crate::coedit::RetentionKind::Delta => shape.deltas = shape.deltas.saturating_add(1),
         }
     }
     if !inspected {
@@ -907,6 +926,10 @@ async fn write_private<W: tokio::io::AsyncWrite + Unpin>(
     }
     Ok(())
 }
+#[expect(
+    clippy::significant_drop_tightening,
+    reason = "the membership guard spans the whole authorization so it observes one roster generation"
+)]
 async fn authorize_state_frame(
     frame: &Envelope,
     peer: &AuthenticatedPeer,
@@ -938,6 +961,14 @@ async fn authorize_state_frame(
     }
     Ok(())
 }
+#[expect(
+    clippy::too_many_lines,
+    reason = "one ordered protocol state machine; splitting it would scatter the invariants each step relies on"
+)]
+#[expect(
+    clippy::significant_drop_tightening,
+    reason = "the workspace and authority handles are cloned into the boundary closures that outlive their last named use"
+)]
 async fn finish_replay_write<W: tokio::io::AsyncWrite + Unpin>(
     batch: ReplayWrite,
     peer: &AuthenticatedPeer,
@@ -1007,21 +1038,22 @@ async fn finish_replay_write<W: tokio::io::AsyncWrite + Unpin>(
                         },
                         move |state, authority| {
                             state.finish_replay(
-                                authority.as_ref().expect("replay cleanup"),
+                                authority.as_ref().invariant("replay cleanup")?,
                                 &cleanup_handle,
                                 |store| {
                                     authorize_replay_now(
                                         store,
                                         &checking_workspace,
                                         &checking_source,
-                                        authority.as_ref().expect("replay cleanup"),
+                                        authority.as_ref().invariant("replay cleanup")?,
                                     )
                                 },
                             )
                         },
                         |result| async { result },
                     );
-                    let _ = replay_wait(cleanup, peer, session, private_rx, write).await?;
+                    let _ =
+                        Box::pin(replay_wait(cleanup, peer, session, private_rx, write)).await?;
                     if !boundary_done {
                         let authority = ticket.authority.clone();
                         let capture = authority.clone();
@@ -1043,7 +1075,8 @@ async fn finish_replay_write<W: tokio::io::AsyncWrite + Unpin>(
                                 if !checking.dirty.load(std::sync::atomic::Ordering::SeqCst) {
                                     return Ok(Step::Done(None));
                                 }
-                                match state.capture_pending_replay(&capture)? {
+                                let step = state.capture_pending_replay(&capture)?;
+                                match step {
                                     Step::More => Ok(Step::More),
                                     Step::Done(handle) => Ok(Step::Done(Some(handle))),
                                 }
@@ -1060,9 +1093,10 @@ async fn finish_replay_write<W: tokio::io::AsyncWrite + Unpin>(
                                 Ok(result)
                             },
                         );
-                        if let Some(catchup_handle) =
-                            replay_wait(boundary, peer, session, private_rx, write).await?
-                        {
+                        let caught_up =
+                            Box::pin(replay_wait(boundary, peer, session, private_rx, write))
+                                .await?;
+                        if let Some(catchup_handle) = caught_up {
                             handle = catchup_handle;
                             written = None;
                             boundary_done = true;
@@ -1096,7 +1130,7 @@ async fn finish_replay_write<W: tokio::io::AsyncWrite + Unpin>(
                 let root = workspace.lock().await.store.root().to_path_buf();
                 let workers = crate::persistence::handle(workspace).await.workers();
                 crate::persistence::blocking(workers, move || {
-                    crate::store::test_barrier::pause(&root, "replay-before-ready")
+                    crate::store::test_barrier::pause(&root, "replay-before-ready");
                 })
                 .await?;
             }
@@ -1159,6 +1193,10 @@ async fn finish_replay_boundary(
     Ok(())
 }
 
+#[expect(
+    clippy::significant_drop_tightening,
+    reason = "the session is read from the membership guard held for the whole boundary check"
+)]
 async fn authorize_replay_boundary(
     workspace: &SharedWorkspace,
     source: &StateSource,
@@ -1181,7 +1219,7 @@ async fn authorize_replay_boundary(
     if session
         .replay
         .as_ref()
-        .unwrap()
+        .invariant("replay missing")?
         .phase
         .load(std::sync::atomic::Ordering::SeqCst)
         != ReplayCatchup::BOUNDARY
@@ -1193,6 +1231,10 @@ async fn authorize_replay_boundary(
     Ok(())
 }
 
+#[expect(
+    clippy::significant_drop_tightening,
+    reason = "the session is read from the membership guard held until readiness is recorded"
+)]
 async fn complete_replay_ready(
     workspace: &SharedWorkspace,
     source: &StateSource,
@@ -1211,7 +1253,7 @@ async fn complete_replay_ready(
                 .is_some_and(|current| Arc::ptr_eq(current, catchup))
         })
         .ok_or_else(|| crate::persistence::error("replay session fenced during Ready"))?;
-    let replay = session.replay.as_ref().unwrap();
+    let replay = session.replay.as_ref().invariant("replay missing")?;
     if replay
         .phase
         .compare_exchange(
@@ -1230,6 +1272,10 @@ async fn complete_replay_ready(
 }
 /// Blocking-worker authority check, immediately before one exact cleanup entry.
 /// Disk I/O precedes the short routing check; no routing guard crosses I/O.
+#[expect(
+    clippy::significant_drop_tightening,
+    reason = "the runtime guard is read by every membership condition below; clippy misreads its last use"
+)]
 fn authorize_replay_now(
     store: &crate::store::WorkspaceStore,
     workspace: &SharedWorkspace,
@@ -1412,7 +1458,7 @@ where
     let reply = handle_envelope(peer, env, session, subscribed, &mut ticket).await?;
     let pending = std::sync::atomic::AtomicUsize::new(usize::from(replaying));
     let (_tx, mut private_rx) = mpsc::channel(1);
-    finish_replay_write(
+    Box::pin(finish_replay_write(
         ReplayWrite {
             ticket,
             reply,
@@ -1423,7 +1469,7 @@ where
         &pending,
         &mut private_rx,
         write,
-    )
+    ))
     .await
 }
 
@@ -1479,9 +1525,23 @@ async fn handle_envelope(
     }
 }
 
+/// How a subscriber's replay capture finished.
+enum SubscribeReplayCompletion {
+    Ready(ReplayHandle),
+    Superseded,
+}
+
 /// Handle `Subscribe`: gate on membership (or admit, for a
 /// same-owner autobind), replay retained baselines + this device's
 /// pending queue, then register the live subscriber.
+#[expect(
+    clippy::too_many_lines,
+    reason = "one ordered protocol state machine; splitting it would scatter the invariants each step relies on"
+)]
+#[expect(
+    clippy::significant_drop_tightening,
+    reason = "the ticket and replay handle move into the connection's replay slot; the lint does not see the move"
+)]
 async fn handle_subscribe(
     peer: &AuthenticatedPeer,
     session: &SessionCtx<'_>,
@@ -1560,23 +1620,24 @@ async fn handle_subscribe(
     let bind = ticket.authority.clone();
     let catchup = Arc::new(ReplayCatchup::new());
     let session_catchup = catchup.clone();
-    enum SubscribeReplayCompletion {
-        Ready(ReplayHandle),
-        Superseded,
-    }
 
     let rx = owner
         .submit_replay_resumable_wait(
             true,
             1,
             async { Ok(()) },
-            move |state, _| match state.capture_replay(&capture)? {
-                Step::More => Ok(Step::More),
-                Step::Done(handle) => Ok(Step::Done(SubscribeReplayCompletion::Ready(handle))),
+            move |state, _| {
+                let step = state.capture_replay(&capture)?;
+                match step {
+                    Step::More => Ok(Step::More),
+                    Step::Done(handle) => Ok(Step::Done(SubscribeReplayCompletion::Ready(handle))),
+                }
             },
             move |result| async move {
                 let SubscribeReplayCompletion::Ready(handle) = result? else {
-                    unreachable!("only replay completion can classify a subscriber as superseded")
+                    return Err(crate::persistence::error(
+                        "only replay completion can classify a subscriber as superseded",
+                    ));
                 };
                 let mut wr = crate::workspace_io::fresh_membership(&completion_workspace).await?;
                 let current = wr.subscribers.get(&source.peer.device_public_key);
@@ -1633,7 +1694,8 @@ async fn handle_subscribe(
             },
         )
         .await?;
-    let handle = match crate::persistence::receipt(rx).await? {
+    let completion = crate::persistence::receipt(rx).await?;
+    let handle = match completion {
         SubscribeReplayCompletion::Ready(handle) => handle,
         SubscribeReplayCompletion::Superseded => return Err(PeerError::Superseded),
     };
@@ -1646,6 +1708,10 @@ async fn handle_subscribe(
 
 /// Handle `Unsubscribe`: drop the live subscriber (if the workspace
 /// is known) and stop tracking it for this connection's teardown.
+#[expect(
+    clippy::significant_drop_tightening,
+    reason = "the flagged value is a shared workspace handle (an Arc clone); dropping it earlier releases no lock"
+)]
 async fn handle_unsubscribe(
     peer: &AuthenticatedPeer,
     session: &SessionCtx<'_>,
@@ -1826,6 +1892,10 @@ fn gated_checkpoint_channel(
 
 impl std::ops::Deref for LiveEnvelope {
     type Target = Envelope;
+    #[expect(
+        clippy::expect_used,
+        reason = "a Selected envelope is only built from a non-empty activation batch"
+    )]
     fn deref(&self) -> &Envelope {
         match self {
             Self::Original(envelope) => envelope,
@@ -1862,6 +1932,19 @@ enum SelectedPublication {
     Recovery(std::path::PathBuf),
 }
 impl SelectedPublication {
+    /// The selected publication a store outcome names, if it names one.
+    fn from_publication(publication: crate::store::shell_selection::Publication) -> Option<Self> {
+        match publication {
+            crate::store::shell_selection::Publication::Activate(path) => {
+                Some(Self::Activation(path))
+            }
+            crate::store::shell_selection::Publication::ReplayRequired(path) => {
+                Some(Self::Recovery(path))
+            }
+            crate::store::shell_selection::Publication::Original
+            | crate::store::shell_selection::Publication::Suppress => None,
+        }
+    }
     fn open(&self) -> Result<crate::store::replay::PublicationCursor, crate::store::StoreError> {
         match self {
             Self::Activation(path) => crate::store::replay::PublicationCursor::open(path),
@@ -1932,6 +2015,10 @@ struct PreparedRecipients {
     logical_offline_bytes: u64,
 }
 
+#[expect(
+    clippy::significant_drop_tightening,
+    reason = "the membership guard is read by the iterator closures until the recipient snapshot is complete"
+)]
 async fn prepare_recipients(
     workspace: &SharedWorkspace,
     source: &StateSource,
@@ -2102,7 +2189,7 @@ impl ReplayPendingWork {
                         Step::More => continue,
                         Step::Done(Some(batch)) => {
                             let bytes = crate::transport::encode(
-                                batch.front().expect("one activation frame"),
+                                batch.front().invariant("one activation frame")?,
                             )
                             .map_err(|error| crate::persistence::error(error.to_string()))?;
                             (Some(bytes), Some(batch))
@@ -2120,25 +2207,24 @@ impl ReplayPendingWork {
                     next_target: 0,
                 });
             }
-            let frame = self.frame.as_mut().unwrap();
+            let frame = self.frame.as_mut().invariant("frame missing")?;
             let Some(target) = self.targets.get(frame.next_target) else {
                 self.frame = None;
                 continue;
             };
-            frame.next_target += 1;
+            frame.next_target = frame.next_target.saturating_add(1);
             if !target.active() {
                 continue;
             }
-            let sequence = match frame.sequence {
-                Some(sequence) => sequence,
-                None => {
-                    let sequence = match &self.continuity {
-                        Some(receipt) => receipt.sequence,
-                        None => state.next_sequence()?,
-                    };
-                    frame.sequence = Some(sequence);
-                    sequence
-                }
+            let sequence = if let Some(sequence) = frame.sequence {
+                sequence
+            } else {
+                let sequence = match &self.continuity {
+                    Some(receipt) => receipt.sequence,
+                    None => state.next_sequence()?,
+                };
+                frame.sequence = Some(sequence);
+                sequence
             };
             if let Some(receipt) = &self.continuity {
                 state
@@ -2218,7 +2304,7 @@ fn new_checkpoint_batch(
         let continuity = peer
             .and_then(|peer| crate::store::continuity::Evidence::authenticated(&envelope, peer))
             .map(|evidence| evidence.accept(sequence));
-        let stage = if state.store.checkpoint_lineage_exists(&channel, &raw)? {
+        let checkpoint_stage = if state.store.checkpoint_lineage_exists(&channel, &raw)? {
             Some(
                 state
                     .store
@@ -2239,7 +2325,7 @@ fn new_checkpoint_batch(
             raw,
             channel,
             incoming,
-            stage,
+            stage: checkpoint_stage,
             prepared: None,
             sequence: Some(sequence),
             cleanup_registered: false,
@@ -2262,14 +2348,14 @@ fn step_checkpoint_batch(
     #[cfg(test)]
     let _progress = checkpoint_progress_step(batch);
     if let Some(input) = batch.inputs.get_mut(batch.stage_index) {
-        let Some(stage) = input.stage.as_mut() else {
+        let Some(checkpoint_stage) = input.stage.as_mut() else {
             batch.all_projectable = false;
-            batch.stage_index += 1;
+            batch.stage_index = batch.stage_index.saturating_add(1);
             return Ok(Step::More);
         };
-        let result = stage.step(Default::default());
+        let result = checkpoint_stage.step(WorkLimit::default());
         if !input.cleanup_registered
-            && let Some(paths) = stage.cleanup_paths()
+            && let Some(paths) = checkpoint_stage.cleanup_paths()
         {
             state.retention_candidates.push(paths);
             input.cleanup_registered = true;
@@ -2278,7 +2364,7 @@ fn step_checkpoint_batch(
             Step::More => return Ok(Step::More),
             Step::Done(eligible) => {
                 batch.all_projectable &= eligible;
-                batch.stage_index += 1;
+                batch.stage_index = batch.stage_index.saturating_add(1);
                 return Ok(Step::More);
             }
         }
@@ -2288,17 +2374,13 @@ fn step_checkpoint_batch(
             .inputs
             .iter()
             .map(|input| {
-                (
-                    input.stage.as_ref().unwrap().lineage_name().to_os_string(),
-                    input
-                        .stage
-                        .as_ref()
-                        .unwrap()
-                        .projected_generation()
-                        .to_path_buf(),
-                )
+                let checkpoint_stage = input.stage.as_ref().invariant("stage missing")?;
+                Ok((
+                    checkpoint_stage.lineage_name()?.to_os_string(),
+                    checkpoint_stage.projected_generation().to_path_buf(),
+                ))
             })
-            .collect();
+            .collect::<Result<_, crate::store::StoreError>>()?;
         let incoming = batch.inputs.iter().map(|input| input.incoming).collect();
         let selector = crate::store::shell_selection::Selection::new_projected(
             &state.store,
@@ -2312,7 +2394,7 @@ fn step_checkpoint_batch(
     let Some(selector) = batch.selector.as_mut() else {
         return Ok(Step::Done(()));
     };
-    match selector.step_projection(Default::default())? {
+    match selector.step_projection(WorkLimit::default())? {
         Step::More => Ok(Step::More),
         Step::Done(projected) => {
             batch.projected = Some(projected);
@@ -2321,12 +2403,13 @@ fn step_checkpoint_batch(
     }
 }
 
-fn union_sessions<'a>(
-    prepared: impl IntoIterator<Item = &'a PreparedRecipients>,
-) -> (
+/// Live recipient sessions and replay targets gathered from prepared recipients.
+type UnionSessions = (
     Vec<([u8; 32], mpsc::Sender<Envelope>)>,
     Vec<ReplayPendingTarget>,
-) {
+);
+
+fn union_sessions<'a>(prepared: impl IntoIterator<Item = &'a PreparedRecipients>) -> UnionSessions {
     let mut sessions: Vec<([u8; 32], mpsc::Sender<Envelope>)> = Vec::new();
     let mut replay_targets: Vec<ReplayPendingTarget> = Vec::new();
     for item in prepared {
@@ -2375,7 +2458,10 @@ fn commit_log_and_materialize(
         delta_len: input.delta.len() as u64,
     });
     state.materialize(&input.delta);
-    Ok(input.stage.as_ref().map_or(0, |stage| stage.written()))
+    Ok(input
+        .stage
+        .as_ref()
+        .map_or(0, super::store::retained::CheckpointStage::written))
 }
 
 fn state_commit_for(
@@ -2400,7 +2486,10 @@ fn state_commit_for(
         continuity: input.continuity.clone(),
         envelope: input.envelope.clone(),
         pending: HashMap::new(),
-        persisted_bytes: input.stage.as_ref().map_or(0, |stage| stage.written()),
+        persisted_bytes: input
+            .stage
+            .as_ref()
+            .map_or(0, super::store::retained::CheckpointStage::written),
         session_lives: prepared.session_lives,
         sessions: prepared.sessions,
         logical_offline_bytes: prepared.logical_offline_bytes,
@@ -2421,9 +2510,11 @@ enum CheckpointBatchMode {
 }
 
 #[cfg(test)]
-static CHECKPOINT_BATCH_MODE_OBSERVERS: std::sync::OnceLock<
-    std::sync::Mutex<HashMap<u64, Arc<std::sync::Mutex<Vec<CheckpointBatchMode>>>>>,
-> = std::sync::OnceLock::new();
+type CheckpointBatchModeObservers =
+    std::sync::Mutex<HashMap<u64, Arc<std::sync::Mutex<Vec<CheckpointBatchMode>>>>>;
+#[cfg(test)]
+static CHECKPOINT_BATCH_MODE_OBSERVERS: std::sync::OnceLock<CheckpointBatchModeObservers> =
+    std::sync::OnceLock::new();
 
 #[cfg(test)]
 #[derive(Debug, Default)]
@@ -2452,8 +2543,8 @@ impl Drop for CheckpointProgressStep {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let entry = observed.completed.entry(self.phase.clone()).or_default();
-        entry.0 += 1;
-        entry.1 += self.started.elapsed().as_micros();
+        entry.0 = entry.0.saturating_add(1);
+        entry.1 = entry.1.saturating_add(self.started.elapsed().as_micros());
         observed.active = None;
     }
 }
@@ -2465,7 +2556,7 @@ fn checkpoint_progress_step(batch: &CheckpointBatch) -> Option<CheckpointProgres
     } else {
         batch.selector.as_ref().map_or_else(
             || "selection-create".into(),
-            |selector| selector.diagnostic_phase(),
+            super::store::shell_selection::Selection::diagnostic_phase,
         )
     };
     checkpoint_progress_phase(batch, phase)
@@ -2561,7 +2652,7 @@ fn checkpoint_mode_for(
 
 enum ProjectedCheckpointStep {
     More,
-    Commit(StateCommit),
+    Commit(Box<StateCommit>),
     Done,
 }
 
@@ -2603,16 +2694,19 @@ impl ProjectedCheckpointCommit {
                     .and_then(|p| p.supplemental_recovery.clone())
             })
             .flatten();
-        let recovery_fence = supplemental_recovery.as_ref().map(|_| {
-            let mut fence = full_fence.as_ref().expect("all-original fence").clone();
-            fence.recovery_lives = Some(union_session_lives(
-                batch
-                    .inputs
-                    .iter()
-                    .filter_map(|input| input.prepared.as_ref()),
-            ));
-            fence
-        });
+        // Both exist only in AllOriginal mode, so the pairing never drops a fence.
+        let recovery_fence = supplemental_recovery
+            .as_ref()
+            .and_then(|_| full_fence.clone())
+            .map(|mut fence| {
+                fence.recovery_lives = Some(union_session_lives(
+                    batch
+                        .inputs
+                        .iter()
+                        .filter_map(|input| input.prepared.as_ref()),
+                ));
+                fence
+            });
         Self {
             recovery_fence,
             supplemental_recovery,
@@ -2628,6 +2722,10 @@ impl ProjectedCheckpointCommit {
         }
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one ordered protocol state machine; splitting it would scatter the invariants each step relies on"
+    )]
     fn step(
         &mut self,
         state: &mut crate::persistence::State,
@@ -2637,8 +2735,8 @@ impl ProjectedCheckpointCommit {
             match batch
                 .selector
                 .as_mut()
-                .expect("projected checkpoint selector")
-                .step(Default::default())?
+                .invariant("projected checkpoint selector")?
+                .step(WorkLimit::default())?
             {
                 Step::More => return Ok(ProjectedCheckpointStep::More),
                 Step::Done(crate::store::shell_selection::SelectionOutcome::BatchPublished {
@@ -2675,13 +2773,13 @@ impl ProjectedCheckpointCommit {
             match input
                 .stage
                 .as_mut()
-                .unwrap()
-                .finish_gc(Default::default())?
+                .invariant("stage missing")?
+                .finish_gc(WorkLimit::default())?
             {
                 Step::More => return Ok(ProjectedCheckpointStep::More),
                 Step::Done(()) => {
                     commit_log_and_materialize(state, input)?;
-                    self.gc_index += 1;
+                    self.gc_index = self.gc_index.saturating_add(1);
                     return Ok(ProjectedCheckpointStep::More);
                 }
             }
@@ -2707,7 +2805,7 @@ impl ProjectedCheckpointCommit {
                     envelope: batch
                         .inputs
                         .last()
-                        .expect("admitted prefix")
+                        .invariant("admitted prefix")?
                         .envelope
                         .clone(),
                     pending: HashMap::new(),
@@ -2728,13 +2826,18 @@ impl ProjectedCheckpointCommit {
                 match replay.step(state, crate::persistence::output_budget())? {
                     Step::More => return Ok(ProjectedCheckpointStep::More),
                     Step::Done(written) => {
-                        self.commit.as_mut().unwrap().persisted_bytes = written;
+                        self.commit
+                            .as_mut()
+                            .invariant("commit missing")?
+                            .persisted_bytes = written;
                         self.replay = None;
                     }
                 }
             }
             self.supplemental_recovery = None;
-            return Ok(ProjectedCheckpointStep::Commit(self.commit.take().unwrap()));
+            return Ok(ProjectedCheckpointStep::Commit(Box::new(
+                self.commit.take().invariant("commit missing")?,
+            )));
         }
         if self.mode == CheckpointBatchMode::AllOriginal {
             #[cfg(test)]
@@ -2754,7 +2857,10 @@ impl ProjectedCheckpointCommit {
             }
             if self.commit.is_none() {
                 let mut commit = state_commit_for(
-                    &mut batch.inputs[self.publication_index],
+                    batch
+                        .inputs
+                        .get_mut(self.publication_index)
+                        .invariant("checkpoint input missing")?,
                     crate::store::shell_selection::Publication::Original,
                 )?;
                 commit.recovery_scope = self.recovery_fence.is_some();
@@ -2772,18 +2878,23 @@ impl ProjectedCheckpointCommit {
                 match replay.step(state, crate::persistence::output_budget())? {
                     Step::More => return Ok(ProjectedCheckpointStep::More),
                     Step::Done(written) => {
-                        self.commit.as_mut().unwrap().persisted_bytes = self
+                        self.commit
+                            .as_mut()
+                            .invariant("commit missing")?
+                            .persisted_bytes = self
                             .commit
                             .as_ref()
-                            .unwrap()
+                            .invariant("commit missing")?
                             .persisted_bytes
                             .saturating_add(written);
                         self.replay = None;
                     }
                 }
             }
-            self.publication_index += 1;
-            return Ok(ProjectedCheckpointStep::Commit(self.commit.take().unwrap()));
+            self.publication_index = self.publication_index.saturating_add(1);
+            return Ok(ProjectedCheckpointStep::Commit(Box::new(
+                self.commit.take().invariant("commit missing")?,
+            )));
         }
         if self.emission_done {
             return Ok(ProjectedCheckpointStep::Done);
@@ -2792,13 +2903,13 @@ impl ProjectedCheckpointCommit {
             let prepared = batch
                 .inputs
                 .iter_mut()
-                .map(|input| input.prepared.take().expect("prepared checkpoint input"))
-                .collect::<Vec<_>>();
+                .map(|input| input.prepared.take().invariant("prepared checkpoint input"))
+                .collect::<Result<Vec<_>, _>>()?;
             let (sessions, replay_targets) = union_sessions(&prepared);
             let (publish, selected) = match self
                 .publication
                 .take()
-                .expect("represented checkpoint publication")
+                .invariant("represented checkpoint publication")?
             {
                 crate::store::shell_selection::Publication::Suppress => (false, None),
                 crate::store::shell_selection::Publication::Activate(path) => {
@@ -2813,13 +2924,24 @@ impl ProjectedCheckpointCommit {
             };
             let commit = StateCommit {
                 continuity: None,
-                envelope: batch.inputs.last().unwrap().envelope.clone(),
+                envelope: batch
+                    .inputs
+                    .last()
+                    .invariant("inputs missing")?
+                    .envelope
+                    .clone(),
                 pending: HashMap::new(),
                 persisted_bytes: batch
                     .inputs
                     .iter()
-                    .map(|input| input.stage.as_ref().unwrap().written())
-                    .sum(),
+                    .map(|input| {
+                        input
+                            .stage
+                            .as_ref()
+                            .map(crate::store::retained::CheckpointStage::written)
+                            .invariant("checkpoint stage missing")
+                    })
+                    .sum::<Result<_, _>>()?,
                 session_lives: Vec::new(),
                 sessions,
                 logical_offline_bytes: prepared.iter().map(|item| item.logical_offline_bytes).sum(),
@@ -2831,7 +2953,7 @@ impl ProjectedCheckpointCommit {
                 accepted_deltas: batch.inputs.len() as u64,
             };
             self.commit = Some(commit);
-            let commit = self.commit.as_ref().unwrap();
+            let commit = self.commit.as_ref().invariant("commit missing")?;
             self.replay = if let Some(path) = &commit.selected {
                 (!commit.replay_targets.is_empty())
                     .then(|| ReplayPendingWork::selected(path, commit.replay_targets.clone()))
@@ -2845,23 +2967,24 @@ impl ProjectedCheckpointCommit {
             match replay.step(state, crate::persistence::output_budget())? {
                 Step::More => return Ok(ProjectedCheckpointStep::More),
                 Step::Done(written) => {
-                    let commit = self.commit.as_mut().unwrap();
+                    let commit = self.commit.as_mut().invariant("commit missing")?;
                     commit.persisted_bytes = commit.persisted_bytes.saturating_add(written);
                     self.replay = None;
                 }
             }
         }
         self.emission_done = true;
-        Ok(ProjectedCheckpointStep::Commit(self.commit.take().unwrap()))
+        Ok(ProjectedCheckpointStep::Commit(Box::new(
+            self.commit.take().invariant("commit missing")?,
+        )))
     }
 
     fn error_fence(&self, batch: &CheckpointBatch) -> Option<CheckpointCommitFence> {
         if self.mode == CheckpointBatchMode::AllOriginal
             && (self.selected_committed
-                || batch
-                    .selector
-                    .as_ref()
-                    .is_some_and(|selector| selector.current_switch_attempted()))
+                || batch.selector.as_ref().is_some_and(
+                    super::store::shell_selection::Selection::current_switch_attempted,
+                ))
         {
             return self
                 .recovery_fence
@@ -2924,8 +3047,11 @@ fn promote_checkpoint_input(
     batch: &mut CheckpointBatch,
     index: usize,
 ) -> Result<(), crate::store::StoreError> {
-    let input = &mut batch.inputs[index];
-    input.stage.as_mut().unwrap().promote()
+    let input = batch
+        .inputs
+        .get_mut(index)
+        .invariant("checkpoint input missing")?;
+    input.stage.as_mut().invariant("stage missing")?.promote()
 }
 
 struct SerialCheckpointCommit {
@@ -2945,27 +3071,43 @@ impl SerialCheckpointCommit {
         batch: &mut CheckpointBatch,
         index: usize,
     ) -> Result<Self, crate::store::StoreError> {
-        let (retain, selection) = if batch.inputs[index].stage.is_some() {
+        let (retain, selection) = if batch
+            .inputs
+            .get(index)
+            .invariant("checkpoint input missing")?
+            .stage
+            .is_some()
+        {
             promote_checkpoint_input(state, batch, index)?;
             let selector = crate::store::shell_selection::Selection::new(
                 &state.store,
                 batch.root.join(format!("serial-{index:02}")),
-                Some(batch.inputs[index].incoming),
+                Some(
+                    batch
+                        .inputs
+                        .get(index)
+                        .invariant("checkpoint input missing")?
+                        .incoming,
+                ),
             )?;
             state.retention_candidates.push(selector.cleanup_paths());
             (None, Some(selector))
         } else {
+            let input = batch
+                .inputs
+                .get(index)
+                .invariant("checkpoint input missing")?;
             (
                 Some(
                     state
                         .store
                         .start_retain_in(
-                            &batch.inputs[index].channel,
+                            &input.channel,
                             None,
-                            batch.inputs[index].raw.clone(),
+                            input.raw.clone(),
                             batch.root.join(format!("serial-retain-{index:02}")),
                         )?
-                        .with_continuity(batch.inputs[index].continuity.clone()),
+                        .with_continuity(input.continuity.clone()),
                 ),
                 None,
             )
@@ -2982,13 +3124,17 @@ impl SerialCheckpointCommit {
         })
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one ordered protocol state machine; splitting it would scatter the invariants each step relies on"
+    )]
     fn step(
         &mut self,
         state: &mut crate::persistence::State,
         batch: &mut CheckpointBatch,
     ) -> Result<Step<StateCommit>, crate::store::StoreError> {
         if let Some(retain) = &mut self.retain {
-            match retain.step(Default::default())? {
+            match retain.step(WorkLimit::default())? {
                 Step::More => return Ok(Step::More),
                 Step::Done(outcome) => {
                     self.retained_written = outcome.written;
@@ -2999,7 +3145,7 @@ impl SerialCheckpointCommit {
             }
         }
         if let Some(selection) = &mut self.selection {
-            match selection.step(Default::default())? {
+            match selection.step(WorkLimit::default())? {
                 Step::More => return Ok(Step::More),
                 Step::Done(crate::store::shell_selection::SelectionOutcome::Published(
                     publication,
@@ -3009,10 +3155,13 @@ impl SerialCheckpointCommit {
                         crate::store::shell_selection::Publication::Activate(_)
                             | crate::store::shell_selection::Publication::ReplayRequired(_)
                     ) {
-                        let prepared = batch.inputs[self.index]
+                        let prepared = batch
+                            .inputs
+                            .get(self.index)
+                            .invariant("checkpoint input missing")?
                             .prepared
                             .as_ref()
-                            .expect("prepared checkpoint input");
+                            .invariant("prepared checkpoint input")?;
                         self.post_cut_fence = Some(CheckpointCommitFence {
                             recovery_lives: matches!(
                                 publication,
@@ -3036,22 +3185,25 @@ impl SerialCheckpointCommit {
             }
         }
         if self.commit.is_none() {
-            let input = &mut batch.inputs[self.index];
-            if let Some(stage) = input.stage.as_mut() {
-                if matches!(stage.finish_gc(Default::default())?, Step::More) {
-                    return Ok(Step::More);
-                }
+            let input = batch
+                .inputs
+                .get_mut(self.index)
+                .invariant("checkpoint input missing")?;
+            if let Some(stage) = input.stage.as_mut()
+                && matches!(stage.finish_gc(WorkLimit::default())?, Step::More)
+            {
+                return Ok(Step::More);
             }
             commit_log_and_materialize(state, input)?;
             let mut commit = state_commit_for(
                 input,
                 self.publication
                     .take()
-                    .expect("serial checkpoint publication"),
+                    .invariant("serial checkpoint publication")?,
             )?;
             commit.persisted_bytes = commit.persisted_bytes.max(self.retained_written);
             self.commit = Some(commit);
-            let commit = self.commit.as_ref().unwrap();
+            let commit = self.commit.as_ref().invariant("commit missing")?;
             self.replay = if let Some(path) = &commit.selected {
                 (!commit.replay_targets.is_empty())
                     .then(|| ReplayPendingWork::selected(path, commit.replay_targets.clone()))
@@ -3071,17 +3223,20 @@ impl SerialCheckpointCommit {
             match replay.step(state, crate::persistence::output_budget())? {
                 Step::More => return Ok(Step::More),
                 Step::Done(written) => {
-                    self.commit.as_mut().unwrap().persisted_bytes = self
+                    self.commit
+                        .as_mut()
+                        .invariant("commit missing")?
+                        .persisted_bytes = self
                         .commit
                         .as_ref()
-                        .unwrap()
+                        .invariant("commit missing")?
                         .persisted_bytes
                         .saturating_add(written);
                     self.replay = None;
                 }
             }
         }
-        Ok(Step::Done(self.commit.take().unwrap()))
+        Ok(Step::Done(self.commit.take().invariant("commit missing")?))
     }
 
     fn error_fence(&self, batch: &CheckpointBatch) -> Option<CheckpointCommitFence> {
@@ -3094,13 +3249,13 @@ impl SerialCheckpointCommit {
         let publication = self
             .selection
             .as_ref()
-            .and_then(|selection| selection.publication_on_error())
+            .and_then(super::store::shell_selection::Selection::publication_on_error)
             .or_else(|| {
                 self.retain
                     .as_ref()
-                    .and_then(|retain| retain.publication_on_error())
+                    .and_then(super::store::retained::RetainBuild::publication_on_error)
             })?;
-        let prepared = batch.inputs[self.index].prepared.as_ref()?;
+        let prepared = batch.inputs.get(self.index)?.prepared.as_ref()?;
         Some(CheckpointCommitFence {
             recovery_lives: matches!(
                 publication,
@@ -3114,6 +3269,10 @@ impl SerialCheckpointCommit {
     }
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "one ordered protocol state machine; splitting it would scatter the invariants each step relies on"
+)]
 async fn publish_checkpoint_commit(
     workspace: &SharedWorkspace,
     source: &StateSource,
@@ -3199,7 +3358,7 @@ async fn publish_checkpoint_commit(
                 target
                     .replay
                     .as_ref()
-                    .unwrap()
+                    .invariant("replay missing")?
                     .dirty
                     .store(true, std::sync::atomic::Ordering::SeqCst);
                 continue;
@@ -3328,6 +3487,14 @@ async fn publish_checkpoint_commit_fenced(
     result
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "one ordered protocol state machine; splitting it would scatter the invariants each step relies on"
+)]
+#[expect(
+    clippy::significant_drop_tightening,
+    reason = "each owner-state guard lives exactly for one blocking checkpoint quantum and ends with its closure"
+)]
 async fn enqueue_checkpoint_prefix(
     workspace: &SharedWorkspace,
     envelopes: Vec<Envelope>,
@@ -3385,14 +3552,15 @@ async fn enqueue_checkpoint_prefix(
                 let started = diagnostics.then(std::time::Instant::now);
                 loop {
                     let staging_state = state.clone();
-                    let (next, result) = crate::persistence::blocking(workers.clone(), move || {
-                        let mut state = staging_state
-                            .lock()
-                            .unwrap_or_else(std::sync::PoisonError::into_inner);
-                        let result = step_checkpoint_batch(&mut state, &mut batch);
-                        (batch, result)
-                    })
-                    .await?;
+                    let (next, result) =
+                        Box::pin(crate::persistence::blocking(workers.clone(), move || {
+                            let mut state = staging_state
+                                .lock()
+                                .unwrap_or_else(std::sync::PoisonError::into_inner);
+                            let result = step_checkpoint_batch(&mut state, &mut batch);
+                            (batch, result)
+                        }))
+                        .await?;
                     batch = next;
                     if matches!(result?, Step::Done(())) {
                         break;
@@ -3468,13 +3636,18 @@ async fn enqueue_checkpoint_prefix(
                 #[cfg(test)]
                 observe_checkpoint_batch_mode(&batch, mode);
                 for index in 0..batch.inputs.len() {
-                    let input = &batch.inputs[index];
+                    let input = batch
+                        .inputs
+                        .get(index)
+                        .invariant("checkpoint input missing")?;
                     let Envelope::Delta {
                         author_device_public_key,
                         ..
                     } = &*input.envelope
                     else {
-                        unreachable!()
+                        return Err(crate::persistence::error(
+                            "checkpoint batch input is not a delta",
+                        ));
                     };
                     let prepared = {
                         #[cfg(test)]
@@ -3489,57 +3662,37 @@ async fn enqueue_checkpoint_prefix(
                         )
                         .await?
                     };
-                    batch.inputs[index].prepared = Some(prepared);
-                    if mode != CheckpointBatchMode::Serial {
+                    batch
+                        .inputs
+                        .get_mut(index)
+                        .invariant("checkpoint input missing")?
+                        .prepared = Some(prepared);
+                    if mode == CheckpointBatchMode::Serial {
                         let operation_state = state.clone();
                         let (next, result) =
-                            crate::persistence::blocking(workers.clone(), move || {
-                                let mut state = operation_state
-                                    .lock()
-                                    .unwrap_or_else(std::sync::PoisonError::into_inner);
-                                #[cfg(test)]
-                                let _progress = checkpoint_progress_phase(&batch, "promote".into());
-                                let result =
-                                    promote_checkpoint_input(&mut state, &mut batch, index);
-                                let result = if index == 0 {
-                                    result.and_then(|()| {
-                                        checkpoint_prefix_post_first_promotion_fault(
-                                            state.store.root(),
-                                        )
-                                    })
-                                } else {
-                                    result
-                                };
-                                (batch, result)
-                            })
-                            .await?;
-                        batch = next;
-                        result?;
-                    } else {
-                        let operation_state = state.clone();
-                        let (next, result) =
-                            crate::persistence::blocking(workers.clone(), move || {
+                            Box::pin(crate::persistence::blocking(workers.clone(), move || {
                                 let mut state = operation_state
                                     .lock()
                                     .unwrap_or_else(std::sync::PoisonError::into_inner);
                                 let result =
                                     SerialCheckpointCommit::new(&mut state, &mut batch, index);
                                 (batch, result)
-                            })
+                            }))
                             .await?;
                         batch = next;
                         let mut work = result?;
                         loop {
                             let operation_state = state.clone();
-                            let (next_batch, next_work, result) =
+                            let (next_batch, next_work, result) = Box::pin(
                                 crate::persistence::blocking(workers.clone(), move || {
                                     let mut state = operation_state
                                         .lock()
                                         .unwrap_or_else(std::sync::PoisonError::into_inner);
                                     let result = work.step(&mut state, &mut batch);
                                     (batch, work, result)
-                                })
-                                .await?;
+                                }),
+                            )
+                            .await?;
                             batch = next_batch;
                             work = next_work;
                             let result = match result {
@@ -3566,6 +3719,31 @@ async fn enqueue_checkpoint_prefix(
                                 }
                             }
                         }
+                    } else {
+                        let operation_state = state.clone();
+                        let (next, result) =
+                            Box::pin(crate::persistence::blocking(workers.clone(), move || {
+                                let mut state = operation_state
+                                    .lock()
+                                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                                #[cfg(test)]
+                                let _progress = checkpoint_progress_phase(&batch, "promote".into());
+                                let result =
+                                    promote_checkpoint_input(&mut state, &mut batch, index);
+                                let result = if index == 0 {
+                                    result.and_then(|()| {
+                                        checkpoint_prefix_post_first_promotion_fault(
+                                            state.store.root(),
+                                        )
+                                    })
+                                } else {
+                                    result
+                                };
+                                (batch, result)
+                            }))
+                            .await?;
+                        batch = next;
+                        result?;
                     }
                 }
                 if mode != CheckpointBatchMode::Serial {
@@ -3580,28 +3758,29 @@ async fn enqueue_checkpoint_prefix(
                             .clone()
                             .or_else(|| work.full_fence.clone());
                         let operation_state = state.clone();
-                        let blocking = crate::persistence::blocking(workers.clone(), move || {
-                            let mut state = operation_state
-                                .lock()
-                                .unwrap_or_else(std::sync::PoisonError::into_inner);
-                            #[cfg(test)]
-                            let _progress = checkpoint_progress_phase(
-                                &batch,
-                                if !work.selected_committed {
-                                    format!(
-                                        "selected-{}",
-                                        batch.selector.as_ref().unwrap().diagnostic_phase()
-                                    )
-                                } else if work.gc_index < batch.inputs.len() {
-                                    "retained-gc".into()
-                                } else {
-                                    "delivery".into()
-                                },
-                            );
-                            let result = work.step(&mut state, &mut batch);
-                            (batch, work, result)
-                        })
-                        .await;
+                        let blocking =
+                            Box::pin(crate::persistence::blocking(workers.clone(), move || {
+                                let mut state = operation_state
+                                    .lock()
+                                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                                #[cfg(test)]
+                                let _progress = checkpoint_progress_phase(
+                                    &batch,
+                                    if !work.selected_committed {
+                                        format!(
+                                            "selected-{}",
+                                            batch.selector.as_ref().unwrap().diagnostic_phase()
+                                        )
+                                    } else if work.gc_index < batch.inputs.len() {
+                                        "retained-gc".into()
+                                    } else {
+                                        "delivery".into()
+                                    },
+                                );
+                                let result = work.step(&mut state, &mut batch);
+                                (batch, work, result)
+                            }))
+                            .await;
                         let (next_batch, next_work, result) = match blocking {
                             Ok(result) => result,
                             Err(error) => {
@@ -3625,6 +3804,7 @@ async fn enqueue_checkpoint_prefix(
                         match result {
                             ProjectedCheckpointStep::More => tokio::task::yield_now().await,
                             ProjectedCheckpointStep::Commit(commit) => {
+                                let commit = *commit;
                                 #[cfg(test)]
                                 let _progress = checkpoint_progress_phase(&batch, "publish".into());
                                 let commit_fence = CheckpointCommitFence::capture(&commit);
@@ -3708,6 +3888,14 @@ pub(crate) async fn enqueue_federated(
     ))
     .await
 }
+#[expect(
+    clippy::too_many_lines,
+    reason = "one ordered protocol state machine; splitting it would scatter the invariants each step relies on"
+)]
+#[expect(
+    clippy::significant_drop_tightening,
+    reason = "the workspace handle and delivery budget move into the persistence closures; the lint does not see the move"
+)]
 async fn enqueue_state_inner(
     workspace: &SharedWorkspace,
     envelope: Envelope,
@@ -3762,7 +3950,7 @@ async fn enqueue_state_inner(
     let mut retained_build: Option<crate::store::retained::RetainBuild> = None;
     let mut pending_work = None;
     let mut replay_pending_work: Option<ReplayPendingWork> = None;
-    owner.submit_resumable_wait(
+    Box::pin(owner.submit_resumable_wait(
         charge,
         async move {
             let runtime = crate::workspace_io::fresh_membership(&prepare_workspace).await?;
@@ -3836,8 +4024,8 @@ async fn enqueue_state_inner(
         move |state, prepared| {
             if commit.is_none() {
                 let (recipients, sessions, session_lives, replay_targets, logical_offline_bytes) =
-                    prepared.take().expect("ordered recipients");
-                let envelope = envelope.take().expect("admitted envelope");
+                    prepared.take().invariant("ordered recipients")?;
+                let envelope = envelope.take().invariant("admitted envelope")?;
                 let Envelope::Delta { delta, .. } = &envelope else {
                     return Err(crate::persistence::error("expected admitted delta"));
                 };
@@ -3897,21 +4085,20 @@ async fn enqueue_state_inner(
                 });
                 return Ok(Step::More);
             }
-            let current = commit.as_mut().unwrap();
+            let current = commit.as_mut().invariant("commit missing")?;
             if let Some(build) = retained_build.as_mut() {
-                let result = match build.step(Default::default()) {
+                let result = match build.step(WorkLimit::default()) {
                     Ok(result) => result,
                     Err(error) => {
                         let Some(activation) = build.publication_on_error() else { return Err(error); };
                         // Keep the captured sessions and uncertain/committed cut
                         // across the worker error so completion fences them.
-                        current.selected = Some(match activation {
-                            crate::store::shell_selection::Publication::Activate(path) => SelectedPublication::Activation(path),
-                            crate::store::shell_selection::Publication::ReplayRequired(path) => SelectedPublication::Recovery(path),
-                            _ => unreachable!("uncertain selected publication"),
-                        });
+                        let Some(selected) = SelectedPublication::from_publication(activation) else {
+                            return Err(error);
+                        };
+                        current.selected = Some(selected);
                         current.activation_error = Some(error);
-                        return Ok(Step::Done(commit.take().unwrap()));
+                        return Ok(Step::Done(commit.take().invariant("commit missing")?));
                     }
                 };
                 match result {
@@ -3926,10 +4113,8 @@ async fn enqueue_state_inner(
                             }
                             publication @ (crate::store::shell_selection::Publication::Activate(_)
                                 | crate::store::shell_selection::Publication::ReplayRequired(_)) => {
-                                let selected = match publication {
-                                    crate::store::shell_selection::Publication::Activate(path) => SelectedPublication::Activation(path),
-                                    crate::store::shell_selection::Publication::ReplayRequired(path) => SelectedPublication::Recovery(path),
-                                    _ => unreachable!(),
+                                let Some(selected) = SelectedPublication::from_publication(publication) else {
+                                    return Err(crate::persistence::error("selected publication changed kind"));
                                 };
                                 current.selected = Some(selected.clone());
                                 if !current.replay_targets.is_empty() {
@@ -3998,7 +4183,7 @@ async fn enqueue_state_inner(
                     };
                     let path = state
                         .store
-                        .enqueue_pending(&recipient, sequence.unwrap(), raw)?;
+                        .enqueue_pending(&recipient, sequence.invariant("sequence missing")?, raw)?;
                     current.pending.insert(recipient, path);
                     persist_metrics.add_bytes_queued(raw.len() as u64);
                     current.persisted_bytes =
@@ -4008,9 +4193,9 @@ async fn enqueue_state_inner(
                     return Ok(Step::More);
                 }
             }
-            let seq = sequence.unwrap();
+            let seq = sequence.invariant("sequence missing")?;
             let Envelope::Delta { delta, .. } = &*current.envelope else {
-                unreachable!()
+                return Err(crate::persistence::error("state commit envelope is not a delta"));
             };
             let _ = state.store.append_log(&crate::store::LogEntry {
                 workspace_id: state.store.workspace_id(),
@@ -4020,7 +4205,7 @@ async fn enqueue_state_inner(
                 delta_len: delta.len() as u64,
             });
             state.materialize(delta);
-            Ok(Step::Done(commit.take().unwrap()))
+            Ok(Step::Done(commit.take().invariant("commit missing")?))
         },
         move |result| async move {
             let result = async {
@@ -4093,7 +4278,7 @@ async fn enqueue_state_inner(
                             // This commit is already durable. The replay owner
                             // will take one final coherent cut before opening
                             // this exact session to post-Ready live delivery.
-                            target.replay.as_ref().unwrap()
+                            target.replay.as_ref().invariant("replay missing")?
                                 .dirty
                                 .store(true, std::sync::atomic::Ordering::SeqCst);
                             continue;
@@ -4200,11 +4385,15 @@ async fn enqueue_state_inner(
             }
             result
         },
-    )
+    ))
     .await?;
     Ok(())
 }
 
+#[expect(
+    clippy::significant_drop_tightening,
+    reason = "the flagged value is a shared workspace handle (an Arc clone); dropping it earlier releases no lock"
+)]
 async fn write_state_delivery<W: tokio::io::AsyncWrite + Unpin>(
     delivery: StateDelivery,
     peer: &AuthenticatedPeer,
@@ -4441,6 +4630,10 @@ fn checkpoint_prefix_recovery_allowed(
 
 /// Handle an inbound `Presence`: fan it out to every other subscriber.
 /// Ephemeral — no author-forgery check, no persistence.
+#[expect(
+    clippy::significant_drop_tightening,
+    reason = "the flagged value is a shared workspace handle (an Arc clone); dropping it earlier releases no lock"
+)]
 async fn handle_presence(
     peer: &AuthenticatedPeer,
     session: &SessionCtx<'_>,
@@ -4487,6 +4680,10 @@ struct RemoteActionRoute {
 /// this relay — to the app-serving plane. Never stored, never executed by the
 /// relay itself; every failure is answered as undeliverable so the sender
 /// need not wait out a timeout.
+#[expect(
+    clippy::significant_drop_tightening,
+    reason = "the flagged value is a shared workspace handle (an Arc clone); dropping it earlier releases no lock"
+)]
 async fn handle_remote_action(
     peer: &AuthenticatedPeer,
     session: &SessionCtx<'_>,
@@ -4626,6 +4823,10 @@ async fn handle_peer_relay_hello(
 /// is currently subscribed. Membership gates device requesters the
 /// same way `Subscribe` does; peer relays are gated by cross-user
 /// auth + host capability.
+#[expect(
+    clippy::significant_drop_tightening,
+    reason = "the membership guard keeps the roster fixed until the reply is classified"
+)]
 async fn handle_sync_request(
     peer: &AuthenticatedPeer,
     session: &SessionCtx<'_>,
@@ -4681,17 +4882,15 @@ async fn handle_sync_request(
                     && source.cert(&source.peer)
                     && state_member(&wr, &source.peer)
                     && same
-                {
-                    if source
+                    && source
                         .tx
                         .try_send(Envelope::SyncResponse {
                             workspace_id,
                             delta_since: changes.clone(),
                         })
                         .is_err()
-                    {
-                        let _ = source.disconnect.try_send(());
-                    }
+                {
+                    let _ = source.disconnect.try_send(());
                 }
                 Ok(changes)
             },
@@ -4725,6 +4924,10 @@ pub(crate) async fn get_or_autobind_workspace(
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "relays, fixtures and guards deliberately stay alive until each test ends"
+)]
 mod autobind_tests {
     use super::*;
 
@@ -4787,6 +4990,10 @@ pub(crate) struct ActionTarget {
     tx: mpsc::Sender<PrivateOutbound>,
 }
 
+#[expect(
+    clippy::large_enum_variant,
+    reason = "both variants are large wire frames of similar size; boxing either only adds an allocation per private frame"
+)]
 pub(crate) enum PrivateOutbound {
     Reply(EnvelopeV2),
     Delivery(PrivateDelivery),
@@ -5038,10 +5245,9 @@ impl<'a> DeliveryAuthorizationTrace<'a> {
         Err(reason)
     }
 
-    fn success(&mut self) -> Result<(), UnavailableReason> {
+    fn success(&mut self) {
         self.phase("delivery_authorization_success");
         self.finished = true;
-        Ok(())
     }
 }
 
@@ -5079,6 +5285,10 @@ fn agent_read_route_allowed(
     }
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "one ordered protocol state machine; splitting it would scatter the invariants each step relies on"
+)]
 async fn route_private(
     action: &DirectedAction,
     peer: &AuthenticatedPeer,
@@ -5157,10 +5367,10 @@ async fn route_private(
     {
         return Ok(Some(U::UnsupportedPeer));
     }
-    let source = wr
-        .action_targets
-        .get(&peer.device_public_key)
-        .expect("current source checked above");
+    // Checked above under the same membership read; keep the same refusal.
+    let Some(source) = wr.action_targets.get(&peer.device_public_key) else {
+        return Ok(Some(U::NotAuthorised));
+    };
     if !agent_read_route_allowed(action, source, target) {
         return Ok(Some(U::UnsupportedPeer));
     }
@@ -5209,13 +5419,10 @@ async fn write_private_delivery<W: tokio::io::AsyncWrite + Unpin>(
                     source_user: delivery.source.user_public_key,
                 }
             };
-            let bytes = match crate::transport_v2::encode(&frame) {
-                Ok(bytes) => bytes,
-                Err(_) => {
-                    private_phase(&delivery.action, "delivery_encoding_rejected");
-                    let _ = delivery.source_disconnect.try_send(());
-                    return Ok(());
-                }
+            let Ok(bytes) = crate::transport_v2::encode(&frame) else {
+                private_phase(&delivery.action, "delivery_encoding_rejected");
+                let _ = delivery.source_disconnect.try_send(());
+                return Ok(());
             };
             private_phase(&delivery.action, "write_authorized");
             write.write_all(&bytes).await?;
@@ -5268,15 +5475,14 @@ async fn authorize_delivery(
         };
     trace.select_workspace(workspace_id);
     trace.phase("delivery_registry_acquired");
-    let wr = match crate::workspace_io::fresh_membership_for_delivery(
+    let Ok(wr) = crate::workspace_io::fresh_membership_for_delivery(
         &ws,
         workspace_id,
         delivery.action.request_id,
     )
     .await
-    {
-        Ok(wr) => wr,
-        Err(_) => return trace.reject("delivery_rejected_membership_error", U::NotAuthorised),
+    else {
+        return trace.reject("delivery_rejected_membership_error", U::NotAuthorised);
     };
     if !current_action_peer(&delivery.source, session) {
         return trace.reject("delivery_rejected_source_cert_current", U::NotAuthorised);
@@ -5320,22 +5526,37 @@ async fn authorize_delivery(
             U::NotAuthorised,
         );
     }
-    let source = wr
-        .action_targets
-        .get(&delivery.source.device_public_key)
-        .expect("current source checked above");
-    let target = wr
-        .action_targets
-        .get(&recipient.device_public_key)
-        .expect("current recipient checked above");
+    // Both were checked above under the same membership read.
+    let Some(source) = wr.action_targets.get(&delivery.source.device_public_key) else {
+        return trace.reject("delivery_rejected_source_action_target", U::NotAuthorised);
+    };
+    let Some(target) = wr.action_targets.get(&recipient.device_public_key) else {
+        return trace.reject(
+            "delivery_rejected_recipient_action_target",
+            U::NotAuthorised,
+        );
+    };
     if !agent_read_route_allowed(&delivery.action, source, target) {
         return trace.reject("delivery_rejected_agent_read_protocol", U::UnsupportedPeer);
     }
     drop(wr);
-    trace.success()
+    trace.success();
+    Ok(())
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "relays, fixtures and guards deliberately stay alive until each test ends"
+)]
+#[allow(
+    clippy::similar_names,
+    reason = "paired test fixtures are named after the roles they mirror"
+)]
+#[allow(
+    clippy::too_many_lines,
+    reason = "each test spells out one end-to-end scenario"
+)]
 mod private_transport_tests {
     use super::*;
     use tilo_user_identity::{
@@ -5422,7 +5643,7 @@ mod private_transport_tests {
         let revocations = Arc::new(std::sync::RwLock::new(RevocationList::new()));
         let source = StateSource {
             peer: governor.clone(),
-            tx: governor_tx.clone(),
+            tx: governor_tx,
             disconnect: governor_disconnect,
             revocations: revocations.clone(),
             policy: Arc::new(std::sync::RwLock::new(
@@ -5462,7 +5683,7 @@ mod private_transport_tests {
             peer: other.clone(),
             tx: other_tx,
             disconnect: other_disconnect,
-            revocations: revocations.clone(),
+            revocations,
             policy: source.policy.clone(),
             own_user: user.public_key,
             federation: None,
@@ -5713,7 +5934,9 @@ mod private_transport_tests {
             root_key.verifying_key().to_bytes(),
             "34 route fenced observer",
         );
-        let now = web_time::SystemTime::UNIX_EPOCH + web_time::Duration::from_secs(4000);
+        let now = web_time::SystemTime::UNIX_EPOCH
+            .checked_add(web_time::Duration::from_secs(4000))
+            .unwrap();
         let room = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
         let mut publisher = qos_peer_state::StatePeer::new(
             room,
@@ -5727,7 +5950,7 @@ mod private_transport_tests {
             .map(|index| {
                 let mut document = automerge::AutoCommit::new();
                 document
-                    .put(automerge::ROOT, "index", index as u64)
+                    .put(automerge::ROOT, "index", u64::try_from(index).unwrap())
                     .unwrap();
                 qos_peer_state::SeedDocument {
                     app_id: "threshold.app".into(),
@@ -6435,13 +6658,12 @@ mod private_transport_tests {
         .await;
         if progressed.is_err() {
             let finished = task.is_finished();
-            if finished {
-                panic!(
-                    "reader suffix failed after {} selections: {:?}",
-                    selection_count.load(std::sync::atomic::Ordering::SeqCst),
-                    task.await
-                );
-            }
+            assert!(
+                !finished,
+                "reader suffix failed after {} selections: {:?}",
+                selection_count.load(std::sync::atomic::Ordering::SeqCst),
+                task.await
+            );
             panic!(
                 "reader suffix stalled after {} selections",
                 selection_count.load(std::sync::atomic::Ordering::SeqCst)
@@ -6609,7 +6831,7 @@ mod private_transport_tests {
                 author_device_public_key,
                 delta,
                 ..
-            } = &real_envelopes[real_envelopes.len() - 1]
+            } = real_envelopes.last().unwrap()
             else {
                 unreachable!()
             };
@@ -6755,27 +6977,33 @@ mod private_transport_tests {
 
     #[tokio::test]
     async fn checkpoint_prefix_post_current_failure_fences_only_original_sessions() {
-        checkpoint_prefix_activation_failure_fences_original_sessions_and_retry(
-            "shell-after-current",
-            false,
+        Box::pin(
+            checkpoint_prefix_activation_failure_fences_original_sessions_and_retry(
+                "shell-after-current",
+                false,
+            ),
         )
         .await;
     }
 
     #[tokio::test]
     async fn checkpoint_prefix_cursor_open_failure_fences_only_original_sessions() {
-        checkpoint_prefix_activation_failure_fences_original_sessions_and_retry(
-            "shell-publication-open",
-            false,
+        Box::pin(
+            checkpoint_prefix_activation_failure_fences_original_sessions_and_retry(
+                "shell-publication-open",
+                false,
+            ),
         )
         .await;
     }
 
     #[tokio::test]
     async fn checkpoint_prefix_serial_gc_failure_fences_only_original_sessions() {
-        checkpoint_prefix_activation_failure_fences_original_sessions_and_retry(
-            "checkpoint-stage-finish-gc",
-            true,
+        Box::pin(
+            checkpoint_prefix_activation_failure_fences_original_sessions_and_retry(
+                "checkpoint-stage-finish-gc",
+                true,
+            ),
         )
         .await;
     }
@@ -6816,6 +7044,10 @@ mod private_transport_tests {
         let store = runtime.store.clone();
         let (root, user) = UserIdentity::generate("activation fault recipients", 1);
         let mut peers = Vec::new();
+        #[expect(
+            clippy::collection_is_never_read,
+            reason = "holds the receivers open so their senders stay connected"
+        )]
         let mut ordinary_receivers = Vec::new();
         let mut disconnects = Vec::new();
         let mut frames = Vec::new();
@@ -7188,6 +7420,10 @@ mod private_transport_tests {
         paused_state_private_roundtrip(false, false, false, true).await;
     }
 
+    #[expect(
+        clippy::fn_params_excessive_bools,
+        reason = "each flag selects one independent fault in the shared scenario"
+    )]
     async fn paused_state_private_roundtrip(
         check_lock: bool,
         held_cleanup: bool,
@@ -7429,7 +7665,9 @@ mod private_transport_tests {
             }
             let encoded_request =
                 crate::transport_v2::encode(&EnvelopeV2::Directed(request.clone())).unwrap();
-            if !check_lock {
+            if check_lock {
+                aw.write_all(&encoded_request).await.unwrap();
+            } else {
                 // A partial header remains in the stateful reader while its
                 // independent writer completes an unrelated private frame.
                 aw.write_all(&encoded_request[..2]).await.unwrap();
@@ -7450,8 +7688,6 @@ mod private_transport_tests {
                 };
                 assert_eq!(action, probe);
                 aw.write_all(&encoded_request[2..]).await.unwrap();
-            } else {
-                aw.write_all(&encoded_request).await.unwrap();
             }
             let Some(EnvelopeV2::Delivered { action, .. }) = br.read_next().await.unwrap() else {
                 panic!("expected private request before any uncommitted state")
@@ -7837,13 +8073,13 @@ mod private_transport_tests {
         let (mut broken, reader) = tokio::io::duplex(1);
         drop(reader);
         assert!(
-            handle_inbound_frame(
+            Box::pin(handle_inbound_frame(
                 Envelope::Subscribe { workspace_id: 7 },
                 &peer,
                 &session,
                 &mut Vec::new(),
                 &mut broken
-            )
+            ))
             .await
             .is_err()
         );
@@ -7884,7 +8120,7 @@ mod private_transport_tests {
             .unwrap();
         let mut snapshot = loop {
             if let Step::Done(snapshot) = store
-                .capture_replay_step(&mut capture, Default::default())
+                .capture_replay_step(&mut capture, WorkLimit::default())
                 .unwrap()
             {
                 break snapshot;
@@ -7892,14 +8128,18 @@ mod private_transport_tests {
         };
         while matches!(
             store
-                .prepare_replay_step(&mut snapshot, Default::default())
+                .prepare_replay_step(&mut snapshot, WorkLimit::default())
                 .unwrap(),
             Step::More
         ) {}
         let budget = crate::store::replay::ReplayBudget::new(1024 * 1024);
         loop {
             let frames = store
-                .read_replay_batch(&mut snapshot, Default::default(), &budget)
+                .read_replay_batch(
+                    &mut snapshot,
+                    crate::store::replay::ReplayLimits::default(),
+                    &budget,
+                )
                 .unwrap();
             if frames.eof {
                 break;
@@ -7934,13 +8174,13 @@ mod private_transport_tests {
         )
         .unwrap();
         let mut wire = Vec::new();
-        handle_inbound_frame(
+        Box::pin(handle_inbound_frame(
             Envelope::Subscribe { workspace_id: 7 },
             &peer,
             &session,
             &mut Vec::new(),
             &mut wire,
-        )
+        ))
         .await
         .unwrap();
         let mut decoded = Vec::new();
@@ -8208,7 +8448,7 @@ mod private_transport_tests {
                     reached.await.unwrap();
                     list.write().unwrap().insert(entry).unwrap();
                     drop(release);
-                })
+                });
             });
             let denied = match operation {
                 0 => {
@@ -8442,17 +8682,17 @@ mod private_transport_tests {
 
     #[tokio::test]
     async fn bounded_private_queue_and_delivery_recheck_never_retain_traffic() {
-        bounded_private_queue_for_room_namespace(false, false).await;
+        Box::pin(bounded_private_queue_for_room_namespace(false, false)).await;
     }
 
     #[tokio::test]
     async fn legacy_room_binding_preserves_private_delivery_and_authorization_rechecks() {
-        bounded_private_queue_for_room_namespace(true, false).await;
+        Box::pin(bounded_private_queue_for_room_namespace(true, false)).await;
     }
 
     #[tokio::test]
     async fn agent_read_queued_delivery_rechecks_protocol_host_and_replacement() {
-        bounded_private_queue_for_room_namespace(false, true).await;
+        Box::pin(bounded_private_queue_for_room_namespace(false, true)).await;
     }
 
     async fn bounded_private_queue_for_room_namespace(legacy: bool, agent_read: bool) {
@@ -9120,7 +9360,7 @@ mod retention_diagnostic_tests {
                 "non_retained",
             ),
         ] {
-            let frames = vec![retained(7, 1, 1, false, 3), barrier];
+            let frames = [retained(7, 1, 1, false, 3), barrier];
             let shape = buffered_retention_prefix(frames.iter()).unwrap();
             assert_eq!(shape.frames, 1);
             assert_eq!(shape.checkpoints, 0);
@@ -9147,7 +9387,7 @@ mod retention_diagnostic_tests {
             assert_eq!(shape.stop_reason, expected);
         }
 
-        let frames = vec![
+        let frames = [
             retained(7, 1, 1, true, 3),
             retained(7, 1, 2, true, 3),
             retained(7, 1, 3, true, 3),
@@ -9159,7 +9399,7 @@ mod retention_diagnostic_tests {
         assert_eq!(frame_limited.stop_reason, "frame_cap");
 
         let full_backlog = (0..RETENTION_PREFIX_FRAME_CAP)
-            .map(|channel| retained(7, 1, channel as u8, true, 3))
+            .map(|channel| retained(7, 1, u8::try_from(channel).unwrap(), true, 3))
             .collect::<Vec<_>>();
         let exact_cap = buffered_retention_prefix(full_backlog.iter()).unwrap();
         assert_eq!(exact_cap.frames, RETENTION_PREFIX_FRAME_CAP);
@@ -9183,11 +9423,10 @@ mod retention_diagnostic_tests {
     #[test]
     fn eligible_checkpoint_prefix_requires_a_coherent_distinct_checkpoint_run() {
         assert_eq!(eligible_checkpoint_prefix(&Envelope::Ping, [].iter()), 1);
-        let current = match retained(7, 1, 1, true, 3) {
-            EnvelopeV2::State(current) => current,
-            _ => unreachable!(),
+        let EnvelopeV2::State(current) = retained(7, 1, 1, true, 3) else {
+            unreachable!()
         };
-        let suffix = vec![
+        let suffix = [
             retained(7, 1, 2, true, 3),
             retained(7, 1, 2, true, 3),
             retained(7, 1, 3, false, 3),
@@ -9266,9 +9505,8 @@ mod retention_diagnostic_tests {
 
     #[test]
     fn eligible_checkpoint_prefix_stops_at_every_identity_kind_and_malformed_barrier() {
-        let current = match retained(7, 1, 1, true, 3) {
-            EnvelopeV2::State(current) => current,
-            _ => unreachable!(),
+        let EnvelopeV2::State(current) = retained(7, 1, 1, true, 3) else {
+            unreachable!()
         };
         for barrier in [
             retained(7, 1, 9, false, 3),
@@ -9292,18 +9530,16 @@ mod retention_diagnostic_tests {
 
     #[test]
     fn eligible_checkpoint_prefix_includes_current_and_enforces_frame_and_byte_caps() {
-        let current = match retained(7, 1, 1, true, 3) {
-            EnvelopeV2::State(current) => current,
-            _ => unreachable!(),
+        let EnvelopeV2::State(current) = retained(7, 1, 1, true, 3) else {
+            unreachable!()
         };
         let full = (2..=34)
             .map(|channel| retained(7, 1, channel, true, 3))
             .collect::<Vec<_>>();
         assert_eq!(eligible_checkpoint_prefix(&current, full.iter()), 32);
 
-        let retained_delta = match retained(7, 1, 2, false, 3) {
-            EnvelopeV2::State(current) => current,
-            _ => unreachable!(),
+        let EnvelopeV2::State(retained_delta) = retained(7, 1, 2, false, 3) else {
+            unreachable!()
         };
         assert_eq!(eligible_checkpoint_prefix(&retained_delta, [].iter()), 1);
         let malformed = Envelope::Delta {
@@ -9315,9 +9551,8 @@ mod retention_diagnostic_tests {
         };
         assert_eq!(eligible_checkpoint_prefix(&malformed, [].iter()), 1);
 
-        let large = match retained(7, 1, 2, true, RETENTION_PREFIX_BYTE_CAP) {
-            EnvelopeV2::State(current) => current,
-            _ => unreachable!(),
+        let EnvelopeV2::State(large) = retained(7, 1, 2, true, RETENTION_PREFIX_BYTE_CAP) else {
+            unreachable!()
         };
         assert_eq!(eligible_checkpoint_prefix(&large, [].iter()), 1);
         assert_eq!(eligible_checkpoint_prefix(&current, [].iter()), 1);

@@ -11,6 +11,14 @@ impl CertifiedAction {
     /// `peer` must be borrowed from the native owner's current committed authority
     /// guard. Current broker policy remains mandatory at dequeue/effect/delivery.
     /// The canonical governor is the broker target; the delivery host may differ.
+    ///
+    /// # Errors
+    ///
+    /// Returns `WireError` if the input is not a canonical encoding within this type's bounds.
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "taking the verified request by value keeps one verification from certifying two actions"
+    )]
     pub fn from_http_request(
         request: VerifiedRequest<'_>,
         peer: &qos_peer_state::StatePeer,

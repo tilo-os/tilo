@@ -1,5 +1,10 @@
 //! Validation of the immutable selected basis and recoverable exact-input GC.
-use super::*;
+use super::{
+    Basis, CoeditPayload, CoverageDecision, DIRECTORY, File, PathBuf, RetentionAuthority, Seek,
+    Step, StoreError, WorkspaceStore, frame, fs, invalid, read_meta, replay, retained, route_key,
+    verify_room, verify_snapshot,
+};
+use crate::store::bounded::Invariant;
 
 /// Reads one immutable selected reference per quantum, including prerequisites.
 /// Rebinding local authority is mandatory after restart; the disk pin is not trust.
@@ -110,7 +115,7 @@ impl SelectedRead {
             CoeditPayload::Checkpoint { channel, body }
             | CoeditPayload::RetainedDelta { channel, body } => (channel, body),
         };
-        let room = self.basis.room.as_ref().unwrap();
+        let room = self.basis.room.as_ref().invariant("room missing")?;
         if room.covers_frame(source, channel, &body) == CoverageDecision::Covered {
             return Ok(true);
         }
@@ -124,7 +129,9 @@ impl SelectedRead {
                 continue;
             }
             let file = frame(
-                &self.root.join(&route.file.as_ref().unwrap().source),
+                &self
+                    .root
+                    .join(&route.file.as_ref().invariant("file missing")?.source),
                 self.workspace,
             )?
             .ok_or_else(|| invalid("missing selected snapshot"))?;
@@ -205,7 +212,7 @@ impl SelectedGc {
             }
             // A prior quantum/process may have unlinked the source but failed
             // its directory barrier. Absence alone is not durable retirement.
-            retained::sync_dir(source.parent().unwrap())?;
+            retained::sync_dir(source.parent().invariant("source missing")?)?;
             fs::remove_file(&pin)?;
             retained::sync_dir(&self.generation)?;
             Ok(())

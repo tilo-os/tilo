@@ -351,7 +351,7 @@ fn agent_activity_round_trips_as_one_preview_insert() {
             at: LiveAnchor {
                 cursor: AGENT_ACTIVITY_ANCHOR.to_vec(),
             },
-            text: json.clone(),
+            text: json,
         }],
     };
     assert!(AgentActivity::from_frame(&foreign).is_err());

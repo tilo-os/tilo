@@ -50,6 +50,25 @@ pub(crate) enum Step<T> {
 pub(super) fn invalid(message: &str) -> StoreError {
     io::Error::new(io::ErrorKind::InvalidData, message).into()
 }
+/// Turn a broken step-machine invariant into a storage error instead of a
+/// panic: the owner fails the operation and keeps serving other workspaces.
+pub(crate) trait Invariant<T> {
+    /// The value, or an `InvalidData` storage error naming what was missing.
+    fn invariant(self, what: &str) -> Result<T, StoreError>;
+}
+fn broken(what: &str) -> StoreError {
+    invalid(&format!("storage step invariant broken: {what}"))
+}
+impl<T> Invariant<T> for Option<T> {
+    fn invariant(self, what: &str) -> Result<T, StoreError> {
+        self.ok_or_else(|| broken(what))
+    }
+}
+impl<T, E> Invariant<T> for Result<T, E> {
+    fn invariant(self, what: &str) -> Result<T, StoreError> {
+        self.map_err(|_| broken(what))
+    }
+}
 pub(super) fn increment(value: &mut u64) -> Result<(), StoreError> {
     *value = value
         .checked_add(1)
@@ -113,7 +132,7 @@ fn bounded_keys<'de, D: serde::Deserializer<'de>>(decoder: D) -> Result<Vec<OsSt
     decoder.deserialize_seq(Keys)
 }
 mod os_path {
-    use super::*;
+    use super::{Deserialize, OsString, PathBuf, Serialize};
     pub fn serialize<S: serde::Serializer>(
         path: &std::path::Path,
         encoder: S,
@@ -127,9 +146,13 @@ mod os_path {
 impl Meta {
     pub fn charge(&self) -> usize {
         std::mem::size_of::<Self>()
-            + self.key.capacity() * std::mem::size_of::<OsString>()
-            + self.key.iter().map(OsString::capacity).sum::<usize>()
-            + self.source.capacity()
+            .saturating_add(
+                self.key
+                    .capacity()
+                    .saturating_mul(std::mem::size_of::<OsString>()),
+            )
+            .saturating_add(self.key.iter().map(OsString::capacity).sum::<usize>())
+            .saturating_add(self.source.capacity())
     }
     fn validate(&self) -> Result<(), StoreError> {
         if self.key.len() > 4
@@ -152,7 +175,8 @@ pub(super) fn write_meta(file: &mut File, meta: &Meta) -> Result<(), StoreError>
     if bytes.len() > MAX_METADATA {
         return Err(invalid("oversized storage metadata"));
     }
-    file.write_all(&(bytes.len() as u32).to_le_bytes())?;
+    let len = u32::try_from(bytes.len()).map_err(|_| invalid("oversized storage metadata"))?;
+    file.write_all(&len.to_le_bytes())?;
     file.write_all(&bytes)?;
     Ok(())
 }
@@ -195,7 +219,7 @@ impl DirectoryCursor {
             if self.entries.is_none() {
                 self.entries = Some(fs::read_dir(&self.path)?);
             }
-            match self.entries.as_mut().unwrap().next() {
+            match self.entries.as_mut().invariant("entries missing")?.next() {
                 Some(Ok(entry)) => self.pending = Some(entry),
                 Some(Err(error)) => {
                     self.entries = None;
@@ -266,19 +290,23 @@ impl Sorter {
         if charge > MAX_METADATA {
             return Err(invalid("oversized metadata allocation"));
         }
-        if self.bytes + charge > RUN_BYTES {
+        if self.bytes.saturating_add(charge) > RUN_BYTES {
             self.pending = Some(meta);
             self.start_spill()?;
         } else {
-            self.bytes += charge;
+            self.bytes = self.bytes.saturating_add(charge);
             self.buffer.push(meta);
             if self.buffer.len() == RUN_ENTRIES {
                 self.start_spill()?;
             }
         }
         self.stats.metadata(
-            self.buffer.len() + usize::from(self.pending.is_some()),
-            self.bytes + RUN_ENTRIES * std::mem::size_of::<Meta>() + MAX_METADATA * 2,
+            self.buffer
+                .len()
+                .saturating_add(usize::from(self.pending.is_some())),
+            self.bytes
+                .saturating_add(RUN_ENTRIES.saturating_mul(std::mem::size_of::<Meta>()))
+                .saturating_add(MAX_METADATA.saturating_mul(2)),
             1,
         );
         Ok(())
@@ -307,9 +335,9 @@ impl Sorter {
                 }
                 return Ok(Step::Done(()));
             };
-            emitted += meta.charge();
+            emitted = emitted.saturating_add(meta.charge());
             write_meta(file, &meta)?;
-            self.stats.last_step_work += 1;
+            self.stats.last_step_work = self.stats.last_step_work.saturating_add(1);
         }
         Ok(Step::More)
     }
@@ -340,8 +368,8 @@ impl Sorter {
             if let Some((next, end)) = self.cleaning {
                 if next < end {
                     fs::remove_file(self.path(self.pass, next))?;
-                    self.cleaning = Some((next + 1, end));
-                    self.stats.last_step_work += 1;
+                    self.cleaning = Some((next.saturating_add(1), end));
+                    self.stats.last_step_work = self.stats.last_step_work.saturating_add(1);
                 } else {
                     self.cleaning = None;
                     increment(&mut self.output_runs)?;
@@ -357,15 +385,15 @@ impl Sorter {
                     return Ok(Step::More);
                 }
                 let first = self.next;
-                let count = (self.runs - first).min(MERGE_FAN_IN as u64);
+                let count = self.runs.saturating_sub(first).min(MERGE_FAN_IN as u64);
                 self.merge = Some(Merge {
                     inputs: Vec::with_capacity(MERGE_FAN_IN),
-                    output: File::create(self.path(self.pass + 1, self.output_runs))?,
+                    output: File::create(self.path(self.pass.saturating_add(1), self.output_runs))?,
                     first,
                     count,
                 });
             }
-            let merge = self.merge.as_mut().unwrap();
+            let merge = self.merge.as_mut().invariant("merge missing")?;
             if (merge.inputs.len() as u64) < merge.count {
                 let path = self
                     .root
@@ -374,7 +402,7 @@ impl Sorter {
                 let head = read_meta(&mut file)?;
                 merge.inputs.push((file, head));
                 increment(&mut self.next)?;
-                self.stats.last_step_work += 1;
+                self.stats.last_step_work = self.stats.last_step_work.saturating_add(1);
                 continue;
             }
             self.stats.metadata(
@@ -385,9 +413,9 @@ impl Sorter {
                     .filter_map(|(_, m)| m.as_ref())
                     .map(Meta::charge)
                     .sum::<usize>()
-                    + MAX_METADATA * 2
-                    + RUN_ENTRIES * std::mem::size_of::<Meta>(),
-                merge.inputs.len() + 1,
+                    .saturating_add(MAX_METADATA.saturating_mul(2))
+                    .saturating_add(RUN_ENTRIES.saturating_mul(std::mem::size_of::<Meta>())),
+                merge.inputs.len().saturating_add(1),
             );
             let choice = merge
                 .inputs
@@ -397,18 +425,21 @@ impl Sorter {
                 .min_by(|(_, a), (_, b)| a.key.cmp(&b.key))
                 .map(|(i, _)| i);
             let Some(choice) = choice else {
-                let merge = self.merge.take().unwrap();
-                self.cleaning = Some((merge.first, merge.first + merge.count));
+                let merge = self.merge.take().invariant("merge missing")?;
+                self.cleaning = Some((merge.first, merge.first.saturating_add(merge.count)));
                 drop(merge);
                 continue;
             };
-            let (file, head) = &mut merge.inputs[choice];
-            let meta = head.take().unwrap();
-            emitted += meta.charge();
+            let (file, head) = merge
+                .inputs
+                .get_mut(choice)
+                .invariant("merge input missing")?;
+            let meta = head.take().invariant("head missing")?;
+            emitted = emitted.saturating_add(meta.charge());
             write_meta(&mut merge.output, &meta)?;
             drop(meta);
             *head = read_meta(file)?;
-            self.stats.last_step_work += 1;
+            self.stats.last_step_work = self.stats.last_step_work.saturating_add(1);
         }
         Ok(Step::More)
     }
@@ -420,6 +451,7 @@ mod tests {
     #[test]
     #[cfg(unix)]
     fn metadata_roundtrips_nonunicode_filesystem_names() {
+        use std::io::{Seek, SeekFrom};
         use std::os::unix::ffi::OsStringExt;
         let name = OsString::from_vec(vec![0xff, b'a']);
         let mut file = tempfile::tempfile().unwrap();
@@ -431,7 +463,6 @@ mod tests {
             pending: false,
         };
         write_meta(&mut file, &meta).unwrap();
-        use std::io::{Seek, SeekFrom};
         file.seek(SeekFrom::Start(0)).unwrap();
         let decoded = read_meta(&mut file).unwrap().unwrap();
         assert_eq!(decoded.key, vec![name.clone()]);
@@ -481,10 +512,10 @@ mod tests {
     }
     #[test]
     fn corrupt_metadata_length_is_rejected_before_allocation() {
+        use std::io::{Seek, SeekFrom};
         let tmp = tempfile::tempfile().unwrap();
         let mut file = tmp;
         file.write_all(&u32::MAX.to_le_bytes()).unwrap();
-        use std::io::{Seek, SeekFrom};
         file.seek(SeekFrom::Start(0)).unwrap();
         assert!(read_meta(&mut file).is_err());
     }

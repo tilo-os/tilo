@@ -1,3 +1,7 @@
+#![allow(
+    clippy::too_many_lines,
+    reason = "each test spells out one end-to-end scenario"
+)]
 use super::*;
 fn request(message: ActionMessage) -> DirectedAction {
     DirectedAction {
@@ -165,7 +169,7 @@ fn private_wire_invoke_and_disposable_read_keep_original_identity() {
         decode_response(PrivateOperation::Invoke, &invoke, &bytes).unwrap(),
         observed
     );
-    let mut wrong = invoke.clone();
+    let mut wrong = invoke;
     if let ActionMessage::InvokeBound { invocation, .. } = &mut wrong.message {
         *invocation = tilo_actions::InvocationId(Uuid::from_u128(7));
     }
@@ -218,7 +222,7 @@ fn private_wire_invoke_and_disposable_read_keep_original_identity() {
         decode_response(PrivateOperation::AgentRead, &read, &encoded).unwrap(),
         response
     );
-    let mut wrong = read.clone();
+    let mut wrong = read;
     if let ActionMessage::AgentReadV1 { request, .. } = &mut wrong.message {
         *request = qos_agent_control_protocol::AgentRequest::Capabilities { version: 1 };
     }
@@ -391,7 +395,7 @@ fn private_cancel_ack_is_only_cancel_and_keeps_exact_invocation() {
         assert!(encode_response(op, &original, &reply).is_err());
         assert!(decode_response(op, &original, &bytes).is_err());
     }
-    let mut wrong = reply.clone();
+    let mut wrong = reply;
     wrong.message = ActionMessage::CancellationRequested {
         invocation: tilo_actions::InvocationId(Uuid::from_u128(18)),
     };
@@ -474,7 +478,7 @@ fn private_event_decoder_is_one_bounded_inert_correlated_response_family() {
     }
     // No original request is supplied: outer correlation remains mandatory in
     // PendingActions and is not authority inferred by this inert decoder.
-    let mut other = reply.clone();
+    let mut other = reply;
     other.request_id = Uuid::from_u128(60);
     let raw = encode(MessageType::PrivateUpdate, &other).unwrap();
     assert_eq!(

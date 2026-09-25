@@ -33,6 +33,10 @@
     clippy::unreachable,
     reason = "in a test these are the assertion, not a hazard"
 )]
+#![allow(
+    clippy::significant_drop_tightening,
+    reason = "relays, fixtures and guards deliberately stay alive until each test ends"
+)]
 
 use std::time::Duration;
 use tilo_automerge::ApplyIncoming;
@@ -222,12 +226,12 @@ async fn two_devices_converge_through_host_with_offline_store_forward() {
     let b = user.enrol("phone", DeviceCapabilities::member());
 
     // A durable host that pins workspace 7 and knows A + B are members.
-    let host = spawn_relay(
+    let host = Box::pin(spawn_relay(
         &user,
         host_dev,
         &[WS],
         &[a.device_pubkey(), b.device_pubkey()],
-    )
+    ))
     .await;
     let addr = host.relay.node_addr();
 

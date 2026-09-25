@@ -262,6 +262,10 @@ pub(crate) async fn replace_membership(
 /// additions appear only after the atomic record commits. A failed write
 /// therefore leaves a fail-closed in-process ceiling until a later successful
 /// replacement.
+#[expect(
+    clippy::significant_drop_tightening,
+    reason = "the runtime guard publishes the narrowed ceiling as one step and ends with the task"
+)]
 pub(crate) async fn replace_governed_access(
     workspace: &SharedWorkspace,
     access: GovernedAccessRecord,
@@ -345,6 +349,10 @@ async fn open_runtime(
 /// One reserved initialization per registry/ID; reservations count against the
 /// room cap. The owner retains the registry Arc (and therefore its identity)
 /// until publication, even when every initial waiter disconnects.
+#[expect(
+    clippy::significant_drop_tightening,
+    reason = "the opened runtime is moved into the registry under its lock; the lint does not see the move"
+)]
 pub(crate) async fn get_or_initialize(
     workspaces: &WorkspaceRegistry,
     state_root: std::path::PathBuf,
@@ -406,6 +414,10 @@ pub(crate) async fn get_or_initialize(
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "relays, fixtures and guards deliberately stay alive until each test ends"
+)]
 mod tests {
     use super::*;
     use crate::store::test_barrier;

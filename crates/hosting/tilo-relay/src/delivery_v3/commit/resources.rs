@@ -1,6 +1,12 @@
 //! Closed allocation custody for the concrete delivery persistence codecs.
 //! These guards carry memory only, never admission, durability or authority.
-use super::*;
+use super::{
+    AdmissionRecord, BorrowedPool, CommitError, CommitRef, ConsumerId, ConsumerState,
+    DeliveryLedgerV1, Deserialize, Deserializer, Digest, DurableAdmissionKind, MAX_ADMISSIONS,
+    MAX_CONSUMERS, MAX_ENVELOPE_BYTES, MAX_HOST_BYTES, MAX_LEDGER_BYTES, MAX_PINS, MAX_REFERENCES,
+    PhantomData, PublicationPool, PublicationRef, ReceiptKey, ReplayCommit, SnapshotPin,
+    StoreGeneration, de, decode_exact,
+};
 use automerge::resource_limits::{NativeReservation, NativeWorkTurn};
 
 /// Codec failures retain their original meaning; resource refusal is separate.
@@ -25,8 +31,12 @@ pub struct PoolMapCustody {
     _retained: NativeReservation,
 }
 impl LedgerCustody {
-    /// Fork the actual ledger held with this custody by Cloud HeldCloudState.
+    /// Fork the actual ledger held with this custody by Cloud `HeldCloudState`.
     /// The concrete clone and validation scratch are funded before allocation.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ResourceError` if the resource budget refuses the allocation or the input is invalid.
     pub fn fork(
         &self,
         ledger: &DeliveryLedgerV1,
@@ -35,6 +45,10 @@ impl LedgerCustody {
         self.fork_in(ledger, &ResourceBudget::native(turn))
     }
     /// Fork the actual Cloud-held ledger using its existing operation budget.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ResourceError` if the resource budget refuses the allocation or the input is invalid.
     pub fn fork_in(
         &self,
         ledger: &DeliveryLedgerV1,
@@ -55,8 +69,12 @@ impl LedgerCustody {
     }
 }
 impl PoolMapCustody {
-    /// Fork the actual pool held with this custody by Cloud HeldCloudState.
+    /// Fork the actual pool held with this custody by Cloud `HeldCloudState`.
     /// Every existing backing must retain its own genuine original keeper.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ResourceError` if the resource budget refuses the allocation or the input is invalid.
     pub fn fork(
         &self,
         pool: &PublicationPool,
@@ -65,6 +83,10 @@ impl PoolMapCustody {
         self.fork_in(pool, &ResourceBudget::native(turn))
     }
     /// Fork the actual Cloud-held pool without replacing original backing credit.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ResourceError` if the resource budget refuses the allocation or the input is invalid.
     pub fn fork_in(
         &self,
         pool: &PublicationPool,
@@ -94,10 +116,18 @@ pub struct HeldDeliveryLedger {
 }
 impl HeldDeliveryLedger {
     /// Decode the exact legacy format using the caller's original work allowance.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ResourceError` if the input is not a canonical encoding within this type's bounds.
     pub fn decode(bytes: &[u8], turn: &NativeWorkTurn) -> Result<Self, ResourceError> {
         Self::decode_in(bytes, &ResourceBudget::native(turn))
     }
     /// Decode the concrete ledger using an existing embedding operation budget.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ResourceError` if the input is not a canonical encoding within this type's bounds.
     pub fn decode_in(bytes: &[u8], budget: &ResourceBudget<'_, '_>) -> Result<Self, ResourceError> {
         let (retained, scratch) = preflight::ledger(bytes)?;
         let custody = LedgerCustody {
@@ -112,10 +142,18 @@ impl HeldDeliveryLedger {
         &self.ledger
     }
     /// Pay the actual separate map/vector allocations before cloning.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ResourceError` if the resource budget refuses the allocation or the input is invalid.
     pub fn fork(&self, turn: &NativeWorkTurn) -> Result<Self, ResourceError> {
         self.fork_in(&ResourceBudget::native(turn))
     }
     /// Pay a separate concrete ledger clone from the same embedding operation.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ResourceError` if the resource budget refuses the allocation or the input is invalid.
     pub fn fork_in(&self, budget: &ResourceBudget<'_, '_>) -> Result<Self, ResourceError> {
         let custody = LedgerCustody {
             _retained: reserve(budget, preflight::ledger_fork(&self.ledger)?)?,
@@ -125,7 +163,7 @@ impl HeldDeliveryLedger {
             custody,
         })
     }
-    /// Transfer once into the audited Cloud HeldCloudState holder. That holder
+    /// Transfer once into the audited Cloud `HeldCloudState` holder. That holder
     /// must drop its State before this custody; never discard custody separately.
     pub fn into_parts(self) -> (DeliveryLedgerV1, LedgerCustody) {
         (self.ledger, self.custody)
@@ -138,6 +176,10 @@ pub struct HeldPublicationPool {
 }
 impl HeldPublicationPool {
     /// Decode exact legacy pool bytes under both payload policy and real credit.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ResourceError` if the input is not a canonical encoding within this type's bounds.
     pub fn decode(
         bytes: &[u8],
         limit: usize,
@@ -146,6 +188,10 @@ impl HeldPublicationPool {
         Self::decode_in(bytes, limit, &ResourceBudget::native(turn))
     }
     /// Decode the concrete pool using an existing embedding operation budget.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ResourceError` if the input is not a canonical encoding within this type's bounds.
     pub fn decode_in(
         bytes: &[u8],
         limit: usize,
@@ -190,15 +236,23 @@ impl HeldPublicationPool {
         &self.pool
     }
     /// Pay new map metadata; preserve each shared backing's original reservation.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ResourceError` if the resource budget refuses the allocation or the input is invalid.
     pub fn fork(&self, turn: &NativeWorkTurn) -> Result<Self, ResourceError> {
         self.fork_in(&ResourceBudget::native(turn))
     }
     /// Pay new map metadata while retaining every original backing's keeper.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ResourceError` if the resource budget refuses the allocation or the input is invalid.
     pub fn fork_in(&self, budget: &ResourceBudget<'_, '_>) -> Result<Self, ResourceError> {
         self.custody.fork_in(&self.pool, budget)
     }
 
-    /// Transfer once into the audited Cloud HeldCloudState holder. Its State
+    /// Transfer once into the audited Cloud `HeldCloudState` holder. Its State
     /// must drop before map custody; payload credit follows every fork and pin.
     pub fn into_parts(self) -> (PublicationPool, PoolMapCustody) {
         (self.pool, self.custody)
@@ -262,10 +316,10 @@ impl Drop for SharedPayloadCredit {
         // No Weak/raw Arc escapes, and every strong holder uses into_inner.
         // The final caller receives the reservation only after the keeper Arc
         // allocation is freed, including concurrent destruction of last roots.
-        if let Some(inner) = self.0.take() {
-            if let Some(reservation) = std::sync::Arc::into_inner(inner) {
-                drop(reservation);
-            }
+        if let Some(inner) = self.0.take()
+            && let Some(reservation) = std::sync::Arc::into_inner(inner)
+        {
+            drop(reservation);
         }
     }
 }

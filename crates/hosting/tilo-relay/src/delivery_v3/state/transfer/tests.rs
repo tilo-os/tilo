@@ -163,7 +163,7 @@ fn unsigned_literal(issue: &ManifestIssue) -> Vec<u8> {
         &s.consumer_device,
         &s.consumer_root,
     ] {
-        out.extend(field)
+        out.extend(field);
     }
     out.extend(s.consumer);
     out.extend(s.store_generation);
@@ -178,18 +178,18 @@ fn unsigned_literal(issue: &ManifestIssue) -> Vec<u8> {
     if let Some(p) = &issue.predecessor {
         out.push(1);
         varint(p.sequence, &mut out);
-        out.extend(p.digest)
+        out.extend(p.digest);
     } else {
-        out.push(0)
+        out.push(0);
     }
     varint(issue.baseline_generation, &mut out);
     varint(issue.expires_at_ns, &mut out);
-    varint(issue.item_count as u64, &mut out);
+    varint(u64::from(issue.item_count), &mut out);
     varint(issue.stream_bytes, &mut out);
-    varint(issue.chunk_size as u64, &mut out);
+    varint(u64::from(issue.chunk_size), &mut out);
     varint(issue.chunk_digests.len() as u64, &mut out);
     for digest in &issue.chunk_digests {
-        out.extend(digest)
+        out.extend(digest);
     }
     out
 }
@@ -306,7 +306,7 @@ fn manifest_enforces_stream_counts_scope_and_five_minute_limit() {
         digest: [13; 32],
     });
     assert!(SnapshotManifest::issue(replay, &key, 100).is_ok());
-    let mut signed_bad = base.clone();
+    let mut signed_bad = base;
     signed_bad.chunk_digests = vec![[1; 32]; 1106];
     let bytes = sign_literal(
         unsigned_literal(&signed_bad),

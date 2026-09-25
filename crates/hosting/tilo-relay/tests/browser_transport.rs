@@ -1,5 +1,13 @@
 //! Same authenticated relay/1 client over a loopback packet relay, with no N0
 //! lookup or direct socket-address fallback (the browser's transport shape).
+#![allow(
+    clippy::significant_drop_tightening,
+    reason = "relays, fixtures and guards deliberately stay alive until each test ends"
+)]
+#![allow(
+    clippy::too_many_lines,
+    reason = "each test spells out one end-to-end scenario"
+)]
 use crate::common::TestUser;
 use iroh::{Endpoint, RelayMap, RelayMode, endpoint::presets};
 use iroh_base::{EndpointAddr, RelayUrl};

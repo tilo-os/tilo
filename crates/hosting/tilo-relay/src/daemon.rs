@@ -192,7 +192,7 @@ pub struct Relay {
     /// Iroh endpoint the daemon accepts on.
     pub endpoint: Endpoint,
     /// Iroh router that wires the ALPN → protocol handler.
-    _router: Router,
+    router: Router,
     /// Runtime state shared with peer tasks.
     workspaces: WorkspaceRegistry,
     /// Metrics — cheap counters.
@@ -685,7 +685,7 @@ impl Relay {
             &endpoint,
             &workspaces,
             &metrics,
-            revocations.clone(),
+            &revocations,
         );
         if cfg.services.compute {
             for workspace in workspaces.lock().await.values() {
@@ -732,7 +732,7 @@ impl Relay {
             .map(crate::workspace_join::InteractiveOwnerTrust::workspace_id);
         Ok(Self {
             endpoint,
-            _router: router,
+            router,
             workspaces,
             metrics,
             own_cert: identity.device_cert,
@@ -753,6 +753,14 @@ impl Relay {
 
     /// Install the original native owner's bounded refresh mailbox for one bound room.
     /// Replacing an installed owner requires closing/recreating this relay.
+    ///
+    /// # Errors
+    ///
+    /// Returns `String` if the inputs violate this operation's bounds or invariants.
+    #[expect(
+        clippy::significant_drop_tightening,
+        reason = "the runtime guard borrows the registry handle and ends with this short scope, right after its only write"
+    )]
     pub async fn install_sync_refresh(
         &self,
         workspace_id: u64,
@@ -803,7 +811,7 @@ impl Relay {
         // Stop reconnecting first: the dial loop would otherwise open a
         // fresh connection while the endpoint is closing.
         lock_peer_relay_tasks(&self.peer_relay_tasks).clear();
-        if let Err(error) = self._router.shutdown().await {
+        if let Err(error) = self.router.shutdown().await {
             tracing::debug!(%error, "relay router shutdown task failed");
         }
     }
@@ -903,6 +911,10 @@ impl Relay {
     /// relay or with a state root other than the relay's configured root, and
     /// [`RelayError::Store`] when workspace initialization or durable
     /// replacement fails.
+    #[expect(
+        clippy::significant_drop_tightening,
+        reason = "the flagged value is a shared workspace handle (an Arc clone); dropping it earlier releases no lock"
+    )]
     pub async fn replace_governed_workspace_access(
         &self,
         workspace_id: u64,
@@ -983,6 +995,10 @@ impl Relay {
 /// Import full-workspace residency from the same bundle the filesystem worker
 /// consumes. The operator cannot accidentally advertise a relay-only binding
 /// for a workspace whose NAS worker is configured to retain complete content.
+#[expect(
+    clippy::too_many_lines,
+    reason = "one ordered protocol state machine; splitting it would scatter the invariants each step relies on"
+)]
 fn import_home_peer_bindings(cfg: &mut RelayConfig) -> Result<(), RelayError> {
     if !cfg.home_peer_bundle.exists() {
         return Ok(());
@@ -1283,7 +1299,7 @@ fn spawn_background_tasks(
     endpoint: &Endpoint,
     workspaces: &WorkspaceRegistry,
     metrics: &Arc<Metrics>,
-    revocations: Arc<std::sync::RwLock<RevocationList>>,
+    revocations: &Arc<std::sync::RwLock<RevocationList>>,
 ) -> Arc<std::sync::Mutex<Vec<AbortOnDrop>>> {
     let peer_relay_tasks: Arc<std::sync::Mutex<Vec<AbortOnDrop>>> =
         Arc::new(std::sync::Mutex::new(Vec::new()));
@@ -1977,6 +1993,10 @@ impl std::fmt::Debug for DiscoveryProtocol {
 }
 
 impl ProtocolHandler for DiscoveryProtocol {
+    #[expect(
+        clippy::significant_drop_tightening,
+        reason = "the workspace handle is consumed by the match that reads admission; there is nothing left to drop early"
+    )]
     #[allow(
         clippy::too_many_lines,
         reason = "one authenticated discovery exchange keeps authorization, workspace lookup, content proof, and response framing in one security-reviewed sequence"
@@ -2140,7 +2160,7 @@ impl ProtocolHandler for RelayProtocol {
         // promptly and the iroh router can accept the next
         // connection.
         tokio::spawn(async move {
-            if let Err(e) = handle_conn(this, connection, send, recv).await {
+            if let Err(e) = Box::pin(handle_conn(this, connection, send, recv)).await {
                 tracing::debug!("relay conn ended: {e}");
             }
         });
@@ -2218,7 +2238,7 @@ async fn handle_conn(
     ctx.metrics.inc_conns_authed();
 
     // 4. Hand off to the peer loop.
-    let peer_result = run_peer_version(
+    let peer_result = Box::pin(run_peer_version(
         client_peer,
         connection.clone(),
         recv,
@@ -2236,7 +2256,7 @@ async fn handle_conn(
         },
         ctx.v2,
         ctx.agent_reads_v1,
-    )
+    ))
     .await;
     if let Err(e) = peer_result {
         tracing::debug!("peer session ended with error: {e}");
@@ -2688,6 +2708,10 @@ fn parse_iroh_node_id(hex_id: &str) -> Option<PublicKey> {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "relays, fixtures and guards deliberately stay alive until each test ends"
+)]
 mod tests {
     use super::*;
     use tilo_user_identity::{DeviceCapabilities, DeviceIdentity, UserIdentity, sign_device_cert};

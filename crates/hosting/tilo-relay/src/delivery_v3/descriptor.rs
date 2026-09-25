@@ -49,7 +49,7 @@ pub enum GenerationExpectation {
 
 /// Trusted owner inputs, not wire claims or an authorization snapshot DTO.
 /// Hold the actual committed native publication guard through each operation;
-/// an arbitrary cloned or stale StatePeer cannot substitute for that owner.
+/// an arbitrary cloned or stale `StatePeer` cannot substitute for that owner.
 pub struct DescriptorAuthority<'a> {
     /// Actual current committed governed workspace.
     pub peer: &'a StatePeer,
@@ -108,6 +108,10 @@ struct DescriptorPayload {
 /// Issue under the actual current governed host, using the existing hint signer.
 /// The caller must persist its revision and gate actual route installation before
 /// publishing this hint; creating signed wire bytes does not install a service.
+///
+/// # Errors
+///
+/// Returns `DescriptorError` if the inputs violate this operation's bounds or invariants.
 pub fn issue_transport_hint(
     settings: &DescriptorSettings,
     current: &DescriptorAuthority<'_>,
@@ -119,6 +123,10 @@ pub fn issue_transport_hint(
 /// Sign an explicit known media mask. This is only a wire signing utility, not
 /// proof of installation. A native publisher must retain its private live service
 /// witness through the owner barrier before requesting a nonzero mask.
+///
+/// # Errors
+///
+/// Returns `DescriptorError` if the inputs violate this operation's bounds or invariants.
 pub fn issue_transport_hint_with_media(
     settings: &DescriptorSettings,
     current: &DescriptorAuthority<'_>,
@@ -194,6 +202,10 @@ pub struct PinnedHintScope {
 /// The caller must match its independent enrollment scope and origin, and check
 /// freshness before using this only for the signed governance handoff. Ordinary
 /// requests still require `verify_transport_hint` against actual current state.
+///
+/// # Errors
+///
+/// Returns `DescriptorError` if the value fails validation or verification.
 pub fn inspect_pinned_hint_scope(
     hint: &TransportHint,
     pinned_host: &DeviceCert,
@@ -212,6 +224,10 @@ pub fn inspect_pinned_hint_scope(
 /// Revocation, current roster/policy, current expiry and client pin admission are
 /// deliberately NOT established: use `verify_transport_hint` for every current use.
 /// Callers may only use this to retain/advance the stored descriptor revision.
+///
+/// # Errors
+///
+/// Returns `DescriptorError` if the value fails validation or verification.
 pub fn inspect_persisted_hint(
     hint: &TransportHint,
     pinned_host: &DeviceCert,
@@ -260,8 +276,8 @@ fn inspect_pinned_payload(
         || payload
             .expires_at_ns
             .checked_sub(payload.issued_at_ns)
-            .filter(|n| *n > 0 && *n <= LIFETIME_NS)
-            .is_none()
+            .as_ref()
+            .is_none_or(|n| !(*n > 0 && *n <= LIFETIME_NS))
         || pinned_host
             .expires_at_ns
             .is_some_and(|end| payload.expires_at_ns > end)
@@ -285,6 +301,10 @@ fn inspect_pinned_payload(
 
 /// Verify exact signed bytes against independently pinned current native state.
 /// A valid self-signed URL alone cannot construct this opaque result.
+///
+/// # Errors
+///
+/// Returns `DescriptorError` if the value fails validation or verification.
 pub fn verify_transport_hint(
     hint: &TransportHint,
     current: &DescriptorAuthority<'_>,
@@ -343,10 +363,18 @@ impl VerifiedDescriptor {
         self.digest
     }
     /// Recheck current authority, expiry, host pins and persisted revision.
+    ///
+    /// # Errors
+    ///
+    /// Returns `DescriptorError` if the value fails validation or verification.
     pub fn revalidate(&self, current: &DescriptorAuthority<'_>) -> Result<(), DescriptorError> {
         check_hint(&self.hint, current).map(|_| ())
     }
     /// Derive independently pinned client scope; boot remains freshly host-proved.
+    ///
+    /// # Errors
+    ///
+    /// Returns `DescriptorError` if the value fails validation or verification.
     pub fn client_scope(
         &self,
         current: &DescriptorAuthority<'_>,
@@ -377,6 +405,10 @@ impl VerifiedDescriptor {
         })
     }
     /// Derive server scope using only that server's own nonzero current boot.
+    ///
+    /// # Errors
+    ///
+    /// Returns `DescriptorError` if the value fails validation or verification.
     pub fn server_binding(
         &self,
         current: &DescriptorAuthority<'_>,
@@ -530,8 +562,8 @@ fn validate_payload(
         || payload
             .expires_at_ns
             .checked_sub(payload.issued_at_ns)
-            .filter(|n| *n > 0 && *n <= LIFETIME_NS)
-            .is_none()
+            .as_ref()
+            .is_none_or(|n| !(*n > 0 && *n <= LIFETIME_NS))
         || [current.pinned_governor, current.pinned_host]
             .iter()
             .any(|cert| {
@@ -590,7 +622,7 @@ fn decode_payload(opaque: &str) -> Result<DescriptorPayload, DescriptorError> {
     }
     let hex: &str = serde_json::from_str(opaque).map_err(|_| DescriptorError::Codec)?;
     if hex.len() > 2 * MAX_PAYLOAD_BYTES
-        || hex.len() % 2 != 0
+        || !hex.len().is_multiple_of(2)
         || !hex
             .bytes()
             .all(|b| b.is_ascii_digit() || matches!(b, b'a'..=b'f'))
@@ -613,11 +645,13 @@ fn hint_digest(hint: &TransportHint) -> Result<[u8; 32], DescriptorError> {
         return Err(DescriptorError::Codec);
     }
     certificate_digest(&hint.host)?;
-    let mut buffer = [0; MAX_HINT_BYTES];
-    let bytes = postcard::to_slice(hint, &mut buffer).map_err(|_| DescriptorError::Codec)?;
+    let bytes = postcard::to_allocvec(hint).map_err(|_| DescriptorError::Codec)?;
+    if bytes.len() > MAX_HINT_BYTES {
+        return Err(DescriptorError::Codec);
+    }
     let mut hash = blake3::Hasher::new();
     hash.update(DOMAIN);
-    hash.update(bytes);
+    hash.update(&bytes);
     Ok(*hash.finalize().as_bytes())
 }
 fn bounded_origin<'de, D: serde::Deserializer<'de>>(d: D) -> Result<String, D::Error> {
@@ -671,8 +705,8 @@ pub(crate) fn validate_origin(origin: &str) -> Result<(), DescriptorError> {
             .map_or((authority, None), |(h, p)| (h, Some(p)));
         (Some(host), port)
     };
-    if let Some(host) = host {
-        if host.len() > 253
+    if let Some(host) = host
+        && (host.len() > 253
             || host.split('.').any(|part| {
                 part.is_empty()
                     || part.len() > 63
@@ -681,18 +715,16 @@ pub(crate) fn validate_origin(origin: &str) -> Result<(), DescriptorError> {
                     || !part
                         .bytes()
                         .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
-            })
-        {
-            return Err(DescriptorError::Endpoint);
-        }
+            }))
+    {
+        return Err(DescriptorError::Endpoint);
     }
-    if let Some(port) = port {
-        if port.is_empty()
+    if let Some(port) = port
+        && (port.is_empty()
             || !port.bytes().all(|b| b.is_ascii_digit())
-            || port.parse::<u16>().ok().filter(|p| *p != 0).is_none()
-        {
-            return Err(DescriptorError::Endpoint);
-        }
+            || port.parse::<u16>().ok().as_ref().is_none_or(|p| *p == 0))
+    {
+        return Err(DescriptorError::Endpoint);
     }
     Ok(())
 }

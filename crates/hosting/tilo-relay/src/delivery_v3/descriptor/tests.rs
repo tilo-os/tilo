@@ -65,7 +65,9 @@ impl Fixture {
             DeviceCapabilities::member(),
             None,
         );
-        let now = SystemTime::UNIX_EPOCH + Duration::from_secs(1000);
+        let now = SystemTime::UNIX_EPOCH
+            .checked_add(Duration::from_secs(1000))
+            .unwrap();
         let roster = vec![governor.clone(), host.clone(), device.clone()];
         let mut peer = StatePeer::new(
             ROOM,
@@ -109,6 +111,10 @@ impl Fixture {
             now: self.now,
         }
     }
+    #[expect(
+        clippy::unused_self,
+        reason = "fixture method keeps call sites uniform across the scenario helpers"
+    )]
     fn settings(&self) -> DescriptorSettings {
         DescriptorSettings {
             origin: "https://example.test".into(),
@@ -312,7 +318,7 @@ fn codec_rejects_noncanonical_hex_json_postcard_and_truncation() {
     }
     let mut trailing = bytes.clone();
     trailing.push(0);
-    let mut overlong = bytes.clone();
+    let mut overlong = bytes;
     overlong.splice(0..1, [0x83, 0]);
     for bytes in [trailing, overlong] {
         assert!(decode_payload(&serde_json::to_string(&hex::encode(bytes)).unwrap()).is_err());
@@ -374,7 +380,7 @@ fn signed_url_aliases_and_certificate_string_bounds_fail_closed() {
         )
         .is_err()
     );
-    let mut cert = f.host.clone();
+    let mut cert = f.host;
     cert.device_label = "a".repeat(1024);
     certificate_digest(&cert).unwrap();
     cert.device_label.push('a');
@@ -510,7 +516,9 @@ impl auth::Authority for Fixture {
         host: &DeviceCert,
         now_ns: u64,
     ) -> Result<(), auth::AuthError> {
-        let now = SystemTime::UNIX_EPOCH + Duration::from_nanos(now_ns);
+        let now = SystemTime::UNIX_EPOCH
+            .checked_add(Duration::from_nanos(now_ns))
+            .unwrap();
         if binding.workspace != self.current().workspace
             || host != &self.host
             || !self.peer.certificates().contains(device)

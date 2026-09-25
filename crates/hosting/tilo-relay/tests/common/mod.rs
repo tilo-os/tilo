@@ -13,6 +13,10 @@
     clippy::unreachable,
     reason = "in a test these are the assertion, not a hazard"
 )]
+#![allow(
+    clippy::significant_drop_tightening,
+    reason = "relays, fixtures and guards deliberately stay alive until each test ends"
+)]
 
 use std::path::PathBuf;
 
@@ -95,7 +99,14 @@ pub async fn spawn_relay(
 ) -> TestRelay {
     let tmp = tempfile::tempdir().unwrap();
     let state_root = tmp.path().to_path_buf();
-    let relay = spawn_relay_on(&state_root, user, relay_dev, workspaces, members).await;
+    let relay = Box::pin(spawn_relay_on(
+        &state_root,
+        user,
+        relay_dev,
+        workspaces,
+        members,
+    ))
+    .await;
     TestRelay {
         relay,
         state_root,
@@ -118,7 +129,10 @@ pub async fn spawn_relay_on(
     workspaces: &[u64],
     members: &[[u8; 32]],
 ) -> Relay {
-    spawn_relay_with(state_root, user, relay_dev, workspaces, members, None).await
+    Box::pin(spawn_relay_with(
+        state_root, user, relay_dev, workspaces, members, None,
+    ))
+    .await
 }
 
 /// [`spawn_relay`] for a host that serves apps through `plane` and asks to
@@ -132,14 +146,14 @@ pub async fn spawn_relay_serving_apps(
 ) -> TestRelay {
     let tmp = tempfile::tempdir().unwrap();
     let state_root = tmp.path().to_path_buf();
-    let relay = spawn_relay_with(
+    let relay = Box::pin(spawn_relay_with(
         &state_root,
         user,
         relay_dev,
         workspaces,
         members,
         Some(plane),
-    )
+    ))
     .await;
     TestRelay {
         relay,

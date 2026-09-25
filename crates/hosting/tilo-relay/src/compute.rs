@@ -909,6 +909,16 @@ fn verify_installed_payload(
     Ok(())
 }
 
+/// Owns a `DIR` stream from `fdopendir` and closes it exactly once.
+struct DirectoryStream(*mut libc::DIR);
+impl Drop for DirectoryStream {
+    fn drop(&mut self) {
+        // SAFETY: this stream exclusively owns the descriptor from fdopendir.
+        unsafe {
+            libc::closedir(self.0);
+        }
+    }
+}
 fn output_names(output_dir: &File) -> io::Result<Vec<OsString>> {
     // fdopendir assumes ownership of the descriptor it receives, so duplicate
     // the held capability before transferring it. Enumeration and subsequent
@@ -927,15 +937,6 @@ fn output_names(output_dir: &File) -> io::Result<Vec<OsString>> {
             libc::close(fd);
         }
         return Err(error);
-    }
-    struct DirectoryStream(*mut libc::DIR);
-    impl Drop for DirectoryStream {
-        fn drop(&mut self) {
-            // SAFETY: this stream exclusively owns the descriptor from fdopendir.
-            unsafe {
-                libc::closedir(self.0);
-            }
-        }
     }
     let stream = DirectoryStream(stream);
     let mut names = Vec::new();

@@ -23,6 +23,10 @@
               here is a synthetic per-delta timestamp counter bounded by a \
               3-item literal array, not real user data"
 )]
+#![allow(
+    clippy::significant_drop_tightening,
+    reason = "relays, fixtures and guards deliberately stay alive until each test ends"
+)]
 
 use std::path::PathBuf;
 use std::time::Duration;
@@ -108,7 +112,15 @@ async fn prime_then_close_relay2(
     members: &[[u8; 32]],
 ) {
     let r2_pubkey = r2_cert.device_public_key;
-    let r2_first = start_relay_at(user, r2_sk, r2_cert, r2_state_root, workspaces, members).await;
+    let r2_first = Box::pin(start_relay_at(
+        user,
+        r2_sk,
+        r2_cert,
+        r2_state_root,
+        workspaces,
+        members,
+    ))
+    .await;
     // Peer-relay r1 ← r2 dial primes relay1's `known_peer_relays`.
     r2_first.add_peer_relay_at(relay1_addr, "r1".into(), 0);
     // Wait for the actual subscription rather than guessing how long the
@@ -239,12 +251,12 @@ async fn deltas_queued_during_outage_arrive_in_order_after_reconnect() {
     let p2 = user.enrol("phone", DeviceCapabilities::member());
     let members = vec![p1.device_pubkey(), p2.device_pubkey()];
 
-    let relay1 = spawn_relay(
+    let relay1 = Box::pin(spawn_relay(
         &user,
         user.enrol("r1", DeviceCapabilities::host()),
         &[11],
         &members,
-    )
+    ))
     .await;
 
     // Stable identity + state root for relay2 across the outage.
@@ -255,7 +267,7 @@ async fn deltas_queued_during_outage_arrive_in_order_after_reconnect() {
 
     // Round 1: relay2 up briefly so relay1 learns its device pubkey
     // via PeerRelayHello.
-    prime_then_close_relay2(
+    Box::pin(prime_then_close_relay2(
         &user,
         &relay1.relay,
         relay1.relay.node_addr(),
@@ -264,7 +276,7 @@ async fn deltas_queued_during_outage_arrive_in_order_after_reconnect() {
         r2_state_root.clone(),
         &[11],
         &members,
-    )
+    ))
     .await;
 
     // Round 2: p1 publishes three deltas via relay1 while relay2 is
@@ -284,14 +296,14 @@ async fn deltas_queued_during_outage_arrive_in_order_after_reconnect() {
     // SAME state root → same device pubkey, same iroh secret →
     // same iroh node id (load_or_create_iroh_secret persists the
     // file). Its subscribe drains the queue.
-    let r2_restart = start_relay_at(
+    let r2_restart = Box::pin(start_relay_at(
         &user,
         r2_sk,
         r2_cert,
         r2_state_root.clone(),
         &[11],
         &members,
-    )
+    ))
     .await;
     r2_restart.add_peer_relay_at(relay1.relay.node_addr(), "r1".into(), 0);
 

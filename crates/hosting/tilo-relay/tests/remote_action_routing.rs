@@ -2,6 +2,10 @@
 //! device, stamps the authenticated sender, never stores it, and answers
 //! frames addressed to itself only through a supplied app-serving plane.
 
+#![allow(
+    clippy::significant_drop_tightening,
+    reason = "relays, fixtures and guards deliberately stay alive until each test ends"
+)]
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -92,7 +96,7 @@ async fn the_relay_routes_a_stamped_frame_to_the_addressed_device_only() {
     let b = user.enrol("desktop", DeviceCapabilities::member());
     let c = user.enrol("phone", DeviceCapabilities::member());
     let members = [a.device_pubkey(), b.device_pubkey(), c.device_pubkey()];
-    let relay = spawn_relay(&user, host, &[WS], &members).await;
+    let relay = Box::pin(spawn_relay(&user, host, &[WS], &members)).await;
     let addr = relay.relay.node_addr();
     let a_client = subscribed(addr.clone(), &user, &a).await;
     let b_client = subscribed(addr.clone(), &user, &b).await;
@@ -128,7 +132,13 @@ async fn undeliverable_frames_are_answered_not_stored() {
     let host_key = host.device_pubkey();
     let a = user.enrol("laptop", DeviceCapabilities::primary());
     let b = user.enrol("desktop", DeviceCapabilities::member());
-    let relay = spawn_relay(&user, host, &[WS], &[a.device_pubkey(), b.device_pubkey()]).await;
+    let relay = Box::pin(spawn_relay(
+        &user,
+        host,
+        &[WS],
+        &[a.device_pubkey(), b.device_pubkey()],
+    ))
+    .await;
     let addr = relay.relay.node_addr();
     let a_client = subscribed(addr.clone(), &user, &a).await;
 
@@ -253,13 +263,13 @@ async fn an_app_serving_host_answers_frames_addressed_to_itself() {
     let host_key = host.device_pubkey();
     let a = user.enrol("laptop", DeviceCapabilities::primary());
     let actions = Arc::new(RecordingHost::default());
-    let relay = spawn_relay_serving_apps(
+    let relay = Box::pin(spawn_relay_serving_apps(
         &user,
         host,
         &[WS],
         &[a.device_pubkey()],
         Arc::new(ActionHostPlane::new(SharedHost(Arc::clone(&actions)))),
-    )
+    ))
     .await;
     assert!(relay.relay.handle().advertised_services().app_serving);
     let a_client = subscribed(relay.relay.node_addr(), &user, &a).await;

@@ -255,7 +255,7 @@ fn context() -> MediaContext {
         delivery_boot: [3; 16],
         origin: "https://media.test".into(),
         workspace: 7,
-        room: request().room.clone(),
+        room: request().room,
         root: [4; 32],
         delivery_host: [5; 32],
         media_host: [6; 32],
@@ -329,7 +329,7 @@ fn bootstrap_binds_candidate_nonce_host_and_exact_bounded_response() {
     assert_eq!(BootstrapRequest::decode(&encoded).unwrap(), request);
     let mut response = BootstrapResponse {
         version: 1,
-        request: request.clone(),
+        request,
         host_certificate: vec![5],
         hint: vec![6],
         generation: 1,
@@ -353,7 +353,7 @@ fn bootstrap_binds_candidate_nonce_host_and_exact_bounded_response() {
     response.descriptor_digest = [4; 32];
     response.expires_at_ns += 1;
     assert!(response.encode().is_err());
-    let mut tail = encoded.clone();
+    let mut tail = encoded;
     tail.push(0);
     assert!(BootstrapRequest::decode(&tail).is_err());
     assert!(BootstrapResponse::decode(&vec![0; 32 * 1024 + 1]).is_err());

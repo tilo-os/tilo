@@ -71,6 +71,10 @@ struct BorrowedClaims<'a> {
 pub struct CursorToken(Vec<u8>);
 impl CursorToken {
     /// Retain nonempty bounded bytes without parsing their claims.
+    ///
+    /// # Errors
+    ///
+    /// Returns `CursorError` if the input is not a canonical encoding within this type's bounds.
     pub fn from_bytes(b: &[u8]) -> Result<Self, CursorError> {
         if b.is_empty() || b.len() > MAX_CURSOR_BYTES {
             Err(CursorError::Codec)
@@ -83,6 +87,10 @@ impl CursorToken {
         &self.0
     }
     /// Issue a cursor with the existing certified host signing key.
+    ///
+    /// # Errors
+    ///
+    /// Returns `CursorError` if the inputs violate this operation's bounds or invariants.
     pub fn issue(issue: CursorIssue, key: &SigningKey) -> Result<Self, CursorError> {
         validate(&issue)?;
         let claims = Claims {
@@ -97,6 +105,10 @@ impl CursorToken {
         Self::from_bytes(&b)
     }
     /// Authenticate canonical bytes; current native authorization remains required.
+    ///
+    /// # Errors
+    ///
+    /// Returns `CursorError` if the value fails validation or verification.
     pub fn authenticate(&self, key: &VerifyingKey) -> Result<SignedCursorClaims, CursorError> {
         let split = self.0.len().checked_sub(64).ok_or(CursorError::Codec)?;
         let (claim_bytes, signature_bytes) = self.0.split_at(split);
@@ -116,7 +128,7 @@ impl CursorToken {
         )
         .map_err(|_| CursorError::Signature)?;
         #[cfg(test)]
-        ROOM_OWNED_COPIES.with(|count| count.set(count.get() + 1));
+        ROOM_OWNED_COPIES.with(|count| count.set(count.get().saturating_add(1)));
         Ok(SignedCursorClaims(claims.issue.into_owned()))
     }
 }

@@ -1,16 +1,28 @@
 //! Certified relay v2 transport tests. No action executor is installed here.
+#![allow(
+    clippy::significant_drop_tightening,
+    reason = "relays, fixtures and guards deliberately stay alive until each test ends"
+)]
+#![allow(
+    clippy::similar_names,
+    reason = "paired test fixtures are named after the roles they mirror"
+)]
+#![allow(
+    clippy::too_many_lines,
+    reason = "each test spells out one end-to-end scenario"
+)]
 use crate::common::{TestUser, client_endpoint, spawn_relay};
 use tilo_user_identity::{DeviceCapabilities, sign_device_cert};
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn agent_read_new_alpn_is_explicitly_served() {
     let user = TestUser::fresh("Agent reads");
-    let relay = spawn_relay(
+    let relay = Box::pin(spawn_relay(
         &user,
         user.enrol("relay", DeviceCapabilities::host()),
         &[7],
         &[],
-    )
+    ))
     .await;
     let endpoint = client_endpoint().await;
     let connection = endpoint
@@ -151,12 +163,12 @@ async fn agent_read_both_legs_and_registered_host_are_required_on_real_wire() {
         let room = Uuid::from_u128(80);
         let host = Uuid::from_u128(81);
         let workspace = tilo_relay::room_workspace_id(&room.to_string()).unwrap();
-        let relay = spawn_relay(
+        let relay = Box::pin(spawn_relay(
             &user,
             user.enrol("relay", DeviceCapabilities::host()),
             &[workspace],
             &[browser.device_pubkey(), broker.device_pubkey()],
-        )
+        ))
         .await;
         let alpn = |new| {
             if new {
@@ -293,12 +305,12 @@ async fn agent_read_both_legs_and_registered_host_are_required_on_real_wire() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn addressed_actions_alpn_is_served_by_the_existing_relay() {
     let user = TestUser::fresh("Alice");
-    let relay = spawn_relay(
+    let relay = Box::pin(spawn_relay(
         &user,
         user.enrol("relay", DeviceCapabilities::host()),
         &[7],
         &[],
-    )
+    ))
     .await;
     let endpoint = client_endpoint().await;
     let connection = endpoint
@@ -380,7 +392,13 @@ async fn exact_relay_device_can_register_its_durable_broker() {
     let relay_signing_key = relay_device.sk.clone();
     let room = Uuid::from_u128(6);
     let workspace_id = tilo_relay::room_workspace_id(&room.to_string()).unwrap();
-    let relay = spawn_relay(&user, relay_device, &[workspace_id], &[relay_key]).await;
+    let relay = Box::pin(spawn_relay(
+        &user,
+        relay_device,
+        &[workspace_id],
+        &[relay_key],
+    ))
+    .await;
     relay
         .relay
         .replace_governed_workspace_access(
@@ -447,12 +465,12 @@ async fn local_broker_exception_rejects_every_non_exact_host_and_unlisted_guest(
     let guest_device = guest.enrol("guest", DeviceCapabilities::primary());
     let room = Uuid::from_u128(8);
     let workspace_id = tilo_relay::room_workspace_id(&room.to_string()).unwrap();
-    let relay = spawn_relay(
+    let relay = Box::pin(spawn_relay(
         &user,
         relay_device,
         &[workspace_id],
         &[relay_key, other_host_key],
-    )
+    ))
     .await;
     relay
         .relay
@@ -531,18 +549,30 @@ async fn local_broker_exception_rejects_every_non_exact_host_and_unlisted_guest(
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn addressed_actions_are_private_live_and_demultiplexed_from_v1_state() {
+    fn scan(path: &std::path::Path) {
+        for entry in std::fs::read_dir(path).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                scan(&path);
+            } else {
+                let data = std::fs::read(path).unwrap();
+                assert!(!data.windows(13).any(|v| v == b"private-phase"));
+                assert!(!data.windows(14).any(|v| v == b"private-result"));
+            }
+        }
+    }
     let user = TestUser::fresh("Alice");
     let a = user.enrol("a", DeviceCapabilities::primary());
     let b = user.enrol("b", DeviceCapabilities::primary());
     let c = user.enrol("v1", DeviceCapabilities::primary());
     let room = Uuid::from_u128(7);
     let workspace_id = tilo_relay::room_workspace_id(&room.to_string()).unwrap();
-    let relay = spawn_relay(
+    let relay = Box::pin(spawn_relay(
         &user,
         user.enrol("relay", DeviceCapabilities::host()),
         &[workspace_id],
         &[a.device_pubkey(), b.device_pubkey(), c.device_pubkey()],
-    )
+    ))
     .await;
     let ca = join_v2(&relay, &a, room).await;
     let cb = join_v2(&relay, &b, room).await;
@@ -590,7 +620,8 @@ async fn addressed_actions_are_private_live_and_demultiplexed_from_v1_state() {
         }
     );
     // Reply carries the existing typed lifecycle, privately, with full UUID.
-    let invocation = tilo_actions::InvocationId(Uuid::from_u128(0x123456789abcdef123456789abcdef));
+    let invocation =
+        tilo_actions::InvocationId(Uuid::from_u128(0x0012_3456_789a_bcde_f123_4567_89ab_cdef));
     let update = DirectedAction {
         room,
         request_id: Uuid::from_u128(101),
@@ -648,18 +679,6 @@ async fn addressed_actions_are_private_live_and_demultiplexed_from_v1_state() {
             .is_err()
     );
     // No action values reached a pending queue, retained tail or checkpoint.
-    fn scan(path: &std::path::Path) {
-        for entry in std::fs::read_dir(path).unwrap() {
-            let path = entry.unwrap().path();
-            if path.is_dir() {
-                scan(&path)
-            } else {
-                let data = std::fs::read(path).unwrap();
-                assert!(!data.windows(13).any(|v| v == b"private-phase"));
-                assert!(!data.windows(14).any(|v| v == b"private-result"));
-            }
-        }
-    }
     scan(&relay.state_root);
     let store =
         tilo_relay::store::WorkspaceStore::open(&relay.state_root, workspace_id, true).unwrap();
@@ -677,12 +696,12 @@ async fn addressed_actions_replacement_survives_old_cleanup_and_rechecks_members
     let b = user.enrol("b", DeviceCapabilities::primary());
     let room = Uuid::from_u128(8);
     let workspace_id = tilo_relay::room_workspace_id(&room.to_string()).unwrap();
-    let relay = spawn_relay(
+    let relay = Box::pin(spawn_relay(
         &user,
         user.enrol("relay", DeviceCapabilities::host()),
         &[workspace_id],
         &[a.device_pubkey(), b.device_pubkey()],
-    )
+    ))
     .await;
     let ca = join_v2(&relay, &a, room).await;
     let old = join_v2(&relay, &b, room).await;
@@ -722,12 +741,12 @@ async fn addressed_actions_reject_source_forgery_and_external_effect_admission()
     let b = user.enrol("b", DeviceCapabilities::primary());
     let room = Uuid::from_u128(9);
     let workspace_id = tilo_relay::room_workspace_id(&room.to_string()).unwrap();
-    let relay = spawn_relay(
+    let relay = Box::pin(spawn_relay(
         &user,
         user.enrol("relay", DeviceCapabilities::host()),
         &[workspace_id],
         &[a.device_pubkey(), b.device_pubkey()],
-    )
+    ))
     .await;
     let ca = join_v2(&relay, &a, room).await;
     let cb = join_v2(&relay, &b, room).await;
@@ -807,12 +826,12 @@ async fn addressed_actions_reject_source_forgery_and_external_effect_admission()
 async fn addressed_actions_v2_preserves_cert_and_enrolled_host_pinning() {
     let user = TestUser::fresh("Alice");
     let other = TestUser::fresh("Mallory");
-    let relay = spawn_relay(
+    let relay = Box::pin(spawn_relay(
         &user,
         user.enrol("relay", DeviceCapabilities::host()),
         &[7],
         &[],
-    )
+    ))
     .await;
     let device = user.enrol("a", DeviceCapabilities::primary());
     let bad = other.enrol("intruder", DeviceCapabilities::primary());
@@ -855,12 +874,12 @@ async fn addressed_actions_coedit_uses_the_same_demultiplexer() {
     let b = user.enrol("b", DeviceCapabilities::primary());
     let room = Uuid::from_u128(10);
     let workspace_id = tilo_relay::room_workspace_id(&room.to_string()).unwrap();
-    let relay = spawn_relay(
+    let relay = Box::pin(spawn_relay(
         &user,
         user.enrol("relay", DeviceCapabilities::host()),
         &[workspace_id],
         &[a.device_pubkey(), b.device_pubkey()],
-    )
+    ))
     .await;
     let ca = join_v2(&relay, &a, room).await;
     let cb = join_v2(&relay, &b, room).await;
@@ -895,7 +914,7 @@ async fn addressed_actions_coedit_uses_the_same_demultiplexer() {
         panic!("state lane lost edit")
     };
     let mut received = automerge::AutoCommit::new();
-    received.load_incremental(&data).unwrap();
+    tilo_automerge::ApplyIncoming::load_incoming(&mut received, &data).unwrap();
     assert_eq!(received.get_heads(), doc.get_heads());
     assert!(
         matches!(tokio::time::timeout(Duration::from_secs(5),b_session.recv_action()).await.unwrap(),Some(EnvelopeV2::Delivered{source_user,..}) if source_user==user.user_pk)
@@ -911,12 +930,12 @@ async fn addressed_actions_sustained_state_flood_keeps_private_roundtrips_and_re
     let b = user.enrol("b", DeviceCapabilities::primary());
     let room = Uuid::from_u128(15);
     let workspace_id = tilo_relay::room_workspace_id(&room.to_string()).unwrap();
-    let relay = spawn_relay(
+    let relay = Box::pin(spawn_relay(
         &user,
         user.enrol("relay", DeviceCapabilities::host()),
         &[workspace_id],
         &[a.device_pubkey(), b.device_pubkey()],
-    )
+    ))
     .await;
     let ca = join_v2(&relay, &a, room).await;
     let cb = join_v2(&relay, &b, room).await;

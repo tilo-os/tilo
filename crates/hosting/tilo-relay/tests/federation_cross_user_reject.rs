@@ -19,6 +19,10 @@
     clippy::unreachable,
     reason = "in a test these are the assertion, not a hazard"
 )]
+#![allow(
+    clippy::significant_drop_tightening,
+    reason = "relays, fixtures and guards deliberately stay alive until each test ends"
+)]
 
 use std::time::Duration;
 
@@ -39,8 +43,14 @@ async fn cross_user_peer_relay_is_rejected() {
     // Same workspace id on both — id collision on its own is not a
     // vulnerability because auth is per-user; this is the setup a
     // malicious operator would use to try to smuggle state across.
-    let a_relay = spawn_relay(&alice, a_relay_dev, &[42], &[a_client_dev.device_pubkey()]).await;
-    let b_relay = spawn_relay(&bob, b_relay_dev, &[42], &[]).await;
+    let a_relay = Box::pin(spawn_relay(
+        &alice,
+        a_relay_dev,
+        &[42],
+        &[a_client_dev.device_pubkey()],
+    ))
+    .await;
+    let b_relay = Box::pin(spawn_relay(&bob, b_relay_dev, &[42], &[])).await;
 
     // Alice's relay is told to federate with Bob's — the dial task
     // will run, but the mutual-auth check on the returning HelloAck

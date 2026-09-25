@@ -1,3 +1,15 @@
+#![allow(
+    clippy::significant_drop_tightening,
+    reason = "relays, fixtures and guards deliberately stay alive until each test ends"
+)]
+#![allow(
+    clippy::similar_names,
+    reason = "paired test fixtures are named after the roles they mirror"
+)]
+#![allow(
+    clippy::too_many_lines,
+    reason = "each test spells out one end-to-end scenario"
+)]
 use super::private_transport_tests::certified_device;
 use super::*;
 use crate::{
@@ -24,7 +36,7 @@ struct Fixture {
     recipient_disconnected: mpsc::Receiver<()>,
     private: mpsc::Sender<PrivateOutbound>,
     metrics: Arc<crate::metrics::Metrics>,
-    _receivers: Vec<mpsc::Receiver<Envelope>>,
+    receivers: Vec<mpsc::Receiver<Envelope>>,
 }
 impl Fixture {
     fn new() -> Self {
@@ -63,7 +75,7 @@ impl Fixture {
         for peer in [&author, &recipient] {
             runtime.admit_device(peer.device_public_key).unwrap();
         }
-        crate::persistence::isolate_test_admission_with_workers(&mut runtime, workers.clone());
+        crate::persistence::isolate_test_admission_with_workers(&runtime, workers.clone());
         let (source_tx, source_rx) = mpsc::channel(32);
         let (recipient_tx, recipient_state_rx) = mpsc::channel(32);
         let (delivery, recipient_rx) = mpsc::channel(delivery_capacity);
@@ -124,7 +136,7 @@ impl Fixture {
             recipient_disconnected,
             private,
             metrics: Arc::new(crate::metrics::Metrics::default()),
-            _receivers: vec![source_rx, recipient_state_rx],
+            receivers: vec![source_rx, recipient_state_rx],
         }
     }
     fn envelope(&self, kind: u8) -> Envelope {
@@ -150,7 +162,7 @@ impl Fixture {
         Envelope::Delta {
             workspace_id: 7,
             author_device_public_key: self.source.peer.device_public_key,
-            authored_at_ns: kind as u64,
+            authored_at_ns: u64::from(kind),
             delta,
             signature: [0; 64],
         }
@@ -259,8 +271,7 @@ impl Fixture {
         }
         // A production prefix arrives only after subscription has initialized
         // the bound selector and replay scratch; retain the resulting live lane.
-        fixture.recipient_rx = fixture
-            .replay_to_with_deliveries(&mut Vec::new())
+        fixture.recipient_rx = Box::pin(fixture.replay_to_with_deliveries(&mut Vec::new()))
             .await
             .unwrap();
         fixture
@@ -332,7 +343,7 @@ impl Fixture {
 }
 
 async fn assert_personal_continuity_live_closure(prefix: bool) -> (Fixture, Envelope) {
-    let mut fixture = Fixture::for_checkpoint_path(prefix).await;
+    let mut fixture = Box::pin(Fixture::for_checkpoint_path(prefix)).await;
     let (channel, initial) = fixture.continuity_checkpoint(vec![1]);
     let initial = fixture.checkpoint_frame(1, channel, initial);
     fixture
@@ -369,14 +380,14 @@ async fn assert_personal_continuity_live_closure(prefix: bool) -> (Fixture, Enve
 #[tokio::test]
 async fn personal_continuity_live_closure_uses_both_publishers() {
     for prefix in [false, true] {
-        assert_personal_continuity_live_closure(prefix).await;
+        Box::pin(assert_personal_continuity_live_closure(prefix)).await;
     }
 }
 
 #[tokio::test]
 async fn personal_continuity_latest_only_replay_uses_both_publishers() {
     for prefix in [false, true] {
-        let (fixture, closed) = assert_personal_continuity_live_closure(prefix).await;
+        let (fixture, closed) = Box::pin(assert_personal_continuity_live_closure(prefix)).await;
         // Re-subscription creates a fresh live session with the same durable
         // identity and exercises the actual replay writer and final Ready.
         fixture
@@ -385,7 +396,7 @@ async fn personal_continuity_latest_only_replay_uses_both_publishers() {
             .await
             .remove_subscriber(&fixture.recipient.device_public_key);
         let mut wire = Vec::new();
-        fixture.replay_to(&mut wire).await.unwrap();
+        Box::pin(fixture.replay_to(&mut wire)).await.unwrap();
         let mut reader = SessionReader::new(wire.as_slice(), true);
         let mut checkpoints = Vec::new();
         let mut ready = false;
@@ -408,7 +419,7 @@ async fn personal_continuity_latest_only_replay_uses_both_publishers() {
 #[tokio::test]
 async fn personal_continuity_newest_replay_preserves_all_retained_receipts() {
     for prefix in [false, true] {
-        let mut fixture = Fixture::for_checkpoint_path(prefix).await;
+        let mut fixture = Box::pin(Fixture::for_checkpoint_path(prefix)).await;
         let mut published = Vec::new();
         for (time, snapshot) in [(1, vec![1]), (2, Vec::new()), (3, vec![1])] {
             let (channel, body) = fixture.continuity_checkpoint(snapshot);
@@ -430,7 +441,7 @@ async fn personal_continuity_newest_replay_preserves_all_retained_receipts() {
             "authenticated receipt append changed bytes/order, retired history or deduplicated a new receipt by its old body"
         );
         let mut wire = Vec::new();
-        fixture.replay_to(&mut wire).await.unwrap();
+        Box::pin(fixture.replay_to(&mut wire)).await.unwrap();
         let mut reader = SessionReader::new(wire.as_slice(), true);
         let mut replayed = Vec::new();
         while let Some(frame) = reader.read_next().await.unwrap() {
@@ -518,7 +529,7 @@ async fn personal_continuity_unmarked_identical_frame_cannot_replace_marked_succ
         "physical receipt order or marked/unmarked association changed"
     );
     let mut wire = Vec::new();
-    fixture.replay_to(&mut wire).await.unwrap();
+    Box::pin(fixture.replay_to(&mut wire)).await.unwrap();
     let mut reader = SessionReader::new(wire.as_slice(), true);
     let mut replayed = Vec::new();
     while let Some(frame) = reader.read_next().await.unwrap() {
@@ -557,7 +568,7 @@ async fn personal_continuity_unmarked_historical_checkpoint_remains_in_replay() 
     fixture.assert_checkpoint_written(&closed).await;
     fixture.drained_wait().await;
     let mut wire = Vec::new();
-    fixture.replay_to(&mut wire).await.unwrap();
+    Box::pin(fixture.replay_to(&mut wire)).await.unwrap();
     let mut reader = SessionReader::new(wire.as_slice(), true);
     let mut replayed = Vec::new();
     while let Some(frame) = reader.read_next().await.unwrap() {
@@ -577,7 +588,7 @@ async fn personal_continuity_unmarked_historical_checkpoint_remains_in_replay() 
 #[tokio::test]
 async fn personal_continuity_aborted_replay_selects_newest_pending_receipt() {
     for prefix in [false, true] {
-        let mut fixture = Fixture::for_checkpoint_path(prefix).await;
+        let mut fixture = Box::pin(Fixture::for_checkpoint_path(prefix)).await;
         let (channel, initial) = fixture.continuity_checkpoint(vec![1]);
         let initial = fixture.checkpoint_frame(1, channel, initial);
         fixture
@@ -588,7 +599,8 @@ async fn personal_continuity_aborted_replay_selects_newest_pending_receipt() {
         let (release, reached) =
             crate::store::test_barrier::install(fixture.store.root(), "replay-manifest-prepare");
         let replaying = fixture.clone();
-        let replay = tokio::spawn(async move { replaying.replay_to(&mut Vec::new()).await });
+        let replay =
+            tokio::spawn(async move { Box::pin(replaying.replay_to(&mut Vec::new())).await });
         tokio::time::timeout(std::time::Duration::from_secs(5), reached)
             .await
             .expect("replay never reached detached preparation")
@@ -627,7 +639,7 @@ async fn personal_continuity_aborted_replay_selects_newest_pending_receipt() {
             "aborting replay acknowledged pending continuity receipts before successful replay"
         );
         let mut wire = Vec::new();
-        fixture.replay_to(&mut wire).await.unwrap();
+        Box::pin(fixture.replay_to(&mut wire)).await.unwrap();
         let mut reader = SessionReader::new(wire.as_slice(), true);
         let mut replayed = Vec::new();
         while let Some(frame) = reader.read_next().await.unwrap() {
@@ -698,7 +710,7 @@ async fn personal_continuity_rechecks_source_revocation_after_persistence_wait()
 
 #[tokio::test]
 async fn personal_continuity_prefix_rechecks_source_revocation_after_persistence_wait() {
-    let mut fixture = Fixture::for_checkpoint_path(true).await;
+    let mut fixture = Box::pin(Fixture::for_checkpoint_path(true)).await;
     let (channel, closed) = fixture.continuity_checkpoint(Vec::new());
     let closed = fixture.checkpoint_frame(1, channel, closed);
     // With a new lineage the prefix prepares recipients before its first
@@ -753,7 +765,7 @@ async fn personal_continuity_prefix_rechecks_source_revocation_after_persistence
 #[tokio::test]
 async fn personal_continuity_caller_cancellation_before_admission_leaves_no_receipt() {
     for prefix in [false, true] {
-        let fixture = Arc::new(Fixture::for_checkpoint_path(prefix).await);
+        let fixture = Arc::new(Box::pin(Fixture::for_checkpoint_path(prefix)).await);
         let owner = crate::persistence::handle(&fixture.workspace).await;
         let (release, reached) =
             crate::store::test_barrier::install(fixture.store.root(), "hold-owner");
@@ -800,7 +812,7 @@ async fn personal_continuity_caller_cancellation_before_admission_leaves_no_rece
 #[tokio::test]
 async fn personal_continuity_caller_cancellation_after_admission_preserves_acceptance() {
     for prefix in [false, true] {
-        let mut fixture = Fixture::for_checkpoint_path(prefix).await;
+        let mut fixture = Box::pin(Fixture::for_checkpoint_path(prefix)).await;
         let (channel, body) = fixture.continuity_checkpoint(vec![1]);
         let initial = fixture.checkpoint_frame(1, channel, body);
         fixture
@@ -830,7 +842,7 @@ async fn personal_continuity_caller_cancellation_after_admission_preserves_accep
         let mut fixture = Arc::try_unwrap(fixture).ok().unwrap();
         fixture.assert_checkpoint_written(&closed).await;
         let mut wire = Vec::new();
-        fixture.replay_to(&mut wire).await.unwrap();
+        Box::pin(fixture.replay_to(&mut wire)).await.unwrap();
         let mut reader = SessionReader::new(wire.as_slice(), true);
         assert_eq!(
             reader.read_next().await.unwrap(),
@@ -848,7 +860,7 @@ async fn personal_continuity_caller_cancellation_after_admission_preserves_accep
 #[tokio::test]
 async fn personal_continuity_session_invalidation_before_acceptance_blocks_receipt() {
     for prefix in [false, true] {
-        let mut fixture = Fixture::for_checkpoint_path(prefix).await;
+        let mut fixture = Box::pin(Fixture::for_checkpoint_path(prefix)).await;
         let live = Arc::new(std::sync::atomic::AtomicBool::new(true));
         fixture.source.session_live = Some(live.clone());
         let owner = crate::persistence::handle(&fixture.workspace).await;
@@ -898,7 +910,7 @@ async fn personal_continuity_session_invalidation_before_acceptance_blocks_recei
 
 #[tokio::test]
 async fn personal_continuity_prefix_revocation_before_promotion_keeps_prior_current() {
-    let mut fixture = Fixture::for_checkpoint_path(true).await;
+    let mut fixture = Box::pin(Fixture::for_checkpoint_path(true)).await;
     let (channel, body) = fixture.continuity_checkpoint(vec![1]);
     let initial = fixture.checkpoint_frame(1, channel, body);
     fixture
@@ -947,7 +959,7 @@ async fn personal_continuity_prefix_revocation_before_promotion_keeps_prior_curr
         "speculative marked stage became accepted CURRENT after source revocation"
     );
     let mut wire = Vec::new();
-    fixture.replay_to(&mut wire).await.unwrap();
+    Box::pin(fixture.replay_to(&mut wire)).await.unwrap();
     let mut reader = SessionReader::new(wire.as_slice(), true);
     assert_eq!(
         reader.read_next().await.unwrap(),
@@ -997,7 +1009,7 @@ async fn personal_continuity_nonmatching_checkpoints_keep_once_and_rearm_gates()
             if prefix && matches!(case, "no_source" | "outer_trailing") {
                 continue;
             }
-            let mut fixture = Fixture::for_checkpoint_path(prefix).await;
+            let mut fixture = Box::pin(Fixture::for_checkpoint_path(prefix)).await;
             let (mut channel, mut body) = fixture.continuity_checkpoint(vec![1]);
             match case {
                 "opaque" => body = vec![1; 64],
@@ -1023,7 +1035,7 @@ async fn personal_continuity_nonmatching_checkpoints_keep_once_and_rearm_gates()
                             requester: 7,
                         },
                     )
-                    .unwrap()
+                    .unwrap();
                 }
                 "signed_shell" => {
                     channel = signed_channel;
@@ -1631,14 +1643,14 @@ async fn failed_sync_fallback_does_not_advance_the_materialized_retry_fence() {
     let pending = fixture.store.root().join("pending");
     std::fs::remove_dir_all(&pending).unwrap();
     std::fs::write(&pending, b"blocked").unwrap();
-    enqueue_state_inner(
+    Box::pin(enqueue_state_inner(
         &fixture.workspace,
         envelope.clone(),
         Some(fixture.source.clone()),
         PeerRole::PeerRelay,
         fixture.metrics.clone(),
         true,
-    )
+    ))
     .await
     .unwrap();
     let owner = crate::persistence::handle(&fixture.workspace).await;
@@ -1650,14 +1662,14 @@ async fn failed_sync_fallback_does_not_advance_the_materialized_retry_fence() {
         "failed durable fanout advanced the anti-entropy retry fence"
     );
     std::fs::remove_file(pending).unwrap();
-    enqueue_state_inner(
+    Box::pin(enqueue_state_inner(
         &fixture.workspace,
         envelope,
         Some(fixture.source.clone()),
         PeerRole::PeerRelay,
         fixture.metrics.clone(),
         true,
-    )
+    ))
     .await
     .unwrap();
     fixture.drained().await;
@@ -1802,7 +1814,7 @@ async fn sync_request_waits_for_owner_capacity_and_rechecks_source() {
             let Envelope::SyncResponse {
                 workspace_id,
                 delta_since,
-            } = fixture._receivers[0]
+            } = fixture.receivers[0]
                 .try_recv()
                 .expect("missing authorized sync response")
             else {
@@ -1810,11 +1822,11 @@ async fn sync_request_waits_for_owner_capacity_and_rechecks_source() {
             };
             assert_eq!(workspace_id, 7);
             let mut received = automerge::AutoCommit::new();
-            received.load_incremental(&delta_since).unwrap();
+            tilo_automerge::ApplyIncoming::load_incoming(&mut received, &delta_since).unwrap();
             assert_eq!(received.get_heads(), expected_heads);
         }
         assert!(
-            fixture._receivers[0].try_recv().is_err(),
+            fixture.receivers[0].try_recv().is_err(),
             "SyncRequest published an extra or unauthorized response ({change})"
         );
     }
@@ -1863,7 +1875,7 @@ async fn unsubscribed_sync_request_cannot_publish_after_a_replacement_subscribes
     drop(release);
     fixture.drained().await;
     assert!(
-        fixture._receivers[0].try_recv().is_err(),
+        fixture.receivers[0].try_recv().is_err(),
         "unsubscribed old source published a sync response after replacement"
     );
 }
@@ -2070,9 +2082,8 @@ async fn replay_completion_only_classifies_a_valid_replacement_as_superseded() {
             .await
             .unwrap()
             .unwrap();
-        let error = match result {
-            Err(error) => error,
-            Ok(_) => panic!("mutated replay completion unexpectedly registered"),
+        let Err(error) = result else {
+            panic!("mutated replay completion unexpectedly registered")
         };
         if matches!(mutation, Mutation::Replacement) {
             assert!(matches!(error, PeerError::Superseded));
@@ -2239,7 +2250,7 @@ async fn replay_owner_wait_drains_private_replies_and_rechecks_authority() {
                 private_tx: &writer.private,
                 revocations: &writer.source.revocations,
             };
-            finish_replay_write(
+            Box::pin(finish_replay_write(
                 ReplayWrite {
                     ticket: Some(ticket),
                     reply: None,
@@ -2250,7 +2261,7 @@ async fn replay_owner_wait_drains_private_replies_and_rechecks_authority() {
                 &std::sync::atomic::AtomicUsize::new(1),
                 &mut private_rx,
                 &mut write,
-            )
+            ))
             .await
         });
         let mut reader = crate::transport_v2::SessionReader::new(read, true);
@@ -2408,13 +2419,12 @@ async fn replay_direct_wait_keeps_replay_live_while_private_delivery_waits_for_i
 
     let mut task = task;
     let joined = tokio::time::timeout(std::time::Duration::from_secs(3), &mut task).await;
-    let (result, wire) = match joined {
-        Ok(joined) => joined.unwrap(),
-        Err(_) => {
-            task.abort();
-            let _ = task.await;
-            panic!("private delivery stopped replay from releasing its authorization lane");
-        }
+    let (result, wire) = if let Ok(joined) = joined {
+        joined.unwrap()
+    } else {
+        task.abort();
+        let _ = task.await;
+        panic!("private delivery stopped replay from releasing its authorization lane");
     };
     result.unwrap();
     let mut reader = SessionReader::new(wire.as_slice(), true);
@@ -2566,7 +2576,8 @@ async fn detached_replay_catches_up_pending_without_replaying_selected_baseline(
         crate::store::test_barrier::install(fixture.store.root(), "replay-before-ready");
     let (mut write, read) = tokio::io::duplex(1024 * 1024);
     let writer = fixture.clone();
-    let replay = tokio::spawn(async move { writer.replay_to_with_deliveries(&mut write).await });
+    let replay =
+        tokio::spawn(async move { Box::pin(writer.replay_to_with_deliveries(&mut write)).await });
     prepare_reached.await.unwrap();
 
     fixture.enqueue(2).await;
@@ -2659,7 +2670,7 @@ async fn cancelled_before_pending_catchup_preserves_semantic_update_for_reconnec
     let (capture_release, capture_reached) =
         crate::store::test_barrier::install(fixture.store.root(), "replay-pending-capture");
     let replaying = fixture.clone();
-    let task = tokio::spawn(async move { replaying.replay_to(&mut Vec::new()).await });
+    let task = tokio::spawn(async move { Box::pin(replaying.replay_to(&mut Vec::new())).await });
     prepare_reached.await.unwrap();
     fixture.enqueue(2).await;
     fixture.drained_wait().await;
@@ -2687,7 +2698,7 @@ async fn cancelled_before_pending_catchup_preserves_semantic_update_for_reconnec
     );
 
     let mut wire = Vec::new();
-    fixture.replay_to(&mut wire).await.unwrap();
+    Box::pin(fixture.replay_to(&mut wire)).await.unwrap();
     let mut reader = crate::transport_v2::SessionReader::new(wire.as_slice(), true);
     let mut tail = 0;
     loop {
@@ -2798,7 +2809,7 @@ async fn replay_fenced_before_final_ready_never_writes_ready() {
     let replaying = fixture.clone();
     let task = tokio::spawn(async move {
         let mut wire = Vec::new();
-        let result = replaying.replay_to(&mut wire).await;
+        let result = Box::pin(replaying.replay_to(&mut wire)).await;
         (result, wire)
     });
     reached.await.unwrap();
@@ -2912,7 +2923,9 @@ impl Fixture {
         &self,
         write: &mut W,
     ) -> Result<(), PeerError> {
-        self.replay_to_with_deliveries(write).await.map(|_| ())
+        Box::pin(self.replay_to_with_deliveries(write))
+            .await
+            .map(|_| ())
     }
 
     async fn replay_to_with_deliveries<W: tokio::io::AsyncWrite + Unpin>(
@@ -2938,7 +2951,7 @@ impl Fixture {
             private_tx: &self.private,
             revocations: &self.source.revocations,
         };
-        handle_inbound_frame(
+        Box::pin(handle_inbound_frame(
             Envelope::Subscribe {
                 workspace_id: self.store.workspace_id(),
             },
@@ -2946,7 +2959,7 @@ impl Fixture {
             &session,
             &mut Vec::new(),
             write,
-        )
+        ))
         .await?;
         Ok(state_rx)
     }
@@ -2968,7 +2981,7 @@ async fn replay_cleanup_rechecks_authority_after_waiting_for_worker() {
         let (release, reached) =
             crate::store::test_barrier::install(fixture.store.root(), "replay-cleanup");
         let writer = fixture.clone();
-        let task = tokio::spawn(async move { writer.replay_to(&mut Vec::new()).await });
+        let task = tokio::spawn(async move { Box::pin(writer.replay_to(&mut Vec::new())).await });
         reached.await.unwrap();
         match change {
             0 => {
@@ -3046,7 +3059,7 @@ async fn replay_finish_rejects_duplicate_completion_and_outstanding_batches() {
         {
             ReplayAdvance::Preparing => {}
             ReplayAdvance::Batch(batch) => break batch,
-            _ => panic!("empty replay bypassed its batch receipt"),
+            ReplayAdvance::Exhausted(_) => panic!("empty replay bypassed its batch receipt"),
         }
     };
     let authority = ticket.authority.clone();
@@ -3131,7 +3144,7 @@ impl tokio::io::AsyncWrite for InterruptWrite {
             return std::task::Poll::Ready(Err(std::io::ErrorKind::BrokenPipe.into()));
         }
         let written = self.remaining.min(bytes.len());
-        self.remaining -= written;
+        self.remaining = self.remaining.saturating_sub(written);
         std::task::Poll::Ready(Ok(written))
     }
     fn poll_flush(
@@ -3156,7 +3169,7 @@ async fn interrupted_second_batch_preserves_entire_replay_until_reconnect() {
             .enqueue_pending(
                 &fixture.recipient.device_public_key,
                 i,
-                &crate::transport::encode(&fixture.envelope(i as u8)).unwrap(),
+                &crate::transport::encode(&fixture.envelope(u8::try_from(i).unwrap())).unwrap(),
             )
             .unwrap();
     }
@@ -3168,12 +3181,11 @@ async fn interrupted_second_batch_preserves_entire_replay_until_reconnect() {
         })
         .sum();
     assert!(
-        fixture
-            .replay_to(&mut InterruptWrite {
-                remaining: first_batch_bytes + 3
-            })
-            .await
-            .is_err()
+        Box::pin(fixture.replay_to(&mut InterruptWrite {
+            remaining: first_batch_bytes + 3
+        }))
+        .await
+        .is_err()
     );
     assert_eq!(
         fixture
@@ -3183,7 +3195,7 @@ async fn interrupted_second_batch_preserves_entire_replay_until_reconnect() {
         25
     );
     let mut wire = Vec::new();
-    fixture.replay_to(&mut wire).await.unwrap();
+    Box::pin(fixture.replay_to(&mut wire)).await.unwrap();
     let mut reader = SessionReader::new(wire.as_slice(), true);
     for i in 0..25 {
         assert_eq!(

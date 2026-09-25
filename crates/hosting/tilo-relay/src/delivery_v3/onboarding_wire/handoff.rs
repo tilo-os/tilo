@@ -1,5 +1,8 @@
 //! Explicit pinned onboarding payloads, never an arbitrary blob read capability.
-use super::*;
+use super::{
+    Deserialize, MAX_RESPONSE_BYTES, OnboardingScope, Serialize, WireError, canonical, current,
+    digest, encode, lifetime, verify,
+};
 pub const HANDOFF_CHUNKS_PATH: &str = "/peer/v3/onboarding/chunks";
 pub const MAX_MANIFEST_BYTES: usize = 8192;
 pub const MAX_HANDOFF_CHUNK_BYTES: usize = 256 * 1024;
@@ -144,15 +147,24 @@ impl<'a> HandoffManifest<'a> {
         }
         Ok(())
     }
+    /// # Errors
+    ///
+    /// Returns `WireError` if the value violates its wire bounds or cannot be serialized.
     pub fn encode(&self) -> Result<Vec<u8>, WireError> {
         self.validate()?;
         encode(self, MAX_MANIFEST_BYTES)
     }
+    /// # Errors
+    ///
+    /// Returns `WireError` if the input is not a canonical encoding within this type's bounds.
     pub fn decode(bytes: &'a [u8]) -> Result<Self, WireError> {
         let v: Self = canonical(bytes, MAX_MANIFEST_BYTES)?;
         v.validate()?;
         Ok(v)
     }
+    /// # Errors
+    ///
+    /// Returns `WireError` if the value cannot be canonically encoded.
     pub fn signing_digest(&self) -> Result<[u8; 32], WireError> {
         self.validate()?;
         digest(
@@ -174,10 +186,16 @@ impl<'a> HandoffManifest<'a> {
             ),
         )
     }
+    /// # Errors
+    ///
+    /// Returns `WireError` if the value cannot be canonically encoded.
     pub fn manifest_digest(&self) -> Result<[u8; 32], WireError> {
         self.validate()?;
         digest(b"tilo-delivery-v3-onboarding-manifest-id\0", self)
     }
+    /// # Errors
+    ///
+    /// Returns `WireError` if the value fails validation or verification.
     pub fn verify_host_signature(
         &self,
         scope: OnboardingScope<'_>,
@@ -207,21 +225,30 @@ impl HandoffRequest {
             || self.nonce == [0; 32]
             || self.length == 0
             || self.length as usize > MAX_HANDOFF_RANGE_BYTES
-            || self.offset.checked_add(self.length as u64).is_none()
+            || self.offset.checked_add(u64::from(self.length)).is_none()
         {
             return Err(WireError::Invalid);
         }
         Ok(())
     }
+    /// # Errors
+    ///
+    /// Returns `WireError` if the value violates its wire bounds or cannot be serialized.
     pub fn encode(&self) -> Result<Vec<u8>, WireError> {
         self.validate()?;
         encode(self, 512)
     }
+    /// # Errors
+    ///
+    /// Returns `WireError` if the input is not a canonical encoding within this type's bounds.
     pub fn decode(bytes: &[u8]) -> Result<Self, WireError> {
         let v: Self = canonical(bytes, 512)?;
         v.validate()?;
         Ok(v)
     }
+    /// # Errors
+    ///
+    /// Returns `WireError` if the value cannot be canonically encoded.
     pub fn signing_digest(&self) -> Result<[u8; 32], WireError> {
         self.validate()?;
         digest(
@@ -238,10 +265,16 @@ impl HandoffRequest {
             ),
         )
     }
+    /// # Errors
+    ///
+    /// Returns `WireError` if the value cannot be canonically encoded.
     pub fn request_digest(&self) -> Result<[u8; 32], WireError> {
         self.validate()?;
         digest(b"tilo-delivery-v3-onboarding-chunk-request-id\0", self)
     }
+    /// # Errors
+    ///
+    /// Returns `WireError` if the value fails validation or verification.
     pub fn verify_device_signature(
         &self,
         manifest: &HandoffManifest<'_>,
@@ -255,7 +288,7 @@ impl HandoffRequest {
             || self.device != manifest.device
             || self
                 .offset
-                .checked_add(self.length as u64)
+                .checked_add(u64::from(self.length))
                 .is_none_or(|end| end > manifest.total_bytes)
             || self.expires_at_ns > manifest.expires_at_ns
         {
@@ -277,15 +310,24 @@ impl<'a> HandoffChunk<'a> {
         }
         Ok(())
     }
+    /// # Errors
+    ///
+    /// Returns `WireError` if the value violates its wire bounds or cannot be serialized.
     pub fn encode(&self) -> Result<Vec<u8>, WireError> {
         self.validate()?;
         encode(self, MAX_HANDOFF_CHUNK_BYTES)
     }
+    /// # Errors
+    ///
+    /// Returns `WireError` if the input is not a canonical encoding within this type's bounds.
     pub fn decode(bytes: &'a [u8]) -> Result<Self, WireError> {
         let v: Self = canonical(bytes, MAX_HANDOFF_CHUNK_BYTES)?;
         v.validate()?;
         Ok(v)
     }
+    /// # Errors
+    ///
+    /// Returns `WireError` if the value cannot be canonically encoded.
     pub fn signing_digest(&self) -> Result<[u8; 32], WireError> {
         self.validate()?;
         digest(
@@ -301,6 +343,10 @@ impl<'a> HandoffChunk<'a> {
     }
     /// Validates transport bytes only; caller additionally verifies accumulated
     /// ordered segment/whole-content digests before original bootstrap admission.
+    ///
+    /// # Errors
+    ///
+    /// Returns `WireError` if the value fails validation or verification.
     pub fn verify_host_signature(
         &self,
         manifest: &HandoffManifest<'_>,
@@ -326,6 +372,10 @@ impl<'a> HandoffChunk<'a> {
 impl<'a> GovernanceBundle<'a> {
     /// Bound before streaming serialization; native can serialize borrowed pins
     /// with a range-writing flavor instead of allocating a second whole bundle.
+    ///
+    /// # Errors
+    ///
+    /// Returns `WireError` if the value violates its wire bounds or cannot be serialized.
     pub fn encoded_len(&self) -> Result<usize, WireError> {
         if self.items.is_empty()
             || self.items.len() > MAX_GOVERNANCE_ITEMS
@@ -342,6 +392,9 @@ impl<'a> GovernanceBundle<'a> {
         }
         Ok(size)
     }
+    /// # Errors
+    ///
+    /// Returns `WireError` if the input is not a canonical encoding within this type's bounds.
     pub fn decode(bytes: &'a [u8]) -> Result<Self, WireError> {
         let v: Self = canonical(bytes, MAX_GOVERNANCE_BYTES)?;
         v.encoded_len()?;

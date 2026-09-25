@@ -18,31 +18,31 @@ pub const MAX_PAYLOAD_BYTES: usize = 256 * 1024;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u16)]
 pub enum MessageType {
-    /// ClientHello message (1).
+    /// `ClientHello` message (1).
     ClientHello = 1,
-    /// ServerHello message (2).
+    /// `ServerHello` message (2).
     ServerHello = 2,
-    /// ClientProof message (3).
+    /// `ClientProof` message (3).
     ClientProof = 3,
     /// Ready message (4).
     Ready = 4,
-    /// LaneOpen message (5).
+    /// `LaneOpen` message (5).
     LaneOpen = 5,
-    /// StateItemChunk message (10).
+    /// `StateItemChunk` message (10).
     StateItemChunk = 10,
-    /// StateAdmission message (11).
+    /// `StateAdmission` message (11).
     StateAdmission = 11,
-    /// EventChunk message (12).
+    /// `EventChunk` message (12).
     EventChunk = 12,
-    /// CommitBoundary message (13).
+    /// `CommitBoundary` message (13).
     CommitBoundary = 13,
-    /// FlowCredit message (14).
+    /// `FlowCredit` message (14).
     FlowCredit = 14,
-    /// CursorAck message (15).
+    /// `CursorAck` message (15).
     CursorAck = 15,
-    /// SnapshotRequired message (16).
+    /// `SnapshotRequired` message (16).
     SnapshotRequired = 16,
-    /// SnapshotManifest message (17).
+    /// `SnapshotManifest` message (17).
     SnapshotManifest = 17,
     /// Pinned snapshot transfer chunk (18).
     SnapshotChunk = 18,
@@ -52,11 +52,11 @@ pub enum MessageType {
     Status = 21,
     /// Cancel message (22).
     Cancel = 22,
-    /// PrivateUpdate message (23).
+    /// `PrivateUpdate` message (23).
     PrivateUpdate = 23,
-    /// PrivateHistoryQuery message (24).
+    /// `PrivateHistoryQuery` message (24).
     PrivateHistoryQuery = 24,
-    /// PrivateHistoryPage message (25).
+    /// `PrivateHistoryPage` message (25).
     PrivateHistoryPage = 25,
     /// Private catalogue request (26).
     CatalogueRequest = 26,
@@ -144,6 +144,10 @@ pub struct Frame {
 
 impl Frame {
     /// Check the payload cap; this does not authorize or decode the message.
+    ///
+    /// # Errors
+    ///
+    /// Returns `FrameError` if the inputs violate this operation's bounds or invariants.
     pub fn new(kind: MessageType, payload: Vec<u8>) -> Result<Self, FrameError> {
         check_length(kind, payload.len())?;
         Ok(Self { kind, payload })
@@ -193,16 +197,23 @@ pub enum FrameError {
 }
 
 /// Decode one exact prefix while borrowing payload and unconsumed tail.
+///
+/// # Errors
+///
+/// Returns `FrameError` if the input is not a canonical encoding within this type's bounds.
 pub fn decode_frame_prefix(bytes: &[u8]) -> Result<(MessageType, &[u8], &[u8]), FrameError> {
-    let header = bytes.get(..HEADER_BYTES).ok_or(FrameError::Truncated)?;
-    let (kind, size) = decode_header(header.try_into().expect("fixed header length"))?;
-    let payload_end = HEADER_BYTES + size;
-    let payload = bytes
-        .get(HEADER_BYTES..payload_end)
+    let (header, rest) = bytes
+        .split_first_chunk::<HEADER_BYTES>()
         .ok_or(FrameError::Truncated)?;
-    Ok((kind, payload, &bytes[payload_end..]))
+    let (kind, size) = decode_header(header)?;
+    let (payload, tail) = rest.split_at_checked(size).ok_or(FrameError::Truncated)?;
+    Ok((kind, payload, tail))
 }
 /// Append a bounded frame atomically within the caller's total buffer limit.
+///
+/// # Errors
+///
+/// Returns `FrameError` if the value violates its wire bounds or cannot be serialized.
 pub fn append_frame(
     output: &mut Vec<u8>,
     kind: MessageType,
@@ -210,7 +221,7 @@ pub fn append_frame(
     max_total: usize,
 ) -> Result<(), FrameError> {
     check_length(kind, payload.len())?;
-    let additional = HEADER_BYTES + payload.len();
+    let additional = HEADER_BYTES.saturating_add(payload.len());
     let total = output
         .len()
         .checked_add(additional)
@@ -251,7 +262,8 @@ fn encode_header(kind: MessageType, size: usize) -> [u8; HEADER_BYTES] {
     header[..4].copy_from_slice(b"TLD3");
     header[4..6].copy_from_slice(&VERSION.to_le_bytes());
     header[6..8].copy_from_slice(&(kind as u16).to_le_bytes());
-    header[8..12].copy_from_slice(&(size as u32).to_le_bytes());
+    // Callers bound every frame far below 4 GiB before encoding its header.
+    header[8..12].copy_from_slice(&u32::try_from(size).unwrap_or(u32::MAX).to_le_bytes());
     header
 }
 
@@ -267,6 +279,10 @@ fn check_length(kind: MessageType, length: usize) -> Result<(), FrameError> {
 
 /// Write one bounded frame. Cancellation discards this stream's partial frame;
 /// callers must not append a new header after cancelling an in-flight write.
+///
+/// # Errors
+///
+/// Returns `FrameError` if the value violates its wire bounds or cannot be serialized.
 pub async fn write_frame<W: AsyncWrite + Unpin>(
     write: &mut W,
     frame: &Frame,
@@ -304,6 +320,10 @@ impl<R: AsyncRead + Unpin> FrameReader<R> {
     }
 
     /// Read one frame or clean EOF, preserving progress across cancellation.
+    ///
+    /// # Errors
+    ///
+    /// Returns `FrameError` if the input is not a canonical encoding within this type's bounds.
     pub async fn read_next(&mut self) -> Result<Option<Frame>, FrameError> {
         if self.poisoned {
             return Err(FrameError::Poisoned);
@@ -317,7 +337,10 @@ impl<R: AsyncRead + Unpin> FrameReader<R> {
 
     async fn read_inner(&mut self) -> Result<Option<Frame>, FrameError> {
         while self.header_read < HEADER_BYTES {
-            let count = self.read.read(&mut self.header[self.header_read..]).await?;
+            let count = self
+                .read
+                .read(self.header.get_mut(self.header_read..).unwrap_or_default())
+                .await?;
             if count == 0 {
                 return if self.header_read == 0 {
                     Ok(None)
@@ -325,29 +348,32 @@ impl<R: AsyncRead + Unpin> FrameReader<R> {
                     Err(FrameError::Truncated)
                 };
             }
-            self.header_read += count;
+            self.header_read = self.header_read.saturating_add(count);
         }
-        let kind = match self.kind {
-            Some(kind) => kind,
-            None => {
-                let (kind, size) = decode_header(&self.header)?;
-                self.payload
-                    .try_reserve_exact(size)
-                    .map_err(|_| FrameError::Allocation)?;
-                self.payload.resize(size, 0);
-                self.kind = Some(kind);
-                kind
-            }
+        let kind = if let Some(kind) = self.kind {
+            kind
+        } else {
+            let (kind, size) = decode_header(&self.header)?;
+            self.payload
+                .try_reserve_exact(size)
+                .map_err(|_| FrameError::Allocation)?;
+            self.payload.resize(size, 0);
+            self.kind = Some(kind);
+            kind
         };
         while self.payload_read < self.payload.len() {
             let count = self
                 .read
-                .read(&mut self.payload[self.payload_read..])
+                .read(
+                    self.payload
+                        .get_mut(self.payload_read..)
+                        .unwrap_or_default(),
+                )
                 .await?;
             if count == 0 {
                 return Err(FrameError::Truncated);
             }
-            self.payload_read += count;
+            self.payload_read = self.payload_read.saturating_add(count);
         }
         self.header_read = 0;
         self.payload_read = 0;
@@ -431,8 +457,8 @@ mod tests {
         for (kind, size) in [
             (1, 8193),
             (4, 8193),
-            (10, 262145),
-            (20, 262145),
+            (10, 262_145),
+            (20, 262_145),
             (36, u32::MAX),
         ] {
             let wire = header(kind, size);
@@ -471,8 +497,8 @@ mod tests {
     async fn exact_payload_limits_are_supported() {
         for (kind, limit) in [
             (MessageType::ClientHello, 8192),
-            (MessageType::StateItemChunk, 262144),
-            (MessageType::Invoke, 262144),
+            (MessageType::StateItemChunk, 262_144),
+            (MessageType::Invoke, 262_144),
         ] {
             assert!(Frame::new(kind, vec![0; limit + 1]).is_err());
             let frame = Frame::new(kind, vec![42; limit]).unwrap();
@@ -554,7 +580,7 @@ mod tests {
             decode_frame_prefix(&invalid),
             Err(FrameError::UnknownType(9))
         ));
-        for (kind, size) in [(1, 8193), (4, 8193), (10, 262145), (36, u32::MAX)] {
+        for (kind, size) in [(1, 8193), (4, 8193), (10, 262_145), (36, u32::MAX)] {
             assert!(matches!(
                 decode_frame_prefix(&header(kind, size)),
                 Err(FrameError::Oversized { .. })

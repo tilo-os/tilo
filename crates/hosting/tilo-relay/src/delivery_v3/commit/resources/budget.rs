@@ -1,5 +1,5 @@
 //! Closed borrowing adapter for the embedding operation's original reservation.
-use super::*;
+use super::{NativeReservation, NativeWorkTurn, ResourceError};
 use qos_peer_state::PeerWork;
 
 /// Borrows an existing operation's memory budget without exposing native work,

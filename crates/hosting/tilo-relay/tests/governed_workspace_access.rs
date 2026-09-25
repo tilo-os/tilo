@@ -9,6 +9,14 @@
     clippy::unreachable,
     reason = "in a test these are the assertion, not a hazard"
 )]
+#![allow(
+    clippy::significant_drop_tightening,
+    reason = "relays, fixtures and guards deliberately stay alive until each test ends"
+)]
+#![allow(
+    clippy::too_many_lines,
+    reason = "each test spells out one end-to-end scenario"
+)]
 
 use std::time::Duration;
 
@@ -177,10 +185,11 @@ async fn governed_access_removes_a_live_person_without_widening_other_rooms() {
         Ok(Some(Envelope::NotAuthorised { workspace_id: 701, reason }))
             if reason == "workspace membership changed"
     ));
-    assert!(matches!(
-        tokio::time::timeout(Duration::from_millis(400), bob_client.recv()).await,
-        Err(_)
-    ));
+    assert!(
+        tokio::time::timeout(Duration::from_millis(400), bob_client.recv())
+            .await
+            .is_err()
+    );
     assert!(
         tilo_relay::store::WorkspaceStore::open(state.path(), 701, true)
             .unwrap()
@@ -226,10 +235,11 @@ async fn governed_access_removes_a_live_person_without_widening_other_rooms() {
             signature: [0; 64],
         })
         .unwrap();
-    assert!(matches!(
-        tokio::time::timeout(Duration::from_millis(400), bob_client.recv()).await,
-        Err(_)
-    ));
+    assert!(
+        tokio::time::timeout(Duration::from_millis(400), bob_client.recv())
+            .await
+            .is_err()
+    );
     assert!(matches!(
         tokio::time::timeout(Duration::from_secs(2), alice_reconnect.recv()).await,
         Ok(None)
@@ -255,7 +265,7 @@ async fn governed_access_removes_a_live_person_without_widening_other_rooms() {
             signature: [0; 64],
         })
         .unwrap();
-    assert!(matches!(alice_reconnect.recv().await, None));
+    assert!(alice_reconnect.recv().await.is_none());
 
     drop(alice_client);
     drop(alice_room_b);

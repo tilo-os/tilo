@@ -8,10 +8,14 @@ use super::{
     replay, retained,
 };
 use crate::coedit::CoeditPayload;
+use crate::store::bounded::Invariant;
 use qos_peer_state::{
     NeighbourMsg,
     coverage::{Coverage, route_key},
-    retained_proof::*,
+    retained_proof::{
+        CoverageDecision, FloorSafety, OrderedTailReadiness, ProofError, RetentionAuthority,
+        RoomInput, VerifiedRoom, VerifiedSnapshot, verify_room, verify_snapshot,
+    },
 };
 use std::{
     collections::BTreeMap,
@@ -234,6 +238,10 @@ enum Phase {
 }
 /// History metadata spills to disk. At most the current route map, a constant number of room
 /// documents, one successor and one prior frame are resident; no history cache.
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "independent step-machine flags of one resumable selection pass"
+)]
 pub(crate) struct Selection {
     store: WorkspaceStore,
     scratch: PathBuf,
@@ -360,7 +368,10 @@ impl Selection {
         retained::create_dir(&staged)?;
         Ok(Self {
             store: store.clone(),
-            authority: store.shell_authority().unwrap().clone(),
+            authority: store
+                .shell_authority()
+                .invariant("shell authority missing")?
+                .clone(),
             old_read,
             old: Basis::default(),
             basis: Basis::default(),
@@ -505,14 +516,19 @@ impl Selection {
         }
     }
     fn restart(&mut self, phase: Phase) -> Result<(), StoreError> {
-        self.input = Some(File::open(self.inventory.as_ref().unwrap())?);
+        self.input = Some(File::open(
+            self.inventory.as_ref().invariant("inventory missing")?,
+        )?);
         self.phase = phase;
         Ok(())
     }
     fn read(&mut self, meta: &Meta) -> Result<Option<Frame>, StoreError> {
         bounded::increment(&mut self.sorter.stats.preparation_reads)?;
-        self.sorter.stats.peak_frame_bytes =
-            self.sorter.stats.peak_frame_bytes.max(meta.len as usize);
+        self.sorter.stats.peak_frame_bytes = self
+            .sorter
+            .stats
+            .peak_frame_bytes
+            .max(usize::try_from(meta.len).unwrap_or(usize::MAX));
         frame(&self.store.root.join(&meta.source), self.store.workspace_id)
     }
     fn add(&mut self, meta: &Meta, role: &str) -> Result<(), StoreError> {
@@ -530,7 +546,10 @@ impl Selection {
             0,
         )?;
         let mut selected = meta.clone();
-        selected.source = path.strip_prefix(&self.store.root).unwrap().into();
+        selected.source = path
+            .strip_prefix(&self.store.root)
+            .invariant("root missing")?
+            .into();
         selected.key = vec![role.into()];
         write_meta(&mut self.output, &selected)?;
         let live = if role == "room" {
@@ -557,7 +576,7 @@ impl Selection {
             role == "tail" && self.old.room.is_none()
         };
         if live {
-            write_meta(&mut self.live_output, &selected)?
+            write_meta(&mut self.live_output, &selected)?;
         }
         Ok(())
     }
@@ -568,18 +587,26 @@ impl Selection {
             value.kind == RoomInput::Checkpoint,
             &value.body,
         );
-        for (index, incoming) in self.incoming.iter().enumerate() {
+        for (incoming, slot) in self
+            .incoming
+            .iter()
+            .zip(self.incoming_dispositions.iter_mut())
+        {
             if incoming != &identity {
                 continue;
             }
-            let slot = &mut self.incoming_dispositions[index];
-            let replace = match (*slot, disposition) {
-                (None, _) => true,
-                (Some(IncomingDisposition::Staged), IncomingDisposition::Covered)
-                | (Some(IncomingDisposition::Staged), IncomingDisposition::SelectedLive)
-                | (Some(IncomingDisposition::Covered), IncomingDisposition::SelectedLive) => true,
-                _ => false,
-            };
+            let replace = matches!(
+                (*slot, disposition),
+                (None, _)
+                    | (
+                        Some(IncomingDisposition::Staged),
+                        IncomingDisposition::Covered | IncomingDisposition::SelectedLive,
+                    )
+                    | (
+                        Some(IncomingDisposition::Covered),
+                        IncomingDisposition::SelectedLive
+                    )
+            );
             if replace {
                 *slot = Some(disposition);
             }
@@ -596,7 +623,7 @@ impl Selection {
                     &value.body,
                 )
         }) {
-            self.incoming_staged = true
+            self.incoming_staged = true;
         }
     }
     fn stage_or_preserve_extra(&mut self, meta: &Meta, value: &Frame) -> Result<(), StoreError> {
@@ -647,7 +674,7 @@ impl Selection {
         // Only v2 immutable originals are eligible. Selected-generation files
         // are collected separately after replacement; legacy files stay intact.
         if meta.source.starts_with("retained/v2") {
-            write_meta(&mut self.retire, meta)?
+            write_meta(&mut self.retire, meta)?;
         }
         Ok(())
     }
@@ -659,13 +686,17 @@ impl Selection {
             .read(&meta)?
             .ok_or_else(|| invalid("selected route vanished"))?;
         Ok(verify_snapshot(
-            self.basis.room.as_ref().unwrap(),
+            self.basis.room.as_ref().invariant("room missing")?,
             value.source,
             value.channel,
             &value.body,
         )
         .ok())
     }
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one ordered protocol state machine; splitting it would scatter the invariants each step relies on"
+    )]
     pub(crate) fn step(&mut self, limit: WorkLimit) -> Result<Step<SelectionOutcome>, StoreError> {
         let limit = limit.checked()?;
         self.sorter.stats.last_step_work = 1;
@@ -673,7 +704,7 @@ impl Selection {
             Phase::Old => {
                 if let Step::Done(()) = self.old_read.step()? {
                     self.old = std::mem::take(&mut self.old_read.basis);
-                    self.phase = Phase::Scan
+                    self.phase = Phase::Scan;
                 }
             }
             Phase::Scan => {
@@ -721,7 +752,7 @@ impl Selection {
                             let lineage = self
                                 .active_lineage
                                 .as_ref()
-                                .expect("active retained lineage")
+                                .invariant("active retained lineage")?
                                 .clone();
                             self.sorter.push(Meta {
                                 key: vec![
@@ -734,7 +765,10 @@ impl Selection {
                                     },
                                     name,
                                 ],
-                                source: path.strip_prefix(&self.store.root).unwrap().into(),
+                                source: path
+                                    .strip_prefix(&self.store.root)
+                                    .invariant("root missing")?
+                                    .into(),
                                 pin: 0,
                                 len: entry.metadata()?.len(),
                                 pending: false,
@@ -744,7 +778,7 @@ impl Selection {
                         self.child = None;
                         self.active_lineage = None;
                     }
-                } else if let Some(entry) = self.outer.as_mut().unwrap().next() {
+                } else if let Some(entry) = self.outer.as_mut().invariant("outer missing")?.next() {
                     let entry = entry?;
                     if entry.file_type()?.is_dir() {
                         let active = self
@@ -758,49 +792,49 @@ impl Selection {
                         }
                     }
                 } else {
-                    self.phase = Phase::Sort
+                    self.phase = Phase::Sort;
                 }
             }
             Phase::Sort => {
                 if let Step::Done(path) = self.sorter.step(limit)? {
                     self.inventory = Some(path);
                     self.ordinal = 0;
-                    self.restart(Phase::Rooms)?
+                    self.restart(Phase::Rooms)?;
                 }
             }
             Phase::Rooms => {
-                if let Some(meta) = read_meta(self.input.as_mut().unwrap())? {
-                    if let Some(value) = self.read(&meta)? {
-                        if value.room() {
-                            if self.basis.room.as_ref().is_some_and(|r| {
-                                r.covers_frame(value.source, value.channel, &value.body)
-                                    == CoverageDecision::Covered
-                            }) {
-                                return Ok(Step::More);
+                if let Some(meta) = read_meta(self.input.as_mut().invariant("input missing")?)? {
+                    if let Some(value) = self.read(&meta)?
+                        && value.room()
+                    {
+                        if self.basis.room.as_ref().is_some_and(|r| {
+                            r.covers_frame(value.source, value.channel, &value.body)
+                                == CoverageDecision::Covered
+                        }) {
+                            return Ok(Step::More);
+                        }
+                        if let Ok(room) = verify_room(
+                            &self.authority,
+                            value.source,
+                            value.channel,
+                            &value.body,
+                            value.kind,
+                            self.basis.room.as_ref(),
+                        ) {
+                            if value.kind == RoomInput::Checkpoint {
+                                self.room_list.set_len(0)?;
+                                self.room_list.rewind()?;
                             }
-                            if let Ok(room) = verify_room(
-                                &self.authority,
-                                value.source,
-                                value.channel,
-                                &value.body,
-                                value.kind,
-                                self.basis.room.as_ref(),
-                            ) {
-                                if value.kind == RoomInput::Checkpoint {
-                                    self.room_list.set_len(0)?;
-                                    self.room_list.rewind()?;
-                                }
-                                write_meta(&mut self.room_list, &meta)?;
-                                self.basis.set_room(room)?;
-                            }
+                            write_meta(&mut self.room_list, &meta)?;
+                            self.basis.set_room(room)?;
                         }
                     }
                 } else {
-                    self.restart(Phase::Pair)?
+                    self.restart(Phase::Pair)?;
                 }
             }
             Phase::Pair => {
-                if let Some(meta) = read_meta(self.input.as_mut().unwrap())? {
+                if let Some(meta) = read_meta(self.input.as_mut().invariant("input missing")?)? {
                     if let Some(value) = self.read(&meta)? {
                         // Rooms has finished. A different route/sequence cannot
                         // match this basis's exact receipt; Check still sees the
@@ -816,7 +850,8 @@ impl Selection {
                         if let Some(room) = &self.basis.room {
                             #[cfg(test)]
                             {
-                                self.snapshot_verifications.0 += 1;
+                                self.snapshot_verifications.0 =
+                                    self.snapshot_verifications.0.saturating_add(1);
                             }
                             if let Ok(proof) =
                                 verify_snapshot(room, value.source, value.channel, &value.body)
@@ -824,7 +859,8 @@ impl Selection {
                                 let identity = value.identity();
                                 let key =
                                     route_key(&proof.coverage().app, &proof.coverage().record);
-                                let route = self.basis.routes.get_mut(&key).unwrap();
+                                let route =
+                                    self.basis.routes.get_mut(&key).invariant("key missing")?;
                                 if route.file.is_none() {
                                     route.file = Some(meta);
                                     route.verified_input = Some(identity);
@@ -852,7 +888,7 @@ impl Selection {
                 }
             }
             Phase::Check => {
-                let Some(meta) = read_meta(self.input.as_mut().unwrap())? else {
+                let Some(meta) = read_meta(self.input.as_mut().invariant("input missing")?)? else {
                     if self.blocked && !self.fallback {
                         self.rejected_complete_cut = true;
                         self.basis = self.old.clone();
@@ -891,7 +927,7 @@ impl Selection {
                         r.covers_frame(value.source, value.channel, &value.body)
                             == CoverageDecision::Covered
                     }) {
-                        self.covered(&meta, &value)?
+                        self.covered(&meta, &value)?;
                     } else if verify_room(
                         &self.authority,
                         value.source,
@@ -902,10 +938,10 @@ impl Selection {
                     )
                     .is_ok()
                     {
-                        self.stage_or_preserve_extra(&meta, &value)?
+                        self.stage_or_preserve_extra(&meta, &value)?;
                     } else {
                         self.blocked = true;
-                        self.extra(&meta)?
+                        self.extra(&meta)?;
                     }
                     return Ok(Step::More);
                 }
@@ -945,7 +981,7 @@ impl Selection {
                 }
                 #[cfg(test)]
                 if self.basis.room.is_some() {
-                    self.snapshot_verifications.1 += 1;
+                    self.snapshot_verifications.1 = self.snapshot_verifications.1.saturating_add(1);
                 }
                 let snapshot_result =
                     self.basis.room.as_ref().map(|room| {
@@ -968,7 +1004,7 @@ impl Selection {
                     self.historical = Some((
                         meta,
                         value,
-                        File::open(self.inventory.as_ref().unwrap())?,
+                        File::open(self.inventory.as_ref().invariant("inventory missing")?)?,
                         None,
                     ));
                     self.phase = Phase::Historical;
@@ -977,14 +1013,14 @@ impl Selection {
                 if self.basis.room.is_none() {
                     // No usable pair yet. A room proof can still establish valid
                     // staging; without one this remains an opaque original.
-                    if let Some(room) = &self.prospective {
-                        if !matches!(
+                    if let Some(room) = &self.prospective
+                        && !matches!(
                             verify_snapshot(room, value.source, value.channel, &value.body),
                             Err(ProofError::Unknown)
-                        ) {
-                            self.stage_or_preserve_extra(&meta, &value)?;
-                            return Ok(Step::More);
-                        }
+                        )
+                    {
+                        self.stage_or_preserve_extra(&meta, &value)?;
+                        return Ok(Step::More);
                     }
                 }
                 if let Some(snapshot) = self.candidate_snapshot(&key)? {
@@ -1011,66 +1047,69 @@ impl Selection {
                 self.extra(&meta)?;
             }
             Phase::Historical => {
-                let (meta, target, mut file, mut prior) = self.historical.take().unwrap();
+                let (meta, target, mut file, mut prior) =
+                    self.historical.take().invariant("historical missing")?;
                 let mut covered = false;
                 if let Some(candidate) = read_meta(&mut file)? {
-                    if let Some(value) = self.read(&candidate)? {
-                        if value.room() {
-                            let previous = if value.kind == RoomInput::Checkpoint {
-                                None
-                            } else {
-                                prior.as_ref()
-                            };
-                            if let Ok(room) = verify_room(
-                                &self.authority,
-                                value.source,
-                                value.channel,
-                                &value.body,
-                                value.kind,
-                                previous,
-                            ) {
-                                if let Ok(old) = verify_snapshot(
-                                    &room,
-                                    target.source,
-                                    target.channel,
-                                    &target.body,
-                                ) {
-                                    if let Some(next) =
-                                        self.candidate_snapshot(&target.route().unwrap().0)?
-                                    {
-                                        covered = next.covers_snapshot(&old)
-                                    }
-                                }
-                                prior = Some(room);
+                    if let Some(value) = self.read(&candidate)?
+                        && value.room()
+                    {
+                        let previous = if value.kind == RoomInput::Checkpoint {
+                            None
+                        } else {
+                            prior.as_ref()
+                        };
+                        if let Ok(room) = verify_room(
+                            &self.authority,
+                            value.source,
+                            value.channel,
+                            &value.body,
+                            value.kind,
+                            previous,
+                        ) {
+                            if let Ok(old) =
+                                verify_snapshot(&room, target.source, target.channel, &target.body)
+                                && let Some(next) = self.candidate_snapshot(
+                                    &target.route().invariant("route missing")?.0,
+                                )?
+                            {
+                                covered = next.covers_snapshot(&old);
                             }
+                            prior = Some(room);
                         }
                     }
                     if covered {
                         self.covered(&meta, &target)?;
-                        self.phase = Phase::Check
+                        self.phase = Phase::Check;
                     } else {
                         self.historical = Some((meta, target, file, prior));
                     }
                 } else {
                     self.blocked = true;
                     self.extra(&meta)?;
-                    self.phase = Phase::Check
+                    self.phase = Phase::Check;
                 }
             }
             Phase::SortExtrasInput => {
-                let sorter = self.extras_sorter.as_mut().unwrap();
+                let sorter = self
+                    .extras_sorter
+                    .as_mut()
+                    .invariant("extras sorter missing")?;
                 if sorter.spilling() {
                     sorter.spill_step(limit)?;
                     return Ok(Step::More);
                 }
-                if let Some(meta) = read_meta(self.input.as_mut().unwrap())? {
-                    sorter.push(meta)?
+                if let Some(meta) = read_meta(self.input.as_mut().invariant("input missing")?)? {
+                    sorter.push(meta)?;
                 } else {
-                    self.phase = Phase::SortExtras
+                    self.phase = Phase::SortExtras;
                 }
             }
             Phase::SortExtras => {
-                let sorter = self.extras_sorter.as_mut().unwrap();
+                let sorter = self
+                    .extras_sorter
+                    .as_mut()
+                    .invariant("extras sorter missing")?;
                 let result = sorter.step(limit)?;
                 self.sorter.stats.last_step_work = sorter.stats.last_step_work;
                 self.sorter.stats.peak_metadata_entries = self
@@ -1079,14 +1118,15 @@ impl Selection {
                     .peak_metadata_entries
                     .max(sorter.stats.peak_metadata_entries);
                 self.sorter.stats.peak_metadata_bytes = self.sorter.stats.peak_metadata_bytes.max(
-                    sorter.stats.peak_metadata_bytes
-                        + bounded::RUN_ENTRIES * std::mem::size_of::<Meta>(),
+                    sorter.stats.peak_metadata_bytes.saturating_add(
+                        bounded::RUN_ENTRIES.saturating_mul(std::mem::size_of::<Meta>()),
+                    ),
                 );
                 self.sorter.stats.peak_open_files = self
                     .sorter
                     .stats
                     .peak_open_files
-                    .max(sorter.stats.peak_open_files + 5);
+                    .max(sorter.stats.peak_open_files.saturating_add(5));
                 if let Step::Done(path) = result {
                     self.input = Some(File::open(&path)?);
                     self.sorted_extras = Some(path);
@@ -1096,7 +1136,7 @@ impl Selection {
                 }
             }
             Phase::ValidateExtras => {
-                let Some(meta) = read_meta(self.input.as_mut().unwrap())? else {
+                let Some(meta) = read_meta(self.input.as_mut().invariant("input missing")?)? else {
                     self.last_tail = None;
                     self.tail_readiness = None;
                     self.input = if self.fallback {
@@ -1109,7 +1149,7 @@ impl Selection {
                     self.phase = Phase::StageRoom;
                     return Ok(Step::More);
                 };
-                if !meta.key.first().is_some_and(|value| value == "0") {
+                if meta.key.first().is_none_or(|value| value != "0") {
                     return Ok(Step::More);
                 }
                 let value = self
@@ -1165,31 +1205,40 @@ impl Selection {
                 }
             }
             Phase::StageRoom => {
-                if let Some(input) = &mut self.input {
-                    if let Some(meta) = read_meta(input)? {
-                        if !self.fallback || meta.key.first().is_some_and(|v| v == "room") {
-                            self.add(&meta, "room")?
-                        }
-                        return Ok(Step::More);
+                if let Some(input) = &mut self.input
+                    && let Some(meta) = read_meta(input)?
+                {
+                    if !self.fallback || meta.key.first().is_some_and(|v| v == "room") {
+                        self.add(&meta, "room")?;
                     }
+                    return Ok(Step::More);
                 }
                 self.route_iter = Some(self.basis.routes.clone().into_iter());
                 self.phase = Phase::StageApps;
             }
             Phase::StageApps => {
-                if let Some((_, route)) = self.route_iter.as_mut().unwrap().next() {
+                if let Some((_, route)) = self
+                    .route_iter
+                    .as_mut()
+                    .invariant("route iter missing")?
+                    .next()
+                {
                     if let Some(meta) = route.file {
-                        self.add(&meta, "app")?
+                        self.add(&meta, "app")?;
                     }
                 } else {
-                    self.input = Some(File::open(self.sorted_extras.as_ref().unwrap())?);
-                    self.phase = Phase::StageExtras
+                    self.input = Some(File::open(
+                        self.sorted_extras
+                            .as_ref()
+                            .invariant("sorted extras missing")?,
+                    )?);
+                    self.phase = Phase::StageExtras;
                 }
             }
             Phase::StageExtras => {
-                if let Some(meta) = read_meta(self.input.as_mut().unwrap())? {
+                if let Some(meta) = read_meta(self.input.as_mut().invariant("input missing")?)? {
                     let tail = meta.key.first().is_some_and(|v| v == "0");
-                    self.add(&meta, if tail { "tail" } else { "extra" })?
+                    self.add(&meta, if tail { "tail" } else { "extra" })?;
                 } else {
                     self.input = if self.fallback {
                         None
@@ -1200,17 +1249,17 @@ impl Selection {
                 }
             }
             Phase::StageRetire => {
-                if let Some(input) = &mut self.input {
-                    if let Some(mut meta) = read_meta(input)? {
-                        meta.pin = self.ordinal;
-                        bounded::increment(&mut self.ordinal)?;
-                        let pin = self.staged.join(format!("gc-{:016x}.delta", meta.pin));
-                        // This is another link to an already durable retained
-                        // inode; the staged-directory barrier precedes CURRENT.
-                        fs::hard_link(self.store.root.join(&meta.source), &pin)?;
-                        write_meta(&mut self.gc_output, &meta)?;
-                        return Ok(Step::More);
-                    }
+                if let Some(input) = &mut self.input
+                    && let Some(mut meta) = read_meta(input)?
+                {
+                    meta.pin = self.ordinal;
+                    bounded::increment(&mut self.ordinal)?;
+                    let pin = self.staged.join(format!("gc-{:016x}.delta", meta.pin));
+                    // This is another link to an already durable retained
+                    // inode; the staged-directory barrier precedes CURRENT.
+                    fs::hard_link(self.store.root.join(&meta.source), &pin)?;
+                    write_meta(&mut self.gc_output, &meta)?;
+                    return Ok(Step::More);
                 }
                 self.input = None;
                 self.phase = Phase::Commit;
@@ -1218,7 +1267,8 @@ impl Selection {
             Phase::Commit => {
                 #[cfg(test)]
                 super::test_barrier::check(&self.staged, "selection-full-flush")?;
-                self.sorter.stats.staging_full_flushes += 3;
+                self.sorter.stats.staging_full_flushes =
+                    self.sorter.stats.staging_full_flushes.saturating_add(3);
                 self.output.sync_all()?;
                 self.live_output.sync_all()?;
                 self.gc_output.sync_all()?;
@@ -1228,7 +1278,10 @@ impl Selection {
                 self.switch_attempted = true;
                 retained::durable_write(
                     &self.store.root.join(DIRECTORY).join("CURRENT"),
-                    self.staged.file_name().unwrap().as_encoded_bytes(),
+                    self.staged
+                        .file_name()
+                        .invariant("staged missing")?
+                        .as_encoded_bytes(),
                 )?;
                 #[cfg(test)]
                 super::test_barrier::check(self.store.root(), "shell-after-current")?;
@@ -1250,8 +1303,13 @@ impl Selection {
                         self.store.root.join(DIRECTORY),
                     )?);
                 }
-                if let Step::Done(()) = self.collect.as_mut().unwrap().step(limit)? {
-                    self.phase = Phase::Done
+                if let Step::Done(()) = self
+                    .collect
+                    .as_mut()
+                    .invariant("collect missing")?
+                    .step(limit)?
+                {
+                    self.phase = Phase::Done;
                 }
             }
             Phase::Done => {

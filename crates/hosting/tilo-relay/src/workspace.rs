@@ -159,13 +159,15 @@ impl WorkspaceRuntime {
             access.member_user_roots.into_iter().collect()
         });
         let mut membership = membership;
-        for device in store.load_membership()? {
+        let stored_membership = store.load_membership()?;
+        for device in stored_membership {
             if !membership.contains(&device) {
                 membership.devices.push(device);
             }
         }
         let doc = if pinned {
-            match store.load_snapshot()? {
+            let snapshot = store.load_snapshot()?;
+            match snapshot {
                 Some(bytes) => Some(AutoCommit::load(&bytes).map_err(|e| {
                     crate::store::StoreError::Io(std::io::Error::new(
                         std::io::ErrorKind::InvalidData,
@@ -235,10 +237,6 @@ impl WorkspaceRuntime {
         self.subscribers.insert(sub.device_public_key, sub);
     }
 
-    /// Remember an authenticated device before sharing this runtime, so deltas
-    /// received while it is offline are queued across daemon restarts. Live
-    /// sessions use the serialized async admission in `workspace_io`.
-
     /// A device asked for a baseline (its hello, a `SyncReq`, or a rejected
     /// checkpoint arrive as presence): the next live checkpoint on every
     /// channel reaches it once more.
@@ -264,6 +262,9 @@ impl WorkspaceRuntime {
         }
     }
 
+    /// Remember an authenticated device before sharing this runtime, so deltas
+    /// received while it is offline are queued across daemon restarts. Live
+    /// sessions use the serialized async admission in `workspace_io`.
     ///
     /// # Errors
     ///
@@ -326,6 +327,10 @@ impl WorkspaceRuntime {
     /// Returns an error if `envelope` can't be re-encoded for the
     /// durable queue, or if persisting it (pending, checkpoint, or
     /// retained tail) fails.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one ordered protocol state machine; splitting it would scatter the invariants each step relies on"
+    )]
     pub fn fanout_delta(
         &mut self,
         author: &[u8; 32],
@@ -334,6 +339,7 @@ impl WorkspaceRuntime {
         raw_delta_bytes: &[u8],
         seq: u64,
     ) -> Result<usize, crate::store::StoreError> {
+        use tokio::sync::mpsc::error::TrySendError;
         // Shared retained coverage is the durable delivery obligation for
         // every reconnect (including newly admitted devices). Commit before
         // live publication, and never duplicate these payloads per member.
@@ -378,7 +384,6 @@ impl WorkspaceRuntime {
         //    subscriber. Dropping slow subscribers here caused the native host
         //    to be disconnected mid-checkpoint, reconnect, receive the room's
         //    retained baselines as a replay, republish, and storm.
-        use tokio::sync::mpsc::error::TrySendError;
         // Stage 9: a retained checkpoint is a bootstrap/compaction artifact. A
         // device that is connected and current holds every delta already, so
         // the native's periodic (idle) full checkpoint — multi-megabyte, and a
@@ -636,6 +641,14 @@ impl WorkspaceRuntime {
 pub type SharedWorkspace = Arc<AsyncMutex<WorkspaceRuntime>>;
 
 #[cfg(test)]
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "relays, fixtures and guards deliberately stay alive until each test ends"
+)]
+#[allow(
+    clippy::too_many_lines,
+    reason = "each test spells out one end-to-end scenario"
+)]
 mod tests {
     use super::*;
     use crate::transport::Envelope;
@@ -698,7 +711,7 @@ mod tests {
     }
 
     fn disk_usage(path: &std::path::Path) -> (u64, usize) {
-        let mut total = (0, 0);
+        let mut total = (0_u64, 0_usize);
         for entry in std::fs::read_dir(path).unwrap() {
             let path = entry.unwrap().path();
             let (bytes, files) = if path.is_dir() {
@@ -706,14 +719,15 @@ mod tests {
             } else {
                 (path.metadata().unwrap().len(), 1)
             };
-            total.0 += bytes;
-            total.1 += files;
+            total.0 = total.0.saturating_add(bytes);
+            total.1 = total.1.saturating_add(files);
         }
         total
     }
 
     #[test]
     fn retained_growth_is_independent_of_obsolete_checkpoints_and_offline_peers() {
+        use automerge::transaction::Transactable;
         let tmp = tempfile::tempdir().unwrap();
         let membership = Membership {
             devices: (10..42).map(|key| [key; 32]).collect(),
@@ -725,7 +739,6 @@ mod tests {
         publish(&mut rt, &other_channel, 2);
         let opaque = env_delta(7, [1; 32]);
         publish(&mut rt, &opaque, 3);
-        use automerge::transaction::Transactable;
         let mut document = AutoCommit::new();
         document.set_actor(automerge::ActorId::from(b"retained-growth".as_slice()));
         document
@@ -1206,7 +1219,7 @@ mod tests {
             disconnect,
         });
         for seq in 2..5u64 {
-            let (env, raw) = checkpoint_envelope(author, seq, vec![seq as u8]);
+            let (env, raw) = checkpoint_envelope(author, seq, vec![u8::try_from(seq).unwrap()]);
             assert_eq!(
                 rt.fanout_delta(&author, PeerRole::Device, &env, &raw, seq)
                     .unwrap(),

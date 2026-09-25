@@ -6,6 +6,7 @@ use super::bounded::{
 };
 pub(crate) use super::bounded::{Step, WorkLimit};
 use super::{StoreError, WorkspaceStore, retained};
+use crate::store::bounded::Invariant;
 use crate::transport::{self, Envelope};
 use std::{
     collections::VecDeque,
@@ -43,7 +44,7 @@ pub(crate) struct ReplaySummary {
     pub total_frames: u64,
 }
 /// A caller shares this budget across all owners; the batch keeps its permit
-/// through writes, including transport::encode's payload + output overlap.
+/// through writes, including `transport::encode`'s payload + output overlap.
 #[derive(Clone)]
 pub(crate) struct ReplayBudget {
     inner: Arc<Budget>,
@@ -108,22 +109,30 @@ impl ReplayBatch {
     }
 }
 
+/// The transport payload after a frame's four-byte length prefix. A frame
+/// from `frame_bytes` always has one; anything shorter decodes as empty.
+fn frame_payload(bytes: &[u8]) -> &[u8] {
+    bytes.get(4..).unwrap_or_default()
+}
+
 /// Only reads complete legal transport frames. Invalid data remains untouched.
 /// Prefix and file length are checked before any payload-sized allocation.
 pub(super) fn frame_bytes(path: &Path) -> Result<Option<Vec<u8>>, StoreError> {
     let mut file = File::open(path)?;
     let len = file.metadata()?.len();
-    if !(4..=transport::MAX_FRAME_BYTES as u64 + 4).contains(&len) {
+    if !(4..=(transport::MAX_FRAME_BYTES as u64).saturating_add(4)).contains(&len) {
         return Ok(None);
     }
     let mut prefix = [0; 4];
     file.read_exact(&mut prefix)?;
-    if u64::from(u32::from_le_bytes(prefix)) != len - 4 {
+    if u64::from(u32::from_le_bytes(prefix)) != len.saturating_sub(4) {
         return Ok(None);
     }
-    let mut bytes = vec![0; len as usize];
-    bytes[..4].copy_from_slice(&prefix);
-    file.read_exact(&mut bytes[4..])?;
+    let mut bytes = vec![0; usize::try_from(len).map_err(|_| invalid("oversized frame"))?];
+    // The range check above guarantees at least the four prefix bytes.
+    let (head, body) = bytes.split_at_mut(4);
+    head.copy_from_slice(&prefix);
+    file.read_exact(body)?;
     let mut extra = [0];
     if file.read(&mut extra)? != 0 {
         return Err(invalid("frame changed during read"));
@@ -135,8 +144,10 @@ fn heap_bytes(envelope: &Envelope) -> usize {
         Envelope::Delta { delta, .. } => delta.capacity(),
         Envelope::Presence { payload, .. } => payload.capacity(),
         Envelope::NotAuthorised { reason, .. } => reason.capacity(),
-        Envelope::PeerRelayHello { hosted_workspaces } => hosted_workspaces.capacity() * 8,
-        Envelope::SyncRequest { have_heads, .. } => have_heads.capacity() * 32,
+        Envelope::PeerRelayHello { hosted_workspaces } => {
+            hosted_workspaces.capacity().saturating_mul(8)
+        }
+        Envelope::SyncRequest { have_heads, .. } => have_heads.capacity().saturating_mul(32),
         Envelope::SyncResponse { delta_since, .. } => delta_since.capacity(),
         _ => 0,
     }
@@ -186,7 +197,7 @@ fn capture_continuity(
             &Meta {
                 key: vec![
                     receipt.group().into(),
-                    format!("{:016x}", u64::MAX - receipt.sequence).into(),
+                    format!("{:016x}", u64::MAX.saturating_sub(receipt.sequence)).into(),
                     hex::encode(receipt.id).into(),
                     format!("{pin:016x}").into(),
                 ],
@@ -286,11 +297,14 @@ impl ReplaySnapshot {
         };
         increment(&mut self.stats.preparation_reads)?;
         self.stats.peak_frame_bytes = self.stats.peak_frame_bytes.max(bytes.capacity());
-        let Ok(envelope) = transport::decode(&bytes[4..]) else {
+        let Ok(envelope) = transport::decode(frame_payload(&bytes)) else {
             return Ok(());
         };
-        let decoded = heap_bytes(&envelope) + std::mem::size_of::<Envelope>();
-        self.stats.peak_frame_bytes = self.stats.peak_frame_bytes.max(bytes.capacity() + decoded);
+        let decoded = heap_bytes(&envelope).saturating_add(std::mem::size_of::<Envelope>());
+        self.stats.peak_frame_bytes = self
+            .stats
+            .peak_frame_bytes
+            .max(bytes.capacity().saturating_add(decoded));
 
         // Canonical complete frames alone can prove retained duplicate coverage.
         let retained = if let Envelope::Delta {
@@ -306,10 +320,12 @@ impl ReplaySnapshot {
                         crate::coedit::CoeditPayload::Checkpoint { body, .. }
                         | crate::coedit::CoeditPayload::RetainedDelta { body, .. } => body,
                     };
-                    self.stats.peak_frame_bytes = self
-                        .stats
-                        .peak_frame_bytes
-                        .max(bytes.capacity() + decoded + body.capacity());
+                    self.stats.peak_frame_bytes = self.stats.peak_frame_bytes.max(
+                        bytes
+                            .capacity()
+                            .saturating_add(decoded)
+                            .saturating_add(body.capacity()),
+                    );
                 }
                 payload.is_some()
             } else {
@@ -324,21 +340,25 @@ impl ReplaySnapshot {
         let encoded =
             postcard::to_allocvec(&envelope).map_err(|_| invalid("replay re-encoding failed"))?;
         let v1_charge = frame_charge(&envelope, bytes.len(), &encoded, encoded.capacity())?;
-        self.stats.peak_frame_bytes = self
-            .stats
-            .peak_frame_bytes
-            .max(bytes.capacity() + decoded + encoded.capacity());
+        self.stats.peak_frame_bytes = self.stats.peak_frame_bytes.max(
+            bytes
+                .capacity()
+                .saturating_add(decoded)
+                .saturating_add(encoded.capacity()),
+        );
         // Exact outer re-encoding rejects every unconsumed Envelope suffix;
         // `retained` independently requires complete Coedit consumption.
-        let coverage = !meta.pending && retained && encoded == bytes[4..];
+        let coverage = !meta.pending && retained && encoded == frame_payload(&bytes);
         drop(encoded);
         let v2 = crate::transport_v2::state_payload(&envelope)
             .map_err(|_| invalid("v2 replay re-encoding failed"))?;
         let charge = v1_charge.max(frame_charge(&envelope, bytes.len(), &v2, v2.capacity())?);
-        self.stats.peak_frame_bytes = self
-            .stats
-            .peak_frame_bytes
-            .max(bytes.capacity() + decoded + v2.capacity());
+        self.stats.peak_frame_bytes = self.stats.peak_frame_bytes.max(
+            bytes
+                .capacity()
+                .saturating_add(decoded)
+                .saturating_add(v2.capacity()),
+        );
         drop(v2);
         let hash = (self.digest)(&bytes);
         // Pin length is immutable. Store measured output reservation in the
@@ -371,7 +391,7 @@ impl ReplaySnapshot {
             blake3::hash(group.as_bytes()).to_hex()
         ))
     }
-    fn elect_continuity(&mut self, store: &WorkspaceStore, meta: Meta) -> Result<(), StoreError> {
+    fn elect_continuity(&mut self, store: &WorkspaceStore, meta: &Meta) -> Result<(), StoreError> {
         let receipt =
             super::continuity::load_measured(store, &self.pin(meta.pin), &mut self.stats)?
                 .ok_or_else(|| invalid("captured continuity association disappeared"))?;
@@ -400,7 +420,7 @@ impl ReplaySnapshot {
         Ok(())
     }
     fn accept_candidate(&mut self, duplicate: bool) -> Result<(), StoreError> {
-        let candidate = self.candidate.take().unwrap();
+        let candidate = self.candidate.take().invariant("candidate missing")?;
         let Candidate {
             continuity,
             mut meta,
@@ -487,6 +507,10 @@ impl WorkspaceStore {
     }
     /// Invoke under one owner operation until Done; later mutations must not
     /// interleave before every selected source has its immutable hardlink.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one ordered protocol state machine; splitting it would scatter the invariants each step relies on"
+    )]
     pub(crate) fn capture_replay_step(
         &self,
         build: &mut ReplayBuild,
@@ -535,7 +559,7 @@ impl WorkspaceStore {
             return Ok(Step::More);
         }
         for _ in 0..limit.record_entries() {
-            sorter.stats.last_step_work += 1;
+            sorter.stats.last_step_work = sorter.stats.last_step_work.saturating_add(1);
             if build.phase == 4 {
                 build.phase = 5;
                 drop(build.continuity.take());
@@ -581,7 +605,7 @@ impl WorkspaceStore {
                         &source,
                         &target,
                         pin,
-                        build.continuity.as_mut().unwrap(),
+                        build.continuity.as_mut().invariant("continuity missing")?,
                         &mut sorter.stats,
                     )?;
                     sorter.push(Meta {
@@ -612,71 +636,63 @@ impl WorkspaceStore {
                 };
                 build.outer = open_dir(&dir)?;
                 if build.outer.is_none() {
-                    build.phase += 1;
+                    build.phase = build.phase.saturating_add(1);
                     continue;
                 }
             }
             let selected = if let Some((channel, _, child)) = &mut build.child {
-                match child.next() {
-                    Some(entry) => {
-                        let entry = entry?;
-                        let name = entry.file_name();
-                        let valid = build.phase == 1
-                            || (name.to_string_lossy().ends_with(".delta")
-                                && !name.to_string_lossy().starts_with('.'));
-                        if entry.file_type()?.is_file() && valid {
-                            let tier = if build.phase == 1 { "0" } else { "1" };
-                            let order = if build.phase == 2 && name == "checkpoint.delta" {
-                                "0"
-                            } else {
-                                "1"
-                            };
-                            Some((
-                                entry.path(),
-                                vec![tier.into(), channel.clone(), order.into(), name],
-                            ))
+                if let Some(entry) = child.next() {
+                    let entry = entry?;
+                    let name = entry.file_name();
+                    let valid = build.phase == 1
+                        || (name.to_string_lossy().ends_with(".delta")
+                            && !name.to_string_lossy().starts_with('.'));
+                    if entry.file_type()?.is_file() && valid {
+                        let tier = if build.phase == 1 { "0" } else { "1" };
+                        let order = if build.phase == 2 && name == "checkpoint.delta" {
+                            "0"
                         } else {
-                            None
-                        }
-                    }
-                    None => {
-                        build.child = None;
+                            "1"
+                        };
+                        Some((
+                            entry.path(),
+                            vec![tier.into(), channel.clone(), order.into(), name],
+                        ))
+                    } else {
                         None
                     }
+                } else {
+                    build.child = None;
+                    None
                 }
             } else {
-                match build.outer.as_mut().unwrap().next() {
-                    Some(entry) => {
-                        let entry = entry?;
-                        let name = entry.file_name();
-                        let kind = entry.file_type()?;
-                        match build.phase {
-                            0 if kind.is_file() => {
-                                Some((entry.path(), vec!["0".into(), name, "0".into()]))
-                            }
-                            1 if kind.is_dir() => {
-                                build.child =
-                                    Some((name, entry.path(), fs::read_dir(entry.path())?));
-                                None
-                            }
-                            2 if kind.is_dir() => {
-                                if let Some(active) = retained::current(&entry.path())? {
-                                    build.child =
-                                        Some((name, active.clone(), fs::read_dir(active)?));
-                                }
-                                None
-                            }
-                            3 if kind.is_file() && name.to_string_lossy().ends_with(".delta") => {
-                                Some((entry.path(), vec!["2".into(), name]))
-                            }
-                            _ => None,
+                if let Some(entry) = build.outer.as_mut().invariant("outer missing")?.next() {
+                    let entry = entry?;
+                    let name = entry.file_name();
+                    let kind = entry.file_type()?;
+                    match build.phase {
+                        0 if kind.is_file() => {
+                            Some((entry.path(), vec!["0".into(), name, "0".into()]))
                         }
+                        1 if kind.is_dir() => {
+                            build.child = Some((name, entry.path(), fs::read_dir(entry.path())?));
+                            None
+                        }
+                        2 if kind.is_dir() => {
+                            if let Some(active) = retained::current(&entry.path())? {
+                                build.child = Some((name, active.clone(), fs::read_dir(active)?));
+                            }
+                            None
+                        }
+                        3 if kind.is_file() && name.to_string_lossy().ends_with(".delta") => {
+                            Some((entry.path(), vec!["2".into(), name]))
+                        }
+                        _ => None,
                     }
-                    None => {
-                        build.outer = None;
-                        build.phase += 1;
-                        None
-                    }
+                } else {
+                    build.outer = None;
+                    build.phase = build.phase.saturating_add(1);
+                    None
                 }
             };
             if let Some((source, key)) = selected {
@@ -689,7 +705,7 @@ impl WorkspaceStore {
                     &source,
                     &target,
                     pin,
-                    build.continuity.as_mut().unwrap(),
+                    build.continuity.as_mut().invariant("continuity missing")?,
                     &mut sorter.stats,
                 )?;
                 let len = fs::metadata(&target)?.len();
@@ -711,6 +727,10 @@ impl WorkspaceStore {
         }
         Ok(Step::More)
     }
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one ordered protocol state machine; splitting it would scatter the invariants each step relies on"
+    )]
     pub(crate) fn prepare_replay_step(
         &self,
         snapshot: &mut ReplaySnapshot,
@@ -731,7 +751,7 @@ impl WorkspaceStore {
         if let Some(sorter) = &mut snapshot.sorter {
             let result = sorter.step(limit)?;
             snapshot.stats = sorter.stats.clone();
-            snapshot.stats.peak_open_files += 2; // output + cleanup manifests
+            snapshot.stats.peak_open_files = snapshot.stats.peak_open_files.saturating_add(2); // output + cleanup manifests
             if let Step::Done(path) = result {
                 snapshot.ordered = Some(File::open(path)?);
                 snapshot.sorter = None;
@@ -746,7 +766,8 @@ impl WorkspaceStore {
                     sorter.spill_step(limit)?;
                 } else {
                     for _ in 0..limit.record_entries() {
-                        snapshot.stats.last_step_work += 1;
+                        snapshot.stats.last_step_work =
+                            snapshot.stats.last_step_work.saturating_add(1);
                         let Some(meta) = read_meta(input)? else {
                             snapshot.continuity_input = None;
                             break;
@@ -768,7 +789,7 @@ impl WorkspaceStore {
                 snapshot.stats.peak_open_files = snapshot
                     .stats
                     .peak_open_files
-                    .max(sorter.stats.peak_open_files + 4);
+                    .max(sorter.stats.peak_open_files.saturating_add(4));
                 snapshot.stats.last_step_work = snapshot
                     .stats
                     .last_step_work
@@ -788,7 +809,7 @@ impl WorkspaceStore {
             snapshot.stats.peak_open_files = snapshot
                 .stats
                 .peak_open_files
-                .max(sorter.stats.peak_open_files + 3);
+                .max(sorter.stats.peak_open_files.saturating_add(3));
             if let Step::Done(path) = result {
                 snapshot.continuity_ordered = Some(File::open(path)?);
                 snapshot.continuity_sorter = None;
@@ -797,19 +818,25 @@ impl WorkspaceStore {
         }
         if snapshot.continuity_ordered.is_some() {
             for _ in 0..limit.record_entries() {
-                snapshot.stats.last_step_work += 1;
-                let Some(meta) = read_meta(snapshot.continuity_ordered.as_mut().unwrap())? else {
+                snapshot.stats.last_step_work = snapshot.stats.last_step_work.saturating_add(1);
+                let Some(meta) = read_meta(
+                    snapshot
+                        .continuity_ordered
+                        .as_mut()
+                        .invariant("continuity ordered missing")?,
+                )?
+                else {
                     snapshot.continuity_ordered = None;
                     snapshot.continuity_previous = None;
                     return Ok(Step::More);
                 };
-                snapshot.elect_continuity(self, meta)?;
+                snapshot.elect_continuity(self, &meta)?;
             }
             return Ok(Step::More);
         }
         snapshot.stats.peak_open_files = snapshot.stats.peak_open_files.max(6);
         for _ in 0..limit.record_entries() {
-            snapshot.stats.last_step_work += 1;
+            snapshot.stats.last_step_work = snapshot.stats.last_step_work.saturating_add(1);
             if let Some(candidate) = &mut snapshot.candidate {
                 let mut entry = [0; 17];
                 if candidate.index.read(&mut entry[..1])? == 0 {
@@ -817,8 +844,8 @@ impl WorkspaceStore {
                     continue;
                 }
                 candidate.index.read_exact(&mut entry[1..])?;
-                let pin = u64::from_le_bytes(entry[..8].try_into().unwrap());
-                let len = u64::from_le_bytes(entry[8..16].try_into().unwrap());
+                let pin = u64::from_le_bytes(entry[..8].try_into().invariant("entry missing")?);
+                let len = u64::from_le_bytes(entry[8..16].try_into().invariant("entry missing")?);
                 let compare =
                     len == candidate.meta.len && (!candidate.meta.pending || entry[16] == 1);
                 let candidate_pin = candidate.meta.pin;
@@ -836,7 +863,9 @@ impl WorkspaceStore {
                 {
                     snapshot.accept_candidate(true)?;
                 }
-            } else if let Some(meta) = read_meta(snapshot.ordered.as_mut().unwrap())? {
+            } else if let Some(meta) =
+                read_meta(snapshot.ordered.as_mut().invariant("ordered missing")?)?
+            {
                 snapshot.classify(self, meta)?;
             } else {
                 snapshot.ready = true;
@@ -899,25 +928,31 @@ impl WorkspaceStore {
             end = input.stream_position()?;
         }
         snapshot.stats.metadata(
-            selected.len() + 1,
-            selected.iter().map(Meta::charge).sum::<usize>() + bounded::MAX_METADATA * 2,
+            selected.len().saturating_add(1),
+            selected
+                .iter()
+                .map(Meta::charge)
+                .sum::<usize>()
+                .saturating_add(bounded::MAX_METADATA.saturating_mul(2)),
             4,
         );
         // Deque backing storage is exact-capacity; empty batches charge nothing.
         let allocation = budget.acquire(charge)?;
         let mut frames = VecDeque::with_capacity(selected.len());
-        let mut decoded_live = frames.capacity() * std::mem::size_of::<Envelope>();
+        let mut decoded_live = frames
+            .capacity()
+            .saturating_mul(std::mem::size_of::<Envelope>());
         for meta in selected {
             let bytes = frame_bytes(&snapshot.pin(meta.pin))?
                 .ok_or_else(|| invalid("pinned frame invalidated"))?;
-            let envelope = transport::decode(&bytes[4..])
+            let envelope = transport::decode(frame_payload(&bytes))
                 .map_err(|_| invalid("pinned frame decode failed"))?;
             increment(&mut snapshot.stats.hydration_reads)?;
-            decoded_live += heap_bytes(&envelope);
+            decoded_live = decoded_live.saturating_add(heap_bytes(&envelope));
             snapshot.stats.peak_frame_bytes = snapshot
                 .stats
                 .peak_frame_bytes
-                .max(bytes.capacity() + decoded_live);
+                .max(bytes.capacity().saturating_add(decoded_live));
             frames.push_back(envelope);
         }
         snapshot.read_offset = end;
@@ -977,8 +1012,11 @@ pub(super) fn equal_files(a: &Path, b: &Path) -> Result<bool, StoreError> {
         if n == 0 {
             return Ok(true);
         }
-        b.read_exact(&mut right[..n])?;
-        if left[..n] != right[..n] {
+        let (Some(read), Some(expected)) = (left.get(..n), right.get_mut(..n)) else {
+            return Ok(false);
+        };
+        b.read_exact(expected)?;
+        if read != expected {
             return Ok(false);
         }
     }
@@ -1049,7 +1087,7 @@ impl WorkDiscard {
                     self.child = None;
                 }
             } else {
-                let outer = self.outer.as_mut().unwrap();
+                let outer = self.outer.as_mut().invariant("outer missing")?;
                 if let Some(entry) = outer.peek()? {
                     let name = entry.file_name();
                     if let Some(kind) = existing_kind(entry)? {
@@ -1274,8 +1312,8 @@ impl PublicationCursor {
         // both transport encoders. No hydrated output escapes without a permit.
         let bytes = frame_bytes(&self.workspace.join(meta.source))?
             .ok_or_else(|| invalid("invalid activation frame"))?;
-        let envelope =
-            transport::decode(&bytes[4..]).map_err(|_| invalid("invalid activation envelope"))?;
+        let envelope = transport::decode(frame_payload(&bytes))
+            .map_err(|_| invalid("invalid activation envelope"))?;
         if self.recovery {
             let workspace_id = self
                 .workspace
@@ -1295,7 +1333,8 @@ impl PublicationCursor {
             .map_err(|_| invalid("activation v2 encoding"))?;
         charge = charge.max(frame_charge(&envelope, bytes.len(), &v2, v2.capacity())?);
         drop(v2);
-        let allocation = match budget.acquire(charge as usize) {
+        let charge = usize::try_from(charge).map_err(|_| invalid("activation charge"))?;
+        let allocation = match budget.acquire(charge) {
             Ok(p) => p,
             Err(error) => {
                 self.input.seek(SeekFrom::Start(offset))?;
@@ -1309,7 +1348,7 @@ impl PublicationCursor {
             frames: VecDeque::from([envelope]),
             eof: false,
             encoded_bytes,
-            charged_bytes: charge as usize,
+            charged_bytes: charge,
             _allocation: allocation,
         })))
     }

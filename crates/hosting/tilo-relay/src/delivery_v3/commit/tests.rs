@@ -5,10 +5,10 @@ fn ledger() -> DeliveryLedgerV1 {
         version: 1,
         store_generation: [1; 16],
         resolved_through: 0,
-        replay: Default::default(),
-        admissions: Default::default(),
-        consumers: Default::default(),
-        pins: Default::default(),
+        replay: BTreeMap::default(),
+        admissions: BTreeMap::default(),
+        consumers: BTreeMap::default(),
+        pins: BTreeMap::default(),
     }
 }
 fn publication(bytes: &[u8]) -> PublicationRef {
@@ -89,7 +89,7 @@ fn unresolved_references_fail_even_if_the_queue_is_empty() {
     let pool = PublicationPool::new(1024).unwrap();
     let reference = publication(b"missing");
     assert!(
-        pool.reference_counts(&[reference.clone()], &ledger())
+        pool.reference_counts(std::slice::from_ref(&reference), &ledger())
             .is_err()
     );
     let mut value = ledger();
@@ -103,7 +103,7 @@ fn metadata_rejects_future_positions_wrong_scope_and_broken_order() {
     let mut value = ledger();
     let event = replay(publication(b"a"));
     let sequence = event.owner_generation;
-    value.replay.insert(sequence, event.clone());
+    value.replay.insert(sequence, event);
     assert!(value.encode().is_err());
     value.resolved_through = sequence;
     assert!(value.encode().is_ok());
@@ -154,7 +154,7 @@ fn decoder_rejects_unknown_truncated_trailing_and_noncanonical_metadata() {
     let mut trailing = encoded.clone();
     trailing.push(0);
     assert!(DeliveryLedgerV1::decode(&trailing).is_err());
-    let mut noncanonical = encoded.clone();
+    let mut noncanonical = encoded;
     noncanonical.splice(17..18, [0x80, 0]);
     assert!(DeliveryLedgerV1::decode(&noncanonical).is_err());
     assert!(DeliveryLedgerV1::decode(&vec![0; MAX_LEDGER_BYTES + 1]).is_err());
@@ -255,6 +255,11 @@ fn exact_metadata_budget_and_binding_capacity_reject_without_mutating_caller() {
 
 #[test]
 fn fork_shares_original_allocations_but_isolates_candidate_growth_and_quota_failure() {
+    #[derive(Serialize)]
+    struct V1 {
+        version: u8,
+        payloads: BTreeMap<Digest, Vec<u8>>,
+    }
     let mut original = PublicationPool::new(7).unwrap();
     let id = original.intern(b"old").unwrap();
     let encoded = original.encode(1024).unwrap();
@@ -272,11 +277,6 @@ fn fork_shares_original_allocations_but_isolates_candidate_growth_and_quota_fail
     drop(original);
     assert_eq!(candidate.resolve(&id).unwrap(), b"old");
     // Independent frozen v1 wire DTO: Arc backing cannot alter persisted ABI.
-    #[derive(Serialize)]
-    struct V1 {
-        version: u8,
-        payloads: BTreeMap<Digest, Vec<u8>>,
-    }
     let fixture = V1 {
         version: 1,
         payloads: BTreeMap::from([(id, b"old".to_vec())]),

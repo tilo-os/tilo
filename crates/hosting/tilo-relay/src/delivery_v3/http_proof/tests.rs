@@ -166,7 +166,7 @@ impl Fixture {
             digest,
             request,
             self.now,
-            self.now + 60 * NS,
+            self.now.saturating_add(60_u64.saturating_mul(NS)),
             &self.device_key,
         )
         .unwrap()

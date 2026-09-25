@@ -179,6 +179,10 @@ fn cmd_status(path: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
+#[expect(
+    clippy::significant_drop_tightening,
+    reason = "the relay must keep serving until shutdown().await consumes it"
+)]
 fn cmd_run(path: &Path) -> anyhow::Result<()> {
     let cfg = load_or_default(path)?;
     tilo_rt::daemon("tilo-relay").run(async move {
@@ -240,6 +244,10 @@ async fn wait_for_shutdown() -> anyhow::Result<()> {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "relays, fixtures and guards deliberately stay alive until each test ends"
+)]
 mod tests {
     use super::*;
     use iroh_base::EndpointAddr;

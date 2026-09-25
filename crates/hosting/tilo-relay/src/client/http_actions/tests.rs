@@ -1,3 +1,7 @@
+#![allow(
+    clippy::similar_names,
+    reason = "paired test fixtures are named after the roles they mirror"
+)]
 use super::*;
 use crate::delivery_v3::{
     auth::*,
@@ -62,7 +66,9 @@ impl Fixture {
         let governor = cert(&governor_key, DeviceCapabilities::primary());
         let roster = vec![governor.clone(), host.clone(), device.clone()];
         let room = Uuid::from_u128(1).to_string();
-        let now = web_time::SystemTime::UNIX_EPOCH + web_time::Duration::from_nanos(100);
+        let now = web_time::SystemTime::UNIX_EPOCH
+            .checked_add(web_time::Duration::from_nanos(100))
+            .unwrap();
         let mut peer = qos_peer_state::StatePeer::new(
             &room,
             governor.clone(),
@@ -166,6 +172,10 @@ impl Fixture {
             },
         }
     }
+    #[expect(
+        clippy::unused_self,
+        reason = "fixture method keeps call sites uniform across the scenario helpers"
+    )]
     fn body(&self, action: &DirectedAction) -> Vec<u8> {
         private_wire::encode_request(
             PrivateOperation::Status,

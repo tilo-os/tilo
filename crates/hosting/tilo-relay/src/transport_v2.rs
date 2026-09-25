@@ -72,6 +72,9 @@ impl EnvelopeV2 {
     }
 }
 
+/// # Errors
+///
+/// Returns `postcard::Error` if the value violates its wire bounds or cannot be serialized.
 pub fn encode(envelope: &EnvelopeV2) -> Result<Vec<u8>, postcard::Error> {
     let payload = postcard::to_allocvec(envelope)?;
     let limit = if matches!(envelope, EnvelopeV2::State(_)) {
@@ -81,24 +84,29 @@ pub fn encode(envelope: &EnvelopeV2) -> Result<Vec<u8>, postcard::Error> {
     };
     // Delivered appends a certified 32-byte root; reserve it at ingress so a
     // legal Directed frame cannot disconnect its target during re-encoding.
-    let reserved = usize::from(matches!(envelope, EnvelopeV2::Directed(_))) * 32;
+    let reserved = usize::from(matches!(envelope, EnvelopeV2::Directed(_))).saturating_mul(32);
     if payload.len().saturating_add(reserved) > limit {
         return Err(postcard::Error::SerializeBufferFull);
     }
-    let mut out = (payload.len() as u32).to_le_bytes().to_vec();
+    let len = u32::try_from(payload.len()).map_err(|_| postcard::Error::SerializeBufferFull)?;
+    let mut out = len.to_le_bytes().to_vec();
     out.extend_from_slice(&payload);
     Ok(out)
 }
 
+/// # Errors
+///
+/// Returns `postcard::Error` if the input is not a canonical encoding within this type's bounds.
 pub fn decode(payload: &[u8]) -> Result<EnvelopeV2, postcard::Error> {
-    if payload.is_empty()
-        || payload.len()
-            > if payload[0] == 0 {
-                MAX_FRAME_BYTES + 1
-            } else {
-                MAX_PRIVATE_BYTES
-            }
-    {
+    let Some(&kind) = payload.first() else {
+        return Err(postcard::Error::DeserializeBadEncoding);
+    };
+    let limit = if kind == 0 {
+        MAX_FRAME_BYTES + 1
+    } else {
+        MAX_PRIVATE_BYTES
+    };
+    if payload.len() > limit {
         return Err(postcard::Error::DeserializeBadEncoding);
     }
     let (value, rest) = postcard::take_from_bytes(payload)?;
@@ -134,7 +142,7 @@ impl<R: tokio::io::AsyncRead + Unpin> SessionReader<R> {
         while self.prefix_read < 4 {
             let n = self
                 .inner
-                .read(&mut self.prefix[self.prefix_read..])
+                .read(self.prefix.get_mut(self.prefix_read..).unwrap_or_default())
                 .await?;
             if n == 0 {
                 if self.prefix_read == 0 {
@@ -142,37 +150,47 @@ impl<R: tokio::io::AsyncRead + Unpin> SessionReader<R> {
                 }
                 return Err(std::io::Error::from(std::io::ErrorKind::UnexpectedEof).into());
             }
-            self.prefix_read += n;
+            self.prefix_read = self.prefix_read.saturating_add(n);
         }
         let len = u32::from_le_bytes(self.prefix) as usize;
         if len == 0 {
             return Err(FrameError::EmptyFrame);
         }
-        if len > MAX_FRAME_BYTES + usize::from(self.v2) {
+        if len > MAX_FRAME_BYTES.saturating_add(usize::from(self.v2)) {
             return Err(FrameError::TooLarge(len));
         }
         if self.payload.is_empty() {
             self.payload.resize(1, 0);
         }
         if self.payload_read == 0 {
-            if self.inner.read(&mut self.payload[..1]).await? == 0 {
+            if self
+                .inner
+                .read(self.payload.get_mut(..1).unwrap_or_default())
+                .await?
+                == 0
+            {
                 return Err(std::io::Error::from(std::io::ErrorKind::UnexpectedEof).into());
             }
             self.payload_read = 1;
         }
-        if self.v2 && self.payload[0] != 0 && len > MAX_PRIVATE_BYTES {
+        if self.v2 && self.payload.first().is_some_and(|kind| *kind != 0) && len > MAX_PRIVATE_BYTES
+        {
             return Err(FrameError::TooLarge(len));
         }
         self.payload.resize(len, 0);
         while self.payload_read < len {
             let n = self
                 .inner
-                .read(&mut self.payload[self.payload_read..])
+                .read(
+                    self.payload
+                        .get_mut(self.payload_read..)
+                        .unwrap_or_default(),
+                )
                 .await?;
             if n == 0 {
                 return Err(std::io::Error::from(std::io::ErrorKind::UnexpectedEof).into());
             }
-            self.payload_read += n;
+            self.payload_read = self.payload_read.saturating_add(n);
         }
         let value = if self.v2 {
             decode(&self.payload)
@@ -193,8 +211,9 @@ pub(crate) fn encode_state(env: &Envelope, v2: bool) -> Result<Vec<u8>, postcard
         if payload.len() > MAX_FRAME_BYTES + 1 {
             return Err(postcard::Error::SerializeBufferFull);
         }
-        let mut out = Vec::with_capacity(payload.len() + 4);
-        out.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+        let mut out = Vec::with_capacity(payload.len().saturating_add(4));
+        let len = u32::try_from(payload.len()).map_err(|_| postcard::Error::SerializeBufferFull)?;
+        out.extend_from_slice(&len.to_le_bytes());
         out.extend_from_slice(&payload);
         Ok(out)
     } else {
@@ -202,7 +221,7 @@ pub(crate) fn encode_state(env: &Envelope, v2: bool) -> Result<Vec<u8>, postcard
     }
 }
 
-/// Same zero-valued State discriminant as EnvelopeV2, borrowing its payload so
+/// Same zero-valued State discriminant as `EnvelopeV2`, borrowing its payload so
 /// the replay allocation permit covers every live representation during writes.
 pub(crate) fn state_payload(env: &Envelope) -> Result<Vec<u8>, postcard::Error> {
     #[derive(serde::Serialize)]
@@ -298,7 +317,7 @@ mod tests {
         ];
         for (frame, payload) in cases {
             let expected = [
-                (payload.len() as u32).to_le_bytes().to_vec(),
+                u32::try_from(payload.len()).unwrap().to_le_bytes().to_vec(),
                 payload.clone(),
             ]
             .concat();
@@ -395,7 +414,10 @@ mod tests {
     #[tokio::test]
     async fn private_frame_length_is_rejected_before_allocating_its_body() {
         let data = [
-            ((MAX_PRIVATE_BYTES + 1) as u32).to_le_bytes().to_vec(),
+            u32::try_from(MAX_PRIVATE_BYTES + 1)
+                .unwrap()
+                .to_le_bytes()
+                .to_vec(),
             vec![3],
         ]
         .concat();

@@ -1,4 +1,10 @@
 //! Offline historical evidence inspection. Never a live admission or migration API.
+#![allow(
+    clippy::indexing_slicing,
+    clippy::too_many_lines,
+    clippy::needless_pass_by_value,
+    reason = "offline diagnostic probe: it indexes JSON objects it builds itself and reads top to bottom"
+)]
 use anyhow::{Result, bail, ensure};
 use automerge::{AutoCommit, ReadDoc, transaction::Transactable};
 use collab_types::DocumentMutation;
@@ -313,7 +319,7 @@ fn inspect(auth: &PublicEnrollment, sources: &[Source]) -> Result<Recovered> {
             ensure!(
                 candidate
                     .get(automerge::ROOT, "room")?
-                    .and_then(|(v, _)| v.to_str().map(str::to_owned))
+                    .and_then(|(v, _)| v.as_str().map(str::to_owned))
                     .as_deref()
                     == Some(&b.room),
                 "room document declaration missing/mismatched"
@@ -410,11 +416,10 @@ fn inspect(auth: &PublicEnrollment, sources: &[Source]) -> Result<Recovered> {
                 ) == CapDecision::Allow,
             "historical document capability forbidden"
         );
-        let mutation = match collab_types::validate_document_payload_route(
-            app_id, cluster_id, record_id, envelope,
-        )? {
-            collab_types::RoutedDocumentPayload::Cleartext(m) => m,
-            _ => bail!("incomplete: encrypted state requires authenticated MLS material"),
+        let collab_types::RoutedDocumentPayload::Cleartext(mutation) =
+            collab_types::validate_document_payload_route(app_id, cluster_id, record_id, envelope)?
+        else {
+            bail!("incomplete: encrypted state requires authenticated MLS material")
         };
         let route = (app_id.clone(), record_id.clone());
         let duplicate = (route.clone(), row.author, envelope.seq);
@@ -489,7 +494,7 @@ fn inspect(auth: &PublicEnrollment, sources: &[Source]) -> Result<Recovered> {
                 Err(_) => bail!("malformed incremental bytes"),
             }
             let mut probe = doc.clone();
-            probe.load_incremental(mutation.data())?;
+            tilo_automerge::ApplyIncoming::load_incoming(&mut probe, mutation.data())?;
             if complete(&probe).is_err() {
                 deferred.push((route, mutation, author, seq));
                 continue;

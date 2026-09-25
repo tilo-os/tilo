@@ -16,6 +16,10 @@
     clippy::unreachable,
     reason = "in a test these are the assertion, not a hazard"
 )]
+#![allow(
+    clippy::significant_drop_tightening,
+    reason = "relays, fixtures and guards deliberately stay alive until each test ends"
+)]
 
 use std::time::Duration;
 
@@ -250,12 +254,12 @@ async fn two_peers_fan_out_through_relay() {
     let a = user.enrol("laptop", DeviceCapabilities::primary());
     let b = user.enrol("phone", DeviceCapabilities::member());
 
-    let relay = spawn_relay(
+    let relay = Box::pin(spawn_relay(
         &user,
         relay_dev,
         &[42],
         &[a.device_pubkey(), b.device_pubkey()],
-    )
+    ))
     .await;
     let relay_addr = relay.relay.node_addr();
 

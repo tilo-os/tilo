@@ -294,6 +294,10 @@ impl RelayCoeditSession {
 
     /// Negotiate client access to an attached durable broker on this same lane.
     /// Call after `enable_actions`, which preserves subscribe-before-enable ordering.
+    ///
+    /// # Errors
+    ///
+    /// Returns `crate::client::ClientError` if the inputs violate this operation's bounds or invariants.
     pub fn enable_broker_client(&self, room: uuid::Uuid) -> Result<(), crate::client::ClientError> {
         if !crate::room_workspace_id_matches(&room.to_string(), self.workspace_id) {
             return Err(crate::client::ClientError::Codec(
@@ -327,6 +331,10 @@ impl RelayCoeditSession {
     }
 
     /// Attach an already healthy durable broker to this private lane.
+    ///
+    /// # Errors
+    ///
+    /// Returns `crate::client::ClientError` if the inputs violate this operation's bounds or invariants.
     pub fn register_action_broker(
         &self,
         room: uuid::Uuid,
@@ -402,6 +410,10 @@ impl RelayCoeditSession {
 
     /// Ask the current authenticated relay owner to refresh its genuine retained
     /// checkpoint. Queue acceptance is neither durability nor a checkpoint ACK.
+    ///
+    /// # Errors
+    ///
+    /// Returns `CoeditError` if the request cannot be sent or its reply is rejected.
     pub fn request_checkpoint_refresh(&self) -> Result<(), CoeditError> {
         self.client
             .send(Envelope::SyncRequest {
