@@ -435,6 +435,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::float_cmp,
+        reason = "one monospace glyph advance is exactly representable"
+    )]
     fn unicode_search_maps_expanded_spelling_to_original_glyphs() {
         let text = "İ test \u{212a} TEST";
         let page = PageText::from_glyphs(
