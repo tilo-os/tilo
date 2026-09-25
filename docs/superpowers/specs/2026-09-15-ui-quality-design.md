@@ -34,7 +34,7 @@ Automatic means deterministic layout policies, not runtime AI guessing the inter
 - `ui/src/widget/form.rs` already composes labels and controls.
 - `ui/src/widget/column.rs` and `row.rs` expose padding, filling, wrapping, and intrinsic-size choices that currently require developer knowledge.
 - `ui/src/widget/nav_shell.rs`, `nav_split.rs`, and `app_shell.rs` contain adaptive behavior with distinct purposes. Classify them before selecting the default public patterns.
-- `crates/app/qos-app/src/lib.rs` exposes the full toolkit. Preserve its capabilities while making the automatic path easier to discover.
+- `crates/sdk/tilo-app/src/lib.rs` exposes the full toolkit. Preserve its capabilities while making the automatic path easier to discover.
 - `ui/src/headless.rs` and `crates/dev/qos-dev/src/main.rs` provide inspection, screenshots, scenarios, and responsive acceptance machinery.
 - `ui/tests/design_token_audit.rs` checks some styling literals. Distinguish standard framework styling from intentional manual choices and domain geometry; a literal alone does not establish poor layout.
 

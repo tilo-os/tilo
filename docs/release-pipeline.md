@@ -73,7 +73,13 @@ binaries. A successful `main` build publishes it immutably and advances
 downloads the matching architecture and omits those three Cargo packages from
 its build. OS-only changes therefore test the desktop/OS integration without
 recompiling the desktop. Scheduled/manual OS builds exercise this immutable
-integration boundary; ordinary PRs do not run the OS image workflow.
+integration boundary; ordinary PRs do not run the OS image workflow. The OS
+build reuses the payload only while it is current: the payload's
+`manifest.json` records its source revision, and if any Rust or Cargo input
+(`Cargo.toml`, `Cargo.lock`, `rust-toolchain.toml`, `.cargo`, `crates`, `apps`,
+`vendor`) changed between that revision and the build commit, or the revision
+cannot be fetched, the OS build compiles the desktop from its own source
+instead of shipping an older compositor.
 
 Each architecture collection also contains the signed `tilo-runtime` bundle
 built in the same Cargo graph as its thin app binaries. The OS verifies and
