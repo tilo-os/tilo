@@ -111,7 +111,7 @@ pub use contract::{
     ActionContract, Availability, ConfirmationPolicy, DiscoveryScope, ExecutionMode,
     PermissionRequirement, ResultSpec, RetryPolicy, RiskLevel,
 };
-pub use door::{ActionAddress, ActionDescriptor, DoorError, InputSpec};
+pub use door::{ActionAddress, ActionDescriptor, DoorError, InputSpec, ResourceViewDescriptor};
 pub use envelope::ActionEnvelope;
 pub use executor::{
     ActionTransport, Dispatched, HostDecision, LocalTransport, apply_local, apply_local_by,
@@ -138,7 +138,7 @@ pub use registry::ActionRegistry;
 pub use resource::{
     ActionBinding, ActionBindingError, ActionInput, ActionSpec, ArgsBuilder, Collects,
     ControlInvocation, FlatAction, KEY_SEP, PROMPTED_PARAM, Resource, ResourceId,
-    ResourcePresentation, ResourceProvider, flatten,
+    ResourcePresentation, ResourceProvider, ResourceViewMountSpec, ResourceViewSpec, flatten,
 };
 
 #[cfg(test)]
