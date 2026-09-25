@@ -25,7 +25,10 @@ enum Mode {
     Good,
     #[cfg_attr(
         not(target_os = "macos"),
-        expect(dead_code, reason = "only the macOS cancellation fixture completes a call")
+        expect(
+            dead_code,
+            reason = "only the macOS cancellation fixture completes a call"
+        )
     )]
     Succeeded,
     Absent,
