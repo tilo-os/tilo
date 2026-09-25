@@ -59,6 +59,7 @@ suites = [
   "os/tests/local_boot_esp.sh",
   "os/tests/portal_config_validity.sh",
   "os/tests/sealed_extensions.sh",
+  "os/tests/validation_access.sh",
   "os/tests/test-installer-cycle-runtime.py",
   "os/tests/test_adopt_development_wpe.py",
   "os/tests/test_allocate_windows_direct_final_install.py",
@@ -141,7 +142,6 @@ suites = [
   "os/tests/test_vm_install_image_proof.py",
   "os/tests/test_windows_dualboot_preflight.py",
   "os/tests/test_windows_direct_provenance.py",
-  "os/tests/test_wpe_candidate_receipt.py",
   "os/tests/test_wpe_stage_artifact.py",
   "os/tests/vm_release_gate_invariants.sh",
   "os/tests/windows_guest_powershell_syntax.py",
@@ -158,6 +158,7 @@ suites = [
   "os/tests/test_finalization_worker.py",
   "os/tests/test_kernel_build_environment.py",
   "os/tests/test_open_snapshot_pr.py",
+  "os/tests/test_reconcile_snapshot_pins.py",
   "os/tests/test_raw_layer_epoch.py",
 ]
 
@@ -941,6 +942,10 @@ reason = "boots the test image in a VM"
 [[unrequired]]
 suite = "scripts/test-flatpak-share.sh"
 reason = "drives distrobox and host GPU encoders"
+
+[[unrequired]]
+suite = "scripts/test-local.sh"
+reason = "developer entry point for the Rust suite, which CI runs through tools/test-env.sh"
 
 [[unrequired]]
 suite = "scripts/tests/test_runtime_auto_attach_proof.py"

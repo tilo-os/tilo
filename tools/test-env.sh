@@ -8,8 +8,9 @@
 #       -E 'not (...visual goldens...)'
 #
 # It provides:
-# - no desktop session: DISPLAY, WAYLAND_DISPLAY, WAYLAND_SOCKET and the session
-#   bus are removed, and XDG_RUNTIME_DIR is a fresh private (0700) directory;
+# - tools/with-test-environment.sh: LANG=C.UTF-8, TZ=UTC, a fresh HOME and XDG
+#   config/data/state/cache/runtime tree removed afterwards, and no desktop
+#   session (DISPLAY, WAYLAND_*, the session bus and keyring sockets removed);
 # - Mesa's CPU Vulkan driver as the only adapter (VK_DRIVER_FILES, WGPU_BACKEND,
 #   WGPU_ADAPTER_NAME), the renderer the visual goldens are recorded with;
 # - TILO_PDFIUM_LIB when the image installed PDFium and it is not already set;
@@ -78,12 +79,7 @@ if [[ -z ${QOS_NTFS_FIXTURES:-} && ${TILO_TEST_NTFS_FIXTURES:-1} != 0 ]]; then
     ntfs_fixtures
 fi
 
-runtime=$(mktemp -d /tmp/tilo-xdg-runtime.XXXXXXXX)
-cleanup() { rm -rf -- "$runtime"; }
-trap cleanup EXIT
-trap 'exit 130' INT
-trap 'exit 143' TERM
-chmod 700 "$runtime"
-export XDG_RUNTIME_DIR="$runtime"
-
-bash "$repo/tools/with-headless-audio.sh" "$@"
+# The fixture cache above lives under the caller's HOME; the tests themselves
+# get a fresh one.
+exec bash "$repo/tools/with-test-environment.sh" \
+    bash "$repo/tools/with-headless-audio.sh" "$@"

@@ -249,10 +249,26 @@ jobs:
             echo 'TILO_COMPILER_CACHE_SECRETS'
           } >> "$GITHUB_ENV"
 
+      # Runner pools with execution-local registries hand jobs the standard
+      # BuildKit registry configuration (a pull-through mirror of
+      # code.sandbox.example) and name their layer-cache registry; see build-image.
+      - name: Select the runner pool's BuildKit registries
+        run: |
+          set -euo pipefail
+          if [[ -r /etc/buildkit/buildkitd.toml ]]; then
+            echo "TILO_BUILDKITD_CONFIG=/etc/buildkit/buildkitd.toml" >> "$GITHUB_ENV"
+          fi
+          registry="${CI_LAYER_CACHE_REGISTRY:-code.sandbox.example}"
+          [[ $registry =~ ^[a-z0-9.-]+(:[0-9]+)?$ ]] || {
+            echo "::error::invalid layer-cache registry: $registry"; exit 1;
+          }
+          echo "TILO_LAYER_CACHE_REGISTRY=$registry" >> "$GITHUB_ENV"
+
       - name: Set up buildx for registry cache export
         uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
         with:
           driver: docker-container
+          buildkitd-config: ${{ env.TILO_BUILDKITD_CONFIG }}
           driver-opts: |
             memory=9g
             memory-swap=9g
@@ -312,14 +328,14 @@ jobs:
           # A published kernel imports no layer cache: no uncached rebuild
           # checks it, and the cache tag is writable by other jobs. Publishing
           # runs refresh the cache that pull requests then consume.
-          cache-from: ${{ github.event_name == 'pull_request' && format('type=registry,ref=code.sandbox.example/qos/tilo-kernel-buildcache:{0}', matrix.arch) || '' }}
+          cache-from: ${{ github.event_name == 'pull_request' && format('type=registry,ref={0}/qos/tilo-kernel-buildcache:{1}', env.TILO_LAYER_CACHE_REGISTRY, matrix.arch) || '' }}
           # PRs consume the shared cache but do not update it: exporting cache
           # work can outlive a successful compile and exhaust the runner's
           # hard deadline. Main/tag/dispatch builds refresh final-stage
           # dependencies only; mode=max duplicates the multi-GiB source tree.
           # ignore-error: a cache write failure must not fail a build whose
           # image was already pushed; the next run simply starts colder.
-          cache-to: ${{ github.event_name != 'pull_request' && format('type=registry,ref=code.sandbox.example/qos/tilo-kernel-buildcache:{0},mode=min,ignore-error=true', matrix.arch) || '' }}
+          cache-to: ${{ github.event_name != 'pull_request' && format('type=registry,ref={0}/qos/tilo-kernel-buildcache:{1},mode=min,ignore-error=true', env.TILO_LAYER_CACHE_REGISTRY, matrix.arch) || '' }}
           provenance: false
 
       # The build step never fails the job itself (continue-on-error), so

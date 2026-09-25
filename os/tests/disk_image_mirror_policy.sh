@@ -5,6 +5,7 @@ repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 mkdir -p "$work/bin" "$work/out" "$work/udev/data"
+export TILO_TEST_REAL_PYTHON="$(command -v python3)"
 
 digest="sha256:$(printf 'a%.0s' {1..64})"
 authoritative="code.sandbox.example/qos/tilo-development@$digest"
@@ -32,6 +33,17 @@ cat >"$work/bin/losetup" <<'EOF'
 case " $* " in
   *' -fP '*) printf '/dev/loop-test\n' ;;
 esac
+EOF
+cat >"$work/bin/python3" <<'EOF'
+#!/bin/bash
+if [[ ${1:-} == -u && ${2:-} == */hold-loop-partition-nodes.py ]]; then shift; fi
+if [[ ${1:-} == */hold-loop-partition-nodes.py ]]; then
+  printf 'READY\n'
+  read -r release
+  [[ $release == release ]]
+else
+  exec "$TILO_TEST_REAL_PYTHON" "$@"
+fi
 EOF
 cat >"$work/bin/mount" <<'EOF'
 #!/bin/sh
