@@ -290,6 +290,47 @@ impl PowerAction {
     }
 }
 
+fn add_guided_alongside_args(cmd: &mut Command, disk: &str, opts: &InstallOptions) {
+    cmd.arg("--guided-alongside")
+        .arg("--free-start-bytes")
+        .arg(opts.guided_free_start_bytes.to_string())
+        .arg("--free-size-bytes")
+        .arg(opts.guided_free_size_bytes.to_string())
+        .arg("--efi-start-bytes")
+        .arg(opts.guided_efi_start_bytes.to_string())
+        .arg("--efi-size-bytes")
+        .arg(opts.guided_efi_size_bytes.to_string())
+        .arg("--boot-start-bytes")
+        .arg(opts.guided_boot_start_bytes.to_string())
+        .arg("--boot-size-bytes")
+        .arg(opts.guided_boot_size_bytes.to_string())
+        .arg("--root-start-bytes")
+        .arg(opts.guided_root_start_bytes.to_string())
+        .arg("--root-size-bytes")
+        .arg(opts.guided_root_size_bytes.to_string())
+        .arg("--expect-disk-ptuuid")
+        .arg(&opts.disk_partition_table_uuid)
+        .arg("--expect-logical-sector-size")
+        .arg(opts.disk_logical_sector_size.to_string())
+        .arg("--new-efi-partuuid")
+        .arg(&opts.guided_efi_partuuid)
+        .arg("--new-boot-partuuid")
+        .arg(&opts.guided_boot_partuuid)
+        .arg("--new-root-partuuid")
+        .arg(&opts.guided_root_partuuid)
+        .arg("--confirm-free-space")
+        .arg(disk);
+    if !opts.internal_handoff.is_empty() {
+        cmd.arg("--internal-handoff").arg(&opts.internal_handoff);
+    }
+    for partition in &opts.expected_partitions {
+        cmd.arg("--expect-partition").arg(format!(
+            "{}:{}:{}",
+            partition.part_uuid, partition.start_bytes, partition.size_bytes
+        ));
+    }
+}
+
 /// Build the backend [`Command`] for `disk` + `user` + `opts`. stdin /
 /// stdout / stderr are wired up by [`stream_command`].
 pub fn install_command(disk: &str, user: &str, opts: &InstallOptions) -> Command {
@@ -322,44 +363,7 @@ pub fn install_command(disk: &str, user: &str, opts: &InstallOptions) -> Command
         cmd.arg("--locale").arg(opts.locale.trim());
     }
     if opts.guided_free_size_bytes > 0 {
-        cmd.arg("--guided-alongside")
-            .arg("--free-start-bytes")
-            .arg(opts.guided_free_start_bytes.to_string())
-            .arg("--free-size-bytes")
-            .arg(opts.guided_free_size_bytes.to_string())
-            .arg("--efi-start-bytes")
-            .arg(opts.guided_efi_start_bytes.to_string())
-            .arg("--efi-size-bytes")
-            .arg(opts.guided_efi_size_bytes.to_string())
-            .arg("--boot-start-bytes")
-            .arg(opts.guided_boot_start_bytes.to_string())
-            .arg("--boot-size-bytes")
-            .arg(opts.guided_boot_size_bytes.to_string())
-            .arg("--root-start-bytes")
-            .arg(opts.guided_root_start_bytes.to_string())
-            .arg("--root-size-bytes")
-            .arg(opts.guided_root_size_bytes.to_string())
-            .arg("--expect-disk-ptuuid")
-            .arg(&opts.disk_partition_table_uuid)
-            .arg("--expect-logical-sector-size")
-            .arg(opts.disk_logical_sector_size.to_string())
-            .arg("--new-efi-partuuid")
-            .arg(&opts.guided_efi_partuuid)
-            .arg("--new-boot-partuuid")
-            .arg(&opts.guided_boot_partuuid)
-            .arg("--new-root-partuuid")
-            .arg(&opts.guided_root_partuuid)
-            .arg("--confirm-free-space")
-            .arg(disk);
-        if !opts.internal_handoff.is_empty() {
-            cmd.arg("--internal-handoff").arg(&opts.internal_handoff);
-        }
-        for partition in &opts.expected_partitions {
-            cmd.arg("--expect-partition").arg(format!(
-                "{}:{}:{}",
-                partition.part_uuid, partition.start_bytes, partition.size_bytes
-            ));
-        }
+        add_guided_alongside_args(&mut cmd, disk, opts);
     } else if opts.alongside_root.is_empty() {
         // The graphical UI has already required the person to type this exact
         // device name. Repeat that decision at the privileged boundary so an
