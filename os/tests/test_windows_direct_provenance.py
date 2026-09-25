@@ -102,6 +102,7 @@ class ProvenanceTests(unittest.TestCase):
             revision = "b" * 40
             origin = "code.sandbox.example/qos/tilo:lenovo-83ed-" + revision
             ci = {"source_revision": revision, "firmware_manifest_sha256": "c" * 64,
+                  "firmware_candidate": "code.sandbox.example/qos/tilo-lenovo-83ed-firmware@sha256:" + "e" * 64,
                   "invocation_id": "234", "key_sha256": "d" * 64}
             ids = {"efi": "00000000-0000-4000-8000-000000000001",
                    "boot": "00000000-0000-4000-8000-000000000002",
@@ -121,6 +122,7 @@ class ProvenanceTests(unittest.TestCase):
                          "update_origin": origin,
                          "provenance": {"source_revision": revision,
                              "firmware_manifest_sha256": "c" * 64,
+                             "firmware_candidate": ci["firmware_candidate"],
                              "invocation_id": "234"},
                          "verifier_key_sha256": "d" * 64}}
             artifact = {"schema": proof.PROOF_SCHEMA_V2,
@@ -137,6 +139,7 @@ class ProvenanceTests(unittest.TestCase):
             for name, change in (
                 ("origin", lambda: guest.update(installed_update_origin="local")),
                 ("source", lambda: guest["selected_target"]["provenance"].update(source_revision="f" * 40)),
+                ("firmware candidate", lambda: guest["selected_target"]["provenance"].update(firmware_candidate="local")),
                 ("installer composefs", lambda: artifact.update(installer_composefs="a" * 128))):
                 with self.subTest(name=name):
                     broken = copy.deepcopy(artifact)
@@ -238,7 +241,7 @@ class ProvenanceTests(unittest.TestCase):
             image = "code.sandbox.example/qos/tilo@" + digest
             self.assertEqual(proof.signed_ci_child(image, child, child),
                              (digest, digest, [], "lenovo-83ed"))
-        candidate = "code.sandbox.example/qos/firmware@sha256:" + "e" * 64
+        candidate = "code.sandbox.example/qos/tilo-lenovo-83ed-firmware@sha256:" + "e" * 64
         statement = {"predicateType": "https://slsa.dev/provenance/v1",
                      "subject": [{"digest": {"sha256": digest[7:]}}],
                      "predicate": {"buildDefinition": {
