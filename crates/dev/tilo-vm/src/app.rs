@@ -274,23 +274,40 @@ fn existing_ancestor(path: &Path) -> &Path {
 /// Free bytes of the filesystem that holds (or will hold) `path`, where the
 /// host can tell.
 fn host_free(path: &Path) -> Option<u64> {
-    if !cfg!(unix) {
-        return None;
+    #[cfg(windows)]
+    {
+        let output = std::process::Command::new("powershell.exe")
+            .args([
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                "[IO.DriveInfo]::new([IO.Path]::GetPathRoot($env:TILO_VM_DISK_DIR)).AvailableFreeSpace",
+            ])
+            .env("TILO_VM_DISK_DIR", existing_ancestor(path))
+            .output()
+            .ok()?;
+        if !output.status.success() {
+            return None;
+        }
+        return String::from_utf8_lossy(&output.stdout).trim().parse().ok();
     }
-    let output = std::process::Command::new("df")
-        .arg("-Pk")
-        .arg(existing_ancestor(path))
-        .output()
-        .ok()?;
-    let text = String::from_utf8_lossy(&output.stdout).into_owned();
-    let kib: u64 = text
-        .lines()
-        .nth(1)?
-        .split_whitespace()
-        .nth(3)?
-        .parse()
-        .ok()?;
-    Some(kib.saturating_mul(1024))
+    #[cfg(unix)]
+    {
+        let output = std::process::Command::new("df")
+            .arg("-Pk")
+            .arg(existing_ancestor(path))
+            .output()
+            .ok()?;
+        let text = String::from_utf8_lossy(&output.stdout).into_owned();
+        let kib: u64 = text
+            .lines()
+            .nth(1)?
+            .split_whitespace()
+            .nth(3)?
+            .parse()
+            .ok()?;
+        Some(kib.saturating_mul(1024))
+    }
 }
 
 fn vm_free_floor(configured: u64, hypervisor: &str) -> u64 {
