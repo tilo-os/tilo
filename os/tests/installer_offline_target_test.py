@@ -64,6 +64,30 @@ class OfflineTargetTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "unexpected"):
             offline.verify(self.root)
 
+    def test_wrong_platform_config_rejected(self):
+        layout = self.root / "oci"
+        index = json.loads((layout / "index.json").read_text())
+        target = index["manifests"][0]
+        manifest_path = self.blobs / target["digest"].removeprefix("sha256:")
+        manifest = json.loads(manifest_path.read_text())
+        config = b'{"architecture":"amd64","os":"linux"}'
+        config_digest = hashlib.sha256(config).hexdigest()
+        (self.blobs / config_digest).write_bytes(config)
+        manifest["config"] = {"digest": "sha256:" + config_digest, "size": len(config)}
+        rewritten = json.dumps(manifest, separators=(",", ":")).encode()
+        rewritten_digest = hashlib.sha256(rewritten).hexdigest()
+        (self.blobs / rewritten_digest).write_bytes(rewritten)
+        manifest_path.unlink()
+        target.update(digest="sha256:" + rewritten_digest, size=len(rewritten))
+        (layout / "index.json").write_text(json.dumps(index))
+        metadata_path = self.root / "target.json"
+        metadata = json.loads(metadata_path.read_text())
+        metadata["target_digest"] = target["digest"]
+        metadata["target_ref"] = "code.sandbox.example/qos/tilo@" + target["digest"]
+        metadata_path.write_text(json.dumps(metadata))
+        with self.assertRaisesRegex(ValueError, "Linux ARM64"):
+            offline.verify(self.root)
+
 
 if __name__ == "__main__":
     unittest.main()

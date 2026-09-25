@@ -80,6 +80,9 @@ def verify(directory):
                 "OCI image manifest is invalid")
         if descriptor is target[0]:
             require(manifest["layers"], "target image has no layers")
+            config = bounded_json(blob_path(layout, manifest["config"].get("digest")))
+            require(config.get("architecture") == "arm64" and config.get("os") == "linux",
+                    "target OCI config is not Linux ARM64")
         refs.extend([descriptor, manifest["config"], *manifest["layers"]])
     require(len(refs) <= MAX_BLOBS, "too many OCI blobs")
     expected = set()

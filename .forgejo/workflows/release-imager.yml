@@ -293,10 +293,15 @@ jobs:
             # QEMU virt can boot the generic installer, then validate that it
             # wrote the exact Lenovo target. The board target's Lenovo DTB
             # cannot boot on QEMU virt; physical boot is a separate gate.
+            export TILO_EXPECTED_INSTALLED_REF="$TILO_LENOVO_TARGET_IMAGE"
             ./os/dev/test-installer-cycle.sh \
               os/output/installer/qcow2/disk.qcow2 \
               --guided-alongside --install-only \
               --out dist/installer-guided-alongside-cycle
+            test "$(cat dist/installer-guided-alongside-cycle/verdict.txt)" = PASS_INSTALL_ONLY
+            test -s dist/installer-guided-alongside-cycle/guest-install-proof.json
+            test -s dist/installer-guided-alongside-cycle/installed-target-esp-readback.txt
+            test -s dist/installer-guided-alongside-cycle/alongside-preservation.txt
             exit 0
           fi
           ./os/dev/test-installer-cycle.sh \
