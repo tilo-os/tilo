@@ -100,7 +100,7 @@ impl<R: Resource> Dispatcher<R> {
         address: ActionAddress,
         arguments: serde_json::Map<String, serde_json::Value>,
     ) {
-        if self.read_only {
+        if self.read_only() {
             return;
         }
         self.queue
