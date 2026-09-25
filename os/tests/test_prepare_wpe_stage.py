@@ -83,7 +83,7 @@ class WpeStageTests(unittest.TestCase):
         argv = wpe.build_command(self.args, Path('/private/image.id'))
         self.assertEqual(argv[argv.index('--target') + 1], 'wpe-builder-1')
         self.assertEqual(argv[argv.index('--source-date-epoch') + 1], '0')
-        self.assertIn('SOURCE_DATE_EPOCH=0', argv)
+        self.assertIn('TILO_WPE_SOURCE_DATE_EPOCH=0', argv)
         self.assertIn('--layers', argv)
         self.assertIn('--network=none', argv)
         self.assertIn(f'github-assets={self.args.assets}', argv)

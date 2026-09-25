@@ -63,7 +63,7 @@ def main():
             assets.mkdir()
             (context / 'Containerfile').write_text(
                 'ARG BASE_REF\nFROM ${BASE_REF} AS wpe-builder-1\n'
-                'ARG SOURCE_DATE_EPOCH=0\nENV SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH}\n'
+                'ARG TILO_WPE_SOURCE_DATE_EPOCH=0\nENV SOURCE_DATE_EPOCH=${TILO_WPE_SOURCE_DATE_EPOCH}\n'
                 'COPY recipe /recipe\n'
                 'RUN --mount=type=cache,target=/wpe-cache '
                 '--mount=type=bind,from=github-assets,source=/,target=/assets,ro sh /recipe\n')
@@ -79,7 +79,7 @@ def main():
                     '--network=none', '--tls-verify=false', '--cache-to', cache, '--cache-from', cache,
                     '--target', 'wpe-builder-1', '--iidfile', str(iidfile),
                     '--source-date-epoch', epoch, '--rewrite-timestamp',
-                    '--build-arg', f'SOURCE_DATE_EPOCH={epoch}',
+                    '--build-arg', f'TILO_WPE_SOURCE_DATE_EPOCH={epoch}',
                     '--build-arg', f'BASE_REF={BASE}', '--build-context', f'github-assets={assets}',
                     str(context), env=environment | {'SOURCE_DATE_EPOCH': epoch})
                 return iidfile.read_text().strip(), out + err
