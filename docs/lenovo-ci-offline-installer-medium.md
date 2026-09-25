@@ -5,20 +5,22 @@ The normal Lenovo OS is built and signed by the `Release / OS` workflow. The
 in a bootable installer medium for native ARM64 CI and Windows ARM64 WHPX tests.
 The Windows laptop does not build or upload an OS image.
 
-Dispatch `release-imager.yml` on `main` for the Lenovo install-only proof with:
+Dispatch `release-imager.yml` on `main` to build both proof media in one CI run:
 
 ```text
 installer_only=true
+generic_target=true
 lenovo_target_image=code.sandbox.example/qos/tilo@sha256:<CI ARM64 child digest>
 published_os_image=code.sandbox.example/qos/tilo@sha256:<signed generic multiarch index>
 ```
 
-For a full VM install and first-boot proof through the same offline backend,
-dispatch it again with `generic_target=true`, `installer_only=true`, and the
-same `published_os_image`. The workflow resolves the index's unique ARM64
+The generic medium gives a full VM install and first-boot proof through the
+same offline backend. The workflow resolves the index's unique ARM64
 child and independently verifies that child's signature and provenance. The
 two media embed different target bytes; compare their signed `live_base_image`
-and `build_revision` to establish the common CI live base and installer recipe.
+and `build_revision`, `run_id`, and `run_attempt` to establish the common CI live
+base and installer recipe. Either target input may be omitted when only one
+variant is needed.
 
 The signed generic image boots QEMU `virt` on ARM64 and supplies the live
 installer. The separate Lenovo image carries a physical Lenovo DTB, so the
