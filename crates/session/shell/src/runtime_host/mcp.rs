@@ -70,7 +70,7 @@ fn invocation_id(value: &str) -> Result<tilo_actions::InvocationId, String> {
 fn parse<T: serde::de::DeserializeOwned>(value: Value) -> Result<T, String> {
     serde_json::from_value(value).map_err(|e| e.to_string())
 }
-fn error(id: Value, code: i32, message: &str) -> Value {
+fn error(id: &Value, code: i32, message: &str) -> Value {
     json!({"jsonrpc":"2.0","id":id,"error":{"code":code,"message":message}})
 }
 fn tool_result(result: Result<Value, String>) -> Value {
@@ -100,26 +100,21 @@ impl McpServer {
             || !request.get("method").is_some_and(Value::is_string)
             || !valid_id
         {
-            return Some(error(
-                if valid_id {
-                    id.unwrap_or(Value::Null)
-                } else {
-                    Value::Null
-                },
-                -32600,
-                "Invalid Request",
-            ));
+            let reply_id = if valid_id {
+                id.unwrap_or(Value::Null)
+            } else {
+                Value::Null
+            };
+            return Some(error(&reply_id, -32600, "Invalid Request"));
         }
-        let Some(id) = id else {
-            return None;
-        };
+        let id = id?;
         let method = request
             .get("method")
             .and_then(Value::as_str)
             .unwrap_or_default();
         let mut params = request.get("params").cloned().unwrap_or_else(|| json!({}));
         if !params.is_object() {
-            return Some(error(id, -32602, "params must be an object"));
+            return Some(error(&id, -32602, "params must be an object"));
         }
         // Standard request metadata is protocol context, never action arguments
         // or authority. Progress notifications are not advertised or emitted.
@@ -128,22 +123,24 @@ impl McpServer {
             .and_then(|params| params.remove("_meta"))
         {
             if !metadata.is_object() {
-                return Some(error(id, -32602, "_meta must be an object"));
+                return Some(error(&id, -32602, "_meta must be an object"));
             }
-            if let Some(token) = metadata.get("progressToken") {
-                if !token.is_string() && token.as_i64().is_none() && token.as_u64().is_none() {
-                    return Some(error(
-                        id,
-                        -32602,
-                        "progressToken must be a string or integer",
-                    ));
-                }
+            if let Some(token) = metadata.get("progressToken")
+                && !token.is_string()
+                && token.as_i64().is_none()
+                && token.as_u64().is_none()
+            {
+                return Some(error(
+                    &id,
+                    -32602,
+                    "progressToken must be a string or integer",
+                ));
             }
         }
         let result = match method {
             "initialize" => {
                 let Some(version) = params.get("protocolVersion").and_then(Value::as_str) else {
-                    return Some(error(id, -32602, "protocolVersion is required"));
+                    return Some(error(&id, -32602, "protocolVersion is required"));
                 };
                 let selected = if ["2024-11-05", "2025-03-26", "2025-06-18"].contains(&version) {
                     version
@@ -172,17 +169,17 @@ impl McpServer {
                     {
                         Ok(tool_result(self.call(&call.name, call.arguments).await))
                     }
-                    Ok(_) => return Some(error(id, -32602, "Unknown tool")),
+                    Ok(_) => return Some(error(&id, -32602, "Unknown tool")),
                     Err(e) => Err(e),
                 }
             }
             "resources/list" => self.resources(params).await,
             "resources/read" => self.read_resource(params).await,
-            _ => return Some(error(id, -32601, "Method not found")),
+            _ => return Some(error(&id, -32601, "Method not found")),
         };
         Some(match result {
             Ok(value) => json!({"jsonrpc":"2.0","id":id,"result":value}),
-            Err(e) => error(id, -32602, &e),
+            Err(e) => error(&id, -32602, &e),
         })
     }
     /// One catalogue page from the action host, as this bridge's caller.

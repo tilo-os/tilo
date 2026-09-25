@@ -1,5 +1,9 @@
 //! Deterministic screenshot scenarios and their one-shot setup lifecycle.
 
+#[allow(
+    clippy::wildcard_imports,
+    reason = "this file is one part of the `VideoEditorApp` impl split out of `app.rs`; it shares the parent's whole scope"
+)]
 use super::*;
 
 /// One-shot capture scenarios selected by the `--shots` entry points. Each
@@ -610,18 +614,16 @@ impl VideoEditorApp {
                     .iter()
                     .find(|t| t.kind == TrackKind::Video && t.index == 2)
                     .map(|t| t.id)
+                    && let Some(cid) = self.project.add_clip(v2, tid, 34.0)
+                    && let Some(c) = self.project.clip_mut(cid)
                 {
-                    if let Some(cid) = self.project.add_clip(v2, tid, 34.0) {
-                        if let Some(c) = self.project.clip_mut(cid) {
-                            c.transform = crate::model::Transform {
-                                scale_x: 0.6,
-                                scale_y: 0.6,
-                                pos_x: -0.1,
-                                pos_y: 0.27,
-                                ..Default::default()
-                            };
-                        }
-                    }
+                    c.transform = crate::model::Transform {
+                        scale_x: 0.6,
+                        scale_y: 0.6,
+                        pos_x: -0.1,
+                        pos_y: 0.27,
+                        ..Default::default()
+                    };
                 }
                 self.project.add_marker(9.0, "act two", 3);
                 self.project.add_marker(21.0, "sunset", 5);
@@ -682,7 +684,6 @@ impl VideoEditorApp {
         for (i, (id, name, at)) in [("ada", "Ada", 6.5), ("bo", "Bo", 21.0)]
             .into_iter()
             .enumerate()
-            .map(|(i, (id, name, at))| (i, (id, name, at)))
         {
             ctx.names.insert(UserId(id.to_string()), name.to_string());
             let (k, p) = crate::presence::point_frame(None, at);
@@ -697,6 +698,10 @@ impl VideoEditorApp {
         self.shot_presence = Some(ctx);
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the capture script: one arm per shot, each setting up exactly what it shows"
+    )]
     pub(super) fn apply_shot_interaction(&mut self, r: &Regions) {
         // A capture that is about the inspector has to show it, and on a
         // narrow window it starts out of the way. Opening it here is what
@@ -985,12 +990,12 @@ impl VideoEditorApp {
                     .into_iter()
                     .find(|t| t.kind == TrackKind::Video)
                     .map(|t| t.id);
-                if let Some(track) = track {
-                    if let Some(cid) = self.project.add_clip(track, mid, 4.0) {
-                        self.selection.select_only(cid);
-                        self.selected_media = Some(mid);
-                        self.playhead = 6.0;
-                    }
+                if let Some(track) = track
+                    && let Some(cid) = self.project.add_clip(track, mid, 4.0)
+                {
+                    self.selection.select_only(cid);
+                    self.selected_media = Some(mid);
+                    self.playhead = 6.0;
                 }
                 self.project.add_marker(9.0, "act two", 1);
                 self.project.add_marker(18.5, "sunset", 3);
@@ -1131,12 +1136,12 @@ impl VideoEditorApp {
                 self.scroll_to_time(self.playhead, r);
             }
             ShotScenario::ClipMenu => {
-                if let Some((tid, _, lane)) = self.lane_rects(r).into_iter().next() {
-                    if let Some(clip) = self.project.clips_on(tid).first().cloned() {
-                        let cr = self.clip_rect(&clip, &lane, r);
-                        self.last_mouse = cr.center();
-                        self.open_clip_menu(clip.id, Point::new(cr.center().x, cr.y0 + 10.0));
-                    }
+                if let Some((tid, _, lane)) = self.lane_rects(r).into_iter().next()
+                    && let Some(clip) = self.project.clips_on(tid).first().copied()
+                {
+                    let cr = self.clip_rect(clip, &lane, r);
+                    self.last_mouse = cr.center();
+                    self.open_clip_menu(clip.id, Point::new(cr.center().x, cr.y0 + 10.0));
                 }
             }
             ShotScenario::Marquee => {

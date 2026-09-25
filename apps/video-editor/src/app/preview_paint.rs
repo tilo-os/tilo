@@ -1,6 +1,14 @@
+#[allow(
+    clippy::wildcard_imports,
+    reason = "this file is one part of the `VideoEditorApp` impl split out of `app.rs`; it shares the parent's whole scope"
+)]
 use super::*;
 
 impl VideoEditorApp {
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the canvas paint pass, drawn back to front: letterbox, picture, overlays, readouts"
+    )]
     pub(super) fn draw_preview(
         &self,
         scene: &mut Scene,
@@ -27,7 +35,7 @@ impl VideoEditorApp {
                     msg,
                     11.5,
                     c.text_dim,
-                    area.center().x - w as f64 / 2.0,
+                    area.center().x - f64::from(w) / 2.0,
                     area.center().y - 7.0,
                 );
             }
@@ -131,7 +139,7 @@ impl VideoEditorApp {
         let tc_chip = Rect::new(
             canvas.x0 + 8.0,
             canvas.y0 + 6.0,
-            canvas.x0 + 8.0 + tcw as f64 + 14.0,
+            canvas.x0 + 8.0 + f64::from(tcw) + 14.0,
             canvas.y0 + 28.0,
         );
         if tc_chip.x1 < canvas.x1 {
@@ -166,7 +174,7 @@ impl VideoEditorApp {
                 let chip = Rect::new(
                     canvas.x0 + 10.0,
                     canvas.y1 - 32.0,
-                    canvas.x0 + 10.0 + mw as f64 + pad * 2.0,
+                    canvas.x0 + 10.0 + f64::from(mw) + pad * 2.0,
                     canvas.y1 - 10.0,
                 );
                 fill_round(scene, tf, chip, 5.0, with_alpha(Color::BLACK, 0.62));
@@ -325,10 +333,10 @@ impl VideoEditorApp {
         let fit = readout_fit(
             r.transport,
             self.transport_content_x(r),
-            bw as f64,
-            tw as f64,
+            f64::from(bw),
+            f64::from(tw),
             motion_w,
-            mw as f64,
+            f64::from(mw),
         );
         if let Some(x) = fit.big_x {
             text_w(

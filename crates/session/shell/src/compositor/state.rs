@@ -3841,7 +3841,7 @@ impl XdgShellHandler for State {
                 tab_binding::rebind_toplevel_for_app_id(
                     &mut tree,
                     surface_id,
-                    app_id.clone(),
+                    &app_id,
                     host_launch_title,
                 )
             };
@@ -3860,7 +3860,7 @@ impl XdgShellHandler for State {
         });
         if let Some(title) = title {
             let mut tree = self.workspace_tree.write();
-            let _ = tab_binding::rename_tab_for_title(&mut tree, surface_id, title);
+            let _ = tab_binding::rename_tab_for_title(&mut tree, surface_id, &title);
         }
     }
 

@@ -286,6 +286,27 @@ strict `/dev/mem`, and compiles kexec out entirely, but Secure Boot remains what
 authenticates the kernel containing those controls and closes the pre-kernel
 replacement boundary.
 
+### No systemd credentials from firmware or the boot loader
+
+systemd imports system credentials from four places: the kernel command line,
+SMBIOS type 11 OEM strings, qemu `fw_cfg`, and the credential files
+systemd-stub passes on from the ESP. It skips them only in containers and
+confidential VMs (systemd 259, `src/core/import-creds.c`). **Physical machines
+are not excluded.** Firmware OEM strings are not in PCR 11, the register disk
+unlock binds to. So whoever can set them, by reflashing firmware or with a
+vendor tool, could hand a sealed boot `systemd.extra-unit.*`, `tmpfiles.extra`
+or `ssh.authorized_keys.root`. The generation still unlocks, and their code runs
+as root.
+
+The sealed command line carries `systemd.import_credentials=no`
+(`os/usr/lib/bootc/kargs.d/05-credentials.toml`). With it, PID 1 imports no
+credential from any of those sources, in the initrd or after it, and
+`tilo-security-audit` checks that it is live. Nothing in a sealed boot needs
+imported credentials. Service-local credentials are unaffected, such as
+`LoadCredentialEncrypted=` for the Secure Boot signing key. The unsealed dev
+image deletes the file, because `tilo-vm` passes a dev VM its SSH key as an
+SMBIOS credential.
+
 ### systemd filesystem restrictions
 
 Tilo's kernel enables `CONFIG_BPF_LSM=y`, `CONFIG_DEBUG_INFO_BTF=y`, and has
@@ -296,6 +317,24 @@ before recovery or installer services can run. This does not enable
 unprivileged BPF: `CONFIG_BPF_UNPRIV_DEFAULT_OFF=y` and the image policy keep
 that disabled. `tilo-security-audit` verifies both the compiled options and
 that `bpf` is present in the live LSM stack.
+
+### No boot-time system or configuration extensions
+
+The composefs digest in the UKI command line seals `/usr`. A systemd system
+extension would overlay it after that check. Fedora presets
+`systemd-sysext.service` and `systemd-confext.service`. At every boot they merge
+each image or plain directory under `/etc`, `/run` and
+`/var/lib/{extensions,confexts}`, and systemd's default image policy accepts
+unsigned images. A file written to `/var` would then replace sealed `/usr`, or
+`/etc`, content on the next boot.
+
+systemd has no setting that refuses directory extensions or unsigned images for
+those services. The image therefore masks both, and the `systemd-sysext.socket`
+Varlink endpoint, so it merges nothing by itself. A caller who merges an
+extension on purpose runs `systemd-sysext` with its own `--image-policy`. Doing
+that already requires root, which can change the system in other ways too.
+Only the unsealed development image (`os/Containerfile.dev`) unmasks
+`systemd-sysext.service`, for its development layers.
 
 PCR 7 measures the Secure Boot policy. A former LUKS TPM design bound only to
 that register; it has been removed because PCR 7 does not identify the selected
