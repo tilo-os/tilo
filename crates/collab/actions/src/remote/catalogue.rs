@@ -288,6 +288,7 @@ mod tests {
                 contract: ActionContract::default(),
                 input: InputSpec::None,
                 params: Vec::new(),
+                view: None,
             }),
             has_children: action.is_none(),
             visibility: None,

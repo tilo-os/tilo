@@ -734,6 +734,7 @@ fn openable(
                 contract: ActionContract::default(),
                 params: Vec::new(),
                 input: onto.clone(),
+                view: None,
             },
         })
         .filter(|o: &Offer| permitted(perms, o.address()))
@@ -1219,6 +1220,7 @@ mod tests {
                 contract: ActionContract::default(),
                 params,
                 input,
+                view: None,
             },
         }
     }
@@ -1592,6 +1594,7 @@ mod tests {
                 contract: tilo_actions::ActionContract::default(),
                 params: Vec::new(),
                 input: tilo_actions::InputSpec::None,
+                view: None,
             }),
         };
         let catalogue = tilo_actions::remote::CataloguePage {
@@ -1629,6 +1632,7 @@ mod tests {
                 contract: ActionContract::default(),
                 params: Vec::new(),
                 input: tilo_actions::InputSpec::None,
+                view: None,
             },
         };
         let decoded = decode_address(&offer.id()).expect("broker offer id remains decodable");

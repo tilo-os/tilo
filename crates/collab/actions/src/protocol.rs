@@ -64,18 +64,7 @@ fn validate_resource<S: BuildHasher>(
     violations: &mut Vec<ContractViolation>,
 ) {
     let resource_id = resource.id.as_str();
-    if resource_id.is_empty() || resource.kind.is_empty() {
-        violations.push(issue(resource_id, "resource id and kind must be non-empty"));
-    }
-    if resource_id.contains(crate::KEY_SEP) {
-        violations.push(issue(
-            resource_id,
-            "resource id contains the address separator",
-        ));
-    }
-    if !seen_resources.insert(resource_id.to_string()) {
-        violations.push(issue(resource_id, "duplicate resource id"));
-    }
+    validate_resource_identity(resource, seen_resources, violations);
     for action in &resource.actions {
         let address = format!("{}{}{}", resource_id, crate::KEY_SEP, action.id);
         if action.id.is_empty() || action.id.contains(crate::KEY_SEP) {
@@ -144,6 +133,7 @@ fn validate_resource<S: BuildHasher>(
             ));
         }
     }
+    validate_views(resource, violations);
     for child in &resource.children {
         validate_resource(
             child,
@@ -153,6 +143,53 @@ fn validate_resource<S: BuildHasher>(
             seen_actions,
             violations,
         );
+    }
+}
+
+fn validate_resource_identity(
+    resource: &Resource,
+    seen_resources: &mut HashSet<String>,
+    violations: &mut Vec<ContractViolation>,
+) {
+    let resource_id = resource.id.as_str();
+    if resource_id.is_empty() || resource.kind.is_empty() {
+        violations.push(issue(resource_id, "resource id and kind must be non-empty"));
+    }
+    if resource_id.contains(crate::KEY_SEP) {
+        violations.push(issue(
+            resource_id,
+            "resource id contains the address separator",
+        ));
+    }
+    if !seen_resources.insert(resource_id.to_string()) {
+        violations.push(issue(resource_id, "duplicate resource id"));
+    }
+}
+
+fn validate_views(resource: &Resource, violations: &mut Vec<ContractViolation>) {
+    let mut view_ids = HashSet::new();
+    let mut view_open_actions = HashSet::new();
+    let mut primary_views = 0usize;
+    for view in &resource.views {
+        let address = format!("{}{}view:{}", resource.id.as_str(), crate::KEY_SEP, view.id);
+        if !view_ids.insert(view.id.as_str()) {
+            violations.push(issue(&address, "duplicate view id"));
+        }
+        if !view_open_actions.insert(view.open_action.as_str()) {
+            violations.push(issue(
+                &address,
+                "at most one view may reference an open action",
+            ));
+        }
+        if view.primary {
+            primary_views = primary_views.saturating_add(1);
+            if primary_views > 1 {
+                violations.push(issue(&address, "at most one view may be primary"));
+            }
+        }
+        for reason in view.validate(resource) {
+            violations.push(issue(&address, &reason));
+        }
     }
 }
 
@@ -166,7 +203,10 @@ fn issue(address: &str, reason: &str) -> ContractViolation {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{ActionSpec, EncodedAction, OperationKind};
+    use crate::{
+        ActionParam, ActionSpec, EncodedAction, OperationKind, ParamType, ResourceViewMountSpec,
+        ResourceViewSpec,
+    };
 
     #[test]
     fn rejects_duplicate_unhandled_and_unsafe_surface_entries() {
@@ -197,5 +237,49 @@ mod tests {
         assert!(text.contains("requires confirmation"));
         assert!(text.contains("no declared handler"));
         assert!(text.contains("not registered"));
+    }
+
+    #[test]
+    fn validates_explicit_resource_view_cardinality_and_bindings() {
+        let open =
+            ActionSpec::operation("open", "Open", OperationKind::View, "test.open", &()).unwrap();
+        let mount = ActionSpec::typed_operation(
+            "mount",
+            "Mount",
+            "",
+            OperationKind::Effect,
+            "test.mount",
+            vec![
+                ActionParam::required("cap", ParamType::Text, "Capability"),
+                ActionParam::optional("target", ParamType::Integer, "View"),
+            ],
+            |_| EncodedAction::encode_operation("test.mount", &()).unwrap(),
+        )
+        .with_contract(crate::ActionContract {
+            confirmation: crate::ConfirmationPolicy::Confirm,
+            ..crate::ActionContract::default()
+        });
+        let resource = Resource::new("thing:1", "test.thing", "Thing")
+            .with_action(open)
+            .with_action(mount)
+            .with_view(
+                ResourceViewSpec::new("editor", "Editor", "open")
+                    .with_primary(true)
+                    .with_mount(ResourceViewMountSpec::new("mount", "cap", "target")),
+            )
+            .with_view(ResourceViewSpec::new("preview", "Preview", "open").with_primary(true));
+
+        let text = validate_surface_contracts(&[resource], &ActionRegistry::new())
+            .into_iter()
+            .map(|issue| issue.reason)
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(text.contains("at most one view may reference an open action"));
+        assert!(text.contains("at most one view may be primary"));
+        assert!(text.contains("mount action `mount` must be a view operation"));
+        assert!(text.contains("mount action `mount` must not require confirmation"));
+        assert!(text.contains("mount action `mount` must not require caller parameters"));
+        assert!(text.contains("mount capability parameter `cap` must name an optional text"));
+        assert!(text.contains("mount view parameter `target` must name an optional text"));
     }
 }

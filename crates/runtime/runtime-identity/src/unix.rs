@@ -188,6 +188,19 @@ pub struct IdentitySummary {
     pub protection: KeyProtection,
 }
 
+/// Public fields from an identity record. Reading these never unlocks or
+/// materializes the account signing share; app-facing brokers use the
+/// certified device key for signatures.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct IdentityMetadata {
+    pub display_name: String,
+    pub avatar_color: [u8; 3],
+    pub group_public_key: [u8; 32],
+    pub threshold: u16,
+    pub total_shares: u16,
+    pub share_index: u16,
+}
+
 const ACTIVE_FILE: &str = "active";
 const LOCK_FILE: &str = ".identity.lock";
 const MAX_RECORD_BYTES: u64 = 1024 * 1024;
@@ -1386,6 +1399,32 @@ pub fn load_from_path(path: PathBuf) -> Result<SigningIdentity, NotAvailable> {
     identity_from_record(record, Some(secret.as_slice()))
 }
 
+/// Read the public presentation and quorum fields of a private identity
+/// record without contacting its secret provider.
+///
+/// The record still receives the same ownership, symlink, size, JSON and
+/// schema validation as [`load_from_path`]. Callers that authorize an identity
+/// must bind `group_public_key` to their independently validated principal.
+///
+/// # Errors
+///
+/// Returns [`NotAvailable::ConnectionFailed`] if the record cannot be read or
+/// parsed safely.
+pub fn load_metadata_from_path(path: &std::path::Path) -> Result<IdentityMetadata, NotAvailable> {
+    let bytes = read_record_bytes(path)
+        .map_err(|error| LoadFailure::ReadFailed(error).into_not_available())?;
+    let record = parse_record(&bytes)?;
+    let identity = record.threshold_identity;
+    Ok(IdentityMetadata {
+        display_name: record.display_name,
+        avatar_color: record.avatar_color,
+        group_public_key: identity.group_public_key,
+        threshold: identity.threshold,
+        total_shares: identity.total_shares,
+        share_index: identity.share_index,
+    })
+}
+
 /// Load a secured record through an explicitly installed hardware provider.
 /// The metadata backend id must match; this prevents silently downgrading a
 /// TPM-labelled identity to a software key.
@@ -1633,6 +1672,48 @@ mod tests {
         assert!(is_secret_service_unavailable(&unavailable));
         let other = NotAvailable::ConnectionFailed(io::Error::from_raw_os_error(libc::EACCES));
         assert!(!is_secret_service_unavailable(&other));
+    }
+
+    #[test]
+    fn public_metadata_does_not_unlock_the_secret_provider() {
+        let dir = tempfile::tempdir().expect("identity directory");
+        let path = dir.path().join("secured.json");
+        fs::write(
+            &path,
+            serde_json::json!({
+                "display_name": "Ada",
+                "avatar_color": [12, 34, 56],
+                "threshold_identity": {
+                    "single_device": true,
+                    "group_public_key": vec![7u8; 32],
+                    "threshold": 1,
+                    "total_shares": 1,
+                    "share_index": 0
+                },
+                "created_at": "proof",
+                "schema_version": 2,
+                "secret_ref": {
+                    "backend": "secret-service-v1",
+                    "locator": "00".repeat(32)
+                }
+            })
+            .to_string(),
+        )
+        .expect("identity record");
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).expect("private mode");
+
+        let metadata = load_metadata_from_path(&path).expect("public metadata");
+        assert_eq!(metadata.display_name, "Ada");
+        assert_eq!(metadata.avatar_color, [12, 34, 56]);
+        assert_eq!(metadata.group_public_key, [7; 32]);
+        assert_eq!(
+            (
+                metadata.threshold,
+                metadata.total_shares,
+                metadata.share_index
+            ),
+            (1, 1, 0)
+        );
     }
 
     #[cfg(unix)]

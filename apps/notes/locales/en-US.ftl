@@ -48,3 +48,5 @@ notes-menu-delete = Delete
 notes-a11y-rename = Rename note
 notes-a11y-new-child-under = New child note under
 notes-a11y-more-actions-for = More actions for
+
+notes-view-editor = Editor
