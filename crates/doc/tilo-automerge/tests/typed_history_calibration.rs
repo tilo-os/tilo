@@ -365,15 +365,16 @@ fn value_snapshot(n: usize) -> Vec<u8> {
     doc.save()
 }
 
-/// A single large value admits into a blank document up to the size a
-/// 64 MiB turn can soundly hold. Upstream's verified load of such a
-/// snapshot peaks at 6x the value (the raw value column, the collector's
-/// doubled `data` buffer, and `ChangeBuilder::build` regrowing its buffer by
-/// the header while the old one lives), on top of the normalized input
-/// (1x) the turn also holds: about 7x in all, so ~9 MiB is the ceiling.
+/// A single large value admits into a blank document within one 64 MiB
+/// turn, up to 10 MiB. With the snapshot-admission memory patch
+/// (vendor/automerge/README.qos.md) the verified load of such a snapshot
+/// peaks at 3x the value (the raw value column, the change's exactly
+/// reserved column data, and its exactly reserved chunk), on top of the
+/// normalized input (1x) the turn also holds; the sound bound charges the
+/// collector's encoder copies too (4x + input).
 #[test]
 fn large_value_snapshot_admits_within_one_64_mib_turn() {
-    for mib in [4usize, 8] {
+    for mib in [4usize, 8, 10] {
         let snapshot = value_snapshot(mib << 20);
         let (outcome, peak) = peak_of(|| apply(&snapshot, 64 * 1024 * 1024));
         assert_eq!(
@@ -383,30 +384,14 @@ fn large_value_snapshot_admits_within_one_64_mib_turn() {
         );
         let needed = minimal_allowance(&snapshot);
         eprintln!(
-            "{mib} MiB value: snapshot {} B, peak {peak} B, minimal allowance {needed} B ({:.2}x peak)",
+            "{mib} MiB value: snapshot {} B, peak {peak} B ({:.2} B per value byte), minimal allowance {needed} B ({:.2}x peak)",
             snapshot.len(),
+            peak as f64 / (mib << 20) as f64,
             needed as f64 / peak as f64
         );
         assert!(
-            needed as f64 <= 1.25 * peak as f64,
+            needed as f64 <= 1.4 * peak as f64,
             "{mib} MiB: {needed} vs {peak}"
         );
     }
-}
-
-/// The 10 MiB single-value snapshot needs ~74 MB in one turn (see above):
-/// sound admission is refused at the 64 MiB cap unless the cap for snapshot
-/// admission is raised or upstream's rebuild stops doubling the value.
-#[test]
-fn ten_mib_value_snapshot_needs_more_than_one_64_mib_turn() {
-    let snapshot = value_snapshot(10 << 20);
-    let result = apply(&snapshot, 64 * 1024 * 1024);
-    assert!(result.is_err(), "{result:?}");
-    // The unbounded load itself, for the record.
-    let (loaded, peak) = peak_of(|| AutoCommit::load(&snapshot).unwrap());
-    drop(loaded);
-    eprintln!(
-        "10 MiB value: snapshot {} B, unbounded load peak {peak} B",
-        snapshot.len()
-    );
 }

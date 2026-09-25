@@ -2,7 +2,7 @@ use std::{borrow::Cow, io::Write, marker::PhantomData, num::NonZeroU64, ops::Ran
 
 use crate::{convert, ActorId, ChangeHash, ScalarValue};
 
-use super::{parse, shift_range, CheckSum, ChunkType, Header, RawColumns};
+use super::{parse, CheckSum, Header, RawColumns};
 
 mod change_op_columns;
 pub(crate) use change_op_columns::ChangeOpsColumns;
@@ -466,7 +466,9 @@ impl ChangeBuilder<Set<NonZeroU64>, Set<ActorId>, Set<u64>, Set<i64>> {
 
         let (actor, other_actors) = actors.done();
 
-        let mut data = Vec::with_capacity(col_data.len());
+        // qOS snapshot admission memory: the prefix is small; the chunk is
+        // assembled exactly once (`assemble_change_chunk`), same bytes.
+        let mut data = Vec::new();
         leb128::write::unsigned(&mut data, self.dependencies.len() as u64).unwrap();
         for dep in &self.dependencies {
             data.write_all(dep.as_bytes()).unwrap();
@@ -484,24 +486,12 @@ impl ChangeBuilder<Set<NonZeroU64>, Set<ActorId>, Set<u64>, Set<i64>> {
             length_prefixed_bytes(actor, &mut data);
         }
         cols.raw_columns().write(&mut data);
-        let ops_data_start = data.len();
-        let ops_data = ops_data_start..(ops_data_start + col_data.len());
-
-        data.extend(col_data);
-        let extra_bytes =
-            data.len()..(data.len() + self.extra_bytes.as_ref().map(|e| e.len()).unwrap_or(0));
-        if let Some(extra) = self.extra_bytes {
-            data.extend(extra);
-        }
-
-        let header = Header::new(ChunkType::Change, &data);
-
-        let mut bytes = Vec::with_capacity(header.len() + data.len());
-        header.write(&mut bytes);
-        bytes.extend(data);
-
-        let ops_data = shift_range(ops_data, header.len());
-        let extra_bytes = shift_range(extra_bytes, header.len());
+        let (header, bytes, ops_data, extra_bytes) = crate::op_set2::change::assemble_change_chunk(
+            &data,
+            col_data,
+            self.extra_bytes.as_deref().unwrap_or(&[]),
+        );
+        drop(data);
 
         Ok(Change {
             bytes: Cow::Owned(bytes),

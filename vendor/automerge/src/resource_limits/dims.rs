@@ -1277,19 +1277,21 @@ fn leading_document_peak(d: &IncomingDims) -> Result<usize> {
 
     let mut processing = Sum::new();
     processing.add(collector).add(queue_or_encoded);
-    // Collecting: every other change is either still encoded (≤ 2 × its
-    // rebuilt raw bytes) or already rebuilt (its raw bytes, plus the Change
-    // and its Vecs, charged in full); the change being assembled holds its
-    // encoder output moved into `data` (≤ 2 × raw, doubling) and then
-    // `ChangeBuilder::build`'s `data` (reserved for the columns, regrown
-    // by the header: ≤ 2 × raw while the old ≤ 1 × lives), so ≤ 5 × its raw
-    // bytes: 2 × all + 3 × the largest.
+    // Collecting: every change not yet rebuilt is still encoded (≤ 2 × its
+    // rebuilt raw bytes: encoder buffers double), every rebuilt one holds
+    // its raw bytes (plus the Change and its Vecs, charged in full). The
+    // change being assembled adds one exact copy at a time (qOS snapshot
+    // admission memory patch, vendor/automerge/README.qos.md): its encoder
+    // output is copied into a `data` buffer reserved exactly
+    // (`ProgressiveEncoder::save_to` / `write_change_ops`), then into the
+    // exactly reserved chunk (`assemble_change_chunk`), each source freed
+    // after its copy: 2 × all + 1 × the largest.
     let mut collecting = Sum::new();
     collecting
         .add(collector)
         .add(rebuilt - rebuilt_raw.min(rebuilt))
         .mul(rebuilt_raw, 2)
-        .mul(rebuilt_raw_max(d)?, 3);
+        .add(rebuilt_raw_max(d)?);
     let empty = DocDims::default();
     let mut finishing = Sum::new();
     finishing

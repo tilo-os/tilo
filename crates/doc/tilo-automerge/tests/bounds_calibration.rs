@@ -409,7 +409,18 @@ fn measure_doc(t: &mut Table, name: &str, doc: &AutoCommit) {
             .shape()
             .native_load_peak_probe(fragments(&changes), actors)
             .unwrap();
-        let (loaded, load_peak) = peak_of(|| AutoCommit::load(&bytes).unwrap());
+        // The checked paths load normalized storage (columns inflated).
+        let set = NativeAllocationSet::new(allowance()).unwrap();
+        let turn = set
+            .work_turn(NativeAllowance::new(64 << 20).unwrap())
+            .unwrap();
+        let normalized = turn
+            .normalize_input(&bytes, &limits)
+            .unwrap()
+            .bytes()
+            .to_vec();
+        drop(turn);
+        let (loaded, load_peak) = peak_of(|| AutoCommit::load(&normalized).unwrap());
         drop(loaded);
         t.add(name, "load peak", load_peak, bound, false);
     }
