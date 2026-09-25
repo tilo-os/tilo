@@ -400,6 +400,10 @@ impl RecordMaterializer {
                         .namespace
                         .lock()
                         .map_err(|_| RecordMaterializerError::NamespaceUnavailable)?;
+                    #[expect(
+                        clippy::indexing_slicing,
+                        reason = "complete repository transactions passed manifest validation, which rejects an empty participant list"
+                    )]
                     let record_id = transaction.manifest.participants[0].record_id;
                     let projection = repository
                         .projection_lease(crate::record_repository::RecordRepositoryKey {
@@ -414,14 +418,13 @@ impl RecordMaterializer {
                     }
                     if let Some(ino) = namespace.ensure_ino_for_record_id(record_id)
                         && let Some(revision) = projection.snapshot.content_revision
+                        && namespace.content_revision_for(ino) != Some(revision)
                     {
-                        if namespace.content_revision_for(ino) != Some(revision) {
-                            namespace.set_content_revision(
-                                ino,
-                                &revision,
-                                transaction.manifest.timestamp_ms,
-                            );
-                        }
+                        namespace.set_content_revision(
+                            ino,
+                            &revision,
+                            transaction.manifest.timestamp_ms,
+                        );
                     }
                     Some(namespace.save_incremental())
                 } else {
@@ -631,6 +634,10 @@ impl RecordMaterializer {
                 let conflict_id = match &envelope.operation {
                     RecordOperationV1::AppendConflict(conflict) => conflict.id,
                     RecordOperationV1::ResolveConflict { conflict_id, .. } => *conflict_id,
+                    #[expect(
+                        clippy::unreachable,
+                        reason = "the enclosing arm admits only AppendConflict and ResolveConflict"
+                    )]
                     _ => unreachable!(),
                 };
                 let conflict = if repository.is_some() {
@@ -645,14 +652,17 @@ impl RecordMaterializer {
                     match &envelope.operation {
                         RecordOperationV1::AppendConflict(conflict) => conflict.clone(),
                         RecordOperationV1::ResolveConflict { resolution, .. } => {
-                            let history = history_lease
+                            history_lease
                                 .as_mut()
-                                .ok_or(RecordMaterializerError::HistoryUnavailable)?;
-                            history
+                                .ok_or(RecordMaterializerError::HistoryUnavailable)?
                                 .resolve(record_id, conflict_id, resolution.clone())
                                 .map_err(history_projection_error)?;
                             return Ok(());
                         }
+                        #[expect(
+                            clippy::unreachable,
+                            reason = "the enclosing arm admits only AppendConflict and ResolveConflict"
+                        )]
                         _ => unreachable!(),
                     }
                 };
@@ -705,6 +715,10 @@ impl RecordMaterializer {
     }
 }
 
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "a `map_err` adapter, which receives the error by value"
+)]
 fn history_projection_error(error: HistoryError) -> RecordMaterializerError {
     match error {
         HistoryError::Io(_) => RecordMaterializerError::HistoryUnavailable,
@@ -1008,6 +1022,7 @@ mod tests {
             &[42; 32]
         );
         assert_eq!(namespace.getattr(fixture.ino).unwrap().size, 42);
+        drop(namespace);
     }
 
     #[test]
@@ -1265,14 +1280,14 @@ mod tests {
             parents: vec![first.id],
             timestamp_ms: 2,
             provenance: FileProvenance::Edit,
-            ..first.clone()
+            ..first
         };
         let result = FileVersionV1 {
             id: FileVersionId::new(),
             parents: vec![first.id, second.id],
             timestamp_ms: 3,
             provenance: FileProvenance::ConflictResolution,
-            ..first.clone()
+            ..first
         };
         fixture
             .history
