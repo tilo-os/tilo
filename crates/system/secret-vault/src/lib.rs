@@ -1,11 +1,14 @@
 //! Sealed local secret vaults and the custody of their key.
 //!
-//! A vault is one file, `vault.enc`, sealed with **XChaCha20-Poly1305**
-//! (192-bit-nonce AEAD, audited `RustCrypto` stack) under a 256-bit key:
-//! `magic(4) || format(1) || nonce(24) || ciphertext+tag`. A fresh random
-//! nonce is drawn per write, so re-saving unchanged plaintext still produces
-//! distinct ciphertext and no nonce is ever reused. What the plaintext means
-//! is the caller's business; this crate only seals it and keeps the key.
+//! A vault is one file, `vault.enc`, sealed as a `tilo-seal` at-rest
+//! envelope (XChaCha20-Poly1305, versioned authenticated header, random
+//! 192-bit nonce) under a 256-bit key. The envelope is bound to the vault's
+//! [`VaultFormat`] identity, so a vault never opens as another kind of vault.
+//! Vaults written before that envelope existed —
+//! `magic(4) || 0x01 || nonce(24) || ciphertext+tag`, with no associated
+//! data — still open, and are rewritten in the current format on their next
+//! save. What the plaintext means is the caller's business; this crate only
+//! seals it and keeps the key.
 //!
 //! Each consumer describes its on-disk identity with a [`VaultFormat`]: the
 //! magic bytes, the Secret Service attributes and the DPAPI entropy. Changing
@@ -43,7 +46,8 @@ use std::io::Read as _;
 use std::path::Path;
 use std::time::Duration;
 
-use getrandom::{SysRng, rand_core::TryRng as _};
+use tilo_seal::envelope::{self, Context};
+use tilo_seal::{Label, legacy};
 use zeroize::Zeroizing;
 
 #[cfg(windows)]
@@ -51,19 +55,24 @@ mod windows;
 
 /// Symmetric key width (256-bit).
 pub const KEY_LEN: usize = 32;
-/// XChaCha20-Poly1305 nonce width (192-bit / 24-byte extended nonce).
-const NONCE_LEN: usize = 24;
-/// Format byte following the magic, so a format bump is detected before
-/// bytes are handed to the AEAD.
-const SEAL_FORMAT: u8 = 1;
+/// Nonce width of the format written before `tilo-seal` envelopes.
+const LEGACY_NONCE_LEN: usize = legacy::XCHACHA_NONCE_LEN;
+/// Format byte following the magic in that earlier format.
+const LEGACY_SEAL_FORMAT: u8 = 1;
 
 /// Name of the sealed vault inside its directory.
 pub const VAULT_FILE: &str = "vault.enc";
 /// Name of the owner-only local key inside the vault directory.
 pub const KEY_FILE: &str = "vault.key";
 
-/// A vault key, wiped from memory on drop.
-pub type VaultKey = Zeroizing<[u8; KEY_LEN]>;
+/// A vault key: wiped from memory on drop, compared in constant time and
+/// never printed by `Debug`.
+pub type VaultKey = tilo_seal::SymmetricKey;
+
+/// Copy exactly [`KEY_LEN`] bytes into a [`VaultKey`].
+fn key_from_bytes(bytes: &[u8]) -> Option<VaultKey> {
+    VaultKey::from_slice(bytes).ok()
+}
 
 /// Where a vault's key is held.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -114,50 +123,44 @@ pub struct VaultFormat {
 }
 
 impl VaultFormat {
-    /// Seal `plaintext` under `key`. `None` if the CSPRNG or the cipher fails.
-    pub fn seal(&self, key: &[u8; KEY_LEN], plaintext: &[u8]) -> Option<Vec<u8>> {
-        use chacha20poly1305::aead::Aead;
-        use chacha20poly1305::{Key, KeyInit, XChaCha20Poly1305, XNonce};
-
-        let mut nonce_bytes = [0u8; NONCE_LEN];
-        SysRng.try_fill_bytes(&mut nonce_bytes).ok()?;
-        let cipher = XChaCha20Poly1305::new(<&Key>::from(key));
-        let ciphertext = cipher
-            .encrypt(<&XNonce>::from(&nonce_bytes), plaintext)
-            .ok()?;
-
-        let mut out = Vec::with_capacity(
-            self.magic
-                .len()
-                .saturating_add(1)
-                .saturating_add(NONCE_LEN)
-                .saturating_add(ciphertext.len()),
-        );
-        out.extend_from_slice(self.magic);
-        out.push(SEAL_FORMAT);
-        out.extend_from_slice(&nonce_bytes);
-        out.extend_from_slice(&ciphertext);
-        Some(out)
+    /// The bytes every envelope of this format is bound to: the magic and
+    /// the name, so neither a renamed nor a re-magicked format opens it.
+    fn identity(&self) -> Vec<u8> {
+        let mut identity = Vec::with_capacity(self.magic.len().saturating_add(self.name.len()));
+        identity.extend_from_slice(self.magic);
+        identity.extend_from_slice(self.name.as_bytes());
+        identity
     }
 
-    /// Open a blob produced by [`Self::seal`], returning the zeroized
-    /// plaintext. `None` on any framing mismatch or authentication failure —
-    /// a tampered or truncated file never yields bytes.
-    pub fn open(&self, key: &[u8; KEY_LEN], blob: &[u8]) -> Option<Zeroizing<Vec<u8>>> {
-        use chacha20poly1305::aead::Aead;
-        use chacha20poly1305::{Key, KeyInit, XChaCha20Poly1305, XNonce};
+    /// Seal `plaintext` under `key`. `None` if the CSPRNG or the cipher fails.
+    pub fn seal(&self, key: &VaultKey, plaintext: &[u8]) -> Option<Vec<u8>> {
+        let identity = self.identity();
+        envelope::seal(key, Context::new(Label::SecretVault, &identity), plaintext).ok()
+    }
 
+    /// Open a blob produced by [`Self::seal`] — or by the format that
+    /// preceded it — returning the zeroized plaintext. `None` on any framing
+    /// mismatch or authentication failure: a tampered or truncated file, or a
+    /// vault of another format, never yields bytes.
+    pub fn open(&self, key: &VaultKey, blob: &[u8]) -> Option<Zeroizing<Vec<u8>>> {
+        if envelope::is_envelope(blob) {
+            let identity = self.identity();
+            return envelope::open(key, Context::new(Label::SecretVault, &identity), blob).ok();
+        }
+        self.open_legacy(key, blob)
+    }
+
+    /// The pre-envelope layout: `magic || 0x01 || nonce(24) || ciphertext`,
+    /// authenticated without associated data. Read-only.
+    fn open_legacy(&self, key: &VaultKey, blob: &[u8]) -> Option<Zeroizing<Vec<u8>>> {
         let rest = blob.strip_prefix(self.magic.as_slice())?;
         let (&format, rest) = rest.split_first()?;
-        if format != SEAL_FORMAT || rest.len() < NONCE_LEN {
+        if format != LEGACY_SEAL_FORMAT || rest.len() < LEGACY_NONCE_LEN {
             return None;
         }
-        let (nonce_bytes, ciphertext) = rest.split_at(NONCE_LEN);
-        let cipher = XChaCha20Poly1305::new(<&Key>::from(key));
-        cipher
-            .decrypt(<&XNonce>::try_from(nonce_bytes).ok()?, ciphertext)
-            .ok()
-            .map(Zeroizing::new)
+        let (nonce, ciphertext) = rest.split_at(LEGACY_NONCE_LEN);
+        let nonce = <&[u8; LEGACY_NONCE_LEN]>::try_from(nonce).ok()?;
+        legacy::open_xchacha20poly1305(key, nonce, b"", ciphertext).ok()
     }
 
     /// Load the key for the vault in `dir`, creating one on first use.
@@ -171,7 +174,7 @@ impl VaultFormat {
             Custody::LocalFile => self.local_file_key(dir),
             #[cfg(windows)]
             Custody::WindowsDpapi => match windows::load_or_create_key(self, dir) {
-                Ok(key) => Some(key),
+                Ok(key) => key_from_bytes(key.as_slice()),
                 Err(error) => {
                     tracing::warn!(vault = self.name, %error, "Windows protected key unavailable; refusing fallback");
                     None
@@ -192,11 +195,7 @@ impl VaultFormat {
 
         let local_path = dir.join(KEY_FILE);
         let (key, migrated) = match read_key_bytes(&local_path) {
-            Ok(bytes) if bytes.len() == KEY_LEN => {
-                let mut key = Zeroizing::new([0u8; KEY_LEN]);
-                key.copy_from_slice(&bytes);
-                (key, true)
-            }
+            Ok(bytes) if bytes.len() == KEY_LEN => (key_from_bytes(&bytes)?, true),
             Ok(_) => {
                 tracing::warn!(
                     vault = self.name,
@@ -212,9 +211,7 @@ impl VaultFormat {
                     );
                     return None;
                 }
-                let mut key = Zeroizing::new([0u8; KEY_LEN]);
-                SysRng.try_fill_bytes(key.as_mut_slice()).ok()?;
-                (key, false)
+                (VaultKey::generate().ok()?, false)
             }
             Err(error) => {
                 tracing::warn!(vault = self.name, %error, "local vault key could not be read for migration");
@@ -227,7 +224,7 @@ impl VaultFormat {
             return None;
         }
         match self.lookup_secret_service_key() {
-            Ok(Some(stored)) if stored.as_ref() == key.as_ref() => {
+            Ok(Some(stored)) if stored == key => {
                 if migrated && let Err(error) = std::fs::remove_file(&local_path) {
                     tracing::warn!(vault = self.name, %error, "migrated vault key but could not remove local copy");
                 }
@@ -280,8 +277,8 @@ impl VaultFormat {
         }
     }
 
-    fn store_secret_service_key(&self, key: &[u8; KEY_LEN]) -> Result<(), String> {
-        let encoded = Zeroizing::new(encode_key(key));
+    fn store_secret_service_key(&self, key: &VaultKey) -> Result<(), String> {
+        let encoded = Zeroizing::new(encode_key(key.expose_secret()));
         let output = bounded_command::run_os(
             "secret-tool",
             &self.secret_service_args("store", Some(self.secret_service_label)),
@@ -300,11 +297,7 @@ impl VaultFormat {
     fn local_file_key(&self, dir: &Path) -> Option<VaultKey> {
         let path = dir.join(KEY_FILE);
         match read_key_bytes(&path) {
-            Ok(bytes) if bytes.len() == KEY_LEN => {
-                let mut key = Zeroizing::new([0u8; KEY_LEN]);
-                key.copy_from_slice(&bytes);
-                Some(key)
-            }
+            Ok(bytes) if bytes.len() == KEY_LEN => key_from_bytes(&bytes),
             // A file exists but isn't a well-formed key: refuse to clobber it,
             // since regenerating would strand any vault it already sealed.
             Ok(_) => {
@@ -322,26 +315,23 @@ impl VaultFormat {
                     );
                     return None;
                 }
-                let mut key = Zeroizing::new([0u8; KEY_LEN]);
-                if SysRng.try_fill_bytes(key.as_mut_slice()).is_err() {
-                    return None;
-                }
+                let key = VaultKey::generate().ok()?;
                 if let Err(error) = std::fs::create_dir_all(dir) {
                     tracing::warn!(vault = self.name, %error, "could not create vault dir for key");
                     return None;
                 }
-                if private_fs::create_atomic(&path, key.as_slice()).is_err() {
+                if private_fs::create_atomic(&path, key.expose_secret()).is_err() {
                     tracing::warn!(vault = self.name, "vault key write failed");
                     return None;
                 }
                 // Another process may have won the exclusive publication. Always
                 // reload its key instead of encrypting with our discarded candidate.
+                drop(key);
                 let bytes = read_key_bytes(&path).ok()?;
                 if bytes.len() != KEY_LEN {
                     return None;
                 }
-                key.copy_from_slice(&bytes);
-                Some(key)
+                key_from_bytes(&bytes)
             }
             Err(error) => {
                 tracing::warn!(vault = self.name, %error, "vault key cannot be read; refusing replacement");
@@ -393,7 +383,7 @@ fn decode_key(encoded: &str) -> Result<VaultKey, String> {
     let mut key = Zeroizing::new([0u8; KEY_LEN]);
     hex::decode_to_slice(encoded, key.as_mut_slice())
         .map_err(|_| "Secret Service key is not hexadecimal".to_string())?;
-    Ok(key)
+    key_from_bytes(key.as_slice()).ok_or_else(|| "Secret Service key has the wrong length".into())
 }
 
 #[cfg(test)]
