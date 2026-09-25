@@ -15,8 +15,11 @@ class ProjectionTests(unittest.TestCase):
         root=tomllib.loads((ROOT/'Cargo.toml').read_text());member=tomllib.loads((ROOT/'crates/system/tilo-crypto/Cargo.toml').read_text())
         projected=module.project_manifest(root,member)
         self.assertEqual(set(projected['dependencies']),set(member['dependencies']))
-        for name in ('ring','getrandom','cms','x509-cert','rsa'):
+        for name in ('ring','cms','x509-cert','rsa'):
             self.assertEqual(projected['dependencies'][name],member['dependencies'][name])
+        # Workspace-inherited dependencies are resolved against the root manifest.
+        self.assertEqual(member['dependencies']['getrandom'],{'workspace':True})
+        self.assertEqual(projected['dependencies']['getrandom'],root['workspace']['dependencies']['getrandom'])
         self.assertEqual(projected['dependencies']['sha2']['version'],root['workspace']['dependencies']['sha2'])
 
     def test_inherited_alias_target_features_and_defaults(self):

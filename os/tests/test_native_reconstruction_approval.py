@@ -9,18 +9,20 @@ import unittest
 from unittest.mock import patch
 sys.dont_write_bytecode = True
 ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from frozen_source_fixture import NATIVE_DRIVER, NATIVE_RECIPE
 SPEC = importlib.util.spec_from_file_location('approval', ROOT/'os/dev/approve-native-reconstruction.py')
 a = importlib.util.module_from_spec(SPEC); SPEC.loader.exec_module(a)
+# Any independently pinned helper commit; the tests supply its blobs from this tree.
 HELPER = '6d390d9ddd96dbe734a6a7d90ac882bd8ef4adc8'
 
 
 class ApprovalTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.material = {'recipe': a.blob(ROOT,a.SOURCE,'os/Containerfile'),
-            'driver': a.blob(ROOT,a.SOURCE,'os/dev/build-image.sh'),
-            'helper': a.blob(ROOT,HELPER,'os/dev/native_resume.py'),
-            'producer': a.blob(ROOT,HELPER,'os/dev/resume-native-payload.py')}
+        cls.material = {'recipe': NATIVE_RECIPE.encode(), 'driver': NATIVE_DRIVER.encode(),
+            'helper': (ROOT/'os/dev/native_resume.py').read_bytes(),
+            'producer': (ROOT/'os/dev/resume-native-payload.py').read_bytes()}
         cls.resume = types.ModuleType('fixture_resume')
         exec(compile(cls.material['helper'],'pinned-helper','exec'),cls.resume.__dict__)
         cls.required = cls.resume.load_native(ROOT).REQUIRED

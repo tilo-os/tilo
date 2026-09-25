@@ -1,0 +1,181 @@
+//! An in-memory replica of one resource: the harness for replay-based tests.
+//!
+//! A replica applies actions exactly as the host does — built from the same
+//! declarations the palette and agents use, applied by the same executor with
+//! the same pinned actor and time — so a test written against it proves the
+//! behaviour every surface gets. Fork two replicas to test collaboration;
+//! replay one replica's log into a fresh one to prove determinism.
+
+use automerge::ChangeHash;
+use tilo_actions::{ActionContext, ActionEnvelope, ActionError, ActionRegistry};
+
+use crate::action::Invoke;
+use crate::history::{self, Version};
+use crate::model::{Doc, ModelError};
+use crate::resource::{self, Resource};
+
+/// One replica of an `R` resource. See the module docs.
+pub struct Replica<R: Resource> {
+    doc: Doc,
+    registry: ActionRegistry,
+    log: Vec<ActionEnvelope>,
+    author: Option<Vec<u8>>,
+    now_ms: i64,
+    marker: std::marker::PhantomData<fn() -> R>,
+}
+
+impl<R: Resource> Default for Replica<R> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<R: Resource> Replica<R> {
+    /// A new resource, initialized as a new record would be.
+    ///
+    /// # Panics
+    /// Panics when [`Resource::initialize`] fails, which is a bug in the
+    /// resource type under test.
+    #[must_use]
+    #[allow(
+        clippy::expect_used,
+        reason = "a test harness surfaces initializer bugs loudly"
+    )]
+    pub fn new() -> Self {
+        let mut doc = Doc::new();
+        R::initialize(&mut doc).expect("resource initializer");
+        doc.commit();
+        Self::from_doc(doc)
+    }
+
+    /// A replica of an existing document.
+    #[must_use]
+    pub fn from_doc(doc: Doc) -> Self {
+        let mut registry = ActionRegistry::new();
+        R::register(&mut registry);
+        Self {
+            doc,
+            registry,
+            log: Vec::new(),
+            author: None,
+            now_ms: 1_700_000_000_000,
+            marker: std::marker::PhantomData,
+        }
+    }
+
+    /// Attribute later actions to `author`, as the host does for a signed-in
+    /// collaborator.
+    #[must_use]
+    pub fn as_author(mut self, author: &str) -> Self {
+        self.author = Some(author.as_bytes().to_vec());
+        self
+    }
+
+    /// Set the origin clock later actions are stamped with.
+    pub fn set_now_ms(&mut self, now_ms: i64) {
+        self.now_ms = now_ms;
+    }
+
+    /// Invoke a declared action by name, exactly as a control, the palette,
+    /// an agent or a script does.
+    ///
+    /// # Errors
+    /// Returns a refusal, an argument error or a document error.
+    pub fn apply(&mut self, invoke: Invoke<R>) -> Result<&ActionEnvelope, ActionError> {
+        let Invoke { id, arguments, .. } = invoke;
+        let action = resource::build_action::<R>(id, &arguments, self.now_ms)
+            .map_err(ActionError::Refused)?;
+        let label = R::declarations()
+            .into_iter()
+            .find(|decl| decl.id == id)
+            .map_or_else(|| id.to_owned(), |decl| decl.label);
+        self.apply_action(&action, &label)
+    }
+
+    /// Apply one typed action value (the path a custom surface takes).
+    ///
+    /// # Errors
+    /// Returns a refusal or a document error.
+    pub fn apply_action(
+        &mut self,
+        action: &R::Action,
+        label: &str,
+    ) -> Result<&ActionEnvelope, ActionError> {
+        let encoded = resource::encode::<R>(action)?;
+        let context = ActionContext::for_resource(label, R::KIND, R::KIND, R::LABEL);
+        let envelope = tilo_actions::apply_local_with_context(
+            &mut self.doc,
+            action,
+            encoded,
+            self.author.as_deref(),
+            context,
+        )?;
+        self.log.push(envelope);
+        self.log
+            .last()
+            .ok_or_else(|| ActionError::Refused("no envelope".into()))
+    }
+
+    /// Replay an envelope authored on another replica.
+    ///
+    /// # Errors
+    /// Returns a decode or apply error.
+    pub fn replay(&mut self, envelope: &ActionEnvelope) -> Result<(), ActionError> {
+        tilo_actions::replay(&mut self.doc, envelope, &self.registry)?;
+        self.log.push(envelope.clone());
+        Ok(())
+    }
+
+    /// The current state.
+    ///
+    /// # Errors
+    /// Returns [`ModelError`] when the document does not hold the resource.
+    pub fn state(&self) -> Result<R::State, ModelError> {
+        R::read(&self.doc)
+    }
+
+    /// A second replica sharing this one's history, as a collaborator who
+    /// just joined would hold.
+    #[must_use]
+    pub fn fork(&mut self) -> Self {
+        let mut replica = Self::from_doc(self.doc.fork());
+        replica.now_ms = self.now_ms;
+        replica
+    }
+
+    /// Exchange every change with `other`, as sync does.
+    ///
+    /// # Errors
+    /// Returns a document error.
+    pub fn sync_with(&mut self, other: &mut Self) -> Result<(), ModelError> {
+        self.doc.merge(&mut other.doc)?;
+        other.doc.merge(&mut self.doc)?;
+        Ok(())
+    }
+
+    /// Every envelope applied or replayed here, in order.
+    pub fn log(&self) -> &[ActionEnvelope] {
+        &self.log
+    }
+
+    pub fn doc(&self) -> &Doc {
+        &self.doc
+    }
+
+    pub fn heads(&mut self) -> Vec<ChangeHash> {
+        self.doc.get_heads()
+    }
+
+    /// The version history.
+    pub fn versions(&mut self) -> Vec<Version> {
+        history::versions(&mut self.doc)
+    }
+
+    /// The state as of `heads`.
+    ///
+    /// # Errors
+    /// Returns [`ModelError`] when that version does not hold the resource.
+    pub fn state_at(&mut self, heads: &[ChangeHash]) -> Result<R::State, ModelError> {
+        history::read_at::<R>(&mut self.doc, heads)
+    }
+}

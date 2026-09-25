@@ -1,0 +1,20 @@
+[package]
+name = "tilo-resource-macros"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+
+# `#[derive(Model)]` and `#[resource]`: the declarations behind the resource
+# layer's golden path. Generated code only calls `tilo_resource`'s public API.
+
+[lib]
+proc-macro = true
+
+[dependencies]
+proc-macro2 = "1"
+quote = "1"
+syn = { version = "2", features = ["full"] }
+
+[lints]
+workspace = true
