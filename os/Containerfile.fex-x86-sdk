@@ -6,7 +6,7 @@ ARG BASE_REF
 FROM --platform=linux/amd64 ${BASE_REF}
 RUN test "$(uname -m)" = x86_64 \
  && dnf install -y \
-      gcc.x86_64 libgcc.i686 \
+      gcc.x86_64 libgcc.i686 libatomic.i686 \
       glibc-devel.x86_64 glibc-devel.i686 \
       libstdc++-devel.x86_64 libstdc++-devel.i686 \
       libX11-devel.x86_64 libX11-devel.i686 \
