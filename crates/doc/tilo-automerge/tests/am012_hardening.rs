@@ -22,9 +22,9 @@
 use automerge::marks::{ExpandMark, Mark};
 use automerge::resource_limits::{NativeAllocationSet, NativeAllowance, NativeLimits};
 use automerge::transaction::Transactable;
-use automerge::{ActorId, AutoCommit, Change, ObjType, ScalarValue, ROOT};
+use automerge::{ActorId, AutoCommit, Change, ObjType, ROOT, ScalarValue};
 use std::cell::RefCell;
-use std::panic::{catch_unwind, AssertUnwindSafe};
+use std::panic::{AssertUnwindSafe, catch_unwind};
 
 const MAGIC: [u8; 4] = [0x85, 0x6f, 0x4a, 0x83];
 
@@ -106,12 +106,19 @@ fn record_panics() {
                 .cloned()
                 .or_else(|| info.payload().downcast_ref::<&str>().map(|s| s.to_string()))
                 .unwrap_or_default();
-            let at = info.location().map(|l| format!("{}:{}", l.file(), l.line())).unwrap_or_default();
+            let at = info
+                .location()
+                .map(|l| format!("{}:{}", l.file(), l.line()))
+                .unwrap_or_default();
             let mut full = format!("{} @ {at}", msg.chars().take(120).collect::<String>());
             if loud {
                 // Keep only the vendored frames: enough to find the caller.
                 let trace = std::backtrace::Backtrace::force_capture().to_string();
-                for frame in trace.lines().filter(|l| l.contains("automerge::") || l.contains("hexane::")).take(12) {
+                for frame in trace
+                    .lines()
+                    .filter(|l| l.contains("automerge::") || l.contains("hexane::"))
+                    .take(12)
+                {
                     full.push_str("\n    ");
                     full.push_str(frame.trim());
                 }
@@ -122,7 +129,9 @@ fn record_panics() {
 }
 
 fn last_panic() -> String {
-    LAST_PANIC.with(|p| p.borrow_mut().take()).unwrap_or_default()
+    LAST_PANIC
+        .with(|p| p.borrow_mut().take())
+        .unwrap_or_default()
 }
 
 fn seeded_doc() -> AutoCommit {
@@ -181,7 +190,8 @@ fn seeds() -> Vec<(u8, Vec<u8>)> {
     let mut src = AutoCommit::new().with_actor(ActorId::from(vec![0xd1; 16]));
     let text = src.put_object(ROOT, "t", ObjType::Text).unwrap();
     src.splice_text(&text, 0, 0, "hello").unwrap();
-    src.mark(&text, Mark::new("b".into(), true, 0, 3), ExpandMark::After).unwrap();
+    src.mark(&text, Mark::new("b".into(), true, 0, 3), ExpandMark::After)
+        .unwrap();
     let list = src.put_object(ROOT, "l", ObjType::List).unwrap();
     src.insert(&list, 0, ScalarValue::counter(1)).unwrap();
     src.commit();
@@ -231,11 +241,20 @@ fn seeds() -> Vec<(u8, Vec<u8>)> {
     let mut c = AutoCommit::new().with_actor(ActorId::from(vec![0xc4; 16]));
     let text = c.put_object(ROOT, "long", ObjType::Text).unwrap();
     for i in 0..40 {
-        c.splice_text(&text, 0, 0, &format!("line {i} of a text long enough to compress; ")).unwrap();
+        c.splice_text(
+            &text,
+            0,
+            0,
+            &format!("line {i} of a text long enough to compress; "),
+        )
+        .unwrap();
         c.commit();
     }
     let saved = c.save();
-    assert!(saved.len() < c.save_nocompress().len(), "seed is not compressed");
+    assert!(
+        saved.len() < c.save_nocompress().len(),
+        "seed is not compressed"
+    );
     out.push((0, saved));
     out
 }
@@ -262,7 +281,12 @@ fn mutants(body: &[u8]) -> Vec<Mutant> {
             ("^2", |b| b ^ 2),
         ]
     } else {
-        &[("^1", |b| b ^ 1), ("^80", |b| b ^ 0x80), ("+1", |b| b.wrapping_add(1)), ("-1", |b| b.wrapping_sub(1))]
+        &[
+            ("^1", |b| b ^ 1),
+            ("^80", |b| b ^ 0x80),
+            ("+1", |b| b.wrapping_add(1)),
+            ("-1", |b| b.wrapping_sub(1)),
+        ]
     };
     for i in 0..body.len() {
         for (name, f) in values {
@@ -276,7 +300,11 @@ fn mutants(body: &[u8]) -> Vec<Mutant> {
         let mut m = body.to_vec();
         m.remove(i);
         out.push((format!("delete {i}"), m));
-        for v in if slow() { &[0u8, 1, 0x7f, 0x80, 0xff][..] } else { &[0u8, 0x80][..] } {
+        for v in if slow() {
+            &[0u8, 1, 0x7f, 0x80, 0xff][..]
+        } else {
+            &[0u8, 0x80][..]
+        } {
             let mut m = body.to_vec();
             m.insert(i, *v);
             out.push((format!("insert {i} {v:#x}"), m));
@@ -284,8 +312,11 @@ fn mutants(body: &[u8]) -> Vec<Mutant> {
         // Two-byte mutations: the adjacent pair always, every pair when slow
         // (each byte +1: keeps LEB/RLE framing plausible while moving two
         // fields at once).
-        let partners: Vec<usize> =
-            if slow() { (i + 1..body.len()).collect() } else { (i + 1..body.len().min(i + 2)).collect() };
+        let partners: Vec<usize> = if slow() {
+            (i + 1..body.len()).collect()
+        } else {
+            (i + 1..body.len().min(i + 2)).collect()
+        };
         for j in partners {
             let mut m = body.to_vec();
             m[i] = m[i].wrapping_add(1);
@@ -306,17 +337,25 @@ static RUNNING: std::sync::Mutex<Vec<(std::thread::ThreadId, String, std::time::
 fn watched<T>(label: impl FnOnce() -> String, f: impl FnOnce() -> T) -> T {
     static WATCHDOG: std::sync::Once = std::sync::Once::new();
     WATCHDOG.call_once(|| {
-        std::thread::spawn(|| loop {
-            std::thread::sleep(std::time::Duration::from_millis(100));
-            let running = RUNNING.lock().unwrap();
-            if let Some((_, what, _)) = running.iter().find(|(_, _, since)| since.elapsed() > DEADLINE) {
-                eprintln!("HANG (a load path ran > {DEADLINE:?}): {what}");
-                std::process::exit(2);
+        std::thread::spawn(|| {
+            loop {
+                std::thread::sleep(std::time::Duration::from_millis(100));
+                let running = RUNNING.lock().unwrap();
+                if let Some((_, what, _)) = running
+                    .iter()
+                    .find(|(_, _, since)| since.elapsed() > DEADLINE)
+                {
+                    eprintln!("HANG (a load path ran > {DEADLINE:?}): {what}");
+                    std::process::exit(2);
+                }
             }
         });
     });
     let me = std::thread::current().id();
-    RUNNING.lock().unwrap().push((me, label(), std::time::Instant::now()));
+    RUNNING
+        .lock()
+        .unwrap()
+        .push((me, label(), std::time::Instant::now()));
     let out = f();
     RUNNING.lock().unwrap().retain(|(id, _, _)| *id != me);
     out
@@ -332,25 +371,48 @@ fn mutation_sweep_never_panics_on_any_load_path() {
         for (what, m) in mutants(body(&raw)) {
             total += 1;
             let input = chunk(kind, &m);
-            let found = watched(|| format!("kind {kind} {what}: {}", hex::encode(&input)), || panics(&input));
+            let found = watched(
+                || format!("kind {kind} {what}: {}", hex::encode(&input)),
+                || panics(&input),
+            );
             for (path, msg) in found {
-                failures.push((format!("kind {kind} {what}"), path, msg, hex::encode(&input)));
+                failures.push((
+                    format!("kind {kind} {what}"),
+                    path,
+                    msg,
+                    hex::encode(&input),
+                ));
             }
         }
     }
-    println!("mutation sweep: {total} mutants x 3 paths in {:?}, {} panics", started.elapsed(), failures.len());
+    println!(
+        "mutation sweep: {total} mutants x 3 paths in {:?}, {} panics",
+        started.elapsed(),
+        failures.len()
+    );
     let mut groups: Vec<(String, usize, String)> = Vec::new();
     for (site, path, msg, input) in &failures {
         // Digits masked in the message (ids, lengths), kept in the location.
         let (text, at) = msg.rsplit_once(" @ ").unwrap_or((msg, ""));
-        let key = format!("{path:?}: {} @ {at}", text.replace(|c: char| c.is_ascii_digit(), "#"));
+        let key = format!(
+            "{path:?}: {} @ {at}",
+            text.replace(|c: char| c.is_ascii_digit(), "#")
+        );
         match groups.iter_mut().find(|g| g.0 == key) {
             Some(g) => g.1 += 1,
             None => groups.push((key, 1, format!("(\"{site}\", \"{input}\"),"))),
         }
     }
-    let report: Vec<String> = groups.iter().map(|(k, n, e)| format!("{n:6} x {k}\n         e.g. {e}")).collect();
-    assert!(failures.is_empty(), "{} panics:\n{}", failures.len(), report.join("\n"));
+    let report: Vec<String> = groups
+        .iter()
+        .map(|(k, n, e)| format!("{n:6} x {k}\n         e.g. {e}"))
+        .collect();
+    assert!(
+        failures.is_empty(),
+        "{} panics:\n{}",
+        failures.len(),
+        report.join("\n")
+    );
 }
 
 mod regressions {
@@ -441,7 +503,13 @@ mod regressions {
                 failures.push(format!("{what}: {path:?}: {msg}"));
             }
         }
-            assert!(failures.is_empty(), "{} of {}:\n{}", failures.len(), cases.len(), failures.join("\n"));
+        assert!(
+            failures.is_empty(),
+            "{} of {}:\n{}",
+            failures.len(),
+            cases.len(),
+            failures.join("\n")
+        );
     }
 
     #[test]
@@ -459,7 +527,9 @@ mod regressions {
 /// runs a single input through every load path. No-op without the variable.
 #[test]
 fn one_input() {
-    let Some(hex_input) = std::env::var_os("AM012_ONE") else { return };
+    let Some(hex_input) = std::env::var_os("AM012_ONE") else {
+        return;
+    };
     let input = hex::decode(hex_input.to_str().unwrap()).unwrap();
     record_panics();
     let found = panics(&input);
