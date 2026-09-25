@@ -69,6 +69,41 @@ class SelectorTests(unittest.TestCase):
         self.assertIn("suites_required=true", lines)
         self.assertIn("suites=os/tests/a.sh", lines)
 
+    def test_a_pin_only_pull_request_takes_the_pins_path(self):
+        (self.root / "os").mkdir(exist_ok=True)
+        for pin in ("os/rpms-snapshot.env", "os/kernel-snapshot.env"):
+            (self.root / pin).write_text("PIN=x\n")
+        manifest = ci_select.path_suites.parse(
+            '[[group]]\nname = "os"\ninputs = ["os/"]\nsuites = ["os/tests/a.sh"]\n')
+        def plan(changes, **options):
+            return ci_select.make_plan(self.metadata, self.root, changes, 2,
+                                       suite_manifest=manifest, **options)
+        pins = plan(["os/rpms-snapshot.env", "os/kernel-snapshot.env"], allow_security_skip=True)
+        self.assertTrue(pins["pins_required"])
+        self.assertEqual(pins["pins"], ["os/kernel-snapshot.env", "os/rpms-snapshot.env"])
+        self.assertFalse(pins["rust_required"])
+        self.assertFalse(pins["security_required"])
+        self.assertFalse(pins["suites_required"])
+        self.assertEqual(pins["matrix"], {"include": []})
+        # Pushes, full runs and mixed changes keep every check.
+        for changes, options in (
+            (["os/rpms-snapshot.env"], {}),
+            (["os/rpms-snapshot.env"], {"allow_security_skip": True, "force_full": True}),
+            (["os/rpms-snapshot.env", "leaf/src/lib.rs"], {"allow_security_skip": True}),
+            (["os/deleted-pin.env"], {"allow_security_skip": True}),
+        ):
+            with self.subTest(changes=changes, options=options):
+                other = plan(changes, **options)
+                self.assertFalse(other["pins_required"])
+                self.assertEqual(other["pins"], [])
+                self.assertTrue(other["security_required"])
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "outputs"
+            ci_select.emit_github(pins, output)
+            lines = output.read_text().splitlines()
+        self.assertIn("pins_required=true", lines)
+        self.assertIn("pins=os/kernel-snapshot.env os/rpms-snapshot.env", lines)
+
     def test_cross_package_readers_are_checked_and_tested_when_their_inputs_change(self):
         # "base" reads leaf's sources and a shipped OS file from outside itself,
         # the way tilo-ui's design audit reads every app.
@@ -521,6 +556,24 @@ class SelectorTests(unittest.TestCase):
         self.assertEqual(plan["selected"], [])
         self.assertEqual(plan["matrix"], {"include": []})
 
+    def test_check_workflow_and_builder_resolution_contract_need_no_rust(self) -> None:
+        self.install_quality_helpers()
+        self.install_control_inputs()
+        changes = [
+            ".forgejo/workflows/check.yml",
+            "tools/tests/test_ci_check_aggregate.py",
+            "tools/tests/test_resolve_ci_builder.py",
+            "tools/ci/affected_packages.py",
+            "tools/tests/test_ci_select.py",
+        ]
+        plan = ci_select.make_plan(self.metadata, self.root, changes, 2)
+        self.assertFalse(plan["rust_required"])
+        self.assertEqual(plan["selected"], [])
+        self.assertTrue(plan["security_required"])
+        # A missing mandatory observer removes the exception.
+        (self.root / "tools/tests/test_resolve_ci_builder.py").unlink()
+        self.assertTrue(ci_select.make_plan(self.metadata, self.root, changes, 2)["rust_required"])
+
     def test_mold_builder_policy_does_not_compile_unrelated_rust(self) -> None:
         self.install_quality_helpers()
         self.install_control_inputs()
@@ -690,6 +743,20 @@ class SelectorTests(unittest.TestCase):
                     plan = ci_select.make_plan(
                         self.metadata, self.root, [mapped_source], 2)
                     self.assertTrue(plan["rust_required"])
+
+    def test_rpm_pin_only_runs_mandatory_policy_and_security_checks(self) -> None:
+        self.install_control_inputs()
+        pin = "os/rpms-snapshot.env"
+        observer = "tools/tests/test_rpm_pin_contract.py"
+        plan = ci_select.make_plan(self.metadata, self.root, [pin], 2)
+        self.assertFalse(plan["rust_required"])
+        self.assertEqual(plan["selected"], [])
+        self.assertTrue(plan["security_required"])
+        (self.root / observer).unlink()
+        self.assertTrue(ci_select.make_plan(self.metadata, self.root, [pin], 2)["rust_required"])
+        self.install_control_inputs()
+        self.assertTrue(ci_select.make_plan(
+            self.metadata, self.root, [pin, "leaf/src/lib.rs"], 2)["rust_required"])
 
     def test_builder_recipe_deletion_and_mixed_inputs_stay_conservative(self) -> None:
         recipe = self.root / "os/Containerfile.builder"

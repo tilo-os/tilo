@@ -936,6 +936,10 @@ impl OnboardingView {
         self.tour_page = Some(page);
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "a declarative page composition covering every onboarding screen"
+    )]
     fn build_composition(&self, theme: &Theme, panel_height: f32) -> Box<dyn Widget> {
         if let Some(page) = self.tour_page {
             return self.build_tour_composition(theme, panel_height, page);
@@ -1214,6 +1218,10 @@ impl OnboardingView {
         )
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "a declarative footer builder with one arm per onboarding screen"
+    )]
     fn identity_actions(&self) -> Box<dyn Widget> {
         match self.flow.screen() {
             Screen::Intro => footer_actions(vec![
@@ -5196,8 +5204,7 @@ mod tests {
                 !node_map.values().any(|&pointer| unsafe {
                     matches!(
                         (*pointer).test_id(),
-                        Some("onboarding.backup.passphrase")
-                            | Some("onboarding.backup.confirmation")
+                        Some("onboarding.backup.passphrase" | "onboarding.backup.confirmation")
                     )
                 }),
                 "verified backup should expose its confirmed state before asking for another passphrase"

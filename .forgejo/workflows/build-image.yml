@@ -876,6 +876,22 @@ jobs:
           fi
           echo "publish=$publish" >> "$GITHUB_OUTPUT"
           echo "validate=$validate" >> "$GITHUB_OUTPUT"
+          # A branch build that validates without publishing installs and
+          # boots the dev image built FROM this image instead, and publishes
+          # both as dev-trust artifacts: tilo-ci:<series>-<arch> and
+          # tilo-vm:<series>-ci. Only main moves tilo-vm:latest.
+          series=""
+          if [[ $validate == true && $GITHUB_REF == refs/heads/* ]]; then
+            if [[ $GITHUB_REF == refs/heads/main ]]; then
+              series="main-${GITHUB_SHA:0:7}"
+            else
+              branch=${GITHUB_REF_NAME//[^A-Za-z0-9_.-]/-}
+              series="${branch:0:100}-${GITHUB_SHA:0:7}"
+            fi
+          fi
+          echo "dev-series=$series" >> "$GITHUB_OUTPUT"
+          echo "dev-gate=$([[ $validate == true && $publish != true ]] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+          echo "dev-channel=$([[ $GITHUB_REF == refs/heads/main ]] && echo true || echo false)" >> "$GITHUB_OUTPUT"
           if [[ "$publish" == true ]]; then
             test -n "$PROTECTED_PCR_PREDICTION_SIGNER" || {
               echo '::error::publishing requires TILO_PCR_PREDICTION_SIGNER'
@@ -1306,23 +1322,24 @@ jobs:
             type=registry,ref=${{ env.TILO_LAYER_CACHE_REGISTRY }}/qos/tilo-buildcache:${{ matrix.arch }}-compile,mode=max,ignore-error=true
             type=registry,ref=${{ env.TILO_LAYER_CACHE_REGISTRY }}/qos/tilo-buildcache:${{ matrix.arch }},mode=max,ignore-error=true
 
-      # Dev VMs must not wait on release gating. Every main build that gets
+      # Dev VMs must not wait on release gating. Every branch build that gets
       # this far pushes its image, unsigned, to tilo-ci: a development-only
       # repository that production policy rejects
-      # (os/etc/containers/policy.json). dev-disk.yml builds the dev image and
-      # disk from it when this run does not also promote a signed release.
-      # No release channel, generation or signature is involved.
+      # (os/etc/containers/policy.json). The dev disk this lane publishes
+      # names it as its base. No release channel, generation or signature is
+      # involved.
       - name: Publish the dev-trust integration image
         id: dev-image
-        if: steps.release-mode.outputs.validate == 'true' && github.ref == 'refs/heads/main'
+        if: steps.release-mode.outputs.validate == 'true' && steps.release-mode.outputs.dev-series != ''
         # A registry hiccup here must never block a release.
         continue-on-error: true
         env:
           REGISTRY_CREDS: ${{ github.actor }}:${{ secrets.REGISTRY_TOKEN }}
           ARCH: ${{ matrix.arch }}
+          DEV_SERIES: ${{ steps.release-mode.outputs.dev-series }}
         run: |
           set -euo pipefail
-          ref="code.podesta.ai/qos/tilo-ci:main-${GITHUB_SHA:0:7}-$ARCH"
+          ref="code.podesta.ai/qos/tilo-ci:$DEV_SERIES-$ARCH"
           # Buildx writes a full image name and a bare OCI ref for each tag.
           # Skopeo selects the latter; verify its descriptor and digest first.
           source_tag="$(printf '%s\n' '${{ steps.meta.outputs.tags }}' | sed -n '1p')"
@@ -1341,6 +1358,7 @@ jobs:
             exit 1
           }
           echo "digest=$digest" >> "$GITHUB_OUTPUT"
+          echo "ref=$ref" >> "$GITHUB_OUTPUT"
           echo "::notice::pushed dev-trust integration image $ref ($digest)"
 
       # Reproducibility is a release gate, not a statement inferred from pinned
@@ -1402,10 +1420,18 @@ jobs:
           docker buildx prune --builder "$BUILDER_NAME" --all --force
           df -h /var/tmp
 
+      # One install and one boot per lane. A publication installs the sealed
+      # release candidate itself, resealing it as bootc#2334 requires, and
+      # gates that exact artifact. Every other validation installs the dev
+      # image os/dev/build-dev-image.sh builds FROM this lane's image, locally
+      # and with the same os/Containerfile.dev recipe as any dev VM, and gates
+      # that disk instead: it runs the same installed-desktop checks, then
+      # proves tilo-vmd answers. The dev image is unsealed, so the sealed UKI
+      # path is exercised by publications (at least the nightly one) only.
       - name: Reseal, install, boot, and stage the verified image
         id: release
         if: steps.release-mode.outputs.validate == 'true'
-        timeout-minutes: 60
+        timeout-minutes: 180
         env:
           TILO_IMAGE: localhost/tilo:release-candidate
           TILO_RUN: /var/tmp/tilo-projection-vm-${{ matrix.arch }}
@@ -1424,6 +1450,11 @@ jobs:
           TILO_RESEALED_DIGEST_FILE: /var/tmp/tilo-resealed-composefs-digest
           PUBLISH: ${{ steps.release-mode.outputs.publish }}
           HARDWARE_PROFILE: ${{ needs.plan.outputs.hardware-profile }}
+          DEV_GATE: ${{ steps.release-mode.outputs.dev-gate }}
+          DEV_SERIES: ${{ steps.release-mode.outputs.dev-series }}
+          DEV_BASE_PUBLISHED: ${{ steps.dev-image.outputs.ref }}
+          DEV_BASE_PUBLISHED_DIGEST: ${{ steps.dev-image.outputs.digest }}
+          DEV_OUTPUT: /var/tmp/tilo-vm-disk-${{ matrix.arch }}
         run: |
           set -euo pipefail
 
@@ -1489,6 +1520,40 @@ jobs:
           # The manifest was verified above and the image is now in Podman's
           # store; retaining its archive would duplicate it during resealing.
           rm -f /var/tmp/tilo-image.tar
+
+          if [[ $DEV_GATE == true ]]; then
+            [[ $HARDWARE_PROFILE == generic && -n $DEV_SERIES ]] || {
+              echo "::error::the dev image gate needs a generic branch build"
+              exit 1
+            }
+            # The base is named as it was published, so the dev image's
+            # base.json and labels describe the tilo-ci image, never a
+            # production name. Its local manifest is the published one.
+            dev_base="code.podesta.ai/qos/tilo-ci:$DEV_SERIES-${{ matrix.arch }}"
+            podman tag "$first_tag" "$dev_base"
+            dev_base_digest="$(podman image inspect --format '{{.Digest}}' "$dev_base")"
+            [[ $dev_base_digest =~ ^sha256:[0-9a-f]{64}$ ]]
+            if [[ -n $DEV_BASE_PUBLISHED && $DEV_BASE_PUBLISHED_DIGEST != "$dev_base_digest" ]]; then
+              echo "::error::$DEV_BASE_PUBLISHED was published as $DEV_BASE_PUBLISHED_DIGEST, but the local base is $dev_base_digest"
+              exit 1
+            fi
+            echo "dev-base-digest=$dev_base_digest" >> "$GITHUB_OUTPUT"
+            mkdir -p "$DEV_OUTPUT" "$TILO_RUN"
+            if [[ '${{ matrix.arch }}' == aarch64 ]]; then
+              rm -rf -- "$DEV_OUTPUT/direct-boot"
+              export TILO_DEV_DIRECT_BUNDLE_DIR="$DEV_OUTPUT/direct-boot"
+            fi
+            TILO_DEV_BASE="$dev_base" TILO_DEV_IMAGE=localhost/tilo-vm:ci TILO_DEV_DISK=1 \
+              TILO_CARGO_FRESHNESS=clean TILO_OUTPUT="$DEV_OUTPUT" TILO_DISK="$DEV_OUTPUT/qcow2/disk.qcow2" \
+              TILO_TARGET_IMGREF="code.podesta.ai/qos/tilo-vm:$DEV_SERIES-ci" TILO_DISK_SIZE=64G \
+              TILO_BUILD_ARGS="--label org.opencontainers.image.version=$DEV_SERIES-ci --label org.opencontainers.image.revision=$GITHUB_SHA --label org.opencontainers.image.base.name=code.podesta.ai/qos/tilo-ci@$dev_base_digest --label org.opencontainers.image.base.digest=$dev_base_digest --label sh.tilo.dev.base-trust=integration" \
+              ./os/dev/build-dev-image.sh
+            test -s "$DEV_OUTPUT/qcow2/disk.qcow2"
+            # Gate a throwaway overlay so the disk published below is never
+            # first-booted.
+            export TILO_DISK="$TILO_RUN/dev-gate.qcow2"
+            qemu-img create -f qcow2 -F qcow2 -b "$DEV_OUTPUT/qcow2/disk.qcow2" "$TILO_DISK" >/dev/null
+          else
           # Keep the installed machine on the public release channel, not on
           # the temporary localhost tag used only for resealing.
           export TILO_TARGET_IMGREF="$first_tag"
@@ -1499,6 +1564,16 @@ jobs:
           # first pass and could never prove the published image bootable.
           mkdir -p "$TILO_OUTPUT" "$TILO_RUN"
           rm -f "$TILO_RESEALED_DIGEST_FILE"
+          # The release image has no SSH server, yet every gate below drives
+          # the installed system over `vm.sh ssh`. Give this run's disk copy,
+          # and only it, validation access: a signed sshd extension on a
+          # second disk, and in the copy's /etc the unit that merges it and
+          # the one-run certificate it trusts. The edits are listed here.
+          if [[ $PUBLISH == true && $HARDWARE_PROFILE == generic ]]; then
+            ./os/dev/validation-access.sh prepare "$TILO_RUN/validation" "$TILO_IMAGE" "$RPMS_REF"
+            export TILO_VALIDATION_ETC="$TILO_RUN/validation/etc"
+            export TILO_VM_VALIDATION_SYSEXT="$TILO_RUN/validation/tilo-validation.raw"
+          fi
           ./os/dev/build-image.sh
 
           # build-image may add a deterministic /boot-only UKI reseal layer.
@@ -1524,9 +1599,10 @@ jobs:
             }
             echo "::notice::final sealed OS image reproduced manifest sha256:$final_manifest"
           fi
+          export TILO_DISK="$TILO_OUTPUT/qcow2/disk.qcow2"
+          fi
 
           if [[ $HARDWARE_PROFILE == generic ]]; then
-          export TILO_DISK="$TILO_OUTPUT/qcow2/disk.qcow2"
           trap './os/dev/vm.sh stop || true' EXIT
           # The installed Files AT-SPI gate needs the running Tilo compositor.
           # The display was selected for this host above; every gate below is
@@ -1607,6 +1683,12 @@ jobs:
           ./os/dev/vm.sh ssh /usr/libexec/tilo/native-atspi-smoke.sh lock
           ./os/dev/vm.sh type "$TILO_PASS"
           ./os/dev/vm.sh keys ret
+
+          if [[ $DEV_GATE == true ]]; then
+            # What makes the disk a dev VM: tilo-vm reaches tilo-vmd as root,
+            # on this architecture, built on exactly this lane's image.
+            ./os/dev/check-dev-vm.sh --arch '${{ matrix.arch }}' --base-digest "$dev_base_digest"
+          fi
           else
             # A Lenovo DTB cannot describe QEMU virt hardware. The sealed
             # disk-install and independent reproduction above remain required;
@@ -1630,8 +1712,38 @@ jobs:
             echo "candidate=$candidate" >> "$GITHUB_OUTPUT"
             echo "::notice::uploaded boot-verified candidate $digest; release channels remain unchanged"
           else
-            echo '::notice::installed OS, desktop, and app integration passed; publication was not requested'
+            echo '::notice::installed dev image, desktop, app integration and tilo-vmd passed; publication was not requested'
           fi
+
+      # The lane's gated dev disk, published for this architecture alone as
+      # soon as it passed: the other architecture's lane adds its own child
+      # and manifest whenever it lands, and neither can hold the other back.
+      # It needs the tilo-ci base it names to exist.
+      - name: Publish this architecture's dev image and disk
+        if: steps.release-mode.outputs.dev-gate == 'true' && steps.dev-image.outcome == 'success'
+        env:
+          REGISTRY_TOKEN: ${{ secrets.REGISTRY_TOKEN }}
+          DEV_IMAGE: localhost/tilo-vm:ci
+          DEV_TAG: ${{ steps.release-mode.outputs.dev-series }}-ci
+          ARCH: ${{ matrix.arch }}
+          SOURCE_REVISION: ${{ github.sha }}
+          SOURCE_DISK: /var/tmp/tilo-vm-disk-${{ matrix.arch }}/qcow2/disk.qcow2
+          SOURCE_BOOT: /var/tmp/tilo-vm-disk-${{ matrix.arch }}/direct-boot
+          DISK_FORMATS: qcow2
+          BASE_REPOSITORY: code.podesta.ai/qos/tilo-ci
+          BASE_TRUST: integration
+          BASE_INDEX_DIGEST: ${{ steps.dev-image.outputs.digest }}
+          BASE_CHILD_DIGEST: ${{ steps.dev-image.outputs.digest }}
+          CHANNEL: ${{ steps.release-mode.outputs.dev-channel }}
+          # Dev disks are development artifacts, never release-signed; the CI
+          # account's package token (as build-kernel.yml uses) writes them.
+          TILO_PACKAGE_TOKEN: ${{ secrets.REGISTRY_TOKEN }}
+          TILO_PACKAGE_PUBLIC_BASE_URL: ${{ vars.TILO_PACKAGE_PUBLIC_BASE_URL }}
+        run: |
+          set -euo pipefail
+          printf '%s' "$REGISTRY_TOKEN" | podman login code.podesta.ai \
+            --username "${{ github.actor }}" --password-stdin
+          ./os/dev/publish-dev-disk.sh
 
       # Sign the pushed image with cosign (security plan §9). The signature
       # lets installed systems verify provenance before `bootc upgrade` applies
@@ -1774,6 +1886,36 @@ jobs:
             '{architecture:$arch,digest:$digest,generation:$generation,sourceRevision:$source}' \
             > "release-child/${{ matrix.arch }}.json"
           echo "::notice::verified signed generation $TILO_GENERATION child $image"
+
+      # A publication gates the unmodified release image, so its dev disk is
+      # derived afterwards: Release / Dev VM disk verifies this signed child
+      # against keys/cosign.pub and its provenance, then builds, boots and
+      # publishes this architecture alone, never waiting on the other lane.
+      - name: Request this architecture's dev disk from the signed child
+        if: steps.release-mode.outputs.publish == 'true' && needs.plan.outputs.hardware-profile == 'generic'
+        # A dev disk must never hold back a release.
+        continue-on-error: true
+        env:
+          FORGEJO_TOKEN: ${{ secrets.REGISTRY_TOKEN }}
+          IMAGE: code.podesta.ai/qos/tilo@${{ steps.release.outputs.digest }}
+          ARCH: ${{ matrix.arch }}
+        run: |
+          set -euo pipefail
+          [[ $IMAGE =~ ^code\.podesta\.ai/qos/tilo@sha256:[0-9a-f]{64}$ ]]
+          if [[ $GITHUB_REF == refs/tags/v* ]]; then
+            tag="${GITHUB_REF_NAME#v}"
+          else
+            tag="main-${GITHUB_SHA:0:7}"
+          fi
+          payload="$(jq -cn --arg ref "$GITHUB_REF_NAME" --arg source "$GITHUB_SHA" \
+            --arg base "$IMAGE" --arg tag "$tag" --arg arch "$ARCH" \
+            '{ref:$ref,inputs:{source_revision:$source,base_image:$base,tag:$tag,architectures:$arch,formats:"qcow2"}}')"
+          curl --fail-with-body --silent --show-error -X POST \
+            -H "Authorization: token ${FORGEJO_TOKEN}" \
+            -H 'Content-Type: application/json' \
+            "${GITHUB_SERVER_URL}/api/v1/repos/${GITHUB_REPOSITORY}/actions/workflows/dev-disk.yml/dispatches" \
+            --data "$payload"
+          echo "::notice::requested tilo-vm:$tag ($ARCH) from $IMAGE"
 
       - uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
         if: steps.release-mode.outputs.publish == 'true'
@@ -2108,8 +2250,9 @@ jobs:
           echo "::notice::CI-built and signed Lenovo ARM64 image: $image; immutable update reference: $target"
 
   # Integration images remain unsigned and outside the production tilo
-  # repository. Publish an index only after both native lanes complete; the
-  # dev disk workflow can then verify each child against the same source SHA.
+  # repository. Publish a multi-architecture index once both native lanes
+  # complete. Nothing waits on it: each lane has already published its own
+  # tilo-ci child and dev disk.
   promote-integration:
     needs: [plan, build-and-push]
     if: needs.plan.outputs.publish != 'true' && needs.plan.outputs.skip != 'true' && github.ref == 'refs/heads/main'
@@ -2206,63 +2349,3 @@ jobs:
           name: tilo-os-integration-index
           path: tilo-os-integration-index.json
           if-no-files-found: error
-
-  # Dev VM disks are derived from an image this run produced, never rebuilt
-  # from source here. A promoted release is preferred: the request pins its
-  # exact index digest. Otherwise a main run that built an image requests
-  # disks from its dev-trust integration image, so dev VMs keep up with main
-  # even while publication is failing or was not requested. Either way the
-  # request pins the source revision and digest, so a later main commit cannot
-  # change what the dev image is built on.
-  dispatch-dev-disk:
-    needs: [plan, promote-multiarch, promote-integration]
-    if: ${{ always() && needs.plan.result == 'success' && needs.plan.outputs.skip != 'true' && (needs.promote-multiarch.result == 'success' || needs.promote-integration.result == 'success') }}
-    runs-on: runner
-    timeout-minutes: 15
-    steps:
-      - uses: actions/download-artifact@9bc31d5ccc31df68ecc42ccf4149144866c47d8a # v3
-        if: needs.promote-multiarch.result == 'success'
-        with:
-          name: tilo-os-release-index
-          path: release-index
-      - uses: actions/download-artifact@9bc31d5ccc31df68ecc42ccf4149144866c47d8a # v3
-        if: needs.promote-integration.result == 'success'
-        with:
-          name: tilo-os-integration-index
-          path: integration-index
-      - name: Request dev VM disks for this run's image
-        env:
-          FORGEJO_TOKEN: ${{ secrets.REGISTRY_TOKEN }}
-          PROMOTED: ${{ needs.promote-multiarch.result == 'success' }}
-        run: |
-          set -euo pipefail
-          if [[ $PROMOTED == true ]]; then
-            image="$(jq -er .image release-index/tilo-os-release-index.json)"
-            [[ "$image" =~ ^code\.podesta\.ai/qos/tilo@sha256:[0-9a-f]{64}$ ]] || {
-              echo "::error::unexpected release index image: $image"
-              exit 1
-            }
-            if [[ $GITHUB_REF == refs/tags/v* ]]; then
-              tag="${GITHUB_REF_NAME#v}"
-            else
-              tag="main-${GITHUB_SHA:0:7}"
-            fi
-          else
-            image="$(jq -er --arg source "$GITHUB_SHA" \
-              'select(.sourceRevision == $source) | .image' \
-              integration-index/tilo-os-integration-index.json)"
-            [[ "$image" =~ ^code\.podesta\.ai/qos/tilo-ci@sha256:[0-9a-f]{64}$ ]] || {
-              echo "::error::unexpected integration index image: $image"
-              exit 1
-            }
-            tag="main-${GITHUB_SHA:0:7}-ci"
-          fi
-          payload="$(jq -cn --arg ref "$GITHUB_REF_NAME" --arg source "$GITHUB_SHA" \
-            --arg base "$image" --arg tag "$tag" \
-            '{ref:$ref,inputs:{source_revision:$source,base_image:$base,tag:$tag,architectures:"x86_64 aarch64",formats:"qcow2"}}')"
-          curl --fail-with-body --silent --show-error -X POST \
-            -H "Authorization: token ${FORGEJO_TOKEN}" \
-            -H 'Content-Type: application/json' \
-            "${GITHUB_SERVER_URL}/api/v1/repos/${GITHUB_REPOSITORY}/actions/workflows/dev-disk.yml/dispatches" \
-            --data "$payload"
-          echo "::notice::requested tilo-vm:$tag disks from $image"

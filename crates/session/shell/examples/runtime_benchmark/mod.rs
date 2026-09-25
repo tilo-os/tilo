@@ -1,5 +1,8 @@
 //! Measurement only: calls production app actions and consumes existing UI timing hooks.
-use super::*;
+use super::{
+    Child, Children, Duration, Instant, PHOTOS, Result, Session, WRITER, emit, json, start_action,
+    wait_action, wait_terminal,
+};
 use std::path::Path;
 
 fn boundaries(root: &Path) -> Result<serde_json::Value> {
@@ -8,6 +11,10 @@ fn boundaries(root: &Path) -> Result<serde_json::Value> {
         let mut counts = serde_json::Map::new();
         for suffix in ["frames.jsonl", "log"] {
             let data = std::fs::read(root.join(format!("{app}.{suffix}")))?;
+            #[expect(
+                clippy::naive_bytecount,
+                reason = "counts lines of a small benchmark log once; not worth a bytecount dependency"
+            )]
             counts.insert(
                 suffix.into(),
                 json!(data.iter().filter(|&&b| b == b'\n').count()),
@@ -34,7 +41,7 @@ pub(super) fn run(
         .ok_or("missing action broker")?;
     let warmup = 10;
     let iterations = 50;
-    emit(json!({"event":"benchmark_config", "warmup_per_app":warmup,
+    emit(&json!({"event":"benchmark_config", "warmup_per_app":warmup,
         "samples_per_app":iterations, "fixture_width":1280,"fixture_height":720,
         "pace_ms":100,"tail_ms":500,"debug_assertions":cfg!(debug_assertions),
         "profile_window_front":true,
@@ -44,7 +51,7 @@ pub(super) fn run(
         "clock":"std::time::Instant", "latency_boundary":"before the action host's invoke through its terminal update"}));
     for phase in ["warmup", "measure"] {
         std::thread::sleep(Duration::from_millis(500));
-        emit(json!({"event":"phase_start", "phase":phase,"boundaries":boundaries(root)?}));
+        emit(&json!({"event":"phase_start", "phase":phase,"boundaries":boundaries(root)?}));
         let count = if phase == "warmup" {
             warmup
         } else {
@@ -80,7 +87,7 @@ pub(super) fn run(
                 let elapsed_ns = start.elapsed().as_nanos();
                 let succeeded = matches!(update, tilo_actions::InvocationUpdate::Succeeded { .. });
                 emit(
-                    json!({"event":"action_sample","phase":phase,"iteration":iteration,
+                    &json!({"event":"action_sample","phase":phase,"iteration":iteration,
                     "app":app,"action":action,"invocation":invocation.0.to_string(),"discovery_ns":discovery_ns,
                     "accepted_ns":accepted_ns,"elapsed_ns":elapsed_ns,"succeeded":succeeded}),
                 );
@@ -93,10 +100,10 @@ pub(super) fn run(
         }
         std::thread::sleep(Duration::from_millis(500));
         children.live()?;
-        emit(json!({"event":"phase_end","phase":phase,"boundaries":boundaries(root)?}));
+        emit(&json!({"event":"phase_end","phase":phase,"boundaries":boundaries(root)?}));
     }
     emit(
-        json!({"event":"benchmark_passed","app_pids":children.0.iter().map(Child::id).collect::<Vec<_>>()}),
+        &json!({"event":"benchmark_passed","app_pids":children.0.iter().map(Child::id).collect::<Vec<_>>()}),
     );
     Ok(())
 }

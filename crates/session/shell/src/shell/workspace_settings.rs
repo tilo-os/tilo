@@ -71,6 +71,10 @@ pub fn permission_profile_resource(ws: &Workspace, local_user: &UserId) -> tilo_
 /// has established that its caller may inspect candidate governance actions.
 /// Each action still carries `PermissionRequirement::Admin` and is rechecked
 /// immediately before mutation.
+#[expect(
+    clippy::too_many_lines,
+    reason = "a declarative resource description listing every governance action"
+)]
 pub(crate) fn permission_profile_resource_with_access(
     ws: &Workspace,
     can_administer: bool,
@@ -672,6 +676,10 @@ impl WorkspaceSettings {
     }
 
     /// Paint the sidebar — identity card, nav rows, footer.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "a paint routine that lays its elements out top to bottom from shared running offsets"
+    )]
     fn draw_sidebar(
         &self,
         scene: &mut Scene,
@@ -3707,6 +3715,10 @@ fn draw_who_what_pickers(
 /// Paint the "Grant a permission" composer card — header, the who/what
 /// cyclers, the expiry track, the submit button. Returns the card's rect
 /// so the caller can lay out the capability rows beneath it.
+#[expect(
+    clippy::too_many_lines,
+    reason = "a paint routine that lays its elements out top to bottom from shared running offsets"
+)]
 fn draw_permission_composer(
     scene: &mut Scene,
     transform: Affine,

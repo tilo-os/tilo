@@ -331,6 +331,10 @@ fn prune_personal_media_objects(
     retained
 }
 
+#[allow(
+    clippy::unnecessary_cast,
+    reason = "statvfs block counts are u64 on Linux but narrower on other Unix targets"
+)]
 fn available_bytes(path: &Path) -> Option<u64> {
     use std::os::unix::ffi::OsStrExt as _;
 
@@ -3681,6 +3685,13 @@ impl ShellNetwork {
     }
 
     /// Install one exact mirror route after target-local consent.
+    ///
+    /// # Errors
+    ///
+    /// Returns a message when this device has no personal fabric identity, the
+    /// binding is invalid or does not include this device, the peer is offline,
+    /// the session id is already bound to another route, too many sessions are
+    /// active, or the fabric or authorization store is unavailable.
     pub fn authorize_personal_display_session(
         &self,
         session_id: [u8; 16],
@@ -4015,7 +4026,7 @@ impl ShellNetwork {
     }
 
     /// Open one already route-validated tethering envelope for an immediate
-    /// NetworkManager call. The plaintext is never retained by ShellNetwork.
+    /// `NetworkManager` call. The plaintext is never retained by `ShellNetwork`.
     pub(crate) fn open_tethering_credential(
         &self,
         credential: &crate::shell::device_fabric::WifiCredential,
@@ -4223,6 +4234,10 @@ impl ShellNetwork {
     /// Route one drained [`NetEvent`] to its handler. Split out of
     /// [`Self::tick`], which owns only the drain loop and the
     /// `event_rx` lock.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one exhaustive dispatcher routes each network event variant"
+    )]
     fn dispatch_net_event(&self, event: NetEvent) {
         match event {
             NetEvent::NativeInput(input) => self.dispatch_native_input(&input),
@@ -4297,7 +4312,7 @@ impl ShellNetwork {
                 user_public_key,
                 payload,
             } => {
-                self.dispatch_personal_fabric(ws, peer, membership_epoch, user_public_key, payload)
+                self.dispatch_personal_fabric(ws, peer, membership_epoch, user_public_key, payload);
             }
             NetEvent::PersonalMediaTransfer {
                 target,
@@ -6426,8 +6441,8 @@ mod tests {
             let mut state = net.personal_media_transfers.lock().expect("transfer state");
             state.completed.insert(source_key.clone(), object.clone());
             state.completed.insert(sibling_key.clone(), object.clone());
-            state.completed_order.push_back(source_key.clone());
-            state.completed_order.push_back(sibling_key.clone());
+            state.completed_order.push_back(source_key);
+            state.completed_order.push_back(sibling_key);
             state.leased_until.insert(
                 object.clone(),
                 std::time::Instant::now()
@@ -6720,7 +6735,7 @@ mod tests {
             .adopt_continuation_room(room, "remote-device");
         let remote = test_device(0xA6);
         let snapshot = crate::shell::personal_continuity::DeviceContinuationSnapshot::new(
-            remote.clone(),
+            remote,
             7,
             None,
             vec![crate::shell::personal_continuity::WorkspaceContinuation {
@@ -6884,7 +6899,7 @@ mod tests {
         net.personal_continuity_device = Some(local_device.clone());
         net.host_identity = Some(HostIdentity {
             device_cert: local_cert,
-            device_signing_key: local_key.clone(),
+            device_signing_key: local_key,
             workspace_device_certs: std::collections::HashMap::new(),
             workspace_revocations: std::collections::HashMap::new(),
             identity_paths: None,
@@ -6926,7 +6941,7 @@ mod tests {
         assert_eq!(
             crate::shell::device_fabric_secrets::wifi_envelope_recipients(&credential)
                 .expect("recipient projection"),
-            std::collections::BTreeSet::from([local_device.clone(), remote_device.clone()]),
+            std::collections::BTreeSet::from([local_device.clone(), remote_device]),
             "relay routing identity must never become a secret recipient"
         );
         assert_eq!(
@@ -7279,6 +7294,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "an end-to-end test scenario that reads top to bottom"
+    )]
     fn personal_fabric_action_queue_reserves_control_during_media_saturation() {
         use crate::shell::device_fabric::PersonalFabricAction;
         use crate::shell::personal_tethering::{TETHERING_PROTOCOL_VERSION, TetheringSignal};

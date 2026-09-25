@@ -1292,7 +1292,7 @@ impl PendingTestControlInvocation {
         match (self.ticket)() {
             Ok(None) => PendingTestControlPoll::Waiting(self),
             Ok(Some(receipt)) => {
-                PendingTestControlPoll::Ready(invocation_response(self.action, receipt))
+                PendingTestControlPoll::Ready(invocation_response(&self.action, &receipt))
             }
             Err(error) => PendingTestControlPoll::Ready(test_control::Response::Err {
                 code: error.code().to_string(),
@@ -1317,7 +1317,7 @@ impl TestControlConn {
         })
     }
 
-    fn peer_disconnected(&mut self) -> bool {
+    fn peer_disconnected(&self) -> bool {
         let mut descriptor = libc::pollfd {
             fd: self.reader.get_ref().as_raw_fd(),
             events: libc::POLLOUT,
@@ -2660,8 +2660,8 @@ fn write_snapshot_png(
 /// of size, so an unbounded no-newline stream could OOM the compositor. 64
 /// KiB is well above any legitimate command and below meaningful memory pressure.
 fn invocation_response(
-    action: serde_json::Value,
-    receipt: crate::shell::search::ActionReceipt,
+    action: &serde_json::Value,
+    receipt: &crate::shell::search::ActionReceipt,
 ) -> test_control::Response {
     test_control::Response::Answer(serde_json::json!({
         "action": action,
@@ -2708,12 +2708,12 @@ fn flush_test_control_output(conn: &mut TestControlConn) -> PendingConnectionPro
             }
         }
     }
-    if !conn.output.is_empty() {
+    if conn.output.is_empty() {
+        PendingConnectionProgress::Idle
+    } else {
         conn.output.clear();
         conn.output_offset = 0;
         PendingConnectionProgress::WroteResponse
-    } else {
-        PendingConnectionProgress::Idle
     }
 }
 
@@ -2874,14 +2874,14 @@ fn pump_test_control_conn(
                     test_control::Response::Answer(action) => action.clone(),
                     _ => serde_json::Value::Null,
                 };
-                if let Some(ticket) = pending {
-                    if failed.is_none() {
-                        conn.pending_invocation = Some(PendingTestControlInvocation {
-                            ticket,
-                            action: action_response,
-                        });
-                        return injected_input;
-                    }
+                if let Some(ticket) = pending
+                    && failed.is_none()
+                {
+                    conn.pending_invocation = Some(PendingTestControlInvocation {
+                        ticket,
+                        action: action_response,
+                    });
+                    return injected_input;
                 }
                 let resp = match failed {
                     Some(failure) => test_control::Response::Err {
@@ -2889,7 +2889,7 @@ fn pump_test_control_conn(
                         message: failure.message,
                     },
                     None => match receipt {
-                        Some(receipt) => invocation_response(action_response, receipt),
+                        Some(receipt) => invocation_response(&action_response, &receipt),
                         None => resp,
                     },
                 };
@@ -2897,6 +2897,11 @@ fn pump_test_control_conn(
                     PendingConnectionProgress::Closed
                     | PendingConnectionProgress::OutputPending => return injected_input,
                     PendingConnectionProgress::WroteResponse => {}
+                    #[expect(
+                        clippy::unreachable,
+                        reason = "the queued response always ends in a newline, so flushing it \
+                                  writes it, leaves it pending, or closes the connection"
+                    )]
                     PendingConnectionProgress::Idle | PendingConnectionProgress::Waiting => {
                         unreachable!("a queued response must write, wait, or close")
                     }
@@ -3832,6 +3837,10 @@ fn active_physical_gamepad_binding(
     })
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "one bridge closure maps every Quick Settings fabric action onto its runtime call beside the shared snapshot cache"
+)]
 fn install_device_fabric_bridge(
     host: &mut crate::shell::overlay_host::ShellOverlayHost,
     fabric_net: Arc<crate::shell::network::ShellNetwork>,
@@ -4360,9 +4369,7 @@ fn attach_peer_presence(
         rooms.len()
     );
     frame_builder.set_peer_presence(crate::shell::peer_presence::PeerPresence::attach(
-        broker,
-        Arc::clone(net),
-        rooms,
+        broker, net, rooms,
     ));
 }
 
@@ -9284,7 +9291,7 @@ mod tests {
         use std::io::BufRead as _;
         match reader.fill_buf() {
             Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {}
-            Ok(bytes) if bytes.is_empty() => panic!("socket disconnected while admission pending"),
+            Ok([]) => panic!("socket disconnected while admission pending"),
             Ok(bytes) => panic!(
                 "admission produced an early response: {}",
                 String::from_utf8_lossy(bytes)
@@ -9306,6 +9313,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "an end-to-end test scenario that reads top to bottom"
+    )]
     fn socket_dispatch_retains_real_directory_admission_and_request_order() {
         use std::io::Write as _;
 
@@ -9531,6 +9542,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "an end-to-end test scenario that reads top to bottom"
+    )]
     fn socket_write_half_close_still_receives_real_directory_admission() {
         use std::io::Write as _;
 
@@ -9639,6 +9654,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "an end-to-end test scenario that reads top to bottom"
+    )]
     fn socket_directory_admission_times_out_and_disconnects_without_restart() {
         use std::io::Write as _;
 
@@ -9823,7 +9842,7 @@ mod tests {
         assert!(conn.output_offset < conn.output.len());
 
         let mut received = Vec::with_capacity(expected.len());
-        let mut chunk = [0_u8; 64 * 1024];
+        let mut chunk = vec![0_u8; 64 * 1024];
         for _ in 0..1024 {
             loop {
                 match client.read(&mut chunk) {

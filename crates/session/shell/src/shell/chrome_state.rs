@@ -1054,7 +1054,7 @@ impl ChromeState {
             ) {
                 Ok(()) => changed = true,
                 Err(ui::record::RecordOpenError::Busy) => {
-                    self.pending_tab_records.push_back(pending)
+                    self.pending_tab_records.push_back(pending);
                 }
                 Err(error) => {
                     self.failed_tab_records.insert(
@@ -1077,10 +1077,10 @@ impl ChromeState {
     pub(crate) fn record_creation_errors(&self, tree: &WorkspaceTree) -> BTreeMap<u64, String> {
         self.failed_tab_records
             .iter()
-            .filter_map(|(tab, (identity, error))| {
-                (TabRecordCreationIdentity::capture(tree, *tab).as_ref() == Some(identity))
-                    .then(|| (*tab, error.clone()))
+            .filter(|(tab, (identity, _))| {
+                TabRecordCreationIdentity::capture(tree, **tab).as_ref() == Some(identity)
             })
+            .map(|(tab, (_, error))| (*tab, error.clone()))
             .collect()
     }
 

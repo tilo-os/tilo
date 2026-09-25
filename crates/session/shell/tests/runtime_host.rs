@@ -22,7 +22,7 @@ fn profile_is_exclusive_and_workspace_survives_restart() {
     }
     let root = std::path::PathBuf::from(std::env::var_os("QOS_RUNTIME_HOST_TEST_CHILD").unwrap());
     let session = crate::runtime_host::Session::start(&root).unwrap();
-    let room = session.room.clone();
+    let room_id = session.room.clone();
     assert!(session.broker.capnp_socket().exists());
     assert!(crate::runtime_host::Session::start(&root).is_err());
     let invocation = tilo_actions::InvocationId::new();
@@ -45,7 +45,7 @@ fn profile_is_exclusive_and_workspace_survives_restart() {
     drop(membership);
     drop(session);
     let reopened = crate::runtime_host::Session::start(&root).unwrap();
-    assert_eq!(reopened.room, room);
+    assert_eq!(reopened.room, room_id);
     let membership = reopened.workspace_tree();
     let tree = membership.read();
     let receipts = &tree.desktop.workspaces[0].effect_receipts;

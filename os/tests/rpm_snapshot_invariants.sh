@@ -153,11 +153,16 @@ else
   bad 'pin promotion can publish pins built from stale inputs'
 fi
 # Inputs moving on main during a run must not starve RPM pin promotion: a pin
-# newer than main's lands, supersedes older pin PRs, and requests the next
-# refresh.
+# newer than main's is proposed, the next refresh is requested, and no open pin
+# PR is closed merely because a newer one exists; the reconcile closes only pins
+# main outdates and schedules the rest to merge on green, on every pin push.
+reconcile_job="$(awk '/^  reconcile-pins:/{on=1} on&&/^  [a-z-]+:$/&&!/reconcile-pins/{exit} on' "$workflow")"
 if grep -Fq -- '--base "$GITHUB_SHA" --head FETCH_HEAD --require-newer-than-pin' <<<"$promotion_step" \
    && grep -Fq -- '--base "$GITHUB_SHA" --head FETCH_HEAD --require-equivalent || moved=true' <<<"$promotion_step" \
-   && grep -Fq 'superseded+=(--supersede "$candidate")' <<<"$promotion_step" \
+   && ! grep -Fq -- '--supersede' <<<"$promotion_step" \
+   && grep -Fq 'python3 os/dev/reconcile-snapshot-pins.py' <<<"$promotion_step" \
+   && grep -Fq 'python3 os/dev/reconcile-snapshot-pins.py' <<<"$reconcile_job" \
+   && grep -Fq 'FORGEJO_TOKEN: ${{ secrets.RELEASE_TOKEN }}' <<<"$reconcile_job" \
    && grep -Fq 'actions/workflows/snapshot-rpms.yml/dispatches' <<<"$promotion_step"; then
   ok 'RPM pin promotion converges while inputs keep moving on main'
 else

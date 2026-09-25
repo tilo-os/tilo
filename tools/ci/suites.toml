@@ -59,6 +59,7 @@ suites = [
   "os/tests/local_boot_esp.sh",
   "os/tests/portal_config_validity.sh",
   "os/tests/sealed_extensions.sh",
+  "os/tests/validation_access.sh",
   "os/tests/test-installer-cycle-runtime.py",
   "os/tests/test_adopt_development_wpe.py",
   "os/tests/test_allocate_windows_direct_final_install.py",
@@ -158,6 +159,7 @@ suites = [
   "os/tests/test_finalization_worker.py",
   "os/tests/test_kernel_build_environment.py",
   "os/tests/test_open_snapshot_pr.py",
+  "os/tests/test_reconcile_snapshot_pins.py",
   "os/tests/test_raw_layer_epoch.py",
 ]
 
@@ -622,6 +624,10 @@ by = "os/tests/imager_release_invariants.sh"
 [[covered]]
 suite = "os/containers/tilo-relay/test-base-retry.sh"
 by = "os/containers/tilo-relay/test-contract.sh"
+
+[[covered]]
+suite = "os/tests/test_require_cosign_authority.py"
+by = "os/tests/workflow_dependency_invariants.sh"
 
 [[covered]]
 suite = "os/tests/frozen_source_fixture.py"

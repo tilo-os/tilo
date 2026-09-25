@@ -227,6 +227,10 @@ impl CollaboratorsOverlay {
         text_renderer.set_text_scale(renderer_scale);
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "a paint routine that lays its elements out top to bottom from shared running offsets"
+    )]
     fn draw_at_theme_scale(
         &mut self,
         scene: &mut Scene,
@@ -613,6 +617,10 @@ impl CollaboratorsOverlay {
         None
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "a declarative accessibility tree for every panel control"
+    )]
     pub fn accessibility_snapshot(&self) -> ui::a11y::AccessNode {
         use ui::a11y::{AccessNode, AccessState, Role};
 
@@ -767,8 +775,7 @@ impl CollaboratorsOverlay {
 
     pub fn accessibility_rect_for_path(&self, path: &[usize]) -> Option<Rect> {
         match path {
-            [] => Some(self.panel),
-            [0] => Some(self.panel),
+            [] | [0] => Some(self.panel),
             [0, row] => self.row_rects.get(*row).copied(),
             [control] if *control > 0 => self
                 .focus_order()
@@ -792,6 +799,10 @@ impl CollaboratorsOverlay {
         true
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one layout pass derives every panel rect from the same running offsets"
+    )]
     fn layout(
         &mut self,
         host: Rect,
@@ -874,26 +885,26 @@ impl CollaboratorsOverlay {
             let pager_y =
                 self.panel.y0 + 48.0 + MY_STATUS_H + exposure_h + warning_h + rows * ROW_H;
             let center = self.panel.x0 + self.panel.width() / 2.0;
-            self.previous_people = (self.roster_offset > 0)
-                .then(|| {
-                    Rect::new(
-                        self.panel.x0 + 12.0,
-                        pager_y + 4.0,
-                        center - 38.0,
-                        pager_y + 32.0,
-                    )
-                })
-                .unwrap_or(Rect::ZERO);
-            self.next_people = (end < member_count)
-                .then(|| {
-                    Rect::new(
-                        center + 38.0,
-                        pager_y + 4.0,
-                        self.panel.x1 - 12.0,
-                        pager_y + 32.0,
-                    )
-                })
-                .unwrap_or(Rect::ZERO);
+            self.previous_people = if self.roster_offset > 0 {
+                Rect::new(
+                    self.panel.x0 + 12.0,
+                    pager_y + 4.0,
+                    center - 38.0,
+                    pager_y + 32.0,
+                )
+            } else {
+                Rect::ZERO
+            };
+            self.next_people = if end < member_count {
+                Rect::new(
+                    center + 38.0,
+                    pager_y + 4.0,
+                    self.panel.x1 - 12.0,
+                    pager_y + 32.0,
+                )
+            } else {
+                Rect::ZERO
+            };
         } else {
             self.previous_people = Rect::ZERO;
             self.next_people = Rect::ZERO;
@@ -1010,6 +1021,10 @@ impl CollaboratorsOverlay {
         }
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "a paint routine that lays its elements out top to bottom from shared running offsets"
+    )]
     fn draw_own_status(
         &self,
         scene: &mut Scene,
@@ -1340,6 +1355,10 @@ impl CollaboratorsOverlay {
         }
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "a paint routine that lays its elements out top to bottom from shared running offsets"
+    )]
     fn draw_row_text(
         &self,
         scene: &mut Scene,

@@ -212,9 +212,10 @@ two-architecture release per day and none on days without `main` changes.
 
 ## Dev VM disks and dev-trust integration images
 
-Dev VMs must not wait on release gating. Every `main` build that gets past the
+Dev VMs must not wait on release gating. Every branch build that gets past the
 image build pushes that image, unsigned, as
-`code.podesta.ai/qos/tilo-ci:main-<sha7>-<arch>`. `tilo-ci` is a
+`code.podesta.ai/qos/tilo-ci:<series>-<arch>`, where `<series>` is
+`main-<sha7>` on `main` and `<branch>-<sha7>` elsewhere. `tilo-ci` is a
 development-only repository: production policy
 (`os/etc/containers/policy.json`) rejects it, and
 `tools/policy/check_dev_image_contract.py` keeps it that way. The push never
@@ -228,20 +229,34 @@ warning. It still runs every gate and produces the `tilo-ci` image and a dev
 disk, and it skips when this commit's integration image already exists. Once
 the inputs are configured, the nightly run publishes without further changes.
 
-After the build, `dispatch-dev-disk` requests **Release / Dev VM disk** once
-per run:
+Each native lane installs and boots exactly one disk:
 
-- when the run promoted a signed release, from its exact index digest, as
-  `tilo-vm:main-<sha7>` (or the release version);
-- otherwise, on `main`, from the run's x86-64 `tilo-ci` image after checking
-  that its revision label names the run's commit, as `tilo-vm:main-<sha7>-ci`.
+- **Integration** (every non-publishing build): the lane builds the dev image
+  with `os/dev/build-dev-image.sh` FROM the image it just built, in its own
+  Podman store, with no registry round trip, and installs that. The boot of
+  this dev disk is the lane's install/boot gate. It runs the same
+  installed-desktop checks as a release (boot performance, first-login OOBE
+  through AT-SPI, projection, collaborative Files, the installed apps, lock),
+  then `os/dev/check-dev-vm.sh` proves that tilo-vmd answers `hello` as root on
+  the lane's architecture, built on exactly that lane's image. The dev image is
+  unsealed, so integration lanes do not exercise the sealed UKI boot path;
+  publications do, and the nightly run is one.
+- **Publication**: the lane gates the unmodified, resealed release candidate as
+  before. Once its child is signed and attested, the lane dispatches
+  **Release / Dev VM disk** (`dev-disk.yml`) for its own architecture only,
+  pinned to that child's digest.
+
+Either way the disk is published per architecture by
+`os/dev/publish-dev-disk.sh`, as soon as that architecture passes; one
+architecture failing or running late never holds back the other. See
+[Dev VM disks](#dev-vm-disks) for the outputs.
 
 `dev-disk.yml` derives the base's trust from its repository. A `tilo` base must
 carry the release signature and provenance naming the source revision; a
 `tilo-ci` base must carry that revision as its OCI label and may publish only
 `-ci` tags, so it can never take a name a signed release would use. The disk
 manifest records `baseImage` and `baseTrust`. `tilo-vm vm create` takes the
-newest `main-*` disk, so developers get the freshest image either way. Dispatch
+newest `main-*` tag that has a disk for the host's architecture. Dispatch
 `dev-disk.yml` with `base_image=code.podesta.ai/qos/tilo-ci:main-<sha7>-x86_64`
 to rebuild a disk by hand.
 
@@ -277,41 +292,49 @@ exists the repository exists too and the variable has no effect; delete it.
 
 ## Dev VM disks
 
-A published OS generation requests **Release / Dev VM disk**
-(`dev-disk.yml`) for its exact source revision and index digest. The workflow
-can also be dispatched by hand for any commit whose production image is
-published; it never runs on pushes or pull requests. Each native lane verifies
-the base against `keys/cosign.pub` and requires the child's signed provenance to
-name the same source revision. It then builds `os/Containerfile.dev` on that
-base, installs and seals a 64 GiB sparse disk with `os/dev/build-image.sh`, and
-boots the disk until SSH answers. Dev images are never signed with the OS
-release authority.
+A dev disk comes from the OS lane that just built its base (integration), or
+from **Release / Dev VM disk** (`dev-disk.yml`) for an image that already
+exists: a publication lane requests its own architecture, and anyone can
+dispatch it by hand for a published image. It never runs on pushes or pull
+requests. For a `tilo` base, each native lane verifies it against
+`keys/cosign.pub` and requires the child's signed provenance to name the same
+source revision. Both paths build `os/Containerfile.dev` with
+`os/dev/build-dev-image.sh`, install a 64 GiB sparse disk with
+`os/dev/build-image.sh`, and boot it until tilo-vmd answers
+(`os/dev/check-dev-vm.sh`). Dev images are never signed with the OS release
+authority.
 
-The outputs are:
+`os/dev/publish-dev-disk.sh` then writes, for one architecture:
 
-- `code.podesta.ai/qos/tilo-vm:<tag>`: an immutable OCI index. The installed
-  disk updates from this tag. `latest` moves last, and only forward, for `main`
-  and release-tag runs.
+- `code.podesta.ai/qos/tilo-vm:<tag>-<arch>`: the dev image child.
+- `code.podesta.ai/qos/tilo-vm:<tag>`: an OCI index of every child of `<tag>`
+  published so far. It is rebuilt from the child tags, and each lane repeats
+  that until a fresh read agrees, so it grows from one architecture to both
+  without either lane waiting. The installed disk updates from this tag.
+  `latest` follows the newest revision's index, only forward, for `main` and
+  release-tag runs.
 - `tilo-vm-disk/<tag>/tilo-vm-<tag>-<arch>.<format>` in the generic package
   registry, each with a `.sha256` sidecar. qcow2 uses zstd-compressed clusters,
   which UTM and libvirt read directly. VHDX (Hyper-V) is dynamic and opt-in
-  through the `formats` input.
-- `tilo-vm-disk/<tag>/tilo-vm-disk.json`: the tag, source revision, image and
-  base digests, and one entry per disk with its arch, format, URL, SHA-256, size
-  and virtual size. This manifest is written last and is the commit point for
-  the disk package version.
+  through the `formats` input of `dev-disk.yml`.
+- `tilo-vm-disk/<tag>/tilo-vm-disk-<arch>.json`: the tag, architecture, source
+  revision, image and base digests, the ARM64 direct-boot companion files, and
+  one entry per disk with its format, URL, SHA-256, size and virtual size. It
+  is written last and is the commit point for that architecture: an
+  architecture is published once its file exists, and a lane whose file exists
+  has nothing left to do.
 
-`<tag>` is `main-<sha7>` for `main`, `<version>` for a release tag, and
-`<branch>-<sha7>` for other dispatches. aarch64 disks are one `architectures`
-entry away (`x86_64 aarch64`) and use `runner-disk-100g-arm64`.
+`<tag>` is `main-<sha7>` for a `main` publication, `<version>` for a release
+tag, `<series>-ci` for an integration build (`main-<sha7>-ci` on `main`), and
+`<branch>-<sha7>` for other dispatches of `dev-disk.yml`.
 
 To fetch a disk, use a Forgejo token with package read access:
 
 ```sh
 base=https://code.podesta.ai/api/packages/qos/generic/tilo-vm-disk/$TAG
-curl -fsSL -H "Authorization: token $FORGEJO_TOKEN" "$base/tilo-vm-disk.json" -o tilo-vm-disk.json
-url=$(jq -er '.disks[] | select(.arch == "x86_64" and .format == "qcow2") | .url' tilo-vm-disk.json)
-sha=$(jq -er '.disks[] | select(.arch == "x86_64" and .format == "qcow2") | .sha256' tilo-vm-disk.json)
+curl -fsSL -H "Authorization: token $FORGEJO_TOKEN" "$base/tilo-vm-disk-x86_64.json" -o tilo-vm-disk.json
+url=$(jq -er '.disks[] | select(.format == "qcow2") | .url' tilo-vm-disk.json)
+sha=$(jq -er '.disks[] | select(.format == "qcow2") | .sha256' tilo-vm-disk.json)
 curl -fL --retry 3 -C - -H "Authorization: token $FORGEJO_TOKEN" "$url" -o tilo-vm.qcow2
 echo "$sha  tilo-vm.qcow2" | sha256sum --check --strict
 ```
@@ -343,7 +366,7 @@ To find the current tag, read the `org.opencontainers.image.version` label of
   (`secrets.REGISTRY_TOKEN`) and advances the `TILO_DESKTOP_PAYLOAD_*` channel
   variables with the repository-scoped `secrets.RELEASE_TOKEN`; it needs no OIDC.
 - Dev VM disks are development artifacts, never release-signed, so
-  `dev-disk.yml` uploads them with the CI account's package token
+  `os/dev/publish-dev-disk.sh` (in the OS lane and in `dev-disk.yml`) uploads them with the CI account's package token
   (`secrets.REGISTRY_TOKEN`, as `build-kernel.yml` uses) rather than an
   Authorized Integration, and needs no OIDC. Disk uploads go to
   `TILO_PACKAGE_PUBLIC_BASE_URL`, because the 100 GiB runners do not resolve the

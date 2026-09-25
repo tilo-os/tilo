@@ -1,7 +1,7 @@
 //! Typed authority and bounded wire model for using one certified personal
 //! device as another device's camera, microphone, or document scanner.
 //!
-//! This module deliberately contains no PipeWire, V4L2, portal, or transport
+//! This module deliberately contains no `PipeWire`, V4L2, portal, or transport
 //! handles. Those are local adapters. The personal lane carries only a
 //! negotiated semantic format plus bounded media chunks, and the registry
 //! binds every transition to the exact peer, app, workspace, kind, and random
@@ -278,6 +278,13 @@ pub struct RemoteCaptureRegistry {
 }
 
 impl RemoteCaptureRegistry {
+    /// Mint a fresh session and grant for a validated request from `source`
+    /// to `target`.
+    ///
+    /// # Errors
+    ///
+    /// Returns a message when the request is invalid, names the same device
+    /// twice, or the session limit is reached.
     pub fn grant(
         &mut self,
         request: &RemoteCaptureRequest,
@@ -317,6 +324,10 @@ impl RemoteCaptureRegistry {
     /// Install a grant minted by the certified source after matching it to an
     /// outstanding target request. The caller owns that request correlation;
     /// this registry owns the exact data-plane binding from this point on.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the source-minted grant arrives as separate wire fields that are all bound here"
+    )]
     pub fn accept_grant(
         &mut self,
         request: &RemoteCaptureRequest,

@@ -50,13 +50,12 @@ impl Drop for DaemonProfile {
             let _ = stream.set_read_timeout(Some(Duration::from_secs(1)));
             let _ = stream.write_all(b"{\"native\":\"status\"}\n");
             let mut line = String::new();
-            if BufReader::new(stream).read_line(&mut line).is_ok() {
-                if let Ok(value) = serde_json::from_str::<Value>(&line) {
-                    if let Some(pid) = value["pid"].as_i64() {
-                        unsafe {
-                            libc::kill(i32::try_from(pid).unwrap(), libc::SIGTERM);
-                        }
-                    }
+            if BufReader::new(stream).read_line(&mut line).is_ok()
+                && let Ok(value) = serde_json::from_str::<Value>(&line)
+                && let Some(pid) = value["pid"].as_i64()
+            {
+                unsafe {
+                    libc::kill(i32::try_from(pid).unwrap(), libc::SIGTERM);
                 }
             }
         }
@@ -203,6 +202,15 @@ fn unsafe_profile_and_relative_override_are_rejected() {
 
 #[test]
 fn independent_sdk_apps_late_join_and_survive_another_app_exit() {
+    struct Children(Vec<Child>);
+    impl Drop for Children {
+        fn drop(&mut self) {
+            for child in &mut self.0 {
+                let _ = child.kill();
+                let _ = child.wait();
+            }
+        }
+    }
     const TEST: &str = "runtime_host::daemon_process_tests::independent_sdk_apps_late_join_and_survive_another_app_exit";
     if let Ok(app_id) = std::env::var("QOS_NATIVE_SDK_HELPER") {
         runtime_portal::native::ensure_attached(&app_id).unwrap();
@@ -211,15 +219,6 @@ fn independent_sdk_apps_late_join_and_survive_another_app_exit() {
         loop {
             let _ = manager.poll();
             std::thread::sleep(Duration::from_millis(10));
-        }
-    }
-    struct Children(Vec<Child>);
-    impl Drop for Children {
-        fn drop(&mut self) {
-            for child in &mut self.0 {
-                let _ = child.kill();
-                let _ = child.wait();
-            }
         }
     }
     let profile = DaemonProfile::new();
@@ -326,6 +325,17 @@ fn public_profile_and_symlinked_session_lock_are_rejected() {
 
 #[test]
 fn ordinary_sdk_parent_child_get_distinct_connections_in_one_runtime() {
+    use std::os::unix::process::CommandExt;
+    struct Family(Child);
+    impl Drop for Family {
+        fn drop(&mut self) {
+            let group = i32::try_from(self.0.id()).unwrap().checked_neg().unwrap();
+            unsafe {
+                libc::kill(group, libc::SIGKILL);
+            }
+            let _ = self.0.wait();
+        }
+    }
     const TEST: &str = "runtime_host::daemon_process_tests::ordinary_sdk_parent_child_get_distinct_connections_in_one_runtime";
     const APP: &str = "dev.qos.parent-child";
     if let Ok(stage) = std::env::var("QOS_SDK_FAMILY_STAGE") {
@@ -348,17 +358,6 @@ fn ordinary_sdk_parent_child_get_distinct_connections_in_one_runtime() {
         loop {
             let _ = manager.poll();
             std::thread::sleep(Duration::from_millis(10));
-        }
-    }
-    use std::os::unix::process::CommandExt;
-    struct Family(Child);
-    impl Drop for Family {
-        fn drop(&mut self) {
-            let group = i32::try_from(self.0.id()).unwrap().checked_neg().unwrap();
-            unsafe {
-                libc::kill(group, libc::SIGKILL);
-            }
-            let _ = self.0.wait();
         }
     }
     let profile = DaemonProfile::new();

@@ -9795,8 +9795,8 @@ impl BooksApp {
         let row_gap = toc_row_gap(theme);
         let row_floor = toc_row_floor(theme);
         let (num_w, num_h) = tr.measure_weighted("00", number_px, None, TextWeight::Bold);
-        let title_dx = number_inset + f64::from(num_w) + f64::from(sp.s3);
-        let title_w = (TOC_W - 2.0 * row_inset - title_dx - f64::from(sp.s2)).max(40.0) as f32;
+        let title_offset = number_inset + f64::from(num_w) + f64::from(sp.s3);
+        let title_w = (TOC_W - 2.0 * row_inset - title_offset - f64::from(sp.s2)).max(40.0) as f32;
         let pill_heights: Vec<f64> = book
             .chapters
             .iter()
@@ -9884,7 +9884,10 @@ impl BooksApp {
                 &ch.title,
                 title_px,
                 if active { c.text_primary } else { c.text_dim },
-                t * Affine::translate((row.x0 + title_dx, row.y0 + (pill_h - f64::from(th)) / 2.0)),
+                t * Affine::translate((
+                    row.x0 + title_offset,
+                    row.y0 + (pill_h - f64::from(th)) / 2.0,
+                )),
                 Some(title_w),
                 title_weight,
             );
@@ -10069,12 +10072,12 @@ impl BooksApp {
         let (cw, ch) = tr.measure(&count, 11.0, None);
         let badge_h = f64::from(ch) + f64::from(sp.s1);
         let badge_x = caption_x + f64::from(cap_w) + f64::from(sp.s2);
-        let caption_cy = caption_y + f64::from(cap_h) / 2.0;
+        let caption_mid_y = caption_y + f64::from(cap_h) / 2.0;
         let badge = Rect::new(
             badge_x,
-            caption_cy - badge_h / 2.0,
+            caption_mid_y - badge_h / 2.0,
             badge_x + f64::from(cw) + 2.0 * f64::from(sp.s2),
-            caption_cy + badge_h / 2.0,
+            caption_mid_y + badge_h / 2.0,
         );
         chrome::quiet_pill(
             scene,

@@ -4043,6 +4043,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::float_cmp,
+        reason = "the values are written through an action and read back unchanged, or clamped to a literal bound"
+    )]
     fn opening_a_project_replays_as_one_action_that_replaces_everything() {
         // Opening a file is an action, so it undoes and replicates. That is
         // only true if the *encoded* form carries the whole project — a
@@ -4215,14 +4219,17 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::float_cmp,
+        reason = "the values are written through an action and read back unchanged, or clamped to a literal bound"
+    )]
     fn the_palette_can_set_a_speed_and_reverse_it() {
         let (ctx, cid) = ctx_fixture();
         let sped = run(&ctx.project, &spec(&ctx, "set-speed"), Some("2"));
         let c = sped.clip(cid).unwrap();
         assert_eq!(c.speed.rate(), 2.0);
-        assert_eq!(
-            c.duration(),
-            15.0,
+        assert!(
+            ((c.duration()) - (15.0)).abs() < 1e-9,
             "and the clip is half as long on the timeline"
         );
 
@@ -4248,6 +4255,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::float_cmp,
+        reason = "the values are written through an action and read back unchanged, or clamped to a literal bound"
+    )]
     fn the_palette_keys_a_parameter_at_the_playhead_without_moving_the_picture() {
         let (ctx, cid) = ctx_fixture();
         let before = ctx.project.clip(cid).unwrap().param_at(Param::Opacity, 4.0);
@@ -4270,6 +4281,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::float_cmp,
+        reason = "the values are written through an action and read back unchanged, or clamped to a literal bound"
+    )]
     fn the_palette_adds_a_timeline_marker_and_removes_it() {
         let (ctx, _) = ctx_fixture();
         let marked = run(&ctx.project, &spec(&ctx, "add-marker"), Some("Act two"));
@@ -4323,6 +4338,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::float_cmp,
+        reason = "the values are written through an action and read back unchanged, or clamped to a literal bound"
+    )]
     fn a_clip_marker_from_the_palette_lands_on_the_clip_not_the_project() {
         let (ctx, cid) = ctx_fixture();
         let marked = run(&ctx.project, &spec(&ctx, "add-clip-marker"), Some("hit"));
@@ -5396,6 +5415,10 @@ mod tests {
     /// Valid input still lands, and unreadable input now changes nothing
     /// instead of inventing a plausible edit.
     #[test]
+    #[expect(
+        clippy::float_cmp,
+        reason = "the values are written through an action and read back unchanged, or clamped to a literal bound"
+    )]
     fn an_unreadable_value_no_longer_invents_an_edit() {
         let (ctx, cid) = ctx_fixture();
 
@@ -5465,6 +5488,10 @@ mod tests {
     /// for size and backdrop, and free text for the colour — which keeps its
     /// leniency deliberately.
     #[test]
+    #[expect(
+        clippy::float_cmp,
+        reason = "the values are written through an action and read back unchanged, or clamped to a literal bound"
+    )]
     fn the_title_actions_hold_their_declared_shapes() {
         let ctx = ctx_with_title();
 
@@ -5670,6 +5697,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::float_cmp,
+        reason = "the values are written through an action and read back unchanged, or clamped to a literal bound"
+    )]
     fn captured_effect_actions_refuse_stale_stack_changes_without_overwriting_other_fields() {
         let (mut ctx, clip_id) = ctx_fixture();
         let clip = ctx.project.clip_mut(clip_id).expect("fixture clip");
@@ -5756,6 +5787,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::float_cmp,
+        reason = "the values are written through an action and read back unchanged, or clamped to a literal bound"
+    )]
     fn captured_clip_field_action_updates_only_its_field_and_refuses_a_stale_value() {
         let (ctx, clip_id) = ctx_fixture();
         let action: VideoEditorAction =
