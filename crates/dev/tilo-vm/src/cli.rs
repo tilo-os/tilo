@@ -244,6 +244,10 @@ pub enum ScenarioCommand {
 }
 
 #[derive(Debug, Args)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "these independent Clap flags are part of the install command interface"
+)]
 pub struct InstallScenarioArgs {
     /// The installer medium (default: os/output/installer/qcow2/disk.qcow2, what os/dev/build-custom-installer.sh writes). Never modified: the VM boots a throwaway overlay.
     #[arg(long)]
