@@ -300,6 +300,7 @@ struct VmSelectedTarget {
 struct VmSelectedProvenance {
     source_revision: String,
     firmware_manifest_sha256: String,
+    firmware_candidate: String,
     invocation_id: String,
 }
 
@@ -394,6 +395,15 @@ fn parse_install_proof(bytes: &[u8]) -> Result<VmInstallProof, String> {
             || selected.hardware_profile != "lenovo-83ed"
             || !lowercase_hex(source, 40)
             || !lowercase_hex(&selected.provenance.firmware_manifest_sha256, 64)
+            || !selected
+                .provenance
+                .firmware_candidate
+                .starts_with("code.sandbox.example/qos/tilo-lenovo-83ed-firmware@sha256:")
+            || !selected
+                .provenance
+                .firmware_candidate
+                .rsplit_once("@sha256:")
+                .is_some_and(|(_, hex)| lowercase_hex(hex, 64))
             || selected.provenance.invocation_id.is_empty()
             || !selected
                 .provenance
@@ -1190,7 +1200,9 @@ mod tests {
                 "target_digest": target, "architecture": "aarch64",
                 "hardware_profile": "lenovo-83ed", "update_origin": origin,
                 "provenance": {"source_revision": revision,
-                    "firmware_manifest_sha256": "d".repeat(64), "invocation_id": "123"},
+                    "firmware_manifest_sha256": "d".repeat(64),
+                    "firmware_candidate": format!("code.sandbox.example/qos/tilo-lenovo-83ed-firmware@sha256:{}", "e".repeat(64)),
+                    "invocation_id": "123"},
                 "verifier_key_sha256": "e".repeat(64),
             },
             "target_uki_sha256": "d".repeat(64), "disk_guid": disk,

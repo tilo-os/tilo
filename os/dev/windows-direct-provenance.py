@@ -144,6 +144,8 @@ def checked_guest_proof(path, child_digest, ci_image=None, ci_provenance=None):
                 and signed.get("source_revision") == revision
                 and signed.get("firmware_manifest_sha256")
                 == ci_provenance.get("firmware_manifest_sha256")
+                and signed.get("firmware_candidate")
+                == ci_provenance.get("firmware_candidate")
                 and signed.get("invocation_id") == ci_provenance.get("invocation_id"),
                 "VM selected target provenance differs from independently verified CI")
     composefs = guest.get("composefs_digest")
@@ -269,7 +271,7 @@ def checked_slsa_attestation(output, pinned, children, kind):
                     or HEX.fullmatch(external["firmwareManifestSha256"]) is None
                     or "children" in external
                     or type(candidate) is not str
-                    or re.fullmatch(r"code\.podesta\.ai/qos/[a-z0-9][a-z0-9._-]*@sha256:[0-9a-f]{64}",
+                    or re.fullmatch(r"code\.podesta\.ai/qos/tilo-lenovo-83ed-firmware@sha256:[0-9a-f]{64}",
                                     candidate) is None):
                 continue
             firmware_candidate = candidate
