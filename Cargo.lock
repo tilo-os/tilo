@@ -556,6 +556,7 @@ dependencies = [
  "toml 1.0.6+spec-1.1.0",
  "tracing",
  "tracing-subscriber",
+ "wire-frame",
 ]
 
 [[package]]
@@ -1958,6 +1959,7 @@ dependencies = [
  "uuid",
  "vello",
  "winit",
+ "wire-frame",
  "xdg-paths",
 ]
 
@@ -2286,6 +2288,7 @@ dependencies = [
  "sha2 0.11.0",
  "thiserror 2.0.18",
  "uuid",
+ "wire-frame",
 ]
 
 [[package]]
@@ -2367,6 +2370,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.18",
  "windows-vm",
+ "wire-frame",
 ]
 
 [[package]]
@@ -3955,6 +3959,7 @@ dependencies = [
  "uuid",
  "vello",
  "winit",
+ "wire-frame",
  "xattr",
  "xdg-paths",
  "zip",
@@ -7255,6 +7260,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "uuid",
+ "wire-frame",
 ]
 
 [[package]]
@@ -7726,6 +7732,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.18",
  "tilo-net",
+ "wire-frame",
  "xdg-paths",
  "zeroize",
  "zstd",
@@ -10850,6 +10857,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.11.0",
+ "wire-frame",
 ]
 
 [[package]]
@@ -11783,6 +11791,7 @@ dependencies = [
  "tokio",
  "tokio-util",
  "uuid",
+ "wire-frame",
 ]
 
 [[package]]
@@ -11797,7 +11806,6 @@ dependencies = [
  "getrandom 0.4.1",
  "hex",
  "libc",
- "postcard",
  "rand_core 0.10.0",
  "runtime-portal",
  "serde",
@@ -11809,6 +11817,7 @@ dependencies = [
  "threshold-identity",
  "tilo-test-env",
  "tokio",
+ "wire-frame",
  "zeroize",
 ]
 
@@ -12926,6 +12935,7 @@ dependencies = [
  "wgpu",
  "windows-vm",
  "winit",
+ "wire-frame",
  "word-processor",
  "x25519-dalek 3.0.0",
  "xattr",
@@ -14377,6 +14387,7 @@ dependencies = [
  "thiserror 2.0.18",
  "tilo-net",
  "url",
+ "wire-frame",
  "zeroize",
 ]
 
@@ -14506,6 +14517,7 @@ dependencies = [
  "tilo-relay-protocol",
  "tilo-user-identity",
  "tokio",
+ "wire-frame",
 ]
 
 [[package]]
@@ -14697,6 +14709,7 @@ dependencies = [
  "windows 0.62.2",
  "windows-sys 0.61.2",
  "winit",
+ "wire-frame",
  "xdg-paths",
  "zbus",
  "zeroize",
@@ -15396,6 +15409,7 @@ dependencies = [
  "vello",
  "vello_encoding",
  "winit",
+ "wire-frame",
  "xdg-paths",
  "zeroize",
 ]
@@ -17678,6 +17692,15 @@ checksum = "3f3fd376f71958b862e7afb20cfe5a22830e1963462f3a17f49d82a6c1d1f42d"
 dependencies = [
  "bitflags 2.11.0",
  "windows-sys 0.59.0",
+]
+
+[[package]]
+name = "wire-frame"
+version = "0.1.0"
+dependencies = [
+ "postcard",
+ "serde",
+ "tokio",
 ]
 
 [[package]]

@@ -58,6 +58,7 @@ on:
       - "crates/runtime/runtime-fs/**"
       - "crates/runtime/runtime-portal/**"
       - "crates/system/atomic-file/**"
+      - "crates/system/wire-frame/**"
       - "crates/system/bounded-command/**"
       - "crates/system/power/**"
       - "crates/system/private-fs/**"

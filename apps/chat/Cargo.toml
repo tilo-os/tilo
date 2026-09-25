@@ -27,6 +27,7 @@ live-media = [
     "dep:gstreamer-app",
     "dep:iroh",
     "dep:tokio",
+    "dep:wire-frame",
     "dep:tilo-callstream",
     "ui/portal",
 ]
@@ -69,6 +70,8 @@ gstreamer = { workspace = true, optional = true }
 gstreamer-app = { workspace = true, optional = true }
 iroh = { workspace = true, optional = true }
 tokio = { workspace = true, optional = true, features = ["rt-multi-thread", "sync", "time"] }
+# Length-prefixed media frames on the call stream.
+wire-frame = { path = "../../crates/system/wire-frame", optional = true, features = ["tokio"] }
 tilo-callstream = { path = "../../crates/collab/tilo-callstream", optional = true }
 
 [dev-dependencies]
