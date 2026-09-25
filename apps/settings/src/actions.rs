@@ -4987,27 +4987,13 @@ impl ResourceProvider for crate::SettingsApp {
 mod tests {
     use super::*;
     use crate::panes;
-    use tilo_actions::{ActionInput, LocalTransport};
+    use tilo_actions::LocalTransport;
     use ui::widget::Widget;
 
     fn registry() -> ActionRegistry {
         let mut r = ActionRegistry::new();
         register(&mut r);
         r
-    }
-
-    fn immediate_encode(spec: &ActionSpec) -> EncodedAction {
-        match &spec.input {
-            ActionInput::Immediate(enc) => enc.clone(),
-            ActionInput::Prompted { .. } => panic!("expected an immediate action: {}", spec.id),
-        }
-    }
-
-    fn prompted_encode(spec: &ActionSpec, arg: &str) -> EncodedAction {
-        match &spec.input {
-            ActionInput::Prompted { build, .. } => build(arg),
-            ActionInput::Immediate(_) => panic!("expected a prompted action: {}", spec.id),
-        }
     }
 
     fn find<'a>(sections: &'a [Resource], id: &str) -> &'a Resource {
@@ -5063,16 +5049,6 @@ mod tests {
         let ids: Vec<&str> = appearance.actions.iter().map(|a| a.id.as_str()).collect();
         assert!(ids.contains(&"theme"), "{ids:?}");
         assert!(ids.contains(&"ui_scale"), "{ids:?}");
-
-        // The one palette surfaces the tree's actions as rows.
-        let mut palette = ui::ActionPalette::new();
-        palette.load_open_resources(&resources);
-        palette.open();
-        let labels = palette.result_labels();
-        assert!(
-            labels.iter().any(|label| label == "Network — Open Network"),
-            "{labels:?}"
-        );
     }
 
     #[test]
@@ -5180,30 +5156,6 @@ mod tests {
                 ExecutionMode::Background { cancellable: false }
             );
         }
-    }
-
-    /// A bool flip spec's target follows the current document value: on when the
-    /// key is off, off when it is on.
-    #[test]
-    fn bool_flip_target_follows_current_value() {
-        let config = crate::prefs::test_env::ScratchConfig::new();
-        let mut doc = AutoCommit::new();
-        let _ = doc.put(
-            &ROOT,
-            panes::notifications::DND_KEY,
-            ScalarValue::Boolean(false),
-        );
-        let notif = {
-            let app = config.app();
-            let res = Widget::resources(&app, &doc);
-            find(&res, "settings.section:notifications").clone()
-        };
-        let dnd = notif.actions.iter().find(|a| a.id == "dnd").unwrap();
-        // Off now → the flip turns it on.
-        assert_eq!(
-            immediate_encode(dnd),
-            encode(&set_bool_action(panes::notifications::DND_KEY, true))
-        );
     }
 
     #[test]
@@ -5651,86 +5603,6 @@ mod tests {
         assert!(text.invoke("not a size".to_string()).is_err());
     }
 
-    /// The full undo covenant on one action: dispatched through the executor it
-    /// writes the setting and records exactly one undo boundary, and Ctrl+Z
-    /// reverts precisely that write.
-    #[test]
-    fn action_records_one_undo_boundary_and_reverts() {
-        let mut state = ui::State::new();
-        // Seed the key off, as a pane would.
-        let _ = state.doc.put(
-            &ROOT,
-            panes::notifications::DND_KEY,
-            ScalarValue::Boolean(false),
-        );
-        let before_heads = state.doc.get_heads();
-
-        let action = set_bool_action(panes::notifications::DND_KEY, true);
-        let encoded = encode(&action);
-        let decoded = registry().decode(&encoded).unwrap();
-        let mut tx = LocalTransport::new();
-        tilo_actions::dispatch(&mut state.doc, decoded.as_ref(), encoded, &mut tx).unwrap();
-        state.record_committed_action(before_heads, None, None);
-
-        assert_eq!(
-            read_bool(&state.doc, &ROOT, panes::notifications::DND_KEY),
-            Some(true),
-            "the action set DND on"
-        );
-        assert!(
-            state.peek_last_undo().is_some(),
-            "exactly one undo boundary recorded"
-        );
-
-        state.undo(None, None).expect("an undo entry to pop");
-        assert_eq!(
-            read_bool(&state.doc, &ROOT, panes::notifications::DND_KEY),
-            Some(false),
-            "undo reverted the setting and nothing else"
-        );
-    }
-
-    /// The collaboration guarantee: replaying the same encoded action on a second
-    /// independent replica (from the same base state) lands on the byte-identical
-    /// document — same head hashes, not merely the same values.
-    #[test]
-    fn action_replays_byte_identical_on_a_peer() {
-        let mut a = AutoCommit::new();
-        a.put(
-            &ROOT,
-            panes::appearance::THEME_KEY,
-            ScalarValue::Str("Dark".into()),
-        )
-        .unwrap();
-        a.commit();
-        let bytes = a.save();
-        let mut b = AutoCommit::load(&bytes).unwrap();
-        assert_eq!(
-            a.get_heads(),
-            b.get_heads(),
-            "precondition: same base state"
-        );
-
-        let action = set_text_action(panes::appearance::THEME_KEY, "Nord");
-        let encoded = encode(&action);
-        let env = tilo_actions::apply_local(&mut a, &action, encoded).unwrap();
-        tilo_actions::replay(&mut b, &env, &registry()).unwrap();
-
-        assert_eq!(
-            a.get_heads(),
-            b.get_heads(),
-            "replay reproduced the identical change"
-        );
-        assert_eq!(
-            read_str_or_text(&a, &ROOT, panes::appearance::THEME_KEY).as_deref(),
-            Some("Nord")
-        );
-        assert_eq!(
-            read_str_or_text(&b, &ROOT, panes::appearance::THEME_KEY),
-            read_str_or_text(&a, &ROOT, panes::appearance::THEME_KEY)
-        );
-    }
-
     #[test]
     fn stale_or_presentation_targets_are_refused() {
         let mut doc = AutoCommit::new();
@@ -5878,26 +5750,48 @@ mod tests {
         );
     }
 
-    /// Single source of truth: a prompted "Set theme" spec and the text builder
-    /// encode byte-identically for the same choice.
+    /// A seed written through the executor, as the panes write: Do Not Disturb
+    /// off and the Dark theme chosen, so every bool flip and choice has a real
+    /// current value to change.
+    fn seeded_doc() -> AutoCommit {
+        let mut doc = AutoCommit::new();
+        for action in [
+            set_bool_action(panes::notifications::DND_KEY, false),
+            set_text_action(panes::appearance::THEME_KEY, "Dark"),
+        ] {
+            tilo_actions::apply_local(&mut doc, &action, encode(&action)).unwrap();
+        }
+        doc
+    }
+
+    ui::action_contract_tests! {
+        seed: seeded_doc(),
+        registry: registry(),
+        resources: |doc| provide_resources(doc),
+        palette: ["Network — Open Network", "Turn on Do Not Disturb", "Set theme"],
+        replay: [
+            set_theme => |_| encode(&set_text_action(panes::appearance::THEME_KEY, "Nord")),
+        ],
+        undo: [
+            turn_on_dnd => |_| encode(&set_bool_action(panes::notifications::DND_KEY, true)),
+        ],
+        encodes: [
+            dnd_flips_the_current_value => ("settings.section:notifications", "dnd", |_, _| {
+                encode(&set_bool_action(panes::notifications::DND_KEY, true))
+            }),
+            theme => ("settings.section:appearance", "theme", arg: "Gruvbox", |_, _| {
+                encode(&set_text_action(panes::appearance::THEME_KEY, "Gruvbox"))
+            }),
+        ],
+    }
+
+    /// The shared typed door rejects an unrecognised theme choice before the
+    /// application's builder can write junk or silently reinterpret it.
     #[test]
-    fn palette_and_builder_encode_identically() {
-        let config = crate::prefs::test_env::ScratchConfig::new();
-        let app = config.app();
-        let doc = AutoCommit::new();
-        let res = Widget::resources(&app, &doc);
+    fn theme_choice_rejects_an_unknown_value() {
+        let res = provide_resources(&AutoCommit::new());
         let appearance = find(&res, "settings.section:appearance");
         let theme = appearance.actions.iter().find(|a| a.id == "theme").unwrap();
-        let from_spec = prompted_encode(theme, "Gruvbox");
-        let from_builder = encode(&set_text_action(panes::appearance::THEME_KEY, "Gruvbox"));
-        assert_eq!(from_spec.type_id, from_builder.type_id);
-        assert_eq!(
-            from_spec.payload, from_builder.payload,
-            "one source of truth for theme"
-        );
-
-        // The shared typed door rejects an unrecognised choice before the
-        // application's builder can write junk or silently reinterpret it.
         let typo = serde_json::Map::from_iter([(
             "choice".to_owned(),
             serde_json::Value::String("not-a-theme".to_owned()),

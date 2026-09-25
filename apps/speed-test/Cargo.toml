@@ -23,5 +23,8 @@ tilo-net = { path = "../../crates/system/tilo-net", features = ["blocking"] }
 serde.workspace = true
 serde_json.workspace = true
 
+[dev-dependencies]
+ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
+
 [lints]
 workspace = true
