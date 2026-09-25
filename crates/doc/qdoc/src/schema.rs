@@ -175,6 +175,16 @@ pub const FIELD_PAGE_NUMBER: &str = "page-number"; // a `field` mark value
 /// The single placeholder character a field occupies (U+FFFC OBJECT REPLACEMENT CHARACTER); the `field` mark covers exactly this character and renderers substitute the computed value.
 pub const FIELD_PLACEHOLDER: char = '\u{FFFC}';
 
+// Inline elements an office codec does not model but keeps verbatim to write back: the mark's
+// value is the element's source XML, and the text it covers is the element's visible text (a
+// field's result, a content control's content), which displays and edits like any other text.
+// An element without visible text (a drawing, a formula) covers one FIELD_PLACEHOLDER, which
+// displays as nothing. Only the codec that wrote the mark re-emits its XML.
+pub const MARK_DOCX_XML: &str = "docx-xml"; // Str — a WordprocessingML paragraph-content fragment
+pub const MARK_ODT_XML: &str = "odt-xml"; // Str — an ODF paragraph-content element
+/// Every mark naming an inline element kept verbatim.
+pub const KEPT_INLINE_MARKS: [&str; 2] = [MARK_DOCX_XML, MARK_ODT_XML];
+
 pub const BLOCK_ORDER: &str = "order"; // Bytes (fractional key)
 pub const BLOCK_KIND: &str = "kind"; // Str ("paragraph"|"heading"|"list_item"|"table"|"cell"|"image"|"fidelity")
 pub const BLOCK_TEXT: &str = "text"; // Text (present for text blocks)
