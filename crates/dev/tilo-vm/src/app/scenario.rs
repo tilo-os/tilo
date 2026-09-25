@@ -602,18 +602,19 @@ impl App {
         let preserve_failed_external = plan.external_target.is_some() && !stopped_cleanly;
         #[cfg(not(windows))]
         let preserve_failed_external = false;
-        if !plan.keep && !preserve_failed_external {
-            let _ = std::fs::remove_dir_all(&plan.cycle_dir);
-            let _ = std::fs::remove_dir_all(&plan.run);
-        }
-        let withheld = scrub(
+        let withheld = scrub_scenario_logs(
             &plan.out,
+            &plan.run,
             &[
                 credentials.account.expose(),
                 credentials.unlock_secret().expose(),
             ],
         )
         .map_err(CliError::io("scrubbing the artifact directory"))?;
+        if !plan.keep && !preserve_failed_external {
+            let _ = std::fs::remove_dir_all(&plan.cycle_dir);
+            let _ = std::fs::remove_dir_all(&plan.run);
+        }
         let mut report = result?;
         if !withheld.is_empty() {
             return Err(failed(
@@ -967,6 +968,17 @@ fn valid_username(name: &str) -> bool {
         && chars.all(|character| matches!(character, 'a'..='z' | '0'..='9' | '_' | '-'))
 }
 
+/// The VM runtime holds raw serial and UART streams, including material the
+/// installer deliberately withholds from scenario artifacts. Scrub it before
+/// retention or cleanup, even when the install failed.
+fn scrub_scenario_logs(out: &Path, run: &Path, secrets: &[&str]) -> std::io::Result<Vec<PathBuf>> {
+    let mut withheld = scrub(out, secrets)?;
+    if run.is_dir() {
+        withheld.extend(scrub(run, secrets)?);
+    }
+    Ok(withheld)
+}
+
 /// Poll until the console answers as `app`, returning its first state.
 fn wait_for_app(console: &mut SocketConsole, app: &str, limit: Duration) -> Option<Value> {
     let deadline = after(limit);
@@ -1036,6 +1048,24 @@ mod tests {
                 qmp: 30002,
             },
         }
+    }
+
+    #[test]
+    fn retained_runtime_logs_are_scrubbed_alongside_artifacts() {
+        let dir = tempfile::tempdir().unwrap();
+        let out = dir.path().join("artifacts");
+        let run = dir.path().join("runtime");
+        std::fs::create_dir(&out).unwrap();
+        std::fs::create_dir(&run).unwrap();
+        std::fs::write(out.join("state.json"), "ready").unwrap();
+        std::fs::write(run.join("serial.log"), "typed accountsecret123").unwrap();
+        std::fs::write(run.join("uart.log"), "typed disksecret456").unwrap();
+        let withheld =
+            scrub_scenario_logs(&out, &run, &["accountsecret123", "disksecret456"]).unwrap();
+        assert_eq!(withheld.len(), 2);
+        assert!(std::fs::read(run.join("serial.log")).unwrap().is_empty());
+        assert!(std::fs::read(run.join("uart.log")).unwrap().is_empty());
+        assert_eq!(std::fs::read(out.join("state.json")).unwrap(), b"ready");
     }
 
     #[cfg(unix)]

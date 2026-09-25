@@ -118,7 +118,9 @@ through the compositor. A wrong or missing phrase is
   (`scenario-passphrase-2026`, or the PIN `804927`). For a retained install,
   pass `--username xaver --credentials-stdin` and pipe exactly one UTF-8 JSON
   object: `{"account_password":"...","disk_passphrase":"..."}`. Both values
-  must be nonempty, distinct and single-line. `--credentials-stdin` requires
+  must be distinct, lowercase ASCII letters and digits. Generate long random
+  values (at least 24 characters each). This alphabet is exactly typable at
+  the VM's first-boot unlock prompt. `--credentials-stdin` requires
   `--username` and is refused with `--dry-run`. Supply the JSON from a protected
   launcher or password store; never place either value in the command line.
   The supplied disk secret unlocks the installed system; the account secret
@@ -129,8 +131,9 @@ through the compositor. A wrong or missing phrase is
   redacts anything key-shaped from the install log it reports.
 - The live installer's serial console is not kept
   (`installer-serial-withheld.txt`).
-- Before the run reports anything, every artifact is searched for both supplied
-  secrets, the backend's recovery-key marker and recovery-key-shaped text; a
+- Before the run reports anything, every artifact and retained VM runtime log
+  is searched for both supplied secrets, the backend's recovery-key marker and
+  recovery-key-shaped text; a
   file that matches is emptied and the run fails.
 
 ## When it fails
