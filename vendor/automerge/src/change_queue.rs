@@ -202,6 +202,9 @@ impl ChangeQueue {
         let mut raw = 0usize;
         for c in &self.changes {
             raw = raw.saturating_add(c.raw_bytes().len());
+            if c.hash().fragment_level() >= 1 {
+                d.queue_fragments += 1;
+            }
             exact = exact.saturating_add(change_heap_bound(c));
             // The cloned ActorId key in `incoming_actor_seqs`.
             let len = c.actor_id().to_bytes().len();

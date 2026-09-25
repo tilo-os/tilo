@@ -754,6 +754,12 @@ impl<T: DeltaValue, C: Codec> DeltaColumn<T, C> {
         self.col.slab_count()
     }
 
+    /// Requested heap bytes (see [`Column::heap_bytes`]). qOS local
+    /// modification (see `PROVENANCE.md`).
+    pub fn heap_bytes(&self) -> usize {
+        self.col.heap_bytes()
+    }
+
     pub fn save(&self) -> Vec<u8> {
         self.col.save()
     }

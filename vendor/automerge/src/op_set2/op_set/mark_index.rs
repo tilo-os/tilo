@@ -229,9 +229,9 @@ impl MarkIndexColumn {
     }
 
     /// qOS bounded admission (L1): `(cache len, cache capacity, cache table
-    /// bytes, owned name/value bytes (×2 capacity slack), data slabs)`.
+    /// bytes, owned name/value capacity, data slabs, data heap bytes)`.
     /// Allocates nothing.
-    pub(crate) fn native_dims(&self) -> (usize, usize, usize, usize, usize) {
+    pub(crate) fn native_dims(&self) -> (usize, usize, usize, usize, usize, usize) {
         use crate::resource_limits::dims::hash_table_bytes;
         let table = hash_table_bytes(
             self.cache.capacity(),
@@ -250,6 +250,7 @@ impl MarkIndexColumn {
             table,
             owned,
             self.data.slab_count(),
+            self.data.heap_bytes(),
         )
     }
 
