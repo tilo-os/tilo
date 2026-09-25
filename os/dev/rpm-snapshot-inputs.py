@@ -69,6 +69,32 @@ def pinned_source(repo, head):
     return revisions[0]
 
 
+def newer_than_pin(repo, source, head):
+    """Return whether a snapshot built from source supersedes the pin at head.
+
+    A pin that records its source is superseded by any strictly later commit.
+    An older pin without a source is superseded only while it is still the pin
+    source itself carried, so an unrecorded newer pin is never replaced.
+    """
+    source = commit(repo, source)
+    head = commit(repo, head)
+    pinned = git(repo, "show", f"{head}:{PIN}").decode()
+    revisions = SOURCE_REVISION.findall(pinned)
+    if len(revisions) == 1:
+        if revisions[0] == source:
+            return False, "the pin on main already comes from this source"
+        ancestor = subprocess.run(
+            ["git", "-C", str(repo), "merge-base", "--is-ancestor", revisions[0], source],
+            stderr=subprocess.PIPE).returncode == 0
+        return ancestor, ("the pin on main comes from an earlier commit" if ancestor
+                          else "the pin on main does not come from an ancestor of this source")
+    if revisions:
+        raise ValueError("the pinned snapshot records several source revisions")
+    same = git(repo, "show", f"{source}:{PIN}").decode() == pinned
+    return same, ("the pin on main is the one this source replaced" if same
+                  else "a pin without a recorded source landed after this source")
+
+
 def equivalent(repo, base, head, inputs):
     # Resolve commits before reading paths. Missing/zero/truncated history is unknown.
     base = commit(repo, base)
@@ -112,7 +138,16 @@ def main():
     cli.add_argument("--head", required=True)
     cli.add_argument("--event", default="push")
     cli.add_argument("--require-equivalent", action="store_true")
+    # Promotion: refuse only a snapshot that is not newer than the pin at head.
+    cli.add_argument("--require-newer-than-pin", action="store_true")
     args = cli.parse_args()
+    if args.require_newer_than_pin:
+        try:
+            newer, reason = newer_than_pin(ROOT, args.base, args.head)
+        except (OSError, ValueError, subprocess.CalledProcessError, TypeError) as error:
+            newer, reason = False, f"cannot order against the pin: {type(error).__name__}"
+        print(json.dumps({"newer": newer, "reason": reason}))
+        return int(not newer)
     try:
         inputs = list(INPUTS)
         if not inputs or not set(parser.SOURCES).issubset(inputs):

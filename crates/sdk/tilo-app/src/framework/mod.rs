@@ -62,16 +62,19 @@
 //!   persisted, never shared, never undone.
 
 mod app;
+mod controls;
 mod dispatch;
 mod each;
 mod live;
 mod preview;
 mod root;
 mod surface;
+mod switch;
 pub mod testing;
 mod view;
 
 pub use app::{ResourceApp, definition, launch_spec, run};
+pub use controls::{ActionControl, Actions};
 pub use dispatch::Dispatcher;
 pub use each::Each;
 pub use live::Live;

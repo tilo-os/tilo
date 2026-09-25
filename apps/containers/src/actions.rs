@@ -68,6 +68,7 @@
 mod tests {
     use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, Value};
     use taffy::{NodeId, TaffyTree};
+    use tilo_automerge::ApplyIncoming;
     use ui::widget::Widget;
     use winit::event::{DeviceId, ElementState, KeyEvent, Modifiers, MouseButton, WindowEvent};
     use winit::keyboard::{Key, KeyLocation, NamedKey, NativeKeyCode, PhysicalKey, SmolStr};
@@ -253,7 +254,7 @@ mod tests {
             "the keystroke spliced into the create-draft Text on the native path",
         );
 
-        peer.merge(&mut doc).unwrap();
+        peer.merge_incoming(&mut doc).unwrap();
         assert_eq!(
             doc.get_heads(),
             peer.get_heads(),

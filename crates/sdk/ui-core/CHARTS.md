@@ -5,6 +5,7 @@ same layout, theme, pointer, accessibility and automation paths as every other
 UI control. Import the focused facade:
 
 ```rust
+# use tilo_ui as ui;
 use ui::charts::{CartesianPlot, PlotDatum, PlotSeries, SeriesKind};
 ```
 
@@ -58,7 +59,11 @@ cargo run -p ui --example ui-shots -- chart_gallery_shots
 ## A mixed Cartesian plot
 
 ```rust
+# use tilo_ui as ui;
 use ui::charts::*;
+# use tilo_ui::vello::peniko::Color;
+# let accent = Color::from_rgb8(0x3B, 0x82, 0xF6);
+# let warning = Color::from_rgb8(0x3B, 0x82, 0xF6);
 
 let observations = vec![
     PlotDatum::new("jan", 1.0, 18.0)
@@ -86,8 +91,11 @@ let style = CartesianStyle {
         .formatted(AxisLabelFormat::Decimal(1))
         .with_tick_density(7, 64.0)
         .titled("Milliseconds"),
-    show_crosshair: true,
-    show_markers_on_lines: true,
+    rendering: CartesianRenderingStyle {
+        show_crosshair: true,
+        show_markers_on_lines: true,
+        ..Default::default()
+    },
     zoom: CartesianZoom::X,
     pan: CartesianPan::X,
     brush: CartesianBrush::X,
@@ -231,6 +239,12 @@ Identical slice updates do not restart motion; `set_slices_immediate()`,
 `finish_animation()`, and `is_animating()` provide explicit lifecycle control.
 
 ```rust
+# use tilo_ui as ui;
+# use ui::charts::*;
+# use tilo_ui::vello::peniko::Color;
+# let blue = Color::from_rgb8(0x3B, 0x82, 0xF6);
+# let amber = Color::from_rgb8(0x3B, 0x82, 0xF6);
+# let gray = Color::from_rgb8(0x3B, 0x82, 0xF6);
 let chart = PieChart::new(vec![
     PieSlice::new("src", "Source", 48.0, blue).with_detail("48 GB"),
     PieSlice::new("target", "Build output", 21.0, amber).with_detail("21 GB"),
@@ -255,6 +269,15 @@ from children. Use `Treemap` when label density matters more than radial form.
 Callers do not need to calculate bins, quartiles, outliers or density curves:
 
 ```rust
+# use tilo_ui as ui;
+# use ui::charts::*;
+# use tilo_ui::vello::peniko::Color;
+# let accent = Color::from_rgb8(0x3B, 0x82, 0xF6);
+# let blue = Color::from_rgb8(0x3B, 0x82, 0xF6);
+# let green = Color::from_rgb8(0x3B, 0x82, 0xF6);
+# let samples = vec![1.0, 2.0, 2.5, 3.0];
+# let before = samples.clone();
+# let after = vec![0.5, 1.5, 2.0];
 let histogram = Histogram::new(samples.clone(), accent)
     .bins(24)
     .normalize(HistogramNormalization::Density)

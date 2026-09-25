@@ -918,6 +918,7 @@ impl BooksDoc {
 mod tests {
     use super::*;
     use crate::model::{AnnoKind, HiColor};
+    use tilo_automerge::ApplyIncoming;
 
     #[test]
     fn settings_round_trip() {
@@ -1112,10 +1113,10 @@ mod tests {
         BooksDoc::upsert_annotation(&mut editing_peer, &comment);
 
         deleting_peer
-            .merge(&mut editing_peer)
+            .merge_incoming(&mut editing_peer)
             .expect("independent replicas merge");
         editing_peer
-            .merge(&mut deleting_peer)
+            .merge_incoming(&mut deleting_peer)
             .expect("second replica converges");
 
         for peer in [&deleting_peer, &editing_peer] {
@@ -1262,8 +1263,8 @@ mod tests {
             },
         );
 
-        left.merge(&mut right).unwrap();
-        right.merge(&mut left).unwrap();
+        left.merge_incoming(&mut right).unwrap();
+        right.merge_incoming(&mut left).unwrap();
         for peer in [&left, &right] {
             assert_eq!(
                 BooksDoc::read_library_entries(peer)
