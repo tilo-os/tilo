@@ -1,6 +1,6 @@
 //! Target-local adapters for certified-device camera and microphone input.
 //!
-//! Fabric messages stop at [`RemoteCaptureProfile`]. PipeWire node identifiers,
+//! Fabric messages stop at [`RemoteCaptureProfile`]. `PipeWire` node identifiers,
 //! V4L2 file descriptors, and the fresh app-consent capability in this module
 //! are process-local and deliberately have no serialization traits.
 
@@ -93,6 +93,10 @@ impl RemoteCaptureTargetBridge {
     /// Install an endpoint produced by the bounded provisioning worker. This
     /// half is deliberately non-blocking and safe to call from a compositor
     /// tick; discovery and subprocess startup happen before it.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "every field of the exact source/target/session/grant binding is checked explicitly"
+    )]
     pub(crate) fn prepare_endpoint(
         &mut self,
         app: &VerifiedAppRegistration,
@@ -176,18 +180,20 @@ impl RemoteCaptureTargetBridge {
             .map_err(|_| RemoteCaptureAdapterError::BrokerUnavailable)?
             .authorize(&session.binding, &session.source_id, kind, now)
             .map_err(|error| RemoteCaptureAdapterError::Broker(error.to_string()))?;
-        if let Some((_, old)) = session
-            .approval
-            .replace((mint_approval(), capture_authorization))
-        {
+        let approval = mint_approval();
+        if let Some((_, old)) = session.approval.replace((approval, capture_authorization)) {
             let _ = broker
                 .lock()
                 .map(|mut broker| broker.revoke_authorizations(&[old]));
         }
-        Ok(session.approval.expect("approval was inserted").0)
+        Ok(approval)
     }
 
     /// Consume the exact approval and make the endpoint available to the app.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "every field of the exact source/target/session/grant binding is checked explicitly"
+    )]
     pub(crate) fn activate(
         &mut self,
         app: &VerifiedAppRegistration,
@@ -390,14 +396,11 @@ fn endpoint_matches(endpoint: &RemoteCaptureEndpoint, kind: RemoteCaptureKind) -
     matches!(
         (endpoint, kind),
         (
-            RemoteCaptureEndpoint::PipeWireNode(_),
+            RemoteCaptureEndpoint::PipeWireNode(_) | RemoteCaptureEndpoint::V4l2Device(_),
             RemoteCaptureKind::Camera
         ) | (
             RemoteCaptureEndpoint::PipeWireNode(_),
             RemoteCaptureKind::Microphone
-        ) | (
-            RemoteCaptureEndpoint::V4l2Device(_),
-            RemoteCaptureKind::Camera
         )
     )
 }
@@ -558,9 +561,8 @@ impl ProductionRemoteCaptureAdapter {
             .stderr(Stdio::null())
             .spawn()
             .map_err(RemoteCaptureAdapterError::Io)?;
-        let node_id = wait_for_pipewire_node(&source_name).map_err(|error| {
+        let node_id = wait_for_pipewire_node(&source_name).inspect_err(|_| {
             let _ = loopback.kill();
-            error
         })?;
         let mut writer = Command::new(trusted_command("pw-cat").ok_or_else(|| {
             RemoteCaptureAdapterError::BackendUnavailable("pw-cat is unavailable".into())
@@ -816,6 +818,10 @@ mod tests {
             .unwrap()
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "forwards the production prepare_endpoint binding unchanged"
+    )]
     fn prepare(
         bridge: &mut RemoteCaptureTargetBridge,
         adapter: &mut FakeAdapter,
@@ -916,8 +922,8 @@ mod tests {
                 approval,
                 Instant::now(),
             ),
-            Err(RemoteCaptureAdapterError::ApprovalRequired)
-                | Err(RemoteCaptureAdapterError::AlreadyActive)
+            Err(RemoteCaptureAdapterError::ApprovalRequired
+                | RemoteCaptureAdapterError::AlreadyActive)
         ));
         assert!(matches!(
             bridge.revoke(
