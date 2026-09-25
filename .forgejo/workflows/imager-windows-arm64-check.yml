@@ -45,9 +45,20 @@ jobs:
           # ring forces clang for Windows ARM64, bypassing cc-rs' CC setting.
           # Use cargo-xwin's clang backend so its SDK flags match that driver.
           export XWIN_CROSS_COMPILER=clang
-          # Clang treats the MSVC ARM64 SDK's __prefetch declaration as a
-          # conflicting builtin while compiling zstd-sys C sources.
-          export CFLAGS_aarch64_pc_windows_msvc=-fno-builtin-__prefetch
+          # cargo-xwin owns the target CFLAGS for its MSVC sysroot. Clang 18
+          # treats the SDK's __prefetch declaration as a conflicting builtin
+          # in zstd-sys, so rename that unused declaration for zstd sources.
+          export TILO_REAL_CLANG="$(command -v clang-18 || command -v clang)"
+          mkdir -p "$RUNNER_TEMP/tilo-clang"
+          cat > "$RUNNER_TEMP/tilo-clang/clang" <<'SH'
+          #!/bin/sh
+          case " $* " in
+            *zstd/lib/*) exec "$TILO_REAL_CLANG" -D__prefetch=__tilo_zstd_prefetch "$@" ;;
+            *) exec "$TILO_REAL_CLANG" "$@" ;;
+          esac
+          SH
+          chmod +x "$RUNNER_TEMP/tilo-clang/clang"
+          export PATH="$RUNNER_TEMP/tilo-clang:$PATH"
           cargo xwin test -p imager --lib --locked --release \
             --target aarch64-pc-windows-msvc --no-run
           cargo xwin build -p imager --bin imager --locked --release \
