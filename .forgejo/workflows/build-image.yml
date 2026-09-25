@@ -911,7 +911,7 @@ jobs:
           HARDWARE_PROFILE: ${{ needs.plan.outputs.hardware-profile }}
         run: |
           set -euo pipefail
-          if [[ $HARDWARE_PROFILE == lenovo-83ed ]]; then
+          if [[ ${HARDWARE_PROFILE:-generic} == lenovo-83ed ]]; then
             # This first board artifact has an immutable update reference and
             # no automatic upgrade series. Do not allocate a generic genN.
             echo 'TILO_GENERATION=1' >> "$GITHUB_ENV"
