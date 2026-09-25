@@ -969,7 +969,7 @@ mod tests {
         for e in cases {
             let s = e.to_string();
             assert!(s.len() > 20, "error text is too terse to act on: {s:?}");
-            assert!(!s.contains("{"), "unformatted placeholder in {s:?}");
+            assert!(!s.contains('{'), "unformatted placeholder in {s:?}");
         }
         assert!(
             ImportError::NotVulkan.to_string().contains("CPU path"),

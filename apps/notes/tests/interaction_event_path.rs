@@ -83,6 +83,10 @@ fn wrapped_block_caret_stays_on_one_baseline_when_moving_or_typing() {
 }
 
 #[test]
+#[expect(
+    clippy::float_cmp,
+    reason = "both heights come from the same layout path; any difference, however small, is the resize this test forbids"
+)]
 fn empty_wrapped_block_reserves_the_same_caret_band_as_first_character() {
     use ui::widget::RichTextLine;
     let theme = Theme::dark();
@@ -312,6 +316,10 @@ fn rich_block_drag_and_scroll_extent_include_the_whole_preview() {
 }
 
 #[test]
+#[expect(
+    clippy::float_cmp,
+    reason = "auto-height paragraphs never scroll internally, so the offset stays exactly 0.0"
+)]
 fn wrapped_paragraph_arrow_navigation_visits_each_visual_row() {
     let (mut editor, tree, node, mut renderer) = block_layout_fixture(
         "A paragraph that needs several visual lines at this narrow width and must keep its caret within the paragraph until its final row.\n\nNext paragraph",

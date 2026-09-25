@@ -458,7 +458,12 @@ fn signing_key_from_file(
     {
         use std::os::unix::fs::MetadataExt;
         reject_metadata_mode(path, &metadata, forbidden_mode)?;
-        if owner_policy != SecretOwner::Any {
+        let accepted_owner = match owner_policy {
+            SecretOwner::Any => None,
+            SecretOwner::Reader => Some("uid"),
+            SecretOwner::RootOrReader => Some("root or uid"),
+        };
+        if let Some(accepted_owner) = accepted_owner {
             // The installed key is provisioned by root and then shared
             // read-only with the device-identity group. Custom/test stores may
             // be owned by the caller, but a third account may never substitute
@@ -469,11 +474,7 @@ fn signing_key_from_file(
                 return Err(PersistError::InsecureOwner {
                     path: path.display().to_string(),
                     owner: metadata.uid(),
-                    expected: match owner_policy {
-                        SecretOwner::Any => unreachable!(),
-                        SecretOwner::Reader => format!("uid {reader}"),
-                        SecretOwner::RootOrReader => format!("root or uid {reader}"),
-                    },
+                    expected: format!("{accepted_owner} {reader}"),
                 });
             }
         }
@@ -860,6 +861,67 @@ pub fn adopt_device_key(
     read_device_key(path)
 }
 
+/// Legacy certificates to adopt as `(source, destination, is_default)`: the
+/// default certificate first, then every per-root certificate, each of which
+/// must be filed under the root it certifies.
+fn legacy_certificates(
+    paths: &IdentityPaths,
+    old: &IdentityPaths,
+    legacy_root: &Path,
+) -> Result<Vec<(std::path::PathBuf, std::path::PathBuf, bool)>, PersistError> {
+    let mut certificates = Vec::new();
+    if artifact_present(&old.device_cert)? {
+        certificates.push((old.device_cert.clone(), paths.device_cert.clone(), true));
+    }
+    let certs_dir = legacy_root.join("device/certs");
+    if artifact_present(&certs_dir)? {
+        let directory = open_regular_without_symlinks(&certs_dir)?;
+        if !directory.metadata()?.is_dir() {
+            return Err(io::Error::other("legacy certificate store is not a directory").into());
+        }
+        for entry in fs::read_dir(&certs_dir)? {
+            let entry = entry?;
+            let certificate = read_device_cert(&entry.path())?;
+            let expected = old.device_cert_for_user(&certificate.user_public_key);
+            if entry.path() != expected {
+                return Err(io::Error::other(
+                    "legacy certificate filename does not match its root",
+                )
+                .into());
+            }
+            certificates.push((
+                entry.path(),
+                paths.device_cert_for_user(&certificate.user_public_key),
+                false,
+            ));
+        }
+    }
+    Ok(certificates)
+}
+
+/// Fail if any canonical artifact already exists with different contents.
+/// Existing paths are read with the same no-symlink, bounded artifact reader.
+fn reject_conflicting_artifacts(
+    paths: &IdentityPaths,
+    artifacts: &[(std::path::PathBuf, Zeroizing<Vec<u8>>, u32)],
+) -> Result<(), PersistError> {
+    for (destination, bytes, _) in artifacts {
+        if destination == &paths.user_privkey && artifact_present(destination)? {
+            read_signing_key(destination)?;
+        }
+        if artifact_present(destination)?
+            && read_regular_bounded(destination, bytes.len())? != **bytes
+        {
+            return Err(io::Error::other(format!(
+                "canonical identity artifact conflicts with legacy: {}",
+                destination.display()
+            ))
+            .into());
+        }
+    }
+    Ok(())
+}
+
 /// Adopt the former qOS identity into the canonical Tilo layout without
 /// deleting or overwriting any existing material. A different established
 /// canonical device identity takes precedence and never receives legacy roots.
@@ -923,34 +985,7 @@ pub fn adopt_legacy_system_identity(
         None if artifact_present(&paths.user_pubkey)? => Some(read_public_key(&paths.user_pubkey)?),
         None => None,
     };
-    let mut certificates = Vec::new();
-    if artifact_present(&old.device_cert)? {
-        certificates.push((old.device_cert.clone(), paths.device_cert.clone(), true));
-    }
-    let certs_dir = legacy_root.join("device/certs");
-    if artifact_present(&certs_dir)? {
-        let directory = open_regular_without_symlinks(&certs_dir)?;
-        if !directory.metadata()?.is_dir() {
-            return Err(io::Error::other("legacy certificate store is not a directory").into());
-        }
-        for entry in fs::read_dir(&certs_dir)? {
-            let entry = entry?;
-            let certificate = read_device_cert(&entry.path())?;
-            let expected = old.device_cert_for_user(&certificate.user_public_key);
-            if entry.path() != expected {
-                return Err(io::Error::other(
-                    "legacy certificate filename does not match its root",
-                )
-                .into());
-            }
-            certificates.push((
-                entry.path(),
-                paths.device_cert_for_user(&certificate.user_public_key),
-                false,
-            ));
-        }
-    }
-    for (source, destination, is_default) in certificates {
+    for (source, destination, is_default) in legacy_certificates(paths, &old, legacy_root)? {
         let certificate = read_device_cert(&source)?;
         crate::verify_device_cert(&certificate)
             .map_err(|error| io::Error::other(error.to_string()))?;
@@ -969,22 +1004,8 @@ pub fn adopt_legacy_system_identity(
             0o644,
         ));
     }
-    // Check all conflicts before publishing even the device key. Existing
-    // paths are read with the same no-symlink, bounded artifact reader.
-    for (destination, bytes, _) in &artifacts {
-        if destination == &paths.user_privkey && artifact_present(destination)? {
-            read_signing_key(destination)?;
-        }
-        if artifact_present(destination)?
-            && read_regular_bounded(destination, bytes.len())? != **bytes
-        {
-            return Err(io::Error::other(format!(
-                "canonical identity artifact conflicts with legacy: {}",
-                destination.display()
-            ))
-            .into());
-        }
-    }
+    // Check all conflicts before publishing even the device key.
+    reject_conflicting_artifacts(paths, &artifacts)?;
     paths.ensure_directories()?;
     if !current_exists {
         // A concurrent publisher may win; only its identical key is safe.

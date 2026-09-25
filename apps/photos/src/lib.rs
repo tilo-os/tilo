@@ -431,6 +431,10 @@ pub fn seed_scenario(
                         (48.8566, 2.3522, "Paris"),
                         (35.6762, 139.6503, "Tokyo"),
                     ];
+                    #[expect(
+                        clippy::indexing_slicing,
+                        reason = "the index is reduced modulo the array length"
+                    )]
                     let (latitude, longitude, label) = locations[variant % locations.len()];
                     photo.location = Some(crate::model::PhotoLocation {
                         latitude,

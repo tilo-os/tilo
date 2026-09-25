@@ -712,7 +712,7 @@ impl EditorView {
         self.lines.len()
     }
 
-    fn font_size(&self) -> f32 {
+    const fn font_size() -> f32 {
         FONT_SIZE
     }
 
@@ -1573,7 +1573,7 @@ impl EditorView {
             text_renderer.draw_text_styled(
                 scene,
                 &num,
-                self.font_size(),
+                Self::font_size(),
                 num_color,
                 transform * Affine::translate((num_x, y + self.text_dy)),
                 None,
@@ -1599,7 +1599,7 @@ impl EditorView {
                 text_renderer.draw_text_styled(
                     scene,
                     line,
-                    self.font_size(),
+                    Self::font_size(),
                     c.text_primary,
                     transform * Affine::translate((base_x, y + self.text_dy)),
                     None,
@@ -1635,7 +1635,7 @@ impl EditorView {
                     text_renderer.draw_text_styled(
                         scene,
                         seg,
-                        self.font_size(),
+                        Self::font_size(),
                         color,
                         transform * Affine::translate((x, y + self.text_dy)),
                         None,
@@ -1833,7 +1833,7 @@ impl EditorView {
             text_renderer.draw_text_styled(
                 scene,
                 glyph,
-                self.font_size(),
+                Self::font_size(),
                 c.accent[6],
                 transform * Affine::translate((px + 8.0, ry + self.text_dy)),
                 None,
@@ -1844,7 +1844,7 @@ impl EditorView {
             text_renderer.draw_text_styled(
                 scene,
                 &item.label,
-                self.font_size(),
+                Self::font_size(),
                 c.text_primary,
                 transform * Affine::translate((px + 26.0, ry + self.text_dy)),
                 None,
@@ -1861,15 +1861,19 @@ impl EditorView {
             {
                 let (lw, _) = text_renderer.measure_styled(
                     &item.label,
-                    self.font_size(),
+                    Self::font_size(),
                     None,
                     TextWeight::Regular,
                     false,
                     true,
                 );
                 let available = width - 40.0 - f64::from(lw);
-                let detail =
-                    fit_completion_detail(text_renderer, detail, available, self.font_size() - 1.0);
+                let detail = fit_completion_detail(
+                    text_renderer,
+                    detail,
+                    available,
+                    Self::font_size() - 1.0,
+                );
                 // The smaller detail shares the label's centre line.
                 let (_, dh) = text_renderer.measure_styled(
                     &detail,
@@ -1883,7 +1887,7 @@ impl EditorView {
                 text_renderer.draw_text_styled(
                     scene,
                     &detail,
-                    self.font_size() - 1.0,
+                    Self::font_size() - 1.0,
                     c.text_dim,
                     transform * Affine::translate((px + 34.0 + f64::from(lw), ry + detail_dy)),
                     None,
@@ -1917,7 +1921,7 @@ impl EditorView {
         };
         let c = &theme.tokens.colors;
         let first: String = hover.lines().take(4).collect::<Vec<_>>().join("\n");
-        let (tw, _) = text_renderer.measure(&first, self.font_size(), None);
+        let (tw, _) = text_renderer.measure(&first, Self::font_size(), None);
         let width = (f64::from(tw) + 20.0).min(self.rect.width() - (gutter_w + 20.0));
         let lines = first.lines().count().max(1);
         // Line pitch from the measured line: 18 px at 1× (a 14 px line
@@ -1948,7 +1952,7 @@ impl EditorView {
             text_renderer.draw_text(
                 scene,
                 line,
-                self.font_size(),
+                Self::font_size(),
                 c.text_primary,
                 transform * Affine::translate((px + 10.0, py + 6.0 + i as f64 * pitch)),
                 Some((width - 20.0) as f32),
@@ -2780,6 +2784,10 @@ mod tests {
     /// at 2×; pointer hit-testing maps a click on the third row back to line
     /// 2 at both scales, so paint and hits share one pitch.
     #[test]
+    #[expect(
+        clippy::float_cmp,
+        reason = "layout reproduces authored whole-pixel sizes and their sums exactly in binary floating point; exact equality is what the test checks"
+    )]
     fn line_pitch_matches_the_constant_at_1x_and_follows_the_text_scale() {
         let (mut ev, _doc) = bound_editor("a\nb\nc\nd");
         ev.rect = Rect::new(0.0, 0.0, 400.0, 300.0);

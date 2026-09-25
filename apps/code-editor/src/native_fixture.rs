@@ -32,11 +32,15 @@ pub fn seed(path: &Path) -> std::io::Result<Manifest> {
         .write(true)
         .create_new(true)
         .open(path)?;
-    let source = (0..500)
-        .map(|index| format!(
+    let mut source = String::new();
+    for index in 0..500 {
+        use std::fmt::Write as _;
+        write!(
+            source,
             "pub fn transform_{index:04}(value: u64) -> u64 {{\n    let shifted = value.wrapping_add({index});\n    shifted.rotate_left(3)\n}}\n"
-        ))
-        .collect::<String>();
+        )
+        .map_err(std::io::Error::other)?;
+    }
     let prefixed = format!("x{source}");
     file.write_all(source.as_bytes())?;
     file.sync_all()?;

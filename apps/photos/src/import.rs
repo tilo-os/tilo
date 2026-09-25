@@ -91,6 +91,16 @@ pub struct ImportFailure {
     pub retryable: bool,
 }
 
+impl ImportFailure {
+    fn new(source: PathBuf, message: &str, retryable: bool) -> Self {
+        Self {
+            source,
+            message: message.to_owned(),
+            retryable,
+        }
+    }
+}
+
 /// Terminal result of a bounded import. `cancelled` is explicit so a UI can
 /// distinguish a partial user cancellation from a successful short import.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -105,6 +115,12 @@ pub struct ImportReport {
 /// Index one explicitly selected directory. Progress runs on the caller's
 /// worker thread; it is never emitted by the CRDT. Cancellation is checked
 /// before descent, after discovery, and before each bounded file read.
+///
+/// # Errors
+///
+/// Returns a user-facing message when `root` is not an absolute path to an
+/// accessible, real (non-symlink) directory. Per-item problems are reported
+/// in [`ImportReport::failures`] instead.
 pub fn index_directory<F>(
     root: &Path,
     options: ImportOptions,
@@ -129,61 +145,46 @@ where
             report.cancelled = true;
             break;
         }
-        let entries = match fs::read_dir(&directory) {
-            Ok(entries) => entries,
-            Err(_) => {
-                report.failures.push(ImportFailure {
-                    source: directory,
-                    message: "Could not read this folder".to_owned(),
-                    retryable: true,
-                });
-                continue;
-            }
+        let Ok(entries) = fs::read_dir(&directory) else {
+            let failure = ImportFailure::new(directory, "Could not read this folder", true);
+            report.failures.push(failure);
+            continue;
         };
         for entry in entries {
             if cancelled.load(Ordering::Acquire) {
                 report.cancelled = true;
                 break;
             }
-            let entry = match entry {
-                Ok(entry) => entry,
-                Err(_) => {
-                    report.failures.push(ImportFailure {
-                        source: directory.clone(),
-                        message: "Could not read one item in this folder".to_owned(),
-                        retryable: true,
-                    });
-                    continue;
-                }
+            let Ok(entry) = entry else {
+                let message = "Could not read one item in this folder";
+                report
+                    .failures
+                    .push(ImportFailure::new(directory.clone(), message, true));
+                continue;
             };
             let path = entry.path();
             let Ok(meta) = fs::symlink_metadata(&path) else {
-                report.failures.push(ImportFailure {
-                    source: path,
-                    message: "Could not inspect this item".to_owned(),
-                    retryable: true,
-                });
+                let failure = ImportFailure::new(path, "Could not inspect this item", true);
+                report.failures.push(failure);
                 continue;
             };
             // Refusing links closes traversal loops and avoids silently
             // importing an unrelated tree through a selected directory.
             if meta.file_type().is_symlink() {
-                report.failures.push(ImportFailure {
-                    source: path,
-                    message: "Symbolic links are not followed during photo import".to_owned(),
-                    retryable: false,
-                });
+                let message = "Symbolic links are not followed during photo import";
+                report
+                    .failures
+                    .push(ImportFailure::new(path, message, false));
                 continue;
             }
             if meta.is_dir() {
                 if depth < options.limits.max_depth {
                     stack.push((path, depth + 1));
                 } else {
-                    report.failures.push(ImportFailure {
-                        source: path,
-                        message: "This folder is deeper than the safe import limit".to_owned(),
-                        retryable: false,
-                    });
+                    let message = "This folder is deeper than the safe import limit";
+                    report
+                        .failures
+                        .push(ImportFailure::new(path, message, false));
                 }
                 continue;
             }
@@ -229,6 +230,12 @@ where
 
 /// Index one real image file with the same byte and metadata bounds used by
 /// directory import. The returned record can be dispatched as `ImportPhoto`.
+///
+/// # Errors
+///
+/// Returns a user-facing message when the import was cancelled (exactly
+/// `"Import cancelled"`), or when the file cannot be read, exceeds the byte
+/// bounds, cannot be decoded, has no usable name, or cannot be stored.
 pub fn index_file(
     path: &Path,
     options: ImportOptions,
@@ -264,7 +271,7 @@ pub fn index_file(
         .with_content(content)
         .portable();
     let mut photo = LibraryPhoto::from_image(open);
-    photo.image.name = name.to_owned();
+    name.clone_into(&mut photo.image.name);
     photo.captured_at = exif
         .captured_at
         .as_deref()

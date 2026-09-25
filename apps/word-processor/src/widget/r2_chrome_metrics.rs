@@ -123,18 +123,18 @@ fn styles_panel_controls_follow_measured_text_at_every_scale() {
 /// selected object.
 #[test]
 fn image_inspector_controls_never_overlap_at_two_x() {
-    let theme = Theme::dark().with_text_scale(2.0);
-    let mut state = ui::State::new();
-    let mut wp = WordProcessorWidget::new();
-    wp.sync(&mut state.doc, &state.root);
-    wp.model_mut().insert_str(&mut state.doc, "Picture");
-    wp.model_mut().enter(&mut state.doc);
     const PNG: &[u8] = &[
         137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 0, 2, 0, 0, 0, 3, 8, 2,
         0, 0, 0, 54, 136, 73, 214, 0, 0, 0, 17, 73, 68, 65, 84, 120, 156, 99, 248, 207, 192, 240,
         159, 1, 140, 17, 20, 0, 68, 208, 5, 251, 176, 88, 73, 172, 0, 0, 0, 0, 73, 69, 78, 68, 174,
         66, 96, 130,
     ];
+    let theme = Theme::dark().with_text_scale(2.0);
+    let mut state = ui::State::new();
+    let mut wp = WordProcessorWidget::new();
+    wp.sync(&mut state.doc, &state.root);
+    wp.model_mut().insert_str(&mut state.doc, "Picture");
+    wp.model_mut().enter(&mut state.doc);
     wp.model_mut().insert_image_bytes(&mut state.doc, PNG);
     wp.sync(&mut state.doc, &state.root);
     let image = qdoc::model::open(&state.doc, &state.root)

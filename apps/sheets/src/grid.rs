@@ -2410,6 +2410,10 @@ impl Grid {
         Rect::new(tl.x0, tl.y0, br.x1, br.y1)
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "cell text painting takes the paint context, the text with its style, the cell rect, alignment and line height"
+    )]
     fn draw_cell_text(
         &self,
         scene: &mut Scene,

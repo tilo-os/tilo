@@ -2481,7 +2481,6 @@ impl Widget for DbClientApp {
         }
 
         match event {
-            WindowEvent::CursorMoved { .. } => {}
             WindowEvent::MouseWheel { delta, .. } => {
                 self.on_mouse_wheel(delta, *modifiers, handled);
             }
@@ -3831,6 +3830,10 @@ impl DbClientApp {
         clippy::too_many_lines,
         reason = "the editor, result status, confirmation and grid need one ordered paint stack"
     )]
+    #[expect(
+        clippy::similar_names,
+        reason = "`*_w`/`*_h` pairs are the measured width and height of the same label"
+    )]
     fn draw_query_tab(
         &mut self,
         scene: &mut Scene,
@@ -4037,38 +4040,37 @@ impl DbClientApp {
             let (_, lh) = tr.measure(text, size, None);
             toolbar.y0 + (toolbar.height() - f64::from(lh)) / 2.0
         };
-        match (&self.session.selected_relation, &self.session.data_result) {
-            (Some(relation), Some(res)) => {
-                let total = self.session.selected_table_rows();
-                let from = self.session.data_offset + 1;
-                let to = (self.session.data_offset + res.rows.len()).min(total as usize);
-                let info = format!(
-                    "{}.{}   ·   rows {from}–{to} of {total}",
-                    relation.schema, relation.name
-                );
-                let iy = centred(tr, &info, 13.0);
-                tr.draw_text(
-                    scene,
-                    &info,
-                    13.0,
-                    theme.text_primary,
-                    t * Affine::translate((toolbar.x0 + 12.0, iy)),
-                    None,
-                );
-                self.data_grid.draw(scene, t, tr, theme, res);
-            }
-            _ => {
-                let hint = "Select a table in the schema browser to view its rows.";
-                let hy = centred(tr, hint, 14.0);
-                tr.draw_text(
-                    scene,
-                    hint,
-                    14.0,
-                    theme.text_dim,
-                    t * Affine::translate((toolbar.x0 + 12.0, hy)),
-                    None,
-                );
-            }
+        if let (Some(relation), Some(res)) =
+            (&self.session.selected_relation, &self.session.data_result)
+        {
+            let total = self.session.selected_table_rows();
+            let from = self.session.data_offset + 1;
+            let to = (self.session.data_offset + res.rows.len()).min(total as usize);
+            let info = format!(
+                "{}.{}   ·   rows {from}–{to} of {total}",
+                relation.schema, relation.name
+            );
+            let iy = centred(tr, &info, 13.0);
+            tr.draw_text(
+                scene,
+                &info,
+                13.0,
+                theme.text_primary,
+                t * Affine::translate((toolbar.x0 + 12.0, iy)),
+                None,
+            );
+            self.data_grid.draw(scene, t, tr, theme, res);
+        } else {
+            let hint = "Select a table in the schema browser to view its rows.";
+            let hy = centred(tr, hint, 14.0);
+            tr.draw_text(
+                scene,
+                hint,
+                14.0,
+                theme.text_dim,
+                t * Affine::translate((toolbar.x0 + 12.0, hy)),
+                None,
+            );
         }
     }
 
@@ -4568,6 +4570,10 @@ mod behavior_tests {
     }
 
     #[test]
+    #[expect(
+        clippy::float_cmp,
+        reason = "layout reproduces authored whole-pixel sizes and their sums exactly in binary floating point; exact equality is what the test checks"
+    )]
     fn divider_drag_preserves_requested_height_state_and_query_models() {
         let (mut app, mut doc) = synced();
         lay_out(&mut app, 1200.0, 800.0);
@@ -4642,6 +4648,14 @@ mod behavior_tests {
     }
 
     #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one keyboard-resize scenario whose steps depend on the previous layout, read top to bottom"
+    )]
+    #[expect(
+        clippy::float_cmp,
+        reason = "layout reproduces authored whole-pixel sizes and their sums exactly in binary floating point; exact equality is what the test checks"
+    )]
     fn divider_keyboard_semantics_and_context_reset_share_the_manual_height() {
         let (mut app, mut doc) = synced();
         lay_out(&mut app, 1200.0, 800.0);
@@ -4789,6 +4803,10 @@ mod behavior_tests {
     }
 
     #[test]
+    #[expect(
+        clippy::float_cmp,
+        reason = "layout reproduces authored whole-pixel sizes and their sums exactly in binary floating point; exact equality is what the test checks"
+    )]
     fn host_routes_named_divider_focus_keyboard_and_pointer_reset() {
         fn reset_rect(snapshot: &ui::headless::InspectionSnapshot) -> Rect {
             fn find(node: &ui::headless::InspectionNode) -> Option<Rect> {
@@ -4853,6 +4871,10 @@ mod behavior_tests {
     }
 
     #[test]
+    #[expect(
+        clippy::float_cmp,
+        reason = "layout reproduces authored whole-pixel sizes and their sums exactly in binary floating point; exact equality is what the test checks"
+    )]
     fn modified_enter_runs_once_ahead_of_the_open_resize_menu() {
         let app = Box::new(DbClientApp::new_demo());
         let app_ptr = mounted_app(&app);
@@ -4898,6 +4920,10 @@ mod behavior_tests {
 
     #[test]
     fn open_resize_menu_reanchors_and_keeps_every_action_mapped_after_resize() {
+        #[expect(
+            clippy::float_cmp,
+            reason = "the menu is anchored by copying these exact edge coordinates, so equality is the invariant under test"
+        )]
         fn assert_bounded_and_anchored(
             driver: &ui::headless::Driver,
             app: &DbClientApp,

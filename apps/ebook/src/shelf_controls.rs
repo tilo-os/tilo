@@ -218,6 +218,10 @@ impl ShelfControls {
         sort
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the sort menu combines the paint context with viewport, anchor, cursor and the selected sort"
+    )]
     pub(super) fn draw_menu(
         &mut self,
         scene: &mut Scene,
@@ -229,10 +233,10 @@ impl ShelfControls {
         cursor: Point,
         selected: LibrarySort,
     ) {
+        use crate::chrome::{MENU_ROW_H, rhythm};
         if !self.sort_menu_open {
             return;
         }
-        use crate::chrome::{MENU_ROW_H, rhythm};
         let colors = &theme.tokens.colors;
         let width = 190.0_f64.max(anchor.width());
         // Menu rows share the settings menu's pitch: a `MENU_ROW_H` face plus
@@ -356,6 +360,7 @@ mod tests {
 
     #[test]
     fn open_menu_owns_rows_and_gap_swallowing() {
+        use crate::chrome::rhythm;
         let mut controls = ShelfControls::default();
         controls.toggle_sort_menu();
         let anchor = draw(&mut controls, LibraryPrefs::default());
@@ -372,7 +377,6 @@ mod tests {
         // The menu opens a related step under its anchor and pads its rows
         // by another related step: a point inside that top padding is the
         // panel's own (swallowed), a point in the gap above it is nobody's.
-        use crate::chrome::rhythm;
         assert_eq!(
             controls.hit_test(Point::new(
                 anchor.x0,
