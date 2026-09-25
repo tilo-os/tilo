@@ -3737,6 +3737,8 @@ mod tests {
         arrived: Vec<Vec<u8>>,
         left: Vec<Vec<u8>>,
         scrollback_requests: Vec<(Vec<u8>, u64, u32)>,
+        action_publications: Vec<(String, Vec<(String, String)>)>,
+        action_directories: Vec<String>,
     }
 
     /// Shared between the test-thread's tokio `LocalSet` and the caller.
@@ -4042,6 +4044,51 @@ mod tests {
     }
 
     impl channel_handle::Server for FakeChannel {
+        fn publish_actions(
+            self: Rc<Self>,
+            params: channel_handle::PublishActionsParams,
+            _results: channel_handle::PublishActionsResults,
+        ) -> Promise<(), capnp::Error> {
+            let request = params.get().unwrap();
+            let app_id = request.get_app_id().unwrap().to_str().unwrap().to_owned();
+            let actions = request
+                .get_actions()
+                .unwrap()
+                .iter()
+                .map(|action| {
+                    (
+                        action
+                            .get_resource_label()
+                            .unwrap()
+                            .to_str()
+                            .unwrap()
+                            .to_owned(),
+                        action.get_action().unwrap().to_str().unwrap().to_owned(),
+                    )
+                })
+                .collect();
+            self.captures
+                .lock()
+                .unwrap()
+                .action_publications
+                .push((app_id, actions));
+            Promise::ok(())
+        }
+
+        fn publish_action_directory(
+            self: Rc<Self>,
+            params: channel_handle::PublishActionDirectoryParams,
+            _results: channel_handle::PublishActionDirectoryResults,
+        ) -> Promise<(), capnp::Error> {
+            let request = params.get().unwrap();
+            self.captures
+                .lock()
+                .unwrap()
+                .action_directories
+                .push(request.get_app_id().unwrap().to_str().unwrap().to_owned());
+            Promise::ok(())
+        }
+
         fn send(
             self: Rc<Self>,
             params: channel_handle::SendParams,
@@ -5170,6 +5217,50 @@ mod tests {
         let joined = captures.lock().unwrap().joined.clone();
         assert_eq!(joined.len(), 1);
         assert_eq!(joined[0].1, presentation);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn first_frame_publishes_actions_without_input() {
+        let broker = FakeBroker {
+            captures: std::sync::Arc::new(std::sync::Mutex::new(Captures::default())),
+            op_backlog: vec![],
+            presence_backlog: vec![],
+            context_backlog: vec![],
+            scrollback_response: None,
+        };
+        let (fd, captures, _thread) = stand_up_fake_broker(broker);
+        let app_id = crate::collaboration::local_app_id();
+        let manager = CollaborationManager::from_sdk_fd_for_test(fd, &app_id, Uuid::new_v4());
+        let mut app = crate::App::with_collaboration_manager(
+            crate::State::new(),
+            Box::new(crate::widget::Button::new(
+                "complete",
+                "Complete",
+                Some("completed"),
+            )),
+            manager,
+        );
+        assert!(captures.lock().unwrap().action_publications.is_empty());
+        // This calls the production layout/draw passes. No input, palette,
+        // explicit publication, or app-owned action invocation primes the app.
+        crate::app::draw_prepared_component_test_frame(&mut app);
+        assert!(
+            wait_until(
+                || {
+                    let seen = captures.lock().unwrap();
+                    seen.action_directories.iter().any(|id| id == &app_id)
+                        && seen.action_publications.iter().any(|(id, actions)| {
+                            id == &app_id
+                                && actions.iter().any(|(label, action)| {
+                                    label == "Complete" && action == "activate"
+                                })
+                        })
+                },
+                Duration::from_secs(2)
+            ),
+            "the first rendered frame must publish its semantic actions to the broker without input"
+        );
     }
 
     #[test]

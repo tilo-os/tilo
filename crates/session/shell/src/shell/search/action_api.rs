@@ -73,6 +73,17 @@ impl ResourceRef {
     }
 }
 
+/// Semantic identity supplied by the provider independently of its opaque
+/// invocation address and presentation labels.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ActionHierarchy {
+    pub application: String,
+    pub room: String,
+    pub record: String,
+    pub resource: String,
+    pub operation: String,
+}
+
 /// A typed, render-free descriptor of one exported thing. Carries **no**
 /// invoke callback — invoking is a separate step through
 /// [`ActionCatalog::select`], so a survey is side-effect free.
@@ -88,6 +99,7 @@ pub struct ExportedAction {
     /// What an invocation must carry, empty for the nullary majority.
     pub params: Vec<ActionParam>,
     pub contract: Option<tilo_actions::ActionContract>,
+    pub hierarchy: Option<ActionHierarchy>,
 }
 
 /// Permission hook: decides whether a caller may *see* a given resource.
@@ -127,6 +139,7 @@ pub struct ActionCatalog {
     /// Indices into `results` that passed the visibility gate; every public
     /// accessor works through this.
     visible: Vec<usize>,
+    hierarchies: Vec<Option<ActionHierarchy>>,
 }
 
 impl ActionCatalog {
@@ -148,7 +161,7 @@ impl ActionCatalog {
         visibility: &dyn ActionVisibility,
     ) -> Self {
         // Empty `wanted_kinds` ⇒ "any kind" — surveys the whole exported surface.
-        let results = registry.query_exhaustive(&QueryArgs {
+        let args = QueryArgs {
             needle: query,
             scope,
             active_provider_id,
@@ -156,14 +169,24 @@ impl ActionCatalog {
             chrome,
             doc,
             doc_root,
-        });
-        let visible = results
+        };
+        // Remote callers do not open the palette, which normally maintains
+        // retained provider indexes. Start/poll that same asynchronous work
+        // here so subsequent requests can discover cold sources too.
+        registry.refresh_indexes(&args);
+        let results = registry.query_exhaustive(&args);
+        let visible: Vec<usize> = results
             .iter()
             .enumerate()
             .filter(|(_, r)| visibility.can_see(&ResourceRef::new(&r.provider_id, &r.id), &r.kind))
             .map(|(i, _)| i)
             .collect();
-        Self { results, visible }
+        let hierarchies = Self::resolve_hierarchies(registry, &results, &visible);
+        Self {
+            results,
+            visible,
+            hierarchies,
+        }
     }
 
     /// Resolve one exact address through its owning provider. Remote
@@ -198,7 +221,7 @@ impl ActionCatalog {
             .query_provider_exact(provider, id, &args)
             .into_iter()
             .collect::<Vec<_>>();
-        let visible = results
+        let visible: Vec<usize> = results
             .iter()
             .enumerate()
             .filter(|(_, result)| {
@@ -209,7 +232,31 @@ impl ActionCatalog {
             })
             .map(|(index, _)| index)
             .collect();
-        Self { results, visible }
+        let hierarchies = Self::resolve_hierarchies(registry, &results, &visible);
+        Self {
+            results,
+            visible,
+            hierarchies,
+        }
+    }
+
+    fn resolve_hierarchies(
+        registry: &SearchRegistry,
+        results: &[SearchResult],
+        visible: &[usize],
+    ) -> Vec<Option<ActionHierarchy>> {
+        let mut hierarchies = vec![None; results.len()];
+        for &index in visible {
+            let Some((result, hierarchy)) = results.get(index).zip(hierarchies.get_mut(index))
+            else {
+                continue;
+            };
+            *hierarchy = registry
+                .providers_iter()
+                .find(|provider| provider.id() == result.provider_id)
+                .and_then(|provider| provider.action_hierarchy(&result.id));
+        }
+        hierarchies
     }
 
     #[allow(
@@ -242,13 +289,18 @@ impl ActionCatalog {
             )
             .into_iter()
             .collect::<Vec<_>>();
-        let visible = results
+        let visible: Vec<usize> = results
             .iter()
             .enumerate()
             .filter(|(_, result)| visibility.can_see(resource, &result.kind))
             .map(|(index, _)| index)
             .collect();
-        Self { results, visible }
+        let hierarchies = Self::resolve_hierarchies(registry, &results, &visible);
+        Self {
+            results,
+            visible,
+            hierarchies,
+        }
     }
 
     /// Enumerate the typed descriptors the caller may see. Render-free —
@@ -256,8 +308,8 @@ impl ActionCatalog {
     pub fn enumerate(&self) -> Vec<ExportedAction> {
         self.visible
             .iter()
-            .filter_map(|&i| self.results.get(i))
-            .map(|r| ExportedAction {
+            .filter_map(|&i| self.results.get(i).map(|result| (i, result)))
+            .map(|(i, r)| ExportedAction {
                 resource: ResourceRef::new(&r.provider_id, &r.id),
                 kind: r.kind.clone(),
                 operation_kind: r.operation_kind,
@@ -266,6 +318,7 @@ impl ActionCatalog {
                 score: r.score,
                 params: r.params.clone(),
                 contract: r.contract.clone(),
+                hierarchy: self.hierarchies.get(i).cloned().flatten(),
             })
             .collect()
     }
