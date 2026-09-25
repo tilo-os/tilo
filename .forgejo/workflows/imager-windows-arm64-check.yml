@@ -36,10 +36,9 @@ jobs:
       - name: Build Windows adapter, app, and focused test executable
         run: |
           set -euo pipefail
-          # cc-rs otherwise selects clang's GNU driver for ring, while
-          # cargo-xwin supplies MSVC /imsvc flags.
-          export CC_aarch64_pc_windows_msvc=clang-cl
-          export CXX_aarch64_pc_windows_msvc=clang-cl
+          # ring forces clang for Windows ARM64, bypassing cc-rs' CC setting.
+          # Use cargo-xwin's clang backend so its SDK flags match that driver.
+          export XWIN_CROSS_COMPILER=clang
           cargo xwin test -p imager --lib --locked --release \
             --target aarch64-pc-windows-msvc --no-run
           cargo xwin build -p imager --bin imager --locked --release \
