@@ -611,6 +611,10 @@ fn apply_step(state: &mut State, step: Step, now: Instant) -> Result<Reply, Stri
             }
             Ok(Reply::Refreshed)
         }
+        Step::RelayClosed => {
+            state.carrier = None;
+            Ok(Reply::Closed)
+        }
         Step::Left => {
             state.grant = None;
             state.carrier = None;
