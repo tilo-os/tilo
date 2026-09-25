@@ -1317,25 +1317,6 @@ COPY \
     os/usr/lib/systemd/user/tilo-fs-recipient.service \
     os/usr/lib/systemd/user/tilo-fs-recipient.socket \
     /usr/lib/systemd/user/
-RUN chmod 755 /usr/bin/shell /usr/bin/fs /usr/bin/terminal \
-              /usr/bin/file-explorer /usr/bin/tilo-greeter \
-              /usr/bin/tilo-installer /usr/bin/tilo-launcher /usr/bin/tilo-runtime-bundle \
-              /usr/bin/tilo-install /usr/bin/tilo-app-package /usr/libexec/tilo-cli-shim \
-              /usr/libexec/tilo-unlock-helper /usr/libexec/tilo-ush \
-              /usr/libexec/tilo-projector /usr/libexec/tilo-doubletake \
-              /usr/libexec/tilo-doubletake-test-receiver \
-              /usr/libexec/tilo-fluxcast \
-    && { [ ! -e /usr/bin/browser ] || chmod 755 /usr/bin/browser; } \
-    && missing="$(ldd /usr/bin/shell | awk '/not found/ { print $1 }')" \
-    && { if [ -n "$missing" ]; then \
-         printf 'shell has unresolved runtime libraries:\n%s\n' "$missing" >&2; \
-         exit 1; \
-       fi; } \
-    && { /usr/libexec/tilo-doubletake -h >/dev/null \
-         || { echo 'doubletake help smoke test failed' >&2; exit 1; }; } \
-    && { /usr/libexec/tilo-fluxcast --help >/dev/null \
-         || { echo 'fluxcast help smoke test failed' >&2; exit 1; }; }
-
 # Exercise the AirPlay CLI path that ships: PIN pairing, FairPlay setup,
 # encrypted RTSP/video transport and H.264 media into the
 # source-pinned receiver simulator. No receiver hardware or live network is
@@ -1389,6 +1370,28 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setop
     && gst-inspect-1.0 pulsesrc >/dev/null \
     && gst-inspect-1.0 avenc_aac >/dev/null \
     && gst-inspect-1.0 aacparse >/dev/null
+
+# Browser and shell are compiled in one Cargo invocation. The browser's WPE
+# feature can therefore affect shell's dynamic link closure. Check it only
+# after both the WPE files and their runtime RPM dependencies are present.
+RUN chmod 755 /usr/bin/shell /usr/bin/fs /usr/bin/terminal \
+              /usr/bin/file-explorer /usr/bin/tilo-greeter \
+              /usr/bin/tilo-installer /usr/bin/tilo-launcher /usr/bin/tilo-runtime-bundle \
+              /usr/bin/tilo-install /usr/bin/tilo-app-package /usr/libexec/tilo-cli-shim \
+              /usr/libexec/tilo-unlock-helper /usr/libexec/tilo-ush \
+              /usr/libexec/tilo-projector /usr/libexec/tilo-doubletake \
+              /usr/libexec/tilo-doubletake-test-receiver \
+              /usr/libexec/tilo-fluxcast \
+    && { [ ! -e /usr/bin/browser ] || chmod 755 /usr/bin/browser; } \
+    && missing="$(ldd /usr/bin/shell | awk '/not found/ { print $1 }')" \
+    && { if [ -n "$missing" ]; then \
+         printf 'shell has unresolved runtime libraries:\n%s\n' "$missing" >&2; \
+         exit 1; \
+       fi; } \
+    && { /usr/libexec/tilo-doubletake -h >/dev/null \
+         || { echo 'doubletake help smoke test failed' >&2; exit 1; }; } \
+    && { /usr/libexec/tilo-fluxcast --help >/dev/null \
+         || { echo 'fluxcast help smoke test failed' >&2; exit 1; }; }
 
 # ---- Baked signed runtime bundle -------------------------------------------
 # The builder stage produced a signed content-addressed bundle from THIS
