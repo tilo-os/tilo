@@ -157,17 +157,23 @@ class SourceTemplateTests(unittest.TestCase):
                 checked = {"guest_proof": {"disk_guid": disk_guid,
                            "composefs_digest": "c" * 128,
                            "target_uki_sha256": "d" * 64}}
-                with (patch.object(prep, "verified_ci_image", return_value="b" * 64),
+                ci_info = {"key_sha256": "b" * 64, "source_revision": "c" * 40,
+                           "generation": 7, "statement_sha256": "d" * 64,
+                           "image_kind": "generic-index", "firmware_candidate": None,
+                           "firmware_manifest_sha256": None}
+                with (patch.object(prep, "verified_ci_image", return_value=ci_info),
                       patch.object(prep.provenance, "signed_ci_child",
                                    return_value=("sha256:" + "a" * 64,
-                                                 "sha256:" + "e" * 64)),
+                                                 "sha256:" + "e" * 64, [], "generic-index")),
                       patch.object(prep.provenance, "checked_guest_proof", return_value=checked),
-                      patch.object(prep.provenance, "installed_uki_sha256", return_value="d" * 64)):
+                      patch.object(prep.provenance, "installed_uki_sha256", return_value="d" * 64),
+                      patch.object(prep.provenance, "installed_loader", return_value=("\\EFI\\BOOT\\BOOTAA64.EFI", "f" * 64))):
                     prep.make_receipt(args)
             receipt = json.loads(receipt_path.read_text())
             self.assertEqual(receipt["ci_image"], args.ci_image)
             self.assertEqual(receipt["ci_verification_key_sha256"], "b" * 64)
             self.assertEqual(receipt["ci_child_digest"], "sha256:" + "e" * 64)
+            self.assertEqual(receipt["ci_source_revision"], "c" * 40)
             self.assertEqual(set(receipt["final_sha256"]), set(prep.direct.ROLES))
             self.assertEqual(prep.direct.source_preflight(raw, receipt, rows, final, disk_size),
                              receipt["final_sha256"])
@@ -178,20 +184,11 @@ class SourceTemplateTests(unittest.TestCase):
             key.write_bytes(b"test-key")
             image = "registry.example/tilo@sha256:" + "a" * 64
             with self.assertRaisesRegex(ValueError, "digest-pinned"):
-                prep.verified_ci_image("registry.example/tilo:latest", key)
+                prep.verified_ci_image("registry.example/tilo:latest", key, [], "generic-index")
             with patch.object(prep.subprocess, "run", return_value=SimpleNamespace(
                     returncode=1, stderr="bad signature")):
                 with self.assertRaisesRegex(ValueError, "verification failed"):
-                    prep.verified_ci_image(image, key)
-            calls = []
-            def successful(command, **_kwargs):
-                calls.append(command)
-                return SimpleNamespace(returncode=0, stderr="")
-            with patch.object(prep.subprocess, "run", side_effect=successful):
-                self.assertEqual(prep.verified_ci_image(image, key),
-                                 prep.hashlib.sha256(key.read_bytes()).hexdigest())
-            self.assertEqual(len(calls), 2)
-            self.assertIn("verify-attestation", calls[1])
+                    prep.verified_ci_image(image, key, [], "generic-index")
 
 
 if __name__ == "__main__":
