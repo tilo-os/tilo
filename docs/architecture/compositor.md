@@ -141,31 +141,23 @@ The frame builder (`crates/session/shell/src/compositor/frame.rs`) produces one 
    supports one, inline otherwise. It either presents into a winit window
    (winit backend) or schedules a page flip on the DRM output (drm backend).
 
-### Composited frames: GBM render targets, dumb-buffer fallback
+### No fullscreen fast path — none of it exists
 
-On a single output with a normal transform, no colour transform, a hardware
-cursor plane, event-driven page flips, and a renderer on the same PCI
-function as the scanout card, the DRM backend allocates two linear
-XRGB8888 GBM buffer objects with `SCANOUT | RENDERING`, registers them as
-KMS framebuffers (`add_planar_framebuffer`), and imports them into Vulkan as
-render targets (`ui::dmabuf_import`). Vello renders the composited scene
-straight into the back slot and the backend flips to it; a slot stays
-owned by KMS until its page-flip event retires it, so the renderer never
-touches the front or flip-pending slot. When any eligibility check fails
-(`direct_scanout_rejection` in `backend/drm/mod.rs` names the reason in
-the log), or a direct submission fails, presentation falls back to the
-readback path: render, copy to CPU bytes, write the two dumb buffers the
-backend allocates at modeset.
+**There is no direct scanout in this compositor, in any partial form.** A
+fullscreen client pays exactly the same cost as a windowed one: its
+buffer is imported to bytes, drawn into the scene as a full-viewport
+image, and the whole scene is rendered and presented. If you are here
+because you expect a fast path to exist and be disabled, or half-wired,
+or gated behind a flag — it is none of those. Nothing was started.
 
-### No client fullscreen fast path
-
-These are the compositor's own buffers. **A client's buffer is never
-handed to KMS**: a fullscreen client pays exactly the same cost as a
-windowed one — its buffer is imported, drawn into the scene as a
-full-viewport image, and the whole scene is rendered and presented.
-`compositor::gpu_import` imports client dma-bufs via EGL into a GL texture
-that it *reads back to CPU bytes*; that is a path to `peniko::ImageBrush`,
-the opposite direction from scanout.
+**What is absent, concretely.** There is no dmabuf→KMS import anywhere in
+`crates/session/shell/src/compositor/backend/drm/`. `add_framebuffer` is called in
+exactly one place — `scanout.rs`, on the two dumb buffers the backend
+allocates for itself at modeset — and nowhere else. The compositor never
+hands a client's buffer to KMS. `compositor::gpu_import` does import
+client dma-bufs, but via EGL into a GL texture that it *reads back to
+CPU bytes*; that is a path to `peniko::ImageBrush`, the opposite
+direction from scanout.
 
 **What building it entails.** Importing a client dmabuf as a KMS
 framebuffer (`drmModeAddFB2WithModifiers`); negotiating format and
@@ -174,14 +166,17 @@ when the client's allocation changes; holding the buffer alive and
 un-released until the flip that shows it retires, or the client
 overwrites a buffer mid-scanout; and a tested fallback for every case
 where the plane refuses — wrong format, wrong modifier, scaling needed,
-a flip that fails at commit time.
+a flip that fails at commit time. It is a project, not a branch in
+`submit_frame`.
 
-**No client qualification logic is wired either**, deliberately. Deciding
+**No qualification logic is wired either**, deliberately. Deciding
 "does this frame qualify for the short route" (one visible surface,
 covering the output, no chrome overlay, not locked, no notifications, no
-remote cursors) is tractable on its own, but a decision with no route
-behind it is a switch wired to nothing. The decision and the route land
-together.
+remote cursors) is tractable on its own and tempting to land early. It
+was left out because a decision with no route behind it is a switch
+wired to nothing: it reads as progress, it accumulates callers, and the
+first person to implement scanout has to re-derive whether the existing
+predicate was ever right. The decision and the route land together.
 
 The same `FrameBuilder` is used by `cargo run --bin shots -- --mode offscreen|recording` — that's how scenario screenshots and recordings stay byte-identical to the live binary. See `docs/architecture/overview.md` for the e2e infrastructure overview.
 

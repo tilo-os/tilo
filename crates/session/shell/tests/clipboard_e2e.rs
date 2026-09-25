@@ -3469,9 +3469,10 @@ fn files_tab_is_active(compositor: &Compositor) -> bool {
     active
 }
 
-/// Narrow the demo group so a client stays visible while the Files tab is
-/// focused (the demo group is laid out at full output width). Split out of
-/// the drag-and-drop tests below to keep each one short.
+/// Narrow the demo group with the seam-drag gesture so a client stays
+/// visible while the Files tab is focused (the demo group is laid out at
+/// full output width). Split out of the drag-and-drop tests below to keep
+/// each one short.
 fn narrow_demo_group_for_files(compositor: &Compositor) {
     // DnD is the contract under test. Give both groups a deterministic
     // quarter-strip width through the same live + persisted width setter the

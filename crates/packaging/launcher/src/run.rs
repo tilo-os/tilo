@@ -777,18 +777,9 @@ fn system_bundle_tree_is_root_owned(
         !metadata.file_type().is_symlink() && metadata.uid() == 0 && metadata.mode() & 0o022 == 0
     }
 
-    let Ok(root) = root.canonicalize() else {
-        return false;
-    };
-
     // Protect against replacing the otherwise-secure version directory through
     // a writable ancestor, then check every signed file and its subdirectories.
-    // Canonicalise first: Fedora Atomic deliberately exposes `/usr` through a
-    // root-owned symlink into its immutable deployment. Rejecting every
-    // symlink component made a normal rpm-ostree installation impossible to
-    // launch even though the resolved tree and all of its ancestors were
-    // root-owned and non-writable.
-    let mut ancestor = Some(root.as_path());
+    let mut ancestor = Some(root);
     while let Some(path) = ancestor {
         if !secure(path) {
             return false;
@@ -804,9 +795,7 @@ fn system_bundle_tree_is_root_owned(
             return false;
         }
         let mut parent = path.parent();
-        while let Some(dir) =
-            parent.filter(|dir| dir.starts_with(root.as_path()) && *dir != root.as_path())
-        {
+        while let Some(dir) = parent.filter(|dir| dir.starts_with(root) && *dir != root) {
             if !secure(dir) {
                 return false;
             }
@@ -822,85 +811,6 @@ fn system_bundle_tree_is_root_owned(
     _manifest: &runtime_bundle::BundleManifest,
 ) -> bool {
     false
-}
-
-#[cfg(all(test, unix))]
-mod system_bundle_tree_policy_tests {
-    use super::*;
-    use std::os::unix::fs::{MetadataExt, PermissionsExt, symlink};
-
-    fn manifest_for(path: &str) -> runtime_bundle::BundleManifest {
-        runtime_bundle::BundleManifest {
-            version: "test".to_string(),
-            arch: std::env::consts::ARCH.to_string(),
-            root_hash: "00".repeat(32),
-            files: vec![runtime_bundle::BundleFile {
-                path: path.to_string(),
-                hash: "00".repeat(32),
-                size: 1,
-            }],
-            produced_at: 0,
-            publisher_hex: None,
-            signature_hex: None,
-        }
-    }
-
-    #[test]
-    fn immutable_system_bundle_accepts_a_root_owned_symlinked_prefix() {
-        if unsafe { libc::geteuid() } != 0 {
-            return;
-        }
-        // The policy walks every ancestor, so the fixture has to live below
-        // root-owned directories nobody else may write. The build output
-        // tree usually is one when tests run as root; a sticky, world-writable
-        // temporary directory never is, and there the check cannot be modelled.
-        let parent = std::env::current_exe()
-            .ok()
-            .and_then(|exe| exe.parent().map(Path::to_path_buf))
-            .unwrap_or_else(std::env::temp_dir);
-        let ancestors_secure = parent.canonicalize().is_ok_and(|parent| {
-            parent.ancestors().all(|dir| {
-                std::fs::symlink_metadata(dir)
-                    .is_ok_and(|metadata| metadata.uid() == 0 && metadata.mode() & 0o022 == 0)
-            })
-        });
-        if !ancestors_secure {
-            return;
-        }
-        let temp = tempfile::tempdir_in(&parent).expect("temporary root");
-        let deployment = temp.path().join("deployment/usr/lib/tilo-runtime/test");
-        std::fs::create_dir_all(&deployment).expect("deployment tree");
-        // tempfile deliberately creates a private 0700 parent, whereas the
-        // real rpm-ostree deployment is rooted below traversable, immutable
-        // root-owned directories. Model that production ancestry exactly.
-        for directory in [
-            temp.path(),
-            &temp.path().join("deployment"),
-            &temp.path().join("deployment/usr"),
-            &temp.path().join("deployment/usr/lib"),
-            &temp.path().join("deployment/usr/lib/tilo-runtime"),
-            &deployment,
-        ] {
-            std::fs::set_permissions(directory, std::fs::Permissions::from_mode(0o755))
-                .expect("immutable deployment directory permissions");
-        }
-        std::fs::write(deployment.join("bundle.toml"), "manifest").expect("manifest");
-        std::fs::write(deployment.join("payload"), b"x").expect("payload");
-        symlink(temp.path().join("deployment/usr"), temp.path().join("usr"))
-            .expect("atomic-style usr link");
-
-        let root = temp.path().join("usr/lib/tilo-runtime/test");
-        assert!(system_bundle_tree_is_root_owned(
-            &root,
-            &manifest_for("payload")
-        ));
-        assert_eq!(
-            std::fs::symlink_metadata(temp.path().join("usr"))
-                .expect("link metadata")
-                .uid(),
-            0
-        );
-    }
 }
 
 /// A single-entry trust list is the pin handed to

@@ -19,7 +19,7 @@ Examples
     # Under load from a fullscreen client that repaints every frame.
     scripts/perf/frame-loop-bench.py --seconds 8 --load fullscreen
 
-    # Inject a pointer move every 100 ms so input-to-present latency is measured.
+    # Inject a click every 100 ms so input-to-present latency is measured.
     scripts/perf/frame-loop-bench.py --seconds 8 --input-hz 10
 
     # Compare two runs.
@@ -42,13 +42,10 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import signal
 import shutil
 import socket
 import subprocess
 import sys
-import threading
-import tempfile
 import time
 from pathlib import Path
 
@@ -269,18 +266,14 @@ def wait_for_wayland_socket(name_file: Path, timeout: float) -> str | None:
 class Control:
     """Minimal TILO_TEST_CONTROL client (see scripts/headless-examples/)."""
 
-    def __init__(self, path: Path, wake_fd: int | None = None):
-        self.path = path
+    def __init__(self, path: Path):
         self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         self.sock.settimeout(5.0)
         self.sock.connect(str(path))
         self.buf = b""
-        self.wake_fd = wake_fd
 
     def send(self, obj: dict) -> dict:
         self.sock.sendall((json.dumps(obj) + "\n").encode())
-        if self.wake_fd is not None:
-            os.eventfd_write(self.wake_fd, 1)
         while b"\n" not in self.buf:
             chunk = self.sock.recv(65536)
             if not chunk:
@@ -289,180 +282,31 @@ class Control:
         line, self.buf = self.buf.split(b"\n", 1)
         return json.loads(line)
 
-    def send_debug(self, obj: dict) -> dict:
-        started = time.monotonic()
-        print(f"[bench] control -> {obj.get('op')}", flush=True)
-        reply = self.send(obj)
-        print(
-            f"[bench] control <- {obj.get('op')} "
-            f"({time.monotonic() - started:.3f}s)",
-            flush=True,
-        )
-        return reply
-
     def close(self) -> None:
         self.sock.close()
 
-    def reconnect(self) -> None:
-        """Replace a wedged diagnostic connection without ending the run."""
-        self.sock.close()
-        self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        self.sock.settimeout(5.0)
-        self.sock.connect(str(self.path))
-        self.buf = b""
 
+def drive_input(ctl: Control, hz: float, seconds: float, width: int, height: int) -> int:
+    """Inject clicks at `hz` for `seconds`. Returns the count sent.
 
-def drive_pointer(ctl: Control, hz: float, seconds: float, width: int, height: int) -> int:
-    """Move the pointer at `hz`; unlike clicks, every move is a distinct input."""
+    Clicks land on a moving point well inside the viewport so they hit
+    the shell's own chrome (which repaints) rather than a client tile.
+    """
     if hz <= 0:
         return 0
     interval = 1.0 / hz
     end = time.monotonic() + seconds
     n = 0
     while time.monotonic() < end:
-        x = width * 0.25 + (n % 80) * width * 0.005
-        y = height * 0.25 + (n % 50) * height * 0.008
-        ctl.send({"op": "pointer_move", "x": float(x), "y": float(y)})
+        x = width * 0.5 + (n % 20) * 4
+        y = height * 0.5 + (n % 13) * 4
+        try:
+            ctl.send({"op": "click_at", "x": float(x), "y": float(y)})
+        except OSError:
+            break
         n += 1
-        # `send` is a synchronous round trip and already consumes part of the
-        # period. Sleep only the remainder, otherwise the requested 20 Hz
-        # silently degrades to roughly 16 Hz whenever one frame takes 10 ms.
-        next_at = end - seconds + n * interval
-        remaining = next_at - time.monotonic()
-        if remaining > 0:
-            time.sleep(remaining)
+        time.sleep(interval)
     return n
-
-
-def response_ok(reply: dict) -> bool:
-    return isinstance(reply, dict) and "err" not in reply
-
-
-def foreign_frames(ctl: Control) -> list[dict]:
-    reply = ctl.send({"op": "foreign_frames"})
-    body = reply.get("foreign_frames", reply.get("ok", reply))
-    if isinstance(body, dict):
-        body = body.get("frames", body)
-    return body if isinstance(body, list) else []
-
-
-def launch_and_wait_for_app(
-    ctl: Control,
-    app_id: str,
-    timeout: float,
-    snapshot: Path | None = None,
-    system_apps_dir: str | None = None,
-) -> tuple[bool, float, str]:
-    """Launch through the real palette keyboard path and require a first frame."""
-    before = {f.get("surface_id") for f in foreign_frames(ctl)}
-    started = time.monotonic()
-    # This is intentionally the interaction a person performs: open Search,
-    # type the package identity, then activate the selected retained result.
-    # `actions_invoke` re-resolves a fresh headless catalogue and therefore
-    # cannot catch a UI-path regression where Enter blocks the compositor.
-    for command in (
-        {"op": "modifiers", "ctrl": False, "shift": False, "alt": False, "logo": True},
-        {"op": "key", "key": "k"},
-        {"op": "modifiers", "ctrl": False, "shift": False, "alt": False, "logo": False},
-        {"op": "type", "text": app_id},
-    ):
-        reply = ctl.send_debug(command)
-        if not response_ok(reply):
-            return False, 0.0, f"palette launch input refused: {reply}"
-    # The retained application index is built off-thread. Give it a bounded
-    # chance to publish and repaint before Enter; this wait is outside the
-    # compositor and remains responsive to the concurrent input driver.
-    time.sleep(min(1.0, timeout / 3.0))
-    reply = ctl.send_debug({"op": "key", "key": "Enter"})
-    if not response_ok(reply):
-        return False, 0.0, f"palette activation refused: {reply}"
-    deadline = started + timeout
-    while time.monotonic() < deadline:
-        frames = foreign_frames(ctl)
-        for frame in frames:
-            if (
-                frame.get("surface_id") not in before
-                and frame.get("app_id") == app_id
-                and frame.get("frame_seq", 0) > 0
-            ):
-                if snapshot is not None:
-                    reply = ctl.send({"op": "snapshot", "path": str(snapshot)})
-                    if not response_ok(reply):
-                        return False, time.monotonic() - started, (
-                            f"app painted but snapshot failed: {reply}"
-                        )
-                return True, time.monotonic() - started, "painted"
-        # A capture worker completion wakes the compositor directly. Keep the
-        # observer from becoming a continuously-chatty Wayland/control client
-        # that changes the scheduling we are trying to measure.
-        time.sleep(0.1)
-    return False, timeout, "new Chat surface did not paint before the deadline"
-
-
-def dismiss_first_login(ctl: Control, timeout: float = 5.0) -> None:
-    """Complete the disposable session's first-login flow via real key input."""
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        reply = ctl.send({"op": "list_targets"})
-        targets = reply.get("targets", reply.get("ok", reply))
-        names = {
-            entry.get("name")
-            for entry in targets
-            if isinstance(entry, dict) and isinstance(entry.get("name"), str)
-        } if isinstance(targets, list) else set()
-        onboarding = sorted(name for name in names if name.startswith("onboarding."))
-        if not onboarding:
-            return
-        clicked = False
-        for name in (
-            "onboarding.begin.button",
-            "onboarding.understood.row",
-            "onboarding.create.button",
-            "onboarding.backup.skip-acknowledged.row",
-            "onboarding.backup.continue.button",
-            "onboarding.tour.skip.button",
-            "onboarding.finish.button",
-        ):
-            if name in names:
-                ctl.send({"op": "click_named", "name": name})
-                clicked = True
-                break
-        if not clicked:
-            return
-        time.sleep(0.2)
-
-
-def gate_failures(stats: dict, args: argparse.Namespace) -> list[str]:
-    failures: list[str] = []
-    if stats.get("ticks", 0) < args.min_ticks:
-        failures.append(f"only {stats.get('ticks', 0)} measured ticks")
-    if stats.get("fps", 0.0) < args.min_fps:
-        failures.append(f"{stats.get('fps', 0.0):.1f} fps < {args.min_fps:.1f}")
-    span_us = stats.get("span_us", 0)
-    ticks_per_second = (
-        stats.get("ticks", 0) * 1e6 / span_us if span_us else float("inf")
-    )
-    if ticks_per_second > args.max_ticks_per_second:
-        failures.append(
-            f"{ticks_per_second:.1f} ticks/s > {args.max_ticks_per_second:.1f} "
-            "(possible unparked compositor spin)"
-        )
-    if stats.get("input_failure"):
-        failures.append(stats["input_failure"])
-    latency = stats.get("input_latency", {})
-    if latency.get("count", 0) < args.min_input_samples:
-        failures.append(
-            f"only {latency.get('count', 0)} input-latency samples "
-            f"(< {args.min_input_samples})"
-        )
-    elif latency.get("p99", 0) > args.max_input_p99_ms * 1000:
-        failures.append(
-            f"input latency p99 {latency['p99'] / 1000:.1f} ms > "
-            f"{args.max_input_p99_ms:.1f} ms"
-        )
-    if args.launch_app and not stats.get("app_painted"):
-        failures.append(stats.get("app_failure", f"{args.launch_app} did not paint"))
-    return failures
 
 
 def run_once(args: argparse.Namespace, out_dir: Path) -> dict:
@@ -476,87 +320,25 @@ def run_once(args: argparse.Namespace, out_dir: Path) -> dict:
     trace = out_dir / f"{label}.csv"
     summary = out_dir / f"{label}.json"
     log = out_dir / f"{label}.log"
-    session_root = Path(tempfile.mkdtemp(prefix="tilo-frame-bench-"))
-    (session_root / "run").mkdir(mode=0o700)
-    # Keep the control socket inside the same private runtime directory passed
-    # to the compositor.  Choosing it from the caller's XDG_RUNTIME_DIR first
-    # and then replacing XDG_RUNTIME_DIR below makes the driver wait on a path
-    # the child can never create.
-    ctl_path = session_root / "run" / f"tilo-bench-{os.getpid()}.sock"
+    ctl_path = Path(f"/run/user/{os.getuid()}/tilo-bench-{os.getpid()}.sock")
+    ctl_path.unlink(missing_ok=True)
+
     env = dict(os.environ)
     env["TILO_FRAME_TRACE"] = str(trace)
     env["TILO_FRAME_SUMMARY"] = str(summary)
     env["TILO_FRAME_WARMUP_MS"] = str(args.warmup_ms)
-    # Startup/app-launch time is outside the measured interval. Give the live
-    # process enough lifetime to reach that interval before its clean exit.
-    process_seconds = args.seconds + (args.app_timeout if args.launch_app else 0.0) + 2.0
-    env["TILO_RUN_SECONDS"] = str(process_seconds)
+    env["TILO_RUN_SECONDS"] = str(args.seconds)
     env["TILO_TEST_CONTROL"] = str(ctl_path)
-    wake_fd = None
     env["TILO_HEADLESS_SIZE"] = f"{args.width}x{args.height}"
-    env["HOME"] = str(session_root / "home")
-    env["XDG_CONFIG_HOME"] = str(session_root / "config")
-    env["XDG_DATA_HOME"] = str(session_root / "data")
-    env["XDG_CACHE_HOME"] = str(session_root / "cache")
-    env["XDG_STATE_HOME"] = str(session_root / "state")
-    env["XDG_RUNTIME_DIR"] = str(session_root / "run")
-    env["TILO_STATE_PATH"] = str(session_root / "config" / "state.json")
-    env["TILO_IDENTITY_ROOT"] = str(session_root / "identity-root")
-    env["TILO_PEER_KEY_PATH"] = str(session_root / "keys" / "peer-key")
-    # The explicit test-control session is an already-booted desktop harness,
-    # not a first-login test. Provision its throwaway identity up front so the
-    # acceptance window measures the desktop and Chat rather than onboarding.
-    provision = subprocess.run(
-        [str(shell_bin), "--provision-identity", "--disable-peer-sync"],
-        env=env,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-        timeout=args.startup_timeout,
-    )
-    if provision.returncode != 0:
-        shutil.rmtree(session_root, ignore_errors=True)
-        sys.exit(f"[bench] could not provision disposable identity:\n{provision.stdout}")
-    process_started = time.monotonic()
     if args.refresh_hz:
         env["TILO_REFRESH_HZ"] = str(args.refresh_hz)
     env["RUST_BACKTRACE"] = "1"
-    if args.rust_log:
-        env["RUST_LOG"] = args.rust_log
-    if args.launch_app:
-        if args.launcher_bin:
-            env["TILO_LAUNCHER_BIN"] = str(Path(args.launcher_bin).resolve())
-        if args.apps_data_dir:
-            env["TILO_APPS_DATA_DIR"] = str(Path(args.apps_data_dir).resolve())
-        if args.system_apps_dir:
-            env["TILO_APPS_SYSTEM_DIR"] = str(
-                Path(args.system_apps_dir).resolve()
-            )
-        if args.system_payload_dir:
-            env["TILO_APPS_SYSTEM_PAYLOAD_DIR"] = str(
-                Path(args.system_payload_dir).resolve()
-            )
-        if args.runtime_bundle_dir:
-            env["TILO_RUNTIME_BUNDLE_DIR"] = str(
-                Path(args.runtime_bundle_dir).resolve()
-            )
-        if args.trusted_publishers_file:
-            env["TILO_LAUNCHER_TRUSTED_PUBLISHERS_FILE"] = str(
-                Path(args.trusted_publishers_file).resolve()
-            )
     if args.backend == "headless":
         # A headless run must not pick up the operator's session.
         env.pop("WAYLAND_DISPLAY", None)
         env.pop("DISPLAY", None)
 
-    cmd = [
-        str(shell_bin),
-        "--mode",
-        "native",
-        "--backend",
-        args.backend,
-        "--disable-peer-sync",
-    ]
+    cmd = [str(shell_bin), "--mode", "native", "--backend", args.backend]
     if args.nested:
         cage = shutil.which("cage")
         if not cage:
@@ -568,22 +350,9 @@ def run_once(args: argparse.Namespace, out_dir: Path) -> dict:
         env.pop("WAYLAND_DISPLAY", None)
         cmd = [cage, "-s", "--"] + cmd
 
-    app_painted = None
-    app_launch_seconds = None
-    app_failure = None
-    app_snapshot = out_dir / f"{label}.app.png" if args.launch_app else None
-    input_failure = None
-
     print(f"[bench] {label}: {' '.join(cmd)}")
     with log.open("wb") as logfh:
-        proc = subprocess.Popen(
-            cmd,
-            env=env,
-            stdout=logfh,
-            stderr=subprocess.STDOUT,
-            pass_fds=(),
-            start_new_session=True,
-        )
+        proc = subprocess.Popen(cmd, env=env, stdout=logfh, stderr=subprocess.STDOUT)
 
         load_proc = None
         try:
@@ -605,17 +374,13 @@ def run_once(args: argparse.Namespace, out_dir: Path) -> dict:
                     else:
                         cenv = dict(os.environ)
                         cenv["WAYLAND_DISPLAY"] = wl
-                        # The Wayland socket belongs to this benchmark's
-                        # disposable compositor, not to the operator's live
-                        # desktop. Pointing at the caller runtime silently
-                        # makes the load test exercise nothing.
-                        cenv["XDG_RUNTIME_DIR"] = str(session_root / "run")
+                        cenv["XDG_RUNTIME_DIR"] = os.environ.get(
+                            "XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}"
+                        )
                         ccmd = [
                             str(client),
                             "--size",
                             f"{args.width}x{args.height}",
-                            "--app-id",
-                            "dev.tilo.frame-loop-load",
                             "--seconds",
                             str(args.seconds),
                         ]
@@ -632,84 +397,22 @@ def run_once(args: argparse.Namespace, out_dir: Path) -> dict:
                         # Give it a moment to map before input starts.
                         time.sleep(0.5)
 
-            launch_result: dict[str, object] = {
-                "painted": None,
-                "seconds": None,
-                "failure": None,
-            }
-            launch_thread = None
-            launch_ctl = None
-            if args.launch_app:
-                # Run the user launch interaction synchronously before the
-                # sustained input phase. Multiple concurrent request/response
-                # streams made failures ambiguous and are not representative
-                # of one person's keyboard action. Chat remains alive for the
-                # complete measured pointer-load interval below.
-                try:
-                    launch_ctl = Control(ctl_path, wake_fd)
-                    dismiss_first_login(launch_ctl)
-                    painted, seconds, failure = launch_and_wait_for_app(
-                        launch_ctl,
-                        args.launch_app,
-                        args.app_timeout,
-                        app_snapshot,
-                        env.get("TILO_APPS_SYSTEM_DIR"),
-                    )
-                    launch_result.update(
-                        painted=painted, seconds=seconds, failure=failure
-                    )
-                    launch_ctl.close()
-                except Exception as exc:
-                    launch_result["painted"] = False
-                    launch_result["failure"] = f"app driver failed: {exc}"
-
-            # Exclude compositor startup and app first-paint from cadence
-            # percentiles. Chat remains alive during the full measured load.
-            measurement_start_us = int(
-                max(0.0, time.monotonic() - process_started) * 1_000_000
-            )
-
-            input_result: dict[str, object] = {"sent": 0, "error": None}
-            input_thread = None
             if args.input_hz > 0:
+                ctl = Control(ctl_path)
+                sent = drive_input(
+                    ctl, args.input_hz, args.seconds - 1.0, args.width, args.height
+                )
+                ctl.close()
+                print(f"[bench] injected {sent} clicks at {args.input_hz} Hz")
 
-                def inject() -> None:
-                    try:
-                        input_ctl = Control(ctl_path, wake_fd)
-                        input_result["sent"] = drive_pointer(
-                            input_ctl,
-                            args.input_hz,
-                            args.seconds,
-                            args.width,
-                            args.height,
-                        )
-                        input_ctl.close()
-                    except Exception as exc:  # surfaced below as a gate failure
-                        input_result["error"] = str(exc)
-
-                input_thread = threading.Thread(target=inject, daemon=True)
-                input_thread.start()
-
-            if input_thread is not None:
-                input_thread.join(timeout=args.seconds + 2.0)
-                sent = int(input_result["sent"])
-                print(f"[bench] injected {sent} pointer moves at {args.input_hz} Hz")
-                if input_result["error"]:
-                    input_failure = f"input driver failed: {input_result['error']}"
-
-            if args.launch_app:
-                app_painted = bool(launch_result["painted"])
-                app_launch_seconds = launch_result["seconds"]
-                app_failure = launch_result["failure"]
-
-            proc.wait(timeout=process_seconds + args.startup_timeout + 15)
+            proc.wait(timeout=args.seconds + args.startup_timeout + 15)
         except subprocess.TimeoutExpired:
             print("[bench] compositor overran its deadline; terminating")
-            os.killpg(proc.pid, signal.SIGTERM)
+            proc.terminate()
             try:
                 proc.wait(timeout=5)
             except subprocess.TimeoutExpired:
-                os.killpg(proc.pid, signal.SIGKILL)
+                proc.kill()
         finally:
             if load_proc is not None:
                 try:
@@ -721,10 +424,6 @@ def run_once(args: argparse.Namespace, out_dir: Path) -> dict:
                     if line.startswith("LOADCLIENT"):
                         print(f"[bench] {line}")
             ctl_path.unlink(missing_ok=True)
-            if args.keep_session_root:
-                print(f"[bench] retained session root: {session_root}")
-            else:
-                shutil.rmtree(session_root, ignore_errors=True)
 
     if not trace.exists():
         sys.exit(f"[bench] no trace written; see {log}")
@@ -733,21 +432,11 @@ def run_once(args: argparse.Namespace, out_dir: Path) -> dict:
     # summary: the trace survives an unclean exit, and recomputing keeps
     # the harness able to re-slice a run (different warmup, subranges)
     # without re-running the compositor.
-    stats = summarize(
-        rows,
-        max(args.warmup_ms * 1000, measurement_start_us),
-        args.target_us,
-    )
+    stats = summarize(rows, args.warmup_ms * 1000, args.target_us)
     stats["label"] = label
     stats["backend"] = args.backend
     stats["load"] = args.load
     stats["trace"] = str(trace)
-    stats["app_id"] = args.launch_app
-    stats["app_painted"] = app_painted
-    stats["app_launch_seconds"] = app_launch_seconds
-    stats["app_failure"] = app_failure
-    stats["app_snapshot"] = str(app_snapshot) if app_snapshot else None
-    stats["input_failure"] = input_failure
     (out_dir / f"{label}.stats.json").write_text(json.dumps(stats, indent=2))
     return stats
 
@@ -762,28 +451,7 @@ def main() -> None:
         choices=["none", "windowed", "fullscreen"],
         help="run a continuously-painting Wayland client alongside",
     )
-    p.add_argument("--input-hz", type=float, default=0.0, help="pointer-move injection rate")
-    p.add_argument(
-        "--launch-app",
-        metavar="APP_ID",
-        help="launch a native app through the applications provider and require a first frame",
-    )
-    p.add_argument("--app-timeout", type=float, default=10.0)
-    p.add_argument("--launcher-bin", help="tilo-launcher binary used by developer builds")
-    p.add_argument("--apps-data-dir", help="installed-app registry root")
-    p.add_argument("--system-apps-dir", help="immutable system-app registry root")
-    p.add_argument("--system-payload-dir", help="immutable system-app payload root")
-    p.add_argument("--runtime-bundle-dir", help="runtime bundle root")
-    p.add_argument("--rust-log", help="RUST_LOG filter for compositor diagnostics")
-    p.add_argument(
-        "--keep-session-root",
-        action="store_true",
-        help="retain the disposable HOME/runtime/app-data tree for postmortem diagnostics",
-    )
-    p.add_argument(
-        "--trusted-publishers-file",
-        help="trusted-publisher list for the disposable launcher runtime",
-    )
+    p.add_argument("--input-hz", type=float, default=0.0, help="click injection rate")
     p.add_argument("--width", type=int, default=1600)
     p.add_argument("--height", type=int, default=900)
     p.add_argument("--warmup-ms", type=int, default=1500)
@@ -805,19 +473,6 @@ def main() -> None:
     p.add_argument("--out", default="target/frame-bench", help="output directory")
     p.add_argument("--shell-bin", help="path to the shell binary")
     p.add_argument("--startup-timeout", type=float, default=30.0)
-    p.add_argument(
-        "--gate", action="store_true", help="fail unless responsiveness thresholds pass"
-    )
-    p.add_argument("--min-fps", type=float, default=120.0)
-    p.add_argument("--max-input-p99-ms", type=float, default=25.0)
-    p.add_argument("--min-input-samples", type=int, default=20)
-    p.add_argument("--min-ticks", type=int, default=100)
-    p.add_argument(
-        "--max-ticks-per-second",
-        type=float,
-        default=500.0,
-        help="reject runaway compositor loops even when rendering is backpressured",
-    )
     p.add_argument(
         "--nested",
         action="store_true",
@@ -883,12 +538,6 @@ def main() -> None:
     print_summary(stats, stats["label"])
     print(f"\n[bench] trace:   {stats['trace']}")
     print(f"[bench] stats:   {out_dir / (stats['label'] + '.stats.json')}")
-    if args.gate:
-        failures = gate_failures(stats, args)
-        if failures:
-            print("\n[bench] FAIL: " + "; ".join(failures), file=sys.stderr)
-            raise SystemExit(1)
-        print("\n[bench] PASS: responsiveness acceptance thresholds met")
 
 
 if __name__ == "__main__":

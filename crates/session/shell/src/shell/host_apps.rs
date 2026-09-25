@@ -262,12 +262,6 @@ pub fn find(desktop_id: &str) -> Option<HostApp> {
         .map(HostApp::from_entry)
 }
 
-/// Resolve a durable host-app identity. New saves use the exact desktop-file
-/// id, while older state may still carry a window-system identity.
-pub fn resolve(identity: &str) -> Option<HostApp> {
-    find(identity).or_else(|| app_for_window_id(identity))
-}
-
 /// Pure — no I/O, so the exact command is assertable. No
 /// `--workspace-id` and no `--capabilities`: a host app is in no room
 /// and confined by nothing Tilo controls, so passing either would

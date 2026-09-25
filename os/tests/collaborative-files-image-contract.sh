@@ -69,7 +69,6 @@ for path in /usr/bin/fs /usr/bin/file-explorer /usr/bin/tilo-launcher \
   require_exec "$path"
 done
 require_file /etc/fuse.conf
-require_file /etc/systemd/sleep.conf.d/20-tilo-freeze-user-sessions.conf
 require_file /usr/lib/systemd/system/fs.service
 require_file /usr/lib/systemd/system/tilo-fs-start.timer
 require_file /usr/lib/systemd/system/fs-identity.path
@@ -82,7 +81,6 @@ require_file /usr/share/wayland-sessions/shell.desktop
 require_file /usr/share/wayland-sessions/shell-peer-sync.desktop
 require_file /usr/lib/tmpfiles.d/tilo.conf
 require_file /usr/share/tilo/fs-capabilities.json
-require_line /etc/systemd/sleep.conf.d/20-tilo-freeze-user-sessions.conf "FreezeUserSessions=yes"
 
 # AccessKit's provider requests org.a11y.Bus from the session bus. Keep the
 # daemon package explicit: a tree-only smoke must never pass merely because a

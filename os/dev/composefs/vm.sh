@@ -41,13 +41,9 @@ running() { [ -f "$CFS_PID" ] && inenv "kill -0 \$(cat '$CFS_PID') 2>/dev/null";
 chmp() { inenv "printf '%s\n' \"$1\" | socat - 'unix:$CFS_MON'"; }
 
 gsh() {
-  env -u SSH_ASKPASS -u SSH_ASKPASS_REQUIRE \
-    sshpass -p tilo ssh -F /dev/null -p "$CFS_SSH_PORT" \
+  sshpass -p tilo ssh -p "$CFS_SSH_PORT" \
     -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
-    -o ConnectTimeout=5 -o LogLevel=ERROR -o BatchMode=no \
-    -o NumberOfPasswordPrompts=1 -o PreferredAuthentications=password \
-    -o PubkeyAuthentication=no -o KbdInteractiveAuthentication=no \
-    root@127.0.0.1 "$@"
+    -o ConnectTimeout=5 -o LogLevel=ERROR root@127.0.0.1 "$@"
 }
 
 cmd_boot() {

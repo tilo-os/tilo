@@ -27,7 +27,7 @@
 //! a namespace, a capability, or a `dsh` session
 //! ([`crate::profile::Profile::reachable_from_app_launch`] gates every request).
 
-use std::io::{BufRead, BufReader, Read, Write};
+use std::io::{BufRead, BufReader, Write};
 use std::os::fd::FromRawFd;
 use std::os::fd::{AsRawFd, RawFd};
 use std::os::unix::net::{UnixListener, UnixStream};
@@ -558,10 +558,25 @@ fn serve_one(stream: &UnixStream, store: &Store, base: PathBuf) -> anyhow::Resul
     // child already holds its own clones for stdio, so the original can
     // close as soon as the spawn is done.
     drop(slave);
+    let audit = AuditLog::at(store.audit_dir());
+    let done_id = id.clone();
+    std::thread::spawn(move || {
+        let mut child = child;
+        let status = child.wait();
+        audit.append(
+            &crate::audit::AuditRecord::new(&done_id, "ush", "close-session", true).because(
+                match status {
+                    Ok(s) => format!("exit {}", s.code().unwrap_or(-1)),
+                    Err(e) => format!("wait failed: {e}"),
+                },
+            ),
+        );
+    });
+
     reply(
         &mut writer,
         &ServeResponse::Session {
-            session: id.clone(),
+            session: id,
             profile: profile.as_str().to_string(),
         },
         Some(master.as_raw_fd()),
@@ -569,24 +584,6 @@ fn serve_one(stream: &UnixStream, store: &Store, base: PathBuf) -> anyhow::Resul
     // Hold the master open until the app has it: closing before the descriptor
     // is received would hand over a dead terminal.
     drop(master);
-    // The request connection is the lifetime capability for this guest. Keep
-    // the worker attached to it: when Terminal closes (or crashes), its socket
-    // closes and this worker tears down exactly the child it created. Merely
-    // dropping the pty master is insufficient because the PID-namespace init
-    // is allowed to survive a terminal hangup.
-    let _ = reader.read(&mut [0u8; 1]);
-    let mut child = child;
-    let termination = match child.try_wait() {
-        Ok(Some(status)) => format!("exit {}", status.code().unwrap_or(-1)),
-        Ok(None) => match child.kill().and_then(|()| child.wait()) {
-            Ok(status) => format!("terminal closed; exit {}", status.code().unwrap_or(-1)),
-            Err(error) => format!("terminal closed; teardown failed: {error}"),
-        },
-        Err(error) => format!("status failed: {error}"),
-    };
-    AuditLog::at(store.audit_dir()).append(
-        &crate::audit::AuditRecord::new(&id, "ush", "close-session", true).because(termination),
-    );
     Ok(())
 }
 

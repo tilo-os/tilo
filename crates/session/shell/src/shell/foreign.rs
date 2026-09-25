@@ -34,13 +34,13 @@
 //! (single-plane RGBA under `Modifier::Linear`); anything else is **rejected with a visible on-tile message**, never silently blank.
 
 #[cfg(target_os = "linux")]
-use std::os::fd::AsRawFd;
-#[cfg(target_os = "linux")]
 use std::sync::Arc;
 
 use std::collections::HashMap;
 #[cfg(any(test, target_os = "linux"))]
 use std::collections::VecDeque;
+#[cfg(target_os = "linux")]
+use std::os::fd::AsRawFd;
 use std::sync::atomic::{AtomicU64, Ordering};
 #[cfg(target_os = "linux")]
 use std::sync::mpsc::{SyncSender, sync_channel};
@@ -73,9 +73,7 @@ use vello::peniko::{Blob, Extend, Fill, ImageAlphaType, ImageBrush, ImageData, I
 use winit::event::{Modifiers, WindowEvent};
 
 #[cfg(target_os = "linux")]
-use crate::compositor::surface_readback::{
-    OwnedShmFrame, ReadbackError, buffer_to_rgba, owned_shm_to_rgba,
-};
+use crate::compositor::surface_readback::{ReadbackError, buffer_to_rgba};
 use crate::shell::state::{TileContent as ShellTile, WorkspaceTree};
 
 /// Wayland `wl_surface` protocol id, widened — same key space the rest of the compositor uses for foreign surfaces.
@@ -422,76 +420,6 @@ pub struct FrameSnapshot {
     pub seq: u64,
 }
 
-fn composite_child_rgba(root: &mut FrameSnapshot, child: &ForeignEntry, x: i32, y: i32) {
-    if child.rgba.is_empty() || child.width == 0 || child.height == 0 {
-        return;
-    }
-    for child_y in 0..child.height {
-        let destination_y = y.saturating_add(i32::try_from(child_y).unwrap_or(i32::MAX));
-        let Ok(destination_y) = u32::try_from(destination_y) else {
-            continue;
-        };
-        if destination_y >= root.height {
-            continue;
-        }
-        for child_x in 0..child.width {
-            let destination_x = x.saturating_add(i32::try_from(child_x).unwrap_or(i32::MAX));
-            let Ok(destination_x) = u32::try_from(destination_x) else {
-                continue;
-            };
-            if destination_x >= root.width {
-                continue;
-            }
-            let pixel_offset = |row: u32, column: u32, width: u32| {
-                usize::try_from(
-                    row.saturating_mul(width)
-                        .saturating_add(column)
-                        .saturating_mul(4),
-                )
-                .unwrap_or(usize::MAX)
-            };
-            let source = pixel_offset(child_y, child_x, child.width);
-            let destination = pixel_offset(destination_y, destination_x, root.width);
-            let (Some(source), Some(destination)) = (
-                child.rgba.get(source..source.saturating_add(4)),
-                root.rgba
-                    .get_mut(destination..destination.saturating_add(4)),
-            ) else {
-                continue;
-            };
-            let (Ok(&[sr, sg, sb, sa]), Ok([dr, dg, db, da])) = (
-                <&[u8; 4]>::try_from(source),
-                <&mut [u8; 4]>::try_from(destination),
-            ) else {
-                continue;
-            };
-            let alpha = u32::from(sa);
-            let inverse = 255_u32.saturating_sub(alpha);
-            let blend = |over: u8, under: u8| {
-                u8::try_from(
-                    u32::from(over)
-                        .saturating_mul(alpha)
-                        .saturating_add(u32::from(under).saturating_mul(inverse))
-                        / 255,
-                )
-                .unwrap_or(u8::MAX)
-            };
-            *dr = blend(sr, *dr);
-            *dg = blend(sg, *dg);
-            *db = blend(sb, *db);
-            *da = u8::try_from(alpha.saturating_add(u32::from(*da).saturating_mul(inverse) / 255))
-                .unwrap_or(u8::MAX);
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ChildFrame {
-    pub surface: SurfaceId,
-    pub x: i32,
-    pub y: i32,
-}
-
 /// Process-wide capture + placement registry for foreign surfaces.
 ///
 /// A singleton rather than a field threaded through the widget tree,
@@ -500,7 +428,6 @@ pub struct ChildFrame {
 #[derive(Default)]
 pub struct ForeignFrameStore {
     entries: Mutex<HashMap<SurfaceId, ForeignEntry>>,
-    children: Mutex<HashMap<SurfaceId, Vec<ChildFrame>>>,
     /// Total completed buffer imports, of any route. A dmabuf import costs a
     /// GPU readback (or full-frame CPU map), so burst commits are coalesced and
     /// paint only reads the latest completed pixels.
@@ -556,22 +483,11 @@ struct CaptureJob<T> {
 #[cfg(target_os = "linux")]
 type DmabufJob = CaptureJob<Dmabuf>;
 
-#[cfg(target_os = "linux")]
-struct ShmJob {
-    surface: SurfaceId,
-    payload: OwnedShmFrame,
-}
-
 #[derive(Debug)]
 #[cfg(any(test, target_os = "linux"))]
 struct ReadyCapture {
     rgba: Vec<u8>,
-    result: Result<(u32, u32, CaptureRoute), String>,
-}
-
-#[derive(Clone, Copy, Debug)]
-enum CaptureRoute {
-    Dmabuf(DmabufRoute),
+    result: Result<(u32, u32, DmabufRoute), String>,
 }
 
 /// One pending job per surface. A client may commit much faster than a GPU
@@ -618,14 +534,6 @@ struct AsyncDmabufCapture {
     /// frame only after replacing it in the store.
     recycled: Arc<Mutex<HashMap<SurfaceId, Vec<u8>>>>,
     wake: SyncSender<()>,
-    completion_ping: Arc<Mutex<Option<smithay::reexports::calloop::ping::Ping>>>,
-}
-
-#[cfg(target_os = "linux")]
-struct AsyncShmCapture {
-    pending: Arc<Mutex<LatestJobs<ShmJob>>>,
-    wake: SyncSender<()>,
-    completion_ping: Arc<Mutex<Option<smithay::reexports::calloop::ping::Ping>>>,
 }
 
 #[cfg(target_os = "linux")]
@@ -657,8 +565,6 @@ impl AsyncDmabufCapture {
         let worker_completed = Arc::clone(&completed);
         let recycled = Arc::new(Mutex::new(HashMap::new()));
         let worker_recycled = Arc::clone(&recycled);
-        let completion_ping = Arc::new(Mutex::new(None::<smithay::reexports::calloop::ping::Ping>));
-        let worker_completion_ping = Arc::clone(&completion_ping);
         // Capacity one is only a wake edge, never a job queue. The authoritative
         // queue is the latest-only map above, so `try_send` cannot block the
         // compositor even while the worker is stuck on a GPU fence.
@@ -683,10 +589,7 @@ impl AsyncDmabufCapture {
                         {
                             *rgba = previous;
                         }
-                        let result =
-                            decode_dmabuf(&job.payload, rgba).map(|(width, height, route)| {
-                                (width, height, CaptureRoute::Dmabuf(route))
-                            });
+                        let result = decode_dmabuf(&job.payload, rgba);
                         let accepted =
                             store().stage_dmabuf_capture(job.surface, job.token, result, rgba);
                         if !accepted {
@@ -697,13 +600,6 @@ impl AsyncDmabufCapture {
                         }
                         signal_capture_barrier(&job.barrier);
                         mark_capture_complete(job.client, &worker_completed);
-                        if let Some(ping) = worker_completion_ping
-                            .lock()
-                            .unwrap_or_else(std::sync::PoisonError::into_inner)
-                            .as_ref()
-                        {
-                            ping.ping();
-                        }
                     }
                 }
             })
@@ -713,7 +609,6 @@ impl AsyncDmabufCapture {
             completed,
             recycled,
             wake,
-            completion_ping,
         })
     }
 
@@ -773,95 +668,7 @@ impl AsyncDmabufCapture {
 }
 
 #[cfg(target_os = "linux")]
-impl AsyncShmCapture {
-    fn spawn() -> Result<Self, String> {
-        let pending: Arc<Mutex<LatestJobs<ShmJob>>> = Arc::new(Mutex::new(LatestJobs::default()));
-        let worker_pending = Arc::clone(&pending);
-        let completion_ping = Arc::new(Mutex::new(None::<smithay::reexports::calloop::ping::Ping>));
-        let worker_completion_ping = Arc::clone(&completion_ping);
-        let (wake, wakes) = sync_channel::<()>(1);
-        std::thread::Builder::new()
-            .name("tilo-shm-capture".into())
-            .spawn(move || {
-                let mut rgba = Vec::new();
-                while wakes.recv().is_ok() {
-                    loop {
-                        let job = worker_pending
-                            .lock()
-                            .unwrap_or_else(std::sync::PoisonError::into_inner)
-                            .pop();
-                        let Some(job) = job else { break };
-                        match owned_shm_to_rgba(&job.payload, &mut rgba) {
-                            Ok((width, height)) => {
-                                store().publish_rgba(job.surface, &rgba, width, height);
-                            }
-                            Err(error) => {
-                                tracing::warn!(
-                                    target: "shell::compositor::foreign_capture",
-                                    surface_id = job.surface,
-                                    %error,
-                                    "foreign shm readback failed"
-                                );
-                                store().note_failure(job.surface, error.to_string());
-                            }
-                        }
-                        if let Some(ping) = worker_completion_ping
-                            .lock()
-                            .unwrap_or_else(std::sync::PoisonError::into_inner)
-                            .as_ref()
-                        {
-                            ping.ping();
-                        }
-                    }
-                }
-            })
-            .map_err(|error| format!("could not start SHM capture worker: {error}"))?;
-        Ok(Self {
-            pending,
-            wake,
-            completion_ping,
-        })
-    }
-
-    fn enqueue(&self, job: ShmJob) {
-        let replaced = self
-            .pending
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .push(job.surface, job);
-        drop(replaced);
-        let _ = self.wake.try_send(());
-    }
-}
-
-#[cfg(target_os = "linux")]
 static ASYNC_DMABUF_CAPTURE: OnceLock<Result<AsyncDmabufCapture, String>> = OnceLock::new();
-
-#[cfg(target_os = "linux")]
-static ASYNC_SHM_CAPTURE: OnceLock<Result<AsyncShmCapture, String>> = OnceLock::new();
-
-#[cfg(target_os = "linux")]
-pub fn install_completion_ping(ping: &smithay::reexports::calloop::ping::Ping) {
-    for slot in [
-        ASYNC_DMABUF_CAPTURE
-            .get_or_init(AsyncDmabufCapture::spawn)
-            .as_ref()
-            .ok()
-            .map(|worker| &worker.completion_ping),
-        ASYNC_SHM_CAPTURE
-            .get_or_init(AsyncShmCapture::spawn)
-            .as_ref()
-            .ok()
-            .map(|worker| &worker.completion_ping),
-    ]
-    .into_iter()
-    .flatten()
-    {
-        *slot
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(ping.clone());
-    }
-}
 
 /// Clients whose capture barriers changed to released since the last
 /// compositor tick. Keeping the client handle here (instead of looking it up
@@ -945,14 +752,8 @@ impl ForeignFrameStore {
         &self,
         id: SurfaceId,
         buffer: &WlBuffer,
-        capture_token: Option<u64>,
+        dmabuf_token: Option<u64>,
     ) -> CaptureOutcome {
-        if let Some(token) = capture_token {
-            self.with_entry(id, |entry| entry.mapped = true);
-            return self
-                .activate_dmabuf_capture_token(id, token)
-                .unwrap_or(CaptureOutcome::Queued);
-        }
         let shm_result = self.with_entry(id, |e| {
             // A non-null buffer commit maps the xdg surface even when its
             // pixels cannot yet be captured or do not fit its latest
@@ -984,7 +785,9 @@ impl ForeignFrameStore {
             }
             Err(ReadbackError::DmaBufUnsupported) => {
                 if smithay::wayland::dmabuf::get_dmabuf(buffer).is_ok() {
-                    CaptureOutcome::Queued
+                    dmabuf_token
+                        .and_then(|token| self.activate_dmabuf_capture_token(id, token))
+                        .unwrap_or(CaptureOutcome::Queued)
                 } else {
                     let msg = "buffer is neither wl_shm nor dmabuf".to_string();
                     self.note_failure(id, msg.clone());
@@ -1044,30 +847,12 @@ impl ForeignFrameStore {
         }
     }
 
-    #[cfg(target_os = "linux")]
-    pub fn prepare_shm_capture(&self, id: SurfaceId, frame: OwnedShmFrame) -> bool {
-        let worker = ASYNC_SHM_CAPTURE.get_or_init(AsyncShmCapture::spawn);
-        match worker {
-            Ok(worker) => {
-                worker.enqueue(ShmJob {
-                    surface: id,
-                    payload: frame,
-                });
-                true
-            }
-            Err(reason) => {
-                self.note_failure(id, reason.clone());
-                false
-            }
-        }
-    }
-
     #[cfg(any(test, target_os = "linux"))]
     fn stage_dmabuf_capture(
         &self,
         id: SurfaceId,
         token: u64,
-        result: Result<(u32, u32, CaptureRoute), String>,
+        result: Result<(u32, u32, DmabufRoute), String>,
         rgba: &mut Vec<u8>,
     ) -> bool {
         let mut guard = self
@@ -1117,14 +902,15 @@ impl ForeignFrameStore {
                 entry.height = height;
                 entry.seq = entry.seq.wrapping_add(1);
                 entry.last_error = None;
-                let outcome = match route {
-                    CaptureRoute::Dmabuf(route) => CaptureOutcome::Dmabuf {
+                (
+                    CaptureOutcome::Dmabuf {
                         width,
                         height,
                         route,
                     },
-                };
-                (outcome, true, previous)
+                    true,
+                    previous,
+                )
             }
             Err(reason) => {
                 entry.rgba.clear();
@@ -1200,15 +986,6 @@ impl ForeignFrameStore {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         guard.remove(&id);
         drop(guard);
-        let mut children = self
-            .children
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        children.remove(&id);
-        for tree in children.values_mut() {
-            tree.retain(|child| child.surface != id);
-        }
-        drop(children);
         #[cfg(target_os = "linux")]
         if let Some(Ok(worker)) = ASYNC_DMABUF_CAPTURE.get() {
             worker.forget_surface(id);
@@ -1217,22 +994,11 @@ impl ForeignFrameStore {
 
     /// Current frame counter for `id`; `0` when nothing has landed.
     pub fn frame_seq(&self, id: SurfaceId) -> u64 {
-        let children = self
-            .children
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .get(&id)
-            .cloned()
-            .unwrap_or_default();
         let guard = self
             .entries
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let mut seq = guard.get(&id).map_or(0, |e| e.seq);
-        for child in children {
-            seq = seq.wrapping_add(guard.get(&child.surface).map_or(0, |entry| entry.seq));
-        }
-        seq
+        guard.get(&id).map_or(0, |e| e.seq)
     }
 
     /// Whether `id` has committed a non-null buffer and is therefore eligible
@@ -1264,58 +1030,7 @@ impl ForeignFrameStore {
             })
         };
         drop(guard);
-        let mut snapshot = snapshot?;
-        let children = self
-            .children
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .get(&id)
-            .cloned()
-            .unwrap_or_default();
-        let guard = self
-            .entries
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        for child in children {
-            let Some(frame) = guard.get(&child.surface) else {
-                continue;
-            };
-            composite_child_rgba(&mut snapshot, frame, child.x, child.y);
-            snapshot.seq = snapshot.seq.wrapping_add(frame.seq);
-        }
-        drop(guard);
-        Some(snapshot)
-    }
-
-    pub fn set_children(&self, root: SurfaceId, children: Vec<ChildFrame>) {
-        self.children
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .insert(root, children);
-    }
-
-    pub fn child_at(&self, root: SurfaceId, x: f64, y: f64) -> Option<(SurfaceId, f64, f64)> {
-        let children = self
-            .children
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .get(&root)
-            .cloned()?;
-        let entries = self
-            .entries
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        children.iter().rev().find_map(|child| {
-            let frame = entries.get(&child.surface)?;
-            let local_x = x - f64::from(child.x);
-            let local_y = y - f64::from(child.y);
-            (local_x >= 0.0
-                && local_y >= 0.0
-                && local_x < f64::from(frame.width)
-                && local_y < f64::from(frame.height)
-                && frame.mapped)
-                .then_some((child.surface, local_x, local_y))
-        })
+        snapshot
     }
 
     /// Dimensions of the frame currently staged for `id`, without copying
@@ -1582,10 +1297,6 @@ pub struct ForeignSurfaceWidget {
     /// GPU-uploadable copy of the last frame we drew, plus the store sequence it came from.
     cached: Option<ImageData>,
     cached_seq: u64,
-    /// Layout moved or resized the client since the last composed frame.
-    /// Even when the client has not committed new pixels yet, the retained
-    /// scene must be rebuilt so its cached image is drawn into the new rect.
-    placement_dirty: bool,
     /// Stable, human-addressable name so `FrameBuilder::widget_registry` (and the shell's click/rect resolver) can find the tile.
     test_id: String,
     /// The app's own name, resolved on the frame that first needs it.
@@ -1604,7 +1315,6 @@ impl ForeignSurfaceWidget {
             rect: Rect::ZERO,
             cached: None,
             cached_seq: 0,
-            placement_dirty: true,
             test_id: format!("foreign-surface-{surface_id}"),
             name: std::cell::OnceCell::new(),
             preserve_transparency: false,
@@ -1716,13 +1426,7 @@ impl ForeignSurfaceWidget {
     /// leaves it at zero, matching the cache, so the strip is judged
     /// unchanged; the ten-second backstop is only read from a draw — without this the window sits invisible until an unrelated repaint.
     fn awaiting_first_paint(&self) -> bool {
-        // The native paint gate asks `needs_animation_frame` before it calls
-        // `draw`.  Merely reading the old latch here creates a permanent
-        // redraw loop: the first fitting frame is already visible, but only
-        // `presented()` (normally reached from draw) used to settle it.  Judge
-        // the same live rect here so the first client frame produces one
-        // final paint and then lets a static desktop sleep.
-        !store().mark_presented(self.surface_id, self.rect)
+        !store().is_presented(self.surface_id)
     }
 
     /// Destination rect for the client image inside `self.rect`, preserving
@@ -1847,16 +1551,12 @@ impl Widget for ForeignSurfaceWidget {
         };
         let x = origin.x + f64::from(l.location.x);
         let y = origin.y + f64::from(l.location.y);
-        let next_rect = Rect::new(
+        self.rect = Rect::new(
             x,
             y,
             x + f64::from(l.size.width),
             y + f64::from(l.size.height),
         );
-        if self.rect != next_rect {
-            self.rect = next_rect;
-            self.placement_dirty = true;
-        }
         // Publish the laid-out rect so the configure pass can tell the client what resolution to render at — the shell-to-wayland seam.
         if self.rect.width() > 0.0 && self.rect.height() > 0.0 {
             store().note_placement(self.surface_id, self.rect);
@@ -2001,21 +1701,13 @@ impl Widget for ForeignSurfaceWidget {
         self.rect
     }
 
-    /// A pending client frame keeps animation cadence alive. A placement-only
-    /// change is edge-triggered through `needs_redraw` instead, so resizing a
-    /// static client repaints once without creating an idle frame loop.
+    /// A pending frame in the store is the only reason this widget needs a repaint — cheap to poll, `false` when idle, so paint-gating is unaffected.
     fn needs_animation_frame(&self) -> bool {
         self.awaiting_first_paint() || store().frame_seq(self.surface_id) != self.cached_seq
     }
 
     fn needs_redraw(&self) -> bool {
-        self.placement_dirty
-            || self.awaiting_first_paint()
-            || store().frame_seq(self.surface_id) != self.cached_seq
-    }
-
-    fn mark_drawn(&mut self) {
-        self.placement_dirty = false;
+        self.awaiting_first_paint() || store().frame_seq(self.surface_id) != self.cached_seq
     }
 }
 
@@ -2400,46 +2092,6 @@ mod tests {
     }
 
     #[test]
-    fn snapshot_composites_positioned_children_with_alpha_and_clipping() {
-        let frames = ForeignFrameStore::default();
-        let root = sid(70);
-        let child = sid(71);
-        frames.publish_rgba(root, &[10, 20, 30, 255].repeat(9), 3, 3);
-        frames.publish_rgba(
-            child,
-            &[
-                250, 0, 0, 255, 0, 250, 0, 128, 0, 0, 250, 255, 250, 250, 0, 255,
-            ],
-            2,
-            2,
-        );
-        frames.set_children(
-            root,
-            vec![ChildFrame {
-                surface: child,
-                x: 2,
-                y: 1,
-            }],
-        );
-
-        let snapshot = frames.snapshot(root).expect("composited root frame");
-        let pixel = |x: usize, y: usize| &snapshot.rgba[(y * 3 + x) * 4..][..4];
-        assert_eq!(pixel(0, 0), &[10, 20, 30, 255]);
-        assert_eq!(pixel(2, 1), &[250, 0, 0, 255]);
-        assert_eq!(pixel(2, 2), &[0, 0, 250, 255]);
-        assert_eq!(snapshot.rgba.len(), 3 * 3 * 4, "child is clipped to root");
-        let first_seq = frames.frame_seq(root);
-        frames.publish_rgba(child, &[1, 2, 3, 255].repeat(4), 2, 2);
-        assert_ne!(
-            frames.frame_seq(root),
-            first_seq,
-            "child damage repaints root"
-        );
-        assert_eq!(frames.child_at(root, 2.25, 1.5), Some((child, 0.25, 0.5)));
-        assert_eq!(frames.child_at(root, 0.5, 0.5), None);
-    }
-
-    #[test]
     #[cfg(target_os = "linux")]
     fn capture_barrier_release_is_visible_across_clones() {
         let barrier = Barrier::new(false);
@@ -2456,21 +2108,11 @@ mod tests {
         });
 
         let mut stale = vec![1, 2, 3, 4];
-        frames.stage_dmabuf_capture(
-            id,
-            1,
-            Ok((1, 1, CaptureRoute::Dmabuf(DmabufRoute::Gpu))),
-            &mut stale,
-        );
+        frames.stage_dmabuf_capture(id, 1, Ok((1, 1, DmabufRoute::Gpu)), &mut stale);
         assert!(frames.snapshot(id).is_none());
 
         let mut latest = vec![5, 6, 7, 8];
-        frames.stage_dmabuf_capture(
-            id,
-            2,
-            Ok((1, 1, CaptureRoute::Dmabuf(DmabufRoute::Gpu))),
-            &mut latest,
-        );
+        frames.stage_dmabuf_capture(id, 2, Ok((1, 1, DmabufRoute::Gpu)), &mut latest);
         assert!(
             frames.snapshot(id).is_none(),
             "pending pixels must not become current before commit application"
@@ -2498,12 +2140,7 @@ mod tests {
             entry.capture_tokens.extend([3, 4]);
         });
         let mut newest = vec![9, 8, 7, 6];
-        frames.stage_dmabuf_capture(
-            id,
-            4,
-            Ok((1, 1, CaptureRoute::Dmabuf(DmabufRoute::Gpu))),
-            &mut newest,
-        );
+        frames.stage_dmabuf_capture(id, 4, Ok((1, 1, DmabufRoute::Gpu)), &mut newest);
 
         assert!(
             frames.activate_dmabuf_capture(id).is_none(),
@@ -2525,12 +2162,7 @@ mod tests {
         let id = sid(103);
         frames.with_entry(id, |entry| entry.capture_tokens.push_back(42));
         let mut pixels = vec![7, 7, 7, 7];
-        assert!(frames.stage_dmabuf_capture(
-            id,
-            42,
-            Ok((1, 1, CaptureRoute::Dmabuf(DmabufRoute::Gpu))),
-            &mut pixels,
-        ));
+        assert!(frames.stage_dmabuf_capture(id, 42, Ok((1, 1, DmabufRoute::Gpu)), &mut pixels,));
 
         assert!(
             frames.activate_dmabuf_capture_token(id, 41).is_none(),
@@ -2552,12 +2184,7 @@ mod tests {
         frames.forget(id);
 
         let mut pixels = vec![1, 2, 3, 4];
-        frames.stage_dmabuf_capture(
-            id,
-            7,
-            Ok((1, 1, CaptureRoute::Dmabuf(DmabufRoute::Gpu))),
-            &mut pixels,
-        );
+        frames.stage_dmabuf_capture(id, 7, Ok((1, 1, DmabufRoute::Gpu)), &mut pixels);
         assert!(frames.snapshot(id).is_none());
         assert_eq!(frames.frame_seq(id), 0);
     }
@@ -2762,56 +2389,6 @@ mod tests {
             store().mark_presented(id, dragged),
             "the window is on screen; a resize does not take it away",
         );
-        store().forget(id);
-    }
-
-    #[test]
-    fn moving_a_static_foreign_surface_requests_one_repaint() {
-        use std::collections::HashMap;
-        use taffy::prelude::TaffyMaxContent;
-        use ui::widget::TaffyTreeExt;
-
-        let id = sid(430);
-        store().forget(id);
-        store().publish_rgba(id, &vec![0; 1200 * 800 * 4], 1200, 800);
-        let mut widget = ForeignSurfaceWidget::new(id, "dev.tilo.static".into());
-
-        let mut taffy = TaffyTree::<()>::new();
-        let mut nodes: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-        let node = widget.build_layout(&mut taffy, &Theme::dark(), &mut nodes);
-        let root = taffy.parent_node(
-            taffy::Style {
-                size: taffy::Size {
-                    width: taffy::Dimension::length(1200.0),
-                    height: taffy::Dimension::length(800.0),
-                },
-                ..Default::default()
-            },
-            &[node],
-        );
-        taffy
-            .compute_layout(root, taffy::Size::MAX_CONTENT)
-            .unwrap();
-        widget.apply_layout(&taffy, node, Point::ZERO);
-        assert!(widget.needs_redraw(), "first placement must paint");
-        assert!(
-            widget.refresh_cache(),
-            "the first draw consumes the staged client frame",
-        );
-        widget.mark_drawn();
-        assert!(!widget.needs_redraw(), "an unchanged static client idles");
-
-        widget.apply_layout(&taffy, node, Point::new(248.0, 136.0));
-        assert!(
-            widget.needs_redraw(),
-            "moving cached client pixels must invalidate the retained scene",
-        );
-        assert!(
-            !widget.needs_animation_frame(),
-            "a placement edge repaints once rather than starting an animation loop",
-        );
-        widget.mark_drawn();
-        assert!(!widget.needs_redraw());
         store().forget(id);
     }
 
@@ -3025,14 +2602,11 @@ mod tests {
         );
         store().publish_rgba(id, &[255, 0, 0, 255], 1, 1);
         assert!(
-            !w.awaiting_first_paint(),
-            "the paint gate itself must settle a fitting first frame; native asks it before draw"
-        );
-        assert!(
             w.needs_animation_frame(),
             "a fresh frame requests a repaint"
         );
         assert!(w.refresh_cache(), "cache picks up the new frame");
+        assert!(w.presented(), "a frame that fits the tab is on screen");
         assert!(
             !w.needs_animation_frame(),
             "once drawn, an idle client must not keep the paint loop awake"

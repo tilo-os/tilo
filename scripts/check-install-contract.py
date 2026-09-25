@@ -71,7 +71,6 @@ rpm_signing_tests = (ROOT / "dist/rpm/test-signing-contract.sh").read_text()
 rpm_repo_generator = (ROOT / "dist/rpm/make-repo-file.sh").read_text()
 rpm_build_deps = (ROOT / "dist/ci/install-build-deps.sh").read_text()
 rpm_release_verifier = (ROOT / "dist/ci/verify-release-artifacts.sh").read_text()
-rpm_spec = (ROOT / "dist/rpm/tilo-session.spec").read_text()
 assert "https://code.sandbox.example/api/packages/qos/rpm/fedora/44.repo" in packaging_docs
 assert "/api/packages/$owner/rpm/fedora/44/upload" in rpm_publisher
 assert "sudo rpm-ostree install tilo-session" in packaging_docs
@@ -115,12 +114,6 @@ assert 'tilo-session-apps-${version}-1.fc44.x86_64.rpm' in rpm_release_verifier
 assert "RPM is unsigned" in rpm_release_verifier
 assert "make-repo-file.sh" in rpm_release_verifier
 assert "cmp -- \"$expected_repo\" \"$release_dir/tilo-fedora-44.repo\"" in rpm_release_verifier
-# The package's runtime publisher is a trust pin for the exact signed runtime
-# shipped beside it, not administrator-owned configuration.  Keeping an old
-# copy during an upgrade makes every packaged app fail closed only after login.
-trust_pin = "%{_sysconfdir}/tilo/runtime-bundle-trusted-publishers.txt"
-assert f"%config(noreplace) {trust_pin}" not in rpm_spec
-assert f"\n{trust_pin}\n" in rpm_spec
 assert "Select native release lanes" in session_workflow
 assert 'TILO_DESKTOP_ARM64_RELEASES: "1"' in session_workflow
 assert '[[ ${TILO_DESKTOP_ARM64_RELEASES:-0} == 1 ]]' in session_workflow

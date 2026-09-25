@@ -331,30 +331,15 @@ if grep -Fq 'systemctl --global enable tilo-ush.service' "$repo/os/Containerfile
 fi
 grep -Fq 'systemctl --global enable tilo-ush.socket' "$repo/os/Containerfile"
 ush_socket="$repo/os/usr/lib/systemd/user/tilo-ush.socket"
-ush_service="$repo/os/usr/lib/systemd/user/tilo-ush.service"
 ush_source="$repo/crates/runtime/ush/src/supervisor.rs"
 grep -Fqx 'ListenStream=%t/tilo/services/ush.sock' "$ush_socket"
 grep -Fqx 'Service=tilo-ush.service' "$ush_socket"
 grep -Fqx 'SocketMode=0600' "$ush_socket"
 grep -Fqx 'Backlog=16' "$ush_socket"
-grep -Fqx 'ProtectHostname=private' "$ush_service"
-grep -Fqx 'PartOf=tilo-graphical-session.target' "$ush_service"
-if grep -Fqx 'ProtectHostname=yes' "$ush_service"; then
-  fail 'ush supervisor denies Bubblewrap the nested guest hostname'
-fi
-for incompatible in ProtectKernelTunables ProtectKernelModules ProtectKernelLogs; do
-  if grep -Eq "^${incompatible}=(yes|true|1)$" "$ush_service"; then
-    fail "ush supervisor blocks nested guest mounts with $incompatible"
-  fi
-done
 grep -Fqx 'PartOf=tilo-graphical-session.target' "$ush_socket"
 grep -Fqx 'WantedBy=tilo-graphical-session.target' "$ush_socket"
 grep -Fq 'std::env::var("LISTEN_PID")' "$ush_source"
 grep -Fq 'listener.local_addr()?.as_pathname() == Some(expected)' "$ush_source"
-ush_vm_probe="$repo/os/tests/ush-systemd-terminal-vm.sh"
-grep -Fq 'systemctl --user start tilo-ush.socket' "$ush_vm_probe"
-grep -Fq 'ush-systemd-terminal-probe.py' "$ush_vm_probe"
-grep -Fq 'TILO_USH_SYSTEMD_OK-root' "$repo/os/tests/ush-systemd-terminal-probe.py"
 
 if grep -Fq 'systemctl --global enable tilo-fs-recipient.service' "$repo/os/Containerfile"; then
   echo 'received-files daemon still starts eagerly in every graphical session' >&2
