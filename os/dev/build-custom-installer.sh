@@ -168,13 +168,13 @@ gib=$((1024 * 1024 * 1024))
 root_gib=$(((image_bytes * 3 + gib - 1) / gib))
 [ "$root_gib" -ge 40 ] || root_gib=40
 if [ -n "$OFFLINE_TARGET_DIR" ]; then
-  # The target OCI archive lives in /var of the live medium, in addition to
-  # bootc's own image tree and working storage. Reserve its actual byte count
-  # before partitioning instead of hoping the default 40 GiB floor is enough.
+  # The target OCI archive lives in /var of the live medium, and podman load
+  # materializes a second copy into container storage during installation.
+  # Reserve both from the actual transported bytes before partitioning.
   offline_bytes="$(du -sb "$OFFLINE_TARGET_DIR" | awk '{print $1}')"
   offline_gib=$(((offline_bytes + gib - 1) / gib))
-  root_gib=$((root_gib + offline_gib + 4))
-  msg "   reserving ${offline_gib}G OCI target transport plus 4G slack in live /var"
+  root_gib=$((root_gib + offline_gib * 2 + 4))
+  msg "   reserving 2x ${offline_gib}G for OCI target transport/import plus 4G slack in live /var"
 fi
 rootfs=btrfs
 if [ "$COMPACT_EXT4" = 1 ]; then
