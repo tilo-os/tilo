@@ -548,6 +548,7 @@ pub struct App {
     actions: ActionRuntime,
     document_history: Box<crate::standalone_history_host::StandaloneHistoryHost>,
     history_chrome_enabled: bool,
+    native_document_chrome: bool,
     history_layout: Option<crate::standalone_history_host::HostHistoryLayout>,
     history_viewport_width: f64,
     history_focus_pending: bool,
@@ -1278,6 +1279,7 @@ impl App {
             actions: ActionRuntime::new(),
             document_history: Box::new(crate::standalone_history_host::StandaloneHistoryHost::new()),
             history_chrome_enabled: false,
+            native_document_chrome: true,
             history_layout: None,
             history_viewport_width: 1000.0,
             history_focus_pending: false,
@@ -1534,6 +1536,7 @@ impl App {
                 },
             },
             params: action.params().to_vec(),
+            view: tilo_actions::ResourceViewDescriptor::declared_for(resource, &action.id),
         }
     }
 }

@@ -61,3 +61,7 @@ class TypingEffectsTests(unittest.TestCase):
             effects[0]['before']['offset_y'] = value
             with self.subTest(value=value), self.assertRaises(ValueError):
                 validate_typing_effects(scenario, lines(), expected_offset_y=0.0)
+
+
+if __name__ == "__main__":
+    unittest.main()
