@@ -1903,6 +1903,7 @@ impl CallbackBinding {
         if bracket.is_none() && !commit {
             return Ok(false);
         }
+        let keep_open = widget.keeps_undo_step_open();
         let context = widget.take_commit_context();
         let metadata = widget.get_state();
         let handle = ACTIVE
@@ -1953,7 +1954,11 @@ impl CallbackBinding {
                 }
             }
         }
-        self.finish_action_boundary(doc)?;
+        // A step the widget keeps open closes at its next boundary, or
+        // before an undo, a save or a merge.
+        if !keep_open {
+            self.finish_action_boundary(doc)?;
+        }
         // Arbitrary widget delivery happens after releasing the frame borrow.
         widget.on_commit();
         Ok(true)

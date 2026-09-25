@@ -114,6 +114,29 @@ fn named_actor(prefix: &str) -> Option<String> {
 }
 
 fn main() {
+    // The live editor runs on the app framework: the document is a hosted
+    // record with history, per-author undo and permissions. Opening a file
+    // by path and the scenario captures (which stage view state directly on
+    // a standalone editor) keep the standalone path.
+    let mut args = std::env::args().skip(1);
+    let mut standalone = false;
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            // The framework's own option and its value.
+            "--data-dir" => {
+                args.next();
+            }
+            "--shots" | "--responsive-matrix" | "--native-audit" | "--headless" => {
+                standalone = true;
+            }
+            file if !file.starts_with('-') => standalone = true,
+            _ => {}
+        }
+    }
+    if !standalone {
+        ui::framework::run::<word_processor::framework::WordProcessorApp>();
+        return;
+    }
     ui::launch::run_or_exit(
         &LaunchSpec::new_with_args("so.tilo.word-processor", live_root)
             .max_positionals(1)
