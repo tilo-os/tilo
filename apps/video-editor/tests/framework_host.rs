@@ -26,17 +26,18 @@ fn a_typed_edit_through_the_door_reaches_the_timeline() {
     assert!(!stored.clips.is_empty());
 }
 
+fn walk(resource: &tilo_actions::Resource, ids: &mut Vec<String>) {
+    ids.push(resource.id.0.clone());
+    for child in &resource.children {
+        walk(child, ids);
+    }
+}
+
 #[test]
 fn the_surface_keeps_publishing_its_own_resource_tree() {
     let mut app = with_sample();
     let resources = app.harness().resources();
     let mut ids = Vec::new();
-    fn walk(resource: &tilo_actions::Resource, ids: &mut Vec<String>) {
-        ids.push(resource.id.0.clone());
-        for child in &resource.children {
-            walk(child, ids);
-        }
-    }
     for resource in &resources {
         walk(resource, &mut ids);
     }
