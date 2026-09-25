@@ -116,6 +116,7 @@ extern crate self as tilo_ui;
 pub(crate) mod application_test_support;
 
 pub mod app;
+pub mod auth_backdrop;
 pub mod background;
 pub mod caps_lock;
 pub mod capture;

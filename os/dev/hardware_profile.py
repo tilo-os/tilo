@@ -12,6 +12,7 @@ PROFILES_DIR = Path(__file__).resolve().parents[1] / "hardware/profiles"
 DEFINITION_PATH = Path("usr/lib/tilo/hardware-profile-definition.json")
 ARCH_CONFIG = {"x86_64": "CONFIG_X86_64=y", "aarch64": "CONFIG_ARM64=y"}
 FIELDS = {"schema_version", "id", "architecture", "devicetree", "firmware"}
+FIELDS_V2 = FIELDS | {"system_firmware"}
 PROFILE_PATH = Path("usr/lib/tilo/hardware-profile.json")
 PROFILE_FIELDS = {"schema_version", "id", "architecture", "devicetree", "devicetree_sha256", "target_update_ref"}
 DEFAULT_TARGET_IMGREF = "code.sandbox.example/qos/tilo:latest"
@@ -183,9 +184,15 @@ def relative_path(value):
 
 
 def validate_definition(data):
-    if not isinstance(data, dict) or set(data) != FIELDS:
+    if not isinstance(data, dict):
         raise ValueError("hardware definition has missing or unknown fields")
-    if type(data["schema_version"]) is not int or data["schema_version"] != 1:
+    schema = data.get("schema_version")
+    expected_fields = FIELDS if schema == 1 else FIELDS_V2 if schema == 2 else None
+    if expected_fields is None or set(data) != expected_fields:
+        if type(schema) is not int or schema not in (1, 2):
+            raise ValueError("unsupported hardware definition schema")
+        raise ValueError("hardware definition has missing or unknown fields")
+    if type(schema) is not int:
         raise ValueError("unsupported hardware definition schema")
     profile_id(data["id"])
     if data["id"] == "generic":
@@ -208,6 +215,19 @@ def validate_definition(data):
                for other in destinations):
             raise ValueError("hardware firmware destinations must be unique and must not overlap")
         destinations.add(destination)
+    system_firmware = data.get("system_firmware", [])
+    if not isinstance(system_firmware, list) or len(system_firmware) > 256:
+        raise ValueError("hardware definition system firmware must be a bounded path list")
+    system_paths = set()
+    for path in system_firmware:
+        relative_path(path)
+        if any(path == other or path.startswith(other + "/") or other.startswith(path + "/")
+               for other in system_paths):
+            raise ValueError("hardware definition system firmware paths must be unique and must not overlap")
+        if any(path == destination or path.startswith(destination + "/") or destination.startswith(path + "/")
+               for destination in destinations):
+            raise ValueError("system firmware must not overlap local firmware destinations")
+        system_paths.add(path)
     return data
 
 
