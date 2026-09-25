@@ -94,6 +94,14 @@ name = "resource_limits_compat_08"
 path = "tests/resource_limits_compat_08.rs"
 
 [[test]]
+name = "resource_limits_read"
+path = "tests/resource_limits_read.rs"
+
+[[test]]
+name = "resource_limits_storage"
+path = "tests/resource_limits_storage.rs"
+
+[[test]]
 name = "text"
 path = "tests/text.rs"
 
