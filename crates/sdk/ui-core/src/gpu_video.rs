@@ -634,11 +634,16 @@ mod tests {
             let cpu = media::frame::planar_to_rgba(&img, 2, 2);
 
             let u = ConvertUniform::for_colorimetry(colorimetry, PlaneLayout::BiPlanarYuv);
-            let gpu = convert_one(&u, y as f32 / 255.0, cb as f32 / 255.0, cr as f32 / 255.0);
+            let gpu = convert_one(
+                &u,
+                f32::from(y) / 255.0,
+                f32::from(cb) / 255.0,
+                f32::from(cr) / 255.0,
+            );
 
             for (i, name) in ["r", "g", "b"].iter().enumerate() {
                 let gpu_u8 = (gpu[i].clamp(0.0, 1.0) * 255.0 + 0.5) as u8;
-                let delta = gpu_u8 as i32 - cpu[i] as i32;
+                let delta = i32::from(gpu_u8) - i32::from(cpu[i]);
                 assert!(
                     delta.abs() <= 1,
                     "YUV({y},{cb},{cr}) {name}: GPU {gpu_u8} vs CPU {} — the two \
