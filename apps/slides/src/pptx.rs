@@ -543,7 +543,7 @@ fn parse_slide(xml: &str, rels: &HashMap<String, String>, zip: &mut Package<'_>)
             // the text around them.
             Ok(Event::GeneralRef(r)) if in_text => {
                 if let Some(c) = cur.as_mut() {
-                    c.text.extend(qdoc::codecs::resolve_general_ref(&r));
+                    c.text.extend(qdoc_codecs::resolve_general_ref(&r));
                 }
             }
             Ok(Event::End(e)) => match local(e.name().as_ref()) {
@@ -681,7 +681,7 @@ fn parse_notes(xml: &str) -> String {
                 }
             }
             Ok(Event::GeneralRef(r)) if in_text => {
-                notes.extend(qdoc::codecs::resolve_general_ref(&r));
+                notes.extend(qdoc_codecs::resolve_general_ref(&r));
             }
             Ok(Event::End(e)) => match local(e.name().as_ref()) {
                 b"t" => in_text = false,
@@ -731,7 +731,7 @@ fn first_text(xml: &str, wanted: &[u8]) -> Option<String> {
             }
             (Ok(Event::Text(t)), Some(text)) => text.push_str(&t.xml10_content().ok()?),
             (Ok(Event::GeneralRef(g)), Some(text)) => {
-                text.extend(qdoc::codecs::resolve_general_ref(&g));
+                text.extend(qdoc_codecs::resolve_general_ref(&g));
             }
             (Ok(Event::End(_)), Some(_)) => return text,
             (Ok(Event::Eof) | Err(_), _) => return None,
@@ -743,7 +743,7 @@ fn attr(e: &BytesStart<'_>, wanted: &[u8]) -> String {
     e.attributes()
         .flatten()
         .find(|a| local(a.key.as_ref()) == wanted)
-        .and_then(|a| qdoc::codecs::unescape_attr(&a))
+        .and_then(|a| qdoc_codecs::unescape_attr(&a))
         .unwrap_or_default()
 }
 fn attr_num(e: &BytesStart<'_>, wanted: &[u8]) -> f64 {
