@@ -18,24 +18,32 @@ set -euo pipefail
 
 dev_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 vm="$dev_dir/vm.sh"
-medium="${1:?usage: test-installer-cycle.sh INSTALLER_QCOW2 [--out DIRECTORY] [--prepared-alongside|--guided-alongside] [--software-tpm] [--graphics gl|software] [--build-profile-encoder]}"
+medium="${1:?usage: test-installer-cycle.sh INSTALLER_QCOW2 [--out DIRECTORY] [--prepared-alongside|--guided-alongside] [--install-only] [--software-tpm] [--graphics gl|software] [--build-profile-encoder]}"
 shift
 out=""
 install_mode=erase
 software_tpm=0
 graphics=gl
 build_profile_encoder=0
+install_only=0
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --out) out="${2:-}"; shift 2;;
     --prepared-alongside) install_mode=prepared-alongside; shift;;
     --guided-alongside) install_mode=guided-alongside; shift;;
+    --install-only) install_only=1; shift;;
     --software-tpm) software_tpm=1; shift;;
     --build-profile-encoder) build_profile_encoder=1; shift;;
     --graphics) graphics="${2:-}"; [ "$#" -ge 2 ] || exit 2; shift 2;;
     *) printf 'unknown option: %s\n' "$1" >&2; exit 2;;
   esac
 done
+if [ "$install_only" -eq 1 ]; then
+  [ "$install_mode" = guided-alongside ] \
+    || { echo '--install-only requires --guided-alongside' >&2; exit 2; }
+  [[ "${TILO_EXPECTED_INSTALLED_REF:-}" =~ ^code\.podesta\.ai/qos/tilo@sha256:[0-9a-f]{64}$ ]] \
+    || { echo 'TILO_EXPECTED_INSTALLED_REF must pin the separately signed target' >&2; exit 2; }
+fi
 case "$graphics" in
   gl) display_arg=--gl ;;
   software) display_arg=--2d ;;
@@ -300,6 +308,30 @@ PY
       || die "guided Tilo EFI partition has no systemd-boot loader configuration"
     MTOOLS_SKIP_CHECK=1 mattrib -i "$raw@@$((1537 * 1024 * 1024))" "::/EFI/systemd/$systemd_loader" >/dev/null \
       || die "guided Tilo EFI partition has no architecture-matched systemd-boot binary"
+    if [ "$install_only" -eq 1 ]; then
+      local target_composefs target_uki_sha
+      target_composefs="$(python3 - "$run/install-proof.txt" <<'PY'
+import json, pathlib, sys
+line = pathlib.Path(sys.argv[1]).read_text().strip()
+assert line.startswith('TILO_VM_INSTALL_PROOF_V2=')
+print(json.loads(line.split('=', 1)[1])['installed_composefs_digest'])
+PY
+)" || die "guest did not report an installed target composefs digest"
+      [[ "$target_composefs" =~ ^[0-9a-f]{128}$ ]] \
+        || die "guest installed composefs digest is malformed"
+      target_uki_sha="$(MTOOLS_SKIP_CHECK=1 mtype -i "$raw@@$((1537 * 1024 * 1024))" \
+        "::/EFI/Linux/bootc/bootc_composefs-${target_composefs}.efi" \
+        | sha256sum | awk '{print $1}')" \
+        || die "installed target UKI is absent from the target ESP"
+      python3 - "$run/install-proof.txt" "$target_uki_sha" <<'PY' \
+        || die "guest proof UKI hash differs from host-read target ESP"
+import json, pathlib, sys
+proof = json.loads(pathlib.Path(sys.argv[1]).read_text().strip().split('=', 1)[1])
+assert proof['target_uki_sha256'] == sys.argv[2]
+PY
+      printf 'target_uki_sha256=%s\n' "$target_uki_sha" \
+        > "$out/installed-target-esp-readback.txt"
+    fi
     if MTOOLS_SKIP_CHECK=1 mdir -i "$raw@@$((1537 * 1024 * 1024))" ::/loader/entries/tilo-windows.conf >/dev/null 2>&1 \
       || MTOOLS_SKIP_CHECK=1 mdir -i "$raw@@$((1537 * 1024 * 1024))" ::/loader/entries/tilo-linux-fedora.conf >/dev/null 2>&1; then
       die "guided Tilo EFI partition contains an invalid cross-ESP chainloader shortcut"
@@ -466,10 +498,12 @@ printf 'medium=%s\ncustomized_medium=%s\narchitecture=%s\nuser=%s\nhostname=cycl
   "$medium" "$profiled_medium" "$TILO_VM_ARCH" "$TILO_USER" "$unlock" "$install_mode" "$storage" "$graphics" "$encoder_sha" \
   > "$out/scenario.txt"
 
+proof_arg=()
+[ "$install_only" -eq 0 ] || proof_arg=(--install-proof)
 if [ "$software_tpm" -eq 1 ]; then
-  "$vm" boot-installer "$display_arg" --tpm
+  "$vm" boot-installer "$display_arg" --tpm "${proof_arg[@]}"
 else
-  "$vm" boot-installer "$display_arg" --no-tpm
+  "$vm" boot-installer "$display_arg" --no-tpm "${proof_arg[@]}"
 fi
 console="$("$vm" console)"
 ic() { python3 "$dev_dir/installer-console.py" --socket "$console" "$@"; }
@@ -565,6 +599,41 @@ copy_evidence installer
 if [ "$install_mode" != erase ]; then
   verify_alongside_target
   cp "$out/alongside-preservation.txt" "$out/alongside-preservation-before-target-boot.txt"
+fi
+
+if [ "$install_only" -eq 1 ]; then
+  proof_file="$run/install-proof.txt"
+  [ -f "$proof_file" ] && [ ! -L "$proof_file" ] \
+    || die "VM guest did not emit its dedicated install proof"
+  python3 - "$proof_file" "$TILO_EXPECTED_INSTALLED_REF" "$out/guest-install-proof.json" <<'PY'
+import json
+from pathlib import Path
+import re
+import sys
+
+lines = Path(sys.argv[1]).read_text(encoding='utf-8').splitlines()
+if len(lines) != 1 or not lines[0].startswith('TILO_VM_INSTALL_PROOF_V2='):
+    raise SystemExit('VM guest did not emit exactly one v2 install proof')
+proof = json.loads(lines[0].split('=', 1)[1])
+expected = sys.argv[2]
+digest = expected.split('@', 1)[1]
+selected = proof.get('selected_target', {})
+if (proof.get('schema') != 'tilo.vm-install-image-proof.v2'
+        or proof.get('architecture') != 'arm64'
+        or selected.get('target_ref') != expected
+        or selected.get('target_digest') != digest
+        or proof.get('installed_image_digest') != digest
+        or proof.get('installed_update_origin') !=
+        'ostree-unverified-image:docker://' + selected.get('update_origin', '')
+        or proof.get('installed_composefs_digest') != proof.get('composefs_digest')
+        or not re.fullmatch('[0-9a-f]{128}', proof.get('installed_composefs_digest', ''))
+        or not re.fullmatch('[0-9a-f]{64}', proof.get('target_uki_sha256', ''))
+        or set(proof.get('partuuids', {})) != {'efi', 'boot', 'root'}):
+    raise SystemExit('VM install proof differs from independently pinned signed target')
+Path(sys.argv[3]).write_text(json.dumps(proof, sort_keys=True, indent=2) + '\n')
+PY
+  printf 'PASS_INSTALL_ONLY\n' > "$out/verdict.txt"
+  exit 0
 fi
 
 phase=target

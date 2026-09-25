@@ -25,7 +25,9 @@ class ProofTests(unittest.TestCase):
         deploy_etc = root / "state/deploy" / COMPOSEFS / "etc"
         deploy_etc.mkdir(parents=True)
         origin = deploy_etc.parent / (COMPOSEFS + ".origin")
-        origin.write_text("[image]\nmanifest_digest=" + DIGEST + "\n", encoding="utf-8")
+        origin.write_text("[image]\nmanifest_digest=" + DIGEST + "\n"
+                          "[origin]\ncontainer-image-reference=ostree-unverified-image:docker://code.sandbox.example/qos/tilo:latest\n",
+                          encoding="utf-8")
         efi = Path(directory) / "efi"
         uki = efi / "EFI/Linux/target.efi"
         uki.parent.mkdir(parents=True)
@@ -70,7 +72,8 @@ class ProofTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "does not match"):
                     proof.build_proof(args)
             status["status"]["booted"]["image"]["imageDigest"] = DIGEST
-            origin.write_text("[image]\nmanifest_digest=sha256:" + "c" * 64 + "\n")
+            origin.write_text("[image]\nmanifest_digest=sha256:" + "c" * 64 + "\n"
+                              "[origin]\ncontainer-image-reference=ostree-unverified-image:docker://code.sandbox.example/qos/tilo:latest\n")
             with patch.object(proof, "command", side_effect=command):
                 with self.assertRaisesRegex(ValueError, "does not match"):
                     proof.build_proof(args)
@@ -99,11 +102,39 @@ class ProofTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "ARM64"):
                     proof.build_proof(args)
 
+    def test_distinct_signed_medium_and_target(self):
+        with tempfile.TemporaryDirectory() as directory:
+            args, status, origin, command = self.fixture(directory)
+            status["status"]["booted"]["image"]["imageDigest"] = "sha256:" + "c" * 64
+            status["status"]["booted"]["composefs"]["verity"] = "d" * 128
+            target_ref = "code.sandbox.example/qos/tilo@" + DIGEST
+            update_origin = "code.sandbox.example/qos/tilo:lenovo-83ed-" + "e" * 40
+            receipt = Path(directory) / "offline-target.json"
+            receipt.write_text(json.dumps({"schema": "tilo.installer-offline-target.v1",
+                                           "target_ref": target_ref, "target_digest": DIGEST,
+                                           "update_origin": update_origin}))
+            args.offline_target_receipt = receipt
+            origin.write_text("[image]\nmanifest_digest=" + DIGEST + "\n"
+                              "[origin]\ncontainer-image-reference=ostree-unverified-image:docker://" + update_origin + "\n")
+            with patch.object(proof, "command", side_effect=command):
+                result = proof.build_proof(args)
+            self.assertEqual(result["schema"], "tilo.vm-install-image-proof.v2")
+            self.assertEqual(result["booted_composefs_digest"], "d" * 128)
+            self.assertEqual(result["installed_composefs_digest"], COMPOSEFS)
+            self.assertEqual(result["selected_target"]["target_ref"], target_ref)
+            self.assertEqual(result["installed_update_origin"],
+                             "ostree-unverified-image:docker://" + update_origin)
+            origin.write_text("[image]\nmanifest_digest=" + DIGEST + "\n"
+                              "[origin]\ncontainer-image-reference=ostree-unverified-image:docker://code.sandbox.example/qos/tilo:latest\n")
+            with patch.object(proof, "command", side_effect=command):
+                with self.assertRaisesRegex(ValueError, "signed offline target"):
+                    proof.build_proof(args)
+
     def test_backend_emits_proof_only_after_encrypted_finish(self):
         backend = (SCRIPT.parent / "tilo-install").read_text(encoding="utf-8")
         prepared = backend.index("VM_INSTALL_PROOF=/run/tilo-installer/vm-install-proof.json")
         finished = backend.index('"$DISK_ENCRYPT" finish "$ENC_LUKS"')
-        emitted = backend.index('proof_line="TILO_VM_INSTALL_PROOF_V1=')
+        emitted = backend.index('proof_line="TILO_VM_INSTALL_PROOF_${proof_version}=')
         self.assertLess(prepared, finished)
         self.assertLess(finished, emitted)
         self.assertIn('VM_INSTALL_PROOF_PORT=/dev/virtio-ports/org.tilo.vm-install-proof', backend)
