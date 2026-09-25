@@ -14517,6 +14517,7 @@ dependencies = [
  "tilo-relay-protocol",
  "tilo-user-identity",
  "tokio",
+ "wire-frame",
 ]
 
 [[package]]

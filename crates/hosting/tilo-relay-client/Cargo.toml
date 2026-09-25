@@ -21,6 +21,7 @@ rand.workspace = true
 serde.workspace = true
 postcard = { workspace = true, features = ["use-std"] }
 thiserror.workspace = true
+wire-frame = { path = "../../system/wire-frame", features = ["postcard", "tokio"] }
 
 [dev-dependencies]
 # Proves a raw Automerge delta is never mistaken for a co-edit payload.
