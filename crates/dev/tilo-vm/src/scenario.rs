@@ -165,16 +165,15 @@ pub fn parse_credentials(bytes: &[u8]) -> Result<Credentials, &'static str> {
     let valid = |value: &str| {
         !value.is_empty()
             && value.len() <= 4096
-            && !value
-                .chars()
-                .any(|character| matches!(character, '\r' | '\n' | '\0'))
-            && !value.trim().is_empty()
+            && value
+                .bytes()
+                .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit())
     };
     if !valid(&input.account_password)
         || !valid(&input.disk_passphrase)
         || input.account_password == input.disk_passphrase
     {
-        return Err("account and disk secrets must be distinct, nonempty single-line values");
+        return Err("account and disk secrets must be distinct lowercase ASCII letters and digits");
     }
     Ok(Credentials {
         account: Secret::new(std::mem::take(&mut input.account_password)),
@@ -234,13 +233,7 @@ pub fn scrub(dir: &Path, secrets: &[&str]) -> std::io::Result<Vec<PathBuf>> {
             }
             let mut bytes = Vec::new();
             std::fs::File::open(entry.path())?.read_to_end(&mut bytes)?;
-            let text = String::from_utf8_lossy(&bytes);
-            if secrets
-                .iter()
-                .any(|secret| !secret.is_empty() && text.contains(secret))
-                || text.contains(RECOVERY_KEY_MARKER)
-                || has_recovery_key_shape(&text)
-            {
+            if contains_sensitive_text(&bytes, secrets) {
                 std::fs::write(entry.path(), b"")?;
                 withheld.push(entry.path());
             }
@@ -248,6 +241,38 @@ pub fn scrub(dir: &Path, secrets: &[&str]) -> std::io::Result<Vec<PathBuf>> {
     }
     withheld.sort();
     Ok(withheld)
+}
+
+fn contains_sensitive_text(bytes: &[u8], secrets: &[&str]) -> bool {
+    let sensitive = |text: &str| {
+        secrets
+            .iter()
+            .any(|secret| !secret.is_empty() && text.contains(secret))
+            || text.contains(RECOVERY_KEY_MARKER)
+            || has_recovery_key_shape(text)
+    };
+    if sensitive(&String::from_utf8_lossy(bytes)) {
+        return true;
+    }
+    if !bytes.contains(&0) {
+        return false;
+    }
+    for little_endian in [true, false] {
+        let units = bytes
+            .chunks_exact(2)
+            .map(|pair| {
+                if little_endian {
+                    u16::from_le_bytes([pair[0], pair[1]])
+                } else {
+                    u16::from_be_bytes([pair[0], pair[1]])
+                }
+            })
+            .collect::<Vec<_>>();
+        if sensitive(&String::from_utf16_lossy(&units)) {
+            return true;
+        }
+    }
+    false
 }
 
 #[cfg(test)]
@@ -301,8 +326,8 @@ mod tests {
 
     #[test]
     fn credentials_from_stdin_are_distinct_bounded_and_never_echoed() {
-        let account = "account-random-2026";
-        let disk = "disk-random-unlock-2026";
+        let account = "accountrandom2026";
+        let disk = "diskrandomunlock2026";
         let input = serde_json::json!({"account_password": account, "disk_passphrase": disk});
         let credentials = parse_credentials(input.to_string().as_bytes()).unwrap();
         assert_eq!(credentials.account.expose(), account);
@@ -312,6 +337,8 @@ mod tests {
             serde_json::json!({"account_password": account, "disk_passphrase": account}),
             serde_json::json!({"account_password": "", "disk_passphrase": disk}),
             serde_json::json!({"account_password": account, "disk_passphrase": "line\nother"}),
+            serde_json::json!({"account_password": account, "disk_passphrase": "Uppercase"}),
+            serde_json::json!({"account_password": "quoted\"account", "disk_passphrase": disk}),
             serde_json::json!({"account_password": account, "disk_passphrase": disk, "extra": true}),
         ] {
             let error = parse_credentials(bad.to_string().as_bytes()).err().unwrap();
@@ -334,6 +361,20 @@ mod tests {
         assert_eq!(withheld.len(), 2);
         assert!(std::fs::read(account).unwrap().is_empty());
         assert!(std::fs::read(disk).unwrap().is_empty());
+    }
+
+    #[test]
+    fn scrubber_withholds_utf16_runtime_log_secrets() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("uart.log");
+        let utf16 = "typed disksecret456"
+            .encode_utf16()
+            .flat_map(u16::to_le_bytes)
+            .collect::<Vec<_>>();
+        std::fs::write(&path, utf16).unwrap();
+        let withheld = scrub(dir.path(), &["disksecret456"]).unwrap();
+        assert_eq!(withheld, [path.clone()]);
+        assert!(std::fs::read(path).unwrap().is_empty());
     }
 
     #[test]
