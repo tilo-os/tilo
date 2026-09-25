@@ -490,7 +490,7 @@ fn approve_enrollment(
     run_enrollment_as_identity_owner(&mut command, &identity_root, uid, account.gid);
     let output =
         bounded_command::run_prepared(command, None, 1024 * 1024, Duration::from_secs(90))?;
-    enrollment_command_result(output, "home-server enrollment was not completed")
+    enrollment_command_result(&output, "home-server enrollment was not completed")
 }
 
 fn validate_identity_dir(path: &Path, uid: u32, home: &Path) -> anyhow::Result<PathBuf> {
@@ -524,7 +524,7 @@ fn validate_peer_ids(device: &str, service: &str) -> anyhow::Result<()> {
 }
 
 fn enrollment_command_result(
-    output: bounded_command::Output,
+    output: &bounded_command::Output,
     incomplete: &'static str,
 ) -> anyhow::Result<()> {
     if output.status.success() {
@@ -559,7 +559,7 @@ fn personal_device_command(
     run_enrollment_as_identity_owner(&mut command, &identity_root, uid, account.gid);
     let output =
         bounded_command::run_prepared(command, None, 1024 * 1024, Duration::from_secs(600))?;
-    enrollment_command_result(output, "personal-device enrollment was not completed")
+    enrollment_command_result(&output, "personal-device enrollment was not completed")
 }
 
 fn main() -> anyhow::Result<()> {
@@ -641,7 +641,7 @@ mod tests {
     #[test]
     fn enrollment_failure_preserves_the_bounded_child_diagnostic() {
         let error = enrollment_command_result(
-            bounded_command::Output {
+            &bounded_command::Output {
                 status: std::process::ExitStatus::from_raw(1 << 8),
                 stdout: Vec::new(),
                 stderr: b"requester lease expired\n".to_vec(),
@@ -658,7 +658,7 @@ mod tests {
     #[test]
     fn enrollment_failure_without_stderr_still_reports_exit_status() {
         let error = enrollment_command_result(
-            bounded_command::Output {
+            &bounded_command::Output {
                 status: std::process::ExitStatus::from_raw(2 << 8),
                 stdout: Vec::new(),
                 stderr: Vec::new(),
