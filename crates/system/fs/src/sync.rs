@@ -1774,7 +1774,9 @@ impl Workspace {
             records: record_plane.clone(),
             workspace_id,
             announcements: announce_tx,
+            pool: Arc::downgrade(&sessions),
         };
+        sessions.serve_with(session_proto.clone());
         let gossip = Gossip::builder().spawn(endpoint.clone());
         let builder = Router::builder(endpoint.clone())
             .accept(TILO_FS_SESSION_ALPN, session_proto)
