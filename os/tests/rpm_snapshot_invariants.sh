@@ -282,7 +282,7 @@ else
   ok 'virtio RPM uses an immutable archived version URL'
 fi
 
-packages_line="$(grep -F 'dnf install -y --downloadonly' "$snapshot" || true)"
+packages_line="$(grep -F 'dnf install -y --best --store=/tmp/tilo-install' "$snapshot" || true)"
 if [ -n "$packages_line" ] \
   && [[ "$packages_line" == *'${PACKAGES}'* ]] \
   && [[ "$packages_line" != *'--skip-unavailable'* ]]; then
@@ -295,14 +295,17 @@ first_instruction="$(grep -m1 -E '^(ARG|FROM) ' "$snapshot")"
 [ "$first_instruction" = 'ARG BASE_REF' ] \
   && ok 'BASE_REF is globally declared before the first snapshot stage' \
   || bad 'BASE_REF must be declared before the first FROM'
-# --downloadonly skips RPMs the base already has; an image that erases one of
-# them (pkgconf) and later needs it again would fail offline without this.
-has "$snapshot" 'dnf download -y --destdir=/repo --exclude='"'"'qemu-user-static*'"'"' ${PACKAGES}' \
-  'snapshot keeps direct specs the base already has installed'
+# --downloadonly skips RPMs the base already has. The final image can update a
+# package whose matching dependency was omitted, or erase and reinstall a base
+# package. --resolve --alldeps preserves that complete offline closure.
+has "$snapshot" 'dnf download -y --resolve --alldeps --destdir=/repo --exclude='"'"'qemu-user-static*'"'"' ${PACKAGES}' \
+  'snapshot keeps the dependency closure even when packages are base-installed'
 has "$snapshot" '/repo/tilo-direct-package-specs.txt' \
   'snapshot publishes its direct package manifest'
-has "$snapshot" 'dnf install -y --downloadonly --setopt=reposdir=/repo --setopt=install_weak_deps=True ${PACKAGES}' \
-  'snapshot proves the frozen repo resolves the complete transaction offline'
+has "$snapshot" 'dnf upgrade -y --best --store=/tmp/tilo-upgrade' \
+  'snapshot includes upgrades of installed direct specs and their reverse dependencies'
+has "$snapshot" 'dnf install -y --best --downloadonly --setopt=reposdir=/repo --setopt=install_weak_deps=True ${PACKAGES}' \
+  'snapshot proves the best frozen transaction resolves offline without skipped specs'
 has "$image_workflow" 'python3 os/dev/verify-rpm-snapshot-buildkit.py "$RPMS_REF" --builder "$SNAPSHOT_BUILDER"' \
   'production CI rejects a stale frozen package manifest before building'
 has "$image_workflow" '^code\.podesta\.ai/qos/rpms@sha256:[0-9a-f]{64}$' \
