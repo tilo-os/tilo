@@ -248,10 +248,14 @@ def make_receipt(args):
             "VM-installed source raw size differs from reviewed disk")
     index_digest, child_digest, children, kind = provenance.signed_ci_child(
         args.ci_image, args.ci_index_manifest, args.ci_child_manifest)
-    checked = provenance.checked_guest_proof(args.vm_proof_checked, child_digest)
     ci_provenance = verified_ci_image(args.ci_image, args.verify_key, children, kind,
                                       getattr(args, "cosign_command_json", None),
                                       getattr(args, "cosign_key_arg", None))
+    checked = provenance.checked_guest_proof(
+        args.vm_proof_checked, child_digest, args.ci_image, ci_provenance)
+    if kind == "lenovo-83ed":
+        require(checked["schema"] == provenance.PROOF_SCHEMA_V2,
+                "Lenovo physical source requires backend-derived signed target proof v2")
     with raw.open("rb", buffering=0) as stream:
         disk_guid, actual = direct.read_gpt(stream, raw.stat().st_size)
         require(direct.same_gpt_content(actual, rows),
@@ -271,6 +275,7 @@ def make_receipt(args):
                "ci_child_digest": child_digest,
                "ci_verification_key_sha256": ci_provenance["key_sha256"],
                "ci_source_revision": ci_provenance["source_revision"],
+               "ci_invocation_id": ci_provenance["invocation_id"],
                "ci_generation": ci_provenance["generation"],
                "ci_image_kind": ci_provenance["image_kind"],
                "ci_firmware_candidate": ci_provenance["firmware_candidate"],

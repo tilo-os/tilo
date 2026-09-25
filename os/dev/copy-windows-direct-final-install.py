@@ -373,11 +373,15 @@ def run(args):
         ci_provenance = provenance.verify_ci_image(
             args.ci_image, key, children, kind,
             args.cosign_command_json, args.cosign_key_arg)
-        checked = provenance.checked_guest_proof(args.vm_proof_checked, child_digest)
+        checked = provenance.checked_guest_proof(
+            args.vm_proof_checked, child_digest, args.ci_image, ci_provenance)
+        require(checked["schema"] == provenance.PROOF_SCHEMA_V2,
+                "physical install requires backend-derived signed target proof v2")
         guest = checked["guest_proof"]
         require(source_receipt.get("ci_index_digest") == index_digest
                 and source_receipt.get("ci_child_digest") == child_digest
                 and source_receipt.get("ci_source_revision") == ci_provenance["source_revision"]
+                and source_receipt.get("ci_invocation_id") == ci_provenance["invocation_id"]
                 and source_receipt.get("ci_generation") == ci_provenance["generation"]
                 and source_receipt.get("ci_image_kind") == ci_provenance["image_kind"]
                 and source_receipt.get("ci_firmware_candidate") == ci_provenance["firmware_candidate"]

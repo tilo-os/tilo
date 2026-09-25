@@ -20,6 +20,7 @@ DOCKER_IMAGE = "application/vnd.docker.distribution.manifest.v2+json"
 INDEX = "application/vnd.oci.image.index.v1+json"
 DOCKER_INDEX = "application/vnd.docker.distribution.manifest.list.v2+json"
 PROOF_SCHEMA = "tilo.windows-vm-install-proof-check.v1"
+PROOF_SCHEMA_V2 = "tilo.windows-vm-install-proof-check.v2"
 BUILD_TYPE = "https://tilo.sh/buildtypes/bootc-os/v1"
 BUILDER_ID = "https://code.sandbox.example/qos/forgejo/actions/bootc-release-v1"
 SOURCE = re.compile(r"git\+ssh://code\.podesta\.ai/qos/qos@([0-9a-f]{40})\Z")
@@ -93,24 +94,63 @@ def signed_ci_child(image, index_path, child_path):
     return pinned, child_digest, children, kind
 
 
-def checked_guest_proof(path, child_digest):
+def checked_guest_proof(path, child_digest, ci_image=None, ci_provenance=None):
     require(path.is_file() and not path.is_symlink() and path.stat().st_size <= 64 * 1024,
             "checked VM proof must be a bounded regular file")
     doc = json.loads(path.read_text(encoding="utf-8"))
-    require(type(doc) is dict and doc.get("schema") == PROOF_SCHEMA,
+    require(type(doc) is dict and doc.get("schema") in (PROOF_SCHEMA, PROOF_SCHEMA_V2),
             "checked VM proof schema differs")
     guest = doc.get("guest_proof")
     source = doc.get("source_check")
     require(type(guest) is dict and type(source) is dict,
             "checked VM proof is incomplete")
-    require(guest.get("schema") == "tilo.vm-install-image-proof.v1"
-            and guest.get("architecture") == "arm64"
-            and guest.get("booted_image_digest") == child_digest
+    require(guest.get("architecture") == "arm64"
             and guest.get("installed_image_digest") == child_digest,
             "VM-installed image differs from signed CI ARM64 child")
+    if doc["schema"] == PROOF_SCHEMA:
+        require(guest.get("schema") == "tilo.vm-install-image-proof.v1"
+                and guest.get("booted_image_digest") == child_digest,
+                "VM installer image differs from signed CI ARM64 child")
+        booted_composefs = guest.get("composefs_digest")
+        installed_composefs = booted_composefs
+    else:
+        require(guest.get("schema") == "tilo.vm-install-image-proof.v2"
+                and doc.get("first_boot_verified") is False
+                and type(guest.get("booted_image_digest")) is str
+                and SHA.fullmatch(guest["booted_image_digest"])
+                and guest.get("composefs_digest") == guest.get("installed_composefs_digest"),
+                "VM target proof has inconsistent booted and installed images")
+        booted_composefs = guest.get("booted_composefs_digest")
+        installed_composefs = guest.get("installed_composefs_digest")
+        selected = guest.get("selected_target")
+        require(type(selected) is dict
+                and selected.get("schema") == "tilo.installer-offline-target.v1"
+                and selected.get("target_digest") == child_digest
+                and selected.get("target_ref") == ci_image
+                and selected.get("architecture") == "aarch64"
+                and selected.get("hardware_profile") == "lenovo-83ed"
+                and type(ci_provenance) is dict,
+                "VM selected target differs from signed Lenovo CI image")
+        revision = ci_provenance.get("source_revision")
+        require(type(revision) is str and re.fullmatch(r"[0-9a-f]{40}", revision),
+                "independently verified CI source revision is invalid")
+        origin = "code.sandbox.example/qos/tilo:lenovo-83ed-" + revision
+        signed = selected.get("provenance")
+        require(type(signed) is dict
+                and selected.get("update_origin") == origin
+                and guest.get("installed_update_origin")
+                == "ostree-unverified-image:docker://" + origin
+                and selected.get("verifier_key_sha256") == ci_provenance.get("key_sha256")
+                and signed.get("source_revision") == revision
+                and signed.get("firmware_manifest_sha256")
+                == ci_provenance.get("firmware_manifest_sha256")
+                and signed.get("invocation_id") == ci_provenance.get("invocation_id"),
+                "VM selected target provenance differs from independently verified CI")
     composefs = guest.get("composefs_digest")
     require(type(composefs) is str and COMPOSEFS.fullmatch(composefs)
-            and doc.get("installer_composefs") == composefs
+            and type(booted_composefs) is str and COMPOSEFS.fullmatch(booted_composefs)
+            and type(installed_composefs) is str and COMPOSEFS.fullmatch(installed_composefs)
+            and doc.get("installer_composefs") == booted_composefs
             and type(guest.get("target_uki_sha256")) is str
             and HEX.fullmatch(guest["target_uki_sha256"]),
             "VM composefs or UKI binding differs")
@@ -251,6 +291,7 @@ def checked_slsa_attestation(output, pinned, children, kind):
                            for item in byproducts)):
             continue
         matches.append({"source_revision": sources[0],
+                        "invocation_id": invocation,
                         "generation": external["generation"],
                         "image_kind": kind,
                         "firmware_candidate": firmware_candidate,

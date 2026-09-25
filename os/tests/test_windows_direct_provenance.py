@@ -94,6 +94,60 @@ class ProvenanceTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "source GPT"):
                 proof.checked_guest_proof(path, child)
 
+    def test_v2_signed_target_may_differ_from_booted_installer(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            target = "sha256:" + "a" * 64
+            image = "code.sandbox.example/qos/tilo@" + target
+            revision = "b" * 40
+            origin = "code.sandbox.example/qos/tilo:lenovo-83ed-" + revision
+            ci = {"source_revision": revision, "firmware_manifest_sha256": "c" * 64,
+                  "invocation_id": "234", "key_sha256": "d" * 64}
+            ids = {"efi": "00000000-0000-4000-8000-000000000001",
+                   "boot": "00000000-0000-4000-8000-000000000002",
+                   "root": "00000000-0000-4000-8000-000000000003"}
+            disk = "00000000-0000-4000-8000-000000000004"
+            guest = {"schema": "tilo.vm-install-image-proof.v2", "architecture": "arm64",
+                     "booted_image_digest": "sha256:" + "e" * 64,
+                     "installed_image_digest": target,
+                     "booted_composefs_digest": "f" * 128,
+                     "installed_composefs_digest": "a" * 128,
+                     "composefs_digest": "a" * 128,
+                     "installed_update_origin": "ostree-unverified-image:docker://" + origin,
+                     "target_uki_sha256": "b" * 64, "disk_guid": disk, "partuuids": ids,
+                     "selected_target": {"schema": "tilo.installer-offline-target.v1",
+                         "target_ref": image, "target_digest": target,
+                         "architecture": "aarch64", "hardware_profile": "lenovo-83ed",
+                         "update_origin": origin,
+                         "provenance": {"source_revision": revision,
+                             "firmware_manifest_sha256": "c" * 64,
+                             "invocation_id": "234"},
+                         "verifier_key_sha256": "d" * 64}}
+            artifact = {"schema": proof.PROOF_SCHEMA_V2,
+                        "first_boot_verified": False, "guest_proof": guest,
+                        "installer_composefs": "f" * 128,
+                        "source_check": {"schema": "tilo.windows-direct-vm-template-check.v1",
+                            "preserved_gpt_verified": True,
+                            "preserved_edge_samples_verified": True,
+                            "final_partition_count": 3, "disk_guid": disk,
+                            "final_partuuids": ids}}
+            path = root / "checked.json"
+            path.write_text(json.dumps(artifact))
+            self.assertEqual(proof.checked_guest_proof(path, target, image, ci), artifact)
+            for name, change in (
+                ("origin", lambda: guest.update(installed_update_origin="local")),
+                ("source", lambda: guest["selected_target"]["provenance"].update(source_revision="f" * 40)),
+                ("installer composefs", lambda: artifact.update(installer_composefs="a" * 128))):
+                with self.subTest(name=name):
+                    broken = copy.deepcopy(artifact)
+                    path.write_text(json.dumps(broken))
+                    change()
+                    path.write_text(json.dumps(artifact))
+                    with self.assertRaises(ValueError):
+                        proof.checked_guest_proof(path, target, image, ci)
+                    artifact = broken
+                    guest = artifact["guest_proof"]
+
     def test_cosign_runner_uses_argv_prefix_and_explicit_wsl_key_path(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
