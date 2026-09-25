@@ -15,9 +15,12 @@ bad() { printf 'FAIL  %s\n' "$*" >&2; fail=1; }
 # Join continuation lines so each RUN instruction is one line.
 joined() { sed -e ':a' -e '/\\$/N; s/\\\n/ /; ta' "$1"; }
 
-mask="$(joined "$image" | grep -F 'RUN systemctl mask systemd-sysext.service systemd-confext.service systemd-sysext.socket' || true)"
+# The strict masks share the prune-mask RUN (one rootfs layer); from them on,
+# nothing may tolerate a missing unit.
+mask="$(joined "$image" | grep -F '&& systemctl mask systemd-sysext.service systemd-confext.service systemd-sysext.socket' || true)"
+strict="${mask#*&& systemctl mask systemd-sysext.service}"
 if [ "$(printf '%s\n' "$mask" | grep -c .)" = 1 ] \
-   && ! printf '%s' "$mask" | grep -Fq '|| true' \
+   && ! printf '%s' "$strict" | grep -Fq '|| true' \
    && printf '%s' "$mask" | grep -Fq 'test "$(readlink "/etc/systemd/system/$u")" = /dev/null'; then
   ok 'the sealed image masks boot-time sysext/confext merges and fails if a unit is missing'
 else
