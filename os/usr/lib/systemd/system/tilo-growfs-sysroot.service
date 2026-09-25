@@ -13,6 +13,10 @@ Type=oneshot
 RemainAfterExit=yes
 # Growing an already-full filesystem is idempotent, so this is safe on every
 # boot and also handles installations onto a larger-than-image partition.
+# bootc leaves the deployed sysroot read-only. Remount it only in this unit's
+# slave mount namespace before growfs runs, so that temporary write access
+# cannot propagate to the host namespace.
+ExecStartPre=/usr/bin/mount -o remount,rw /sysroot
 ExecStart=/usr/lib/systemd/systemd-growfs /sysroot
 TimeoutSec=infinity
 # Filesystem growth is background maintenance after the first boot. Keep its
@@ -27,6 +31,10 @@ NoNewPrivileges=yes
 PrivateTmp=yes
 PrivateNetwork=yes
 PrivateIPC=yes
+# Isolate the temporary sysroot remount from the booted host while continuing
+# to receive mounts created by systemd before this service starts.
+PrivateMounts=yes
+MountFlags=slave
 ProtectSystem=strict
 ReadWritePaths=/sysroot
 ProtectHome=yes
