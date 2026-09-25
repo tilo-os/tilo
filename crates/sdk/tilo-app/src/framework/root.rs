@@ -84,7 +84,7 @@ impl<R: Resource> ResourceRoot<R> {
 
     /// Apply a permission change made while the app runs: dispatchers stop
     /// (or resume) submitting, bound state and surfaces see the new value.
-    fn refresh_access(&mut self) {
+    fn refresh_access(&self) {
         if let (Some(permissions), Some(write)) = (&self.permissions, &self.write) {
             self.dispatch.set_read_only(!permissions.check(write));
         }
