@@ -66,6 +66,7 @@ ALLOWED = {
 MIGRATING = {
     "channel-crypto": frozenset({"chacha20poly1305"}),
     "shell": frozenset({"chacha20poly1305", "x25519-dalek"}),
+    "tilo-ui": frozenset({"chacha20poly1305"}),
 }
 
 DEPENDENCY_TABLES = ("dependencies", "dev-dependencies", "build-dependencies")
