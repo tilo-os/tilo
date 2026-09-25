@@ -514,21 +514,23 @@ struct NewArgs {
     dev: bool,
 }
 
+/// Every template starts on the app framework: a `#[derive(Model)]` resource,
+/// `#[action]` edits and a view bound to them.
 #[derive(Clone, Copy, Debug, ValueEnum)]
 enum TemplateArg {
-    /// A small, accessible window using the standard app lifecycle.
+    /// A profile resource edited through bound text, toggle, number, slider and choice controls.
     Starter,
-    /// A virtualized, selectable data table suitable for large models.
+    /// A virtualized, selectable data table over sparse external rows; opened rows are resource state.
     Data,
     /// A sparse, variable-height list with interactive retained row widgets.
     List,
     /// A stable-id, accessible tree suitable for professional hierarchy UIs.
     Tree,
-    /// A live-editable serialized UI graph with model-bound controls.
+    /// A live-editable serialized UI graph above controls bound to the resource.
     Graph,
-    /// Typed background work with automatic wakeup and keyed result views.
+    /// Typed background work on resource input, with automatic wakeup and keyed result views.
     Async,
-    /// Durable synchronized fields with persistence and built-in undo.
+    /// A collaborative document with a live preview, undo and confirmation for destructive edits.
     Document,
     /// IME-capable input driving an accessible generated QR image.
     Qr,

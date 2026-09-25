@@ -92,6 +92,7 @@ tilo-actions = { path = "../../collab/actions" }
 
 # Workspace CRDT (same version as identity + shell).
 automerge.workspace = true
+tilo-automerge.workspace = true
 
 # Wire encoding — postcard for the framed messages exchanged over
 # the ALPN. Same encoding the identity crate uses so byte layouts
@@ -131,12 +132,18 @@ sd-notify.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
+tilo-automerge = { workspace = true, features = ["heap-probe"] }
 tilo-app-package = { path = "../../packaging/tilo-app-package" }
 ed25519-dalek = { workspace = true, features = ["rand_core"] }
 
 [[test]]
 name = "it"
 path = "tests/it.rs"
+
+# Its own binary: it installs a counting global allocator.
+[[test]]
+name = "held_memory"
+path = "tests/held_memory.rs"
 
 [lints]
 workspace = true

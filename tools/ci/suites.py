@@ -3,15 +3,18 @@
 
 tools/ci/suites.toml declares each suite with the repository paths it reads.
 affected_packages.py selects the suites whose inputs a change touches; the
-check workflow's "suites" job runs them with `run`. `check` is the repository
-policy that keeps every test-shaped file accounted for.
+check workflow's "suites" job runs them with `run`. The same manifest declares
+the Cargo packages whose code reads repository files outside the package, so
+a change to those files selects the package's checks and tests. `check` is the
+repository policy that keeps every test-shaped file and every cross-package
+read accounted for.
 """
 
 from __future__ import annotations
 
 import argparse
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import fnmatch
 import os
 from pathlib import Path
@@ -50,10 +53,20 @@ class Group:
 
 
 @dataclass(frozen=True)
+class CargoReader:
+    """A Cargo package whose code reads repository files outside its directory."""
+    package: str
+    inputs: tuple[str, ...]
+    readers: tuple[str, ...]
+
+
+@dataclass(frozen=True)
 class Manifest:
     groups: tuple[Group, ...]
     covered: dict[str, str]
     unrequired: dict[str, str]
+    cargo: tuple[CargoReader, ...] = ()
+    cargo_exempt: dict[str, str] = field(default_factory=dict)
 
     def suites(self) -> list[str]:
         return sorted(suite for group in self.groups for suite in group.suites)
@@ -75,7 +88,7 @@ def _path(value: object, where: str) -> str:
 def parse(text: str) -> Manifest:
     """Parse the manifest strictly: unknown keys and duplicate suites are errors."""
     data = tomllib.loads(text)
-    unknown = set(data) - {"group", "covered", "unrequired"}
+    unknown = set(data) - {"group", "covered", "unrequired", "cargo", "cargo-exempt"}
     if unknown:
         raise ValueError(f"unknown manifest tables: {', '.join(sorted(unknown))}")
     groups: list[Group] = []
@@ -119,7 +132,34 @@ def parse(text: str) -> Manifest:
             raise ValueError(f"{suite}: unrequired entries need a reason")
         claim(suite, "unrequired")
         unrequired[suite] = reason
-    return Manifest(tuple(groups), covered, unrequired)
+    cargo: list[CargoReader] = []
+    packages: set[str] = set()
+    for index, entry in enumerate(data.get("cargo", [])):
+        where = f"cargo entry {index + 1}"
+        if not isinstance(entry, dict) or set(entry) != {"package", "inputs", "readers"}:
+            raise ValueError(f"{where} must have exactly package, inputs and readers")
+        package = entry["package"]
+        if not isinstance(package, str) or not re.fullmatch(r"[A-Za-z0-9_-]+", package) or package in packages:
+            raise ValueError(f"{where} has an invalid or duplicate package: {package!r}")
+        packages.add(package)
+        inputs = tuple(_path(item, f"{where} input") for item in _strings(entry["inputs"], f"{where} inputs"))
+        readers = tuple(_path(item, f"{where} reader") for item in _strings(entry["readers"], f"{where} readers"))
+        for reader in readers:
+            if not reader.endswith(".rs"):
+                raise ValueError(f"{reader}: readers must be .rs files")
+            claim(reader, f"cargo {package}")
+        cargo.append(CargoReader(package, inputs, readers))
+    cargo_exempt: dict[str, str] = {}
+    for entry in data.get("cargo-exempt", []):
+        if not isinstance(entry, dict) or set(entry) != {"file", "reason"}:
+            raise ValueError("cargo-exempt entries must have exactly file and reason")
+        path = _path(entry["file"], "cargo-exempt file")
+        reason = entry["reason"]
+        if not isinstance(reason, str) or not reason.strip():
+            raise ValueError(f"{path}: cargo-exempt entries need a reason")
+        claim(path, "cargo-exempt")
+        cargo_exempt[path] = reason
+    return Manifest(tuple(groups), covered, unrequired, tuple(cargo), cargo_exempt)
 
 
 def load(root: Path = ROOT) -> Manifest:
@@ -146,6 +186,19 @@ def select(manifest: Manifest, changes: list[str], *, run_all: bool = False) -> 
     }
     selected.update(suite for suite in manifest.suites() if suite in changes)
     return sorted(selected)
+
+
+def select_packages(manifest: Manifest, changes: list[str]) -> list[str]:
+    """Return the Cargo packages that read a changed path from outside themselves.
+
+    A package's own files select it through the dependency graph; this adds
+    the packages whose tests or build read the changed file from elsewhere.
+    """
+    return sorted(
+        entry.package
+        for entry in manifest.cargo
+        if any(matches(path, pattern) for path in changes for pattern in entry.inputs)
+    )
 
 
 def command(suite: str) -> list[str]:
@@ -249,6 +302,134 @@ def audit(root: Path, tracked: list[str], manifest: Manifest | None = None) -> l
             problems.append(
                 f"{path}: test-shaped file is neither gated nor listed in {MANIFEST} "
                 "(add it to a group, or to [[covered]]/[[unrequired]] with a reason)")
+    problems.extend(audit_cargo(root, tracked, manifest))
+    return problems
+
+
+# How Rust code reaches a repository file outside its package: a literal
+# include!/include_str!/include_bytes! or #[path] module whose path climbs out
+# of the package, or a path built from CARGO_MANIFEST_DIR that climbs out of it
+# in the same statement. A statement that only names target/ writes build
+# output instead.
+RUST_INCLUDE = re.compile(
+    r'\binclude(?:_str|_bytes)?!\s*\(\s*"([^"\\]+)"\s*\)|#\[\s*path\s*=\s*"([^"\\]+)"\s*\]')
+MANIFEST_DIR = re.compile(r'env!\s*\(\s*"CARGO_MANIFEST_DIR"\s*\)')
+CLIMB = re.compile(r'"/?\.\.(?:/|")|\.parent\(\)|\.ancestors\(\)')
+BUILD_OUTPUT = re.compile(r'"(?:\.\./|/)*target(?:/|")')
+STATEMENT_END = re.compile(r"[;{}]")
+
+
+@dataclass(frozen=True)
+class CrossRead:
+    line: int
+    # The repository path a literal include resolves to; None for a runtime
+    # path, whose target the manifest's inputs must describe.
+    target: str | None
+
+
+def cargo_packages(root: Path, tracked: list[str]) -> dict[str, str]:
+    """Map each tracked package directory ("" for the root) to its package name."""
+    packages: dict[str, str] = {}
+    for path in tracked:
+        if path.rpartition("/")[2] != "Cargo.toml" or path.startswith("vendor/"):
+            continue
+        try:
+            package = tomllib.loads((root / path).read_text(encoding="utf-8")).get("package")
+        except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError):
+            continue
+        if isinstance(package, dict) and isinstance(package.get("name"), str):
+            packages[path.rpartition("/")[0]] = package["name"]
+    return packages
+
+
+def package_dir(path: str, packages: dict[str, str]) -> str | None:
+    """The directory of the innermost package that owns `path`."""
+    directory = path
+    while directory:
+        directory = directory.rpartition("/")[0]
+        if directory in packages:
+            return directory
+    return None
+
+
+def cross_package_reads(root: Path, tracked: list[str],
+                        packages: dict[str, str]) -> dict[str, list[CrossRead]]:
+    """Rust files that read repository files outside their own package."""
+    found: dict[str, list[CrossRead]] = {}
+    for path in tracked:
+        if not path.endswith(".rs") or path.startswith("vendor/"):
+            continue
+        directory = package_dir(path, packages)
+        if directory is None:
+            continue
+        text = (root / path).read_text(encoding="utf-8", errors="replace")
+        if "include" not in text and "path" not in text and "CARGO_MANIFEST_DIR" not in text:
+            continue
+        reads: list[CrossRead] = []
+        for match in RUST_INCLUDE.finditer(text):
+            literal = match.group(1) or match.group(2)
+            target = os.path.normpath(os.path.join(path.rpartition("/")[0], literal))
+            inside = (target + "/").startswith(directory + "/") if directory else not target.startswith("..")
+            if not inside:
+                reads.append(CrossRead(text.count("\n", 0, match.start()) + 1, target))
+        for match in MANIFEST_DIR.finditer(text):
+            statement = STATEMENT_END.split(text[match.end():match.end() + 800], maxsplit=1)[0]
+            if CLIMB.search(statement) and not BUILD_OUTPUT.search(statement):
+                reads.append(CrossRead(text.count("\n", 0, match.start()) + 1, None))
+        if reads:
+            found[path] = reads
+    return found
+
+
+def audit_cargo(root: Path, tracked: list[str], manifest: Manifest) -> list[str]:
+    """Every Rust file that reads outside its package must be declared.
+
+    A declared package lists the files that read (so a new reader cannot go
+    unnoticed) and the inputs they read (which select the package when they
+    change). Literal includes are checked against the inputs; paths built at
+    runtime rely on the declaration.
+    """
+    problems: list[str] = []
+    tracked_set = set(tracked)
+    packages = cargo_packages(root, tracked)
+    names = set(packages.values())
+    reads = cross_package_reads(root, tracked, packages)
+    entries = {entry.package: entry for entry in manifest.cargo}
+    for entry in manifest.cargo:
+        if entry.package not in names:
+            problems.append(f"cargo {entry.package}: no tracked Cargo.toml declares this package")
+        for pattern in entry.inputs:
+            if not any(matches(path, pattern) for path in tracked):
+                problems.append(f"cargo {entry.package}: input {pattern} matches no tracked file")
+        for reader in entry.readers:
+            directory = package_dir(reader, packages)
+            if reader not in tracked_set:
+                problems.append(f"{reader}: listed in {MANIFEST} but not a tracked file")
+            elif directory is None or packages[directory] != entry.package:
+                problems.append(f"{reader}: listed as a reader of {entry.package}, which does not own it")
+            elif reader not in reads:
+                problems.append(f"{reader}: no longer reads outside {entry.package}; remove it from {MANIFEST}")
+    for path, reason in sorted(manifest.cargo_exempt.items()):
+        if path not in tracked_set:
+            problems.append(f"{path}: listed in {MANIFEST} but not a tracked file")
+        elif path not in reads:
+            problems.append(f"{path}: cargo-exempt, but reads nothing outside its package; remove it")
+    for path, found in sorted(reads.items()):
+        if path in manifest.cargo_exempt:
+            continue
+        package = packages[package_dir(path, packages) or ""]
+        entry = entries.get(package)
+        if entry is None or path not in entry.readers:
+            lines = ", ".join(str(read.line) for read in found)
+            problems.append(
+                f"{path}:{lines}: reads repository files outside package {package}; list it under "
+                f"[[cargo]] package = \"{package}\" in {MANIFEST} with the paths it reads, so "
+                "changing them runs its tests")
+            continue
+        for read in found:
+            if read.target is not None and not any(matches(read.target, pattern) for pattern in entry.inputs):
+                problems.append(f"{path}:{read.line}: includes {read.target}, "
+                                f"which no input of cargo {package} matches")
     return problems
 
 
@@ -278,7 +459,8 @@ def main(argv: list[str] | None = None) -> int:
         if not problems:
             manifest = load(ROOT)
             print(f"suite manifest OK: {len(manifest.suites())} path-selected, "
-                  f"{len(manifest.covered)} covered, {len(manifest.unrequired)} unrequired")
+                  f"{len(manifest.covered)} covered, {len(manifest.unrequired)} unrequired; "
+                  f"{len(manifest.cargo)} Cargo packages with cross-package inputs")
         return 1 if problems else 0
     if args.all and args.suites:
         parser.error("run takes either suite paths or --all")

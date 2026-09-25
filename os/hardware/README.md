@@ -67,6 +67,31 @@ The manifest has exactly three fields: `schema_version` (integer `1`),
 basenames to its lowercase SHA-256). Hashes bind the selected local copies;
 they do not prove compatibility or establish a publisher's signature.
 
+### Public firmware gap for Lenovo 83ED
+
+The six-file input above was extracted from this laptop's Windows drivers for
+private development. As checked on 2026-09-25, upstream
+[linux-firmware's 83ED directory](https://gitlab.com/kernel-firmware/linux-firmware/-/tree/main/qcom/x1e80100/LENOVO/83ED)
+and Fedora's
+[qcom-firmware file list](https://packages.fedoraproject.org/pkgs/linux-firmware/qcom-firmware/fedora-44-updates.html)
+contain five of those six names. Neither lists `cdsp_dtbs.elf` for 83ED.
+The five locally extracted files also have different SHA-256 values from the
+same-named upstream 83ED files, so a distro package cannot silently replace
+the reviewed private six-file set. The upstream
+[83ED entries in WHENCE](https://gitlab.com/kernel-firmware/linux-firmware/-/blob/main/WHENCE)
+identify the five published files and their licensing references; that does
+not establish redistribution rights for the separately extracted Windows
+files. The [Linux board device tree](https://github.com/torvalds/linux/blob/master/arch/arm64/boot/dts/qcom/x1e80100-lenovo-yoga-slim7x.dts)
+requests the 83ED `cdsp_dtbs.elf` alongside `qccdsp8380.mbn`.
+
+Do not publish a public 83ED image from the extracted six-file set. Before a
+public release, obtain an authoritative, redistributable 83ED CDSP DTB source
+with its license and notices, confirm the full firmware set against the
+target kernel on the device, and build and sign the image in CI. A profile
+that omits CDSP firmware would need a separately reviewed device tree and
+physical test of the resulting feature loss; this profile still requires all
+six files.
+
 ## Image build integration
 
 Select the profile when building on native aarch64 Linux, after configuring
@@ -97,6 +122,31 @@ manifest pin, profile and every file hash before staging data into the ignored
 firmware directory. Different existing firmware is rejected rather than
 overwritten. Import failures stop before cache probes, signing or compilation.
 The workflow retains a public `firmware-import.json` receipt.
+
+### CI-built Lenovo install image
+
+`build-image.yml` accepts `hardware_profile=lenovo-83ed` on an explicit
+`main`-branch dispatch with `publish=true`. Supply the same independently
+reviewed `firmware_candidate` OCI digest and `firmware_manifest_sha256` as the
+development importer. CI imports those inert files on the native ARM64 runner,
+builds and independently rebuilds the image, closes the composefs/UKI seal by
+installing it to a disposable disk, signs its target prediction, and publishes
+the signed ARM64 image at
+`code.podesta.ai/qos/tilo:lenovo-83ed-<full-main-commit>`.
+The image binds that exact immutable tag as its update reference. The workflow
+attests the firmware artifact and manifest digest in SLSA provenance and retains
+the import receipt. Obtain the final `repo@sha256:...` child digest from the CI
+release-child artifact or registry tag and verify its Cosign signature and
+provenance before a physical install.
+
+This is an initial, generation-1 board image with an immutable update
+reference. It does not join or advance the generic multiarch `latest`/`genN`
+release series, and automatic board upgrades are not available until a
+separate dense Lenovo generation series is implemented. QEMU's `virt` machine
+cannot boot the Lenovo device tree, so CI's board path validates the disk
+install and signed image without claiming a physical boot; the generic ARM64
+image continues to run the full VM desktop gate. The first laptop boot and
+device drivers still require on-device acceptance.
 
 Local driver invocations may instead use `--hardware-profile` with already
 staged, verified firmware. Firmware transfer and hash checks establish build

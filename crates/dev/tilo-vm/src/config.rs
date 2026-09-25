@@ -65,6 +65,13 @@ pub struct VmEntry {
     /// Published dev image the VM disk is created from.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub image: Option<String>,
+    /// `raw` when `image` is a raw disk; absent for qcow2.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image_format: Option<String>,
+    /// A raw ESP disk attached read-only ahead of the VM's disk, so the VM
+    /// boots its loader and UKI instead of the disk's own (libvirt, whpx).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub boot_esp: Option<String>,
     /// The VM's own disk (a copy-on-write child of `image` where supported).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub disk: Option<String>,

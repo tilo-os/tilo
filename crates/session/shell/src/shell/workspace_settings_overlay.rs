@@ -187,8 +187,11 @@ impl WorkspaceSettingsOverlay {
         // 620px floor consumed half of a 1280px laptop even when the pane's
         // responsive tab layout no longer needed a sidebar.
         let lens_w = (viewport.width() * 0.42).clamp(540.0, 720.0);
-        let right = viewport.x1 - margin;
-        Rect::new(right - lens_w, top, right, bottom)
+        // The workspace-name control that summons this lens lives on the
+        // left. Keep the contextual surface on that same side instead of
+        // making the pointer cross the entire display after clicking Home.
+        let left = viewport.x0 + margin;
+        Rect::new(left, top, left + lens_w, bottom)
     }
 
     /// The lens header keeps one rhythm (HIG §7b): `s4` from the panel's
@@ -2492,9 +2495,9 @@ mod tests {
     fn laptop_lens_preserves_most_of_the_workspace() {
         let viewport = Rect::new(0.0, 0.0, 1280.0, 720.0);
         let lens = WorkspaceSettingsOverlay::rect_for(viewport);
-        assert_eq!(lens.x1, viewport.x1 - 20.0);
+        assert_eq!(lens.x0, viewport.x0 + 20.0);
         assert!(lens.width() <= 540.0);
-        assert!(lens.x0 >= 720.0, "the workspace keeps a usable majority");
+        assert!(lens.x1 <= 560.0, "the workspace keeps a usable majority");
     }
 
     #[test]
@@ -2505,7 +2508,11 @@ mod tests {
             Rect::new(0.0, 0.0, 600.0, 700.0),
         ] {
             let lens = WorkspaceSettingsOverlay::rect_for(viewport);
-            assert_eq!(viewport.x1 - lens.x1, 20.0);
+            if viewport.width() >= 820.0 {
+                assert_eq!(lens.x0 - viewport.x0, 20.0);
+            } else {
+                assert_eq!(viewport.x1 - lens.x1, 20.0);
+            }
             assert_eq!(viewport.y1 - lens.y1, 20.0);
             assert!(lens.y0 >= viewport.y0 + 20.0);
         }

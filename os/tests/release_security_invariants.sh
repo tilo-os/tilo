@@ -20,7 +20,7 @@ grep -Fq "group: \${{ (startsWith(github.ref, 'refs/tags/v') || (github.ref == '
   && ok 'OS generation publication is globally serialized' \
   || bad 'release jobs can race and reuse one generation'
 
-kernel_verify_line="$(grep -n 'cosign verify --key keys/cosign.pub "$ref"' "$workflow" | tail -1 | cut -d: -f1)"
+kernel_verify_line="$(grep -n './os/dev/verify-kernel-provenance.sh "$ref"' "$workflow" | tail -1 | cut -d: -f1)"
 kernel_export_line="$(grep -n 'echo "KERNEL_RPMS_REF=$ref" >> "$GITHUB_ENV"' "$workflow" | head -1 | cut -d: -f1)"
 kernel_build_arg_line="$(grep -n 'KERNEL_RPMS_REF=${{ env.KERNEL_RPMS_REF }}' "$workflow" | head -1 | cut -d: -f1)"
 if [ -n "$kernel_verify_line" ] && [ -n "$kernel_export_line" ] && [ -n "$kernel_build_arg_line" ] \
@@ -242,6 +242,30 @@ if RELEASE_DIGEST="sha256:$hex" TILO_GENERATION=42 SOURCE_DATE_EPOCH=1 \
   bad 'provenance accepted an unpinned build dependency'
 else
   ok 'provenance refuses unpinned build dependencies'
+fi
+
+firmware="code.podesta.ai/qos/lenovo-firmware@sha256:$hex"
+if RELEASE_DIGEST="sha256:$hex" TILO_GENERATION=1 SOURCE_DATE_EPOCH=1 \
+   BASE_REF="base@sha256:$hex" RPMS_REF="rpms@sha256:$hex" \
+   KERNEL_RPMS_REF="kernel@sha256:$hex" GITHUB_SHA="$hex" \
+   TILO_HARDWARE_PROFILE=lenovo-83ed TILO_RELEASE_ARCHITECTURE=aarch64 \
+   TILO_FIRMWARE_CANDIDATE="$firmware" \
+   TILO_FIRMWARE_MANIFEST_SHA256="$hex" \
+   "$provenance" "$tmp/lenovo-provenance.json" \
+   && jq -e --arg firmware "$firmware" --arg manifest "$hex" '
+     .buildDefinition.externalParameters.hardwareProfile == "lenovo-83ed"
+     and .buildDefinition.externalParameters.architecture == "aarch64"
+     and .buildDefinition.externalParameters.firmwareManifestSha256 == $manifest
+     and any(.buildDefinition.resolvedDependencies[]; .uri == $firmware)
+   ' "$tmp/lenovo-provenance.json" >/dev/null \
+   && ! (RELEASE_DIGEST="sha256:$hex" TILO_GENERATION=1 SOURCE_DATE_EPOCH=1 \
+         BASE_REF="base@sha256:$hex" RPMS_REF="rpms@sha256:$hex" \
+         KERNEL_RPMS_REF="kernel@sha256:$hex" GITHUB_SHA="$hex" \
+         TILO_HARDWARE_PROFILE=generic TILO_FIRMWARE_CANDIDATE="$firmware" \
+         "$provenance" "$tmp/bad-generic-firmware.json" >/dev/null 2>&1); then
+  ok 'Lenovo release provenance binds reviewed firmware and generic releases reject it'
+else
+  bad 'Lenovo firmware input is absent from release provenance or can enter a generic release'
 fi
 
 exit "$fail"

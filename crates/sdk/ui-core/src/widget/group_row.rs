@@ -1079,6 +1079,31 @@ impl GroupRow {
         true
     }
 
+    /// Move the active tab out to an adjacent standalone group.
+    pub fn detach_active_tab(&mut self, group_id: u64) -> bool {
+        let Some(src) = self.groups.iter().position(|group| group.id == group_id) else {
+            return false;
+        };
+        let tab = self.groups[src].active_tab_id();
+        self.split_tab_into_new_group(src, tab, src.saturating_add(1))
+    }
+
+    /// Move the active tab into the adjacent group in `direction`.
+    pub fn attach_active_tab(&mut self, group_id: u64, direction: i32) -> bool {
+        let Some(src) = self.groups.iter().position(|group| group.id == group_id) else {
+            return false;
+        };
+        let dst = if direction < 0 {
+            src.checked_sub(1)
+        } else {
+            src.checked_add(1).filter(|idx| *idx < self.groups.len())
+        };
+        let Some(dst) = dst else { return false };
+        let tab = self.groups[src].active_tab_id();
+        let target = self.groups[dst].tabs().len();
+        self.transfer_tab(src, dst, tab, target)
+    }
+
     /// A tab merged into a sibling may have emptied its source window.
     /// Keep the row's structural invariant here so every transfer path uses
     /// the same pruning rule before publishing its topology.

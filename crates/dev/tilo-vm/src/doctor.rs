@@ -69,7 +69,7 @@ pub fn install_fix(facts: &HostFacts, tool: &str) -> String {
         HostKind::Zypper => format!("sudo zypper install {package}"),
         HostKind::Macos => format!("brew install {package}"),
         HostKind::Windows if tool == "rsync" => {
-            "put rsync on PATH: from WSL, MSYS2 or cwRsync".into()
+            "install MSYS2 rsync in %USERPROFILE%\\msys64\\usr\\bin (pacman -S rsync), or put a native rsync on PATH".into()
         }
         HostKind::Windows => format!("install {package} (winget) and put it on PATH"),
         HostKind::Dnf => format!("sudo dnf install {package}"),

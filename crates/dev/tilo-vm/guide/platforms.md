@@ -12,7 +12,8 @@ another architecture needs `--arch <arch> --emulated` and is many times slower.
 | Windows ARM64 Home | QEMU with WHPX | local VNC | VM only | none (llvmpipe) |
 
 In-VM builds sync the worktree with rsync over SSH, so the host needs
-`rsync` (on Windows: MSYS2 or cwRsync on `PATH`). Headless and vkms
+`rsync` (on Windows: MSYS2 in `%USERPROFILE%\msys64\usr\bin`, or a native
+rsync on `PATH`). Headless and vkms
 slots need no GPU, so every row runs them.
 
 ## Linux: libvirt's user session
@@ -63,9 +64,9 @@ the Hyper-V PowerShell module, `vm create` selects `whpx` automatically; use
 CPU emulation.
 
 For component swaps that build inside the VM, install MSYS2's `rsync`
-package too (`pacman -S rsync`) and put `%USERPROFILE%\msys64\usr\bin` on
-your Windows user `PATH`. `tilo-vm` passes the Windows worktree as an MSYS2
-`/c/...` path, so `rsync` treats it as a local source.
+package too (`pacman -S rsync`). `tilo-vm` discovers the default per-user
+location automatically without changing `PATH` and passes the Windows
+worktree as an MSYS2 `/c/...` path, so `rsync` treats it as a local source.
 
 The published QCOW2 remains unchanged. Each VM gets a small QCOW2 child and
 its own copy of the UEFI variables template beside that child. Before a
@@ -120,6 +121,46 @@ code.podesta.ai. That token is read only for disk downloads; image pulls
 - or ask a human for a shared VM and use it: `tilo-vm vm use <name>`;
 - or, when this checkout has `os/dev/build-dev-image.sh`, build a disk
   locally and pass it as `--image`. The error says whether it exists here.
+
+## A local disk, and throwaway VMs
+
+`--image` takes a qcow2 dev disk or a raw disk with a GPT, such as
+`os/dev/disk-image.sh --raw` writes. `vm create` reads the file's first bytes
+and refuses anything else (a blank or half-written disk) before it creates
+anything. The image is never written: the VM's disk is a qcow2 child of it,
+with a fresh UEFI variable store, so every VM made from one image is a clean
+boot of it. That makes a VM per attempt cheap:
+
+```sh
+tilo-vm vm create try1 --image ~/tilo-vm/media/disk.raw
+tilo-vm vm start try1         # waits up to 180s for SSH; an early-boot failure ends with its serial command
+tilo-vm vm serial try1
+tilo-vm vm rm try1 --force    # power off, unregister, delete its disk, variables, logs and key
+```
+
+`vm rm` keeps the image, and forgets a VM it did not create (one registered by
+hand) without touching its hypervisor, disk or key.
+
+On WHPX, an image on a network path (`\\wsl.localhost\...` from WSL, or an SMB
+share) is imported once into the cache (`tilo-vm/imports/` in the platform
+cache dir) and the VM is made from that copy: QEMU on Windows reads a backing
+file behind a UNC path unreliably. The import converts it to qcow2 and
+compares every guest-visible byte with the source before it is used; it is
+reused until the source's size or modification time changes.
+
+### Booting a candidate ESP
+
+To try a candidate UKI or boot loader without rebuilding the disk, build a
+small override ESP with `os/dev/make-boot-esp.sh` (`os/dev/local-boot-esp.md`)
+and attach it ahead of the VM's disk:
+
+```sh
+tilo-vm vm create esp1 --image base.raw --boot-esp tilo-boot-override.raw
+```
+
+The ESP is attached read-only with the first boot index, so firmware boots its
+loader and UKI, which mounts the root from the VM's disk. libvirt and WHPX
+support it; keep the ESP on a local drive.
 
 ## The root SSH key
 

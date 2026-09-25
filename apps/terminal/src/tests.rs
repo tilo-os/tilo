@@ -3,6 +3,7 @@ use automerge::{AutoCommit, ObjType, ROOT, ReadDoc, transaction::Transactable};
 use portable_pty::{MasterPty, PtySize};
 use std::io::{Read, Write};
 use std::sync::{Arc, Mutex};
+use tilo_automerge::ApplyIncoming;
 use ui::State;
 use ui::widget::Widget as _;
 use vello::kurbo::Rect;
@@ -145,20 +146,50 @@ fn pty_reader_retries_interrupts_and_linux_handoff_eio() {
     use crate::inner::{PtyReadDisposition, classify_pty_read};
 
     assert_eq!(
-        classify_pty_read(&Err(std::io::Error::from(std::io::ErrorKind::Interrupted))),
+        classify_pty_read(
+            &Err(std::io::Error::from(std::io::ErrorKind::Interrupted)),
+            || false
+        ),
         PtyReadDisposition::Retry
     );
     assert_eq!(
-        classify_pty_read(&Err(std::io::Error::from_raw_os_error(libc::EIO))),
+        classify_pty_read(&Err(std::io::Error::from_raw_os_error(libc::EIO)), || true),
         PtyReadDisposition::Retry,
         "a PTY master can report EIO before the guest opens its slave"
     );
-    assert_eq!(classify_pty_read(&Ok(19)), PtyReadDisposition::Data(19));
-    assert_eq!(classify_pty_read(&Ok(0)), PtyReadDisposition::Closed);
     assert_eq!(
-        classify_pty_read(&Err(std::io::Error::from_raw_os_error(libc::EBADF))),
+        classify_pty_read(&Err(std::io::Error::from_raw_os_error(libc::EIO)), || false),
+        PtyReadDisposition::Closed,
+        "once the session's lifetime socket closes, EIO means the guest exited"
+    );
+    assert_eq!(
+        classify_pty_read(&Ok(19), || true),
+        PtyReadDisposition::Data(19)
+    );
+    assert_eq!(
+        classify_pty_read(&Ok(0), || true),
         PtyReadDisposition::Closed
     );
+    assert_eq!(
+        classify_pty_read(&Err(std::io::Error::from_raw_os_error(libc::EBADF)), || {
+            true
+        }),
+        PtyReadDisposition::Closed
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn lifetime_socket_probe_sees_the_supervisor_close_its_end() {
+    use crate::inner::lifetime_socket_open;
+
+    let (terminal_end, supervisor_end) =
+        std::os::unix::net::UnixStream::pair().expect("socket pair");
+    assert!(lifetime_socket_open(&terminal_end));
+    supervisor_end
+        .shutdown(std::net::Shutdown::Both)
+        .expect("supervisor closes the session");
+    assert!(!lifetime_socket_open(&terminal_end));
 }
 
 /// Drain and concatenate everything the PTY-write channel has buffered.
@@ -2391,10 +2422,10 @@ fn concurrent_terminal_initialisation_converges_on_one_resource_identity() {
     left_doc.commit();
     right_doc.commit();
     left_doc
-        .merge(&mut right_doc)
+        .merge_incoming(&mut right_doc)
         .expect("merge concurrent terminal initialisation");
     right_doc
-        .merge(&mut left_doc)
+        .merge_incoming(&mut left_doc)
         .expect("return the merged terminal state to the second peer");
 
     assert_eq!(
@@ -3609,7 +3640,7 @@ fn two_peers_converge_on_terminal_grid_via_crdt() {
         !delta.is_empty(),
         "A produced an incremental change to share"
     );
-    doc_b.load_incremental(&delta).unwrap();
+    doc_b.load_incoming(&delta).unwrap();
     b.sync(&mut doc_b, &automerge::ROOT);
     assert!(
         b.grid_text().contains("peer-a-line-two"),

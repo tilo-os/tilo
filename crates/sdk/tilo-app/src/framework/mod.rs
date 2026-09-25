@@ -13,7 +13,7 @@
 //! [`run`] hosts that on the toolkit's component runtime, so without writing
 //! any of it the app gets persistence and sync of its record, collaboration
 //! and presence, versioned history (a History mode that renders past versions
-//! with the app's own view), per-author undo, permissions enforced on every
+//! with the app's own view and restores any of them), per-author undo, permissions enforced on every
 //! action (controls of forbidden actions disable themselves), the action
 //! palette and agent/script door, and search indexing.
 //!
@@ -62,16 +62,19 @@
 //!   persisted, never shared, never undone.
 
 mod app;
+mod controls;
 mod dispatch;
 mod each;
 mod live;
 mod preview;
 mod root;
 mod surface;
+mod switch;
 pub mod testing;
 mod view;
 
 pub use app::{ResourceApp, definition, launch_spec, run};
+pub use controls::{ActionControl, Actions};
 pub use dispatch::Dispatcher;
 pub use each::Each;
 pub use live::Live;

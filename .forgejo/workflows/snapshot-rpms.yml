@@ -256,12 +256,16 @@ jobs:
         uses: actions/download-artifact@9bc31d5ccc31df68ecc42ccf4149144866c47d8a # v3
         with:
           path: native-children
-      - name: Refuse stale snapshot inputs before promotion
+      # Inputs that moved on main while the native builds ran do not stop
+      # promotion: a snapshot newer than the pin is still strictly better, and
+      # the kernel promotion requests the next refresh. Only a snapshot that is
+      # not newer than main's pin is refused.
+      - name: Refuse a snapshot that is not newer than main's pin
         run: |
           set -euo pipefail
           git fetch --no-tags origin main
-          if ! python3 os/dev/rpm-snapshot-inputs.py --base "$GITHUB_SHA" --head origin/main --require-equivalent; then
-            echo '::error::RPM snapshot inputs changed while native builds ran'
+          if ! python3 os/dev/rpm-snapshot-inputs.py --base "$GITHUB_SHA" --head origin/main --require-newer-than-pin; then
+            echo '::error::main already pins an RPM snapshot at least as new as this one'
             exit 1
           fi
       - name: Log in to code.podesta.ai
@@ -398,4 +402,5 @@ jobs:
     uses: ./.forgejo/workflows/build-kernel.yml
     with:
       rpms_ref: ${{ needs.promote-snapshot.outputs.rpms-ref }}
+      publish: true
     secrets: inherit

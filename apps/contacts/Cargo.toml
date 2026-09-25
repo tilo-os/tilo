@@ -31,6 +31,7 @@ ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["po
 # mutation side (create / delete / edit / favourite a contact).
 tilo-actions = { path = "../../crates/collab/actions" }
 automerge.workspace = true
+tilo-automerge.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 uuid.workspace = true
