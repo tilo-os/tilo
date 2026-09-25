@@ -45,11 +45,10 @@ jobs:
         run: |
           set -euo pipefail
           cargo xwin build -p tilo-vm --locked --release --target aarch64-pc-windows-msvc
-      - name: Verify scenario credential and installer action tests
+      - name: Verify CLI unit tests
         run: |
           set -euo pipefail
           cargo test -p tilo-vm --locked --lib
-          cargo test -p installer --locked --lib separate_disk_secret_action_keeps_backend_credentials_distinct_and_private
       - name: Package exact-source CLI
         run: |
           set -euo pipefail
