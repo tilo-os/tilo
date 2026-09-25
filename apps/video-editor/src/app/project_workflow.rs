@@ -1,3 +1,7 @@
+#[allow(
+    clippy::wildcard_imports,
+    reason = "this file is one part of the `VideoEditorApp` impl split out of `app.rs`; it shares the parent's whole scope"
+)]
 use super::*;
 
 impl VideoEditorApp {
@@ -199,8 +203,8 @@ impl VideoEditorApp {
         self.clip_edit_bases.clear();
         self.doc_heads = doc.get_heads();
         self.saved_heads = Some(self.doc_heads.clone());
-        self.project_path = Some(path.clone());
         self.recents = crate::project_file::recents::remember(&self.recents, &path);
+        self.project_path = Some(path);
         // The view belongs to the project that was open, not to this one.
         self.selection = Selection::default();
         self.selected_media = None;

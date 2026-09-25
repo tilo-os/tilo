@@ -66,6 +66,13 @@ struct Accum {
     views: [wgpu::TextureView; 2],
 }
 
+/// One of the two accumulation targets. Passes ping-pong between them, so an
+/// index names a target by its parity alone.
+fn ping_pong<T>(pair: &[T; 2], i: usize) -> &T {
+    let [even, odd] = pair;
+    if i.is_multiple_of(2) { even } else { odd }
+}
+
 /// The baked tone curves for one composite: `LUT_SIZE` entries across, one
 /// row per layer.
 ///
@@ -116,10 +123,7 @@ impl VideoCompositor {
     }
 
     fn ensure_gpu(&mut self, device: &wgpu::Device) -> &Gpu {
-        if self.gpu.is_none() {
-            self.gpu = Some(build_gpu(device));
-        }
-        self.gpu.as_ref().expect("gpu just built")
+        self.gpu.get_or_insert_with(|| build_gpu(device))
     }
 
     fn ensure_accum(&mut self, device: &wgpu::Device, width: u32, height: u32) {
@@ -199,30 +203,32 @@ impl VideoCompositor {
         // curve), but the texture must still have the row it was sized for.
         bytes.resize(LUT_SIZE * 4 * rows as usize, 255);
 
-        if self.lut.as_ref().is_none_or(|l| l.rows != rows) {
-            let texture = device.create_texture(&wgpu::TextureDescriptor {
-                label: Some("video-composite-lut"),
-                size: wgpu::Extent3d {
-                    width: LUT_SIZE as u32,
-                    height: rows,
-                    depth_or_array_layers: 1,
-                },
-                mip_level_count: 1,
-                sample_count: 1,
-                dimension: wgpu::TextureDimension::D2,
-                format: wgpu::TextureFormat::Rgba8Unorm,
-                usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-                view_formats: &[],
-            });
-            let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-            self.lut = Some(Lut {
-                rows,
-                texture,
-                view,
-                uploaded: Vec::new(),
-            });
-        }
-        let lut = self.lut.as_mut().expect("built above");
+        let lut = match &mut self.lut {
+            Some(lut) if lut.rows == rows => lut,
+            slot => {
+                let texture = device.create_texture(&wgpu::TextureDescriptor {
+                    label: Some("video-composite-lut"),
+                    size: wgpu::Extent3d {
+                        width: LUT_SIZE as u32,
+                        height: rows,
+                        depth_or_array_layers: 1,
+                    },
+                    mip_level_count: 1,
+                    sample_count: 1,
+                    dimension: wgpu::TextureDimension::D2,
+                    format: wgpu::TextureFormat::Rgba8Unorm,
+                    usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+                    view_formats: &[],
+                });
+                let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+                slot.insert(Lut {
+                    rows,
+                    texture,
+                    view,
+                    uploaded: Vec::new(),
+                })
+            }
+        };
         // Re-upload only when the baked bytes actually differ, so holding a
         // playhead over a graded clip costs one comparison.
         if lut.uploaded != bytes {
@@ -258,6 +264,19 @@ impl VideoCompositor {
     /// `target` must be an `Rgba8Unorm` texture view with
     /// `STORAGE_BINDING` usage — vello's intermediate render target and
     /// the export's offscreen texture both qualify.
+    ///
+    /// # Panics
+    ///
+    /// Never in practice: the pipelines, accumulation and uniform buffer it
+    /// reads are all built by the accumulation pass it runs first.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the GPU handles, the target and the timeline instant are independent inputs"
+    )]
+    #[expect(
+        clippy::expect_used,
+        reason = "`accumulate` builds every resource read here before returning"
+    )]
     pub fn render(
         &mut self,
         device: &wgpu::Device,
@@ -278,10 +297,11 @@ impl VideoCompositor {
 
         // The present pass reads the finished accumulation and stores it
         // at the viewport's origin on the caller's target.
-        let mut params = Params::default();
-        params.frame = [w as f32, h as f32, 1.0, 0.0];
-        params.wipe[2] = viewport.x as f32;
-        params.wipe[3] = viewport.y as f32;
+        let params = Params {
+            frame: [w as f32, h as f32, 1.0, 0.0],
+            wipe: [0.0, 0.0, viewport.x as f32, viewport.y as f32],
+            ..Params::default()
+        };
         let offset = u64::from(*stride) * layers.len() as u64;
         queue.write_buffer(buffer, offset, &params.to_bytes());
 
@@ -299,7 +319,7 @@ impl VideoCompositor {
                 },
                 wgpu::BindGroupEntry {
                     binding: 1,
-                    resource: wgpu::BindingResource::TextureView(&accum.views[last]),
+                    resource: wgpu::BindingResource::TextureView(ping_pong(&accum.views, last)),
                 },
                 wgpu::BindGroupEntry {
                     binding: 2,
@@ -343,6 +363,19 @@ impl VideoCompositor {
     /// This is the export's frame source. It runs the identical layer
     /// stack, grade, effect chain and transition math the preview shows,
     /// so the encoded file *is* the preview.
+    ///
+    /// # Panics
+    ///
+    /// When the GPU fails to map the readback buffer — the frame cannot be
+    /// read at all then.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the GPU handles, the timeline instant and the output size are independent inputs"
+    )]
+    #[expect(
+        clippy::expect_used,
+        reason = "the accumulation and readback buffer are built just above; a failed map is fatal"
+    )]
     pub fn render_rgba(
         &mut self,
         device: &wgpu::Device,
@@ -390,7 +423,7 @@ impl VideoCompositor {
         });
         enc.copy_texture_to_buffer(
             wgpu::TexelCopyTextureInfo {
-                texture: &accum.textures[last],
+                texture: ping_pong(&accum.textures, last),
                 mip_level: 0,
                 origin: wgpu::Origin3d::ZERO,
                 aspect: wgpu::TextureAspect::All,
@@ -422,9 +455,11 @@ impl VideoCompositor {
         let mapped = slice.get_mapped_range();
         let row = unpadded as usize;
         let mut out = Vec::with_capacity(row * h as usize);
-        for y in 0..h as usize {
-            let start = y * padded as usize;
-            out.extend_from_slice(&mapped[start..start + row]);
+        // The buffer holds exactly `h` padded rows, each at least `row` long.
+        for padded_row in mapped.chunks(padded as usize).take(h as usize) {
+            if let Some(pixels) = padded_row.get(..row) {
+                out.extend_from_slice(pixels);
+            }
         }
         drop(mapped);
         staging.unmap();
@@ -461,6 +496,10 @@ impl VideoCompositor {
 
     /// Run every layer pass. Returns which accumulation index holds the
     /// finished frame.
+    #[expect(
+        clippy::expect_used,
+        reason = "the pipelines, accumulation and uniform buffer are ensured at the top"
+    )]
     fn accumulate(
         &mut self,
         device: &wgpu::Device,
@@ -510,102 +549,8 @@ impl VideoCompositor {
         let mut offsets = Vec::with_capacity(passes);
 
         for i in 0..passes {
-            let dst = i % 2;
-            let src_accum = 1 - dst;
-            let layer = layers.get(i);
             let tex = resolved.get(i).and_then(|t| t.as_ref());
-
-            let mut params = Params::default();
-            params.frame = [
-                w as f32,
-                h as f32,
-                if i == 0 { 0.0 } else { 1.0 },
-                if tex.is_some() { 1.0 } else { 0.0 },
-            ];
-            if let Some(l) = layer {
-                let f = &l.filters;
-                params.grade = [
-                    crate::model::Filters::gain(f.brightness) as f32,
-                    crate::model::Filters::gain(f.contrast) as f32,
-                    crate::model::Filters::gain(f.saturation) as f32,
-                    l.alpha as f32,
-                ];
-                let rgb = preview::palette_rgb(l.palette);
-                let n = l.effects.len().min(MAX_SHADER_EFFECTS);
-                params.palette = [rgb.r as f32, rgb.g as f32, rgb.b as f32, n as f32];
-                for (slot, e) in params.effects.iter_mut().zip(l.effects.iter()).take(n) {
-                    slot[0] = effect_index(e.kind) as f32;
-                    slot[1] = e.amount as f32;
-                }
-                if let Some(t) = tex {
-                    params.src[0] = t.width as f32;
-                    params.src[1] = t.height as f32;
-                }
-                if let Some(wp) = l.wipe {
-                    params.src[2] = 1.0;
-                    params.src[3] = wp.dir.index() as f32;
-                    params.wipe[0] = wp.progress as f32;
-                    params.wipe[1] = wp.softness as f32;
-                }
-                // Geometry. `Layer::transform` is already sampled at this
-                // instant, so an animated move arrives here as a number.
-                let x = &l.transform;
-                params.xform_a = [
-                    x.scale_x as f32,
-                    x.scale_y as f32,
-                    x.pos_x as f32,
-                    x.pos_y as f32,
-                ];
-                let (cl, ct, cr, cb) = x.crop_rect();
-                params.xform_b = [
-                    x.rotation.to_radians() as f32,
-                    x.anchor_x as f32,
-                    x.anchor_y as f32,
-                    if l.source_alpha { 1.0 } else { 0.0 },
-                ];
-                params.crop = [cl as f32, ct as f32, cr as f32, cb as f32];
-                // A key or a mask that is switched off is passed as
-                // inactive rather than as neutral numbers, so the shader
-                // takes neither branch on the ordinary clip.
-                if l.key.is_active() {
-                    params.key_a = [
-                        1.0,
-                        l.key.tolerance as f32,
-                        l.key.softness as f32,
-                        l.key.spill as f32,
-                    ];
-                    params.key_b = [
-                        l.key.color[0] as f32,
-                        l.key.color[1] as f32,
-                        l.key.color[2] as f32,
-                        0.0,
-                    ];
-                }
-                // A curve is a baked table this layer looks up; an identity
-                // one is left inactive so the shader takes no lookup at all.
-                if has_lut && !l.curve.is_identity() {
-                    params.lut = [1.0, i as f32, 0.0, 0.0];
-                }
-                if l.mask.is_active() {
-                    let m = &l.mask;
-                    params.mask_a = [
-                        m.shape.index() as f32,
-                        m.x as f32,
-                        m.y as f32,
-                        m.rotation.to_radians() as f32,
-                    ];
-                    params.mask_b = [
-                        m.w as f32,
-                        m.h as f32,
-                        m.feather as f32,
-                        if m.invert { 1.0 } else { 0.0 },
-                    ];
-                }
-            } else {
-                // The empty-timeline clear: fully transparent coverage
-                // leaves the frame at black.
-                params.grade = [1.0, 1.0, 1.0, 0.0];
-            }
+            let params = layer_params(w, h, i, layers.get(i), tex, has_lut);
 
             let offset = u64::from(stride) * i as u64;
             queue.write_buffer(buffer, offset, &params.to_bytes());
@@ -626,7 +571,11 @@ impl VideoCompositor {
                     },
                     wgpu::BindGroupEntry {
                         binding: 1,
-                        resource: wgpu::BindingResource::TextureView(&accum.views[src_accum]),
+                        // Read the accumulation the previous pass wrote.
+                        resource: wgpu::BindingResource::TextureView(ping_pong(
+                            &accum.views,
+                            i + 1,
+                        )),
                     },
                     wgpu::BindGroupEntry {
                         binding: 2,
@@ -638,7 +587,7 @@ impl VideoCompositor {
                     },
                     wgpu::BindGroupEntry {
                         binding: 4,
-                        resource: wgpu::BindingResource::TextureView(&accum.views[dst]),
+                        resource: wgpu::BindingResource::TextureView(ping_pong(&accum.views, i)),
                     },
                     wgpu::BindGroupEntry {
                         binding: 5,
@@ -651,19 +600,126 @@ impl VideoCompositor {
         let mut enc = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("video-composite-layers"),
         });
-        for (i, bg) in bind_groups.iter().enumerate() {
+        for (bg, offset) in bind_groups.iter().zip(&offsets) {
             let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor {
                 label: Some("video-composite-layer"),
                 timestamp_writes: None,
             });
             pass.set_pipeline(&gpu.layer_pipeline);
-            pass.set_bind_group(0, bg, &[offsets[i]]);
+            pass.set_bind_group(0, bg, &[*offset]);
             pass.dispatch_workgroups(w.div_ceil(8), h.div_ceil(8), 1);
         }
         queue.submit([enc.finish()]);
 
         (passes - 1) % 2
     }
+}
+
+/// The uniform for pass `i` of a `w × h` composite: `layer` over the
+/// accumulation, or — with no layer at all — the clearing pass.
+fn layer_params(
+    w: u32,
+    h: u32,
+    i: usize,
+    layer: Option<&Layer>,
+    tex: Option<&SourceTexture>,
+    has_lut: bool,
+) -> Params {
+    let mut params = Params {
+        frame: [
+            w as f32,
+            h as f32,
+            if i == 0 { 0.0 } else { 1.0 },
+            if tex.is_some() { 1.0 } else { 0.0 },
+        ],
+        ..Params::default()
+    };
+    let Some(layer) = layer else {
+        // The empty-timeline clear: fully transparent coverage
+        // leaves the frame at black.
+        params.grade = [1.0, 1.0, 1.0, 0.0];
+        return params;
+    };
+    let filters = &layer.filters;
+    params.grade = [
+        crate::model::Filters::gain(filters.brightness) as f32,
+        crate::model::Filters::gain(filters.contrast) as f32,
+        crate::model::Filters::gain(filters.saturation) as f32,
+        layer.alpha as f32,
+    ];
+    let rgb = preview::palette_rgb(layer.palette);
+    let count = layer.effects.len().min(MAX_SHADER_EFFECTS);
+    params.palette = [rgb.r as f32, rgb.g as f32, rgb.b as f32, count as f32];
+    for (slot, effect) in params
+        .effects
+        .iter_mut()
+        .zip(layer.effects.iter())
+        .take(count)
+    {
+        slot[0] = effect_index(effect.kind) as f32;
+        slot[1] = effect.amount as f32;
+    }
+    if let Some(tex) = tex {
+        params.src[0] = tex.width as f32;
+        params.src[1] = tex.height as f32;
+    }
+    if let Some(wp) = layer.wipe {
+        params.src[2] = 1.0;
+        params.src[3] = wp.dir.index() as f32;
+        params.wipe[0] = wp.progress as f32;
+        params.wipe[1] = wp.softness as f32;
+    }
+    // Geometry. `Layer::transform` is already sampled at this
+    // instant, so an animated move arrives here as a number.
+    let xf = &layer.transform;
+    params.xform_a = [
+        xf.scale_x as f32,
+        xf.scale_y as f32,
+        xf.pos_x as f32,
+        xf.pos_y as f32,
+    ];
+    let (cl, ct, cr, cb) = xf.crop_rect();
+    params.xform_b = [
+        xf.rotation.to_radians() as f32,
+        xf.anchor_x as f32,
+        xf.anchor_y as f32,
+        if layer.source_alpha { 1.0 } else { 0.0 },
+    ];
+    params.crop = [cl as f32, ct as f32, cr as f32, cb as f32];
+    // A key or a mask that is switched off is passed as
+    // inactive rather than as neutral numbers, so the shader
+    // takes neither branch on the ordinary clip.
+    if layer.key.is_active() {
+        let [kr, kg, kb] = layer.key.color;
+        params.key_a = [
+            1.0,
+            layer.key.tolerance as f32,
+            layer.key.softness as f32,
+            layer.key.spill as f32,
+        ];
+        params.key_b = [kr as f32, kg as f32, kb as f32, 0.0];
+    }
+    // A curve is a baked table this layer looks up; an identity
+    // one is left inactive so the shader takes no lookup at all.
+    if has_lut && !layer.curve.is_identity() {
+        params.lut = [1.0, i as f32, 0.0, 0.0];
+    }
+    if layer.mask.is_active() {
+        let mask = &layer.mask;
+        params.mask_a = [
+            mask.shape.index() as f32,
+            mask.x as f32,
+            mask.y as f32,
+            mask.rotation.to_radians() as f32,
+        ];
+        params.mask_b = [
+            mask.w as f32,
+            mask.h as f32,
+            mask.feather as f32,
+            if mask.invert { 1.0 } else { 0.0 },
+        ];
+    }
+    params
 }
 
 fn effect_index(kind: crate::model::EffectKind) -> u32 {
@@ -726,35 +782,37 @@ impl Default for Params {
 
 impl Params {
     fn to_bytes(self) -> [u8; PARAMS_BYTES] {
+        let vectors = [
+            self.frame,
+            self.grade,
+            self.palette,
+            self.src,
+            self.wipe,
+            self.xform_a,
+            self.xform_b,
+            self.crop,
+            self.key_a,
+            self.key_b,
+            self.mask_a,
+            self.mask_b,
+            self.lut,
+        ]
+        .into_iter()
+        .chain(self.effects);
+        debug_assert_eq!(vectors.clone().count() * 16, PARAMS_BYTES);
         let mut out = [0u8; PARAMS_BYTES];
-        let mut at = 0;
-        let put = |v: [f32; 4], out: &mut [u8; PARAMS_BYTES], at: &mut usize| {
-            for c in v {
-                out[*at..*at + 4].copy_from_slice(&c.to_ne_bytes());
-                *at += 4;
-            }
-        };
-        put(self.frame, &mut out, &mut at);
-        put(self.grade, &mut out, &mut at);
-        put(self.palette, &mut out, &mut at);
-        put(self.src, &mut out, &mut at);
-        put(self.wipe, &mut out, &mut at);
-        put(self.xform_a, &mut out, &mut at);
-        put(self.xform_b, &mut out, &mut at);
-        put(self.crop, &mut out, &mut at);
-        put(self.key_a, &mut out, &mut at);
-        put(self.key_b, &mut out, &mut at);
-        put(self.mask_a, &mut out, &mut at);
-        put(self.mask_b, &mut out, &mut at);
-        put(self.lut, &mut out, &mut at);
-        for e in self.effects {
-            put(e, &mut out, &mut at);
+        let (words, _) = out.as_chunks_mut::<4>();
+        for (word, c) in words.iter_mut().zip(vectors.flatten()) {
+            *word = c.to_ne_bytes();
         }
-        debug_assert_eq!(at, PARAMS_BYTES);
         out
     }
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "declarative wgpu descriptors for the one bind group layout and its pipelines"
+)]
 fn build_gpu(device: &wgpu::Device) -> Gpu {
     let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("video-composite"),
@@ -834,7 +892,7 @@ fn build_gpu(device: &wgpu::Device) -> Gpu {
             layout: Some(&layout),
             module: &shader,
             entry_point: Some(entry),
-            compilation_options: Default::default(),
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
             cache: None,
         })
     };
@@ -888,9 +946,10 @@ pub fn upload_rgba(
     rgba: &[u8],
 ) -> Option<SourceTexture> {
     let (w, h) = (width, height);
-    if w == 0 || h == 0 || rgba.len() < (w as usize * h as usize * 4) {
+    if w == 0 || h == 0 {
         return None;
     }
+    let pixels = rgba.get(..(w as usize * h as usize * 4))?;
     let texture = device.create_texture(&wgpu::TextureDescriptor {
         label: Some("video-composite-source"),
         size: wgpu::Extent3d {
@@ -912,7 +971,7 @@ pub fn upload_rgba(
             origin: wgpu::Origin3d::ZERO,
             aspect: wgpu::TextureAspect::All,
         },
-        &rgba[..(w as usize * h as usize * 4)],
+        pixels,
         wgpu::TexelCopyBufferLayout {
             offset: 0,
             bytes_per_row: Some(w * 4),

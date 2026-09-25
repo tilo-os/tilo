@@ -1,3 +1,7 @@
+#[allow(
+    clippy::wildcard_imports,
+    reason = "this file is one part of the `VideoEditorApp` impl split out of `app.rs`; it shares the parent's whole scope"
+)]
 use super::*;
 
 impl VideoEditorApp {
@@ -9,6 +13,10 @@ impl VideoEditorApp {
     /// is content, not a control the fleet shares. Everything around it —
     /// the channel chooser, the amount slider, the reset — goes through the
     /// shared widgets.
+    #[expect(
+        clippy::many_single_char_names,
+        reason = "curve plotting: colours c, sample fraction f and value v, and the x/y/h of each mark"
+    )]
     fn draw_curve_editor(
         &self,
         scene: &mut Scene,
@@ -18,6 +26,7 @@ impl VideoEditorApp {
         canvas: Rect,
         clip: &Clip,
     ) {
+        const STEPS: usize = 64;
         let c = &theme.tokens.colors;
         let ch = self.curve_channel;
         let spline = clip.curves.spline(ch);
@@ -56,7 +65,6 @@ impl VideoEditorApp {
         // curve rather than as the polyline it is drawn with.
         let tint = curve_channel_color(theme, ch);
         let mut path = BezPath::new();
-        const STEPS: usize = 64;
         for i in 0..=STEPS {
             let t = i as f64 / STEPS as f64;
             let p = curve_point(canvas, t, spline.eval(t));
@@ -616,6 +624,10 @@ impl VideoEditorApp {
         clippy::too_many_lines,
         reason = "inspector controls index fixed option tables and share one scroll coordinate system with their validated hit targets"
     )]
+    #[expect(
+        clippy::many_single_char_names,
+        reason = "the paint pass's shorthands: colours c, regions r, layout l, value v and the y pen"
+    )]
     fn draw_inspector_body(
         &self,
         scene: &mut Scene,
@@ -1156,7 +1168,15 @@ impl VideoEditorApp {
             let labels: Vec<&str> = band
                 .iter()
                 .map(|(a, _)| {
+                    #[expect(
+                        clippy::float_cmp,
+                        reason = "the anchor cells are laid out from `ANCHOR_STOPS` itself, so equality is the lookup"
+                    )]
                     let col = ANCHOR_STOPS.iter().position(|s| *s == a.0).unwrap_or(1);
+                    #[expect(
+                        clippy::float_cmp,
+                        reason = "the anchor cells are laid out from `ANCHOR_STOPS` itself, so equality is the lookup"
+                    )]
                     let row = ANCHOR_STOPS.iter().position(|s| *s == a.1).unwrap_or(1);
                     ANCHOR_GLYPHS[row * 3 + col]
                 })
@@ -1773,6 +1793,10 @@ impl VideoEditorApp {
     /// a fold that hid "this clip plays at 4x in reverse" would turn a view
     /// choice into missing state, and the user would have no way to know the
     /// clip was re-timed without unfolding every section on every clip.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the paint context plus the section, its rect, fold state and summary"
+    )]
     fn draw_section_header(
         &self,
         scene: &mut Scene,

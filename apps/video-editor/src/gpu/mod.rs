@@ -169,6 +169,10 @@ pub struct HeadlessCompositor {
 impl HeadlessCompositor {
     /// Borrow the shared device. Fails (rather than panicking) on a box
     /// with no usable adapter, so callers can report it honestly.
+    ///
+    /// # Errors
+    ///
+    /// The adapter's own message when no usable GPU is available.
     pub fn new() -> Result<Self, String> {
         let gpu = ui::offscreen::shared_gpu().map_err(|e| e.to_string())?;
         Ok(Self {
@@ -273,6 +277,10 @@ mod tests {
     /// A [`FrameSource`] handing every layer the same known picture, so a
     /// test can assert on *where the picture landed* rather than on a
     /// stand-in fill. `paint(u, v) -> (r, g, b, a)` in 0..255.
+    #[expect(
+        clippy::many_single_char_names,
+        reason = "pixel maths: frame w/h, texel index i, its u/v, and the colour c"
+    )]
     fn painted(
         w: u32,
         h: u32,
@@ -808,6 +816,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::many_single_char_names,
+        reason = "test shorthands: project p, media m, track t, clip c and its filters f"
+    )]
     fn the_shader_grade_matches_the_cpu_grade() {
         // The shader is the production path; this pins its arithmetic to
         // `Rgb::graded`, which the inspector and every CPU test rely on.
@@ -1333,6 +1345,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::many_single_char_names,
+        reason = "test shorthands: project p, media m, track t, clip c, and the two frames a/b"
+    )]
     fn the_same_input_always_composites_the_same_frame() {
         // `--shots` determinism, asserted on the production path.
         let mut p = Project::new("t");
@@ -1850,6 +1866,7 @@ mod tests {
         let frame = s
             .frame_at(2_000, std::time::Duration::from_secs(10))
             .expect("a frame at 2s");
+        drop(s);
         match &frame.payload {
             FramePayload::Planar(img) => {
                 assert_eq!(img.planes.len(), 2, "NV12 is luma plus interleaved chroma");
@@ -2026,6 +2043,10 @@ mod tests {
 
     /// A [`FrameSource`] that paints each media its own picture, so a
     /// two-layer stack can be told apart pixel by pixel.
+    #[expect(
+        clippy::many_single_char_names,
+        reason = "pixel maths: frame w/h, texel index i, its u/v, and the colour c"
+    )]
     fn per_media(
         w: u32,
         h: u32,
@@ -2255,7 +2276,7 @@ mod tests {
             "the subject is kept either way — spill removal is not a matte",
         );
         // Green comes down relative to the other two channels.
-        let cast = |c: Rgb| c.g - (c.r + c.b) / 2.0;
+        let cast = |c: Rgb| c.g - c.r.midpoint(c.b);
         assert!(
             cast(clean) < cast(plain) - 0.02,
             "spill removal pulls the green cast down: {:.3} → {:.3}",

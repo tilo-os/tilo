@@ -1,5 +1,9 @@
 //! Deterministic screenshot scenarios and their one-shot setup lifecycle.
 
+#[allow(
+    clippy::wildcard_imports,
+    reason = "this file is one part of the `VideoEditorApp` impl split out of `app.rs`; it shares the parent's whole scope"
+)]
 use super::*;
 
 /// One-shot capture scenarios selected by the `--shots` entry points. Each
@@ -694,6 +698,10 @@ impl VideoEditorApp {
         self.shot_presence = Some(ctx);
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the capture script: one arm per shot, each setting up exactly what it shows"
+    )]
     pub(super) fn apply_shot_interaction(&mut self, r: &Regions) {
         // A capture that is about the inspector has to show it, and on a
         // narrow window it starts out of the way. Opening it here is what
