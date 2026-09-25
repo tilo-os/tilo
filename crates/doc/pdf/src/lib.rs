@@ -73,6 +73,9 @@ pub use edits::{
     NewAnnotationKind, PageEdit, PageSource, StampText,
 };
 pub use error::{Error, Result};
+/// A face of a pinned font file for appearance text (see
+/// [`install_appearance_faces`]).
+pub use font::BundledFace;
 pub use geom::{PageGeometry, PageSize, Point, Rect, Rotation};
 pub use model::{
     ANNOT_FLAG_HIDDEN, ANNOT_FLAG_NOVIEW, ANNOT_FLAG_PRINT, AnnotationInfo, AnnotationKind,
@@ -81,6 +84,14 @@ pub use model::{
 };
 pub use proto::ProbeReport;
 pub use text::{SearchOptions, Selection, TextChar, TextLayer, TextMatch};
+
+/// Hand the engine the faces free text, typed signatures and stamps are set
+/// in, in preference order. The helper binary installs Tilo's pinned font
+/// set before it serves requests, so exports never depend on the host's
+/// fonts; the first call in a process wins.
+pub fn install_appearance_faces(faces: Vec<BundledFace>) {
+    font::install_faces(faces);
+}
 
 use proto::OpenKind;
 
