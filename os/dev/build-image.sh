@@ -593,6 +593,12 @@ fi
 if [ -n "${TILO_TARGET_IMGREF:-}" ]; then
   disk_args+=(--target-imgref "$TILO_TARGET_IMGREF")
 fi
+# Release gate only: the /etc half of os/dev/validation-access.sh, written into
+# this disk copy; `vm.sh boot` attaches the signed extension it trusts
+# (TILO_VM_VALIDATION_SYSEXT).
+if [ -n "${TILO_VALIDATION_ETC:-}" ]; then
+  disk_args+=(--etc-overlay "$TILO_VALIDATION_ETC")
+fi
 # Whole-disk virtual size (disk-image.sh --size). The qcow2 stays sparse, so a
 # dev VM disk with room for builds and slot layers costs nothing until written.
 if [ -n "${TILO_DISK_SIZE:-}" ]; then
