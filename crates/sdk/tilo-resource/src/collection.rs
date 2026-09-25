@@ -5,7 +5,8 @@ use std::fmt;
 use automerge::transaction::Transactable;
 use automerge::{ObjId, ObjType, ReadDoc, ScalarValue, Value};
 
-use crate::model::{Doc, Model, ModelError, Slot, read_key};
+use crate::delta::{Delta, Touch};
+use crate::model::{Doc, Model, ModelError, Slot, read_key, refresh_key};
 use crate::order;
 
 /// A stable identity for an item in a resource. Minted deterministically by
@@ -69,9 +70,45 @@ pub(crate) const VALUE: &str = "v";
 /// from several collaborators interleave deterministically; deleting an item
 /// never disturbs another item's identity. This is the default container for
 /// anything a user adds, reorders or removes.
-#[derive(Clone, Debug, PartialEq)]
+///
+/// A collection read from a document remembers each item's order key, so a
+/// later change re-reads only the items it touched
+/// ([`Model::refresh`]) instead of the whole collection.
+#[derive(Clone, Debug)]
 pub struct Collection<T> {
-    items: Vec<(Id, T)>,
+    items: Vec<Entry<T>>,
+}
+
+#[derive(Clone, Debug)]
+struct Entry<T> {
+    id: Id,
+    /// The stored order key, when this entry was read from a document and
+    /// has not been moved since.
+    key: Option<String>,
+    item: T,
+}
+
+impl<T> Entry<T> {
+    fn new(id: Id, item: T) -> Self {
+        Self {
+            id,
+            key: None,
+            item,
+        }
+    }
+}
+
+impl<T: PartialEq> PartialEq for Collection<T> {
+    /// Equal items in equal order; where each item's order key came from is
+    /// bookkeeping, not content.
+    fn eq(&self, other: &Self) -> bool {
+        self.items.len() == other.items.len()
+            && self
+                .items
+                .iter()
+                .zip(&other.items)
+                .all(|(a, b)| a.id == b.id && a.item == b.item)
+    }
 }
 
 impl<T> Default for Collection<T> {
@@ -96,19 +133,21 @@ impl<T> Collection<T> {
 
     /// Items in collection order.
     pub fn iter(&self) -> impl DoubleEndedIterator<Item = (&Id, &T)> + ExactSizeIterator {
-        self.items.iter().map(|(id, item)| (id, item))
+        self.items.iter().map(|entry| (&entry.id, &entry.item))
     }
 
     pub fn iter_mut(&mut self) -> impl Iterator<Item = (&Id, &mut T)> {
-        self.items.iter_mut().map(|(id, item)| (&*id, item))
+        self.items
+            .iter_mut()
+            .map(|entry| (&entry.id, &mut entry.item))
     }
 
     pub fn values(&self) -> impl DoubleEndedIterator<Item = &T> + ExactSizeIterator {
-        self.items.iter().map(|(_, item)| item)
+        self.items.iter().map(|entry| &entry.item)
     }
 
     pub fn ids(&self) -> impl DoubleEndedIterator<Item = &Id> + ExactSizeIterator {
-        self.items.iter().map(|(id, _)| id)
+        self.items.iter().map(|entry| &entry.id)
     }
 
     pub fn contains(&self, id: &Id) -> bool {
@@ -116,39 +155,39 @@ impl<T> Collection<T> {
     }
 
     pub fn position(&self, id: &Id) -> Option<usize> {
-        self.items.iter().position(|(candidate, _)| candidate == id)
+        self.items.iter().position(|entry| &entry.id == id)
     }
 
     pub fn get(&self, id: &Id) -> Option<&T> {
         self.items
             .iter()
-            .find(|(candidate, _)| candidate == id)
-            .map(|(_, item)| item)
+            .find(|entry| &entry.id == id)
+            .map(|entry| &entry.item)
     }
 
     pub fn get_mut(&mut self, id: &Id) -> Option<&mut T> {
         self.items
             .iter_mut()
-            .find(|(candidate, _)| candidate == id)
-            .map(|(_, item)| item)
+            .find(|entry| &entry.id == id)
+            .map(|entry| &mut entry.item)
     }
 
     /// Append an item. Returns its id for chaining.
     pub fn push(&mut self, id: Id, item: T) -> Id {
-        self.items.push((id.clone(), item));
+        self.items.push(Entry::new(id.clone(), item));
         id
     }
 
     /// Insert an item at `index` (clamped to the end).
     pub fn insert(&mut self, index: usize, id: Id, item: T) -> Id {
         let index = index.min(self.items.len());
-        self.items.insert(index, (id.clone(), item));
+        self.items.insert(index, Entry::new(id.clone(), item));
         id
     }
 
     pub fn remove(&mut self, id: &Id) -> Option<T> {
         let index = self.position(id)?;
-        Some(self.items.remove(index).1)
+        Some(self.items.remove(index).item)
     }
 
     /// Move an item to `index` (clamped to the end). Returns whether it exists.
@@ -156,18 +195,22 @@ impl<T> Collection<T> {
         let Some(from) = self.position(id) else {
             return false;
         };
-        let entry = self.items.remove(from);
+        let mut entry = self.items.remove(from);
+        entry.key = None;
         let index = index.min(self.items.len());
         self.items.insert(index, entry);
         true
     }
 
     pub fn retain(&mut self, mut keep: impl FnMut(&Id, &T) -> bool) {
-        self.items.retain(|(id, item)| keep(id, item));
+        self.items.retain(|entry| keep(&entry.id, &entry.item));
     }
 
     pub fn sort_by(&mut self, mut compare: impl FnMut(&T, &T) -> std::cmp::Ordering) {
-        self.items.sort_by(|(_, a), (_, b)| compare(a, b));
+        self.items.sort_by(|a, b| compare(&a.item, &b.item));
+        for entry in &mut self.items {
+            entry.key = None;
+        }
     }
 }
 
@@ -188,7 +231,10 @@ impl<T> std::ops::Index<&Id> for Collection<T> {
 impl<T> FromIterator<(Id, T)> for Collection<T> {
     fn from_iter<I: IntoIterator<Item = (Id, T)>>(iter: I) -> Self {
         Self {
-            items: iter.into_iter().collect(),
+            items: iter
+                .into_iter()
+                .map(|(id, item)| Entry::new(id, item))
+                .collect(),
         }
     }
 }
@@ -257,11 +303,71 @@ impl<T: Model> Model for Collection<T> {
             .into_iter()
             .map(|stored| {
                 read_key::<T>(doc, &stored.entry, VALUE)
-                    .map(|item| (stored.id.clone(), item))
+                    .map(|item| Entry {
+                        id: stored.id.clone(),
+                        key: Some(stored.key),
+                        item,
+                    })
                     .map_err(|error| error.at(stored.id.as_str()))
             })
             .collect::<Result<Vec<_>, _>>()
             .map(|items| Self { items })
+    }
+
+    fn refresh(
+        &mut self,
+        doc: &Doc,
+        value: &Value<'_>,
+        id: &ObjId,
+        delta: &Delta,
+    ) -> Result<(), ModelError> {
+        let touched = delta.under(id);
+        // A collection edited in memory since it was read no longer knows
+        // every stored order key; read it again rather than guess.
+        if touched.is_all() || self.items.iter().any(|entry| entry.key.is_none()) {
+            *self = Self::load(doc, value, id)?;
+            return Ok(());
+        }
+        let mut reorder = false;
+        for key in touched.keys() {
+            let item_id = Id(key.to_owned());
+            let position = self.position(&item_id);
+            let Some((Value::Object(ObjType::Map), entry)) = doc.get(id, key)? else {
+                if let Some(position) = position {
+                    self.items.remove(position);
+                }
+                continue;
+            };
+            let order = |doc: &Doc| read_key::<crate::Atom>(doc, &entry, ORDER).map(|k| k.0);
+            // Something inside an item already read: its order key, its value.
+            if touched.key(key) == Touch::Below
+                && let Some(existing) = position.and_then(|position| self.items.get_mut(position))
+            {
+                if delta.key(&entry, ORDER) != Touch::Untouched {
+                    existing.key = Some(order(doc).map_err(|error| error.at(key))?);
+                    reorder = true;
+                }
+                refresh_key(&mut existing.item, doc, &entry, VALUE, delta)
+                    .map_err(|error| error.at(key))?;
+                continue;
+            }
+            // A new item, or one whose entry was replaced.
+            let fresh = Entry {
+                id: item_id,
+                key: Some(order(doc).map_err(|error| error.at(key))?),
+                item: read_key::<T>(doc, &entry, VALUE).map_err(|error| error.at(key))?,
+            };
+            match position.and_then(|position| self.items.get_mut(position)) {
+                Some(existing) => *existing = fresh,
+                None => self.items.push(fresh),
+            }
+            reorder = true;
+        }
+        if reorder {
+            self.items
+                .sort_by(|a, b| a.key.cmp(&b.key).then_with(|| a.id.cmp(&b.id)));
+        }
+        Ok(())
     }
 
     fn missing() -> Result<Self, ModelError> {
@@ -278,15 +384,14 @@ impl<T: Model> Model for Collection<T> {
         }
         // Keep every order key that is still consistent with the new order
         // (the longest increasing run); mint keys only for new or moved items.
+        let by_id: std::collections::HashMap<&Id, &str> = stored
+            .iter()
+            .map(|entry| (&entry.id, entry.key.as_str()))
+            .collect();
         let existing: Vec<Option<&str>> = self
             .items
             .iter()
-            .map(|(id, _)| {
-                stored
-                    .iter()
-                    .find(|entry| &entry.id == id)
-                    .map(|entry| entry.key.as_str())
-            })
+            .map(|entry| by_id.get(&entry.id).copied())
             .collect();
         let kept = longest_increasing(&existing);
         let mut keys: Vec<Option<String>> = vec![None; self.items.len()];
@@ -318,7 +423,7 @@ impl<T: Model> Model for Collection<T> {
                 }
             }
         }
-        for ((id, item), key) in self.items.iter().zip(keys) {
+        for (Entry { id, item, .. }, key) in self.items.iter().zip(keys) {
             let entry = Slot::Key(&map, id.as_str()).object(doc, ObjType::Map)?;
             let key = key.unwrap_or_default();
             Slot::Key(&entry, ORDER).put_scalar(doc, ScalarValue::Str(key.into()))?;

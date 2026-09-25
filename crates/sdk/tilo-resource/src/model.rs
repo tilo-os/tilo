@@ -17,6 +17,8 @@ use std::collections::BTreeMap;
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjId, ObjType, ReadDoc, ScalarValue, Value};
 
+use crate::delta::{Delta, Touch};
+
 /// The document every resource lives in.
 pub type Doc = AutoCommit;
 
@@ -189,6 +191,26 @@ pub trait Model: Sized {
     /// Returns the document's write error.
     fn store(&self, doc: &mut Doc, slot: Slot<'_>) -> Result<(), ModelError>;
 
+    /// Bring a value read earlier up to date after the changes in `delta`,
+    /// re-reading only what they touched. `value` and `id` are what the
+    /// parent's slot holds now — the same object as when `self` was read, or
+    /// the parent would have read it anew. The default reads the value again,
+    /// which is right for scalars and short values.
+    ///
+    /// # Errors
+    /// Returns [`ModelError`] when the stored value has another shape.
+    fn refresh(
+        &mut self,
+        doc: &Doc,
+        value: &Value<'_>,
+        id: &ObjId,
+        delta: &Delta,
+    ) -> Result<(), ModelError> {
+        let _ = delta;
+        *self = Self::load(doc, value, id)?;
+        Ok(())
+    }
+
     /// Append the human-readable text this value carries, for search indexing.
     fn collect_text(&self, _out: &mut Vec<String>) {}
 }
@@ -210,6 +232,18 @@ pub trait Fields: Model {
     fn item_collections(&self) -> Vec<crate::items::ItemCollection> {
         Vec::new()
     }
+
+    /// Bring fields read earlier from the map `obj` up to date after the
+    /// changes in `delta`, re-reading only the fields they touched.
+    ///
+    /// # Errors
+    /// Returns [`ModelError`] when a touched field has another shape.
+    fn refresh_fields(&mut self, doc: &Doc, obj: &ObjId, delta: &Delta) -> Result<(), ModelError> {
+        if delta.touches(obj) {
+            *self = Self::read_fields(doc, obj)?;
+        }
+        Ok(())
+    }
 }
 
 /// Read the value under `key` of the map `obj`, or [`Model::missing`].
@@ -222,6 +256,33 @@ pub fn read_key<T: Model>(doc: &Doc, obj: &ObjId, key: &str) -> Result<T, ModelE
         None => T::missing(),
     }
     .map_err(|error| error.at(key))
+}
+
+/// Bring `target`, read earlier from `key` of the map `obj`, up to date
+/// after the changes in `delta`: untouched keeps it, a written slot reads it
+/// again, a change inside the object it holds refreshes it in place.
+///
+/// # Errors
+/// Returns [`ModelError`] located at `key`.
+pub fn refresh_key<T: Model>(
+    target: &mut T,
+    doc: &Doc,
+    obj: &ObjId,
+    key: &str,
+    delta: &Delta,
+) -> Result<(), ModelError> {
+    match delta.key(obj, key) {
+        Touch::Untouched => Ok(()),
+        Touch::Written => {
+            *target = read_key(doc, obj, key)?;
+            Ok(())
+        }
+        Touch::Below => match doc.get(obj, key)? {
+            Some((value, id)) => target.refresh(doc, &value, &id, delta),
+            None => T::missing().map(|missing| *target = missing),
+        }
+        .map_err(|error| error.at(key)),
+    }
 }
 
 /// Write `value` under `key` of the map `obj`.
@@ -470,6 +531,23 @@ impl<T: Model> Model for Option<T> {
             None => slot.remove(doc),
         }
     }
+    fn refresh(
+        &mut self,
+        doc: &Doc,
+        value: &Value<'_>,
+        id: &ObjId,
+        delta: &Delta,
+    ) -> Result<(), ModelError> {
+        match self {
+            Some(inner) if !matches!(scalar(value), Some(ScalarValue::Null)) => {
+                inner.refresh(doc, value, id, delta)
+            }
+            _ => {
+                *self = Self::load(doc, value, id)?;
+                Ok(())
+            }
+        }
+    }
     fn collect_text(&self, out: &mut Vec<String>) {
         if let Some(value) = self {
             value.collect_text(out);
@@ -488,6 +566,15 @@ impl<T: Model> Model for Box<T> {
     }
     fn store(&self, doc: &mut Doc, slot: Slot<'_>) -> Result<(), ModelError> {
         (**self).store(doc, slot)
+    }
+    fn refresh(
+        &mut self,
+        doc: &Doc,
+        value: &Value<'_>,
+        id: &ObjId,
+        delta: &Delta,
+    ) -> Result<(), ModelError> {
+        (**self).refresh(doc, value, id, delta)
     }
     fn collect_text(&self, out: &mut Vec<String>) {
         (**self).collect_text(out);
@@ -564,6 +651,33 @@ impl<T: Model> Model for BTreeMap<String, T> {
         }
         for (key, value) in self {
             write_key(doc, &map, key, value)?;
+        }
+        Ok(())
+    }
+    fn refresh(
+        &mut self,
+        doc: &Doc,
+        value: &Value<'_>,
+        id: &ObjId,
+        delta: &Delta,
+    ) -> Result<(), ModelError> {
+        let touched = delta.under(id);
+        if touched.is_all() {
+            *self = Self::load(doc, value, id)?;
+            return Ok(());
+        }
+        for key in touched.keys() {
+            match doc.get(id, key)? {
+                None => {
+                    self.remove(key);
+                }
+                Some(_) => match self.get_mut(key) {
+                    Some(existing) => refresh_key(existing, doc, id, key, delta)?,
+                    None => {
+                        self.insert(key.to_owned(), read_key(doc, id, key)?);
+                    }
+                },
+            }
         }
         Ok(())
     }

@@ -22,7 +22,10 @@ use super::live::Live;
 ///   whenever it changes: a local edit, a collaborator's, an undo. In History
 ///   mode the framework builds the surface again from a read-only `ViewCx`
 ///   and presents a *past* version, so time travel needs no extra code as
-///   long as the surface draws from what it was presented.
+///   long as the surface draws from what it was presented. A surface over a
+///   large resource reads through [`SurfaceCx::live`] instead of copying,
+///   and demands the parts it shows ([`Live::demand`]) from the document its
+///   `sync` receives — the live one, or the past version in History mode.
 /// * **Write** — edits go through the [`Dispatcher`] handed to
 ///   [`attach`](Self::attach): a named action, or any typed action value via
 ///   [`Dispatcher::apply`]. The host checks permissions, applies, records one
@@ -68,11 +71,20 @@ pub trait ResourceSurface<R: Resource>: Widget {
 /// What a surface receives when attached.
 pub struct SurfaceCx<R: Resource> {
     pub(crate) dispatch: Dispatcher<R>,
+    pub(crate) live: Live<R>,
 }
 
 impl<R: Resource> SurfaceCx<R> {
     pub fn dispatcher(&self) -> Dispatcher<R> {
         self.dispatch.clone()
+    }
+
+    /// The live state, for a surface that reads it where it needs it (in
+    /// `draw`, in an event) rather than copying what it was presented, and
+    /// that asks for the parts of a large resource it shows
+    /// ([`Live::demand`]).
+    pub fn live(&self) -> Live<R> {
+        self.live.clone()
     }
 
     /// Whether the participant may only view, as of now.

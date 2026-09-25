@@ -81,6 +81,7 @@ fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
                 let mut reads = Vec::new();
                 let mut missing = Vec::new();
                 let mut writes = Vec::new();
+                let mut refreshes = Vec::new();
                 let mut texts = Vec::new();
                 let mut shapes = Vec::new();
                 let mut collections = Vec::new();
@@ -101,6 +102,9 @@ fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
                         #ident: <#ty as #krate::Model>::missing().map_err(|error| error.at(#key))?
                     ));
                     writes.push(quote!(#krate::write_key::<#ty>(doc, obj, #key, &self.#ident)?;));
+                    refreshes.push(
+                        quote!(#krate::refresh_key::<#ty>(&mut self.#ident, doc, obj, #key, delta)?;),
+                    );
                     texts.push(quote!(#krate::Model::collect_text(&self.#ident, out);));
                     shapes.push(quote!(#krate::FieldShape {
                         key: #key,
@@ -156,6 +160,20 @@ fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
                             let obj = slot.object(doc, #krate::__private::ObjType::Map)?;
                             <Self as #krate::Fields>::write_fields(self, doc, &obj)
                         }
+                        fn refresh(
+                            &mut self,
+                            doc: &#krate::Doc,
+                            value: &#krate::__private::Value<'_>,
+                            id: &#krate::__private::ObjId,
+                            delta: &#krate::Delta,
+                        ) -> ::core::result::Result<(), #krate::ModelError> {
+                            match value {
+                                #krate::__private::Value::Object(#krate::__private::ObjType::Map) => {
+                                    <Self as #krate::Fields>::refresh_fields(self, doc, id, delta)
+                                }
+                                _ => ::core::result::Result::Err(#krate::ModelError::shape("a map")),
+                            }
+                        }
                         fn collect_text(&self, out: &mut ::std::vec::Vec<::std::string::String>) {
                             let _ = &out;
                             #(#texts)*
@@ -180,6 +198,20 @@ fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
                         }
 
                         #item_collections
+                        fn refresh_fields(
+                            &mut self,
+                            doc: &#krate::Doc,
+                            obj: &#krate::__private::ObjId,
+                            delta: &#krate::Delta,
+                        ) -> ::core::result::Result<(), #krate::ModelError> {
+                            let _ = (&doc, &obj, &delta);
+                            if delta.under(obj).is_all() {
+                                *self = <Self as #krate::Fields>::read_fields(doc, obj)?;
+                                return ::core::result::Result::Ok(());
+                            }
+                            #(#refreshes)*
+                            ::core::result::Result::Ok(())
+                        }
                     }
                 })
             }
@@ -209,6 +241,15 @@ fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
                             slot: #krate::Slot<'_>,
                         ) -> ::core::result::Result<(), #krate::ModelError> {
                             #krate::Model::store(&self.0, doc, slot)
+                        }
+                        fn refresh(
+                            &mut self,
+                            doc: &#krate::Doc,
+                            value: &#krate::__private::Value<'_>,
+                            id: &#krate::__private::ObjId,
+                            delta: &#krate::Delta,
+                        ) -> ::core::result::Result<(), #krate::ModelError> {
+                            #krate::Model::refresh(&mut self.0, doc, value, id, delta)
                         }
                         fn collect_text(&self, out: &mut ::std::vec::Vec<::std::string::String>) {
                             #krate::Model::collect_text(&self.0, out);
@@ -838,6 +879,14 @@ fn expand_resource(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Resul
 
             fn read(doc: &#krate::Doc) -> ::core::result::Result<Self, #krate::ModelError> {
                 <Self as #krate::Fields>::read_fields(doc, &#krate::__private::ROOT)
+            }
+
+            fn refresh(
+                state: &mut Self,
+                doc: &#krate::Doc,
+                delta: &#krate::Delta,
+            ) -> ::core::result::Result<(), #krate::ModelError> {
+                <Self as #krate::Fields>::refresh_fields(state, doc, &#krate::__private::ROOT, delta)
             }
 
             fn initialize(doc: &mut #krate::Doc) -> ::core::result::Result<(), #krate::ModelError> {
