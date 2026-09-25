@@ -2796,10 +2796,10 @@ impl ChatApp {
             let status = if blob.starts_with(crate::images::DEMO_SCHEME) {
                 "Loading image…"
             } else {
-                match qdoc::blobstore::state(blob) {
-                    qdoc::blobstore::BlobState::Pending => "Loading shared image…",
-                    qdoc::blobstore::BlobState::Unavailable => "Shared image unavailable",
-                    qdoc::blobstore::BlobState::Resolved => "Decoding image…",
+                match self.content.state(blob) {
+                    tilo_content::ContentState::Pending => "Loading shared image…",
+                    tilo_content::ContentState::Unavailable => "Shared image unavailable",
+                    tilo_content::ContentState::Resolved => "Decoding image…",
                 }
             };
             let (sw, _) = tr.measure(status, 11.0, None);
@@ -4324,7 +4324,7 @@ fn attachment_flow_height(att: &Attachment, max_w: f64, scale: f64) -> f64 {
 /// (derived from the display name's extension) and a human-readable size.
 ///
 /// This deliberately carries **no filesystem path**. Where the bytes actually
-/// live — qdoc's content-addressed blob store — is an implementation detail;
+/// live — the app's content store — is an implementation detail;
 /// surfacing a local source path in chrome is a HIG §4 violation
 /// ("no internal / implementation labels in user-facing chrome … a leaked
 /// `/var/workspace` path"). The chip already shows the human filename above

@@ -1166,7 +1166,8 @@ pub struct WordProcessorWidget {
     format: Option<WpFormat>,
     /// Find & Replace owns its query modes, match cursor, drawing, and hit map.
     find: FindBar,
-    /// Image blobs (blake3 hash → bytes), refreshed from the document, plus a
+    /// Image bytes (content address → bytes) fetched from the content store for the images the
+    /// document references, plus a
     /// lazily-decoded image cache (`None` = decode failed / unsupported format).
     blobs: std::collections::BTreeMap<String, Vec<u8>>,
     image_cache: std::collections::HashMap<String, Option<ui::widget::Image>>,
@@ -1949,6 +1950,7 @@ impl WordProcessorWidget {
                     end: *end,
                 })
                 .collect(),
+            content: self.inner.content_store().clone(),
         })
     }
 
@@ -2373,30 +2375,64 @@ impl WordProcessorWidget {
         self.format = Some(format);
     }
 
+    /// Fetch the bytes of every image the document references that is not fetched yet: from the
+    /// content store, or from the document itself if an older version carried them inline.
+    /// Content that is not here stays absent, which is what draws a placeholder.
+    fn refresh_images(
+        blobs: &mut std::collections::BTreeMap<String, Vec<u8>>,
+        image_cache: &mut std::collections::HashMap<String, Option<ui::widget::Image>>,
+        content: &tilo_content::ContentStore,
+        state: &AutoCommit,
+        c: &qdoc::Containers,
+    ) {
+        for hash in qdoc::model::blob_hashes(state, c) {
+            if blobs.contains_key(&hash) {
+                continue;
+            }
+            let bytes = content
+                .read(&hash)
+                .or_else(|| qdoc::model::inline_content(state, c, &hash));
+            if let Some(bytes) = bytes {
+                // A cached "not decodable yet" result must not outlive the bytes' arrival.
+                image_cache.remove(&hash);
+                blobs.insert(hash, bytes);
+            }
+        }
+    }
+
     /// Read an image file and insert it at the caret. Returns whether it inserted
-    /// (false if the file couldn't be read). The bytes are stored in the doc's
-    /// content-addressed blob store; the renderer/exporter decode them on demand.
+    /// (false if the file couldn't be read or kept). The bytes go in the app's
+    /// content store and the document references them; the renderer/exporter
+    /// decode them on demand.
     fn insert_image_from_path(&mut self, state: &mut AutoCommit, path: &std::path::Path) -> bool {
         match std::fs::read(path) {
             Ok(bytes) => {
+                let hash = match self.inner.content_store().put(&bytes) {
+                    Ok(hash) => hash,
+                    Err(error) => {
+                        eprintln!(
+                            "word-processor: could not keep image {}: {error}",
+                            path.display()
+                        );
+                        return false;
+                    }
+                };
                 if self.inner.has_selection() {
                     self.insert_text_via_action(state, "");
                 }
                 let caret = self.inner.caret().clone();
                 let before: std::collections::HashSet<String> =
                     self.inner.ordered_blocks(state).into_iter().collect();
-                let intrinsic = ui::widget::Image::from_encoded(&bytes)
-                    .ok()
-                    .map(|image| image.intrinsic_size());
+                let mut image = crate::actions::ImageInput::of(hash, &bytes);
+                // Prefer the decoder's size: it reads formats the header sniffer does not.
+                if let Ok(decoded) = ui::widget::Image::from_encoded(&bytes) {
+                    let (width, height) = decoded.intrinsic_size();
+                    image.width = Some(i64::from(width));
+                    image.height = Some(i64::from(height));
+                }
                 self.perform_action(
                     state,
-                    &crate::actions::insert_image_action(
-                        &caret.block,
-                        caret.offset,
-                        bytes.clone(),
-                        intrinsic.map(|(width, _)| i64::from(width)),
-                        intrinsic.map(|(_, height)| i64::from(height)),
-                    ),
+                    &crate::actions::insert_image_action(&caret.block, caret.offset, image),
                 );
                 if let Some(after) = self
                     .inner
@@ -2701,7 +2737,7 @@ impl WordProcessorWidget {
         self.lifecycle.dirty = true;
         if let Some(c) = self.inner.containers.as_ref() {
             let dr = qdoc::DocRef { doc: state, c };
-            match format.export(dr) {
+            match format.export(dr, self.inner.content_store()) {
                 Ok(bytes) => {
                     atomic_file::write_preserving_target(path, &bytes).map_err(|e| {
                         eprintln!("word-processor: could not write {}: {e}", path.display());
@@ -2989,7 +3025,13 @@ impl WordProcessorWidget {
         }
 
         if changed {
-            self.blobs = qdoc::model::blobs(state, c);
+            Self::refresh_images(
+                &mut self.blobs,
+                &mut self.image_cache,
+                self.inner.content_store(),
+                state,
+                c,
+            );
             self.header = qdoc::model::materialize_region(state, c, Region::Header);
             self.footer = qdoc::model::materialize_region(state, c, Region::Footer);
             self.notes = qdoc::model::materialize_notes(state, c);
@@ -12063,7 +12105,7 @@ impl WordProcessorWidget {
                     ))
                 } else {
                     WpFormat::Markdown
-                        .export(qdoc::DocRef { doc: state, c })
+                        .export(qdoc::DocRef { doc: state, c }, &tilo_content::NoContent)
                         .ok()
                 }
             })

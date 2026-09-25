@@ -26,6 +26,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::ops::Bound;
 use std::sync::Arc;
 use tilo_automerge::ApplyIncoming;
+use tilo_content::{ContentInputs, ContentMeta, ContentSource};
 
 mod bulk;
 /// Instrumentation for tests comparing the bulk import path with the op-by-op reference.
@@ -42,8 +43,10 @@ pub struct Containers {
     pub styles: ObjId,
     pub preserved: ObjId,
     pub meta: ObjId,
-    /// Content-addressed binary descriptors (blake3 hex → descriptor; bytes live outside the CRDT, see [`crate::blobstore`]).
-    /// `None` for documents predating the blobs map; created lazily on first [`DocMut::put_blob`].
+    /// Content-addressed binary descriptors (blake3 hex → descriptor). The bytes are binary inputs kept
+    /// outside the document, in the caller's content store (see [`tilo_content`]). The map only grows, so it
+    /// names every input any version of the document refers to.
+    /// `None` for documents predating the blobs map; created lazily on first [`DocMut::reference_content`].
     pub blobs: Option<ObjId>,
     /// Page-header block container (same shape as `blocks`); `None` only for documents predating the region, created lazily on first header write.
     pub header: Option<ObjId>,
@@ -623,6 +626,31 @@ fn region_obj(doc: &AutoCommit, c: &Containers, region: Region) -> Option<ObjId>
     }
 }
 
+/// The length in characters of block `id`'s text in `region`, or `None` when `id` is not a block
+/// of that region as a snapshot would show it (a map carrying a byte order key). A block without a
+/// text object has length 0. A point lookup: nothing else in the document is read, so an editor can
+/// validate a keystroke against it without materializing the region.
+pub fn region_block_len(
+    doc: &AutoCommit,
+    c: &Containers,
+    region: Region,
+    id: &str,
+) -> Option<usize> {
+    let container = region_obj(doc, c, region)?;
+    let block = block_obj(doc, &container, id)?;
+    match doc.get(&block, BLOCK_ORDER) {
+        Ok(Some((Value::Scalar(value), _))) if matches!(value.as_ref(), ScalarValue::Bytes(_)) => {}
+        _ => return None,
+    }
+    let len = match doc.get(&block, BLOCK_TEXT) {
+        Ok(Some((Value::Object(ObjType::Text), text))) => {
+            doc.text(&text).map_or(0, |t| t.chars().count())
+        }
+        _ => 0,
+    };
+    Some(len)
+}
+
 /// The ordered block ids of a region (empty when the region is absent).
 pub fn region_blocks_in_order(doc: &AutoCommit, c: &Containers, region: Region) -> Vec<String> {
     match region_obj(doc, c, region) {
@@ -1190,11 +1218,7 @@ fn changes_with_ranges(
 
 /// A blob's descriptor — what the document holds *instead of* its bytes.
 /// `None` when the document doesn't reference that hash at all, distinct from referencing it without having the content yet.
-pub fn blob_meta(
-    doc: &AutoCommit,
-    c: &Containers,
-    hash: &str,
-) -> Option<crate::blobstore::BlobMeta> {
+pub fn blob_meta(doc: &AutoCommit, c: &Containers, hash: &str) -> Option<ContentMeta> {
     let blobs = blobs_obj(doc, c)?;
     match doc.get(&blobs, hash) {
         Ok(Some((Value::Object(ObjType::Map), d))) => {
@@ -1213,7 +1237,7 @@ pub fn blob_meta(
                 },
                 _ => 0,
             };
-            Some(crate::blobstore::BlobMeta {
+            Some(ContentMeta {
                 mime: str_at(BLOB_MIME),
                 len: u64::try_from(int_at(BLOB_LEN).max(0)).unwrap_or(0),
                 w: u32::try_from(int_at(BLOB_W).max(0)).unwrap_or(u32::MAX),
@@ -1222,7 +1246,7 @@ pub fn blob_meta(
         }
         // A document authored before the bytes moved out still describes itself inline (length + format known).
         Ok(Some((Value::Scalar(s), _))) => match s.as_ref() {
-            ScalarValue::Bytes(b) => Some(crate::blobstore::sniff(b)),
+            ScalarValue::Bytes(b) => Some(tilo_content::sniff(b)),
             _ => None,
         },
         _ => None,
@@ -1237,38 +1261,36 @@ pub fn blob_hashes(doc: &AutoCommit, c: &Containers) -> Vec<String> {
     }
 }
 
-/// Fetch a content-addressed blob's bytes by its blake3 hex hash, through the process-wide blob store.
-/// `None` means the content hasn't arrived — a *knowable* state a renderer turns into a placeholder rather than nothing.
-pub fn blob(doc: &AutoCommit, c: &Containers, hash: &str) -> Option<Vec<u8>> {
-    if let Some(bytes) = crate::blobstore::get(hash) {
-        return Some(bytes);
-    }
-    // Documents written before the bytes moved out of the CRDT still carry them inline; serve those,
-    // and warm the store so every later read of this hash takes the modern path.
+/// Content an older document carried inline under its hash (before binary inputs moved out of the
+/// document), or `None`. A reader falls back to this when its content store lacks the hash.
+pub fn inline_content(doc: &AutoCommit, c: &Containers, hash: &str) -> Option<Vec<u8>> {
     let blobs = blobs_obj(doc, c)?;
     match doc.get(&blobs, hash) {
         Ok(Some((Value::Scalar(s), _))) => match s.as_ref() {
-            ScalarValue::Bytes(b) => {
-                let _ = crate::blobstore::put(b);
-                Some(b.clone())
-            }
+            ScalarValue::Bytes(b) => Some(b.clone()),
             _ => None,
         },
         _ => None,
     }
 }
 
-/// The blobs whose content is available here, keyed by blake3 hex.
-/// A referenced hash **absent** from this map means the content hasn't arrived yet — that absence is
-/// load-bearing: it's what a renderer keys a placeholder off, and [`blob_meta`] sizes that placeholder.
-pub fn blobs(doc: &AutoCommit, c: &Containers) -> BTreeMap<String, Vec<u8>> {
-    let mut out = BTreeMap::new();
-    for k in blob_hashes(doc, c) {
-        if let Some(bytes) = blob(doc, c, &k) {
-            out.insert(k, bytes);
+/// Every piece of content this document still carries inline, for the caller to move into its
+/// content store (after which nothing reads it from the document again).
+pub fn inline_contents(doc: &AutoCommit, c: &Containers) -> ContentInputs {
+    let mut inputs = ContentInputs::new();
+    for hash in blob_hashes(doc, c) {
+        if let Some(bytes) = inline_content(doc, c, &hash) {
+            inputs.add(bytes);
         }
     }
-    out
+    inputs
+}
+
+/// Every content address the document refers to, in any of its versions: image descriptors and
+/// preserved package parts alike (both are recorded in the grow-only blobs map). The set a
+/// content store must retain for this document.
+pub fn referenced_content(doc: &AutoCommit, c: &Containers) -> BTreeSet<String> {
+    blob_hashes(doc, c).into_iter().collect()
 }
 
 fn block_obj(doc: &AutoCommit, container: &ObjId, id: &str) -> Option<ObjId> {
@@ -1582,15 +1604,61 @@ pub fn has_mark_over(
 /// All preserved parts (the lossless preservation layer — verbatim bytes a codec stashed for content it
 /// doesn't model), as `(key, bytes)`. Reconstructed exactly from however the part is stored — the legacy
 /// single-`Bytes` scalar form, or the per-atom segmented `Map` form (see [`PRESERVED_SEGMENTS`]) — by concatenating segments in stored order.
-pub fn preserved_parts(doc: &AutoCommit, c: &Containers) -> Vec<(String, Vec<u8>)> {
+///
+/// A part preserved as a content reference is read from `content`; one whose content is missing there
+/// is left out (and logged), since there are no bytes to re-emit.
+pub fn preserved_parts(
+    doc: &AutoCommit,
+    c: &Containers,
+    content: &dyn ContentSource,
+) -> Vec<(String, Vec<u8>)> {
     doc.keys(&c.preserved)
-        .filter_map(|k| preserved_part(doc, c, &k).map(|b| (k, b)))
+        .filter_map(|k| preserved_part(doc, c, &k, content).map(|b| (k, b)))
         .collect()
 }
 
-/// Reconstruct one preserved part's verbatim bytes by key, transparently handling both the legacy
-/// `Bytes`-scalar form and the per-atom segmented `Map` form (concatenating ordered segments).
-pub fn preserved_part(doc: &AutoCommit, c: &Containers, key: &str) -> Option<Vec<u8>> {
+/// How a preserved part is stored: verbatim in the document, or as a reference to a binary input.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PreservedPart {
+    /// The part's bytes, reassembled from its atoms.
+    Bytes(Vec<u8>),
+    /// The content address of the part, kept in the caller's content store.
+    Content(String),
+}
+
+/// One preserved part as stored, without resolving content references.
+pub fn preserved_entry(doc: &AutoCommit, c: &Containers, key: &str) -> Option<PreservedPart> {
+    if let Ok(Some((Value::Scalar(s), _))) = doc.get(&c.preserved, key)
+        && let ScalarValue::Str(hash) = s.as_ref()
+    {
+        return Some(PreservedPart::Content(hash.to_string()));
+    }
+    preserved_inline(doc, c, key).map(PreservedPart::Bytes)
+}
+
+/// Reconstruct one preserved part's verbatim bytes by key: inline parts from the document (both the
+/// legacy `Bytes`-scalar form and the per-atom segmented `Map` form), content references from `content`.
+pub fn preserved_part(
+    doc: &AutoCommit,
+    c: &Containers,
+    key: &str,
+    content: &dyn ContentSource,
+) -> Option<Vec<u8>> {
+    match preserved_entry(doc, c, key)? {
+        PreservedPart::Bytes(bytes) => Some(bytes),
+        PreservedPart::Content(hash) => {
+            let bytes = content.content(&hash).map(std::borrow::Cow::into_owned);
+            if bytes.is_none() {
+                tracing::warn!(%key, %hash, "preserved part's content is not available; leaving it out");
+            }
+            bytes
+        }
+    }
+}
+
+/// A preserved part stored in the document, transparently handling both the legacy `Bytes`-scalar form
+/// and the per-atom segmented `Map` form (concatenating ordered segments).
+fn preserved_inline(doc: &AutoCommit, c: &Containers, key: &str) -> Option<Vec<u8>> {
     match doc.get(&c.preserved, key) {
         // Per-atom segmented form: `Map<segment_id, {ord: Bytes, bytes: Bytes}>`, sorted by `ord` then concatenated.
         // CRDT-merge-friendly: each segment is an independent automerge object, so edits to different atoms of the same part merge.
@@ -1711,7 +1779,6 @@ pub fn materialize(doc: &AutoCommit, c: &Containers) -> DocSnapshot {
         schema: SCHEMA_ID.to_string(),
         schema_version: SCHEMA_VERSION,
         blocks,
-        blobs: blobs(doc, c),
         styles: all_styles(doc, c),
         properties: doc_props(doc, c),
         header: materialize_region(doc, c, Region::Header),
@@ -1736,7 +1803,7 @@ fn project_blob_meta(doc: &AutoCommit, c: &Containers, snap: &mut DocSnapshot) {
     fn walk(
         doc: &AutoCommit,
         c: &Containers,
-        cache: &mut BTreeMap<String, crate::blobstore::BlobMeta>,
+        cache: &mut BTreeMap<String, ContentMeta>,
         blocks: &mut [BlockView],
     ) {
         for b in blocks.iter_mut() {
@@ -1771,7 +1838,7 @@ fn project_blob_meta(doc: &AutoCommit, c: &Containers, snap: &mut DocSnapshot) {
             walk(doc, c, cache, &mut b.children);
         }
     }
-    let mut cache: BTreeMap<String, crate::blobstore::BlobMeta> = BTreeMap::new();
+    let mut cache: BTreeMap<String, ContentMeta> = BTreeMap::new();
     walk(doc, c, &mut cache, &mut snap.blocks);
     walk(doc, c, &mut cache, &mut snap.header);
     walk(doc, c, &mut cache, &mut snap.footer);
@@ -2044,6 +2111,22 @@ impl DocMut<'_> {
         if let Some(tid) = self.region_text_obj(region, block_id) {
             let mark = Mark::new(name.to_string(), value, start, end);
             let _ = self.doc.mark(&tid, mark, ExpandMark::After);
+        }
+    }
+
+    /// Clear the mark `name` over `[start, end)` of a block living in `region` (the region
+    /// counterpart of [`Self::remove_mark`]).
+    pub fn remove_mark_in(
+        &mut self,
+        region: Region,
+        block_id: &str,
+        start: usize,
+        end: usize,
+        name: &str,
+    ) {
+        self.flush_bulk();
+        if let Some(tid) = self.region_text_obj(region, block_id) {
+            let _ = self.doc.unmark(&tid, name, start, end, ExpandMark::After);
         }
     }
 
@@ -2720,6 +2803,20 @@ impl DocMut<'_> {
         self.forget_order(&container, id);
     }
 
+    /// Remove block `id` from `region` (the region counterpart of [`Self::remove_block`]).
+    pub fn remove_block_in(&mut self, region: Region, id: &str) {
+        if region == Region::Body {
+            self.remove_block(id);
+            return;
+        }
+        self.flush_bulk();
+        let Some(container) = region_obj(self.doc, self.c, region) else {
+            return;
+        };
+        let _ = self.doc.delete(&container, id);
+        self.forget_order(&container, id);
+    }
+
     /// Remove one structural block and leave a grow-only semantic tombstone in
     /// the same region container. Action replay uses this for delete-wins
     /// behavior against divergent edits of the removed object.
@@ -2906,6 +3003,20 @@ impl DocMut<'_> {
         }
     }
 
+    /// Set the kind of a block living in `region` (the region counterpart of [`Self::set_kind`]).
+    pub fn set_kind_in(&mut self, region: Region, block_id: &str, kind: &str) {
+        if region == Region::Body {
+            self.set_kind(block_id, kind);
+            return;
+        }
+        self.flush_bulk();
+        if let Some(container) = region_obj(self.doc, self.c, region)
+            && let Some(obj) = block_obj(self.doc, &container, block_id)
+        {
+            let _ = self.doc.put(&obj, BLOCK_KIND, kind);
+        }
+    }
+
     /// Remove a mark named `name` over `[start, end)` of the block's text.
     pub fn remove_mark(&mut self, block_id: &str, start: usize, end: usize, name: &str) {
         self.flush_bulk();
@@ -2963,16 +3074,24 @@ impl DocMut<'_> {
         }
     }
 
-    /// Store `bytes` in the content-addressed blob store and write a descriptor under their blake3 hex hash
-    /// (the key an `image` block's `blob` attr references). Creates the blobs map lazily for older documents.
-    /// Returns `None` if the store rejects the content (for example, because of
-    /// its quota); in that case this method makes no CRDT change, so a local
-    /// edit cannot create a reference to bytes this replica does not retain.
+    /// Take `bytes` as a binary input of this document: add them to `inputs` (which the caller persists
+    /// in its content store) and record their descriptor. Returns the content address an `image` block's
+    /// `blob` attr names.
+    pub fn attach(&mut self, bytes: &[u8], inputs: &mut ContentInputs) -> String {
+        let meta = tilo_content::sniff(bytes);
+        let hash = inputs.add(bytes);
+        self.reference_content(&hash, &meta);
+        hash
+    }
+
+    /// Record that this document refers to the content at `hash`, described by `meta` (what a
+    /// renderer needs to reserve space before the bytes arrive). The bytes themselves are the
+    /// caller's to keep in its content store. Idempotent; creates the blobs map lazily for older
+    /// documents. The descriptor is never removed, so the map names every input any version refers to.
     ///
     /// # Panics
     /// Panics if `self.c.root` no longer resolves in `self.doc` — see the note on `impl DocMut` above.
-    pub fn put_blob(&mut self, bytes: &[u8]) -> Option<String> {
-        let hash = crate::blobstore::put(bytes)?;
+    pub fn reference_content(&mut self, hash: &str, meta: &ContentMeta) {
         let blobs = match blobs_obj(self.doc, self.c) {
             Some(b) => b,
             None => self
@@ -2983,13 +3102,12 @@ impl DocMut<'_> {
         // Idempotent by construction: the key is the content hash, so identical bytes address the same descriptor
         // and re-putting it would be pure tombstone churn for no change in meaning.
         if matches!(
-            self.doc.get(&blobs, hash.as_str()),
+            self.doc.get(&blobs, hash),
             Ok(Some((Value::Object(ObjType::Map), _)))
         ) {
-            return Some(hash);
+            return;
         }
-        let meta = crate::blobstore::sniff(bytes);
-        if let Ok(d) = self.doc.put_object(&blobs, hash.as_str(), ObjType::Map) {
+        if let Ok(d) = self.doc.put_object(&blobs, hash, ObjType::Map) {
             let _ = self
                 .doc
                 .put(&d, BLOB_MIME, ScalarValue::Str(meta.mime.as_str().into()));
@@ -3005,7 +3123,20 @@ impl DocMut<'_> {
                 .doc
                 .put(&d, BLOB_H, ScalarValue::Int(i64::from(meta.h)));
         }
-        Some(hash)
+    }
+
+    /// Preserve the part `key` as a reference to content the caller keeps in its content store (a
+    /// binary package part: an image, a font, an embedded object) rather than as bytes in the
+    /// document. Replaces any existing part under `key`; the address is also recorded with
+    /// [`Self::reference_content`], so it stays among the document's [`referenced_content`].
+    ///
+    /// # Panics
+    /// Panics if `self.c.preserved` no longer resolves in `self.doc` — see the note on `impl DocMut` above.
+    pub fn set_preserved_content(&mut self, key: &str, hash: &str, meta: &ContentMeta) {
+        self.reference_content(hash, meta);
+        self.doc
+            .put(&self.c.preserved, key, ScalarValue::Str(hash.into()))
+            .unwrap();
     }
 }
 
@@ -4159,9 +4290,10 @@ mod preserved_tests {
             dm.set_preserved_atoms("odt/part/styles.xml", &two_style_atoms());
         }
         // Stored as a segmented Map, yet reconstructs byte-for-byte.
-        let got = preserved_part(&doc, &c, "odt/part/styles.xml").unwrap();
+        let got =
+            preserved_part(&doc, &c, "odt/part/styles.xml", &tilo_content::NoContent).unwrap();
         assert_eq!(got, TWO_STYLE_PART, "segmented part re-emits verbatim");
-        let parts = preserved_parts(&doc, &c);
+        let parts = preserved_parts(&doc, &c, &tilo_content::NoContent);
         let p = parts
             .iter()
             .find(|(k, _)| k == "odt/part/styles.xml")
@@ -4180,7 +4312,8 @@ mod preserved_tests {
             ScalarValue::Bytes(TWO_STYLE_PART.to_vec()),
         )
         .unwrap();
-        let got = preserved_part(&doc, &c, "odt/part/settings.xml").unwrap();
+        let got =
+            preserved_part(&doc, &c, "odt/part/settings.xml", &tilo_content::NoContent).unwrap();
         assert_eq!(got, TWO_STYLE_PART, "legacy blob still re-emits verbatim");
         // Legacy form exposes no addressable atoms (it's one opaque blob).
         assert!(preserved_atoms(&doc, &c, "odt/part/settings.xml").is_empty());
@@ -4275,7 +4408,8 @@ mod preserved_tests {
 
         // BOTH edits survive on BOTH replicas — this is what clobbered before.
         for (d, cc, who) in [(&doc, &c, "A"), (&doc_b, &c_b, "B")] {
-            let merged = preserved_part(d, cc, "odt/part/styles.xml").unwrap();
+            let merged =
+                preserved_part(d, cc, "odt/part/styles.xml", &tilo_content::NoContent).unwrap();
             let txt = String::from_utf8_lossy(&merged);
             assert!(
                 txt.contains("ALPHA-EDITED"),
@@ -4296,8 +4430,13 @@ mod preserved_tests {
         }
         // Convergence: both replicas reconstruct identical bytes.
         assert_eq!(
-            preserved_part(&doc, &c, "odt/part/styles.xml"),
-            preserved_part(&doc_b, &c_b, "odt/part/styles.xml"),
+            preserved_part(&doc, &c, "odt/part/styles.xml", &tilo_content::NoContent),
+            preserved_part(
+                &doc_b,
+                &c_b,
+                "odt/part/styles.xml",
+                &tilo_content::NoContent
+            ),
             "replicas converge on identical reconstructed bytes"
         );
     }

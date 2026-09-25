@@ -620,7 +620,7 @@ analysis unavailable instead of bypassing that service with direct network acces
 
 ```powershell
 cargo test --locked -p photos --all-targets
-cargo test --locked -p qdoc --lib blobstore::
+cargo test --locked -p tilo-content
 ./tools/windows/install-apps.ps1 -Apps photos
 ```
 

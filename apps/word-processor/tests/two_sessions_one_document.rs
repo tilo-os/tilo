@@ -75,8 +75,10 @@ fn two_sessions_that_each_opened_a_file_keep_both_documents() {
         write_markdown(&mine_path, "the quarterly figures\n");
         write_markdown(&theirs_path, "notes from the call\n");
 
-        let (mut mine, mut mine_wp, _) = open_document(&mine_path).unwrap();
-        let (mut theirs, mut theirs_wp, _) = open_document(&theirs_path).unwrap();
+        let (mut mine, mut mine_wp, _) =
+            open_document(&mine_path, tilo_content::ContentStore::memory()).unwrap();
+        let (mut theirs, mut theirs_wp, _) =
+            open_document(&theirs_path, tilo_content::ContentStore::memory()).unwrap();
 
         sync_full_state(&mut mine, &mut theirs);
         sync_full_state(&mut theirs, &mut mine);
@@ -123,8 +125,11 @@ fn a_photograph_pasted_on_one_side_reaches_the_other() {
         write_markdown(&mine_path, "the quarterly figures\n");
         write_markdown(&theirs_path, "nothing here yet\n");
 
-        let (mut mine, mut mine_wp, _) = open_document(&mine_path).unwrap();
-        let (mut theirs, mut theirs_wp, _) = open_document(&theirs_path).unwrap();
+        // Both sessions run on one device, so they share its content store; reaching another
+        // device's store is the store backend's job, not the document's.
+        let content = tilo_content::ContentStore::memory();
+        let (mut mine, mut mine_wp, _) = open_document(&mine_path, content.clone()).unwrap();
+        let (mut theirs, mut theirs_wp, _) = open_document(&theirs_path, content.clone()).unwrap();
 
         // Paste the photograph through the app's own image path.
         mine_wp.sync(&mut mine.doc, &mine.root);
@@ -151,7 +156,7 @@ fn a_photograph_pasted_on_one_side_reaches_the_other() {
             other => panic!("round {round}: image block carries no blob hash: {other:?}"),
         };
         assert!(
-            qdoc::model::blob(&theirs.doc, &containers, &hash).is_some(),
+            content.read(&hash).is_some(),
             "round {round}: the far side has the image block but not its bytes"
         );
         assert!(
@@ -182,13 +187,16 @@ fn a_third_session_joining_late_displaces_nobody() {
             })
             .collect();
 
-        let (mut a, mut a_wp, _) = open_document(&paths[0]).unwrap();
-        let (mut b, mut b_wp, _) = open_document(&paths[1]).unwrap();
+        let (mut a, mut a_wp, _) =
+            open_document(&paths[0], tilo_content::ContentStore::memory()).unwrap();
+        let (mut b, mut b_wp, _) =
+            open_document(&paths[1], tilo_content::ContentStore::memory()).unwrap();
         sync_full_state(&mut a, &mut b);
         sync_full_state(&mut b, &mut a);
 
         // Carol opens her copy only now, with content already in the room.
-        let (mut c, mut c_wp, _) = open_document(&paths[2]).unwrap();
+        let (mut c, mut c_wp, _) =
+            open_document(&paths[2], tilo_content::ContentStore::memory()).unwrap();
         sync_full_state(&mut c, &mut a);
         sync_full_state(&mut a, &mut c);
         sync_full_state(&mut b, &mut a);
@@ -225,8 +233,9 @@ fn no_container_is_shadowed_after_a_merge() {
     write_markdown(&mine_path, "mine\n");
     write_markdown(&theirs_path, "theirs\n");
 
-    let (mut mine, _, _) = open_document(&mine_path).unwrap();
-    let (mut theirs, _, _) = open_document(&theirs_path).unwrap();
+    let (mut mine, _, _) = open_document(&mine_path, tilo_content::ContentStore::memory()).unwrap();
+    let (mut theirs, _, _) =
+        open_document(&theirs_path, tilo_content::ContentStore::memory()).unwrap();
     sync_full_state(&mut mine, &mut theirs);
 
     assert_eq!(

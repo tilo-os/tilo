@@ -5,6 +5,7 @@ use crate::{
 };
 use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, Value};
 use std::{collections::BTreeMap, rc::Rc};
+use tilo_content::ContentStore;
 use ui::history_mode::restore::{HistoryRestoreRoot, HistoryRestoreSchema, RestoreValueType};
 use ui::history_mode::{
     HistoricalAssetRequest, HistoricalAssetResponse, HistoricalAssetSource, HistoryDefinition,
@@ -18,7 +19,11 @@ pub static HISTORY: HistoryDefinition = HistoryDefinition {
         title: "Photograph and photo library",
         presentation: HistoryPresentation::DomainWithAssets {
             create: preview,
-            assets: || Rc::new(PhotoAssets),
+            assets: || {
+                Rc::new(PhotoAssets {
+                    content: ContentStore::for_app(),
+                })
+            },
         },
         content_schema: Some(&SCHEMA),
     }],
@@ -101,7 +106,7 @@ fn image(open: &OpenImage) -> Result<(), String> {
                 .bytes()
                 .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
     }) {
-        return Err("Recorded qdoc content ID must be a BLAKE3 hex digest".into());
+        return Err("Recorded content ID must be a BLAKE3 hex digest".into());
     }
     Ok(())
 }
@@ -342,11 +347,15 @@ pub(crate) fn validate(doc: &AutoCommit) -> Result<(), String> {
     }
     library(&PhotosDoc::library(doc))
 }
-/// The qdoc schema specifies BLAKE3. Keep authored bare IDs untouched.
+/// Content addresses are BLAKE3. Keep authored bare IDs untouched.
 pub(crate) fn asset_id(open: &OpenImage) -> Option<String> {
     open.content.as_ref().map(|h| format!("asset:blake3:{h}"))
 }
-struct PhotoAssets;
+/// Historical originals come from the app's own content store: the same
+/// directory the running app imports into, resolved the same way.
+struct PhotoAssets {
+    content: ContentStore,
+}
 impl HistoricalAssetSource for PhotoAssets {
     fn request(&self, request: HistoricalAssetRequest, response: HistoricalAssetResponse) {
         let result = (|| {
@@ -365,10 +374,9 @@ impl HistoricalAssetSource for PhotoAssets {
                 if result.contains_key(&id) {
                     continue;
                 }
-                // Selected-source custody: only content this app may read from
-                // the content store, never waiting on a peer and never resolving
-                // an ambient historical path.
-                if let qdoc::blobstore::Fetch::Ready(bytes) = qdoc::blobstore::store().fetch(hash) {
+                // Selected-source custody; local immutable content lookup has no
+                // transport request and never resolves an ambient historical path.
+                if let Some(bytes) = self.content.read(hash) {
                     total = total.saturating_add(bytes.len());
                     if total > 128 * 1024 * 1024 {
                         return Err("Recorded Photos assets exceed byte budget".into());

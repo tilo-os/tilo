@@ -86,7 +86,7 @@ pub struct PagePlanEntry {
     pub id: String,
     pub source_page: usize,
     /// `None` denotes an immutable page of the file which was opened.  A
-    /// populated value names bytes in qdoc's content-addressed store; bytes
+    /// populated value names bytes in the app's content store by hash; bytes
     /// never enter Automerge.
     pub imported: Option<ImportedPage>,
     /// Clockwise rotation (0, 90, 180 or 270) added to the source page's own.

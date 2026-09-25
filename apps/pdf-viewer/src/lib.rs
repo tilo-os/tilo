@@ -82,6 +82,14 @@ pub fn app_root_open(path: impl AsRef<std::path::Path>) -> Box<dyn Widget> {
     Box::new(PdfApp::open(path))
 }
 
+/// Open a real PDF from `path`, keeping imported pages in `content`.
+pub fn app_root_open_with_content(
+    path: impl AsRef<std::path::Path>,
+    content: tilo_content::ContentStore,
+) -> Box<dyn Widget> {
+    Box::new(PdfApp::open_with_content(path, content))
+}
+
 /// The bundled demonstration document with example markup — screenshots and
 /// tests only.
 pub fn app_root_sample() -> Box<dyn Widget> {

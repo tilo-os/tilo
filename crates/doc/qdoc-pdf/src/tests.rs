@@ -97,7 +97,7 @@ fn multi_block_snapshot_yields_valid_pdf_bytes() {
         ..empty_snapshot()
     };
 
-    let bytes = render_pdf(&snap).expect("render");
+    let bytes = render_pdf(&snap, &tilo_content::NoContent).expect("render");
     assert!(bytes.starts_with(b"%PDF"), "must start with %PDF magic");
     assert!(bytes.len() > 500, "non-trivial length, got {}", bytes.len());
     assert!(
@@ -156,7 +156,7 @@ fn heading_paragraph_list_produces_multiple_content_objects() {
         ..empty_snapshot()
     };
 
-    let bytes = render_pdf(&snap).expect("render");
+    let bytes = render_pdf(&snap, &tilo_content::NoContent).expect("render");
     assert!(bytes.starts_with(b"%PDF"));
 
     // The PDF must contain multiple distinct content/structural objects: at
@@ -175,7 +175,7 @@ fn heading_paragraph_list_produces_multiple_content_objects() {
 #[test]
 fn empty_doc_yields_valid_single_page_pdf() {
     let snap = empty_snapshot();
-    let bytes = render_pdf(&snap).expect("render empty");
+    let bytes = render_pdf(&snap, &tilo_content::NoContent).expect("render empty");
     assert!(bytes.starts_with(b"%PDF"), "valid header even when empty");
     assert!(bytes.ends_with(b"%%EOF\n"));
     // Exactly one page.
@@ -201,7 +201,7 @@ fn long_document_paginates_to_multiple_pages() {
         blocks,
         ..empty_snapshot()
     };
-    let bytes = render_pdf(&snap).expect("render");
+    let bytes = render_pdf(&snap, &tilo_content::NoContent).expect("render");
     let pages = count(&bytes, b"/Type /Page ");
     assert!(
         pages >= 2,
@@ -226,10 +226,9 @@ fn image_block_with_decodable_png_embeds_xobject() {
 
     let snap = DocSnapshot {
         blocks: vec![block_attr("image", "", &[("blob", AttrVal::Str(hash))])],
-        blobs,
         ..empty_snapshot()
     };
-    let bytes = render_pdf(&snap).expect("render");
+    let bytes = render_pdf(&snap, &blobs).expect("render");
     // The XObject dict is uncompressed in the object stream, so we can assert
     // on it directly. (The page content stream that paints it via `Do` is
     // FlateDecode-compressed, so its operators aren't visible in the raw bytes.)
@@ -259,11 +258,10 @@ fn image_block_with_bad_blob_draws_placeholder_not_error() {
             "",
             &[("blob", AttrVal::Str("h".into()))],
         )],
-        blobs,
         ..empty_snapshot()
     };
     // Must not error — degrades to a placeholder.
-    let bytes = render_pdf(&snap).expect("render with bad image");
+    let bytes = render_pdf(&snap, &blobs).expect("render with bad image");
     assert!(bytes.starts_with(b"%PDF"));
     // No image XObject, but a rectangle (placeholder) was drawn.
     assert_eq!(count(&bytes, b"/Subtype /Image"), 0);
@@ -283,7 +281,7 @@ fn table_block_renders_grid() {
         blocks: vec![table],
         ..empty_snapshot()
     };
-    let bytes = render_pdf(&snap).expect("render");
+    let bytes = render_pdf(&snap, &tilo_content::NoContent).expect("render");
     assert!(bytes.starts_with(b"%PDF"));
     assert!(bytes.len() > 400);
 }

@@ -14,9 +14,8 @@
 //! # What is deliberately not here
 //!
 //! The pixels. The document holds portable display metadata and two small edit
-//! fields and never the image itself, which is the same invariant
-//! `crates/doc/qdoc/src/blobstore.rs` documents for a document's blobs: an
-//! automerge change carrying a multi-megabyte payload bloats every replica and
+//! fields and never the image itself, which lives in the app's content store
+//! (`tilo-content`) under its hash: an automerge change carrying a multi-megabyte payload bloats every replica and
 //! durable host log and makes later edits wait behind the media. A content
 //! address plus a crop rect is a change of a few dozen bytes.
 
@@ -34,9 +33,9 @@ use crate::model::{Edits, ImageAnalysis, LibraryPhoto, OpenImage, PhotoLibrary, 
 /// Resolving the hash is what turns "a photograph a collaborator opened" into
 /// pixels here rather than into an empty canvas.
 ///
-/// Missing both is not an error to report: `blobstore::get` asks the room for
-/// the content on its way through, so the honest answer now is no picture, and
-/// the moment after the bytes land there is one.
+/// Missing both is not an error to report: content a collaborator imported may
+/// simply not have reached this device's store yet, so the honest answer now is
+/// no picture, and the moment after the bytes land there is one.
 ///
 /// Public, and the only answer to this question, because the app is not the
 /// only thing that asks it. Anything acting on the open photograph — the
@@ -44,10 +43,9 @@ use crate::model::{Edits, ImageAnalysis, LibraryPhoto, OpenImage, PhotoLibrary, 
 /// asked for — needs the same bytes, and a second copy of "read the path" is
 /// how one of those callers ends up reading a path that is true on another
 /// machine.
-pub fn bytes_of(open: &OpenImage) -> Option<Vec<u8>> {
+pub fn bytes_of(open: &OpenImage, store: &tilo_content::ContentStore) -> Option<Vec<u8>> {
     if let Some(content) = &open.content {
-        return qdoc::blobstore::get(content)
-            .filter(|bytes| bytes.len() <= crate::pixels::MAX_ENCODED_BYTES);
+        return crate::pixels::read_bounded(store.open(content)?, crate::pixels::MAX_ENCODED_BYTES);
     }
     crate::pixels::read_bounded(
         std::fs::File::open(&open.path).ok()?,
@@ -119,7 +117,7 @@ const METADATA_OBJECTS_KEY: &str = "metadata_objects";
 const METADATA_PETS_KEY: &str = "metadata_pets";
 
 fn metadata_resource_id(prefix: &str, label: &str) -> String {
-    format!("{prefix}{}", qdoc::blobstore::hash_bytes(label.as_bytes()))
+    format!("{prefix}{}", tilo_content::hash_bytes(label.as_bytes()))
 }
 
 impl PhotosDoc {
@@ -1695,7 +1693,7 @@ mod tests {
     }
 
     fn photo(id: &str) -> LibraryPhoto {
-        let hash = qdoc::blobstore::hash_bytes(id.as_bytes());
+        let hash = tilo_content::hash_bytes(id.as_bytes());
         let mut image = OpenImage::from_path(&format!("/private/{id}.png"), 800, 600);
         image.name = format!("{id}.png");
         image.content = Some(hash);
@@ -2199,7 +2197,7 @@ mod tests {
         );
     }
 
-    /// The invariant the blob store exists to protect, asserted here rather
+    /// The invariant the content store exists to protect, asserted here rather
     /// than assumed: a document that has an image open is still tiny, because
     /// the pixels are not in it.
     #[test]

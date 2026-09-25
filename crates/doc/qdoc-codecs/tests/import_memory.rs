@@ -48,7 +48,13 @@ fn an_owned_import_holds_what_a_loaded_document_does() {
     let md = synth::markdown(150_000);
     let (mut doc, imported) = held(|| {
         let mut doc = Document::new();
-        MarkdownCodec.import(&md, &mut doc.as_mut()).unwrap();
+        MarkdownCodec
+            .import(
+                &md,
+                &mut doc.as_mut(),
+                &mut tilo_content::ContentInputs::new(),
+            )
+            .unwrap();
         with_one_more_block(&mut doc);
         doc
     });
@@ -69,7 +75,9 @@ fn an_import_into_a_new_host_document_holds_what_a_loaded_document_does() {
             c: &c,
             ids: &mut ids,
         };
-        MarkdownCodec.import(&md, &mut dm).unwrap();
+        MarkdownCodec
+            .import(&md, &mut dm, &mut tilo_content::ContentInputs::new())
+            .unwrap();
         dm.insert_block(None, "paragraph");
         am.commit();
         am

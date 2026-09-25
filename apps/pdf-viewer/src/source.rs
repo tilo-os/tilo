@@ -34,6 +34,7 @@ fn profiling() -> bool {
 }
 
 use anyhow::{Context, anyhow};
+use tilo_content::{ContentState, ContentStore};
 use vello::peniko::{Blob, ImageAlphaType, ImageData as PenikoImage, ImageFormat};
 
 use crate::doc::{ImportedPage, PagePlanEntry};
@@ -101,12 +102,11 @@ fn inspect_import_for_store(
         return Err(anyhow!("the import file is empty"));
     }
     let (kind, sizes) = backend.inspect_import(&bytes)?;
-    let hash = qdoc::blobstore::put(&bytes)
-        .ok_or_else(|| anyhow!("the local content store refused the import"))?;
-    qdoc::blobstore::store()
-        .has(&hash)
-        .then_some((hash, kind, sizes))
-        .ok_or_else(|| anyhow!("the local content store refused the import"))
+    let hash = backend
+        .content
+        .put(&bytes)
+        .map_err(|error| anyhow!("the local content store refused the import: {error}"))?;
+    Ok((hash, kind, sizes))
 }
 
 struct PrivateSave {
@@ -183,14 +183,15 @@ pub struct LoadedDoc {
     pub file: ui::RecordId,
 }
 
-/// Load a PDF from `path` through the shared PDF engine.
+/// Load a PDF from `path` through the shared PDF engine. Pages the shared
+/// page plan imports are read from `content` by hash.
 ///
 /// # Errors
 ///
 /// Returns an error if `path` cannot be read, if the PDF engine is not
 /// available on this host, or if it cannot parse the bytes as a PDF within
 /// the reader's page and geometry limits.
-pub fn open(path: &Path) -> anyhow::Result<LoadedDoc> {
+pub fn open(path: &Path, content: &ContentStore) -> anyhow::Result<LoadedDoc> {
     let t = Instant::now();
     let bytes = read_file_bounded(path, MAX_OPEN_BYTES)?;
     prof("fs::read", t);
@@ -206,7 +207,7 @@ pub fn open(path: &Path) -> anyhow::Result<LoadedDoc> {
         .to_string();
 
     let t = Instant::now();
-    let r = Rasterizer::open(&bytes)?;
+    let r = Rasterizer::open(&bytes, content.clone())?;
     prof("Rasterizer::open (engine parse + page sizes)", t);
     let (mut title, author, subject) = r.metadata();
     if title.trim().is_empty() {
@@ -264,7 +265,7 @@ pub struct RasterBackend {
     /// The ordered, editable list of displayed pages.
     plan: Vec<Option<PageSlot>>,
     /// Dimensions supplied by the durable plan for a not-yet-downloaded page.
-    /// This lets UI layout remain stable while `blobstore::get()` asks peers.
+    /// This lets UI layout remain stable while the content store fetches it.
     pending_sizes: Vec<Option<(f64, f64)>>,
     pending_hashes: Vec<Option<String>>,
     /// Recorded rotation (degrees) of each displayed page occurrence.
@@ -290,6 +291,8 @@ pub struct RasterBackend {
     /// content-addressed blob store.
     source_hash: String,
     source_len: u64,
+    /// Where imported pages' bytes live, addressed by the hash in the plan.
+    content: ContentStore,
 }
 
 /// A cached bitmap's identity: source, source page, width bucket, rotation.
@@ -404,14 +407,15 @@ impl RasterBackend {
         Self::source_from(doc).ok_or_else(|| anyhow!("the image page has unsupported dimensions"))
     }
 
-    fn open(bytes: &[u8]) -> anyhow::Result<Self> {
+    fn open(bytes: &[u8], content: ContentStore) -> anyhow::Result<Self> {
         let engine = engine()?;
-        // The document is an immutable blob: keep the bytes in the
-        // content-addressed store (deduplicated by hash) so the markup record
-        // can pin exactly what it annotates. A store that refuses (size
-        // limits) still leaves the hash as the identity.
-        let source_hash =
-            qdoc::blobstore::put(bytes).unwrap_or_else(|| qdoc::blobstore::hash_bytes(bytes));
+        // The document is an immutable blob: keep the bytes in the app's
+        // content store (deduplicated by hash) so the markup record can pin
+        // exactly what it annotates. A store that refuses (size limits) still
+        // leaves the hash as the identity.
+        let source_hash = content
+            .put(bytes)
+            .unwrap_or_else(|_| tilo_content::hash_bytes(bytes));
         let byte_len = bytes.len() as u64;
         let source = match engine.open_bytes(bytes) {
             Ok(doc) => Self::source_from(doc)
@@ -445,6 +449,7 @@ impl RasterBackend {
             link_cache: HashMap::new(),
             source_hash,
             source_len: byte_len,
+            content,
         })
     }
 
@@ -526,7 +531,7 @@ impl RasterBackend {
     }
 
     /// Hydrate a content-addressed imported source on demand. A miss is not an
-    /// error: qdoc asks the room and the next sync/render retries lazily.
+    /// error: the content store fetches it and the next sync/render retries.
     fn imported_source(&mut self, imported: &ImportedPage) -> Option<usize> {
         if let Some(index) = self
             .sources
@@ -535,10 +540,8 @@ impl RasterBackend {
         {
             return Some(index);
         }
-        let bytes = qdoc::blobstore::get(&imported.hash)?;
-        if !qdoc::blobstore::verify(&imported.hash, &bytes) {
-            return None;
-        }
+        // `read` verifies the bytes against the hash that named them.
+        let bytes = self.content.read(&imported.hash)?;
         let mut source = if imported.kind == "pdf" {
             Self::load_source(&self.engine, &bytes)?
         } else {
@@ -615,12 +618,12 @@ impl RasterBackend {
 
     /// `None` for a normal/original page; otherwise the truthful transfer
     /// state for an imported occurrence whose bytes have not materialised yet.
-    pub fn page_blob_state(&self, display_idx: usize) -> Option<qdoc::blobstore::BlobState> {
+    pub fn page_blob_state(&self, display_idx: usize) -> Option<ContentState> {
         self.slot(display_idx).is_none().then(|| {
             self.pending_hashes
                 .get(display_idx)
                 .and_then(Option::as_deref)
-                .map(qdoc::blobstore::state)
+                .map(|hash| self.content.state(hash))
         })?
     }
 
@@ -1963,6 +1966,9 @@ struct QueueState {
     events: VecDeque<QueuedEvent>,
     event_bytes: usize,
     closing_sessions: HashSet<u64>,
+    /// Each session's content store, from which its documents read imported
+    /// pages and into which its imports are stored.
+    content: HashMap<u64, ContentStore>,
     start_error: Option<String>,
     prefer_text: bool,
 }
@@ -2007,17 +2013,27 @@ impl Drop for SessionGuard {
 }
 
 impl RasterHandle {
-    /// Connect a new reader session to the dedicated PDF owner thread.
+    /// Connect a new reader session to the dedicated PDF owner thread. Its
+    /// documents read imported pages from `content`, and its imports are
+    /// stored there.
     ///
     /// # Errors
     ///
     /// Returns [`RasterSubmitError::Exhausted`] rather than reusing an id if
     /// the process has exhausted its non-reusable session-id space.
-    pub fn new() -> Result<Self, RasterSubmitError> {
+    pub fn new(content: ContentStore) -> Result<Self, RasterSubmitError> {
+        let queue = shared_worker_queue();
+        let id = next_session_id()?;
+        queue
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .content
+            .insert(id, content);
         Ok(Self {
             session: Arc::new(SessionGuard {
-                queue: shared_worker_queue(),
-                id: next_session_id()?,
+                queue,
+                id,
                 closed: std::sync::atomic::AtomicBool::new(false),
             }),
         })
@@ -2667,46 +2683,48 @@ fn source_worker(queue: &Arc<WorkerQueue>) {
 
         let session_id = command.session_id;
         let event = match command.command {
-            RasterCommand::OpenPath(request) => match open(&request.path) {
-                Ok(LoadedDoc {
-                    doc,
-                    raster,
-                    name,
-                    file,
-                }) => {
-                    let page_sizes = (0..raster.page_count())
-                        .map(|page| raster.page_size(page))
-                        .collect();
-                    let (geometries, rotations) = raster.page_layout();
-                    let form_fields = raster.form_fields();
-                    let source_hash = raster.source_hash().to_string();
-                    let source_len = raster.source_len();
-                    active
-                        .entry(session_id)
-                        .or_default()
-                        .insert(request.id, raster);
-                    let raster = RasterDocument {
-                        id: request.id,
-                        page_sizes,
-                        geometries,
-                        rotations,
-                        form_fields,
-                        source_hash,
-                        source_len,
-                    };
-                    RasterEvent::Opened {
-                        request,
-                        document: doc,
-                        name,
+            RasterCommand::OpenPath(request) => {
+                match open(&request.path, &session_content(queue, session_id)) {
+                    Ok(LoadedDoc {
+                        doc,
                         raster,
+                        name,
                         file,
+                    }) => {
+                        let page_sizes = (0..raster.page_count())
+                            .map(|page| raster.page_size(page))
+                            .collect();
+                        let (geometries, rotations) = raster.page_layout();
+                        let form_fields = raster.form_fields();
+                        let source_hash = raster.source_hash().to_string();
+                        let source_len = raster.source_len();
+                        active
+                            .entry(session_id)
+                            .or_default()
+                            .insert(request.id, raster);
+                        let raster = RasterDocument {
+                            id: request.id,
+                            page_sizes,
+                            geometries,
+                            rotations,
+                            form_fields,
+                            source_hash,
+                            source_len,
+                        };
+                        RasterEvent::Opened {
+                            request,
+                            document: doc,
+                            name,
+                            raster,
+                            file,
+                        }
                     }
+                    Err(error) => RasterEvent::OpenFailed {
+                        request,
+                        error: error.to_string(),
+                    },
                 }
-                Err(error) => RasterEvent::OpenFailed {
-                    request,
-                    error: error.to_string(),
-                },
-            },
+            }
             RasterCommand::Activate { document_id } => {
                 if let Some(documents) = active.get_mut(&session_id) {
                     documents.retain(|id, _| *id == document_id);
@@ -2929,12 +2947,26 @@ fn source_worker(queue: &Arc<WorkerQueue>) {
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner);
                 state.closing_sessions.remove(&session_id);
+                state.content.remove(&session_id);
                 drop(state);
                 continue;
             }
         };
         push_event(queue, session_id, event);
     }
+}
+
+/// The content store `session_id` registered. A session always registers one
+/// before it can queue work; the empty fallback only covers a closed session.
+fn session_content(queue: &WorkerQueue, session_id: u64) -> ContentStore {
+    queue
+        .state
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .content
+        .get(&session_id)
+        .cloned()
+        .unwrap_or_else(ContentStore::memory)
 }
 
 fn push_event(queue: &WorkerQueue, session_id: u64, event: RasterEvent) {

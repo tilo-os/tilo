@@ -54,6 +54,7 @@ use crate::presentation::{Blank, Command as PresentCommand, Presentation, Presen
 use crate::render;
 use crate::strings::{tr, tr_args};
 use crate::toolbar_tools::{MenuPress, ToolbarTools, ToolbarToolsLayout};
+use tilo_content::ContentStore;
 use ui::i18n::ArgValue;
 
 /// Logical pixels scrolled per mouse-wheel line notch.
@@ -105,25 +106,32 @@ fn read_presentation_file(path: &std::path::Path) -> std::io::Result<Vec<u8>> {
     Ok(bytes)
 }
 
-fn load_presentation_from_path(path: &std::path::Path) -> Result<Deck, String> {
+fn load_presentation_from_path(
+    path: &std::path::Path,
+    content: &ContentStore,
+) -> Result<Deck, String> {
     let bytes = read_presentation_file(path).map_err(|error| error.to_string())?;
     if is_pptx(path) {
-        crate::pptx::read_pptx(&bytes).map_err(|error| error.to_string())
+        crate::pptx::read_pptx(&bytes, content).map_err(|error| error.to_string())
     } else {
-        crate::odp::read_odp(&bytes).map_err(|error| error.to_string())
+        crate::odp::read_odp(&bytes, content).map_err(|error| error.to_string())
     }
 }
 
-fn save_presentation_to_path(deck: &Deck, path: &std::path::Path) -> Result<(), String> {
+fn save_presentation_to_path(
+    deck: &Deck,
+    path: &std::path::Path,
+    content: &ContentStore,
+) -> Result<(), String> {
     let (path, bytes) = if is_pptx(path) {
         (
             path.to_path_buf(),
-            crate::pptx::write_pptx(deck).map_err(|error| error.to_string())?,
+            crate::pptx::write_pptx(deck, content).map_err(|error| error.to_string())?,
         )
     } else {
         (
             ensure_odp_ext(path),
-            crate::odp::write_odp(deck).map_err(|error| error.to_string())?,
+            crate::odp::write_odp(deck, content).map_err(|error| error.to_string())?,
         )
     };
     std::fs::write(path, bytes).map_err(|error| error.to_string())
@@ -174,7 +182,7 @@ struct DocumentWorker {
 }
 
 impl DocumentWorker {
-    fn new() -> Result<Self, String> {
+    fn new(content: ContentStore) -> Result<Self, String> {
         let (tx, jobs) = std::sync::mpsc::sync_channel(1);
         let (results, rx) = std::sync::mpsc::sync_channel(1);
         std::thread::Builder::new()
@@ -184,7 +192,7 @@ impl DocumentWorker {
                     let result = match job {
                         DocumentJob::Open { generation, path } => DocumentJobResult::Open {
                             generation,
-                            result: load_presentation_from_path(&path),
+                            result: load_presentation_from_path(&path, &content),
                         },
                         DocumentJob::Save {
                             generation,
@@ -192,7 +200,7 @@ impl DocumentWorker {
                             deck,
                         } => DocumentJobResult::Save {
                             generation,
-                            result: save_presentation_to_path(&deck, &path),
+                            result: save_presentation_to_path(&deck, &path, &content),
                         },
                     };
                     if results.send(result).is_err() {
@@ -904,6 +912,9 @@ pub struct SlidesApp {
     /// cheap; rebuilding a large deck's postings each frame is not.
     search_provider: crate::search_provider::SlideSearchProvider,
 
+    /// Where image elements' bytes live, addressed by the hash in their `src`.
+    /// Created once with the app and shared with its image and document workers.
+    content: ContentStore,
     /// Path-keyed decode cache for image elements. Decodes off the UI thread;
     /// the slide shows a light loading state until the pixels land.
     images: ImageStore,
@@ -1004,6 +1015,20 @@ enum DemoMenu {
     Slide,
 }
 
+/// The content store an app constructed without one uses: the app's own
+/// store, or an in-memory one under unit test so tests never write to the
+/// user's data directory.
+fn default_content() -> ContentStore {
+    #[cfg(test)]
+    {
+        ContentStore::memory()
+    }
+    #[cfg(not(test))]
+    {
+        ContentStore::for_app()
+    }
+}
+
 impl Default for SlidesApp {
     fn default() -> Self {
         Self::new()
@@ -1034,8 +1059,9 @@ impl SlidesApp {
     }
 
     fn build(deck: Deck) -> Self {
+        let content = default_content();
         let search_provider = crate::search_provider::SlideSearchProvider::new(&deck);
-        let (document_worker, document_worker_error) = match DocumentWorker::new() {
+        let (document_worker, document_worker_error) = match DocumentWorker::new(content.clone()) {
             Ok(worker) => (Some(worker), None),
             Err(error) => (None, Some(error)),
         };
@@ -1077,7 +1103,8 @@ impl SlidesApp {
             breakpoint: NARROW_BREAKPOINT,
             deck_rev: 0,
             search_provider,
-            images: ImageStore::new(),
+            images: ImageStore::new(content.clone()),
+            content,
             rail_scroll: 0.0,
             overview: OverviewGrid::new(),
             toolbar_tools: ToolbarTools::default(),
@@ -1325,7 +1352,7 @@ impl SlidesApp {
     /// dedicated slide.
     fn apply_scenario_image(&mut self) {
         if let Some(path) = write_demo_image() {
-            let Some(src) = crate::assets::import_asset_file(&path) else {
+            let Some(src) = crate::assets::import_asset_file(&self.content, &path) else {
                 return;
             };
             self.images.load_blocking(&src);
@@ -3659,9 +3686,9 @@ impl SlidesApp {
             return false;
         };
         let deck = if is_pptx(path) {
-            crate::pptx::read_pptx(&bytes)
+            crate::pptx::read_pptx(&bytes, &self.content)
         } else {
-            crate::odp::read_odp(&bytes)
+            crate::odp::read_odp(&bytes, &self.content)
         };
         let Ok(deck) = deck else {
             return false;
@@ -3702,13 +3729,13 @@ impl SlidesApp {
     #[cfg(test)]
     fn save_presentation(&self, path: &std::path::Path) -> bool {
         if is_pptx(path) {
-            return match crate::pptx::write_pptx(&self.deck) {
+            return match crate::pptx::write_pptx(&self.deck, &self.content) {
                 Ok(bytes) => std::fs::write(path, bytes).is_ok(),
                 Err(_) => false,
             };
         }
         let path = ensure_odp_ext(path);
-        match crate::odp::write_odp(&self.deck) {
+        match crate::odp::write_odp(&self.deck, &self.content) {
             Ok(bytes) => std::fs::write(&path, bytes).is_ok(),
             Err(_) => false,
         }
@@ -3748,7 +3775,7 @@ impl SlidesApp {
     /// Place the picked image on the current slide and kick off its background
     /// decode so the picture is ready by the time it paints.
     fn insert_image_from_path(&mut self, doc: &mut AutoCommit, path: &std::path::Path) {
-        let Some(src) = crate::assets::import_asset_file(path) else {
+        let Some(src) = crate::assets::import_asset_file(&self.content, path) else {
             self.io_toast = Some((tr("slides-toast-image-import-failed"), ToastKind::Error));
             return;
         };
@@ -10011,8 +10038,10 @@ mod tests {
     fn image_store_decodes_a_real_png_and_fails_gracefully() {
         use crate::assets::{ImageState, ImageStore};
         let path = write_png("slides-unit-decode.png", 8, 6);
-        let key = crate::assets::import_asset_file(&path).expect("fixture imports as an asset");
-        let store = ImageStore::new();
+        let content = ContentStore::memory();
+        let key =
+            crate::assets::import_asset_file(&content, &path).expect("fixture imports as an asset");
+        let store = ImageStore::new(content);
         store.load_blocking(&key);
         match store.get(&key) {
             ImageState::Ready(img) => {
@@ -10098,7 +10127,7 @@ mod tests {
             "only a portable asset id enters the CRDT"
         );
         assert_eq!(
-            crate::assets::read_asset(&el.src).as_deref(),
+            crate::assets::read_asset(&app.content, &el.src).as_deref(),
             Some(&std::fs::read(&path).unwrap()[..])
         );
         assert_eq!(
@@ -10390,7 +10419,7 @@ mod tests {
     #[test]
     fn draining_an_open_outcome_loads_the_deck() {
         let deck = crate::model::seed_deck();
-        let bytes = crate::odp::write_odp(&deck).unwrap();
+        let bytes = crate::odp::write_odp(&deck, &ContentStore::memory()).unwrap();
         let path = std::env::temp_dir().join("slides-drain-open.odp");
         std::fs::write(&path, &bytes).unwrap();
 
@@ -10440,7 +10469,11 @@ mod tests {
         let mut imported = crate::model::seed_deck();
         imported.title = "stale import".into();
         let path = std::env::temp_dir().join(format!("slides-stale-{}.odp", uuid::Uuid::new_v4()));
-        std::fs::write(&path, crate::odp::write_odp(&imported).unwrap()).unwrap();
+        std::fs::write(
+            &path,
+            crate::odp::write_odp(&imported, &ContentStore::memory()).unwrap(),
+        )
+        .unwrap();
         let mut app = SlidesApp::new();
         let original = app.deck.title.clone();
         let mut doc = AutoCommit::new();
@@ -11884,7 +11917,9 @@ mod history_interruption_tests {
         if succeeds {
             let bytes = std::fs::read(path).unwrap();
             assert_eq!(
-                crate::odp::read_odp(&bytes).unwrap().title,
+                crate::odp::read_odp(&bytes, &ContentStore::memory())
+                    .unwrap()
+                    .title,
                 "Authorized export snapshot"
             );
             Some(bytes)

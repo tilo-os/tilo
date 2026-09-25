@@ -29,6 +29,8 @@
 
 use std::sync::mpsc::{Receiver, Sender};
 
+use tilo_content::ContentStore;
+
 use crate::model::{AccountConfig, Draft, Folder, Message};
 use crate::oauth::OAuthProvider;
 use crate::transport::build_mime;
@@ -301,7 +303,16 @@ fn report_engine_error(
 /// The offline backend. It validates outgoing MIME locally, but never claims a
 /// connection, sync, or delivery that did not happen. Live IMAP/SMTP is the
 /// `live`-feature backend below.
-pub struct StubEngine;
+pub struct StubEngine {
+    /// Where draft attachment bytes are read from when validating MIME.
+    content: ContentStore,
+}
+
+impl StubEngine {
+    pub fn new(content: ContentStore) -> Self {
+        Self { content }
+    }
+}
 
 impl MailEngine for StubEngine {
     fn handle(&mut self, req: EngineRequest, out: &Sender<EngineEvent>) {
@@ -358,7 +369,7 @@ impl MailEngine for StubEngine {
             }
             EngineRequest::Send { account, draft, .. } => {
                 let from = crate::model::Addr::new(account.display_name.clone(), account.email);
-                match build_mime(&from, &draft) {
+                match build_mime(&self.content, &from, &draft) {
                     Ok(bytes) => {
                         let _ = out.send(EngineEvent::Error {
                             request_id,
@@ -387,21 +398,22 @@ impl MailEngine for StubEngine {
 /// Spawn the engine worker thread and return the request sender + event
 /// receiver. The live app calls this once at startup; `--shots` never does, so
 /// it stays offline. Under `--features live` the real IMAP/SMTP backend is
-/// used; otherwise the offline [`StubEngine`].
-pub fn spawn() -> (Sender<EngineRequest>, Receiver<EngineEvent>) {
+/// used; otherwise the offline [`StubEngine`]. Either reads draft attachment
+/// bytes from `content` when it builds outgoing MIME.
+pub fn spawn(content: ContentStore) -> (Sender<EngineRequest>, Receiver<EngineEvent>) {
     #[cfg(feature = "live")]
     {
-        match live::LiveEngine::new() {
+        match live::LiveEngine::new(content.clone()) {
             Ok(engine) => spawn_with(Box::new(engine)),
             Err(e) => {
                 tracing::warn!(error = %e, "mail: live engine unavailable, using offline backend");
-                spawn_with(Box::new(StubEngine))
+                spawn_with(Box::new(StubEngine::new(content)))
             }
         }
     }
     #[cfg(not(feature = "live"))]
     {
-        spawn_with(Box::new(StubEngine))
+        spawn_with(Box::new(StubEngine::new(content)))
     }
 }
 
@@ -468,6 +480,8 @@ pub mod live {
     pub struct LiveEngine {
         rt: &'static ui::rt::AppRuntime,
         tls: Arc<rustls::ClientConfig>,
+        /// Where draft attachment bytes are read from when building MIME.
+        content: tilo_content::ContentStore,
     }
 
     /// The credentials to present to a server, resolved from the account +
@@ -482,11 +496,12 @@ pub mod live {
         ///
         /// Returns `Err` if the app runtime that drives the IMAP/SMTP sockets
         /// cannot be started (e.g. the OS refuses its thread).
-        pub fn new() -> Result<Self, String> {
+        pub fn new(content: tilo_content::ContentStore) -> Result<Self, String> {
             let rt = ui::rt::try_app().map_err(|e| e.to_string())?;
             Ok(Self {
                 rt,
                 tls: build_tls_config(),
+                content,
             })
         }
 
@@ -534,7 +549,7 @@ pub mod live {
         fn handle_send(&self, account: &AccountConfig, draft: &Draft) -> Result<usize, String> {
             let creds = resolve_auth(account)?;
             let from = Addr::new(account.display_name.clone(), account.email.clone());
-            let bytes = build_mime(&from, draft)?;
+            let bytes = build_mime(&self.content, &from, draft)?;
             self.block_on(smtp_send(account, draft, &creds, &bytes))?;
             Ok(bytes.len())
         }
@@ -1563,7 +1578,8 @@ This message was fetched over a real IMAP socket.\r\n"
                     ..Default::default()
                 };
                 let from = Addr::new(account.display_name.clone(), account.email.clone());
-                let mime = build_mime(&from, &draft).expect("build MIME");
+                let mime = build_mime(&tilo_content::ContentStore::memory(), &from, &draft)
+                    .expect("build MIME");
                 let creds = resolve_auth(&account).unwrap();
 
                 // Send: the production submission path over a real STARTTLS
@@ -1603,7 +1619,7 @@ mod tests {
 
     #[test]
     fn stub_send_never_claims_delivery() {
-        let (tx, rx) = spawn_with(Box::new(StubEngine));
+        let (tx, rx) = spawn_with(Box::new(StubEngine::new(ContentStore::memory())));
         let account = AccountConfig {
             display_name: "Me".into(),
             email: "me@example.test".into(),
@@ -1631,7 +1647,7 @@ mod tests {
 
     #[test]
     fn stub_connect_reports_offline_honestly() {
-        let (tx, rx) = spawn_with(Box::new(StubEngine));
+        let (tx, rx) = spawn_with(Box::new(StubEngine::new(ContentStore::memory())));
         tx.send(EngineRequest::connect(AccountConfig {
             email: "a@b.example".into(),
             ..Default::default()

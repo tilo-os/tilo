@@ -91,12 +91,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         schema: "tilo.richtext".into(),
         schema_version: 1,
         blocks,
-        blobs: BTreeMap::new(),
         styles: BTreeMap::new(),
         ..Default::default()
     };
 
-    let bytes = qdoc_pdf::render_pdf(&snap)?;
+    let bytes = qdoc_pdf::render_pdf(&snap, &tilo_content::NoContent)?;
     std::fs::write(&out, &bytes)?;
     println!("wrote {} bytes to {out}", bytes.len());
     Ok(())

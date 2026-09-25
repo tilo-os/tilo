@@ -327,7 +327,7 @@ impl PhotoPresentation {
         let id = asset_id(open)?;
         let bytes = self.assets.get(&id)?;
         // Recheck even manually assembled inputs: admitted maps are public values.
-        if !qdoc::blobstore::verify(open.content.as_deref()?, bytes) {
+        if !tilo_content::verify(open.content.as_deref()?, bytes) {
             return None;
         }
         let original = pixels::decode(bytes)?;
@@ -628,7 +628,7 @@ mod geometry_tests {
     fn fixture() -> PhotoPresentation {
         let rgba = crate::shots_pattern(6, 4);
         let bytes = pixels::encode_png(&rgba).unwrap();
-        let hash = qdoc::blobstore::hash_bytes(&bytes);
+        let hash = tilo_content::hash_bytes(&bytes);
         let open = OpenImage::from_path("historic.png", 6, 4).with_content(hash);
         let mut library = PhotoLibrary::default();
         for i in 0..24 {
