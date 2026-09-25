@@ -334,3 +334,7 @@ installer never silently swaps the offline image for a network download.
 For dual boot, reboot once into the other operating system too. A BitLocker
 recovery prompt is possible after the firmware change. Confirm both operating
 systems boot before deleting backups or recovery media.
+
+For a Windows-direct install that used a one-time `BootNext`, Tilo can be
+added to the persistent firmware picker after its first healthy boot while
+Windows remains the default. See [Windows-first firmware boot order](windows-first-tilo-boot-order.md).
