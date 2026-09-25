@@ -34,6 +34,11 @@ on:
         type: boolean
         required: false
         default: false
+      published_os_source_revision:
+        description: "Full main-ancestor commit that built both signed offline targets and the generic live base. Required for offline installer-only runs."
+        type: string
+        required: false
+        default: ""
 
 concurrency:
   # Tagged package promotion and the website manifest are mutable "latest"
@@ -65,13 +70,15 @@ jobs:
           LENOVO_TARGET_IMAGE: ${{ github.event.inputs.lenovo_target_image }}
           GENERIC_TARGET: ${{ github.event.inputs.generic_target }}
           INSTALLER_ONLY: ${{ github.event.inputs.installer_only }}
+          PUBLISHED_OS_SOURCE_REVISION: ${{ github.event.inputs.published_os_source_revision }}
         run: |
           if [[ -n ${LENOVO_TARGET_IMAGE:-} || ${GENERIC_TARGET:-false} == true ]]; then
             [[ $GITHUB_EVENT_NAME == workflow_dispatch && $GITHUB_REF == refs/heads/main \
                && ${INSTALLER_ONLY:-false} == true \
+               && ${PUBLISHED_OS_SOURCE_REVISION:-} =~ ^[0-9a-f]{40}$ \
                && ( -z ${LENOVO_TARGET_IMAGE:-} \
                     || $LENOVO_TARGET_IMAGE =~ ^code\.podesta\.ai/qos/tilo@sha256:[0-9a-f]{64}$ ) ]] || {
-              echo '::error::offline medium requires main, installer_only, and an immutable signed target'; exit 1;
+              echo '::error::offline medium requires main, installer_only, an immutable signed target, and a full source revision'; exit 1;
             }
             echo 'linux-matrix={"include":[]}' >> "$GITHUB_OUTPUT"
             if [[ -n ${LENOVO_TARGET_IMAGE:-} && ${GENERIC_TARGET:-false} == true ]]; then
@@ -83,6 +90,9 @@ jobs:
             fi
             exit 0
           fi
+          [[ -z ${PUBLISHED_OS_SOURCE_REVISION:-} ]] || {
+            echo '::error::published_os_source_revision is only for offline installer-only runs'; exit 1;
+          }
           if [[ "$GITHUB_REF" == refs/tags/imager-v* || ${FULL_NATIVE:-false} == true ]]; then
             echo 'linux-matrix={"include":[{"arch":"x86_64","runner":"imager-linux-x86_64"},{"arch":"aarch64","runner":"imager-linux-aarch64"}]}' >> "$GITHUB_OUTPUT"
           else
@@ -95,6 +105,21 @@ jobs:
           else
             echo 'medium-matrix={"include":[{"arch":"x86_64","runner":"runner-disk-100g"}]}' >> "$GITHUB_OUTPUT"
           fi
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        if: github.event.inputs.published_os_source_revision
+        with:
+          fetch-depth: 0
+      - name: Require the pinned source to be an ancestor of dispatched main
+        if: github.event.inputs.published_os_source_revision
+        env:
+          PUBLISHED_OS_SOURCE_REVISION: ${{ github.event.inputs.published_os_source_revision }}
+        run: |
+          set -euo pipefail
+          [[ "$PUBLISHED_OS_SOURCE_REVISION" =~ ^[0-9a-f]{40}$ ]]
+          git cat-file -e "$PUBLISHED_OS_SOURCE_REVISION^{commit}"
+          git merge-base --is-ancestor "$PUBLISHED_OS_SOURCE_REVISION" "$GITHUB_SHA" || {
+            echo '::error::pinned OS source is not an ancestor of dispatched main'; exit 1;
+          }
 
   medium:
     timeout-minutes: 240
@@ -117,10 +142,9 @@ jobs:
       # target carries its physical DTB and is staged as an offline payload.
       TILO_HARDWARE_PROFILE: generic
       # A release tag must use an OS release from the identical source commit.
-      # Manual rehearsals intentionally layer this checkout's installer/rootfs
-      # overlay onto the most recent signed published generation, so they stay
-      # runnable before a candidate commit is itself publishable.
-      TILO_EXPECTED_OS_SOURCE_REVISION: ${{ startsWith(github.ref, 'refs/tags/imager-v') && github.sha || '' }}
+      # Offline media use the explicitly pinned signed OS source. Other manual
+      # rehearsals may still layer current installer code onto a published OS.
+      TILO_EXPECTED_OS_SOURCE_REVISION: ${{ github.event.inputs.published_os_source_revision || (startsWith(github.ref, 'refs/tags/imager-v') && github.sha) || '' }}
       # A manual rehearsal receives no production signing interface. The
       # protected-tag broker is exposed only for the release path that requires
       # newly signed live/target UKIs in the installer overlay.
@@ -129,6 +153,14 @@ jobs:
       TILO_REQUIRE_PCR_PREDICTION: ${{ startsWith(github.ref, 'refs/tags/imager-v') && '1' || '0' }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.event.inputs.published_os_source_revision || github.sha }}
+      - name: Verify checked out source revision
+        if: matrix.target_profile == 'generic' || matrix.target_profile == 'lenovo-83ed'
+        run: |
+          test "$(git rev-parse HEAD)" = "$TILO_EXPECTED_OS_SOURCE_REVISION" || {
+            echo '::error::offline medium checkout differs from signed OS source pin'; exit 1;
+          }
       - name: Require the native medium architecture
         run: ./os/dev/assert-native-arch.sh "${{ matrix.arch }}"
       - name: Verify documented installation targets
@@ -234,12 +266,24 @@ jobs:
               child_digest="$(jq -er '[.manifests[] | select(.platform.os == "linux" and .platform.architecture == "arm64") | .digest] | if length == 1 then .[0] else error("index must have one ARM64 child") end' <<<"$index_raw")"
               target_image="code.podesta.ai/qos/tilo@$child_digest"
               target_profile=generic
-              ./os/dev/prepare-ci-installer-target.sh "$target_profile" "$target_image" "$target_dir" "$TILO_PUBLISHED_OS_IMAGE"
             else
               target_image="$TILO_LENOVO_TARGET_IMAGE"
               target_profile=lenovo-83ed
-              ./os/dev/prepare-ci-installer-target.sh "$target_profile" "$target_image" "$target_dir"
             fi
+            # The pinned source predates this workflow update. Its target
+            # verifier emits the independently checked SLSA revision, so bind
+            # that output here rather than relying on newer checkout scripts.
+            target_verification_log="${RUNNER_TEMP:?}/tilo-target-source-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${target_profile}.log"
+            if [[ "$target_profile" == generic ]]; then
+              ./os/dev/prepare-ci-installer-target.sh "$target_profile" "$target_image" "$target_dir" "$TILO_PUBLISHED_OS_IMAGE" \
+                | tee "$target_verification_log"
+            else
+              ./os/dev/prepare-ci-installer-target.sh "$target_profile" "$target_image" "$target_dir" \
+                | tee "$target_verification_log"
+            fi
+            grep -Fq "verified CI $target_profile target $target_image from source $TILO_EXPECTED_OS_SOURCE_REVISION generation " "$target_verification_log" || {
+              echo '::error::signed offline target source differs from pinned installer source'; exit 1;
+            }
             export TILO_INSTALLER_OFFLINE_TARGET_DIR="$target_dir"
             printf 'TILO_OFFLINE_TARGET_IMAGE=%s\nTILO_OFFLINE_TARGET_PROFILE=%s\n' "$target_image" "$target_profile" >> "${GITHUB_ENV:?}"
             echo "::notice::signed generic live base generation $generation; distinct signed CI $target_profile offline target: $target_image"
@@ -405,7 +449,7 @@ jobs:
             --arg profile "$TILO_OFFLINE_TARGET_PROFILE" \
             --arg target "$TILO_OFFLINE_TARGET_IMAGE" \
             --arg live_base "$TILO_PUBLISHED_OS_IMAGE" \
-            --arg build_revision "$GITHUB_SHA" \
+            --arg build_revision "$(git rev-parse HEAD)" \
             --arg run_id "$GITHUB_RUN_ID" \
             --arg run_attempt "$GITHUB_RUN_ATTEMPT" \
             --arg qcow2_sha256 "$(cat "dist/tilo-installer/$stem.qcow2.sha256")" \
@@ -436,7 +480,7 @@ jobs:
       - uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
         if: matrix.target_profile == 'generic' || matrix.target_profile == 'lenovo-83ed'
         with:
-          name: tilo-${{ matrix.target_profile }}-whpx-installer-${{ github.sha }}
+          name: tilo-${{ matrix.target_profile }}-whpx-installer-${{ github.event.inputs.published_os_source_revision || github.sha }}
           path: |
             dist/tilo-installer/tilo-installer-generic-aarch64.qcow2.zst
             dist/tilo-installer/tilo-installer-generic-aarch64.qcow2.zst.sha256
