@@ -198,6 +198,15 @@ pub fn encode<R: Resource>(action: &R::Action) -> Result<EncodedAction, ActionEr
     EncodedAction::encode(R::ACTION_TYPE, action)
 }
 
+/// The encoded form of a builder's result: the action, or a refusal that
+/// carries the builder's reason.
+pub(crate) fn encode_built<R: Resource>(built: Result<R::Action, String>) -> EncodedAction {
+    match built {
+        Ok(action) => encode::<R>(&action).unwrap_or_else(|error| refused::<R>(&error.to_string())),
+        Err(reason) => refused::<R>(&reason),
+    }
+}
+
 /// An action whose payload cannot be decoded, so the host refuses it with
 /// the builder's reason instead of applying anything.
 fn refused<R: Resource>(reason: &str) -> EncodedAction {
@@ -310,15 +319,30 @@ fn group_spec<R: Resource>() -> ActionSpec {
 /// The resource tree published for one open resource: every declared action,
 /// the generic [`APPLY`] and [`GROUP`](crate::GROUP) actions, and the nested
 /// resources.
+///
+/// An action offered on the items of a collection (see [`crate::items`])
+/// stays published on the record, with its id parameter, for scripts and
+/// agents; a person picks it on the item, so it is not a palette row here.
 pub fn publish<R: Resource>(id: &str, label: &str, state: &R::State) -> tilo_actions::Resource {
+    let children = R::children(state);
+    let on_items: std::collections::HashSet<&str> = children
+        .iter()
+        .filter(|child| crate::items::item_of_resource::<R>(child.id.as_str()).is_some())
+        .flat_map(|child| child.actions.iter().map(|spec| spec.id.as_str()))
+        .collect();
     let mut resource = tilo_actions::Resource::new(id, R::KIND, label);
     for decl in R::declarations() {
-        resource = resource.with_action(spec_from(&decl));
+        let spec = spec_from(&decl);
+        resource = resource.with_action(if on_items.contains(decl.id) {
+            spec.programmatic()
+        } else {
+            spec
+        });
     }
     resource
         .with_action(apply_spec::<R>())
         .with_action(group_spec::<R>())
-        .with_children(R::children(state))
+        .with_children(children)
 }
 
 /// Build the action a declaration produces for JSON arguments, validating them

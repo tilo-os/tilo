@@ -263,3 +263,69 @@ fn a_group_is_one_change_that_replays_exactly() {
     );
     assert_eq!(first.state().unwrap(), state);
 }
+
+#[test]
+fn actions_on_a_collection_item_are_offered_on_the_item() {
+    let mut board = Replica::<Board>::new();
+    board
+        .apply(Board::ADD_CARD.with("Write docs".into()))
+        .unwrap();
+    board.apply(Board::ADD_CARD.with("Ship".into())).unwrap();
+    let state = board.state().unwrap();
+    let published = tilo_resource::publish::<Board>("board", "Board", &state);
+
+    // One child resource per card, labelled by the card's text.
+    let labels: Vec<_> = published
+        .children
+        .iter()
+        .map(|child| child.label.as_str())
+        .collect();
+    assert_eq!(labels, ["Write docs", "Ship"]);
+    let first = state.cards.ids().next().unwrap();
+    let card = published.children.first().unwrap();
+    assert_eq!(
+        card.id.as_str(),
+        tilo_resource::items::item_resource_id::<Board>("cards", first)
+    );
+    assert_eq!(
+        tilo_resource::items::item_of_resource::<Board>(card.id.as_str()),
+        Some(("cards", first.clone()))
+    );
+
+    // Its actions are the card actions, with the card already bound: only
+    // the remaining parameters are asked for.
+    let actions: Vec<_> = card.actions.iter().map(|spec| spec.id.as_str()).collect();
+    assert_eq!(actions, ["advance", "move-card", "delete-card"]);
+    let advance = card.actions.first().unwrap();
+    assert!(advance.params().is_empty());
+    let move_card = card.actions.get(1).unwrap();
+    let params: Vec<_> = move_card
+        .params()
+        .iter()
+        .map(|param| param.name.as_ref())
+        .collect();
+    assert_eq!(params, ["index"]);
+    let delete = card.actions.get(2).unwrap();
+    assert_eq!(
+        delete.contract.confirmation,
+        tilo_actions::ConfirmationPolicy::Confirm,
+        "a destructive item action still asks"
+    );
+
+    // The record keeps the id-taking action for scripts and agents, but a
+    // person picks it on the card, so it is no palette row of its own.
+    let on_record = published
+        .actions
+        .iter()
+        .find(|spec| spec.id == "advance")
+        .unwrap();
+    assert!(on_record.is_programmatic());
+    assert!(
+        !published
+            .actions
+            .iter()
+            .find(|spec| spec.id == "rename")
+            .unwrap()
+            .is_programmatic()
+    );
+}
