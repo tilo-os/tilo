@@ -1,8 +1,98 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-[[ $# == 1 ]] || { echo "usage: $0 debian|fedora|arch" >&2; exit 2; }
+# The single list of native build dependencies. `DISTRO` alone installs what a
+# desktop-session package build needs. `fedora workspace` adds what building and
+# checking the whole Cargo workspace needs on top; the developer distrobox
+# (dist/dev/Containerfile.fedora44) and the CI builder (os/Containerfile.builder)
+# both install exactly that, so the two environments cannot drift.
+#
+# `fedora test` adds, on top of `workspace`, what running the whole test suite
+# needs: the runtime libraries, plugins, fonts, software Vulkan driver and test
+# subjects the suites drive, plus the pinned cargo-nextest. The developer
+# distrobox installs it so the suite runs there as it does in CI; the CI builder
+# keeps its own workflow tooling.
+#
+# TILO_RUST_TOOLCHAIN (default: stable) and TILO_RUST_COMPONENTS (space
+# separated) select what the checksum-pinned rustup bootstrap installs.
+usage() { echo "usage: $0 debian|fedora|arch | $0 fedora workspace|test" >&2; exit 2; }
+[[ $# == 1 || $# == 2 ]] || usage
 distro=$1
+profile=${2:-package}
+case "$distro:$profile" in
+*:package|fedora:workspace|fedora:test) ;;
+*) usage ;;
+esac
+
+# The suites' runtime, matching what os/Containerfile.builder gives CI jobs.
+# Weak dependencies stay enabled so runtime plugins and drivers arrive.
+# vulkan-loader + mesa-vulkan-drivers: lavapipe/llvmpipe, so GPU tests and
+# goldens render headless on the CPU. GStreamer plugins: the media suites encode
+# and decode real H.264/AAC. The Noto set: text shaping and golden rendering.
+# pulseaudio: only the private software endpoint tools/with-headless-audio.sh
+# starts; it replaces PipeWire's PulseAudio shim where that is installed.
+# bubblewrap, GNOME Text Editor, cryptsetup, swtpm and tpm2-tools are test
+# subjects that their suites refuse to skip.
+install_test_runtime_fedora() {
+    if rpm -q pipewire-pulseaudio >/dev/null 2>&1; then
+        dnf swap -y pipewire-pulseaudio pulseaudio
+    fi
+    dnf install -y \
+        pulseaudio \
+        gstreamer1 gstreamer1-plugins-good gstreamer1-plugins-bad-free \
+        gstreamer1-plugin-openh264 \
+        google-noto-sans-fonts google-noto-sans-mono-fonts \
+        google-noto-serif-fonts google-noto-color-emoji-fonts \
+        google-noto-sans-symbols-fonts google-noto-sans-symbols-2-fonts \
+        google-noto-sans-math-fonts google-noto-sans-cjk-fonts \
+        google-noto-sans-arabic-fonts google-noto-sans-hebrew-fonts \
+        google-noto-sans-devanagari-fonts google-noto-sans-bengali-fonts \
+        google-noto-sans-thai-fonts \
+        vulkan-loader mesa-vulkan-drivers \
+        bubblewrap gnome-text-editor \
+        cryptsetup swtpm swtpm-tools tpm2-tools
+    # Package scriptlets that create system accounts (sysusers) or compile
+    # GSettings schemas can be skipped or fail inside unprivileged image
+    # builds without failing the transaction. Replay both idempotently so the
+    # image never depends on whether they ran.
+    systemd-sysusers
+    getent passwd pulse >/dev/null || {
+        echo 'pulseaudio system account is missing after sysusers' >&2
+        exit 1
+    }
+    glib-compile-schemas /usr/share/glib-2.0/schemas
+    test -s /usr/share/glib-2.0/schemas/gschemas.compiled
+    install_nextest
+}
+
+# The test runner, pinned and checksum-verified. It goes to /usr/local/bin, not
+# CARGO_HOME, so it stays on PATH when a build tool mounts its own CARGO_HOME.
+install_nextest() {
+    local version=0.9.146 target sha archive
+    case "$(uname -m)" in
+    x86_64)
+        target=x86_64-unknown-linux-gnu
+        sha=682c21b777c333e96fd532e114d3a5a894e0729ab88d94c0a9f20f8419695428
+        ;;
+    aarch64)
+        target=aarch64-unknown-linux-gnu
+        sha=b2e33d7c72de7ade0ff7b3a948ac37516b24f8a836b7a8870c1f634a94be9de9
+        ;;
+    *)
+        echo "unsupported cargo-nextest architecture: $(uname -m)" >&2
+        exit 1
+        ;;
+    esac
+    archive=$(mktemp)
+    curl --proto '=https' --tlsv1.2 -fsSL \
+        "https://github.com/nextest-rs/nextest/releases/download/cargo-nextest-$version/cargo-nextest-$version-$target.tar.gz" \
+        -o "$archive"
+    printf '%s  %s\n' "$sha" "$archive" | sha256sum --check --status
+    tar -xzf "$archive" -C /usr/local/bin cargo-nextest
+    rm -f -- "$archive"
+    chmod 0755 /usr/local/bin/cargo-nextest
+    /usr/local/bin/cargo-nextest nextest --version
+}
 
 case "$distro" in
 debian)
@@ -27,6 +117,19 @@ fedora)
         mesa-libEGL-devel pipewire-devel dbus-devel dbus-daemon xdg-dbus-proxy \
         fontconfig-devel freetype-devel harfbuzz-devel fuse3-devel \
         gstreamer1-devel gstreamer1-plugins-base-devel
+    if [[ $profile == workspace || $profile == test ]]; then
+        # FFmpeg: the shell's hdr-decode/vaapi features. Fedora ships the
+        # libraries as libav*-free; there is no ffmpeg-devel. nasm, perl-FindBin
+        # and python3 drive vendored native builds; zlib-ng-compat provides zlib.
+        dnf install -y --setopt=install_weak_deps=False \
+            libavcodec-free-devel libavformat-free-devel libavutil-free-devel \
+            libswscale-free-devel libva-devel \
+            nasm perl-FindBin python3 \
+            sqlite-devel zlib-ng-compat-devel expat-devel
+    fi
+    if [[ $profile == test ]]; then
+        install_test_runtime_fedora
+    fi
     dnf clean all
     ;;
 arch)
@@ -82,7 +185,12 @@ if [[ $distro != arch ]]; then
     # in the PRoot userspace after its executable-access probe. Install the
     # checksum-pinned binary under /usr/local and execute it directly; PRoot's
     # configured QEMU handler supplies ARM emulation transparently.
-    "$rustup_init" -y --no-modify-path --profile minimal
+    rustup_args=(-y --no-modify-path --profile minimal
+        --default-toolchain "${TILO_RUST_TOOLCHAIN:-stable}")
+    for component in ${TILO_RUST_COMPONENTS:-}; do
+        rustup_args+=(--component "$component")
+    done
+    "$rustup_init" "${rustup_args[@]}"
 fi
 
 rustup show active-toolchain
