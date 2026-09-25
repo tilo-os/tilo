@@ -4,8 +4,57 @@ use atomic_file::test_support::{Checkpoint, with_failure};
 use qos_agent_control_protocol::{AgentRequest, GrantAction, canonical_request};
 use qos_peer_state::owner_commit::*;
 
+/// A fresh temporary directory on a filesystem the private owner profile
+/// admits on Linux (ext4, btrfs, XFS or tmpfs).
+///
+/// The Cloud managed sender keeps its private-actions file under the Store
+/// root (see [`enrolled_admitted`]). CI's test job runs in a container whose default temporary directory
+/// is overlayfs, which that owner profile refuses by design (`unsupported`),
+/// so the sender would never install. There the fixture falls back to the
+/// build's target directory on the host-backed checkout (as main's qualified
+/// imager fixtures do), then to `/dev/shm`.
+fn admitted_temp_dir() -> tempfile::TempDir {
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::unix::ffi::OsStrExt;
+        let admitted = |path: &std::path::Path| {
+            let Ok(path) = std::ffi::CString::new(path.as_os_str().as_bytes()) else {
+                return false;
+            };
+            let mut stat = std::mem::MaybeUninit::<libc::statfs>::uninit();
+            // SAFETY: `path` is NUL-terminated and `stat` is a writable buffer.
+            if unsafe { libc::statfs(path.as_ptr(), stat.as_mut_ptr()) } != 0 {
+                return false;
+            }
+            // SAFETY: statfs returned 0, so it initialised the buffer.
+            let stat = unsafe { stat.assume_init() };
+            u64::try_from(stat.f_type).is_ok_and(|magic| {
+                matches!(magic, 0xef53 | 0x9123_683e | 0x5846_5342 | 0x0102_1994)
+            })
+        };
+        // Unit tests run from `<target>/<profile>/deps`; use `<target>/tmp`.
+        let target = std::env::current_exe()
+            .ok()
+            .and_then(|exe| Some(exe.parent()?.parent()?.parent()?.join("tmp")));
+        std::iter::once(std::env::temp_dir())
+            .chain(target)
+            .chain(std::iter::once(std::path::PathBuf::from("/dev/shm")))
+            .find(|base| std::fs::create_dir_all(base).is_ok() && admitted(base))
+            .map(|base| tempfile::tempdir_in(base).unwrap())
+            .expect("Cloud Store fixtures need an ext4, btrfs, XFS or tmpfs temporary directory")
+    }
+    #[cfg(not(target_os = "linux"))]
+    tempfile::tempdir().unwrap()
+}
+
 pub(super) fn enrolled() -> (tempfile::TempDir, Store, [u8; 32]) {
-    let dir = tempfile::tempdir().unwrap();
+    enrolled_in(tempfile::tempdir().unwrap())
+}
+/// [`enrolled`] on a filesystem the managed sender's private file admits.
+pub(super) fn enrolled_admitted() -> (tempfile::TempDir, Store, [u8; 32]) {
+    enrolled_in(admitted_temp_dir())
+}
+fn enrolled_in(dir: tempfile::TempDir) -> (tempfile::TempDir, Store, [u8; 32]) {
     let root = SigningKey::from_bytes(&[7; 32]);
     let device = SigningKey::from_bytes(&[8; 32]);
     let mut store = Store::open(dir.path(), "agent-admission").unwrap();

@@ -1326,53 +1326,23 @@ async fn checked_application_catalogue(
         client.close().await;
         return;
     }
+    // Committed selective publication failure is exercised with a native
+    // desktop command: the owner commits it itself, so its publication is
+    // open. A relay-invoked Writer effect cannot serve here, because the
+    // owner keeps its contributor publication closed (asserted above).
     #[cfg(feature = "test-support")]
-    let client = if publication_failure != PublicationFailureFixture::None {
-        client
-    } else {
-        active_replacement(
-            &mut host,
-            origin,
-            client,
-            &observer_binding,
+    if publication_failure != PublicationFailureFixture::None {
+        desktop_open_through_broker(
+            &client,
             &mut remote,
             room,
             &cert,
             &native,
             broker_host,
-            invocation,
-            operation.clone(),
+            &catalogue,
         )
-        .await
-    };
-    #[cfg(feature = "test-support")]
-    let first_observation = if publication_failure != PublicationFailureFixture::None {
-        operation.clone()
-    } else {
-        ActionMessage::Status { invocation }
-    };
-    #[cfg(not(feature = "test-support"))]
-    let first_observation = operation.clone();
-    invoke_and_observe(
-        &client,
-        &mut remote,
-        room,
-        &cert,
-        &native,
-        broker_host,
-        invocation,
-        first_observation,
-    )
-    .await;
-    assert_eq!(
-        table_cells(&remote),
-        4,
-        "actual checked Writer insert-table must create exactly 2x2 cells"
-    );
-    #[cfg(feature = "test-support")]
-    observe_native_publication(origin, &client, &mut remote).await;
-    #[cfg(feature = "test-support")]
-    if publication_failure != PublicationFailureFixture::None {
+        .await;
+        observe_native_publication(origin, &client, &mut remote).await;
         let prior = selective_publication_failure_after_commit(
             &mut host,
             origin,
@@ -1440,11 +1410,56 @@ async fn checked_application_catalogue(
                 expected_receipts
             );
         } else {
-            assert_eq!(table_cells(reopened.peer()), prior + 4);
-            assert_eq!(table_cells(&remote), prior);
+            assert_eq!(reopened.peer().rows().len(), prior + 1);
+            assert_eq!(remote.rows().len(), prior);
         }
         return;
     }
+    #[cfg(feature = "test-support")]
+    let client = if publication_failure != PublicationFailureFixture::None {
+        client
+    } else {
+        active_replacement(
+            &mut host,
+            origin,
+            client,
+            &observer_binding,
+            &mut remote,
+            room,
+            &cert,
+            &native,
+            broker_host,
+            invocation,
+            operation.clone(),
+        )
+        .await
+    };
+    #[cfg(feature = "test-support")]
+    let first_observation = if publication_failure != PublicationFailureFixture::None {
+        operation.clone()
+    } else {
+        ActionMessage::Status { invocation }
+    };
+    #[cfg(not(feature = "test-support"))]
+    let first_observation = operation.clone();
+    invoke_and_observe(
+        &client,
+        &mut remote,
+        room,
+        &cert,
+        &native,
+        broker_host,
+        invocation,
+        first_observation,
+    )
+    .await;
+    assert_eq!(
+        table_cells(&remote),
+        4,
+        "actual checked Writer insert-table must create exactly 2x2 cells"
+    );
+    #[cfg(feature = "test-support")]
+    observe_native_publication(origin, &client, &mut remote).await;
     let (desktop_invocation, desktop_operation, desktop_records) = desktop_open_through_broker(
         &client,
         &mut remote,
@@ -1902,7 +1917,24 @@ async fn invoke_and_expect_closed_publication(
                         pending.insert(status.clone()).unwrap();
                         client.send_action(EnvelopeV2::Directed(status)).unwrap();
                     }
-                    other => panic!("actual browser action response: {other:?}"),
+                    // Once admitted, the owner's refusal of the closed
+                    // publication may take the native peer through a reconnect,
+                    // during which a status poll is answered as rejected. That
+                    // is not success; keep observing the same invocation.
+                    ActionMessage::Rejected { .. } if admitted => {
+                        tokio::time::sleep(Duration::from_millis(50)).await;
+                        request_id = uuid::Uuid::new_v4();
+                        let status = DirectedAction {
+                            room,
+                            request_id,
+                            source: cert.device_public_key,
+                            target: native.device_public_key,
+                            message: ActionMessage::Status { invocation },
+                        };
+                        pending.insert(status.clone()).unwrap();
+                        client.send_action(EnvelopeV2::Directed(status)).unwrap();
+                    }
+                    other => panic!("actual browser action response: {other:?} (admitted {admitted})"),
                 }
             }
             () = tokio::time::sleep_until(window) => {}
@@ -2918,31 +2950,8 @@ async fn selective_publication_failure_after_commit(
         transport_v2::EnvelopeV2,
     };
 
-    let surface = catalogue["surfaces"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|surface| surface["app_id"] == "so.tilo.word-processor")
-        .unwrap();
-    let action = surface["actions"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|action| action["action"] == "insert-table")
-        .unwrap();
-    let invocation = tilo_actions::InvocationId::new();
-    let operation = ActionMessage::InvokeBound {
-        host: broker_host,
-        invocation,
-        app_peer: surface["peer_id"].as_u64().unwrap().to_string(),
-        app_id: surface["app_id"].as_str().unwrap().into(),
-        record_id: surface["record_id"].as_str().unwrap().into(),
-        resource: action["resource"].as_str().unwrap().into(),
-        action: "insert-table".into(),
-        argument: None,
-        confirmation: None,
-        revision: None,
-    };
+    // One committed native desktop command: a new checked record.
+    let (_, invocation, operation) = desktop_open_operation(remote, room, broker_host, catalogue);
     let generation =
         request(origin, "/status", None, None).await.1["native_subscription_generation"]
             .as_u64()
@@ -2976,7 +2985,7 @@ async fn selective_publication_failure_after_commit(
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
 
-    let prior = table_cells(remote);
+    let prior = remote.rows().len();
     let invoke_request = uuid::Uuid::new_v4();
     client
         .send_action(EnvelopeV2::Directed(DirectedAction {
@@ -3003,7 +3012,7 @@ async fn selective_publication_failure_after_commit(
             && status["native_peer"] == "disconnected"
         {
             assert!(status["action_error"].is_string(), "{status}");
-            assert_eq!(table_cells(remote), prior);
+            assert_eq!(remote.rows().len(), prior);
             return prior;
         }
         if failure == PublicationFailureFixture::Disconnect {
@@ -3026,14 +3035,14 @@ async fn selective_publication_failure_after_commit(
                 .unwrap();
             status_request = Some(request_id);
         }
-        if ready && terminal && table_cells(remote) > prior {
+        if ready && terminal && remote.rows().len() > prior {
             assert!(status["action_error"].is_null(), "{status}");
             break status;
         }
         assert!(
             Instant::now() < deadline,
-            "committed selective publication did not reconnect: {status}; terminal={terminal}; cells={}",
-            table_cells(remote)
+            "committed selective publication did not reconnect: {status}; terminal={terminal}; records={}",
+            remote.rows().len()
         );
         tokio::select! {
             state = client.recv() => apply_state(remote, state.expect("observer state stream ended")),
@@ -3059,35 +3068,28 @@ async fn selective_publication_failure_after_commit(
     };
     assert_eq!(recovered["action_error"], serde_json::Value::Null);
     assert_eq!(
-        table_cells(remote),
-        prior + 4,
-        "recovery must replay the one committed 2x2 effect exactly once"
+        remote.rows().len(),
+        prior + 1,
+        "recovery must replay the one committed desktop record exactly once"
     );
     observe_native_publication(origin, client, remote).await;
     prior
 }
 
-async fn desktop_open_through_broker(
-    client: &tilo_relay::RelayClient,
-    remote: &mut qos_peer_state::StatePeer,
+/// A native desktop open-tab command bound to the observer's current room
+/// heads, as an invocation of the installed desktop service.
+fn desktop_open_operation(
+    remote: &qos_peer_state::StatePeer,
     room: uuid::Uuid,
-    cert: &tilo_user_identity::DeviceCert,
-    native: &tilo_user_identity::DeviceCert,
     host: uuid::Uuid,
     catalogue: &serde_json::Value,
 ) -> (
+    qos_desktop::WorkspaceTree,
     tilo_actions::InvocationId,
     tilo_relay::peer_actions::ActionMessage,
-    usize,
 ) {
     use qos_peer_state::desktop_command::*;
     use tilo_relay::peer_actions::ActionMessage;
-    #[cfg(not(feature = "test-support"))]
-    while let Ok(Some(event)) =
-        tokio::time::timeout(Duration::from_millis(100), client.recv()).await
-    {
-        apply_state(remote, event);
-    }
     let mut tree = qos_desktop::WorkspaceTree::default();
     qos_desktop::projection::RoomProjection::apply_admitted_room(
         &mut tree,
@@ -3132,11 +3134,34 @@ async fn desktop_open_through_broker(
         confirmation: None,
         revision: None,
     };
+    (tree, invocation, operation)
+}
+
+async fn desktop_open_through_broker(
+    client: &tilo_relay::RelayClient,
+    remote: &mut qos_peer_state::StatePeer,
+    room: uuid::Uuid,
+    cert: &tilo_user_identity::DeviceCert,
+    native: &tilo_user_identity::DeviceCert,
+    host: uuid::Uuid,
+    catalogue: &serde_json::Value,
+) -> (
+    tilo_actions::InvocationId,
+    tilo_relay::peer_actions::ActionMessage,
+    usize,
+) {
+    #[cfg(not(feature = "test-support"))]
+    while let Ok(Some(event)) =
+        tokio::time::timeout(Duration::from_millis(100), client.recv()).await
+    {
+        apply_state(remote, event);
+    }
+    let (tree, invocation, operation) = desktop_open_operation(remote, room, host, catalogue);
     let prior = remote.rows().len();
     // A desktop gesture must publish its committed topology and checked record
     // without waiting for the five-second background checkpoint timer.
     tokio::time::timeout(Duration::from_secs(2), async {
-        invoke_and_observe(
+        invoke_and_observe_until(
             client,
             remote,
             room,
@@ -3145,6 +3170,7 @@ async fn desktop_open_through_broker(
             host,
             invocation,
             operation.clone(),
+            |remote| remote.rows().len() > prior,
         )
         .await;
         while remote.rows().len() <= prior {
@@ -3154,7 +3180,7 @@ async fn desktop_open_through_broker(
     .await
     .expect("native desktop record must replicate without the idle publication delay");
     let records = remote.rows().len();
-    invoke_and_observe(
+    invoke_and_observe_until(
         client,
         remote,
         room,
@@ -3163,6 +3189,7 @@ async fn desktop_open_through_broker(
         host,
         invocation,
         operation.clone(),
+        |_| true,
     )
     .await;
     assert_eq!(

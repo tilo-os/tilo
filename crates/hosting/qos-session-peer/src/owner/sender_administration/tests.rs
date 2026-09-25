@@ -7,6 +7,58 @@ use ui::host_worker::private_actions::{
     administration::{AdministrativeExpectation, AdministrativeFile},
 };
 
+/// A fresh temporary directory on a filesystem the private owner profile
+/// admits on Linux (ext4, btrfs, XFS or tmpfs) with the free space the
+/// session Store requires.
+///
+/// CI's test job runs in a container whose root filesystem, and so its
+/// default temporary directory, is overlayfs, which the bounded owner profile
+/// refuses by design (`unsupported`). There the fixture falls back to the
+/// build's target directory on the host-backed checkout (as main's qualified
+/// imager fixtures do), then to `/dev/shm`. The explicit XFS qualification
+/// root remains `QOS_PRIVATE_ACTIONS_TEST_ROOT`.
+fn admitted_temp_dir() -> tempfile::TempDir {
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::unix::ffi::OsStrExt;
+        let admitted = |path: &std::path::Path| {
+            let Ok(path) = std::ffi::CString::new(path.as_os_str().as_bytes()) else {
+                return false;
+            };
+            let mut stat = std::mem::MaybeUninit::<libc::statfs>::uninit();
+            // SAFETY: `path` is NUL-terminated and `stat` is a writable buffer.
+            if unsafe { libc::statfs(path.as_ptr(), stat.as_mut_ptr()) } != 0 {
+                return false;
+            }
+            // SAFETY: statfs returned 0, so it initialised the buffer.
+            let stat = unsafe { stat.assume_init() };
+            // The session Store also refuses to commit below its free-space
+            // floor (a twentieth of the filesystem, at least 1 GiB).
+            let fragment = u64::try_from(stat.f_frsize).unwrap_or(0);
+            let total = u64::try_from(stat.f_blocks).unwrap_or(0) * fragment;
+            let available = u64::try_from(stat.f_bavail).unwrap_or(0) * fragment;
+            u64::try_from(stat.f_type).is_ok_and(|magic| {
+                matches!(magic, 0xef53 | 0x9123_683e | 0x5846_5342 | 0x0102_1994)
+            }) && available > (total / 20).max(1 << 30) + (64 << 20)
+        };
+        // Unit tests run from `<target>/<profile>/deps`; use `<target>/tmp`.
+        let target: Option<std::path::PathBuf> = std::env::current_exe()
+            .ok()
+            .and_then(|exe| Some(exe.parent()?.parent()?.parent()?.join("tmp")));
+        std::iter::once(std::env::temp_dir())
+            .chain(target)
+            .chain(std::iter::once(std::path::PathBuf::from("/dev/shm")))
+            .find(|base| std::fs::create_dir_all(base).is_ok() && admitted(base))
+            .map(|base| tempfile::tempdir_in(base).unwrap())
+            .expect(
+                "sender administration fixtures need an ext4, btrfs, XFS or tmpfs \
+                 temporary directory with free space (or QOS_PRIVATE_ACTIONS_TEST_ROOT)",
+            )
+    }
+    #[cfg(not(target_os = "linux"))]
+    tempfile::tempdir().unwrap()
+}
+
 fn fixture() -> tempfile::TempDir {
     let temp = match std::env::var_os("QOS_PRIVATE_ACTIONS_TEST_ROOT") {
         Some(parent) => {
@@ -18,7 +70,7 @@ fn fixture() -> tempfile::TempDir {
             assert!(parent.is_dir(), "explicit fixture root must already exist");
             tempfile::tempdir_in(parent).unwrap()
         }
-        None => tempfile::tempdir().unwrap(),
+        None => admitted_temp_dir(),
     };
     std::fs::set_permissions(temp.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
     let opened = std::fs::File::open(temp.path()).unwrap();

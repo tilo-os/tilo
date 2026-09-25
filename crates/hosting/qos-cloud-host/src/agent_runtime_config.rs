@@ -463,11 +463,14 @@ mod tests {
             stream.write_all(b"{").unwrap(); // Incomplete body, with no blocking worker to join.
             received.send(()).unwrap();
             let mut byte = [0];
-            assert_eq!(
-                stream.read(&mut byte).unwrap(),
-                0,
-                "cancel must close the actual gateway socket"
-            );
+            // Linux reports a Unix stream closed with unread received bytes
+            // (the incomplete body, when cancellation wins the race against
+            // the client's read) as a reset rather than end of file.
+            let closed = match stream.read(&mut byte) {
+                Ok(read) => read == 0,
+                Err(error) => error.kind() == std::io::ErrorKind::ConnectionReset,
+            };
+            assert!(closed, "cancel must close the actual gateway socket");
         });
         runtime().block_on(async {
             let config = configuration(&path);

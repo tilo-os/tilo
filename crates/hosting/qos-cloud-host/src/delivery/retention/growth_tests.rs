@@ -233,8 +233,12 @@ fn store_stays_bounded_over_many_agent_steps_refreshes_and_retries() {
     let guest = join_guest(&mut store, owner, now);
     store.activate_delivery_storage(now).unwrap();
     let room = store.state.room.clone();
-    // Agent-typed text of the size a streamed type-text step carries.
-    let text = "streamed agent text ".repeat(64);
+    // Agent-typed text per step. Every step republishes the whole Writer
+    // snapshot, which each replica admits under one checked 64 MiB automerge
+    // turn (the vendored crate's ceiling); 0.12's sound load bound funds about
+    // 100k typed characters there. 400 steps of 160 characters stay inside it,
+    // so this exercises retention rather than the document admission ceiling.
+    let text = "streamed agent text ".repeat(8);
     // At least 200 steps, then until the first rotation (at most 400).
     let mut steps = 0u32;
     let mut sizes = Vec::new();

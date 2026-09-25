@@ -69,7 +69,13 @@ pub use transport::{ALPN, ContentPeerRegistration, Envelope};
 /// Returns an error if `room` is not a valid UUID string.
 pub fn room_workspace_id(room: &str) -> Result<u64, uuid::Error> {
     let room = uuid::Uuid::parse_str(room)?;
-    let hash = blake3::derive_key("tilo-room-transport-v1", room.to_string().as_bytes());
+    // Encode on the stack: bounded delivery paths derive this id under a
+    // native allowance that funds no heap allocation.
+    let mut canonical = [0u8; 36];
+    let hash = blake3::derive_key(
+        "tilo-room-transport-v1",
+        room.hyphenated().encode_lower(&mut canonical).as_bytes(),
+    );
     let mut first8 = [0u8; 8];
     first8.copy_from_slice(&hash[..8]);
     let id = u64::from_le_bytes(first8);

@@ -2,7 +2,8 @@ use super::*;
 use qos_actions::Action;
 
 pub(crate) fn selected() -> (tempfile::TempDir, Arc<RuntimeOwner>) {
-    let (directory, mut store, device) = crate::agent_owner_tests::enrolled();
+    // The workers install the managed sender under the Store root.
+    let (directory, mut store, device) = crate::agent_owner_tests::enrolled_admitted();
     let mut peer = store.peer().unwrap();
     peer.select_admission_v5().unwrap();
     let mut state = store.state.clone();
