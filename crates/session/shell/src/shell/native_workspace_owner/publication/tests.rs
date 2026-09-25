@@ -1017,7 +1017,7 @@ fn native_outgoing_sanitized_foreign_title_cannot_consume_recovery_reserve() {
     candidate.record.generation += 1;
     let group_index = {
         let mut tree = owner.0.tree.write();
-        let groups = &mut tree.workspaces[0].strips[0].window_groups;
+        let groups = &mut tree.desktop.workspaces[0].strips[0].window_groups;
         let index = groups.len();
         groups.push(WindowGroup {
             id: 990_000,
@@ -1052,8 +1052,10 @@ fn native_outgoing_sanitized_foreign_title_cannot_consume_recovery_reserve() {
     assert!(final_encoded_len < store::MAX_STATE_BYTES);
     assert!(final_encoded_len + reserved > store::MAX_STATE_BYTES);
     let title = "t".repeat(title_len);
-    prospective.workspaces[0].strips[0].window_groups[group_index].tabs[0].title = title.clone();
-    owner.0.tree.write().workspaces[0].strips[0].window_groups[group_index].tabs[0].title = title;
+    prospective.desktop.workspaces[0].strips[0].window_groups[group_index].tabs[0].title =
+        title.clone();
+    owner.0.tree.write().desktop.workspaces[0].strips[0].window_groups[group_index].tabs[0].title =
+        title;
     preflight_tree(&prospective).expect("the live Foreign shape still has promised spare space");
     assert!(
         persist::encode_tree(&prospective).is_err(),

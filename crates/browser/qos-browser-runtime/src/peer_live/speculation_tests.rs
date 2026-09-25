@@ -211,7 +211,7 @@ fn get(state: &StatePeer, key: &str) -> Option<String> {
     doc.get(automerge::ROOT, key)
         .ok()
         .flatten()
-        .map(|(value, _)| value.to_str().unwrap_or_default().to_owned())
+        .map(|(value, _)| value.as_str().unwrap_or_default().to_owned())
 }
 fn item(canonical: &[u8], at: u64) -> Speculative {
     Speculative {

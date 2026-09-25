@@ -86,6 +86,7 @@ impl PopulatedShellFixture {
                 .expect("owned populated shell fixture files");
         let tree = crate::shell::state::WorkspaceTree::bootstrap_demo();
         let tab_ids = tree
+            .desktop
             .active_workspace()
             .expect("populated fixture has an active workspace")
             .strips

@@ -6,12 +6,12 @@ use std::collections::BTreeMap;
 
 fn fixture() -> (WorkspaceTree, WorkspaceTree, RoomId, PeerOrigin) {
     let mut host = WorkspaceTree::bootstrap_demo();
-    let room = host.workspaces[0].room;
+    let room = host.desktop.workspaces[0].room;
     let root = ed25519_dalek::SigningKey::from_bytes(&[91; 32]);
     let device = iroh::SecretKey::from_bytes(&[92; 32]);
     let endpoint = device.public();
     let owner = hex::encode(root.verifying_key().as_bytes());
-    host.workspaces[0].owner = Some(owner.clone());
+    host.desktop.workspaces[0].owner = Some(owner.clone());
     assert!(host.name_peer(room, &owner, &endpoint.to_string(), "Governor"));
     let mut cert = tilo_user_identity::DeviceCert {
         user_public_key: root.verifying_key().to_bytes(),
@@ -26,7 +26,7 @@ fn fixture() -> (WorkspaceTree, WorkspaceTree, RoomId, PeerOrigin) {
     assert!(host.certify_peer_identity(room, &endpoint.to_string(), cert));
     host.sync_room_doc(room);
     let mut guest = WorkspaceTree::bootstrap_demo();
-    let workspace = guest.workspaces[0].id;
+    let workspace = guest.desktop.workspaces[0].id;
     assert!(guest.set_room(workspace, room));
     (host, guest, room, PeerOrigin::peer(&endpoint))
 }
@@ -149,7 +149,7 @@ fn accept_media_invite(host: &WorkspaceTree, guest: &mut WorkspaceTree, room: Ro
         3600,
     )
     .unwrap();
-    let local = guest.workspaces[0].id;
+    let local = guest.desktop.workspaces[0].id;
     assert_eq!(
         crate::network::invite::accept_invite_into(guest, local, &token).unwrap(),
         room
@@ -366,7 +366,7 @@ fn local_security_projection_refreshes_revision_once_and_preserves_calls() {
     let doc = host.room_docs.get_mut(&room).unwrap();
     let value = policy(doc, room);
     put_policy(doc, &value);
-    let authority = host.workspaces[0].owner.clone().unwrap();
+    let authority = host.desktop.workspaces[0].owner.clone().unwrap();
     let endpoint = iroh::SecretKey::from_bytes(&[92; 32]).public().to_string();
     assert!(host.name_peer(room, &authority, &endpoint, "Renamed governor"));
     assert_eq!(
@@ -414,7 +414,7 @@ fn malformed_local_policy_is_not_repaired_or_exported() {
     doc.put(ROOT, media::FIELD, "not bytes").unwrap();
     doc.commit();
     let heads = doc.get_heads();
-    host.workspaces[0].name = "Changed locally".into();
+    host.desktop.workspaces[0].name = "Changed locally".into();
     host.sync_room_doc(room);
     assert_eq!(host.room_docs.get_mut(&room).unwrap().get_heads(), heads);
     assert!(host.room_heads(room).is_empty());

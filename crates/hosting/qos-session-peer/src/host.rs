@@ -2101,6 +2101,9 @@ pub async fn run(mut owner: SessionOwner, ready_path: &Path) -> Result<()> {
                                 data,
                             ),
                             Inbound::Presence {author,payload} => (qos_peer_state::TransportOrigin::UntrustedPresence(author),payload),
+                            // The session peer serves no remote-action route; the relay only
+                            // forwards these to devices that registered one.
+                            Inbound::RemoteAction {..} => continue,
                             Inbound::Ready {..} => unreachable!(),
                         };
                         let inbound_bytes = bytes.len();

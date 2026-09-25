@@ -652,6 +652,10 @@ struct DocumentAuthorizationInner {
     to: Vec<ChangeHash>,
     exported: BTreeSet<ChangeHash>,
     contributions: Vec<Contribution>,
+    #[cfg_attr(
+        not(feature = "broker-transport"),
+        allow(dead_code, reason = "only the broker transport acknowledges commits")
+    )]
     acknowledgements: Vec<Arc<AtomicBool>>,
 }
 
@@ -673,6 +677,10 @@ impl DocumentAuthorization {
     /// Check the concrete committer's returned operation against the exact
     /// captured body (including its encoded causal dependencies) and route.
     /// Actual bounded graph/basis admission is still the final owner's job.
+    #[cfg_attr(
+        not(feature = "broker-transport"),
+        allow(dead_code, reason = "only the broker transport commits documents")
+    )]
     pub(crate) fn check_committed_operation(
         &self,
         route: &RouteSpec,
@@ -696,6 +704,10 @@ impl DocumentAuthorization {
 
     // Private SDK-only confirmation, after exact scoped durable success and
     // matching receipt handoff. A handler or terminal receipt cannot set it.
+    #[cfg_attr(
+        not(feature = "broker-transport"),
+        allow(dead_code, reason = "only the broker transport commits documents")
+    )]
     pub(crate) fn acknowledge_committed(&self) {
         for acknowledgement in &self.0.acknowledgements {
             acknowledgement.store(true, Ordering::Release);
@@ -789,6 +801,10 @@ impl DocumentAuthorization {
         Ok(())
     }
 
+    #[cfg_attr(
+        not(feature = "broker-transport"),
+        allow(dead_code, reason = "only the broker transport commits documents")
+    )]
     pub(crate) fn retained_bytes(&self) -> Option<usize> {
         let mut bytes = std::mem::size_of::<DocumentAuthorizationInner>();
         bytes = bytes

@@ -15,7 +15,7 @@ use qos_peer_state::join::{
     MembershipChallengeResponse, MembershipCompleteRequest, TransportHint, VerifiedJoin,
     decode_and_verify_invitation, issue_invitation, verify_join_proof, verify_membership_proof,
 };
-use rand::RngCore;
+use rand::Rng as _;
 use serde::{Deserialize, Serialize};
 use std::{fmt, time::Duration};
 use tilo_user_identity::RevocationList;
@@ -386,7 +386,7 @@ impl CollaborationService {
         validate_issue_request(&request, now_ns)?;
 
         let mut nonce = [0; 16];
-        rand::rngs::OsRng.fill_bytes(&mut nonce);
+        rand::rand_core::UnwrapErr(rand::rngs::SysRng).fill_bytes(&mut nonce);
         let (candidate, delegation) = owner
             .prepare_workspace_host_delegation(system_time(now_ns))
             .map_err(|error| CollaborationError::new(error.to_string()))?;
@@ -622,7 +622,7 @@ impl CollaborationService {
             ));
         }
         let mut nonce = [0; 32];
-        rand::rngs::OsRng.fill_bytes(&mut nonce);
+        rand::rand_core::UnwrapErr(rand::rngs::SysRng).fill_bytes(&mut nonce);
         let expires_at_ns = verified
             .grant()
             .expires_at_ns
@@ -804,7 +804,7 @@ impl CollaborationService {
             });
         }
         let mut nonce = [0; 32];
-        rand::rngs::OsRng.fill_bytes(&mut nonce);
+        rand::rand_core::UnwrapErr(rand::rngs::SysRng).fill_bytes(&mut nonce);
         let challenge = owner
             .peer()
             .membership_challenge(

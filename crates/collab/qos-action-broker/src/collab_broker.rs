@@ -202,7 +202,7 @@ impl FanoutState {
     }
 
     /// Read the capnp fanout sink if one has been attached.
-    pub(crate) fn capnp_state(&self) -> Option<Arc<CapnpBrokerState>> {
+    pub fn capnp_state(&self) -> Option<Arc<CapnpBrokerState>> {
         self.capnp
             .lock()
             .ok()
@@ -476,6 +476,51 @@ impl AppActionBroker {
     pub fn status(&self, id: u64) -> Option<tilo_actions::InvocationUpdate> {
         self.state
             .while_live(|state| Ok(state.invocation_status(id)))
+            .ok()
+            .flatten()
+    }
+
+    /// The facade around a live broker state, for a host's action host.
+    #[must_use]
+    pub fn from_state(state: Arc<CapnpBrokerState>) -> Self {
+        Self { state }
+    }
+
+    /// The broker state behind this facade, for the host's action host.
+    #[must_use]
+    pub fn state(&self) -> &Arc<CapnpBrokerState> {
+        &self.state
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn record_completion_for_test(
+        &self,
+        id: u64,
+        actor: &str,
+        update: tilo_actions::InvocationUpdate,
+    ) {
+        self.state.record_completion_for_test(id, actor, update);
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn capture_invocations_for_test(
+        &self,
+        peer_id: u64,
+    ) -> tokio::sync::mpsc::UnboundedReceiver<crate::collab_broker_capnp::InvocationEnvelope> {
+        self.state.capture_invocations_for_test(peer_id)
+    }
+
+    /// Changes whenever any invocation's status changes.
+    #[must_use]
+    pub fn statuses_generation(&self) -> u64 {
+        self.state.invocations_generation()
+    }
+
+    /// One invocation's current status, only when `actor` owns it.
+    #[must_use]
+    pub fn status_for_actor(&self, id: u64, actor: &str) -> Option<tilo_actions::InvocationUpdate> {
+        self.state
+            .while_live(|state| Ok(state.invocation_status_for_actor(id, actor)))
             .ok()
             .flatten()
     }

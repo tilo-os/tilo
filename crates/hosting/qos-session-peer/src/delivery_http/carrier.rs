@@ -2,6 +2,7 @@
 //! The concrete owner supplies a fresh borrowed context under its actual lock,
 //! performs its consumer barrier, and only then publishes the finished session.
 use super::*;
+use rand::TryRng as _;
 use tilo_relay::delivery_v3::descriptor::VerifiedDescriptor;
 
 /// Inert lookup fields used only to construct a fresh concrete owner context.
@@ -41,7 +42,7 @@ impl HttpSessions {
             "unknown data capability"
         );
         let mut boot = [0; 16];
-        rand::rngs::OsRng.try_fill_bytes(&mut boot)?;
+        rand::rngs::SysRng.try_fill_bytes(&mut boot)?;
         ensure!(boot != [0; 16], "invalid entropy");
         Ok(Self {
             native_time: None,

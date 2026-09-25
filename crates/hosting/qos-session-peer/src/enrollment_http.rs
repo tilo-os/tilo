@@ -2,7 +2,7 @@
 use crate::enrollment::EnrollmentError;
 use anyhow::{Context, Result, bail};
 use qos_peer_state::enrollment::{ChallengeRequest, CompleteRequest};
-use rand::RngCore;
+use rand::Rng as _;
 use std::{collections::HashMap, path::Path, sync::Arc, time::Duration};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
@@ -27,7 +27,7 @@ impl Authorization {
         };
         if absent {
             let mut capability = [0; 32];
-            rand::rngs::OsRng.fill_bytes(&mut capability);
+            rand::rand_core::UnwrapErr(rand::rngs::SysRng).fill_bytes(&mut capability);
             atomic_file::write_with_mode(&path, hex::encode(capability).as_bytes(), 0o600)?;
             crate::store::sync_dir(root)?;
         }

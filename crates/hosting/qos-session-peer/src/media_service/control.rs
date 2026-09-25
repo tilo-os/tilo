@@ -147,7 +147,7 @@ impl<S: MediaAuthoritySource> MediaService<S> {
                     return Err(MediaError::Unauthorized);
                 }
                 let mut id = [0; 32];
-                rand::rngs::OsRng
+                rand::rngs::SysRng
                     .try_fill_bytes(&mut id)
                     .map_err(|_| MediaError::EntropyUnavailable)?;
                 let challenge = core

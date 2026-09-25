@@ -10,7 +10,7 @@ use qos_moq::relay::{
     Admission, AuthorizationStatus, Denied, Direction, RelayAuthority, SessionAuthorization,
 };
 use qos_peer_state::StatePeer;
-use rand::RngCore;
+use rand::TryRng as _;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeMap,
@@ -349,7 +349,7 @@ impl<S: MediaAuthoritySource> MediaService<S> {
     }
     pub(crate) fn relay_challenge(&self, grant: &[u8]) -> Result<RelayChallenge, MediaError> {
         let mut session_id = [0; 32];
-        rand::rngs::OsRng
+        rand::rngs::SysRng
             .try_fill_bytes(&mut session_id)
             .map_err(|_| MediaError::EntropyUnavailable)?;
         self.turn(|peer, policy, core, now| {

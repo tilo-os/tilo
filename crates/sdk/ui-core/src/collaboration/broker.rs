@@ -15,13 +15,15 @@
     reason = "native host runner: the shovel thread bridges a blocking socket"
 )]
 
+#[cfg(test)]
+use super::channel_key;
 use super::{
     ActionDirectoryRequest, Backend, BrokerActionCatalogueWire, BrokerActionDescriptor,
     BrokerActionSurface, CollabEvent, CollabRequest, CollabTransport, CollaborationManager,
     Collaborator, DocumentMutation, DocumentPublicationError, DocumentPublicationReceipt,
     ExportedAction, ExportedInput, HostDocumentCommitter, PresenceKey, PresencePayload,
     PrimaryRouteState, RouteSpec, SignedOp, TransportCommand, TransportError, TransportStatus,
-    Uuid, auto_hello_env, channel_key, mpsc, presence_handle_env,
+    Uuid, auto_hello_env, mpsc, presence_handle_env,
 };
 
 // Worker-owned Cloud facilities: committed-document reads, the paged
@@ -138,17 +140,6 @@ pub fn wifi_continuity_command(
     reply_rx
         .recv_timeout(WIFI_CONTINUITY_TIMEOUT)
         .map_err(|_| "Wi-Fi continuity service did not respond".to_string())?
-}
-
-impl RouteSpec {
-    /// The single channel id this route is joined under on the broker.
-    pub(crate) fn channel_id(&self) -> String {
-        channel_key::format(
-            &self.app_id,
-            &self.cluster_id.to_string(),
-            self.record.as_deref().unwrap_or(""),
-        )
-    }
 }
 
 /// Owned mpsc pair + shovel-thread handle for SDK mode. Both directions are

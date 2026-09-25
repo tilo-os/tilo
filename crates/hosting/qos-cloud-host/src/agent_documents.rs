@@ -825,7 +825,7 @@ mod tests {
                 .filter(|m| matches!(m, NeighbourMsg::AppDocument { app_id, .. } if app_id == "so.tilo.chat"))
                 .count()
         };
-        let mut edit = |store: &mut Store, snapshot: bool, value: &str| {
+        let edit = |store: &mut Store, snapshot: bool, value: &str| {
             let bytes = store.peer().unwrap().document("so.tilo.chat", "").unwrap();
             let mut doc = automerge::AutoCommit::load(&bytes).unwrap();
             let heads = doc.get_heads();

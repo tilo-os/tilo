@@ -3,7 +3,7 @@ use crate::SessionOwner;
 use qos_peer_state::enrollment::{
     self, ChallengeRequest, ChallengeResponse, CompleteRequest, EnrollmentChallenge,
 };
-use rand::RngCore;
+use rand::Rng as _;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, WorkspaceDirectory, sign_device_cert};
@@ -102,7 +102,7 @@ impl EnrollmentAuthority {
             ));
         }
         let mut nonce = [0; 32];
-        rand::rngs::OsRng.fill_bytes(&mut nonce);
+        rand::rand_core::UnwrapErr(rand::rngs::SysRng).fill_bytes(&mut nonce);
         let challenge = EnrollmentChallenge {
             version: 2,
             root_public_key: owner.peer().authority().user_public_key,

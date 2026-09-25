@@ -137,11 +137,12 @@ mod macos_tests {
         let options = options(directory.path());
         {
             let session = prepare(&options).unwrap();
-            assert_eq!(session.tree.read().workspaces.len(), 1);
+            assert_eq!(session.tree.read().desktop.workspaces.len(), 1);
             assert!(
                 session
                     .tree
                     .read()
+                    .desktop
                     .workspaces
                     .iter()
                     .all(|ws| ws.collaborators.is_empty())
@@ -158,6 +159,7 @@ mod macos_tests {
             session
                 .tree
                 .read()
+                .desktop
                 .workspaces
                 .iter()
                 .any(|ws| ws.name == "Mac work")
@@ -356,6 +358,7 @@ mod macos_tests {
             .and_then(|node| node.value.clone());
         let tree = tree_handle.read();
         let titles = tree
+            .desktop
             .active_workspace()
             .unwrap()
             .strips
@@ -441,6 +444,7 @@ mod macos_tests {
 
         let tree = tree_handle.read();
         let titles = tree
+            .desktop
             .active_workspace()
             .unwrap()
             .strips

@@ -403,7 +403,7 @@ impl Store {
                         transport.push(hint);
                     }
                     let mut nonce = [0; 16];
-                    rand::rngs::OsRng.fill_bytes(&mut nonce);
+                    rand::rand_core::UnwrapErr(rand::rngs::SysRng).fill_bytes(&mut nonce);
                     let signed = qos_peer_state::join::issue_invitation(
                         qos_peer_state::join::InviteGrant {
                             workspace_id: qos_relay::room_workspace_id(&self.state.room)?,

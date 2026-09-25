@@ -415,6 +415,7 @@ impl NativeMediaService {
         let tree = consent.grants.tree_handle();
         let workspace = tree
             .read()
+            .desktop
             .workspaces
             .iter()
             .find(|workspace| workspace.room.to_string() == entry.caller.workspace)

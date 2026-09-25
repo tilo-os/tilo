@@ -1026,7 +1026,7 @@ fn compact_enrollment_imports_existing_history_after_prior_browser_expires() {
             .unwrap()
             .unwrap()
             .0
-            .to_str(),
+            .as_str(),
         Some("expired browser")
     );
     assert!(existing.certificates().contains(&first.browser_certificate));

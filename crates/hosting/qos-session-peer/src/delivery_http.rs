@@ -7,7 +7,6 @@ use crate::{
     owner::delivery::NativeDeliveryAuthority,
 };
 use anyhow::{Context, Result, ensure};
-use rand::RngCore;
 use std::collections::BTreeMap;
 use tilo_relay::delivery_v3::{
     auth,

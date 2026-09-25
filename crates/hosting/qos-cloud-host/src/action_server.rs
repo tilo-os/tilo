@@ -67,7 +67,7 @@ impl Handler {
             (peer, store.key(), b.authority.clone())
         };
         let mut nonce = [0; 32];
-        rand::rngs::OsRng.fill_bytes(&mut nonce);
+        rand::rand_core::UnwrapErr(rand::rngs::SysRng).fill_bytes(&mut nonce);
         let ack = auth::build_hello_ack(
             auth::AuthDomain::LegacyQos,
             cert,

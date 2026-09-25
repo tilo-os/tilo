@@ -79,7 +79,7 @@ pub(crate) fn recordless_desktop_is_initialized(peer: &qos_peer_state::StatePeer
                 .get(&owners, key)
                 .ok()
                 .flatten()
-                .is_some_and(|(value, _)| value.to_str() == Some(authority.as_str()))
+                .is_some_and(|(value, _)| value.as_str() == Some(authority.as_str()))
     });
     owns_namespace
         && RoomProjection::contents_of(doc)
@@ -116,7 +116,7 @@ fn legacy_writer_notes_split(
         .filter_map(|entry| {
             let salt = u16::from_str_radix(&entry, 16).ok()?;
             let (value, _) = doc.get(&owners, &entry).ok()??;
-            (salt != 0 && value.to_str() == Some(authority.as_str())).then_some(salt)
+            (salt != 0 && value.as_str() == Some(authority.as_str())).then_some(salt)
         })
         .collect::<std::collections::BTreeSet<_>>();
     let routes = RoomProjection::record_routes(doc);
@@ -182,7 +182,7 @@ fn legacy_writer_notes_split(
     let stored_counter = doc
         .get(ROOT, "desktop_counter_v1")
         .map_err(|e| e.to_string())?
-        .and_then(|(value, _)| value.to_u64())
+        .and_then(|(value, _)| value.as_u64())
         .unwrap_or(1);
     let mut counter = stored_counter.max(
         maximum
@@ -316,7 +316,7 @@ pub(crate) fn bootstrap_desktop(
         if doc
             .get(ROOT, "writer_notes_split_v1")
             .map_err(|e| e.to_string())?
-            .and_then(|(value, _)| value.to_u64())
+            .and_then(|(value, _)| value.as_u64())
             == Some(1)
         {
             return Ok(false);

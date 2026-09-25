@@ -3,12 +3,11 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeSet, HashMap, HashSet};
 use tilo_automerge::ApplyIncoming;
 
-mod fs_authority;
 mod local_app_records;
-use fs_authority::schedule_fs_authority_publication;
-#[cfg(test)]
-use fs_authority::wait_for_fs_authority_publication_idle;
 pub use local_app_records::LocalAppRecord;
+use qos_desktop::fs_authority::schedule_fs_authority_publication;
+#[cfg(test)]
+use qos_desktop::fs_authority::wait_for_fs_authority_publication_idle;
 
 fn now_unix_nanos() -> u64 {
     std::time::SystemTime::now()
@@ -2278,23 +2277,17 @@ impl WorkspaceTree {
         if self.workspace_in_room(room).is_none() {
             return Ok(false);
         }
-        let parsed: Result<Vec<automerge::Change>, _> = changes
-            .iter()
-            .map(|b| automerge::Change::try_from(b.as_slice()))
-            .collect();
-        let parsed = parsed?;
-
         // Applied to a copy first: a check that runs after the merge has
-        // already happened is not a check.
-        let mut candidate = self
-            .room_docs
-            .get(&room)
-            .cloned()
-            .unwrap_or_else(AutoCommit::new);
-        // See `sync_room_doc`: a patch log carried into `apply_changes`
-        // is what turns a peer's first delta into a panic.
-        candidate.reset_diff_cursor();
-        candidate.apply_incoming(parsed)?;
+        // already happened is not a check. `candidate` admits the batch
+        // through automerge's checked path under the shared incoming
+        // resource limits (and resets the patch log, see `sync_room_doc`);
+        // it reports a refusal as text, so keep this API's error type and
+        // the detail in the log.
+        let candidate = qos_peer_state::room::candidate(self.room_docs.get(&room), changes)
+            .map_err(|error| {
+                tracing::warn!(%error, room = %room, "room changes refused");
+                automerge::AutomergeError::Fail
+            })?;
 
         if Self::declared_room_mismatches(&candidate, room) {
             return Ok(false);

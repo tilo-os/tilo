@@ -227,7 +227,7 @@ fn fixture(owner: &NativeWorkspaceOwner) -> Fixture {
 
 fn tree_at(path: &std::path::Path) -> WorkspaceTreeHandle {
     let mut tree = WorkspaceTree::bootstrap_default();
-    let id = tree.active;
+    let id = tree.desktop.active;
     assert!(tree.set_room(id, RoomId::parse(ROOM).unwrap()));
     tree.persist_path = Some(path.into());
     tree.shared()
@@ -696,7 +696,7 @@ fn native_file_writer_excludes_competing_owner_and_encoded_overflow_preserves_di
     assert!(NativeWorkspaceOwner::open(independently_loaded.shared()).is_err());
     let committed = std::fs::read(&path).unwrap();
     let mut oversized = tree.read().clone();
-    oversized.workspaces[0].name = "x".repeat(store::MAX_STATE_BYTES);
+    oversized.desktop.workspaces[0].name = "x".repeat(store::MAX_STATE_BYTES);
     assert!(persist::save_tree_to(&oversized, &path).is_err());
     assert_eq!(std::fs::read(&path).unwrap(), committed);
     drop(oversized);
@@ -850,7 +850,7 @@ fn fresh_slot(
     RoomId,
 ) {
     let mut native = WorkspaceTree::bootstrap_default();
-    let local = native.active;
+    let local = native.desktop.active;
     let previous = native.room_of(local).unwrap();
     assert_ne!(previous, RoomId::parse(ROOM).unwrap());
     native.persist_path = Some(path.into());
@@ -1096,7 +1096,7 @@ fn native_slot_barrier_and_stale_flush_preserve_actual_acl_and_publisher() {
             Verb::Read,
         );
         old.id = "old-room-only".into();
-        native.workspaces[0].capabilities.push(old);
+        native.desktop.workspaces[0].capabilities.push(old);
     }
     let owner = NativeWorkspaceOwner::open(tree.clone()).unwrap();
     tree.read().export_fs_capabilities();

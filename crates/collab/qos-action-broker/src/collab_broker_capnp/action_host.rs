@@ -4,12 +4,14 @@
 //! network, an app or agent on this machine, the MCP bridge, the palette —
 //! reaches published actions through these methods, wrapped as an
 //! [`ActionHost`](tilo_actions::remote::ActionHost) by
-//! [`BrokerActionHost`](crate::shell::remote_actions::BrokerActionHost).
+//! the host's `BrokerActionHost`.
 //! Authority is decided from the transport-supplied [`Caller`] alone, with
 //! the same capability checks the admission path has always applied.
 
-use crate::shell::state::WorkspaceAuthority as _;
 use std::sync::Arc;
+
+use collab_types::caps::Actor;
+use qos_desktop::Workspace;
 
 use tilo_actions::remote::{
     APPLICATION_OPEN_ACTION, APPLICATION_RESOURCE_PREFIX, ActionHostError, Caller, CallerPrincipal,
@@ -22,15 +24,17 @@ use tilo_actions::{ActionAddress, ActionDescriptor, Collects, ExecutionLocus, In
 
 use super::{
     ActionDirectoryBridgeError, ActionDirectoryBridgeReply, ActionDirectoryBridgeResponse,
-    ActionDirectoryRoot, BrokerActor, CapDecision, CapnpBrokerState, PublishedAction,
-    PublishedInput, PublishedSurface, ResourceRef, Verb, permission_verb,
+    ActionDirectoryRoot, BrokerActor, CapDecision, CapnpBrokerState, InvocationOwner,
+    PublishedAction, PublishedInput, PublishedSurface, ResourceRef, Verb, permission_verb,
     published_directory_action, validate_directory_target_input,
 };
-use crate::shell::collab_broker::CrdtRoute;
+use crate::collab_broker::CrdtRoute;
+use crate::policy::WorkspacePolicy as _;
 
 impl BrokerActor {
     /// The broker actor a caller is admitted as.
-    pub(crate) fn for_caller(caller: &Caller) -> Self {
+    #[must_use]
+    pub fn for_caller(caller: &Caller) -> Self {
         match caller.principal() {
             CallerPrincipal::Person(id) => Self::person(id.clone()),
             CallerPrincipal::Agent(id) => Self::agent(format!("agent:{id}")),
@@ -124,25 +128,28 @@ impl CapnpBrokerState {
     /// Workspaces `caller` may act in, with the policy actor for each. A
     /// caller confined to a room was admitted to it by its connection; any
     /// other caller must be a member.
-    fn workspaces_for(
-        &self,
-        caller: &Caller,
-    ) -> Vec<(crate::shell::state::Workspace, crate::shell::state::Actor)> {
+    fn workspaces_for(&self, caller: &Caller) -> Vec<(Workspace, Actor, u64)> {
         let Some(membership) = self.membership.as_ref() else {
             return Vec::new();
         };
+        // One policy clock sample for the whole pass; an unavailable clock
+        // offers nothing rather than deciding at an unknown time.
+        let Ok(now) = self.policy_now_ns().map(|now| now / 1_000_000_000) else {
+            return Vec::new();
+        };
+        let Ok(tree) = membership.snapshot() else {
+            return Vec::new();
+        };
         let actor = BrokerActor::for_caller(caller);
-        let tree = membership.read();
-        tree.desktop
-            .workspaces
-            .iter()
+        tree.workspaces
+            .into_iter()
             .filter(|workspace| {
                 let room = workspace.room.to_string();
                 match caller.room() {
                     Some(confined) => confined == room,
                     None => match caller.principal() {
-                        CallerPrincipal::Person(id) => workspace.role_of(id).is_some(),
-                        CallerPrincipal::Agent(id) => workspace.role_of_agent(id).is_some(),
+                        CallerPrincipal::Person(id) => workspace.role_of_at(id, now).is_some(),
+                        CallerPrincipal::Agent(id) => workspace.role_of_agent_at(id, now).is_some(),
                     },
                 }
             })
@@ -150,28 +157,30 @@ impl CapnpBrokerState {
                 let policy = if actor.is_agent {
                     workspace.actor_for_agent(actor.id.strip_prefix("agent:").unwrap_or(&actor.id))
                 } else {
-                    workspace.actor_for_person(&actor.id)
+                    workspace.actor_for_person_at(&actor.id, now)
                 };
-                (workspace.clone(), policy)
+                (workspace, policy, now)
             })
             .collect()
     }
 
     fn allowed(
-        workspace: &crate::shell::state::Workspace,
-        policy: &crate::shell::state::Actor,
+        workspace: &Workspace,
+        policy: &Actor,
+        now: u64,
         app: &str,
         action: &str,
         permission: tilo_actions::PermissionRequirement,
     ) -> bool {
         permission_verb(permission).is_none_or(|verb| {
-            workspace.decide(
+            workspace.decide_at(
                 policy,
                 &ResourceRef::Action {
                     app: app.to_string(),
                     action: action.to_string(),
                 },
                 verb,
+                now,
             ) == CapDecision::Allow
         })
     }
@@ -194,7 +203,7 @@ impl CapnpBrokerState {
         let roots = self.action_directory_roots();
         let mut rows = Vec::new();
         let mut providers = Vec::new();
-        for (workspace, policy) in self.workspaces_for(caller) {
+        for (workspace, policy, now) in self.workspaces_for(caller) {
             let room = workspace.room.to_string();
             let mut live_apps = std::collections::HashSet::new();
             for surface in surfaces
@@ -220,6 +229,7 @@ impl CapnpBrokerState {
                             Self::allowed(
                                 &workspace,
                                 &policy,
+                                now,
                                 &surface.app_id,
                                 &action.action,
                                 action.contract.permission,
@@ -256,39 +266,41 @@ impl CapnpBrokerState {
             if !with_rows {
                 continue;
             }
-            let profile = crate::shell::workspace_settings::permission_profile_resource_with_access(
-                &workspace, true,
-            );
-            rows.extend(
-                tilo_actions::door::survey(&[profile])
-                    .into_iter()
-                    .filter(|descriptor| {
-                        Self::allowed(
-                            &workspace,
-                            &policy,
-                            crate::shell::state::WORKSPACE_GOVERNANCE_APP_ID,
-                            &descriptor.address.action,
-                            descriptor.contract.permission,
-                        )
-                    })
-                    .map(|descriptor| {
-                        action_row(
-                            workspace_provider(&room),
-                            crate::shell::state::WORKSPACE_GOVERNANCE_APP_ID,
-                            descriptor,
-                        )
-                    }),
-            );
+            if let Some(governance) = self.services.workspace_governance.as_ref() {
+                rows.extend(
+                    governance
+                        .descriptors(&workspace)
+                        .into_iter()
+                        .filter(|descriptor| {
+                            Self::allowed(
+                                &workspace,
+                                &policy,
+                                now,
+                                governance.app_id(),
+                                &descriptor.address.action,
+                                descriptor.contract.permission,
+                            )
+                        })
+                        .map(|descriptor| {
+                            action_row(workspace_provider(&room), governance.app_id(), descriptor)
+                        }),
+                );
+            }
             if caller.room().is_some() {
                 rows.extend(
-                    crate::shell::launcher::gui_apps()
+                    self.services
+                        .launcher
+                        .as_ref()
+                        .map(|launcher| launcher.applications())
+                        .unwrap_or_default()
                         .into_iter()
                         .filter(|app| !live_apps.contains(&app.package_id))
                         .filter(|app| {
-                            workspace.decide(
+                            workspace.decide_at(
                                 &policy,
                                 &ResourceRef::App(app.package_id.clone()),
                                 Verb::Write,
+                                now,
                             ) == CapDecision::Allow
                         })
                         .map(|app| {
@@ -310,7 +322,7 @@ impl CapnpBrokerState {
         let rooms = self
             .workspaces_for(caller)
             .into_iter()
-            .map(|(workspace, _)| workspace.room.to_string())
+            .map(|(workspace, _, _)| workspace.room.to_string())
             .collect::<Vec<_>>();
         self.action_directory_roots()
             .into_iter()
@@ -320,7 +332,7 @@ impl CapnpBrokerState {
     /// One page of what `caller` is offered. A provider publishing a live
     /// directory is browsed there, on the broker's local set; everything
     /// else is answered at once from the eager surfaces.
-    pub(crate) fn action_query(
+    pub fn action_query(
         self: &Arc<Self>,
         caller: &Caller,
         query: &CatalogueQuery,
@@ -369,7 +381,7 @@ impl CapnpBrokerState {
                     reason: "resolving a target needs the revision it was chosen at".into(),
                 }));
             };
-            queue.try_resolve(
+            queue.try_resolve_pending(
                 actor,
                 &root.cluster_id,
                 root.peer_id,
@@ -379,7 +391,7 @@ impl CapnpBrokerState {
             )
         } else {
             let limits = query.limits.unwrap_or_default();
-            queue.try_query(
+            queue.try_query_pending(
                 actor,
                 &root.cluster_id,
                 runtime_collab::ActionDirectoryQuery {
@@ -408,7 +420,7 @@ impl CapnpBrokerState {
     /// caller that is itself an application connection. Never blocks: an
     /// action published through a live directory is re-resolved by its owner
     /// on the broker's local set, and the admission arrives when it has.
-    pub(crate) fn action_invoke(
+    pub fn action_invoke(
         self: &Arc<Self>,
         caller: &Caller,
         own_peer: Option<u64>,
@@ -497,6 +509,7 @@ impl CapnpBrokerState {
             &address.resource,
             &address.action,
             argument.as_deref(),
+            None,
         )
         .is_err()
         {
@@ -519,7 +532,7 @@ impl CapnpBrokerState {
             }
             Ok(Reservation::Reserved) => {}
         }
-        let resolved = self.action_directory_request_queue().try_resolve(
+        let resolved = self.action_directory_request_queue().try_resolve_pending(
             BrokerActor::for_caller(caller),
             &root.cluster_id,
             root.peer_id,
@@ -628,6 +641,7 @@ impl CapnpBrokerState {
             &actor,
             token.as_deref(),
             request.context.clone(),
+            request.revision.as_deref(),
         )
         .map(|job| job.id)
         .map_err(refusal)
@@ -658,10 +672,10 @@ impl CapnpBrokerState {
             .into_iter()
             .find(|surface| surface.peer_id == peer_id && surface.live)
             .and_then(|surface| {
-                let (workspace, policy) =
+                let (workspace, policy, now) =
                     self.workspaces_for(caller)
                         .into_iter()
-                        .find(|(workspace, _)| {
+                        .find(|(workspace, _, _)| {
                             workspace.room.to_string() == surface.route.cluster_id
                         })?;
                 let action = surface
@@ -674,6 +688,7 @@ impl CapnpBrokerState {
                 Self::allowed(
                     &workspace,
                     &policy,
+                    now,
                     &surface.app_id,
                     &action.action,
                     action.contract.permission,
@@ -710,10 +725,10 @@ impl CapnpBrokerState {
         argument: Option<&str>,
     ) -> Result<u64, ActionHostError> {
         let address = &request.target.address;
-        let Some((workspace, policy)) = self
+        let Some((workspace, policy, now)) = self
             .workspaces_for(caller)
             .into_iter()
-            .find(|(workspace, _)| workspace.room.to_string() == room)
+            .find(|(workspace, _, _)| workspace.room.to_string() == room)
         else {
             return Err(ActionHostError::UnknownAction);
         };
@@ -724,16 +739,21 @@ impl CapnpBrokerState {
                 return Err(ActionHostError::UnknownAction);
             }
             return self
-                .launch_application(workspace, &policy, actor, app_id, argument.unwrap_or(""))
+                .launch_application(
+                    &workspace,
+                    &policy,
+                    now,
+                    actor,
+                    app_id,
+                    argument.unwrap_or(""),
+                )
                 .map_err(refusal);
         }
-        if matches!(
-            address.action.as_str(),
-            crate::shell::state::PROFILE_SAVE_ACTION_ID
-                | crate::shell::state::PROFILE_ASSIGN_ACTION_ID
-        ) {
+        if let Some(governance) = self.services.workspace_governance.as_ref()
+            && governance.handles(&address.action)
+        {
             return self
-                .invoke_workspace_profile_action(
+                .invoke_workspace_governance_action(
                     room,
                     actor,
                     &address.resource,
@@ -741,37 +761,85 @@ impl CapnpBrokerState {
                     argument,
                     &confirmation_evidence(request.confirmation.as_ref()),
                 )
-                .map(|(id, _)| id)
                 .map_err(refusal);
         }
         Err(ActionHostError::UnknownAction)
     }
 
-    /// Launch `app_id` into `workspace`, optionally opening content-addressed
-    /// bytes read-only, and record the terminal outcome as an invocation.
-    pub(crate) fn launch_application(
+    /// Execute a host-owned workspace governance action (permission
+    /// profiles). There is no application to forward to: the host's
+    /// governance service validates, applies and records it under its own
+    /// capability authority, and the broker reports one terminal update.
+    fn invoke_workspace_governance_action(
         &self,
-        mut workspace: crate::shell::state::Workspace,
-        policy: &crate::shell::state::Actor,
+        room: &str,
         actor: &BrokerActor,
-        app_id: &str,
-        content_hash: &str,
+        resource: &str,
+        action: &str,
+        argument: Option<&str>,
+        confirmation: &serde_json::Value,
     ) -> Result<u64, String> {
-        if workspace.decide(policy, &ResourceRef::App(app_id.to_string()), Verb::Write)
-            != CapDecision::Allow
-        {
-            return Err("the caller is not allowed to launch that application".into());
-        }
-        let document = super::stage_launch_content(app_id, content_hash, &mut workspace)?;
+        let governance = self
+            .services
+            .workspace_governance
+            .as_ref()
+            .ok_or_else(|| "workspace governance is unavailable on this host".to_string())?;
         let id = self
             .invocation_id
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let invocation = tilo_actions::InvocationId(uuid::Uuid::from_u128(u128::from(id)));
-        let update = match crate::shell::launcher::launch_document_in_workspace(
-            app_id,
-            &workspace,
-            document.as_deref(),
-        ) {
+        governance.invoke(&crate::services::WorkspaceGovernanceRequest {
+            room,
+            actor,
+            resource,
+            action,
+            argument,
+            confirmation,
+            invocation,
+        })?;
+        self.record_completion(
+            id,
+            InvocationOwner::Local {
+                actor: actor.id.clone(),
+            },
+            tilo_actions::InvocationUpdate::Succeeded {
+                invocation,
+                output: tilo_actions::ActionOutput::default(),
+            },
+        );
+        Ok(id)
+    }
+
+    /// Launch `app_id` into `workspace`, optionally opening content-addressed
+    /// bytes read-only, and record the terminal outcome as an invocation.
+    pub fn launch_application(
+        &self,
+        workspace: &Workspace,
+        policy: &Actor,
+        now: u64,
+        actor: &BrokerActor,
+        app_id: &str,
+        content_hash: &str,
+    ) -> Result<u64, String> {
+        if workspace.decide_at(
+            policy,
+            &ResourceRef::App(app_id.to_string()),
+            Verb::Write,
+            now,
+        ) != CapDecision::Allow
+        {
+            return Err("the caller is not allowed to launch that application".into());
+        }
+        let launcher = self
+            .services
+            .launcher
+            .as_ref()
+            .ok_or_else(|| "application launch unsupported".to_string())?;
+        let id = self
+            .invocation_id
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let invocation = tilo_actions::InvocationId(uuid::Uuid::from_u128(u128::from(id)));
+        let update = match launcher.launch_content(app_id, workspace, content_hash) {
             Ok(_) => tilo_actions::InvocationUpdate::Succeeded {
                 invocation,
                 output: tilo_actions::ActionOutput::default(),
@@ -786,15 +854,18 @@ impl CapnpBrokerState {
                 },
             },
         };
-        self.record_completion(id, actor.id.clone(), update);
+        self.record_completion(
+            id,
+            InvocationOwner::Local {
+                actor: actor.id.clone(),
+            },
+            update,
+        );
         Ok(id)
     }
 
-    pub(crate) fn remote_job(
-        &self,
-        caller: &Caller,
-        id: &tilo_actions::InvocationId,
-    ) -> Option<u64> {
+    #[must_use]
+    pub fn remote_job(&self, caller: &Caller, id: &tilo_actions::InvocationId) -> Option<u64> {
         self.remote_invocations
             .lock()
             .ok()
@@ -802,7 +873,7 @@ impl CapnpBrokerState {
     }
 
     /// The latest state of an invocation `caller` admitted.
-    pub(crate) fn action_observe(
+    pub fn action_observe(
         &self,
         caller: &Caller,
         id: &tilo_actions::InvocationId,
@@ -813,7 +884,12 @@ impl CapnpBrokerState {
     }
 
     /// Ask an invocation `caller` admitted to stop.
-    pub(crate) fn action_cancel(
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when `caller` admitted no such invocation or it cannot
+    /// be cancelled.
+    pub fn action_cancel(
         &self,
         caller: &Caller,
         id: &tilo_actions::InvocationId,
@@ -913,6 +989,13 @@ fn directory_page(
                 | runtime_collab::ActionDirectoryResolution::Unavailable => {}
             }
             Ok(page)
+        }
+        // Only a start request answers with a started action; a query or
+        // resolution never does.
+        ActionDirectoryBridgeResponse::StartedDirectoryAction(_) => {
+            Err(ActionHostError::Unavailable {
+                reason: "the action directory answered a different request".into(),
+            })
         }
     }
 }

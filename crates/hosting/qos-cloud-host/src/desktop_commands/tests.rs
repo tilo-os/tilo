@@ -483,7 +483,7 @@ fn a_person_and_an_agent_open_through_the_same_path() {
 fn an_open_publishes_one_covered_checkpoint_members_admit() {
     let (_directory, _owner, mut store, caller) = owner_store();
     let now = store.policy_now_ns().unwrap();
-    let mut host = store.peer().unwrap();
+    let host = store.peer().unwrap();
     let authority = host.authority().clone();
     let mut member = StatePeer::new(
         &store.state.room,
@@ -747,7 +747,7 @@ fn with_delivery_selected_opens_are_admitted_by_members() {
         now_time(now),
     )
     .unwrap();
-    let mut deliver = |store: &mut Store, member: &mut StatePeer| {
+    let deliver = |store: &mut Store, member: &mut StatePeer| {
         let batch = store.delivery_relay_batch().unwrap();
         let messages: Vec<_> = batch.messages().map(|m| m.unwrap().message).collect();
         let at = store.policy_now_ns().unwrap();
@@ -774,7 +774,7 @@ fn with_delivery_selected_opens_are_admitted_by_members() {
         }
         store.retire_delivery_relay_batch(&batch, sent).unwrap();
     }
-    let mut host = store.peer().unwrap();
+    let host = store.peer().unwrap();
     member
         .receive_from(
             TransportOrigin::RelayDelta(authority.device_public_key),

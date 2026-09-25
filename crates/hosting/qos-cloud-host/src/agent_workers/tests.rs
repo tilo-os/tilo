@@ -645,8 +645,7 @@ async fn cloud_worker_setup_failure_retains_original_record_and_captured_view() 
     workers.setup_error(ui::launch::LaunchError::ComponentSetup {
         source: Box::new(ui::launch::LaunchError::Operation("mount failed".into())),
         record: RecordCheckout::new(record, word_processor::definition().record_kind.clone()),
-        records,
-        reports: vec![report],
+        recovery: ui::launch::LaunchRecovery::new(Some(records), vec![report]),
     });
     assert!(!workers.recovery.is_empty());
     assert!(workers.close().unwrap_err().contains("custody preserved"));
@@ -802,6 +801,7 @@ async fn cloud_worker_publications_exclude_real_ordinary_surface_on_same_route()
                 contract_json: serde_json::to_string(&qos_actions::ActionContract::default())
                     .unwrap(),
                 input: ui::collaboration::ExportedInput::None,
+                view: None,
             }],
         })
     );

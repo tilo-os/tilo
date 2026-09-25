@@ -759,7 +759,7 @@ mod publication_tests {
                 .unwrap()
                 .unwrap()
                 .0
-                .to_str(),
+                .as_str(),
             Some("edited")
         );
         assert!(

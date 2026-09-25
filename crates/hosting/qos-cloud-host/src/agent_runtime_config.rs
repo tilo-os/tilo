@@ -275,7 +275,7 @@ async fn write_gateway_frame<T: serde::Serialize>(
 ) -> Result<(), String> {
     use tokio::io::AsyncWriteExt;
     let body = zeroize::Zeroizing::new(serde_json::to_vec(value).map_err(|e| e.to_string())?);
-    if body.len() > tilo_model_gateway::MAX_FRAME_BYTES {
+    if body.len() > tilo_model_gateway::FRAMING.max_len() {
         return Err("gateway request exceeds frame limit".into());
     }
     stream
@@ -295,7 +295,7 @@ async fn read_gateway_response(
         .await
         .map_err(|e| e.to_string())?;
     let length = u32::from_le_bytes(length) as usize;
-    if length > tilo_model_gateway::MAX_FRAME_BYTES {
+    if length > tilo_model_gateway::FRAMING.max_len() {
         return Err("gateway response exceeds frame limit".into());
     }
     let mut body = zeroize::Zeroizing::new(vec![0; length]);
@@ -527,7 +527,7 @@ mod tests {
             let _: serde_json::Value = tilo_model_gateway::read_frame(&mut stream).unwrap();
             let _: serde_json::Value = tilo_model_gateway::read_frame(&mut stream).unwrap();
             stream
-                .write_all(&((tilo_model_gateway::MAX_FRAME_BYTES + 1) as u32).to_le_bytes())
+                .write_all(&((tilo_model_gateway::FRAMING.max_len() + 1) as u32).to_le_bytes())
                 .unwrap();
         });
         let result = runtime().block_on(configuration(&path).configured_for_plan());

@@ -1383,8 +1383,7 @@ mod tests {
         let error = runtime.setup_error(ui::launch::LaunchError::ComponentSetup {
             source: Box::new(ui::launch::LaunchError::Operation("mount failed".into())),
             record: RecordCheckout::new(record, word_processor::definition().record_kind.clone()),
-            records,
-            reports: vec![report],
+            recovery: ui::launch::LaunchRecovery::new(Some(records), vec![report]),
         });
         assert!(
             !runtime.recovery.is_empty(),

@@ -817,16 +817,35 @@ pub fn project_room_records(
 /// Read a room document's record index back as `(record id, kind)`
 /// pairs, sorted by id so two peers read one document the same way.
 pub fn room_records_of(doc: &AutoCommit) -> Vec<(String, String)> {
-    use automerge::{ROOT, ReadDoc, ScalarValue, Value};
+    use automerge::{ObjType, ROOT, ReadDoc, ScalarValue, Value};
 
-    let Some((_, records_id)) = doc.get(&ROOT, ROOM_RECORDS_KEY).ok().flatten() else {
-        return Vec::new();
-    };
+    // `records` is created on first projection, so two peers whose room
+    // documents started empty may each have minted one: a key conflict
+    // where a plain `get` hides one peer's index. Join every candidate
+    // map (the `get` winner first; the first copy of a record wins).
+    let mut candidates: Vec<automerge::ObjId> = Vec::new();
+    if let Ok(Some((Value::Object(ObjType::Map), winner))) = doc.get(&ROOT, ROOM_RECORDS_KEY) {
+        candidates.push(winner);
+    }
+    if let Ok(values) = doc.get_all(&ROOT, ROOM_RECORDS_KEY) {
+        for (value, id) in values {
+            if matches!(value, Value::Object(ObjType::Map)) && !candidates.contains(&id) {
+                candidates.push(id);
+            }
+        }
+    }
     let mut out: Vec<(String, String)> = Vec::new();
-    for key in doc.keys(&records_id) {
-        let Some((_, entry)) = doc.get(&records_id, key.as_str()).ok().flatten() else {
+    for (key, entry) in candidates.iter().flat_map(|records_id| {
+        doc.keys(records_id)
+            .filter_map(|key| {
+                let (_, entry) = doc.get(records_id, key.as_str()).ok().flatten()?;
+                Some((key, entry))
+            })
+            .collect::<Vec<_>>()
+    }) {
+        if out.iter().any(|(seen, _)| *seen == key) {
             continue;
-        };
+        }
         let kind = match doc.get(&entry, "kind").ok().flatten() {
             Some((Value::Scalar(v), _)) => match v.as_ref() {
                 ScalarValue::Str(k) => k.to_string(),
@@ -968,4 +987,30 @@ pub fn changed_owned_entries(
         .iter()
         .filter(|(id, v)| before_by_id.get(id).is_some_and(|prev| *prev != v))
         .count()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn held(entry: (&str, &str)) -> std::collections::BTreeMap<String, String> {
+        std::collections::BTreeMap::from([(entry.0.to_string(), entry.1.to_string())])
+    }
+
+    /// Two room documents that start empty (the legacy path) each mint the
+    /// `records` map on first projection; the merge must show both indexes.
+    #[test]
+    fn concurrently_created_record_indexes_both_survive() {
+        for _ in 0..8 {
+            let mut base = AutoCommit::new();
+            base.commit();
+            let mut a = base.fork();
+            let mut b = base.fork();
+            project_room_records(&mut a, &held(("file:/a.md", "document"))).unwrap();
+            project_room_records(&mut b, &held(("file:/b.md", "document"))).unwrap();
+            a.merge(&mut b).unwrap();
+            let ids: Vec<String> = room_records_of(&a).into_iter().map(|(id, _)| id).collect();
+            assert_eq!(ids, ["file:/a.md", "file:/b.md"]);
+        }
+    }
 }

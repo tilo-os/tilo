@@ -201,7 +201,7 @@ fn pending_owner(
 ) {
     let directory = tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
     let mut tree = crate::shell::state::WorkspaceTree::bootstrap_default();
-    let local = tree.active;
+    let local = tree.desktop.active;
     assert!(tree.set_room(local, room));
     tree.persist_path = Some(directory.path().join("state.json"));
     let owner =

@@ -997,6 +997,7 @@ mod tests {
                 operation_kind: kind,
                 params: vec![],
                 contract,
+                view: None,
                 input: PublishedInput::None,
             }
         }

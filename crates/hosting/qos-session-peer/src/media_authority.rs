@@ -4,7 +4,7 @@
 use collab_types::caps::{Actor, CapDecision, ResourceRef, Verb, decide_capability};
 use ed25519_dalek::{Signature, VerifyingKey};
 use qos_peer_state::StatePeer;
-use rand::RngCore;
+use rand::TryRng as _;
 use serde::Serialize;
 use std::collections::BTreeMap;
 use tilo_user_identity::canonical::{canonical_bytes, from_canonical_bytes, signing_digest};
@@ -1124,7 +1124,7 @@ fn digest(value: &impl Serialize) -> Result<[u8; 32], MediaError> {
 }
 fn fresh_nonce() -> Result<[u8; 32], MediaError> {
     let mut nonce = [0; 32];
-    rand::rngs::OsRng
+    rand::rngs::SysRng
         .try_fill_bytes(&mut nonce)
         .map_err(|_| MediaError::EntropyUnavailable)?;
     Ok(nonce)
@@ -1963,7 +1963,7 @@ mod tests {
             let identities = doc.get(ROOT, "peer_identities_v1").unwrap().unwrap().1;
             let (value, _) = doc.get(&identities, &key).unwrap().unwrap();
             let mut identity: serde_json::Value =
-                serde_json::from_slice(value.to_bytes().unwrap()).unwrap();
+                serde_json::from_slice(value.as_bytes().unwrap()).unwrap();
             identity["revocations"] = serde_json::json!([revocation]);
             doc.put(
                 &identities,

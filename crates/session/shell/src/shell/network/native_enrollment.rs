@@ -59,6 +59,7 @@ impl ShellNetwork {
             let tree = replica.tree.read();
             let target = RoomId::parse(&legacy.room_id).ok_or("invalid legacy room")?;
             let previous = tree
+                .desktop
                 .workspaces
                 .iter()
                 .find(|workspace| workspace.id == local)
@@ -81,6 +82,7 @@ impl ShellNetwork {
                 .map_err(|_| "native replica unavailable")?;
             let tree = replica.tree.read();
             let workspace = tree
+                .desktop
                 .workspaces
                 .iter()
                 .find(|workspace| workspace.id == local)

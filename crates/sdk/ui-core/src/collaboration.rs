@@ -31,15 +31,52 @@ pub use transport::{
 mod broker;
 #[cfg(feature = "broker-transport")]
 pub use broker::{CertifiedEndpointIdentity, HostSessionConnector, wifi_continuity_command};
-// Committed reads live with the broker worker that retains them; the type is
-// part of `CollabEvent`, so the Cloud stack requires `broker-transport`.
+// Committed reads live with the broker worker that retains them. Without the
+// broker transport no committed capture can exist, but the type stays part of
+// `CollabEvent` and native construction custody still runs (always on the
+// non-Required path).
+#[cfg(feature = "broker-transport")]
 pub use broker::CommittedDocument;
+#[cfg(feature = "broker-transport")]
 pub(crate) use broker::native_initial;
+#[cfg(not(feature = "broker-transport"))]
+pub use portable_committed::CommittedDocument;
+#[cfg(not(feature = "broker-transport"))]
+pub(crate) mod native_initial;
+
+#[cfg(not(feature = "broker-transport"))]
+mod portable_committed {
+    /// A committed-history capture. Only the broker transport produces one,
+    /// so in a portable build the type is uninhabited.
+    #[derive(Clone, Debug)]
+    pub struct CommittedDocument {
+        never: std::convert::Infallible,
+    }
+    impl CommittedDocument {
+        pub(crate) fn with_mutation<T>(
+            &self,
+            _apply: impl FnOnce(&collab_types::DocumentMutation) -> T,
+        ) -> Result<T, String> {
+            match self.never {}
+        }
+        pub(crate) fn is_current(&self) -> bool {
+            match self.never {}
+        }
+        pub(crate) fn applied(&self) {
+            match self.never {}
+        }
+    }
+}
 
 #[cfg(any(test, feature = "test-support"))]
 mod loopback;
 #[cfg(any(test, feature = "test-support"))]
 pub use loopback::{LoopbackPeer, LoopbackTransport};
+
+/// Reserved `invokePublishedAction.peerId` meaning "the application
+/// connection making this request". Live broker peer ids are allocated from
+/// zero upward; the broker never assigns this sentinel.
+pub const CURRENT_CONNECTION_PEER_ID: u64 = u64::MAX;
 
 pub use collab_types::DocumentMutation;
 use collab_types::SignedOp;
@@ -452,6 +489,13 @@ pub struct BrokerActionInput {
 }
 
 #[derive(serde::Deserialize)]
+#[cfg_attr(
+    not(feature = "broker-transport"),
+    allow(
+        dead_code,
+        reason = "only the broker transport decodes the catalogue wire"
+    )
+)]
 pub(crate) struct BrokerActionCatalogueWire {
     pub(crate) surfaces: Vec<BrokerActionSurface>,
 }
@@ -470,6 +514,15 @@ pub struct RouteSpec {
 }
 
 impl RouteSpec {
+    /// The single channel id this route is joined under on the broker.
+    pub(crate) fn channel_id(&self) -> String {
+        channel_key::format(
+            &self.app_id,
+            &self.cluster_id.to_string(),
+            self.record.as_deref().unwrap_or(""),
+        )
+    }
+
     pub fn cluster(cluster_id: Uuid) -> Self {
         Self {
             app_id: String::new(),
@@ -934,6 +987,16 @@ impl CollaborationManager {
         Self::new_scoped(
             continuation_instance_env().map(|instance| format!("continuation:{instance}")),
         )
+    }
+
+    /// Without the broker transport there is no native document route to
+    /// switch; callers keep their current record.
+    #[cfg(not(feature = "broker-transport"))]
+    pub(crate) fn switch_native_record(
+        &mut self,
+        _record: &crate::record::RecordId,
+    ) -> Result<(), String> {
+        Err("native document routes need the broker transport".into())
     }
 
     pub(crate) fn has_native_committed_primary(&self) -> bool {

@@ -40,7 +40,7 @@ pub(super) fn encoded(
     let mut total = 0usize;
     let governor = match room.get(ROOT, "owner")? {
         Some((Value::Scalar(value), _)) => {
-            let value = value.to_str().context("invalid governed owner")?;
+            let value = value.as_str().context("invalid governed owner")?;
             policy_add(&mut total, value.len())?;
             value.to_owned()
         }

@@ -144,7 +144,7 @@ fn value(state: &StatePeer) -> Option<String> {
     doc.get(automerge::ROOT, "value")
         .ok()
         .flatten()
-        .map(|(value, _)| value.to_str().unwrap_or_default().to_owned())
+        .map(|(value, _)| value.as_str().unwrap_or_default().to_owned())
 }
 
 #[test]

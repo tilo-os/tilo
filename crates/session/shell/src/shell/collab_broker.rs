@@ -383,7 +383,9 @@ impl DrainQueues {
         let host = self.action_host.get().or_else(|| {
             let state = self.table.capnp_state()?;
             Some(self.action_host.get_or_init(|| {
-                crate::shell::remote_actions::BrokerActionHost::new(AppActionBroker { state })
+                crate::shell::remote_actions::BrokerActionHost::new(AppActionBroker::from_state(
+                    state,
+                ))
             }))
         });
         answer_remote_actions(&self.net, host, drained);
@@ -843,6 +845,7 @@ fn spawn_inner(
         if let Ok((queue, host)) = broker.peer_action_attachment() {
             let rooms = tree
                 .read()
+                .desktop
                 .workspaces
                 .iter()
                 .filter_map(|w| uuid::Uuid::parse_str(&w.room.to_string()).ok())

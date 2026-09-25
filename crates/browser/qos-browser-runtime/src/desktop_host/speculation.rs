@@ -151,7 +151,7 @@ pub(crate) fn namespace(doc: &AutoCommit, tree: &WorkspaceTree) -> Option<Namesp
                 .ok()
                 .filter(|salt| *salt != 0)?;
             let (value, _) = doc.get(&owners, &entry).ok()??;
-            Some((salt, value.to_str()?.to_owned()))
+            Some((salt, value.as_str()?.to_owned()))
         })
         .collect::<Vec<_>>();
     let keys = registry
@@ -176,7 +176,7 @@ pub(crate) fn namespace(doc: &AutoCommit, tree: &WorkspaceTree) -> Option<Namesp
         .get(automerge::ROOT, "desktop_counter_v1")
         .ok()
         .flatten()
-        .and_then(|(value, _)| value.to_u64())
+        .and_then(|(value, _)| value.as_u64())
         .unwrap_or(1);
     (!salts.is_empty()).then_some(Namespace { salts, stored })
 }

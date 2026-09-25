@@ -254,10 +254,8 @@ tilo-user-identity = { path = "../../collab/tilo-user-identity" }
 tilo-relay-protocol = { path = "../../hosting/tilo-relay-protocol" }
 # The authenticated relay client and co-edit session (`RelayClient`,
 # `RelayCoeditSession`) that carry workspace deltas through a home or
-# provider host.
-tilo-relay-client = { path = "../../hosting/tilo-relay-client" }
-# The Cloud native-owner path (workspace join, delivery v3, peer actions,
-# sync refresh) still lives in the relay crate itself.
+# provider host, plus the Cloud native-owner path (workspace join, delivery
+# v3, peer actions, sync refresh).
 tilo-relay = { path = "../../hosting/tilo-relay" }
 # `network::identity` verifies raw Ed25519 signatures directly
 # against a peer's device pubkey (as recovered from their
@@ -266,7 +264,6 @@ tilo-relay = { path = "../../hosting/tilo-relay" }
 ed25519-dalek = { workspace = true, features = ["rand_core"] }
 capnp.workspace = true
 capnp-rpc.workspace = true
-tokio-util.workspace = true
 futures = { workspace = true, default-features = true }
 # The shell re-serialises signed op envelopes and presence keys onto
 # the capnp wire; `postcard` matches what apps and the ui toolkit

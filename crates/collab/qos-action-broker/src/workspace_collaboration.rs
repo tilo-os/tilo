@@ -177,6 +177,7 @@ fn collaboration_actions(room: &str, media: bool) -> Vec<PublishedAction> {
             operation_kind: tilo_actions::OperationKind::Effect,
             params: definition.params,
             contract: definition.contract,
+            view: None,
             input: PublishedInput::None,
         })
         .collect()

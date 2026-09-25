@@ -11,7 +11,7 @@ use qos_relay::delivery_v3::{
 use qos_session_peer::ingress::delivery_planning::{
     AckPlan, ConsumerPlan, CursorCut, PlanningFailure, ReplaySelection,
 };
-use rand::RngCore;
+use rand::TryRng as _;
 
 type Result<T> = std::result::Result<T, CloudDeliveryError>;
 fn planning(error: PlanningFailure) -> CloudDeliveryError {
@@ -54,7 +54,7 @@ impl CloudStoreTurn {
                 if ledger.consumers.len() >= MAX_CONSUMERS {
                     return Err(CloudDeliveryError::Capacity);
                 }
-                rand::rngs::OsRng
+                rand::rngs::SysRng
                     .try_fill_bytes(&mut fresh)
                     .map_err(|_| CloudDeliveryError::Unavailable)?;
             }

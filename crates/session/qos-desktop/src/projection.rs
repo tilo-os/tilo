@@ -203,7 +203,7 @@ impl RoomProjection {
         share_floor: Option<u64>,
         retain_empty: bool,
     ) {
-        use automerge::{ObjType, ROOT, ReadDoc, transaction::Transactable};
+        use automerge::{ROOT, ReadDoc};
         use std::collections::HashSet;
 
         if local_salt == 0 {
@@ -239,7 +239,7 @@ impl RoomProjection {
                 doc.get(entry, "retained_empty_v1")
                     .ok()
                     .flatten()
-                    .and_then(|(value, _)| value.to_u64())
+                    .and_then(|(value, _)| value.as_u64())
                     == Some(1)
             });
             if strip.window_groups.is_empty() && !retain_empty && !retained {
@@ -873,7 +873,7 @@ impl RoomProjection {
                         Self::contents_key_id(&tab.key),
                         doc.get(&tab.id(), "record_id").ok().flatten(),
                     ) {
-                        if let Some(record) = value.to_str() {
+                        if let Some(record) = value.as_str() {
                             routes.insert(id, record.to_owned());
                         }
                     }
@@ -906,7 +906,7 @@ impl RoomProjection {
                 .1;
         }
         if let Some((value, _)) = doc.get(&object, "record_id").map_err(|e| e.to_string())? {
-            if value.to_str() != Some(record) {
+            if value.as_str() != Some(record) {
                 return Err("canonical record route cannot be rebound".into());
             }
             return Ok(());
@@ -925,14 +925,14 @@ impl RoomProjection {
         let declared = doc
             .get(ROOT, "room")
             .map_err(|e| e.to_string())?
-            .and_then(|(v, _)| v.to_str().map(str::to_owned));
+            .and_then(|(v, _)| v.as_str().map(str::to_owned));
         if declared.as_deref().and_then(RoomId::parse) != Some(room) {
             return Err("admitted room identity mismatch".into());
         }
         let name = doc
             .get(ROOT, "name")
             .map_err(|e| e.to_string())?
-            .and_then(|(v, _)| v.to_str().map(str::to_owned))
+            .and_then(|(v, _)| v.as_str().map(str::to_owned))
             .unwrap_or_default();
         if !tree.workspaces.iter().any(|w| w.room == room) {
             let bytes = room.as_uuid().into_bytes();
@@ -958,7 +958,7 @@ impl RoomProjection {
         workspace.owner = doc
             .get(ROOT, "owner")
             .map_err(|e| e.to_string())?
-            .and_then(|(v, _)| v.to_str().map(str::to_owned));
+            .and_then(|(v, _)| v.as_str().map(str::to_owned));
         let changed = Self::merge_viewer_contents(tree, room, doc);
         Ok(changed || renamed)
     }

@@ -15,7 +15,7 @@ fn initialize(path: &Path, name: &str) -> std::process::Output {
 fn assert_name(owner: &SessionOwner, name: &str) {
     let room = owner.peer().admitted_room().unwrap();
     assert_eq!(
-        room.get(ROOT, "name").unwrap().unwrap().0.to_str(),
+        room.get(ROOT, "name").unwrap().unwrap().0.as_str(),
         Some(name)
     );
     let authority = owner.peer().authority();

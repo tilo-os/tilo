@@ -111,7 +111,57 @@ pub struct LaunchableApplication {
 pub trait LauncherServices: Send + Sync {
     fn applications(&self) -> Vec<LaunchableApplication>;
     fn launch(&self, app: &str, workspace: &Workspace) -> Result<(), String>;
+    /// Launch `app` into `workspace`, opening the content-addressed bytes
+    /// named by the lowercase BLAKE3 `content_hash` read-only. An empty hash
+    /// is a plain launch. A host that cannot stage content refuses one.
+    fn launch_content(
+        &self,
+        app: &str,
+        workspace: &Workspace,
+        content_hash: &str,
+    ) -> Result<(), String> {
+        if content_hash.is_empty() {
+            self.launch(app, workspace)
+        } else {
+            Err("opening launch content is unsupported on this host".into())
+        }
+    }
     fn attest_process(&self, pid: u32, app: &str, room: &str) -> bool;
+}
+
+/// One host-owned workspace governance action, already admitted to the
+/// remote-action vocabulary. The broker mints `invocation`; the service
+/// validates the caller's authority and applies the action.
+pub struct WorkspaceGovernanceRequest<'a> {
+    pub room: &'a str,
+    pub actor: &'a crate::collab_broker_capnp::BrokerActor,
+    pub resource: &'a str,
+    pub action: &'a str,
+    pub argument: Option<&'a str>,
+    /// Legacy JSON confirmation evidence (`{"confirm": true}` or
+    /// `{"confirmation_phrase": ...}`).
+    pub confirmation: &'a serde_json::Value,
+    pub invocation: tilo_actions::InvocationId,
+}
+
+/// Workspace governance (permission profiles) owned by a host that holds the
+/// workspace's capability authority. Its actions are offered through the
+/// broker's remote-action catalogue under the workspace provider.
+pub trait WorkspaceGovernanceServices: Send + Sync {
+    /// The application id governance actions are checked against.
+    fn app_id(&self) -> &str;
+    /// Whether `action` is one of this service's governance actions.
+    fn handles(&self, action: &str) -> bool;
+    /// Every governance action of `workspace`, before the caller's
+    /// permission check.
+    fn descriptors(&self, workspace: &Workspace) -> Vec<tilo_actions::ActionDescriptor>;
+    /// Validate and apply one governance action, recording its effect.
+    ///
+    /// # Errors
+    ///
+    /// Returns a refusal when the caller may not act, confirmation is
+    /// missing, or the action cannot be applied.
+    fn invoke(&self, request: &WorkspaceGovernanceRequest<'_>) -> Result<(), String>;
 }
 pub trait ContinuationServices: Send + Sync {
     fn report(
@@ -201,6 +251,7 @@ pub struct HostServices {
     pub native_certificates: Option<Arc<dyn crate::peer_actions::CertificateAuthority>>,
     pub legacy_workspace: Option<Arc<dyn LegacyWorkspaceProjection>>,
     pub launcher: Option<Arc<dyn LauncherServices>>,
+    pub workspace_governance: Option<Arc<dyn WorkspaceGovernanceServices>>,
     pub continuations: Option<Arc<dyn ContinuationServices>>,
     pub workspace_control: Option<Arc<dyn WorkspaceControlServices>>,
     pub realtime: Option<Arc<dyn RealtimeServices>>,

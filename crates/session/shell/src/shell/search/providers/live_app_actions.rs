@@ -2729,9 +2729,7 @@ mod tests {
     fn broker_for(
         chrome: &crate::shell::chrome_state::Chrome,
     ) -> crate::shell::collab_broker::AppActionBroker {
-        crate::shell::collab_broker_capnp::CapnpBrokerState::test_broker_with_membership(
-            chrome.borrow().tree_handle(),
-        )
+        crate::shell::broker_services::test_broker_with_membership(chrome.borrow().tree_handle())
     }
 
     fn page(rows: Vec<CatalogueRow>, next_cursor: Vec<u8>) -> CataloguePage {

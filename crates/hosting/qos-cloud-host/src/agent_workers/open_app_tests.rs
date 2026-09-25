@@ -77,7 +77,7 @@ fn document_strings(owner: &RuntimeOwner, record: &str) -> Vec<String> {
             match value {
                 Value::Object(_) => walk(doc, &id, out),
                 Value::Scalar(scalar) => {
-                    if let Some(text) = scalar.to_str() {
+                    if let Some(text) = scalar.as_str() {
                         out.push(text.to_owned());
                     }
                 }

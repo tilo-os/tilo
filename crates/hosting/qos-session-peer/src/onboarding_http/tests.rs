@@ -627,7 +627,7 @@ async fn onboarding_five_operations_use_real_distinct_person_join_and_current_bo
 }
 
 fn large_publication(f: &mut Fixture) {
-    use rand::{RngCore, SeedableRng};
+    use rand::{Rng as _, SeedableRng};
     use ui::automerge::transaction::Transactable;
     let mut input = vec![0u8; 1_200_000];
     rand::rngs::StdRng::seed_from_u64(4421).fill_bytes(&mut input);
@@ -1002,7 +1002,7 @@ async fn onboarding_large_join_reply_preserves_frozen_response_bytes_through_chu
 async fn onboarding_mid_size_inline_join_reply_fits_response_capacity() {
     use crate::collaboration::{CollaborationService, IssueInvitationRequest};
     use qos_peer_state::join::*;
-    use rand::{RngCore, SeedableRng};
+    use rand::{Rng as _, SeedableRng};
     use ui::automerge::transaction::Transactable;
     let mut f = Fixture::new();
     let mut input = vec![0u8; 700_000];

@@ -169,7 +169,7 @@ async fn actual_exchange(restart: bool) {
         )
         .unwrap();
     let mut tree = crate::shell::state::WorkspaceTree::bootstrap_default();
-    let local = tree.active;
+    let local = tree.desktop.active;
     tree.persist_path = Some(directory.path().join("state.json"));
     let receiving_owner = NativeWorkspaceOwner::open(tree.shared()).unwrap();
     let saw = Arc::new(std::sync::atomic::AtomicBool::new(false));

@@ -8,7 +8,9 @@ mod codec;
 mod lifecycle;
 mod observation;
 mod runtime;
-pub(crate) use attempt::{AttemptFailure, RequestView};
+pub(crate) use attempt::AttemptFailure;
+#[cfg(feature = "broker-transport")]
+pub(crate) use attempt::RequestView;
 pub use attempt::{LocalFailure, LocalRequest, ManagedAttempt, ManagedAttemptResult};
 pub use codec::{NativeSenderOutboxV1, OutboxFailure};
 pub use runtime::{

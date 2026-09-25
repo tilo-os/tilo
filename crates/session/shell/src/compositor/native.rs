@@ -9685,7 +9685,8 @@ mod tests {
             .active_workspace_mut()
             .unwrap()
             .owner = Some(actor.clone());
-        let broker = CapnpBrokerState::test_broker_with_membership(fb.chrome().tree_handle());
+        let broker =
+            crate::shell::broker_services::test_broker_with_membership(fb.chrome().tree_handle());
         broker.replace_action_directory_roots_for_test(vec![ActionDirectoryRoot {
             peer_id: 4096,
             app_id: "dev.tilo.calculator".into(),

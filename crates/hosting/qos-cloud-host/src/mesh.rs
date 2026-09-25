@@ -38,7 +38,7 @@ impl Store {
         let address =
             iroh_base::EndpointAddr::new(self.action_key().public()).with_relay_url(relay.parse()?);
         let mut nonce = [0; 32];
-        rand::rngs::OsRng.fill_bytes(&mut nonce);
+        rand::rand_core::UnwrapErr(rand::rngs::SysRng).fill_bytes(&mut nonce);
         let c = MeshChallenge {
             version: 1,
             machine_id: self.state.machine_id.clone(),
@@ -455,7 +455,7 @@ impl Handler {
             )
         };
         let mut nonce = [0; 32];
-        rand::rngs::OsRng.fill_bytes(&mut nonce);
+        rand::rand_core::UnwrapErr(rand::rngs::SysRng).fill_bytes(&mut nonce);
         write_frame(
             &mut send,
             &postcard::to_stdvec(&auth::build_hello_ack(
@@ -624,7 +624,7 @@ async fn exchange(
 ) -> Result<ActionReceipt> {
     let (mut send, mut recv) = connection.open_bi().await?;
     let mut nonce = [0; 32];
-    rand::rngs::OsRng.fill_bytes(&mut nonce);
+    rand::rand_core::UnwrapErr(rand::rngs::SysRng).fill_bytes(&mut nonce);
     write_frame(
         &mut send,
         &postcard::to_stdvec(&Hello {

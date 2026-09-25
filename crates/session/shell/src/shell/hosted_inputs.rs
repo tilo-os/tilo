@@ -244,6 +244,7 @@ impl HostedTileInputs {
             return false;
         }
         let live: std::collections::HashSet<_> = tree
+            .desktop
             .workspaces
             .iter()
             .flat_map(|workspace| &workspace.strips)

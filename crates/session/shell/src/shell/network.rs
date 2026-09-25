@@ -10388,10 +10388,7 @@ mod tests {
         authenticated_personal_peer_on_topic(&net_b, &root_a, &device_a, epoch, topic);
         authenticated_personal_peer_on_topic(&net_a, &root_b, &device_b, epoch, topic);
 
-        let broker =
-            crate::shell::collab_broker_capnp::CapnpBrokerState::test_broker_with_membership(
-                tree_b,
-            );
+        let broker = crate::shell::broker_services::test_broker_with_membership(tree_b);
         broker.replace_published_surfaces_for_test(vec![PublishedSurface {
             peer_id: 9,
             app_id: "so.tilo.files".into(),

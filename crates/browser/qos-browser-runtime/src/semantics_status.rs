@@ -212,6 +212,7 @@ mod tests {
             viewport: [100, 100],
             keyboard_focus_owner: Some(format!("/Column/TextInput[{focused}]")),
             root,
+            presentation: None,
         }
     }
     fn ime(x: u32, y: u32) -> ImeWindowState {

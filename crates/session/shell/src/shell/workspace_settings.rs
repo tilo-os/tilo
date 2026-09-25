@@ -28,7 +28,7 @@ use ui::widget::{Avatar, Badge, Button, ButtonFace, SegmentedFace, SegmentedStyl
 
 use crate::shell::state::{
     CapOverride, CapRole, Effect, Expiry, Principal, Scope, Subject, UserId, Verb, Workspace,
-    WorkspaceExt as _, WorkspaceId,
+    WorkspaceId,
 };
 
 pub const OWNERSHIP_TRANSFER_ACTION_TYPE: &str = "qos.workspace.ownership-transfer.v1";

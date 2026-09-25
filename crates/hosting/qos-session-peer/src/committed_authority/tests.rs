@@ -69,7 +69,7 @@ fn committed_authority_fences_updates_and_publishes_only_after_durability() {
             .unwrap()
             .unwrap()
             .0
-            .to_bool()
+            .as_bool()
             .unwrap()
     );
 }
@@ -417,7 +417,7 @@ fn committed_owner_view_borrows_prior_generation_and_publishes_real_mutation() {
             .unwrap()
             .unwrap()
             .0
-            .to_bool(),
+            .as_bool(),
         Some(true)
     );
     drop(current);

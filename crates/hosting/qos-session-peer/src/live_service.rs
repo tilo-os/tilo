@@ -40,7 +40,7 @@ use qos_moq::{
     relay::{Admission, AuthorizationStatus},
 };
 use qos_peer_state::StatePeer;
-use rand::RngCore;
+use rand::TryRng as _;
 use std::{
     collections::HashMap,
     sync::{Arc, Mutex},
@@ -146,7 +146,7 @@ impl LiveService {
         ensure!(owner.permits_publication(), "live authority unavailable");
         let mut host_boot = [0; 32];
         while host_boot == [0; 32] {
-            rand::rngs::OsRng.try_fill_bytes(&mut host_boot)?;
+            rand::rngs::SysRng.try_fill_bytes(&mut host_boot)?;
         }
         let room = owner.peer().room().to_owned();
         Ok(Self(Arc::new(Shared {

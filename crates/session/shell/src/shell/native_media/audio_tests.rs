@@ -246,6 +246,7 @@ async fn chat_semantic_call_commands_drive_consented_real_native_call_audio() {
     let lifecycle = owner.lifecycle();
     lifecycle.publish_native_state(false, false);
     let workspace = super::super::state::WorkspaceTree::bootstrap_demo()
+        .desktop
         .workspaces
         .remove(0);
     let room = workspace.room.to_string();

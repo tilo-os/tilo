@@ -99,11 +99,7 @@ impl NativeConstruction {
             let deadline = crate::time::now() + crate::time::Duration::from_secs(3);
             loop {
                 bridge.check()?;
-                if bridge
-                    .state
-                    .document_reads
-                    .publishable(&requested.channel_id())
-                {
+                if bridge.publishable(&requested.channel_id()) {
                     break;
                 }
                 if crate::time::now() >= deadline {
@@ -255,12 +251,14 @@ pub(crate) fn primary(
         Ok((bridge.route.cluster_id.to_string(), read))
     })())
 }
+#[cfg(feature = "broker-transport")]
 #[derive(Clone)]
 pub(crate) struct InitialReadBridge {
     route: RouteSpec,
     commands: tokio_mpsc::WeakSender<QueuedSdkCommand>,
     state: BridgeState,
 }
+#[cfg(feature = "broker-transport")]
 impl InitialReadBridge {
     fn from_manager(manager: &CollaborationManager) -> Result<Option<Self>, String> {
         let Backend::Transport(transport) = &manager.backend else {
@@ -293,6 +291,9 @@ impl InitialReadBridge {
             return Err("native construction worker ended".into());
         }
         Ok(())
+    }
+    fn publishable(&self, channel: &str) -> bool {
+        self.state.document_reads.publishable(channel)
     }
     fn check_scope(&self, app: &str, room: Option<&str>) -> Result<(), String> {
         self.check()?;
@@ -350,5 +351,45 @@ impl InitialReadBridge {
             // document borrow crosses this bounded construction wait.
             std::thread::sleep(crate::time::Duration::from_millis(10));
         }
+    }
+}
+
+/// Without the broker transport there is no SDK worker to read committed
+/// history from, so no bridge can exist: the portable host always takes the
+/// non-Required path.
+#[cfg(not(feature = "broker-transport"))]
+#[derive(Clone)]
+pub(crate) struct InitialReadBridge {
+    never: std::convert::Infallible,
+    route: RouteSpec,
+}
+#[cfg(not(feature = "broker-transport"))]
+impl InitialReadBridge {
+    #[expect(
+        clippy::unnecessary_wraps,
+        reason = "mirrors the broker-backed bridge's signature"
+    )]
+    fn from_manager(_manager: &CollaborationManager) -> Result<Option<Self>, String> {
+        Ok(None)
+    }
+    fn check(&self) -> Result<(), String> {
+        match self.never {}
+    }
+    fn check_scope(&self, _app: &str, _room: Option<&str>) -> Result<(), String> {
+        match self.never {}
+    }
+    fn publishable(&self, _channel: &str) -> bool {
+        match self.never {}
+    }
+    pub(crate) fn record(
+        &self,
+        _app: &str,
+        _room: &str,
+        _record: &crate::record::RecordId,
+    ) -> Result<CommittedDocument, String> {
+        match self.never {}
+    }
+    fn read(&self, _record: Option<&crate::record::RecordId>) -> Result<CommittedDocument, String> {
+        match self.never {}
     }
 }

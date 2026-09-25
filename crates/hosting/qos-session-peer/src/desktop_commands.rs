@@ -78,7 +78,7 @@ impl SessionOwner {
             .filter_map(|key| {
                 let salt = u16::from_str_radix(&key, 16).ok()?;
                 let (value, _) = doc.get(&owners, &key).ok()??;
-                (salt != 0 && value.to_str() == Some(owner.as_str())).then_some(salt)
+                (salt != 0 && value.as_str() == Some(owner.as_str())).then_some(salt)
             })
             .collect::<std::collections::BTreeSet<_>>();
         let salt = salts
@@ -205,7 +205,7 @@ impl SessionOwner {
         let stored = doc
             .get(ROOT, "desktop_counter_v1")
             .map_err(|e| rejected(e.to_string()))?
-            .and_then(|(v, _)| v.to_u64())
+            .and_then(|(v, _)| v.as_u64())
             .unwrap_or(1);
         let mut counter = stored.max(maximum + 1);
         let mut creation = None;

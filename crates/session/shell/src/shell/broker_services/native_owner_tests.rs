@@ -91,7 +91,7 @@ async fn native_owner_service_offline_receipt_follows_actual_state_file_barrier(
                             .unwrap()
                             .unwrap()
                             .0
-                            .to_bool(),
+                            .as_bool(),
                         Some(true)
                     );
                     Ok(())

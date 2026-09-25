@@ -1330,7 +1330,7 @@ async fn installed_https_large_join_reply_hydrates_through_the_chunk_route() {
     use qos_peer_state::join::*;
     let mut h = Harness::start().await;
     {
-        use rand::{RngCore, SeedableRng};
+        use rand::{Rng as _, SeedableRng};
         let mut input = vec![0u8; 1_200_000];
         rand::rngs::StdRng::seed_from_u64(9931).fill_bytes(&mut input);
         let text = hex::encode(input);

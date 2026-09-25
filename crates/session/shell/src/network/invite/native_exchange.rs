@@ -8,7 +8,6 @@ use crate::{
     },
 };
 use qos_peer_state::join::{JoinChallengeRequest, JoinTransportResponse};
-use rand_core::RngCore;
 use tilo_relay::workspace_join::WorkspaceJoinClient;
 
 fn current(identity: &HostIdentity, topic: u64, expected: &DeviceCert) -> Result<(), String> {
@@ -116,7 +115,10 @@ pub(crate) async fn prepare_and_complete(
         }
         current(&identity, identity_topic, &device)?;
         let mut request_id = [0; 32];
-        rand_core::OsRng.fill_bytes(&mut request_id);
+        rand_core::Rng::fill_bytes(
+            &mut getrandom::rand_core::UnwrapErr(getrandom::SysRng),
+            &mut request_id,
+        );
         let challenge = match client
             .request(
                 host.endpoint_addr.clone(),

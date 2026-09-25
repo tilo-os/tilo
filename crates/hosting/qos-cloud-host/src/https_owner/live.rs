@@ -40,7 +40,7 @@ use qos_relay::delivery_v3::{
         OpsFrame, PresenceFrame, SignedLiveGrant, room_digest,
     },
 };
-use rand::RngCore;
+use rand::TryRng as _;
 use std::{
     collections::{HashMap, VecDeque},
     sync::{Arc, Mutex},
@@ -217,7 +217,7 @@ impl CloudLiveService {
         );
         let mut host_boot = [0; 32];
         while host_boot == [0; 32] {
-            rand::rngs::OsRng.try_fill_bytes(&mut host_boot)?;
+            rand::rngs::SysRng.try_fill_bytes(&mut host_boot)?;
         }
         let room = turn.peer().room().to_owned();
         Ok(Self(Arc::new(Shared {

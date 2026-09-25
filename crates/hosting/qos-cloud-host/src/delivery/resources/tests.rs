@@ -5,7 +5,7 @@ use automerge::resource_limits::{NativeAllocationSet, NativeAllowance};
 
 pub(super) fn work(bytes: usize) -> (NativeAllowance, NativeWorkTurn) {
     let allowance = NativeAllowance::new(bytes).unwrap();
-    let mut allocations = NativeAllocationSet::new(allowance.clone()).unwrap();
+    let allocations = NativeAllocationSet::new(allowance.clone()).unwrap();
     let turn = allocations.work_turn(allowance.clone()).unwrap();
     (allowance, turn)
 }

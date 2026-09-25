@@ -358,7 +358,7 @@ fn owner_mutations_journal_and_crash_recovery_reopens_the_exact_owner_state() {
                 .unwrap()
                 .unwrap()
                 .0
-                .to_i64(),
+                .as_i64(),
             Some(11)
         );
     });

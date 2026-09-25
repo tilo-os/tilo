@@ -17,7 +17,7 @@ use ui::automerge::transaction::Transactable;
 
 /// `count` small incremental publications, as a browser editing session makes.
 fn publish_edits(h: &mut Harness, count: usize, bytes_each: usize) {
-    use rand::{RngCore, SeedableRng};
+    use rand::{Rng as _, SeedableRng};
     let mut random = rand::rngs::StdRng::seed_from_u64(9051);
     for index in 0..count {
         let mut input = vec![0u8; bytes_each];

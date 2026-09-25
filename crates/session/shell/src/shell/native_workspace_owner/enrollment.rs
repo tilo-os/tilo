@@ -88,6 +88,7 @@ impl NativeWorkspaceOwner {
             .0
             .tree
             .read()
+            .desktop
             .workspaces
             .iter()
             .find(|slot| slot.room == intent.room())

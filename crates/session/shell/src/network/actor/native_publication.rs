@@ -1,5 +1,4 @@
 //! Only committed outgoing custody is enqueued, once per actual live session.
-use super::*;
 use std::collections::BTreeSet;
 #[derive(Default)]
 pub(super) struct Cursor {

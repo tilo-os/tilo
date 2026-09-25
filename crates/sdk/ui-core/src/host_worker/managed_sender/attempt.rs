@@ -42,6 +42,10 @@ struct Inner {
     claimed: AtomicBool,
     completed: AtomicBool,
     retired: AtomicBool,
+    #[cfg_attr(
+        not(feature = "broker-transport"),
+        allow(dead_code, reason = "only the broker transport meters attempts")
+    )]
     credit: NativeReservation,
 }
 /// Opaque request custody. Clone shares the original paid backing.
@@ -261,6 +265,10 @@ impl AttemptOwner {
     }
 }
 impl ManagedAttempt {
+    #[cfg_attr(
+        not(feature = "broker-transport"),
+        allow(dead_code, reason = "only the broker transport meters attempts")
+    )]
     pub(crate) fn meter_bytes(&self) -> usize {
         self.inner.as_ref().unwrap().credit.bytes()
     }
@@ -415,6 +423,10 @@ impl ManagedAttempt {
     }
 }
 impl ManagedAttemptResult {
+    #[cfg_attr(
+        not(feature = "broker-transport"),
+        allow(dead_code, reason = "only the broker transport meters attempts")
+    )]
     pub(crate) fn meter_bytes(&self) -> usize {
         self.inner.as_ref().unwrap().attempt.meter_bytes()
     }

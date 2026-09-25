@@ -222,14 +222,14 @@ pub enum WorkspaceControlInput {
 }
 
 #[cfg(feature = "client")]
+pub use collab_capnp::action_catalogue_stream::Client as ActionCatalogueStreamClient;
+#[cfg(feature = "client")]
 /// Client endpoint for an application-owned paged action directory.  Apps
 /// implement the matching `action_directory::Server` and hand this capability
 /// to [`ChannelHandle::publish_action_directory`]; the broker owns neither the
 /// widget nor a complete copy of its rows.
 #[cfg(feature = "client")]
 pub use collab_capnp::action_directory::Client as ActionDirectoryClient;
-#[cfg(feature = "client")]
-pub use collab_capnp::action_catalogue_stream::Client as ActionCatalogueStreamClient;
 #[cfg(feature = "client")]
 pub use collab_capnp::action_stream::Client as ActionStreamClient;
 #[cfg(feature = "client")]
@@ -419,6 +419,7 @@ pub enum TaskStepReply {
 /// Whether a failed step call left its outcome uncertain but recoverable by
 /// re-sending the same step: the broker's explicit "pending" reply, or a
 /// connection lost after the request may have been bound.
+#[cfg(feature = "client")]
 fn task_step_retryable(error: &capnp::Error) -> bool {
     error.kind == capnp::ErrorKind::Disconnected || error.extra.contains("retry the same step")
 }
@@ -3495,6 +3496,7 @@ mod enrolled_tests {
         assert!(!replay.execute);
         assert_eq!(replay.acceptance, accepted.acceptance);
     }
+    #[cfg(feature = "client")]
     #[tokio::test(flavor = "current_thread")]
     async fn enrolled_old_peer_cannot_acknowledge_delivery_from_queue_success() {
         struct OldPeer;
@@ -3523,6 +3525,7 @@ mod enrolled_tests {
                 .is_err()
         );
     }
+    #[cfg(feature = "client")]
     #[tokio::test(flavor = "current_thread")]
     async fn enrolled_report_preserves_full_private_result_and_bounds_encoded_frame() {
         struct Recipient(Rc<std::cell::Cell<usize>>);
@@ -3769,10 +3772,12 @@ impl EnrolledRecipientCustody {
     }
 }
 
+#[cfg(feature = "client")]
 #[derive(Clone)]
 pub struct EnrolledTaskStream {
     inner: Rc<collab_capnp::enrolled_task_stream::Client>,
 }
+#[cfg(feature = "client")]
 impl EnrolledTaskStream {
     pub async fn read(&self) -> Result<EnrolledTaskEnvelope, NotAvailable> {
         let reply = self.inner.read_request().send().promise.await?;
@@ -3790,6 +3795,7 @@ impl EnrolledTaskStream {
         Ok(envelope)
     }
 }
+#[cfg(feature = "client")]
 impl ChannelHandle {
     pub async fn subscribe_enrolled_tasks(&self) -> Result<EnrolledTaskStream, NotAvailable> {
         let reply = self
@@ -3838,7 +3844,7 @@ impl ChannelHandle {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "client"))]
 mod resolved_invocation_tests {
     use super::*;
     use capnp::capability::Promise;
@@ -4137,15 +4143,18 @@ pub struct PublishedInvocationObservation {
     pub result: Option<PublishedInvocationResult>,
 }
 
+#[cfg(feature = "client")]
 fn reliable_error() -> capnp::Error {
     capnp::Error::failed("invalid or unavailable reliable invocation".into())
 }
+#[cfg(feature = "client")]
 fn reliable_text(value: &str, limit: usize, empty: bool, identifier: bool) -> bool {
     (empty || !value.is_empty())
         && value.len() <= limit
         && !value.contains('\0')
         && (!identifier || !value.bytes().any(|byte| byte.is_ascii_control()))
 }
+#[cfg(feature = "client")]
 fn reliable_address(peer: u64, revision: &str, resource: &str, action: &str) -> bool {
     peer != 0
         && peer != u64::MAX
@@ -4153,6 +4162,7 @@ fn reliable_address(peer: u64, revision: &str, resource: &str, action: &str) -> 
         && reliable_text(resource, 512, false, true)
         && reliable_text(action, 512, false, true)
 }
+#[cfg(feature = "client")]
 fn reliable_size(size: capnp::MessageSize) -> Result<(), capnp::Error> {
     if size.word_count > 256 * 1024 / 8 || size.cap_count != 0 {
         Err(reliable_error())
@@ -4160,6 +4170,7 @@ fn reliable_size(size: capnp::MessageSize) -> Result<(), capnp::Error> {
         Ok(())
     }
 }
+#[cfg(feature = "client")]
 fn reliable_array<const N: usize>(bytes: &[u8]) -> Result<[u8; N], capnp::Error> {
     let value: [u8; N] = bytes.try_into().map_err(|_| reliable_error())?;
     if value == [0; N] {
@@ -4168,6 +4179,7 @@ fn reliable_array<const N: usize>(bytes: &[u8]) -> Result<[u8; N], capnp::Error>
         Ok(value)
     }
 }
+#[cfg(feature = "client")]
 fn reliable_binding_valid(b: &PublishedInvocationBinding) -> bool {
     b.host != [0; 16]
         && b.peer_id != 0
@@ -4178,6 +4190,7 @@ fn reliable_binding_valid(b: &PublishedInvocationBinding) -> bool {
         && b.device != [0; 32]
         && b.target_binding != [0; 32]
 }
+#[cfg(feature = "client")]
 fn reliable_decode_binding(
     b: collab_capnp::published_invocation_binding::Reader<'_>,
 ) -> Result<PublishedInvocationBinding, capnp::Error> {
@@ -4204,6 +4217,7 @@ fn reliable_decode_binding(
         target_binding,
     })
 }
+#[cfg(feature = "client")]
 fn reliable_uuid_matches(text: &str, expected: &[u8; 16]) -> bool {
     let bytes = text.as_bytes();
     if bytes.len() != 36 {
@@ -4226,6 +4240,7 @@ fn reliable_uuid_matches(text: &str, expected: &[u8; 16]) -> bool {
     }
     true
 }
+#[cfg(feature = "client")]
 fn reliable_decode_observation(
     o: collab_capnp::published_invocation_observation::Reader<'_>,
     host: &[u8; 16],
@@ -4279,6 +4294,7 @@ fn reliable_decode_observation(
     })
 }
 
+#[cfg(feature = "client")]
 impl ChannelHandle {
     /// Resolve a reliable target; older @35 responses with no binding refuse.
     /// The result is inert data; the server revalidates authority at admission.
@@ -4452,7 +4468,7 @@ impl ChannelHandle {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "client"))]
 mod reliable_invocation_tests {
     use super::*;
     use capnp::capability::Promise;

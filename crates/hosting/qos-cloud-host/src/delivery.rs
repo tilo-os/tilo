@@ -3,7 +3,7 @@
 use crate::{PublicationKind, State, StatePeer, Store, StoredPublication, now_time};
 use anyhow::{Context, Result, ensure};
 use qos_relay::delivery_v3::commit::*;
-use rand::RngCore;
+use rand::TryRng as _;
 pub(crate) mod access;
 pub(crate) mod admission;
 pub(crate) mod commit_wake;
@@ -235,7 +235,7 @@ impl Store {
             crate::durable_bootstrap_messages(&mut peer, &self.key(), now_time(now), generation)?;
         let baseline = crate::baseline_publications(messages)?;
         let mut incarnation = [0; 16];
-        rand::rngs::OsRng.try_fill_bytes(&mut incarnation)?;
+        rand::rngs::SysRng.try_fill_bytes(&mut incarnation)?;
         ensure!(incarnation != [0; 16], "delivery entropy unavailable");
         let mut delivery = DeliveryState {
             prior_private_schema,

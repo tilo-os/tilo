@@ -39,7 +39,7 @@ use qos_relay::delivery_v3::commit::{
     ConsumerState, DeliveryLedgerV1, MAX_ADMISSIONS, MAX_REFERENCES, PublicationPool, ReceiptKey,
     ReplayCommit, StoreGeneration,
 };
-use rand::RngCore;
+use rand::TryRng as _;
 use std::collections::{BTreeMap, BTreeSet};
 
 /// Rotate once any budget is half used, so the fresh checkpoint still fits.
@@ -262,7 +262,7 @@ impl Store {
             .map_err(anyhow::Error::msg)?;
         let policy = super::revision(&peer)?;
         let mut incarnation = [0; 16];
-        rand::rngs::OsRng.try_fill_bytes(&mut incarnation)?;
+        rand::rngs::SysRng.try_fill_bytes(&mut incarnation)?;
         ensure!(
             incarnation != [0; 16] && incarnation != old.ledger.store_generation,
             "delivery entropy unavailable"

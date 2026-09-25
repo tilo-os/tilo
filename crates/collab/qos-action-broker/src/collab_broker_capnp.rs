@@ -238,6 +238,17 @@ impl BrokerActor {
             is_agent: true,
         }
     }
+
+    /// The policy principal id (`agent:`-prefixed for an agent).
+    #[must_use]
+    pub fn id(&self) -> &str {
+        &self.id
+    }
+
+    #[must_use]
+    pub fn is_agent(&self) -> bool {
+        self.is_agent
+    }
 }
 
 impl AdmittedJoinIdentity {
@@ -260,7 +271,20 @@ impl AdmittedJoinIdentity {
     }
 }
 
-fn principal_id_for_root(user_public_key: [u8; 32]) -> String {
+/// The capability verb an action's declared permission requires, if any.
+fn permission_verb(requirement: tilo_actions::PermissionRequirement) -> Option<Verb> {
+    match requirement {
+        tilo_actions::PermissionRequirement::None => None,
+        tilo_actions::PermissionRequirement::Read => Some(Verb::Read),
+        tilo_actions::PermissionRequirement::Comment => Some(Verb::Comment),
+        tilo_actions::PermissionRequirement::Write => Some(Verb::Write),
+        tilo_actions::PermissionRequirement::Invite => Some(Verb::Invite),
+        tilo_actions::PermissionRequirement::Admin => Some(Verb::Admin),
+    }
+}
+
+#[must_use]
+pub fn principal_id_for_root(user_public_key: [u8; 32]) -> String {
     match Principal::person_from_key(collab_types::Ed25519PublicKey::from_bytes(user_public_key)) {
         Principal::Person(id) => id,
         _ => hex::encode(user_public_key),
@@ -603,7 +627,119 @@ pub struct PublishedAction {
     pub operation_kind: tilo_actions::OperationKind,
     pub params: Vec<tilo_actions::ActionParam>,
     pub contract: tilo_actions::ActionContract,
+    pub view: Option<tilo_actions::ResourceViewDescriptor>,
     pub input: PublishedInput,
+}
+
+fn validate_view_action_binding(action: &PublishedAction, role: &str) -> Result<(), capnp::Error> {
+    if action.operation_kind != tilo_actions::OperationKind::View {
+        return Err(capnp::Error::failed(format!(
+            "resource view {role} action must be a view operation"
+        )));
+    }
+    if action.contract.confirmation != tilo_actions::ConfirmationPolicy::None {
+        return Err(capnp::Error::failed(format!(
+            "resource view {role} action must not require confirmation"
+        )));
+    }
+    if action.params.iter().any(|parameter| parameter.required) {
+        return Err(capnp::Error::failed(format!(
+            "resource view {role} action must not require caller parameters"
+        )));
+    }
+    Ok(())
+}
+
+/// Recheck the resource-view invariants after decoding an untrusted action
+/// surface. A view with a mount must carry that action in the same atomic
+/// publication/page so the broker can prove the binding before exposing it.
+fn validate_resource_view_descriptors(actions: &[PublishedAction]) -> Result<(), capnp::Error> {
+    #[derive(Default)]
+    struct ResourceViews<'a> {
+        ids: std::collections::HashSet<&'a str>,
+        open_actions: std::collections::HashSet<&'a str>,
+        primary_count: usize,
+    }
+
+    let mut resources = std::collections::HashMap::<&str, ResourceViews<'_>>::new();
+    for action in actions {
+        let Some(view) = &action.view else {
+            continue;
+        };
+        if view.id.is_empty() || view.id.contains(tilo_actions::KEY_SEP) {
+            return Err(capnp::Error::failed(
+                "resource view id must be non-empty and contain no separator".into(),
+            ));
+        }
+        if view.label.trim().is_empty() {
+            return Err(capnp::Error::failed(
+                "resource view label must be non-empty".into(),
+            ));
+        }
+        if view.open_action != action.action {
+            return Err(capnp::Error::failed(
+                "resource view must be attached to its open action".into(),
+            ));
+        }
+        validate_view_action_binding(action, "open")?;
+
+        let seen = resources.entry(&action.resource).or_default();
+        if !seen.ids.insert(&view.id) {
+            return Err(capnp::Error::failed(
+                "resource view ids must be unique per resource".into(),
+            ));
+        }
+        if !seen.open_actions.insert(&view.open_action) {
+            return Err(capnp::Error::failed(
+                "at most one resource view may reference an open action".into(),
+            ));
+        }
+        if view.primary {
+            seen.primary_count = seen.primary_count.saturating_add(1);
+            if seen.primary_count > 1 {
+                return Err(capnp::Error::failed(
+                    "at most one resource view may be primary".into(),
+                ));
+            }
+        }
+
+        let Some(mount) = &view.mount else {
+            continue;
+        };
+        if mount.action.trim().is_empty()
+            || mount.capability_param.trim().is_empty()
+            || mount.view_param.trim().is_empty()
+            || mount.capability_param == mount.view_param
+        {
+            return Err(capnp::Error::failed(
+                "resource view mount requires an action and distinct parameter names".into(),
+            ));
+        }
+        let mount_action = actions.iter().find(|candidate| {
+            candidate.resource == action.resource && candidate.action == mount.action
+        });
+        let Some(mount_action) = mount_action else {
+            return Err(capnp::Error::failed(
+                "resource view mount action is not exported by its resource".into(),
+            ));
+        };
+        validate_view_action_binding(mount_action, "mount")?;
+        for (role, name) in [
+            ("capability", mount.capability_param.as_str()),
+            ("view", mount.view_param.as_str()),
+        ] {
+            if !mount_action.params.iter().any(|parameter| {
+                parameter.name.as_ref() == name
+                    && parameter.ty == tilo_actions::ParamType::Text
+                    && !parameter.required
+            }) {
+                return Err(capnp::Error::failed(format!(
+                    "resource view mount {role} parameter `{name}` must name an optional text parameter"
+                )));
+            }
+        }
+    }
+    Ok(())
 }
 
 /// A live application's complete, level-triggered action surface.
@@ -620,13 +756,13 @@ pub struct PublishedSurface {
 }
 
 #[derive(Clone, Debug)]
-struct InvocationEnvelope {
+pub struct InvocationEnvelope {
     id: u64,
     invocation: tilo_actions::InvocationId,
-    resource: String,
+    pub resource: String,
     action: String,
     argument: Option<String>,
-    actor: String,
+    pub actor: String,
     context: Option<tilo_actions::ActionContext>,
 }
 
@@ -758,6 +894,8 @@ impl PendingInvocation {
     }
 }
 
+// Remote-action host: the broker as a `tilo_actions::remote::ActionHost`.
+mod action_host;
 #[path = "desktop_commands.rs"]
 mod desktop_commands;
 #[path = "peer_action_broker.rs"]
@@ -1173,12 +1311,38 @@ pub enum ActionDirectoryBridgeError {
 pub type ActionDirectoryBridgeReply =
     Result<ActionDirectoryBridgeResponse, ActionDirectoryBridgeError>;
 
+/// Where a directory bridge answer goes: a oneshot any executor may await,
+/// or a remote-action [`tilo_actions::remote::Pending`] completed on the
+/// broker `LocalSet` in the same turn the owner answered.
+enum DirectoryReply {
+    Oneshot(tokio::sync::oneshot::Sender<ActionDirectoryBridgeReply>),
+    Pending(tilo_actions::remote::Completer<ActionDirectoryBridgeReply>),
+}
+
+impl DirectoryReply {
+    fn is_closed(&self) -> bool {
+        match self {
+            Self::Oneshot(sender) => sender.is_closed(),
+            Self::Pending(completer) => completer.is_abandoned(),
+        }
+    }
+
+    fn send(self, reply: ActionDirectoryBridgeReply) {
+        match self {
+            Self::Oneshot(sender) => {
+                let _ = sender.send(reply);
+            }
+            Self::Pending(completer) => completer.complete(reply),
+        }
+    }
+}
+
 enum ActionDirectoryBridgeRequest {
     Query {
         actor: BrokerActor,
         cluster_id: String,
         query: runtime_collab::ActionDirectoryQuery,
-        reply: tokio::sync::oneshot::Sender<ActionDirectoryBridgeReply>,
+        reply: DirectoryReply,
     },
     Resolve {
         actor: BrokerActor,
@@ -1187,7 +1351,7 @@ enum ActionDirectoryBridgeRequest {
         revision: String,
         resource: String,
         action: String,
-        reply: tokio::sync::oneshot::Sender<ActionDirectoryBridgeReply>,
+        reply: DirectoryReply,
     },
     Start {
         actor: BrokerActor,
@@ -1198,7 +1362,7 @@ enum ActionDirectoryBridgeRequest {
         action: String,
         argument: Option<String>,
         confirmation: Option<DirectoryActionConfirmation>,
-        reply: tokio::sync::oneshot::Sender<ActionDirectoryBridgeReply>,
+        reply: DirectoryReply,
     },
 }
 
@@ -1236,6 +1400,7 @@ impl ActionDirectoryRequestQueue {
             return Err(ActionDirectoryBridgeError::InvalidRequest);
         }
         let (reply, response) = tokio::sync::oneshot::channel();
+        let reply = DirectoryReply::Oneshot(reply);
         match self.sender.try_send(ActionDirectoryBridgeRequest::Query {
             actor,
             cluster_id: cluster_id.into(),
@@ -1280,6 +1445,7 @@ impl ActionDirectoryRequestQueue {
             return Err(ActionDirectoryBridgeError::InvalidRequest);
         }
         let (reply, response) = tokio::sync::oneshot::channel();
+        let reply = DirectoryReply::Oneshot(reply);
         match self.sender.try_send(ActionDirectoryBridgeRequest::Resolve {
             actor,
             cluster_id,
@@ -1290,6 +1456,83 @@ impl ActionDirectoryRequestQueue {
             reply,
         }) {
             Ok(()) => Ok(response),
+            Err(std::sync::mpsc::TrySendError::Full(_)) => Err(ActionDirectoryBridgeError::Busy),
+            Err(std::sync::mpsc::TrySendError::Disconnected(_)) => {
+                Err(ActionDirectoryBridgeError::Unavailable)
+            }
+        }
+    }
+
+    /// [`Self::try_query`] answered as a remote-action pending value.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the query is invalid, the bounded broker queue is
+    /// full, or the broker is unavailable.
+    pub(crate) fn try_query_pending(
+        &self,
+        actor: BrokerActor,
+        cluster_id: impl Into<String>,
+        query: runtime_collab::ActionDirectoryQuery,
+    ) -> Result<tilo_actions::remote::Pending<ActionDirectoryBridgeReply>, ActionDirectoryBridgeError>
+    {
+        if validate_directory_query_input(&query).is_err() {
+            return Err(ActionDirectoryBridgeError::InvalidRequest);
+        }
+        let (reply, response) = tilo_actions::remote::pending();
+        self.enqueue(ActionDirectoryBridgeRequest::Query {
+            actor,
+            cluster_id: cluster_id.into(),
+            query,
+            reply: DirectoryReply::Pending(reply),
+        })
+        .map(|()| response)
+    }
+
+    /// [`Self::try_resolve`] answered as a remote-action pending value.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the target is invalid, the bounded broker queue
+    /// is full, or the broker is unavailable.
+    pub(crate) fn try_resolve_pending(
+        &self,
+        actor: BrokerActor,
+        cluster_id: impl Into<String>,
+        peer_id: u64,
+        revision: impl Into<String>,
+        resource: impl Into<String>,
+        action: impl Into<String>,
+    ) -> Result<tilo_actions::remote::Pending<ActionDirectoryBridgeReply>, ActionDirectoryBridgeError>
+    {
+        let cluster_id = cluster_id.into();
+        let revision = revision.into();
+        let resource = resource.into();
+        let action = action.into();
+        if validate_directory_target_input(&cluster_id, &revision, &resource, &action, None, None)
+            .is_err()
+        {
+            return Err(ActionDirectoryBridgeError::InvalidRequest);
+        }
+        let (reply, response) = tilo_actions::remote::pending();
+        self.enqueue(ActionDirectoryBridgeRequest::Resolve {
+            actor,
+            cluster_id,
+            peer_id,
+            revision,
+            resource,
+            action,
+            reply: DirectoryReply::Pending(reply),
+        })
+        .map(|()| response)
+    }
+
+    fn enqueue(
+        &self,
+        request: ActionDirectoryBridgeRequest,
+    ) -> Result<(), ActionDirectoryBridgeError> {
+        match self.sender.try_send(request) {
+            Ok(()) => Ok(()),
             Err(std::sync::mpsc::TrySendError::Full(_)) => Err(ActionDirectoryBridgeError::Busy),
             Err(std::sync::mpsc::TrySendError::Disconnected(_)) => {
                 Err(ActionDirectoryBridgeError::Unavailable)
@@ -1336,6 +1579,7 @@ impl ActionDirectoryRequestQueue {
             return Err(ActionDirectoryBridgeError::InvalidRequest);
         }
         let (reply, response) = tokio::sync::oneshot::channel();
+        let reply = DirectoryReply::Oneshot(reply);
         match self.sender.try_send(ActionDirectoryBridgeRequest::Start {
             actor,
             cluster_id,
@@ -1489,6 +1733,20 @@ fn write_directory_descriptor(
     out.set_operation_kind(&descriptor.operation_kind);
     out.set_params_json(&descriptor.params_json);
     out.set_contract_json(&descriptor.contract_json);
+    if let Some(view) = &descriptor.view {
+        let mut out = out.reborrow().init_view();
+        out.set_id(&view.id);
+        out.set_label(&view.label);
+        out.set_description(view.description.as_deref().unwrap_or(""));
+        out.set_open_action(&view.open_action);
+        out.set_primary(view.primary);
+        if let Some(mount) = &view.mount {
+            let mut out = out.init_mount();
+            out.set_action(&mount.action);
+            out.set_capability_param(&mount.capability_param);
+            out.set_view_param(&mount.view_param);
+        }
+    }
     let mut input = out.init_input();
     match &descriptor.input {
         runtime_collab::ExportedInput::None => input.set_none(()),
@@ -1691,6 +1949,12 @@ pub struct CapnpBrokerState {
     invocation_subscribers: Mutex<HashMap<u64, mpsc::UnboundedSender<InvocationEnvelope>>>,
     action_catalogue_subscribers: Mutex<HashMap<u64, ActionCatalogueSubscriber>>,
     pending_invocations: Mutex<HashMap<u64, PendingInvocation>>,
+    /// Remote-action invocations admitted through the action host, keyed by
+    /// caller and invocation id so a retried id is idempotent.
+    remote_invocations: Mutex<tilo_actions::remote::InvocationLedger<u64>>,
+    /// Bumped whenever a pending or completed invocation changes, so hosts
+    /// can refresh retained invocation projections exactly when needed.
+    invocation_generation: AtomicU64,
     /// Admission serialization covers policy, one-use confirmation, the durable
     /// barrier and the single application delivery. Never held across awaits.
     admission_lock: Mutex<()>,
@@ -2100,6 +2364,7 @@ impl CapnpBrokerState {
     ) {
         if let Ok(mut completed) = self.completed_invocations.lock() {
             completed.insert(id, (actor, update));
+            self.invocation_generation.fetch_add(1, Ordering::Relaxed);
             while completed.len() > Self::MAX_RETAINED_INVOCATIONS {
                 let Some(oldest) = completed.keys().min().copied() else {
                     break;
@@ -2315,6 +2580,8 @@ impl CapnpBrokerState {
                 invocation_subscribers: Mutex::new(HashMap::new()),
                 action_catalogue_subscribers: Mutex::new(HashMap::new()),
                 pending_invocations: Mutex::new(HashMap::new()),
+                remote_invocations: Mutex::new(tilo_actions::remote::InvocationLedger::default()),
+                invocation_generation: AtomicU64::new(0),
                 admission_lock: Mutex::new(()),
                 journal: Mutex::new(journal),
                 stable_invocation_subscribers: Mutex::new(std::collections::HashSet::new()),
@@ -2348,6 +2615,56 @@ impl CapnpBrokerState {
             None,
         );
         crate::collab_broker::AppActionBroker::from_state_for_test(state)
+    }
+
+    /// A broker over a host's own workspace authority and services, with no
+    /// transport, for host integration tests.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn test_broker_with_authority(
+        membership: WorkspaceTreeHandle,
+        services: HostServices,
+    ) -> crate::collab_broker::AppActionBroker {
+        let fanout = Arc::new(FanoutState::new());
+        let (state, _bridge_rx) = Self::new_configured(
+            &fanout,
+            Arc::new(Mutex::new(BrokerChannels::default())),
+            PeerPublisher::disabled(),
+            Some(membership),
+            None,
+            None,
+            services,
+        );
+        crate::collab_broker::AppActionBroker::from_state_for_test(state)
+    }
+
+    /// Retain a terminal receipt as if an application had reported it.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn record_completion_for_test(
+        &self,
+        id: u64,
+        actor: &str,
+        update: tilo_actions::InvocationUpdate,
+    ) {
+        self.record_completion(
+            id,
+            InvocationOwner::Local {
+                actor: actor.to_owned(),
+            },
+            update,
+        );
+    }
+
+    /// Stand in for an application's invocation stream on `peer_id`.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn capture_invocations_for_test(
+        &self,
+        peer_id: u64,
+    ) -> mpsc::UnboundedReceiver<InvocationEnvelope> {
+        let (tx, rx) = mpsc::unbounded_channel();
+        if let Ok(mut subscribers) = self.invocation_subscribers.lock() {
+            subscribers.insert(peer_id, tx);
+        }
+        rx
     }
 
     #[cfg(any(test, feature = "test-support"))]
@@ -2582,7 +2899,7 @@ impl CapnpBrokerState {
                                     .map_err(|_| ActionDirectoryBridgeError::Unavailable)
                             },
                         );
-                        let _ = reply.send(response);
+                        reply.send(response);
                     }
                     ActionDirectoryBridgeRequest::Resolve {
                         actor,
@@ -2617,7 +2934,7 @@ impl CapnpBrokerState {
                                     .map_err(|_| ActionDirectoryBridgeError::Unavailable)
                             },
                         );
-                        let _ = reply.send(response);
+                        reply.send(response);
                     }
                     ActionDirectoryBridgeRequest::Start {
                         actor,
@@ -2654,7 +2971,7 @@ impl CapnpBrokerState {
                                 result.map(ActionDirectoryBridgeResponse::StartedDirectoryAction)
                             },
                         );
-                        let _ = reply.send(response);
+                        reply.send(response);
                     }
                 }
             });
@@ -3805,6 +4122,7 @@ impl CapnpBrokerState {
                     cancellation_requested_at: None,
                 },
             );
+        self.invocation_generation.fetch_add(1, Ordering::Relaxed);
         if sender
             .send(InvocationEnvelope {
                 id,
@@ -3817,12 +4135,13 @@ impl CapnpBrokerState {
             })
             .is_err()
         {
-            if let Some(pending) = self
+            let removed = self
                 .pending_invocations
                 .lock()
                 .ok()
-                .and_then(|mut jobs| jobs.remove(&id))
-            {
+                .and_then(|mut jobs| jobs.remove(&id));
+            self.invocation_generation.fetch_add(1, Ordering::Relaxed);
+            if let Some(pending) = removed {
                 let _ = self.persist_invocation(
                     &pending,
                     invocation_journal::unknown(invocation),
@@ -3832,6 +4151,74 @@ impl CapnpBrokerState {
             return Err("the application invocation stream closed; outcome unknown".into());
         }
         Ok(InvocationJob { id, completion: rx })
+    }
+
+    /// Changes whenever a pending or completed invocation changes.
+    #[must_use]
+    pub fn invocations_generation(&self) -> u64 {
+        self.invocation_generation.load(Ordering::Relaxed)
+    }
+
+    /// Read one current receipt without surveying or disclosing another
+    /// actor's jobs.
+    #[must_use]
+    pub fn invocation_status_for_actor(
+        &self,
+        id: u64,
+        actor: &str,
+    ) -> Option<tilo_actions::InvocationUpdate> {
+        self.invocation_status_for_owner(
+            id,
+            &InvocationOwner::Local {
+                actor: actor.to_string(),
+            },
+        )
+    }
+
+    /// Check `evidence` against the offered action's confirmation policy and,
+    /// when one is required, mint the one-use grant that binds it to this
+    /// exact peer, address, argument and actor.
+    pub(crate) fn confirmation_token(
+        &self,
+        peer_id: u64,
+        offered: &PublishedAction,
+        argument: Option<&str>,
+        actor: &str,
+        evidence: Option<&tilo_actions::remote::Confirmation>,
+    ) -> Result<Option<String>, tilo_actions::remote::ActionHostError> {
+        use tilo_actions::remote::{ActionHostError, Confirmation};
+        match (&offered.contract.advertised_confirmation(), evidence) {
+            (tilo_actions::ConfirmationPolicy::None, _) => return Ok(None),
+            (tilo_actions::ConfirmationPolicy::Confirm, Some(Confirmation::Confirmed)) => {}
+            (
+                tilo_actions::ConfirmationPolicy::Phrase { phrase: expected },
+                Some(Confirmation::Phrase(phrase)),
+            ) if phrase.len() <= DIRECTORY_MAX_CONFIRMATION_BYTES && phrase == expected => {}
+            _ => return Err(ActionHostError::ConfirmationRequired),
+        }
+        let unavailable = || ActionHostError::Unavailable {
+            reason: "the confirmation registry is unavailable".into(),
+        };
+        let token = uuid::Uuid::new_v4().to_string();
+        let now = std::time::Instant::now();
+        let expires = now
+            .checked_add(std::time::Duration::from_secs(60))
+            .ok_or_else(unavailable)?;
+        let mut grants = self.confirmation_grants.lock().map_err(|_| unavailable())?;
+        grants.retain(|_, grant| grant.expires >= now);
+        grants.insert(
+            token.clone(),
+            ConfirmationGrant {
+                peer_id,
+                resource: offered.resource.clone(),
+                action: offered.action.clone(),
+                argument_digest: argument_digest(argument),
+                actor: actor.to_string(),
+                expires,
+            },
+        );
+        drop(grants);
+        Ok(Some(token))
     }
 
     pub fn invocation_status(&self, id: u64) -> Option<tilo_actions::InvocationUpdate> {
@@ -3920,8 +4307,10 @@ impl CapnpBrokerState {
             .get_mut(&id)
             .ok_or_else(|| "the invocation is not running".to_string())?;
         self.persist_cancellation(job)?;
-        job.cancellation_requested_at
-            .get_or_insert_with(std::time::Instant::now);
+        if job.cancellation_requested_at.is_none() {
+            job.cancellation_requested_at = Some(std::time::Instant::now());
+            self.invocation_generation.fetch_add(1, Ordering::Relaxed);
+        }
         drop(pending);
         self.cancellation_requests
             .lock()
@@ -4594,7 +4983,8 @@ impl CapnpBrokerState {
             | CollabEvent::NativeMediaCommandResult { .. }
             | CollabEvent::RealtimeCommandResult { .. }
             | CollabEvent::NearbyTransferCommandResult { .. }
-            | CollabEvent::Realtime(_) => {
+            | CollabEvent::Realtime(_)
+            | CollabEvent::RemoteAction { .. } => {
                 // Invocation delivery and cooperative cancellation are
                 // point-to-point and never enter route fanout.
             }
@@ -5727,6 +6117,36 @@ impl channel_handle::Server for CapnpChannelHandle {
                         wants_content: text.get_wants_content(),
                     },
                 };
+                let view = row
+                    .has_view()
+                    .then(|| row.get_view())
+                    .transpose()?
+                    .map(|view| {
+                        let description = view.get_description()?.to_str()?.to_owned();
+                        Ok::<_, capnp::Error>(tilo_actions::ResourceViewDescriptor {
+                            id: view.get_id()?.to_str()?.to_owned(),
+                            label: view.get_label()?.to_str()?.to_owned(),
+                            description: (!description.is_empty()).then_some(description),
+                            open_action: view.get_open_action()?.to_str()?.to_owned(),
+                            primary: view.get_primary(),
+                            mount: view
+                                .has_mount()
+                                .then(|| view.get_mount())
+                                .transpose()?
+                                .map(|mount| {
+                                    Ok::<_, capnp::Error>(tilo_actions::ResourceViewMountSpec {
+                                        action: mount.get_action()?.to_str()?.to_owned(),
+                                        capability_param: mount
+                                            .get_capability_param()?
+                                            .to_str()?
+                                            .to_owned(),
+                                        view_param: mount.get_view_param()?.to_str()?.to_owned(),
+                                    })
+                                })
+                                .transpose()?,
+                        })
+                    })
+                    .transpose()?;
                 actions.push(PublishedAction {
                     resource,
                     action,
@@ -5771,6 +6191,7 @@ impl channel_handle::Server for CapnpChannelHandle {
                             })?
                         }
                     },
+                    view,
                     input,
                 });
                 let published = actions.last().ok_or_else(|| {
@@ -5804,6 +6225,7 @@ impl channel_handle::Server for CapnpChannelHandle {
                     }
                 }
             }
+            validate_resource_view_descriptors(&actions)?;
             let surface = PublishedSurface {
                 peer_id,
                 app_id,
@@ -7184,6 +7606,8 @@ fn permits_directory_row(
                     )?;
                 }
             }
+            let published = published_directory_action(row)?;
+            validate_resource_view_descriptors(std::slice::from_ref(&published))?;
             state.permits_directory_action(
                 cluster_id,
                 actor,
@@ -7232,6 +7656,13 @@ fn filter_directory_page(
             "application exceeded directory result budget".into(),
         ));
     }
+    let page_actions = page
+        .rows
+        .iter()
+        .filter(|row| row.action.is_some())
+        .map(published_directory_action)
+        .collect::<Result<Vec<_>, _>>()?;
+    validate_resource_view_descriptors(&page_actions)?;
     let mut visible = Vec::with_capacity(page.rows.len());
     for row in page.rows {
         if permits_directory_row(state, cluster_id, actor, app_id, &row)? {
@@ -7287,6 +7718,24 @@ fn published_directory_action(
             wants_content: *wants_content,
         },
     };
+    let view = descriptor
+        .view
+        .as_ref()
+        .map(|view| tilo_actions::ResourceViewDescriptor {
+            id: view.id.clone(),
+            label: view.label.clone(),
+            description: view.description.clone(),
+            open_action: view.open_action.clone(),
+            primary: view.primary,
+            mount: view
+                .mount
+                .as_ref()
+                .map(|mount| tilo_actions::ResourceViewMountSpec {
+                    action: mount.action.clone(),
+                    capability_param: mount.capability_param.clone(),
+                    view_param: mount.view_param.clone(),
+                }),
+        });
     Ok(PublishedAction {
         resource: descriptor.resource.clone(),
         action: descriptor.action.clone(),
@@ -7297,6 +7746,7 @@ fn published_directory_action(
         operation_kind,
         params,
         contract,
+        view,
         input,
     })
 }
@@ -9908,6 +10358,7 @@ pub mod tests {
                 params_json: "[]".into(),
                 contract_json: contract_json.clone(),
                 input: runtime_collab::ExportedInput::None,
+                view: None,
             };
             runtime_collab::ActionDirectoryRow {
                 parent_resource: String::new(),
@@ -11548,6 +11999,7 @@ pub mod tests {
                     permission: tilo_actions::PermissionRequirement::Write,
                     ..Default::default()
                 },
+                view: None,
                 input: PublishedInput::None,
             }],
             live: true,
@@ -11889,6 +12341,7 @@ pub mod tests {
                     permission: tilo_actions::PermissionRequirement::Write,
                     ..Default::default()
                 },
+                view: None,
                 input: PublishedInput::None,
             };
         let desktop = PublishedSurface {
@@ -12052,6 +12505,7 @@ pub mod tests {
                         operation_kind: tilo_actions::OperationKind::View,
                         params: Vec::new(),
                         contract: tilo_actions::ActionContract::view(),
+                        view: None,
                         input: PublishedInput::None,
                     },
                     PublishedAction {
@@ -12068,6 +12522,7 @@ pub mod tests {
                             confirmation: tilo_actions::ConfirmationPolicy::Confirm,
                             ..tilo_actions::ActionContract::default()
                         },
+                        view: None,
                         input: PublishedInput::None,
                     },
                     PublishedAction {
@@ -12086,6 +12541,7 @@ pub mod tests {
                             result: tilo_actions::ResultSpec::Job,
                             ..tilo_actions::ActionContract::default()
                         },
+                        view: None,
                         input: PublishedInput::None,
                     },
                 ],
@@ -12280,6 +12736,7 @@ pub mod tests {
                     discovery: tilo_actions::DiscoveryScope::Launchable,
                     ..tilo_actions::ActionContract::view()
                 },
+                view: None,
                 input: PublishedInput::None,
             }],
             live: false,
@@ -13590,6 +14047,7 @@ impl CapnpBrokerState {
         pending.last_activity = std::time::Instant::now();
         pending.last_sequence = next_sequence;
         pending.update = update.clone();
+        state.invocation_generation.fetch_add(1, Ordering::Relaxed);
         if update.is_terminal() {
             let completion = match &update {
                 tilo_actions::InvocationUpdate::Succeeded { .. } => InvocationCompletion {
@@ -13730,5 +14188,76 @@ mod host_worker_capacity_tests {
                 .retain_host_worker(MAX_HOST_WORKERS as u64 + 1, &host_worker(MAX_HOST_WORKERS))
                 .is_ok()
         );
+    }
+}
+
+#[cfg(test)]
+mod resource_view_tests {
+    use super::*;
+
+    fn test_published_view(action: &str, view_id: &str, primary: bool) -> PublishedAction {
+        PublishedAction {
+            resource: "note:one".into(),
+            action: action.into(),
+            resource_kind: "note".into(),
+            resource_label: "One".into(),
+            action_label: "Open".into(),
+            description: None,
+            operation_kind: tilo_actions::OperationKind::View,
+            params: vec![
+                tilo_actions::ActionParam::optional(
+                    "slot_capability",
+                    tilo_actions::ParamType::Text,
+                    "Mount capability",
+                ),
+                tilo_actions::ActionParam::optional(
+                    "slot_view",
+                    tilo_actions::ParamType::Text,
+                    "View slot",
+                ),
+            ],
+            contract: tilo_actions::ActionContract::view(),
+            view: Some(tilo_actions::ResourceViewDescriptor {
+                id: view_id.into(),
+                label: "Editor".into(),
+                description: None,
+                open_action: action.into(),
+                primary,
+                mount: Some(tilo_actions::ResourceViewMountSpec::new(
+                    action,
+                    "slot_capability",
+                    "slot_view",
+                )),
+            }),
+            input: PublishedInput::None,
+        }
+    }
+
+    #[test]
+    fn published_resource_views_validate_bindings_and_resource_cardinality() {
+        let editor = test_published_view("open", "editor", true);
+        assert!(validate_resource_view_descriptors(std::slice::from_ref(&editor)).is_ok());
+
+        let mut wrong_owner = editor.clone();
+        wrong_owner.view.as_mut().unwrap().open_action = "preview".into();
+        assert!(validate_resource_view_descriptors(std::slice::from_ref(&wrong_owner)).is_err());
+
+        let mut unsafe_open = editor.clone();
+        unsafe_open.contract.confirmation = tilo_actions::ConfirmationPolicy::Confirm;
+        assert!(validate_resource_view_descriptors(std::slice::from_ref(&unsafe_open)).is_err());
+
+        let mut invalid_mount = editor.clone();
+        invalid_mount
+            .view
+            .as_mut()
+            .unwrap()
+            .mount
+            .as_mut()
+            .unwrap()
+            .view_param = "slot_capability".into();
+        assert!(validate_resource_view_descriptors(std::slice::from_ref(&invalid_mount)).is_err());
+
+        let reader = test_published_view("read", "reader", true);
+        assert!(validate_resource_view_descriptors(&[editor, reader]).is_err());
     }
 }

@@ -10,7 +10,7 @@ use qos_peer_state::join::{
 };
 use qos_relay::workspace_join::WorkspaceJoinService;
 use qos_user_identity::DeviceCert;
-use rand::RngCore as _;
+use rand::Rng as _;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
@@ -517,7 +517,7 @@ impl Store {
             .ok_or_else(|| anyhow!("join challenge clock overflow"))?
             .min(verified.grant().expires_at_ns);
         let mut nonce = [0; 32];
-        rand::rngs::OsRng.fill_bytes(&mut nonce);
+        rand::rand_core::UnwrapErr(rand::rngs::SysRng).fill_bytes(&mut nonce);
         let challenge = JoinChallenge::new(
             &verified,
             &request.device_cert,
@@ -698,7 +698,7 @@ impl Store {
         }
         let peer = self.peer_at(now)?;
         let mut nonce = [0; 32];
-        rand::rngs::OsRng.fill_bytes(&mut nonce);
+        rand::rand_core::UnwrapErr(rand::rngs::SysRng).fill_bytes(&mut nonce);
         let challenge = peer
             .membership_challenge(
                 request.workspace_id,

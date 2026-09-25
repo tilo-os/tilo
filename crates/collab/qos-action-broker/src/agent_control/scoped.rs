@@ -451,6 +451,7 @@ mod tests {
             operation_kind: kind,
             params: vec![],
             contract: tilo_actions::ActionContract::default(),
+            view: None,
             input: crate::collab_broker_capnp::PublishedInput::None,
         }
     }

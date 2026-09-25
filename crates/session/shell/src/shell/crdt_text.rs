@@ -59,7 +59,7 @@ fn body_values(doc: &AutoCommit, root: &ObjId, key: &str) -> Vec<BodyValue> {
                 .filter_map(|(value, id)| match value {
                     Value::Object(ObjType::Text) => Some(BodyValue::Text(id)),
                     Value::Scalar(scalar) => scalar
-                        .to_str()
+                        .as_str()
                         .map(|text| BodyValue::Legacy(text.to_string())),
                     Value::Object(_) => None,
                 })

@@ -13,7 +13,7 @@ use qos_moq::live::fallback::{
     FALLBACK_OPEN_PATH, FALLBACK_RESUME_PATH, FALLBACK_SEND_PATH, FALLBACK_SESSION_HEADER,
     FallbackError, MAX_SEND_BYTES, session_id,
 };
-use rand::RngCore;
+use rand::TryRng as _;
 
 /// Host bytes held by one open stream (bounded chunks in its queue).
 const STREAM_BYTES: usize = 320 * 1024;
@@ -117,7 +117,7 @@ where
                 return Err(Rejection::invalid());
             }
             let mut id = [0u8; 16];
-            rand::rngs::OsRng
+            rand::rngs::SysRng
                 .try_fill_bytes(&mut id)
                 .map_err(|_| Rejection::unavailable())?;
             drop(credit);

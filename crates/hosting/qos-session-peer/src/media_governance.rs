@@ -9,7 +9,7 @@ use qos_peer_state::{
     StatePeer,
     room::media::{self, CallPhaseV1, DirectionsV1, MediaCallResultV1},
 };
-use rand::RngCore;
+use rand::TryRng as _;
 use web_time::SystemTime;
 
 /// Reconcile and validate an already authorized owned candidate before its
@@ -103,7 +103,7 @@ pub fn prepare_media_transition(
             let mut id = [0; 32];
             let mut allocated = false;
             for _ in 0..8 {
-                rand::rngs::OsRng
+                rand::rngs::SysRng
                     .try_fill_bytes(&mut id)
                     .map_err(|e| Error::Rejected(e.to_string()))?;
                 if id != [0; 32] && !policy.calls.contains_key(&id) {

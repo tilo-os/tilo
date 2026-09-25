@@ -137,9 +137,9 @@ pub mod tests {
     }
     fn local_directory_fixture() -> LocalDirectoryFixture {
         let mut tree = WorkspaceTree::default();
-        let mut workspace = Workspace::test_default(WorkspaceId(71), "Directory test room");
+        let mut workspace = Workspace::new(WorkspaceId(71), "Directory test room");
         workspace.owner = Some(crate::shell::state::local_user_id_for_room(&workspace.room));
-        tree.workspaces.push(workspace);
+        tree.desktop.workspaces.push(workspace);
         tree.set_active(WorkspaceId(71));
         local_directory_fixture_with_membership(tree.shared())
     }

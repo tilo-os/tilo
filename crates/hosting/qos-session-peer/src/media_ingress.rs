@@ -394,10 +394,10 @@ impl InstalledIngress {
         &mut self,
         service: crate::collaboration::CollaborationService,
     ) -> Result<()> {
-        use rand::RngCore;
+        use rand::TryRng as _;
         let mut boot = [0; 16];
         while boot == [0; 16] {
-            rand::rngs::OsRng.try_fill_bytes(&mut boot)?;
+            rand::rngs::SysRng.try_fill_bytes(&mut boot)?;
         }
         let registry =
             crate::onboarding_http::OnboardingRegistry::new(boot, self.transport.host_bytes())?;

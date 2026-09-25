@@ -10,7 +10,7 @@ use qos_user_identity::{
     DeviceCert, RevocationList, WorkspaceDirectory,
     cloud_enrollment::{Challenge, EnrollmentRequest, verify_request},
 };
-use rand::RngCore;
+use rand::Rng as _;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeMap,
@@ -664,7 +664,7 @@ impl Store {
                 bail!("existing delivery Store is missing")
             }
             let mut secret = [0; 32];
-            rand::rngs::OsRng.fill_bytes(&mut secret);
+            rand::rand_core::UnwrapErr(rand::rngs::SysRng).fill_bytes(&mut secret);
             State {
                 version: STATE_VERSION,
                 delivery: None,
@@ -891,7 +891,7 @@ impl Store {
             }
         }
         let mut nonce = [0; 32];
-        rand::rngs::OsRng.fill_bytes(&mut nonce);
+        rand::rand_core::UnwrapErr(rand::rngs::SysRng).fill_bytes(&mut nonce);
         let c = Challenge {
             version: 1,
             machine_id: self.state.machine_id.clone(),

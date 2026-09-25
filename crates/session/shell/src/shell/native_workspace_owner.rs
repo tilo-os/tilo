@@ -15,7 +15,6 @@ use super::{
 };
 pub(crate) use bootstrap::NativeBootstrap;
 use parking_lot::{Mutex, RwLock};
-pub(crate) use publication::{NativeOutgoing, NativeOutgoingEntry, NativeOutgoingStatus};
 use qos_peer_state::{AdmissionReport, NeighbourMsg, StatePeer, TransportOrigin};
 pub use record::NativeAuthorityStorage;
 pub(crate) use record::{PendingEnrollmentId, PendingEnrollmentStatus, StoredPendingEnrollment};

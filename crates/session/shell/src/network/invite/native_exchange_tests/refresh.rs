@@ -193,9 +193,8 @@ pub(super) async fn restart_after_offline_snapshot(
                 governor
                     .receive(qos_peer_state::TransportOrigin::RelayDelta(author), message)
                     .unwrap();
-                let mut doc =
-                    AutoCommit::load(&governor.peer().document("so.tilo.chat", "").unwrap())
-                        .unwrap();
+                let doc = AutoCommit::load(&governor.peer().document("so.tilo.chat", "").unwrap())
+                    .unwrap();
                 if doc.get(ROOT, "real-clock-offline-edit").unwrap().is_some() {
                     for head in &expected_heads {
                         assert!(doc.get_change_by_hash(head).is_some());

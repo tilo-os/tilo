@@ -1,6 +1,8 @@
 #![allow(refining_impl_trait)]
 //! Adapters from the shared broker to the native session's existing services.
-use super::state::{WorkspaceTaskStatus, WorkspaceTreeHandle};
+use super::desktop_bridge::{native_room, native_task_status, native_workspace, portable_tree};
+use super::state::WorkspaceAuthority as _;
+use super::state::WorkspaceTreeHandle;
 mod committed_document;
 use qos_action_broker::services::*;
 use std::sync::Arc;
@@ -66,7 +68,7 @@ impl qos_peer_state::owner_commit::OwnerCommitService for NativeOwnerCommitServi
 pub struct NativeWorkspaceAuthority(pub WorkspaceTreeHandle);
 impl WorkspaceAuthority for NativeWorkspaceAuthority {
     fn snapshot(&self) -> Result<qos_desktop::WorkspaceTree, String> {
-        Ok(self.0.read().desktop.clone())
+        portable_tree(&self.0.read().desktop)
     }
     fn legacy_journal_root(&self) -> Option<std::path::PathBuf> {
         self.0.read().persist_path.as_ref().map(|path| {
@@ -90,6 +92,7 @@ impl LegacyWorkspaceProjection for NativeWorkspaceAuthority {
             return Err("native enrolled mutation requires its typed durable owner".into());
         }
         let id = tree
+            .desktop
             .workspaces
             .iter()
             .find(|w| w.room.to_string() == room)
@@ -104,7 +107,7 @@ impl LegacyWorkspaceProjection for NativeWorkspaceAuthority {
         room: &str,
         task: &str,
         actor: &str,
-        status: Option<WorkspaceTaskStatus>,
+        status: Option<qos_desktop::WorkspaceTaskStatus>,
         summary: String,
     ) -> Result<(), String> {
         let mut tree = self.0.write();
@@ -112,17 +115,106 @@ impl LegacyWorkspaceProjection for NativeWorkspaceAuthority {
             return Err("native enrolled mutation requires its typed durable owner".into());
         }
         let id = tree
+            .desktop
             .workspaces
             .iter()
             .find(|w| w.room.to_string() == room && w.tasks.iter().any(|t| t.id == task))
             .map(|w| w.id)
             .ok_or("task workspace or task no longer hosted")?;
         if let Some(status) = status {
-            let _ = tree.set_workspace_task_status(id, task, status, actor);
+            let _ = tree.set_workspace_task_status(id, task, native_task_status(status), actor);
         }
         let _ = tree.append_workspace_task_audit(id, task, actor, summary);
         Ok(())
     }
+}
+
+/// Upper bound on content a launch may open read-only.
+const MAX_LAUNCH_CONTENT_BYTES: usize = 64 * 1024 * 1024;
+
+fn stage_launch_content(
+    app_id: &str,
+    content_hash: &str,
+    workspace: &mut super::state::Workspace,
+) -> Result<Option<std::path::PathBuf>, String> {
+    if content_hash.is_empty() {
+        return Ok(None);
+    }
+    if content_hash.len() != 64
+        || !content_hash
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
+        return Err("launch content hash must be a lowercase 64-character blake3 value".into());
+    }
+    let bytes = qdoc::blobstore::get(content_hash)
+        .ok_or_else(|| "launch content is unavailable on this device".to_owned())?;
+    if bytes.is_empty()
+        || bytes.len() > MAX_LAUNCH_CONTENT_BYTES
+        || !qdoc::blobstore::verify(content_hash, &bytes)
+    {
+        return Err("launch content failed integrity validation".into());
+    }
+    let dir = std::env::var_os("XDG_RUNTIME_DIR")
+        .map_or_else(std::env::temp_dir, std::path::PathBuf::from)
+        .join("tilo-opened");
+    std::fs::create_dir_all(&dir).map_err(|error| format!("create launch staging: {error}"))?;
+    #[cfg(unix)]
+    std::fs::set_permissions(
+        &dir,
+        <std::fs::Permissions as std::os::unix::fs::PermissionsExt>::from_mode(0o700),
+    )
+    .map_err(|error| format!("protect launch staging: {error}"))?;
+    let extension = match qdoc::blobstore::sniff(&bytes).mime.as_str() {
+        "image/png" => "png",
+        "image/jpeg" => "jpg",
+        "image/webp" => "webp",
+        _ if bytes.get(4..8).is_some_and(|header| header == b"ftyp") => "mp4",
+        _ if bytes.starts_with(&[0x1A, 0x45, 0xDF, 0xA3]) => "webm",
+        _ if bytes.starts_with(b"RIFF")
+            && bytes.get(8..12).is_some_and(|header| header == b"AVI ") =>
+        {
+            "avi"
+        }
+        _ => "bin",
+    };
+    let path = dir.join(format!("{content_hash}.{extension}"));
+    match std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&path)
+    {
+        Ok(mut file) => {
+            use std::io::Write;
+            file.write_all(&bytes)
+                .and_then(|()| file.sync_all())
+                .map_err(|error| format!("stage launch content: {error}"))?;
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+            let metadata = std::fs::symlink_metadata(&path)
+                .map_err(|error| format!("inspect existing launch content: {error}"))?;
+            if !metadata.file_type().is_file() {
+                return Err("existing launch content is not a regular file".into());
+            }
+            let existing = std::fs::read(&path)
+                .map_err(|error| format!("read existing launch content: {error}"))?;
+            if existing.len() > MAX_LAUNCH_CONTENT_BYTES
+                || !qdoc::blobstore::verify(content_hash, &existing)
+            {
+                return Err("existing launch content failed integrity validation".into());
+            }
+        }
+        Err(error) => return Err(format!("stage launch content: {error}")),
+    }
+    workspace.grant_app(
+        app_id,
+        &super::state::Capability::Filesystem {
+            path: dir,
+            mode: super::state::FsMode::Read,
+            scope: super::state::GRANT_SESSION,
+        },
+    );
+    Ok(Some(path))
 }
 
 pub struct NativeLauncher;
@@ -137,7 +229,19 @@ impl LauncherServices for NativeLauncher {
             .collect()
     }
     fn launch(&self, app: &str, workspace: &qos_desktop::Workspace) -> Result<(), String> {
-        super::launcher::launch_in_workspace(app, workspace)
+        super::launcher::launch_in_workspace(app, &native_workspace(workspace)?)
+            .map(|_| ())
+            .map_err(|e| e.to_string())
+    }
+    fn launch_content(
+        &self,
+        app: &str,
+        workspace: &qos_desktop::Workspace,
+        content_hash: &str,
+    ) -> Result<(), String> {
+        let mut workspace = native_workspace(workspace)?;
+        let document = stage_launch_content(app, content_hash, &mut workspace)?;
+        super::launcher::launch_document_in_workspace(app, &workspace, document.as_deref())
             .map(|_| ())
             .map_err(|e| e.to_string())
     }
@@ -145,6 +249,216 @@ impl LauncherServices for NativeLauncher {
         super::launcher::attest_trusted_service_launch_for_pid(pid, app, room).is_some()
     }
 }
+
+/// Workspace governance (permission profiles) applied under the shell's
+/// canonical capability authority. There is no application behind these
+/// actions: the shell validates, mutates, records the effect and persists.
+pub struct NativeWorkspaceGovernance(pub WorkspaceTreeHandle);
+impl WorkspaceGovernanceServices for NativeWorkspaceGovernance {
+    fn app_id(&self) -> &str {
+        super::state::WORKSPACE_GOVERNANCE_APP_ID
+    }
+    fn handles(&self, action: &str) -> bool {
+        matches!(
+            action,
+            super::state::PROFILE_SAVE_ACTION_ID | super::state::PROFILE_ASSIGN_ACTION_ID
+        )
+    }
+    fn descriptors(
+        &self,
+        workspace: &qos_desktop::Workspace,
+    ) -> Vec<tilo_actions::ActionDescriptor> {
+        // Describe from the shell's own authority, not the broker's snapshot.
+        let tree = self.0.read();
+        let room = native_room(workspace.room);
+        tree.desktop
+            .workspaces
+            .iter()
+            .find(|workspace| workspace.room == room)
+            .map(|workspace| {
+                tilo_actions::door::survey(&[
+                    super::workspace_settings::permission_profile_resource_with_access(
+                        workspace, true,
+                    ),
+                ])
+            })
+            .unwrap_or_default()
+    }
+    fn invoke(&self, request: &WorkspaceGovernanceRequest<'_>) -> Result<(), String> {
+        let actor = request.actor;
+        let mut tree = self.0.write();
+        let workspace_index = tree
+            .desktop
+            .workspaces
+            .iter()
+            .position(|workspace| workspace.room.to_string() == request.room)
+            .ok_or_else(|| "the application workspace is no longer hosted".to_string())?;
+        let caller = if actor.is_agent() {
+            tree.desktop.workspaces[workspace_index]
+                .actor_for_agent(actor.id().strip_prefix("agent:").unwrap_or(actor.id()))
+        } else {
+            tree.desktop.workspaces[workspace_index].actor_for_person(&actor.id().to_string())
+        };
+        let surface = super::workspace_settings::permission_profile_resource_with_access(
+            &tree.desktop.workspaces[workspace_index],
+            true,
+        );
+        let resource = find_resource(&surface, request.resource)
+            .ok_or_else(|| "unknown workspace governance resource".to_string())?;
+        let spec = resource
+            .actions
+            .iter()
+            .find(|candidate| candidate.id == request.action)
+            .ok_or_else(|| "unknown workspace governance action".to_string())?;
+        if request
+            .confirmation
+            .get("confirm")
+            .and_then(serde_json::Value::as_bool)
+            != Some(true)
+        {
+            return Err("explicit confirmation is required".into());
+        }
+        if tree.desktop.workspaces[workspace_index].decide(
+            &caller,
+            &super::state::ResourceRef::Action {
+                app: super::state::WORKSPACE_GOVERNANCE_APP_ID.into(),
+                action: request.action.into(),
+            },
+            super::state::Verb::Admin,
+        ) != super::state::CapDecision::Allow
+        {
+            return Err("the caller is not allowed to manage permission profiles".into());
+        }
+        let operation = decode_permission_profile_operation(spec, request.argument)?;
+        let workspace_id = tree.desktop.workspaces[workspace_index].id;
+        apply_permission_profile_operation(
+            &mut tree,
+            workspace_index,
+            workspace_id,
+            &caller,
+            operation,
+        )?;
+        let context = tilo_actions::ActionContext::for_resource(
+            &spec.label,
+            resource.id.as_str(),
+            &resource.kind,
+            &resource.label,
+        )
+        .with_app(
+            super::state::WORKSPACE_GOVERNANCE_APP_ID,
+            "Workspace permissions",
+        );
+        let _ = tree.append_workspace_effect_receipt(
+            workspace_id,
+            request.invocation,
+            actor.id(),
+            context,
+            tilo_actions::EffectReceiptStatus::Succeeded,
+        );
+        tree.desktop.external_revision = tree.desktop.external_revision.wrapping_add(1);
+        tree.flush_to_disk();
+        Ok(())
+    }
+}
+
+/// Find `id` in `resource`'s subtree.
+fn find_resource<'a>(
+    resource: &'a tilo_actions::Resource,
+    id: &str,
+) -> Option<&'a tilo_actions::Resource> {
+    if resource.id.as_str() == id {
+        return Some(resource);
+    }
+    resource
+        .children
+        .iter()
+        .find_map(|child| find_resource(child, id))
+}
+
+/// Decode a workspace governance invocation's typed `argument` into the
+/// permission-profile operation `spec` encodes.
+fn decode_permission_profile_operation(
+    spec: &tilo_actions::ActionSpec,
+    argument: Option<&str>,
+) -> Result<super::workspace_settings::PermissionProfileOperation, String> {
+    let json = argument
+        .and_then(|value| value.strip_prefix(tilo_actions::ARGUMENTS_JSON_PREFIX))
+        .ok_or_else(|| "workspace governance action requires typed arguments".to_string())?;
+    let arguments = serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(json)
+        .map_err(|error| format!("invalid workspace governance arguments: {error}"))?;
+    let encoded = spec
+        .build_json(&arguments)
+        .map_err(|error| format!("invalid workspace governance arguments: {error}"))?;
+    if encoded.type_id == tilo_actions::resource::INVALID_ARGUMENTS_TYPE {
+        return Err(format!(
+            "invalid workspace governance arguments: {}",
+            String::from_utf8_lossy(&encoded.payload)
+        ));
+    }
+    if encoded.type_id != super::workspace_settings::PERMISSION_PROFILE_ACTION_TYPE {
+        return Err("workspace governance action encoded an unexpected operation".into());
+    }
+    serde_json::from_slice(&encoded.payload)
+        .map_err(|error| format!("invalid workspace governance operation: {error}"))
+}
+
+/// Apply a permission-profile operation as `caller` to one workspace and
+/// mirror it into the room document.
+fn apply_permission_profile_operation(
+    tree: &mut super::state::WorkspaceTree,
+    workspace_index: usize,
+    workspace_id: super::state::WorkspaceId,
+    caller: &super::state::Actor,
+    operation: super::workspace_settings::PermissionProfileOperation,
+) -> Result<(), String> {
+    match operation {
+        super::workspace_settings::PermissionProfileOperation::Save {
+            name,
+            description,
+            rules,
+        } => {
+            let profile = collab_types::PermissionProfile {
+                name,
+                description,
+                rules,
+            };
+            tree.desktop.workspaces[workspace_index]
+                .save_permission_profile_as_actor(caller, profile.clone())
+                .map_err(|error| error.to_string())?;
+            tree.doc_upsert_permission_profile(workspace_id, &profile);
+        }
+        super::workspace_settings::PermissionProfileOperation::Assign {
+            profile,
+            subject_kind,
+            subject,
+            expires_unix,
+        } => {
+            let subject = match subject_kind.trim().to_ascii_lowercase().as_str() {
+                "person" => collab_types::Subject::person(subject.trim()),
+                "app" => collab_types::Subject::app(subject.trim()),
+                "agent" => collab_types::Subject::agent(subject.trim()),
+                _ => return Err("subject_kind must be person, app, or agent".into()),
+            };
+            let expiry = (expires_unix > 0)
+                .then_some(expires_unix)
+                .map_or(collab_types::Expiry::Never, collab_types::Expiry::AtUnix);
+            let ids = tree.desktop.workspaces[workspace_index]
+                .assign_permission_profile_as_actor(caller, &profile, &subject, expiry)
+                .map_err(|error| error.to_string())?;
+            let capabilities = tree.desktop.workspaces[workspace_index]
+                .capabilities
+                .iter()
+                .filter(|capability| ids.contains(&capability.id))
+                .cloned()
+                .collect::<Vec<_>>();
+            for capability in capabilities {
+                tree.doc_insert_capability(workspace_id, &capability);
+            }
+        }
+    }
+    Ok(())
+}
+
 pub struct NativeContinuations;
 impl ContinuationServices for NativeContinuations {
     fn report(
@@ -159,7 +473,7 @@ impl ContinuationServices for NativeContinuations {
             .lock()
             .map_err(|_| "continuation registry unavailable".to_string())?
             .report(
-                room,
+                native_room(room),
                 app,
                 super::personal_continuity::AppInstanceId(instance),
                 schema,
@@ -173,7 +487,7 @@ impl ContinuationServices for NativeContinuations {
             .lock()
             .map_err(|_| "continuation registry unavailable".to_string())?
             .clear(
-                room,
+                native_room(room),
                 app,
                 super::personal_continuity::AppInstanceId(instance),
             );
@@ -232,6 +546,9 @@ pub fn native_services(
         Arc::new(NativeOwnerCommitService::new(tree.clone(), network.clone()))
             as Arc<dyn NativeDocumentReads>
     });
+    let governance = membership.as_ref().map(|tree| {
+        Arc::new(NativeWorkspaceGovernance(tree.clone())) as Arc<dyn WorkspaceGovernanceServices>
+    });
     HostServices {
         committed_documents,
         desktop_commands: None,
@@ -240,12 +557,31 @@ pub fn native_services(
             Arc::new(NativeWorkspaceAuthority(tree)) as Arc<dyn LegacyWorkspaceProjection>
         }),
         launcher: Some(Arc::new(NativeLauncher)),
+        workspace_governance: governance,
         continuations: Some(Arc::new(NativeContinuations)),
         workspace_control: network.map(|network| {
             Arc::new(NativeWorkspaceControl(network)) as Arc<dyn WorkspaceControlServices>
         }),
         ..Default::default()
     }
+}
+
+/// A broker over `membership` with the native services an action host
+/// reaches (launcher, governance, legacy projection), for tests.
+#[cfg(test)]
+pub(crate) fn test_broker_with_membership(
+    membership: WorkspaceTreeHandle,
+) -> qos_action_broker::collab_broker::AppActionBroker {
+    let authority = Arc::new(NativeWorkspaceAuthority(membership.clone()));
+    let services = HostServices {
+        legacy_workspace: Some(authority.clone()),
+        launcher: Some(Arc::new(NativeLauncher)),
+        workspace_governance: Some(Arc::new(NativeWorkspaceGovernance(membership))),
+        ..Default::default()
+    };
+    qos_action_broker::collab_broker_capnp::CapnpBrokerState::test_broker_with_authority(
+        authority, services,
+    )
 }
 
 use capnp::capability::Promise;
@@ -265,7 +601,7 @@ impl WorkspaceControlServices for NativeWorkspaceControl {
             .map_err(|_| capnp::Error::failed("invalid target device identity".into()))?;
         let network = self.0.clone();
         let session = network
-            .open_workspace_control(super::network::room_topic_id(room), target)
+            .open_workspace_control(super::network::room_topic_id(native_room(room)), target)
             .map_err(capnp::Error::failed)?;
         let initial_route = match session.route() {
             crate::network::WorkspaceControlRoute::Direct { .. } => {

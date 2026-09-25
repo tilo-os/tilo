@@ -71,7 +71,8 @@ impl ShellNetwork {
             return true;
         };
         let tree = replica.tree.read();
-        tree.workspaces
+        tree.desktop
+            .workspaces
             .iter()
             .any(|slot| room_topic_id(slot.room) == ws && tree.requires_native_owner(slot.room))
     }

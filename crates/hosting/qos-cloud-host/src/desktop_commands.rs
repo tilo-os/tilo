@@ -262,7 +262,7 @@ impl Store {
                 .filter_map(|entry| {
                     let salt = u16::from_str_radix(&entry, 16).ok()?;
                     let (value, _) = doc.get(&owners, &entry).ok()??;
-                    (salt != 0 && value.to_str() == Some(host.as_str())).then_some(salt)
+                    (salt != 0 && value.as_str() == Some(host.as_str())).then_some(salt)
                 })
                 .collect::<std::collections::BTreeSet<_>>()
         };
@@ -305,7 +305,7 @@ impl Store {
             .unwrap_or(0);
         let stored = doc
             .get(automerge::ROOT, "desktop_counter_v1")?
-            .and_then(|(value, _)| value.to_u64())
+            .and_then(|(value, _)| value.as_u64())
             .unwrap_or(1);
         let mut counter = stored.max(maximum + 1);
         let mut documents = vec![];

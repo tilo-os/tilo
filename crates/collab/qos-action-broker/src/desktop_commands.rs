@@ -328,6 +328,7 @@ fn desktop_command_action() -> PublishedAction {
             ),
         ],
         contract: desktop_contract(),
+        view: None,
         input: PublishedInput::None,
     }
 }
@@ -347,6 +348,7 @@ fn open_app_action(app: &str, title: &str) -> PublishedAction {
         operation_kind: tilo_actions::OperationKind::Effect,
         params: vec![],
         contract: desktop_contract(),
+        view: None,
         input: PublishedInput::None,
     }
 }
