@@ -589,6 +589,7 @@ mod wire_tests {
                 output: Some("x".into()),
                 configured: None,
                 error: None,
+                event: None,
             },
         )
         .unwrap();

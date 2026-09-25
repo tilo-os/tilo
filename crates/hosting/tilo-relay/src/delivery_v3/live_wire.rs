@@ -390,12 +390,19 @@ impl PresenceFrame {
 pub enum PreviewOp {
     /// Insert text at an anchor.
     Insert {
+        /// Where the text goes.
         at: LiveAnchor,
+        /// The inserted text.
         #[serde(deserialize_with = "preview_text")]
         text: String,
     },
     /// Delete `len` characters starting at an anchor.
-    Delete { at: LiveAnchor, len: u32 },
+    Delete {
+        /// Where the deletion starts.
+        at: LiveAnchor,
+        /// How many characters are deleted.
+        len: u32,
+    },
 }
 
 /// Ordered per-record stream frame.

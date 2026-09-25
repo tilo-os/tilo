@@ -886,11 +886,8 @@ codec!(RelaySubmission, 129);
 /// Generate an ephemeral nonce using the existing secure entropy provider.
 /// This creates no signing identity and conveys no authority.
 pub fn fresh_nonce() -> Result<[u8; 32], WireError> {
-    use rand::RngCore;
     let mut nonce = [0; 32];
-    rand::thread_rng()
-        .try_fill_bytes(&mut nonce)
-        .map_err(|_| WireError::Entropy)?;
+    getrandom::fill(&mut nonce).map_err(|_| WireError::Entropy)?;
     nonzero(nonce)?;
     Ok(nonce)
 }

@@ -7,7 +7,7 @@
 use super::auth::{self, Binding, Carrier, VerificationContext, VerifiedSession};
 use super::framing::{MAX_AUTH_BYTES, VERSION};
 use ed25519_dalek::{Signer, SigningKey, VerifyingKey};
-use rand::RngCore;
+use rand::Rng as _;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -170,7 +170,7 @@ impl RequestProof {
         device_key: &SigningKey,
     ) -> Result<Self, ProofError> {
         let mut nonce = [0; 32];
-        rand::thread_rng().fill_bytes(&mut nonce);
+        rand::rng().fill_bytes(&mut nonce);
         let mut wire = ProofWire {
             protocol: VERSION,
             session_id,

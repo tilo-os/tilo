@@ -1704,6 +1704,7 @@ async fn broadcast_webtransport_negotiate_client_all_server_transport_19() {
 ///
 /// The server binds a WebSocket TCP listener on a separate port.
 /// The client connects directly via ws://, bypassing QUIC entirely.
+#[cfg(feature = "websocket")]
 #[tracing_test::traced_test]
 #[tokio::test]
 async fn broadcast_websocket() {
@@ -1817,6 +1818,7 @@ async fn broadcast_websocket() {
 /// The client connects via `http://` to the WebSocket port. QUIC tries to
 /// reach that port over UDP and fails (no QUIC listener there). The WebSocket
 /// fallback converts `http://` → `ws://` and connects over TCP, succeeding.
+#[cfg(feature = "websocket")]
 #[tracing_test::traced_test]
 #[tokio::test]
 async fn broadcast_websocket_fallback() {
@@ -1936,12 +1938,14 @@ async fn broadcast_websocket_fallback() {
 /// so the regression tests below keep tracking "the newest", not a frozen value.
 /// Work-in-progress versions (e.g. `moq-lite-06-wip`) are excluded from the default
 /// set, so they don't count as "the newest" here until promoted.
+#[cfg(feature = "websocket")]
 const NEWEST_LITE: &str = "moq-lite-05";
 
 /// Regression guard for the WebSocket ALPN path. Lite02 over WebSocket means
 /// the qmux subprotocol negotiation produced a bare `moql` (or no match)
 /// instead of `moq-lite-04`, which falls through to legacy SETUP negotiation
 /// and picks Lite02. This test fails immediately if that happens.
+#[cfg(feature = "websocket")]
 #[tracing_test::traced_test]
 #[tokio::test]
 async fn broadcast_websocket_uses_newest_version() {
@@ -2012,6 +2016,7 @@ async fn broadcast_websocket_uses_newest_version() {
 /// regressed (and would also tend to drag the version down to Lite02 on
 /// older relays). We bind WebSocket TCP and QUIC UDP to the same port,
 /// then disable the head start so the race is genuine.
+#[cfg(feature = "websocket")]
 #[tracing_test::traced_test]
 #[tokio::test]
 async fn broadcast_race_quic_wins() {
@@ -2440,6 +2445,7 @@ async fn idle_subscription_releases_the_viewer_count() {
 		.expect("server task failed");
 }
 
+#[cfg(feature = "websocket")]
 #[tracing_test::traced_test]
 #[tokio::test]
 async fn websocket_unauthorized_handshake_is_explicit() {
@@ -2477,6 +2483,7 @@ async fn websocket_unauthorized_handshake_is_explicit() {
 		.expect("server task failed");
 }
 
+#[cfg(feature = "websocket")]
 #[tracing_test::traced_test]
 #[tokio::test]
 async fn reconnect_stops_on_websocket_unauthorized() {
@@ -2708,10 +2715,12 @@ fn test_client() -> moq_native::Client {
 	config.init().expect("failed to init client")
 }
 
+#[cfg(feature = "websocket")]
 fn assert_connect_error(err: &moq_native::Error, expected: moq_native::ConnectError) {
 	assert_eq!(err.connect_error(), Some(expected), "unexpected error: {err}",);
 }
 
+#[cfg(feature = "websocket")]
 fn expect_connect_err(result: moq_native::Result<moq_net::Session>) -> moq_native::Error {
 	match result {
 		Ok(_) => panic!("client connect unexpectedly succeeded"),

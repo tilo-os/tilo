@@ -6,7 +6,7 @@
 //! durable admission is opened by these primitives.
 
 use ed25519_dalek::{Signer, SigningKey, VerifyingKey};
-use rand::RngCore;
+use rand::Rng as _;
 use serde::{Deserialize, Serialize};
 use tilo_user_identity::{DeviceCert, RevocationList, verify_device_cert_at};
 
@@ -276,8 +276,8 @@ impl Challenge {
         }
         let mut server_nonce = [0; 32];
         let mut session_id = [0; 16];
-        rand::thread_rng().fill_bytes(&mut server_nonce);
-        rand::thread_rng().fill_bytes(&mut session_id);
+        rand::rng().fill_bytes(&mut server_nonce);
+        rand::rng().fill_bytes(&mut session_id);
         let transcript = Transcript {
             protocol: VERSION,
             binding: context.binding.clone(),

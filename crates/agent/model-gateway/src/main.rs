@@ -24,7 +24,7 @@ use clap::{Parser, Subcommand};
 #[cfg(test)]
 use tilo_model_gateway::read_frame;
 use tilo_model_gateway::{
-    EVENT_TOOL_CALL, EVENT_TOOL_CALL_DELTA, FaceImage, Frame, MAX_DELTA_EVENTS, MAX_FRAME_BYTES,
+    EVENT_TOOL_CALL, EVENT_TOOL_CALL_DELTA, FRAMING, FaceImage, Frame, MAX_DELTA_EVENTS,
     MAX_STREAM_EVENTS, PlanTrace, RPC_VERSION, Request, Response, TraceEvent, VisionImage,
     write_frame,
 };
@@ -282,10 +282,7 @@ fn read_request_frame(stream: &mut UnixStream) -> Result<Zeroizing<Vec<u8>>, ()>
         .set_read_timeout(Some(FRAME_TIMEOUT))
         .map_err(|_| ())?;
     stream.read_exact(&mut length[1..]).map_err(|_| ())?;
-    let length = usize::try_from(u32::from_le_bytes(length)).map_err(|_| ())?;
-    if length > MAX_FRAME_BYTES {
-        return Err(());
-    }
+    let length = FRAMING.decode_prefix(length).map_err(|_| ())?;
     let mut body = Zeroizing::new(vec![0_u8; length]);
     stream.read_exact(&mut body).map_err(|_| ())?;
     Ok(body)
