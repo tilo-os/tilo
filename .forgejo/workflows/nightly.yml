@@ -46,6 +46,10 @@ jobs:
       VK_DRIVER_FILES: /usr/share/vulkan/icd.d/lvp_icd.${{ matrix.arch }}.json
       WGPU_ADAPTER_NAME: llvmpipe
       XDG_RUNTIME_DIR: /tmp/tilo-xdg-runtime
+      # Property tests that default to a short run for pull requests read
+      # this and search the full case count once a day. 256 is proptest's
+      # own default, so tests without an explicit count are unaffected.
+      PROPTEST_CASES: "256"
       # Keep this identical to the nextest gpu-golden override. These tests
       # need an idle software Vulkan renderer, not merely serialization with
       # one another; the isolated tail below retains full daily coverage.
