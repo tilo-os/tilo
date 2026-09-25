@@ -709,17 +709,17 @@ RUN : > /out/browser-runtime-publisher.hex \
          && test -x /out/optional/browser \
          && /out/tilo-runtime-bundle key generate --out /out/browser-runtime-identity.json \
          && /out/tilo-runtime-bundle build \
-              --version "${RUNTIME_VERSION}-browser" --arch "$(uname -m)" --from / \
+              --version 2026.7.0-browser --arch "$(uname -m)" --from / \
               --include /out/optional/browser \
               --identity /out/browser-runtime-identity.json \
-              --out "/usr/lib/tilo-runtime/${RUNTIME_VERSION}-browser" \
+              --out /usr/lib/tilo-runtime/2026.7.0-browser \
          && /out/tilo-runtime-bundle key pubkey \
               --identity /out/browser-runtime-identity.json \
               > /out/browser-runtime-publisher.hex \
          && /out/tilo-runtime-bundle verify \
-              "/usr/lib/tilo-runtime/${RUNTIME_VERSION}-browser" \
+              /usr/lib/tilo-runtime/2026.7.0-browser \
               --require-publisher "$(cat /out/browser-runtime-publisher.hex)" \
-         && test -x "/usr/lib/tilo-runtime/${RUNTIME_VERSION}-browser/lib/browser" \
+         && test -x /usr/lib/tilo-runtime/2026.7.0-browser/lib/browser \
          && if [ "$(uname -m)" = x86_64 ]; then cet=-Wl,-z,shstk; else cet=; fi \
          && cc -std=c11 -Wall -Wextra -Werror -O2 -fPIE -pie \
               -fstack-protector-strong -Wl,-z,relro,-z,now ${cet} \
@@ -753,10 +753,10 @@ RUN BIN_DIR=/out/thin-apps \
     && { [ "${TILO_PREBUILT_APPS}" != 1 ] \
          || [ "${TILO_WITH_BROWSER}" = 0 ] \
          || { mkdir -p /tmp/browser-package-repo/apps/browser \
-            && sed "s#tilo-runtime/${RUNTIME_VERSION}\"#tilo-runtime/${RUNTIME_VERSION}-browser\"#" \
+            && sed "s#tilo-runtime/${RUNTIME_VERSION}\"#tilo-runtime/2026.7.0-browser\"#" \
                  /build/apps/browser/tilo-app.toml \
                  > /tmp/browser-package-repo/apps/browser/tilo-app.toml \
-            && grep -Eq '^runtime[[:space:]]*=[[:space:]]*"tilo-runtime/2026\.07-browser"$' \
+            && grep -Eq '^runtime[[:space:]]*=[[:space:]]*"tilo-runtime/2026\.7\.0-browser"$' \
                  /tmp/browser-package-repo/apps/browser/tilo-app.toml \
             && REPO=/tmp/browser-package-repo \
             BIN_DIR=/out/browser-app \
