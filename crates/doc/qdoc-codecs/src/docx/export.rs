@@ -478,7 +478,6 @@ fn write_lists_and_styles(
 pub(crate) fn export(doc: DocRef, content: &dyn ContentSource) -> Result<Vec<u8>, CodecError> {
     let snapshot = doc.materialize();
     let snap = &Resolved::new(&snapshot, content);
-    let hf_parts = super::headers::export_parts(&doc);
     let cols = super::columns::section_columns_xml(&doc).unwrap_or_default();
 
     let mut c = DocxContainer { parts: Vec::new() };
@@ -503,7 +502,9 @@ pub(crate) fn export(doc: DocRef, content: &dyn ContentSource) -> Result<Vec<u8>
         })
         .collect();
     let breaks: Vec<&str> = section_breaks.iter().map(String::as_str).collect();
-    let section = super::section::plan(&mut c, original_sectpr, &breaks, &hf_parts, &cols);
+    let keep = kept_regions(&doc, &c, &breaks, original_sectpr);
+    let hf_parts = super::headers::export_parts(&doc, keep);
+    let section = super::section::plan(&mut c, original_sectpr, &breaks, &hf_parts, keep, &cols);
     let numbering = Numbering::new(c.get("word/numbering.xml"));
     let root = qdoc::model::preserved_part(
         doc.doc,
@@ -594,6 +595,31 @@ pub(crate) fn export(doc: DocRef, content: &dyn ContentSource) -> Result<Vec<u8>
     build_document_rels(&mut c, &flags, &w, &images);
 
     c.write()
+}
+
+/// Which imported default header/footer parts are written back as they are: those whose region
+/// the model still holds unedited (see `headers::region_unchanged`). The parts are found the
+/// way import found them, from the section properties and the carried relationships.
+fn kept_regions(
+    doc: &DocRef,
+    c: &DocxContainer,
+    section_breaks: &[&str],
+    final_sectpr: Option<&str>,
+) -> super::headers::KeptRegions {
+    use qdoc::model::Region;
+    let sections: String = section_breaks.iter().copied().chain(final_sectpr).collect();
+    let (header, footer) = super::headers::resolve_default_parts(
+        sections.as_bytes(),
+        c.get("word/_rels/document.xml.rels"),
+    );
+    let unchanged = |part: Option<String>, region: Region| {
+        part.and_then(|p| c.get(&p))
+            .is_some_and(|xml| super::headers::region_unchanged(xml, region, doc))
+    };
+    super::headers::KeptRegions {
+        header: unchanged(header, Region::Header),
+        footer: unchanged(footer, Region::Footer),
+    }
 }
 
 /// The `<w:docDefaults>` block declaring a document default language, read by
