@@ -20,6 +20,7 @@ use std::sync::mpsc::{SyncSender, TrySendError, sync_channel};
 use std::sync::{Mutex, PoisonError};
 
 use automerge::{AutoCommit, ObjId};
+use iroh_base::{EndpointId, SecretKey};
 use taffy::{NodeId, Style, TaffyTree};
 use uuid::Uuid;
 use vello::Scene;
@@ -1591,7 +1592,7 @@ impl RemoteApp {
                 Err(e) => LiveSession::Error(e.to_string()),
             },
             ConnectionKind::Tilo => {
-                let target = match c.host.parse::<iroh::EndpointId>() {
+                let target = match c.host.parse::<EndpointId>() {
                     Ok(target) => *target.as_bytes(),
                     Err(_) => {
                         return LiveSession::Error(
@@ -2062,7 +2063,7 @@ fn seed_connections() -> Vec<Connection> {
 /// First half of [`seed_connections`]' roster — split out only to stay under
 /// the line-count limit; order matters (it's the on-screen list order).
 fn seed_connections_lab_and_office() -> Vec<Connection> {
-    let studio_node = iroh::SecretKey::from_bytes(&[17; 32]).public().to_string();
+    let studio_node = SecretKey::from_bytes(&[17; 32]).public().to_string();
     vec![
         ConnectionSeed {
             name: "Build Box",
@@ -2122,7 +2123,7 @@ fn seed_connections_lab_and_office() -> Vec<Connection> {
 /// Second half of [`seed_connections`]' roster — see
 /// [`seed_connections_lab_and_office`].
 fn seed_connections_remote_and_backup() -> Vec<Connection> {
-    let workshop_laptop = iroh::SecretKey::from_bytes(&[29; 32]).public().to_string();
+    let workshop_laptop = SecretKey::from_bytes(&[29; 32]).public().to_string();
     vec![
         ConnectionSeed {
             name: "Edge Gateway",
@@ -2180,10 +2181,10 @@ fn seed_connections_remote_and_backup() -> Vec<Connection> {
 }
 
 fn seed_tilo_devices() -> Vec<TiloDevice> {
-    let studio_node = iroh::SecretKey::from_bytes(&[17; 32]).public().to_string();
-    let workshop_laptop = iroh::SecretKey::from_bytes(&[29; 32]).public().to_string();
-    let living_room_tv = iroh::SecretKey::from_bytes(&[41; 32]).public().to_string();
-    let garage_pi = iroh::SecretKey::from_bytes(&[53; 32]).public().to_string();
+    let studio_node = SecretKey::from_bytes(&[17; 32]).public().to_string();
+    let workshop_laptop = SecretKey::from_bytes(&[29; 32]).public().to_string();
+    let living_room_tv = SecretKey::from_bytes(&[41; 32]).public().to_string();
+    let garage_pi = SecretKey::from_bytes(&[53; 32]).public().to_string();
     vec![
         TiloDevice {
             name: "Studio Node".into(),
@@ -7473,7 +7474,7 @@ mod tests {
             .id;
         app.apply(Action::RequestConnect(id), &mut doc());
         app.workspace.get_mut(id).expect("profile").host =
-            iroh::SecretKey::generate().public().to_string();
+            SecretKey::generate().public().to_string();
 
         app.apply(Action::ConfirmPending, &mut doc());
 
@@ -7555,7 +7556,7 @@ mod tests {
     #[test]
     fn connect_tilo_starts_the_production_broker_transport_without_dev_gate() {
         let mut app = RemoteApp::new_demo();
-        let target = iroh::SecretKey::generate().public();
+        let target = SecretKey::generate().public();
         let id = app
             .workspace
             .connections()
@@ -7585,7 +7586,7 @@ mod tests {
             .find(|connection| connection.kind == ConnectionKind::Tilo)
             .expect("demo Tilo connection")
             .clone();
-        let target = iroh::SecretKey::generate().public();
+        let target = SecretKey::generate().public();
         connection.host = target.to_string();
         let session = app.start_live(&connection);
         assert!(matches!(
@@ -7612,7 +7613,7 @@ mod tests {
             .find(|connection| connection.kind == ConnectionKind::Tilo)
             .expect("demo Tilo connection")
             .clone();
-        connection.host = iroh::SecretKey::generate().public().to_string();
+        connection.host = SecretKey::generate().public().to_string();
         let live = app.start_live(&connection);
         app.live = Some(live);
         let session_id = match app.live.as_ref() {

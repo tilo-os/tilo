@@ -1357,11 +1357,10 @@ pub(crate) fn build_workspace_root_with_scene_parts(
         // `percent(1.0)` height overflowed the viewport by the bar height and apps
         // painted right up to the absolute bottom.
         .with_fill_remaining_height()
-        // 8px is the minimum keeping the active-tile bottom from clipping
-        // the windowed DE's edge — the tile-host's bloom shadow paints up
-        // to 120px past `self.rect.y1` (`TileHost::draw_steady_state`),
-        // and at 4px it visibly bled past the window edge.
-        .with_vertical_padding(8.0)
+        // Window surfaces meet the strip boundary. Shadows may be clipped at
+        // the viewport edge; moving the actual app inward to preserve a
+        // decorative effect creates a visible shell-owned gutter.
+        .with_vertical_padding(0.0)
         // No horizontal padding: `GroupRow::leading_inset` reserves
         // canvas-x [0, SIDEBAR_WIDTH] for the wheel disc, and wheel/strip
         // pan as one unit — a gutter here would split that canvas in two.

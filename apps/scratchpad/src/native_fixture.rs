@@ -36,9 +36,9 @@ pub fn seed_native_fixture(directory: &Path) -> anyhow::Result<NativeFixtureMani
         schema_version: 1,
         lines: 1000,
         editor_id: "note-editor",
-        body_hash: iroh_blobs::Hash::new(body.as_bytes()).to_hex(),
+        body_hash: blake3::hash(body.as_bytes()).to_hex().to_string(),
         body_bytes: body.len(),
-        prefixed_x_hash: iroh_blobs::Hash::new(prefixed.as_bytes()).to_hex(),
+        prefixed_x_hash: blake3::hash(prefixed.as_bytes()).to_hex().to_string(),
         prefixed_x_bytes: prefixed.len(),
     };
     let (mut state, mut root) = crate::open(directory)?;

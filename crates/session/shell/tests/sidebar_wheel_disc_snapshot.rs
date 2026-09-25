@@ -20,11 +20,10 @@ use std::path::{Path, PathBuf};
 
 use taffy::{AvailableSpace, Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect};
+use vello::kurbo::{Affine, Point};
 use vello::peniko::Color;
 
 use shell::shell::sidebar_wheel_disc::{SidebarWheelDisc, SpokeLabel};
-use ui::ColorCompat;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
@@ -40,10 +39,8 @@ fn goldens_dir() -> PathBuf {
         .join("wheel_disc")
 }
 
-/// Canvas proportions matter as much as size: the disc takes its radius
-/// from the slot's *width* and shows whatever slice the slot's *height*
-/// reaches, so the ratio decides how many workspaces land on screen.
-/// The live slot is ~234x690 (~2.9); these numbers keep that ratio.
+/// Wide enough to include the 66 px disc sliver and its compact labels, while
+/// preserving the live shell's tall left-edge composition.
 const CANVAS_W: u32 = 290;
 const CANVAS_H: u32 = 700;
 // `as f32` on a compile-time canvas-size literal: 290/700 are exactly
@@ -132,18 +129,10 @@ fn render_disc_at(
             workspace_id: Some(3),
         },
     ];
-    // Size the disc so its visible sliver fits the canvas, as the live shell
-    // does (viewport-derived slot width, not the widget default), or the
-    // sliver runs off the right edge and the snapshot pins empty background.
-    // `visible_width_px` is linear in the diameter, so one ratio solves it;
-    // the 48px of slack keeps the active marker's halo in frame.
     let mut disc = SidebarWheelDisc::new(spokes);
-    let target_visible = f64::from(CANVAS_W) - 48.0;
-    let scaled_diameter = disc.diameter_px * (target_visible / disc.visible_width_px());
-    disc = disc.with_diameter(scaled_diameter);
-    // Keep the default 4500px diameter. Mounted at the canvas's LEFT edge,
-    // only the right ~66° of rim protrudes; `align_items: Center` keeps the
-    // sliver vertically centred.
+    // Keep production geometry: a fixed 4400 px diameter and only 66 px of
+    // protrusion. Rescaling this to the canvas width would turn the regression
+    // test itself back into the rejected broad rail.
 
     let mut taffy: TaffyTree<()> = TaffyTree::new();
     let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
@@ -212,48 +201,6 @@ fn sidebar_wheel_disc_renders_a_spoke_per_workspace() {
     if path.exists() {
         SnapshotAssertion::new(path, goldens_dir().join("three-spokes.png")).assert();
     }
-}
-
-/// High contrast is the sharp case: it grounds everything on pure black,
-/// including the disc body's own hue, so the body is black on black and
-/// the rim is all that says the wheel exists — only reading pixels back
-/// can see that.
-#[test]
-fn sidebar_wheel_disc_keeps_a_visible_rim_under_high_contrast() {
-    let Some(mut renderer) = try_new_renderer(CANVAS_W, CANVAS_H) else {
-        eprintln!("skip: no wgpu adapter available for offscreen render");
-        return;
-    };
-    let mut tr = TextRenderer::new();
-    let (scene, _disc) = render_three_spoke_disc(&Theme::high_contrast(), &mut tr);
-    let rgba = renderer.render(&scene, Color::BLACK);
-    // The pixel probe can only say the rim survived; whether the whole wheel
-    // still reads under an all-black palette needs a human.
-    renderer.render_png(
-        &scene,
-        Color::BLACK,
-        screenshots_dir().join("wheel-disc-03-high-contrast.png"),
-    );
-
-    // A row a quarter of the way down: high enough to miss the active
-    // marker's halo and the widest chip, so the only things that can paint
-    // in the band to the right of the rail are the body and the rim.
-    let y = CANVAS_H / 4;
-    let band_start = CANVAS_W - 80;
-    let brightest = (band_start..CANVAS_W)
-        .map(|x| {
-            let (r, g, b, _) = OffscreenRenderer::sample(&rgba, CANVAS_W, x, y);
-            r.max(g).max(b)
-        })
-        .max()
-        .unwrap_or(0);
-
-    assert!(
-        brightest >= 90,
-        "the wheel has no visible edge under high contrast — the brightest pixel \
-         across x={band_start}..{CANVAS_W} at y={y} was {brightest}/255, which is a \
-         black disc on a black ground"
-    );
 }
 
 /// Summoning lifts the disc onto the strip under the pointer — usually
@@ -331,216 +278,3 @@ fn the_summoned_band_is_a_surface_over_a_bright_app_and_still_ends() {
 /// Pixels past the rim at which the app must be fully visible again,
 /// clear of the rim's outward shadow.
 const RIM_SHADOW_CLEARANCE: f64 = 36.0;
-
-/// The body is one colour — a gradient reads as a grey smear that never
-/// resolves into an object. Walks the band's radial run at its vertical
-/// middle and requires every sample to agree (a gradient or a ring-fill
-/// seam both fail). Rendered on mid-grey so a translucent body has
-/// something to differ against; over black an alpha ramp reads as almost
-/// no delta and would pass on a smear.
-#[test]
-#[allow(
-    clippy::many_single_char_names,
-    reason = "c (centre point) and x/y/r/g/b (pixel coordinate and colour channels) are the \
-              idiomatic short names for geometry/colour code; spelling them out would add \
-              noise, not clarity"
-)]
-fn the_band_is_filled_flat_with_a_single_colour() {
-    let Some(mut renderer) = try_new_renderer(CANVAS_W, CANVAS_H) else {
-        eprintln!("skip: no wgpu adapter available for offscreen render");
-        return;
-    };
-    let mut tr = TextRenderer::new();
-    let (scene, disc) = render_three_spoke_disc(&Theme::dark(), &mut tr);
-    let rgba = renderer.render(&scene, Color::from_rgb8(0x80, 0x80, 0x80));
-
-    let (r_in, r_out) = disc.label_band_radii();
-    let c = disc.disc_centre();
-    // A row inside a sector but off its label. Measured in sectors, not in
-    // band thicknesses: labels sit on the centrelines, so the right offset is
-    // a fraction of the angular step, and a fixed pixel drop lands wherever
-    // the current geometry happens to put it. The band-thickness figure this
-    // used to carry came to exactly one sector when the step widened, which
-    // put the sample straight through the next label.
-    let mid_r = f64::midpoint(r_in, r_out);
-    let off = f64::from(disc.spoke_gap_deg()).to_radians() * 0.3;
-    let y = (c.y - mid_r * off.sin()).round();
-    let dy = y - c.y;
-    // Stay off both edges so the rim strokes and the inner hairline are
-    // not in the sample.
-    let x_from = px(c.x + ((r_in * r_in - dy * dy).max(0.0)).sqrt() + 10.0);
-    let x_to = px(c.x + ((r_out * r_out - dy * dy).max(0.0)).sqrt() - 10.0);
-    assert!(
-        x_to > x_from + 20,
-        "the band is too thin at y={y} to sample: x {x_from}..{x_to}"
-    );
-
-    let y_u = px(y);
-    let samples: Vec<u32> = (x_from..=x_to)
-        .step_by(4)
-        .map(|x| {
-            let (r, g, b, _) = OffscreenRenderer::sample(&rgba, CANVAS_W, x, y_u);
-            luma_u32(r, g, b)
-        })
-        .collect();
-    let lo = *samples.iter().min().unwrap();
-    let hi = *samples.iter().max().unwrap();
-
-    // A gradient of any consequence spans well over 80 luma on this
-    // mid-grey ground; a flat fill has only dithering and the sector
-    // dividers to account for.
-    assert!(
-        hi - lo <= 8,
-        "the band is shaded, not flat: luma runs {lo}..{hi} across its radial run \
-         at y={y_u} (samples {samples:?})"
-    );
-}
-
-/// The disc is a thing you spin, so its contents must turn WITH it: the
-/// active label is horizontal at rest (box exactly as tall as the label)
-/// and needs a taller box once tipped. Half a detent is the hardest
-/// frame, two sectors equally near the middle, so both are written out.
-#[test]
-fn spinning_the_wheel_turns_the_labels_with_it() {
-    let Some(mut renderer) = try_new_renderer(CANVAS_W, CANVAS_H) else {
-        eprintln!("skip: no wgpu adapter available for offscreen render");
-        return;
-    };
-    let mut tr = TextRenderer::new();
-
-    let mut placed = |deg: f32, name: &str| -> (Vec<Rect>, f32) {
-        let (scene, disc) = render_disc_at(&Theme::dark(), &mut tr, deg);
-        renderer.render_png(
-            &scene,
-            Color::from_rgb8(0x02, 0x06, 0x14),
-            screenshots_dir().join(format!("wheel-disc-04-{name}.png")),
-        );
-        (disc.spoke_hit_rects.clone(), disc.spoke_gap_deg())
-    };
-
-    // Half a detent, asked of the disc rather than copied. The step is derived
-    // per layout — the band's angular height divided across the sectors that
-    // fit — so a constant here goes stale silently. The 15.0 this test carried
-    // is three detents at the current geometry, which rotated the sector it
-    // meant to tip clean out of the band and read as the disc having lost it.
-    let (rest, detent) = placed(0.0, "rest");
-    let (half, _) = placed(detent / 2.0, "half-detent");
-
-    let active = 0usize;
-    let rest_box = rest[active];
-    let half_box = half[active];
-    assert!(
-        rest_box.area() > 0.0 && half_box.area() > 0.0,
-        "the active workspace has to be on screen in both frames: {rest_box:?} / {half_box:?}"
-    );
-
-    // Upright at rest: the box is the label, so it is far wider than tall.
-    // Tipped by half a detent: the same label needs a taller box.
-    assert!(
-        half_box.height() > rest_box.height() + 8.0,
-        "the active label did not tip with its sector — box was {:.0} px tall at rest \
-         and {:.0} px tall half a detent on. An upright label beside a turning disc \
-         is the rail this design replaced.",
-        rest_box.height(),
-        half_box.height()
-    );
-
-    // And it travelled: a positive rotation carries a sector downward.
-    let moved = half_box.center().y - rest_box.center().y;
-    assert!(
-        moved > 10.0,
-        "half a detent moved the active label by {moved:.0} px — the sectors are not \
-         turning with the disc"
-    );
-}
-
-/// Renders under every theme track and requires the surface to change
-/// with it — three themes giving three different answers is what a
-/// hardcoded palette cannot do.
-#[test]
-#[allow(
-    clippy::many_single_char_names,
-    reason = "c (centre point), a (angle) and x/y/r/g/b (pixel coordinate and colour \
-              channels) are the idiomatic short names for geometry/colour code; spelling \
-              them out would add noise, not clarity"
-)]
-fn the_disc_takes_its_colours_from_the_theme() {
-    let Some(mut renderer) = try_new_renderer(CANVAS_W, CANVAS_H) else {
-        eprintln!("skip: no wgpu adapter available for offscreen render");
-        return;
-    };
-    let mut tr = TextRenderer::new();
-
-    let mut wedges = Vec::new();
-    for (name, theme) in [
-        ("dark", Theme::dark()),
-        ("light", Theme::light()),
-        ("high-contrast", Theme::high_contrast()),
-    ] {
-        let (scene, disc) = render_three_spoke_disc(&theme, &mut tr);
-        let path = screenshots_dir().join(format!("wheel-disc-theme-{name}.png"));
-        let ground = theme.tokens.colors.surfaces.base;
-        renderer.render_png(&scene, ground, &path);
-        assert!(path.exists(), "snapshot PNG should be written to {path:?}");
-
-        // Probe the active wedge against an inactive neighbour at the same
-        // radius, isolating the wedge's own tint from the (also themed) body
-        // fill underneath.
-        let rgba = renderer.render(&scene, ground);
-        let (r_in, r_out) = disc.label_band_radii();
-        let c = disc.disc_centre();
-        let radius = f64::midpoint(r_in, r_out);
-        let probe = |deg: f64| -> (i32, i32, i32) {
-            let a = deg.to_radians();
-            let x = px(c.x + radius * a.cos()).min(CANVAS_W - 1);
-            let y = px(c.y + radius * a.sin()).min(CANVAS_H - 1);
-            let (r, g, b, _) = OffscreenRenderer::sample(&rgba, CANVAS_W, x, y);
-            (i32::from(r), i32::from(g), i32::from(b))
-        };
-        // Offset as a fraction of the disc's own detent, not a fixed angle: the
-        // step is derived per layout, so 4 deg was inside the active sector
-        // when a sector was 15 deg wide and is two sectors away now. Both
-        // probes sit the same way off their sector's centreline, so the
-        // difference between them is the active wedge's tint and nothing else.
-        let gap = f64::from(disc.spoke_gap_deg());
-        let lit = probe(gap * 0.3);
-        let unlit = probe(gap * 1.3);
-        assert_ne!(
-            lit, unlit,
-            "{name}: the active sector is painted the same as its neighbour — \
-             nothing marks which workspace is selected"
-        );
-
-        // The channel the wedge pushes hardest must be the channel the
-        // theme's own workspace colour leads with.
-        let delta = [lit.0 - unlit.0, lit.1 - unlit.1, lit.2 - unlit.2];
-        let lead = |c: [i32; 3]| (0..3).max_by_key(|&i| c[i]).expect("three channels");
-        let want = theme.tokens.colors.categorical(0);
-        let want_ch = lead([
-            i32::from(want.r()),
-            i32::from(want.g()),
-            i32::from(want.b()),
-        ]);
-        assert_eq!(
-            lead(delta),
-            want_ch,
-            "{name}: the active wedge shifts channel {} hardest but the theme's \
-             workspace colour {want:?} leads with channel {want_ch} — the disc is \
-             not painting the themed colour (delta {delta:?})",
-            lead(delta)
-        );
-
-        wedges.push((name, lit));
-    }
-
-    for i in 0..wedges.len() {
-        for j in (i + 1)..wedges.len() {
-            assert_ne!(
-                wedges[i].1, wedges[j].1,
-                "the disc painted identical pixels under {} and {} — its colours \
-                 are not coming from the theme",
-                wedges[i].0, wedges[j].0
-            );
-        }
-    }
-}

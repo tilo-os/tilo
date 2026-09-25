@@ -3,8 +3,9 @@
 # screenshots, pull logs, and shut down. Designed for machines where qemu lives
 # in a distrobox and the host is immutable (see os/dev/_common.sh for config).
 #
-#   ./os/dev/vm.sh boot [--gl] [--disk PATH] [--tpm] [--secboot] [--attach PATH]
-#                                              start the VM (detached)
+#   ./os/dev/vm.sh boot [--gl] [--disk PATH] [--serial ID] [--tpm] [--secboot] [--attach PATH]
+#                                              start the VM (detached); --serial gives
+#                                              the boot disk a stable hardware serial
 #   ./os/dev/vm.sh boot-installer [--gl]       boot the custom installer + blank /dev/vdb
 #   ./os/dev/vm.sh boot-target [--gl]          boot the installed result (target.qcow2)
 #   TILO_VM_CYCLE=NAME ./os/dev/vm.sh init-cycle
@@ -101,9 +102,12 @@ char_key() {
 vm_running() { [ -f "$TILO_PIDFILE" ] && inenv "kill -0 \$(cat '$TILO_PIDFILE') 2>/dev/null"; }
 
 cmd_boot() {
-  local mode=2d disk="$TILO_DISK" attach=""
+  local mode=2d disk="$TILO_DISK" attach="" disk_serial=""
   while [ $# -gt 0 ]; do case "$1" in
     --gl) mode=gl;; --2d) mode=2d;; --window) mode=window;; --disk) disk="$2"; shift;;
+    # The installer binds a destructive target to WWN or serial; a virtio disk
+    # has neither unless QEMU is given one.
+    --serial) disk_serial="$2"; shift;;
     --tpm) TILO_TPM=1;; --no-tpm) TILO_TPM=0;;
     --secboot) TILO_SECBOOT=1;;
     # Attach a SECOND virtio disk (/dev/vdb), creating it blank if absent. Lets a
@@ -113,6 +117,9 @@ cmd_boot() {
     *) die "boot: unknown arg $1";; esac; shift; done
   [ -f "$disk" ] || die "disk not found: $disk (run os/dev/build-image.sh)"
   vm_running && die "VM already running (pid $(cat "$TILO_PIDFILE")); stop it first"
+  [[ "$disk_serial" =~ ^[A-Za-z0-9._-]{0,20}$ ]] || die "boot: --serial must be up to 20 of [A-Za-z0-9._-]"
+  local serial_arg=""
+  [ -z "$disk_serial" ] || serial_arg=",serial=$disk_serial"
   local attach_arg=""
   if [ -n "$attach" ]; then
     inenv "test -f '$attach' || qemu-img create -f qcow2 '$attach' '$TILO_TARGET_SIZE'" >/dev/null
@@ -129,7 +136,7 @@ cmd_boot() {
 
   local args="$(machine_args) $(qemu_accel_args) -m $TILO_MEM -smp $TILO_SMP \
     $(pflash_args "$varstore") \
-    -drive file=$disk,format=qcow2,if=virtio $attach_arg \
+    -drive file=$disk,format=qcow2,if=virtio$serial_arg $attach_arg \
     $display -nic user,model=virtio-net-pci,hostfwd=tcp:127.0.0.1:$TILO_SSH_PORT-:22 $(input_qemu_args) \
     -monitor unix:$TILO_MON,server,nowait -serial file:$TILO_SERIAL \
     -pidfile $TILO_PIDFILE -name tilo"

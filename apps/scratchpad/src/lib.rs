@@ -197,7 +197,7 @@ impl Widget for Scratchpad {
             "app": "so.tilo.scratchpad",
             "editor_id": "note-editor",
             "editor_focused": editor_focused,
-            "body_hash": iroh_blobs::Hash::new(body.as_bytes()).to_hex(),
+            "body_hash": blake3::hash(body.as_bytes()).to_hex().to_string(),
             "body_bytes": body.len(),
             "offset_x": offset_x,
             "offset_y": offset_y,

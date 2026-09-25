@@ -57,7 +57,7 @@ Tilo entry to the sign-in screen. Use the repository and commands in
 from the session menu, and sign in with the same local account.
 
 The first login creates or connects your Tilo collaboration identity and then
-offers a skippable three-screen desktop tour. It does not copy another
+offers a skippable four-step desktop tour. It does not copy another
 desktop's extensions or private settings. To switch back, sign out and select
 the previous session. Remove `tilo-session` with the same package manager only
 after signing in to another desktop.
@@ -125,6 +125,8 @@ The optional tour teaches the navigation model:
 1. **Move** through a horizontal strip of windows.
 2. **Arrange** strips inside workspaces.
 3. **Share** a workspace deliberately and review its permissions.
+4. **Begin** from the real desktop with the shortcuts and handoff actions you
+   just learned still in context.
 
 You can reopen it later by searching for **Desktop tour**. Start with Personal,
 open Notes from search, create one note, move between its window and Files, and
