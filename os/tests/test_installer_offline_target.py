@@ -89,6 +89,28 @@ class OfflineTargetTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "SLSA"):
                 target.checked_provenance(attestation, metadata)
 
+    def test_generic_child_binds_signed_generation_origin(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root, metadata, _, attestation = self.fixture(directory)
+            metadata["hardware_profile"] = "generic"
+            metadata["update_origin"] = "code.sandbox.example/qos/tilo:gen2"
+            (root / "target.json").write_text(json.dumps(metadata))
+            target.read_target(root)
+            wrapper = json.loads(attestation)[0]
+            statement = json.loads(base64.b64decode(wrapper["payload"]))
+            external = statement["predicate"]["buildDefinition"]["externalParameters"]
+            external.clear()
+            external["generation"] = 2
+            statement["predicate"]["buildDefinition"]["resolvedDependencies"].pop()
+            wrapper["payload"] = base64.b64encode(json.dumps(statement).encode()).decode()
+            signed = json.dumps([wrapper])
+            provenance = target.checked_provenance(signed, metadata)
+            self.assertEqual(provenance["generation"], 2)
+            self.assertIsNone(provenance["firmware_candidate"])
+            metadata["update_origin"] = "code.sandbox.example/qos/tilo:gen3"
+            with self.assertRaisesRegex(ValueError, "SLSA"):
+                target.checked_provenance(signed, metadata)
+
     def test_ambiguous_or_unsigned_target_fails(self):
         with tempfile.TemporaryDirectory() as directory:
             root, metadata, _, _ = self.fixture(directory)
