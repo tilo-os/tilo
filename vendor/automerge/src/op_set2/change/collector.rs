@@ -8,7 +8,7 @@ use std::num::NonZero;
 
 use super::super::types::{Action, ActorIdx};
 use super::super::ValueMeta;
-use super::{length_prefixed_bytes, shift_range};
+use super::length_prefixed_bytes;
 use super::{ActorMapper, ChangeOpsColumns};
 
 use crate::author::Authors;
@@ -19,7 +19,6 @@ use crate::op_set2::op_set::{IndexBuilder, MarkOrderValidator};
 use crate::storage::bundle::BundleChange;
 use crate::storage::change::{Change as StoredChange, Verified};
 use crate::storage::load::change_collector::Error;
-use crate::storage::{ChunkType, Header};
 use crate::{
     change::Change,
     op_set2::{ChangeMetadata, KeyRef, Op, OpBuilder, OpSet, ReadOpError, ScalarValue},
@@ -224,7 +223,8 @@ impl<'a> OpEncoderStrategy<'a> {
         let actor = cols.actor;
         let other_actors = cols.other_actors;
 
-        let mut data = Vec::with_capacity(col_data.len());
+        // qOS: the prefix is small; the chunk is assembled exactly once.
+        let mut data = Vec::new();
 
         leb128::write::unsigned(&mut data, change.deps.len() as u64).unwrap();
 
@@ -257,23 +257,9 @@ impl<'a> OpEncoderStrategy<'a> {
 
         ops_meta.raw_columns().write(&mut data);
 
-        let ops_data_start = data.len();
-        let ops_data = ops_data_start..(ops_data_start + col_data.len());
-
-        data.extend(col_data);
-        let extra_bytes = data.len()..(data.len() + change.extra.len());
-        if !change.extra.is_empty() {
-            data.extend(change.extra.as_ref());
-        }
-
-        let header = Header::new(ChunkType::Change, &data);
-
-        let mut bytes = Vec::with_capacity(header.len() + data.len());
-        header.write(&mut bytes);
-        bytes.extend(data);
-
-        let ops_data = shift_range(ops_data, header.len());
-        let extra_bytes = shift_range(extra_bytes, header.len());
+        let (header, bytes, ops_data, extra_bytes) =
+            super::assemble_change_chunk(&data, col_data, change.extra.as_ref());
+        drop(data);
 
         Ok(StoredChange {
             bytes: Cow::Owned(bytes),
@@ -522,16 +508,32 @@ impl<'a> ProgressiveEncoder<'a> {
         let insert = self.insert.save_to(data);
         let action = self.action.save_to(data);
         let value_meta = self.value_meta.save_to(data);
+        // qOS snapshot admission memory: encode the columns after the value
+        // into a small buffer first, so `data` grows exactly once to hold
+        // the value and them (no doubling of a large value). Same bytes.
+        let mut tail = Vec::new();
+        let pred_count = self.pred_count.save_to(&mut tail);
+        let pred_actor = self.pred_actor.save_to_and_remap(&mut tail, &remap);
+        let pred_ctr = self.pred_ctr.save_to(&mut tail);
+        let expand = self.expand.save_to_unless(&mut tail, false);
+        let mark_name = self.mark_name.save_to_unless(&mut tail, None);
+        data.reserve_exact(self.value.len() + tail.len());
         let value = {
             let start = data.len();
-            data.extend(self.value);
+            data.extend_from_slice(&self.value);
             start..data.len()
         };
-        let pred_count = self.pred_count.save_to(data);
-        let pred_actor = self.pred_actor.save_to_and_remap(data, &remap);
-        let pred_ctr = self.pred_ctr.save_to(data);
-        let expand = self.expand.save_to_unless(data, false);
-        let mark_name = self.mark_name.save_to_unless(data, None);
+        drop(self.value);
+        let base = data.len();
+        data.extend_from_slice(&tail);
+        let shift = |r: std::ops::Range<usize>| r.start + base..r.end + base;
+        let (pred_count, pred_actor, pred_ctr, expand, mark_name) = (
+            shift(pred_count),
+            shift(pred_actor),
+            shift(pred_ctr),
+            shift(expand),
+            shift(mark_name),
+        );
 
         ChangeOpsColumns {
             obj_actor,

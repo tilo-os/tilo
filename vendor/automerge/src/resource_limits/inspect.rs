@@ -9,6 +9,7 @@ use sha2::{Digest, Sha256};
 pub(super) const MAX_COLUMNS: usize = 128;
 /// Operation action column (id 4, unsigned integer).
 const ACTION_SPEC: u32 = 0x42;
+const VALUE_RAW_SPEC: u32 = 0x57;
 // Exact miniz_oxide 0.8.9 has one boxed InflateState: a fixed 32 KiB
 // dictionary and fixed Huffman arrays, with no growable owned fields. Charge
 // that concrete layout and the scanner's fixed output scratch before creation.
@@ -220,6 +221,16 @@ pub(super) fn inspect(
             scan.shape.leading_document_bytes = scan.shape.normalized_bytes - chunk_start.0;
             scan.shape.leading_document_operations = scan.shape.operations - chunk_start.1;
             scan.shape.leading_document_changes = scan.shape.changes - chunk_start.2;
+            scan.shape.leading_document_queued_ops = scan.shape.last_document_queued_ops;
+            scan.shape.leading_document_raw_values = scan.shape.last_document_raw_values;
+            scan.shape.leading_document_literal_ops = scan.shape.last_document_literal_ops;
+            // Ordered ops' change columns: every doc run can be cut once per
+            // change switch between consecutive rows (and each change starts
+            // its own columns), costing a new header and value per cut.
+            scan.shape.leading_document_ordered_encoding = scan.shape.last_document_switches
+                .saturating_add(scan.shape.leading_document_changes)
+                .saturating_mul(scan.shape.last_document_ordered_per_switch)
+                .saturating_add(scan.shape.last_document_ordered_bytes);
         }
     }
     Ok(scan.shape)
@@ -296,7 +307,7 @@ impl Scan<'_> {
                 let heads = self.hashes(&mut reader)?;
                 let (changes, changes_len, change_meta) = self.metadata(&mut reader)?;
                 let (ops, ops_len, op_meta) = self.metadata(&mut reader)?;
-                super::structure::document(&changes[..changes_len], reader.0,
+                super::structure::document(&changes[..changes_len], &ops[..ops_len], reader.0,
                     actors, self.limits, self.allowance, &mut self.shape)?;
                 self.normalized(body.len() - reader.0.len() - change_meta - op_meta)?;
                 self.columns(&changes[..changes_len], &mut reader, false, true)?;
@@ -425,9 +436,30 @@ impl Scan<'_> {
             } else {
                 self.limits.max_changes
             };
-            let values = self.column(bytes, kind, row_limit, operations)?;
+            let (values, runs) = self.column(bytes, kind, row_limit, operations)?;
+            let group = (column.spec & !8) >> 4;
+            if operations && may_compress && kind != 7 && kind != 0 && group != 2 && group != 8 {
+                // A document op column the load collector re-encodes per
+                // change: literal values are partitioned among changes (their
+                // bytes count once); a run or null run can be cut by change
+                // switches (charged per switch below) and otherwise costs at
+                // most its own bytes. Per cut: a value (≤ 10 LEB bytes for
+                // numeric columns; string contents are expanded value bytes,
+                // charged separately) plus ≤ 4 header bytes.
+                let width = if matches!(kind, 1 | 2 | 3 | 6) { 10 } else { 0 };
+                self.shape.last_document_ordered_bytes = self.shape.last_document_ordered_bytes
+                    .saturating_add(bytes.len())
+                    .saturating_add(runs.saturating_mul(width + 4));
+                self.shape.last_document_ordered_per_switch =
+                    self.shape.last_document_ordered_per_switch.saturating_add(width + 4);
+            }
             if operations && column.spec & !8 == ACTION_SPEC {
                 self.actions(bytes)?;
+            }
+            if operations && may_compress && column.spec & !8 == VALUE_RAW_SPEC {
+                // The raw value column is copied once on load (not
+                // re-segmented); load bounds charge it separately.
+                self.shape.last_document_raw_values = bytes.len();
             }
             if !grouped && kind != 7 {
                 rows = rows.max(values);
@@ -489,12 +521,13 @@ impl Scan<'_> {
         kind: u32,
         maximum: usize,
         operations: bool,
-    ) -> Result<usize, Error> {
+    ) -> Result<(usize, usize), Error> {
         if kind == 7 {
-            return Ok(0);
+            return Ok((0, 0));
         }
         let mut reader = Reader(bytes);
         let mut rows = 0;
+        let mut runs = 0usize;
         let row_error = || {
             if operations {
                 Error::Operations
@@ -506,13 +539,16 @@ impl Scan<'_> {
             if kind == 4 {
                 let count = reader.size()?;
                 add(&mut rows, count, maximum, row_error())?;
+                runs += 1;
                 continue;
             }
             let run = reader.sint()?;
             if run == 0 {
                 let count = reader.size()?;
                 add(&mut rows, count, maximum, row_error())?;
+                runs += 1;
             } else if run > 0 {
+                runs += 1;
                 let count = usize::try_from(run).map_err(|_| row_error())?;
                 add(&mut rows, count, maximum, row_error())?;
                 self.value(&mut reader, kind, count)?;
@@ -525,7 +561,7 @@ impl Scan<'_> {
                 }
             }
         }
-        Ok(rows)
+        Ok((rows, runs))
     }
     fn value(&mut self, reader: &mut Reader<'_>, kind: u32, count: usize) -> Result<(), Error> {
         let bytes = match kind {
