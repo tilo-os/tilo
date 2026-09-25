@@ -599,22 +599,19 @@ impl BodyState {
         }
     }
 
-    /// Record `raw` as an inline atom at the current position: a placeholder character covered
-    /// by a mark holding the element verbatim.
+    /// Record `raw` as an inline atom at the current position: its visible text (or one
+    /// placeholder when it shows none, see `preserve::covered_text`), covered by a mark holding
+    /// the element verbatim.
     fn push_atom(&mut self, doc: &mut DocMut, raw: String) {
         self.ensure_continuation(doc);
         if let Some(b) = self.cur.clone() {
             let idx = self.cur_len;
-            append(
-                doc,
-                Some(b.as_str()),
-                &mut self.cur_len,
-                &FIELD_PLACEHOLDER.to_string(),
-            );
+            let text = crate::preserve::covered_text(&raw, MARK_ODT_XML);
+            append(doc, Some(b.as_str()), &mut self.cur_len, &text);
             self.pending_marks.push((
                 b,
                 idx,
-                idx.saturating_add(1),
+                self.cur_len,
                 MARK_ODT_XML.to_string(),
                 MarkValue::Str(raw),
             ));
@@ -2083,7 +2080,8 @@ mod tests {
         let ph = qdoc::schema::FIELD_PLACEHOLDER;
         assert_eq!(snap.blocks.len(), 1, "{snap:?}");
         let p = &snap.blocks[0];
-        assert_eq!(p.text, format!("{ph}Page {ph} of  two{ph} after\ttab"));
+        // The field shows its text; the shape and the text box show none.
+        assert_eq!(p.text, format!("{ph}Page 3 of  two{ph} after\ttab"));
         assert_eq!(
             p.marks
                 .iter()
@@ -2117,7 +2115,27 @@ mod tests {
             .unwrap();
         assert_eq!(
             again.materialize().blocks[0].text,
-            format!("{ph}Page {ph} of  two{ph} after\ttab!")
+            format!("{ph}Page 3 of  two{ph} after\ttab!")
+        );
+
+        // Text typed right after the field follows it; replacing the field's text writes the
+        // new text instead of the field.
+        let export_text = |d: &Document| {
+            let out = OdtCodec
+                .export(d.as_ref(), &tilo_content::NoContent)
+                .unwrap();
+            let c = OdtContainer::read(&out).unwrap();
+            String::from_utf8(c.get("content.xml").unwrap().to_vec()).unwrap()
+        };
+        let after_field = "_Page 3".chars().count();
+        d.splice_text(&id, after_field, 0, "x");
+        let xml = export_text(&d);
+        assert!(xml.contains(&format!("{field}x of")), "{xml}");
+        d.splice_text(&id, after_field.saturating_sub(1), 2, "4");
+        let xml = export_text(&d);
+        assert!(
+            !xml.contains("text:page-number") && xml.contains("Page 4 of"),
+            "{xml}"
         );
     }
 

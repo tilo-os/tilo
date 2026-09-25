@@ -200,7 +200,7 @@ struct BodyState {
     // In-progress verbatim capture of an unmodeled inline element or complex field.
     inline: Option<InlineCapture>,
     // (block, char index, verbatim XML) of each inline atom, marked once all text is in.
-    atoms: Vec<(String, usize, String)>,
+    atoms: Vec<(String, usize, usize, String)>,
 
     // The table cell being read, and the open vertical merges: grid column → (the merge's
     // first cell, rows it spans so far).
@@ -316,14 +316,15 @@ impl BodyState {
         }
     }
 
-    /// Record `raw` as an inline atom at the current position: a placeholder character marked
-    /// with the verbatim XML once all text is in.
+    /// Record `raw` as an inline atom at the current position: its visible text (or one
+    /// placeholder when it shows none, see `preserve::covered_text`), covered by a mark holding
+    /// the element verbatim.
     fn push_atom(&mut self, doc: &mut DocMut, raw: String) {
         self.ensure_continuation(doc);
         if let Some(b) = self.cur.clone() {
             let idx = self.cur_len;
-            self.append(doc, &FIELD_PLACEHOLDER.to_string());
-            self.atoms.push((b, idx, raw));
+            self.append(doc, &crate::preserve::covered_text(&raw, MARK_DOCX_XML));
+            self.atoms.push((b, idx, self.cur_len, raw));
         }
     }
 
@@ -1326,8 +1327,8 @@ impl BodyState {
             let end = idx.saturating_add(1);
             doc.add_mark(&b, idx, end, MARK_NOTE_REF, nid.as_str());
         }
-        for (b, idx, xml) in self.atoms {
-            doc.add_mark(&b, idx, idx.saturating_add(1), MARK_DOCX_XML, xml.as_str());
+        for (b, start, end, xml) in self.atoms {
+            doc.add_mark(&b, start, end, MARK_DOCX_XML, xml.as_str());
         }
         for (b, start, end, kept) in self.rpr_marks {
             doc.add_mark(&b, start, end, super::paragraph::MARK_RPR, kept.as_str());
@@ -1744,7 +1745,8 @@ mod tests {
             .unwrap();
         let p = &d.materialize().blocks[0];
         let ph = qdoc::schema::FIELD_PLACEHOLDER;
-        assert_eq!(p.text, format!("page {ph} and {ph}{ph}end"));
+        // The field and the content control show their text; the page break shows none.
+        assert_eq!(p.text, format!("page 7 and ctl{ph}end"));
         let atoms = p
             .marks
             .iter()
@@ -1776,8 +1778,22 @@ mod tests {
             .unwrap();
         assert_eq!(
             again.materialize().blocks[0].text,
-            format!("The page {ph} and {ph}{ph}end")
+            format!("The page 7 and ctl{ph}end")
         );
+
+        // Editing a kept element's text writes the edited text instead of the element.
+        let at_ctl = "The page 7 and ".chars().count();
+        d.splice_text(&id, at_ctl, 3, "CTL");
+        let out = DocxCodec
+            .export(d.as_ref(), &tilo_content::NoContent)
+            .unwrap();
+        let c = DocxContainer::read(&out).unwrap();
+        let xml = String::from_utf8(c.get("word/document.xml").unwrap().to_vec()).unwrap();
+        assert!(
+            !xml.contains("<w:sdt>") && xml.contains(" and CTL</w:t>"),
+            "{xml}"
+        );
+        assert!(xml.contains(field), "the unedited field stays: {xml}");
     }
 
     #[test]

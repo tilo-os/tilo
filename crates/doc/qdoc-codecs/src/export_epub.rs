@@ -48,7 +48,8 @@ pub fn render_epub(
     snap: &DocSnapshot,
     content: &dyn ContentSource,
 ) -> Result<Vec<u8>, DocEpubError> {
-    let snap = &Resolved::new(snap, content);
+    let snap = qdoc::export::without_kept_placeholders(snap);
+    let snap = &Resolved::new(&snap, content);
     // 1. Collect image blobs into packaged resources, mapping blob-hash → item.
     let images = collect_images(snap);
 

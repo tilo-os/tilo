@@ -22,24 +22,45 @@ const INSERTED: &str = "Inserted by the fidelity test.";
 struct Fixture {
     name: &'static str,
     bytes: &'static [u8],
+    /// Lines of `LibreOffice`'s own text conversion of the fixture that show fields' results and
+    /// content controls' contents: the imported model's text must show them too.
+    shows: &'static [&'static str],
 }
+
+const STRUCTURE_SHOWS: &[&str] = &[];
+const ANNOTATIONS_SHOWS: &[&str] = &["See Notes and comments above."];
+// LibreOffice's conversion shows the page field as 0 (a text file has no pages), the model
+// the result the document stores; the page line is left out.
+const FIELDS_SHOWS: &[&str] = &[
+    "Title field: Fields fixture; date: 06.05.24.",
+    "is the codename; again: Falcon.",
+    "Table 1: a caption.",
+    "Plain text control: ACME Corp end.",
+    "Checkbox control: \u{2612} done.",
+    "Dropdown control: green and date control: 2024-05-06.",
+];
+const DRAWINGS_SHOWS: &[&str] = &["Einstein wrote ", " famously.", " A chart."];
 
 const DOCX_FIXTURES: &[Fixture] = &[
     Fixture {
         name: "lo-structure.docx",
         bytes: include_bytes!("../../fixtures/lo-structure.docx"),
+        shows: STRUCTURE_SHOWS,
     },
     Fixture {
         name: "lo-annotations.docx",
         bytes: include_bytes!("../../fixtures/lo-annotations.docx"),
+        shows: ANNOTATIONS_SHOWS,
     },
     Fixture {
         name: "lo-fields.docx",
         bytes: include_bytes!("../../fixtures/lo-fields.docx"),
+        shows: FIELDS_SHOWS,
     },
     Fixture {
         name: "lo-drawings.docx",
         bytes: include_bytes!("../../fixtures/lo-drawings.docx"),
+        shows: DRAWINGS_SHOWS,
     },
 ];
 
@@ -47,18 +68,22 @@ const ODT_FIXTURES: &[Fixture] = &[
     Fixture {
         name: "lo-structure.odt",
         bytes: include_bytes!("../../fixtures/lo-structure.odt"),
+        shows: STRUCTURE_SHOWS,
     },
     Fixture {
         name: "lo-annotations.odt",
         bytes: include_bytes!("../../fixtures/lo-annotations.odt"),
+        shows: ANNOTATIONS_SHOWS,
     },
     Fixture {
         name: "lo-fields.odt",
         bytes: include_bytes!("../../fixtures/lo-fields.odt"),
+        shows: FIELDS_SHOWS,
     },
     Fixture {
         name: "lo-drawings.odt",
         bytes: include_bytes!("../../fixtures/lo-drawings.odt"),
+        shows: DRAWINGS_SHOWS,
     },
 ];
 
@@ -433,6 +458,52 @@ fn lost_counts(before: &BTreeMap<String, usize>, after: &BTreeMap<String, usize>
         .collect()
 }
 
+/// The model shows what `LibreOffice` shows of kept inline elements (`shows`), and the exporters
+/// that cannot keep them print their text but never their placeholder.
+fn check_shown_text(what: &str, snap: &DocSnapshot, shows: &[&str], problems: &mut Vec<String>) {
+    let text: Vec<&str> = snap.blocks.iter().map(|b| b.text.as_str()).collect();
+    let text = text.join("\n");
+    for line in shows {
+        if !text.contains(line) {
+            problems.push(format!("{what}: the model does not show {line:?}"));
+        }
+    }
+    let html = qdoc_codecs::export_html::render_html(
+        snap,
+        qdoc_codecs::export_html::HtmlOptions::default(),
+        &tilo_content::NoContent,
+    );
+    let rtf = qdoc_codecs::export_rtf::render_rtf(snap);
+    let md = String::from_utf8(qdoc_codecs::markdown::export_views(
+        &snap.properties,
+        &snap.blocks,
+        &snap.notes,
+    ))
+    .expect("utf-8");
+    // HTML and RTF have no notes and print a note reference's placeholder; any placeholder
+    // beyond those stands for a kept element.
+    let note_refs = snap
+        .blocks
+        .iter()
+        .flat_map(|b| &b.marks)
+        .filter(|m| m.name == qdoc::schema::MARK_NOTE_REF)
+        .count();
+    for (format, out) in [("html", &html), ("rtf", &rtf), ("md", &md)] {
+        let placeholders = out.matches(qdoc::schema::FIELD_PLACEHOLDER).count();
+        if placeholders > note_refs {
+            problems.push(format!(
+                "{what}: {format} export prints {placeholders} placeholders for {note_refs} note references"
+            ));
+        }
+        for line in shows {
+            let words = line.split_whitespace().next().unwrap_or_default();
+            if !out.contains(words) {
+                problems.push(format!("{what}: {format} export lacks {words:?}"));
+            }
+        }
+    }
+}
+
 fn check_fixture(
     codec: &dyn FormatProvider,
     fx: &Fixture,
@@ -446,6 +517,7 @@ fn check_fixture(
     let original = unzip(fx.bytes);
     let content = tilo_content::ContentStore::memory();
     let mut d = import(codec, fx.bytes, what, &content);
+    check_shown_text(what, &d.materialize(), fx.shows, problems);
     edit(&mut d, what);
     let edited = d.materialize();
     let out = codec

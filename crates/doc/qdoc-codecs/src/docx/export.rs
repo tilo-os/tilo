@@ -4,7 +4,7 @@
 
 use super::container::DocxContainer;
 use crate::format::CodecError;
-use crate::preserve::{InlinePiece, MARK_DOCX_XML, inline_pieces, merge_root_namespaces};
+use crate::preserve::{MARK_DOCX_XML, merge_root_namespaces};
 use crate::resolved::Resolved;
 use crate::xml_escape::{escape_attr, push_text};
 use qdoc::export::InlinePlan;
@@ -102,6 +102,23 @@ fn copy_preserved_parts(
         }
     }
     (flags, original_core, original_app)
+}
+
+/// The header and footer parts `section` writes qdoc's regions to.
+fn region_parts(section: &super::section::SectionPlan) -> Vec<RegionPart> {
+    let header = section.header_part.clone().map(|part| RegionPart {
+        part,
+        rel_id: super::headers::HEADER_REL_ID,
+        rel_type: super::section::HEADER_REL_TYPE,
+        content_type: super::section::HEADER_CONTENT_TYPE,
+    });
+    let footer = section.footer_part.clone().map(|part| RegionPart {
+        part,
+        rel_id: super::headers::FOOTER_REL_ID,
+        rel_type: super::section::FOOTER_REL_TYPE,
+        content_type: super::section::FOOTER_CONTENT_TYPE,
+    });
+    header.into_iter().chain(footer).collect()
 }
 
 /// A header or footer part this export writes, with the relationship that references it.
@@ -533,28 +550,12 @@ pub(crate) fn export(doc: DocRef, content: &dyn ContentSource) -> Result<Vec<u8>
 
     c.set("word/document.xml", document.into_bytes());
 
-    // Each exported drawing references a synthesised `word/media/imageN.<ext>` relationship part.
+    // Each exported drawing references a synthesised media part, named by its content.
     for img in &images.images {
         c.set(&img.part, img.bytes.clone());
     }
 
-    let mut regions = Vec::new();
-    if let Some(part) = section.header_part.clone() {
-        regions.push(RegionPart {
-            part,
-            rel_id: super::headers::HEADER_REL_ID,
-            rel_type: super::section::HEADER_REL_TYPE,
-            content_type: super::section::HEADER_CONTENT_TYPE,
-        });
-    }
-    if let Some(part) = section.footer_part.clone() {
-        regions.push(RegionPart {
-            part,
-            rel_id: super::headers::FOOTER_REL_ID,
-            rel_type: super::section::FOOTER_REL_TYPE,
-            content_type: super::section::FOOTER_CONTENT_TYPE,
-        });
-    }
+    let regions = region_parts(&section);
     copy_fixed_parts(&mut c, hf_parts, &section, &notes, &comments);
 
     let (wrote_core, wrote_app) = write_doc_props(
@@ -1146,8 +1147,9 @@ fn block_ppr(b: &BlockView, modeled: &[(&[u8], String)], ids: &RunIds) -> String
     super::paragraph::ppr_xml(&all, kept, |sectpr| ids.section.section_break(sectpr))
 }
 
-/// The runs of one run group: its text with the modeled and the kept run properties, or — for
-/// an unmodeled inline element kept verbatim — the element in place of its placeholder.
+/// The runs of one run group: its text with the modeled and the kept run properties, after
+/// the unmodeled inline element kept verbatim that the text shows, while the text still shows
+/// it unedited (see `preserve::run_content`).
 fn push_run_group(out: &mut String, run: &qdoc::export::InlineRun<'_>, is_del: bool) {
     let mark = |name: &str| {
         run.marks
@@ -1157,16 +1159,12 @@ fn push_run_group(out: &mut String, run: &qdoc::export::InlineRun<'_>, is_del: b
     };
     let rpr =
         super::paragraph::run_props_xml(&run_props(&run.marks), mark(super::paragraph::MARK_RPR));
-    let atom = crate::preserve::inline_atom(&run.marks, MARK_DOCX_XML);
-    let pieces = match atom {
-        Some(_) => inline_pieces(run.text),
-        None => vec![InlinePiece::Text(run.text)],
-    };
-    for piece in pieces {
-        match piece {
-            InlinePiece::Atom => out.push_str(atom.flatten().unwrap_or_default()),
-            InlinePiece::Text(text) => push_run(out, text, &rpr, is_del),
-        }
+    let content = crate::preserve::run_content(run.text, &run.marks, MARK_DOCX_XML);
+    if let Some(xml) = content.kept {
+        out.push_str(xml);
+    }
+    if !content.text.is_empty() {
+        push_run(out, &content.text, &rpr, is_del);
     }
 }
 
