@@ -6,6 +6,7 @@ ARG BASE_REF
 FROM --platform=linux/amd64 ${BASE_REF}
 RUN test "$(uname -m)" = x86_64 \
  && dnf install -y \
+      gcc.x86_64 libgcc.i686 \
       glibc-devel.x86_64 glibc-devel.i686 \
       libstdc++-devel.x86_64 libstdc++-devel.i686 \
       libX11-devel.x86_64 libX11-devel.i686 \
@@ -18,6 +19,9 @@ RUN test "$(uname -m)" = x86_64 \
       libdrm-devel.x86_64 libdrm-devel.i686 \
       zlib-ng-compat-devel.x86_64 zlib-ng-compat-devel.i686 \
  && dnf clean all \
+ && printf 'int main(void) { return 0; }\n' | gcc -m32 -x c - -o /tmp/tilo-fex-sdk-smoke \
+ && /tmp/tilo-fex-sdk-smoke \
+ && rm /tmp/tilo-fex-sdk-smoke \
  && test -d /usr/include \
  && rpm -qa --qf '%{NAME}-%{EPOCHNUM}:%{VERSION}-%{RELEASE}.%{ARCH}\n' \
       | LC_ALL=C sort > /usr/lib/tilo-fex-sdk-packages.txt
