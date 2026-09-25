@@ -283,7 +283,7 @@ impl Relay {
         identity: RelayIdentity,
         relay_mode: iroh::RelayMode,
     ) -> Result<Self, RelayError> {
-        Self::start_inner(
+        Box::pin(Self::start_inner(
             cfg,
             identity,
             Some(relay_mode),
@@ -291,7 +291,7 @@ impl Relay {
             Vec::new(),
             RelayStartupMode::CertifiedHost,
             None,
-        )
+        ))
         .await
     }
 
@@ -314,7 +314,7 @@ impl Relay {
     where
         H: ProtocolHandler,
     {
-        Self::start_inner(
+        Box::pin(Self::start_inner(
             cfg,
             identity,
             Some(relay_mode),
@@ -322,7 +322,7 @@ impl Relay {
             vec![(alpn.to_vec(), Box::<dyn DynProtocolHandler>::from(handler))],
             RelayStartupMode::CertifiedHost,
             None,
-        )
+        ))
         .await
     }
 
@@ -347,7 +347,7 @@ impl Relay {
         endpoint: Endpoint,
         protocols: Vec<(Vec<u8>, Box<dyn DynProtocolHandler>)>,
     ) -> Result<Self, RelayError> {
-        Self::start_inner(
+        Box::pin(Self::start_inner(
             cfg,
             identity,
             None,
@@ -355,7 +355,7 @@ impl Relay {
             protocols,
             RelayStartupMode::CertifiedHost,
             None,
-        )
+        ))
         .await
     }
 
@@ -375,7 +375,7 @@ impl Relay {
         endpoint: Endpoint,
         protocols: Vec<(Vec<u8>, Box<dyn DynProtocolHandler>)>,
     ) -> Result<Self, RelayError> {
-        Self::start_inner(
+        Box::pin(Self::start_inner(
             cfg,
             identity,
             None,
@@ -383,7 +383,7 @@ impl Relay {
             protocols,
             RelayStartupMode::NativeInteractiveWorkspaceOwner,
             None,
-        )
+        ))
         .await
     }
 
@@ -428,7 +428,7 @@ impl Relay {
         identity: RelayIdentity,
         app_serving: Option<Arc<dyn crate::app_serving::AppServingPlane>>,
     ) -> Result<Self, RelayError> {
-        Self::start_inner(
+        Box::pin(Self::start_inner(
             cfg,
             identity,
             None,
@@ -436,10 +436,13 @@ impl Relay {
             Vec::new(),
             RelayStartupMode::CertifiedHost,
             app_serving,
-        )
+        ))
         .await
     }
 
+    /// The shared startup transaction. Its future is large (endpoint binding,
+    /// workspace loading, router wiring), so every public constructor awaits
+    /// it boxed rather than embedding it in the caller's future.
     #[allow(
         clippy::too_many_lines,
         reason = "ordered startup preserves native identity, policy and task ownership"

@@ -2259,7 +2259,7 @@ mod tests {
         let secret = provider
             .load(&reference.locator)
             .expect("published metadata must still resolve its provider secret");
-        assert!(secret.as_slice() == [seed; 32]);
+        assert_eq!(secret.as_slice(), [seed; 32]);
         let identity = identity_from_record(record, Some(secret.as_slice())).unwrap();
         let message = b"publication failure must preserve the signing identity";
         let signature = identity.sign(message).unwrap();
@@ -2318,7 +2318,7 @@ mod tests {
             atomic_file::publication_state(&error),
             Some(PublicationState::NotPublished)
         );
-        assert!(fs::read(&path).unwrap() == original);
+        assert_eq!(fs::read(&path).unwrap(), original);
         let locator = hex::encode(SigningKey::from_bytes(&[72; 32]).verifying_key().to_bytes());
         assert_eq!(
             provider.load(&locator).unwrap_err().kind(),
@@ -2414,9 +2414,12 @@ mod tests {
             atomic_file::publication_state(&error),
             Some(PublicationState::PublicationUnknown)
         );
-        assert!(fs::read(dir.path().join("personal.json")).unwrap() == original);
+        assert_eq!(
+            fs::read(dir.path().join("personal.json")).unwrap(),
+            original
+        );
         let locator = hex::encode(SigningKey::from_bytes(&[75; 32]).verifying_key().to_bytes());
-        assert!(provider.load(&locator).unwrap().as_slice() == [75; 32]);
+        assert_eq!(provider.load(&locator).unwrap().as_slice(), [75; 32]);
     }
 
     #[test]

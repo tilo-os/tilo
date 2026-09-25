@@ -420,6 +420,11 @@ impl PageSaver {
     }
 
     /// Wait for queued bodies and report failed or disconnected storage.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the writer thread has stopped, the flush does not
+    /// complete within 30 seconds, or a queued write failed.
     pub fn try_flush(&self) -> Result<(), String> {
         let (sender, receiver) = mpsc::channel();
         self.tx
@@ -432,11 +437,6 @@ impl PageSaver {
 
     /// Compatibility helper for callers that need a completed body flush.
     /// Prefer `try_flush` when the caller can report storage failures.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the writer thread has stopped, the flush does not
-    /// complete within 30 seconds, or a queued write failed.
     pub fn flush_blocking(&self, _root: &std::path::Path) {
         if let Err(error) = self.try_flush() {
             tracing::error!(%error, "notes: blocking body flush failed");

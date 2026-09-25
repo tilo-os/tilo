@@ -428,10 +428,13 @@ pub mod recovery {
     pub const RECOVERY_BASE_ENV: &str = "TILO_WP_RECOVERY_DIR";
 
     /// The directory recovery copies live in. Resolution order:
-    /// 1. `$TILO_WP_RECOVERY_DIR` (test / explicit override), used verbatim;
+    ///
+    /// 1. `$TILO_WP_RECOVERY_DIR` (test / explicit override), used verbatim.
+    ///
     /// On Windows, the default is `%LOCALAPPDATA%/tilo/word-processor/recovery`,
     /// falling back to `%USERPROFILE%/AppData/Local` when necessary.
     /// On other hosts, the remaining resolution order is:
+    ///
     /// 2. `$XDG_STATE_HOME/tilo/word-processor/recovery`;
     /// 3. `$HOME/.local/state/tilo/word-processor/recovery`;
     /// 4. `./.tilo-wp-recovery` as a last resort (no HOME at all).

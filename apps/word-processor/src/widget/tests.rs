@@ -2286,7 +2286,7 @@ fn trackpad_pinch_zooms_smoothly_and_keeps_the_reading_position() {
     assert!((before - after).abs() < 1e-6);
     assert!(!wp.view.auto_fit_page);
     assert_eq!(state.doc.get_heads(), heads);
-    assert!(!(wp.save_status == DocumentSaveStatus::Modified));
+    assert_ne!(wp.save_status, DocumentSaveStatus::Modified);
     assert!(pinch(&mut wp, &mut state, -0.05, TouchPhase::Moved));
     assert!(wp.zoom.factor() < 1.025);
 }
@@ -5253,7 +5253,7 @@ fn file_ux_new_template_starts_untitled_without_overwriting_the_old_file() {
         "New must ask for a destination on its first Save"
     );
     assert_eq!(wp.format, Some(WpFormat::Markdown));
-    assert!((wp.save_status == DocumentSaveStatus::Modified));
+    assert_eq!(wp.save_status, DocumentSaveStatus::Modified);
     assert_eq!(
         std::fs::read_to_string(&old_path).unwrap(),
         "Original document"
@@ -6842,7 +6842,7 @@ fn file_ux_failed_save_as_keeps_the_original_destination() {
     wp.sync(&mut state.doc, &state.root);
     assert_eq!(wp.path, Some(original.clone()));
     assert_eq!(wp.format, Some(WpFormat::Markdown));
-    assert!((wp.save_status == DocumentSaveStatus::Modified));
+    assert_eq!(wp.save_status, DocumentSaveStatus::Modified);
     assert_eq!(
         std::fs::read_to_string(&original).unwrap(),
         "Original on disk"
@@ -6887,7 +6887,7 @@ fn file_ux_new_does_not_replace_a_modified_draft_without_a_decision() {
         first_block(&wp, &state).map(|b| b.text),
         Some("Unsaved work".into())
     );
-    assert!((wp.save_status == DocumentSaveStatus::Modified));
+    assert_eq!(wp.save_status, DocumentSaveStatus::Modified);
 }
 
 #[test]
@@ -6970,7 +6970,7 @@ fn file_ux_cancelling_a_resource_open_closes_its_unsaved_prompt() {
         first_block(&wp, &state).map(|b| b.text),
         Some("Keep this draft".into())
     );
-    assert!((wp.save_status == DocumentSaveStatus::Modified));
+    assert_eq!(wp.save_status, DocumentSaveStatus::Modified);
 }
 
 #[test]
@@ -7407,7 +7407,7 @@ fn failed_save_as_preserves_source_identity_and_recovery_for_picker_and_action()
         }
         assert_eq!(wp.path.as_deref(), Some(source.as_path()));
         assert_eq!(wp.format, Some(WpFormat::Markdown));
-        assert!(wp.save_status == DocumentSaveStatus::Modified);
+        assert_eq!(wp.save_status, DocumentSaveStatus::Modified);
         assert_eq!(std::fs::read(&source).unwrap(), b"original source");
         assert_eq!(std::fs::read(&recovery).unwrap(), b"unsaved recovery");
     }
@@ -7440,7 +7440,7 @@ fn export_only_save_as_preserves_editable_path_and_recovery() {
         assert!(bytes.starts_with(if extension == "pdf" { b"%PDF" } else { b"PK" }));
         assert_eq!(wp.path.as_deref(), Some(source.as_path()));
         assert_eq!(wp.format, Some(WpFormat::Markdown));
-        assert!(wp.save_status == DocumentSaveStatus::Modified);
+        assert_eq!(wp.save_status, DocumentSaveStatus::Modified);
         assert_eq!(std::fs::read(&source).unwrap(), b"original source");
         assert_eq!(std::fs::read(&recovery).unwrap(), b"unsaved recovery");
     }
@@ -7525,7 +7525,7 @@ fn failed_open_preserves_document_bytes_caret_and_file_identity() {
         assert_eq!(state.doc.pending_ops(), pending);
         assert_eq!(wp.model_mut().caret(), &caret);
         assert_eq!(wp.path.as_deref(), Some(source.as_path()));
-        assert!(wp.save_status == DocumentSaveStatus::Modified);
+        assert_eq!(wp.save_status, DocumentSaveStatus::Modified);
         assert!(matches!(wp.toast.as_ref(), Some((_, ToastKind::Error))));
         assert_eq!(std::fs::read(&source).unwrap(), b"original source");
     }
@@ -7586,7 +7586,7 @@ fn readonly_destination_save_as_preserves_source_and_destination() {
     assert_eq!(std::fs::read(&source).unwrap(), b"source bytes");
     assert_eq!(std::fs::read(&destination).unwrap(), b"protected bytes");
     assert_eq!(wp.path.as_deref(), Some(source.as_path()));
-    assert!(wp.save_status == DocumentSaveStatus::Modified);
+    assert_eq!(wp.save_status, DocumentSaveStatus::Modified);
     assert!(matches!(wp.toast.as_ref(), Some((_, ToastKind::Error))));
     std::fs::remove_dir_all(dir).unwrap();
 }
@@ -8712,7 +8712,7 @@ fn canonical_save_preserves_symlink_target_and_private_permissions() {
         0o600
     );
     assert_eq!(wp.path.as_deref(), Some(link.as_path()));
-    assert!(wp.save_status == DocumentSaveStatus::Clean);
+    assert_eq!(wp.save_status, DocumentSaveStatus::Clean);
     // The public export/save API has the same target and permission contract.
     crate::save_document(&state, &link, WpFormat::Markdown).unwrap();
     assert!(
@@ -8764,7 +8764,7 @@ fn unsupported_link_save_as_keeps_source_identity_and_bytes() {
             .is_err()
         );
         assert_eq!(wp.path.as_deref(), Some(source.as_path()));
-        assert!(wp.save_status == DocumentSaveStatus::Modified);
+        assert_eq!(wp.save_status, DocumentSaveStatus::Modified);
         assert_eq!(std::fs::read(&source).unwrap(), b"source bytes");
         assert_eq!(std::fs::read(&target).unwrap(), b"target bytes");
         assert_eq!(std::fs::read(&linked).unwrap(), b"target bytes");

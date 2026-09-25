@@ -4920,6 +4920,30 @@ mod tests {
         );
     }
 
+    /// A selection in `block` plus more search hits than discovery may list.
+    fn overflowing_resource_ctx(block: &str) -> WpResourceCtx {
+        WpResourceCtx {
+            caret_block: block.to_owned(),
+            caret_offset: 0,
+            target_blocks: vec![block.to_owned()],
+            format_spans: Vec::new(),
+            selection: Some(SelectionTarget {
+                start_block: block.to_owned(),
+                start: 0,
+                end_block: block.to_owned(),
+                end: 4,
+            }),
+            region: RegionKind::Body,
+            search_hits: (0..MAX_RESOURCE_SEARCH_HITS + 8)
+                .map(|start| SearchTarget {
+                    block: block.to_owned(),
+                    start,
+                    end: start + 1,
+                })
+                .collect(),
+        }
+    }
+
     #[test]
     fn resource_results_and_revisions_are_bounded_and_precisely_addressable() {
         let (mut state, ids) = seeded(&format!("{}\n", "x".repeat(MAX_RESOURCE_SEARCH_HITS + 16)));
@@ -4949,27 +4973,7 @@ mod tests {
         let pending = (state.doc.base_heads(), state.doc.pending_ops());
         let expected = state.doc.clone().get_changes(&[]);
         let block = ids[0].clone();
-        let ctx = WpResourceCtx {
-            caret_block: block.clone(),
-            caret_offset: 0,
-            target_blocks: vec![block.clone()],
-            format_spans: Vec::new(),
-            selection: Some(SelectionTarget {
-                start_block: block.clone(),
-                start: 0,
-                end_block: block.clone(),
-                end: 4,
-            }),
-            region: RegionKind::Body,
-            search_hits: (0..MAX_RESOURCE_SEARCH_HITS + 8)
-                .map(|start| SearchTarget {
-                    block: block.clone(),
-                    start,
-                    end: start + 1,
-                })
-                .collect(),
-        };
-        let resources = provide_resources(&ctx, &state.doc);
+        let resources = provide_resources(&overflowing_resource_ctx(&block), &state.doc);
         let root = &resources[0];
         assert!(
             root.children

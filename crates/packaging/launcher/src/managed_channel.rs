@@ -565,14 +565,15 @@ mod received_rights_tests {
             .set_read_timeout(Some(Duration::from_secs(2)))
             .unwrap();
         let enabled: libc::c_int = i32::from(passcred);
+        let enabled_len = libc::socklen_t::try_from(std::mem::size_of_val(&enabled)).unwrap();
         assert_eq!(
             unsafe {
                 libc::setsockopt(
                     receiver.as_raw_fd(),
                     libc::SOL_SOCKET,
                     libc::SO_PASSCRED,
-                    (&enabled as *const libc::c_int).cast(),
-                    std::mem::size_of_val(&enabled) as libc::socklen_t,
+                    (&raw const enabled).cast(),
+                    enabled_len,
                 )
             },
             0
@@ -581,31 +582,29 @@ mod received_rights_tests {
     }
     fn send_rights(sender: &UnixStream, file: &File, count: usize) {
         let mut answer = [37_u8; 32];
-        let bytes = count * std::mem::size_of::<libc::c_int>();
-        let space = unsafe { libc::CMSG_SPACE(bytes as _) as usize };
+        let payload: Vec<u8> = std::iter::repeat_n(file.as_raw_fd().to_ne_bytes(), count)
+            .flatten()
+            .collect();
+        let bytes = u32::try_from(payload.len()).unwrap();
+        let space = unsafe { libc::CMSG_SPACE(bytes) as usize };
         let mut control = vec![0usize; space.div_ceil(std::mem::size_of::<usize>())];
         let mut iov = libc::iovec {
             iov_base: answer.as_mut_ptr().cast(),
             iov_len: answer.len(),
         };
         let mut msg: libc::msghdr = unsafe { std::mem::zeroed() };
-        msg.msg_iov = &mut iov;
+        msg.msg_iov = &raw mut iov;
         msg.msg_iovlen = 1;
         msg.msg_control = control.as_mut_ptr().cast();
         msg.msg_controllen = space;
         unsafe {
-            let header = libc::CMSG_FIRSTHDR(&msg);
+            let header = libc::CMSG_FIRSTHDR(&raw const msg);
             (*header).cmsg_level = libc::SOL_SOCKET;
             (*header).cmsg_type = libc::SCM_RIGHTS;
-            (*header).cmsg_len = libc::CMSG_LEN(bytes as _) as usize;
-            for index in 0..count {
-                std::ptr::write_unaligned(
-                    libc::CMSG_DATA(header).cast::<libc::c_int>().add(index),
-                    file.as_raw_fd(),
-                );
-            }
+            (*header).cmsg_len = libc::CMSG_LEN(bytes) as usize;
+            std::ptr::copy_nonoverlapping(payload.as_ptr(), libc::CMSG_DATA(header), payload.len());
             assert_eq!(
-                libc::sendmsg(sender.as_raw_fd(), &msg, libc::MSG_NOSIGNAL),
+                libc::sendmsg(sender.as_raw_fd(), &raw const msg, libc::MSG_NOSIGNAL),
                 32
             );
         }
@@ -643,16 +642,16 @@ mod received_rights_tests {
         let before = descriptor_count(file.as_file());
         send_rights(&sender, file.as_file(), 1);
         let mut answer = [0; 32];
-        let received = receive_credential_chunk(&receiver, &mut answer).unwrap();
-        assert_eq!(received.rights.len(), 1);
+        let chunk = receive_credential_chunk(&receiver, &mut answer).unwrap();
+        assert_eq!(chunk.rights.len(), 1);
         assert_eq!(descriptor_count(file.as_file()), before + 1);
-        let flags = unsafe { libc::fcntl(received.rights[0].as_raw_fd(), libc::F_GETFD) };
+        let flags = unsafe { libc::fcntl(chunk.rights[0].as_raw_fd(), libc::F_GETFD) };
         assert!(
             flags >= 0 && flags & libc::FD_CLOEXEC != 0,
             "recvmsg must atomically set CLOEXEC"
         );
         assert_not_inherited(file.path());
-        drop(received);
+        drop(chunk);
         assert_eq!(descriptor_count(file.as_file()), before);
     }
     #[test]
