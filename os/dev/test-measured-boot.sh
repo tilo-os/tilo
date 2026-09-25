@@ -39,11 +39,11 @@ SSHOPTS=(-F /dev/null -p "$TILO_SSH_PORT" -o StrictHostKeyChecking=no
          -o BatchMode=no -o NumberOfPasswordPrompts=1
          -o PreferredAuthentications=password -o PubkeyAuthentication=no
          -o KbdInteractiveAuthentication=no)
+# Automation must never fall through to the desktop's graphical askpass
+# helper; sshpass owns the one permitted password prompt.
+unset SSH_ASKPASS SSH_ASKPASS_REQUIRE
 GUEST="$TILO_USER@127.0.0.1"
-g() {
-  env -u SSH_ASKPASS -u SSH_ASKPASS_REQUIRE \
-    sshpass -p "$TILO_PASS" ssh "${SSHOPTS[@]}" "$GUEST" "$@"
-}
+g() { sshpass -p "$TILO_PASS" ssh "${SSHOPTS[@]}" "$GUEST" "$@"; }
 groot() { g "echo $TILO_PASS | sudo -S -p '' $*" ; }
 
 say() { printf '\n\033[1;35m### %s\033[0m\n' "$*"; }
