@@ -70,8 +70,8 @@ impl NormalizedStorage<'_> {
         let bound = dims::load_peak_bound(&incoming)?
             .checked_add(declared_collector_slots(&self.shape)?)
             .ok_or(NativeResourceError::WorkBytes)?;
-        let peak = allowance.reserve(bound)?;
-        let doc = load::load_strict(&self.bytes)?;
+        let mut peak = allowance.reserve(bound)?;
+        let doc = load::load_strict(&self.bytes, allowance, &mut peak)?;
         // The complete load call has returned, so its parse, collector,
         // encoder, index and queued-apply scratch has died. `peak` stays held
         // until custody transfers the retained part of it.
