@@ -93,13 +93,31 @@ pub fn init() {
 pub fn mark(name: &str) {
     let Some(Some(m)) = METRICS.get() else { return };
     let ns = m.origin.elapsed().as_nanos();
-    m.events
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
-        .push(Event {
+    let events = {
+        let mut events = m.events.lock().unwrap_or_else(PoisonError::into_inner);
+        events.push(Event {
             name: name.to_owned(),
             ns,
         });
+        events.clone()
+    };
+    // Startup failures often end in a forced reboot, so an exit-only dump is
+    // precisely least useful when diagnostics matter most. Replace a small
+    // JSON checkpoint after every coarse startup mark; callers deliberately
+    // mark phases, not frames, so this never enters a hot render path.
+    let temporary = m.output_path.with_extension("json.tmp");
+    let payload = serde_json::json!({
+        "origin_epoch_ms": m.origin_epoch_ms,
+        "events": events,
+    });
+    if std::fs::write(
+        &temporary,
+        serde_json::to_vec_pretty(&payload).unwrap_or_default(),
+    )
+    .is_ok()
+    {
+        let _ = std::fs::rename(temporary, &m.output_path);
+    }
 }
 
 /// Serialise every recorded event to the configured file. Called automatically at process
