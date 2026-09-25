@@ -88,9 +88,11 @@ changes the disk image or the installer test path.
 
 WHPX can boot a development kernel and initrd directly, without EDK2. Prepare
 `Image`, `initrd` and the UKI's `.cmdline` from the **same dev disk** once,
-and read that disk's ESP GPT partition UUID. The dev-disk CI pipeline should
-publish these as a companion bundle; until then, an operator may extract
-them from the disk's UKI. Put this JSON beside `Image` and `initrd`:
+and read that disk's ESP GPT partition UUID. The dev-disk CI pipeline
+publishes the three checksum-listed companion files under `directBoot` in
+`tilo-vm-disk.json` for ARM64. Download those files into one directory;
+for a local disk, an operator may extract the same files from its UKI.
+The bundle JSON beside `Image` and `initrd` has this shape:
 
 ```json
 {

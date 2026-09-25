@@ -587,6 +587,9 @@ rm -rf "$TILO_OUTPUT/qcow2" "$TILO_OUTPUT"/manifest* 2>/dev/null || true
 OUTDIR="$(dirname "$TILO_DISK")"
 INSTALL_LOG="$OUTDIR/.install.log"
 disk_args=(--user "$TILO_ACCOUNT")
+if [ -n "${TILO_DEV_DIRECT_BUNDLE_DIR:-}" ]; then
+  disk_args+=(--direct-boot-bundle "$TILO_DEV_DIRECT_BUNDLE_DIR")
+fi
 if [ -n "${TILO_TARGET_IMGREF:-}" ]; then
   disk_args+=(--target-imgref "$TILO_TARGET_IMGREF")
 fi
