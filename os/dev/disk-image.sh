@@ -701,6 +701,23 @@ if [ -n "$OFFLINE_TARGET_DIR" ]; then
   sudo -n python3 "$(dirname "${BASH_SOURCE[0]}")/installer-offline-target.py" \
     install "$OFFLINE_TARGET_DIR" "$t_var/lib/tilo-installer/target-oci" \
     || die "could not stage the verified offline target into the live medium"
+  # The host runner may have no SELinux policy or restorecon at all. Use the
+  # install image's own file_contexts through the same confined offline-label
+  # method as first-boot account seeding above. The guest installer service
+  # must be able to read these blobs while SELinux remains enforcing.
+  label_args=(--rm --privileged -v "$t_var:/target-var")
+  if [ -n "$SRC_REF" ]; then
+    label_args+=(--network host
+      -v "$REGCONF:/etc/containers/registries.conf.d/98-local.conf:ro")
+  fi
+  sudo -n podman run "${label_args[@]}" "${TLS_ARGS[@]+"${TLS_ARGS[@]}"}" \
+    "$RUNREF" bash -c '
+      set -e
+      mount --bind /target-var /var
+      fc=/etc/selinux/targeted/contexts/files/file_contexts
+      test -r "$fc"
+      setfiles -F "$fc" /var/lib/tilo-installer/target-oci
+    ' || die "could not apply the installer image SELinux labels to the offline target"
 fi
 
 # WSL kernels can omit vfat entirely. bootc can still finalize the boot tree in
