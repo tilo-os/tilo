@@ -370,8 +370,7 @@ impl ApplicationDefinition {
                 LaunchError::ComponentSetup {
                     source: Box::new(source),
                     record,
-                    records,
-                    reports: Vec::new(),
+                    recovery: crate::launch::LaunchRecovery::records(records),
                 }
             } else {
                 source
@@ -516,8 +515,10 @@ impl AppComponent {
         LaunchError::ComponentSetup {
             source: Box::new(source),
             record: binding.checkout,
-            records: binding.records,
-            reports: self.take_close_reports(),
+            recovery: crate::launch::LaunchRecovery::new(
+                Some(binding.records),
+                self.take_close_reports(),
+            ),
         }
     }
 

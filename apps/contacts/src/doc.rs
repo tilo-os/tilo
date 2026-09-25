@@ -803,6 +803,7 @@ fn sync_address_list(
 mod tests {
     use super::*;
     use crate::model::sample_contacts;
+    use tilo_automerge::ApplyIncoming;
 
     #[test]
     fn upsert_then_list_round_trips() {
@@ -862,7 +863,7 @@ mod tests {
         ContactsDoc::upsert_contact(&mut b, &cb);
 
         let mut b_loaded = AutoCommit::load(&b.save()).unwrap();
-        a.merge(&mut b_loaded).unwrap();
+        a.merge_incoming(&mut b_loaded).unwrap();
 
         let names: Vec<String> = ContactsDoc::list_contacts(&a)
             .into_iter()

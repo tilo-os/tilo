@@ -3,6 +3,7 @@ use automerge::{AutoCommit, ObjType, ROOT, ReadDoc, transaction::Transactable};
 use portable_pty::{MasterPty, PtySize};
 use std::io::{Read, Write};
 use std::sync::{Arc, Mutex};
+use tilo_automerge::ApplyIncoming;
 use ui::State;
 use ui::widget::Widget as _;
 use vello::kurbo::Rect;
@@ -2345,10 +2346,10 @@ fn concurrent_terminal_initialisation_converges_on_one_resource_identity() {
     left_doc.commit();
     right_doc.commit();
     left_doc
-        .merge(&mut right_doc)
+        .merge_incoming(&mut right_doc)
         .expect("merge concurrent terminal initialisation");
     right_doc
-        .merge(&mut left_doc)
+        .merge_incoming(&mut left_doc)
         .expect("return the merged terminal state to the second peer");
 
     assert_eq!(
@@ -3563,7 +3564,7 @@ fn two_peers_converge_on_terminal_grid_via_crdt() {
         !delta.is_empty(),
         "A produced an incremental change to share"
     );
-    doc_b.load_incremental(&delta).unwrap();
+    doc_b.load_incoming(&delta).unwrap();
     b.sync(&mut doc_b, &automerge::ROOT);
     assert!(
         b.grid_text().contains("peer-a-line-two"),

@@ -20,6 +20,7 @@ thin = ["dep:runtime-dylib"]
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["portal"] }
 automerge.workspace = true
+tilo-automerge.workspace = true
 # The Tilo ACTION model: the reader's `actions` module exports its markup-store
 # operations as replayable actions the host's Ctrl+K palette dispatches.
 tilo-actions = { path = "../../crates/collab/actions" }

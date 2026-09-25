@@ -3,7 +3,7 @@
 use std::{cell::RefCell, fmt::Write as _, path::Path, rc::Rc};
 use ui::application::{ApplicationHost, ComponentRunnerInputs, PreparedComponentInputs};
 use ui::headless::{FrameHarness, SemanticExpectation};
-use ui::launch::LaunchError;
+use ui::launch::{LaunchError, LaunchRecovery};
 use ui::permissions::{Actor, PermissionContext, Role, UserId};
 
 thread_local! {
@@ -1358,7 +1358,7 @@ pub fn render_to_path(
     if let Err(source) = result {
         return Err(LaunchError::ComponentCapture {
             source: Box::new(source),
-            reports,
+            recovery: LaunchRecovery::reports(reports),
         });
     }
     if reports.iter().any(|report| {
@@ -1368,7 +1368,7 @@ pub fn render_to_path(
     }) {
         return Err(LaunchError::ComponentCapture {
             source: Box::new(LaunchError::Operation("capture close failed".into())),
-            reports,
+            recovery: LaunchRecovery::reports(reports),
         });
     }
     Ok(())

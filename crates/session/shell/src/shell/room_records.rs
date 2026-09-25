@@ -18,6 +18,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Bound::{Excluded, Unbounded};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
+use tilo_automerge::ApplyIncoming;
 
 use automerge::{AutoCommit, LoadOptions, OnPartialLoad};
 use ui::record::{RecordCheckout, RecordId, RecordKind, room};
@@ -813,7 +814,7 @@ fn open_room_store(room: RoomId, doc: &mut AutoCommit) -> Option<app_state::DocW
     let mut autosave = store.writer();
     if let Some(mut stored) = stored {
         autosave.seed(&mut stored);
-        if let Err(e) = doc.merge(&mut stored) {
+        if let Err(e) = doc.merge_incoming(&mut stored) {
             tracing::error!(room = %room, error = %e, "stored room index could not be merged");
         }
     }

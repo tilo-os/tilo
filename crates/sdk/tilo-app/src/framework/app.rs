@@ -238,7 +238,14 @@ fn prepare<A: ResourceApp>(
     args: &LaunchArgs,
 ) -> Result<PreparedComponentInputs, LaunchError> {
     let inputs = ComponentRunnerInputs::from_native_process();
-    if args.shots.is_some() || args.responsive_matrix.is_some() || args.native_audit {
+    // Captures, audits and headless driving never touch the user's profile:
+    // they run on a private one removed with the process, unless a headless
+    // drive names its profile with `--data-dir`.
+    let isolated = args.shots.is_some()
+        || args.responsive_matrix.is_some()
+        || args.native_audit
+        || (args.headless.is_some() && args.value("--data-dir").is_none());
+    if isolated {
         let profile = tempfile::Builder::new()
             .prefix("tilo-capture-")
             .tempdir()

@@ -1567,6 +1567,7 @@ mod tests {
     use crate::model::seed_deck;
     use automerge::{AutoCommit, ROOT};
     use tilo_actions::{ActionInput, LocalTransport};
+    use tilo_automerge::ApplyIncoming;
     use ui::widget::Widget;
 
     fn registry() -> ActionRegistry {
@@ -1918,8 +1919,8 @@ mod tests {
         assert_eq!(SlidesDoc::slide_order(&a, &moved), Some(rank));
         assert_eq!(SlidesDoc::slide_order(&b, &moved), Some(rank));
 
-        a.merge(&mut b).expect("merge into a");
-        b.merge(&mut a).expect("merge into b");
+        a.merge_incoming(&mut b).expect("merge into a");
+        b.merge_incoming(&mut a).expect("merge into b");
         assert_eq!(
             SlidesDoc::load(&a),
             SlidesDoc::load(&b),
@@ -1956,8 +1957,8 @@ mod tests {
         assert_eq!(SlidesDoc::slide_order(&a, &inserted_id), Some(rank));
         assert_eq!(SlidesDoc::slide_order(&b, &inserted_id), Some(rank));
 
-        a.merge(&mut b).expect("merge into a");
-        b.merge(&mut a).expect("merge into b");
+        a.merge_incoming(&mut b).expect("merge into a");
+        b.merge_incoming(&mut a).expect("merge into b");
         assert_eq!(SlidesDoc::load(&a), SlidesDoc::load(&b));
         assert_eq!(SlidesDoc::slide_order(&a, &inserted_id), Some(rank));
     }
@@ -1985,8 +1986,8 @@ mod tests {
         action.apply(&mut a).expect("absolute z applies to a");
         action.apply(&mut b).expect("absolute z applies to b");
 
-        a.merge(&mut b).expect("merge into a");
-        b.merge(&mut a).expect("merge into b");
+        a.merge_incoming(&mut b).expect("merge into a");
+        b.merge_incoming(&mut a).expect("merge into b");
         let left = SlidesDoc::load(&a).expect("merged deck");
         assert_eq!(Some(left.clone()), SlidesDoc::load(&b));
         assert_eq!(

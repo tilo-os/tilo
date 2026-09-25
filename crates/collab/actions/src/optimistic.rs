@@ -8,6 +8,7 @@
 //! every still-pending action with fresh dependency-correct envelopes.
 
 use std::collections::{HashSet, VecDeque};
+use tilo_automerge::ApplyIncoming;
 
 use automerge::AutoCommit;
 
@@ -218,7 +219,7 @@ impl OptimisticQueue {
         registry: &ActionRegistry,
     ) -> Result<RebaseBatch, OptimisticError> {
         let mut confirmed = self.confirmed.clone();
-        confirmed.merge(authoritative)?;
+        confirmed.merge_incoming(authoritative)?;
         self.rebase_from(live, registry, None, confirmed)
     }
 
@@ -236,7 +237,7 @@ impl OptimisticQueue {
         registry: &ActionRegistry,
     ) -> Result<(usize, RebaseBatch), OptimisticError> {
         let mut confirmed = self.confirmed.clone();
-        let applied = confirmed.load_incremental(bytes)?;
+        let applied = confirmed.load_incoming(bytes)?;
         let rebase = self.rebase_from(live, registry, None, confirmed)?;
         Ok((applied, rebase))
     }

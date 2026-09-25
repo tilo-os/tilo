@@ -1078,7 +1078,7 @@ impl App {
             return true;
         }
         let confirmation = tilo_actions::door::resolve(&resources, &address)
-            .map(|spec| spec.contract.confirmation.clone())
+            .map(|spec| spec.confirmation_for_argument(argument))
             .unwrap_or_default();
         if !matches!(confirmation, tilo_actions::ConfirmationPolicy::None) {
             let _ = self.open_action_palette_at(&address);
