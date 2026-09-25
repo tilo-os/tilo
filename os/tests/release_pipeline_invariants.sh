@@ -184,6 +184,20 @@ else
   bad 'the two-architecture OS release does not have matching native kernel builds'
 fi
 
+# A push that lands both pins, or that snapshot-rpms.yml will answer with a
+# snapshot and kernels built against it, must not publish a second kernel whose
+# pin could land against the other RPM snapshot.
+rebuild_job="$(sed -n '/^  rebuild:/,/^  signing-preflight:/p' "$kernel_workflow")"
+if grep -Fq "if: \${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && !inputs.rpms_ref }}" <<<"$rebuild_job" \
+   && grep -Fq "printf 'os/kernel-snapshot.env\\nos/rpms-snapshot.env'" <<<"$rebuild_job" \
+   && grep -Fq 'python3 os/dev/rpm-snapshot-inputs.py --base "$BEFORE" --head "$GITHUB_SHA"' <<<"$rebuild_job" \
+   && grep -Fq "(needs.rebuild.result == 'skipped' || needs.rebuild.outputs.needed == 'true')" "$kernel_workflow" \
+   && ! grep -Fq 'os/kernel-snapshot.env"' <<<"$(sed -n '/^on:/,/^concurrency:/p' "$kernel_workflow")"; then
+  ok 'pin-only merges and snapshot-covered pushes do not publish a redundant kernel'
+else
+  bad 'a pin merge or snapshot refresh can race a redundant kernel publication'
+fi
+
 grep -Fq 'tags: ["desktop-v*"]' "$desktop" \
   && grep -Fq 'tags: ["apps-v*", "app-*-v*"]' "$apps" \
   && grep -Fq 'tags: ["v*"]' "$os" \
