@@ -30,12 +30,15 @@ const ARG: &str = "--tilo-final-bootnext";
 const PRIMARY: &str = "\\EFI\\systemd\\systemd-bootaa64.efi";
 const FALLBACK: &str = "\\EFI\\BOOT\\BOOTAA64.EFI";
 const MAX_LOADER: u64 = 64 << 20;
+const LINUX_TYPE: &str = "0fc63daf-8483-4772-8e79-3d69d8477de4";
+const TILO_ROOT_TYPE: &str = "7a2e8d75-3f01-4e5a-b2c9-51f6ed90b8ab";
 
 #[derive(Clone, Debug, Deserialize)]
 pub struct FinalReadback {
     pub schema: String,
     pub disk: ReviewedDisk,
     pub physical_readback_verified: bool,
+    pub r#final: Vec<FinalPartition>,
     pub final_esp_partuuid: String,
     pub loader_path: String,
     pub loader_sha256: String,
@@ -43,6 +46,15 @@ pub struct FinalReadback {
     pub ci_child_digest: String,
     pub installed_uki_sha256: String,
     pub vm_proof_checked_sha256: String,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct FinalPartition {
+    pub role: String,
+    pub partuuid: String,
+    pub sha256: String,
+    pub offset_bytes: u64,
+    pub size_bytes: u64,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -111,21 +123,52 @@ fn checked_esp<'a>(
     {
         return Err("Windows disk no longer matches the final readback".into());
     }
-    let matching: Vec<_> = disk
-        .partitions
-        .iter()
-        .filter(|part| {
-            same_guid(&part.guid, &receipt.final_esp_partuuid)
-                && same_guid(&part.type_guid, ESP_TYPE)
-                && part.number > 0
-                && part.first_lba > 0
-                && part.last_lba >= part.first_lba
-        })
-        .collect();
-    if matching.len() != 1 {
-        return Err("installed ESP PARTUUID is missing or ambiguous".into());
+    if receipt.r#final.len() != 3 || disk.sector_bytes == 0 {
+        return Err("final readback lacks the three installed partitions".into());
     }
-    Ok(matching[0])
+    let expected = [
+        ("final-esp", ESP_TYPE),
+        ("final-boot", LINUX_TYPE),
+        ("final-root", TILO_ROOT_TYPE),
+    ];
+    let mut esp = None;
+    for (row, (role, kind)) in receipt.r#final.iter().zip(expected) {
+        if row.role != role || !valid_hash(&row.sha256) || row.size_bytes == 0 {
+            return Err("final readback partition entry is invalid".into());
+        }
+        let matching: Vec<_> = disk
+            .partitions
+            .iter()
+            .filter(|part| same_guid(&part.guid, &row.partuuid))
+            .collect();
+        if matching.len() != 1 {
+            return Err("final readback PARTUUID is missing or ambiguous".into());
+        }
+        let part = matching[0];
+        let offset = part.first_lba.checked_mul(disk.sector_bytes);
+        let size = part
+            .last_lba
+            .checked_sub(part.first_lba)
+            .and_then(|sectors| sectors.checked_add(1))
+            .and_then(|sectors| sectors.checked_mul(disk.sector_bytes));
+        if part.number == 0
+            || part.first_lba == 0
+            || !same_guid(&part.type_guid, kind)
+            || offset != Some(row.offset_bytes)
+            || size != Some(row.size_bytes)
+        {
+            return Err(format!(
+                "{role} geometry differs from final physical readback"
+            ));
+        }
+        if role == "final-esp" {
+            if !same_guid(&row.partuuid, &receipt.final_esp_partuuid) {
+                return Err("installed ESP differs from final readback".into());
+            }
+            esp = Some(part);
+        }
+    }
+    esp.ok_or_else(|| "installed ESP PARTUUID is missing".into())
 }
 
 fn loader_hash<P: FinalBootPlatform + ?Sized>(
@@ -328,6 +371,8 @@ mod tests {
 
     const DISK_GUID: &str = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
     const ESP_GUID: &str = "11111111-2222-4333-8444-555555555555";
+    const BOOT_GUID: &str = "22222222-2222-4333-8444-555555555555";
+    const ROOT_GUID: &str = "33333333-2222-4333-8444-555555555555";
 
     /// EFI globals are files so the test covers actual readback through a
     /// filesystem, rather than a mutable HashMap view.
@@ -373,6 +418,7 @@ mod tests {
             fat.file(Some(dir), long, short, loader, false);
             let image = fat.image;
             let first_lba = 2048;
+            let esp_last = first_lba + image.len() as u64 / 512 - 1;
             let disk = Disk {
                 id: "3".into(),
                 guid: DISK_GUID.into(),
@@ -380,13 +426,29 @@ mod tests {
                 sector_bytes: 512,
                 first_usable_lba: 34,
                 last_usable_lba: (2 << 30) / 512 - 34,
-                partitions: vec![Partition {
-                    number: 4,
-                    guid: ESP_GUID.into(),
-                    type_guid: ESP_TYPE.into(),
-                    first_lba,
-                    last_lba: first_lba + image.len() as u64 / 512 - 1,
-                }],
+                partitions: vec![
+                    Partition {
+                        number: 4,
+                        guid: ESP_GUID.into(),
+                        type_guid: ESP_TYPE.into(),
+                        first_lba,
+                        last_lba: esp_last,
+                    },
+                    Partition {
+                        number: 5,
+                        guid: BOOT_GUID.into(),
+                        type_guid: LINUX_TYPE.into(),
+                        first_lba: esp_last + 1,
+                        last_lba: esp_last + 8192,
+                    },
+                    Partition {
+                        number: 6,
+                        guid: ROOT_GUID.into(),
+                        type_guid: TILO_ROOT_TYPE.into(),
+                        first_lba: esp_last + 8193,
+                        last_lba: esp_last + 16384,
+                    },
+                ],
             };
             let receipt = FinalReadback {
                 schema: "tilo.windows-direct-final-readback.v1".into(),
@@ -396,6 +458,18 @@ mod tests {
                     size_bytes: disk.size_bytes,
                 },
                 physical_readback_verified: true,
+                r#final: disk
+                    .partitions
+                    .iter()
+                    .zip(["final-esp", "final-boot", "final-root"])
+                    .map(|(part, role)| FinalPartition {
+                        role: role.into(),
+                        partuuid: part.guid.clone(),
+                        sha256: "e".repeat(64),
+                        offset_bytes: part.first_lba * 512,
+                        size_bytes: (part.last_lba - part.first_lba + 1) * 512,
+                    })
+                    .collect(),
                 final_esp_partuuid: ESP_GUID.into(),
                 loader_path: path.into(),
                 loader_sha256: efi::hex(&Sha256::digest(loader)),
@@ -526,6 +600,34 @@ mod tests {
         assert!(platform.writes.is_empty());
         platform.disk.guid = "99999999-bbbb-4ccc-8ddd-eeeeeeeeeeee".into();
         assert!(arm(&mut platform, &receipt).unwrap_err().contains("disk"));
+        assert!(platform.writes.is_empty());
+    }
+
+    #[test]
+    fn refuses_changed_boot_or_root_geometry_after_physical_readback() {
+        let (mut platform, mut receipt) = FilePlatform::new(true);
+        platform.disk.partitions[1].last_lba += 1;
+        assert!(
+            arm(&mut platform, &receipt)
+                .unwrap_err()
+                .contains("final-boot geometry")
+        );
+        assert!(platform.writes.is_empty());
+        platform.disk.partitions[1].last_lba -= 1;
+        platform.disk.partitions[2].type_guid = LINUX_TYPE.into();
+        assert!(
+            arm(&mut platform, &receipt)
+                .unwrap_err()
+                .contains("final-root geometry")
+        );
+        assert!(platform.writes.is_empty());
+        platform.disk.partitions[2].type_guid = TILO_ROOT_TYPE.into();
+        receipt.r#final[2].offset_bytes += 512;
+        assert!(
+            arm(&mut platform, &receipt)
+                .unwrap_err()
+                .contains("final-root geometry")
+        );
         assert!(platform.writes.is_empty());
     }
 
