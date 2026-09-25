@@ -1,0 +1,646 @@
+//! How typed values live in a resource's CRDT document.
+//!
+//! [`Model`] is the whole storage contract: read a value out of the slot its
+//! parent found, and write a value back touching only what changed. Every
+//! write is a *diff* — an unchanged scalar writes nothing, a string is spliced
+//! rather than replaced, a keyed collection moves one order key rather than
+//! renumbering — so concurrent edits from collaborators merge field by field
+//! and an action that changes nothing commits nothing.
+//!
+//! Plain Rust types implement it here; `#[derive(Model)]` implements it for
+//! structs (a map, one key per field) and unit enums (a string). A resource
+//! type with its own storage layout implements it — or skips it and reads and
+//! writes the document itself, see [`crate::Resource`].
+
+use std::collections::BTreeMap;
+
+use automerge::transaction::Transactable;
+use automerge::{AutoCommit, ObjId, ObjType, ReadDoc, ScalarValue, Value};
+
+/// The document every resource lives in.
+pub type Doc = AutoCommit;
+
+/// Why a document could not be read as, or written from, a typed value.
+#[derive(Debug, thiserror::Error)]
+pub enum ModelError {
+    #[error("{path}: expected {expected}")]
+    Shape {
+        path: String,
+        expected: &'static str,
+    },
+    #[error("{path}: required value is missing")]
+    Missing { path: String },
+    #[error("{path}: {message}")]
+    Invalid { path: String, message: String },
+    #[error("document error: {0}")]
+    Automerge(#[from] automerge::AutomergeError),
+}
+
+impl ModelError {
+    #[must_use]
+    pub fn shape(expected: &'static str) -> Self {
+        Self::Shape {
+            path: String::new(),
+            expected,
+        }
+    }
+
+    #[must_use]
+    pub fn invalid(message: impl Into<String>) -> Self {
+        Self::Invalid {
+            path: String::new(),
+            message: message.into(),
+        }
+    }
+
+    /// Prefix the location this error was found at, innermost last.
+    #[must_use]
+    pub fn at(mut self, segment: &str) -> Self {
+        match &mut self {
+            Self::Shape { path, .. } | Self::Missing { path } | Self::Invalid { path, .. } => {
+                *path = if path.is_empty() {
+                    segment.to_owned()
+                } else {
+                    format!("{segment}.{path}")
+                };
+            }
+            Self::Automerge(_) => {}
+        }
+        self
+    }
+}
+
+/// Where a value is written: a key of a map, an existing list element, or a
+/// new list element inserted at an index.
+#[derive(Clone, Copy, Debug)]
+pub enum Slot<'a> {
+    Key(&'a ObjId, &'a str),
+    Index(&'a ObjId, usize),
+    Insert(&'a ObjId, usize),
+}
+
+impl Slot<'_> {
+    /// What currently occupies this slot. A new list element holds nothing.
+    ///
+    /// # Errors
+    /// Returns the document's read error.
+    pub fn current(self, doc: &Doc) -> Result<Option<(Value<'static>, ObjId)>, ModelError> {
+        let found = match self {
+            Slot::Key(obj, key) => doc.get(obj, key)?,
+            Slot::Index(obj, index) => doc.get(obj, index)?,
+            Slot::Insert(..) => None,
+        };
+        Ok(found.map(|(value, id)| (value.to_owned(), id)))
+    }
+
+    /// Write `value` unless the slot already holds an equal scalar.
+    ///
+    /// # Errors
+    /// Returns the document's write error.
+    pub fn put_scalar(self, doc: &mut Doc, value: ScalarValue) -> Result<(), ModelError> {
+        match self {
+            Slot::Key(obj, key) => {
+                if !matches!(doc.get(obj, key)?, Some((Value::Scalar(current), _)) if same_scalar(&current, &value))
+                {
+                    doc.put(obj, key, value)?;
+                }
+            }
+            Slot::Index(obj, index) => {
+                if !matches!(doc.get(obj, index)?, Some((Value::Scalar(current), _)) if same_scalar(&current, &value))
+                {
+                    doc.put(obj, index, value)?;
+                }
+            }
+            Slot::Insert(obj, index) => doc.insert(obj, index, value)?,
+        }
+        Ok(())
+    }
+
+    /// The object of type `kind` in this slot, creating it (and replacing any
+    /// value of another shape) when absent.
+    ///
+    /// # Errors
+    /// Returns the document's write error.
+    pub fn object(self, doc: &mut Doc, kind: ObjType) -> Result<ObjId, ModelError> {
+        if let Some((Value::Object(existing), id)) = self.current(doc)?
+            && existing == kind
+        {
+            return Ok(id);
+        }
+        Ok(match self {
+            Slot::Key(obj, key) => doc.put_object(obj, key, kind)?,
+            Slot::Index(obj, index) => doc.put_object(obj, index, kind)?,
+            Slot::Insert(obj, index) => doc.insert_object(obj, index, kind)?,
+        })
+    }
+
+    /// Remove whatever occupies this slot (a no-op for a new list element).
+    ///
+    /// # Errors
+    /// Returns the document's write error.
+    pub fn remove(self, doc: &mut Doc) -> Result<(), ModelError> {
+        match self {
+            Slot::Key(obj, key) => {
+                if doc.get(obj, key)?.is_some() {
+                    doc.delete(obj, key)?;
+                }
+            }
+            Slot::Index(obj, index) => doc.put(obj, index, ScalarValue::Null)?,
+            Slot::Insert(obj, index) => doc.insert(obj, index, ScalarValue::Null)?,
+        }
+        Ok(())
+    }
+}
+
+fn same_scalar(current: &ScalarValue, next: &ScalarValue) -> bool {
+    match (current, next) {
+        (ScalarValue::F64(a), ScalarValue::F64(b)) => a.to_bits() == b.to_bits(),
+        (a, b) => a == b,
+    }
+}
+
+/// A typed value stored in a CRDT document. See the module docs.
+pub trait Model: Sized {
+    /// Read from the value a parent found in its slot.
+    ///
+    /// # Errors
+    /// Returns [`ModelError`] when the stored value has another shape.
+    fn load(doc: &Doc, value: &Value<'_>, id: &ObjId) -> Result<Self, ModelError>;
+
+    /// The value of an absent slot. Types with a natural empty value return it,
+    /// so a field added to a schema reads older documents without migration.
+    ///
+    /// # Errors
+    /// Returns [`ModelError::Missing`] for types without an empty value.
+    fn missing() -> Result<Self, ModelError> {
+        Err(ModelError::Missing {
+            path: String::new(),
+        })
+    }
+
+    /// Write `self` into `slot`, changing only what differs from what the slot
+    /// already holds.
+    ///
+    /// # Errors
+    /// Returns the document's write error.
+    fn store(&self, doc: &mut Doc, slot: Slot<'_>) -> Result<(), ModelError>;
+
+    /// Append the human-readable text this value carries, for search indexing.
+    fn collect_text(&self, _out: &mut Vec<String>) {}
+}
+
+/// A [`Model`] stored as the fields of a map. `#[derive(Model)]` implements
+/// it for structs with named fields; a record resource keeps its fields at
+/// the document root.
+pub trait Fields: Model {
+    /// # Errors
+    /// Returns [`ModelError`] when a field has another shape.
+    fn read_fields(doc: &Doc, obj: &ObjId) -> Result<Self, ModelError>;
+    /// # Errors
+    /// Returns the document's write error.
+    fn write_fields(&self, doc: &mut Doc, obj: &ObjId) -> Result<(), ModelError>;
+}
+
+/// Read the value under `key` of the map `obj`, or [`Model::missing`].
+///
+/// # Errors
+/// Returns [`ModelError`] located at `key`.
+pub fn read_key<T: Model>(doc: &Doc, obj: &ObjId, key: &str) -> Result<T, ModelError> {
+    match doc.get(obj, key)? {
+        Some((value, id)) => T::load(doc, &value, &id),
+        None => T::missing(),
+    }
+    .map_err(|error| error.at(key))
+}
+
+/// Write `value` under `key` of the map `obj`.
+///
+/// # Errors
+/// Returns [`ModelError`] located at `key`.
+pub fn write_key<T: Model>(
+    doc: &mut Doc,
+    obj: &ObjId,
+    key: &str,
+    value: &T,
+) -> Result<(), ModelError> {
+    value
+        .store(doc, Slot::Key(obj, key))
+        .map_err(|error| error.at(key))
+}
+
+fn scalar<'v>(value: &'v Value<'_>) -> Option<&'v ScalarValue> {
+    match value {
+        Value::Scalar(scalar) => Some(scalar.as_ref()),
+        Value::Object(_) => None,
+    }
+}
+
+impl Model for bool {
+    fn load(_: &Doc, value: &Value<'_>, _: &ObjId) -> Result<Self, ModelError> {
+        match scalar(value) {
+            Some(ScalarValue::Boolean(value)) => Ok(*value),
+            Some(ScalarValue::Null) => Ok(false),
+            _ => Err(ModelError::shape("a boolean")),
+        }
+    }
+    fn missing() -> Result<Self, ModelError> {
+        Ok(false)
+    }
+    fn store(&self, doc: &mut Doc, slot: Slot<'_>) -> Result<(), ModelError> {
+        slot.put_scalar(doc, ScalarValue::Boolean(*self))
+    }
+}
+
+macro_rules! integer_model {
+    ($($ty:ty),*) => {$(
+        impl Model for $ty {
+            fn load(_: &Doc, value: &Value<'_>, _: &ObjId) -> Result<Self, ModelError> {
+                let wide: i128 = match scalar(value) {
+                    Some(ScalarValue::Int(value)) => i128::from(*value),
+                    Some(ScalarValue::Uint(value)) => i128::from(*value),
+                    Some(ScalarValue::Counter(counter)) => i128::from(i64::from(counter)),
+                    Some(ScalarValue::Timestamp(value)) => i128::from(*value),
+                    Some(ScalarValue::Null) => 0,
+                    _ => return Err(ModelError::shape("an integer")),
+                };
+                <$ty>::try_from(wide).map_err(|_| ModelError::invalid("integer out of range"))
+            }
+            fn missing() -> Result<Self, ModelError> {
+                Ok(0)
+            }
+            fn store(&self, doc: &mut Doc, slot: Slot<'_>) -> Result<(), ModelError> {
+                let value = i64::try_from(*self)
+                    .map(ScalarValue::Int)
+                    .or_else(|_| u64::try_from(*self).map(ScalarValue::Uint))
+                    .map_err(|_| ModelError::invalid("integer out of range"))?;
+                slot.put_scalar(doc, value)
+            }
+        }
+    )*};
+}
+integer_model!(i8, i16, i32, i64, u8, u16, u32, u64, usize, isize);
+
+impl Model for f64 {
+    #[allow(
+        clippy::cast_precision_loss,
+        reason = "integers written by older schemas widen to the stored float"
+    )]
+    fn load(_: &Doc, value: &Value<'_>, _: &ObjId) -> Result<Self, ModelError> {
+        match scalar(value) {
+            Some(ScalarValue::F64(value)) => Ok(*value),
+            Some(ScalarValue::Int(value)) => Ok(*value as f64),
+            Some(ScalarValue::Uint(value)) => Ok(*value as f64),
+            Some(ScalarValue::Null) => Ok(0.0),
+            _ => Err(ModelError::shape("a number")),
+        }
+    }
+    fn missing() -> Result<Self, ModelError> {
+        Ok(0.0)
+    }
+    fn store(&self, doc: &mut Doc, slot: Slot<'_>) -> Result<(), ModelError> {
+        slot.put_scalar(doc, ScalarValue::F64(*self))
+    }
+}
+
+impl Model for f32 {
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "an f32 field stores what it wrote, widened"
+    )]
+    fn load(doc: &Doc, value: &Value<'_>, id: &ObjId) -> Result<Self, ModelError> {
+        f64::load(doc, value, id).map(|value| value as f32)
+    }
+    fn missing() -> Result<Self, ModelError> {
+        Ok(0.0)
+    }
+    fn store(&self, doc: &mut Doc, slot: Slot<'_>) -> Result<(), ModelError> {
+        f64::from(*self).store(doc, slot)
+    }
+}
+
+/// Collaborative text: stored as an Automerge `Text` object and updated by
+/// splicing only the changed span, so concurrent typing in one field merges
+/// character by character. A string scalar written by an older schema reads
+/// too and is upgraded on the first write.
+impl Model for String {
+    fn load(doc: &Doc, value: &Value<'_>, id: &ObjId) -> Result<Self, ModelError> {
+        match value {
+            Value::Object(ObjType::Text) => Ok(doc.text(id)?),
+            Value::Scalar(scalar) => match scalar.as_ref() {
+                ScalarValue::Str(text) => Ok(text.to_string()),
+                ScalarValue::Null => Ok(Self::new()),
+                _ => Err(ModelError::shape("text")),
+            },
+            Value::Object(_) => Err(ModelError::shape("text")),
+        }
+    }
+    fn missing() -> Result<Self, ModelError> {
+        Ok(Self::new())
+    }
+    fn store(&self, doc: &mut Doc, slot: Slot<'_>) -> Result<(), ModelError> {
+        let text = slot.object(doc, ObjType::Text)?;
+        let current = doc.text(&text)?;
+        if current != *self {
+            splice_changed_span(doc, &text, &current, self)?;
+        }
+        Ok(())
+    }
+    fn collect_text(&self, out: &mut Vec<String>) {
+        if !self.is_empty() {
+            out.push(self.clone());
+        }
+    }
+}
+
+/// Replace the one span where `old` and `new` differ (after their common
+/// prefix, before their common suffix) with a single splice.
+///
+/// One contiguous splice is what an edit is — typing, pasting, deleting a
+/// selection — so it merges with a collaborator's concurrent edits elsewhere
+/// in the text, and it is a change the host's undo inverts exactly. (A
+/// character-level diff of two unrelated strings scatters one edit across
+/// many splices.)
+fn splice_changed_span(
+    doc: &mut Doc,
+    text: &ObjId,
+    old: &str,
+    new: &str,
+) -> Result<(), ModelError> {
+    let width = |part: &str| match doc.text_encoding() {
+        automerge::TextEncoding::UnicodeCodePoint => Some(part.chars().count()),
+        automerge::TextEncoding::Utf8CodeUnit => Some(part.len()),
+        automerge::TextEncoding::Utf16CodeUnit => Some(part.encode_utf16().count()),
+        automerge::TextEncoding::GraphemeCluster => None,
+    };
+    let prefix = old
+        .char_indices()
+        .zip(new.chars())
+        .find(|((_, a), b)| a != b)
+        .map_or_else(|| old.len().min(new.len()), |((index, _), _)| index);
+    let prefix = (0..=prefix)
+        .rev()
+        .find(|&index| old.is_char_boundary(index) && new.is_char_boundary(index))
+        .unwrap_or(0);
+    let (old_rest, new_rest) = (
+        old.get(prefix..).unwrap_or(""),
+        new.get(prefix..).unwrap_or(""),
+    );
+    let suffix = old_rest
+        .chars()
+        .rev()
+        .zip(new_rest.chars().rev())
+        .take_while(|(a, b)| a == b)
+        .map(|(a, _)| a.len_utf8())
+        .sum::<usize>();
+    let removed = old_rest
+        .get(..old_rest.len().saturating_sub(suffix))
+        .unwrap_or("");
+    let inserted = new_rest
+        .get(..new_rest.len().saturating_sub(suffix))
+        .unwrap_or("");
+    match (width(old.get(..prefix).unwrap_or("")), width(removed)) {
+        (Some(position), Some(deleted)) => {
+            let deleted =
+                isize::try_from(deleted).map_err(|_| ModelError::invalid("text too long"))?;
+            doc.splice_text(text, position, deleted, inserted)?;
+        }
+        _ => doc.update_text(text, new)?,
+    }
+    Ok(())
+}
+
+/// A string written whole: last writer wins. For identifiers, enum-like
+/// codes and short values where character merging would be wrong.
+#[derive(Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct Atom(pub String);
+
+impl Model for Atom {
+    fn load(doc: &Doc, value: &Value<'_>, id: &ObjId) -> Result<Self, ModelError> {
+        String::load(doc, value, id).map(Self)
+    }
+    fn missing() -> Result<Self, ModelError> {
+        Ok(Self::default())
+    }
+    fn store(&self, doc: &mut Doc, slot: Slot<'_>) -> Result<(), ModelError> {
+        slot.put_scalar(doc, ScalarValue::Str(self.0.as_str().into()))
+    }
+}
+
+impl Model for uuid::Uuid {
+    fn load(_: &Doc, value: &Value<'_>, _: &ObjId) -> Result<Self, ModelError> {
+        match scalar(value) {
+            Some(ScalarValue::Str(text)) => {
+                Self::parse_str(text).map_err(|error| ModelError::invalid(error.to_string()))
+            }
+            _ => Err(ModelError::shape("a uuid")),
+        }
+    }
+    fn store(&self, doc: &mut Doc, slot: Slot<'_>) -> Result<(), ModelError> {
+        slot.put_scalar(doc, ScalarValue::Str(self.to_string().into()))
+    }
+}
+
+/// `None` is an absent key (or a null list element).
+impl<T: Model> Model for Option<T> {
+    fn load(doc: &Doc, value: &Value<'_>, id: &ObjId) -> Result<Self, ModelError> {
+        if matches!(scalar(value), Some(ScalarValue::Null)) {
+            return Ok(None);
+        }
+        T::load(doc, value, id).map(Some)
+    }
+    fn missing() -> Result<Self, ModelError> {
+        Ok(None)
+    }
+    fn store(&self, doc: &mut Doc, slot: Slot<'_>) -> Result<(), ModelError> {
+        match self {
+            Some(value) => value.store(doc, slot),
+            None => slot.remove(doc),
+        }
+    }
+    fn collect_text(&self, out: &mut Vec<String>) {
+        if let Some(value) = self {
+            value.collect_text(out);
+        }
+    }
+}
+
+impl<T: Model> Model for Box<T> {
+    fn load(doc: &Doc, value: &Value<'_>, id: &ObjId) -> Result<Self, ModelError> {
+        T::load(doc, value, id).map(Box::new)
+    }
+    fn missing() -> Result<Self, ModelError> {
+        T::missing().map(Box::new)
+    }
+    fn store(&self, doc: &mut Doc, slot: Slot<'_>) -> Result<(), ModelError> {
+        (**self).store(doc, slot)
+    }
+    fn collect_text(&self, out: &mut Vec<String>) {
+        (**self).collect_text(out);
+    }
+}
+
+/// A list reconciled by position: elements present on both sides are written
+/// in place, the tail is inserted or deleted. Use
+/// [`Collection`](crate::Collection) for items with identity, where a move or
+/// a concurrent insert must not rewrite the neighbours.
+impl<T: Model> Model for Vec<T> {
+    fn load(doc: &Doc, value: &Value<'_>, id: &ObjId) -> Result<Self, ModelError> {
+        if !matches!(value, Value::Object(ObjType::List)) {
+            return Err(ModelError::shape("a list"));
+        }
+        (0..doc.length(id))
+            .map(|index| {
+                match doc.get(id, index)? {
+                    Some((value, item)) => T::load(doc, &value, &item),
+                    None => T::missing(),
+                }
+                .map_err(|error| error.at(&index.to_string()))
+            })
+            .collect()
+    }
+    fn missing() -> Result<Self, ModelError> {
+        Ok(Self::new())
+    }
+    fn store(&self, doc: &mut Doc, slot: Slot<'_>) -> Result<(), ModelError> {
+        let list = slot.object(doc, ObjType::List)?;
+        let existing = doc.length(&list);
+        for (index, item) in self.iter().enumerate() {
+            let slot = if index < existing {
+                Slot::Index(&list, index)
+            } else {
+                Slot::Insert(&list, index)
+            };
+            item.store(doc, slot)
+                .map_err(|error| error.at(&index.to_string()))?;
+        }
+        for index in (self.len()..existing).rev() {
+            doc.delete(&list, index)?;
+        }
+        Ok(())
+    }
+    fn collect_text(&self, out: &mut Vec<String>) {
+        for item in self {
+            item.collect_text(out);
+        }
+    }
+}
+
+/// A map reconciled key by key.
+impl<T: Model> Model for BTreeMap<String, T> {
+    fn load(doc: &Doc, value: &Value<'_>, id: &ObjId) -> Result<Self, ModelError> {
+        if !matches!(value, Value::Object(ObjType::Map)) {
+            return Err(ModelError::shape("a map"));
+        }
+        doc.keys(id)
+            .map(|key| read_key(doc, id, &key).map(|value| (key, value)))
+            .collect()
+    }
+    fn missing() -> Result<Self, ModelError> {
+        Ok(Self::new())
+    }
+    fn store(&self, doc: &mut Doc, slot: Slot<'_>) -> Result<(), ModelError> {
+        let map = slot.object(doc, ObjType::Map)?;
+        let stale: Vec<String> = doc
+            .keys(&map)
+            .filter(|key| !self.contains_key(key))
+            .collect();
+        for key in stale {
+            doc.delete(&map, key.as_str())?;
+        }
+        for (key, value) in self {
+            write_key(doc, &map, key, value)?;
+        }
+        Ok(())
+    }
+    fn collect_text(&self, out: &mut Vec<String>) {
+        for value in self.values() {
+            value.collect_text(out);
+        }
+    }
+}
+
+/// An opaque value stored as one JSON string: written whole, last writer
+/// wins. The escape hatch for nested data that has no meaningful concurrent
+/// merge (a colour curve, a filter preset).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Json<T>(pub T);
+
+impl<T> Model for Json<T>
+where
+    T: serde::Serialize + serde::de::DeserializeOwned + Default,
+{
+    fn load(_: &Doc, value: &Value<'_>, _: &ObjId) -> Result<Self, ModelError> {
+        match scalar(value) {
+            Some(ScalarValue::Str(text)) => serde_json::from_str(text)
+                .map(Self)
+                .map_err(|error| ModelError::invalid(error.to_string())),
+            Some(ScalarValue::Null) => Ok(Self::default()),
+            _ => Err(ModelError::shape("a JSON string")),
+        }
+    }
+    fn missing() -> Result<Self, ModelError> {
+        Ok(Self::default())
+    }
+    fn store(&self, doc: &mut Doc, slot: Slot<'_>) -> Result<(), ModelError> {
+        let text = serde_json::to_string(&self.0)
+            .map_err(|error| ModelError::invalid(error.to_string()))?;
+        slot.put_scalar(doc, ScalarValue::Str(text.into()))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use automerge::ROOT;
+
+    #[test]
+    fn unchanged_writes_produce_no_operations() {
+        let mut doc = Doc::new();
+        write_key(&mut doc, &ROOT, "title", &"hello".to_owned()).unwrap();
+        write_key(&mut doc, &ROOT, "count", &3_u32).unwrap();
+        write_key(&mut doc, &ROOT, "tags", &vec![1_i64, 2]).unwrap();
+        doc.commit();
+        write_key(&mut doc, &ROOT, "title", &"hello".to_owned()).unwrap();
+        write_key(&mut doc, &ROOT, "count", &3_u32).unwrap();
+        write_key(&mut doc, &ROOT, "tags", &vec![1_i64, 2]).unwrap();
+        assert_eq!(doc.pending_ops(), 0);
+        assert_eq!(read_key::<String>(&doc, &ROOT, "title").unwrap(), "hello");
+        assert_eq!(read_key::<Vec<i64>>(&doc, &ROOT, "tags").unwrap(), [1, 2]);
+        assert_eq!(read_key::<Option<u8>>(&doc, &ROOT, "absent").unwrap(), None);
+    }
+
+    #[test]
+    fn text_splices_merge_concurrent_edits() {
+        let mut base = Doc::new();
+        write_key(&mut base, &ROOT, "body", &"hello world".to_owned()).unwrap();
+        base.commit();
+        let mut left = base.fork();
+        let mut right = base.fork();
+        write_key(&mut left, &ROOT, "body", &"hello brave world".to_owned()).unwrap();
+        write_key(&mut right, &ROOT, "body", &"hello world!".to_owned()).unwrap();
+        left.merge(&mut right).unwrap();
+        assert_eq!(
+            read_key::<String>(&left, &ROOT, "body").unwrap(),
+            "hello brave world!"
+        );
+    }
+
+    #[test]
+    fn a_text_edit_is_one_splice_of_the_changed_span() {
+        for (old, new) in [
+            ("first thought", "second thought"),
+            ("café 日本語", "café 日本 語!"),
+            ("abc", ""),
+            ("", "abc"),
+            ("aaa", "aa"),
+            ("ab", "ba"),
+        ] {
+            let mut doc = Doc::new();
+            write_key(&mut doc, &ROOT, "t", &old.to_owned()).unwrap();
+            doc.commit();
+            write_key(&mut doc, &ROOT, "t", &new.to_owned()).unwrap();
+            doc.commit();
+            assert_eq!(read_key::<String>(&doc, &ROOT, "t").unwrap(), new);
+        }
+    }
+}
