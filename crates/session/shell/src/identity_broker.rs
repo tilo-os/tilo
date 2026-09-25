@@ -1,7 +1,7 @@
 //! Capability-gated identity metadata and signing service for app sandboxes.
 
 use crate::shell::state::WorkspaceAuthority as _;
-use std::io::{self, Read, Write};
+use std::io::{self, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -19,7 +19,8 @@ use collab_types::{
     role_permits,
 };
 use ed25519_dalek::Signer;
-use runtime_identity::wire::{Handshake, Request, Response};
+use runtime_identity::wire::{FRAMING, HANDSHAKE_FRAMING, Handshake, Request, Response};
+use wire_frame::FrameError;
 
 use crate::shell::state::{RoomId, WorkspaceTreeHandle, now_unix};
 
@@ -387,17 +388,7 @@ fn require_trusted_current_device(
 }
 
 fn read_frame<T: serde::de::DeserializeOwned>(stream: &mut UnixStream) -> io::Result<T> {
-    let mut len = [0_u8; 4];
-    stream.read_exact(&mut len)?;
-    let len = u32::from_le_bytes(len) as usize;
-    if len > 1024 * 1024 {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "identity frame too large",
-        ));
-    }
-    let mut bytes = vec![0_u8; len];
-    stream.read_exact(&mut bytes)?;
+    let bytes = HANDSHAKE_FRAMING.read(stream)?.ok_or(FrameError::Closed)?;
     serde_json::from_slice(&bytes)
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
 }
@@ -406,43 +397,16 @@ fn read_frame<T: serde::de::DeserializeOwned>(stream: &mut UnixStream) -> io::Re
 fn write_frame<T: serde::Serialize>(stream: &mut UnixStream, value: &T) -> io::Result<()> {
     let bytes = serde_json::to_vec(value)
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
-    let len = u32::try_from(bytes.len())
-        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "identity frame too large"))?;
-    stream.write_all(&len.to_le_bytes())?;
-    stream.write_all(&bytes)?;
+    HANDSHAKE_FRAMING.write(stream, &bytes)?;
     stream.flush()
 }
 
-const MAX_ACTION_FRAME_BYTES: usize = 64 * 1024 * 1024;
-
 fn read_action_frame<T: serde::de::DeserializeOwned>(stream: &mut UnixStream) -> io::Result<T> {
-    let mut len = [0_u8; 4];
-    stream.read_exact(&mut len)?;
-    let len = u32::from_le_bytes(len) as usize;
-    if len > MAX_ACTION_FRAME_BYTES {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "identity action frame exceeds 64 MiB",
-        ));
-    }
-    let mut bytes = vec![0_u8; len];
-    stream.read_exact(&mut bytes)?;
-    postcard::from_bytes(&bytes).map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
+    Ok(FRAMING.read_value(stream)?.ok_or(FrameError::Closed)?)
 }
 
 fn write_action_frame<T: serde::Serialize>(stream: &mut UnixStream, value: &T) -> io::Result<()> {
-    let bytes = postcard::to_allocvec(value)
-        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
-    if bytes.len() > MAX_ACTION_FRAME_BYTES {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "identity action frame exceeds 64 MiB",
-        ));
-    }
-    let len = u32::try_from(bytes.len())
-        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "identity frame too large"))?;
-    stream.write_all(&len.to_le_bytes())?;
-    stream.write_all(&bytes)?;
+    FRAMING.write_value(stream, value)?;
     stream.flush()
 }
 
@@ -451,6 +415,7 @@ mod tests {
     use super::*;
     use collab_types::caps::{CapOverride, Scope, Subject};
     use ed25519_dalek::{Signature, Verifier, VerifyingKey};
+    use std::io::Read as _;
     use std::os::fd::IntoRawFd;
 
     /// The identity service's bytes: the launcher's handshake is a

@@ -13,6 +13,10 @@ use tokio::net::UnixListener;
 use tokio_util::compat::TokioAsyncReadCompatExt;
 
 use crate::app_host_capnp::app_host;
+
+/// After the `QAH1` marker: a big-endian `u32` length, then the launcher's
+/// JSON handoff.
+const HANDOFF_FRAMING: wire_frame::Framing = wire_frame::Framing::big_endian(1024).reject_empty();
 use crate::service::{AppHostServer, SystemCatalog};
 use crate::store::Store;
 
@@ -86,15 +90,10 @@ pub async fn handle_connection(
     let mut magic = [0u8; 4];
     stream.read_exact(&mut magic).await?;
     anyhow::ensure!(magic == *b"QAH1", "missing authenticated launcher handoff");
-    let mut length = [0u8; 4];
-    stream.read_exact(&mut length).await?;
-    let length = u32::from_be_bytes(length) as usize;
-    anyhow::ensure!(
-        length > 0 && length <= 1024,
-        "invalid launcher handoff length"
-    );
-    let mut bytes = vec![0u8; length];
-    stream.read_exact(&mut bytes).await?;
+    let bytes = HANDOFF_FRAMING
+        .read_async(&mut stream)
+        .await?
+        .ok_or(wire_frame::FrameError::Closed)?;
     let handoff: serde_json::Value = serde_json::from_slice(&bytes)?;
     anyhow::ensure!(
         handoff.get("protocol").and_then(serde_json::Value::as_u64) == Some(1)

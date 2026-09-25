@@ -250,7 +250,7 @@ fn assert_local_app_behavior() {
 #[test]
 #[cfg(unix)]
 fn local_app_ignores_ambient_services_and_runs_effects() {
-    use std::io::{Read, Write};
+    use std::io::Read;
     use std::os::fd::AsRawFd;
     use std::os::unix::net::UnixStream;
     use std::os::unix::process::CommandExt;
@@ -269,14 +269,12 @@ fn local_app_ignores_ambient_services_and_runs_effects() {
     let pairs = services.map(|_| UnixStream::pair().unwrap());
     // A regression must fail promptly, without touching a real identity store
     // or waiting for a real broker. A discovery request receives this refusal.
-    let refusal = postcard::to_allocvec(&runtime_identity::wire::Response::Error(
-        "private-app service tripwire".into(),
-    ))
-    .unwrap();
-    (&pairs[0].1)
-        .write_all(&u32::try_from(refusal.len()).unwrap().to_le_bytes())
+    runtime_identity::wire::FRAMING
+        .write_value(
+            &mut &pairs[0].1,
+            &runtime_identity::wire::Response::Error("private-app service tripwire".into()),
+        )
         .unwrap();
-    (&pairs[0].1).write_all(&refusal).unwrap();
     pairs[0].1.shutdown(std::net::Shutdown::Write).unwrap();
     let inherited = pairs.each_ref().map(|(client, _)| client.as_raw_fd());
     let mut command = std::process::Command::new(std::env::current_exe().unwrap());
