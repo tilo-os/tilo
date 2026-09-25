@@ -93,6 +93,7 @@ pub mod action;
 pub mod collection;
 pub mod group;
 pub mod history;
+pub mod items;
 pub mod model;
 pub mod order;
 pub mod replica;
@@ -135,6 +136,16 @@ pub mod __private {
             title: text.first().cloned().unwrap_or_else(|| label.to_owned()),
             text: text.join("\n"),
         }]
+    }
+
+    /// The label an item is offered under: its first text, else its id.
+    pub fn item_label<T: crate::Model>(id: &crate::Id, item: &T) -> String {
+        let mut text = Vec::new();
+        item.collect_text(&mut text);
+        text.into_iter()
+            .map(|line| line.lines().next().unwrap_or_default().trim().to_owned())
+            .find(|line| !line.is_empty())
+            .unwrap_or_else(|| id.to_string())
     }
 
     /// Decode a declared operation from bound arguments.
