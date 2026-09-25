@@ -434,7 +434,16 @@ mod native {
         fn acquire_at(cache: &Path, selected: &SelectedManifest) -> Result<Self> {
             let parts = raw_components(cache.as_os_str().as_bytes())?;
             let root = File::open("/").map_err(io)?;
-            let mut ancestry = vec![Held::new(root, b"", true, false)?];
+            Self::acquire_below(root, &parts, selected)
+        }
+        /// Hold `anchor` and every component of `parts` below it, then the
+        /// private manifest root. Production always anchors at `/`.
+        fn acquire_below(
+            anchor: File,
+            parts: &[&[u8]],
+            selected: &SelectedManifest,
+        ) -> Result<Self> {
+            let mut ancestry = vec![Held::new(anchor, b"", true, false)?];
             for (index, part) in parts.iter().enumerate() {
                 let parent = last_held(&ancestry)?;
                 let leaf = index.saturating_add(1) == parts.len();
@@ -1282,9 +1291,28 @@ mod native {
             self.lease.check()
         }
     }
+    /// The provider exactly as production acquires it: ancestry held from `/`.
+    #[cfg(test)]
+    pub(super) fn rooted_acquire(path: &Path, selected: &SelectedManifest) -> Result<CacheRoot> {
+        CacheRoot::acquire_at(path, selected)
+    }
+    /// The provider with its ancestry held from the qualified test root, which
+    /// `path` must lie below. Everything from that root down (fixture
+    /// directories, the private manifest root and its contents) takes the
+    /// production path; only the host's own ancestry above it is not held, so
+    /// the fixtures also run where `/` itself is not qualified (a container's
+    /// overlay root). `rooted_acquire` covers the `/` anchoring.
     #[cfg(test)]
     pub(super) fn fixture_acquire(path: &Path, selected: &SelectedManifest) -> Result<CacheRoot> {
-        CacheRoot::acquire_at(path, selected)
+        let anchor = super::tests::qualified_root();
+        let below = path
+            .as_os_str()
+            .as_bytes()
+            .strip_prefix(anchor.as_os_str().as_bytes())
+            .filter(|rest| rest.first() == Some(&b'/'))
+            .ok_or("Fixture cache outside the qualified test root")?;
+        let parts = raw_components(below)?;
+        CacheRoot::acquire_below(File::open(anchor).map_err(io)?, &parts, selected)
     }
 }
 #[cfg(test)]

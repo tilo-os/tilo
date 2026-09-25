@@ -1,3 +1,15 @@
+//! Actual-filesystem qualification of the bounded owner directory on Linux.
+//!
+//! Every case needs a task-private XFS root that the coordinator supplies:
+//! `TILO_PRIVATE_ACTIONS_XFS_FIXTURES` names a `0700` directory owned by the
+//! test principal on XFS, and `setfacl`/`getfacl` are installed. The general
+//! test job has neither (its container root is overlayfs), so the cases are
+//! ignored there and run explicitly:
+//!
+//! ```sh
+//! TILO_PRIVATE_ACTIONS_XFS_FIXTURES=/mnt/xfs/private \
+//!     cargo test -p atomic-file --lib bounded::linux_tests -- --ignored
+//! ```
 #![expect(
     clippy::result_large_err,
     reason = "the tests return the production custody-carrying errors from closures"
@@ -41,6 +53,7 @@ fn acl(path: &std::path::Path, entries: &str) {
 }
 
 #[test]
+#[ignore = "native Linux XFS qualification; the coordinator supplies TILO_PRIVATE_ACTIONS_XFS_FIXTURES and the acl tools"]
 fn bounded_linux_actual_xfs_admission_and_masked_named_acl() {
     use allocations::measure;
     let root = xfs_fixture();
@@ -62,6 +75,7 @@ fn bounded_linux_actual_xfs_admission_and_masked_named_acl() {
 }
 
 #[test]
+#[ignore = "native Linux XFS qualification; the coordinator supplies TILO_PRIVATE_ACTIONS_XFS_FIXTURES and the acl tools"]
 fn bounded_linux_inherited_default_acl_keeps_actual_stage_private() {
     use allocations::measure;
     let root = xfs_fixture();
@@ -104,6 +118,7 @@ fn bounded_linux_inherited_default_acl_keeps_actual_stage_private() {
 }
 
 #[test]
+#[ignore = "native Linux XFS qualification; the coordinator supplies TILO_PRIVATE_ACTIONS_XFS_FIXTURES and the acl tools"]
 fn bounded_linux_current_objects_and_names_are_rechecked() {
     use allocations::measure;
     let root = xfs_fixture();
@@ -147,6 +162,7 @@ fn bounded_linux_current_objects_and_names_are_rechecked() {
 }
 
 #[test]
+#[ignore = "native Linux XFS qualification; the coordinator supplies TILO_PRIVATE_ACTIONS_XFS_FIXTURES and the acl tools"]
 fn bounded_linux_child_uses_retained_root_and_current_identity() {
     use allocations::measure;
     let root = xfs_fixture();
@@ -192,6 +208,7 @@ fn bounded_linux_child_uses_retained_root_and_current_identity() {
 
 #[cfg(feature = "test-support")]
 #[test]
+#[ignore = "native Linux XFS qualification; the coordinator supplies TILO_PRIVATE_ACTIONS_XFS_FIXTURES and the acl tools"]
 fn bounded_linux_retry_keeps_original_errors_and_rechecks_parent_and_file() {
     use crate::test_support::{Checkpoint, ExistingCheckpoint, with_existing_hooks, with_failure};
     let root = xfs_fixture();
@@ -234,6 +251,7 @@ fn bounded_linux_retry_keeps_original_errors_and_rechecks_parent_and_file() {
 }
 
 #[test]
+#[ignore = "native Linux XFS qualification; the coordinator supplies TILO_PRIVATE_ACTIONS_XFS_FIXTURES and the acl tools"]
 fn bounded_linux_descriptor_and_filesystem_refusals_do_not_allocate() {
     use allocations::measure;
     let proc = StorageDirectory::open(std::path::Path::new("/proc")).unwrap();
@@ -252,6 +270,7 @@ fn bounded_linux_descriptor_and_filesystem_refusals_do_not_allocate() {
 }
 
 #[test]
+#[ignore = "native Linux XFS qualification; the coordinator supplies TILO_PRIVATE_ACTIONS_XFS_FIXTURES and the acl tools"]
 fn bounded_linux_existing_sentinel_has_real_exclusive_lease() {
     use crate::lease::{AcquireError, FileLease, LeaseMode};
     use allocations::measure;
@@ -278,6 +297,7 @@ fn bounded_linux_existing_sentinel_has_real_exclusive_lease() {
 }
 
 #[test]
+#[ignore = "native Linux XFS qualification; the coordinator supplies TILO_PRIVATE_ACTIONS_XFS_FIXTURES and the acl tools"]
 fn bounded_fresh_admin_creates_from_actual_retained_root() {
     use allocations::measure;
     let temp = xfs_fixture();
@@ -312,6 +332,7 @@ fn bounded_fresh_admin_creates_from_actual_retained_root() {
 }
 
 #[test]
+#[ignore = "native Linux XFS qualification; the coordinator supplies TILO_PRIVATE_ACTIONS_XFS_FIXTURES and the acl tools"]
 fn bounded_fresh_admin_existing_names_are_never_adopted() {
     use allocations::measure;
     let temp = xfs_fixture();
@@ -350,6 +371,7 @@ fn bounded_fresh_admin_existing_names_are_never_adopted() {
 }
 
 #[test]
+#[ignore = "native Linux XFS qualification; the coordinator supplies TILO_PRIVATE_ACTIONS_XFS_FIXTURES and the acl tools"]
 fn bounded_fresh_admin_parent_change_prevents_submission() {
     use allocations::measure;
     let temp = xfs_fixture();
@@ -367,6 +389,7 @@ fn bounded_fresh_admin_parent_change_prevents_submission() {
 }
 
 #[test]
+#[ignore = "native Linux XFS qualification; the coordinator supplies TILO_PRIVATE_ACTIONS_XFS_FIXTURES and the acl tools"]
 fn bounded_fresh_admin_renamed_root_keeps_original_parent_barrier() {
     use allocations::measure;
     let temp = xfs_fixture();
@@ -384,6 +407,7 @@ fn bounded_fresh_admin_renamed_root_keeps_original_parent_barrier() {
 }
 
 #[test]
+#[ignore = "native Linux XFS qualification; the coordinator supplies TILO_PRIVATE_ACTIONS_XFS_FIXTURES and the acl tools"]
 fn bounded_fresh_admin_parent_and_nonempty_retry_keep_original_custody() {
     use allocations::measure;
     let temp = xfs_fixture();
@@ -428,6 +452,7 @@ fn bounded_fresh_admin_parent_and_nonempty_retry_keep_original_custody() {
 }
 
 #[test]
+#[ignore = "native Linux XFS qualification; the coordinator supplies TILO_PRIVATE_ACTIONS_XFS_FIXTURES and the acl tools"]
 fn bounded_fresh_admin_replaced_child_is_not_normalized() {
     use allocations::measure;
     let temp = xfs_fixture();
@@ -456,6 +481,7 @@ fn bounded_fresh_admin_replaced_child_is_not_normalized() {
 }
 
 #[test]
+#[ignore = "native Linux XFS qualification; the coordinator supplies TILO_PRIVATE_ACTIONS_XFS_FIXTURES and the acl tools"]
 fn bounded_fresh_admin_ambiguous_mkdir_never_recovers_by_name() {
     use allocations::measure;
     let temp = xfs_fixture();
@@ -475,6 +501,7 @@ fn bounded_fresh_admin_ambiguous_mkdir_never_recovers_by_name() {
 }
 
 #[test]
+#[ignore = "native Linux XFS qualification; the coordinator supplies TILO_PRIVATE_ACTIONS_XFS_FIXTURES and the acl tools"]
 fn bounded_fresh_admin_each_barrier_failure_retries_original_child() {
     use allocations::measure;
     for at in [
@@ -500,6 +527,7 @@ fn bounded_fresh_admin_each_barrier_failure_retries_original_child() {
 }
 
 #[test]
+#[ignore = "native Linux XFS qualification; the coordinator supplies TILO_PRIVATE_ACTIONS_XFS_FIXTURES and the acl tools"]
 fn bounded_fresh_admin_nonempty_child_preserves_each_entry() {
     use allocations::measure;
     for (name, directory) in [
@@ -535,6 +563,7 @@ fn bounded_fresh_admin_nonempty_child_preserves_each_entry() {
 }
 
 #[test]
+#[ignore = "native Linux XFS qualification; the coordinator supplies TILO_PRIVATE_ACTIONS_XFS_FIXTURES and the acl tools"]
 fn bounded_fresh_admin_linux_inherited_acl_is_preserved_and_masked() {
     use allocations::measure;
     let temp = xfs_fixture();
@@ -587,6 +616,7 @@ fn bounded_fresh_admin_linux_inherited_acl_is_preserved_and_masked() {
 }
 
 #[test]
+#[ignore = "native Linux XFS qualification; the coordinator supplies TILO_PRIVATE_ACTIONS_XFS_FIXTURES and the acl tools"]
 fn bounded_fresh_admin_linux_widened_child_refuses_before_chmod() {
     use allocations::measure;
     let temp = xfs_fixture();

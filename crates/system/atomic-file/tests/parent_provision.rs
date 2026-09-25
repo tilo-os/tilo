@@ -7,6 +7,9 @@
     reason = "in a test these are the assertion, not a hazard; the restart child exits on purpose"
 )]
 use std::{fs, path::Path};
+#[cfg(target_os = "linux")]
+#[path = "support/posix_acl.rs"]
+mod posix_acl;
 
 #[test]
 fn unresolved_parent_components_fail_before_creation() {
@@ -666,16 +669,7 @@ fn macos_creation_preflight_checks_inheritable_acl_before_mkdir() {
 #[test]
 fn linux_default_acl_creation_remains_mode_bounded() {
     let root = tempfile::tempdir().unwrap();
-    let output = Command::new("setfacl")
-        .args(["-m", "d:u::rwx,d:g::rwx,d:o::rwx"])
-        .arg(root.path())
-        .output()
-        .expect("native ACL qualification requires setfacl");
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
+    posix_acl::modify(root.path(), "d:u::rwx,d:g::rwx,d:o::rwx");
     let leaf = root.path().join("private/leaf");
     provision_directory(&leaf, Privacy::OwnerOnly).unwrap();
     for path in [leaf.parent().unwrap(), leaf.as_path()] {

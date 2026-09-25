@@ -42,7 +42,10 @@ fn raw_ancestry_is_bounded_lossless_and_refuses_normalization() {
 // under the current runtime holds; host tests above make no native claim.
 #[cfg(target_os = "linux")]
 mod native {
-    use super::super::{native::fixture_acquire, *};
+    use super::super::{
+        native::{fixture_acquire, rooted_acquire},
+        *,
+    };
     use crate::{
         bundle as internal_bundle,
         cache::{Candidate, Kind, Provider, Session},
@@ -53,7 +56,7 @@ mod native {
         fs::{self, OpenOptions},
         io::Write,
         os::unix::{
-            ffi::OsStringExt,
+            ffi::{OsStrExt, OsStringExt},
             fs::{OpenOptionsExt, PermissionsExt},
         },
         sync::atomic::AtomicBool,
@@ -67,9 +70,56 @@ mod native {
         SelectedManifest::from_bytes(&release, bytes).unwrap()
     }
     fn directory() -> tempfile::TempDir {
-        // No /tmp fallback: native fixtures need the qualified current-user
-        // cache filesystem and safe ancestry, just like the production provider.
-        tempfile::tempdir_in(xdg_paths::cache_dir().unwrap()).unwrap()
+        // No /tmp fallback: native fixtures need a qualified filesystem and
+        // safe ancestry, just like the production provider.
+        tempfile::tempdir_in(super::qualified_root()).unwrap()
+    }
+    #[test]
+    fn production_ancestry_is_held_from_the_filesystem_root() {
+        use std::os::unix::fs::MetadataExt;
+        // Production holds every directory from `/` down, and each must be on
+        // a qualified filesystem with a root-or-current, non-writable owner.
+        // Where the host's root is not qualified (a container's overlay root)
+        // it refuses before creating anything; on a qualified, safely owned
+        // ancestry it admits the same fixture the other cases use.
+        let dir = directory();
+        let s = selected();
+        // SAFETY: geteuid has no preconditions.
+        let uid = unsafe { libc::geteuid() };
+        let ancestry: Vec<_> = dir.path().ancestors().collect();
+        let qualified = |path: &std::path::Path| {
+            let path = std::ffi::CString::new(path.as_os_str().as_bytes()).unwrap();
+            let mut stat = std::mem::MaybeUninit::<libc::statfs>::uninit();
+            // SAFETY: NUL-terminated path and writable statfs storage.
+            assert_eq!(unsafe { libc::statfs(path.as_ptr(), stat.as_mut_ptr()) }, 0);
+            // SAFETY: successful statfs initialized the storage.
+            let magic = unsafe { stat.assume_init() }.f_type;
+            #[allow(
+                clippy::cast_sign_loss,
+                reason = "statfs magic numbers compare as unsigned; the width and sign of `f_type` vary by target"
+            )]
+            let magic = magic as u64;
+            matches!(magic, 0xef53 | 0x5846_5342 | 0x9123_683e)
+        };
+        let safe = |path: &std::path::Path| {
+            let m = fs::metadata(path).unwrap();
+            effective_mode_allowed(m.uid(), uid, m.mode(), true, false)
+        };
+        let result = rooted_acquire(dir.path(), &s);
+        if !qualified(std::path::Path::new("/")) {
+            assert!(
+                matches!(&result, Err(e) if *e == "Unqualified cache filesystem (requires Linux ext4/XFS/Btrfs semantics)"),
+                "{:?}",
+                result.err()
+            );
+            assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 0);
+        } else if ancestry.iter().all(|path| qualified(path) && safe(path)) {
+            assert!(result.is_ok(), "{:?}", result.err());
+            assert!(root(dir.path(), &s).join("payload").is_dir());
+        } else {
+            assert!(result.is_err());
+            assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 0);
+        }
     }
     fn root(path: &std::path::Path, s: &SelectedManifest) -> std::path::PathBuf {
         path.join("qos-internal-install").join(s.manifest_sha256())
@@ -832,5 +882,41 @@ pub(super) fn boundary(stage: &'static str) -> Result<(), crate::error::Failure>
         } else {
             Ok(())
         }
+    })
+}
+
+/// Root of the native fixtures: a directory on a qualified local filesystem.
+///
+/// The cache refuses filesystems without Linux ext4/XFS/Btrfs semantics, so
+/// the fixtures cannot use a tmpfs or overlay `/tmp` or home. They live below
+/// `QOS_INSTALL_ARTIFACTS_TEST_CACHE_ROOT` when set, else below the build's
+/// own `target/test-fs/install-artifacts`, which lives in the checkout (in CI,
+/// the host-backed workspace) and so on the developer's filesystem.
+#[cfg(target_os = "linux")]
+pub(super) fn qualified_root() -> &'static std::path::Path {
+    use std::os::unix::fs::PermissionsExt;
+    static ROOT: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
+    ROOT.get_or_init(|| {
+        let root = std::env::var_os("QOS_INSTALL_ARTIFACTS_TEST_CACHE_ROOT").map_or_else(
+            || {
+                // `<target>/<profile>/deps/<test binary>`, so a custom target
+                // directory is honoured.
+                let exe = std::env::current_exe().unwrap();
+                let target = exe
+                    .ancestors()
+                    .find(|dir| dir.file_name().is_some_and(|name| name == "deps"))
+                    .and_then(|deps| deps.parent()?.parent())
+                    .unwrap_or_else(|| {
+                        panic!("{} is not in a cargo target directory", exe.display())
+                    })
+                    .to_path_buf();
+                target.join("test-fs").join("install-artifacts")
+            },
+            std::path::PathBuf::from,
+        );
+        std::fs::create_dir_all(&root)
+            .unwrap_or_else(|error| panic!("create test root {}: {error}", root.display()));
+        std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700)).unwrap();
+        root
     })
 }

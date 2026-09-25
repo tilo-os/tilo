@@ -4,6 +4,9 @@ use std::{
     fs,
     os::unix::fs::{MetadataExt, PermissionsExt},
 };
+#[cfg(target_os = "linux")]
+#[path = "support/posix_acl.rs"]
+mod posix_acl;
 
 #[test]
 fn namespace_control_is_distinct_from_directory_privacy() {
@@ -26,13 +29,32 @@ fn namespace_control_is_distinct_from_directory_privacy() {
 
 #[test]
 fn namespace_control_rejects_foreign_owned_directory_without_mutation() {
-    let root = std::path::Path::new("/");
+    // An ordinary principal meets a foreign owner at `/`. Root owns `/`, so
+    // as root (CI) the foreign owner is a directory handed to `nobody`.
+    let effective = rustix::process::geteuid();
+    let foreign = if effective.is_root() {
+        let temp = tempfile::tempdir().unwrap();
+        fs::set_permissions(temp.path(), fs::Permissions::from_mode(0o755)).unwrap();
+        rustix::fs::chown(
+            temp.path(),
+            Some(rustix::process::Uid::from_raw(65534)),
+            None,
+        )
+        .unwrap();
+        Some(temp)
+    } else {
+        None
+    };
+    let root = foreign
+        .as_ref()
+        .map_or_else(|| std::path::Path::new("/"), tempfile::TempDir::path);
     let before = fs::metadata(root).unwrap();
     assert_ne!(
         before.uid(),
-        rustix::process::geteuid().as_raw(),
-        "qualification requires a non-root test principal"
+        effective.as_raw(),
+        "the fixture directory must have a foreign owner"
     );
+    assert_eq!(before.mode() & 0o022, 0, "only ownership may be foreign");
     assert!(
         StorageDirectory::open(root)
             .unwrap()
@@ -110,20 +132,12 @@ fn macos_namespace_acl_profile_preserves_independent_private_creation() {
 #[cfg(target_os = "linux")]
 #[test]
 fn linux_named_acl_namespace_write_mask_is_rejected() {
-    use std::process::Command;
     let owner = rustix::process::geteuid().as_raw();
     let foreign = if owner == 65534 { 65533 } else { 65534 };
     for (access, accepted) in [("r-x", true), ("rwx", false)] {
         let root = tempfile::tempdir().unwrap();
         fs::set_permissions(root.path(), fs::Permissions::from_mode(0o755)).unwrap();
-        assert!(
-            Command::new("setfacl")
-                .args(["-m", &format!("u:{foreign}:{access}")])
-                .arg(root.path())
-                .status()
-                .expect("native Linux ACL qualification requires setfacl")
-                .success()
-        );
+        posix_acl::modify(root.path(), &format!("u:{foreign}:{access}"));
         let before = fs::metadata(root.path()).unwrap();
         assert_eq!(
             StorageDirectory::open(root.path())
