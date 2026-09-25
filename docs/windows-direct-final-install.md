@@ -100,6 +100,12 @@ manifest, compare it directly. The composefs digest is 128 lowercase hex
 without a prefix; the UKI hash is 64 lowercase hex without a prefix; GPT IDs
 are lowercase hyphenated UUIDs.
 
+`verify-template` prints a JSON record with `disk_guid` and
+`final_partuuids` (`efi`, `boot`, `root`). Before the VM install the latter is
+empty; after the install it contains the guest-created GPT identities. The
+scenario must compare them to the guest's install proof before `finalize`
+rewrites the final PARTUUIDs to the Windows-assigned values.
+
 The allocator command above is an authorized physical mutation and must run
 only after the matching BitLocker recovery key has actually been backed up.
 The source raw commands act only on a new disposable VM file.

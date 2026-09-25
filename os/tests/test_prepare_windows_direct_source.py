@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """Small file-backed checks for the native Windows direct source boundary."""
 import importlib.util
+import io
 import json
+from contextlib import redirect_stdout
 from pathlib import Path
 from types import SimpleNamespace
 import tempfile
@@ -67,9 +69,17 @@ class SourceTemplateTests(unittest.TestCase):
             plan_path.write_text(json.dumps(plan))
             with patch.object(prep.direct, "GIB", fixture.MIB):
                 prep.create_template(SimpleNamespace(plan=plan_path, output=raw))
-                self.guided_vm_install(raw, plan, final)
-                prep.verify_template(SimpleNamespace(
-                    manifest=Path(str(raw) + ".manifest.json"), source_raw=raw))
+                vm_final = self.guided_vm_install(raw, plan, final)
+                output = io.StringIO()
+                with redirect_stdout(output):
+                    prep.verify_template(SimpleNamespace(
+                        manifest=Path(str(raw) + ".manifest.json"), source_raw=raw))
+                proof = json.loads(output.getvalue())
+                self.assertEqual(proof["final_partuuids"], dict(zip(
+                    ("efi", "boot", "root"),
+                    (row["partuuid"] for row in vm_final), strict=True)))
+                self.assertEqual(proof["disk_guid"], json.loads(
+                    Path(str(raw) + ".manifest.json").read_text())["source_disk_guid"])
                 with raw.open("rb") as stream:
                     before = {row["partuuid"]: prep.direct.hash_range(
                         stream, row["offset_bytes"], row["size_bytes"]) for row in final}
