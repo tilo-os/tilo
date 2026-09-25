@@ -1,0 +1,49 @@
+name: Recover / regional builder mirror
+
+on:
+  workflow_dispatch:
+    inputs:
+      digest:
+        description: Signed promoted two-platform builder index (sha256:...)
+        required: true
+        type: string
+
+jobs:
+  replicate:
+    if: github.ref == 'refs/heads/main'
+    runs-on: runner
+    timeout-minutes: 45
+    enable-openid-connect: true
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Install regional replication tools
+        run: |
+          set -euo pipefail
+          ./os/dev/install-cached-cosign.sh
+          if command -v apt-get >/dev/null; then
+            sudo -n apt-get update
+            sudo -n apt-get install -y --no-install-recommends software-properties-common
+            sudo -n add-apt-repository --yes universe
+            sudo -n apt-get update
+            sudo -n apt-get install -y --no-install-recommends curl unzip skopeo
+          else
+            sudo -n dnf install -y curl unzip skopeo
+          fi
+          bash ./os/dev/install-aws-cli.sh
+      - name: Verify signature and replicate exact promoted index
+        env:
+          SOURCE_DIGEST: ${{ inputs.digest }}
+        run: |
+          set -euo pipefail
+          [[ $SOURCE_DIGEST =~ ^sha256:[0-9a-f]{64}$ ]]
+          printf 'code.podesta.ai/qos/tilo-builder@%s\n' "$SOURCE_DIGEST" > builder-index.txt
+          python3 os/dev/replicate-builder-index.py \
+            --source-file builder-index.txt \
+            --target-repository 125650147312.dkr.ecr.us-west-2.amazonaws.com/qos/tilo-builder \
+            --role-arn arn:aws:iam::125650147312:role/podesta-burst-usw2-tilo-builder-replication \
+            --region us-west-2 \
+            --public-key keys/cosign.pub \
+            --output builder-replication.txt
+          cat builder-replication.txt >> "$GITHUB_STEP_SUMMARY"
