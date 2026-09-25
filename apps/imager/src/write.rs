@@ -263,26 +263,10 @@ fn target_lock_name(target: &TargetDrive) -> String {
 }
 
 #[cfg(unix)]
-#[derive(Debug)]
-struct TargetWriteLock(std::fs::File);
-
-#[cfg(unix)]
-impl Drop for TargetWriteLock {
-    fn drop(&mut self) {
-        use std::os::fd::AsRawFd;
-        // Closing alone would leave the flock held while a child another
-        // thread is spawning still shares the descriptor; unlocking releases
-        // the open file description's lock at once.
-        // SAFETY: the owned descriptor stays live for this call.
-        unsafe {
-            libc::flock(self.0.as_raw_fd(), libc::LOCK_UN);
-        }
-    }
-}
+type TargetWriteLock = advisory_lock::FileLock;
 
 #[cfg(unix)]
 fn try_lock_file(path: &Path) -> io::Result<TargetWriteLock> {
-    use std::os::fd::AsRawFd;
     use std::os::unix::fs::OpenOptionsExt;
 
     let file = OpenOptions::new()
@@ -292,22 +276,13 @@ fn try_lock_file(path: &Path) -> io::Result<TargetWriteLock> {
         .truncate(false)
         .mode(0o600)
         .open(path)?;
-    let status = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
-    if status != 0 {
-        let error = io::Error::last_os_error();
-        return if error
-            .raw_os_error()
-            .is_some_and(|code| code == libc::EAGAIN || code == libc::EWOULDBLOCK)
-        {
-            Err(io::Error::new(
-                io::ErrorKind::WouldBlock,
-                "another Tilo Imager helper is already using this drive",
-            ))
-        } else {
-            Err(error)
-        };
-    }
-    Ok(TargetWriteLock(file))
+    advisory_lock::FileLock::try_exclusive(file).map_err(|error| match error {
+        advisory_lock::TryLockError::WouldBlock => io::Error::new(
+            io::ErrorKind::WouldBlock,
+            "another Tilo Imager helper is already using this drive",
+        ),
+        advisory_lock::TryLockError::Error(error) => error,
+    })
 }
 
 #[cfg(unix)]
@@ -844,6 +819,17 @@ fn run_job_file_bound(
             "source image no longer matches its signed release catalog".into(),
         );
     }
+    // The descriptor path has already checked the reviewed metadata, but a
+    // local source can still grow while the copy is in flight.  Keep this
+    // path as strict as the pathname writer: accepting only the reviewed
+    // prefix would make the two production backends disagree about what was
+    // actually flashed.
+    let mut extra = [0_u8; 1];
+    match source.read(&mut extra) {
+        Ok(0) => {}
+        Ok(_) => return JobResult::WriteFailed("source image became larger after review".into()),
+        Err(error) => return JobResult::WriteFailed(error.to_string()),
+    }
     if let Err(error) = device.flush().and_then(|()| device.sync_all()) {
         return JobResult::WriteFailed(error.to_string());
     }
@@ -962,18 +948,27 @@ fn run_system_job(
         )
     };
     if prepared {
-        if result.is_success()
-            && req.source.installable
-            && let Err(error) =
+        if result.is_success() && req.source.installable {
+            // The profile is written through a second open because the
+            // pathname backend's streaming verifier owns and then closes its
+            // descriptor.  Revalidate immediately before that open so a
+            // disconnect/replug cannot make the profile land on a replacement
+            // device which happens to reuse the same path.
+            if let Err(error) = revalidate_target(&req.target) {
+                result = JobResult::VerifyFailed(format!(
+                    "could not revalidate the drive before embedding the setup profile: {error}"
+                ));
+            } else if let Err(error) =
                 write_profile_block_bound(&dst, req.target.size, &req.profile, should_cancel)
-        {
-            result = if error.kind() == io::ErrorKind::Interrupted {
-                JobResult::Cancelled
-            } else {
-                JobResult::VerifyFailed(format!(
-                    "could not embed and verify the setup profile: {error}"
-                ))
-            };
+            {
+                result = if error.kind() == io::ErrorKind::Interrupted {
+                    JobResult::Cancelled
+                } else {
+                    JobResult::VerifyFailed(format!(
+                        "could not embed and verify the setup profile: {error}"
+                    ))
+                };
+            }
         }
         if result.is_success() && should_cancel() {
             result = JobResult::Cancelled;
@@ -1898,7 +1893,7 @@ mod tests {
         assert_eq!(contention.kind(), io::ErrorKind::WouldBlock);
 
         drop(first);
-        try_lock_file(&path).expect("kernel releases lock with its owner");
+        let _reacquired = try_lock_file(&path).expect("kernel releases lock with its owner");
     }
 
     #[cfg(target_os = "windows")]

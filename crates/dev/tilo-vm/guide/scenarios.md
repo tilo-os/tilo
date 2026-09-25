@@ -21,6 +21,24 @@ No slot and no dev VM are involved. The scenario runs its own QEMU VM through
 when QEMU is on the host itself) in a named cycle, so its disks, TPM and
 firmware state exist for this run only.
 
+On Windows ARM64, use the native `tilo-vm.exe` and the WHPX transport:
+
+```powershell
+tilo-vm scenario install --medium C:\path\to\installer.qcow2 --layout erase --encrypt passphrase --graphics software
+```
+
+`os/dev/vm-windows.ps1` uses `qemu-system-aarch64.exe` with `-accel whpx`
+and `-cpu host`. It creates a copy-on-write installer overlay and a sparse
+40 GiB QCOW2 target; the medium remains unchanged. Set `TILO_QEMU_SYSTEM`,
+`TILO_QEMU_IMG`, `TILO_EFI_CODE`, and `TILO_EFI_VARS` if these are outside the
+QEMU installation. The two boots share the target and UEFI variable store.
+The virtio console and QMP endpoints bind to localhost TCP ports in the run
+plan. Windows currently supports the erase layout with passphrase unlock and
+software graphics; alongside fixtures need Linux filesystem creation tools,
+and TPM PIN needs a persistent software TPM. The default `--graphics gl`
+must therefore be overridden on Windows. This route has static and transport
+checks but has not yet completed a live installer cycle on this host.
+
 Phases, each timed in the receipt (`target/dev-runs/<id>/run.json`):
 
 | Phase | What happens |
@@ -48,8 +66,8 @@ endpoints:
   0600 socket): the local console and assistive tooling running as that user;
 - the virtio-serial port `org.tilo.console.0`, which exists only because
   `vm.sh boot-installer` / `boot-target` attach it. Its host end is
-  `$TILO_RUN/console.sock`. Real hardware has no virtio-serial bus, so the
-  channel cannot exist there; nothing listens on a network.
+  `$TILO_RUN/console.sock` on Linux or a localhost TCP port on Windows.
+  Real hardware has no virtio-serial bus, so the channel cannot exist there.
 
 Drive a scenario VM yourself (with `--keep`, or while a run is in progress):
 

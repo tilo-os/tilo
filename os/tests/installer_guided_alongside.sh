@@ -93,6 +93,20 @@ invoke_helper() {
     sudo -n env "PATH=$tmp/bin:/usr/sbin:/usr/bin" "$helper" "${helper_args[@]}" >/dev/null
   fi
 }
+
+# An existing Tilo root anywhere on the disk refuses the plan before any write:
+# the installed UKI resolves root=tilo-auto to exactly one Tilo root.
+run_root sfdisk --part-type "$loop" 1 7a2e8d75-3f01-4e5a-b2c9-51f6ed90b8ab >/dev/null 2>&1
+if invoke_helper 2>"$tmp/second-root.error"; then
+  echo 'FAIL  helper created a second Tilo root on the disk' >&2
+  exit 1
+fi
+grep -q 'already holds a Tilo root' "$tmp/second-root.error" \
+  || { cat "$tmp/second-root.error" >&2; echo 'FAIL  second Tilo root refused for the wrong reason' >&2; exit 1; }
+[ "$(run_root sfdisk --json "$loop" | python3 -c 'import json,sys; print(len(json.load(sys.stdin)["partitiontable"]["partitions"]))')" -eq 1 ] \
+  || { echo 'FAIL  refused plan changed the partition map' >&2; exit 1; }
+run_root sfdisk --part-type "$loop" 1 0fc63daf-8483-4772-8e79-3d69d8477de4 >/dev/null 2>&1
+
 invoke_helper
 
 after_hash="$(run_root dd if="$existing" bs=1 skip=4096 count=31 status=none | sha256sum)"

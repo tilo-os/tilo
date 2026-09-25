@@ -70,6 +70,7 @@ dev-session = []
 dev-overrides = []
 
 [dependencies]
+advisory-lock = { path = "../../system/advisory-lock" }
 # Crash-safe file replacement (temp + fsync + rename + dir fsync).
 atomic-file = { path = "../../system/atomic-file", features = ["json"] }
 bounded-command = { path = "../../system/bounded-command" }

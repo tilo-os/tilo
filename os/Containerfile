@@ -904,13 +904,16 @@ COPY --chmod=0755 os/scripts/finalize-rpmdb.sh /usr/libexec/tilo/finalize-rpmdb
 ARG FINALIZE_RPMDB="/usr/libexec/tilo/finalize-rpmdb"
 
 # Graphics stack. `at-spi2-core` supplies the D-Bus-activated org.a11y.Bus
-# service discovered by AccessKit providers at runtime. Keep it explicit so
-# compositor and packaged-app export never depends on a transitive browser
-# accessibility dependency.
+# service discovered by AccessKit providers at runtime. `harfbuzz-icu` and
+# `libatomic` own libharfbuzz-icu.so.0 and libatomic.so.1, which the copied
+# shell binary links directly; keep them explicit so compositor startup never
+# depends on build-stage or transitive browser dependencies.
 RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setopt=reposdir=/repo \
     mesa-dri-drivers \
     mesa-vulkan-drivers \
     libglvnd-egl \
+    harfbuzz-icu \
+    libatomic \
     at-spi2-core \
     google-noto-sans-fonts \
     plymouth \
@@ -1016,6 +1019,7 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setop
 RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setopt=reposdir=/repo \
     bubblewrap \
     flatpak \
+    dbus-tools \
     xdg-dbus-proxy \
     distrobox \
     cups \
@@ -1263,6 +1267,8 @@ RUN chmod 755 /usr/bin/shell /usr/bin/fs /usr/bin/terminal \
               /usr/libexec/tilo-doubletake-test-receiver \
               /usr/libexec/tilo-fluxcast \
     && { [ ! -e /usr/bin/browser ] || chmod 755 /usr/bin/browser; } \
+    && missing="$(ldd /usr/bin/shell | awk '/not found/ { print $1 }')" \
+    && test -z "$missing" \
     && /usr/libexec/tilo-doubletake -h >/dev/null \
     && /usr/libexec/tilo-fluxcast --help >/dev/null
 
@@ -1478,6 +1484,7 @@ COPY os/usr/lib/systemd/user/tilo-identity.service /usr/lib/systemd/user/tilo-id
 # compositor also serving, whichever lost the race left a portal that
 # answered nothing while looking healthy.
 COPY os/usr/share/xdg-desktop-portal/portals/tilo.portal /usr/share/xdg-desktop-portal/portals/tilo.portal
+COPY os/usr/share/xdg-desktop-portal/tilo-portals.conf /usr/share/xdg-desktop-portal/tilo-portals.conf
 
 # Opt-in peer-sync user service. NOT enabled by default — users opt
 # in via `systemctl --user enable shell-peer-sync` or by
@@ -1840,6 +1847,8 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setop
 # tilo-rpm-snapshot-package[aarch64]: libwayland-client
 # tilo-rpm-snapshot-package[aarch64]: vulkan-loader
 ARG TILO_WINDOWS_ARCH
+# wine only recommends dosbox-staging, a DOS emulator no Tilo Windows path
+# uses. It would bring opusfile, whose HTTP stream reader links OpenSSL.
 RUN --mount=type=bind,from=rpms,source=/repo,target=/repo \
     test "$(uname -m)" = "$TILO_WINDOWS_ARCH" && \
     case "$(uname -m)" in \
@@ -1847,6 +1856,7 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo \
       aarch64) vm_firmware=edk2-aarch64; windows_packages='glibc libgcc libstdc++ libglvnd-glx libglvnd-opengl libglvnd-egl qt6-qtbase qt6-qtbase-gui qt6-qtdeclarative alsa-lib libdrm libwayland-client vulkan-loader' ;; \
       *) echo 'unsupported Windows VM firmware architecture' >&2; exit 1 ;; \
     esac && dnf install -y --setopt=reposdir=/repo \
+    --exclude=dosbox-staging \
     $windows_packages \
     qemu-kvm \
     libvirt-client \
@@ -2342,6 +2352,10 @@ RUN chmod 0755 /usr/libexec/tilo/luks-enrolment-test.sh \
 # removed, so delete its payload and package metadata too. The aggregate
 # GStreamer bundle retains a dependency on libshout for the deleted plugin;
 # `--nodeps` is therefore intentional and bounded by the absence audit below.
+# wine-common's helper scripts need a Perl interpreter, and Fedora's Perl
+# core pulls in HTTP::Tiny's HTTPS backend (IO::Socket::SSL over the
+# Net::SSLeay OpenSSL binding). No Tilo path runs Perl networking, so remove
+# that backend the same way; the forbidden-package gate below enforces it.
 # Delete these loadable surfaces before the composefs root is sealed.
 RUN find /usr/lib /usr/lib64 \
       \( -path '*/ossl-modules/legacy.so' -o -path '*/engines-3/*.so' \
@@ -2356,6 +2370,8 @@ RUN find /usr/lib /usr/lib64 \
          -o -path '*/qt6/plugins/tls/libqopensslbackend.so' \) \
       \( -type f -o -type l \) -delete \
     && rpm -e --nodeps libshout \
+    && rpm -qa --qf '%{NAME}\n' perl-IO-Socket-SSL perl-Net-SSLeay \
+       | xargs -r rpm -e --nodeps \
     && ! find /usr/lib /usr/lib64 \
       \( -path '*/ossl-modules/legacy.so' -o -path '*/engines-3/*.so' \
          -o -name 'libshout.so*' \

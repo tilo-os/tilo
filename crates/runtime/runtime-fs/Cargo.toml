@@ -21,6 +21,7 @@ path = "src/lib.rs"
 capnpc.workspace = true
 
 [dependencies]
+advisory-lock = { path = "../../system/advisory-lock" }
 blake3.workspace = true
 cap-std = "3.4.6"
 rustix = { workspace = true, features = ["fs"] }

@@ -24,7 +24,7 @@
       "filename": "staging-root.img",
       "byte_size": 8192,
       "sha256": "14d3313fa050fbd2cedc5d87eab247d8b048f116a4b357a4d4fd652924f2b8b5",
-      "partition_type_guid": "0fc63daf-8483-4772-8e79-3d69d8477de4",
+      "partition_type_guid": "d4c4daf6-f72c-43ee-b8e3-5ba32550311d",
       "filesystem_type": "btrfs",
       "filesystem_uuid": "12345678-1234-4234-8234-123456789abc",
       "minimum_partition_bytes": 42949672960,
@@ -35,8 +35,7 @@
     "efi_path": "/EFI/BOOT/BOOTX64.EFI",
     "uki_architecture": "x86_64",
     "uki_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-    "uki_cmdline": "init_on_alloc=1 init_on_free=1 lockdown=integrity slab_nomerge randomize_kstack_offset=on page_alloc.shuffle=1 vsyscall=none tilo.generation=7 rw preempt=full console=tty0 console=ttyS0,115200 quiet splash plymouth.ignore-serial-consoles tilo.mode=normal composefs=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb root=UUID=12345678-1234-4234-8234-123456789abc  tilo.luks=000000000000000000000000000000000000000000000 tilo.unlock=000000000000000000000000000000000000000000000000000000000000000000000000000 tilo.install",
-    "root_locator": "UUID=12345678-1234-4234-8234-123456789abc",
+    "uki_cmdline": "root=tilo-auto rd.luks.options=tpm2-device=auto,fido2-device=auto init_on_alloc=1 init_on_free=1 lockdown=integrity slab_nomerge randomize_kstack_offset=on page_alloc.shuffle=1 vsyscall=none tilo.generation=7 rw preempt=full console=tty0 console=ttyS0,115200 quiet splash plymouth.ignore-serial-consoles tilo.mode=normal composefs=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb tilo.install",
     "composefs_digest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
   }
 }

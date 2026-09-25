@@ -38,6 +38,7 @@ path = "src/bin/tilo-device-key-init.rs"
 # may change without a version bump.
 
 [dependencies]
+advisory-lock = { path = "../../system/advisory-lock" }
 # Crash-safe file replacement (temp + fsync + rename + dir fsync).
 atomic-file = { path = "../../system/atomic-file" }
 # Ed25519 signing/verification. Same version + features used across

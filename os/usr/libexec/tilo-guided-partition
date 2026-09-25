@@ -152,6 +152,19 @@ ACTUAL_MAP="$(canonical_actual | sort -t: -k2,2n)"
 [ "$ACTUAL_MAP" = "$EXPECTED_MAP" ] \
   || die "partition map changed after review; automatic reinitialization is unavailable"
 
+# An installed Tilo resolves root=tilo-auto to the one Tilo root on its disk
+# and refuses to boot beside a second one (tilo-root-discover). Never create
+# the partition that would make an existing Tilo installation, and this one,
+# unbootable. A staged installer's own root has its own type and does not count.
+existing_tilo_roots="$(sfdisk --json "$DISK" | python3 -c '
+import json, sys
+table = json.load(sys.stdin)["partitiontable"]
+print(sum(str(p.get("type", "")).lower() == "7a2e8d75-3f01-4e5a-b2c9-51f6ed90b8ab"
+          for p in table.get("partitions", [])))
+')"
+[ "$existing_tilo_roots" = 0 ] \
+  || die "$DISK already holds a Tilo root partition; a second one would make both unbootable"
+
 # The complete-map equality above is the TOCTOU binding. Repeat the geometric
 # assertion explicitly so this safety property remains obvious and testable.
 while IFS=: read -r _ start size; do

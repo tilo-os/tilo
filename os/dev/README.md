@@ -259,7 +259,10 @@ How it works:
   fresh root and writes `name:hash` (password via the pure-Rust `tilo-crypto`) into the
   deployment's writable `/etc/tilo/install-user.conf`.
 - On the installed system's first boot, `tilo-firstboot-user.service` creates the
-  account from that file (`useradd -G wheel` + `chpasswd -e`) and shreds it.
+  account from that file (`useradd -p <sha512-crypt-hash> -G wheel`) and shreds it. The
+  installer then launches that account once into OOBE; after greetd consumes that
+  first-session handoff, it restores the normal password greeter for every later
+  login and reboot.
 
 ```bash
 # 1. Build + load the desktop image (the installer is FROM localhost/tilo).
@@ -269,6 +272,11 @@ How it works:
 ./os/dev/build-custom-installer.sh
 #    …or test the OS plumbing without the real UI:
 ./os/dev/build-custom-installer.sh --stub-ui
+# VM size experiment: use a fixed 40 GiB ext4 live root. The builder rejects
+# images whose 2x OCI size plus 4 GiB slack would exceed it. Physical use
+# requires end-to-end VM peak usage and boot checks for this filesystem.
+TILO_INSTALLER_OUTPUT="$PWD/os/output/installer-compact-vm" \
+  ./os/dev/build-custom-installer.sh --compact-ext4
 #    A local diagnostic image may explicitly add SSH + a wheel account:
 TILO_INSTALLER_DEV_PASSWORD='use-a-unique-local-secret' \
   ./os/dev/build-custom-installer.sh --dev-login

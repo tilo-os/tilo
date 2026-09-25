@@ -575,35 +575,33 @@ else
   "$vm" boot-target "$display_arg" --no-tpm
 fi
 
-# The sealed boot has no serial-console test instrumentation. Type only after
-# firmware/systemd-boot have had time to hand off, and stop as soon as OCR sees
-# the real greeter so a late retry cannot contaminate its username field.
-unlocked=0
+# The sealed boot has no serial-console test instrumentation.  The installed
+# target consumes its one-boot greetd handoff here, so its first visible surface
+# is OOBE rather than the password greeter.  Send the disk secret only during
+# the early unlock window; do not keep retrying after an OOBE surface could own
+# keyboard focus.
+oobe_started=0
 for attempt in $(seq 1 60); do
   if image="$(shot_ocr target-observe 2>/dev/null)" \
-    && grep -Eqi 'Welcome[[:space:]]+back|Sign[[:space:]]+in' "$out/target-observe.txt"; then
-    cp -f "$image" "$out/07-target-greeter.png"
-    cp -f "$out/target-observe.txt" "$out/07-target-greeter.txt"
-    target_greeter_seen="$(date +%s)"
-    printf 'cold_boot_to_greeter_seconds=%s\n' \
-      "$((target_greeter_seen - target_boot_started))" > "$out/boot-timing.txt"
-    unlocked=1
+    && grep -Eqi 'Create[[:space:]]+your[[:space:]]+local' "$out/target-observe.txt"; then
+    cp -f "$image" "$out/07-first-boot-oobe.png"
+    cp -f "$out/target-observe.txt" "$out/07-first-boot-oobe.txt"
+    target_oobe_seen="$(date +%s)"
+    printf 'cold_boot_to_oobe_seconds=%s\n' \
+      "$((target_oobe_seen - target_boot_started))" > "$out/boot-timing.txt"
+    oobe_started=1
     break
   fi
   "$vm" status | grep -q '^running' || die "installed target exited before unlock"
-  if [ "$attempt" -ge 2 ]; then
+  if [ "$attempt" -ge 2 ] && [ "$attempt" -le 3 ]; then
     "$vm" type "$TILO_PASS"
     "$vm" keys ret
   fi
-  sleep 10
+  sleep 5
 done
-[ "$unlocked" -eq 1 ] || die "installed target did not unlock into the greeter"
-
-# Successful graphical authentication proves the installer-created account and
-# its password hash. A fresh account must then enter trusted compositor OOBE.
-"$vm" login --passcode-only "$TILO_PASS"
-wait_screen 08-oobe-intro 'Create[[:space:]]+your[[:space:]]+local' 120 5 \
-  || die "first graphical login did not enter Tilo identity setup"
+[ "$oobe_started" -eq 1 ] || die "first installed boot did not reach direct OOBE"
+wait_screen 08-oobe-intro 'Create[[:space:]]+your[[:space:]]+local' 10 1 \
+  || die "first installed boot did not preserve the OOBE introduction"
 
 # Use the real first-use flow: Create identity -> acknowledge no recovery ->
 # Create. OCR of the backup screen is the barrier for the async mint.
@@ -613,31 +611,44 @@ sleep 2
 wait_screen 09-oobe-backup 'Back[[:space:]]+up[[:space:]]+your[[:space:]]+Tilo[[:space:]]+identity' 120 2 \
   || die "OOBE did not create the local/device identity chain"
 
+# Simulate power loss at the durable identity/backup boundary.  The following
+# cold boot must resume this exact OOBE screen without recreating the identity.
+# It also proves that the initial_session cleanup survived an interrupted first
+# session before we ever reach the desktop.
+"$vm" stop
+if [ "$software_tpm" -eq 1 ]; then
+  "$vm" boot-target "$display_arg" --tpm
+else
+  "$vm" boot-target "$display_arg" --no-tpm
+fi
+wait_screen 10-oobe-backup-resumed 'Back[[:space:]]+up[[:space:]]+your[[:space:]]+Tilo[[:space:]]+identity' 120 2 \
+  || die "OOBE did not resume after an interrupted first boot"
+
 # A fresh identity must either save and verify its encrypted recovery material
 # or explicitly acknowledge that losing this device loses the identity. This
 # disposable cycle exercises the latter: from the first passphrase field, three
 # Tabs reach the mandatory acknowledgement, then Continue becomes available.
 "$vm" keys tab tab tab spc tab ret
-wait_screen 10-oobe-ready 'Your[[:space:]]+identity[[:space:]]+is[[:space:]]+ready' 60 2 \
+wait_screen 11-oobe-ready 'Your[[:space:]]+identity[[:space:]]+is[[:space:]]+ready' 60 2 \
   || die "OOBE did not require and accept the backup-loss acknowledgement"
 
 # Ready is a replacement surface and focuses Take a quick tour. Traverse every
 # compositor-owned tutorial page and OCR each replacement surface so a tagged
 # release cannot ship a dead or unreachable tutorial behind healthy OOBE.
 "$vm" keys ret
-wait_screen 11-tour-move 'Everything[[:space:]]+is[[:space:]]+close[[:space:]]+at[[:space:]]+hand' 60 2 \
+wait_screen 12-tour-move 'Everything[[:space:]]+is[[:space:]]+close[[:space:]]+at[[:space:]]+hand' 60 2 \
   || die "desktop tutorial did not open its navigation page"
 
 # Each tutorial page reseats focus on Skip tour. Back and then Continue are the
 # next two controls, so this drives the same keyboard route a user receives.
 "$vm" keys tab tab ret
-wait_screen 12-tour-arrange 'A[[:space:]]+place[[:space:]]+for[[:space:]]+each[[:space:]]+kind[[:space:]]+of[[:space:]]+work' 60 2 \
+wait_screen 13-tour-arrange 'A[[:space:]]+place[[:space:]]+for[[:space:]]+each[[:space:]]+kind[[:space:]]+of[[:space:]]+work' 60 2 \
   || die "desktop tutorial did not advance to its organisation page"
 "$vm" keys tab tab ret
-wait_screen 13-tour-share 'Sharing[[:space:]]+stays[[:space:]]+deliberate' 60 2 \
+wait_screen 14-tour-share 'Sharing[[:space:]]+stays[[:space:]]+deliberate' 60 2 \
   || die "desktop tutorial did not advance to its collaboration page"
 "$vm" keys tab tab ret
-wait_screen 14-tour-start 'Your[[:space:]]+first[[:space:]]+five[[:space:]]+minutes' 60 2 \
+wait_screen 15-tour-start 'Your[[:space:]]+first[[:space:]]+five[[:space:]]+minutes' 60 2 \
   || die "desktop tutorial did not advance to its first-steps page"
 "$vm" keys tab tab ret
 sleep 8
@@ -647,7 +658,7 @@ sleep 8
 # or privileged observer is introduced for the test.
 "$vm" type hostname
 "$vm" keys ret
-wait_screen 15-desktop-config 'cycle.?tilo' 60 2 \
+wait_screen 16-desktop-config 'cycle.?tilo' 60 2 \
   || die "desktop terminal did not report the installed hostname"
 
 # Exercise the installed Browser in this same target-only cold boot. The page
@@ -708,6 +719,26 @@ wait_screen 17-browser-open 'Search[[:space:]]+or[[:space:]]+enter[[:space:]]+ad
 "$vm" keys ret
 wait_screen 18-browser-offline 'Tilo[[:space:]]+browser[[:space:]]+offline[[:space:]]+ready' 120 2 \
   || die "installed Browser did not render the local offline acceptance page"
+
+# A second cold boot is the user-visible proof that the handoff was consumed:
+# greetd must display normal authentication and the same password must reopen
+# the completed account.  This is intentionally after OOBE so neither recovery
+# state nor a normal session can hide a persistent autologin defect.
+"$vm" stop
+target_reboot_started="$(date +%s)"
+if [ "$software_tpm" -eq 1 ]; then
+  "$vm" boot-target "$display_arg" --tpm
+else
+  "$vm" boot-target "$display_arg" --no-tpm
+fi
+wait_screen 19-reboot-greeter 'Welcome[[:space:]]+back|Sign[[:space:]]+in' 120 2 \
+  || die "second installed boot bypassed the password greeter"
+target_reboot_greeter_seen="$(date +%s)"
+printf 'cold_reboot_to_greeter_seconds=%s\n' \
+  "$((target_reboot_greeter_seen - target_reboot_started))" >> "$out/boot-timing.txt"
+"$vm" login --passcode-only "$TILO_PASS"
+wait_screen 20-reboot-login 'cycle.?tilo' 120 2 \
+  || die "password authentication did not reopen the completed account"
 
 copy_evidence target
 [ "$install_mode" = erase ] || {

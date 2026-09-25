@@ -34,9 +34,11 @@ pub const MIN_TARGET_BYTES: u64 = 35 << 30;
 pub const DEFAULT_TARGET_BYTES: u64 = 64 << 30;
 /// GPT type of the staging ESP.
 pub const ESP_TYPE: &str = "c12a7328-f81f-11d2-ba4b-00a0c93ec93b";
-/// GPT type of the staging root: generic Linux filesystem, deliberately not the
-/// Tilo root type so installed-target discovery still sees exactly one root.
-pub const STAGING_ROOT_TYPE: &str = "0fc63daf-8483-4772-8e79-3d69d8477de4";
+/// GPT type of the staging root: the Tilo staging root. The live installer UKI
+/// boots the one partition of this type on its disk (`root=tilo-auto`, see
+/// os/usr/libexec/tilo-root-discover); an installed UKI never considers it, so
+/// the staging root beside a freshly installed Tilo root is never ambiguous.
+pub const STAGING_ROOT_TYPE: &str = "d4c4daf6-f72c-43ee-b8e3-5ba32550311d";
 /// GPT partition names; informational only, never used as identity.
 pub const STAGING_ESP_NAME: &str = "Tilo installer boot";
 pub const STAGING_ROOT_NAME: &str = "Tilo installer";

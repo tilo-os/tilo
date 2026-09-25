@@ -51,6 +51,14 @@ image_sha256="$(sha256sum "$raw" | awk '{print $1}')"
 zstd --threads=0 --ultra -19 --sparse -f "$raw" -o "$archive"
 archive_sha256="$(sha256sum "$archive" | awk '{print $1}')"
 archive_size="$(stat -c %s "$archive")"
+# Exercise the exact bytes that the Imager will later receive from zstd.  The
+# raw source is removed below, so without this pass a successful compressor
+# invocation would be the only evidence that the exported artifact expands to
+# the hash recorded in the catalog.  Streaming keeps the check bounded without
+# allocating a second image-sized file on the release runner.
+expanded_sha256="$(zstd --decompress --stdout -- "$archive" | sha256sum | awk '{print $1}')"
+[ "$expanded_sha256" = "$image_sha256" ] \
+  || { printf 'expanded installer bytes do not match the frozen raw image\n' >&2; exit 1; }
 (cd "$out" && sha256sum "$(basename "$archive")") >"$archive.sha256"
 rm -f "$raw"
 

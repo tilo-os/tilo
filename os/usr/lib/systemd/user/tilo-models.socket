@@ -1,6 +1,7 @@
 [Unit]
 Description=Tilo local-model manager activation socket
 Documentation=file:///usr/share/doc/tilo/system-extensions.md
+PartOf=tilo-graphical-session.target
 
 [Socket]
 ListenStream=%t/tilo/services/models.sock
@@ -11,4 +12,4 @@ RemoveOnStop=yes
 Service=tilo-models.service
 
 [Install]
-WantedBy=sockets.target
+WantedBy=tilo-graphical-session.target

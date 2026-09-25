@@ -3,7 +3,7 @@
 use crate::native::{NativeLocator, io_error, lock};
 use crate::operations::{FsJob, ItemOutcome, ItemState};
 use crate::{DirectoryGrant, EntryName, FsError, FsOwner, FsSession};
-use cap_std::fs::{Dir, File};
+use cap_std::fs::Dir;
 use serde::{Deserialize, Serialize};
 use std::os::unix::ffi::OsStringExt;
 use std::{
@@ -138,7 +138,7 @@ struct Store {
 /// directory and an exclusive writer lock; no ambient directory is consulted.
 pub struct OperationOwner {
     directory: Dir,
-    _writer: File,
+    _writer: advisory_lock::FileLock,
     owner: FsOwner,
     metadata_limit: usize,
     state: Mutex<Store>,
@@ -171,12 +171,8 @@ impl OperationOwner {
             rustix::fs::Mode::RUSR | rustix::fs::Mode::WUSR,
         )
         .map_err(|e| io_error(e.into()))?;
-        let writer = File::from_std(std::fs::File::from(writer));
-        rustix::fs::flock(
-            &writer,
-            rustix::fs::FlockOperation::NonBlockingLockExclusive,
-        )
-        .map_err(|e| io_error(e.into()))?;
+        let writer = advisory_lock::FileLock::try_exclusive(std::fs::File::from(writer))
+            .map_err(|e| io_error(e.into()))?;
         let mut store = Store::default();
         let mut aggregate = 0_usize;
         for entry in directory.entries().map_err(io_error)? {
