@@ -498,7 +498,7 @@ fn parse_content(xml: &str) -> Option<Deck> {
                 // its own event, splitting the surrounding text. Fold it back into
                 // the active run so a literal `&`, `<` or `>` survives the round
                 // trip instead of vanishing at the split.
-                if in_text_p && let Some(ch) = qdoc::codecs::resolve_general_ref(&r) {
+                if in_text_p && let Some(ch) = qdoc_codecs::resolve_general_ref(&r) {
                     p_buf.push(ch);
                 }
                 continue;
@@ -688,7 +688,7 @@ fn attr(e: &quick_xml::events::BytesStart, key: &[u8]) -> Option<String> {
     e.attributes()
         .flatten()
         .find(|a| a.key.as_ref() == key)
-        .and_then(|a| qdoc::codecs::unescape_attr(&a))
+        .and_then(|a| qdoc_codecs::unescape_attr(&a))
 }
 
 #[cfg(test)]

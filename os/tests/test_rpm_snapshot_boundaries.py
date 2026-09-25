@@ -14,6 +14,7 @@ RECIPE = REPO / "os/Containerfile.rpms"
 IMAGE = REPO / "os/Containerfile"
 VERIFY = REPO / "os/dev/verify-rpm-snapshot-signatures.sh"
 DERIVE = REPO / "os/dev/derive-rpm-package-set.py"
+LAYER = REPO / "os/dev/layer-rpm-snapshot.py"
 FULL_OFFLINE_RESOLVE = ("dnf install -y --best --downloadonly --setopt=reposdir=/repo "
                         "--setopt=install_weak_deps=True ${PACKAGES}")
 # The image's erase of base-installed packages that later stages need again.
@@ -87,8 +88,29 @@ def validate_boundaries(text):
         raise ValueError("offline closure policy differs from resolution")
     if REPOCLOSURE not in stages["repository"]:
         raise ValueError("snapshot can publish a repository that is not dependency-closed")
-    if not any("COPY --from=offline-check /repo /repo" in line for line in stages["final"]):
+    # The published layers come only from the slots of the checked repository.
+    layers = stages.get("layers", [])
+    if (bases.get("layers") != "metadata-tools"
+            or not any("COPY --from=offline-check /repo /repo" in line for line in layers)
+            or not any("layer-rpm-snapshot.py /repo /slots" in line for line in layers)):
         raise ValueError("final artifact can prune offline closure check")
+    if bases["final"] != "scratch":
+        raise ValueError("published snapshot carries more than the repository")
+    slots = []
+    for line in stages["final"]:
+        match = re.fullmatch(r"COPY --from=layers /slots/(\S+)/ /", line.strip())
+        if not match:
+            raise ValueError(f"final artifact copies something other than a slot: {line}")
+        slots.append(match.group(1))
+    if slots != load_layering().slot_names():
+        raise ValueError("final artifact's slots differ from layer-rpm-snapshot.py's slot_names()")
+
+
+def load_layering():
+    spec = importlib.util.spec_from_file_location("layer_rpm_snapshot", LAYER)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 class BoundaryTests(unittest.TestCase):
@@ -146,9 +168,78 @@ class BoundaryTests(unittest.TestCase):
             validate_boundaries(recipe)
 
     def test_prunable_check_is_rejected(self):
-        recipe = RECIPE.read_text().replace("COPY --from=offline-check /repo /repo", "COPY --from=repository /repo /repo")
+        recipe = RECIPE.read_text().replace("FROM metadata-tools AS layers\nCOPY --from=offline-check /repo /repo",
+                                            "FROM metadata-tools AS layers\nCOPY --from=repository /repo /repo")
         with self.assertRaisesRegex(ValueError, "prune"):
             validate_boundaries(recipe)
+
+    def test_a_final_copy_outside_the_slots_is_rejected(self):
+        recipe = RECIPE.read_text() + "COPY --from=repository /repo /repo\n"
+        with self.assertRaisesRegex(ValueError, "other than a slot"):
+            validate_boundaries(recipe)
+
+    def test_a_dropped_slot_is_rejected(self):
+        recipe = RECIPE.read_text().replace("COPY --from=layers /slots/meta/ /\n", "")
+        with self.assertRaisesRegex(ValueError, "slot_names"):
+            validate_boundaries(recipe)
+
+
+class LayeringTests(unittest.TestCase):
+    """os/dev/layer-rpm-snapshot.py places packages by name and size only."""
+
+    def setUp(self):
+        self.layering = load_layering()
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+
+    def snapshot(self, name, files):
+        repo = self.root / name / "repo"
+        (repo / "repodata").mkdir(parents=True)
+        for file, size in files.items():
+            (repo / file).write_bytes(b"x" * size)
+            os.utime(repo / file, (1_700_000_000, 1_700_000_000))
+        (repo / "repodata/repomd.xml").write_text(name)
+        slots = self.root / name / "slots"
+        placed = self.layering.layer(repo, slots, name_of=lambda rpm: rpm.name.rsplit("-", 2)[0])
+        return slots, placed
+
+    def test_an_update_changes_only_its_own_slot(self):
+        big = self.layering.BIG_BYTES
+        before = {"wine-core-11.0-3.x86_64.rpm": big, "bash-5.3-1.x86_64.rpm": 10,
+                  "zlib-1.3-1.x86_64.rpm": 20}
+        after = {"wine-core-11.0-3.x86_64.rpm": big, "bash-5.3-2.x86_64.rpm": 11,
+                 "zlib-1.3-1.x86_64.rpm": 20}
+        old_slots, old = self.snapshot("old", before)
+        new_slots, new = self.snapshot("new", after)
+        bash = self.layering.slot_for("bash", 11)
+        self.assertEqual(self.layering.slot_for("bash", 10), bash)
+        self.assertTrue(self.layering.slot_for("wine-core", big).startswith("big/"))
+        for slot in self.layering.slot_names():
+            same = sorted(old[slot]) == sorted(new[slot])
+            if slot == "meta":
+                continue
+            if slot == bash:
+                self.assertFalse(same, slot)
+            else:
+                self.assertTrue(same, slot)
+                for file in old[slot]:
+                    self.assertEqual((old_slots / slot / "repo" / file).read_bytes(),
+                                     (new_slots / slot / "repo" / file).read_bytes())
+
+    def test_files_are_normalized_and_every_slot_exists(self):
+        slots, placed = self.snapshot("one", {"bash-5.3-1.x86_64.rpm": 10})
+        self.assertEqual(placed["meta"], ["repodata/repomd.xml"])
+        for slot in self.layering.slot_names():
+            repo = slots / slot / "repo"
+            self.assertTrue(repo.is_dir(), slot)
+            for path in [repo, *repo.rglob("*")]:
+                self.assertEqual(path.stat().st_mtime, 0, path)
+                self.assertEqual(path.stat().st_mode & 0o777, 0o755 if path.is_dir() else 0o644, path)
+
+    def test_slot_count_stays_under_the_layer_limits(self):
+        # Docker's overlay2 refuses images deeper than 128 layers.
+        self.assertLess(len(self.layering.slot_names()), 128)
 
 
 @unittest.skipUnless(shutil.which("bash"), "Linux shell required")

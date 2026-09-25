@@ -4988,14 +4988,14 @@ impl CapnpChannelHandle {
 
 fn nearby_transfer_reply(
     results: &mut channel_handle::NearbyTransferCommandResults,
-    reply: runtime_collab::NearbyTransferReply,
+    reply: &runtime_collab::NearbyTransferReply,
 ) -> Promise<(), capnp::Error> {
     if !reply.valid() {
         return Promise::err(capnp::Error::failed(
             "Nearby Send produced an invalid bounded reply".into(),
         ));
     }
-    let bytes = match serde_json::to_vec(&reply) {
+    let bytes = match serde_json::to_vec(reply) {
         Ok(bytes) if bytes.len() <= runtime_collab::MAX_NEARBY_TRANSFER_WIRE_BYTES => bytes,
         Ok(_) => {
             return Promise::err(capnp::Error::failed(
@@ -5244,7 +5244,7 @@ impl channel_handle::Server for CapnpChannelHandle {
                     Err(reason) => {
                         return nearby_transfer_reply(
                             &mut results,
-                            runtime_collab::NearbyTransferReply::Rejected { reason },
+                            &runtime_collab::NearbyTransferReply::Rejected { reason },
                         );
                     }
                 };
@@ -5259,7 +5259,7 @@ impl channel_handle::Server for CapnpChannelHandle {
                 let Some(target) = target else {
                     return nearby_transfer_reply(
                         &mut results,
-                        runtime_collab::NearbyTransferReply::Rejected {
+                        &runtime_collab::NearbyTransferReply::Rejected {
                             reason: "Nearby Send target expired; reopen the device picker".into(),
                         },
                     );
@@ -5320,7 +5320,7 @@ impl channel_handle::Server for CapnpChannelHandle {
                 let Some(transfer_id) = transfer_id else {
                     return nearby_transfer_reply(
                         &mut results,
-                        runtime_collab::NearbyTransferReply::Rejected {
+                        &runtime_collab::NearbyTransferReply::Rejected {
                             reason:
                                 "Nearby Send transfer expired or belongs to another Files workspace"
                                     .into(),
@@ -5358,7 +5358,7 @@ impl channel_handle::Server for CapnpChannelHandle {
                 let Some(transfer_id) = transfer_id else {
                     return nearby_transfer_reply(
                         &mut results,
-                        runtime_collab::NearbyTransferReply::Rejected {
+                        &runtime_collab::NearbyTransferReply::Rejected {
                             reason:
                                 "Nearby Send transfer expired or belongs to another Files workspace"
                                     .into(),
@@ -5386,7 +5386,7 @@ impl channel_handle::Server for CapnpChannelHandle {
                 if accept && destination.is_none() {
                     return nearby_transfer_reply(
                         &mut results,
-                        runtime_collab::NearbyTransferReply::Rejected {
+                        &runtime_collab::NearbyTransferReply::Rejected {
                             reason: "Nearby Send destination expired; choose it again".into(),
                         },
                     );
@@ -5419,7 +5419,7 @@ impl channel_handle::Server for CapnpChannelHandle {
                 let Some(transfer_id) = transfer_id else {
                     return nearby_transfer_reply(
                         &mut results,
-                        runtime_collab::NearbyTransferReply::Rejected {
+                        &runtime_collab::NearbyTransferReply::Rejected {
                             reason:
                                 "Nearby Send transfer expired or belongs to another Files workspace"
                                     .into(),
@@ -5435,7 +5435,7 @@ impl channel_handle::Server for CapnpChannelHandle {
                 }
             }
         };
-        nearby_transfer_reply(&mut results, reply)
+        nearby_transfer_reply(&mut results, &reply)
     }
 
     #[allow(
@@ -6972,7 +6972,7 @@ impl channel_handle::Server for CapnpChannelHandle {
                     metadata,
                 )
             }) {
-            Ok(_) => Promise::ok(()),
+            Ok(()) => Promise::ok(()),
             Err(error) => Promise::err(capnp::Error::failed(error)),
         }
     }
@@ -7300,7 +7300,9 @@ fn permits_directory_row(
             .ok()
     };
     if !row.resource_presentation_json.is_empty()
-        && !presentation.as_ref().is_some_and(|value| value.is_valid())
+        && !presentation
+            .as_ref()
+            .is_some_and(tilo_actions::ResourcePresentation::is_valid)
     {
         return Err(capnp::Error::failed(
             "invalid resource presentation metadata".into(),
@@ -9281,6 +9283,10 @@ pub(crate) mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "an end-to-end test scenario that reads top to bottom"
+    )]
     fn realtime_consent_reserves_once_and_revokes_minted_batch_after_disconnect() {
         use crate::shell::realtime_session::{
             BrokerRealtimeFabricAdapter, RealtimeFabricAdapter, RealtimeFabricSignal,
@@ -9331,7 +9337,7 @@ pub(crate) mod tests {
             room: SemanticRoomLocator::new("meet", "standup").expect("semantic room"),
             semantic_position: None,
             media: RealtimeMediaSet::new([RealtimeMediaFacet::Microphone]).expect("media set"),
-            controls: Default::default(),
+            controls: crate::shell::realtime_session::RealtimeControlState::default(),
         };
         let id = source_broker
             .lock()
@@ -9427,6 +9433,10 @@ pub(crate) mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "an end-to-end test scenario that reads top to bottom"
+    )]
     fn realtime_policy_disable_tears_down_exact_pending_consent() {
         use crate::shell::realtime_session::{
             BrokerRealtimeFabricAdapter, RealtimeFabricAdapter, RealtimeFabricSignal,
@@ -9477,7 +9487,7 @@ pub(crate) mod tests {
             room: SemanticRoomLocator::new("meet", "standup").expect("semantic room"),
             semantic_position: None,
             media: RealtimeMediaSet::new([RealtimeMediaFacet::Microphone]).expect("media set"),
-            controls: Default::default(),
+            controls: crate::shell::realtime_session::RealtimeControlState::default(),
         };
         let id = source_broker
             .lock()
@@ -9921,6 +9931,10 @@ pub(crate) mod tests {
         }
 
         /// Exercise the production peer-bound update RPC, including result-contract validation.
+        #[expect(
+            clippy::future_not_send,
+            reason = "Cap'n Proto clients are single-threaded; the fixture is awaited on a local set"
+        )]
         pub(crate) async fn complete_invocation(
             &self,
             id: u64,
@@ -9947,7 +9961,7 @@ pub(crate) mod tests {
             request.get().set_id(id);
             request
                 .get()
-                .set_update_json(&serde_json::to_string(update).expect("canonical update"));
+                .set_update_json(serde_json::to_string(update).expect("canonical update"));
             request.send().promise.await?;
             Ok(())
         }
@@ -9963,6 +9977,11 @@ pub(crate) mod tests {
                 .map(|invocation| invocation.actor)
         }
 
+        /// `None` when no invocation arrived; otherwise the invocation's optional argument.
+        #[expect(
+            clippy::option_option,
+            reason = "tests distinguish no invocation from an invocation without an argument"
+        )]
         pub(crate) fn take_invocation_argument(&mut self) -> Option<Option<String>> {
             self.invocation_rx
                 .try_recv()

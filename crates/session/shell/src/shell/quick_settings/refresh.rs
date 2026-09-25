@@ -192,7 +192,7 @@ impl QsRefresh {
         });
     }
 
-    /// Join without ever waiting on NetworkManager from the compositor/input
+    /// Join without ever waiting on `NetworkManager` from the compositor/input
     /// thread. Only one join is admitted at a time; the visible prompt/row is
     /// already marked busy before this method returns.
     pub fn kick_wifi_join(
