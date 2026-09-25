@@ -1,0 +1,34 @@
+# CI-built FEX candidate for ARM Windows apps
+
+Dispatch `development-fex-payload.yml` on `main`. The workflow uses native
+ARM64 and x86-64 CI runners: it publishes a native FEX toolchain candidate, a
+complete x86 development SDK candidate, and the portable ARM FEX payload. It
+clones the reviewed FEX revision and recursive submodules from
+`os/external-assets/fex-source.env`, applies the checked-in hash-pinned patches,
+and validates the installed payload before publishing it. All references use
+immutable OCI digests. The final payload receives a CI KMS signature and a
+provenance attestation that names both input digests and states that runtime
+acceptance has **not** been verified.
+
+The SDK and native toolchain still resolve live Fedora RPMs. These artifacts
+are development candidates, not frozen production inputs. Their unique tags
+are retained for inspection; consumers must use the digest reference printed
+by the payload job rather than a tag. A signed payload proves which CI job
+built those bytes. It does not prove that Wine, Proton, graphics, or the device
+GPU work. The validation limits and known FEX regressions are tracked in
+[`os/docs/fex-build-validation.md`](../os/docs/fex-build-validation.md).
+
+The separate retained x86 guest currently available at
+`code.sandbox.example/qos/tilo-development-windows-guest@sha256:592518b08a4c88395b7054c293eab9aeb52750869aba3a59dbe87d98556ae765`
+is also a development candidate. Before using it for an ARM OS image, verify
+that its traditional Wine pair, source pins, DXVK payload and loader layout
+pass the current `windows_provider.py` consumer checks. Its producer records
+`runtime_acceptance_verified=false`.
+
+`build-image.yml` reads repository variables `TILO_FEX_PAYLOAD_REF` and
+`TILO_WINDOWS_GUEST_REF` as a pair. It fails with only one variable and builds
+an ARM image without Windows apps if both are absent. Set the pair only after
+the candidate payload and guest have passed the consumer checks and the
+intended image has been explicitly classified as development. A production
+provider additionally needs frozen input transactions and mixed-width Wine,
+Proton, DXVK, graphics, capsule and target-hardware acceptance.
