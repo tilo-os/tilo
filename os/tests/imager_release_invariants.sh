@@ -497,7 +497,7 @@ if grep -Fq './os/dev/test-installer-cycle.sh' "$workflow" \
   && grep -Fq 'efi /EFI/Microsoft/Boot/bootmgfw.efi' "$cycle" \
   && grep -Fq 'efi /EFI/Fedora/$linux_loader' "$cycle" \
   && grep -Fq 'prepared alongside GPT layout changed' "$cycle" \
-  && grep -Fq 'expected five GPT partitions' "$cycle" \
+  && grep -Fq 'expected six GPT partitions' "$cycle" \
   && grep -Fq 'guided Tilo EFI partition has no architecture-matched systemd-boot binary' "$cycle" \
   && grep -Fq 'guided Tilo EFI partition contains an invalid cross-ESP chainloader shortcut' "$cycle" \
   && grep -Fq 'confirmation=/dev/vdb5' "$cycle" \
