@@ -3,6 +3,7 @@ use crate::permissions::UserId;
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ChangeHash, ObjId, PatchAction, ReadDoc, Value};
 use std::collections::HashMap;
+use tilo_automerge::ApplyIncoming;
 
 pub(crate) mod owned_restore;
 #[cfg(test)]
@@ -138,7 +139,7 @@ impl DocumentReplica {
     /// for this document.
     pub fn load_incremental(&mut self, data: &[u8]) -> Result<usize, automerge::AutomergeError> {
         let before = self.doc.get_heads();
-        let loaded = self.doc.load_incremental(data)?;
+        let loaded = self.doc.load_incoming(data)?;
         self.outbound.observe_changes_after(&mut self.doc, &before);
         Ok(loaded)
     }
@@ -152,7 +153,7 @@ impl DocumentReplica {
     pub fn merge_snapshot(&mut self, data: &[u8]) -> Result<(), automerge::AutomergeError> {
         let mut incoming = AutoCommit::load(data)?;
         let observed = incoming.get_heads();
-        self.doc.merge(&mut incoming)?;
+        self.doc.merge_incoming(&mut incoming)?;
         self.outbound.observe(observed);
         Ok(())
     }
@@ -1157,7 +1158,7 @@ impl State {
     /// (corrupt bytes, or bytes that don't apply to this document's history).
     pub fn load_incremental(&mut self, data: &[u8]) -> Result<usize, automerge::AutomergeError> {
         let before = self.doc.get_heads();
-        let n = self.doc.load_incremental(data)?;
+        let n = self.doc.load_incoming(data)?;
         // Keep the undo baseline aligned with the new, merged document state
         // so the *next* local action brackets against a complete picture.
         // Existing entries keep their original before/after heads — those
@@ -1179,7 +1180,7 @@ impl State {
     pub fn merge_snapshot(&mut self, data: &[u8]) -> Result<(), automerge::AutomergeError> {
         let mut incoming = AutoCommit::load(data)?;
         let observed = incoming.get_heads();
-        self.doc.merge(&mut incoming)?;
+        self.doc.merge_incoming(&mut incoming)?;
         self.undo.rebase(&mut self.doc);
         self.outbound.observe(observed);
         Ok(())

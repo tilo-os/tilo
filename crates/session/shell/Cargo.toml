@@ -155,6 +155,7 @@ winit.workspace = true
 pollster.workspace = true
 sysinfo.workspace = true
 automerge.workspace = true
+tilo-automerge.workspace = true
 taffy.workspace = true
 vello.workspace = true
 tilo-startup-metrics = { path = "../../system/tilo-startup-metrics" }

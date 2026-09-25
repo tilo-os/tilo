@@ -225,6 +225,7 @@ impl AuthDoc {
 mod tests {
     use super::*;
     use crate::model::demo_accounts;
+    use tilo_automerge::ApplyIncoming;
 
     #[test]
     fn round_trips_metadata_without_a_secret() {
@@ -263,7 +264,7 @@ mod tests {
 
         AuthDoc::delete_account(&mut a, account.id);
         AuthDoc::set_label(&mut b, account.id, "updated elsewhere");
-        a.merge(&mut b).unwrap();
+        a.merge_incoming(&mut b).unwrap();
 
         assert!(
             AuthDoc::list_accounts(&a)
@@ -283,7 +284,7 @@ mod tests {
         AuthDoc::upsert_account(&mut b, &acc_a[1]);
 
         let mut b_loaded = AutoCommit::load(&b.save()).unwrap();
-        a.merge(&mut b_loaded).unwrap();
+        a.merge_incoming(&mut b_loaded).unwrap();
 
         let issuers: Vec<_> = AuthDoc::list_accounts(&a)
             .into_iter()

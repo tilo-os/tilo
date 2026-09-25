@@ -147,6 +147,7 @@ mod tests {
     use automerge::transaction::Transactable;
     use automerge::{AutoCommit, ROOT, ReadDoc, ScalarValue};
     use serde::{Deserialize, Serialize};
+    use tilo_automerge::ApplyIncoming;
 
     /// A real action: set a scalar under a key, and (for lists) append.
     /// Mutates only via the passed doc, no wall-clock/RNG — the determinism contract.
@@ -307,7 +308,7 @@ mod tests {
         // replayed, the merge is a no-op: no second append.
         let a_bytes = a.save();
         let mut a_native = AutoCommit::load(&a_bytes).unwrap();
-        b.merge(&mut a_native).unwrap();
+        b.merge_incoming(&mut a_native).unwrap();
         assert_eq!(
             b.get_heads(),
             heads_after_replay,

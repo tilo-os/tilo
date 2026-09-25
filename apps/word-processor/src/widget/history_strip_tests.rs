@@ -1,5 +1,6 @@
 use super::tests::pipeline_draw;
 use super::*;
+use tilo_automerge::ApplyIncoming;
 
 /// A full left click: move, press, release. The release matters — pressing
 /// on the scrubber's track latches the handle to the pointer, so a
@@ -91,7 +92,7 @@ fn editor_with_history(w: u32, h: u32) -> (WordProcessorWidget, ui::State) {
         dm.splice_text(&blocks[0].id, 5, 0, " and second");
     }
     qdoc::history::commit_stamped(&mut bob);
-    state.doc.merge(&mut bob).expect("peers merge");
+    state.doc.merge_incoming(&mut bob).expect("peers merge");
 
     // Keep the fixture's authored labels independent of the developer's
     // local Tilo identity, which production history otherwise registers for
