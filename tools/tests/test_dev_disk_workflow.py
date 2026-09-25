@@ -100,6 +100,57 @@ class DevDiskWorkflowTests(unittest.TestCase):
         self.assertNotIn("--file os/Containerfile.dev", self.source)
         self.assertLess(build.index("Resolve and verify"), build.index("Build the dev image"))
 
+    def test_older_os_source_uses_explicitly_recorded_disk_tooling(self) -> None:
+        build = job(self.source, "build")
+        image = step(build, "Build the dev image FROM the verified base")
+        checkout = step(build, "Checkout exact disk tooling revision")
+        apply = step(build, "Apply reviewed disk tooling only")
+        disk = step(build, "Install the dev image to a bootable disk")
+        self.assertIn("SOURCE_REVISION: ${{ needs.plan.outputs.source }}", build)
+        self.assertIn("DISK_TOOLING_REVISION: ${{ github.sha }}", build)
+        self.assertIn("ref: ${{ github.sha }}", checkout)
+        self.assertIn("sparse-checkout-cone-mode: false", checkout)
+        for file in (
+            "disk-image.sh",
+            "hold-loop-partition-nodes.py",
+            "private_disk_image.py",
+            "check-dev-vm.sh",
+            "publish-dev-disk.sh",
+            "_common.sh",
+        ):
+            self.assertIn(file, checkout)
+            self.assertIn(file, apply)
+        self.assertIn("git -C .ci-disk-tooling rev-parse HEAD", apply)
+        self.assertNotIn("cmp .ci-disk-tooling/os/dev/_common.sh os/dev/_common.sh", apply)
+        self.assertLess(build.index(image), build.index(checkout))
+        self.assertLess(build.index(apply), build.index(disk))
+
+    def test_preinstall_checkpoint_is_digest_pinned_and_verified_on_resume(self) -> None:
+        self.assertIn("dev_image:", self.source)
+        plan = job(self.source, "plan")
+        self.assertIn("checkpoint=${INPUT_CHECKPOINT:-}", plan)
+        self.assertIn("ne 1", plan)
+        build = job(self.source, "build")
+        image = step(build, "Build the dev image FROM the verified base")
+        push = step(build, "Push preinstall dev-image checkpoint")
+        resume = step(build, "Load and verify preinstall dev-image checkpoint")
+        self.assertIn("if: needs.plan.outputs.checkpoint == ''", image)
+        self.assertIn("org.opencontainers.image.base.child.digest=$BASE_CHILD_DIGEST", image)
+        self.assertIn("podman push --digestfile", push)
+        self.assertIn('podman pull "$DEV_CHECKPOINT_REF"', resume)
+        self.assertIn('if: needs.plan.outputs.checkpoint != \'\'', resume)
+        for label in (
+            "sh.tilo.image.flavour",
+            "org.opencontainers.image.revision",
+            "org.opencontainers.image.base.name",
+            "org.opencontainers.image.base.digest",
+            "org.opencontainers.image.base.child.digest",
+            "sh.tilo.dev.base-trust",
+        ):
+            self.assertIn(label, resume)
+        self.assertLess(build.index(image), build.index(push))
+        self.assertLess(build.index(resume), build.index("Install the dev image to a bootable disk"))
+
     def test_disk_is_installed_booted_then_published(self) -> None:
         build = job(self.source, "build")
         disk = step(build, "Install the dev image to a bootable disk")
@@ -189,6 +240,11 @@ class PublishScriptTests(unittest.TestCase):
         self.assertIn('package="$package_api/tilo-vm-disk/$DEV_TAG"', self.source)
         self.assertIn("*'.svc.cluster.local'*", self.source)
 
+    def test_disk_manifest_records_separate_tooling_revision(self) -> None:
+        self.assertIn("DISK_TOOLING_REVISION", self.source)
+        self.assertIn('[[ $DISK_TOOLING_REVISION =~ ^[0-9a-f]{40}$ ]]', self.source)
+        self.assertIn("diskToolingRevision: $tooling", self.source)
+
 
 class DevVmCheckTests(unittest.TestCase):
     def test_tilo_vmd_answers_as_root_for_the_expected_arch_and_base(self) -> None:
@@ -235,6 +291,7 @@ class OsLaneGatesAndPublishesTheDevDiskTests(unittest.TestCase):
         self.assertIn("BASE_REPOSITORY: code.podesta.ai/qos/tilo-ci", publish)
         self.assertIn("BASE_TRUST: integration", publish)
         self.assertIn("DEV_TAG: ${{ steps.release-mode.outputs.dev-series }}-ci", publish)
+        self.assertIn("DISK_TOOLING_REVISION: ${{ github.sha }}", publish)
         self.assertLess(
             self.lane.index("- name: Reseal, install, boot, and stage the verified image"),
             self.lane.index("- name: Publish this architecture's dev image and disk"),
