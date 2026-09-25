@@ -147,6 +147,9 @@ struct Entry {
     unsynced: u64,
     /// What the last durable record holds.
     durable: RangeSet,
+    /// Changes whenever the entry's file is created anew, so a write into
+    /// an earlier file is never recorded against the new one.
+    generation: u64,
 }
 
 impl Entry {
@@ -178,11 +181,17 @@ struct State {
     entries: HashMap<AreaKey, Entry>,
     handles: HashMap<AreaKey, Arc<File>>,
     clock: u64,
+    generations: u64,
     /// Complete keyed entries by the BLAKE3 of their bytes.
     digests: HashMap<[u8; 32], AreaKey>,
 }
 
 impl State {
+    fn next_generation(&mut self) -> u64 {
+        self.generations = self.generations.saturating_add(1);
+        self.generations
+    }
+
     fn tick(&mut self) -> u64 {
         self.clock = self.clock.saturating_add(1);
         self.clock
@@ -196,6 +205,12 @@ pub struct FileArea {
     /// Serialises persistence so an older snapshot of an entry never
     /// overwrites a newer one.
     commit: Mutex<()>,
+    /// Serialises creating and replacing entries: two creators of one entry
+    /// must not both create its file, or the later would truncate bytes the
+    /// earlier already wrote and recorded.
+    create: Mutex<()>,
+    /// Distinguishes the staging files of concurrent adoptions.
+    staging: AtomicU64,
     budget: AtomicU64,
 }
 
@@ -242,6 +257,8 @@ impl FileArea {
             db,
             state: Mutex::new(State::default()),
             commit: Mutex::new(()),
+            create: Mutex::new(()),
+            staging: AtomicU64::new(0),
             budget: AtomicU64::new(budget),
         };
         area.load()?;
@@ -273,6 +290,7 @@ impl FileArea {
                         digest: stored.digest,
                         unsynced: 0,
                         durable: range_set(&stored.resident),
+                        generation: 0,
                     },
                 );
             }
@@ -413,6 +431,10 @@ impl FileArea {
         retention: Retention,
         chunks: &[([u8; 32], u64, u32)],
     ) -> io::Result<()> {
+        let _create = self
+            .create
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let existing = {
             let mut state = self.lock();
             state.entries.get_mut(key).map(|entry| {
@@ -441,6 +463,7 @@ impl FileArea {
         {
             let mut state = self.lock();
             let now = state.tick();
+            let generation = state.next_generation();
             state.entries.insert(
                 *key,
                 Entry {
@@ -451,6 +474,7 @@ impl FileArea {
                     digest: None,
                     unsynced: 0,
                     durable: RangeSet::new(),
+                    generation,
                 },
             );
             state.handles.insert(*key, Arc::new(file));
@@ -577,6 +601,48 @@ impl FileArea {
         ranges: &[Range<u64>],
         durable: bool,
     ) -> io::Result<()> {
+        self.mark_resident_in(key, None, ranges, durable)
+    }
+
+    /// The current generation of `key`'s file.
+    pub fn generation(&self, key: &AreaKey) -> Option<u64> {
+        self.lock().entries.get(key).map(|e| e.generation)
+    }
+
+    /// The file of `key` together with its generation, for writes that are
+    /// recorded later with [`Self::mark_resident_in`].
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the area has no such entry or its file cannot
+    /// be opened.
+    pub fn file_in_generation(&self, key: &AreaKey) -> io::Result<(Arc<File>, u64)> {
+        let generation = || self.lock().entries.get(key).map(|e| e.generation);
+        let before = generation();
+        let file = self.file(key)?;
+        match (before, generation()) {
+            (Some(a), Some(b)) if a == b => Ok((file, a)),
+            _ => Err(io::Error::new(
+                io::ErrorKind::Interrupted,
+                "the entry was replaced",
+            )),
+        }
+    }
+
+    /// [`Self::mark_resident`] for bytes written into the file of
+    /// `generation`: when the entry has since been replaced (evicted and
+    /// created anew), nothing is recorded.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::mark_resident`].
+    pub fn mark_resident_in(
+        &self,
+        key: &AreaKey,
+        generation: Option<u64>,
+        ranges: &[Range<u64>],
+        durable: bool,
+    ) -> io::Result<()> {
         if ranges.is_empty() {
             return Ok(());
         }
@@ -588,6 +654,10 @@ impl FileArea {
                 .entries
                 .get_mut(key)
                 .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "no such entry"))?;
+            if generation.is_some_and(|g| g != entry.generation) {
+                drop(guard);
+                return Ok(());
+            }
             let before = entry.resident.total();
             for range in ranges {
                 entry
@@ -786,7 +856,8 @@ impl FileArea {
     }
 
     fn staging_path(&self, key: &AreaKey) -> PathBuf {
-        self.data.join(format!(".{}.staging", hex(key)))
+        let n = self.staging.fetch_add(1, Ordering::Relaxed);
+        self.data.join(format!(".{}.{n}.staging", hex(key)))
     }
 
     #[allow(
@@ -803,6 +874,10 @@ impl FileArea {
         digest: Option<[u8; 32]>,
         chunks: &[([u8; 32], u64, u32)],
     ) -> io::Result<()> {
+        let _create = self
+            .create
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if self.entry(key).is_some() {
             self.remove(key)?;
         }
@@ -810,6 +885,7 @@ impl FileArea {
         {
             let mut state = self.lock();
             let now = state.tick();
+            let generation = state.next_generation();
             state.entries.insert(
                 *key,
                 Entry {
@@ -820,6 +896,7 @@ impl FileArea {
                     digest,
                     unsynced: 0,
                     durable: RangeSet::full(len),
+                    generation,
                 },
             );
             state.handles.insert(*key, Arc::new(file));
