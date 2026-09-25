@@ -55,7 +55,12 @@ env:
   CARGO_PROFILE_TEST_DEBUG: '0'
   CARGO_TERM_COLOR: never
   SCCACHE_IGNORE_SERVER_IO_ERROR: '1'
-  RUSTFLAGS: '-D warnings'
+  # Deny warnings through per-target flags. Cargo joins these with the
+  # target rustflags in .cargo/config.toml (x86-64-v3, frame pointers,
+  # hardening); RUSTFLAGS would replace them, giving these builds different
+  # codegen, and different pixels, from nightly and local builds.
+  CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: '-D warnings'
+  CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS: '-D warnings'
   WGPU_BACKEND: vulkan
   WGPU_ADAPTER_NAME: llvmpipe
 

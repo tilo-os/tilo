@@ -945,6 +945,10 @@ suite = "scripts/test-flatpak-share.sh"
 reason = "drives distrobox and host GPU encoders"
 
 [[unrequired]]
+suite = "scripts/test-local.sh"
+reason = "developer entry point for the Rust suite, which CI runs through tools/test-env.sh"
+
+[[unrequired]]
 suite = "scripts/tests/test_runtime_auto_attach_proof.py"
 reason = "needs procps (ps), absent from the ci-fast image"
 
