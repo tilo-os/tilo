@@ -74,7 +74,7 @@ pub struct HostFacts {
     pub session: Option<Result<Vec<Guest>, String>>,
     /// macOS: UTM.app's `utmctl`, found even when it is not on `PATH`.
     pub utm_app: Option<PathBuf>,
-    /// Windows: whether PowerShell has the Hyper-V module (`Get-VM`).
+    /// Windows: whether `PowerShell` has the Hyper-V module (`Get-VM`).
     pub hyperv: Option<bool>,
 }
 
