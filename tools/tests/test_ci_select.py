@@ -709,6 +709,20 @@ class SelectorTests(unittest.TestCase):
                         self.metadata, self.root, [mapped_source], 2)
                     self.assertTrue(plan["rust_required"])
 
+    def test_rpm_pin_only_runs_mandatory_policy_and_security_checks(self) -> None:
+        self.install_control_inputs()
+        pin = "os/rpms-snapshot.env"
+        observer = "tools/tests/test_rpm_pin_contract.py"
+        plan = ci_select.make_plan(self.metadata, self.root, [pin], 2)
+        self.assertFalse(plan["rust_required"])
+        self.assertEqual(plan["selected"], [])
+        self.assertTrue(plan["security_required"])
+        (self.root / observer).unlink()
+        self.assertTrue(ci_select.make_plan(self.metadata, self.root, [pin], 2)["rust_required"])
+        self.install_control_inputs()
+        self.assertTrue(ci_select.make_plan(
+            self.metadata, self.root, [pin, "leaf/src/lib.rs"], 2)["rust_required"])
+
     def test_builder_recipe_deletion_and_mixed_inputs_stay_conservative(self) -> None:
         recipe = self.root / "os/Containerfile.builder"
         recipe.parent.mkdir(parents=True, exist_ok=True)
