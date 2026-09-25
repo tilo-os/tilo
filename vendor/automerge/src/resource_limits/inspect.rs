@@ -234,8 +234,10 @@ impl Scan<'_> {
             Error::Collection,
         )?;
         for _ in 0..count {
-            reader.blob()?;
+            let actor = reader.blob()?;
+            self.shape.max_actor_bytes = self.shape.max_actor_bytes.max(actor.len());
         }
+        self.shape.max_chunk_actors = self.shape.max_chunk_actors.max(count);
         Ok(count)
     }
     fn hashes(&mut self, reader: &mut Reader<'_>) -> Result<usize, Error> {
@@ -310,7 +312,8 @@ impl Scan<'_> {
                     self.limits.max_actors,
                     Error::Collection,
                 )?;
-                reader.blob()?;
+                let author = reader.blob()?;
+                self.shape.max_actor_bytes = self.shape.max_actor_bytes.max(author.len());
                 reader.uint()?; // sequence
                 let start_op = reader.uint()?;
                 if start_op == 0 {
@@ -325,7 +328,9 @@ impl Scan<'_> {
                     self.limits.max_value_bytes,
                     Error::ValueBytes,
                 )?;
-                self.actors(&mut reader)?;
+                let others = self.actors(&mut reader)?;
+                // A change chunk's actor table is its author plus the others.
+                self.shape.max_chunk_actors = self.shape.max_chunk_actors.max(others + 1);
                 let (ops, ops_len, op_meta) = self.metadata(&mut reader)?;
                 self.normalized(body.len() - reader.0.len() - op_meta)?;
                 let before_ops = self.shape.operations;
