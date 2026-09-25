@@ -277,23 +277,34 @@ pub(super) fn import_region(xml: &[u8], region: Region, doc: &mut DocMut) {
     let mut field_marks: Vec<(String, usize)> = Vec::new();
 
     while let Ok(ev) = reader.read_event() {
+        // Some writers spell an empty `w:fldChar` as a start/end pair.
+        if let Event::Start(e) | Event::Empty(e) = &ev
+            && e.name().as_ref() == b"w:fldChar"
+        {
+            handle_fld_char(
+                e,
+                region,
+                doc,
+                cur.as_deref(),
+                &mut cur_len,
+                &mut field_pending,
+                &mut field_in_progress,
+                &mut field_skip_text,
+                &mut field_marks,
+            );
+            continue;
+        }
         match ev {
             Event::Start(e) => match e.name().as_ref() {
                 b"w:p" => open_region_block(region, doc, &mut prev, &mut cur, &mut cur_len),
                 b"w:t" => in_t = true,
                 b"w:instrText" => in_instr = true,
+                // Emit the field once at its start, then skip its cached result-run text until it closes.
                 b"w:fldSimple" => {
-                    // Emit the field once at its start, then skip its cached result-run text until it closes.
                     fldsimple_depth = fldsimple_depth.saturating_add(1);
                     let instr = attr_w_val(&e, b"w:instr").unwrap_or_default();
-                    emit_page_field(
-                        &instr,
-                        region,
-                        doc,
-                        cur.as_deref(),
-                        &mut cur_len,
-                        &mut field_marks,
-                    );
+                    let cur = cur.as_deref();
+                    emit_page_field(&instr, region, doc, cur, &mut cur_len, &mut field_marks);
                 }
                 _ => {}
             },
@@ -304,26 +315,9 @@ pub(super) fn import_region(xml: &[u8], region: Region, doc: &mut DocMut) {
                 }
                 b"w:fldSimple" => {
                     let instr = attr_w_val(&e, b"w:instr").unwrap_or_default();
-                    emit_page_field(
-                        &instr,
-                        region,
-                        doc,
-                        cur.as_deref(),
-                        &mut cur_len,
-                        &mut field_marks,
-                    );
+                    let cur = cur.as_deref();
+                    emit_page_field(&instr, region, doc, cur, &mut cur_len, &mut field_marks);
                 }
-                b"w:fldChar" => handle_fld_char(
-                    &e,
-                    region,
-                    doc,
-                    cur.as_deref(),
-                    &mut cur_len,
-                    &mut field_pending,
-                    &mut field_in_progress,
-                    &mut field_skip_text,
-                    &mut field_marks,
-                ),
                 _ => {}
             },
             ev @ (Event::Text(_) | Event::GeneralRef(_)) => {
@@ -455,11 +449,36 @@ pub(super) struct ExportedParts {
     pub footer: Option<Vec<u8>>,
 }
 
-pub(super) fn export_parts(doc: &DocRef) -> ExportedParts {
-    let header = materialize_region(doc.doc, doc.c, Region::Header);
-    let footer = materialize_region(doc.doc, doc.c, Region::Footer);
+/// qdoc's header/footer parts, less the regions whose original part is kept (`keep`).
+pub(super) fn export_parts(doc: &DocRef, keep: KeptRegions) -> ExportedParts {
+    let part = |region: Region, kept: bool, tag: &str| {
+        if kept {
+            return None;
+        }
+        region_part_xml(&materialize_region(doc.doc, doc.c, region), tag)
+    };
     ExportedParts {
-        header: region_part_xml(&header, "hdr"),
-        footer: region_part_xml(&footer, "ftr"),
+        header: part(Region::Header, keep.header, "hdr"),
+        footer: part(Region::Footer, keep.footer, "ftr"),
     }
+}
+
+/// Which of the imported default header/footer parts are written back as they are.
+#[derive(Clone, Copy, Default)]
+pub(super) struct KeptRegions {
+    pub header: bool,
+    pub footer: bool,
+}
+
+/// Whether `region` of `doc` is what importing `original` (a header/footer part) gives: the
+/// region was not edited, so the original part stays as it is, with everything the model does
+/// not hold (fields other than the page number, pictures, tables, formatting).
+pub(super) fn region_unchanged(original: &[u8], region: Region, doc: &DocRef) -> bool {
+    let mut scratch = qdoc::Document::new();
+    import_region(original, region, &mut scratch.as_mut());
+    let fresh = scratch.as_ref();
+    crate::preserve::same_blocks(
+        &materialize_region(doc.doc, doc.c, region),
+        &materialize_region(fresh.doc, fresh.c, region),
+    )
 }

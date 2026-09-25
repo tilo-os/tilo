@@ -23,7 +23,7 @@
 //! while their part does — so every section shows the document's header and footer.
 
 use super::container::DocxContainer;
-use super::headers::{ExportedParts, FOOTER_REL_ID, HEADER_REL_ID, normalize_target};
+use super::headers::{ExportedParts, FOOTER_REL_ID, HEADER_REL_ID, KeptRegions, normalize_target};
 use quick_xml::events::{BytesStart, Event};
 use quick_xml::reader::Reader;
 use std::collections::BTreeSet;
@@ -362,7 +362,8 @@ pub(super) struct SectionPlan {
 
 impl SectionPlan {
     /// The header/footer references a rebuilt `w:sectPr` starts with: qdoc's `default` pair,
-    /// then the kept `first`/`even` ones of `children`.
+    /// then the kept ones of `children` (`first`/`even`, and the `default` ones of a region
+    /// whose original part is kept).
     fn references(&self, children: &[Child]) -> String {
         let mut inner = String::new();
         if self.header_part.is_some() {
@@ -379,7 +380,6 @@ impl SectionPlan {
         }
         for ch in children {
             if let Some(r) = &ch.reference
-                && !r.is_default
                 && self.kept_refs.contains(&r.id)
             {
                 inner.push_str(&ch.raw);
@@ -409,6 +409,7 @@ pub(super) fn plan(
     original: Option<&str>,
     section_breaks: &[&str],
     parts: &ExportedParts,
+    keep: KeptRegions,
     cols: &str,
 ) -> SectionPlan {
     let rels = document_rels(c);
@@ -424,11 +425,15 @@ pub(super) fn plan(
         .iter()
         .flat_map(|xml| split_sectpr(xml).1)
         .collect();
+    let kept_default = |kind: Kind| match kind {
+        Kind::Header => keep.header,
+        Kind::Footer => keep.footer,
+    };
     let kept_refs: BTreeSet<String> = children
         .iter()
         .chain(&break_children)
         .filter_map(|ch| ch.reference.as_ref())
-        .filter(|r| !r.is_default && resolves(r.kind, &r.id))
+        .filter(|r| (!r.is_default || kept_default(r.kind)) && resolves(r.kind, &r.id))
         .map(|r| r.id.clone())
         .collect();
     prune_header_footer_rels(c, &rels, &kept_refs);
@@ -513,6 +518,7 @@ mod tests {
             Some(original),
             &[],
             &parts,
+            KeptRegions::default(),
             r#"<w:cols w:num="2"/>"#,
         );
         assert_eq!(

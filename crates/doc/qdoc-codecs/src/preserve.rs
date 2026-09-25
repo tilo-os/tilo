@@ -40,6 +40,23 @@ pub fn is_codec_private_attr(key: &str) -> bool {
     key.starts_with("docx_") || key.starts_with("odt_")
 }
 
+/// Whether two block sequences hold the same content: kinds, text, marks and attrs, whatever
+/// their ids. Tells an unedited region from an edited one by comparing it with a fresh import
+/// of its original, so the original can be written back with everything the model lacks.
+#[must_use]
+pub fn same_blocks(a: &[BlockView], b: &[BlockView]) -> bool {
+    let key = |v: &BlockView| {
+        let mut marks: Vec<String> = v
+            .marks
+            .iter()
+            .map(|m| format!("{}:{}:{}:{:?}", m.name, m.start, m.end, m.value))
+            .collect();
+        marks.sort();
+        (v.kind.clone(), v.text.clone(), marks, v.attrs.clone())
+    };
+    a.len() == b.len() && a.iter().zip(b).all(|(x, y)| key(x) == key(y))
+}
+
 /// The verbatim XML of a `fidelity` block if `format` may re-emit it: blocks captured by the
 /// other office codec are skipped; blocks without a format tag predate it and are kept.
 pub fn fidelity_xml<'a>(b: &'a BlockView, format: &str) -> Option<&'a str> {

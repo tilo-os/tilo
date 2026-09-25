@@ -948,7 +948,12 @@ impl ContentHead {
         };
         let automatic_styles = get(super::CONTENT_AUTOMATIC_STYLES_KEY).unwrap_or_default();
         let mut registry = super::styles::StyleRegistry::default();
-        if let Some(styles) = qdoc::model::preserved_part(doc.doc, doc.c, "odt/part/styles.xml") {
+        if let Some(styles) = qdoc::model::preserved_part(
+            doc.doc,
+            doc.c,
+            "odt/part/styles.xml",
+            &tilo_content::NoContent,
+        ) {
             super::styles::parse_styles(&styles, &mut registry, true);
         }
         super::styles::parse_styles(automatic_styles.as_bytes(), &mut registry, false);
@@ -1093,8 +1098,8 @@ fn build_content_xml(
     let notes = note_index(snap);
     let mut note_ctr = 0usize;
     let comments = comment_index(snap);
-    let (snap, tracked_changes) = super::changes::split_tracked_changes(snap);
-    let snap = snap.as_ref();
+    let (split, tracked_changes) = super::changes::split_tracked_changes(snap);
+    let snap = &snap.with_snapshot(split.as_ref());
     let mut style_attr = |b: &BlockView| -> String {
         resolve_para_style(b, head, &snap.styles, &mut pstyles, &mut named_refs)
     };
@@ -2139,6 +2144,57 @@ mod tests {
     }
 
     #[test]
+    fn unedited_page_regions_keep_their_original_elements() {
+        let styles = concat!(
+            r#"<?xml version="1.0" encoding="UTF-8"?><office:document-styles xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0" xmlns:style="urn:oasis:names:tc:opendocument:xmlns:style:1.0" xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0">"#,
+            r#"<office:master-styles><style:master-page style:name="Standard">"#,
+            r#"<style:header><text:p>Head</text:p></style:header>"#,
+            r#"<style:header-first><text:p>Cover</text:p></style:header-first>"#,
+            r#"<style:footer><text:p>Page <text:page-number>1</text:page-number> of <text:page-count>2</text:page-count></text:p></style:footer>"#,
+            r#"</style:master-page></office:master-styles></office:document-styles>"#,
+        );
+        let mut c = OdtContainer::read(&minimal_odt("<text:p>body</text:p>")).unwrap();
+        c.set("styles.xml", styles.as_bytes().to_vec());
+        let odt = c.write().unwrap();
+        let styles_of = |bytes: &[u8]| {
+            let c = OdtContainer::read(bytes).unwrap();
+            String::from_utf8(c.get("styles.xml").unwrap().to_vec()).unwrap()
+        };
+
+        let mut d = Document::new();
+        OdtCodec
+            .import(
+                &odt,
+                &mut d.as_mut(),
+                &mut tilo_content::ContentInputs::new(),
+            )
+            .unwrap();
+        assert_eq!(
+            styles_of(
+                &OdtCodec
+                    .export(d.as_ref(), &tilo_content::NoContent)
+                    .unwrap()
+            ),
+            styles
+        );
+
+        // Editing the header regenerates it (dropping the first-page variant with it); the
+        // unedited footer keeps its page count.
+        let head = d.header_blocks_in_order()[0].clone();
+        d.splice_header_text(&head, 4, 0, "er");
+        let out = styles_of(
+            &OdtCodec
+                .export(d.as_ref(), &tilo_content::NoContent)
+                .unwrap(),
+        );
+        assert!(out.contains("<text:p>Header</text:p>"), "{out}");
+        assert!(
+            out.contains("<text:page-count>2</text:page-count>"),
+            "{out}"
+        );
+    }
+
+    #[test]
     fn keeps_paragraph_span_and_table_styles_while_they_agree() {
         let styles = concat!(
             r#"<style:style style:name="P1" style:family="paragraph"><style:paragraph-properties fo:break-before="page" fo:text-align="center"/></style:style>"#,
@@ -2156,7 +2212,11 @@ mod tests {
         );
         let mut d = Document::new();
         OdtCodec
-            .import(&minimal_odt_styled(styles, body), &mut d.as_mut())
+            .import(
+                &minimal_odt_styled(styles, body),
+                &mut d.as_mut(),
+                &mut tilo_content::ContentInputs::new(),
+            )
             .unwrap();
         let snap = d.materialize();
         assert!(
@@ -2169,7 +2229,9 @@ mod tests {
         let second = snap.blocks[1].id.clone();
         d.as_mut().set_attr(&second, "align", "right");
 
-        let exported = OdtCodec.export(d.as_ref()).unwrap();
+        let exported = OdtCodec
+            .export(d.as_ref(), &tilo_content::NoContent)
+            .unwrap();
         let cont = OdtContainer::read(&exported).unwrap();
         let content = std::str::from_utf8(cont.get("content.xml").unwrap()).unwrap();
         for kept in [
@@ -2185,7 +2247,13 @@ mod tests {
             "{content}"
         );
         let mut d2 = Document::new();
-        OdtCodec.import(&exported, &mut d2.as_mut()).unwrap();
+        OdtCodec
+            .import(
+                &exported,
+                &mut d2.as_mut(),
+                &mut tilo_content::ContentInputs::new(),
+            )
+            .unwrap();
         let again = d2.materialize();
         assert_eq!(norm(&again)[0], norm(&snap)[0]);
         assert_eq!(
@@ -2204,7 +2272,11 @@ mod tests {
         );
         let mut d = Document::new();
         OdtCodec
-            .import(&minimal_odt(body), &mut d.as_mut())
+            .import(
+                &minimal_odt(body),
+                &mut d.as_mut(),
+                &mut tilo_content::ContentInputs::new(),
+            )
             .unwrap();
         let snap = d.materialize();
         let p = &snap.blocks[0];
@@ -2217,7 +2289,9 @@ mod tests {
             p.marks
         );
 
-        let exported = OdtCodec.export(d.as_ref()).unwrap();
+        let exported = OdtCodec
+            .export(d.as_ref(), &tilo_content::NoContent)
+            .unwrap();
         let cont = OdtContainer::read(&exported).unwrap();
         let content = std::str::from_utf8(cont.get("content.xml").unwrap()).unwrap();
         assert!(
@@ -2230,7 +2304,13 @@ mod tests {
         );
         assert!(!content.contains("removed wordsgone"), "{content}");
         let mut d2 = Document::new();
-        OdtCodec.import(&exported, &mut d2.as_mut()).unwrap();
+        OdtCodec
+            .import(
+                &exported,
+                &mut d2.as_mut(),
+                &mut tilo_content::ContentInputs::new(),
+            )
+            .unwrap();
         assert_eq!(norm(&d2.materialize()), norm(&snap));
     }
 
