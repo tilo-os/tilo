@@ -239,6 +239,21 @@ impl<R: Resource> Widget for ResourceRoot<R> {
             .or_else(|| self.content.take_control_invocation())
     }
 
+    /// An edit this resource's dispatcher submitted was refused, or is held
+    /// for the user's confirmation. Nothing changed in the document, so a
+    /// surface that previewed the edit is re-presented the stored state; a
+    /// confirmed edit then arrives as an ordinary document change.
+    fn on_control_invocation_result(
+        &mut self,
+        address: &tilo_actions::ActionAddress,
+        result: &Result<ui_core::widget::ResourceOperationStart, tilo_actions::DoorError>,
+    ) {
+        if result.is_err() && address.resource == self.dispatch.resource_id() {
+            self.live.represent();
+        }
+        self.content.on_control_invocation_result(address, result);
+    }
+
     fn has_pending_control_invocation(&self) -> bool {
         self.dispatch.has_pending() || self.content.has_pending_control_invocation()
     }
