@@ -287,14 +287,28 @@ pub(crate) struct StorageSummary {
     pub(crate) max_op_decode: usize,
     /// Whether a document or bundle chunk (native expansion) is present.
     pub(crate) expanding: bool,
+    /// Largest bundle: operation rows and changes (0.12's bundle parse
+    /// reconstructs operation counters into Vecs of these sizes).
+    pub(crate) max_bundle_rows: usize,
+    pub(crate) max_bundle_changes: usize,
 }
 impl StorageSummary {
     /// Transient bytes of parsing one change chunk: the owned copy of its
     /// bytes, its dependency, actor and column descriptor Vecs (all bounded
     /// by the chunk size), and one decoded operation at a time.
+    ///
+    /// Also covers the largest bundle's `extract_id_ctr_values`: the decoded
+    /// inverse permutation and the counters (`Vec<i64>` of the op rows each)
+    /// and the collected change metadata (a `Vec` of 32-byte tuples grown by
+    /// doubling, with realloc overlap).
     pub(crate) fn change_parse_bytes(&self) -> std::result::Result<usize, Error> {
         use super::budget::product;
-        sum(sum(product(self.max_chunk, 4)?, self.max_op_decode)?, 4096)
+        let change = sum(sum(product(self.max_chunk, 4)?, self.max_op_decode)?, 4096)?;
+        let bundle = sum(
+            product(self.max_bundle_rows, 2 * std::mem::size_of::<i64>())?,
+            product(self.max_bundle_changes, 3 * 32)?,
+        )?;
+        sum(change, bundle)
     }
 }
 
@@ -318,7 +332,7 @@ pub(crate) fn validate(bytes: &[u8], charge: &mut Charge<'_>) -> Result<StorageS
                 meta.data(&mut body, actor_count)?;
                 ops.data(&mut body, actor_count)?;
                 metadata(&meta, false, 0)?;
-                operations(&ops, kind, Some(&mut *charge))?;
+                operations(&ops, kind, None, charge)?;
             }
             1 => {
                 let dims = change_body(body)?;
@@ -333,7 +347,9 @@ pub(crate) fn validate(bytes: &[u8], charge: &mut Charge<'_>) -> Result<StorageS
                 let mut ops = Columns::metadata(&mut body)?;
                 ops.data(&mut body, actor_count)?;
                 metadata(&meta, true, external)?;
-                operations(&ops, kind, Some(&mut *charge))?;
+                let dims = operations(&ops, kind, Some(&meta), charge)?;
+                summary.max_bundle_rows = summary.max_bundle_rows.max(dims.ops);
+                summary.max_bundle_changes = summary.max_bundle_changes.max(meta.rows(0x01));
             }
             // Normalized storage never holds compressed chunks.
             _ => return Err(Error::Invalid),
@@ -369,7 +385,7 @@ fn change_body(mut body: Reader<'_>) -> Result<ChangeDims> {
     let actor_count = sum(actors(&mut body)?, 1).map_err(|_| Error::Invalid)?;
     let mut ops = Columns::metadata(&mut body)?;
     ops.data(&mut body, actor_count)?;
-    let mut dims = operations(&ops, 1, None)?;
+    let mut dims = operations_unowned(&ops)?;
     dims.actors = actor_count;
     Ok(dims)
 }
@@ -432,7 +448,27 @@ fn metadata(cols: &Columns<'_>, bundle: bool, external: usize) -> Result {
     Ok(())
 }
 
-fn operations(cols: &Columns<'_>, kind: u8, mut charge: Option<&mut Charge<'_>>) -> Result<ChangeDims> {
+/// Operation columns of a change chunk: no allocation.
+fn operations_unowned(cols: &Columns<'_>) -> Result<ChangeDims> {
+    operations_inner(cols, 1, None, None)
+}
+
+fn operations(
+    cols: &Columns<'_>,
+    kind: u8,
+    bundle_meta: Option<&Columns<'_>>,
+    charge: &mut Charge<'_>,
+) -> Result<ChangeDims> {
+    operations_inner(cols, kind, bundle_meta, Some(charge))
+}
+
+/// `kind` 0 (document), 1 (change) or 3 (bundle, with its change metadata).
+fn operations_inner(
+    cols: &Columns<'_>,
+    kind: u8,
+    bundle_meta: Option<&Columns<'_>>,
+    mut charge: Option<&mut Charge<'_>>,
+) -> Result<ChangeDims> {
     let rows = cols.rows(0x42);
     let group = if kind == 0 { 0x80 } else { 0x70 };
     let object_counter = if kind == 3 { 0x03 } else { 0x02 };
@@ -451,7 +487,14 @@ fn operations(cols: &Columns<'_>, kind: u8, mut charge: Option<&mut Charge<'_>>)
         ],
         rows,
     )?;
-    if kind != 1 && (cols.rows(0x21) != rows || cols.rows(0x23) != rows) {
+    // Bundles come in two layouts: the legacy explicit id-counter column
+    // (0x23), or 0.12's inverse permutation (0xb3) from which counters are
+    // derived with the change metadata ranges. Exactly one must be present.
+    let inverse = kind == 3 && !cols.get(0xb3).bytes.is_empty();
+    if kind == 3 && inverse == !cols.get(0x23).bytes.is_empty() {
+        return Err(Error::Invalid);
+    }
+    if kind != 1 && (cols.rows(0x21) != rows || (!inverse && cols.rows(0x23) != rows)) {
         return Err(Error::Invalid);
     }
     // All narrowing references, including optional roots/heads, are inspected
@@ -521,7 +564,7 @@ fn operations(cols: &Columns<'_>, kind: u8, mut charge: Option<&mut Charge<'_>>)
         dims.max_mark_name = dims.max_mark_name.max(mark);
         dims.mark_bytes = dims.mark_bytes.checked_add(mark).ok_or(Error::Invalid)?;
         dims.value_bytes = dims.value_bytes.checked_add(len).ok_or(Error::Invalid)?;
-        if kind != 1 {
+        if kind != 1 && !inverse {
             let actor = id_actor.required()?;
             let ctr = id_counter.required()?;
             if ctr == 0 {
@@ -532,6 +575,11 @@ fn operations(cols: &Columns<'_>, kind: u8, mut charge: Option<&mut Charge<'_>>)
     }
     if !raw.0.is_empty() {
         return Err(Error::Invalid);
+    }
+    if inverse {
+        let meta = bundle_meta.ok_or(Error::Invalid)?;
+        let charge = charge.as_deref_mut().ok_or(Error::Unaccounted)?;
+        inverse_ids(cols, meta, rows, &mut ids, charge)?;
     }
     // Document and bundle operation ids must be unique.
     ids.sort_unstable();
@@ -545,4 +593,109 @@ fn operations(cols: &Columns<'_>, kind: u8, mut charge: Option<&mut Charge<'_>>)
         return Err(Error::Invalid);
     }
     Ok(dims)
+}
+
+/// 0.12 bundle layout: rebuild every operation id the way
+/// `extract_id_ctr_values` does (changes sorted by (actor, seq), their
+/// counter ranges `start..=max` walked in that order, the k-th counter
+/// landing at row `inverse[k]`) and push `(id actor, counter)` into `ids`.
+/// Refuses a length mismatch, an out-of-range or repeated position (where
+/// upstream would silently overwrite), per-actor ranges that overlap, and a
+/// row whose id actor is not the actor of the change owning its counter.
+/// Scratch (positions, a bitmap, the id actors and the change ranges) is
+/// charged before allocation and released afterwards.
+fn inverse_ids(
+    cols: &Columns<'_>,
+    meta: &Columns<'_>,
+    rows: usize,
+    ids: &mut Vec<(u32, u32)>,
+    charge: &mut Charge<'_>,
+) -> Result {
+    use super::budget::{product, vec};
+    if cols.rows(0xb3) != rows {
+        return Err(Error::Invalid);
+    }
+    let changes = meta.rows(0x01);
+    let words = rows / 64 + 1;
+    let scratch = sum(
+        sum(product(vec::<u32>(rows).map_err(|_| Error::WorkBytes)?, 2).map_err(|_| Error::WorkBytes)?,
+            vec::<u64>(words).map_err(|_| Error::WorkBytes)?).map_err(|_| Error::WorkBytes)?,
+        vec::<(u32, u32, u32, u32)>(changes).map_err(|_| Error::WorkBytes)?,
+    )
+    .map_err(|_| Error::WorkBytes)?;
+    charge.grow(scratch)?;
+    let result = (|| -> Result {
+        let reserve = |n: usize| -> Result<Vec<u32>> {
+            let mut v = Vec::new();
+            v.try_reserve_exact(n).map_err(|_| Error::WorkBytes)?;
+            Ok(v)
+        };
+        let mut positions = reserve(rows)?;
+        let mut seen: Vec<u64> = Vec::new();
+        seen.try_reserve_exact(words).map_err(|_| Error::WorkBytes)?;
+        seen.resize(words, 0);
+        let mut values = cols.values(0xb3);
+        for _ in 0..rows {
+            let position = values.required()?;
+            let position = usize::try_from(position)
+                .ok()
+                .filter(|p| *p < rows)
+                .ok_or(Error::Invalid)?;
+            let (word, bit) = (position / 64, 1u64 << (position % 64));
+            if seen[word] & bit != 0 {
+                return Err(Error::Invalid);
+            }
+            seen[word] |= bit;
+            positions.push(position as u32);
+        }
+        let mut actors = reserve(rows)?;
+        let mut id_actor = cols.values(0x21);
+        for _ in 0..rows {
+            actors.push(u32::try_from(id_actor.required()?).map_err(|_| Error::Invalid)?);
+        }
+        let mut ranges: Vec<(u32, u32, u32, u32)> = Vec::new();
+        ranges.try_reserve_exact(changes).map_err(|_| Error::WorkBytes)?;
+        let (mut actor, mut seq, mut start, mut max) =
+            (meta.values(0x01), meta.values(0x03), meta.values(0x13), meta.values(0x23));
+        let narrow = |v: u64| u32::try_from(v).map_err(|_| Error::Invalid);
+        let mut total = 0usize;
+        for _ in 0..changes {
+            let entry = (
+                narrow(actor.required()?)?,
+                narrow(seq.required()?)?,
+                narrow(start.required()?)?,
+                narrow(max.required()?)?,
+            );
+            // metadata() checked start <= max + 1 and both in range.
+            let len = (entry.3 as usize + 1).checked_sub(entry.2 as usize).ok_or(Error::Invalid)?;
+            total = total.checked_add(len).ok_or(Error::Invalid)?;
+            ranges.push(entry);
+        }
+        if total != rows {
+            return Err(Error::Invalid);
+        }
+        ranges.sort_unstable_by_key(|(actor, seq, _, _)| (*actor, *seq));
+        let mut previous: Option<(u32, u32)> = None; // (actor, max) of the last non-empty range
+        let mut k = 0usize;
+        for (actor, _, start, max) in &ranges {
+            if start > max {
+                continue;
+            }
+            if previous.is_some_and(|(a, m)| a == *actor && *start <= m) {
+                return Err(Error::Invalid);
+            }
+            previous = Some((*actor, *max));
+            for counter in *start..=*max {
+                let row = positions[k] as usize;
+                k += 1;
+                if actors[row] != *actor {
+                    return Err(Error::Invalid);
+                }
+                ids.push((*actor, counter));
+            }
+        }
+        Ok(())
+    })();
+    charge.shrink(scratch);
+    result
 }

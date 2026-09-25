@@ -1384,3 +1384,330 @@ fn plain_apply_refuses_non_contiguous_sequences_without_panic() {
         assert!(result.is_err(), "{name}");
     }
 }
+
+// ---------------------------------------------------------------------------
+// Bundles (0.12 layout: inverse id-counter permutation, spec 0xb3)
+// ---------------------------------------------------------------------------
+
+fn uleb(out: &mut Vec<u8>, mut v: u64) {
+    loop {
+        let byte = (v & 0x7f) as u8;
+        v >>= 7;
+        if v == 0 {
+            out.push(byte);
+            return;
+        }
+        out.push(byte | 0x80);
+    }
+}
+fn sleb(out: &mut Vec<u8>, mut v: i64) {
+    loop {
+        let byte = (v & 0x7f) as u8;
+        v >>= 7;
+        let done = (v == 0 && byte & 0x40 == 0) || (v == -1 && byte & 0x40 != 0);
+        out.push(if done { byte } else { byte | 0x80 });
+        if done {
+            return;
+        }
+    }
+}
+fn read_uleb(b: &[u8], at: &mut usize) -> u64 {
+    let (mut v, mut shift) = (0u64, 0);
+    loop {
+        let byte = b[*at];
+        *at += 1;
+        v |= u64::from(byte & 0x7f) << shift;
+        shift += 7;
+        if byte & 0x80 == 0 {
+            return v;
+        }
+    }
+}
+fn read_sleb(b: &[u8], at: &mut usize) -> i64 {
+    let (mut v, mut shift) = (0i64, 0);
+    loop {
+        let byte = b[*at];
+        *at += 1;
+        v |= i64::from(byte & 0x7f) << shift;
+        shift += 7;
+        if byte & 0x80 == 0 {
+            if shift < 64 && byte & 0x40 != 0 {
+                v |= -1 << shift;
+            }
+            return v;
+        }
+    }
+}
+
+/// Absolute values of a (non-null) delta column.
+fn decode_delta(data: &[u8]) -> Vec<i64> {
+    let (mut at, mut abs, mut out) = (0, 0i64, Vec::new());
+    while at < data.len() {
+        let run = read_sleb(data, &mut at);
+        if run > 0 {
+            let d = read_sleb(data, &mut at);
+            for _ in 0..run {
+                abs += d;
+                out.push(abs);
+            }
+        } else if run < 0 {
+            for _ in 0..(-run) {
+                abs += read_sleb(data, &mut at);
+                out.push(abs);
+            }
+        } else {
+            panic!("null run in a test delta column");
+        }
+    }
+    out
+}
+fn encode_delta(values: &[i64]) -> Vec<u8> {
+    let mut out = Vec::new();
+    if values.is_empty() {
+        return out;
+    }
+    sleb(&mut out, -(values.len() as i64));
+    let mut last = 0;
+    for v in values {
+        sleb(&mut out, v - last);
+        last = *v;
+    }
+    out
+}
+
+struct BundleParts {
+    prefix: Vec<u8>,
+    meta: Vec<(u64, Vec<u8>)>,
+    ops: Vec<(u64, Vec<u8>)>,
+    rest: Vec<u8>,
+}
+fn columns(b: &[u8], at: &mut usize) -> Vec<(u64, usize)> {
+    let n = read_uleb(b, at);
+    (0..n).map(|_| (read_uleb(b, at), read_uleb(b, at) as usize)).collect()
+}
+impl BundleParts {
+    fn parse(bytes: &[u8]) -> Self {
+        assert_eq!(bytes[8], 3, "bundle chunk");
+        let mut at = 9;
+        let len = read_uleb(bytes, &mut at) as usize;
+        let body = &bytes[at..at + len];
+        let mut p = 0;
+        let n = read_uleb(body, &mut p) as usize;
+        p += 32 * n;
+        let actors = read_uleb(body, &mut p);
+        for _ in 0..actors {
+            let l = read_uleb(body, &mut p) as usize;
+            p += l;
+        }
+        let prefix = body[..p].to_vec();
+        let meta_desc = columns(body, &mut p);
+        let meta = meta_desc
+            .into_iter()
+            .map(|(spec, l)| {
+                let d = body[p..p + l].to_vec();
+                p += l;
+                (spec, d)
+            })
+            .collect();
+        let ops_desc = columns(body, &mut p);
+        let ops = ops_desc
+            .into_iter()
+            .map(|(spec, l)| {
+                let d = body[p..p + l].to_vec();
+                p += l;
+                (spec, d)
+            })
+            .collect();
+        BundleParts { prefix, meta, ops, rest: body[p..].to_vec() }
+    }
+    fn col(cols: &mut [(u64, Vec<u8>)], spec: u64) -> &mut Vec<u8> {
+        &mut cols.iter_mut().find(|(s, _)| *s == spec).expect("column").1
+    }
+    fn encode(&self) -> Vec<u8> {
+        let mut out_body = self.prefix.clone();
+        for group in [&self.meta, &self.ops] {
+            uleb(&mut out_body, group.len() as u64);
+            for (spec, d) in group.iter() {
+                uleb(&mut out_body, *spec);
+                uleb(&mut out_body, d.len() as u64);
+            }
+            for (_, d) in group.iter() {
+                out_body.extend_from_slice(d);
+            }
+        }
+        out_body.extend_from_slice(&self.rest);
+        let mut chunk = vec![0x85, 0x6f, 0x4a, 0x83, 0, 0, 0, 0, 3];
+        uleb(&mut chunk, out_body.len() as u64);
+        chunk.extend(out_body);
+        rechecksum(&mut chunk);
+        chunk
+    }
+}
+
+/// A multi-actor history (base plus three concurrent peers, two changes each).
+fn bundle_history() -> (AutoCommit, AutoCommit, Vec<ChangeHash>) {
+    let mut doc = base();
+    let heads = doc.get_heads();
+    let mut merged = doc.fork().with_actor(actor(40));
+    for n in 0..3u8 {
+        let mut peer = doc.fork().with_actor(actor(41 + n));
+        let list = peer.get(&ROOT, "list").unwrap().unwrap().1;
+        peer.insert(&list, 0, n as i64).unwrap();
+        peer.put(&ROOT, format!("p{n}"), "x").unwrap();
+        peer.commit();
+        peer.increment(&ROOT, "count", 1).unwrap();
+        peer.commit();
+        merged.merge(&mut peer).unwrap();
+    }
+    let hashes = merged.get_changes(&heads).iter().map(Change::hash).collect();
+    (doc, merged, hashes)
+}
+
+fn plain_heads(target: &AutoCommit, bytes: &[u8]) -> Vec<ChangeHash> {
+    let mut plain = target.clone();
+    plain.load_incremental(bytes).unwrap();
+    plain.get_heads()
+}
+
+#[test]
+fn bundles_apply_and_reconstruct_like_plain_load() {
+    let (doc, mut merged, hashes) = bundle_history();
+    // One change, onto an existing document.
+    let one = merged.bundle([hashes[0]]).unwrap().bytes().to_vec();
+    let mut target = doc.clone();
+    assert_eq!(
+        incoming(&mut target, &one, NativeDependencyPolicy::RequireComplete).unwrap(),
+        NativeIncomingOutcome::Applied { changed: true }
+    );
+    assert_eq!(target.get_heads(), plain_heads(&doc, &one));
+    // Every new change (three actors), onto an existing document.
+    let many = merged.bundle(hashes.iter().copied()).unwrap().bytes().to_vec();
+    let mut target = doc.clone();
+    assert_eq!(
+        incoming(&mut target, &many, NativeDependencyPolicy::RequireComplete).unwrap(),
+        NativeIncomingOutcome::Applied { changed: true }
+    );
+    assert_eq!(target.get_heads(), merged.get_heads());
+    assert_eq!(target.get_heads(), plain_heads(&doc, &many));
+    // The bounded candidate path is precharged for bundle parsing too.
+    let mut restored = bounded_apply(&mut doc.clone(), &many).expect("bundle applies");
+    assert_eq!(restored.get_heads(), merged.get_heads());
+    // The whole history into a fresh document, and through reconstruct.
+    let all: Vec<ChangeHash> = merged.get_changes(&[]).iter().map(Change::hash).collect();
+    let whole = merged.bundle(all).unwrap().bytes().to_vec();
+    let mut fresh = AutoCommit::new();
+    assert_eq!(
+        incoming(&mut fresh, &whole, NativeDependencyPolicy::RequireComplete).unwrap(),
+        NativeIncomingOutcome::Applied { changed: true }
+    );
+    assert_eq!(fresh.get_heads(), merged.get_heads());
+    assert_eq!(fresh.get_heads(), plain_heads(&AutoCommit::new(), &whole));
+    let credit = allowance();
+    let mut registry = NativeAllocationSet::new(credit.clone()).unwrap();
+    let turn = registry.work_turn(credit.clone()).unwrap();
+    let owned = turn
+        .normalize_input(&whole, &NativeLimits::default())
+        .unwrap()
+        .reconstruct(&mut registry, &turn)
+        .unwrap();
+    let mut heads = owned.base_heads_bounded(&turn).unwrap().as_slice().to_vec();
+    heads.sort();
+    let mut expected = merged.get_heads();
+    expected.sort();
+    assert_eq!(heads, expected);
+}
+
+#[test]
+fn forged_bundle_inverse_permutations_are_refused() {
+    let (doc, merged, hashes) = bundle_history();
+    let original = merged.bundle(hashes.iter().copied()).unwrap().bytes().to_vec();
+    let parts = BundleParts::parse(&original);
+    assert!(parts.ops.iter().any(|(s, _)| *s == 0xb3), "0.12 bundles use the inverse column");
+    assert_eq!(parts.encode(), original, "test codec round-trips");
+    let inverse = decode_delta(&parts.ops.iter().find(|(s, _)| *s == 0xb3).unwrap().1);
+    let rows = inverse.len() as i64;
+    let mut cases: Vec<(&str, Vec<u8>)> = Vec::new();
+    let mut with = |name, f: &dyn Fn(&mut BundleParts)| {
+        let mut p = BundleParts::parse(&original);
+        f(&mut p);
+        cases.push((name, p.encode()));
+    };
+    with("duplicate inverse position", &|p| {
+        let mut v = inverse.clone();
+        v[1] = v[0];
+        *BundleParts::col(&mut p.ops, 0xb3) = encode_delta(&v);
+    });
+    with("out-of-range inverse position", &|p| {
+        let mut v = inverse.clone();
+        v[0] = rows;
+        *BundleParts::col(&mut p.ops, 0xb3) = encode_delta(&v);
+    });
+    with("inverse length mismatch", &|p| {
+        let v = &inverse[..inverse.len() - 1];
+        *BundleParts::col(&mut p.ops, 0xb3) = encode_delta(v);
+    });
+    with("both id-counter layouts", &|p| {
+        let counters: Vec<i64> = (1..=rows).collect();
+        p.ops.push((0x23, encode_delta(&counters)));
+        p.ops.sort_by_key(|(s, _)| *s);
+    });
+    with("neither id-counter layout", &|p| {
+        p.ops.retain(|(s, _)| *s != 0xb3);
+    });
+    with("overlapping per-actor ranges", &|p| {
+        // Shift the first change of the first actor up by one and let its
+        // successor start at the shifted end.
+        let actors = decode_delta_actor(BundleParts::col(&mut p.meta, 0x01));
+        let mut start = decode_delta(BundleParts::col(&mut p.meta, 0x13));
+        let mut max = decode_delta(BundleParts::col(&mut p.meta, 0x23));
+        let first = 0;
+        let second = (1..actors.len()).find(|i| actors[*i] == actors[first]).expect("two changes by one actor");
+        start[first] += 1;
+        max[first] += 1;
+        assert!(start[second] <= max[first]);
+        *BundleParts::col(&mut p.meta, 0x13) = encode_delta(&start);
+        *BundleParts::col(&mut p.meta, 0x23) = encode_delta(&max);
+    });
+    for (name, bytes) in cases {
+        let mut target = doc.clone();
+        let before = snapshot(&mut target);
+        let result = catch_unwind(AssertUnwindSafe(|| {
+            incoming(&mut target, &bytes, NativeDependencyPolicy::RetainOrphans)
+        }))
+        .unwrap_or_else(|_| panic!("{name}: panicked"));
+        assert!(
+            matches!(result, Err(NativeMutationError::Resource(NativeResourceError::Invalid))),
+            "{name}: {result:?}"
+        );
+        assert_eq!(snapshot(&mut target), before, "{name}");
+        let credit = allowance();
+        let mut registry = NativeAllocationSet::new(credit.clone()).unwrap();
+        let turn = registry.work_turn(credit.clone()).unwrap();
+        let loaded = catch_unwind(AssertUnwindSafe(|| {
+            turn.normalize_input(&bytes, &NativeLimits::default())
+                .and_then(|n| n.reconstruct(&mut registry, &turn).map(|_| ()))
+        }))
+        .unwrap_or_else(|_| panic!("{name}: reconstruct panicked"));
+        assert!(loaded.is_err(), "{name}: reconstruct accepted");
+    }
+}
+
+/// The bundle metadata actor column (uleb RLE of actor indexes).
+fn decode_delta_actor(data: &[u8]) -> Vec<u64> {
+    let (mut at, mut out) = (0, Vec::new());
+    while at < data.len() {
+        let run = read_sleb(data, &mut at);
+        if run > 0 {
+            let v = read_uleb(data, &mut at);
+            out.extend(std::iter::repeat_n(v, run as usize));
+        } else if run < 0 {
+            for _ in 0..(-run) {
+                out.push(read_uleb(data, &mut at));
+            }
+        } else {
+            let n = read_uleb(data, &mut at);
+            out.extend(std::iter::repeat_n(u64::MAX, n as usize));
+        }
+    }
+    out
+}
