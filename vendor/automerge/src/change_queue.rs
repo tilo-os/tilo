@@ -207,13 +207,7 @@ impl ChangeQueue {
                 d.queue_new_actors += 1;
             }
             d.queue_edges = d.queue_edges.saturating_add(c.deps().len());
-            // Interim: op predecessor references are not countable without
-            // decoding ops (pending an allocation-free pred counter); a
-            // queued change was admitted under at most the default
-            // `NativeLimits::max_edges` references.
-            d.queue_preds = d
-                .queue_preds
-                .saturating_add(crate::resource_limits::NativeLimits::default().max_edges);
+            d.queue_preds = d.queue_preds.saturating_add(c.native_pred_count());
             if c.hash().fragment_level() >= 1 {
                 d.queue_fragments += 1;
             }

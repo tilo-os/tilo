@@ -281,7 +281,7 @@ fn probe(doc: &AutoCommit, incoming: &[Change]) -> NativeBoundProbe {
         save_peak,
         history_peak,
         incoming_changes,
-    ] = doc.native_bound_probe(incoming, op_preds(incoming)).unwrap();
+    ] = doc.native_bound_probe(incoming).unwrap();
     NativeBoundProbe {
         clone_peak,
         apply_peak,
@@ -290,21 +290,6 @@ fn probe(doc: &AutoCommit, incoming: &[Change]) -> NativeBoundProbe {
         history_peak,
         incoming_changes,
     }
-}
-
-/// Op predecessor references in `changes` (the real paths take them from
-/// the inspected shape).
-fn op_preds(changes: &[Change]) -> usize {
-    changes
-        .iter()
-        .map(|c| {
-            c.decode()
-                .operations
-                .iter()
-                .map(|o| o.pred.len())
-                .sum::<usize>()
-        })
-        .sum()
 }
 
 fn fragments(changes: &[Change]) -> usize {

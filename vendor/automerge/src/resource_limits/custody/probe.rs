@@ -10,17 +10,13 @@ impl AutoCommit {
     /// Bounds for this document and `incoming`, in order: retained, clone
     /// peak, apply peak, super-linear apply, save output, save peak,
     /// history peak (all changes), parsed `incoming` changes.
-    /// `op_preds` is the number of op predecessor references in `incoming`
-    /// (callers of the real paths get it from the inspected shape).
     #[doc(hidden)]
     pub fn native_bound_probe(
         &self,
         incoming: &[Change],
-        op_preds: usize,
     ) -> Result<[usize; 8], NativeResourceError> {
         let doc = DocDims::of(self);
-        let mut inc = IncomingDims::from_changes(incoming)?;
-        inc.edges = inc.edges.saturating_add(op_preds);
+        let inc = IncomingDims::from_changes(incoming)?;
         Ok([
             dims::retained_bound(&doc)?,
             dims::clone_peak_bound(&doc)?,
