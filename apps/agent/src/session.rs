@@ -53,13 +53,16 @@ struct StepOutcome {
 
 impl StepOutcome {
     fn content_hash(&self) -> Result<&str, String> {
-        if !self.output.resources.is_empty() {
-            if self.output.resources.len() != 1 {
+        match self.output.resources.as_slice() {
+            [] => {}
+            [resource] => {
+                return tilo_actions::content_hash(resource).ok_or_else(|| {
+                    "the previous action produced a resource that is not tilo.content".into()
+                });
+            }
+            _ => {
                 return Err("the previous action must produce exactly one content resource".into());
             }
-            return tilo_actions::content_hash(&self.output.resources[0]).ok_or_else(|| {
-                "the previous action produced a resource that is not tilo.content".into()
-            });
         }
         if let Some(surface::Product::Content { hash }) = &self.product {
             return Ok(hash);
@@ -2585,8 +2588,8 @@ mod tests {
             reason = "one fixture owns both app peers and the real Session plan lifecycle"
         )]
         fn run_sequence(
-            output: ActionOutput,
-            result: ResultSpec,
+            output: &ActionOutput,
+            result: &ResultSpec,
             between: Between,
             failed: bool,
         ) -> Observation {
@@ -2734,16 +2737,16 @@ mod tests {
                 )]),
             ));
             let calls = Arc::new(Mutex::new(Calls::new()));
-            let stop = Arc::new(AtomicBool::new(false));
+            let shutdown = Arc::new(AtomicBool::new(false));
             let mut threads = Vec::new();
             for (mut client, is_photo) in [(photo_peer, true), (writer_peer, false)] {
                 let calls = Arc::clone(&calls);
-                let stop = Arc::clone(&stop);
+                let shutdown = Arc::clone(&shutdown);
                 let output = output.clone();
                 let mut replica = document.clone();
                 let caret = instruction_id.clone();
                 threads.push(std::thread::spawn(move || {
-                    while !stop.load(Ordering::Acquire) {
+                    while !shutdown.load(Ordering::Acquire) {
                         let Some(event) = client.recv().unwrap() else {
                             continue;
                         };
@@ -2808,7 +2811,7 @@ mod tests {
                 }));
             }
             let outcome = session.run_plan(&instruction_id, &Plan { steps });
-            stop.store(true, Ordering::Release);
+            shutdown.store(true, Ordering::Release);
             for thread in threads {
                 thread.join().unwrap();
             }
@@ -2865,7 +2868,7 @@ mod tests {
             let hash = tilo_actions::content_hash(&output.resources[0])
                 .unwrap()
                 .to_owned();
-            let observed = run_sequence(output, content_result(), Between::Nothing, false);
+            let observed = run_sequence(&output, &content_result(), Between::Nothing, false);
             assert_eq!(observed.calls.len(), 2);
             assert_eq!(observed.calls[0], (PRODUCE.into(), serde_json::Map::new()));
             assert_eq!(
@@ -2885,8 +2888,8 @@ mod tests {
         #[test]
         fn run_plan_refuses_missing_broker_content_despite_a_held_photograph() {
             let observed = run_sequence(
-                ActionOutput::default(),
-                ResultSpec::None,
+                &ActionOutput::default(),
+                &ResultSpec::None,
                 Between::Nothing,
                 false,
             );
@@ -2896,11 +2899,11 @@ mod tests {
         #[test]
         fn run_plan_refuses_wrong_kind_despite_a_held_photograph() {
             let observed = run_sequence(
-                ActionOutput {
+                &ActionOutput {
                     value: None,
                     resources: vec!["files.entry:fixture".into()],
                 },
-                ResultSpec::Resource {
+                &ResultSpec::Resource {
                     resource_kind: "files.entry".into(),
                 },
                 Between::Nothing,
@@ -2916,19 +2919,20 @@ mod tests {
                 tilo_actions::content_resource(&"a".repeat(64))
                     .expect("the duplicate has a valid content hash"),
             );
-            let observed = run_sequence(output, content_result(), Between::Nothing, false);
+            let observed = run_sequence(&output, &content_result(), Between::Nothing, false);
             assert_no_consumer(&observed, &[PRODUCE]);
         }
 
         #[test]
         fn run_plan_invalidates_content_after_a_nonproducing_broker_step() {
-            let observed = run_sequence(produced(), content_result(), Between::BrokerView, false);
+            let observed = run_sequence(&produced(), &content_result(), Between::BrokerView, false);
             assert_no_consumer(&observed, &[PRODUCE, "view"]);
         }
 
         #[test]
         fn run_plan_invalidates_content_after_a_local_photos_edit() {
-            let observed = run_sequence(produced(), content_result(), Between::LocalRotate, false);
+            let observed =
+                run_sequence(&produced(), &content_result(), Between::LocalRotate, false);
             assert_eq!(
                 observed.rotation, 1,
                 "the intervening local Document operation must really run"
@@ -2938,13 +2942,13 @@ mod tests {
 
         #[test]
         fn run_plan_invalidates_content_after_a_skipped_duplicate() {
-            let observed = run_sequence(produced(), content_result(), Between::Duplicate, false);
+            let observed = run_sequence(&produced(), &content_result(), Between::Duplicate, false);
             assert_no_consumer(&observed, &[PRODUCE]);
         }
 
         #[test]
         fn run_plan_stops_after_a_failed_producer() {
-            let observed = run_sequence(produced(), content_result(), Between::Nothing, true);
+            let observed = run_sequence(&produced(), &content_result(), Between::Nothing, true);
             assert_no_consumer(&observed, &[PRODUCE]);
             assert!(observed.instruction.contains("Producer refused"));
         }
@@ -2954,14 +2958,14 @@ mod tests {
             let missing = "e".repeat(64);
             assert!(qdoc::blobstore::get(&missing).is_none());
             let observed = run_sequence(
-                ActionOutput {
+                &ActionOutput {
                     value: None,
                     resources: vec![
                         tilo_actions::content_resource(&missing)
                             .expect("the missing blob still has a valid content hash"),
                     ],
                 },
-                content_result(),
+                &content_result(),
                 Between::Nothing,
                 false,
             );

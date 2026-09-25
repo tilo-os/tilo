@@ -1650,9 +1650,9 @@ impl Widget for FileView {
     }
 
     fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
+        use ui::a11y::{AccessNode, AccessState, Role};
         #[cfg(test)]
         ACCESSIBILITY_BUILDS.with(|count| count.set(count.get() + 1));
-        use ui::a11y::{AccessNode, AccessState, Role};
         let primary = self.selection.primary();
         let value = primary
             .and_then(|i| self.entries.get(i))
@@ -2018,6 +2018,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "measurement scenario checks every scroll layout step in sequence"
+    )]
     fn scroll_layout_reuses_real_file_view_measurement() {
         use ui::widget::{NavShell, Scrollable};
         fn scroll(nav: &mut NavShell) -> &mut Scrollable {

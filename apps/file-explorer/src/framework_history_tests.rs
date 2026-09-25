@@ -71,7 +71,12 @@ fn confirm(driver: &mut ui::headless::FrameHarness, phase: &str) {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "end-to-end restore/undo/redo/reopen scenario reads top to bottom"
+)]
 async fn framework_history_real_backend_uncertain_result_restore_undo_redo_and_reopen() {
+    use automerge::transaction::Transactable;
     let directory = tempfile::tempdir().unwrap();
     let endpoint = iroh::Endpoint::bind(iroh::endpoint::presets::N0)
         .await
@@ -163,7 +168,6 @@ async fn framework_history_real_backend_uncertain_result_restore_undo_redo_and_r
     }));
     let registration = root.history_registration().unwrap().unwrap();
     let mut state = ui::State::new();
-    use automerge::transaction::Transactable;
     state
         .doc
         .put(automerge::ROOT, "incidental-view-state", "untouched")
@@ -349,8 +353,12 @@ fn framework_history_embedded_files_root_has_shared_entry_and_preserves_incident
 }
 
 /// Ordinary xattrs exercise production target construction/session routing,
-/// not backend authority. The separate QuickFS fixture proves real operations.
+/// not backend authority. The separate `QuickFS` fixture proves real operations.
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "end-to-end A/B/A session recovery scenario reads top to bottom"
+)]
 fn round1_production_targets_recover_pending_and_applied_session_after_a_b_a() {
     fn install(
         path: &std::path::Path,

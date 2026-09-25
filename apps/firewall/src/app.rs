@@ -223,7 +223,7 @@ impl Metrics {
     /// value is the label's measured line plus the padding the 1× band
     /// implied, floored at that band ([`Self::default`]). `chips` are every
     /// zone's stat chips ([`stat_chip_specs`]).
-    fn measure(tr: &mut TextRenderer, chips: &[(ZoneKind, Vec<(&str, String, ChipTone)>)]) -> Self {
+    fn measure(tr: &mut TextRenderer, chips: &[ZoneChips]) -> Self {
         let floors = Self::default();
         let h = |tr: &mut TextRenderer, size: f32| f64::from(tr.measure("Hg", size, None).1);
         let w = |tr: &mut TextRenderer, text: &str, size: f32| paint::text_width(tr, text, size);
@@ -343,7 +343,12 @@ enum ChipTone {
 /// The summary card's stat chips for `z`, in display order. One list feeds
 /// the measurement, the wrapping layout and the painter, so a chip is always
 /// painted where the layout wrapped it.
-fn stat_chip_specs(z: &Zone) -> Vec<(&'static str, String, ChipTone)> {
+/// One stat chip: its label, its value text and its tone.
+type StatChip = (&'static str, String, ChipTone);
+/// A zone's stat chips, keyed by the zone they describe.
+type ZoneChips = (ZoneKind, Vec<StatChip>);
+
+fn stat_chip_specs(z: &Zone) -> Vec<StatChip> {
     let (allow, deny) = z.rule_counts();
     let ifaces = if z.interfaces.is_empty() {
         "—".to_string()
@@ -759,7 +764,7 @@ impl FirewallApp {
         if self.metrics_key.as_ref() == Some(&key) {
             return;
         }
-        let chips: Vec<(ZoneKind, Vec<(&str, String, ChipTone)>)> = self
+        let chips: Vec<ZoneChips> = self
             .config
             .zones
             .iter()
@@ -889,6 +894,10 @@ impl FirewallApp {
 
     /// Services panel, summary, filter row, form + table, and services rows —
     /// everything inside the rail-inset `content` rect.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "places every centre-panel band in reading order, top to bottom"
+    )]
     fn layout_center(
         &self,
         r: Rect,
@@ -2183,6 +2192,10 @@ impl FirewallApp {
             .build()
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one keyboard dispatch table covering every focusable region"
+    )]
     fn handle_key(
         &mut self,
         event: &WindowEvent,
@@ -4590,7 +4603,13 @@ mod tests {
         assert!(l.kind_seg[0].y0 >= l.form.y0 + 12.0 + title_h);
         assert!(l.source_field.y0 >= l.kind_seg[0].y1);
         assert!(l.add_btn.y1 + m.form_status_h <= l.form.y1 + 1e-6);
-        assert!(l.action_seg[1].x1 <= l.form.x1 && l.kind_seg[1].x1 < l.port_field.x0);
+        #[expect(
+            clippy::suspicious_operation_groupings,
+            reason = "two independent containment checks on different controls"
+        )]
+        let action_and_kind_fit =
+            l.action_seg[1].x1 <= l.form.x1 && l.kind_seg[1].x1 < l.port_field.x0;
+        assert!(action_and_kind_fit);
         // Rows never overlap and the first clears the caption band.
         assert!(l.rule_rows[0].rect.y0 >= l.table.y0 + m.table_head_h);
         for pair in l.rule_rows.windows(2) {

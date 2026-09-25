@@ -9,6 +9,7 @@
 
 #[cfg(all(unix, not(target_os = "macos")))]
 use std::ffi::OsStr;
+use std::fmt::Write as _;
 use std::path::{Component, Path, PathBuf};
 
 const MAX_DESTINATION_SUFFIX: u32 = 10_000;
@@ -371,7 +372,7 @@ fn transfer_into_with(
                 .map_err(|error| error.to_string())?;
             match rename_noreplace(src, &destination) {
                 Ok(()) => return Ok(destination),
-                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
                 Err(_) => break,
             }
         }
@@ -433,7 +434,7 @@ fn quarantine_source(src: &Path) -> std::io::Result<PathBuf> {
                 }
                 return Ok(quarantine);
             }
-            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
             Err(error) => return Err(error),
         }
     }
@@ -458,10 +459,11 @@ fn restore_failed_cut(
         Ok(()) => {
             let mut error = staging.error_with_cleanup(original_error);
             if let Some(quarantine_error) = quarantine_error {
-                error.push_str(&format!(
+                let _ = write!(
+                    error,
                     "; partial source quarantine retained at {}: {quarantine_error}",
                     quarantine.display()
-                ));
+                );
             }
             error
         }
@@ -509,7 +511,7 @@ fn inspect_destination(path: &Path) -> Result<bool, String> {
     match std::fs::symlink_metadata(path) {
         Ok(_) => Ok(false),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(true),
-        Err(error) => Err(destination_inspection_error(path, error)),
+        Err(error) => Err(destination_inspection_error(path, &error)),
     }
 }
 
@@ -529,7 +531,7 @@ fn publish_staging(
             .map_err(|error| error.to_string())?;
         match rename_noreplace(staging, &destination) {
             Ok(()) => return Ok(destination),
-            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
             Err(error) => return Err(error.to_string()),
         }
     }
@@ -586,14 +588,14 @@ impl StagingPath {
 
 impl Drop for StagingPath {
     fn drop(&mut self) {
-        if !self.retain.get() {
-            if let Err(error) = remove_path(&self.container) {
-                tracing::warn!(
-                    path = %self.container.display(),
-                    %error,
-                    "Files transfer staging cleanup failed during unwinding"
-                );
-            }
+        if !self.retain.get()
+            && let Err(error) = remove_path(&self.container)
+        {
+            tracing::warn!(
+                path = %self.container.display(),
+                %error,
+                "Files transfer staging cleanup failed during unwinding"
+            );
         }
     }
 }
@@ -717,7 +719,7 @@ fn rename_noreplace(_src: &Path, _dest: &Path) -> std::io::Result<()> {
     Err(std::io::Error::from(std::io::ErrorKind::Unsupported))
 }
 
-fn destination_inspection_error(path: &Path, error: std::io::Error) -> String {
+fn destination_inspection_error(path: &Path, error: &std::io::Error) -> String {
     crate::i18n::t_args(
         "files-destination-inspect-failed",
         &[
@@ -821,6 +823,10 @@ fn create_private_container(path: &Path) -> std::io::Result<()> {
 }
 
 #[cfg(not(windows))]
+#[expect(
+    clippy::unnecessary_wraps,
+    reason = "signature matches the fallible Windows implementation so callers stay platform-neutral"
+)]
 fn mark_private_path(_path: &Path) -> std::io::Result<()> {
     Ok(())
 }
