@@ -59,6 +59,25 @@ thread_local! {
     static CHECK_ALLOWANCE: RefCell<Option<(NativeAllowance, usize)>> = const { RefCell::new(None) };
     static WATCH_ALLOCATION_BYTES: Cell<Option<usize>> = const { Cell::new(None) };
     static LABEL: Cell<&'static str> = const { Cell::new("") };
+    // Diagnostics (AM012_TRACE=1): backtrace of the first unreserved allocation.
+    static IN_TRACE: Cell<bool> = const { Cell::new(false) };
+    static FIRST_TRACE: RefCell<Option<String>> = const { RefCell::new(None) };
+}
+static TRACE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+static TRACE_INIT: std::sync::Once = std::sync::Once::new();
+
+fn capture_first_unreserved() {
+    if !TRACE.load(std::sync::atomic::Ordering::Relaxed) || IN_TRACE.with(Cell::get) {
+        return;
+    }
+    IN_TRACE.with(|t| t.set(true));
+    let trace = std::backtrace::Backtrace::force_capture().to_string();
+    let _ = FIRST_TRACE.try_with(|f| {
+        if let Ok(mut f) = f.try_borrow_mut() {
+            f.get_or_insert(trace);
+        }
+    });
+    IN_TRACE.with(|t| t.set(false));
 }
 
 /// Like `assert_precharged`, naming the operation in the failure message.
@@ -86,6 +105,7 @@ fn allocated(bytes: usize) {
                         let reserved = initial.saturating_sub(allowance.available_bytes());
                         if state.live > reserved && state.first_unreserved.is_none() {
                             state.first_unreserved = Some((bytes, state.live, reserved));
+                            capture_first_unreserved();
                         }
                         state.unreserved_peak = state.unreserved_peak.max(state.live.saturating_sub(reserved));
                     }
@@ -175,6 +195,8 @@ fn measure_under<T>(allowance: &NativeAllowance, operation: impl FnOnce() -> T) 
             CHECK_ALLOWANCE.with(|check| *check.borrow_mut() = None);
         }
     }
+    TRACE_INIT.call_once(|| TRACE.store(std::env::var_os("AM012_TRACE").is_some(), std::sync::atomic::Ordering::Relaxed));
+    FIRST_TRACE.with(|f| *f.borrow_mut() = None);
     // The clone is made before metering starts so it is not itself measured.
     let entry = (allowance.clone(), allowance.available_bytes());
     CHECK_ALLOWANCE.with(|check| {
@@ -183,6 +205,11 @@ fn measure_under<T>(allowance: &NativeAllowance, operation: impl FnOnce() -> T) 
     });
     let _reset = Reset;
     let result = measure(operation);
+    if result.1.unreserved_peak != 0 {
+        if let Some(trace) = FIRST_TRACE.with(|f| f.borrow_mut().take()) {
+            eprintln!("first unreserved allocation:\n{trace}");
+        }
+    }
     assert_eq!(
         result.1.unreserved_peak, 0,
         "{}: every allocation must already be reserved (bytes, live, reserved): {:?}",
@@ -2174,7 +2201,10 @@ mod shapes {
     /// level at a time with bounded steps.
     #[test]
     fn deep_nesting_is_admitted_without_recursion_blowup() {
-        let depth = if slow() { 10_000 } else { 2_000 };
+        let depth = std::env::var("AM012_DEPTH")
+            .ok()
+            .and_then(|d| d.parse().ok())
+            .unwrap_or(if slow() { 10_000 } else { 2_000 });
         let mut src = AutoCommit::new().with_actor(ActorId::from(vec![0xa1; 16]));
         let mut obj = ROOT;
         for _ in 0..depth {
@@ -2190,7 +2220,8 @@ mod shapes {
                 let mut doc = AutoCommit::new();
                 let result = doc.apply_incoming_checked(&change, &NativeLimits::default(), &allowance(), NativeDependencyPolicy::RequireComplete);
                 assert_eq!(result.unwrap(), NativeIncomingOutcome::Applied { changed: true });
-                let owned = reconstruct(&change, &NativeLimits::default()).unwrap();
+                let owned = reconstruct(&change, &NativeLimits::default())
+                    .unwrap_or_else(|e| panic!("reconstruct of {depth} nested maps ({} bytes) under 64 MiB: {e:?}", change.len()));
                 let credit = allowance();
                 let mut registry = NativeAllocationSet::new(credit.clone()).unwrap();
                 let _ = &mut registry;
