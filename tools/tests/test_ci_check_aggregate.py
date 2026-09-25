@@ -177,7 +177,7 @@ class CheckAggregateTests(unittest.TestCase):
         self.assertIn("suites_required: ${{ steps.plan.outputs.suites_required }}", select)
         self.assertIn("suites: ${{ steps.plan.outputs.suites }}", select)
         plan = step_script(self.workflow, "plan")
-        self.assertIn("if [ '${{ github.event_name }}' = push ]; then\n"
+        self.assertIn("if [ \"$EVENT_NAME\" = push ]; then\n"
                       "  # Pull requests run", plan)
         self.assertIn("selection_args+=(--all-suites)", plan)
         self.assertEqual(self.aggregate(suites_required="true", suites="success")[0], 0)
@@ -232,7 +232,8 @@ class CheckAggregateTests(unittest.TestCase):
         self.assertIn("needs: [builder, select]", security)
         select = section(self.workflow, "select", 2)
         self.assertIn("security_required: ${{ steps.plan.outputs.security_required }}", select)
-        self.assertIn("if [ '${{ github.event_name }}' = pull_request ]; then", select)
+        self.assertIn("EVENT_NAME: ${{ github.event_name }}", select)
+        self.assertIn('if [ "$EVENT_NAME" = pull_request ]; then', select)
         self.assertIn("selection_args+=(--allow-security-skip)", select)
         script = step_script(self.workflow, "plan")
         # Execute the production pipeline with failing selector and benign git.
@@ -242,7 +243,8 @@ class CheckAggregateTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory) / "outputs"
             result = subprocess.run([self.bash, "-c", prefix + script], cwd=directory,
-                env={**os.environ, "GITHUB_OUTPUT": output.as_posix(),
+                env={**os.environ, "GITHUB_OUTPUT": output.as_posix(), "EVENT_NAME": "pull_request",
+                     "PULL_REQUEST_BASE": "", "PUSH_BEFORE": "", "GITHUB_REF": "refs/pull/1/head",
                      "GITHUB_STEP_SUMMARY": (Path(directory) / "summary").as_posix()},
                 capture_output=True, text=True)
         self.assertEqual(result.returncode, 37, result.stderr)
