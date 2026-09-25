@@ -24,6 +24,35 @@ def reference(value):
     return value
 
 
+def mode(arch, fex_ref, guest_ref):
+    """Whether this build includes the Windows provider: "1" or "0".
+
+    x86_64 always ships Fedora Wine. ARM ships FEX and the x86 guest exactly
+    when both are pinned, and builds without Windows apps while neither is.
+    A single pin is an incomplete provider, never a reason to drop it.
+    """
+    if arch == "x86_64":
+        return "1"
+    if arch != "aarch64":
+        raise ValueError("unsupported Windows provider architecture")
+    pinned = [value not in ("", "scratch") for value in (fex_ref, guest_ref)]
+    if all(pinned):
+        inputs(arch, fex_ref, guest_ref)
+        return "1"
+    if any(pinned):
+        raise ValueError("ARM Windows provider needs both FEX_PAYLOAD_REF and WINDOWS_GUEST_REF")
+    return "0"
+
+
+def absent(arch):
+    """Build record of an ARM image assembled without the Windows provider."""
+    if arch != "aarch64":
+        raise ValueError(f"{arch} images always include the Windows provider")
+    return {"schema_version": 1, "host_architecture": arch, "provider": "none",
+            "detail": "Built without FEX_PAYLOAD_REF and WINDOWS_GUEST_REF; "
+                      "Windows apps are not available on this image."}
+
+
 def inputs(arch, fex_ref, guest_ref):
     if arch not in ("x86_64", "aarch64"):
         raise ValueError("unsupported Windows provider architecture")
@@ -144,7 +173,7 @@ def file_hash(path):
 def validate_host(manifest):
     """Check copied native files and the final host's dynamic linker closure."""
     data = json.loads(manifest.read_text())
-    if data["host_architecture"] == "x86_64":
+    if data["host_architecture"] == "x86_64" or data["provider"] == "none":
         return data
     for item in data["native_elfs"]:
         path = Path("/") / item["path"]
@@ -157,7 +186,7 @@ def validate_host(manifest):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action", choices=("inputs", "validate", "host"))
+    parser.add_argument("action", choices=("mode", "absent", "inputs", "validate", "host"))
     parser.add_argument("--manifest", type=Path)
     parser.add_argument("--arch", default="aarch64")
     parser.add_argument("--fex-ref", default="")
@@ -172,6 +201,12 @@ def main():
             if args.manifest is None:
                 raise ValueError("host validation requires a manifest")
             print(json.dumps(validate_host(args.manifest)))
+            return 0
+        if args.action == "mode":
+            print(mode(args.arch, args.fex_ref, args.guest_ref))
+            return 0
+        if args.action == "absent":
+            print(json.dumps(absent(args.arch), indent=2, sort_keys=True))
             return 0
         result = inputs(args.arch, args.fex_ref, args.guest_ref)
         if args.action == "validate":

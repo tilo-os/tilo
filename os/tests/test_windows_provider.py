@@ -66,6 +66,29 @@ class ProviderTests(unittest.TestCase):
     def test_native_x64_needs_no_translator(self):
         self.assertEqual(PROVIDER.inputs("x86_64", "", "")["provider"], "native-wine")
 
+    def test_mode_follows_the_pins(self):
+        self.assertEqual(PROVIDER.mode("x86_64", "", ""), "1")
+        self.assertEqual(PROVIDER.mode("aarch64", "", ""), "0")
+        self.assertEqual(PROVIDER.mode("aarch64", "scratch", "scratch"), "0")
+        self.assertEqual(PROVIDER.mode("aarch64", REF, REF), "1")
+        for fex, guest in ((REF, ""), ("", REF), (REF, "scratch"), (REF, "registry/guest:latest")):
+            with self.subTest(fex=fex, guest=guest), self.assertRaises(ValueError):
+                PROVIDER.mode("aarch64", fex, guest)
+        with self.assertRaises(ValueError):
+            PROVIDER.mode("riscv64", "", "")
+
+    def test_only_arm_can_be_built_without_windows(self):
+        record = PROVIDER.absent("aarch64")
+        self.assertEqual(record["provider"], "none")
+        self.assertEqual(PROVIDER.validate_host(self.write_manifest(record)), record)
+        with self.assertRaises(ValueError):
+            PROVIDER.absent("x86_64")
+
+    def write_manifest(self, record):
+        path = self.guest.root / "provider.json"
+        path.write_text(json.dumps(record))
+        return path
+
     def test_arm_refs_fail_closed(self):
         for reference in ("", "scratch", "registry/payload:latest", REF[:-1]):
             with self.subTest(reference=reference), self.assertRaises(ValueError):
