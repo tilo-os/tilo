@@ -51,6 +51,7 @@ class CheckAggregateTests(unittest.TestCase):
                   required="true", security_required="true", count="4",
                   event="pull_request",
                   suites_required="false", suites="skipped",
+                  pins_required="false", pins="skipped",
                   test=None, check=None, clippy=None):
         with tempfile.TemporaryDirectory() as directory:
             summary = Path(directory) / "summary"
@@ -64,6 +65,7 @@ class CheckAggregateTests(unittest.TestCase):
                      "RUST_REQUIRED": required,
                      "SECURITY_REQUIRED": security_required, "EVENT_NAME": event,
                      "SUITES_REQUIRED": suites_required, "SUITES_RESULT": suites,
+                     "PINS_REQUIRED": pins_required, "PINS_RESULT": pins,
                      "SELECTED_COUNT": count, "GITHUB_STEP_SUMMARY": summary.as_posix()},
                 capture_output=True, text=True,
             )
@@ -73,6 +75,20 @@ class CheckAggregateTests(unittest.TestCase):
         code, summary = self.aggregate(affected="skipped", required="false", count="0")
         self.assertEqual(code, 0)
         self.assertIn("not applicable", summary)
+
+    def test_a_pin_only_pull_request_passes_on_verified_pins_alone(self):
+        pin_only = dict(affected="skipped", required="false", count="0",
+                        security="skipped", security_required="false", pins_required="true")
+        code, summary = self.aggregate(pins="success", **pin_only)
+        self.assertEqual(code, 0)
+        self.assertIn("Snapshot pins verified", summary)
+        for result in ("failure", "skipped", "cancelled"):
+            with self.subTest(result=result):
+                self.assertNotEqual(self.aggregate(pins=result, **pin_only)[0], 0)
+        # Only a pull request may take the pin path; pushes keep every check.
+        self.assertNotEqual(self.aggregate(pins="success", event="push", **pin_only)[0], 0)
+        # A pin job that ran without being selected is invalid.
+        self.assertNotEqual(self.aggregate(pins="success")[0], 0)
 
     def test_successful_rust_checks_pass(self):
         code, summary = self.aggregate()
@@ -192,7 +208,7 @@ class CheckAggregateTests(unittest.TestCase):
         checks = section(self.workflow, "checks", 2)
         self.assertIn("if: always()", checks)
         self.assertIn(
-            "needs: [builder, select, security, test, check, clippy, suites]", checks)
+            "needs: [builder, select, security, test, check, clippy, suites, pins]", checks)
         for name in ("test", "check", "clippy"):
             self.assertIn(f"{name.upper()}_RESULT: ${{{{ needs.{name}.result }}}}", checks)
         self.assertIn("BUILDER_RESULT: ${{ needs.builder.result }}", checks)
