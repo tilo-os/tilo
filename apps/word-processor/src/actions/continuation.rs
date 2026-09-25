@@ -58,6 +58,33 @@ pub(super) fn selection(value: RegionKind, selected: &SelectionTarget) -> Parts 
         number(selected.end),
     ]
 }
+/// A participant's caret and ordered selection: the resolution domain of the
+/// editing primitives, whose envelopes are built from exactly this view.
+pub(super) fn view(
+    value: RegionKind,
+    caret: &super::participant::ViewPoint,
+    selected: Option<(
+        &super::participant::ViewPoint,
+        &super::participant::ViewPoint,
+    )>,
+) -> Parts {
+    let mut parts = vec![
+        region(value),
+        caret.block.as_bytes().to_vec(),
+        number(caret.offset),
+    ];
+    match selected {
+        Some((start, end)) => parts.extend([
+            vec![1],
+            start.block.as_bytes().to_vec(),
+            number(start.offset),
+            end.block.as_bytes().to_vec(),
+            number(end.offset),
+        ]),
+        None => parts.push(vec![0]),
+    }
+    parts
+}
 
 /// Only the audited pure Writer argument encoders use this helper. In
 /// particular place-image is excluded: evaluating its builder can fetch data.

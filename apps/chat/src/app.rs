@@ -658,6 +658,14 @@ pub struct ChatApp {
     pub(crate) room_names: HashMap<Id, String>,
     pub(crate) room_colors: HashMap<Id, (u8, u8, u8)>,
 
+    // Agent display names of agent-authored messages (`agent_authors` in the
+    // document): what every member renders as "<name> · agent".
+    pub(crate) agent_authors: HashMap<Id, String>,
+    // Agent task participants this (headless host) worker serves, with the
+    // display name the host labelled each with. A delivered `post` resolved
+    // for one of them is authored by that participant.
+    pub(crate) participant_labels: HashMap<Id, String>,
+
     // Ids this session authored under before the room told it which
     // participant it is. See `adopt_own_participant`: what was already said
     // under one of these is still this person, so their own earlier lines go
@@ -933,6 +941,8 @@ impl ChatApp {
             me: LocalIdentity::demo(),
             room_names: HashMap::new(),
             room_colors: HashMap::new(),
+            agent_authors: HashMap::new(),
+            participant_labels: HashMap::new(),
             former_ids: Vec::new(),
             // Default to the deterministic local bus; the live binary
             // (`ChatApp::new`) upgrades to the real transport. This keeps
@@ -1040,6 +1050,35 @@ impl ChatApp {
     /// workspace, its channels (including archived, so they can be unarchived from
     /// the palette), the open channel, and that channel's messages. Derived
     /// entirely from the projection the document already holds.
+    /// [`Self::chat_resource_ctx`] as agent task `participant`: authored by
+    /// it, with it in the room under its label as an agent. `None` for any
+    /// participant that is not an agent task (its own view is the default).
+    pub(crate) fn participant_ctx(
+        &self,
+        participant: &tilo_actions::ParticipantId,
+    ) -> Option<actions::ChatResourceCtx> {
+        participant.agent_task()?;
+        let id = participant.as_str().to_owned();
+        let label = self
+            .participant_labels
+            .get(&id)
+            .filter(|label| !label.is_empty())
+            .cloned()
+            .unwrap_or_else(|| "Agent".to_owned());
+        let mut ctx = self.chat_resource_ctx();
+        ctx.participants.retain(|p| p.id != id);
+        ctx.participants.insert(
+            0,
+            crate::mention::Participant {
+                id: id.clone(),
+                name: label,
+                is_agent: true,
+            },
+        );
+        ctx.me = id;
+        Some(ctx)
+    }
+
     pub(crate) fn chat_resource_ctx(&self) -> actions::ChatResourceCtx {
         let workspace_name = self
             .workspaces
@@ -1786,6 +1825,9 @@ impl ChatApp {
         {
             return n.clone();
         }
+        if let Some(agent) = self.agent_authors.get(id) {
+            return agent.clone();
+        }
         if let Some(u) = self.users.iter().find(|u| u.id == id)
             && !u.name.trim().is_empty()
         {
@@ -1819,6 +1861,9 @@ impl ChatApp {
         // id it resolved at startup, and those are still its own.
         if self.is_me(id) {
             return "You".to_string();
+        }
+        if let Some(agent) = self.agent_authors.get(id) {
+            return format!("{agent} \u{b7} agent");
         }
         let named = self.display_name(id);
         if named != id && !named.trim().is_empty() {
@@ -2123,6 +2168,7 @@ impl ChatApp {
             .flat_map(|(_, messages)| messages.iter().cloned())
             .collect();
         self.search_users = ChatDoc::list_users(doc);
+        self.agent_authors = ChatDoc::agent_authors(doc);
         // Durable voice rows are legacy history. Current stream inventory is
         // projected only from the authenticated local service response.
         self.refresh_native_streams();
@@ -3591,6 +3637,53 @@ impl Widget for ChatApp {
         <Self as tilo_actions::ResourceProvider>::resource(self, doc, id)
     }
 
+    /// The tree a delivered invocation resolves against for an agent task
+    /// participant: the same resources, authored as that participant (its
+    /// posts carry it as author and its display name). Chat keeps no other
+    /// per-participant view state.
+    fn resources_for(
+        &self,
+        participant: Option<&tilo_actions::ParticipantId>,
+        doc: &AutoCommit,
+    ) -> Vec<tilo_actions::Resource> {
+        match participant.and_then(|p| self.participant_ctx(p)) {
+            Some(ctx) => crate::actions::provide_resources(&ctx, doc),
+            None => Widget::resources(self, doc),
+        }
+    }
+
+    fn resource_for(
+        &self,
+        participant: Option<&tilo_actions::ParticipantId>,
+        doc: &AutoCommit,
+        id: &str,
+    ) -> Option<tilo_actions::Resource> {
+        match participant.and_then(|p| self.participant_ctx(p)) {
+            Some(ctx) => crate::actions::resolve_resource(&ctx, doc, id),
+            None => Widget::resource(self, doc, id),
+        }
+    }
+
+    fn join_participant(&mut self, participant: &tilo_actions::ParticipantId) -> bool {
+        if participant.agent_task().is_some() {
+            self.participant_labels
+                .entry(participant.as_str().to_owned())
+                .or_default();
+        }
+        false
+    }
+
+    fn leave_participant(&mut self, participant: &tilo_actions::ParticipantId) {
+        self.participant_labels.remove(participant.as_str());
+    }
+
+    fn set_participant_label(&mut self, participant: &tilo_actions::ParticipantId, label: &str) {
+        if participant.agent_task().is_some() {
+            self.participant_labels
+                .insert(participant.as_str().to_owned(), label.trim().to_owned());
+        }
+    }
+
     fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
         use ui::a11y::{AccessNode, AccessState, Role};
 
@@ -4438,5 +4531,121 @@ mod live_draft_presence {
         let mut ahead = PresenceCtx::empty();
         ahead.set_caret(&key, UserId("ada".into()), 400);
         assert!(composer_paths(&mut app, &ahead) > empty);
+    }
+}
+
+/// MUST-13 attribution: an agent task's `post` (the same operation a person
+/// uses) is authored by the invoking participant and rendered for every member
+/// as "<agent name> · agent"; a person's post is unchanged.
+#[cfg(test)]
+mod agent_attribution_tests {
+    use super::*;
+    use automerge::ROOT;
+    use tilo_actions::{ActionInput, LocalTransport, ParticipantId};
+
+    fn post_via(resources: &[tilo_actions::Resource], text: &str) -> tilo_actions::EncodedAction {
+        fn find<'a>(
+            resources: &'a [tilo_actions::Resource],
+            id: &str,
+        ) -> Option<&'a tilo_actions::Resource> {
+            resources.iter().find_map(|r| {
+                if r.id.as_str() == id {
+                    Some(r)
+                } else {
+                    find(&r.children, id)
+                }
+            })
+        }
+        let general = find(resources, "chat.channel:c_general").expect("general published");
+        let post = general.actions.iter().find(|a| a.id == "post").unwrap();
+        match &post.input {
+            ActionInput::Prompted { build, .. } => build(text),
+            _ => panic!("post is prompted"),
+        }
+    }
+
+    fn dispatch(doc: &mut AutoCommit, encoded: tilo_actions::EncodedAction) {
+        let mut registry = tilo_actions::ActionRegistry::new();
+        crate::actions::register(&mut registry);
+        let decoded = registry.decode(&encoded).unwrap();
+        let mut tx = LocalTransport::new();
+        tilo_actions::dispatch(doc, decoded.as_ref(), encoded, &mut tx).unwrap();
+    }
+
+    #[test]
+    fn agent_posts_are_authored_by_the_invoking_agent_for_every_member() {
+        let mut app = ChatApp::new_ephemeral();
+        let mut doc = AutoCommit::new();
+        crate::doc::ChatDoc::seed_if_empty(&mut doc);
+        app.sync(&mut doc, &ROOT);
+        let agent = ParticipantId::for_agent_task("11111111-1111-4111-8111-111111111111").unwrap();
+        Widget::join_participant(&mut app, &agent);
+        Widget::set_participant_label(&mut app, &agent, "Tide");
+
+        let resources = Widget::resources_for(&app, Some(&agent), &doc);
+        let encoded = post_via(&resources, "hello from the agent");
+        let action: crate::actions::ChatAction = serde_json::from_slice(&encoded.payload).unwrap();
+        assert!(
+            matches!(&action, crate::actions::ChatAction::AgentAuthored { name, .. } if name == "Tide")
+        );
+        dispatch(&mut doc, encoded);
+
+        // A person's post in the same tree shape is the plain send, as before.
+        let own = Widget::resources_for(&app, None, &doc);
+        let encoded = post_via(&own, "hello from a person");
+        let action: crate::actions::ChatAction = serde_json::from_slice(&encoded.payload).unwrap();
+        assert!(matches!(
+            action,
+            crate::actions::ChatAction::SendMessage { .. }
+        ));
+        dispatch(&mut doc, encoded);
+
+        let messages = crate::doc::ChatDoc::list_messages(&doc, "c_general");
+        let by_agent = messages
+            .iter()
+            .find(|m| m.text == "hello from the agent")
+            .unwrap();
+        assert_eq!(by_agent.author, agent.as_str());
+        let by_person = messages
+            .iter()
+            .find(|m| m.text == "hello from a person")
+            .unwrap();
+        assert_eq!(by_person.author, app.me.id);
+
+        // Any member (a fresh peer replaying the document) renders the agent.
+        let mut member = ChatApp::new_ephemeral();
+        member.sync(&mut doc, &ROOT);
+        assert_eq!(member.user_name(agent.as_str()), "Tide \u{b7} agent");
+    }
+
+    /// The label is applied only to the message's own agent-task author: a
+    /// wrapper naming a person, or a message it did not write, labels nothing.
+    #[test]
+    fn agent_labels_bind_only_agent_task_authors_of_their_own_message() {
+        let mut doc = AutoCommit::new();
+        crate::doc::ChatDoc::seed_if_empty(&mut doc);
+        let send = crate::actions::send_message_action(
+            "c_general",
+            "m_person_1",
+            "person-1",
+            1,
+            "hi",
+            None,
+            None,
+            Vec::new(),
+        );
+        dispatch(
+            &mut doc,
+            crate::actions::encode(&crate::actions::ChatAction::AgentAuthored {
+                name: "Impostor".into(),
+                send: Box::new(send),
+            }),
+        );
+        assert!(
+            crate::doc::ChatDoc::list_messages(&doc, "c_general")
+                .iter()
+                .any(|m| m.id == "m_person_1")
+        );
+        assert!(crate::doc::ChatDoc::agent_authors(&doc).is_empty());
     }
 }

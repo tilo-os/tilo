@@ -285,6 +285,12 @@ impl FindBar {
         self.replacement.value()
     }
 
+    /// The Find query as typed; with [`Self::matches`] it is the window's
+    /// Find state in its participant view.
+    pub(crate) fn query(&self) -> &str {
+        self.query.value()
+    }
+
     #[cfg(test)]
     pub(crate) fn set_queries_for_tests(&mut self, query: &str, replacement: &str) {
         self.query.set_text(query);
