@@ -14310,6 +14310,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-content"
+version = "0.1.0"
+dependencies = [
+ "advisory-lock",
+ "blake3",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tracing",
+ "xdg-paths",
+]
+
+[[package]]
 name = "tilo-crypto"
 version = "0.1.0"
 dependencies = [
