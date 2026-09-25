@@ -58,6 +58,15 @@ thread_local! {
     static METER: Cell<Option<Allocations>> = const { Cell::new(None) };
     static CHECK_ALLOWANCE: RefCell<Option<(NativeAllowance, usize)>> = const { RefCell::new(None) };
     static WATCH_ALLOCATION_BYTES: Cell<Option<usize>> = const { Cell::new(None) };
+    static LABEL: Cell<&'static str> = const { Cell::new("") };
+}
+
+/// Like `assert_precharged`, naming the operation in the failure message.
+fn precharged_as<T>(label: &'static str, allowance: &NativeAllowance, operation: impl FnOnce() -> T) -> T {
+    LABEL.with(|l| l.set(label));
+    let value = assert_precharged(allowance, operation);
+    LABEL.with(|l| l.set(""));
+    value
 }
 
 struct MeasuredSystem;
@@ -176,7 +185,8 @@ fn measure_under<T>(allowance: &NativeAllowance, operation: impl FnOnce() -> T) 
     let result = measure(operation);
     assert_eq!(
         result.1.unreserved_peak, 0,
-        "every allocation must already be reserved (bytes, live, reserved): {:?}",
+        "{}: every allocation must already be reserved (bytes, live, reserved): {:?}",
+        LABEL.with(Cell::get),
         result.1.first_unreserved
     );
     result
@@ -194,6 +204,14 @@ const MAGIC: [u8; 4] = [0x85, 0x6f, 0x4a, 0x83];
 
 fn allowance() -> NativeAllowance {
     NativeAllowance::new(64 * 1024 * 1024).unwrap()
+}
+
+fn panic_message(panic: &(dyn std::any::Any + Send)) -> String {
+    panic
+        .downcast_ref::<String>()
+        .cloned()
+        .or_else(|| panic.downcast_ref::<&str>().map(|s| s.to_string()))
+        .unwrap_or_default()
 }
 
 fn slow() -> bool {
@@ -398,7 +416,7 @@ fn incoming(
 ) -> Result<NativeIncomingOutcome, NativeMutationError> {
     let before = snapshot(doc);
     let result = catch_unwind(AssertUnwindSafe(|| doc.apply_incoming_checked(input, limits, credit, policy)))
-        .unwrap_or_else(|_| panic!("apply_incoming_checked panicked on {} input bytes", input.len()));
+        .unwrap_or_else(|p| panic!("apply_incoming_checked panicked on {} input bytes: {}", input.len(), panic_message(&*p)));
     match &result {
         Err(_) | Ok(NativeIncomingOutcome::MissingDependencies) => {
             assert!(snapshot(doc) == before, "refused input mutated the document: {result:?}");
@@ -421,7 +439,7 @@ fn reconstruct(input: &[u8], limits: &NativeLimits) -> Result<NativeOwned<AutoCo
         let turn = registry.work_turn(credit)?;
         turn.normalize_input(input, limits)?.reconstruct(&mut registry, &turn)
     }))
-    .expect("normalize_input/reconstruct panicked")
+    .unwrap_or_else(|p| panic!("normalize_input/reconstruct panicked: {}", panic_message(&*p)))
 }
 
 /// Every refusal path of the whole admission surface must agree on refusing
@@ -1765,12 +1783,16 @@ mod budget {
 
     // ---- ported from native_footprint_vendor_tests.rs (0.12 semantics) ----
 
-    fn populated_document() -> (AutoCommit, ObjId) {
+    /// The Cloud fixture: text, marks, an open transaction, and (optionally)
+    /// the diff cursor/cached diff state the 0.8 patch measured exactly.
+    fn populated_document_with(caches: bool) -> (AutoCommit, ObjId) {
         let mut doc = AutoCommit::new();
         let text = doc.put_object(ROOT, "text", ObjType::Text).unwrap();
         doc.splice_text(&text, 0, 0, &"retained native text ".repeat(256)).unwrap();
         doc.commit();
-        doc.update_diff_cursor();
+        if caches {
+            doc.update_diff_cursor();
+        }
         doc.mark(
             &text,
             Mark::new("long-shared-mark-name-for-allocation".into(), "long-shared-mark-value-for-allocation", 0, 200),
@@ -1779,11 +1801,34 @@ mod budget {
         .unwrap();
         doc.splice_text(&text, 8, 0, "marked insertion").unwrap();
         doc.commit();
-        let heads = doc.get_heads();
-        drop(doc.diff(&[], &heads));
+        if caches {
+            let heads = doc.get_heads();
+            drop(doc.diff(&[], &heads));
+        }
         doc.put(ROOT, "pending", ScalarValue::Bytes(vec![7; 32_768])).unwrap();
         assert!(doc.pending_ops() > 0);
         (doc, text)
+    }
+    fn populated_document() -> (AutoCommit, ObjId) {
+        populated_document_with(false)
+    }
+
+    /// 0.8 contract (qos-peer-state native_footprint_vendor_tests): a
+    /// document with a diff cursor, cached diff and an open transaction has
+    /// a covering footprint and can be cloned under custody. A fail-closed
+    /// `Unaccounted` here is a contract regression for Cloud callers.
+    #[test]
+    fn footprint_and_clone_accept_diff_and_patch_caches() {
+        drop(populated_document_with(true));
+        let ((doc, _), allocations) = measure(|| populated_document_with(true));
+        let footprint = doc.native_footprint(&allowance());
+        assert!(footprint.is_ok(), "native_footprint with diff caches: {footprint:?}");
+        assert!(footprint.unwrap().total_bytes() >= allocations.live);
+        let credit = allowance();
+        let mut registry = NativeAllocationSet::new(credit.clone()).unwrap();
+        let turn = registry.work_turn(credit.clone()).unwrap();
+        let cloned = assert_precharged(&credit, || doc.clone_bounded(&mut registry, &turn));
+        assert!(cloned.is_ok(), "clone_bounded with diff caches: {cloned:?}");
     }
 
     fn measure_destination<T>(credit: &NativeAllowance, bytes: usize, operation: impl FnOnce() -> T) -> (T, Allocations) {
@@ -2060,7 +2105,7 @@ mod budget {
         let read = owned.read(&turn).unwrap();
         let root = read.root();
         let mut list = None;
-        assert_precharged(&credit, || {
+        precharged_as("visit_property", &credit, || {
             read.visit_property(root, "list", NativeSelection::Winner, |value, _| {
                 if let NativeValue::Object { object, .. } = value {
                     list = Some(object);
@@ -2072,7 +2117,7 @@ mod budget {
         let list = list.expect("list object");
         let steps = NativeReadSteps::new(10).unwrap();
         let mut seen = 0;
-        let result = assert_precharged(&credit, || {
+        let result = precharged_as("visit_list (10 steps)", &credit, || {
             read.visit_list(list, &steps, |_| {
                 seen += 1;
                 Ok::<_, ()>(std::ops::ControlFlow::Continue(()))
@@ -2081,16 +2126,17 @@ mod budget {
         assert!(result.is_err(), "200-element list visited within 10 steps");
         assert!(seen <= 10);
         let steps = NativeReadSteps::new(10_000).unwrap();
-        let visited = assert_precharged(&credit, || {
+        let visited = precharged_as("visit_list (10k steps)", &credit, || {
             read.visit_list(list, &steps, |_| Ok::<_, ()>(std::ops::ControlFlow::Continue(())))
         })
         .unwrap();
         assert_eq!(visited, 200);
-        let keys = assert_precharged(&credit, || read.visit_keys(root, |_| Ok::<_, ()>(()))).unwrap();
+        let keys = precharged_as("visit_keys", &credit, || read.visit_keys(root, |_| Ok::<_, ()>(()))).unwrap();
         assert_eq!(keys, 3);
-        let mut heads = Vec::new();
-        assert_precharged(&credit, || read.visit_heads(8, |h| heads.push(h))).ok();
-        let _ = src.get_heads();
+        let mut heads = Vec::with_capacity(8); // caller-owned output, allocated outside the measured call
+        let count = precharged_as("visit_heads", &credit, || read.visit_heads(8, |h| heads.push(h))).unwrap();
+        assert_eq!(count, heads.len());
+        assert_eq!(heads, src.get_heads());
     }
 }
 
@@ -2392,7 +2438,10 @@ mod columnar {
                                 .cloned()
                                 .or_else(|| p.downcast_ref::<&str>().map(|s| s.to_string()))
                                 .unwrap_or_default();
-                            failures.push(format!("kind {kind} byte {i}: {} -> {}: {}", body[i], m[i], msg.chars().take(160).collect::<String>()));
+                            let msg: String = msg.chars().take(160).collect();
+                            // Strip the byte count so identical causes group together.
+                            let msg = msg.split(" input bytes: ").last().unwrap_or(&msg).to_string();
+                            failures.push((format!("kind {kind} byte {i}: {} -> {}", body[i], m[i]), msg, hex::encode(&input)));
                         }
                     }
                 }
@@ -2400,6 +2449,63 @@ mod columnar {
         }
         std::panic::set_hook(hook);
         println!("mutation sweep: {accepted} mutants passed inspection");
-        assert!(failures.is_empty(), "{} panicking mutants:\n{}", failures.len(), failures.iter().take(40).cloned().collect::<Vec<_>>().join("\n"));
+        // Group by panic message (first example of each) so distinct bugs stand out.
+        let mut groups: Vec<(String, usize, String, String)> = Vec::new();
+        for (site, msg, input) in &failures {
+            let key = msg.replace(|c: char| c.is_ascii_digit(), "#");
+            match groups.iter_mut().find(|g| g.0 == key) {
+                Some(g) => g.1 += 1,
+                None => groups.push((key, 1, site.clone(), input.clone())),
+            }
+        }
+        let report: Vec<String> =
+            groups.iter().map(|(k, n, site, input)| format!("{n:5} x {k}\n        e.g. {site}: {input}")).collect();
+        assert!(failures.is_empty(), "{} panicking mutants:\n{}", failures.len(), report.join("\n"));
+    }
+}
+
+// ===========================================================================
+// sweep_regressions: one minimised-by-construction example per distinct
+// panic the mutation sweep found in normalize_input -> reconstruct (single
+// byte mutations of a valid document / bundle, checksum recomputed; all pass
+// inspect_bounded). Each must be refused without panicking.
+// ===========================================================================
+mod sweep_regressions {
+    use super::*;
+
+    const CASES: &[(&str, &str)] = &[
+        ("kind 0 byte 123: 0 -> 1; 0.12 panicked with: index out of bounds: the len is # but the index is #", "856f4a833d51cb7a00f0010110d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1011f0242f07c77fbf3d3aac425927bb392f9d579080452645fdb50bf7e4097564b07010203021303230240034302560210010402061108130d15092102230e3403420d560f5708800109810102830103940103a50107020002017e0a0302007e00017f000207000309010003070102090005050000017f00000302007f0202017c00017b0a7d016b016c017400090c007b0b7e78067b02017b047d0104020308017c0102040703017f0703017f057f1602007f0203167f0002167e18147668656c6c6f010205007f0104007e010002007e0d7f07010400037f0162000801"),
+        ("kind 0 byte 137: 0 -> 1; 0.12 panicked with: assertion failed: self.data[index].is_none()", "856f4a83916008c800f0010110d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1011f0242f07c77fbf3d3aac425927bb392f9d579080452645fdb50bf7e4097564b07010203021303230240034302560210010402061108130d15092102230e3403420d560f5708800109810102830103940103a50107020002017e0a0302007e00017f000207000309000003070102090005050000017f01000302007f0202017c00017b0a7d016b016c017400090c007b0b7e78067b02017b047d0104020308017c0102040703017f0703017f057f1602007f0203167f0002167e18147668656c6c6f010205007f0104007e010002007e0d7f07010400037f0162000801"),
+        ("kind 3 byte 56: 0 -> 1; 0.12 panicked with: called Option::unwrap() on a None value", "856f4a83555f404403df01000110d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d109010203021303230333024502500353026002020002017e010a7e0a03020000027e00017f01020010010403091108130d150921023405420f56115708700871027303940103a50107b3010f00030a0000037f0107007e08000005060000017f0000030200780201000100017b0a7d016b016c0174000a0d0003030105017c0102040702017d03010703017f057f1602007f0202167d00160002167e18147668656c6c6f010206007f0105007f0102007e030708010400037f0162000902027f01020278017905790a750c7a"),
+        ("kind 3 byte 58: 0 -> 1; 0.12 panicked with: mid > len", "856f4a8350e6121a03df01000110d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d109010203021303230333024502500353026002020002017e010a7e0a03020000027e00017f00020110010403091108130d150921023405420f56115708700871027303940103a50107b3010f00030a0000037f0107007e08000005060000017f0000030200780201000100017b0a7d016b016c0174000a0d0003030105017c0102040702017d03010703017f057f1602007f0202167d00160002167e18147668656c6c6f010206007f0105007f0102007e030708010400037f0162000902027f01020278017905790a750c7a"),
+        ("kind 3 byte 101: 127 -> 255; 0.12 panicked with: Obj ObjId(OpId(#, #)) Missing from Index", "856f4a83d07f19f603df01000110d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d109010203021303230333024502500353026002020002017e010a7e0a03020000027e00017f00020010010403091108130d150921023405420f56115708700871027303940103a50107b3010f00030a000003ff0107007e08000005060000017f0000030200780201000100017b0a7d016b016c0174000a0d0003030105017c0102040702017d03010703017f057f1602007f0202167d00160002167e18147668656c6c6f010206007f0105007f0102007e030708010400037f0162000902027f01020278017905790a750c7a"),
+        ("kind 3 byte 106: 8 -> 9; 0.12 panicked with: Obj ObjId(OpId(##, #)) Missing from Index", "856f4a83669f4a5503df01000110d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d109010203021303230333024502500353026002020002017e010a7e0a03020000027e00017f00020010010403091108130d150921023405420f56115708700871027303940103a50107b3010f00030a0000037f0107007e09000005060000017f0000030200780201000100017b0a7d016b016c0174000a0d0003030105017c0102040702017d03010703017f057f1602007f0202167d00160002167e18147668656c6c6f010206007f0105007f0102007e030708010400037f0162000902027f01020278017905790a750c7a"),
+        ("kind 3 byte 138: 13 -> 12; 0.12 panicked with: called Result::unwrap() on an Err value: MissingOps", "856f4a833830aa0703df01000110d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d109010203021303230333024502500353026002020002017e010a7e0a03020000027e00017f00020010010403091108130d150921023405420f56115708700871027303940103a50107b3010f00030a0000037f0107007e08000005060000017f0000030200780201000100017b0a7d016b016c0174000a0c0003030105017c0102040702017d03010703017f057f1602007f0202167d00160002167e18147668656c6c6f010206007f0105007f0102007e030708010400037f0162000902027f01020278017905790a750c7a"),
+        ("kind 3 byte 140: 3 -> 2; 0.12 panicked with: assertion failed: self.entry.is_empty()", "856f4a836183f15903df01000110d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d109010203021303230333024502500353026002020002017e010a7e0a03020000027e00017f00020010010403091108130d150921023405420f56115708700871027303940103a50107b3010f00030a0000037f0107007e08000005060000017f0000030200780201000100017b0a7d016b016c0174000a0d0002030105017c0102040702017d03010703017f057f1602007f0202167d00160002167e18147668656c6c6f010206007f0105007f0102007e030708010400037f0162000902027f01020278017905790a750c7a"),
+        ("kind 3 byte 148: 4 -> 5; 0.12 panicked with: called Result::unwrap() on an Err value: InvalidOpType(NonNumericInc)", "856f4a834acfff3d03df01000110d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d109010203021303230333024502500353026002020002017e010a7e0a03020000027e00017f00020010010403091108130d150921023405420f56115708700871027303940103a50107b3010f00030a0000037f0107007e08000005060000017f0000030200780201000100017b0a7d016b016c0174000a0d0003030105017c0102050702017d03010703017f057f1602007f0202167d00160002167e18147668656c6c6f010206007f0105007f0102007e030708010400037f0162000902027f01020278017905790a750c7a"),
+        ("kind 3 byte 150: 2 -> 3; 0.12 panicked with: assertion failed: doc.ops.validate_op_order()", "856f4a8373d7ff5803df01000110d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d109010203021303230333024502500353026002020002017e010a7e0a03020000027e00017f00020010010403091108130d150921023405420f56115708700871027303940103a50107b3010f00030a0000037f0107007e08000005060000017f0000030200780201000100017b0a7d016b016c0174000a0d0003030105017c0102040703017d03010703017f057f1602007f0202167d00160002167e18147668656c6c6f010206007f0105007f0102007e030708010400037f0162000902027f01020278017905790a750c7a"),
+    ];
+
+    #[test]
+    fn mutated_storage_found_by_the_sweep_is_refused_without_panic() {
+        // AM012_LOUD=1 keeps the default hook, printing each panic's location.
+        let hook = std::panic::take_hook();
+        if std::env::var_os("AM012_LOUD").is_none() {
+            std::panic::set_hook(Box::new(|_| {}));
+        }
+        let mut failures = Vec::new();
+        for (what, hex_input) in CASES {
+            let input = hex::decode(hex_input).unwrap();
+            assert_eq!(inspect(&input, &NativeLimits::default()), Ok(()), "{what}: no longer passes inspection");
+            let plain = catch_unwind(|| AutoCommit::load(&input).map(drop)).is_err();
+            let checked = catch_unwind(AssertUnwindSafe(|| reconstruct(&input, &NativeLimits::default()).map(drop)));
+            match checked {
+                Ok(Err(_)) => {}
+                Ok(Ok(())) => failures.push(format!("{what}: accepted (plain load panics: {plain})")),
+                Err(p) => failures.push(format!("{what}: PANIC {} (plain AutoCommit::load panics too: {plain})", panic_message(&*p))),
+            }
+        }
+        std::panic::set_hook(hook);
+        assert!(failures.is_empty(), "{} of {}:\n{}", failures.len(), CASES.len(), failures.join("\n"));
     }
 }
