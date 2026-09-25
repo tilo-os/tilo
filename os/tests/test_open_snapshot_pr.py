@@ -215,5 +215,70 @@ class RpmSnapshotPullRequestTests(unittest.TestCase):
                 run_main(self.argv(**overrides))
 
 
+class WpeSnapshotPullRequestTests(unittest.TestCase):
+    x86_ref = "code.podesta.ai/qos/tilo-wpe-buildroot@sha256:" + "a" * 64
+    arm_ref = "code.podesta.ai/qos/tilo-wpe-buildroot@sha256:" + "b" * 64
+
+    def setUp(self):
+        contents = MODULE.wpe_contents(self.x86_ref, self.arm_ref)
+        self.digest = hashlib.sha256(contents.encode()).hexdigest()
+        self.branch = "automation/wpe-buildroot-snapshot-" + self.digest[:16]
+
+    def argv(self, **overrides):
+        values = {"branch": self.branch, "digest": self.digest,
+                  "x86": self.x86_ref, "arm": self.arm_ref}
+        values.update(overrides)
+        return [
+            str(SCRIPT), "--server", "https://forge.invalid",
+            "--repository", "qos/qos", "--branch", values["branch"],
+            "--snapshot-digest", values["digest"], "wpe",
+            "--x86-ref", values["x86"], "--arm-ref", values["arm"],
+        ]
+
+    def test_main_creates_digest_bound_pull(self):
+        result, request = run_main(self.argv())
+        self.assertEqual(result, 0)
+        payload = request.call_args.args[5]
+        self.assertEqual(payload["head"], self.branch)
+        self.assertEqual(payload["title"], "build(os): refresh native WPE buildroot snapshots")
+        self.assertIn(self.digest, payload["body"])
+
+    def test_workflow_writes_the_canonical_pin_file(self):
+        workflow = (REPO / ".forgejo/workflows/snapshot-wpe-buildroot.yml").read_text()
+        for line in MODULE.wpe_contents("$WPE_BUILDROOT_X86_64_REF",
+                                        "$WPE_BUILDROOT_AARCH64_REF").splitlines()[:2]:
+            self.assertIn(f"'{line}'", workflow)
+        self.assertIn('"WPE_BUILDROOT_X86_64_REF=$WPE_BUILDROOT_X86_64_REF"', workflow)
+        self.assertIn('"WPE_BUILDROOT_AARCH64_REF=$WPE_BUILDROOT_AARCH64_REF"', workflow)
+
+    def test_committed_pins_use_the_canonical_names(self):
+        committed = (REPO / "os/wpe-buildroot-snapshot.env").read_text()
+        refs = dict(line.split("=", 1) for line in committed.splitlines()
+                    if line and not line.startswith("#"))
+        self.assertEqual(set(refs), {"WPE_BUILDROOT_X86_64_REF", "WPE_BUILDROOT_AARCH64_REF"})
+        if all(refs.values()):
+            self.assertEqual(
+                MODULE.wpe_contents(refs["WPE_BUILDROOT_X86_64_REF"],
+                                    refs["WPE_BUILDROOT_AARCH64_REF"]),
+                committed,
+            )
+
+    def test_rejects_shared_mutable_or_foreign_ref(self):
+        cases = (
+            {"arm": self.x86_ref},
+            {"arm": "code.podesta.ai/qos/tilo-wpe-buildroot:latest"},
+            {"arm": "code.podesta.ai/qos/tilo-kernel@sha256:" + "b" * 64},
+        )
+        for overrides in cases:
+            with self.subTest(overrides=overrides), self.assertRaises(SystemExit):
+                run_main(self.argv(**overrides))
+
+    def test_rejects_digest_or_branch_not_bound_to_refs(self):
+        for overrides in ({"digest": "e" * 64},
+                          {"branch": "automation/kernel-snapshot-" + self.digest[:16]}):
+            with self.subTest(overrides=overrides), self.assertRaises(SystemExit):
+                run_main(self.argv(**overrides))
+
+
 if __name__ == "__main__":
     unittest.main()

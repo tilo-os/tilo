@@ -51,8 +51,8 @@ use super::input_config::{
 use super::outputs::{ConnectorInfo, DrmOutputKey, OutputRegistry};
 use super::scale::resolve_scale;
 use super::scanout::{
-    CardHandle, ConnectorKeyCandidate, ConnectorSnapshot, CursorPlanes, DrmScanout, ScanoutBuild,
-    device_id_from_dev_t, discover_icc_profiles, physical_card_identity,
+    CardHandle, ConnectorKeyCandidate, ConnectorSnapshot, CursorPlanes, DirectScanoutTargets,
+    DrmScanout, ScanoutBuild, device_id_from_dev_t, discover_icc_profiles, physical_card_identity,
     resolve_connector_config_keys,
 };
 use super::session::{SeatTick, SessionAction, SessionState};
@@ -1079,6 +1079,8 @@ impl DrmDispatchState {
                 color_profile: None,
                 color_transform: None,
                 color_buffer: Vec::new(),
+                direct_targets: None,
+                direct_unavailable: None,
                 scanout: build.scanout,
             });
         }
@@ -2296,6 +2298,12 @@ pub struct ScanoutEntry {
     pub color_profile: Option<String>,
     pub color_transform: Option<qcms::Transform>,
     pub color_buffer: Vec<u8>,
+    /// Lazily created same-device GBM/Vulkan targets. `None` means the safe
+    /// readback presenter remains authoritative.
+    pub direct_targets: Option<DirectScanoutTargets>,
+    /// Permanent failure for this output generation. Cleared only when a
+    /// lifecycle/topology boundary makes reprobe meaningful.
+    pub direct_unavailable: Option<String>,
     pub scanout: DrmScanout,
 }
 

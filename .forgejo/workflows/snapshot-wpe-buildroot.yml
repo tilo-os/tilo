@@ -1,8 +1,9 @@
 name: Snapshot / WPE buildroots
 
 # This is the only CI boundary allowed to resolve WPE build dependencies from
-# Fedora. It promotes signed, per-architecture immutable refs; OS release jobs
-# consume those refs and cannot fall back to the network.
+# Fedora. It builds each architecture natively, signs it with the release KMS
+# key, and proposes both digest pins through a protected-main pull request.
+# OS release jobs consume those refs and cannot fall back to the network.
 on:
   workflow_dispatch:
   push:
@@ -14,79 +15,110 @@ on:
       - os/dev/assert-native-arch.sh
       - os/dev/cache-github-assets.sh
       - os/dev/install-cached-cosign.sh
+      - os/dev/configure-cosign-kms.sh
+      - os/dev/login-registry-with-retry.sh
+      - os/dev/open-snapshot-pr.py
       - ".forgejo/actions/install-cosign/**"
-      - os/dev/acquire-wpe-snapshot-credentials.sh
       - keys/cosign.pub
       - .forgejo/workflows/snapshot-wpe-buildroot.yml
 
 concurrency:
   group: snapshot-wpe-buildroot
   # Only the newest immutable snapshot is useful. In particular, do not let an
-  # older run waiting for future runner-arm64 capacity serialize newer amd64
-  # work behind it.
+  # older run waiting for runner-arm64 capacity serialize newer amd64 work
+  # behind it.
   cancel-in-progress: true
 
 jobs:
-  build:
-    timeout-minutes: 600
-    # Promotion is atomic across both native architectures. Keep automatic
-    # pushes skipped until the ARM64 pool exists instead of leaving every run
-    # permanently queued; enabling the pool is one repository-variable flip.
+  # Fail in seconds, before the multi-hour native builds, when the signing
+  # authority is missing or no longer matches the committed trust root.
+  signing-preflight:
+    # Promotion is atomic across both native architectures, so the workflow
+    # stays skipped until the ARM64 pool exists instead of queueing forever.
     if: github.ref == 'refs/heads/main' && vars.TILO_NATIVE_ARM64_RUNNER == 'true'
+    runs-on: runner
+    timeout-minutes: 5
+    enable-openid-connect: true
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Install checksum-pinned Cosign
+        uses: ./.forgejo/actions/install-cosign
+        with:
+          cache-architecture: x86_64
+      - name: Require non-exportable snapshot signing authority
+        env:
+          COSIGN_KEY_REF: ${{ secrets.COSIGN_KEY_REF }}
+          AWS_SIGNING_ROLE_ARN: ${{ secrets.AWS_SIGNING_ROLE_ARN }}
+        run: |
+          set -euo pipefail
+          case "$COSIGN_KEY_REF" in
+            gcpkms://*|awskms://*|azurekms://*|hashivault://*) ;;
+            *) echo "::error::COSIGN_KEY_REF must name a non-exportable KMS/HSM key"; exit 1 ;;
+          esac
+          . os/dev/configure-cosign-kms.sh
+          resolved="$RUNNER_TEMP/wpe-snapshot-signing-authority.pub"
+          cosign public-key --key "$COSIGN_KEY_REF" > "$resolved"
+          cmp --silent keys/cosign.pub "$resolved" || {
+            echo '::error::snapshot KMS/HSM authority does not match keys/cosign.pub'
+            exit 1
+          }
+
+  build:
+    needs: signing-preflight
+    if: github.ref == 'refs/heads/main' && vars.TILO_NATIVE_ARM64_RUNNER == 'true'
+    timeout-minutes: 600
     enable-openid-connect: true
     strategy:
       fail-fast: true
       matrix:
         include:
           - arch: x86_64
+            platform: linux/amd64
             runner: runner
           - arch: aarch64
+            platform: linux/arm64
             runner: runner-arm64
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Validate the native runner architecture
         run: ./os/dev/assert-native-arch.sh "${{ matrix.arch }}"
-      - name: Require the OIDC credential broker
-        env:
-          WPE_SNAPSHOT_CREDENTIAL_BROKER: ${{ vars.WPE_SNAPSHOT_CREDENTIAL_BROKER }}
-        run: test -n "$WPE_SNAPSHOT_CREDENTIAL_BROKER"
       - name: Install checksum-pinned Cosign
         uses: ./.forgejo/actions/install-cosign
         with:
           cache-architecture: ${{ matrix.arch }}
       - name: Load the mirrored Fedora base
         run: grep '^BASE_REF=' os/base-snapshot.env >> "$GITHUB_ENV"
-      - name: Acquire a short-lived base-image read lease
+      - name: Log in to code.podesta.ai
         env:
-          WPE_SNAPSHOT_CREDENTIAL_BROKER: ${{ vars.WPE_SNAPSHOT_CREDENTIAL_BROKER }}
-        run: os/dev/acquire-wpe-snapshot-credentials.sh "resolve-${{ matrix.arch }}"
+          REGISTRY_USERNAME: ${{ github.actor }}
+          REGISTRY_PASSWORD: ${{ secrets.REGISTRY_TOKEN }}
+        run: |
+          printf '%s' "$REGISTRY_PASSWORD" | \
+            os/dev/login-registry-with-retry.sh \
+              docker code.podesta.ai "$REGISTRY_USERNAME"
       - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
-      - name: Resolve and build the native buildroot locally
+        with:
+          driver: docker-container
+      - name: Resolve, build and publish the native buildroot
+        id: buildroot
         uses: docker/build-push-action@ca052bb54ab0790a636c9b5f226502c73d547a25 # v5
         with:
           context: .
           file: os/Containerfile.wpe-buildroot
-          push: false
-          load: true
+          platforms: ${{ matrix.platform }}
+          push: true
           provenance: false
           no-cache: true
           build-args: |
             BASE_REF=${{ env.BASE_REF }}
+          labels: org.opencontainers.image.revision=${{ github.sha }}
           tags: code.podesta.ai/qos/tilo-wpe-buildroot:${{ matrix.arch }}-${{ github.sha }}
-      - name: Revoke the base-image read lease
-        run: docker logout code.podesta.ai || true
-      - name: Acquire a fresh short-lived publish and signing lease
+      - name: Audit the immutable buildroot
         env:
-          WPE_SNAPSHOT_CREDENTIAL_BROKER: ${{ vars.WPE_SNAPSHOT_CREDENTIAL_BROKER }}
-        run: os/dev/acquire-wpe-snapshot-credentials.sh "publish-${{ matrix.arch }}"
-      - name: Publish and audit the immutable buildroot
+          DIGEST: ${{ steps.buildroot.outputs.digest }}
         run: |
           set -euo pipefail
-          tag="code.podesta.ai/qos/tilo-wpe-buildroot:${{ matrix.arch }}-${{ github.sha }}"
-          docker push "$tag"
-          digest_ref="$(docker image inspect --format '{{index .RepoDigests 0}}' "$tag")"
-          DIGEST="${digest_ref##*@}"
           [[ "$DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]
           ref="code.podesta.ai/qos/tilo-wpe-buildroot@$DIGEST"
           actual_arch="$(docker run --rm --entrypoint cat "$ref" /usr/lib/tilo/wpe-buildroot-arch)"
@@ -94,11 +126,18 @@ jobs:
           docker run --rm --entrypoint sh "$ref" -c \
             'test -s /usr/lib/tilo/wpe-buildroot-packages.txt && ! find /etc/yum.repos.d -type f -print -quit | grep -q .'
           printf 'TILO_WPE_REF=%s\n' "$ref" >> "$GITHUB_ENV"
-      - name: Sign through the non-exportable leased key
+      - name: Sign with the non-exportable release key
+        env:
+          COSIGN_KEY_REF: ${{ secrets.COSIGN_KEY_REF }}
+          AWS_SIGNING_ROLE_ARN: ${{ secrets.AWS_SIGNING_ROLE_ARN }}
         run: |
           set -euo pipefail
-          test -n "${TILO_WPE_SIGNER:-}"
-          "$TILO_WPE_SIGNER" "$TILO_WPE_REF"
+          case "$COSIGN_KEY_REF" in
+            gcpkms://*|awskms://*|azurekms://*|hashivault://*) ;;
+            *) echo "::error::COSIGN_KEY_REF must name a non-exportable KMS/HSM key"; exit 1 ;;
+          esac
+          . os/dev/configure-cosign-kms.sh
+          cosign sign --yes --key "$COSIGN_KEY_REF" "$TILO_WPE_REF"
       - name: Verify the signature and record the immutable reference
         run: |
           set -euo pipefail
@@ -109,12 +148,13 @@ jobs:
             x86_64) key=WPE_BUILDROOT_X86_64_REF ;;
             aarch64) key=WPE_BUILDROOT_AARCH64_REF ;;
           esac
-          printf '%s=%s\n' "$key" \
-            "$ref" > "refs/${{ matrix.arch }}.env"
+          printf '%s=%s\n' "$key" "$ref" > "refs/${{ matrix.arch }}.env"
+          echo "::notice::$key=$ref"
       - uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
         with:
           name: wpe-buildroot-${{ matrix.arch }}
           path: refs/${{ matrix.arch }}.env
+          if-no-files-found: error
       - name: Revoke local registry credentials
         if: always()
         run: docker logout code.podesta.ai || true
@@ -122,6 +162,7 @@ jobs:
   promote:
     timeout-minutes: 60
     needs: build
+    if: github.ref == 'refs/heads/main' && vars.TILO_NATIVE_ARM64_RUNNER == 'true'
     runs-on: runner
     env:
       WPE_SNAPSHOT_INPUTS: |
@@ -131,10 +172,12 @@ jobs:
         os/dev/assert-native-arch.sh
         os/dev/cache-github-assets.sh
         os/dev/install-cached-cosign.sh
-        os/dev/acquire-wpe-snapshot-credentials.sh
+        os/dev/configure-cosign-kms.sh
+        os/dev/login-registry-with-retry.sh
+        os/dev/open-snapshot-pr.py
+        .forgejo/actions/install-cosign
         keys/cosign.pub
         .forgejo/workflows/snapshot-wpe-buildroot.yml
-    enable-openid-connect: true
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -147,15 +190,24 @@ jobs:
       - uses: actions/download-artifact@9bc31d5ccc31df68ecc42ccf4149144866c47d8a # v3
         with:
           path: refs
-      - name: Require the OIDC credential broker
+      - name: Log in to code.podesta.ai
         env:
-          WPE_SNAPSHOT_CREDENTIAL_BROKER: ${{ vars.WPE_SNAPSHOT_CREDENTIAL_BROKER }}
-        run: test -n "$WPE_SNAPSHOT_CREDENTIAL_BROKER"
-      - name: Acquire a short-lived registry lease
+          REGISTRY_USERNAME: ${{ github.actor }}
+          REGISTRY_PASSWORD: ${{ secrets.REGISTRY_TOKEN }}
+        run: |
+          printf '%s' "$REGISTRY_PASSWORD" | \
+            os/dev/login-registry-with-retry.sh \
+              docker code.podesta.ai "$REGISTRY_USERNAME"
+      # Protected main accepts no direct pushes. Land both pins the way
+      # build-kernel.yml does: commit them on the current main tip, push a
+      # branch named after the pin file's digest, and open a pull request so the
+      # required checks and merge policy apply.
+      - name: Verify both signatures and propose the pins through protected main
         env:
-          WPE_SNAPSHOT_CREDENTIAL_BROKER: ${{ vars.WPE_SNAPSHOT_CREDENTIAL_BROKER }}
-        run: os/dev/acquire-wpe-snapshot-credentials.sh promote
-      - name: Verify signatures and advance both architecture pins atomically
+          # The job token pushes the branch but Forgejo answers its
+          # pull-request API calls with 404. RELEASE_TOKEN has repository scope;
+          # a PR it opens also triggers its own required checks.
+          FORGEJO_TOKEN: ${{ secrets.RELEASE_TOKEN }}
         run: |
           set -euo pipefail
           x86="$(find refs -type f -name x86_64.env -print -quit)"
@@ -167,31 +219,42 @@ jobs:
             [[ "$ref" =~ ^code\.podesta\.ai/qos/tilo-wpe-buildroot@sha256:[0-9a-f]{64}$ ]]
             cosign verify --key keys/cosign.pub "$ref" >/dev/null
           done
+          [ "$WPE_BUILDROOT_X86_64_REF" != "$WPE_BUILDROOT_AARCH64_REF" ] || {
+            printf 'native WPE builds unexpectedly produced one shared manifest\n' >&2
+            exit 1
+          }
           git fetch --no-tags origin main
           mapfile -t snapshot_inputs < <(printf '%s' "$WPE_SNAPSHOT_INPUTS")
           if ! git diff --quiet "$GITHUB_SHA..origin/main" -- "${snapshot_inputs[@]}"; then
             printf 'WPE buildroot inputs changed after this run started; refusing stale promotion\n' >&2
             exit 1
           fi
+          git checkout --detach origin/main
           printf '%s\n' \
             '# Per-architecture WPE buildroots, signed and pinned by digest.' \
-            '# Updated only by snapshot-wpe-buildroot.yml.' \
+            '# Updated atomically by snapshot-wpe-buildroot.yml after both native builds verify.' \
             "WPE_BUILDROOT_X86_64_REF=$WPE_BUILDROOT_X86_64_REF" \
             "WPE_BUILDROOT_AARCH64_REF=$WPE_BUILDROOT_AARCH64_REF" \
             > os/wpe-buildroot-snapshot.env
+          if git diff --quiet -- os/wpe-buildroot-snapshot.env; then
+            echo 'WPE buildroot pins are already current'
+            exit 0
+          fi
           git config user.name 'Tilo CI'
           git config user.email 'ci@tilo.invalid'
           git add os/wpe-buildroot-snapshot.env
-          if git diff --cached --quiet; then
-            exit 0
-          fi
-          git commit -m 'build(os): refresh WPE buildroot snapshots'
-          git pull --rebase origin main
-          if ! git diff --quiet "$GITHUB_SHA..origin/main" -- "${snapshot_inputs[@]}"; then
-            printf 'WPE buildroot inputs changed during promotion; refusing stale push\n' >&2
-            exit 1
-          fi
-          git push origin HEAD:main
+          git commit -m 'build(os): refresh native WPE buildroot snapshots'
+          snapshot_digest="$(sha256sum os/wpe-buildroot-snapshot.env | awk '{print $1}')"
+          [[ "$snapshot_digest" =~ ^[0-9a-f]{64}$ ]]
+          branch="automation/wpe-buildroot-snapshot-${snapshot_digest:0:16}"
+          remote_tip="$(git ls-remote --heads origin "refs/heads/$branch" | awk '{print $1}')"
+          git push --force-with-lease="refs/heads/$branch:$remote_tip" \
+            origin "HEAD:refs/heads/$branch"
+          python3 os/dev/open-snapshot-pr.py \
+            --server "$GITHUB_SERVER_URL" --repository "$GITHUB_REPOSITORY" \
+            --branch "$branch" --snapshot-digest "$snapshot_digest" \
+            wpe --x86-ref "$WPE_BUILDROOT_X86_64_REF" \
+            --arm-ref "$WPE_BUILDROOT_AARCH64_REF" | tee -a "$GITHUB_STEP_SUMMARY"
       - name: Revoke local registry credentials
         if: always()
         run: docker logout code.podesta.ai || true

@@ -1,9 +1,9 @@
 [workspace]
 # qdoc-codec-markdown-wasm is intentionally excluded from default `cargo build`
-# runs: it must be compiled with `--target wasm32-wasip2` and produces a
-# Component Model `.wasm`, not a host-target library. Build it explicitly:
-# `cargo build --manifest-path crates/doc/qdoc-codec-markdown-wasm/Cargo.toml
-# --target wasm32-wasip2 --release --locked`.
+# runs: it is a format-provider guest compiled for `wasm32-unknown-unknown`,
+# not a host-target library. Build it from its own directory so its
+# `.cargo/config.toml` applies:
+# `crates/doc/qdoc-codec-markdown-wasm/build.sh`.
 exclude = [
     "fuzz",
     "crates/doc/qdoc-codec-markdown-wasm",
@@ -15,6 +15,7 @@ exclude = [
     "vendor/winit",
     "vendor/wgpu-hal",
     "vendor/openh264-sys2",
+    "vendor/wayland-backend",
 ]
 # Build `runtime-dylib` with `cargo build -p runtime-dylib --profile thin-app`;
 # it requires unwind support, unlike the default release profile.
@@ -117,6 +118,7 @@ members = [
     "crates/dev/frame-link",
     "crates/dev/headless-schema",
     "crates/dev/test-env",
+    "crates/dev/test-http",
     "crates/dev/tilo-app-cli",
     "crates/dev/tilo-app-template-smoke",
     "crates/dev/tilo-vm",
@@ -128,12 +130,14 @@ members = [
     # Doc
     "crates/doc/bounded-zip",
     "crates/doc/format-host",
-    "crates/doc/format-provider-wit",
+    "crates/doc/format-provider-abi",
     "crates/doc/qdoc",
     "crates/doc/qdoc-pdf",
 
     # Hosting
     "crates/hosting/tilo-relay",
+    "crates/hosting/tilo-relay-client",
+    "crates/hosting/tilo-relay-protocol",
 
     # Media
     "crates/media/core",
@@ -191,6 +195,7 @@ members = [
     "crates/system/desktop-policy",
     "crates/system/durable-store",
     "crates/system/fs",
+    "crates/system/fs-native",
     "crates/system/os-actions",
     "crates/system/power",
     "crates/system/projector",
@@ -202,6 +207,7 @@ members = [
     "crates/system/tilo-bluez",
     "crates/system/tilo-cli",
     "crates/system/tilo-crypto",
+    "crates/system/tilo-dav",
     "crates/system/tilo-native-certs",
     "crates/system/tilo-net",
     "crates/system/tilo-rollback",
@@ -211,6 +217,7 @@ members = [
     "crates/system/xdg-paths",
 
     # Text
+    "crates/text/pim-lines",
     "crates/text/spellcheck",
 
     # Windows
@@ -309,6 +316,7 @@ cosmic-text = { version = "0.19.0", default-features = false }
 tokio = "1.52.3"
 tokio-util = { version = "0.7.18", features = ["compat"] }
 tokio-rustls = { version = "0.26", default-features = false, features = ["ring"] }
+async-imap = { version = "0.10", default-features = false, features = ["runtime-tokio"] }
 futures = { version = "0.3", default-features = false }
 futures-lite = "2"
 futures-util = "0.3"
@@ -375,6 +383,8 @@ iroh-base = "1.0.3"
 iroh-blobs = { version = "0.103.0", default-features = false, features = ["fs-store", "hide-proto-docs"] }
 iroh-gossip = "0.101.0"
 iroh-mdns-address-lookup = "0.5.0"
+# Content-defined chunking for the native data plane (normalised FastCDC).
+fastcdc = { version = "3.2", default-features = false }
 # ---------------------------------------------------------------------------
 # Media: images, codecs, capture and playback
 #
@@ -424,6 +434,8 @@ tracing-subscriber = "0.3"
 anyhow = "1.0.102"
 thiserror = "2"
 clap = { version = "4.6.1", features = ["derive"] }
+clap_complete = "4.6.9"
+strsim = "0.11"
 uuid = { version = "1.23.1", features = ["serde", "v4"] }
 chrono = { version = "0.4", default-features = false }
 dirs = "6.0.0"
@@ -521,6 +533,13 @@ wgpu-hal = { path = "vendor/wgpu-hal" }
 genawaiter-proc-macro = { path = "vendor/genawaiter-proc-macro" }
 rustls-native-certs = { path = "crates/system/tilo-native-certs" }
 winit = { path = "vendor/winit" }
+# The pure-Rust server used by Smithay used to panic if a client disappeared
+# from inside a request callback which had just created a child object. OAuth
+# browser launches make that race easy to hit: a probing helper can connect,
+# create a registry object, and exit before dispatch finishes. Keep the
+# compositor alive and treat the vanished object as a disconnected client.
+# See vendor/wayland-backend/TILO-PATCH.md.
+wayland-backend = { path = "vendor/wayland-backend" }
 # Vendored vello variants size scratch buffers from the current scene and
 # include the matching shader/encoding changes.
 vello_encoding = { path = "vendor/vello_encoding" }

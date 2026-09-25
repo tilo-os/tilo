@@ -26,12 +26,14 @@ ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 tilo-actions = { path = "../../crates/collab/actions" }
 # Tilo-device sessions consume the authenticated exact-target mesh placement;
 # Remote does not maintain a second host-selection implementation.
-tilo-relay = { path = "../../crates/hosting/tilo-relay" }
+tilo-relay-protocol = { path = "../../crates/hosting/tilo-relay-protocol" }
 runtime-collab = { path = "../../crates/runtime/runtime-collab" }
 tilo-callstream = { path = "../../crates/collab/tilo-callstream" }
 # Durable, same-directory replacement for the device-private SSH trust store.
 atomic-file = { path = "../../crates/system/atomic-file" }
-iroh.workspace = true
+# Tilo-device connections store the target's endpoint id; only the key types
+# are needed, not the iroh transport.
+iroh-base = { workspace = true, features = ["key"] }
 automerge.workspace = true
 serde.workspace = true
 serde_json.workspace = true

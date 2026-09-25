@@ -206,7 +206,7 @@ impl Default for CzAnchors {
 pub struct CzResponse {
     /// The panel consumed the event.
     pub handled: bool,
-    /// The user asked to export the unattended-install config.
+    /// The user asked to export the secret-free media preconfiguration.
     pub export_requested: bool,
 }
 

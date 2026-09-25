@@ -21,6 +21,10 @@ bash -n "$repo/apps/imager/packaging/package-host.sh" \
   "$repo/apps/imager/packaging/revoke-github-installation-token.sh" \
   "$repo/apps/imager/packaging/publish-github-release.sh" \
   "$repo/apps/imager/packaging/publish-forgejo-release.sh" \
+  "$repo/apps/imager/packaging/publish-internal-bundle.sh" \
+  "$repo/os/dev/export-internal-bundle.sh" \
+  "$repo/os/tests/internal_bundle_export.sh" \
+  "$repo/os/tests/internal_bundle_catalog.sh" \
   "$repo/apps/imager/packaging/publish-homebrew-tap.sh" \
   "$repo/apps/imager/packaging/publish-site-release.sh" \
   "$repo/apps/imager/packaging/monitor-winget-acceptance.sh" \
@@ -34,6 +38,14 @@ bash "$repo/os/tests/forgejo_release_publication.sh" \
   || bad 'GitHub release publication is not target-scoped, idempotent, and immutable'
 bash "$repo/os/tests/public_release_origin.sh" \
   || bad 'installer catalog is not bound to the configured public release origin'
+bash "$repo/os/tests/internal_bundle_catalog.sh" \
+  || bad 'internal installer catalog entries are not bound to exact published manifests'
+[ "$(grep -Fc "startsWith(github.ref, 'refs/tags/imager-v') && vars.IMAGER_INTERNAL_BUNDLE == 'publish'" "$workflow")" -eq 2 ] \
+  && grep -Fq 'IMAGER_INTERNAL_BUNDLE_CREDENTIAL_BROKER' "$workflow" \
+  && grep -Fq 'sudo -n bash os/tests/internal_bundle_export.sh' "$workflow" \
+  && grep -Fq 'acquire-release-token.sh" internal-bundle' "$repo/apps/imager/packaging/publish-internal-bundle.sh" \
+  && ok 'internal installer bundles publish only from opted-in, tested tag builds' \
+  || bad 'internal installer bundle publication is not gated on tags, opt-in and the export test'
 bash "$repo/os/tests/winget_publication_idempotency.sh" \
   || bad 'WinGet publication retry does not recognize exact accepted manifests'
 bash "$repo/os/tests/winget_acceptance_monitor.sh" \
@@ -151,7 +163,7 @@ if grep -Fq "release_repository=\"\${TILO_RELEASE_REPOSITORY:-tilo-os/releases}\
    && grep -Fq 'persist-credentials: false' <<<"$publish_job" \
    && ! grep -Fq '${{ github.token }}' <<<"$publish_job" \
    && grep -Fq '.releaseRoot = $release_root' "$repo/apps/imager/packaging/publish-site-release.sh" \
-   && grep -Fq 'landing page does not consume the public releaseRoot manifest field' "$repo/apps/imager/packaging/publish-site-release.sh" \
+   && grep -Fq 'landing page does not expose required release asset' "$repo/apps/imager/packaging/publish-site-release.sh" \
    && ! grep -Fq 'tilo/tilo/releases/download' \
       "$repo/apps/imager/packaging/package-install-medium.sh" \
       "$repo/apps/imager/packaging/build-release-catalog.sh" \
@@ -355,7 +367,9 @@ grep -Fq 'tilo-os/homebrew-tilo' "$repo/apps/imager/packaging/publish-homebrew-t
   && grep -Fq 'state=open&base=master&head=' "$repo/apps/imager/packaging/publish-winget.sh" \
   && grep -Fq 'homebrew "$CREDENTIAL_BROKER" "$token_file"' "$workflow" \
   && grep -Fq 'winget "$CREDENTIAL_BROKER" "$token_file"' "$workflow" \
-  && grep -Fq 'ALLOW_STATIC_BOOTSTRAP' "$workflow" \
+  && grep -Fq 'IMAGER_HOMEBREW_CREDENTIAL_BROKER' "$workflow" \
+  && grep -Fq 'IMAGER_WINGET_CREDENTIAL_BROKER' "$workflow" \
+  && ! grep -Fq 'ALLOW_STATIC_BOOTSTRAP' "$workflow" \
   && ok 'first-party Homebrew and public WinGet promotion are automated' \
   || bad 'a package-index promotion path is missing'
 
@@ -365,10 +379,14 @@ grep -Fq 'site-downloads:' "$workflow" \
   && grep -Fq '.linuxSigningFingerprint = $fingerprint' "$repo/apps/imager/packaging/publish-site-release.sh" \
   && grep -Fq '.channels.homebrew = "available"' "$repo/apps/imager/packaging/publish-site-release.sh" \
   && grep -Fq '.channels.winget = $winget_state' "$repo/apps/imager/packaging/publish-site-release.sh" \
-  && grep -Fq 'for asset_key in macosX64Dmg macosX64Portable macosArm64Dmg macosArm64Portable' \
+  && grep -Fq 'linuxX64Flatpak linuxArm64Flatpak linuxX64AppImage linuxArm64AppImage' \
     "$repo/apps/imager/packaging/publish-site-release.sh" \
-  && grep -Fq 'landing page does not expose required macOS asset' \
+  && grep -Fq 'landing page does not expose required release asset' \
     "$repo/apps/imager/packaging/publish-site-release.sh" \
+  && grep -Fq "'brew install --cask tilo-imager' 'brew install tilo-imager'" \
+    "$repo/apps/imager/packaging/publish-site-release.sh" \
+  && grep -Fq "IMAGER_PUBLIC_RELEASE_REPOSITORY || 'tilo-os/releases'" \
+    "$repo/.forgejo/workflows/monitor-winget.yml" \
   && grep -Fq 'raw.githubusercontent.com/microsoft/winget-pkgs/master/manifests/q/Tilo/Imager/${version}/Tilo.Imager.yaml' "$repo/apps/imager/packaging/publish-site-release.sh" \
   && grep -Fq 'TILO_LINUX_SIGNING_FINGERPRINT: ${{ vars.IMAGER_LINUX_SIGNING_FINGERPRINT }}' "$workflow" \
   && ok 'landing-page manifest advances only through the gated release workflow' \
@@ -406,7 +424,8 @@ if grep -Fq 'TILO_INSTALLER_OS_IMAGE' "$workflow" \
    && grep -Fq 'generation_image="code.podesta.ai/qos/tilo:gen$generation"' "$published_image" \
    && grep -Fq 'generation_digest' "$published_image" \
    && grep -Fq 'published generation tag gen$generation binds' "$published_image" \
-   && grep -Fq 'TILO_EXPECTED_OS_SOURCE_REVISION: ${{ github.sha }}' "$workflow" \
+   && grep -Fq "TILO_EXPECTED_OS_SOURCE_REVISION: \${{ startsWith(github.ref, 'refs/tags/imager-v') && github.sha || '' }}" "$workflow" \
+   && grep -Fq 'rehearsal overlays $GITHUB_SHA onto verified published generation' "$workflow" \
    && grep -Fq 'resolvedDependencies[]?; .uri == $source' "$published_image" \
    && grep -Fq 'podman tag "$image" "$TILO_IMAGE"' "$published_image"; then
   ok 'installer media consume one verified, digest-pinned published OS generation'
@@ -432,6 +451,10 @@ if grep -Fq './os/dev/test-installer-cycle.sh' "$workflow" \
   && [ "$image_tools_line" -lt "$image_auth_line" ] \
   && grep -Fq 'ntfs-3g podman' "$workflow" \
   && grep -Fq 'mtype ntfscp podman qemu-img' "$workflow" \
+  && grep -Fq 'cycle_graphics=(--graphics software)' "$workflow" \
+  && grep -Fq 'export TILO_ACCEL=tcg' "$workflow" \
+  && grep -Fq 'if [[ "$GITHUB_REF" == refs/tags/imager-v* ]]; then' "$workflow" \
+  && grep -Fq 'test -c /dev/kvm && test -r /dev/kvm && test -w /dev/kvm' "$workflow" \
   && grep -Fq -- '--prepared-alongside' "$workflow" \
   && grep -Fq -- '--guided-alongside' "$workflow" \
   && grep -Fq 'dist/installer-guided-alongside-cycle' "$workflow" \
@@ -536,11 +559,15 @@ grep -Fq 'BOOT_SIGNAL="serial-getty"' "$boot_verify" \
   && [ "$(grep -Fc 'pull_request:' "$workflow")" -eq 0 ] \
   && grep -Fq 'runner":"imager-linux-x86_64"' "$workflow" \
   && grep -Fq 'runner":"imager-linux-aarch64"' "$workflow" \
+  && grep -Fq 'runner":"runner-disk-100g"' "$workflow" \
+  && grep -Fq 'runner":"runner-disk-100g-arm64"' "$workflow" \
+  && grep -Fq 'matrix: ${{ fromJSON(needs.plan.outputs.medium-matrix) }}' "$workflow" \
+  && grep -Fq "if: github.event.inputs.installer_only != 'true'" "$workflow" \
   && grep -Fq './os/dev/assert-native-arch.sh "${{ matrix.arch }}"' "$workflow" \
   && grep -Fq 'TILO_VM_CYCLE: release-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.arch }}' "$workflow" \
   && grep -Fq -- '--authfile "$REGISTRY_AUTH_FILE"' "$workflow" \
   && ! grep -Fq 'TILO_REGISTRY_CREDS:' "$workflow" \
-  && ok 'installer media runs only on explicit, architecture-matched native release hosts' \
+  && ok 'installer media runs only on explicit, architecture-matched native release or rehearsal hosts' \
   || bad 'installer-medium event, architecture, or registry-auth boundary is incomplete'
 
 grep -Fq 'key: imager-linux-tools-${{ matrix.arch }}-' "$workflow" \
@@ -564,7 +591,9 @@ grep -Fq "group: release-imager-\${{ startsWith(github.ref, 'refs/tags/imager-v'
 winget_monitor="$repo/.forgejo/workflows/monitor-winget.yml"
 winget_reconcile="$repo/apps/imager/packaging/monitor-winget-acceptance.sh"
 grep -Fq 'cron: "23 */6 * * *"' "$winget_monitor" \
-  && grep -Fq "if: vars.IMAGER_SITE_CREDENTIAL_BROKER != '' || vars.IMAGER_ALLOW_STATIC_SIGNING_BOOTSTRAP == '1'" "$winget_monitor" \
+  && grep -Fq "IMAGER_PUBLIC_RELEASE_REPOSITORY || 'tilo-os/releases'" "$winget_monitor" \
+  && grep -Fq "if: vars.IMAGER_SITE_CREDENTIAL_BROKER != ''" "$winget_monitor" \
+  && ! grep -Fq 'secrets.' "$winget_monitor" \
   && grep -Fq 'enable-openid-connect: true' "$winget_monitor" \
   && grep -Fq 'IMAGER_SITE_CREDENTIAL_BROKER' "$winget_monitor" \
   && grep -Fq 'acquire-release-token.sh' "$winget_monitor" \

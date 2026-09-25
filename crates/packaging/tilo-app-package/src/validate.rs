@@ -7,7 +7,7 @@
 //! - `package.runtime` is `<name>/<semver>`, absent for `kind = "runtime"`.
 //! - `kind = "app"` has `[entrypoint]` with `bin` set.
 //! - `kind = "format-provider"` has non-empty `providers.mime` and
-//!   ships `component.wasm` (payload-side counterpart in
+//!   ships [`FORMAT_PROVIDER_MODULE`] (payload-side counterpart in
 //!   [`validate_manifest_with_payload`]; this only enforces the mime half).
 //! - `publisher.identity` parses as `ed25519:<32-byte-hex>`.
 //! - `publisher.signature`, if present, parses as 64-byte hex.
@@ -16,6 +16,11 @@ use semver::Version;
 
 use crate::id::Kind;
 use crate::manifest::{ContinuityFacet, EntrypointType, Manifest};
+
+/// File a `kind = "format-provider"` payload must ship: the provider's core
+/// WebAssembly module, which the format host checks against its provider ABI
+/// when loading it.
+pub const FORMAT_PROVIDER_MODULE: &str = "provider.wasm";
 
 /// Validation failure reasons; each variant is one concrete invariant a manifest can violate, surfaced verbatim by the CLI.
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
@@ -32,6 +37,8 @@ pub enum ManifestError {
     AppMissingEntrypoint,
     #[error("kind=format-provider requires non-empty `providers.mime`")]
     FormatProviderMissingMime,
+    #[error("kind=format-provider requires `provider.wasm` in the payload")]
+    FormatProviderMissingModule,
     #[error("invalid provider file extension {0:?}")]
     BadProviderExtension(String),
     #[error("invalid provider MIME type {0:?}")]
@@ -300,14 +307,13 @@ fn is_calver(ver: &str) -> bool {
 }
 
 /// Payload-aware validation, called after walking the payload
-/// directory: checks `format-provider` ships `component.wasm` and
-/// `entrypoint.bin` resolves.
+/// directory: checks `format-provider` ships [`FORMAT_PROVIDER_MODULE`].
 ///
 /// # Errors
 ///
 /// Returns whatever [`validate_manifest`] would for the manifest alone, or
-/// [`ManifestError::FormatProviderMissingMime`] if `kind = "format-provider"`
-/// and `payload_files` has no `component.wasm`.
+/// [`ManifestError::FormatProviderMissingModule`] if `kind = "format-provider"`
+/// and `payload_files` has no [`FORMAT_PROVIDER_MODULE`].
 pub fn validate_manifest_with_payload(
     m: &Manifest,
     payload_files: &[std::path::PathBuf],
@@ -316,11 +322,9 @@ pub fn validate_manifest_with_payload(
     if matches!(m.package.kind, Kind::FormatProvider)
         && !payload_files
             .iter()
-            .any(|p| p.file_name().is_some_and(|n| n == "component.wasm"))
+            .any(|p| p.file_name().is_some_and(|n| n == FORMAT_PROVIDER_MODULE))
     {
-        // Promoting this from the docstring rule to an enforced payload-side
-        // check, using the same enum so the CLI handler renders one error message.
-        return Err(ManifestError::FormatProviderMissingMime); // re-used; see below
+        return Err(ManifestError::FormatProviderMissingModule);
     }
     Ok(())
 }
@@ -353,6 +357,30 @@ write = []
 mode = "off"
         "#;
         Manifest::from_toml_str(src).unwrap()
+    }
+
+    fn minimal_format_provider_manifest() -> Manifest {
+        let mut m = minimal_runtime_manifest();
+        m.package.kind = Kind::FormatProvider;
+        m.providers.mime = vec!["text/markdown".into()];
+        m
+    }
+
+    #[test]
+    fn format_provider_payload_needs_provider_module() {
+        let m = minimal_format_provider_manifest();
+        assert_eq!(
+            validate_manifest_with_payload(&m, &["provider.wasm".into()]),
+            Ok(())
+        );
+        assert_eq!(
+            validate_manifest_with_payload(&m, &["component.wasm".into()]),
+            Err(ManifestError::FormatProviderMissingModule)
+        );
+        assert_eq!(
+            validate_manifest_with_payload(&m, &[]),
+            Err(ManifestError::FormatProviderMissingModule)
+        );
     }
 
     #[test]

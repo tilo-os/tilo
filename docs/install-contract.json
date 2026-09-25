@@ -37,6 +37,12 @@
       "efiMinimumGiB": 2,
       "efiMinimumFreeGiB": 1,
       "resizesExistingFilesystems": false
+    },
+    "stagedLiveInstaller": {
+      "liveInstallerModes": ["guided-alongside"],
+      "targetMinimumGiB": 34,
+      "reclaimsStagingAfterFirstSession": true,
+      "resizesExistingFilesystems": false
     }
   },
   "desktopSession": [
