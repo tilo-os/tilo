@@ -94,7 +94,11 @@ class BuilderCandidates(unittest.TestCase):
 
     def test_legacy_subjects_are_installed_only_for_e2e_and_cannot_be_skipped(self):
         subjects = ['gnome-text-editor', 'qt6-qtbase-examples', 'libreoffice-writer']
-        recipe = (ROOT / 'os/Containerfile.builder').read_text()
+        # The builder installs the shared script's `fedora test` profile, so the
+        # image's test subjects are the recipe plus that script.
+        builder = (ROOT / 'os/Containerfile.builder').read_text()
+        self.assertIn('install-build-deps.sh fedora test', builder)
+        recipe = builder + (ROOT / 'dist/ci/install-build-deps.sh').read_text()
         for subject in subjects[1:]:
             self.assertNotIn(subject, recipe)
         self.assertIn("gnome-text-editor", recipe)
