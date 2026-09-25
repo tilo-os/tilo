@@ -70,6 +70,11 @@ impl std::fmt::Debug for RecordProtocolCredentialV1 {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "a wire operation decoded once per request and consumed immediately; boxing the \
+              envelope would only add an allocation per write"
+)]
 pub enum RecordProtocolOperationV1 {
     Read,
     Write(RecordEnvelopeV1),

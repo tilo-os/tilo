@@ -156,6 +156,10 @@ impl RepositoryLease<'_> {
             .unwrap_or(0)
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "validates every participant and installs the fences under one R lease in a single pass"
+    )]
     pub fn prepare<A: RecordAuthorizer + ?Sized>(
         &self,
         journal: &RecordTransactionJournal,
@@ -212,10 +216,10 @@ impl RepositoryLease<'_> {
                 record_id: participant.record_id,
             };
             let current = records.get(&key);
-            if let Some(reserved) = current.and_then(|record| record.pending_restore) {
-                if reserved != id {
-                    return Err(RecordRepositoryError::RestoreRecoveryRequired(reserved));
-                }
+            if let Some(reserved) = current.and_then(|record| record.pending_restore)
+                && reserved != id
+            {
+                return Err(RecordRepositoryError::RestoreRecoveryRequired(reserved));
             }
             let exact_suffix = current.is_some_and(|record| {
                 record
@@ -233,10 +237,10 @@ impl RepositoryLease<'_> {
                         participant.record_id,
                     ));
                 }
-            } else if !(matches!(
+            } else if !matches!(
                 transaction.manifest.operation,
                 collab_types::FileMutationOperation::RestoreContent { .. }
-            ) && !journal_missing)
+            ) || journal_missing
             {
                 let snapshot = projected_snapshot(records, key, Some(id))?;
                 if snapshot
@@ -318,7 +322,7 @@ impl RepositoryLease<'_> {
         }
         if journal_missing {
             journal
-                .insert_prepared(entry.clone())
+                .insert_prepared(entry)
                 .map_err(RecordRepositoryError::TransactionJournal)?;
             checkpoint(RecordTransactionCheckpoint::PreparedJournalDurable)
                 .map_err(RecordRepositoryError::TransactionFailureInjected)?;
@@ -370,6 +374,15 @@ impl RecordRepository {
 
     /// Seed admission fences before exposing a reopened repository to writers.
     /// Caller retains J; this method only acquires R. No second durable owner.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the record state is poisoned, a prepared
+    /// participant record is missing, or it is fenced by another transaction.
+    #[expect(
+        clippy::significant_drop_tightening,
+        reason = "all admission fences are seeded under one R lease"
+    )]
     pub fn restore_admission_fences(
         &self,
         journal: &RecordTransactionJournal,
@@ -415,6 +428,10 @@ impl RecordRepository {
     /// before any persistence. Re-persisting the verified current records
     /// establishes durability even after an ambiguous earlier write error and
     /// retains any later accepted envelopes. A phase alone never clears a fence.
+    #[expect(
+        clippy::significant_drop_tightening,
+        reason = "R stays held from batch validation through persistence to fence clearing"
+    )]
     pub(crate) fn complete_admitted_restore_participation(
         &self,
         journal: &mut RecordTransactionJournal,
@@ -491,6 +508,10 @@ impl RecordRepository {
             )?;
         }
         for key in keys {
+            #[expect(
+                clippy::expect_used,
+                reason = "every key was looked up in `records` above under the same R lease"
+            )]
             let record = records
                 .get_mut(&key)
                 .expect("validated under the same R lease");
@@ -1264,6 +1285,14 @@ fn projected_snapshot(
     Ok(snapshot)
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "one exhaustive match over the transaction operations and their preconditions"
+)]
+#[expect(
+    clippy::suspicious_operation_groupings,
+    reason = "a history version's `id` is the version id the prior revision points at"
+)]
 fn validate_structural_precondition(
     manifest: &collab_types::FileMutationTransactionManifest,
     record_id: FileRecordId,
@@ -2504,6 +2533,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "end-to-end scenario that reads top to bottom"
+    )]
     fn later_signed_edit_and_binding_survive_completed_transaction_projection_and_reopen() {
         let fixture = Fixture::new();
         let repository = RecordRepository::open(&fixture.root).unwrap();
