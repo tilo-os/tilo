@@ -4,10 +4,6 @@
 # no native build starts under a key that verifiers would reject.
 set -eu
 repo=$(CDPATH='' cd -- "$(dirname -- "$0")/../.." && pwd)
-case ${COSIGN_KEY_REF:-} in
-  gcpkms://*|awskms://*|azurekms://*|hashivault://*) ;;
-  *) echo '::error::COSIGN_KEY_REF must name a non-exportable KMS/HSM key' >&2; exit 1 ;;
-esac
 . "$repo/os/dev/configure-cosign-kms.sh"
 resolved=$(mktemp "${RUNNER_TEMP:-${TMPDIR:-/tmp}}/signing-authority.XXXXXX")
 cosign public-key --key "$COSIGN_KEY_REF" > "$resolved"

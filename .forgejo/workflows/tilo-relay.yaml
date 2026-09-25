@@ -395,10 +395,6 @@ jobs:
           AWS_SIGNING_ROLE_ARN: ${{ secrets.AWS_SIGNING_ROLE_ARN }}
         run: |
           set -euo pipefail
-          case "$COSIGN_KEY_REF" in
-            gcpkms://*|awskms://*|azurekms://*|hashivault://*) ;;
-            *) echo "::error::COSIGN_KEY_REF must name a non-exportable KMS/HSM key"; exit 1 ;;
-          esac
           . os/dev/configure-cosign-kms.sh
           ref="code.podesta.ai/qos/tilo-relay@${{ steps.build.outputs.digest }}"
           cosign sign --yes --key "$COSIGN_KEY_REF" "$ref"

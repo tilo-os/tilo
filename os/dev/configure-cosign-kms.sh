@@ -1,4 +1,11 @@
 #!/bin/sh
+# Every signing step sources this before calling Cosign. Release keys must stay
+# inside a KMS/HSM, so refuse any other key reference before anything else.
+case ${COSIGN_KEY_REF:-} in
+  gcpkms://*|awskms://*|azurekms://*|hashivault://*) ;;
+  *) echo '::error::COSIGN_KEY_REF must name a non-exportable KMS/HSM key' >&2; exit 1 ;;
+esac
+
 # Cosign's AWS KMS provider does not infer the SDK region from every supported
 # awskms URI form. Derive it from the already trusted key ARN so workflows do
 # not need a second, independently configurable region secret.
