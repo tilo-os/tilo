@@ -983,6 +983,10 @@ mod tests {
     /// with an error toast, the Do-Not-Disturb pill over held items, and the
     /// locked-session card — at 1× and 200 % text, dark and light.
     #[test]
+    #[expect(
+        clippy::many_single_char_names,
+        reason = "viewport size and sampled colour channels read best as w/h and r/g/b/e"
+    )]
     fn notification_stack_review_fixtures_are_written() {
         let out = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../target/ui-review/s2-r2/notifications");
@@ -1450,8 +1454,10 @@ mod tests {
         chrome.borrow_mut().pump_dbus_notifications();
         assert!(bridge.drain_continuity_outbound().is_empty());
 
-        let mut policy = settings_store::notification_policy::NotificationPolicy::default();
-        policy.show_previews = false;
+        let policy = settings_store::notification_policy::NotificationPolicy {
+            show_previews: false,
+            ..Default::default()
+        };
         chrome
             .borrow_mut()
             .set_notification_policy_for_tests(policy);

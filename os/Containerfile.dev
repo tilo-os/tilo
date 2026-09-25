@@ -40,8 +40,9 @@
 #         -t localhost/tilo-vm:latest .
 #
 # os/dev/build-dev-image.sh (./os/build.sh --dev) does that for the local
-# production image and then writes a disk. The CI lane is
-# .forgejo/workflows/dev-disk.yml.
+# production image and then writes a disk. CI runs the same script: the OS
+# integration lane (.forgejo/workflows/build-image.yml) FROM the image it just
+# built, and .forgejo/workflows/dev-disk.yml FROM a published one.
 # ============================================================================
 
 # The production image to derive from: `localhost/tilo:latest` (./os/build.sh),
@@ -78,6 +79,10 @@ RUN test -s /usr/lib/tilo/generation \
 # Unseal first: everything below changes the rootfs the UKI's digest describes.
 RUN --mount=type=bind,from=dev-inputs,source=/tilo,target=/run/tilo-dev \
     python3 /run/tilo-dev/os/scripts/unseal-rootfs.py /
+
+# tilo-vm hands a dev VM its root SSH key as an SMBIOS credential
+# (ssh.authorized_keys.root), which the sealed image refuses to import.
+RUN rm /usr/lib/bootc/kargs.d/05-credentials.toml
 
 # Fail now, not at the first slot, when this kernel cannot give a slot a seat.
 RUN --mount=type=bind,from=dev-inputs,source=/tilo,target=/run/tilo-dev \
@@ -203,6 +208,7 @@ RUN --mount=type=bind,from=dev-inputs,source=/tilo,target=/run/tilo-dev \
       --base-image "$BASE_IMAGE" --base-digest "$TILO_BASE_DIGEST" \
       --base-created "$TILO_BASE_CREATED" \
       --cargo-lock /run/tilo-dev/Cargo.lock \
+    && systemctl unmask systemd-sysext.service \
     && systemctl enable sshd.service systemd-sysext.service tilo-vm-restore.service \
     && test -x /usr/bin/tilo-control && test -x /usr/libexec/tilo-vmd \
     && /usr/bin/tilo-vmd --version \

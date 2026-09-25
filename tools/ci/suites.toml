@@ -58,6 +58,7 @@ suites = [
   "os/tests/installer_offline_target_test.py",
   "os/tests/local_boot_esp.sh",
   "os/tests/portal_config_validity.sh",
+  "os/tests/sealed_extensions.sh",
   "os/tests/test-installer-cycle-runtime.py",
   "os/tests/test_adopt_development_wpe.py",
   "os/tests/test_allocate_windows_direct_final_install.py",
@@ -434,9 +435,9 @@ inputs = ["crates/system/block-devices/tests/fixtures/disks.json"]
 readers = ["apps/disks/src/probe.rs"]
 
 [[cargo]]
-package = "qdoc"
+package = "qdoc-codecs"
 inputs = ["crates/doc/fixtures/"]
-readers = ["crates/doc/qdoc/src/codecs/bulk_equivalence.rs", "crates/doc/qdoc/tests/office_roundtrip.rs"]
+readers = ["crates/doc/qdoc-codecs/src/bulk_equivalence.rs", "crates/doc/qdoc-codecs/tests/office_roundtrip.rs"]
 
 [[cargo]]
 package = "tilo-pdf"
@@ -545,6 +546,10 @@ by = "os/tests/imager_release_invariants.sh"
 [[covered]]
 suite = "os/containers/tilo-relay/test-base-retry.sh"
 by = "os/containers/tilo-relay/test-contract.sh"
+
+[[covered]]
+suite = "os/tests/test_require_cosign_authority.py"
+by = "os/tests/workflow_dependency_invariants.sh"
 
 [[covered]]
 suite = "os/tests/frozen_source_fixture.py"

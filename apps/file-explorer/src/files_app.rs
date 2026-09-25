@@ -4462,7 +4462,7 @@ impl CommandRunner for SystemRunner {
 pub fn is_document(path: &std::path::Path) -> bool {
     path.extension()
         .and_then(|e| e.to_str())
-        .is_some_and(qdoc::is_supported_ext)
+        .is_some_and(qdoc_codecs::is_supported_ext)
 }
 
 /// Presentation-side lower bound for the daemon's fail-closed merge codecs.

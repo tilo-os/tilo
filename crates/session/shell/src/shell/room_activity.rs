@@ -350,6 +350,10 @@ fn local_resume_snapshot(entries: &[HistoryEntry]) -> Option<ResumeSnapshot> {
     clippy::too_many_arguments,
     reason = "resume card rendering receives the ordinary immediate-mode scene and typography context"
 )]
+#[expect(
+    clippy::too_many_lines,
+    reason = "a paint routine that lays its elements out top to bottom from shared running offsets"
+)]
 fn draw_resume_card(
     scene: &mut Scene,
     transform: Affine,
@@ -5262,6 +5266,10 @@ impl RoomActivityPane {
         out
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "a declarative focus order covering every activity view"
+    )]
     fn focus_order(&self) -> Vec<ActivityFocus> {
         let mut order = Vec::new();
         order.extend(
@@ -7298,7 +7306,7 @@ fn draw_brief_author_stack(
     let visible = authors.len().min(2);
     for (index, author) in authors.iter().take(visible).enumerate() {
         let avatar_x = x + small_count_to_f64(index) * 12.0;
-        let (r, g, b) = ui::widget::history::hue_to_rgb(author.avatar_hue);
+        let (red, green, blue) = ui::widget::history::hue_to_rgb(author.avatar_hue);
         let initial = author
             .name
             .chars()
@@ -7311,7 +7319,7 @@ fn draw_brief_author_stack(
             transform,
             Rect::new(avatar_x, y - 2.0, avatar_x + 18.0, y + 16.0),
             &initial,
-            vello::peniko::Color::from_rgba8(r, g, b, 255),
+            vello::peniko::Color::from_rgba8(red, green, blue, 255),
             theme,
             tr,
         );
@@ -10282,10 +10290,10 @@ mod tests {
             if !chip_names.iter().any(|chip| chip == name) {
                 continue;
             }
-            let rect = node
-                .bounds
-                .map(ui::AccessBounds::to_rect)
-                .unwrap_or_else(|| panic!("{name:?} publishes its hit rect"));
+            let rect = node.bounds.map_or_else(
+                || panic!("{name:?} publishes its hit rect"),
+                ui::AccessBounds::to_rect,
+            );
             assert!(
                 targets.contains(&rect),
                 "{name:?} publishes the rect the pointer hits"
@@ -10465,6 +10473,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "an end-to-end test scenario that reads top to bottom"
+    )]
     fn catch_up_redraws_work_session_boundaries_without_rewriting_history() {
         let (mut tree, _, _) = busy_room();
         let mut pane = pane_over(&mut tree);

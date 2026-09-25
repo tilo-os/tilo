@@ -1,6 +1,6 @@
 //! Consent-bound personal-device tethering.
 //!
-//! A local hotspot is an ordinary NetworkManager action. Remote tethering is
+//! A local hotspot is an ordinary `NetworkManager` action. Remote tethering is
 //! a different operation: one certified device asks an exact certified phone
 //! to offer connectivity, the phone prompts locally, and an accepted request
 //! receives a short-lived nonce plus a Wi-Fi credential sealed only to the
@@ -28,7 +28,7 @@ pub type TetheringNonce = [u8; 16];
 /// The two intentionally different Quick Settings choices.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum TetheringRoute {
-    /// Turn this machine's NetworkManager hotspot on or off.
+    /// Turn this machine's `NetworkManager` hotspot on or off.
     LocalHotspot,
     /// Ask one certified phone to offer tethering. This never toggles the
     /// requester's local hotspot profile.
@@ -154,6 +154,16 @@ impl std::fmt::Debug for TetheringSignal {
 impl TetheringSignal {
     /// Validate the immutable transport-visible contract. Stateful replay and
     /// grant checks remain the responsibility of [`PersonalTethering`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TetheringError::InvalidRequest`], [`TetheringError::InvalidDecision`]
+    /// or [`TetheringError::InvalidCredential`], by signal kind, when the signal
+    /// breaks its wire contract for this source, target and time.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one exhaustive validator checks every tethering signal's wire contract"
+    )]
     pub fn validate_transport(
         &self,
         authenticated_source: &DeviceId,
@@ -280,7 +290,7 @@ pub enum TetheringEvent {
         provider: DeviceId,
     },
     /// The shell may decrypt this sealed credential only immediately before
-    /// passing it to NetworkManager. UI and logs receive the metadata fields.
+    /// passing it to `NetworkManager`. UI and logs receive the metadata fields.
     ConnectOffered {
         request_id: TetheringId,
         provider: DeviceId,
@@ -323,7 +333,13 @@ pub struct PersonalTethering {
 
 impl PersonalTethering {
     /// Begin a remote request. `LocalHotspot` is rejected because it belongs
-    /// to the existing local NetworkManager action, not this protocol.
+    /// to the existing local `NetworkManager` action, not this protocol.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TetheringError::LocalRoute`] for the local hotspot route and
+    /// [`TetheringError::InvalidRequest`] when the requester names itself, the id or
+    /// label is invalid, the id is already pending, or too many requests are pending.
     pub fn request(
         &mut self,
         route: TetheringRoute,
@@ -366,6 +382,13 @@ impl PersonalTethering {
     /// Accept an authenticated request only when its claimed requester is the
     /// transport source and its target is this exact phone. Duplicate ids are
     /// rejected rather than replacing another pending consent.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TetheringError::UnexpectedSignal`] for any other signal kind and
+    /// [`TetheringError::InvalidRequest`] for an unsupported version, a request not
+    /// from `authenticated_source` to `local_device`, an invalid id or label, a stale
+    /// or expired request, a duplicate id, or too many pending consents.
     pub fn receive_request(
         &mut self,
         authenticated_source: &DeviceId,
@@ -417,6 +440,13 @@ impl PersonalTethering {
 
     /// Apply the phone user's explicit decision. Acceptance requires a fresh
     /// nonzero nonce and a credential sealed only to the exact requester.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TetheringError::UnknownRequest`] for an id with no pending
+    /// consent, [`TetheringError::Expired`] once it lapsed, and
+    /// [`TetheringError::InvalidDecision`] or [`TetheringError::InvalidCredential`]
+    /// when the nonce or credential does not fit the decision.
     pub fn decide(
         &mut self,
         local_device: &DeviceId,
@@ -483,6 +513,15 @@ impl PersonalTethering {
         ])
     }
 
+    /// Apply the provider's authenticated decision to this device's request.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TetheringError::UnexpectedSignal`] for any other signal kind,
+    /// [`TetheringError::UnknownRequest`] for an id this device did not request, and
+    /// [`TetheringError::InvalidDecision`] for an unsupported version, another route,
+    /// an expired request, a nonce that does not fit the decision, or a grant expiry
+    /// outside its bounds.
     pub fn receive_decision(
         &mut self,
         authenticated_source: &DeviceId,
@@ -537,6 +576,15 @@ impl PersonalTethering {
         Ok(None)
     }
 
+    /// Accept the sealed credential for a granted request.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TetheringError::UnexpectedSignal`] for any other signal kind,
+    /// [`TetheringError::UnknownRequest`] for an id this device did not request, and
+    /// [`TetheringError::InvalidCredential`] for an unsupported version, another
+    /// route, a nonce or expiry that differs from the grant, an expired grant, or a
+    /// credential not sealed to this requester.
     pub fn receive_credential(
         &mut self,
         authenticated_source: &DeviceId,
@@ -579,6 +627,14 @@ impl PersonalTethering {
         })
     }
 
+    /// End this device's request when its provider stops the lease.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TetheringError::UnexpectedSignal`] for any other signal kind,
+    /// [`TetheringError::UnknownRequest`] for an id this device did not request, and
+    /// [`TetheringError::InvalidDecision`] for an unsupported version, another route,
+    /// or a nonce that differs from the grant.
     pub fn receive_stop(
         &mut self,
         authenticated_source: &DeviceId,
@@ -616,6 +672,11 @@ impl PersonalTethering {
 
     /// Cancel a requester-owned pending or active request and return the exact
     /// authenticated cancellation message for its provider.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TetheringError::UnknownRequest`] when this device has no such
+    /// request.
     pub fn cancel_request(
         &mut self,
         local_device: &DeviceId,
@@ -636,6 +697,13 @@ impl PersonalTethering {
 
     /// Consume a requester-authored cancellation only for the exact pending
     /// consent or provider lease and nonce it names.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TetheringError::UnexpectedSignal`] for any other signal kind,
+    /// [`TetheringError::InvalidDecision`] for an unsupported version, another route,
+    /// or a requester or nonce that does not match, and
+    /// [`TetheringError::UnknownRequest`] when nothing is pending or leased.
     pub fn receive_cancel(
         &mut self,
         authenticated_source: &DeviceId,
@@ -683,6 +751,11 @@ impl PersonalTethering {
     }
 
     /// End a provider-owned active lease and produce its exact stop message.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TetheringError::UnknownRequest`] when this device holds no such
+    /// lease.
     pub fn stop_provider_lease(
         &mut self,
         local_device: &DeviceId,

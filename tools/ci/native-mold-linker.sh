@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
-# Opt-in Rust linker for native GNU/Linux CI builds.
+# Default Rust linker for native GNU/Linux builds in the CI builder image.
+# os/Containerfile.builder routes only the native target here and sets
+# TILO_CI_MOLD_TARGET through Cargo's [env], so a cross build never reaches it.
 set -euo pipefail
 
 fail() {
