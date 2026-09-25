@@ -6,6 +6,7 @@ use std::rc::Rc;
 
 use tilo_resource::{Resource, SearchEntry};
 use ui_core::automerge::{AutoCommit, ChangeHash, ObjId};
+use ui_core::permissions::{LivePermissions, PermissionScope};
 use ui_core::presence::PresenceCtx;
 use ui_core::record::RecordSaveStatus;
 use ui_core::search::{SearchProvider, SearchResult, fuzzy_score};
@@ -29,6 +30,11 @@ pub(crate) struct ResourceRoot<R: Resource> {
     dispatch: Dispatcher<R>,
     saved: LocalState<RecordSaveStatus>,
     heads: Vec<ChangeHash>,
+    /// The participant's permissions, re-checked every sync so a role change
+    /// while the app runs takes effect at once. `None` for a read-only view
+    /// of a past version.
+    permissions: Option<LivePermissions>,
+    write: Option<PermissionScope>,
     content: Element,
 }
 
@@ -58,7 +64,29 @@ impl<R: Resource> ResourceRoot<R> {
             dispatch,
             saved,
             heads: Vec::new(),
+            permissions: None,
+            write: None,
             content,
+        }
+    }
+
+    /// Follow `permissions`: the resource is editable while they grant
+    /// `write`.
+    pub(crate) fn following(
+        mut self,
+        permissions: Option<LivePermissions>,
+        write: PermissionScope,
+    ) -> Self {
+        self.permissions = permissions;
+        self.write = Some(write);
+        self
+    }
+
+    /// Apply a permission change made while the app runs: dispatchers stop
+    /// (or resume) submitting, bound state and surfaces see the new value.
+    fn refresh_access(&self) {
+        if let (Some(permissions), Some(write)) = (&self.permissions, &self.write) {
+            self.dispatch.set_read_only(!permissions.check(write));
         }
     }
 
@@ -134,6 +162,7 @@ impl<R: Resource> Decorator for ResourceRoot<R> {
     }
 
     fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
+        self.refresh_access();
         self.refresh(state);
         self.content.sync(state, path);
     }
