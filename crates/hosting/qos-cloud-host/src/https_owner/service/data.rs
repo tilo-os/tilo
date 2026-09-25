@@ -280,11 +280,34 @@ impl CloudService {
             Err(error) if deferrable(&error) => return Some(request),
             Err(error) => {
                 tracing::debug!(%error, "Cloud event poll refused");
-                refuse(request)
+                // Capacity/contention answers 503; only authorization stays 403.
+                super::refuse_error(request, &error)
             }
         }
         None
     }
+}
+
+/// A complete signed replay group larger than one page (a commit republishing
+/// every record's checkpoint). Groups are atomic, so it is never split: the
+/// consumer is answered the contract's reset and installs a snapshot (a
+/// chunked transfer without a page bound), then continues after it — as the
+/// native host does. Never a denial.
+#[derive(Debug)]
+struct OversizedGroup(&'static str);
+impl std::fmt::Display for OversizedGroup {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.0)
+    }
+}
+impl std::error::Error for OversizedGroup {}
+fn oversized(diagnostic: &'static str) -> anyhow::Error {
+    anyhow::Error::new(OversizedGroup(diagnostic))
+}
+fn is_oversized(error: &anyhow::Error) -> bool {
+    error
+        .chain()
+        .any(|cause| cause.downcast_ref::<OversizedGroup>().is_some())
 }
 
 /// Build a page of complete signed replay groups strictly after the verified
@@ -321,6 +344,25 @@ pub(super) fn replay_page(
         let committed = selection.committed().clone();
         let group = match replay_group(turn, session, selection) {
             Ok(group) => group,
+            Err(error) if groups == 0 && is_oversized(&error) => {
+                if let Some(suppressed) = super::ops_log::admit("oversized_replay_group") {
+                    tracing::info!(
+                        event = "cloud_replay_reset",
+                        reason = "oversized_replay_group",
+                        sequence = committed.sequence,
+                        suppressed,
+                        "Cloud replay group exceeds one page; consumer reset to a snapshot"
+                    );
+                }
+                return Ok(Some(frame(
+                    MessageType::SnapshotRequired,
+                    &state::SnapshotRequired::new(
+                        state::ResetReason::HistoryUnavailable,
+                        turn.delivery_ledger().store_generation,
+                    )
+                    .encode()?,
+                )?));
+            }
             Err(error) if groups == 0 => return Err(error),
             // A later group simply starts the next page.
             Err(_) => break,
@@ -350,10 +392,9 @@ fn replay_group(
     selection: qos_session_peer::ingress::delivery_planning::ReplaySelection<'_>,
 ) -> Result<(Vec<u8>, usize)> {
     let committed = selection.committed().clone();
-    ensure!(
-        selection.entry().publications.len() < PAGE_FRAMES,
-        "complete replay group exceeds page frame budget"
-    );
+    if selection.entry().publications.len() >= PAGE_FRAMES {
+        return Err(oversized("complete replay group exceeds page frame budget"));
+    }
     let pool = turn.publication_pool();
     let mut events = Vec::new();
     let mut raw = 0usize;
@@ -362,10 +403,9 @@ fn replay_group(
         raw = raw
             .checked_add(publication.bytes.len())
             .context("replay size overflow")?;
-        ensure!(
-            raw <= PAGE_BYTES,
-            "complete replay group exceeds page byte budget"
-        );
+        if raw > PAGE_BYTES {
+            return Err(oversized("complete replay group exceeds page byte budget"));
+        }
         let kind = match postcard::from_bytes::<qos_peer_state::NeighbourMsg>(publication.bytes)? {
             qos_peer_state::NeighbourMsg::SyncResp { .. } => EventKind::Governance,
             qos_peer_state::NeighbourMsg::AppDocument { .. } => EventKind::State,
@@ -410,10 +450,9 @@ fn replay_group(
                 .checked_add(framing::HEADER_BYTES + payload.len())
                 .context("replay size overflow")?;
             frames += 1;
-            ensure!(
-                page_len <= PAGE_BYTES && frames <= PAGE_FRAMES,
-                "complete replay group exceeds page budget"
-            );
+            if page_len > PAGE_BYTES || frames > PAGE_FRAMES {
+                return Err(oversized("complete replay group exceeds page budget"));
+            }
             Ok(())
         })?;
     }
@@ -648,7 +687,7 @@ impl Polls {
                 }
                 Err(error) => {
                     tracing::debug!(%error, "held Cloud poll refused");
-                    refuse(parked.pending.into_request());
+                    super::refuse_error(parked.pending.into_request(), &error);
                 }
             }
         }

@@ -1,4 +1,3 @@
-import {firstPartyApp} from './first-party-app.mjs';
 import {createActionStorage} from './action-storage.mjs';
 import {createPeerDelivery} from './peer-delivery.mjs';
 import {createPeerMedia} from './peer-media.mjs';
@@ -261,7 +260,7 @@ return async function connectPeer(options={}){
     const text=String(error);let code=scope==='storage'?'storage-transaction-failed':'transport-unavailable';
     // A signed in-band onboarding refusal (removed member, expired grant) is the
     // host's authoritative answer: stop retrying instead of looping every few seconds.
-    if(/revoked/i.test(text)||/Workspace join rejected \(40[13]\)/.test(text)||error?.code==='membership-refused')code='identity-revoked';else if(['claimed-elsewhere','identity-lost'].includes(error?.code))code='certificate-rejected';else if(/certificate|signature|root mismatch|binding mismatch|HTTP 40[13]/i.test(text))code='certificate-rejected';else if(error?.name==='QuotaExceededError')code='storage-quota';else if(error?.name==='SecurityError')code='storage-denied';
+    if(/revoked/i.test(text)||/Workspace join rejected \(40[13]\)/.test(text)||error?.code==='membership-refused')code='identity-revoked';else if(['claimed-elsewhere','identity-lost'].includes(error?.code))code='certificate-rejected';else if(!error?.sessionRefused&&/certificate|signature|root mismatch|binding mismatch|HTTP 40[13]/i.test(text))code='certificate-rejected';else if(error?.name==='QuotaExceededError')code='storage-quota';else if(error?.name==='SecurityError')code='storage-denied';
     const terminal=['identity-revoked','certificate-rejected'].includes(code);if(terminal&&error&&typeof error==='object')error.terminal=true;
     clearFailure(scope);health={...health,failures:[...health.failures,{id:`session:${scope}`,code,scope:{kind:scope},severity:'error',message:scope==='storage'?'Changes could not be saved on this device. Saving retries automatically.':terminal?'This device needs authorization to reconnect.':'Connection is unavailable. Your saved work is retained.',recovery:[{kind:scope==='storage'?'retry-saving':terminal?'reauthenticate':'retry-connection'}],occurredAtMs:Date.now()}]};return terminal;
   }
@@ -678,7 +677,7 @@ return async function connectPeer(options={}){
         if(snapshot.phase!=='ready')throw Error('Certified record hydration is incomplete');
         const sessionDesktop=snapshot.desktop?.version===1&&snapshot.desktop.mode==='session'&&!mountOptions.app;
         const app=sessionDesktop?'desktop':(mountOptions.app??'writer');
-        const record=sessionDesktop?undefined:snapshot.records.find(row=>firstPartyApp(row.app_id,app==='writer'?'so.tilo.word-processor':'so.tilo.chat'));
+        const record=sessionDesktop?undefined:snapshot.records.find(row=>row.app_id===(app==='writer'?'dev.qos.word-processor':'dev.qos.chat'));
         if(!sessionDesktop&&!record)throw Error('Canonical record missing');
         surfaceAttempts.get(surfaceTargets.get(target))?.cancel();
         const controller=new AbortController();mountControllers.add(controller);

@@ -113,7 +113,7 @@ function fixture({enroll,recoveryClock,initialStatus,acquireStorage,createMedia,
  const syncs=[];const peers=new Set(),mounts=new Set(),closed=[],rebound=[],suspended=new Set();let componentOwners=0,durableRecord,statusCallback,commitStatus,refreshStatus,reconnectStatus,publishFailure=false,failMount=false;
  const locks={request:async(_name,_opts,fn)=>{held++;try{return await fn({});}finally{held--;}}};
  const runtime={peer_delivery_begin:()=>JSON.stringify({kind:"ready"}),peer_delivery_next:()=>JSON.stringify({kind:"idle"}),peer_delivery_stop(){},identity_request:()=>'{public}',identity_complete:()=>'{proof}',bind_identity:()=> identityMaterial,peer_enrollment:()=>JSON.stringify({profile:'p',device:'d',room:'r'}),refresh_storage_lease(){},
-  async connect_peer(_raw,_identity,_bytes,status){statusCallback=status;attempts++;if(gate)await gate.promise;if(failConnect)throw Error('dial failed');const id=++next;peers.add(id);status(JSON.stringify(initialStatus??{phase:'ready',records:[{app_id:'so.tilo.word-processor',record_id:'tab:1',heads:['h']}],health:{transport:{phase:'connected',authenticated:true,generation:'1'},admission:{phase:'ready',requiredRecords:[],pendingPrerequisites:0,progressRevision:'0'}}}));return id;},
+  async connect_peer(_raw,_identity,_bytes,status){statusCallback=status;attempts++;if(gate)await gate.promise;if(failConnect)throw Error('dial failed');const id=++next;peers.add(id);status(JSON.stringify(initialStatus??{phase:'ready',records:[{app_id:'dev.qos.word-processor',record_id:'tab:1',heads:['h']}],health:{transport:{phase:'connected',authenticated:true,generation:'1'},admission:{phase:'ready',requiredRecords:[],pendingPrerequisites:0,progressRevision:'0'}}}));return id;},
   async reconnect_peer(id){attempts++;assert(peers.has(id));if(gate)await gate.promise;if(failConnect)throw Error('dial failed');if(reconnectStatus)statusCallback(JSON.stringify(reconnectStatus()));return id;},
   peer_request_sync(id,generation){assert(peers.has(id));syncs.push([id,generation]);},
   peer_refresh_status(id){assert(peers.has(id));if(refreshStatus)statusCallback(JSON.stringify(refreshStatus()));},
@@ -299,7 +299,7 @@ function clock(){
  let time=0,wallOffset=0,id=0;const timers=new Map();
  return{now:()=>time+wallOffset,shiftWall:ms=>{wallOffset+=ms;},setTimeout:(fn,delay)=>{timers.set(++id,{fn,at:time+delay});return id;},clearTimeout:id=>timers.delete(id),async tick(ms){const end=time+ms;await drain();for(;;){const due=[...timers].filter(([,t])=>t.at<=end).sort((a,b)=>a[1].at-b[1].at)[0];if(!due)break;time=due[1].at;timers.delete(due[0]);due[1].fn();await drain();}time=end;await drain();}};
 }
-const record={roomId:'r',appId:'so.tilo.word-processor',recordId:'tab:1'};
+const record={roomId:'r',appId:'dev.qos.word-processor',recordId:'tab:1'};
 const otherRecord={...record,recordId:'tab:2'};
 function admissionStatus(admitted=false,records=[record]){
  return{phase:admitted?'ready':'incomplete',health:{transport:{phase:'connected',authenticated:true,generation:'1'},admission:{phase:admitted?'ready':'syncing',requiredRecords:records,pendingPrerequisites:admitted?0:1},records:records.map(record=>({record,admission:admitted?'admitted':'unavailable',current:admitted?{heads:['h']}:null,editing:{mode:admitted?'online':'blocked'},failureIds:[]})),failures:admitted?[]:[{id:'runtime:admission',code:'prerequisite-missing',scope:{kind:'admission'},severity:'error'}]}};
@@ -649,7 +649,7 @@ test('light reports trigger persistence without a new snapshot; the commit repor
  f.status({phase:'ready',persistenceNeeded:false});await settle();
  assert.equal(notifications.length,0);assert.strictEqual(peer.getSnapshot(),before);
  // The full report after a commit carries fresh durability and advances the generation once.
- f.setCommitStatus(()=>({phase:'ready',records:before.records,health:{transport:{phase:'connected',authenticated:true},admission:{phase:'ready',requiredRecords:[],pendingPrerequisites:0},records:[{record:{roomId:'r',appId:'so.tilo.word-processor',recordId:'tab:1'},admission:'admitted',current:{heads:['h']},editing:{mode:'online'},local:{state:'durable',committedAtMs:1},acknowledgement:{state:'covered',coversCurrentBasis:true},failureIds:[]}],failures:[]}}));
+ f.setCommitStatus(()=>({phase:'ready',records:before.records,health:{transport:{phase:'connected',authenticated:true},admission:{phase:'ready',requiredRecords:[],pendingPrerequisites:0},records:[{record:{roomId:'r',appId:'dev.qos.word-processor',recordId:'tab:1'},admission:'admitted',current:{heads:['h']},editing:{mode:'online'},local:{state:'durable',committedAtMs:1},acknowledgement:{state:'covered',coversCurrentBasis:true},failureIds:[]}],failures:[]}}));
  f.setFailCommit(false);f.status({phase:'ready',persistenceNeeded:true});await settle();
  assert.equal(commits,2);
  const committed=peer.getSnapshot();
@@ -952,5 +952,17 @@ test('a refused read-only request never reaches membership recovery (the deliver
  // A read retry only reports availability; no onError, so no reconnect or re-enrollment.
  delivery.onReadAvailability({route:'catalogue',available:false,retrying:true,attempt:1,status:403});await drain();await time.tick(30000);
  assert.equal(f.counts().attempts,attempts);assert.equal(starts,1);
+ await peer.dispose();
+});
+test('a refused event stream (403) is never shown as lost device authorization and keeps recovering',async()=>{
+ const time=clock();let delivery,starts=0;
+ const f=fixture({recoveryClock:time,createDelivery:options=>{delivery=options;return{async start(){starts++;},wake(){},close:async()=>{}};}});
+ const peer=await f.connect();const attempts=f.counts().attempts;
+ delivery.onError(Object.assign(Error('Delivery HTTP 403'),{status:403,terminal:false,sessionRefused:true}));await drain();
+ let snapshot=peer.getSnapshot();
+ const failure=snapshot.health.failures.find(failure=>failure.scope.kind==='connection');
+ assert.equal(failure.code,'transport-unavailable');assert.equal(failure.recovery[0].kind,'retry-connection');
+ await time.tick(5000);
+ assert(f.counts().attempts>attempts,'the recovery backoff reconnects (fresh enrollment) instead of stopping');
  await peer.dispose();
 });

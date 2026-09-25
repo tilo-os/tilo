@@ -121,12 +121,13 @@ test('an aborted or quota-refused cut transaction never resumes, ACKs or polls p
  }
 });
 
-test('refused data stream discards only its HTTP session before reporting a terminal failure',async()=>{
+test('refused data stream discards only its HTTP session and is not lost authorization; other refusals stay terminal',async()=>{
  for(const [target,status,expected] of [['/peer/v3/events?mode=poll',403,1],['/peer/v3/acks',401,1],['/peer/v3/commands/invoke',403,0],['/peer/v3/events?mode=poll',503,0]]){
   let discarded=0,errors=[];
   const {runtime}=setup({peer_delivery_begin:()=>JSON.stringify(request(1,target,{method:target.startsWith('/peer/v3/events')?'GET':'POST',body:target.startsWith('/peer/v3/events')?[]:[1],proof:[1]})),peer_delivery_discard_session:()=>{discarded++;}});
   const client=createPeerDelivery({runtime,peerId:4,persist:async()=>{},fetch:async()=>new Response(new Uint8Array([1]),{status}),onError:error=>errors.push(error)});
-  await assert.rejects(client.start(),error=>error.terminal===(status===401||status===403));
+  const stream=target.startsWith('/peer/v3/events')||target==='/peer/v3/acks',refused=status===401||status===403;
+  await assert.rejects(client.start(),error=>error.terminal===(refused&&!stream)&&!!error.sessionRefused===(refused&&stream));
   assert.equal(discarded,expected,`${target} ${status}`);await client.close();
  }
 });
@@ -194,7 +195,7 @@ test('a refused chained poll discards its HTTP session like a plain poll',async(
  let discarded=0;
  const {runtime}=setup({peer_delivery_begin:()=>JSON.stringify(chained(1,2)),peer_delivery_discard_session:()=>{discarded++;}});
  const client=createPeerDelivery({runtime,peerId:4,persist:async()=>{},fetch:async()=>new Response(new Uint8Array([1]),{status:403})});
- await assert.rejects(client.start(),error=>error.terminal===true&&error.sessionRefused===true);assert.equal(discarded,1);await client.close();
+ await assert.rejects(client.start(),error=>error.terminal===false&&error.sessionRefused===true);assert.equal(discarded,1);await client.close();
 });
 test('several chained polls stay outstanding together and a lost one is forgotten so Rust abandons the chain',async()=>{
  let issued=0,errors=[];const forgotten=[];const pending=[];

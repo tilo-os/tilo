@@ -1370,6 +1370,117 @@ async fn baseline_snapshot(client: &Client, root: &Path) -> CommitBoundary {
     boundary.expect("final chunk carries the boundary")
 }
 
+/// Lane D (fo6 lockout): a commit that republishes every record's checkpoint
+/// (an owner re-enrollment with ~70 records: one room change plus 67
+/// checkpoints) is one atomic replay group larger than a page. The consumer is
+/// answered SnapshotRequired(HistoryUnavailable), never a 403, and a snapshot
+/// at the head restores it past that group; later commits replay normally.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn cloud_https_oversized_replay_group_resets_to_a_snapshot_instead_of_refusing() {
+    use qos_relay::delivery_v3::state::{ResetReason, SnapshotRequired};
+    let (_transport_root, store_root, config, ready) = deployment().await;
+    let root = store_root.path().to_owned();
+    let (stop, server, origin) = started(&config, &ready).await;
+    let mut client = Client {
+        http: reqwest::Client::builder()
+            .danger_accept_invalid_certs(true)
+            .build()
+            .unwrap(),
+        origin,
+        key: SigningKey::from_bytes(&[8; 32]),
+        session: None,
+    };
+    handshake(&mut client, &root).await;
+    let first = browser_delta(&root, MACHINE, "before ");
+    let (status, body) = client
+        .post("/peer/v3/state", chunk([1; 16], &first, 0, first.len()))
+        .await;
+    assert_eq!(status, reqwest::StatusCode::OK);
+    let first = accepted(&body);
+    let mut cursor = None;
+    loop {
+        let boundary = poll(&client, cursor.as_ref())
+            .await
+            .expect("committed group");
+        cursor = Some(boundary.cursor().clone());
+        if boundary.committed().sequence >= first.sequence {
+            break;
+        }
+    }
+    // The republish-everything commit, as an owner re-enrollment makes it:
+    // a durable bootstrap whose one replay group exceeds the 64-frame page.
+    let oversized = {
+        let root = root.clone();
+        tokio::task::spawn_blocking(move || {
+            let mut store = crate::delivery::access::open(&root, MACHINE).unwrap();
+            let now = qos_relay::clock::now_ns();
+            let (_, mut peer) = store.peer_transition_at(now).unwrap();
+            let generation = store.next_generation().unwrap();
+            let messages = crate::durable_bootstrap_messages(
+                &mut peer,
+                &store.key(),
+                crate::now_time(now),
+                generation,
+            )
+            .unwrap();
+            let mut state = store.state.clone();
+            let publications = crate::baseline_publications(messages).unwrap();
+            while state.outbox.len() < 70 {
+                state.outbox.extend(publications.iter().cloned());
+            }
+            state.bound.as_mut().unwrap().peer = peer.durable().unwrap();
+            store.commit(state).unwrap();
+            let delivery = store.state.delivery.as_ref().unwrap();
+            let (sequence, entry) = delivery.ledger().replay.last_key_value().unwrap();
+            assert!(entry.publications.len() >= 64, "an oversized group");
+            *sequence
+        })
+        .await
+        .unwrap()
+    };
+    let target = format!(
+        "/peer/v3/events?cursor={}&mode=poll",
+        encode_cursor_url(cursor.as_ref().unwrap().as_bytes()).unwrap()
+    );
+    let (status, body) = tokio::time::timeout(Duration::from_secs(10), client.get(&target))
+        .await
+        .expect("answered");
+    assert_eq!(
+        status,
+        reqwest::StatusCode::OK,
+        "an oversized group is never a refusal: {}",
+        String::from_utf8_lossy(&body)
+    );
+    let reset = frames(&body);
+    assert_eq!(reset.len(), 1);
+    assert_eq!(reset[0].0, MessageType::SnapshotRequired);
+    assert_eq!(
+        SnapshotRequired::decode(&reset[0].1).unwrap().reason(),
+        ResetReason::HistoryUnavailable
+    );
+    // The snapshot is cut at the head, past the oversized group.
+    let boundary = baseline_snapshot(&client, &root).await;
+    assert!(boundary.committed().sequence >= oversized);
+    let after = browser_delta(&root, MACHINE, "after ");
+    let (status, body) = client
+        .post("/peer/v3/state", chunk([2; 16], &after, 0, after.len()))
+        .await;
+    assert_eq!(status, reqwest::StatusCode::OK);
+    let after = accepted(&body);
+    let mut cursor = Some(boundary.cursor().clone());
+    loop {
+        let boundary = poll(&client, cursor.as_ref())
+            .await
+            .expect("suffix replays after the snapshot");
+        cursor = Some(boundary.cursor().clone());
+        if boundary.committed().sequence >= after.sequence {
+            break;
+        }
+    }
+    let _ = stop.send(());
+    server.await.unwrap().unwrap();
+}
+
 /// Retention rotation on the running service: a caught-up consumer's cursor
 /// is answered SnapshotRequired(StoreRotated) instead of a refusal, the
 /// snapshot + suffix restores it, admitted state is preserved, and a
@@ -1865,7 +1976,7 @@ async fn cloud_https_media_control_route_grants_over_installed_listener() {
         let now = qos_relay::clock::now_ns();
         let (before, mut peer) = store.peer_transition_at(now).unwrap();
         let mut chat =
-            automerge::AutoCommit::load(&peer.document("so.tilo.chat", "").unwrap()).unwrap();
+            automerge::AutoCommit::load(&peer.document("dev.qos.chat", "").unwrap()).unwrap();
         let channels = chat.get(ROOT, "channels").unwrap().unwrap().1;
         let channel = chat
             .put_object(&channels, "cloud_voice", ObjType::Map)
@@ -1873,7 +1984,7 @@ async fn cloud_https_media_control_route_grants_over_installed_listener() {
         chat.put(&channel, "kind", "voice").unwrap();
         chat.put(&channel, "workspace", "cloud").unwrap();
         peer.publish_document(
-            "so.tilo.chat",
+            "dev.qos.chat",
             "",
             chat.save(),
             &store.key(),
@@ -1902,7 +2013,7 @@ async fn cloud_https_media_control_route_grants_over_installed_listener() {
                     invocation_id: "loopback-media-create".into(),
                     operation: crate::NativeOperation::MediaCreate(
                         qos_action_broker::collaboration_admin::MediaCreateInput {
-                            app_id: "so.tilo.chat".into(),
+                            app_id: "dev.qos.chat".into(),
                             record_id: "".into(),
                             channel_id: "cloud_voice".into(),
                             expected_authorization_revision: None,

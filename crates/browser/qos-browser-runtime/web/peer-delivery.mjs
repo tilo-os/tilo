@@ -85,11 +85,15 @@ export function createPeerDelivery({runtime,peerId,persist,transfers,commit,cloc
   try{
    valid();const response=await fetcher(`${value.origin}${value.target}`,{method:value.method,headers,...(body.byteLength?{body}:{}),signal:controller.signal,credentials:'omit',redirect:'error',cache:'no-store'});
    valid();if(response.status!==200){
-    const terminal=response.status===401||response.status===403;
+    const refused=response.status===401||response.status===403;
     // A refused data stream means the host no longer serves this HTTP session
     // (for example its consumer registration predates an authorization change).
     // Recovery must bootstrap a fresh session, which re-registers the consumer.
-    const sessionRefused=terminal&&!detachOnly&&(poll.test(value.target)||value.target==='/peer/v3/acks');
+    // It is not lost device authorization: a fresh session (and, failing that,
+    // a re-enrollment on the recovery backoff) decides; only a signed
+    // membership refusal there is terminal.
+    const sessionRefused=refused&&!detachOnly&&(poll.test(value.target)||value.target==='/peer/v3/acks');
+    const terminal=refused&&!sessionRefused;
     if(sessionRefused)try{runtime.peer_delivery_discard_session?.(peerId);}catch{}
     const staleChain=response.status===409&&!detachOnly&&chainedPoll(value);
     throw Object.assign(fail(`Delivery HTTP ${response.status}`),{status:response.status,terminal,sessionRefused,staleChain});
@@ -156,7 +160,7 @@ export function createPeerDelivery({runtime,peerId,persist,transfers,commit,cloc
      // A lost/timed-out poll or ACK on a lossy link is retried in place: the
      // Rust scheduler re-issues it (fresh proof) once this handle is forgotten.
      // Only repeated failures escalate to full transport recovery.
-     if(retryable&&established&&!error?.terminal&&!closed&&!failed&&!renewing&&transientFailures<TRANSIENT_RETRIES){
+     if(retryable&&established&&!error?.terminal&&!error?.sessionRefused&&!closed&&!failed&&!renewing&&transientFailures<TRANSIENT_RETRIES){
       transientFailures++;hold(Math.min(2000,200*2**(transientFailures-1)));
       return {kind:'idle'};
      }
