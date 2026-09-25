@@ -143,24 +143,26 @@ mod linux {
             let Some((w_px, h_px, stride)) = Self::buffer_geometry(width, height) else {
                 return;
             };
-            let buffer = self.buffer.get_or_insert_with(|| {
-                self.pool
-                    .create_buffer(w_px, h_px, stride, wl_shm::Format::Argb8888)
-                    .expect("create load buffer")
-                    .0
-            });
-            let canvas = match self.pool.canvas(buffer) {
-                Some(canvas) => canvas,
-                None => {
-                    let Ok((second, canvas)) =
-                        self.pool
-                            .create_buffer(w_px, h_px, stride, wl_shm::Format::Argb8888)
-                    else {
-                        return;
-                    };
-                    *buffer = second;
-                    canvas
-                }
+            // Reuse the released buffer; allocate a fresh one while the
+            // compositor still holds the previous frame.
+            if self
+                .buffer
+                .as_ref()
+                .is_none_or(|buffer| self.pool.canvas(buffer).is_none())
+            {
+                let Ok((fresh, _)) =
+                    self.pool
+                        .create_buffer(w_px, h_px, stride, wl_shm::Format::Argb8888)
+                else {
+                    return;
+                };
+                self.buffer = Some(fresh);
+            }
+            let Some(buffer) = self.buffer.as_ref() else {
+                return;
+            };
+            let Some(canvas) = self.pool.canvas(buffer) else {
+                return;
             };
             // One moving scanline makes every frame observably different while
             // bounding client callback work to O(width), not O(width*height).
@@ -170,7 +172,11 @@ mod linux {
             let Ok(row_len) = usize::try_from(stride) else {
                 return;
             };
-            let row_idx = usize::try_from(self.frames % u64::from(height)).unwrap_or(0);
+            let row_idx = self
+                .frames
+                .checked_rem(u64::from(height))
+                .and_then(|row| usize::try_from(row).ok())
+                .unwrap_or(0);
             let Some(row) = canvas.chunks_exact_mut(row_len).nth(row_idx) else {
                 return;
             };

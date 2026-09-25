@@ -5,6 +5,7 @@
 //! row commits through the durable tab lifecycle, including the compositor's
 //! normal foreign-surface close request; it never synthesises pointer input.
 
+use std::fmt::Write as _;
 use std::rc::Rc;
 
 use crate::shell::chrome_state::Chrome;
@@ -75,10 +76,12 @@ fn close_tab(chrome: &Chrome, expected_group: GroupId, tab_id: TabId) -> Result<
                 "tab {tab_id} is no longer in window group {expected_group}"
             )));
         };
-        match &tab.tile {
+        let surface = match &tab.tile {
             TileContent::Foreign { surface_id, .. } => Some(*surface_id),
             _ => None,
-        }
+        };
+        drop(tree);
+        surface
     };
     if !crate::shell::tab_binding::remove_tab(&mut state.tree_mut(), tab_id) {
         return Err(ActionError::Refused(format!(
@@ -148,7 +151,7 @@ impl SearchProvider for DesktopWindowsProvider {
         PROVIDER_ID
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "Desktop Windows"
     }
 
@@ -243,6 +246,7 @@ impl SearchProvider for DesktopWindowsProvider {
                 }
             }
         }
+        drop(tree);
         rows
     }
 
@@ -254,12 +258,13 @@ impl SearchProvider for DesktopWindowsProvider {
         let mut revision = format!("desktop-windows:{}", workspace.id.raw());
         for strip in &workspace.strips {
             for group in &strip.window_groups {
-                revision.push_str(&format!(":g{}", group.id));
+                let _ = write!(revision, ":g{}", group.id);
                 for tab in &group.tabs {
-                    revision.push_str(&format!(":t{}", tab.id));
+                    let _ = write!(revision, ":t{}", tab.id);
                 }
             }
         }
+        drop(tree);
         revision
     }
 }
@@ -355,7 +360,10 @@ mod tests {
                     .as_deref()
                     .is_some_and(|text| text.contains("group"))
         }));
-        assert_eq!(actions[2].title, "Close this window group");
+        assert_eq!(
+            actions[2].title,
+            "Close window group “Profilfehler aufgetreten”"
+        );
     }
 
     #[test]

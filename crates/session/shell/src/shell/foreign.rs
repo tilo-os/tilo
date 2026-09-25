@@ -442,10 +442,16 @@ fn composite_child_rgba(root: &mut FrameSnapshot, child: &ForeignEntry, x: i32, 
             if destination_x >= root.width {
                 continue;
             }
-            let source =
-                usize::try_from((child_y * child.width + child_x) * 4).unwrap_or(usize::MAX);
-            let destination = usize::try_from((destination_y * root.width + destination_x) * 4)
-                .unwrap_or(usize::MAX);
+            let pixel_offset = |row: u32, column: u32, width: u32| {
+                usize::try_from(
+                    row.saturating_mul(width)
+                        .saturating_add(column)
+                        .saturating_mul(4),
+                )
+                .unwrap_or(usize::MAX)
+            };
+            let source = pixel_offset(child_y, child_x, child.width);
+            let destination = pixel_offset(destination_y, destination_x, root.width);
             let (Some(source), Some(destination)) = (
                 child.rgba.get(source..source.saturating_add(4)),
                 root.rgba
@@ -453,18 +459,28 @@ fn composite_child_rgba(root: &mut FrameSnapshot, child: &ForeignEntry, x: i32, 
             ) else {
                 continue;
             };
-            let alpha = u32::from(source[3]);
+            let (Ok(&[sr, sg, sb, sa]), Ok([dr, dg, db, da])) = (
+                <&[u8; 4]>::try_from(source),
+                <&mut [u8; 4]>::try_from(destination),
+            ) else {
+                continue;
+            };
+            let alpha = u32::from(sa);
             let inverse = 255_u32.saturating_sub(alpha);
-            for channel in 0..3 {
-                destination[channel] = u8::try_from(
-                    (u32::from(source[channel]) * alpha
-                        + u32::from(destination[channel]) * inverse)
+            let blend = |over: u8, under: u8| {
+                u8::try_from(
+                    u32::from(over)
+                        .saturating_mul(alpha)
+                        .saturating_add(u32::from(under).saturating_mul(inverse))
                         / 255,
                 )
-                .unwrap_or(255);
-            }
-            destination[3] =
-                u8::try_from(alpha + u32::from(destination[3]) * inverse / 255).unwrap_or(255);
+                .unwrap_or(u8::MAX)
+            };
+            *dr = blend(sr, *dr);
+            *dg = blend(sg, *dg);
+            *db = blend(sb, *db);
+            *da = u8::try_from(alpha.saturating_add(u32::from(*da).saturating_mul(inverse) / 255))
+                .unwrap_or(u8::MAX);
         }
     }
 }
@@ -825,7 +841,7 @@ static ASYNC_DMABUF_CAPTURE: OnceLock<Result<AsyncDmabufCapture, String>> = Once
 static ASYNC_SHM_CAPTURE: OnceLock<Result<AsyncShmCapture, String>> = OnceLock::new();
 
 #[cfg(target_os = "linux")]
-pub fn install_completion_ping(ping: smithay::reexports::calloop::ping::Ping) {
+pub fn install_completion_ping(ping: &smithay::reexports::calloop::ping::Ping) {
     for slot in [
         ASYNC_DMABUF_CAPTURE
             .get_or_init(AsyncDmabufCapture::spawn)
@@ -1093,9 +1109,7 @@ impl ForeignFrameStore {
             return None;
         }
         entry.capture_tokens.pop_front();
-        let Some(ready) = entry.ready_captures.remove(&token) else {
-            return None;
-        };
+        let ready = entry.ready_captures.remove(&token)?;
         let (outcome, imported, recycled) = match ready.result {
             Ok((width, height, route)) => {
                 let previous = std::mem::replace(&mut entry.rgba, ready.rgba);
@@ -1269,6 +1283,7 @@ impl ForeignFrameStore {
             composite_child_rgba(&mut snapshot, frame, child.x, child.y);
             snapshot.seq = snapshot.seq.wrapping_add(frame.seq);
         }
+        drop(guard);
         Some(snapshot)
     }
 

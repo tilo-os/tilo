@@ -6084,10 +6084,10 @@ impl ShellOverlayHost {
     /// launch/exit is silent — the window is the feedback). Returns whether
     /// anything was posted, so the caller can mark the frame dirty.
     pub(crate) fn drain_launch_events(&mut self) -> bool {
+        use crate::shell::launcher::LaunchEventKind;
         if self.desktop_controls.is_explicit() {
             return false;
         }
-        use crate::shell::launcher::LaunchEventKind;
         // Expiry is independent of new launcher events: a daemonising parent
         // can exit and never produce another event or window.
         let timed_out = crate::shell::launcher::expire_pending_placements();
@@ -24905,6 +24905,12 @@ mod overview_panel_tests {
 
     #[test]
     fn workspace_name_accessibility_exposes_current_selection() {
+        fn find(node: &ui::a11y::AccessNode) -> Option<&ui::a11y::AccessNode> {
+            if node.name.as_deref() == Some("Workspace name") {
+                return Some(node);
+            }
+            node.children.iter().find_map(find)
+        }
         let h = host_with(WorkspaceTree::bootstrap_default());
         {
             let mut state = h.chrome.as_ref().unwrap().borrow_mut();
@@ -24916,12 +24922,6 @@ mod overview_panel_tests {
             };
         }
         let node = h.accessibility().unwrap();
-        fn find(node: &ui::a11y::AccessNode) -> Option<&ui::a11y::AccessNode> {
-            if node.name.as_deref() == Some("Workspace name") {
-                return Some(node);
-            }
-            node.children.iter().find_map(find)
-        }
         let selection = find(&node)
             .unwrap()
             .text_selection
@@ -26595,14 +26595,12 @@ mod palette_dispatch_tests {
     }
 
     #[test]
-    #[serial_test::serial(logout_request_env)]
     fn logout_power_action_publishes_its_edge_before_dispatch_returns() {
         let (host, _chrome) = host_with_chrome();
         let directory = tempfile::tempdir().unwrap();
         let request = directory.path().join("logout-request");
-        // SAFETY: this test is serialized with every test using this process
-        // environment key and restores it before returning.
-        unsafe { std::env::set_var("TILO_SESSION_LOGOUT_REQUEST", &request) };
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("TILO_SESSION_LOGOUT_REQUEST", &request);
 
         assert!(
             host.apply_power_menu_outcome(PowerMenuClick::Execute(
@@ -26612,9 +26610,7 @@ mod palette_dispatch_tests {
         assert_eq!(std::fs::read_to_string(&request).unwrap(), "logout\n");
         assert!(os_actions::take_logout_request());
         assert!(!os_actions::take_logout_request());
-
-        // SAFETY: paired with the serialized set above.
-        unsafe { std::env::remove_var("TILO_SESSION_LOGOUT_REQUEST") };
+        drop(env);
     }
 
     #[test]
@@ -28938,6 +28934,7 @@ mod overlay_event_absorb_tests {
     /// rather than guess where the strip wrapped it to.
     #[test]
     fn filter_chips_and_scope_segments_are_bounded_semantic_targets() {
+        use crate::shell::search::ResourceKind;
         use ui::a11y::Role;
         let (vw, vh) = (1280.0, 800.0);
         let mut h = build_harness_sized(vw, vh);
@@ -29071,7 +29068,6 @@ mod overlay_event_absorb_tests {
         // The controls share one centre line: chips and the scope switch
         // are laid out to the same control height in the band's first row.
         // Addresses stay unique and single-segment even for hostile labels.
-        use crate::shell::search::ResourceKind;
         let odd = [
             ResourceKind::Custom("Foo Bar".into()),
             ResourceKind::Custom("foo  bar".into()),
@@ -33686,16 +33682,20 @@ mod resync_strips_tests {
         let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&tree);
 
         {
-            let state = chrome.borrow_mut();
-            let mut live = state.tree_mut();
-            live.desktop.workspaces[0].strips[0].window_groups[0].tabs[0].tile =
-                TileContent::Foreign {
-                    app_id: "dev.tilo.terminal".into(),
-                    surface_id: surface,
-                };
-            live.desktop.external_revision = live.desktop.external_revision.wrapping_add(1);
+            let mut state = chrome.borrow_mut();
+            {
+                let mut live = state.tree_mut();
+                live.desktop.workspaces[0].strips[0].window_groups[0].tabs[0].tile =
+                    TileContent::Foreign {
+                        app_id: "dev.tilo.terminal".into(),
+                        surface_id: surface,
+                    };
+                live.desktop.external_revision = live.desktop.external_revision.wrapping_add(1);
+            }
+            assert!(state.sync_external_tree_revision());
         }
-        assert!(host.take_structure_dirty());
+        // Drains the revision; the still-starting card itself stays put.
+        let _ = host.take_structure_dirty();
         assert_eq!(host.active_tile_rect(group_id), Some(Rect::ZERO));
         assert_eq!(
             host.opening_foreign_frames.get(&surface),
@@ -34057,6 +34057,7 @@ mod resync_strips_tests {
 
     #[test]
     fn newly_active_group_retries_reveal_after_its_first_layout() {
+        const LAUNCHED_GROUP: GroupId = 999;
         let (mut tree, strip_id, first_group) = one_group_seed();
         for id in 201..=206 {
             tree.desktop.workspaces[0].strips[0]
@@ -34084,7 +34085,6 @@ mod resync_strips_tests {
         host.last_scrolled_active_group
             .insert(strip_id, first_group);
 
-        const LAUNCHED_GROUP: GroupId = 999;
         {
             let mut st = chrome.borrow_mut();
             let mut live = st.tree_mut();

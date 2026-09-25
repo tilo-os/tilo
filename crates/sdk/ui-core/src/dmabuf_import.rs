@@ -745,7 +745,7 @@ mod tests {
     use super::*;
     use std::os::fd::AsFd as _;
 
-    fn one_plane<'a>(file: &'a std::fs::File, offset: u32, stride: u32) -> [PlaneRef<'a>; 1] {
+    fn one_plane(file: &std::fs::File, offset: u32, stride: u32) -> [PlaneRef<'_>; 1] {
         [PlaneRef {
             fd: file.as_fd(),
             offset,

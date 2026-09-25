@@ -1317,6 +1317,10 @@ impl VelloDrmBridge {
     ///
     /// Keeping import here prevents a target created by another device from reaching the render
     /// callback. Retain the returned alias while the scanout allocation remains alive.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BridgeError::Import`] when the device cannot import the dma-buf.
     pub fn import_bgra8_target(
         &self,
         image: &ui::dmabuf_import::DmabufRef<'_>,
@@ -1327,6 +1331,11 @@ impl VelloDrmBridge {
 
     /// Render and blit into an imported direct-scanout target in one submission, then wait for
     /// the existing completion marker before returning.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BridgeError::InvalidSize`] when the target does not match the
+    /// bridge's size, or the render/completion error otherwise.
     pub fn paint_imported_bgra8_until(
         &mut self,
         scene: &Scene,
@@ -3691,7 +3700,7 @@ mod tests {
         assert!(!adapter.name.is_empty());
         assert!(!adapter.backend.is_empty());
         assert!(!adapter.device_type.is_empty());
-        eprintln!("renderer gate adapter: {:?}", adapter);
+        eprintln!("renderer gate adapter: {adapter:?}");
         bridge
     }
 
