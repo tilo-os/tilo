@@ -40,25 +40,27 @@ disk_guid=11111111-2222-4333-8444-555555555555
 esp_uuid=aaaaaaaa-0000-4000-8000-000000000001
 root_uuid=bbbbbbbb-0000-4000-8000-000000000002
 target_esp_uuid=cccccccc-0000-4000-8000-000000000003
+target_boot_uuid=dddddddd-0000-4000-8000-000000000004
 target_root_uuid=eeeeeeee-0000-4000-8000-000000000005
 recovery_uuid=00000000-0000-4000-8000-00000000000d
 mib=2048 # 512-byte sectors per MiB
-# [ foreign ESP | "Windows" | target ESP | target root | staging ESP | staging root | recovery ]
+# [ foreign ESP | "Windows" | target ESP | target boot | target root | staging ESP | staging root | recovery ]
 sfdisk --wipe always "$loop" >/dev/null <<EOF
 label: gpt
 label-id: $disk_guid
 start=$((1 * mib)), size=$((100 * mib)), type=c12a7328-f81f-11d2-ba4b-00a0c93ec93b, uuid=00000000-0000-4000-8000-00000000000a
 start=$((101 * mib)), size=$((1024 * mib)), type=ebd0a0a2-b9e5-4433-87c0-68b6b72699c7, uuid=00000000-0000-4000-8000-00000000000b
 start=$((1126 * mib)), size=$((256 * mib)), type=c12a7328-f81f-11d2-ba4b-00a0c93ec93b, uuid=$target_esp_uuid
-start=$((1382 * mib)), size=$((2048 * mib)), type=7a2e8d75-3f01-4e5a-b2c9-51f6ed90b8ab, uuid=$target_root_uuid
-start=$((3430 * mib)), size=$((256 * mib)), type=c12a7328-f81f-11d2-ba4b-00a0c93ec93b, uuid=$esp_uuid
-start=$((3686 * mib)), size=$((2048 * mib)), type=d4c4daf6-f72c-43ee-b8e3-5ba32550311d, uuid=$root_uuid
-start=$((5734 * mib)), size=$((100 * mib)), type=ebd0a0a2-b9e5-4433-87c0-68b6b72699c7, uuid=$recovery_uuid
+start=$((1382 * mib)), size=$((1024 * mib)), type=0fc63daf-8483-4772-8e79-3d69d8477de4, uuid=$target_boot_uuid
+start=$((2406 * mib)), size=$((2048 * mib)), type=7a2e8d75-3f01-4e5a-b2c9-51f6ed90b8ab, uuid=$target_root_uuid
+start=$((4454 * mib)), size=$((256 * mib)), type=c12a7328-f81f-11d2-ba4b-00a0c93ec93b, uuid=$esp_uuid
+start=$((4710 * mib)), size=$((2048 * mib)), type=d4c4daf6-f72c-43ee-b8e3-5ba32550311d, uuid=$root_uuid
+start=$((6758 * mib)), size=$((100 * mib)), type=ebd0a0a2-b9e5-4433-87c0-68b6b72699c7, uuid=$recovery_uuid
 EOF
 partx -u "$loop"
 udevadm settle 2>/dev/null || true
-for _ in {1..50}; do [ -b "${loop}p7" ] && break; sleep 0.1; done
-[ -b "${loop}p7" ] || { echo 'FAIL  loop partitions did not appear' >&2; exit 1; }
+for _ in {1..50}; do [ -b "${loop}p8" ] && break; sleep 0.1; done
+[ -b "${loop}p8" ] || { echo 'FAIL  loop partitions did not appear' >&2; exit 1; }
 
 map() {
   sfdisk --json "$loop" | python3 -c 'import json,sys; t=json.load(sys.stdin)["partitiontable"]; print("\n".join(sorted("{}:{}:{}".format(p["uuid"].lower(),p["start"],p["size"]) for p in t["partitions"])))'
@@ -73,9 +75,9 @@ disk_bytes="$(blockdev --getsize64 "$loop")"
 cat > "$fixture/esp/EFI/tilo-staging/handoff.json" <<EOF
 {"schema":1,"operation_id":"0f0e0d0c-0b0a-4908-8706-050403020100","host_os":"windows",
  "disk_guid":"$disk_guid","disk_size_bytes":$disk_bytes,
- "staging_esp":{"partuuid":"$esp_uuid","first_lba":$((3430 * mib)),"last_lba":$((3686 * mib - 1))},
- "staging_root":{"partuuid":"$root_uuid","first_lba":$((3686 * mib)),"last_lba":$((5734 * mib - 1))},
- "target_extent":{"first_lba":$((1126 * mib)),"last_lba":$((3430 * mib - 1))},
+ "staging_esp":{"partuuid":"$esp_uuid","first_lba":$((4454 * mib)),"last_lba":$((4710 * mib - 1))},
+ "staging_root":{"partuuid":"$root_uuid","first_lba":$((4710 * mib)),"last_lba":$((6758 * mib - 1))},
+ "target_extent":{"first_lba":$((1126 * mib)),"last_lba":$((4454 * mib - 1))},
  "owned_boot_entry":"0104","original_boot_order":["0001"],"profile":{}}
 EOF
 cp "$fixture/esp/EFI/tilo-staging/handoff.json" "$fixture/handoff.json"
@@ -84,8 +86,8 @@ import sys
 open(sys.argv[1] + '/LoaderDevicePartUUID-4a67b082-0a4c-41cf-b6c7-440b29bb8c4f', 'wb').write(
     b'\x06\x00\x00\x00' + (sys.argv[2].upper() + '\0').encode('utf-16-le'))
 PY
-# Remove the not-yet-created target pair so the extent is unallocated again.
-sfdisk --delete "$loop" 3 4 >/dev/null
+# Remove the not-yet-created target partitions so the extent is unallocated again.
+sfdisk --delete "$loop" 3 4 5 >/dev/null
 partx -u "$loop"
 # Find the staging root's node from the GPT itself: without a udev database
 # (CI containers) lsblk reports no PARTUUID to match on.
@@ -104,9 +106,10 @@ check() {
   TILO_STAGING_LSBLK_JSON="$fixture/lsblk.json" \
     python3 "$handoff_helper" check-install --handoff "$fixture/handoff.json" --disk "$loop" \
       --mode "$1" --sector-size 512 \
-      --free-start-bytes $((1126 * mib * 512)) --free-size-bytes $((2304 * mib * 512)) \
+      --free-start-bytes $((1126 * mib * 512)) --free-size-bytes $((3328 * mib * 512)) \
       --efi-start-bytes $((1126 * mib * 512)) --efi-size-bytes $((2048 * mib * 512)) \
-      --root-start-bytes $((3174 * mib * 512)) --root-size-bytes $((256 * mib * 512))
+      --boot-start-bytes $((3174 * mib * 512)) --boot-size-bytes $((1024 * mib * 512)) \
+      --root-start-bytes $((4198 * mib * 512)) --root-size-bytes $((256 * mib * 512))
 }
 # The loop layout is scaled down, so the real guided minimum refuses it; that
 # refusal must come from the size rule, i.e. only after every identity matched.
@@ -120,10 +123,11 @@ if check erase > "$tmp/check.out" 2>&1 || ! grep -Fq 'accepts only guided alongs
 fi
 printf 'ok    staged same-disk guard parses real lsblk identities and refuses erase\n'
 
-# Recreate the installed target pair exactly where the installer puts it.
+# Recreate the installed target partitions exactly where the installer puts them.
 sfdisk --append "$loop" >/dev/null <<EOF
 start=$((1126 * mib)), size=$((256 * mib)), type=c12a7328-f81f-11d2-ba4b-00a0c93ec93b, uuid=$target_esp_uuid
-start=$((1382 * mib)), size=$((2048 * mib)), type=7a2e8d75-3f01-4e5a-b2c9-51f6ed90b8ab, uuid=$target_root_uuid
+start=$((1382 * mib)), size=$((1024 * mib)), type=0fc63daf-8483-4772-8e79-3d69d8477de4, uuid=$target_boot_uuid
+start=$((2406 * mib)), size=$((2048 * mib)), type=7a2e8d75-3f01-4e5a-b2c9-51f6ed90b8ab, uuid=$target_root_uuid
 EOF
 partx -u "$loop"
 udevadm settle 2>/dev/null || true
@@ -140,9 +144,9 @@ mkdir -p "$(dirname "$record")" "$tmp/bin"
 cat > "$record" <<EOF
 {"schema":1,"operation_id":"0f0e0d0c-0b0a-4908-8706-050403020100","disk_guid":"$disk_guid",
  "disk_size_bytes":$disk_bytes,"sector_bytes":512,
- "staging_esp":{"partuuid":"$esp_uuid","first_lba":$((3430 * mib)),"last_lba":$((3686 * mib - 1))},
- "staging_root":{"partuuid":"$root_uuid","first_lba":$((3686 * mib)),"last_lba":$((5734 * mib - 1))},
- "target_root":{"partuuid":"$target_root_uuid","first_lba":$((1382 * mib)),"last_lba":$((3430 * mib - 1))},
+ "staging_esp":{"partuuid":"$esp_uuid","first_lba":$((4454 * mib)),"last_lba":$((4710 * mib - 1))},
+ "staging_root":{"partuuid":"$root_uuid","first_lba":$((4710 * mib)),"last_lba":$((6758 * mib - 1))},
+ "target_root":{"partuuid":"$target_root_uuid","first_lba":$((2406 * mib)),"last_lba":$((4454 * mib - 1))},
  "target_esp_partuuid":"$target_esp_uuid"}
 EOF
 # Only the session gate is simulated; every disk tool is the real one.
@@ -162,7 +166,7 @@ run_reclaim() {
 
 # A single changed identity must leave the whole map untouched.
 cp "$record" "$tmp/record.good"
-sed -i "s/$root_uuid/dddddddd-0000-4000-8000-000000000004/" "$record"
+sed -i "s/$root_uuid/ffffffff-0000-4000-8000-00000000000f/" "$record"
 before_map="$(map)"
 if run_reclaim > "$tmp/reclaim.out" 2>&1; then
   echo 'FAIL  mismatched reclaim record was accepted' >&2; exit 1
@@ -176,9 +180,9 @@ run_reclaim || { echo 'FAIL  reclaim failed' >&2; exit 1; }
 after_map="$(map)"
 grep -q "^$esp_uuid:" <<<"$after_map" && { echo 'FAIL  staging ESP survived' >&2; exit 1; }
 grep -q "^$root_uuid:" <<<"$after_map" && { echo 'FAIL  staging root survived' >&2; exit 1; }
-grep -Fxq "$target_root_uuid:$((1382 * mib)):$((4352 * mib))" <<<"$after_map" \
+grep -Fxq "$target_root_uuid:$((2406 * mib)):$((4352 * mib))" <<<"$after_map" \
   || { printf 'FAIL  Tilo root did not grow to the end of the staging space:\n%s\n' "$after_map" >&2; exit 1; }
-grep -Fxq "$recovery_uuid:$((5734 * mib)):$((100 * mib))" <<<"$after_map" \
+grep -Fxq "$recovery_uuid:$((6758 * mib)):$((100 * mib))" <<<"$after_map" \
   || { echo 'FAIL  the partition after staging changed' >&2; exit 1; }
 grep -Fxq "00000000-0000-4000-8000-00000000000b:$((101 * mib)):$((1024 * mib))" <<<"$after_map" \
   || { echo 'FAIL  the retained OS partition changed' >&2; exit 1; }

@@ -47,6 +47,7 @@ cat > "$tmp/bin/blkid" <<'EOF'
 case "$*" in
   *'TYPE -o value'*) printf 'ext4\n' ;;
   *'LABEL -o value'*) printf '%s\n' "${TILO_TEST_LABEL:-TILO_BOOT}" ;;
+  *'UUID -o value'*) printf '%s\n' "${TILO_TEST_UUID:-12345678-1234-1234-1234-123456789abc}" ;;
   *) exit 1 ;;
 esac
 EOF
@@ -60,10 +61,11 @@ run_contract() {
   PATH="$tmp/bin:$PATH" "$contract" --disk "$disk" --boot-part "$part" --target-root "$tmp/root"
 }
 
-[ "$(run_contract)" = LABEL=TILO_BOOT ]
+[ "$(run_contract)" = UUID=12345678-1234-1234-1234-123456789abc ]
 ! PATH="$tmp/bin:$PATH" "$contract" --disk "$disk" --target-root "$tmp/root" >/dev/null 2>&1
 ! TILO_TEST_LABEL=OTHER PATH="$tmp/bin:$PATH" "$contract" --disk "$disk" --boot-part "$part" --target-root "$tmp/root" >/dev/null 2>&1
 ! TILO_TEST_MOUNT_SOURCE=/dev/hostile PATH="$tmp/bin:$PATH" "$contract" --disk "$disk" --boot-part "$part" --target-root "$tmp/root" >/dev/null 2>&1
 ! TILO_TEST_EXTRA_LABEL="/dev/hostile TILO_BOOT" PATH="$tmp/bin:$PATH" "$contract" --disk "$disk" --boot-part "$part" --target-root "$tmp/root" >/dev/null 2>&1
+! TILO_TEST_UUID=invalid PATH="$tmp/bin:$PATH" "$contract" --disk "$disk" --boot-part "$part" --target-root "$tmp/root" >/dev/null 2>&1
 
 printf 'ok: encrypted boot mount contract rejects missing, substituted, wrong, and duplicate labels\n'

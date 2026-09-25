@@ -1488,7 +1488,7 @@ pub(super) mod tests {
         let fakes = Fakes::new(Vec::new());
         let mut install = probed(&fakes, true);
         let (min, max) = install.bounds_gib().unwrap();
-        assert_eq!(min, 34);
+        assert_eq!(min, 35);
         assert_eq!(max, 400 - 120 - 42);
         let first = install.reviewed_digest().unwrap();
         assert!(install.set_target_gib(min - 1).is_err());

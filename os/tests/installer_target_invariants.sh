@@ -220,12 +220,15 @@ if grep -Fq -- '--expect-disk-size-bytes)' "$backend" \
    && grep -Fq -- '--expect-disk-serial)' "$backend" \
    && grep -Fq -- '--expect-root-partuuid)' "$backend" \
    && grep -Fq -- '--expect-root-size-bytes)' "$backend" \
+   && grep -Fq -- '--expect-boot-partuuid)' "$backend" \
+   && grep -Fq -- '--expect-boot-size-bytes)' "$backend" \
    && grep -Fq -- '--expect-efi-partuuid)' "$backend" \
    && grep -Fq -- '--expect-efi-size-bytes)' "$backend" \
    && grep -Fq 'missing stable disk identity (expected WWN or serial)' "$backend" \
    && grep -Fq 'validate_partition_identity "$ROOT_PARTITION"' "$backend" \
+   && grep -Fq 'validate_partition_identity "$BOOT_PARTITION"' "$backend" \
    && grep -Fq 'validate_partition_identity "$EFI_PARTITION"' "$backend" \
-   && [ "$(grep -c '^[[:space:]]*validate_disk_identity$' "$backend" || true)" -eq 2 ]; then
+   && [ "$(grep -c '^[[:space:]]*validate_disk_identity$' "$backend" || true)" -ge 3 ]; then
   ok "reviewed disk and alongside partition identities are revalidated before destructive work"
 else
   bad "installer target identity is not bound across discovery and destructive execution"
@@ -502,7 +505,8 @@ if grep -Fq -- '--alongside' "$backend" \
    && grep -Fq 'signature_types="$(wipefs --noheadings --no-act --output TYPE "$ROOT_PARTITION")"' "$backend" \
    && [ "$(grep -c '^[[:space:]]*validate_alongside$' "$backend" || true)" -eq 4 ] \
    && grep -Fq 'signature_types="$(wipefs --noheadings --no-act --output TYPE "$part")"' "$encryptor" \
-   && grep -Fq 'root and EFI partitions are not on the same disk' "$encryptor" \
+   && grep -Fq 'root, boot, and EFI partitions are not on the same disk' "$encryptor" \
+   && grep -Fq 'boot partition already contains a signature' "$encryptor" \
    && grep -Fq 'MIN_ALONGSIDE_ESP_BYTES=2147483648' "$backend" \
    && grep -Fq 'MIN_ALONGSIDE_ESP_FREE_BYTES=1073741824' "$backend" \
    && grep -Fq 'MIN_ALONGSIDE_ESP_BYTES=2147483648' "$encryptor" \
@@ -528,7 +532,7 @@ else
   bad "prepared-storage preflight is missing or can fall through into destructive installation"
 fi
 
-if grep -Fq 'prepare-partition "$ROOT_PARTITION" --efi "$EFI_PARTITION"' "$backend" \
+if grep -Fq 'prepare-partition "$ROOT_PARTITION" --boot "$BOOT_PARTITION" --efi "$EFI_PARTITION"' "$backend" \
    && grep -Fq 'ROOT_FS_UUID=' "$backend" \
    && grep -Fq 'ENC_CLEANUP_TARGET="$ROOT_PARTITION"' "$backend"; then
   ok "encrypted and unencrypted alongside paths preserve the partition table"

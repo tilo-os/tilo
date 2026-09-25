@@ -767,20 +767,20 @@ pub(crate) mod tests {
         let r = Requirements {
             staging_esp_bytes: 600 * MIB + 512,
             staging_root_bytes: 40 * GIB + 1,
-            target_bytes: 34 * GIB + 3,
+            target_bytes: 35 * GIB + 3,
         };
         let plan = compute(&basis, r).unwrap();
         assert_layout(&plan, r);
         assert_eq!(plan.staging_esp.extent().lbas() * 512, 601 * MIB);
         assert_eq!(plan.staging_root.extent().lbas() * 512, 40 * GIB + MIB);
-        assert_eq!(plan.target_extent.lbas() * 512, 34 * GIB + MIB);
+        assert_eq!(plan.target_extent.lbas() * 512, 35 * GIB + MIB);
     }
 
     #[test]
     fn target_below_installer_minimum_is_refused() {
         let basis = linux_basis(512, 256 * GIB, Vec::new());
         assert!(matches!(
-            compute(&basis, req(34 * GIB - MIB)),
+            compute(&basis, req(35 * GIB - MIB)),
             Err(PlanError::Unsupported(_))
         ));
     }
@@ -797,19 +797,19 @@ pub(crate) mod tests {
             ],
         );
         assert!(matches!(
-            compute(&overlap, req(34 * GIB)),
+            compute(&overlap, req(35 * GIB)),
             Err(PlanError::Unsupported(_))
         ));
         let mut odd = linux_basis(512, 64 * GIB, Vec::new());
         odd.disk.sector_bytes = 520;
         assert!(matches!(
-            compute(&odd, req(34 * GIB)),
+            compute(&odd, req(35 * GIB)),
             Err(PlanError::Unsupported(_))
         ));
         let mut outside = linux_basis(s, 64 * GIB, Vec::new());
         outside.disk.partitions = vec![part(1, "a0000000-0000-4000-8000-000000000001", 1, 100)];
         assert!(matches!(
-            compute(&outside, req(34 * GIB)),
+            compute(&outside, req(35 * GIB)),
             Err(PlanError::Unsupported(_))
         ));
         let mut duplicate = linux_basis(s, 64 * GIB, Vec::new());
@@ -818,7 +818,7 @@ pub(crate) mod tests {
             part(2, "A0000000-0000-4000-8000-000000000001", 8192, 9000),
         ];
         assert!(matches!(
-            compute(&duplicate, req(34 * GIB)),
+            compute(&duplicate, req(35 * GIB)),
             Err(PlanError::Unsupported(_))
         ));
     }
@@ -979,7 +979,7 @@ pub(crate) mod tests {
             )],
         );
         assert!(matches!(
-            compute(&basis, req(34 * GIB)),
+            compute(&basis, req(35 * GIB)),
             Err(PlanError::InsufficientSpace {
                 available_bytes: 0,
                 ..
@@ -1002,7 +1002,7 @@ pub(crate) mod tests {
     fn loader_path_comes_from_the_bundle_binding() {
         let basis = linux_basis(512, 128 * GIB, Vec::new());
         let plan = with_loader_path(
-            compute(&basis, req(34 * GIB)).unwrap(),
+            compute(&basis, req(35 * GIB)).unwrap(),
             "/EFI/BOOT/BOOTX64.EFI",
         );
         assert_eq!(plan.boot_entry.loader_path, "\\EFI\\BOOT\\BOOTX64.EFI");

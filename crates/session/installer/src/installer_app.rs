@@ -204,6 +204,29 @@ fn connect_power_message(percent: u8) -> String {
     )
 }
 
+fn alongside_install_impact(guided: bool, dev: &str) -> String {
+    let change = if guided {
+        format!(
+            "Three new Tilo partitions (EFI, boot, and encrypted root) will be created and formatted only in the reviewed unallocated space on {dev}. Existing OS partitions are preserved."
+        )
+    } else {
+        format!(
+            "Only the prepared Tilo boot and root partitions on {dev} will be formatted. The existing EFI partition and other OS partitions are preserved."
+        )
+    };
+    format!(
+        "{change} Firmware/Secure Boot changes can still trigger a Windows BitLocker recovery prompt; save that recovery key before continuing."
+    )
+}
+
+fn alongside_confirmation_operation(guided: bool) -> &'static str {
+    if guided {
+        "guided free-space partition plan"
+    } else {
+        "Tilo boot and root format"
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum InstallMethod {
     Erase,
@@ -1094,6 +1117,7 @@ pub struct InstallerApp {
     /// Generated once per installer run; changing disks clears confirmation but
     /// retaining these stable IDs keeps Review and the backend handoff identical.
     guided_efi_partuuid: String,
+    guided_boot_partuuid: String,
     guided_root_partuuid: String,
     /// Index into [`FILESYSTEMS`].
     selected_fs: usize,
@@ -1311,6 +1335,7 @@ impl InstallerApp {
             selected_guided_extent: None,
             install_method: InstallMethod::Erase,
             guided_efi_partuuid: uuid::Uuid::new_v4().to_string(),
+            guided_boot_partuuid: uuid::Uuid::new_v4().to_string(),
             guided_root_partuuid: uuid::Uuid::new_v4().to_string(),
             selected_fs: 0,
             supported_filesystems: [true; FILESYSTEMS.len()],
@@ -1734,14 +1759,18 @@ impl InstallerApp {
     fn install_options(&self) -> InstallOptions {
         let layout = self.layout();
         let disk = self.selected_disk_ref();
-        let (root, efi) = if self.install_method == InstallMethod::Alongside {
-            disk.map_or((None, None), |disk| {
-                (disk.alongside_root(), disk.efi_partition())
+        let (root, boot, efi) = if self.install_method == InstallMethod::Alongside {
+            disk.map_or((None, None, None), |disk| {
+                (
+                    disk.alongside_root(),
+                    disk.alongside_boot(),
+                    disk.efi_partition(),
+                )
             })
         } else {
-            (None, None)
+            (None, None, None)
         };
-        let guided = if root.is_none() && efi.is_none() {
+        let guided = if root.is_none() && boot.is_none() && efi.is_none() {
             self.guided_alongside_plan()
         } else {
             None
@@ -1755,6 +1784,10 @@ impl InstallerApp {
             alongside_root_partuuid: root
                 .map_or_else(String::new, |partition| partition.part_uuid.clone()),
             alongside_root_size_bytes: root.map_or(0, |partition| partition.size_bytes),
+            alongside_boot: boot.map_or_else(String::new, |partition| partition.name.clone()),
+            alongside_boot_partuuid: boot
+                .map_or_else(String::new, |partition| partition.part_uuid.clone()),
+            alongside_boot_size_bytes: boot.map_or(0, |partition| partition.size_bytes),
             alongside_efi: efi.map_or_else(String::new, |partition| partition.name.clone()),
             alongside_efi_partuuid: efi
                 .map_or_else(String::new, |partition| partition.part_uuid.clone()),
@@ -1763,12 +1796,15 @@ impl InstallerApp {
             guided_free_size_bytes: guided.as_ref().map_or(0, |plan| plan.free_size_bytes),
             guided_efi_start_bytes: guided.as_ref().map_or(0, |plan| plan.efi_start_bytes),
             guided_efi_size_bytes: guided.as_ref().map_or(0, |plan| plan.efi_size_bytes),
+            guided_boot_start_bytes: guided.as_ref().map_or(0, |plan| plan.boot_start_bytes),
+            guided_boot_size_bytes: guided.as_ref().map_or(0, |plan| plan.boot_size_bytes),
             guided_root_start_bytes: guided.as_ref().map_or(0, |plan| plan.root_start_bytes),
             guided_root_size_bytes: guided.as_ref().map_or(0, |plan| plan.root_size_bytes),
             disk_partition_table_uuid: disk
                 .map_or_else(String::new, |disk| disk.partition_table_uuid.clone()),
             disk_logical_sector_size: disk.map_or(0, |disk| disk.logical_sector_size),
             guided_efi_partuuid: self.guided_efi_partuuid.clone(),
+            guided_boot_partuuid: self.guided_boot_partuuid.clone(),
             guided_root_partuuid: self.guided_root_partuuid.clone(),
             expected_partitions: if guided.is_some() {
                 disk.and_then(Disk::occupied_extents).unwrap_or_default()
@@ -1977,7 +2013,7 @@ impl InstallerApp {
             && self.install_method == InstallMethod::Alongside
             && !self.selected_disk_can_install_alongside()
         {
-            self.set_status("Alongside needs either one unallocated GPT extent of at least 34 GiB, or a prepared empty Linux root (32 GiB+) and EFI partition (2 GiB+)");
+            self.set_status("Alongside needs either one unallocated GPT extent of at least 35 GiB, or a prepared empty Linux root (32 GiB+) and a 1 GiB boot plus 2 GiB EFI partition");
             return;
         }
         if self.step == Step::Disk
@@ -2093,6 +2129,7 @@ impl InstallerApp {
                 self.selected_guided_extent = None;
                 self.erase_confirmation.clear();
                 self.guided_efi_partuuid = uuid::Uuid::new_v4().to_string();
+                self.guided_boot_partuuid = uuid::Uuid::new_v4().to_string();
                 self.guided_root_partuuid = uuid::Uuid::new_v4().to_string();
                 self.reset_viewport();
                 self.install_state = InstallState::Idle;
@@ -2527,7 +2564,7 @@ impl InstallerApp {
         {
             children.push(Box::new(
                 Text::new(&format!(
-                    "Ready to use {} GiB of unallocated space: a new 2 GiB Tilo EFI partition and a new {} GiB encrypted root. Existing partitions will not be changed.",
+                    "Ready to use {} GiB of unallocated space: a new 2 GiB Tilo EFI partition, a new 1 GiB Tilo boot partition, and a new {} GiB encrypted root. Existing partitions will not be changed.",
                     plan.free_size_bytes / (1024 * 1024 * 1024),
                     plan.root_size_bytes / (1024 * 1024 * 1024)
                 ))
@@ -2580,7 +2617,7 @@ impl InstallerApp {
         let guidance = if self.install_method == InstallMethod::Erase {
             "Erase disk deletes every partition and operating system on the selected disk."
         } else {
-            "Alongside preserves existing partitions. Tilo can use one unallocated GPT extent (34 GiB+) or prepared Tilo partitions. It never shrinks, moves, or deletes an existing partition."
+            "Alongside preserves existing partitions. Tilo can use one unallocated GPT extent (35 GiB+) or prepared Tilo partitions. It never shrinks, moves, or deletes an existing partition."
         };
         children.push(Box::new(Text::new(guidance).with_size(sm).with_color(
             if self.install_method == InstallMethod::Erase {
@@ -2618,7 +2655,7 @@ impl InstallerApp {
                 "{issue} The privileged install check will also verify FAT health and at least 1 GiB of free space before formatting anything."
             );
         }
-        "No safe alongside space was found. Shrink the existing OS from its own disk manager and leave at least 34 GiB unallocated, or prepare an empty Linux root and 2 GiB EFI partition, then refresh disks.".to_string()
+        "No safe alongside space was found. Shrink the existing OS from its own disk manager and leave at least 35 GiB unallocated, or prepare an empty Linux root and 1 GiB boot plus 2 GiB EFI partition, then refresh disks.".to_string()
     }
 
     fn compose_guided_extent_choices(
@@ -2902,11 +2939,7 @@ impl InstallerApp {
                         .and_then(|selected| selected.alongside_root())
                         .map_or("<missing root>", |partition| partition.name.as_str())
                 },
-                if self.uses_guided_alongside() {
-                    "guided free-space partition plan"
-                } else {
-                    "Tilo root format"
-                },
+                alongside_confirmation_operation(self.uses_guided_alongside()),
             ),
         };
         children.push(Box::new(
@@ -3051,15 +3084,7 @@ impl InstallerApp {
         }
 
         let impact = if self.install_method == InstallMethod::Alongside {
-            if self.uses_guided_alongside() {
-                format!(
-                    "Two new Tilo partitions will be created only in the reviewed unallocated space on {dev}. Existing OS partitions are preserved. Firmware/Secure Boot changes can still trigger a Windows BitLocker recovery prompt; save that recovery key before continuing."
-                )
-            } else {
-                format!(
-                    "Only the prepared Tilo root partition on {dev} is formatted. Existing OS partitions are preserved. Firmware/Secure Boot changes can still trigger a Windows BitLocker recovery prompt; save that recovery key before continuing."
-                )
-            }
+            alongside_install_impact(self.uses_guided_alongside(), &dev)
         } else {
             format!("This will ERASE {dev} and all data on it.")
         };
@@ -3402,6 +3427,16 @@ fn sample_disks() -> Vec<Disk> {
                     mountpoint: String::new(),
                     part_type: EFI_SYSTEM_GUID.to_string(),
                 },
+                DiskPartition {
+                    name: "/dev/sda5".to_string(),
+                    start_bytes: 226_685_403_136,
+                    size_bytes: 1_073_741_824,
+                    part_uuid: "00000000-0000-0000-0000-000000000005".to_string(),
+                    filesystem: String::new(),
+                    label: String::new(),
+                    mountpoint: String::new(),
+                    part_type: LINUX_FILESYSTEM_GUID.to_string(),
+                },
             ],
         },
         Disk {
@@ -3573,6 +3608,7 @@ impl InstallerApp {
         self.selected_disk = None;
         self.selected_guided_extent = None;
         self.guided_efi_partuuid = uuid::Uuid::new_v4().to_string();
+        self.guided_boot_partuuid = uuid::Uuid::new_v4().to_string();
         self.guided_root_partuuid = uuid::Uuid::new_v4().to_string();
         self.erase_confirmation.clear();
         self.storage_preflight_request = None;
@@ -4922,6 +4958,28 @@ mod tests {
     }
 
     #[test]
+    fn alongside_review_describes_each_partition_it_changes() {
+        let guided = alongside_install_impact(true, "/dev/nvme0n1");
+        assert!(guided.contains("Three new Tilo partitions (EFI, boot, and encrypted root)"));
+        assert!(guided.contains("created and formatted only in the reviewed unallocated space"));
+        assert!(guided.contains("BitLocker recovery prompt"));
+
+        let prepared = alongside_install_impact(false, "/dev/nvme0n1");
+        assert!(prepared.contains("prepared Tilo boot and root partitions"));
+        assert!(prepared.contains("will be formatted"));
+        assert!(prepared.contains("existing EFI partition and other OS partitions are preserved"));
+        assert!(prepared.contains("BitLocker recovery prompt"));
+        assert_eq!(
+            alongside_confirmation_operation(false),
+            "Tilo boot and root format"
+        );
+        assert_eq!(
+            alongside_confirmation_operation(true),
+            "guided free-space partition plan"
+        );
+    }
+
+    #[test]
     fn options_step_always_shows_encryption_factors() {
         let mut app = InstallerApp::with_disks(sample());
         app.step = Step::Options;
@@ -4967,6 +5025,12 @@ mod tests {
             "00000000-0000-0000-0000-000000000003"
         );
         assert_eq!(opts.alongside_root_size_bytes, 64_000_000_000);
+        assert_eq!(opts.alongside_boot, "/dev/sda5");
+        assert_eq!(
+            opts.alongside_boot_partuuid,
+            "00000000-0000-0000-0000-000000000005"
+        );
+        assert_eq!(opts.alongside_boot_size_bytes, 1024 * 1024 * 1024);
         assert_eq!(opts.alongside_efi, "/dev/sda4");
         assert_eq!(
             opts.alongside_efi_partuuid,
@@ -4989,6 +5053,8 @@ mod tests {
         assert_eq!(opts.guided_free_start_bytes, plan.free_start_bytes);
         assert_eq!(opts.guided_free_size_bytes, plan.free_size_bytes);
         assert_eq!(opts.guided_efi_size_bytes, 2 * 1024 * 1024 * 1024);
+        assert_eq!(opts.guided_boot_size_bytes, 1024 * 1024 * 1024);
+        assert_eq!(opts.guided_boot_start_bytes, plan.boot_start_bytes);
         assert!(opts.guided_root_size_bytes >= 32 * 1024 * 1024 * 1024);
         assert_eq!(
             opts.disk_partition_table_uuid,
@@ -5057,7 +5123,8 @@ mod tests {
     #[test]
     fn alongside_explains_a_determinable_prepared_efi_failure() {
         let mut disk = sample_disks().remove(0);
-        disk.partitions.pop(); // remove the valid 2 GiB Tilo ESP
+        disk.partitions
+            .retain(|partition| partition.name != "/dev/sda4"); // remove the valid 2 GiB Tilo ESP, retain prepared boot
         let mut app = InstallerApp::with_disks(vec![disk]);
         app.install_method = InstallMethod::Alongside;
         app.selected_disk = Some(0);
