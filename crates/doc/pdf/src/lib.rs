@@ -18,6 +18,26 @@
 //! with [`Error::Crashed`] or [`Error::Timeout`] and the next request starts
 //! a fresh helper, re-opening the documents it needs.
 //!
+//! ### When the sandbox cannot be enforced
+//!
+//! Tilo's kernel always has Landlock (ABI 5 and later), but a foreign
+//! distribution, an old kernel or a container may not. The helper then
+//! refuses to start and the engine reports [`Error::Unconfined`]; it never
+//! falls back to seccomp alone. Seccomp keeps the parser off the network and
+//! away from `exec`, but only Landlock keeps a compromised parser from
+//! opening the user's files, and that is the property the helper exists for.
+//! A partially enforced ruleset (a kernel whose Landlock ABI is older than
+//! the one Tilo targets) counts as not enforced.
+//!
+//! Release builds stop there: no PDF is parsed. A development build instead
+//! parses in this process, saying so on stderr, exactly as it does when no
+//! helper binary is installed — unless [`REQUIRE_SANDBOX_ENV`] is set, which
+//! an environment that promises a sandbox-capable kernel (a CI runner with
+//! Landlock) does so that an unconfined helper is a failure there. Tests
+//! whose assertions need the helper itself go through [`sandboxed_for_test`]:
+//! they stand down on a host that cannot confine it, and fail when the
+//! variable is set.
+//!
 //! ## Shape
 //!
 //! - [`Engine`] — a handle to the engine (cheap to clone). [`Engine::shared`]
@@ -200,6 +220,67 @@ impl std::fmt::Debug for Engine {
 /// Whether development-only overrides are honoured (debug builds).
 const DEV_OVERRIDES: bool = cfg!(debug_assertions);
 
+/// Set by an environment that promises a kernel able to confine the helper;
+/// see [When the sandbox cannot be enforced](crate#when-the-sandbox-cannot-be-enforced).
+pub const REQUIRE_SANDBOX_ENV: &str = "TILO_REQUIRE_PDF_SANDBOX";
+
+/// Whether this environment promises that the helper can confine itself
+/// ([`REQUIRE_SANDBOX_ENV`] is set), so [`Error::Unconfined`] is a failure
+/// rather than a property of the host.
+fn sandbox_required() -> bool {
+    std::env::var_os(REQUIRE_SANDBOX_ENV).is_some_and(|v| !v.is_empty())
+}
+
+/// The gate for every test whose assertions need the sandboxed helper
+/// itself — its confinement, or the pinned appearance fonts compiled into it
+/// — rather than any engine. Tests that only need documents opened use
+/// [`Engine::shared`] and run everywhere.
+///
+/// The engine is [`HelperGate::Sandboxed`] when it is the helper. Otherwise
+/// the test stands down, saying on stderr that `what` went unchecked: on a
+/// host that cannot confine the helper, and where no helper binary is built
+/// (the in-process engine of a development build).
+///
+/// # Panics
+///
+/// When the host cannot confine the helper and [`REQUIRE_SANDBOX_ENV`] is
+/// set: the environment promised a sandbox.
+pub fn sandboxed_for_test(engine: Result<Engine>, what: &str) -> HelperGate {
+    match engine {
+        Ok(engine) if engine.is_sandboxed() => HelperGate::Sandboxed(engine),
+        Ok(_) => {
+            eprintln!(
+                "SKIPPING {what}: the PDF engine here is not the sandboxed helper \
+                 (none is built next to this binary, or this host cannot confine it)"
+            );
+            HelperGate::StandDown
+        }
+        Err(Error::Unconfined(reason)) => {
+            assert!(
+                !sandbox_required(),
+                "{REQUIRE_SANDBOX_ENV} is set, but this host cannot confine the PDF helper: {reason}"
+            );
+            eprintln!(
+                "SKIPPING {what}: this host cannot confine the PDF helper ({reason}); \
+                 set {REQUIRE_SANDBOX_ENV} to make this a failure"
+            );
+            HelperGate::StandDown
+        }
+        Err(e) => HelperGate::Failed(e),
+    }
+}
+
+/// What [`sandboxed_for_test`] decided.
+#[derive(Debug)]
+pub enum HelperGate {
+    /// The helper runs confined here: run the test against it.
+    Sandboxed(Engine),
+    /// It cannot, and nothing promised it could: the test stands down.
+    StandDown,
+    /// The engine failed for a reason unrelated to the sandbox.
+    Failed(Error),
+}
+
 /// Where the helper binary is looked for, in order.
 fn helper_candidates() -> Vec<PathBuf> {
     let mut out = Vec::new();
@@ -226,16 +307,29 @@ fn helper_candidates() -> Vec<PathBuf> {
 
 impl Engine {
     /// The engine every consumer should use: the sandboxed helper. In
-    /// development builds without an installed helper it falls back to the
-    /// in-process engine (with a warning on stderr); release builds never
-    /// parse a PDF in-process.
+    /// development builds without an installed helper, or on a host that
+    /// cannot confine it, it falls back to the in-process engine (with a
+    /// warning on stderr); release builds never parse a PDF in-process. See
+    /// [When the sandbox cannot be enforced](crate#when-the-sandbox-cannot-be-enforced).
     ///
     /// # Errors
     ///
-    /// [`Error::Unavailable`] when neither is possible.
+    /// [`Error::Unconfined`] when the host cannot confine the helper (release
+    /// builds, or [`REQUIRE_SANDBOX_ENV`] is set), [`Error::Unavailable`]
+    /// when no engine can start.
     pub fn new() -> Result<Self> {
         match helper_candidates().into_iter().find(|p| p.is_file()) {
-            Some(helper) => Self::with_helper(&helper),
+            Some(helper) => match Self::with_helper(&helper) {
+                Err(Error::Unconfined(reason)) if DEV_OVERRIDES && !sandbox_required() => {
+                    eprintln!(
+                        "tilo-pdf: {HELPER_NAME} cannot confine itself here ({reason}); \
+                         parsing PDFs in-process (development build; set \
+                         {REQUIRE_SANDBOX_ENV} to refuse instead)"
+                    );
+                    Self::in_process()
+                }
+                started => started,
+            },
             None if DEV_OVERRIDES => {
                 eprintln!(
                     "tilo-pdf: {HELPER_NAME} not found; parsing PDFs in-process (development build)"
@@ -273,7 +367,8 @@ impl Engine {
     ///
     /// # Errors
     ///
-    /// [`Error::Unavailable`] when the helper cannot start or confine itself.
+    /// [`Error::Unconfined`] when the helper cannot confine itself,
+    /// [`Error::Unavailable`] when it cannot start.
     pub fn with_helper(helper: &Path) -> Result<Self> {
         Ok(Self::from_backend(Backend::Sandboxed(
             client::Sandboxed::start(helper)?,

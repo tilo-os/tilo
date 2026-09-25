@@ -13,6 +13,9 @@
 //!    connect/bind, no exec, write-xor-execute memory.
 //!
 //! Then it announces `Ready` and serves requests until the socket closes.
+//! If either confinement cannot be fully enforced it reports
+//! [`FailureKind::Sandbox`] and exits without reading a document; see
+//! [When the sandbox cannot be enforced](crate#when-the-sandbox-cannot-be-enforced).
 //! A crash or hang here costs only this process; the client reports an
 //! error and starts a fresh helper.
 
@@ -35,29 +38,28 @@ pub fn run() -> i32 {
     let mut channel = Channel::new(UnixStream::from(socket));
     match start(&mut channel) {
         Ok(engine) => serve(&mut channel, engine),
-        Err(message) => {
-            let _ = channel.send(&Response::Failed {
-                kind: FailureKind::Engine,
-                message,
-            });
+        Err((kind, message)) => {
+            let _ = channel.send(&Response::Failed { kind, message });
             1
         }
     }
 }
 
-fn start(channel: &mut Channel) -> Result<Engine, String> {
-    die_with_parent()?;
-    close_inherited_descriptors()?;
-    let library = Library::load()?;
+fn start(channel: &mut Channel) -> Result<Engine, (FailureKind, String)> {
+    let engine = |message: String| (FailureKind::Engine, message);
+    let sandbox = |message: String| (FailureKind::Sandbox, message);
+    die_with_parent().map_err(engine)?;
+    close_inherited_descriptors().map_err(engine)?;
+    let library = Library::load().map_err(engine)?;
     let lib_path = library.path().to_path_buf();
-    limit_resources()?;
-    confine_filesystem(&lib_path)?;
-    confine_syscalls()?;
+    limit_resources().map_err(engine)?;
+    confine_filesystem(&lib_path).map_err(sandbox)?;
+    confine_syscalls().map_err(sandbox)?;
     channel
         .send(&Response::Ready {
             version: PROTOCOL_VERSION,
         })
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| engine(e.to_string()))?;
     Ok(Engine::new(library))
 }
 

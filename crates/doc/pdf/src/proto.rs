@@ -115,6 +115,8 @@ pub enum FailureKind {
     Limit,
     /// The engine failed for another reason.
     Engine,
+    /// The helper could not confine itself, so it serves nothing.
+    Sandbox,
 }
 
 /// What the helper's sandbox let a probe do.

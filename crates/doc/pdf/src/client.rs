@@ -18,7 +18,9 @@ use std::time::Duration;
 use crate::edits::Edits;
 use crate::error::Error;
 use crate::model::{AnnotationInfo, DocumentInfo, FormField, Link, OutlineEntry, RenderOptions};
-use crate::proto::{Channel, OpenKind, PROTOCOL_VERSION, ProbeReport, Request, Response};
+use crate::proto::{
+    Channel, FailureKind, OpenKind, PROTOCOL_VERSION, ProbeReport, Request, Response,
+};
 use crate::text::RawChar;
 use crate::{Bitmap, shm};
 
@@ -212,6 +214,13 @@ impl Sandboxed {
         };
         match connection.channel.recv::<Response>() {
             Ok(Response::Ready { version }) if version == PROTOCOL_VERSION => {}
+            Ok(Response::Failed {
+                kind: FailureKind::Sandbox,
+                message,
+            }) => {
+                let _ = connection.kill();
+                return Err(Error::Unconfined(message));
+            }
             Ok(Response::Failed { message, .. }) => {
                 let _ = connection.kill();
                 return Err(Error::Unavailable(format!(
