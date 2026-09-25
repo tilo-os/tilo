@@ -118,11 +118,11 @@ fn timeline_virtual_window_has_stable_overscan_without_materialising_the_library
 fn date_index_uses_timeline_rows_and_preserves_virtual_scroll_anchor() {
     let mut app = PhotosApp::new();
     app.timeline_index_metrics = ScrollMetrics::new(100.0, 10.0, 20.0);
-    assert!(app.apply_timeline_index_intent(DateIndexIntent::ScrollTo { position: 0.5 }));
+    assert!(app.apply_timeline_index_intent(&DateIndexIntent::ScrollTo { position: 0.5 }));
     assert!((app.timeline_scroll_y - 45.0).abs() < f64::EPSILON);
     // A hover preview may redraw a label but must never mutate the scroll
     // anchor or create an accidental shared action.
-    assert!(app.apply_timeline_index_intent(DateIndexIntent::PreviewChanged(None)));
+    assert!(app.apply_timeline_index_intent(&DateIndexIntent::PreviewChanged(None)));
     assert!((app.timeline_scroll_y - 45.0).abs() < f64::EPSILON);
 }
 
@@ -1286,7 +1286,7 @@ fn people_places_and_albums_keep_complete_paged_collections() {
         ));
         photo.people = vec![format!("Person {index:02}")];
         photo.location = Some(crate::model::PhotoLocation {
-            latitude: 10.0 + index as f64 / 100.0,
+            latitude: 10.0 + f64::from(index) / 100.0,
             longitude: 20.0,
             label: Some(format!("Place {index:02}")),
             provenance: crate::model::LocationProvenance::default(),
@@ -2284,7 +2284,11 @@ fn justified_timeline_preserves_aspects_and_never_crosses_a_day() {
         .filter(|entry| entry.photo.day == "2026-06-18")
         .collect();
     assert_eq!(first_day.len(), 3);
-    assert!(first_day.iter().all(|entry| entry.y == first_day[0].y));
+    assert!(
+        first_day
+            .iter()
+            .all(|entry| (entry.y - first_day[0].y).abs() < f64::EPSILON)
+    );
     let first_day_width = first_day.iter().map(|entry| entry.width).sum::<f64>() + 24.0;
     assert!((first_day_width - 600.0).abs() <= 1.0);
     let next_day = layout
@@ -2435,8 +2439,14 @@ fn date_index_boundaries_are_chronological_and_mark_year_changes() {
 
 #[test]
 fn toolbar_capsules_and_status_band_contain_their_text_at_any_scale() {
-    assert_eq!(btn_h(1.0), BTN_H, "1× keeps the authored capsule");
-    assert_eq!(status_h(1.0), BAR_H * 0.6, "1× keeps the authored band");
+    assert!(
+        (btn_h(1.0) - BTN_H).abs() < f32::EPSILON,
+        "1× keeps the authored capsule"
+    );
+    assert!(
+        (status_h(1.0) - BAR_H * 0.6).abs() < f32::EPSILON,
+        "1× keeps the authored band"
+    );
     let mut tr = TextRenderer::new();
     tr.set_text_scale(2.0);
     let (_, label_line) = tr.measure("More", BUTTON_LABEL_SIZE, None);
@@ -2452,7 +2462,7 @@ fn toolbar_capsules_and_status_band_contain_their_text_at_any_scale() {
         status_h(2.0)
     );
     // Icon-only items stay square at every scale.
-    assert_eq!(item_width(Face::IconOnly, "", btn_h(2.0)), btn_h(2.0));
+    assert!((item_width(Face::IconOnly, "", btn_h(2.0)) - btn_h(2.0)).abs() < f32::EPSILON);
 }
 
 #[test]
@@ -2535,8 +2545,8 @@ fn metadata_sheet_footer_never_covers_a_focused_field() {
             "{scale}×: retained Cancel and Save sit below the visible body {body:?}: {footer:?}"
         );
         if (scale - 1.0).abs() < f32::EPSILON {
-            assert_eq!(
-                app.metadata_editor_scroll, 0.0,
+            assert!(
+                app.metadata_editor_scroll.abs() < f64::EPSILON,
                 "1× holds the whole sheet without scrolling"
             );
         } else {
