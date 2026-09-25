@@ -242,6 +242,11 @@ fn every_variable_in_the_sandbox_is_one_the_launcher_set() {
             .iter()
             .map(std::string::ToString::to_string),
     );
+    allowed.extend(
+        launcher::sandbox::ACCESSIBILITY_TEXT_SCALE_ENV
+            .iter()
+            .map(std::string::ToString::to_string),
+    );
 
     let inside = env_names_inside();
     assert!(
@@ -306,4 +311,42 @@ fn the_sessions_logging_preference_reaches_the_app() {
         "the session's log filter must reach the app; without it every app \
          inside the sandbox is silent below error level"
     );
+}
+
+/// Text scaling is a user accessibility preference, so the launcher carries
+/// it across the clean environment after parsing and canonicalising it.
+#[test]
+fn validated_accessibility_text_scale_reaches_the_app() {
+    let _env = parent_env(&[
+        ("TILO_A11Y_TEXT_SCALE", " 1.25 "),
+        ("TILO_TEXT_SCALE", "2.0"),
+    ]);
+
+    assert_eq!(
+        run(&["env", "TILO_A11Y_TEXT_SCALE"]),
+        "ENV TILO_A11Y_TEXT_SCALE=1.25"
+    );
+    assert_eq!(run(&["env", "TILO_TEXT_SCALE"]), "ENV TILO_TEXT_SCALE=2");
+}
+
+/// Recognising a preference name must not turn it into a generic string
+/// channel. Non-finite, out-of-range and non-numeric values remain absent,
+/// as does an unrelated parent variable.
+#[test]
+fn unsafe_text_scale_and_other_parent_environment_stay_out() {
+    for value in ["NaN", "0.49", "4.01", "1.25\nTILO_ENV_LEAK_MARKER=leaked"] {
+        let _env = parent_env(&[
+            ("TILO_A11Y_TEXT_SCALE", value),
+            (MARKER, "the-parent-was-here"),
+        ]);
+        assert_eq!(
+            run(&["env", "TILO_A11Y_TEXT_SCALE"]),
+            "ENV TILO_A11Y_TEXT_SCALE=<unset>",
+            "unsafe value crossed the sandbox: {value:?}"
+        );
+        assert!(
+            !env_names_inside().iter().any(|key| key == MARKER),
+            "unrelated parent environment crossed beside {value:?}"
+        );
+    }
 }
