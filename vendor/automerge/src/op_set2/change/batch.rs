@@ -8,7 +8,7 @@ use crate::op_set2::SuccInsert;
 use crate::types::{
     ActorId, ElemId, ObjId, ObjType, OpId, Prop, ScalarValue, SequenceType, SmallHashMap,
 };
-use crate::{Automerge, Change, ChangeHash, PatchLog, PatchLogMismatch};
+use crate::{Automerge, Change, ChangeHash, PatchLog};
 use crate::{AutomergeError, TextEncoding};
 
 use super::super::op::{ChangeOp, Op, OpBuilder};
@@ -130,25 +130,31 @@ impl<'a> Untangler<'a> {
         }
     }
 
-    fn finish(mut self, log: &mut PatchLog) {
+    fn finish(mut self, log: &mut PatchLog) -> Result<(), AutomergeError> {
         self.finish_updates();
 
         self.flush(log);
 
-        assert!(self.entry.is_empty());
+        // qOS: internal consistency failures are errors, not panics.
+        // Checked admission validates inputs so that none is reachable.
+        if !self.entry.is_empty() {
+            return Err(AutomergeError::Fail);
+        }
 
         self.finish_inserts(log);
 
         self.flush(log);
 
-        assert_eq!(self.top, Top::Nothing);
+        if self.top != Top::Nothing || self.change_ops.iter().any(|op| op.pos.is_none()) {
+            return Err(AutomergeError::Fail);
+        }
 
         self.change_ops.sort_by(|a, b| {
             a.pos
-                .unwrap()
-                .cmp(&b.pos.unwrap())
+                .cmp(&b.pos)
                 .then_with(|| a.subsort.cmp(&b.subsort))
         });
+        Ok(())
     }
 
     fn untangle_inserts(&mut self, id: OpId, insert_pos: usize, log: &mut PatchLog) {
@@ -319,7 +325,7 @@ fn walk_list<'a>(
     doc_ops: OpIter<'a>,
     succ: &mut Vec<SuccInsert>,
     log: &mut PatchLog,
-) {
+) -> Result<(), AutomergeError> {
     for op in doc_ops {
         ut.element_update(&op);
 
@@ -330,7 +336,7 @@ fn walk_list<'a>(
         ut.handle_doc_op(&op, succ, log);
     }
 
-    ut.finish(log);
+    ut.finish(log)
 }
 
 struct MapWalker<'a, 'b> {
@@ -858,24 +864,25 @@ impl BatchApply {
         }
     }
 
-    fn import_ops(&mut self, doc: &mut Automerge) {
+    fn import_ops(&mut self, doc: &mut Automerge) -> Result<(), AutomergeError> {
         for c in &self.changes {
-            doc.import_ops_to(c, &mut self.ops).unwrap();
+            doc.import_ops_to(c, &mut self.ops)?;
             doc.update_history(c);
         }
         doc.remove_unused_actors(true);
+        Ok(())
     }
 
     pub(crate) fn apply(
         &mut self,
         doc: &mut Automerge,
         log: &mut PatchLog,
-    ) -> Result<(), PatchLogMismatch> {
+    ) -> Result<(), AutomergeError> {
         self.insert_new_actors(doc);
 
         log.migrate_actors(&doc.ops().actors)?;
 
-        self.import_ops(doc);
+        self.import_ops(doc)?;
 
         let mut obj_info = doc.ops().obj_info.clone();
 
@@ -919,9 +926,10 @@ impl BatchApply {
                         &mut self.pred,
                         doc_ops.end_pos(),
                     );
-                    walk_list(ut, doc_ops, &mut succ, log);
+                    walk_list(ut, doc_ops, &mut succ, log)?;
                 }
-                _ => panic!("Obj {:?} Missing from Index", os.obj),
+                // qOS: was a panic ("Obj .. Missing from Index").
+                _ => return Err(AutomergeError::Fail),
             }
         }
 
@@ -950,7 +958,10 @@ impl BatchApply {
 
         self.insert_runs_of_ops(doc);
 
-        debug_assert!(doc.ops.validate_op_order());
+        if cfg!(debug_assertions) && !doc.ops.validate_op_order() {
+            // qOS: was a debug assertion.
+            return Err(AutomergeError::Fail);
+        }
         Ok(())
     }
 

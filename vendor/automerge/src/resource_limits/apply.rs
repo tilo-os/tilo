@@ -97,12 +97,16 @@ impl NativeOwned<AutoCommit> {
             return Err(NativeResourceError::Unaccounted.into());
         }
         let mut charge = Charge::new(allowance);
-        preflight::validate(input.bytes(), &mut charge)?;
+        let summary = preflight::validate(input.bytes(), &mut charge)?;
         let shape = IncomingDims::from_shape(input.shape());
-        // The retained parsed changes, plus the load-shaped expansion of any
-        // document or bundle chunk, are reserved before parsing.
-        let mut parse_bytes = dims::incoming_changes_bound(&shape)?;
-        if preflight::has_expanding_chunks(input.bytes())? {
+        // The retained parsed changes, one change chunk's parse transient,
+        // and the load-shaped expansion of any document or bundle chunk are
+        // reserved before parsing.
+        let mut parse_bytes = budget::sum(
+            dims::incoming_changes_bound(&shape)?,
+            summary.change_parse_bytes()?,
+        )?;
+        if summary.expanding {
             parse_bytes = budget::sum(parse_bytes, dims::load_peak_bound(&shape)?)?;
         }
         charge.grow(parse_bytes)?;
