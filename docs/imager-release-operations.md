@@ -176,8 +176,10 @@ SIGNER export-efi-cert OUTPUT_CERTIFICATE
 It receives the Forgejo OIDC request environment, validates the protected
 workflow/ref and native architecture server-side, and asks the KMS/HSM to make
 an RSA PKCS#1 v1.5 SHA-256 signature without exporting the private key. The EFI
-operation obtains the industry/OEM-trusted Authenticode signature required for
-stock-firmware Secure Boot and must omit nondeterministic timestamps. The
+operation obtains the Authenticode signature of the Tilo release EFI
+certificate (`keys/efi-signing.crt`, which owners enroll in firmware `db`; see
+[security/boot-chain.md](security/boot-chain.md)) and must omit
+nondeterministic timestamps. The
 export operation returns its public X.509 signing certificate; CI verifies its
 DER SHA-256 fingerprint against the independently protected
 `TILO_EFI_SIGNING_CERT_SHA256` repository variable and verifies every returned
@@ -385,7 +387,7 @@ administrators):
 | `TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY` | independently verified lowercase 64-hex Tilo-main registry-owner Ed25519 public key |
 | `TILO_INSTALLER_OS_IMAGE` | signed, published multi-architecture `code.podesta.ai/qos/tilo@sha256:...` manifest-list reference used by installer media |
 | `TILO_PCR_PREDICTION_SIGNER` | absolute root-owned KMS/HSM wrapper path on both native Linux runner images |
-| `TILO_EFI_SIGNING_CERT_SHA256` | independently verified lowercase 64-hex fingerprint of the firmware-trusted release certificate |
+| `TILO_EFI_SIGNING_CERT_SHA256` | independently verified lowercase 64-hex fingerprint of the Tilo release EFI certificate (`keys/efi-signing.crt`) |
 | `IMAGER_LINUX_SIGNING_FINGERPRINT` | uppercase 40- or 64-hex full primary-key fingerprint, independently verified |
 | `IMAGER_WINDOWS_PUBLISHER` | complete expected Authenticode certificate subject, independently verified |
 | `IMAGER_MAC_TEAM_ID` | 10-character Apple Developer team identifier, independently verified |
