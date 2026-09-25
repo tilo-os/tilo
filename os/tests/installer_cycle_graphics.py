@@ -14,28 +14,40 @@ SCRIPT = (Path(__file__).resolve().parents[1] / 'dev/test-installer-cycle.sh').r
 class CycleGraphicsTests(unittest.TestCase):
     def test_selected_graphics_reaches_every_boot_with_either_tpm_mode(self):
         parser = SCRIPT[SCRIPT.index('medium="${1:?'):SCRIPT.index('[ -f "$medium" ]')]
+        proof_selection = SCRIPT[SCRIPT.index('proof_arg=()'):SCRIPT.index('if [ "$software_tpm" -eq 1 ]; then', SCRIPT.index('proof_arg=()'))]
         pattern = re.compile(
             r'if \[ "\$software_tpm" -eq 1 \]; then\n'
-            r'  "\$vm" (boot-(?:installer|target)) "\$display_arg" --tpm\n'
+            r'  "\$vm" (boot-(?:installer|target)) "\$display_arg" --tpm( "\$\{proof_arg\[@\]\}")?\n'
             r'else\n'
-            r'  "\$vm" \1 "\$display_arg" --no-tpm\n'
+            r'  "\$vm" \1 "\$display_arg" --no-tpm( "\$\{proof_arg\[@\]\}")?\n'
             r'fi')
         matches = list(pattern.finditer(SCRIPT))
         self.assertEqual([match.group(1) for match in matches],
                          ['boot-installer', 'boot-target', 'boot-target', 'boot-target'])
+        self.assertEqual([(bool(match.group(2)), bool(match.group(3))) for match in matches],
+                         [(True, True), (False, False), (False, False), (False, False)])
         blocks = [match.group(0) for match in matches]
-        script = 'set -euo pipefail\n' + parser + '\nvm=fixture\nfixture() { printf "%s|%s|%s\\n" "$1" "$2" "$3"; }\n' + '\n'.join(blocks)
+        script = ('set -euo pipefail\n' + parser + '\n' + proof_selection
+                  + '\nvm=fixture\nfixture() { printf "%s|%s|%s|%s\\n" "$1" "$2" "$3" "${4:-}"; }\n'
+                  + '\n'.join(blocks))
         for graphics, flag in (('gl', '--gl'), ('software', '--2d')):
             for tpm in (False, True):
-                args = ['bash', '-c', script, 'cycle', '/fixture/medium', '--graphics', graphics]
-                if tpm:
-                    args.append('--software-tpm')
-                result = subprocess.run(args, text=True, capture_output=True)
-                self.assertEqual(result.returncode, 0, result.stderr)
-                tpm_flag = '--tpm' if tpm else '--no-tpm'
-                self.assertEqual(result.stdout.splitlines(),
-                    [f'boot-installer|{flag}|{tpm_flag}']
-                    + [f'boot-target|{flag}|{tpm_flag}'] * 3)
+                for signed in (False, True):
+                    args = ['bash', '-c', script, 'cycle', '/fixture/medium', '--graphics', graphics]
+                    if tpm:
+                        args.append('--software-tpm')
+                    env = dict(os.environ)
+                    env.pop('TILO_EXPECTED_INSTALLED_REF', None)
+                    if signed:
+                        args.append('--guided-alongside')
+                        env['TILO_EXPECTED_INSTALLED_REF'] = 'code.sandbox.example/qos/tilo@sha256:' + 'a' * 64
+                    result = subprocess.run(args, text=True, capture_output=True, env=env)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    tpm_flag = '--tpm' if tpm else '--no-tpm'
+                    proof_flag = '--install-proof' if signed else ''
+                    self.assertEqual(result.stdout.splitlines(),
+                        [f'boot-installer|{flag}|{tpm_flag}|{proof_flag}']
+                        + [f'boot-target|{flag}|{tpm_flag}|'] * 3)
         result = subprocess.run(['bash', '-c', script, 'cycle', '/fixture/medium', '--graphics', 'bad'],
                                 text=True, capture_output=True)
         self.assertEqual(result.returncode, 2)

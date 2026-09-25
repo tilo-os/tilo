@@ -24,6 +24,7 @@ use automerge::marks::{ExpandMark, Mark};
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjId, ReadDoc, ScalarValue, TextEncoding, hydrate};
 use std::collections::{BTreeMap, HashMap, HashSet};
+use tilo_automerge::ApplyIncoming;
 
 #[cfg(test)]
 thread_local! {
@@ -581,27 +582,9 @@ impl ChangeWriter {
 )]
 fn apply_sealed(doc: &mut AutoCommit, writer: &mut ChangeWriter) {
     if let Some(change) = writer.seal() {
-        apply_change(doc, change).expect("a change continuing this document's history applies");
+        doc.apply_incoming([change])
+            .expect("a change continuing this document's history applies");
     }
-}
-
-/// Apply one change, dropping the patch events automerge records for it when nothing will read
-/// them.
-///
-/// Automerge 0.8 logs a patch event for every op a change integrates, into the document's patch
-/// log, whether or not that log is active; an `AutoCommit` only drains an active one (armed by
-/// `update_diff_cursor`). Left alone, an imported document keeps an event per character, roughly
-/// ten times the memory of the document itself, for as long as it lives. Without a diff cursor the
-/// log is inactive and its events are dead, so it is replaced by an empty one.
-pub(crate) fn apply_change(
-    doc: &mut AutoCommit,
-    change: automerge::Change,
-) -> Result<(), automerge::AutomergeError> {
-    let applied = doc.apply_changes([change]);
-    if doc.diff_cursor().is_empty() {
-        doc.reset_diff_cursor();
-    }
-    applied
 }
 
 /// Commit, then write every staged block — with its text and the marks on it — as the ops of new
@@ -683,7 +666,7 @@ fn write_as_changes(doc: &mut AutoCommit, blocks: &[StagedBlock], marks: &[Stage
         })
         .collect();
     if let Some(change) = writer.seal()
-        && apply_change(doc, change).is_err()
+        && doc.apply_incoming([change]).is_err()
     {
         return false;
     }

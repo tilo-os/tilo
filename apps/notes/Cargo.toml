@@ -28,6 +28,7 @@ ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["po
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 tilo-actions = { path = "../../crates/collab/actions" }
 automerge.workspace = true
+tilo-automerge.workspace = true
 blake3.workspace = true
 chrono.workspace = true
 serde.workspace = true

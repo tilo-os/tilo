@@ -74,6 +74,7 @@ postcard = { workspace = true, features = ["alloc"] }
 # devices, host assignments, pins, revocations) is user-scoped, not
 # workspace-scoped.
 automerge.workspace = true
+tilo-automerge.workspace = true
 
 # Error plumbing (matches collab-types).
 thiserror.workspace = true

@@ -967,11 +967,13 @@ pub(crate) fn resolve_resource_invocation<'a>(
         .iter()
         .find(|action| action.id == address.action)
         .ok_or_else(|| tilo_actions::DoorError::Unknown(address.clone()))?;
-    if !matches!(
-        spec.contract.confirmation,
-        tilo_actions::ConfirmationPolicy::None
-    ) && !confirmed
-    {
+    // Confirmation is decided for these exact arguments: a generic edit
+    // needs it only when its value is consequential.
+    let confirmation = match typed.as_ref() {
+        Some(arguments) => spec.confirmation_for_json(arguments),
+        None => spec.confirmation_for_argument(argument),
+    };
+    if !matches!(confirmation, tilo_actions::ConfirmationPolicy::None) && !confirmed {
         return Err(tilo_actions::DoorError::ConfirmationRequired);
     }
     Ok((typed, resource, spec))

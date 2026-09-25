@@ -10,6 +10,7 @@
 use automerge::AutoCommit;
 #[cfg(test)]
 use automerge::sync::{State as SyncState, SyncDoc};
+use tilo_automerge::ApplyIncoming;
 
 /// One side of a test-only Automerge sync session.
 #[cfg(test)]
@@ -29,7 +30,7 @@ impl SyncSession {
     fn receive(&mut self, doc: &mut AutoCommit, data: &[u8]) -> bool {
         match automerge::sync::Message::decode(data) {
             Ok(message) => {
-                let _ = doc.sync().receive_sync_message(&mut self.state, message);
+                let _ = doc.receive_incoming_sync(&mut self.state, message);
                 true
             }
             Err(_) => false,

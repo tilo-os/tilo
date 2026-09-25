@@ -81,6 +81,7 @@
 mod tests {
     use std::io::{Read, Write};
     use std::sync::{Arc, Mutex};
+    use tilo_automerge::ApplyIncoming;
 
     use automerge::{AutoCommit, ObjType, ROOT, ReadDoc, Value};
     use crossbeam_channel::Receiver;
@@ -357,7 +358,7 @@ mod tests {
         );
 
         // Merge into the peer: byte-identical convergence, for free, no action.
-        peer.merge(&mut doc).unwrap();
+        peer.merge_incoming(&mut doc).unwrap();
         assert_eq!(
             doc.get_heads(),
             peer.get_heads(),

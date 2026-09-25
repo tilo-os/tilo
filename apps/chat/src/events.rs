@@ -1797,6 +1797,7 @@ mod tests {
     use super::*;
     use crate::doc::{ChatDoc, NewMessage};
     use crate::model;
+    use tilo_automerge::ApplyIncoming;
 
     fn app_with_doc() -> (ChatApp, AutoCommit) {
         let mut doc = AutoCommit::new();
@@ -4228,11 +4229,11 @@ mod tests {
     fn exchange(a: &mut AutoCommit, b: &mut AutoCommit) {
         let da = a.save_incremental();
         if !da.is_empty() {
-            b.load_incremental(&da).unwrap();
+            b.load_incoming(&da).unwrap();
         }
         let db = b.save_incremental();
         if !db.is_empty() {
-            a.load_incremental(&db).unwrap();
+            a.load_incoming(&db).unwrap();
         }
     }
 

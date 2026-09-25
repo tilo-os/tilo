@@ -27,6 +27,7 @@ libc.workspace = true
 # state (playing / position / rate / epoch) between peers so a joiner follows
 # the host with drift correction. Same pin as `ui` so a single copy resolves.
 automerge.workspace = true
+tilo-automerge.workspace = true
 blake3.workspace = true
 serde.workspace = true
 hex.workspace = true

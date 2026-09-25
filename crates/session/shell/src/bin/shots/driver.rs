@@ -11,6 +11,7 @@
 
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
+use tilo_automerge::ApplyIncoming;
 
 use automerge::{AutoCommit, ObjId};
 use vello::Scene;
@@ -1714,7 +1715,7 @@ impl ShellDriver {
                 .collect();
             let mut peer = automerge::AutoCommit::new();
             peer.set_actor(automerge::ActorId::from("ada".as_bytes()));
-            if peer.apply_changes(base).is_ok() {
+            if peer.apply_incoming(base).is_ok() {
                 const DAY: i64 = 86_400;
                 let now = std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
@@ -2021,7 +2022,7 @@ impl ShellDriver {
                     "Reading week",
                 );
                 qdoc::history::commit_stamped(&mut peer);
-                let _ = tree.doc.merge(&mut peer);
+                let _ = tree.doc.merge_incoming(&mut peer);
             }
 
             if let (Some(first), Some(fourth)) = (entries.first(), entries.get(3)) {
