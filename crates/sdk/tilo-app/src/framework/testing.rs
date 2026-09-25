@@ -251,6 +251,16 @@ impl<A: ResourceApp> HeadlessApp<A> {
             .unwrap_or_default()
     }
 
+    /// Stage a screenshot scenario (`None` for a plain `--shots`) exactly as
+    /// the launcher does before a capture: its actions, then its view state.
+    /// The harness then holds the frame `--shots --scenario` would write.
+    ///
+    /// # Errors
+    /// Returns the host's refusal of a scenario action.
+    pub fn stage(&mut self, scenario: Option<&str>) -> Result<(), LaunchError> {
+        super::stage::stage::<A>(self.harness(), scenario)
+    }
+
     /// Undo the local participant's last action, as Ctrl+Z does.
     pub fn undo(&mut self) -> bool {
         let harness = self.harness();

@@ -13,7 +13,16 @@ use crate::widget::layout::CompositionFocus;
 impl FrameHarness {
     /// Enable the same standalone chrome used by a native App window. Widget
     /// and embedded-component harnesses retain their original content viewport.
+    ///
+    /// As in the App, a root whose framework owner already supplies its own
+    /// shared History surface (a hosted component, a registered framework
+    /// app) keeps that one: wrapping it in the standalone adapter as well
+    /// would stack two History toolbars and squeeze the app's layout.
     pub fn enable_document_history_chrome(&mut self) {
+        if self.history.is_some() || crate::history_mode::embedded::has_surfaces(self.root.as_ref())
+        {
+            return;
+        }
         if !self.history_chrome_enabled {
             self.history_chrome_enabled = true;
             self.remember_history_content();
