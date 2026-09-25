@@ -237,19 +237,20 @@ impl FindBar {
         .map(|text| f64::from(tr.measure(text, LABEL_FONT, None).0))
         .fold(0.0, f64::max);
         let count_w = (widest_count + s2).max(COUNT_W);
-        let toggles_w = toggle_w.iter().sum::<f64>() + 2.0 * TOGGLE_SEAM;
-        let actions_w = action_w.iter().sum::<f64>() + 4.0 * ACTION_SEAM;
+        let toggle_row_w = toggle_w.iter().sum::<f64>() + 2.0 * TOGGLE_SEAM;
+        let action_row_w = action_w.iter().sum::<f64>() + 4.0 * ACTION_SEAM;
         // One row: find field, toggles, replace field, count, actions.
         let field_w = FIELD_W * scale;
-        let one_row = 2.0 * s3 + field_w + s2 + toggles_w + s2 + field_w + s2 + count_w + actions_w;
+        let one_row =
+            2.0 * s3 + field_w + s2 + toggle_row_w + s2 + field_w + s2 + count_w + action_row_w;
         let (rows, field_w) = if one_row <= bar_w {
             (1, field_w)
         } else {
             // Two rows: find field + toggles + count above, replace field +
             // actions below. Each field yields down to the classic width
             // (and beyond, on a very narrow canvas) so its row fits.
-            let room_top = bar_w - 2.0 * s3 - s2 - toggles_w - s2 - count_w;
-            let room_bottom = bar_w - 2.0 * s3 - s2 - actions_w;
+            let room_top = bar_w - 2.0 * s3 - s2 - toggle_row_w - s2 - count_w;
+            let room_bottom = bar_w - 2.0 * s3 - s2 - action_row_w;
             (2, field_w.min(room_top).min(room_bottom).max(FIELD_MIN_W))
         };
         let bar_h = (rows as f64 * (field_h + s2) + s2).max(HEIGHT);

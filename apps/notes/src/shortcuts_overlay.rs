@@ -723,6 +723,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::float_cmp,
+        reason = "End and Home assign max_scroll_y and 0.0 exactly; exact equality is the property under test"
+    )]
     fn keyboard_scrolling_reaches_both_ends_without_closing_help() {
         let mut overlay = ShortcutsOverlay::new();
         overlay.set_viewport(Rect::new(0.0, 0.0, 390.0, 844.0));

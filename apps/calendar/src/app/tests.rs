@@ -1126,9 +1126,8 @@ fn stepping_month_changes_anchor_month() {
 fn schedule_overlap_warning_reflows_and_keeps_complete_semantics() {
     for (width, text_scale) in [(880.0, 1.0), (880.0, 2.0), (390.0, 2.0)] {
         let mut app = CalendarApp::new_demo();
-        let selected = match app.selection {
-            Some(Sel::Event(id)) => id,
-            _ => panic!("demo opens an event editor"),
+        let Some(Sel::Event(selected)) = app.selection else {
+            panic!("demo opens an event editor");
         };
         let edited = app.model.event(selected).expect("selected event").clone();
         let mut overlapping = edited.clone();
@@ -1950,6 +1949,10 @@ fn accessibility_exports_stable_event_and_task_action_targets() {
 }
 
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "end-to-end accessibility scenario that reads top to bottom through every sidebar control"
+)]
 fn accessibility_exposes_sidebar_lists_and_calendar_visibility_controls() {
     use tilo_actions::ActionInput;
 

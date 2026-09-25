@@ -93,7 +93,7 @@ impl UnsavedChanges {
         &mut self,
         event: &WindowEvent,
         scale: f64,
-        modifiers: &Modifiers,
+        modifiers: Modifiers,
     ) -> Option<UnsavedChoice> {
         if !self.open {
             return None;
@@ -139,7 +139,7 @@ impl UnsavedChanges {
                     Key::Named(NamedKey::Tab) => self.move_focus(modifiers.state().shift_key()),
                     Key::Named(NamedKey::ArrowLeft | NamedKey::ArrowUp) => self.move_focus(true),
                     Key::Named(NamedKey::ArrowRight | NamedKey::ArrowDown) => {
-                        self.move_focus(false)
+                        self.move_focus(false);
                     }
                     Key::Named(NamedKey::Enter | NamedKey::Space) => {
                         return Some(
@@ -352,7 +352,7 @@ mod tests {
     }
 
     fn press(dialog: &mut UnsavedChanges, named: NamedKey) -> Option<UnsavedChoice> {
-        dialog.handle_event(&key(named), 1.0, &Modifiers::default())
+        dialog.handle_event(&key(named), 1.0, Modifiers::default())
     }
 
     fn draw(dialog: &mut UnsavedChanges, theme: &Theme, viewport: Rect) {
@@ -374,7 +374,7 @@ mod tests {
                 position: winit::dpi::PhysicalPosition::new(point.x * 2.0, point.y * 2.0),
             },
             2.0,
-            &Modifiers::default(),
+            Modifiers::default(),
         );
         dialog.handle_event(
             &WindowEvent::MouseInput {
@@ -383,7 +383,7 @@ mod tests {
                 button: MouseButton::Left,
             },
             2.0,
-            &Modifiers::default(),
+            Modifiers::default(),
         )
     }
 
@@ -427,7 +427,7 @@ mod tests {
             Some(UnsavedChoice::Cancel)
         );
         dialog.open();
-        dialog.handle_event(&key(NamedKey::Tab), 1.0, &ModifiersState::SHIFT.into());
+        dialog.handle_event(&key(NamedKey::Tab), 1.0, ModifiersState::SHIFT.into());
         assert_eq!(
             press(&mut dialog, NamedKey::Enter),
             Some(UnsavedChoice::Discard)

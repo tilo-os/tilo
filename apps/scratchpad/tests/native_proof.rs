@@ -77,8 +77,8 @@ fn native_snapshot_observes_real_scroll_and_focused_edit_without_body_text() {
         .send(&ui::winit::event::WindowEvent::CursorMoved {
             device_id: ui::winit::event::DeviceId::dummy(),
             position: ui::winit::dpi::PhysicalPosition::new(
-                (coord(0) + coord(2)) / 2.0,
-                (coord(1) + coord(3)) / 2.0,
+                f64::midpoint(coord(0), coord(2)),
+                f64::midpoint(coord(1), coord(3)),
             ),
         });
     let before = snapshot(&mut app)["offset_y"].as_f64().unwrap();

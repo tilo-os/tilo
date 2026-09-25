@@ -1345,7 +1345,7 @@ mod tests {
 
     #[test]
     fn unicode_search_preserves_source_byte_spans_after_case_expansion_and_contraction() {
-        let text = "İ test K TEST";
+        let text = "İ test \u{212a} TEST";
         let mut doc = Document::blank_pages("", "", 1, PAGE_W, PAGE_H);
         doc.pages[0].blocks = vec![Block::Body(text.into())];
         let hits = search(&doc, "test", SearchOptions::default());
@@ -1357,8 +1357,8 @@ mod tests {
 
         let kelvin = search(&doc, "k", SearchOptions::default());
         assert_eq!(kelvin.len(), 1);
-        assert_eq!(kelvin[0].start, text.find('K').unwrap());
-        assert_eq!(kelvin[0].len, 'K'.len_utf8());
+        assert_eq!(kelvin[0].start, text.find('\u{212a}').unwrap());
+        assert_eq!(kelvin[0].len, '\u{212a}'.len_utf8());
         let dotted = search(&doc, "i\u{307}", SearchOptions::default());
         assert_eq!(dotted.len(), 1);
         assert_eq!((dotted[0].start, dotted[0].len), (0, 'İ'.len_utf8()));
