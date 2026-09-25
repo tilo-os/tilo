@@ -52,6 +52,7 @@ suites = [
   "os/tests/installer_target_artifacts.py",
   "os/tests/installer_target_modes.py",
   "os/tests/internal_bundle_test.py",
+  "os/tests/installer_offline_target_test.py",
   "os/tests/local_boot_esp.sh",
   "os/tests/portal_config_validity.sh",
   "os/tests/test-installer-cycle-runtime.py",
