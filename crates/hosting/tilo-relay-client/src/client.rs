@@ -18,11 +18,11 @@ use tokio::sync::{Mutex as AsyncMutex, mpsc};
 
 use tilo_user_identity::{DeviceCert, RevocationList};
 
-use crate::auth::{self, AuthenticatedPeer, Hello, HelloAck};
-use crate::daemon::{read_frame, write_frame};
-use crate::transport::{
+use crate::frame::{FrameReader, read_frame, write_frame};
+use tilo_relay_protocol::auth::{self, AuthError, AuthenticatedPeer, Hello, HelloAck, now_ns};
+use tilo_relay_protocol::transport::{
     ALPN, ContentEndpointAdvertisement, ContentEndpointRequest, ContentPeerRegistration,
-    DISCOVERY_ALPN, Envelope, FrameReader, HomePeerManagementRequest, HomePeerManagementResponse,
+    DISCOVERY_ALPN, Envelope, HomePeerManagementRequest, HomePeerManagementResponse,
     MANAGEMENT_ALPN, MAX_FRAME_BYTES,
 };
 
@@ -92,7 +92,7 @@ pub enum ClientError {
     Codec(String),
     /// Auth check failed.
     #[error("auth: {0}")]
-    Auth(#[from] crate::auth::AuthError),
+    Auth(#[from] AuthError),
     /// I/O.
     #[error("io: {0}")]
     Io(#[from] std::io::Error),
@@ -144,15 +144,9 @@ impl RelayClient {
         .await?;
         let ack: HelloAck = postcard::from_bytes(&read_frame(&mut recv, MAX_FRAME_BYTES).await?)
             .map_err(|error| ClientError::Codec(error.to_string()))?;
-        auth::verify_hello_ack(
-            &ack,
-            &expected_server_user,
-            &revocations,
-            crate::peer::now_ns(),
-            &nonce,
-        )?;
+        auth::verify_hello_ack(&ack, &expected_server_user, &revocations, now_ns(), &nonce)?;
         if ack.cert.device_public_key != expected_server_device {
-            return Err(ClientError::Auth(crate::auth::AuthError::PolicyReject));
+            return Err(ClientError::Auth(AuthError::PolicyReject));
         }
         let ack2 = auth::build_hello_ack2(&own_sk, &ack.server_nonce);
         write_frame(
@@ -308,17 +302,13 @@ impl RelayClient {
         let ack: HelloAck = postcard::from_bytes(&read_frame(&mut recv, MAX_FRAME_BYTES).await?)
             .map_err(|error| ClientError::Codec(error.to_string()))?;
         match expected_server.as_ref() {
-            Some((user, _)) => {
-                auth::verify_hello_ack(&ack, user, &revocations, crate::peer::now_ns(), &nonce)?
-            }
-            None => {
-                auth::verify_pinned_host_ack(&ack, &revocations, crate::peer::now_ns(), &nonce)?
-            }
+            Some((user, _)) => auth::verify_hello_ack(&ack, user, &revocations, now_ns(), &nonce)?,
+            None => auth::verify_pinned_host_ack(&ack, &revocations, now_ns(), &nonce)?,
         };
         if let Some((_, expected_device)) = expected_server
             && ack.cert.device_public_key != expected_device
         {
-            return Err(ClientError::Auth(crate::auth::AuthError::PolicyReject));
+            return Err(ClientError::Auth(AuthError::PolicyReject));
         }
         let ack2 = auth::build_hello_ack2(&own_sk, &ack.server_nonce);
         write_frame(
@@ -490,24 +480,19 @@ impl RelayClient {
         let ack_bytes = read_frame(&mut recv, MAX_FRAME_BYTES).await?;
         let ack: HelloAck =
             postcard::from_bytes(&ack_bytes).map_err(|e| ClientError::Codec(e.to_string()))?;
-        let now_ns = crate::peer::now_ns();
+        let now = now_ns();
         let relay_peer = match expected_server_user.as_ref() {
             Some(expected_user) => {
-                let relay_peer = auth::verify_hello_ack(
-                    &ack,
-                    expected_user,
-                    &revocations,
-                    now_ns,
-                    &client_nonce,
-                )?;
+                let relay_peer =
+                    auth::verify_hello_ack(&ack, expected_user, &revocations, now, &client_nonce)?;
                 if expected_server_device.is_some_and(|expected_device| {
                     relay_peer.cert.device_public_key != expected_device
                 }) {
-                    return Err(ClientError::Auth(crate::auth::AuthError::PolicyReject));
+                    return Err(ClientError::Auth(AuthError::PolicyReject));
                 }
                 relay_peer
             }
-            None => auth::verify_pinned_host_ack(&ack, &revocations, now_ns, &client_nonce)?,
+            None => auth::verify_pinned_host_ack(&ack, &revocations, now, &client_nonce)?,
         };
 
         let ack2 = auth::build_hello_ack2(&own_sk, &ack.server_nonce);
@@ -528,7 +513,7 @@ impl RelayClient {
                     biased;
                     ob = outbound_rx.recv() => {
                         if let Some(env) = ob {
-                            let Ok(bytes) = crate::transport::encode(&env) else { break };
+                            let Ok(bytes) = crate::frame::encode(&env) else { break };
                             if send.write_all(&bytes).await.is_err() { break; }
                         } else {
                             let _ = send.finish();

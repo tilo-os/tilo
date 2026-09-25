@@ -21,6 +21,10 @@ bash -n "$repo/apps/imager/packaging/package-host.sh" \
   "$repo/apps/imager/packaging/revoke-github-installation-token.sh" \
   "$repo/apps/imager/packaging/publish-github-release.sh" \
   "$repo/apps/imager/packaging/publish-forgejo-release.sh" \
+  "$repo/apps/imager/packaging/publish-internal-bundle.sh" \
+  "$repo/os/dev/export-internal-bundle.sh" \
+  "$repo/os/tests/internal_bundle_export.sh" \
+  "$repo/os/tests/internal_bundle_catalog.sh" \
   "$repo/apps/imager/packaging/publish-homebrew-tap.sh" \
   "$repo/apps/imager/packaging/publish-site-release.sh" \
   "$repo/apps/imager/packaging/monitor-winget-acceptance.sh" \
@@ -34,6 +38,14 @@ bash "$repo/os/tests/forgejo_release_publication.sh" \
   || bad 'GitHub release publication is not target-scoped, idempotent, and immutable'
 bash "$repo/os/tests/public_release_origin.sh" \
   || bad 'installer catalog is not bound to the configured public release origin'
+bash "$repo/os/tests/internal_bundle_catalog.sh" \
+  || bad 'internal installer catalog entries are not bound to exact published manifests'
+[ "$(grep -Fc "startsWith(github.ref, 'refs/tags/imager-v') && vars.IMAGER_INTERNAL_BUNDLE == 'publish'" "$workflow")" -eq 2 ] \
+  && grep -Fq 'IMAGER_INTERNAL_BUNDLE_CREDENTIAL_BROKER' "$workflow" \
+  && grep -Fq 'sudo -n bash os/tests/internal_bundle_export.sh' "$workflow" \
+  && grep -Fq 'acquire-release-token.sh" internal-bundle' "$repo/apps/imager/packaging/publish-internal-bundle.sh" \
+  && ok 'internal installer bundles publish only from opted-in, tested tag builds' \
+  || bad 'internal installer bundle publication is not gated on tags, opt-in and the export test'
 bash "$repo/os/tests/winget_publication_idempotency.sh" \
   || bad 'WinGet publication retry does not recognize exact accepted manifests'
 bash "$repo/os/tests/winget_acceptance_monitor.sh" \

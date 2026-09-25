@@ -80,6 +80,10 @@ RUN test -x /usr/bin/tilo-installer \
     && /usr/libexec/tilo-uki-cmdline show /boot/tilo-target/tilo-target.efi | grep -qw systemd.mount-extra=LABEL=TILO_BOOT:/boot:ext4:ro,nosuid,nodev,noexec \
     && ! /usr/libexec/tilo-uki-cmdline show /boot/tilo-target/tilo-target.efi | grep -qw tilo.install \
     && systemctl enable tilo-firstboot-user.service tilo-firstboot-autologin-cleanup.service tilo-installer-setup.service tilo-live-recovery.service \
+    # USB-free installation: recognise a staged installer and grow its root on
+    # the live side (both conditioned on tilo.install), and reclaim the staging
+    # partitions once on the installed system (conditioned on its record).
+    && systemctl enable tilo-staging-handoff.service tilo-installer-grow-root.service tilo-staging-reclaim.timer \
     && if [ "$TILO_INSTALLER_DEV_SSH" = 1 ]; then \
          systemctl unmask sshd.service && systemctl enable sshd.service; \
        else \

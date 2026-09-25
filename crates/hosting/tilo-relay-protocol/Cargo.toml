@@ -3,13 +3,14 @@ name = "tilo-relay-protocol"
 version = "0.1.0"
 edition = "2024"
 publish.workspace = true
-description = "Shared value types of the Tilo host + relay: mesh roles and placement, relay configuration, home-peer registrations, room shard ids and the metrics snapshot."
+description = "Shared value types of the Tilo host + relay: the handshake and wire messages, mesh roles and placement, relay configuration, home-peer registrations, room shard ids and the metrics snapshot."
 license = "MIT OR Apache-2.0"
 
 # Clients of the relay (the shell, Settings, Remote) read and write these
 # records without linking the daemon. Keep this crate free of the relay's
-# transport, storage and sandbox dependencies: anything that needs a runtime,
-# an iroh endpoint or the filesystem daemon belongs in `tilo-relay`.
+# transport, storage and sandbox dependencies: stream I/O and the iroh
+# endpoint belong in `tilo-relay-client`, the runtime and storage in
+# `tilo-relay`.
 [dependencies]
 # Crash-safe replacement of the metrics snapshot.
 atomic-file = { path = "../../system/atomic-file" }
@@ -19,7 +20,11 @@ tilo-user-identity = { path = "../../collab/tilo-user-identity" }
 # `EndpointAddr` in mesh profiles and home-peer registrations.
 iroh-base = { workspace = true, features = ["key"] }
 serde.workspace = true
+# Signatures in handshake and delta messages travel as one byte string.
+serde_bytes.workspace = true
 serde_json.workspace = true
+# The handshake signs and verifies challenge nonces with device keys.
+ed25519-dalek.workspace = true
 toml.workspace = true
 thiserror.workspace = true
 blake3.workspace = true

@@ -210,6 +210,13 @@ layer = "desktop-binaries"
 files = [
   { from = "app", to = "/usr/bin/app", mode = "0755" },
   { link = "app", to = "/usr/bin/store" },
+  # Shell completions the image build generates from the binary; a dev build
+  # of the binary alone leaves them absent.
+  { from = "completions/bash/app", to = "/usr/share/bash-completion/completions/app", mode = "0644", optional = true },
+  { link = "app", to = "/usr/share/bash-completion/completions/store" },
+  { from = "completions/fish/app.fish", to = "/usr/share/fish/vendor_completions.d/app.fish", mode = "0644", optional = true },
+  { from = "completions/zsh/_app", to = "/usr/share/zsh/site-functions/_app", mode = "0644", optional = true },
+  { link = "_app", to = "/usr/share/zsh/site-functions/_store" },
 ]
 
 [[component]]
@@ -411,6 +418,13 @@ layer = "recovery-files"
 files = [
   { from = "tilo", to = "/usr/bin/tilo", mode = "0755" },
   { link = "tilo", to = "/usr/bin/system", layer = "desktop-binaries" },
+  # Shell completions the image build generates from the binary; a dev build
+  # of the binary alone leaves them absent.
+  { from = "completions/bash/tilo", to = "/usr/share/bash-completion/completions/tilo", mode = "0644", optional = true, layer = "desktop-binaries" },
+  { link = "tilo", to = "/usr/share/bash-completion/completions/system", layer = "desktop-binaries" },
+  { from = "completions/fish/tilo.fish", to = "/usr/share/fish/vendor_completions.d/tilo.fish", mode = "0644", optional = true, layer = "desktop-binaries" },
+  { from = "completions/zsh/_tilo", to = "/usr/share/zsh/site-functions/_tilo", mode = "0644", optional = true, layer = "desktop-binaries" },
+  { link = "_tilo", to = "/usr/share/zsh/site-functions/_system", layer = "desktop-binaries" },
 ]
 
 [[component]]

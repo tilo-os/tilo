@@ -37,7 +37,7 @@ containerfile="$repo/os/Containerfile"
 # each COPY's installed bytes and path. Modes remain source modes except at the
 # explicitly equivalent COPY --chmod=0755 sites checked below. COPY preserves
 # ownership, mtimes and symlinks through scratch stages; no RUN mutates them.
-expected_contract=d1646c357044f6d0baa346cad99005c4788fc1c8b8d23571461a61e482a84577
+expected_contract=97501c7bb4b86f920a985654e4e72eabae650c1a2f324bdc61962f1c9b59d2c7
 actual_contract="$(containerfile_expanded_rootfs_copy_contract "$containerfile" |
   LC_ALL=C sort | sha256sum | awk '{print $1}')"
 [ "$actual_contract" = "$expected_contract" ] || {
