@@ -74,15 +74,9 @@ const COMPAT_PROTOCOL_VERSION: u16 = 1;
 pub const COMPAT_HANDOFF_FRAMING: Framing = Framing::little_endian(4 * 1024).reject_empty();
 /// The model gateway's handoff: a little-endian `u32` length, then JSON.
 const MODEL_GATEWAY_HANDOFF_FRAMING: Framing = Framing::little_endian(4 * 1024);
-/// Length-prefixed launcher handoff consumed before Cap'n Proto starts on a
-/// collaboration descriptor. The broker binds it to `SO_PEERCRED` and a
-/// compositor-created one-shot launch record.
-pub const COLLAB_LAUNCH_PROTOCOL_VERSION: u16 = 1;
-/// Prefix that separates a launcher-authenticated connection from a raw
-/// Cap'n Proto diagnostic client. It is deliberately not an authority: the
-/// broker still verifies the peer process against the compositor's one-shot
-/// record before it accepts the following frame.
-pub const COLLAB_LAUNCH_MAGIC: [u8; 4] = *b"QCL1";
+/// The collaboration launch preamble (magic + protocol version) is shared
+/// with the broker through `collab-types`.
+pub use collab_types::local_transport::{COLLAB_LAUNCH_MAGIC, COLLAB_LAUNCH_PROTOCOL_VERSION};
 /// After [`COLLAB_LAUNCH_MAGIC`]: a little-endian `u32` length, then the JSON
 /// handoff. It is deliberately tiny: it only binds a socket to the shell's
 /// already-created process record, while the certificate the app presents
@@ -1091,5 +1085,146 @@ mod tests {
             }
             other => panic!("expected RequiredMissing, got {other:?}"),
         }
+    }
+}
+
+/// Bounded nonsecret model selection. Credentials/endpoints remain gateway-owned.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ManagedProviderSelection {
+    pub profile_id: String,
+    pub model_id: String,
+    pub protocol: String,
+}
+impl ManagedProviderSelection {
+    fn validate(&self) -> Result<(), String> {
+        if [&self.profile_id, &self.model_id].iter().any(|value| {
+            value.is_empty() || value.len() > 256 || value.chars().any(char::is_control)
+        }) || !matches!(self.protocol.as_str(), "anthropic" | "open_ai_compatible")
+        {
+            return Err("invalid managed provider selection".into());
+        }
+        Ok(())
+    }
+}
+/// Exactly one connected identity, collaboration and authenticated model handoff.
+/// No ambient service discovery or identity file access occurs on this path.
+#[derive(Debug)]
+pub struct EnrolledServiceContext {
+    binding: crate::managed::ManagedBinding,
+    data_home: PathBuf,
+    runtime_epoch: String,
+    channel_id: String,
+    provider: ManagedProviderSelection,
+    connected: Option<BTreeMap<String, UnixStream>>,
+}
+impl EnrolledServiceContext {
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "explicit owned service capabilities and immutable launch context are independently supplied"
+    )]
+    pub fn new(
+        binding: crate::managed::ManagedBinding,
+        data_home: PathBuf,
+        runtime_epoch: String,
+        channel_id: String,
+        provider: ManagedProviderSelection,
+        identity: UnixStream,
+        collab: UnixStream,
+        mut model: UnixStream,
+    ) -> Result<Self, String> {
+        binding.validate()?;
+        provider.validate()?;
+        if !data_home.is_absolute()
+            || [&runtime_epoch, &channel_id].iter().any(|value| {
+                value.is_empty()
+                    || value.len() > 128
+                    || !value
+                        .bytes()
+                        .all(|b| b.is_ascii_alphanumeric() || b"-_.:".contains(&b))
+            })
+        {
+            return Err("invalid managed descriptor context".into());
+        }
+        let data_home = data_home.canonicalize().map_err(|e| e.to_string())?;
+        for stream in [&identity, &collab, &model] {
+            stream.peer_addr().map_err(|e| e.to_string())?;
+        }
+        model
+            .set_write_timeout(Some(std::time::Duration::from_secs(5)))
+            .map_err(|e| e.to_string())?;
+        write_model_gateway_handoff(&mut model, &binding.app).map_err(|e| e.to_string())?;
+        model.set_write_timeout(None).map_err(|e| e.to_string())?;
+        Ok(Self {
+            binding,
+            data_home,
+            runtime_epoch,
+            channel_id,
+            provider,
+            connected: Some(
+                [
+                    (IDENTITY_SERVICE.into(), identity),
+                    (COLLAB_SERVICE.into(), collab),
+                    (MODEL_GATEWAY_SERVICE.into(), model),
+                ]
+                .into_iter()
+                .collect(),
+            ),
+        })
+    }
+    pub fn binding(&self) -> &crate::managed::ManagedBinding {
+        &self.binding
+    }
+    pub fn data_home(&self) -> &Path {
+        &self.data_home
+    }
+    pub fn runtime_epoch(&self) -> &str {
+        &self.runtime_epoch
+    }
+    pub fn channel_id(&self) -> &str {
+        &self.channel_id
+    }
+    pub fn agent_context_json(&self) -> Result<String, String> {
+        serde_json::to_string(&serde_json::json!({ "version": 1, "room": self.binding.room, "agent": self.binding.agent, "launch": self.binding.launch, "runtime_epoch": self.runtime_epoch, "channel_id": self.channel_id, "provider": self.provider })).map_err(|e| e.to_string())
+    }
+    pub fn take_for_launch(
+        &mut self,
+        binding: &crate::managed::ManagedBinding,
+        required: &BTreeMap<String, String>,
+    ) -> Result<Vec<ResolvedService>, String> {
+        if binding != &self.binding {
+            return Err("managed descriptor binding mismatch".into());
+        }
+        let connected = self
+            .connected
+            .as_ref()
+            .ok_or("managed descriptors already consumed")?;
+        for (name, raw) in required {
+            let requirement = ServiceReq::parse(raw).map_err(|e| e.to_string())?;
+            if requirement.is_required()
+                && (requirement.version() != 1 || !connected.contains_key(name))
+            {
+                return Err(format!("required managed service unavailable: {name}"));
+            }
+        }
+        let connected = self
+            .connected
+            .take()
+            .ok_or("managed descriptors already consumed")?;
+        connected
+            .into_iter()
+            .enumerate()
+            .map(|(index, (name, stream))| {
+                let child_fd = i32::try_from(index)
+                    .map_err(|_| "service index overflow")?
+                    .checked_add(17)
+                    .ok_or("service FD overflow")?;
+                Ok(ResolvedService {
+                    name,
+                    host: stream.into(),
+                    child_fd,
+                })
+            })
+            .collect()
     }
 }

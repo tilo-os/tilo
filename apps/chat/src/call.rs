@@ -5,9 +5,8 @@
 //! * [`CallState`] — the per-peer view state of the current call: which
 //!   voice channel, whether the overlay is expanded, where the user has
 //!   dragged the floating overlay, whether the participant list is expanded,
-//!   and the local mic / deafen / audio-only toggles. (Who is *in* the call
-//!   is shared truth in the CRDT — see [`crate::doc`] — but how this peer
-//!   lays out the overlay is local.)
+//!   and local presentation controls. Current stream state comes from the
+//!   native service; durable voice rows are replayable history.
 //! * [`CallPermissions`] — a small policy seam for isolated call-state tests
 //!   and embedding. Chat's live UI uses [`crate::permissions::ChatPermissions`]
 //!   from the host-provided permission context; this module does not grant
@@ -121,7 +120,8 @@ pub enum ScreenCapturePurpose {
     reason = "each bool is an independent peer-local call toggle (active/expanded/participants_expanded/muted/deafened/audio_only/sharing) that the UI reads and writes individually — grouping them would just relocate the boolean soup, not remove it"
 )]
 pub struct CallState {
-    /// True while connected to a voice channel.
+    /// The call panel is open for an explicit local join attempt. This is
+    /// view state, never connection readiness or capture authority.
     pub active: bool,
     /// The voice channel id the call is in.
     pub channel: String,
@@ -155,9 +155,9 @@ impl Default for CallState {
             expanded: false,
             placement: ui::floating_surface::FloatingPlacement::attached(Size::new(360.0, 220.0)),
             participants_expanded: true,
-            muted: false,
+            muted: true,
             deafened: false,
-            audio_only: false,
+            audio_only: true,
             sharing: false,
         }
     }
@@ -200,6 +200,8 @@ impl CallState {
         self.expanded = false;
         self.placement.reset_attached();
         self.deafened = false;
+        self.muted = true;
+        self.audio_only = true;
         self.sharing = false;
     }
 
@@ -209,6 +211,8 @@ impl CallState {
         self.expanded = false;
         self.placement.reset_attached();
         self.sharing = false;
+        self.muted = true;
+        self.audio_only = true;
     }
 
     /// Toggle mute. Un-muting also un-deafens (you can't speak while
@@ -247,6 +251,24 @@ pub use sound::SoundEngine;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn native_voice_starts_unjoined_and_each_join_is_muted_audio_only() {
+        let mut state = CallState::default();
+        assert!(!state.active);
+        assert!(state.muted);
+        assert!(state.audio_only);
+        state.join("first");
+        state.muted = false;
+        state.audio_only = false;
+        state.join("second");
+        assert!(state.muted);
+        assert!(state.audio_only);
+        state.muted = false;
+        state.leave();
+        assert!(!state.active);
+        assert!(state.muted);
+    }
 
     #[test]
     fn allow_all_grants_everything() {

@@ -203,8 +203,14 @@ fn search_provider_row_invokes_the_exported_open_action() {
         Widget::invoke_resource_operation(
             &mut app,
             operation.kind,
-            &operation.encoded.type_id,
-            &operation.encoded.payload,
+            &operation
+                .encoded()
+                .expect("test requires prepared encoding")
+                .type_id,
+            &operation
+                .encoded()
+                .expect("test requires prepared encoding")
+                .payload,
             &doc,
             &ROOT,
         )
@@ -250,7 +256,9 @@ fn search_activation_reveals_a_contact_hidden_by_the_group_filter() {
         .expect("the search address resolves in the agent-visible tree");
     let encoded = match &spec.input {
         tilo_actions::ActionInput::Immediate(encoded) => encoded,
-        tilo_actions::ActionInput::Prompted { .. } => panic!("open takes no arguments"),
+        tilo_actions::ActionInput::Prompted { .. } | tilo_actions::ActionInput::Deferred { .. } => {
+            panic!("open takes no arguments")
+        }
     };
     assert!(
         Widget::invoke_resource_operation(
@@ -468,6 +476,7 @@ fn two_hundred_percent_text_reflows_and_scales_interaction_geometry() {
         notes.ti_rect().height() >= field_h * 3.0,
         "notes reserve multiple large-text lines"
     );
+    assert_eq!(notes.ti_rect().height(), 3.0 * field_h);
 }
 
 #[test]
@@ -2651,6 +2660,70 @@ fn discovered_duplicates_have_a_canonical_responsive_review_route() {
         );
         assert!(left.width() >= 40.0 && right.width() >= 40.0);
     }
+}
+
+#[test]
+fn duplicate_review_face_owns_its_drawn_hit_and_semantic_rect() {
+    let mut app = ContactsApp::new();
+    app.rect = Rect::new(0.0, 0.0, 1200.0, 800.0);
+    let contacts = sample_contacts();
+    for contact in &contacts {
+        app.store.upsert(contact.clone());
+    }
+    app.duplicate_candidate = Some(crate::actions::DuplicateCandidate {
+        survivor_id: contacts[0].id,
+        source_id: contacts[1].id,
+        reasons: vec![crate::actions::DuplicateReason::Name],
+    });
+
+    app.layout();
+    let duplicate = app.hit.duplicates;
+    assert_eq!(
+        duplicate.width(),
+        TOOLBAR_DUPLICATE_W,
+        "wide toolbar draws the authored face at 1×"
+    );
+    assert!(app.hit.import.x1 <= duplicate.x0);
+    assert!(duplicate.x1 <= app.hit.export.x0);
+    let tree = app.accessibility().expect("contacts has semantics");
+    let action = access_target(&tree, "contacts.duplicates")
+        .expect("duplicate review is exposed as an action");
+    assert_eq!(
+        action.bounds.map(ui::a11y::AccessBounds::to_rect),
+        Some(duplicate),
+        "paint, pointer, and semantic routes share one rectangle"
+    );
+
+    let mut tr = TextRenderer::new();
+    tr.set_text_scale(2.0);
+    app.text_scale = 2.0;
+    app.refresh_label_growth(&mut tr);
+    app.layout();
+    let scaled = app.hit.duplicates;
+    assert_eq!(
+        scaled.width(),
+        (TOOLBAR_DUPLICATE_W + app.label_growth.duplicate).ceil(),
+        "the drawn duplicate label and its target grow together at 2×"
+    );
+    assert!(scaled.width() > duplicate.width());
+    assert!(app.hit.import.x1 <= scaled.x0);
+    assert!(scaled.x1 <= app.hit.export.x0);
+    let tree = app.accessibility().expect("contacts has semantics");
+    assert_eq!(
+        access_target(&tree, "contacts.duplicates")
+            .and_then(|action| action.bounds)
+            .map(ui::a11y::AccessBounds::to_rect),
+        Some(scaled),
+        "scaled paint, pointer, and semantic routes share one rectangle"
+    );
+
+    app.duplicate_candidate = None;
+    app.layout();
+    assert_eq!(
+        app.hit.duplicates,
+        Rect::ZERO,
+        "removing the candidate clears the prior frame's hit target"
+    );
 }
 
 #[test]

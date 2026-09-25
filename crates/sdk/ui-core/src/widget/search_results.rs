@@ -41,6 +41,10 @@ const ROW_TEXT_X: f64 = 12.0; // text/icon inset within a row
 const ICON_D: f64 = 18.0;
 const ICON_COL: f64 = 30.0; // icon box + gap when a row has an icon
 const EMPTY_H: f64 = 92.0;
+/// A lifted row (selection, hover) is inset this much top and bottom, so a
+/// selected row and its hovered neighbour keep one `s1` between them instead
+/// of fusing into one block (HIG §7 "nothing touches").
+const ROW_LIFT_INSET: f64 = crate::tokens::Spacing::BASE.s1 as f64 / 2.0;
 const PREVIEW_H: f64 = 68.0;
 const ROW_LIFT_INSET: f64 = crate::tokens::Spacing::BASE.s1 as f64 / 2.0;
 
@@ -213,6 +217,18 @@ impl SearchResultsView {
         }
     }
 
+    /// Preserve one exact control across an asynchronous result replacement.
+    /// A missing identity leaves no actionable selection; it never falls back
+    /// to the row that inherited the old index.
+    pub(crate) fn restore_action_selection(&mut self, id: &str) -> bool {
+        let index = self
+            .flat
+            .iter()
+            .position(|&(group, row)| self.groups[group].results[row].action_id == id);
+        self.cursor = index.unwrap_or(usize::MAX);
+        index.is_some()
+    }
+
     pub fn selected(&self) -> Option<&SearchResult> {
         let (gi, ri) = *self.flat.get(self.cursor)?;
         self.groups.get(gi)?.results.get(ri)
@@ -246,6 +262,10 @@ impl SearchResultsView {
         if self.flat.is_empty() {
             return;
         }
+        if self.selected().is_none() {
+            self.cursor = 0;
+            return;
+        }
         self.cursor = self
             .cursor
             .saturating_add(1)
@@ -256,6 +276,10 @@ impl SearchResultsView {
     /// Move the highlight up one row, wrapping to the bottom past the top.
     pub fn move_up(&mut self) {
         if self.flat.is_empty() {
+            return;
+        }
+        if self.selected().is_none() {
+            self.cursor = self.flat.len() - 1;
             return;
         }
         self.cursor = self
@@ -738,33 +762,68 @@ impl Widget for SearchResultsView {
         self.rect
     }
 
+    fn perform_semantic_action(
+        &mut self,
+        target: &str,
+        action: &crate::a11y::Action,
+        _: &mut AutoCommit,
+        _: &automerge::ObjId,
+    ) -> bool {
+        if !matches!(
+            action,
+            crate::a11y::Action::Focus | crate::a11y::Action::Activate
+        ) {
+            return false;
+        }
+        let Some(index) = self
+            .flat
+            .iter()
+            .position(|&(group, row)| self.groups[group].results[row].action_id == target)
+        else {
+            return false;
+        };
+        self.cursor = index;
+        if matches!(action, crate::a11y::Action::Activate) {
+            self.activate_selected();
+        }
+        true
+    }
+
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         use crate::a11y::{AccessNode, AccessState, Role};
         let total = self.flat.len();
-        let children = self
-            .plan()
-            .rows
-            .into_iter()
-            .filter_map(|row| {
-                let result = self.groups.get(row.gi)?.results.get(row.ri)?;
-                let description = result
-                    .subtitle
-                    .iter()
-                    .chain(result.preview.iter())
-                    .cloned()
-                    .collect::<Vec<_>>()
-                    .join(". ");
-                let mut node = AccessNode::new(Role::ListItem)
-                    .with_name(result.title.clone())
-                    .with_bounds(row.rect)
-                    .with_position(row.flat.saturating_add(1), total)
-                    .with_state(AccessState::new().selected(row.flat == self.cursor));
-                if !description.is_empty() {
-                    node = node.with_description(description);
-                }
-                Some(node)
-            })
-            .collect();
+        let children = if self.flat.is_empty() {
+            vec![
+                AccessNode::new(Role::StaticText)
+                    .with_name(&self.empty_text)
+                    .with_live(crate::a11y::Politeness::Polite),
+            ]
+        } else {
+            self.plan()
+                .rows
+                .into_iter()
+                .filter_map(|row| {
+                    let result = self.groups.get(row.gi)?.results.get(row.ri)?;
+                    let description = result
+                        .subtitle
+                        .iter()
+                        .chain(result.preview.iter())
+                        .cloned()
+                        .collect::<Vec<_>>()
+                        .join(". ");
+                    let mut node = AccessNode::new(Role::ListItem)
+                        .with_name(result.title.clone())
+                        .with_action_target(&result.action_id)
+                        .with_bounds(row.rect)
+                        .with_position(row.flat.saturating_add(1), total)
+                        .with_state(AccessState::new().selected(row.flat == self.cursor));
+                    if !description.is_empty() {
+                        node = node.with_description(description);
+                    }
+                    Some(node)
+                })
+                .collect()
+        };
         Some(
             AccessNode::new(Role::List)
                 .with_name("Search results")
@@ -1104,6 +1163,15 @@ mod tests {
         v.set_rect(Rect::new(0.0, 0.0, 360.0, v.desired_height()));
         assert!(v.is_empty());
         assert_eq!(v.selected(), None);
+        let access = Widget::accessibility(&v).expect("empty result list semantics");
+        assert_eq!(access.children.len(), 1);
+        assert_eq!(access.children[0].role, crate::a11y::Role::StaticText);
+        assert_eq!(access.children[0].name.as_deref(), Some("Nothing here"));
+        assert_eq!(
+            access.children[0].live,
+            Some(crate::a11y::Politeness::Polite),
+            "empty results remain a polite live announcement"
+        );
         v.activate_selected();
         assert_eq!(v.take_activated(), None, "no row ⇒ nothing to activate");
     }

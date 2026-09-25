@@ -73,6 +73,8 @@ async fn start_relay_at(
             pin: true,
             replication: tilo_relay::ReplicationIntent::FullWorkspace,
             admitted_users: Vec::new(),
+            shell_authority: None,
+            checkpoint_prefix_recovery: tilo_relay::CheckpointPrefixRecovery::Disabled,
         });
     }
     let identity = RelayIdentity {

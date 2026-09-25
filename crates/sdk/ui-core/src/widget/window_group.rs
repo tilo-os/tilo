@@ -95,6 +95,8 @@ const MAXIMIZED_CHROME_REVEAL_Y: f64 = 80.0;
     reason = "independent UI flags on a widely-shared pub struct; not a state bitset"
 )]
 pub struct WindowGroup {
+    external_navigation: bool,
+    close_reports: Vec<crate::application::ComponentCloseReport>,
     pub id: u64,
     bar: TabBar,
     hosts: Vec<(u64, TileHost)>,
@@ -239,20 +241,37 @@ impl WindowGroup {
         active_id: u64,
         width: WindowWidth,
     ) -> Self {
-        let descs: Vec<TabDescriptor> = tabs_with_content.iter().map(|(d, _)| d.clone()).collect();
-        let hosts: Vec<(u64, TileHost)> = tabs_with_content
-            .into_iter()
-            .map(|(d, c)| (d.id, TileHost::new(c)))
-            .collect();
+        Self::from_hosts(
+            id,
+            tabs_with_content
+                .into_iter()
+                .map(|(d, c)| (d, TileHost::new(c)))
+                .collect(),
+            active_id,
+            width,
+        )
+    }
+
+    /// Mount prepared hosts without unwrapping checked component custody.
+    pub fn from_hosts(
+        id: u64,
+        tabs: Vec<(TabDescriptor, TileHost)>,
+        active_id: u64,
+        width: WindowWidth,
+    ) -> Self {
+        let descs = tabs.iter().map(|(d, _)| d.clone()).collect();
+        let hosts = tabs.into_iter().map(|(d, h)| (d.id, h)).collect();
         let mut bar = TabBar::new(&format!("g{id}"), descs, active_id);
         bar.set_drag_overlay_owned_by_parent(true);
         Self {
             id,
+            close_reports: vec![],
             bar,
             hosts,
             width,
             strip_usable_px: DEFAULT_STRIP_USABLE_PX,
             rect: Rect::ZERO,
+            external_navigation: false,
             resize_origin: None,
             hover_resize: false,
             maximized: false,
@@ -281,6 +300,12 @@ impl WindowGroup {
         self.width
     }
 
+    pub fn set_external_navigation(&mut self, external: bool) {
+        if self.external_navigation != external {
+            self.external_navigation = external;
+            self.style_dirty = true;
+        }
+    }
     #[must_use]
     pub fn with_maximized(mut self, maximized: bool) -> Self {
         self.maximized = maximized;
@@ -335,7 +360,9 @@ impl WindowGroup {
     }
 
     pub fn should_show_maximized_chrome(&self, cursor_y: Option<f64>) -> bool {
-        self.maximized && cursor_y.is_some_and(|y| y <= MAXIMIZED_CHROME_REVEAL_Y)
+        !self.external_navigation
+            && self.maximized
+            && cursor_y.is_some_and(|y| y <= MAXIMIZED_CHROME_REVEAL_Y)
     }
 
     pub fn strip_usable_px(&self) -> f64 {
@@ -489,6 +516,12 @@ impl WindowGroup {
         self.hosts.iter().find(|(i, _)| *i == id).map(|(_, h)| h)
     }
 
+    pub(crate) fn discard_layout_nodes(&mut self) {
+        for (_, host) in &mut self.hosts {
+            host.discard_layout_nodes();
+        }
+    }
+
     /// Complete capture bounds for the active app, including this group's tab
     /// decoration. `None` preserves the normal whole-window capture path.
     pub fn complete_capture_rect(&self) -> Option<Rect> {
@@ -607,11 +640,13 @@ impl WindowGroup {
         bar.set_drag_overlay_owned_by_parent(true);
         Self {
             id,
+            close_reports: vec![],
             bar,
             hosts: vec![(tab_id, host)],
             width,
             strip_usable_px: DEFAULT_STRIP_USABLE_PX,
             rect: Rect::ZERO,
+            external_navigation: false,
             resize_origin: None,
             hover_resize: false,
             maximized: false,
@@ -653,6 +688,9 @@ impl WindowGroup {
     /// right-edge resize band. Used by [`GroupRow`] to arbitrate a press
     /// into a group-reorder drag vs. a tab/resize gesture.
     pub fn bar_grab_hit(&self, p: Point) -> bool {
+        if self.external_navigation {
+            return false;
+        }
         if !self.bar_rect().contains(p) {
             return false;
         }
@@ -685,6 +723,23 @@ impl WindowGroup {
         self.bar.drop_index_for(release_point)
     }
 
+    /// Update chrome metadata without replacing the document/component owner.
+    pub fn update_tab_descriptor(&mut self, descriptor: TabDescriptor) -> bool {
+        let Some(tab) = self
+            .bar
+            .tabs_mut()
+            .iter_mut()
+            .find(|tab| tab.id == descriptor.id)
+        else {
+            return false;
+        };
+        if tab.title == descriptor.title && tab.app_kind == descriptor.app_kind {
+            return false;
+        }
+        *tab = descriptor;
+        self.style_dirty = true;
+        true
+    }
     pub fn tabs(&self) -> &[TabDescriptor] {
         self.bar.tabs()
     }
@@ -769,6 +824,11 @@ impl WindowGroup {
 
     pub fn drag_in_flight(&self) -> bool {
         self.bar.drag_in_flight()
+    }
+
+    /// Whether this group's own edge is being dragged to resize it.
+    pub fn edge_resize_in_flight(&self) -> bool {
+        self.resize_origin.is_some()
     }
 
     /// A no-op while the bar has its own `pending_drag` in flight, so the
@@ -993,7 +1053,8 @@ impl WindowGroup {
         for id in expired {
             self.closing_hosts.remove(&id);
             if let Some(idx) = self.hosts.iter().position(|(i, _)| *i == id) {
-                self.hosts.remove(idx);
+                let (_, mut host) = self.hosts.remove(idx);
+                self.close_reports.extend(host.close_components());
             }
             self.bar.finalize_close(id);
         }
@@ -1568,6 +1629,208 @@ impl FloatingSurfaceProvider for WindowGroup {
 }
 
 impl Widget for WindowGroup {
+    fn keyboard_input_scope(&self) -> Option<crate::application::InstanceId> {
+        (!self.is_closing()).then(|| self.active_tab_id())
+    }
+
+    fn primary_vertical_scroll(&self) -> Option<crate::widget::PrimaryScrollRegion> {
+        self.active_host()?.primary_vertical_scroll()
+    }
+    fn apply_primary_vertical_scroll(
+        &mut self,
+        action: crate::widget::PrimaryScrollAction,
+    ) -> crate::widget::PrimaryScrollResult {
+        self.active_host_mut()
+            .map_or(crate::widget::PrimaryScrollResult::Unsupported, |host| {
+                host.apply_primary_vertical_scroll(action)
+            })
+    }
+
+    // Presentation traversal follows the active tab, while lifecycle and
+    // History ownership must cover every retained tab. Closing a group or
+    // switching tabs must not hide an inactive document from durability or
+    // retire its framework History route.
+    fn unsaved_documents(&self, doc: &AutoCommit) -> Vec<crate::close_admission::UnsavedDocument> {
+        self.hosts
+            .iter()
+            .flat_map(|(_, host)| host.unsaved_documents(doc))
+            .collect()
+    }
+    fn checkpoint_components(&mut self) -> Vec<String> {
+        self.hosts
+            .iter_mut()
+            .flat_map(|(_, host)| host.checkpoint_components())
+            .collect()
+    }
+    fn finish_admitted_close(&mut self) -> Vec<crate::application::ComponentCloseReport> {
+        self.hosts
+            .iter_mut()
+            .flat_map(|(_, host)| host.finish_admitted_close())
+            .collect()
+    }
+    fn has_pending_control_invocation(&self) -> bool {
+        self.hosts
+            .iter()
+            .any(|(_, host)| host.has_pending_control_invocation())
+    }
+    #[allow(
+        private_interfaces,
+        reason = "finite toolkit resource ownership requests"
+    )]
+    fn visit_resource_owners_mut(
+        &mut self,
+        request: &mut crate::bound_dispatch::legacy_document::ResourceRequest<'_>,
+    ) -> Result<(), tilo_actions::DoorError> {
+        for (_, host) in &mut self.hosts {
+            request.visit(host)?;
+        }
+        Ok(())
+    }
+    fn visit_framework_history(
+        &self,
+        visitor: &mut dyn FnMut(&crate::history_mode::FrameworkHistorySurface, &dyn Widget),
+    ) {
+        for (_, host) in &self.hosts {
+            host.visit_framework_history(visitor);
+        }
+    }
+    fn visit_framework_history_mut(
+        &mut self,
+        visitor: &mut dyn FnMut(&mut crate::history_mode::FrameworkHistorySurface, &mut dyn Widget),
+    ) {
+        for (_, host) in &mut self.hosts {
+            host.visit_framework_history_mut(visitor);
+        }
+    }
+
+    // Modal capture and presentation polling follow visible content, never inactive tabs.
+    fn modal_capture(&self) -> Option<Rect> {
+        self.children().into_iter().find_map(Widget::modal_capture)
+    }
+    fn next_wake_deadline(&self) -> Option<Instant> {
+        self.children()
+            .into_iter()
+            .filter_map(Widget::next_wake_deadline)
+            .min()
+    }
+
+    fn set_platform_conventions(&mut self, conventions: crate::platform::PlatformConventions) {
+        self.bar.set_platform_conventions(conventions);
+        for child in self
+            .hosts
+            .iter_mut()
+            .map(|(_, host)| host as &mut dyn Widget)
+        {
+            child.set_platform_conventions(conventions);
+        }
+    }
+
+    fn set_interaction_environment(
+        &mut self,
+        environment: crate::interaction::InteractionEnvironment,
+    ) {
+        self.bar.set_interaction_environment(environment);
+        for child in self
+            .hosts
+            .iter_mut()
+            .map(|(_, host)| host as &mut dyn Widget)
+        {
+            child.set_interaction_environment(environment);
+        }
+    }
+
+    fn mount_native_views(&mut self, host: &crate::widget::native_view::NativeViewHost<'_>) {
+        self.bar.mount_native_views(host);
+        for child in self
+            .hosts
+            .iter_mut()
+            .map(|(_, host)| host as &mut dyn Widget)
+        {
+            child.mount_native_views(host);
+        }
+    }
+
+    fn unmount_native_views(&mut self) {
+        self.bar.unmount_native_views();
+        for child in self
+            .hosts
+            .iter_mut()
+            .map(|(_, host)| host as &mut dyn Widget)
+        {
+            child.unmount_native_views();
+        }
+    }
+
+    fn native_view_frame_start(&mut self) {
+        self.bar.native_view_frame_start();
+        for child in self
+            .hosts
+            .iter_mut()
+            .map(|(_, host)| host as &mut dyn Widget)
+        {
+            child.native_view_frame_start();
+        }
+    }
+
+    fn children(&self) -> Vec<&dyn Widget> {
+        let mut children: Vec<&dyn Widget> = Vec::new();
+        if !self.maximized && !self.external_navigation {
+            children.push(&self.bar);
+        }
+        if let Some(host) = self.active_host() {
+            children.push(host);
+        }
+        children
+    }
+    fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
+        let active = self.bar.active_id();
+        let mut children: Vec<&mut dyn Widget> = Vec::new();
+        if !self.maximized && !self.external_navigation {
+            children.push(&mut self.bar);
+        }
+        if let Some((_, host)) = self.hosts.iter_mut().find(|(id, _)| *id == active) {
+            children.push(host);
+        }
+        children
+    }
+
+    // Read-only resource discovery follows retained owners, including inactive tabs.
+    fn for_each_child(&self, visitor: &mut dyn FnMut(&dyn Widget)) {
+        for (_, host) in &self.hosts {
+            visitor(host);
+        }
+    }
+
+    #[allow(private_interfaces, reason = "toolkit-only checked custody traversal")]
+    fn visit_components(
+        &mut self,
+        request: &mut crate::bound_dispatch::ComponentRequest<'_>,
+    ) -> Result<(), crate::bound_dispatch::BoundDispatchError> {
+        for child in self.hosts.iter_mut().map(|(_, host)| host) {
+            child.visit_components(request)?;
+        }
+        Ok(())
+    }
+    fn close_components(&mut self) -> Vec<crate::application::ComponentCloseReport> {
+        for child in self.hosts.iter_mut().map(|(_, host)| host) {
+            self.close_reports.extend(child.close_components());
+        }
+        self.take_component_close_reports()
+    }
+    fn take_component_close_reports(&mut self) -> Vec<crate::application::ComponentCloseReport> {
+        let mut reports = std::mem::take(&mut self.close_reports);
+        for child in self.hosts.iter_mut().map(|(_, host)| host) {
+            reports.extend(child.take_component_close_reports());
+        }
+        reports
+    }
+    fn collaboration_children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
+        self.hosts
+            .iter_mut()
+            .map(|(_, host)| host as &mut dyn Widget)
+            .collect()
+    }
+
     fn sync(&mut self, s: &mut AutoCommit, p: &ObjId) {
         if let Some(h) = self.active_host_mut() {
             h.sync(s, p);
@@ -1582,12 +1845,19 @@ impl Widget for WindowGroup {
         theme: &Theme,
         node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        let bar_node = self.bar.build_layout(taffy, theme, node_map);
+        let bar_node =
+            (!self.external_navigation).then(|| self.bar.build_layout(taffy, theme, node_map));
         let active_id = self.bar.active_id();
+        for (id, host) in &mut self.hosts {
+            if *id != active_id {
+                host.discard_layout_nodes();
+            }
+        }
         // See `built_active`'s field doc: forces a rebuild when the
         // active tab switches.
         self.built_active = Some(active_id);
         let tile_node = if let Some((_, h)) = self.hosts.iter_mut().find(|(i, _)| *i == active_id) {
+            h.set_flush_edges(self.external_navigation);
             h.build_layout(taffy, theme, node_map)
         } else {
             taffy.leaf_node(Style::default())
@@ -1616,11 +1886,14 @@ impl Widget for WindowGroup {
             style.flex_basis = Dimension::length(0.0);
             // Fullscreen: the tab strip neither paints (see `draw`) nor
             // reserves height; the floating pill draws over the content.
-            let mut bar_style = taffy.style(bar_node).cloned().unwrap_or_default();
-            bar_style.display = taffy::Display::None;
-            let _ = taffy.set_style(bar_node, bar_style);
+            if let Some(bar_node) = bar_node {
+                let mut bar_style = taffy.style(bar_node).cloned().unwrap_or_default();
+                bar_style.display = taffy::Display::None;
+                let _ = taffy.set_style(bar_node, bar_style);
+            }
         }
-        let node = taffy.parent_node(style, &[bar_node, tile_node]);
+        let nodes = bar_node.map_or_else(|| vec![tile_node], |bar| vec![bar, tile_node]);
+        let node = taffy.parent_node(style, &nodes);
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
@@ -1634,14 +1907,15 @@ impl Widget for WindowGroup {
         );
         let children = taffy.children(node).unwrap_or_default();
         let new_origin = Point::new(self.rect.x0, self.rect.y0);
-        let Some(&bar_child) = children.first() else {
-            return;
-        };
-        self.bar.apply_layout(taffy, bar_child, new_origin);
+        if !self.external_navigation {
+            if let Some(&bar_child) = children.first() {
+                self.bar.apply_layout(taffy, bar_child, new_origin);
+            }
+        }
         let active_id = self.bar.active_id();
         if let (Some((_, h)), Some(&tile_child)) = (
             self.hosts.iter_mut().find(|(i, _)| *i == active_id),
-            children.get(1),
+            children.get(usize::from(!self.external_navigation)),
         ) {
             h.apply_layout(taffy, tile_child, new_origin);
         }
@@ -1718,7 +1992,7 @@ impl Widget for WindowGroup {
         };
         // The bar's hit rects stay live either way — only the paint is
         // gated (maximized swaps in the floating pill further down).
-        if !self.maximized {
+        if !self.maximized && !self.external_navigation {
             self.bar
                 .set_group_focused(self.focused || self.search_active);
             self.bar.draw(scene, transform, tr, theme, presence);
@@ -1757,7 +2031,7 @@ impl Widget for WindowGroup {
             }
         }
         self.draw_closing_hosts(scene, transform, tr, theme, presence);
-        if !self.maximized {
+        if !self.maximized && !self.external_navigation {
             self.draw_resize_grip(scene, transform, theme);
         }
 
@@ -1788,15 +2062,21 @@ impl Widget for WindowGroup {
         taffy: &TaffyTree<()>,
     ) {
         let children = taffy.children(node_id).unwrap_or_default();
-        let bar_child = children.first().copied();
-        let tile_child = children.get(1).copied();
+        let bar_child = (!self.external_navigation)
+            .then(|| children.first().copied())
+            .flatten();
+        let tile_child = children
+            .get(usize::from(!self.external_navigation))
+            .copied();
         let handle_rect = Rect::new(
             self.rect.x1 - RESIZE_HANDLE_PX,
             self.rect.y0,
             self.rect.x1,
             self.rect.y1,
         );
-        if self.handle_direct_input(event, scale_factor, *m, handle_rect) {
+        if !self.external_navigation
+            && self.handle_direct_input(event, scale_factor, *m, handle_rect)
+        {
             *handled = true;
             return;
         }
@@ -1876,6 +2156,9 @@ impl Widget for WindowGroup {
     /// Mirrors the inter-group [`crate::widget::ResizeHandle`] so both
     /// affordances give the same feedback.
     fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {
+        if self.external_navigation {
+            return None;
+        }
         let band = Rect::new(
             self.rect.x1 - RESIZE_HANDLE_PX,
             self.rect.y0,
@@ -1911,9 +2194,27 @@ impl Widget for WindowGroup {
         let active_switched = self.built_active != Some(self.bar.active_id());
         bar || hosts || style || active_switched
     }
+    fn needs_redraw(&self) -> bool {
+        // Redraw follows the presentation tree. Retained inactive hosts still
+        // participate in resources, lifecycle, components and ownership, but
+        // they are not drawn or marked drawn until selected.
+        self.children().into_iter().any(Widget::needs_redraw)
+    }
+    /// Layout follows the built tree: the tab bar (whenever it was built) and
+    /// the active host. Inactive hosts have no taffy nodes until they are
+    /// selected, which is a structural change, so their dirtiness must not
+    /// keep the group re-measuring; the default would walk `for_each_child`
+    /// and include them.
+    fn is_layout_dirty(&self) -> bool {
+        (!self.external_navigation && self.bar.is_layout_dirty())
+            || self.active_host().is_some_and(Widget::is_layout_dirty)
+    }
+    fn layout_needs_measure(&self) -> bool {
+        (!self.external_navigation && self.bar.layout_needs_measure())
+            || self.active_host().is_some_and(Widget::layout_needs_measure)
+    }
     fn needs_animation_frame(&self) -> bool {
-        // `WindowGroup::children()` uses the default (empty) impl, so
-        // ancestors wouldn't otherwise see the bar's drag/spawn signals.
+        // Include group and inactive closing-host animations beyond the active presentation.
         let spawn_in_flight = self
             .spawned_at
             .is_some_and(|t| t.elapsed() < Duration::from_millis(SPAWN_ANIM_MS));
@@ -1939,7 +2240,7 @@ impl Widget for WindowGroup {
         spawn_in_flight
             || close_in_flight
             || group_close_in_flight
-            || self.bar.needs_animation_frame()
+            || (!self.external_navigation && self.bar.needs_animation_frame())
             || host
     }
 }
@@ -1948,6 +2249,74 @@ impl Widget for WindowGroup {
 mod tests {
     use super::*;
     use crate::widget::{AppKind, TabDescriptor, TileContent};
+
+    #[test]
+    fn external_navigation_omits_bar_from_layout_and_semantics_but_retains_tabs() {
+        let mut group = make_group();
+        assert_eq!(group.children().len(), 2);
+        group.set_external_navigation(true);
+        let mut tree = TaffyTree::new();
+        let node = group.build_layout(&mut tree, &Theme::default(), &mut Default::default());
+        assert_eq!(tree.children(node).unwrap().len(), 1);
+        assert_eq!(group.children().len(), 1);
+        assert_eq!(group.tabs().len(), 2);
+        assert!(!group.should_show_maximized_chrome(Some(0.0)));
+    }
+    #[test]
+    fn external_windows_paint_to_their_border_without_spilling_into_neighbors() {
+        use crate::offscreen::OffscreenRenderer;
+        use taffy::prelude::TaffyMaxContent;
+        let theme = Theme::dark();
+        let mut renderer = OffscreenRenderer::new(400, 300);
+        for focused in [false, true] {
+            let mut group = make_group();
+            group.set_external_navigation(true);
+            group.set_focused(focused);
+            let mut tree = TaffyTree::new();
+            let node = group.build_layout(&mut tree, &theme, &mut Default::default());
+            let mut style = tree.style(node).unwrap().clone();
+            style.size.width = Dimension::length(200.0);
+            tree.set_style(node, style).unwrap();
+            let root = tree.parent_node(
+                Style {
+                    size: Size {
+                        width: Dimension::length(200.0),
+                        height: Dimension::length(200.0),
+                    },
+                    ..Default::default()
+                },
+                &[node],
+            );
+            tree.compute_layout(root, Size::MAX_CONTENT).unwrap();
+            group.apply_layout(&tree, node, Point::new(100.0, 50.0));
+            assert_eq!(group.rect, Rect::new(100.0, 50.0, 300.0, 250.0));
+            let mut scene = Scene::new();
+            group.draw(
+                &mut scene,
+                Affine::IDENTITY,
+                &mut TextRenderer::new(),
+                &theme,
+                &PresenceCtx::empty(),
+            );
+            let rgba = renderer.render(&scene, vello::peniko::Color::from_rgb8(0, 0, 255));
+            for x in [96, 97, 98, 99, 300, 301, 302, 303] {
+                let (r, g, b, _) = OffscreenRenderer::sample(&rgba, 400, x, 150);
+                assert_eq!(
+                    (r, g, b),
+                    (0, 0, 255),
+                    "window spilled into neighbor at x={x}, focused={focused}"
+                );
+            }
+            for x in [100, 299] {
+                let (r, g, b, _) = OffscreenRenderer::sample(&rgba, 400, x, 150);
+                assert_ne!(
+                    (r, g, b),
+                    (0, 0, 255),
+                    "gap before window border at x={x}, focused={focused}"
+                );
+            }
+        }
+    }
 
     fn make_group() -> WindowGroup {
         let tabs: Vec<(TabDescriptor, TileContent)> = vec![
@@ -1967,6 +2336,197 @@ mod tests {
             ),
         ];
         WindowGroup::new(10, tabs, 1, WindowWidth::Normal)
+    }
+
+    #[derive(Default)]
+    struct RetainedTraversalHits {
+        unsaved: std::cell::Cell<u32>,
+        checkpoint: std::cell::Cell<u32>,
+        finish: std::cell::Cell<u32>,
+        history: std::cell::Cell<u32>,
+        history_mut: std::cell::Cell<u32>,
+        resources_mut: std::cell::Cell<u32>,
+    }
+
+    struct RetainedTraversalProbe {
+        hits: std::rc::Rc<RetainedTraversalHits>,
+        pending_control: bool,
+    }
+
+    impl Widget for RetainedTraversalProbe {
+        fn unsaved_documents(
+            &self,
+            _: &AutoCommit,
+        ) -> Vec<crate::close_admission::UnsavedDocument> {
+            self.hits.unsaved.set(self.hits.unsaved.get() + 1);
+            vec![]
+        }
+        fn checkpoint_components(&mut self) -> Vec<String> {
+            self.hits.checkpoint.set(self.hits.checkpoint.get() + 1);
+            vec![]
+        }
+        fn finish_admitted_close(&mut self) -> Vec<crate::application::ComponentCloseReport> {
+            self.hits.finish.set(self.hits.finish.get() + 1);
+            vec![]
+        }
+        fn has_pending_control_invocation(&self) -> bool {
+            self.pending_control
+        }
+        fn visit_framework_history(
+            &self,
+            _: &mut dyn FnMut(&crate::history_mode::FrameworkHistorySurface, &dyn Widget),
+        ) {
+            self.hits.history.set(self.hits.history.get() + 1);
+        }
+        fn visit_framework_history_mut(
+            &mut self,
+            _: &mut dyn FnMut(&mut crate::history_mode::FrameworkHistorySurface, &mut dyn Widget),
+        ) {
+            self.hits.history_mut.set(self.hits.history_mut.get() + 1);
+        }
+        #[allow(
+            private_interfaces,
+            reason = "focused retained-owner traversal regression"
+        )]
+        fn visit_resource_owners_mut(
+            &mut self,
+            _: &mut crate::bound_dispatch::legacy_document::ResourceRequest<'_>,
+        ) -> Result<(), tilo_actions::DoorError> {
+            self.hits
+                .resources_mut
+                .set(self.hits.resources_mut.get() + 1);
+            Ok(())
+        }
+        fn sync(&mut self, _: &mut AutoCommit, _: &ObjId) {}
+        fn build_layout(
+            &mut self,
+            taffy: &mut TaffyTree<()>,
+            _: &Theme,
+            _: &mut HashMap<NodeId, *mut dyn Widget>,
+        ) -> NodeId {
+            taffy.leaf_node(Style::default())
+        }
+        fn apply_layout(&mut self, _: &TaffyTree<()>, _: NodeId, _: Point) {}
+        fn draw(
+            &mut self,
+            _: &mut Scene,
+            _: Affine,
+            _: &mut TextRenderer,
+            _: &Theme,
+            _: &PresenceCtx,
+        ) {
+        }
+        fn handle_event(
+            &mut self,
+            _: &WindowEvent,
+            _: f64,
+            _: &winit::event::Modifiers,
+            _: &mut AutoCommit,
+            _: &ObjId,
+            _: &mut bool,
+            _: &mut Option<NodeId>,
+            _: NodeId,
+            _: &TaffyTree<()>,
+        ) {
+        }
+        fn name(&self) -> &'static str {
+            "RetainedTraversalProbe"
+        }
+        fn get_rect(&self) -> Rect {
+            Rect::ZERO
+        }
+    }
+
+    impl crate::widget::app_widget::AppWidget for RetainedTraversalProbe {
+        fn app_kind(&self) -> AppKind {
+            AppKind::Settings
+        }
+        fn app_title(&self) -> &'static str {
+            "Retained traversal probe"
+        }
+        fn app_icon(&self) -> crate::widget::app_widget::IconDescriptor {
+            crate::widget::app_widget::IconDescriptor::Glyph("R")
+        }
+        fn permission_hint(&self) -> Option<AppKind> {
+            None
+        }
+    }
+
+    #[test]
+    fn inactive_tabs_retain_session_collaboration_delivery() {
+        let active = crate::history_mode::isolation_tests::native_effect_probe_parts(
+            "active-session",
+            "fixture.active-session",
+        );
+        let inactive = crate::history_mode::isolation_tests::native_effect_probe_parts(
+            "inactive-session",
+            "fixture.inactive-session",
+        );
+        let active_events = std::rc::Rc::clone(&active.collab_events);
+        let inactive_events = std::rc::Rc::clone(&inactive.collab_events);
+        let tabs = vec![
+            (
+                TabDescriptor::new(1, "Active"),
+                TileContent::App(active.root),
+            ),
+            (
+                TabDescriptor::new(2, "Inactive"),
+                TileContent::App(inactive.root),
+            ),
+        ];
+        let mut group = WindowGroup::new(10, tabs, 1, WindowWidth::Normal);
+
+        crate::widget::handle_collab_event(
+            &mut group,
+            &crate::collaboration::CollabEvent::FollowChanged { peer_id: None },
+        );
+        assert_eq!(active_events.get(), 1);
+        assert_eq!(inactive_events.get(), 1);
+    }
+
+    #[test]
+    fn inactive_tabs_remain_in_lifecycle_history_and_resource_traversal() {
+        let active = std::rc::Rc::new(RetainedTraversalHits::default());
+        let inactive = std::rc::Rc::new(RetainedTraversalHits::default());
+        let tabs = vec![
+            (
+                TabDescriptor::new(1, "Active"),
+                TileContent::App(Box::new(RetainedTraversalProbe {
+                    hits: active.clone(),
+                    pending_control: false,
+                })),
+            ),
+            (
+                TabDescriptor::new(2, "Inactive"),
+                TileContent::App(Box::new(RetainedTraversalProbe {
+                    hits: inactive.clone(),
+                    pending_control: true,
+                })),
+            ),
+        ];
+        let mut group = WindowGroup::new(10, tabs, 1, WindowWidth::Normal);
+        let doc = AutoCommit::new();
+
+        group.unsaved_documents(&doc);
+        group.checkpoint_components();
+        group.finish_admitted_close();
+        group.visit_framework_history(&mut |_, _| {});
+        group.visit_framework_history_mut(&mut |_, _| {});
+        assert!(group.has_pending_control_invocation());
+        group
+            .visit_resource_owners_mut(
+                &mut crate::bound_dispatch::legacy_document::ResourceRequest::Discard,
+            )
+            .unwrap();
+
+        for hits in [active, inactive] {
+            assert_eq!(hits.unsaved.get(), 1);
+            assert_eq!(hits.checkpoint.get(), 1);
+            assert_eq!(hits.finish.get(), 1);
+            assert_eq!(hits.history.get(), 1);
+            assert_eq!(hits.history_mut.get(), 1);
+            assert_eq!(hits.resources_mut.get(), 1);
+        }
     }
 
     struct Starting {

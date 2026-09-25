@@ -12,6 +12,8 @@ native = ["ui-core/native"]
 # The collaboration manager's built-in broker transport; see `tilo-ui`'s
 # `broker-transport`.
 broker-transport = ["ui-core/broker-transport"]
+install-artifacts = ["dep:tilo-install-artifacts"]
+folder-copy = ["dep:tilo-folder-service"]
 test-support = ["ui-core/test-support"]
 webview-adblock = ["ui-core/webview-adblock"]
 webview-wpe = ["ui-core/webview-wpe"]
@@ -32,6 +34,8 @@ tilo-actions = { path = "../../collab/actions" }
 serde_json.workspace = true
 tempfile.workspace = true
 tracing.workspace = true
+tilo-install-artifacts = { path = "../../packaging/install-artifacts", optional = true }
+tilo-folder-service = { path = "../../system/folder-service", optional = true }
 
 [lints]
 workspace = true

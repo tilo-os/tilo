@@ -41,6 +41,7 @@ use tilo_actions::{
     Resource, ResourcePresentation, ResourceProvider, ResourceViewSpec, ResultSpec, RetryPolicy,
 };
 
+use crate::continuation::{self, BuilderDomain};
 use crate::doc::NotesDoc;
 use crate::model::{PageId, PageMeta, TagId, TagMeta};
 use crate::num;
@@ -429,6 +430,19 @@ fn duplicate_subtree_from_workspace(
     source: PageId,
     workspace: &crate::Workspace,
 ) -> Result<NotesAction, String> {
+    Ok(author_duplicate(
+        source,
+        &duplicate_sources(doc, source, workspace)?,
+    ))
+}
+
+// Projection captures only existing stable identities. Destination UUIDs are
+// authored once by the final admitted builder, never by resource discovery.
+fn duplicate_sources(
+    doc: &AutoCommit,
+    source: PageId,
+    workspace: &crate::Workspace,
+) -> Result<Vec<(PageId, Vec<String>)>, String> {
     if workspace.get(source).is_none() {
         return Err("source note no longer exists".into());
     }
@@ -447,21 +461,35 @@ fn duplicate_subtree_from_workspace(
     }
     let mut sources = subtree.into_iter().collect::<Vec<_>>();
     sources.sort();
-    let pages = sources
+    Ok(sources
         .into_iter()
-        .map(|page| DuplicatePage {
-            source: page.to_string(),
-            destination: Uuid::new_v4().to_string(),
-            blocks: NotesDoc::page_block_snapshots(doc, page)
-                .into_iter()
-                .map(|(id, _)| (id, Uuid::new_v4().to_string()))
-                .collect(),
+        .map(|page| {
+            (
+                page,
+                NotesDoc::page_block_snapshots(doc, page)
+                    .into_iter()
+                    .map(|(id, _)| id)
+                    .collect(),
+            )
         })
-        .collect();
-    Ok(NotesAction::DuplicateSubtree {
+        .collect())
+}
+
+fn author_duplicate(source: PageId, sources: &[(PageId, Vec<String>)]) -> NotesAction {
+    NotesAction::DuplicateSubtree {
         source: source.to_string(),
-        pages,
-    })
+        pages: sources
+            .iter()
+            .map(|(page, blocks)| DuplicatePage {
+                source: page.to_string(),
+                destination: Uuid::new_v4().to_string(),
+                blocks: blocks
+                    .iter()
+                    .map(|id| (id.clone(), Uuid::new_v4().to_string()))
+                    .collect(),
+            })
+            .collect(),
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -1107,6 +1135,16 @@ fn effect_operation_spec(id: &str, label: &str, operation: &NotesOperation) -> O
         operation,
     )
     .ok()
+    .map(|mut spec| {
+        if matches!(
+            operation,
+            NotesOperation::InsertImage { .. } | NotesOperation::OpenExternalLink { .. }
+        ) {
+            spec.contract.execution = ExecutionMode::Background { cancellable: false };
+            spec.contract.result = ResultSpec::Job;
+        }
+        spec
+    })
 }
 
 fn page_editor_view() -> ResourceViewSpec {
@@ -1137,7 +1175,17 @@ fn decorate_external_link_actions(resource: &mut Resource, text: &str, marks: &[
             &format!("Open link: {label}"),
             &NotesOperation::OpenExternalLink { url: url.clone() },
         ) {
-            resource.actions.push(action);
+            resource.actions.push(
+                action.with_continuation_identity(continuation::fixed_target(
+                    "open-safe-uri-scoped-portal/v1",
+                    vec![
+                        resource.id.as_str().as_bytes().to_vec(),
+                        (mark.start as u64).to_be_bytes().to_vec(),
+                        (mark.end as u64).to_be_bytes().to_vec(),
+                        url.as_bytes().to_vec(),
+                    ],
+                )),
+            );
         }
     }
 }
@@ -1163,6 +1211,7 @@ fn file_operation(id: &str, label: &str, page: Option<PageId>) -> ActionSpec {
             )
         },
     )
+    .with_continuation_identity(continuation::builder(BuilderDomain::File(page)))
     .with_contract(ActionContract {
         risk: if page.is_some() {
             tilo_actions::RiskLevel::Destructive
@@ -1205,6 +1254,7 @@ fn markdown_content_operation() -> ActionSpec {
             })
         },
     )
+    .with_continuation_identity(continuation::builder(BuilderDomain::ImportContent))
     .with_contract(ActionContract {
         risk: tilo_actions::RiskLevel::Low,
         confirmation: tilo_actions::ConfirmationPolicy::None,
@@ -1433,9 +1483,24 @@ fn page_resource_from_index(
         res = res.with_action(copy_link);
     }
     if let Some(workspace) = workspace
-        && let Ok(action) = duplicate_subtree_from_workspace(doc, m.id, workspace)
+        && let Ok(sources) = duplicate_sources(doc, m.id, workspace)
     {
-        res = res.with_action(immediate_spec("duplicate", "Duplicate note", &action));
+        let source = m.id;
+        let domain = BuilderDomain::Duplicate {
+            source,
+            pages: sources.clone(),
+        };
+        res = res.with_action(
+            ActionSpec::deferred(
+                "duplicate",
+                "Duplicate note",
+                ExecutionLocus::ClientLocal,
+                NOTES_ACTION_TYPE,
+                move || encode(&author_duplicate(source, &sources)),
+            )
+            .reversible()
+            .with_continuation_identity(continuation::builder(domain)),
+        );
     }
     for (id, label, command) in [
         ("move-up", "Move note up", PageTreeCommand::MoveUp),
@@ -1465,14 +1530,17 @@ fn page_resource_from_index(
     // Rename — a prompted action carrying the rest of the page's metadata
     // unchanged so only the title diff-splices.
     let meta = m.clone();
-    res = res.with_action(ActionSpec::prompted(
-        "rename",
-        "Rename note",
-        "Title",
-        "note title…",
-        ExecutionLocus::ClientLocal,
-        move |title: &str| encode(&rename_page_action(&meta, title.trim())),
-    ));
+    res = res.with_action(
+        ActionSpec::prompted(
+            "rename",
+            "Rename note",
+            "Title",
+            "note title…",
+            ExecutionLocus::ClientLocal,
+            move |title: &str| encode(&rename_page_action(&meta, title.trim())),
+        )
+        .with_continuation_identity(continuation::builder(BuilderDomain::RenamePage(m.clone()))),
+    );
 
     // Delete the whole page (and its subtree).
     res = res.with_action(immediate_spec(
@@ -1485,18 +1553,24 @@ fn page_resource_from_index(
     // append position is resolved from the current tree.
     let parent = m.id;
     let order = index.next_order(Some(m.id));
-    res = res.with_action(ActionSpec::prompted(
-        "new-child",
-        "New child note",
-        "Title",
-        "note title…",
-        ExecutionLocus::ClientLocal,
-        move |title: &str| {
-            let t = title.trim();
-            let title = if t.is_empty() { "Untitled" } else { t };
-            encode(&new_page_action(Uuid::new_v4(), Some(parent), order, title))
-        },
-    ));
+    res = res.with_action(
+        ActionSpec::prompted(
+            "new-child",
+            "New child note",
+            "Title",
+            "note title…",
+            ExecutionLocus::ClientLocal,
+            move |title: &str| {
+                let t = title.trim();
+                let title = if t.is_empty() { "Untitled" } else { t };
+                encode(&new_page_action(Uuid::new_v4(), Some(parent), order, title))
+            },
+        )
+        .with_continuation_identity(continuation::builder(BuilderDomain::CreatePage {
+            parent: Some(parent),
+            order,
+        })),
+    );
 
     // Child pages are sorted in the index. Omitted siblings/deeper descendants
     // remain available by their durable id through `resource()`; we never
@@ -1559,30 +1633,38 @@ fn block_resource_in_page(
     let resource_id = block_resource_id(page, &block.id);
     let original = block.text.clone();
     let block_id = block.id.clone();
+    let domain = BuilderDomain::ReplaceBlock {
+        page,
+        block: block_id.clone(),
+        original: original.clone(),
+    };
     let mut resource = Resource::new(resource_id, "notes.block", label)
         .with_action(open)
         // Agents and the action palette get a truthful, replayable edit
         // affordance too. The expected old text is encoded as a bounded
         // splice; if a collaborator changed it first, apply refuses and
         // the caller reconciles rather than clobbering remote work.
-        .with_action(ActionSpec::prompted(
-            "replace-text",
-            "Replace block text",
-            "Text",
-            "block text…",
-            ExecutionLocus::ClientLocal,
-            move |text: &str| {
-                encode(&apply_block_ops_action(
-                    page,
-                    vec![BlockEditOp::TextSplice {
-                        block_id: block_id.clone(),
-                        start: 0,
-                        end: original.len(),
-                        text: text.to_string(),
-                    }],
-                ))
-            },
-        ));
+        .with_action(
+            ActionSpec::prompted(
+                "replace-text",
+                "Replace block text",
+                "Text",
+                "block text…",
+                ExecutionLocus::ClientLocal,
+                move |text: &str| {
+                    encode(&apply_block_ops_action(
+                        page,
+                        vec![BlockEditOp::TextSplice {
+                            block_id: block_id.clone(),
+                            start: 0,
+                            end: original.len(),
+                            text: text.to_string(),
+                        }],
+                    ))
+                },
+            )
+            .with_continuation_identity(continuation::builder(domain)),
+        );
     if let Some(index) = siblings
         .iter()
         .position(|candidate| candidate.id == block.id)
@@ -1666,18 +1748,24 @@ fn notebook_resource(ctx: &NotesResourceCtx, doc: &AutoCommit) -> Resource {
     // deterministic.
     let index = PageResourceIndex::new(&ctx.pages);
     let order = index.next_order(None);
-    notebook = notebook.with_action(ActionSpec::prompted(
-        "new-page",
-        "New note",
-        "Title",
-        "note title…",
-        ExecutionLocus::ClientLocal,
-        move |title: &str| {
-            let t = title.trim();
-            let title = if t.is_empty() { "Untitled" } else { t };
-            encode(&new_page_action(Uuid::new_v4(), None, order, title))
-        },
-    ));
+    notebook = notebook.with_action(
+        ActionSpec::prompted(
+            "new-page",
+            "New note",
+            "Title",
+            "note title…",
+            ExecutionLocus::ClientLocal,
+            move |title: &str| {
+                let t = title.trim();
+                let title = if t.is_empty() { "Untitled" } else { t };
+                encode(&new_page_action(Uuid::new_v4(), None, order, title))
+            },
+        )
+        .with_continuation_identity(continuation::builder(BuilderDomain::CreatePage {
+            parent: None,
+            order,
+        })),
+    );
     notebook = notebook.with_action(file_operation("import-markdown", "Import Markdown", None));
     notebook = notebook.with_action(markdown_content_operation());
     notebook = with_daily_note_action(notebook, ctx, &index);
@@ -1723,11 +1811,22 @@ fn with_daily_note_action(
         }
         return notebook;
     }
-    notebook.with_action(immediate_spec(
-        "daily-note",
-        "Create today's note",
-        &new_page_action(Uuid::new_v4(), None, index.next_order(None), &title),
-    ))
+    let order = index.next_order(None);
+    let domain = BuilderDomain::DailyCreate {
+        title: title.clone(),
+        order,
+    };
+    notebook.with_action(
+        ActionSpec::deferred(
+            "daily-note",
+            "Create today's note",
+            ExecutionLocus::ClientLocal,
+            NOTES_ACTION_TYPE,
+            move || encode(&new_page_action(Uuid::new_v4(), None, order, &title)),
+        )
+        .reversible()
+        .with_continuation_identity(continuation::builder(domain)),
+    )
 }
 
 fn tags_resource(ctx: &NotesResourceCtx) -> Resource {
@@ -1735,21 +1834,24 @@ fn tags_resource(ctx: &NotesResourceCtx) -> Resource {
     // exposed as absolute assign/unassign actions on each page, while tag
     // records publish their own stable open/rename/delete identities.
     let mut tags_root = Resource::new("notes.tags", "notes.tags", "Tags");
-    tags_root = tags_root.with_action(ActionSpec::prompted(
-        "new-tag",
-        "New tag",
-        "Name",
-        "tag name…",
-        ExecutionLocus::ClientLocal,
-        move |name: &str| {
-            let name = if name.trim().is_empty() {
-                "Untitled tag"
-            } else {
-                name
-            };
-            encode(&new_tag_action(Uuid::new_v4(), name))
-        },
-    ));
+    tags_root = tags_root.with_action(
+        ActionSpec::prompted(
+            "new-tag",
+            "New tag",
+            "Name",
+            "tag name…",
+            ExecutionLocus::ClientLocal,
+            move |name: &str| {
+                let name = if name.trim().is_empty() {
+                    "Untitled tag"
+                } else {
+                    name
+                };
+                encode(&new_tag_action(Uuid::new_v4(), name))
+            },
+        )
+        .with_continuation_identity(continuation::builder(BuilderDomain::CreateTag)),
+    );
     for tag in ctx.tags.iter().take(RESOURCE_TAG_SNAPSHOT_LIMIT) {
         tags_root = tags_root.with_child(tag_resource(tag, ctx));
     }
@@ -1787,21 +1889,26 @@ fn decorate_tag_actions(resource: &mut Resource, ctx: &NotesResourceCtx) {
                 &set_tag_assignment_action(page, tag.id, !is_assigned),
             ));
         }
-        resource.actions.push(ActionSpec::prompted(
-            "new-and-assign-tag",
-            "Create and add tag",
-            "Name",
-            "tag name…",
-            ExecutionLocus::ClientLocal,
-            move |name: &str| {
-                let name = if name.trim().is_empty() {
-                    "Untitled tag"
-                } else {
-                    name
-                };
-                encode(&create_and_assign_tag_action(page, Uuid::new_v4(), name))
-            },
-        ));
+        resource.actions.push(
+            ActionSpec::prompted(
+                "new-and-assign-tag",
+                "Create and add tag",
+                "Name",
+                "tag name…",
+                ExecutionLocus::ClientLocal,
+                move |name: &str| {
+                    let name = if name.trim().is_empty() {
+                        "Untitled tag"
+                    } else {
+                        name
+                    };
+                    encode(&create_and_assign_tag_action(page, Uuid::new_v4(), name))
+                },
+            )
+            .with_continuation_identity(continuation::builder(
+                BuilderDomain::CreateAssignedTag(page),
+            )),
+        );
     }
     for child in &mut resource.children {
         decorate_tag_actions(child, ctx);
@@ -1824,14 +1931,17 @@ fn tag_resource(tag: &TagMeta, ctx: &NotesResourceCtx) -> Resource {
         resource = resource.with_action(open);
     }
     let original = tag.clone();
-    resource = resource.with_action(ActionSpec::prompted(
-        "rename",
-        "Rename tag",
-        "Name",
-        "tag name…",
-        ExecutionLocus::ClientLocal,
-        move |name: &str| encode(&rename_tag_action(&original, name)),
-    ));
+    resource = resource.with_action(
+        ActionSpec::prompted(
+            "rename",
+            "Rename tag",
+            "Name",
+            "tag name…",
+            ExecutionLocus::ClientLocal,
+            move |name: &str| encode(&rename_tag_action(&original, name)),
+        )
+        .with_continuation_identity(continuation::builder(BuilderDomain::RenameTag(tag.clone()))),
+    );
     resource = resource.with_action(immediate_spec(
         "delete",
         "Delete tag",
@@ -1840,34 +1950,46 @@ fn tag_resource(tag: &TagMeta, ctx: &NotesResourceCtx) -> Resource {
     // Large vocabularies remain fully operable without attaching every tag as
     // an action to every page resource. The endpoint check in Action::apply
     // makes malformed, deleted, or stale page ids harmless no-ops.
-    resource = resource.with_action(ActionSpec::prompted(
-        "assign-page",
-        "Add tag to note",
-        "Note ID",
-        "note UUID…",
-        ExecutionLocus::ClientLocal,
-        move |page: &str| {
-            let page = page
-                .trim()
-                .parse::<PageId>()
-                .unwrap_or_else(|_| Uuid::nil());
-            encode(&set_tag_assignment_action(page, tag_id, true))
-        },
-    ));
-    resource = resource.with_action(ActionSpec::prompted(
-        "unassign-page",
-        "Remove tag from note",
-        "Note ID",
-        "note UUID…",
-        ExecutionLocus::ClientLocal,
-        move |page: &str| {
-            let page = page
-                .trim()
-                .parse::<PageId>()
-                .unwrap_or_else(|_| Uuid::nil());
-            encode(&set_tag_assignment_action(page, tag_id, false))
-        },
-    ));
+    resource = resource.with_action(
+        ActionSpec::prompted(
+            "assign-page",
+            "Add tag to note",
+            "Note ID",
+            "note UUID…",
+            ExecutionLocus::ClientLocal,
+            move |page: &str| {
+                let page = page
+                    .trim()
+                    .parse::<PageId>()
+                    .unwrap_or_else(|_| Uuid::nil());
+                encode(&set_tag_assignment_action(page, tag_id, true))
+            },
+        )
+        .with_continuation_identity(continuation::builder(BuilderDomain::TagMembership {
+            tag: tag_id,
+            assigned: true,
+        })),
+    );
+    resource = resource.with_action(
+        ActionSpec::prompted(
+            "unassign-page",
+            "Remove tag from note",
+            "Note ID",
+            "note UUID…",
+            ExecutionLocus::ClientLocal,
+            move |page: &str| {
+                let page = page
+                    .trim()
+                    .parse::<PageId>()
+                    .unwrap_or_else(|_| Uuid::nil());
+                encode(&set_tag_assignment_action(page, tag_id, false))
+            },
+        )
+        .with_continuation_identity(continuation::builder(BuilderDomain::TagMembership {
+            tag: tag_id,
+            assigned: false,
+        })),
+    );
 
     let mut tagged_pages = ctx
         .tag_assignments
@@ -2117,6 +2239,47 @@ mod tests {
     }
 
     #[test]
+    fn deferred_effect_contracts_allow_truthful_completion() {
+        let mut doc = AutoCommit::new();
+        crate::notebook::initialize_empty(&mut doc).unwrap();
+        let page = PageMeta {
+            id: Uuid::from_u128(42),
+            title: "Guide".into(),
+            parent: None,
+            order: 0,
+        };
+        NotesDoc::upsert_page_meta(&mut doc, &page);
+        let resource = page_resource(&page, std::slice::from_ref(&page), &doc);
+        let image = resource
+            .actions
+            .iter()
+            .find(|action| action.id == "insert-image")
+            .unwrap();
+        let mut block = Resource::new("notes.block:test", "notes.block", "Guide");
+        decorate_external_link_actions(
+            &mut block,
+            "Guide",
+            &[InlineMarkSpan {
+                start: 0,
+                end: 5,
+                mark: InlineMark::ExternalLink {
+                    url: "https://example.test/guide".into(),
+                },
+            }],
+        );
+        let link = block.actions.first().unwrap();
+        for action in [image, link] {
+            assert_eq!(action.kind, OperationKind::Effect);
+            assert_eq!(
+                action.contract.execution,
+                ExecutionMode::Background { cancellable: false },
+                "deferred chooser/portal work must remain pending until its actual outcome"
+            );
+            assert_eq!(action.contract.result, ResultSpec::Job);
+        }
+    }
+
+    #[test]
     fn markdown_file_actions_are_portal_mediated_background_jobs() {
         let import = file_operation("import-markdown", "Import Markdown", None);
         assert!(import.params().is_empty());
@@ -2177,14 +2340,18 @@ mod tests {
     fn immediate_encode(spec: &ActionSpec) -> EncodedAction {
         match &spec.input {
             ActionInput::Immediate(enc) => enc.clone(),
-            ActionInput::Prompted { .. } => panic!("expected an immediate action: {}", spec.id),
+            ActionInput::Prompted { .. } | ActionInput::Deferred { .. } => {
+                panic!("expected an immediate action: {}", spec.id)
+            }
         }
     }
 
     fn prompted_encode(spec: &ActionSpec, arg: &str) -> EncodedAction {
         match &spec.input {
             ActionInput::Prompted { build, .. } => build(arg),
-            ActionInput::Immediate(_) => panic!("expected a prompted action: {}", spec.id),
+            ActionInput::Immediate(_) | ActionInput::Deferred { .. } => {
+                panic!("expected a prompted action: {}", spec.id)
+            }
         }
     }
 
@@ -2412,7 +2579,7 @@ mod tests {
             .iter()
             .find(|action| action.id == "duplicate")
             .expect("canonical note publishes duplicate");
-        let encoded = immediate_encode(duplicate);
+        let encoded = duplicate.build_json(&serde_json::Map::new()).unwrap();
         let NotesAction::DuplicateSubtree { source, pages } =
             serde_json::from_slice(&encoded.payload).unwrap()
         else {

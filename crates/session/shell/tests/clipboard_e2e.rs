@@ -75,6 +75,10 @@ const TEXT_MIME: &str = "text/plain;charset=utf-8";
 /// is talking to *this* compositor and not a session one.
 const TILO_SEAT_NAME: &str = "tilo-desktop";
 
+/// Match the native session's launcher-less record scope explicitly, so
+/// inherited package/workspace variables cannot redirect fixture documents.
+const FIXTURE_RECORD_SCOPE: &str = "00000000-0000-0000-0000-000000000000";
+
 /// How long any single wait-for-condition may take. Generous, because a cold
 /// headless compositor spins up a wgpu offscreen renderer on its first frame.
 const DEADLINE: Duration = Duration::from_secs(25);
@@ -178,6 +182,7 @@ impl Compositor {
         fixture_tree.desktop.workspaces[0].name = "Clipboard test desktop".into();
         shell::shell::persist::save_tree_to(&fixture_tree, &state_path)
             .expect("seed the clipboard e2e desktop");
+        Self::seed_tab_records(&runtime_dir, &fixture_tree);
         let identity_root = Self::seed_identity(&runtime_dir);
 
         let mut child = Self::spawn_compositor(
@@ -214,6 +219,36 @@ impl Compositor {
             this.privileged_socket.display()
         );
         this
+    }
+
+    /// This fixture authored the saved tabs, so it also creates their
+    /// documents before native startup performs existing-only admission.
+    /// Restart deliberately reuses these files without creating them again.
+    fn seed_tab_records(runtime_dir: &Path, tree: &shell::shell::state::WorkspaceTree) {
+        let mut owners = ui::record::RecordOwners::new(runtime_dir.join("data"));
+        let records = owners
+            .open(shell::shell::SHELL_RECORDS_PACKAGE, FIXTURE_RECORD_SCOPE)
+            .expect("open the fixture's explicit Shell record namespace");
+        for tab in tree
+            .workspaces
+            .iter()
+            .flat_map(|workspace| &workspace.strips)
+            .flat_map(|strip| &strip.window_groups)
+            .flat_map(|group| &group.tabs)
+        {
+            shell::shell::tab_documents::create_scratch_tab_record(&records, tab.id)
+                .expect("create the authored fixture tab's document");
+            records
+                .try_open_record(&shell::shell::tab_documents::scratch_tab_record(tab.id))
+                .expect("the fixture tab must admit its existing document");
+        }
+        records
+            .try_flush()
+            .expect("persist every fixture tab document before starting the compositor");
+        // Release the writers and canonical ownership gates before the child
+        // opens these same records in its own session store.
+        drop(records);
+        drop(owners);
     }
 
     /// Kill and relaunch the native headless compositor on its existing
@@ -312,6 +347,9 @@ impl Compositor {
             .env("XDG_DATA_HOME", runtime_dir.join("data"))
             .env("XDG_STATE_HOME", runtime_dir.join("state"))
             .env("XDG_CACHE_HOME", runtime_dir.join("cache"))
+            // Match the namespace provisioned once by seed_tab_records.
+            .env("TILO_PACKAGE_ID", shell::shell::SHELL_RECORDS_PACKAGE)
+            .env("TILO_WORKSPACE_ID", FIXTURE_RECORD_SCOPE)
             // A CI checkout commonly lives at `/workspace`. It is not a Tilo
             // collaborative mount, and must not win over the fixture home as
             // the hosted Files app's initial directory.
@@ -2182,7 +2220,7 @@ fn spawn_isolated_x11_probe(
 #[ignore = "starts installed Electron with a compositor-minted token in a private Xwayland session; opt in for compatibility review"]
 #[allow(
     clippy::too_many_lines,
-    reason = "the opt-in Electron test preserves one end-to-end compositor and Xwayland lifecycle"
+    reason = "The opt-in compatibility test keeps native and Electron clients alive through one ordered mapping, focus, and placement lifecycle."
 )]
 fn installed_electron_client_maps_focuses_and_places_through_private_xwayland() {
     let compositor = Compositor::start_host_desktop();

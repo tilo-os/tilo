@@ -299,10 +299,15 @@ async fn two_devices_converge_through_host_with_offline_store_forward() {
     // ---- B reconnects and catches up. ----
     reconnect_b_and_catch_up(addr, &user, &b, WS, &mut doc_a, &mut doc_b).await;
 
-    // Queue drains after delivery.
-    assert_eq!(
-        count_delta_files(&pending_dir),
-        0,
-        "pending queue drains after B catches up"
-    );
+    // Queue drains after delivery. The drain follows the delivered flush on
+    // the host's persistence turn, so it may land just after B has applied it.
+    let mut remaining = count_delta_files(&pending_dir);
+    for _ in 0..80 {
+        if remaining == 0 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+        remaining = count_delta_files(&pending_dir);
+    }
+    assert_eq!(remaining, 0, "pending queue drains after B catches up");
 }

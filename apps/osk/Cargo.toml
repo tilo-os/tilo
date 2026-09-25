@@ -35,6 +35,7 @@ swipe = { path = "../../crates/system/swipe" }
 # events, and (for tests/headless) carry an automerge handle.
 automerge.workspace = true
 serde_json.workspace = true
+serde.workspace = true
 vello.workspace = true
 winit.workspace = true
 taffy.workspace = true
@@ -48,6 +49,7 @@ wayland-protocols-misc = { version = "0.3", features = ["client"] }
 libc.workspace = true
 
 [dev-dependencies]
+ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
 tempfile.workspace = true
 # Compile the synthetic keymap with libxkbcommon so tests validate generated
 # keymaps and symbol resolution.

@@ -337,6 +337,11 @@ fn metrics_snapshot_json_encoding() {
         deltas_received: 4,
         bytes_queued: 5,
         deltas_fanned_out: 6,
+        subscribes: 7,
+        replayed_retained: 8,
+        replayed_pending: 9,
+        subscriber_dropped: 10,
+        subscriber_dropped_backpressure: 11,
     };
     let encoded = r#"{
   "conns_accepted": 1,
@@ -344,7 +349,12 @@ fn metrics_snapshot_json_encoding() {
   "auth_rejected": 3,
   "deltas_received": 4,
   "bytes_queued": 5,
-  "deltas_fanned_out": 6
+  "deltas_fanned_out": 6,
+  "subscribes": 7,
+  "replayed_retained": 8,
+  "replayed_pending": 9,
+  "subscriber_dropped": 10,
+  "subscriber_dropped_backpressure": 11
 }"#;
     assert_eq!(
         String::from_utf8(serde_json::to_vec_pretty(&snapshot).unwrap()).unwrap(),
@@ -353,6 +363,26 @@ fn metrics_snapshot_json_encoding() {
     assert_eq!(
         serde_json::from_str::<MetricsSnapshot>(encoded).unwrap(),
         snapshot
+    );
+    // Snapshots written before the delivery counters existed still load.
+    let legacy = r#"{
+  "conns_accepted": 1,
+  "conns_authed": 2,
+  "auth_rejected": 3,
+  "deltas_received": 4,
+  "bytes_queued": 5,
+  "deltas_fanned_out": 6
+}"#;
+    assert_eq!(
+        serde_json::from_str::<MetricsSnapshot>(legacy).unwrap(),
+        MetricsSnapshot {
+            subscribes: 0,
+            replayed_retained: 0,
+            replayed_pending: 0,
+            subscriber_dropped: 0,
+            subscriber_dropped_backpressure: 0,
+            ..snapshot
+        }
     );
 }
 

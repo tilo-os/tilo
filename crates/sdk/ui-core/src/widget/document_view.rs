@@ -20,7 +20,7 @@ use crate::theme::Theme;
 use super::{Element, FullscreenProvider, FullscreenWidgetExt as _, TaffyTreeExt, Text, Widget};
 
 type Projection<K> = Box<dyn FnMut(&AutoCommit, &ObjId) -> K>;
-type Builder<K> = Box<dyn FnMut(&K) -> Element>;
+type Builder<K> = Box<dyn FnMut(&K, Option<&crate::ControlDomain>) -> Element>;
 
 /// A retained subtree selected by a value projected from application state.
 ///
@@ -30,6 +30,9 @@ type Builder<K> = Box<dyn FnMut(&K) -> Element>;
 pub struct ModelView<K> {
     project: Projection<K>,
     build: Builder<K>,
+    control_domain: Option<crate::ControlDomain>,
+    child_domain: Option<crate::ControlDomain>,
+    scope_domain: Option<crate::ControlDomain>,
     current: Option<K>,
     child: Element,
     rect: Rect,
@@ -49,11 +52,14 @@ where
     /// unequal to the previous value.
     pub fn from_document(
         project: impl FnMut(&AutoCommit, &ObjId) -> K + 'static,
-        build: impl FnMut(&K) -> Element + 'static,
+        mut build: impl FnMut(&K) -> Element + 'static,
     ) -> Self {
         Self {
             project: Box::new(project),
-            build: Box::new(build),
+            build: Box::new(move |key, _| build(key)),
+            control_domain: None,
+            child_domain: None,
+            scope_domain: None,
             current: None,
             // The first sync happens before layout. This inert child merely
             // keeps the wrapper valid for headless/manual users that inspect it
@@ -66,6 +72,19 @@ where
         }
     }
 
+    /// Build with the exact installed domain before any constructor emission.
+    /// The supplied domain must be the owner obtained from HostContext/runner.
+    pub fn from_document_in(
+        domain: &crate::ControlDomain,
+        project: impl FnMut(&AutoCommit, &ObjId) -> K + 'static,
+        mut build: impl FnMut(&K, &crate::ControlDomain) -> Element + 'static,
+    ) -> Self {
+        let mut view = Self::from_document(project, |_| Box::new(Text::new("")));
+        view.control_domain = Some(domain.clone());
+        view.build =
+            Box::new(move |key, domain| build(key, domain.expect("explicit ModelView custody")));
+        view
+    }
     /// Focus the first focusable descendant after a projection changes.
     ///
     /// This is opt-in because replacing a passive detail pane should not steal
@@ -85,7 +104,23 @@ where
         {
             return;
         }
-        self.child = (self.build)(&next);
+        if let Some(old) = self.child_domain.take() {
+            old.close();
+        }
+        if self.scope_domain.is_none() {
+            self.scope_domain = self
+                .control_domain
+                .as_ref()
+                .map(crate::ControlDomain::child);
+        }
+        self.child_domain = self.scope_domain.as_ref().map(crate::ControlDomain::child);
+        self.child = (self.build)(&next, self.child_domain.as_ref());
+        if let Some(domain) = &self.child_domain {
+            self.child.install_control_custody(
+                domain,
+                crate::control_custody::CustodyAttachment::Dynamic,
+            );
+        }
         self.current = Some(next);
         self.structure_dirty = true;
         self.focus_reset |= self.autofocus;
@@ -161,6 +196,28 @@ where
 
     fn fullscreen_provider_mut(&mut self) -> Option<&mut dyn FullscreenProvider> {
         Some(self)
+    }
+    fn install_control_custody(
+        &mut self,
+        domain: &crate::ControlDomain,
+        attachment: crate::control_custody::CustodyAttachment,
+    ) {
+        if let Some(old) = &self.control_domain {
+            if !old.same(domain) {
+                if !domain.permits_renewal(old, attachment) {
+                    domain.unsafe_attachment();
+                    return;
+                }
+                if let Some(scope) = self.scope_domain.take() {
+                    scope.close();
+                }
+                self.child_domain = None;
+            }
+        }
+        self.control_domain = Some(domain.clone());
+        let scope = self.scope_domain.get_or_insert_with(|| domain.child());
+        let child_domain = self.child_domain.get_or_insert_with(|| scope.child());
+        self.child.install_control_custody(child_domain, attachment);
     }
     fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
         self.reconcile(state, path);
@@ -316,6 +373,10 @@ where
 
     fn set_record_scope(&mut self, record: &crate::record::RecordId) {
         self.child.set_record_scope(record);
+    }
+
+    fn release_record_scope(&mut self) -> Result<(), String> {
+        self.child.release_record_scope()
     }
 
     fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
@@ -515,5 +576,13 @@ mod tests {
         }));
         view.sync(&mut doc, &ROOT);
         assert_eq!(builds.get(), 2, "the Ready subtree keeps its identity");
+    }
+}
+
+impl<K> Drop for ModelView<K> {
+    fn drop(&mut self) {
+        if let Some(domain) = &self.scope_domain {
+            domain.close();
+        }
     }
 }

@@ -296,7 +296,6 @@ pub fn close_tab(st: &mut ChromeState, tab_id: TabId) -> Result<(), TabActionErr
     if !removed {
         return Err(TabActionError::UnknownTab);
     }
-    #[cfg(target_os = "macos")]
     st.hosted_inputs.prune_documents(&mut st.tree_mut());
     // Close is durable before the client is asked to exit.
     st.tree().flush_to_disk();

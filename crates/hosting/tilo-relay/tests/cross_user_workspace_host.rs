@@ -19,7 +19,10 @@ use tilo_user_identity::{DeviceCapabilities, RevocationList};
 use crate::common::{TestUser, client_endpoint};
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[allow(clippy::too_many_lines)]
+#[allow(
+    clippy::too_many_lines,
+    reason = "The test keeps enrollment, admission and refusal controls in one real cross-user relay lifecycle."
+)]
 async fn pinned_provider_host_serves_only_enrolled_cross_user_devices() {
     let provider = TestUser::fresh("Tilo hosting");
     let alice = TestUser::fresh("Alice");
@@ -42,6 +45,8 @@ async fn pinned_provider_host_serves_only_enrolled_cross_user_devices() {
             pin: true,
             replication: tilo_relay::ReplicationIntent::FullWorkspace,
             admitted_users: Vec::new(),
+            shell_authority: None,
+            checkpoint_prefix_recovery: tilo_relay::CheckpointPrefixRecovery::Disabled,
         }],
         ..RelayConfig::default()
     };
@@ -148,6 +153,8 @@ async fn provider_membership_removal_closes_a_live_tenant_session() {
                 pin: true,
                 replication: tilo_relay::ReplicationIntent::FullWorkspace,
                 admitted_users: Vec::new(),
+                shell_authority: None,
+                checkpoint_prefix_recovery: tilo_relay::CheckpointPrefixRecovery::Disabled,
             }],
             ..RelayConfig::default()
         },

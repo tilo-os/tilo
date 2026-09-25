@@ -115,7 +115,7 @@ impl HistoryEntry {
                 context
                     .facets
                     .iter()
-                    .any(|facet| facet.key == "tilo.receipt" && facet.value == "effect")
+                    .any(|facet| facet.key == "qos.receipt" && facet.value == "effect")
             })
     }
 }

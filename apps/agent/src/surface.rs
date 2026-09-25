@@ -429,7 +429,9 @@ pub fn for_namespace(namespace: &str) -> Option<&'static AppContract> {
 
 /// The contract for an announced app id.
 pub fn for_app_id(app_id: &str) -> Option<&'static AppContract> {
-    CONTRACTS.iter().find(|c| c.app_id == app_id)
+    CONTRACTS.iter().find(|contract| {
+        ui::application::lookup_compatible_first_party_app_ids(contract.app_id, app_id)
+    })
 }
 
 /// Decoders for every app the agent speaks to, in one registry: the door
@@ -539,7 +541,80 @@ impl Offer {
 /// inert offers the planner already consumes. No application registry or
 /// document reconstruction is involved: arbitrary apps appear here solely
 /// because they published a descriptor to the authenticated broker.
-pub fn broker_offers(catalogue: &tilo_actions::remote::CataloguePage) -> Vec<Offer> {
+///
+/// Accepts either the action host's fetched [`tilo_actions::remote::CataloguePage`]
+/// or the broker's pushed [`ui::collaboration::BrokerActionSurface`] directory.
+pub fn broker_offers<C: BrokerCatalogue + ?Sized>(catalogue: &C) -> Vec<Offer> {
+    catalogue.broker_offers()
+}
+
+/// A live, permission-filtered action directory the broker supplies.
+pub trait BrokerCatalogue {
+    /// Every live action it names, as planner offers.
+    fn broker_offers(&self) -> Vec<Offer>;
+}
+
+impl BrokerCatalogue for tilo_actions::remote::CataloguePage {
+    fn broker_offers(&self) -> Vec<Offer> {
+        catalogue_page_offers(self)
+    }
+}
+
+impl BrokerCatalogue for [ui::collaboration::BrokerActionSurface] {
+    fn broker_offers(&self) -> Vec<Offer> {
+        surface_offers(self)
+    }
+}
+
+impl BrokerCatalogue for Vec<ui::collaboration::BrokerActionSurface> {
+    fn broker_offers(&self) -> Vec<Offer> {
+        surface_offers(self)
+    }
+}
+
+/// Offers from the broker's pushed surface directory: only live surfaces.
+fn surface_offers(surfaces: &[ui::collaboration::BrokerActionSurface]) -> Vec<Offer> {
+    surfaces
+        .iter()
+        .filter(|surface| surface.live)
+        .flat_map(|surface| {
+            surface.actions.iter().map(|action| {
+                let input = if action.input.kind == "text" {
+                    tilo_actions::InputSpec::Text {
+                        prompt: action.input.prompt.clone(),
+                        placeholder: action.input.placeholder.clone(),
+                        collects: if action.input.wants_content {
+                            tilo_actions::Collects::Content
+                        } else {
+                            tilo_actions::Collects::Words
+                        },
+                    }
+                } else {
+                    tilo_actions::InputSpec::None
+                };
+                Offer {
+                    app: surface.app_id.clone(),
+                    broker_peer_id: Some(surface.peer_id),
+                    descriptor: ActionDescriptor {
+                        address: ActionAddress::new(&action.resource, &action.action),
+                        resource_kind: action.resource_kind.clone(),
+                        resource_label: action.resource_label.clone(),
+                        action_label: action.action_label.clone(),
+                        description: action.description.clone(),
+                        locus: tilo_actions::ExecutionLocus::ServerPreferred,
+                        kind: action.operation_kind,
+                        contract: action.contract.clone(),
+                        params: action.params.clone(),
+                        input,
+                        view: None,
+                    },
+                }
+            })
+        })
+        .collect()
+}
+
+fn catalogue_page_offers(catalogue: &tilo_actions::remote::CataloguePage) -> Vec<Offer> {
     catalogue
         .rows
         .iter()
@@ -1365,6 +1440,18 @@ mod tests {
             .is_none(),
             "holding a Photos replica must not silently rerender content; only the explicit export action may produce tilo.content"
         );
+    }
+
+    #[test]
+    fn contract_lookup_accepts_each_exact_deployed_first_party_id() {
+        for app_id in ["dev.qos.photos", "dev.tilo.photos", "so.tilo.photos"] {
+            assert_eq!(
+                for_app_id(app_id).expect("deployed Photos route").namespace,
+                "photos"
+            );
+        }
+        assert!(for_app_id("dev.qos.unknown").is_none());
+        assert!(for_app_id("so.tilo.unknown").is_none());
     }
 
     // -- opening an application ------------------------------------------

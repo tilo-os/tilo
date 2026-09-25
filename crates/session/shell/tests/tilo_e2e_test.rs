@@ -352,7 +352,7 @@ fn editor_app_is_bootstrapped_as_fifth_demo_tab() {
         .find(|t| t.title == "Editor")
         .expect("Editor tab");
     assert!(
-        matches!(editor_tab.tile, RuntimeTile::App(_)),
+        matches!(shell.runtime_tile(editor_tab.id), Some(RuntimeTile::App(_))),
         "expected Editor to be a live App, got {:?}",
         editor_tab.tile
     );
@@ -711,7 +711,8 @@ fn topbar_with_overview_btn_hit() -> (
         "precondition: overview starts closed"
     );
 
-    let mut bar = TopBarChrome::from_tree(&tree).with_chrome(chrome.clone());
+    let mut bar = TopBarChrome::from_tree(&tree)
+        .with_chrome(shell::shell::topbar_chrome::native_source(chrome.clone()));
 
     let theme = Theme::dark();
     let mut taffy: TaffyTree<()> = TaffyTree::new();

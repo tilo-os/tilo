@@ -429,7 +429,7 @@ impl Invalidation {
 
 #[allow(
     clippy::struct_excessive_bools,
-    reason = "independent onboarding ceremony states are clearer as named flags than as one coupled state enum"
+    reason = "recovery mode, backup verification/acknowledgement, modal entry points and presentation preferences are separate state flags"
 )]
 pub struct OnboardingView {
     flow: Onboarding,
@@ -940,6 +940,10 @@ impl OnboardingView {
         if let Some(page) = self.tour_page {
             return self.build_tour_composition(theme, panel_height, page);
         }
+        let compact_ready = self.flow.screen() == Screen::Done
+            && self.identity_ready_page
+            && theme.text_scale <= 1.0
+            && !theme.name.eq_ignore_ascii_case("high contrast");
         let (step, stage) = match self.flow.screen() {
             Screen::Intro => (1, "Choose"),
             Screen::Connect => (2, "Restore"),
@@ -951,7 +955,7 @@ impl OnboardingView {
             Screen::Intro => self.intro(theme),
             Screen::Connect => self.connect(theme),
             Screen::NoRecovery => self.no_recovery(theme),
-            Screen::Done if self.identity_ready_page => self.done(theme),
+            Screen::Done if self.identity_ready_page => self.done(theme, compact_ready),
             Screen::Done => self.backup(theme),
         };
         let spacing = &theme.tokens.spacing;
@@ -1066,14 +1070,14 @@ impl OnboardingView {
             // available below the sticky footer.
             scroll = scroll.always_visible();
         }
+        let bottom_content_inset = if compact_ready { 0.0 } else { spacing.s3 };
         let scroll = scroll
             // Keep a clean terminal edge even on Backup's in-flow decision
             // block, so the last control is not painted against the clip.
-            .with_bottom_content_inset(if self.identity_ready_page {
-                0.0
-            } else {
-                spacing.s3
-            })
+            // Normal-text Ready already has the parent's `s3` footer gap;
+            // repeating it inside the scroller was the last 12 px of a
+            // needless 800×600 overflow.
+            .with_bottom_content_inset(bottom_content_inset)
             // A 960×540 large-text/high-contrast dialog resolves to a 492 px
             // scroll viewport. Keep its first frame's edge in the gap between
             // the form card and recovery copy; the full-height 672 px dialog
@@ -1550,7 +1554,7 @@ impl OnboardingView {
 
     #[allow(
         clippy::too_many_lines,
-        reason = "the restore ceremony is kept together so copy, validation, and actions stay visibly ordered"
+        reason = "the connect page keeps recovery warnings, nearby-device status/actions and encrypted-backup inputs in one composition"
     )]
     fn connect(&self, theme: &Theme) -> Box<dyn Widget> {
         let compact = self.rect.height() <= 540.0;
@@ -1699,7 +1703,7 @@ impl OnboardingView {
 
     #[allow(
         clippy::too_many_lines,
-        reason = "the backup ceremony is kept together so recovery guidance and its actions cannot diverge"
+        reason = "the backup page keeps identity-creation errors and current or restored backup-verification feedback in one composition"
     )]
     fn backup(&self, theme: &Theme) -> Box<dyn Widget> {
         if let Some(err) = &self.error {
@@ -1761,7 +1765,7 @@ impl OnboardingView {
         Box::new(page)
     }
 
-    fn done(&self, theme: &Theme) -> Box<dyn Widget> {
+    fn done(&self, theme: &Theme, compact: bool) -> Box<dyn Widget> {
         let system_care = match self.context {
             OnboardingContext::FullSystem => {
                 "Tilo checks signed system updates automatically after setup when the machine is \
@@ -1785,7 +1789,15 @@ impl OnboardingView {
         let mut page = Column::new()
             .with_no_padding()
             .with_intrinsic_height()
-            .with_gap(theme.tokens.spacing.s4)
+            // Keep every hand-off block, with a full token between them. The
+            // ordinary-text surface uses `s3` so its complete hand-off
+            // decision fits a safe 800×600 panel without scrolling; large
+            // text and high contrast retain the roomier scrollable rhythm.
+            .with_gap(if compact {
+                theme.tokens.spacing.s3
+            } else {
+                theme.tokens.spacing.s4
+            })
             .push(heading(title, theme))
             .push(spaced_banner(
                 Banner::success(ready).with_icon(ui::icons::Icon::Check),
@@ -2865,7 +2877,7 @@ impl Widget for OnboardingView {
 
     #[allow(
         clippy::too_many_arguments,
-        reason = "the Widget event contract supplies this shared routing context to every implementation"
+        reason = "onboarding forwards the Widget event, CRDT, focus and layout context to its picker and composed child controls"
     )]
     fn handle_event(
         &mut self,
@@ -4332,7 +4344,7 @@ mod tests {
     #[test]
     #[allow(
         clippy::too_many_lines,
-        reason = "one table-driven test verifies every onboarding page at every supported laptop size"
+        reason = "the fixture crosses identity pages and error states with laptop sizes, text scaling and high contrast to check action alignment"
     )]
     fn host_identity_actions_stay_visible_and_aligned_at_supported_laptop_sizes() {
         let scenarios: &[(&[&str], &[&str], bool)] = &[

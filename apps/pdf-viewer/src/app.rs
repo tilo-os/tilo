@@ -3943,6 +3943,27 @@ impl Widget for PdfApp {
         self.markup_record.clone()
     }
 
+    fn release_record_scope(&mut self) -> Result<(), String> {
+        if self.editing.is_some() {
+            return Err("Finish or cancel the active PDF edit before switching documents".into());
+        }
+        self.portal_rx = None;
+        self.portal_save_rx = None;
+        self.portal_import_rx = None;
+        self.cancel_pending_open();
+        self.pending_import = None;
+        if let Some(request) = self.pending_save.take() {
+            let _ = self
+                .raster_handle
+                .as_ref()
+                .and_then(|handle| handle.cancel_save(request).ok());
+        }
+        self.pending_worker_plan = None;
+        self.portal_action = None;
+        self.completed_portal_action = None;
+        Ok(())
+    }
+
     fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
         (self.has_document && !self.awaiting_markup_record)
             .then(|| {
@@ -4918,6 +4939,79 @@ mod tests {
     use super::*;
     use serial_test::serial;
     use tilo_automerge::ApplyIncoming;
+
+    #[test]
+    fn owner_release_refuses_inline_draft_then_detaches_all_old_worker_requests() {
+        let mut app = PdfApp::loading_preview();
+        let selected = ui::RecordCheckout::new(
+            ui::RecordId::for_tab(9201),
+            ui::RecordKind::new("pdf-markup"),
+        );
+        app.markup_record = Some(selected.clone());
+        app.source_path = Some("selected.pdf".into());
+        app.begin_edit(EditTarget::Signer, "Draft signer");
+        assert!(app.release_record_scope().is_err());
+        assert!(app.pending_open.is_some());
+        assert_eq!(app.markup_record, Some(selected.clone()));
+        assert_eq!(
+            app.source_path.as_deref(),
+            Some(std::path::Path::new("selected.pdf"))
+        );
+
+        app.editing = None;
+        app.portal_rx = Some({
+            let (answer, channel) = std::sync::mpsc::channel();
+            let _ = answer.send(PortalOutcome::Cancelled);
+            channel
+        });
+        app.portal_save_rx = Some({
+            let (answer, channel) = std::sync::mpsc::channel();
+            let _ = answer.send(PortalOutcome::Cancelled);
+            channel
+        });
+        app.portal_import_rx = Some({
+            let (answer, channel) = std::sync::mpsc::channel();
+            let _ = answer.send(PortalOutcome::Cancelled);
+            channel
+        });
+        app.pending_import = Some(ImportRequest {
+            id: 2,
+            document_id: 1,
+            path: "import.pdf".into(),
+            at: 0,
+            after: None,
+        });
+        app.pending_save = Some(SaveRequest {
+            id: 3,
+            document_id: 1,
+            annotations: Vec::new(),
+            comments: Vec::new(),
+            signatures: Vec::new(),
+            path: "save.pdf".into(),
+        });
+        app.pending_worker_plan = Some(Vec::new());
+        let invocation = tilo_actions::InvocationId::new();
+        app.portal_action = Some((invocation, PortalActionKind::Open));
+        app.completed_portal_action = Some(tilo_actions::InvocationUpdate::Succeeded {
+            invocation,
+            output: tilo_actions::ActionOutput::default(),
+        });
+        app.release_record_scope().unwrap();
+        assert!(app.portal_rx.is_none());
+        assert!(app.portal_save_rx.is_none());
+        assert!(app.portal_import_rx.is_none());
+        assert!(app.pending_open.is_none());
+        assert!(app.pending_import.is_none());
+        assert!(app.pending_save.is_none());
+        assert!(app.pending_worker_plan.is_none());
+        assert!(app.portal_action.is_none());
+        assert!(app.completed_portal_action.is_none());
+        assert_eq!(app.markup_record, Some(selected));
+        assert_eq!(
+            app.source_path.as_deref(),
+            Some(std::path::Path::new("selected.pdf"))
+        );
+    }
 
     /// Two real PDFs on disk, from the bundled fixture. "Open a second
     /// document" has to be a second *file* — the bug is about one document's

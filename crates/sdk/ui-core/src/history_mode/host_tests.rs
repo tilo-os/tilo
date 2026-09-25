@@ -113,6 +113,50 @@ pub(super) fn registration() -> HistoryRegistration {
     )
     .unwrap()
 }
+
+#[test]
+fn first_control_capture_preserves_admitted_toolbar_until_recomposition() {
+    fn addresses(widget: &dyn Widget, output: &mut Vec<*const ()>) {
+        output.push(std::ptr::from_ref(widget).cast());
+        widget.for_each_child(&mut |child| addresses(child, output));
+    }
+
+    let mut state = State::new();
+    state.doc.put(ROOT, "body", "existing document").unwrap();
+    state.commit_action(None, None);
+    let mut live = Column::new().push(Box::new(Button::new("live", "Send", None)));
+    let mut history = host::HistoryHost::new(registration(), &state.doc).unwrap();
+    history.set_width(900.0);
+    assert!(history.request_open());
+    history.refresh(&state.doc);
+    let mut tree = taffy::TaffyTree::new();
+    let mut nodes = std::collections::HashMap::new();
+    history.build_composition(&mut live, &mut tree, &Theme::dark(), &mut nodes);
+    assert!(!nodes.is_empty());
+    assert!(!history.needs_refresh(&state.doc, 900.0));
+    let mut admitted = Vec::new();
+    addresses(&history, &mut admitted);
+
+    // An external open can run during update, after the runner's capture pass.
+    // Its first control capture then occurs with the prior frame still admitted.
+    assert!(history.capture_pending_controls(&mut live, &state.doc, uuid::Uuid::new_v4()));
+    assert!(
+        history.needs_refresh(&state.doc, 900.0),
+        "control capture must schedule recomposition before replacing mapped controls"
+    );
+    let mut retained = Vec::new();
+    addresses(&history, &mut retained);
+    assert_eq!(admitted, retained, "admitted controls must remain alive");
+
+    nodes.clear();
+    tree = taffy::TaffyTree::new();
+    history.refresh(&state.doc);
+    history.build_composition(&mut live, &mut tree, &Theme::dark(), &mut nodes);
+    assert!(!nodes.is_empty());
+    assert!(!history.needs_refresh(&state.doc, 900.0));
+    assert!(history.captures_input());
+}
+
 #[test]
 fn managed_history_button_opens_real_activity_without_invoking_live_effects() {
     let effects = Rc::new(Cell::new(0));
@@ -138,6 +182,10 @@ fn managed_history_button_opens_real_activity_without_invoking_live_effects() {
     );
     driver.click_named("history-open").unwrap();
     assert!(driver.targets().contains_key("activity_timeline"));
+    assert!(
+        driver.inspection_json().unwrap().contains("Send"),
+        "wide Domain activity keeps the live surface beside the timeline"
+    );
     assert_eq!(effects.get(), 0);
     assert_eq!(driver.state_mut().doc.get_heads(), before);
 }
@@ -185,6 +233,92 @@ fn versioned_driver(viewport: (u32, u32)) -> (Driver, String, Vec<automerge::Cha
         ),
         before,
     )
+}
+
+fn assert_history_frame_idle(driver: &mut Driver, context: &str) {
+    assert!(
+        !driver.frame_output().needs_redraw,
+        "{context}: visible History branch stayed dirty after draw"
+    );
+    assert!(
+        !driver.poll_frame().unwrap(),
+        "{context}: idle History branch produced another frame"
+    );
+}
+
+#[test]
+fn managed_history_visible_branches_drain_and_retained_modes_return_current() {
+    let (mut wide, target, _) = versioned_driver((900, 650));
+    assert_history_frame_idle(&mut wide, "toolbar");
+
+    wide.click_named("history-open").unwrap();
+    assert!(wide.targets().contains_key("activity_timeline"));
+    assert_history_frame_idle(&mut wide, "available timeline");
+
+    wide.perform_semantic_named(
+        "activity_timeline",
+        Some(&target),
+        &crate::a11y::Action::Activate,
+    )
+    .unwrap();
+    assert!(wide.inspection_json().unwrap().contains("Notebook: first"));
+    assert_history_frame_idle(&mut wide, "after preview");
+
+    wide.click_named("history-before").unwrap();
+    assert!(!wide.inspection_json().unwrap().contains("Notebook: first"));
+    assert_history_frame_idle(&mut wide, "before preview");
+    wide.click_named("history-after").unwrap();
+    assert!(wide.inspection_json().unwrap().contains("Notebook: first"));
+    assert_history_frame_idle(&mut wide, "retained after preview");
+
+    let (mut narrow, target, _) = versioned_driver((390, 650));
+    narrow.click_named("history-open").unwrap();
+    narrow
+        .perform_semantic_named(
+            "activity_timeline",
+            Some(&target),
+            &crate::a11y::Action::Activate,
+        )
+        .unwrap();
+    assert_history_frame_idle(&mut narrow, "narrow preview");
+    narrow.click_named("history-activity").unwrap();
+    assert!(narrow.targets().contains_key("activity_timeline"));
+    assert!(!narrow.targets().contains_key("history-preview"));
+    assert_history_frame_idle(&mut narrow, "narrow activity");
+
+    static UNVERSIONED: HistoryDefinition = HistoryDefinition {
+        app_id: "dev.qos.history-unavailable-fixture",
+        scopes: &[HistoryScopeDefinition {
+            key: "document",
+            title: "Unavailable notebook",
+            presentation: HistoryPresentation::External {
+                reason: "Fixture history unavailable",
+            },
+            content_schema: None,
+        }],
+    };
+    let registration = HistoryRegistration::new(
+        &UNVERSIONED,
+        vec![HistorySourceRegistration::Unversioned {
+            scope: "document",
+            reason: "Fixture history unavailable",
+        }],
+    )
+    .unwrap();
+    let mut unavailable = Driver::from_managed_root(
+        State::new(),
+        ManagedRoot::new(Box::new(Column::new()), registration),
+        (900, 650),
+    )
+    .unwrap();
+    unavailable.click_named("history-open").unwrap();
+    assert!(
+        unavailable
+            .inspection_json()
+            .unwrap()
+            .contains("Fixture history unavailable")
+    );
+    assert_history_frame_idle(&mut unavailable, "unavailable timeline");
 }
 fn find_access<'a>(
     node: &'a crate::headless::InspectionNode,
@@ -648,18 +782,176 @@ fn external_history_explains_why_no_versions_exist() {
             content_schema: None,
         }],
     };
+    for viewport in [(390, 650), (900, 650)] {
+        let registration = HistoryRegistration::new(
+            &EXTERNAL,
+            vec![HistorySourceRegistration::Unversioned {
+                scope: "session",
+                reason: "Remote content has no document versions",
+            }],
+        )
+        .unwrap();
+        let live = Column::new().push(Box::new(Button::new(
+            "external-live-marker",
+            "Retained live session",
+            None,
+        )));
+        let mut driver = Driver::from_managed_root(
+            State::new(),
+            ManagedRoot::new(Box::new(live), registration),
+            viewport,
+        )
+        .unwrap();
+        assert!(driver.targets().contains_key("external-live-marker"));
+        driver.click_named("history-open").unwrap();
+        let inspection = driver.inspection_json().unwrap();
+        assert!(inspection.contains("Remote content has no document versions"));
+        assert!(!driver.targets().contains_key("activity_timeline"));
+        assert!(
+            !inspection.contains("Retained live session"),
+            "External History presents only its limitation at {viewport:?}"
+        );
+        driver.click_named("history-open").unwrap();
+        assert!(
+            driver
+                .inspection_json()
+                .unwrap()
+                .contains("Retained live session")
+        );
+    }
+}
+
+fn checked_preview(
+    _: crate::history_mode::checked_files::FilePreviewInput,
+) -> Result<Box<dyn crate::history_mode::HistoryPreview>, String> {
+    Err("no preview selected by the composition test".into())
+}
+
+static CHECKED_COMPOSITION: HistoryDefinition = HistoryDefinition {
+    app_id: "dev.qos.checked-composition-fixture",
+    scopes: &[HistoryScopeDefinition {
+        key: "file",
+        title: "File",
+        presentation: HistoryPresentation::CheckedFiles {
+            create: checked_preview,
+        },
+        content_schema: None,
+    }],
+};
+
+struct CheckedCompositionRoot {
+    inner: Box<dyn Widget>,
+    source: crate::history_mode::checked_files::FileHistorySource,
+}
+
+impl Widget for CheckedCompositionRoot {
+    fn history_registration(
+        &self,
+    ) -> Result<Option<HistoryRegistration>, HistoryRegistrationError> {
+        HistoryRegistration::new(
+            &CHECKED_COMPOSITION,
+            vec![HistorySourceRegistration::CheckedFiles {
+                scope: "file",
+                source: self.source.clone(),
+            }],
+        )
+        .map(Some)
+    }
+
+    fn document_history_definition(&self) -> Option<&'static HistoryDefinition> {
+        Some(&CHECKED_COMPOSITION)
+    }
+
+    fn sync(&mut self, state: &mut automerge::AutoCommit, path: &automerge::ObjId) {
+        self.inner.sync(state, path);
+    }
+
+    fn build_layout(
+        &mut self,
+        tree: &mut taffy::TaffyTree<()>,
+        theme: &Theme,
+        nodes: &mut std::collections::HashMap<taffy::NodeId, *mut dyn Widget>,
+    ) -> taffy::NodeId {
+        self.inner.build_layout(tree, theme, nodes)
+    }
+
+    fn apply_layout(
+        &mut self,
+        tree: &taffy::TaffyTree<()>,
+        node: taffy::NodeId,
+        origin: vello::kurbo::Point,
+    ) {
+        self.inner.apply_layout(tree, node, origin);
+    }
+
+    fn draw(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text: &mut TextRenderer,
+        theme: &Theme,
+        presence: &crate::presence::PresenceCtx,
+    ) {
+        self.inner.draw(scene, transform, text, theme, presence);
+    }
+
+    fn handle_event(
+        &mut self,
+        event: &winit::event::WindowEvent,
+        scale: f64,
+        modifiers: &winit::event::Modifiers,
+        state: &mut automerge::AutoCommit,
+        path: &automerge::ObjId,
+        handled: &mut bool,
+        focus: &mut Option<taffy::NodeId>,
+        node: taffy::NodeId,
+        tree: &taffy::TaffyTree<()>,
+    ) {
+        self.inner.handle_event(
+            event, scale, modifiers, state, path, handled, focus, node, tree,
+        );
+    }
+
+    fn children(&self) -> Vec<&dyn Widget> {
+        self.inner.children()
+    }
+
+    fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
+        self.inner.children_mut()
+    }
+
+    fn name(&self) -> &str {
+        "checked-composition-root"
+    }
+
+    fn get_rect(&self) -> Rect {
+        self.inner.get_rect()
+    }
+}
+
+#[test]
+fn checked_files_activity_keeps_the_wide_live_surface() {
+    let source = crate::history_mode::checked_files::FileHistorySource::default();
     let registration = HistoryRegistration::new(
-        &EXTERNAL,
-        vec![HistorySourceRegistration::Unversioned {
-            scope: "session",
-            reason: "Remote content has no document versions",
+        &CHECKED_COMPOSITION,
+        vec![HistorySourceRegistration::CheckedFiles {
+            scope: "file",
+            source: source.clone(),
         }],
     )
     .unwrap();
+    let live = CheckedCompositionRoot {
+        inner: Box::new(Column::new().push(Box::new(Button::new(
+            "checked-live-marker",
+            "Retained checked file",
+            None,
+        )))),
+        source,
+    };
     let mut driver = Driver::from_managed_root(
         State::new(),
-        ManagedRoot::new(Box::new(Column::new()), registration),
-        (390, 650),
+        ManagedRoot::new(Box::new(live), registration),
+        (900, 650),
     )
     .unwrap();
     driver.click_named("history-open").unwrap();
@@ -667,9 +959,9 @@ fn external_history_explains_why_no_versions_exist() {
         driver
             .inspection_json()
             .unwrap()
-            .contains("Remote content has no document versions")
+            .contains("Retained checked file"),
+        "wide CheckedFiles activity keeps the live surface beside its controls"
     );
-    assert!(!driver.targets().contains_key("activity_timeline"));
 }
 
 #[test]
@@ -954,6 +1246,10 @@ impl Widget for LazyOwnerRoot {
     fn sync(&mut self, doc: &mut automerge::AutoCommit, path: &automerge::ObjId) {
         if !self.during_layout {
             self.mount_owner();
+        } else if self.mount.get() && !self.mounted {
+            // A widget that will compose an owner during its next build has
+            // to request that build: a retained host never rebuilds unasked.
+            self.dirty = true;
         }
         self.child.sync(doc, path);
     }

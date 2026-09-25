@@ -91,7 +91,7 @@ fn build_test_widget() -> (TerminalWidget, crossbeam_channel::Receiver<Vec<u8>>)
 /// so a test can push bytes down the exact channel the reader thread uses.
 /// This exercises the production `sync` → `pump` drain path (which is what
 /// snaps the scrollback viewport back to the live bottom on fresh output).
-fn build_test_widget_io() -> (
+pub(crate) fn build_test_widget_io() -> (
     TerminalWidget,
     crossbeam_channel::Receiver<Vec<u8>>,
     crossbeam_channel::Sender<Vec<u8>>,
@@ -142,7 +142,7 @@ fn embedded_terminal_only_requests_frames_for_queued_output() {
 }
 
 /// Drain and concatenate everything the PTY-write channel has buffered.
-fn drain_writes(rx: &crossbeam_channel::Receiver<Vec<u8>>) -> Vec<u8> {
+pub(crate) fn drain_writes(rx: &crossbeam_channel::Receiver<Vec<u8>>) -> Vec<u8> {
     let mut out = Vec::new();
     while let Ok(b) = rx.try_recv() {
         out.extend_from_slice(&b);

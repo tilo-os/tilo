@@ -176,6 +176,37 @@ fn corrupt_default_refuses_without_falling_back_to_legacy() {
 }
 
 #[test]
+fn retired_personal_source_refuses_stale_import_or_blank_default() {
+    let f = LegacyFixture::rich();
+    let checkout = hosting::default_notebook();
+    let path = f.document_path(&checkout);
+    std::fs::write(f.source.join(".notes-canonical-v1"), b"retired elsewhere").unwrap();
+    let source = f.source_bytes();
+
+    let result = hosting::prepare_default(&mut host(&f), 214, Some(&f.source), runner_inputs());
+
+    assert!(matches!(
+        result,
+        Err(ui::launch::LaunchError::Operation(message))
+            if message.contains("--notebook-dir")
+    ));
+    assert!(!path.exists());
+    assert_eq!(source, f.source_bytes());
+}
+
+#[test]
+fn workspace_default_does_not_inspect_a_private_retirement_marker() {
+    let f = LegacyFixture::rich();
+    std::fs::write(f.source.join(".notes-canonical-v1"), b"private retirement").unwrap();
+    let mut owner = host(&f);
+
+    let prepared = hosting::prepare_default(&mut owner, 215, None, runner_inputs()).unwrap();
+
+    assert!(matches!(prepared.target, LaunchTarget::New));
+    assert_eq!(prepared.context.record().id, hosting::default_notebook().id);
+}
+
+#[test]
 fn one_host_shares_the_owner_but_competing_hosts_cannot_start_another_writer() {
     let f = LegacyFixture::rich();
     let mut owner = host(&f);

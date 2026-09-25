@@ -17,6 +17,7 @@ pub use owner::HistoryOwner;
 mod canvas;
 pub(crate) mod frame;
 pub(crate) mod host;
+pub mod pending_controls;
 pub use preview::*;
 pub use registration::*;
 

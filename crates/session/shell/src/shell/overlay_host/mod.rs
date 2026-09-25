@@ -1453,6 +1453,10 @@ pub struct ShellOverlayHost {
     /// default chord set on its own.
     shortcut_config: settings_store::hardware::ShortcutConfig,
     content: Box<dyn Widget>,
+    /// Recovery reports of embedded components settled when a workspace
+    /// rebuild replaced `content`; handed on by
+    /// [`Widget::take_component_close_reports`] so a rebuild cannot lose them.
+    desktop_close_reports: Vec<ui::application::ComponentCloseReport>,
     /// Exact production root layers, supplied only by `build_workspace_root`. This is a
     /// capability, not an invalidation hint: section drawing invokes these same widgets in their
     /// established backdrop → workspace → topbar order.
@@ -3081,6 +3085,7 @@ impl ShellOverlayHost {
             shortcut_help_drawn_rect: Rect::ZERO,
             content,
             workspace_scene_parts: None,
+            desktop_close_reports: Vec::new(),
             onboarding: None,
             onboarding_node: None,
             onboarding_released: false,
@@ -4193,6 +4198,9 @@ impl ShellOverlayHost {
     /// frame from [`Widget::update`]. `/invite` mints a token; `/connect`
     /// opens the token prompt. Both write their outcome into chrome.
     fn pump_peer_sync(&mut self) {
+        if let Some(request) = self.peer_sync_overlay.pending_enrollment_request() {
+            self.run_peer_sync_request(&request, false);
+        }
         let actions = self.chrome.as_ref().map_or_else(Vec::new, |chrome| {
             chrome.borrow_mut().take_peer_sync_requests()
         });
@@ -4447,6 +4455,10 @@ impl ShellOverlayHost {
     /// both [`Widget::update`] and [`Widget::take_structure_dirty`] — the
     /// shots driver's relayout-only path skips `update`.
     fn resync_workspace_content(&mut self) -> bool {
+        // Both update and structure-dirty enter here before canonical
+        // reconciliation. Commit pending widget gestures first, before a
+        // rebuild drops the rows holding them.
+        self.harvest_active_tab_writeback();
         let Some(chrome) = self.chrome.clone() else {
             return false;
         };
@@ -4481,6 +4493,12 @@ impl ShellOverlayHost {
         let records = chrome.borrow().records().clone();
         let (root, ptrs, scene_parts) =
             crate::shell::build_workspace_root_with_scene_parts(&snapshot, &records, &chrome);
+        // Settle outgoing components while the old root still owns them, so
+        // their recovery reports survive the swap.
+        self.desktop_close_reports
+            .extend(self.content.close_components());
+        self.desktop_close_reports
+            .extend(self.content.take_component_close_reports());
         // Replace content and pointer map in one step: dropping the old
         // root frees every old GroupRow, and the map must never outlive
         // the rows it points into.
@@ -4815,6 +4833,7 @@ impl ShellOverlayHost {
             // makes this walk exclusive, matching the other row accessors.
             let row: &mut GroupRow = unsafe { &mut *row_ptr };
             for group in &mut row.groups {
+                let source_tab = group.active_tab_id();
                 let Some(host) = group.active_host_mut() else {
                     continue;
                 };
@@ -4822,14 +4841,14 @@ impl ShellOverlayHost {
                     continue;
                 };
                 if let Some(intent) = app.take_host_intent() {
-                    intents.push(intent);
+                    intents.push((source_tab, intent));
                 }
             }
         }
         let Some(chrome) = self.chrome.clone() else {
             return;
         };
-        for intent in intents {
+        for (source_tab, intent) in intents {
             match intent {
                 ui::widget::AppHostIntent::ShowWorkspaceActivity {
                     resource_id,
@@ -4849,8 +4868,59 @@ impl ShellOverlayHost {
                         },
                     ));
                 }
+                ui::widget::AppHostIntent::OpenDocument {
+                    path,
+                    capability,
+                    token,
+                    reply,
+                } => {
+                    let Some(reply) = reply.upgrade() else {
+                        continue;
+                    };
+                    let Ok(mut reply) = reply.try_borrow_mut() else {
+                        continue;
+                    };
+                    if !reply.is_pending(token) {
+                        continue;
+                    }
+                    Self::complete_document_open_request(
+                        &chrome,
+                        source_tab,
+                        &path,
+                        &capability,
+                        token,
+                        &mut reply,
+                    );
+                }
             }
         }
+    }
+
+    /// Resolve the one capability-bound Files request that drain admitted.
+    /// Keeping the authorization immediately beside the actual opener avoids
+    /// any generic app intent becoming a filesystem-read capability.
+    fn complete_document_open_request(
+        chrome: &crate::shell::chrome_state::Chrome,
+        source_tab: crate::shell::state::TabId,
+        path: &std::path::Path,
+        capability: &ui::widget::DocumentOpenCapability,
+        token: u64,
+        reply: &mut ui::widget::DocumentOpenReply,
+    ) {
+        let authorized_source = {
+            let state = chrome.borrow();
+            let files_app_id = crate::shell::state::AppKind::FileExplorer.app_id();
+            state.active_tab_id() == Some(source_tab)
+                && state.active_app_id().as_deref() == Some(files_app_id.as_str())
+                && state
+                    .hosted_inputs
+                    .accepts_document_open_capability(capability)
+        };
+        if !authorized_source {
+            reply.cancel(token);
+            return;
+        }
+        reply.complete(token, crate::shell::open_document_from_files(chrome, path));
     }
 
     /// Diffs the live `WorkspaceTree` against every `GroupRow`'s children,
@@ -5263,7 +5333,10 @@ impl ShellOverlayHost {
         // Only an explicit pointer/keyboard/accessibility edge reaches this
         // list. A newly rebuilt retained row can temporarily disagree with
         // the model; treating that divergence as a click steals focus back
-        // from an application which just opened.
+        // from an application which just opened. Focus is stamped only for
+        // the active workspace: a newer workspace switch takes precedence
+        // over a gesture made in the outgoing one.
+        let mut selection_changed = false;
         let mut focus_writes: Vec<(WorkspaceId, StripId, GroupId)> = Vec::new();
         // A FileReference card is inert until the person explicitly selects
         // its tab.  Capture that activation while holding the tree, then
@@ -5272,6 +5345,7 @@ impl ShellOverlayHost {
         let mut activated_file_tabs = Vec::new();
         {
             let mut tree = st.tree_mut();
+            let active_workspace = tree.desktop.active;
             for w in &writes {
                 for ws in &mut tree.desktop.workspaces {
                     for strip in &mut ws.strips {
@@ -5290,17 +5364,19 @@ impl ShellOverlayHost {
                                 continue;
                             }
                             group.active_tab = w.tab;
-                            focus_writes.push((ws.id, w.strip, w.group));
-                            activated_file_tabs.push(w.tab);
+                            selection_changed = true;
+                            if ws.id == active_workspace {
+                                focus_writes.push((ws.id, w.strip, w.group));
+                                activated_file_tabs.push(w.tab);
+                            }
                         }
                     }
                 }
             }
         }
-        if !focus_writes.is_empty() {
+        if selection_changed {
             let mut tree = st.tree_mut();
             for (ws_id, strip_id, group_id) in focus_writes {
-                tree.desktop.active = ws_id;
                 tree.desktop.active_strip.insert(ws_id, strip_id);
                 tree.desktop.active_group.insert(strip_id, group_id);
             }
@@ -15509,6 +15585,14 @@ fn focus_quick_settings_accessibility(host: &mut ShellOverlayHost, child_path: &
 }
 
 impl Widget for ShellOverlayHost {
+    fn take_component_close_reports(&mut self) -> Vec<ui::application::ComponentCloseReport> {
+        let mut reports = std::mem::take(&mut self.desktop_close_reports);
+        for child in self.children_mut() {
+            reports.extend(child.take_component_close_reports());
+        }
+        reports
+    }
+
     fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
         Some(self)
     }
@@ -15672,7 +15756,17 @@ impl Widget for ShellOverlayHost {
         // Offer every open tab's document to its own writer, debounced and
         // off-thread — without this the store never writes to disk.
         if let Some(chrome) = self.chrome.as_ref() {
-            let records = chrome.borrow().records().clone();
+            let state = chrome.borrow();
+            // Release native document launch data once its tab is gone —
+            // covers removals through workspace/peer reconciliation as well
+            // as the explicit close action.
+            let mut tree = state.tree_mut();
+            if state.hosted_inputs.prune_documents(&mut tree) {
+                tree.flush_to_disk();
+            }
+            drop(tree);
+            let records = state.records().clone();
+            drop(state);
             records.tick();
         }
         // Before the prompt pump, so a request arriving this frame is on
@@ -18759,6 +18853,32 @@ impl ShellOverlayHost {
         flags: crate::shell::chrome_state::OverlayFlags,
     ) {
         self.drain_app_host_intents();
+        let view_request = self
+            .chrome
+            .as_ref()
+            .and_then(|chrome| chrome.borrow_mut().take_workspace_view_request());
+        if let Some((previous, request)) = view_request {
+            // Finish against the outgoing admission before awareness refreshes
+            // for the destination. A first open must not acknowledge its feed.
+            if self.room_activity_was_open {
+                self.room_activity.finish_view(previous.raw());
+            }
+            if let qos_desktop::activity::WorkspaceViewRequest::OpenActivity { view, .. } = request
+            {
+                use crate::shell::room_activity::ActivityView as Local;
+                use qos_desktop::activity::ActivityView as Portable;
+                let view = match view {
+                    Portable::CatchUp => Local::CatchUp,
+                    Portable::Tasks => Local::Tasks,
+                    Portable::Explore => Local::Explore,
+                    Portable::Replay => Local::Replay,
+                };
+                self.room_activity.set_view(Local::CatchUp);
+                self.room_activity.set_view(view);
+                self.room_activity.invalidate();
+            }
+            self.room_activity_was_open = false;
+        }
         // Older control/shot clients still express this as an overlay edge;
         // consume it by opening the typed tiled window once.
         if flags.room_activity
@@ -23941,6 +24061,29 @@ mod tab_context_menu_tests {
     /// closes, uses the hand-built tree. One structure pass settles the
     /// host's chrome revision the way the first frame's `update` does.
     fn harness(tabs: usize) -> Harness {
+        harness_built_with(tabs, build_tilo_overlay_host_with_chrome)
+    }
+
+    /// [`harness`] over explicit hosted inputs, for tests that need the
+    /// production Files services (document-open capability) wired in.
+    fn harness_with_inputs(
+        tabs: usize,
+        inputs: crate::shell::hosted_inputs::HostedTileInputs,
+    ) -> Harness {
+        harness_built_with(tabs, |tree| {
+            crate::shell::build_tilo_overlay_host_with_inputs(
+                tree.clone().shared(),
+                false,
+                ui::record::RecordStore::in_memory(),
+                inputs,
+            )
+        })
+    }
+
+    fn harness_built_with(
+        tabs: usize,
+        build: impl FnOnce(&WorkspaceTree) -> (ShellOverlayHost, Chrome),
+    ) -> Harness {
         let tree = if tabs >= 2 {
             WorkspaceTree::bootstrap_demo()
         } else {
@@ -23964,7 +24107,7 @@ mod tab_context_menu_tests {
             tab_ids.len() >= tabs,
             "fixture has the tabs the test asked for"
         );
-        let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&tree);
+        let (mut host, chrome) = build(&tree);
         let theme = Theme::dark();
         let (taffy, root) = lay_out_host_with_theme(&mut host, VW, VH, &theme);
         let _ = host.take_structure_dirty();
@@ -24084,6 +24227,183 @@ mod tab_context_menu_tests {
                 .map(|t| t.id)
                 .collect()
         }
+    }
+
+    fn files_document_open_capability(
+        chrome: &crate::shell::chrome_state::Chrome,
+    ) -> ui::widget::DocumentOpenCapability {
+        let state = chrome.borrow();
+        let services = state
+            .hosted_inputs
+            .file_services()
+            .expect("the production harness provides hosted Files services");
+        let file_explorer::files_app::DocumentOpenRoute::Deferred(capability) =
+            &services.document_opener
+        else {
+            panic!("the production harness routes Files opens through the deferred owner");
+        };
+        capability.clone()
+    }
+
+    fn tab_count(chrome: &crate::shell::chrome_state::Chrome) -> usize {
+        chrome
+            .borrow()
+            .tree()
+            .desktop
+            .workspaces
+            .iter()
+            .flat_map(|workspace| &workspace.strips)
+            .flat_map(|strip| &strip.window_groups)
+            .map(|group| group.tabs.len())
+            .sum()
+    }
+
+    #[test]
+    fn stale_files_document_open_is_cancelled_before_record_or_tab_publication() {
+        let directory = tempfile::tempdir().unwrap();
+        let h = harness_with_inputs(
+            4,
+            crate::shell::hosted_inputs::HostedTileInputs::for_host_directory(directory.path())
+                .expect("owned Files directory"),
+        );
+        let chrome = h.chrome.clone();
+        let source = h.tabs[1]; // Files in the production demo workspace.
+        let replacement = h.tabs[0];
+        let capability = files_document_open_capability(&chrome);
+        let tabs_before = tab_count(&chrome);
+        let path = directory.path().join("queued.txt");
+        std::fs::write(&path, "must not be read after source replacement\n").unwrap();
+        let path = path.canonicalize().unwrap();
+        let record = ui::record::RecordId::for_file(&path);
+        let reply = std::rc::Rc::new(std::cell::RefCell::new(
+            ui::widget::DocumentOpenReply::pending(41),
+        ));
+        let queued = ui::widget::AppHostIntent::OpenDocument {
+            path,
+            capability,
+            token: 41,
+            reply: std::rc::Rc::downgrade(&reply),
+        };
+        let workspace = chrome.borrow().tree().desktop.active;
+        chrome
+            .borrow_mut()
+            .focus_tab(workspace, h.strip, h.group, replacement);
+
+        let ui::widget::AppHostIntent::OpenDocument {
+            path,
+            capability,
+            token,
+            ..
+        } = queued
+        else {
+            unreachable!("the queued intent has the Files shape");
+        };
+        ShellOverlayHost::complete_document_open_request(
+            &chrome,
+            source,
+            &path,
+            &capability,
+            token,
+            &mut reply.borrow_mut(),
+        );
+
+        assert_eq!(
+            reply.borrow_mut().take_result(token),
+            Some(ui::widget::DocumentOpenOutcome::Cancelled)
+        );
+        assert!(!chrome.borrow().records().is_ready(&record));
+        assert_eq!(tab_count(&chrome), tabs_before);
+        assert_eq!(
+            crate::shell::window_actions::active_tab_id(&chrome.borrow()),
+            Some(replacement),
+            "a stale Files request must not replace the current tab"
+        );
+    }
+
+    #[test]
+    fn non_files_source_cannot_use_the_hosted_files_capability() {
+        let directory = tempfile::tempdir().unwrap();
+        let h = harness_with_inputs(
+            4,
+            crate::shell::hosted_inputs::HostedTileInputs::for_host_directory(directory.path())
+                .expect("owned Files directory"),
+        );
+        let chrome = h.chrome.clone();
+        let source = h.tabs[0]; // Notes, not the Files tile at index 1.
+        let capability = files_document_open_capability(&chrome);
+        let tabs_before = tab_count(&chrome);
+        let path = directory.path().join("forged.txt");
+        std::fs::write(&path, "a non-Files app must not open this\n").unwrap();
+        let path = path.canonicalize().unwrap();
+        let record = ui::record::RecordId::for_file(&path);
+        let reply = std::rc::Rc::new(std::cell::RefCell::new(
+            ui::widget::DocumentOpenReply::pending(42),
+        ));
+        let workspace = chrome.borrow().tree().desktop.active;
+        chrome
+            .borrow_mut()
+            .focus_tab(workspace, h.strip, h.group, source);
+
+        ShellOverlayHost::complete_document_open_request(
+            &chrome,
+            source,
+            &path,
+            &capability,
+            42,
+            &mut reply.borrow_mut(),
+        );
+
+        assert_eq!(
+            reply.borrow_mut().take_result(42),
+            Some(ui::widget::DocumentOpenOutcome::Cancelled)
+        );
+        assert!(!chrome.borrow().records().is_ready(&record));
+        assert_eq!(tab_count(&chrome), tabs_before);
+        assert_eq!(
+            crate::shell::window_actions::active_tab_id(&chrome.borrow()),
+            Some(source),
+            "a non-Files intent must not publish a replacement tab"
+        );
+    }
+
+    #[test]
+    fn wrong_document_open_capability_cannot_use_the_current_files_source() {
+        let directory = tempfile::tempdir().unwrap();
+        let h = harness_with_inputs(
+            4,
+            crate::shell::hosted_inputs::HostedTileInputs::for_host_directory(directory.path())
+                .expect("owned Files directory"),
+        );
+        let chrome = h.chrome.clone();
+        let source = h.tabs[1]; // Files in the production demo workspace.
+        let tabs_before = tab_count(&chrome);
+        let path = directory.path().join("forged-capability.txt");
+        std::fs::write(&path, "a mismatched capability must not read this\n").unwrap();
+        let path = path.canonicalize().unwrap();
+        let record = ui::record::RecordId::for_file(&path);
+        let reply = std::rc::Rc::new(std::cell::RefCell::new(
+            ui::widget::DocumentOpenReply::pending(43),
+        ));
+        let workspace = chrome.borrow().tree().desktop.active;
+        chrome
+            .borrow_mut()
+            .focus_tab(workspace, h.strip, h.group, source);
+
+        ShellOverlayHost::complete_document_open_request(
+            &chrome,
+            source,
+            &path,
+            &ui::widget::DocumentOpenCapability::issue(),
+            43,
+            &mut reply.borrow_mut(),
+        );
+
+        assert_eq!(
+            reply.borrow_mut().take_result(43),
+            Some(ui::widget::DocumentOpenOutcome::Cancelled)
+        );
+        assert!(!chrome.borrow().records().is_ready(&record));
+        assert_eq!(tab_count(&chrome), tabs_before);
     }
 
     /// The whole pointer story, on the production `handle_event` path: a
@@ -27174,7 +27494,9 @@ mod palette_dispatch_tests {
                 "tilo-identity:{}",
                 "42".repeat(32)
             ))),
-            PeerSyncRequest::AcceptInvite(_) => Err("not here".to_string()),
+            PeerSyncRequest::AcceptInvite(_)
+            | PeerSyncRequest::PollEnrollment(_)
+            | PeerSyncRequest::CancelEnrollment(_) => Err("not here".to_string()),
             PeerSyncRequest::ListPendingInvitations => {
                 Ok(PeerSyncResponse::PendingInvitations(Vec::new()))
             }

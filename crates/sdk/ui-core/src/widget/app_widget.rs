@@ -6,12 +6,91 @@
 //! `Terminal, Files, Editor, Browser, Settings`.
 
 use crate::widget::{AppKind, Widget};
+use std::cell::RefCell;
+use std::fmt;
+use std::path::PathBuf;
+use std::rc::Weak;
+
+/// An unguessable capability for one Files document-open route. A capability
+/// minted anywhere else is insufficient: the shell compares it against the
+/// exact capability installed in its current hosted Files inputs.
+#[derive(Clone, PartialEq, Eq)]
+pub struct DocumentOpenCapability(uuid::Uuid);
+
+impl DocumentOpenCapability {
+    #[must_use]
+    pub fn issue() -> Self {
+        Self(uuid::Uuid::new_v4())
+    }
+}
+
+impl fmt::Debug for DocumentOpenCapability {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("DocumentOpenCapability(..)")
+    }
+}
+
+/// One Files-to-shell document-open request. The Files widget owns the
+/// strong cell; the shell receives only a weak witness, so a detached widget
+/// cannot leave an actionable request behind.
+#[derive(Debug, PartialEq, Eq)]
+pub struct DocumentOpenReply {
+    token: u64,
+    result: Option<DocumentOpenOutcome>,
+}
+
+/// Shell-owned result for one exact Files document-open request.
+#[derive(Debug, PartialEq, Eq)]
+pub enum DocumentOpenOutcome {
+    Opened,
+    Refused(String),
+    Cancelled,
+}
+
+impl DocumentOpenReply {
+    #[must_use]
+    pub fn pending(token: u64) -> Self {
+        Self {
+            token,
+            result: None,
+        }
+    }
+
+    #[must_use]
+    pub fn token(&self) -> u64 {
+        self.token
+    }
+
+    #[must_use]
+    pub fn is_pending(&self, token: u64) -> bool {
+        self.token == token && self.result.is_none()
+    }
+
+    pub fn complete(&mut self, token: u64, result: Result<(), String>) {
+        if self.is_pending(token) {
+            self.result = Some(match result {
+                Ok(()) => DocumentOpenOutcome::Opened,
+                Err(reason) => DocumentOpenOutcome::Refused(reason),
+            });
+        }
+    }
+
+    pub fn cancel(&mut self, token: u64) {
+        if self.is_pending(token) {
+            self.result = Some(DocumentOpenOutcome::Cancelled);
+        }
+    }
+
+    pub fn take_result(&mut self, token: u64) -> Option<DocumentOpenOutcome> {
+        (self.token == token).then(|| self.result.take()).flatten()
+    }
+}
 
 /// A typed, device-local request from app content to shell chrome. Keeping
 /// this on the common app contract lets both in-process tiles and future IPC
 /// adapters use one destination without an app reaching into compositor
 /// state or pretending a status toast completed the navigation.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 pub enum AppHostIntent {
     ShowWorkspaceActivity {
         resource_id: String,
@@ -21,6 +100,57 @@ pub enum AppHostIntent {
         /// an empty resource lens while the durable indexes converge.
         entry: Option<crate::widget::HistoryEntry>,
     },
+    /// A Files-selected local document. The shell validates and admits it only
+    /// after the originating tile has released its record loan.
+    OpenDocument {
+        path: PathBuf,
+        capability: DocumentOpenCapability,
+        token: u64,
+        reply: Weak<RefCell<DocumentOpenReply>>,
+    },
+}
+
+impl PartialEq for AppHostIntent {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (
+                Self::ShowWorkspaceActivity {
+                    resource_id: left_resource,
+                    version_id: left_version,
+                    entry: left_entry,
+                },
+                Self::ShowWorkspaceActivity {
+                    resource_id: right_resource,
+                    version_id: right_version,
+                    entry: right_entry,
+                },
+            ) => {
+                left_resource == right_resource
+                    && left_version == right_version
+                    && left_entry == right_entry
+            }
+            (
+                Self::OpenDocument {
+                    path: left_path,
+                    capability: left_capability,
+                    token: left_token,
+                    reply: left_reply,
+                },
+                Self::OpenDocument {
+                    path: right_path,
+                    capability: right_capability,
+                    token: right_token,
+                    reply: right_reply,
+                },
+            ) => {
+                left_path == right_path
+                    && left_capability == right_capability
+                    && left_token == right_token
+                    && Weak::ptr_eq(left_reply, right_reply)
+            }
+            _ => false,
+        }
+    }
 }
 
 /// A lightweight icon descriptor usable before the full asset pipeline lands.
@@ -482,6 +612,42 @@ mod component_adapter {
             self.component.take_close_reports()
         }
 
+        fn install_control_custody(
+            &mut self,
+            parent: &crate::ControlDomain,
+            attachment: crate::control_custody::CustodyAttachment,
+        ) {
+            let binding = self.component.callback_binding();
+            if let Some(domain) = binding.control_domain.upgrade() {
+                let _ = domain.attach_to(parent);
+                if let Some(root) = self.component.root.as_deref_mut() {
+                    root.install_control_custody(&domain, attachment);
+                }
+            }
+        }
+
+        fn primary_vertical_scroll(&self) -> Option<crate::widget::PrimaryScrollRegion> {
+            let binding = self.component.callback_binding();
+            let _entry = binding.enter().ok()?;
+            let mut region = self.component.root.as_deref()?.primary_vertical_scroll()?;
+            region.owner_generation = Some(binding.lifetime_id);
+            Some(region)
+        }
+        fn apply_primary_vertical_scroll(
+            &mut self,
+            action: crate::widget::PrimaryScrollAction,
+        ) -> crate::widget::PrimaryScrollResult {
+            let binding = self.component.callback_binding();
+            let Ok(_entry) = binding.enter() else {
+                return crate::widget::PrimaryScrollResult::Unsupported;
+            };
+            let Some(root) = self.component.root.as_deref_mut() else {
+                return crate::widget::PrimaryScrollResult::Unsupported;
+            };
+            root.apply_primary_vertical_scroll(action)
+                .stamp(binding.lifetime_id)
+        }
+
         fn close_components(&mut self) -> Vec<crate::application::ComponentCloseReport> {
             self.component.close();
             self.component.take_close_reports()
@@ -541,6 +707,36 @@ mod component_adapter {
                 root.visit_components(request)?;
             }
             Ok(())
+        }
+        fn mount_native_views(&mut self, host: &crate::widget::native_view::NativeViewHost<'_>) {
+            let binding = self.component.callback_binding();
+            let Ok(_entry) = binding.enter() else {
+                return;
+            };
+            let Some(root) = self.component.root.as_deref_mut() else {
+                return;
+            };
+            root.mount_native_views(host);
+        }
+        fn unmount_native_views(&mut self) {
+            let binding = self.component.callback_binding();
+            let Ok(_entry) = binding.enter() else {
+                return;
+            };
+            let Some(root) = self.component.root.as_deref_mut() else {
+                return;
+            };
+            root.unmount_native_views();
+        }
+        fn native_view_frame_start(&mut self) {
+            let binding = self.component.callback_binding();
+            let Ok(_entry) = binding.enter() else {
+                return;
+            };
+            let Some(root) = self.component.root.as_deref_mut() else {
+                return;
+            };
+            root.native_view_frame_start();
         }
         fn set_platform_conventions(&mut self, conventions: crate::platform::PlatformConventions) {
             let binding = self.component.callback_binding();
@@ -730,11 +926,42 @@ mod component_adapter {
                 visitor(root);
             }
         }
+        /// Participant views (agent carets) live against the component's own
+        /// record document, the one `sync` hands the app, never the outer
+        /// App document: resolved against the outer document a Writer caret
+        /// finds no block, and no participant presence is produced at all.
+        fn participant_presence(
+            &self,
+            state: &AutoCommit,
+        ) -> Vec<crate::widget::ParticipantPresence> {
+            let binding = self.component.callback_binding();
+            binding
+                .read_document(state, |document, _record_root| {
+                    self.component
+                        .root
+                        .as_deref()
+                        .map(|root| root.participant_presence(document))
+                        .unwrap_or_default()
+                })
+                .unwrap_or_default()
+        }
         fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
             self.component
                 .root
                 .as_deref_mut()
                 .map_or_else(Vec::new, |root| vec![root as &mut dyn Widget])
+        }
+        fn history_restore_readiness(&self, scope: &str) -> Result<(), String> {
+            let binding = self.component.callback_binding();
+            let _entry = binding
+                .enter()
+                .map_err(|error| format!("Component is unavailable: {error:?}"))?;
+            let root = self
+                .component
+                .root
+                .as_deref()
+                .ok_or("Component root is unavailable")?;
+            root.history_restore_readiness(scope)
         }
         fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
             let binding = self.component.callback_binding();
@@ -1198,12 +1425,60 @@ mod component_adapter {
                 })
                 .unwrap_or(None)
         }
+
+        fn action_directory_invocation_domain(
+            &self,
+            doc: &AutoCommit,
+        ) -> crate::widget::ActionDirectoryInvocationDomain {
+            let binding = self.component.callback_binding();
+            binding
+                .read_document(doc, |document, _record_root| {
+                    self.component
+                        .root
+                        .as_deref()
+                        .map(|root| root.action_directory_invocation_domain(document))
+                        .unwrap_or_default()
+                })
+                .unwrap_or_default()
+        }
         fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
             let binding = self.component.callback_binding();
             binding
                 .read_document(doc, |document, _record_root| {
                     let root = self.component.root.as_deref()?;
                     root.resource(document, id)
+                })
+                .unwrap_or(None)
+        }
+        /// A participant's tree is built against the component's own record
+        /// document, like [`Self::resources`]; the default would fall back to
+        /// this boundary's own view (the published schema) on the outer doc.
+        fn resources_for(
+            &self,
+            participant: Option<&tilo_actions::ParticipantId>,
+            doc: &AutoCommit,
+        ) -> Vec<tilo_actions::Resource> {
+            let binding = self.component.callback_binding();
+            binding
+                .read_document(doc, |document, _record_root| {
+                    let Some(root) = self.component.root.as_deref() else {
+                        return Vec::new();
+                    };
+                    root.resources_for(participant, document)
+                })
+                .unwrap_or_else(|_| Vec::new())
+        }
+        fn resource_for(
+            &self,
+            participant: Option<&tilo_actions::ParticipantId>,
+            doc: &AutoCommit,
+            id: &str,
+        ) -> Option<tilo_actions::Resource> {
+            let binding = self.component.callback_binding();
+            binding
+                .read_document(doc, |document, _record_root| {
+                    let root = self.component.root.as_deref()?;
+                    root.resource_for(participant, document, id)
                 })
                 .unwrap_or(None)
         }
@@ -1628,3 +1903,59 @@ mod component_adapter {
     }
 }
 pub(crate) use component_adapter::BoundAppWidget;
+
+#[cfg(test)]
+mod native_lifecycle_tests {
+    use super::*;
+    use crate::application::{LaunchTarget, RestoreInput};
+    use crate::application_test_support as probe;
+
+    #[test]
+    fn free_native_lifecycle_walk_enters_bound_owner_once_and_refuses_closed_owner() {
+        let host = probe::ProbeHost::new();
+        let component =
+            probe::instantiate_probe(&host, 41, LaunchTarget::New, RestoreInput::None).unwrap();
+        let binding = component.callback_binding();
+        let mut widget = BoundAppWidget { component };
+        let native_host = crate::widget::NativeViewHost::headless(
+            crate::platform::PlatformConventions::default(),
+            1.0,
+        );
+
+        crate::widget::mount_native_views(&mut widget, &native_host);
+        crate::widget::native_view_frame_start(&mut widget);
+        crate::widget::unmount_native_views(&mut widget);
+        let observations = probe::take_native_lifecycle_observations();
+        assert_eq!(
+            observations
+                .iter()
+                .map(|(event, _)| *event)
+                .collect::<Vec<_>>(),
+            vec!["mount", "frame", "unmount"]
+        );
+        assert!(
+            observations
+                .iter()
+                .all(|(_, lifetime)| lifetime.is_active())
+        );
+
+        binding.closing.set(true);
+        crate::widget::mount_native_views(&mut widget, &native_host);
+        crate::widget::native_view_frame_start(&mut widget);
+        crate::widget::unmount_native_views(&mut widget);
+        assert!(probe::take_native_lifecycle_observations().is_empty());
+
+        widget.component.close();
+        assert!(
+            observations
+                .iter()
+                .all(|(_, lifetime)| !lifetime.is_active())
+        );
+        let teardown = probe::take_native_lifecycle_observations();
+        assert_eq!(
+            teardown.iter().map(|(event, _)| *event).collect::<Vec<_>>(),
+            vec!["unmount"]
+        );
+        assert!(teardown.iter().all(|(_, lifetime)| !lifetime.is_active()));
+    }
+}

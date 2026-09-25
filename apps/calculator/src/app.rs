@@ -87,16 +87,27 @@ pub struct CalculatorApp {
     drag_last: Point,
     /// A drag-select is in progress inside a math field.
     field_dragging: bool,
+    /// Host focus selects this component's record for undo/redo and keyboard
+    /// delivery. Individual custom-painted controls remain semantic children.
+    host_focused: bool,
     /// Time + position of the last press, for double-click detection.
-    last_click: Option<std::time::Instant>,
+    last_click: Option<ui::clock::Instant>,
     last_click_pos: Point,
 
     seeded: bool,
     model_dirty: bool,
+    /// Something visible changed since the last paint. Cleared by
+    /// `mark_drawn`; without it the default (dirty every frame) repainted the
+    /// whole desktop on every pointer move while the Calculator was active.
+    dirty: bool,
+    /// Document heads and pending-operation count at the last model reload,
+    /// so `sync` reloads history, functions and surfaces only when the
+    /// document actually moved rather than on every frame.
+    synced: Option<(Vec<automerge::ChangeHash>, usize)>,
     /// When `Some`, an edit landed at this time and has not yet been sealed into
     /// an undo checkpoint. Drives [`Widget::needs_commit`] so a burst of typing
     /// coalesces into a single Ctrl+Z step once editing pauses.
-    last_edit_time: Option<std::time::Instant>,
+    last_edit_time: Option<ui::clock::Instant>,
     node: Option<NodeId>,
 
     /// Framework-owned action dispatch. Each on-screen affordance dispatches its
@@ -118,6 +129,15 @@ impl CalculatorApp {
     /// is adopted from the CRDT on the first [`Widget::sync`].
     pub fn new() -> Self {
         Self::with_model(CalcModel::default())
+    }
+
+    /// Project an already admitted Calculator record without authoring schema
+    /// or replacing malformed content. The checked component initializes New
+    /// records before calling this constructor; Existing records stay read-only.
+    pub fn from_document(doc: &AutoCommit) -> Result<Self, String> {
+        let mut app = Self::with_model(crate::doc::load_existing(doc)?);
+        app.seeded = true;
+        Ok(app)
     }
 
     /// A lived-in demo instance (populated history / plots / surface) used by
@@ -156,10 +176,13 @@ impl CalculatorApp {
             dragging: false,
             drag_last: Point::ZERO,
             field_dragging: false,
+            host_focused: false,
             last_click: None,
             last_click_pos: Point::ZERO,
             seeded: false,
             model_dirty: false,
+            dirty: true,
+            synced: None,
             last_edit_time: None,
             node: None,
             actions: ui::ActionHost::new(),
@@ -502,7 +525,7 @@ impl CalculatorApp {
         }
 
         // Double-click detection (≤400 ms, within 5 px).
-        let now = std::time::Instant::now();
+        let now = ui::clock::Instant::now();
         let double = self
             .last_click
             .is_some_and(|t| now.duration_since(t).as_millis() <= 400)
@@ -791,6 +814,16 @@ impl CalculatorApp {
     // -- keyboard ------------------------------------------------------------
 
     fn on_key(&mut self, key: &WKey, modifiers: winit::event::Modifiers, doc: &mut AutoCommit) {
+        self.on_key_with_paste(key, modifiers, doc, ui::clipboard_paste);
+    }
+
+    fn on_key_with_paste(
+        &mut self,
+        key: &WKey,
+        modifiers: winit::event::Modifiers,
+        doc: &mut AutoCommit,
+        paste: impl FnOnce() -> Option<String>,
+    ) {
         let ctrl = modifiers.state().control_key() || modifiers.state().super_key();
 
         // Ctrl+digit always switches mode, from any screen.
@@ -888,6 +921,16 @@ impl CalculatorApp {
             }
             WKey::Character(s) => {
                 if ctrl {
+                    if self.model.mode == Mode::Calc
+                        && matches!(s.as_str(), "v" | "V")
+                        && let Some(paste) = paste()
+                    {
+                        self.on_key(
+                            &WKey::Character(paste.into()),
+                            winit::event::Modifiers::default(),
+                            doc,
+                        );
+                    }
                     return;
                 }
                 if self.model.mode == Mode::Calc {
@@ -1105,6 +1148,35 @@ fn key_accessible_name(key: &model::Key) -> String {
 }
 
 impl Widget for CalculatorApp {
+    fn is_focusable(&self) -> bool {
+        true
+    }
+
+    fn set_focus(&mut self, focused: bool) {
+        self.dirty |= self.host_focused != focused;
+        self.host_focused = focused;
+    }
+
+    fn is_focused(&self) -> bool {
+        self.host_focused
+    }
+
+    fn ime_cursor_rect(&self) -> Option<Rect> {
+        if !self.host_focused {
+            return None;
+        }
+        match self.model.mode {
+            Mode::Calc => self.calc.expression_ime_rect(),
+            Mode::Graph2d => self.g2.field_rect(self.model.active_fn),
+            Mode::Graph3d => self.g3.field_rect(self.model.active_surface),
+        }
+    }
+
+    fn ime_purpose(&self) -> Option<winit::window::ImePurpose> {
+        self.host_focused
+            .then_some(winit::window::ImePurpose::Normal)
+    }
+
     fn document_history_definition(&self) -> Option<&'static ui::history_mode::HistoryDefinition> {
         Some(&crate::framework_history::HISTORY)
     }
@@ -1167,7 +1239,10 @@ impl Widget for CalculatorApp {
             if crate::doc::is_seeded(state) {
                 let _ = crate::doc::load_into(state, &mut self.model);
             } else {
-                crate::doc::store(state, &self.model);
+                // Keep standalone native and checked component roots on the
+                // same schema initializer. The explicit model preserves the
+                // separate screenshot/demo fixture path.
+                let _ = crate::doc::initialize(state, &self.model);
             }
             self.seeded = true;
             return;
@@ -1183,7 +1258,24 @@ impl Widget for CalculatorApp {
         // store→load, so this reloads *only* on a genuine external change.
         // `after_equals` is ephemeral (never persisted), so carry it across the
         // comparison to avoid a spurious reload after an `=`.
-        let _ = crate::doc::load_into(state, &mut self.model);
+        //
+        // Reload only when the document moved: committed heads differ, or a
+        // transaction is or was open. Reloading every frame re-read every
+        // history row, function and surface on each pointer move.
+        use automerge::transaction::Transactable as _;
+        let heads = state.base_heads();
+        let pending = state.pending_ops();
+        let unchanged = self
+            .synced
+            .as_ref()
+            .is_some_and(|(synced_heads, synced_pending)| {
+                *synced_heads == heads && *synced_pending == 0 && pending == 0
+            });
+        if !unchanged {
+            let _ = crate::doc::load_into(state, &mut self.model);
+            self.synced = Some((heads, pending));
+            self.dirty = true;
+        }
     }
 
     fn build_layout(
@@ -1212,12 +1304,14 @@ impl Widget for CalculatorApp {
         let Ok(layout) = taffy.layout(node) else {
             return;
         };
-        self.area = Rect::new(
+        let area = Rect::new(
             origin.x + f64::from(layout.location.x),
             origin.y + f64::from(layout.location.y),
             origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
             origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
         );
+        self.dirty |= area != self.area;
+        self.area = area;
         self.relayout();
     }
 
@@ -1296,8 +1390,26 @@ impl Widget for CalculatorApp {
         _node_id: NodeId,
         _taffy: &TaffyTree<()>,
     ) {
+        // Window groups offer an event to visible apps in presentation order.
+        // Keyboard and IME input belongs to the host-selected Calculator only;
+        // an unfocused instance must leave it unclaimed so that selected sibling
+        // can receive the same event. Pointer routing remains geometry-based.
+        if !self.host_focused
+            && matches!(
+                event,
+                WindowEvent::KeyboardInput { .. } | WindowEvent::Ime(_)
+            )
+        {
+            return;
+        }
         self.relayout();
         self.layout_active();
+        let hover_before = (
+            self.calc.hovered_key,
+            self.calc.hovered_mem,
+            self.g2.hovered_row,
+            self.g3.hovered_row,
+        );
 
         match event {
             WindowEvent::CursorMoved { position, .. } => {
@@ -1322,7 +1434,15 @@ impl Widget for CalculatorApp {
                     self.on_drag(d);
                     self.drag_last = p;
                 }
-                *handled = true;
+                // Motion that changed no hover state and drags nothing is
+                // inert: leave it unconsumed so the host can skip the frame.
+                let hover_now = (
+                    self.calc.hovered_key,
+                    self.calc.hovered_mem,
+                    self.g2.hovered_row,
+                    self.g3.hovered_row,
+                );
+                *handled = self.dragging || self.field_dragging || hover_now != hover_before;
             }
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
@@ -1358,9 +1478,24 @@ impl Widget for CalculatorApp {
                 self.on_key(&key_event.logical_key, *modifiers, state);
                 *handled = true;
             }
+            WindowEvent::Ime(winit::event::Ime::Commit(text)) => {
+                self.on_key(
+                    &WKey::Character(text.clone().into()),
+                    winit::event::Modifiers::default(),
+                    state,
+                );
+                *handled = true;
+            }
+            WindowEvent::Ime(_) => {
+                *handled = true;
+            }
             _ => {}
         }
 
+        // Everything but inert pointer motion may have changed what is drawn.
+        if !matches!(event, WindowEvent::CursorMoved { .. }) || *handled || self.model_dirty {
+            self.dirty = true;
+        }
         if self.model_dirty {
             // `model_dirty` is presentation-only. Durable changes have already
             // travelled through `perform_action`; never mirror this window's
@@ -1369,12 +1504,22 @@ impl Widget for CalculatorApp {
             // Mark an uncommitted edit so `needs_commit` can seal it into an
             // undo checkpoint once editing pauses (character-key edits are not
             // committed by the App's per-event path, only coalesced here).
-            self.last_edit_time = Some(std::time::Instant::now());
+            self.last_edit_time = Some(ui::clock::Instant::now());
         }
     }
 
     fn name(&self) -> &'static str {
         "CalculatorApp"
+    }
+
+    fn needs_redraw(&self) -> bool {
+        // `model_dirty` covers mutations that arrive outside `handle_event`
+        // (resource operations, assistive actions) before the next event.
+        self.dirty || self.model_dirty || self.needs_animation_frame()
+    }
+
+    fn mark_drawn(&mut self) {
+        self.dirty = false;
     }
 
     /// The calculator is custom-painted, so publish the complete retained
@@ -1432,11 +1577,7 @@ impl Widget for CalculatorApp {
                 let mut controls = Vec::new();
                 let mut display = AccessNode::new(Role::TextInput)
                     .with_name("Expression")
-                    .with_value(if self.model.expr.trim().is_empty() {
-                        "0".to_string()
-                    } else {
-                        self.model.expr.clone()
-                    })
+                    .with_value(self.model.expr.clone())
                     .with_description("Type an expression, then activate Evaluate or press Enter.")
                     .with_action_target("calculator.expression")
                     .with_state(AccessState::new().focusable(true))
@@ -1550,6 +1691,11 @@ impl Widget for CalculatorApp {
                     self.model.expr.clone()
                 })
                 .with_description("Calculator and graphing workspace")
+                .with_state(
+                    AccessState::new()
+                        .focusable(true)
+                        .focused(self.host_focused),
+                )
                 .with_children(children),
         )
     }
@@ -1565,6 +1711,8 @@ impl Widget for CalculatorApp {
         _path: &ObjId,
     ) -> bool {
         use ui::a11y::Action;
+        // Assistive actions bypass `handle_event`; they may change anything.
+        self.dirty = true;
         match target {
             "calculator.mode:0" if matches!(action, Action::Activate) => {
                 self.set_mode_in_document(Mode::Calc, state);
@@ -1720,6 +1868,32 @@ impl Widget for CalculatorApp {
 
     fn get_rect(&self) -> Rect {
         self.area
+    }
+    /// One self-drawn taffy leaf filling its tile; controls are positioned
+    /// inside `self.area` by `relayout`, so only the first layout is a size
+    /// change.
+    fn is_layout_dirty(&self) -> bool {
+        self.area == Rect::ZERO
+    }
+}
+
+impl ui::widget::AppWidget for CalculatorApp {
+    fn app_kind(&self) -> ui::widget::AppKind {
+        // The hosted glyph vocabulary has no Utility variant. Calculator is
+        // an interactive expression editor, which is the closest existing kind.
+        ui::widget::AppKind::Editor
+    }
+
+    fn app_title(&self) -> &'static str {
+        "Calculator"
+    }
+
+    fn app_icon(&self) -> ui::widget::IconDescriptor {
+        ui::widget::IconDescriptor::Named("calculator".into())
+    }
+
+    fn permission_hint(&self) -> Option<ui::widget::AppKind> {
+        None
     }
 }
 
@@ -1972,6 +2146,226 @@ impl CalculatorApp {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn keyboard(key: WKey) -> WindowEvent {
+        let text = if let WKey::Character(text) = &key {
+            Some(text.clone())
+        } else {
+            None
+        };
+        WindowEvent::KeyboardInput {
+            device_id: winit::event::DeviceId::dummy(),
+            event: winit::event::KeyEvent::synthetic(
+                winit::event::RawKeyEvent {
+                    physical_key: winit::keyboard::PhysicalKey::Unidentified(
+                        winit::keyboard::NativeKeyCode::Unidentified,
+                    ),
+                    state: ElementState::Pressed,
+                },
+                key.clone(),
+                text.clone(),
+                winit::keyboard::KeyLocation::Standard,
+                false,
+                text,
+                key,
+            ),
+            is_synthetic: false,
+        }
+    }
+
+    #[test]
+    fn keyboard_and_ime_only_mutate_the_host_focused_calculator() {
+        let mut app = CalculatorApp::new();
+        let mut state = ui::State::new();
+        app.sync(&mut state.doc, &state.root);
+
+        assert!(
+            !send(&mut app, &mut state, &keyboard(WKey::Character("2".into())),),
+            "an unfocused Calculator must leave keyboard input for the focused sibling"
+        );
+        assert!(app.model.expr.is_empty());
+        assert!(
+            !send(
+                &mut app,
+                &mut state,
+                &WindowEvent::Ime(winit::event::Ime::Commit("3".into())),
+            ),
+            "an unfocused Calculator must leave IME commits for the focused sibling"
+        );
+        assert!(app.model.expr.is_empty());
+        assert!(
+            !send(
+                &mut app,
+                &mut state,
+                &WindowEvent::Ime(winit::event::Ime::Preedit("3".into(), Some((1, 1)))),
+            ),
+            "an unfocused Calculator must not capture an IME preedit"
+        );
+
+        app.set_focus(true);
+        assert!(send(
+            &mut app,
+            &mut state,
+            &keyboard(WKey::Character("2".into())),
+        ));
+        assert_eq!(app.model.expr, "2");
+
+        app.set_mode(Mode::Graph2d);
+        app.model.funcs = vec![PlotFn {
+            expr: String::new(),
+            visible: true,
+        }];
+        app.model.active_fn = 0;
+        assert!(send(
+            &mut app,
+            &mut state,
+            &keyboard(WKey::Character("x".into())),
+        ));
+        assert_eq!(app.model.funcs[0].expr, "x");
+
+        app.set_mode(Mode::Graph3d);
+        app.model.surfaces = vec![PlotFn {
+            expr: "x+y".into(),
+            visible: true,
+        }];
+        app.model.active_surface = 0;
+        assert!(send(
+            &mut app,
+            &mut state,
+            &keyboard(WKey::Named(NamedKey::Backspace)),
+        ));
+        assert_eq!(app.model.surfaces[0].expr, "x+");
+
+        app.set_focus(false);
+        let graph_expression = app.model.surfaces[0].expr.clone();
+        assert!(
+            !send(&mut app, &mut state, &keyboard(WKey::Character("y".into())),),
+            "an unfocused Calculator must not consume graph keyboard edits"
+        );
+        assert_eq!(app.model.surfaces[0].expr, graph_expression);
+    }
+
+    #[test]
+    fn power_input_physical_keys_evaluates_once() {
+        let mut app = CalculatorApp::new();
+        let mut state = ui::State::new();
+        app.sync(&mut state.doc, &state.root);
+        app.set_focus(true);
+        for text in ["2", "^", "2"] {
+            send(
+                &mut app,
+                &mut state,
+                &keyboard(WKey::Character(text.into())),
+            );
+        }
+        assert_eq!(app.model.expr, "2^2");
+        send(
+            &mut app,
+            &mut state,
+            &keyboard(WKey::Named(NamedKey::Enter)),
+        );
+        assert_eq!(app.model.ans, 4.0);
+        assert_eq!(app.model.history.len(), 1);
+    }
+
+    #[test]
+    fn power_input_dead_key_commit_preserves_caret() {
+        use winit::event::Ime;
+        let mut app = CalculatorApp::new();
+        let mut state = ui::State::new();
+        app.sync(&mut state.doc, &state.root);
+        app.set_focus(true);
+        send(&mut app, &mut state, &keyboard(WKey::Character("2".into())));
+        send(&mut app, &mut state, &keyboard(WKey::Dead(Some('^'))));
+        send(
+            &mut app,
+            &mut state,
+            &WindowEvent::Ime(Ime::Preedit("^".into(), Some((1, 1)))),
+        );
+        assert_eq!(app.model.expr, "2", "preedit must not insert an operator");
+        send(
+            &mut app,
+            &mut state,
+            &WindowEvent::Ime(Ime::Commit("^".into())),
+        );
+        send(&mut app, &mut state, &keyboard(WKey::Character("2".into())));
+        assert_eq!(app.model.expr, "2^2");
+        send(
+            &mut app,
+            &mut state,
+            &keyboard(WKey::Named(NamedKey::Enter)),
+        );
+        assert_eq!(app.model.ans, 4.0);
+        assert_eq!(app.model.history.len(), 1);
+    }
+
+    #[test]
+    fn power_input_browser_commits_evaluate_once() {
+        let mut app = CalculatorApp::new();
+        let mut state = ui::State::new();
+        app.sync(&mut state.doc, &state.root);
+        app.set_focus(true);
+        for text in ["2", "^", "2"] {
+            send(
+                &mut app,
+                &mut state,
+                &WindowEvent::Ime(winit::event::Ime::Commit(text.into())),
+            );
+        }
+        assert_eq!(app.model.expr, "2^2");
+        send(
+            &mut app,
+            &mut state,
+            &keyboard(WKey::Named(NamedKey::Enter)),
+        );
+        assert_eq!(app.model.ans, 4.0);
+        assert_eq!(app.model.history.len(), 1);
+    }
+
+    #[test]
+    fn power_input_focused_calculator_enables_browser_text_editor() {
+        let mut app = CalculatorApp::new();
+        app.area = Rect::new(0.0, 0.0, 800.0, 600.0);
+        app.relayout();
+        app.layout_active();
+        assert!(app.ime_cursor_rect().is_none());
+        app.set_focus(true);
+        let caret = app
+            .ime_cursor_rect()
+            .expect("text entry must enable the browser editor and platform IME");
+        assert!(caret.height() > 0.0 && app.body.contains(caret.center()));
+        assert_eq!(app.ime_purpose(), Some(winit::window::ImePurpose::Normal));
+        app.set_focus(false);
+        assert!(app.ime_cursor_rect().is_none());
+        assert_eq!(app.ime_purpose(), None);
+    }
+
+    #[test]
+    fn power_input_paste_shortcuts_evaluate_once() {
+        for primary in [
+            winit::keyboard::ModifiersState::CONTROL,
+            winit::keyboard::ModifiersState::SUPER,
+        ] {
+            let mut app = CalculatorApp::new();
+            let mut state = ui::State::new();
+            app.sync(&mut state.doc, &state.root);
+            app.set_focus(true);
+            app.on_key_with_paste(
+                &WKey::Character("v".into()),
+                primary.into(),
+                &mut state.doc,
+                || Some("2^2".into()),
+            );
+            assert_eq!(app.model.expr, "2^2");
+            send(
+                &mut app,
+                &mut state,
+                &keyboard(WKey::Named(NamedKey::Enter)),
+            );
+            assert_eq!(app.model.ans, 4.0);
+            assert_eq!(app.model.history.len(), 1);
+        }
+    }
 
     #[test]
     fn history_recall_through_headless_host_is_available_to_local_viewer() {
@@ -2624,7 +3018,7 @@ mod tests {
     // taffy are unused by the (single-leaf) calculator, so a throwaway leaf is
     // fine.
 
-    fn send(app: &mut CalculatorApp, st: &mut ui::State, ev: &WindowEvent) {
+    fn send(app: &mut CalculatorApp, st: &mut ui::State, ev: &WindowEvent) -> bool {
         let mut taffy: TaffyTree<()> = TaffyTree::new();
         let node = taffy.new_leaf(taffy::Style::default()).unwrap();
         let mods = winit::event::Modifiers::default();
@@ -2641,6 +3035,7 @@ mod tests {
             node,
             &taffy,
         );
+        handled
     }
 
     fn cursor(p: Point) -> WindowEvent {
@@ -2957,7 +3352,7 @@ mod tests {
         );
         // Once the coalesce window has elapsed the widget asks to checkpoint.
         app.last_edit_time = Some(
-            std::time::Instant::now()
+            ui::clock::Instant::now()
                 .checked_sub(COMMIT_COALESCE)
                 .unwrap(),
         );

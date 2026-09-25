@@ -57,7 +57,7 @@ fn collection(doc: &AutoCommit, key: &str) -> Result<Option<ObjId>, String> {
 // Closed, local navigation only. The host owns the accessible page controls at
 // every width; no pointer/key events or live Widget actions enter this object.
 
-fn validate(doc: &AutoCommit) -> Result<(), String> {
+pub(crate) fn validate(doc: &AutoCommit) -> Result<(), String> {
     for key in [crate::doc::HISTORY, crate::doc::FUNCS, crate::doc::SURFACES] {
         let Some(map) = collection(doc, key)? else {
             continue;
@@ -89,6 +89,15 @@ fn validate(doc: &AutoCommit) -> Result<(), String> {
                 ]
             };
             validate_fields(doc, &row, allowed)?;
+            for (field, _) in allowed {
+                if doc
+                    .get(&row, *field)
+                    .map_err(|error| error.to_string())?
+                    .is_none()
+                {
+                    return Err(format!("Missing calculator field: {field}"));
+                }
+            }
         }
     }
     if let Some((v, _)) = doc
@@ -100,7 +109,7 @@ fn validate(doc: &AutoCommit) -> Result<(), String> {
     }
     Ok(())
 }
-fn project(doc: &AutoCommit) -> Result<crate::model::CalcModel, String> {
+pub(crate) fn project(doc: &AutoCommit) -> Result<crate::model::CalcModel, String> {
     let mut model = crate::model::CalcModel {
         history: crate::doc::load_history(doc),
         funcs: crate::doc::load_graph(doc, crate::doc::FUNCS),

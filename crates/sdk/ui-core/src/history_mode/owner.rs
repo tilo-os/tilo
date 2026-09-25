@@ -4,21 +4,39 @@ use crate::{
     bound_dispatch::CallbackBinding,
     record::{RecordCheckout, RecordStore},
 };
-use automerge::AutoCommit;
+use automerge::{AutoCommit, transaction::Transactable};
 use std::{
     cell::Cell,
     rc::{Rc, Weak},
 };
 
+#[cfg(test)]
+thread_local! {
+    pub(crate) static OWNED_DOCUMENT_CLONES: Cell<usize> = const { Cell::new(0) };
+}
+
+pub(crate) enum OwnedDocumentPublication {
+    Unchanged,
+    Unfinished,
+    Blocked,
+    Changed {
+        mutation: collab_types::DocumentMutation,
+        authorization: Option<crate::invocation_scope::DocumentAuthorization>,
+        heads: Vec<automerge::ChangeHash>,
+    },
+}
+
 pub(crate) struct LegacyHistoryLifetime {
     pub(crate) active: Cell<bool>,
     id: uuid::Uuid,
+    pub(crate) control_domain: crate::ControlDomain,
 }
 impl LegacyHistoryLifetime {
     pub(crate) fn new() -> Rc<Self> {
         Rc::new(Self {
             active: Cell::new(true),
             id: uuid::Uuid::new_v4(),
+            control_domain: crate::control_custody::ControlDomain::new(),
         })
     }
 }
@@ -40,6 +58,21 @@ pub(crate) enum OwnerKind {
     },
 }
 impl HistoryOwner {
+    pub(crate) fn check_invocation_lifetime(&self) -> Result<(), String> {
+        match &self.0 {
+            OwnerKind::Component(binding) => binding
+                .enter()
+                .map(|_| ())
+                .map_err(|error| format!("{error:?}")),
+            OwnerKind::Legacy { lifetime, .. } => {
+                if lifetime.upgrade().is_some_and(|life| life.active.get()) {
+                    Ok(())
+                } else {
+                    Err("invocation record owner has retired".into())
+                }
+            }
+        }
+    }
     pub(crate) fn component(binding: CallbackBinding) -> Self {
         Self(OwnerKind::Component(binding))
     }
@@ -111,7 +144,10 @@ impl HistoryOwner {
         self.validate()?;
         let (store, checkout, lifetime) = match &self.0 {
             OwnerKind::Component(binding) => {
-                if binding.app_id != app_id {
+                if !crate::application::lookup_compatible_first_party_app_ids(
+                    &binding.app_id,
+                    app_id,
+                ) {
                     return Err(HistoryRegistrationError::ForeignSource);
                 }
                 (&binding.records, &binding.checkout, binding.lifetime_id)
@@ -132,9 +168,12 @@ impl HistoryOwner {
         let (storage, package, room) = store
             .history_namespace(&checkout.id)
             .map_err(|_| HistoryRegistrationError::UnsupportedOwner)?;
-        if !package.is_empty() && package != app_id {
+        if !package.is_empty()
+            && !crate::application::lookup_compatible_first_party_app_ids(&package, app_id)
+        {
             return Err(HistoryRegistrationError::ForeignSource);
         }
+        let durable_app_id = if package.is_empty() { app_id } else { &package };
         Ok(HistoryResource::new(
             storage.unwrap_or_else(|| format!("memory:{lifetime}")),
             if room.is_empty() {
@@ -142,7 +181,7 @@ impl HistoryOwner {
             } else {
                 room
             },
-            app_id,
+            durable_app_id,
             checkout.id.clone(),
         ))
     }
@@ -153,14 +192,133 @@ impl HistoryOwner {
         self.validate()?;
         match &self.0 {
             OwnerKind::Component(binding) => binding
-                .read_document(outer, |doc, _| doc.clone())
+                .read_document(outer, |doc, _| {
+                    #[cfg(test)]
+                    OWNED_DOCUMENT_CLONES.set(OWNED_DOCUMENT_CLONES.get() + 1);
+                    doc.clone()
+                })
                 .map_err(|_| HistoryRegistrationError::UnsupportedOwner),
             OwnerKind::Legacy {
                 store, checkout, ..
             } => store
-                .read_checked(&checkout.id, Clone::clone)
+                .read_checked(&checkout.id, |doc| {
+                    #[cfg(test)]
+                    OWNED_DOCUMENT_CLONES.set(OWNED_DOCUMENT_CLONES.get() + 1);
+                    doc.clone()
+                })
                 .map_err(|_| HistoryRegistrationError::UnsupportedOwner),
         }
+    }
+
+    pub(crate) fn prepare_publication(
+        &self,
+        outer: &AutoCommit,
+        sent_heads: &[automerge::ChangeHash],
+        needs_snapshot: bool,
+        blocked: bool,
+    ) -> Result<OwnedDocumentPublication, HistoryRegistrationError> {
+        fn inspect(
+            document: &AutoCommit,
+            sent_heads: &[automerge::ChangeHash],
+            needs_snapshot: bool,
+            blocked: bool,
+            provenance: &crate::invocation_scope::InvocationProvenance,
+        ) -> OwnedDocumentPublication {
+            if document.pending_ops() != 0 {
+                return OwnedDocumentPublication::Unfinished;
+            }
+            let heads = super::sorted_heads(document.base_heads());
+            if heads == sent_heads && !needs_snapshot {
+                return OwnedDocumentPublication::Unchanged;
+            }
+            if blocked {
+                return OwnedDocumentPublication::Blocked;
+            }
+            #[cfg(test)]
+            OWNED_DOCUMENT_CLONES.set(OWNED_DOCUMENT_CLONES.get() + 1);
+            let mut document = document.clone();
+            let from = if needs_snapshot { &[][..] } else { sent_heads };
+            let mutation = if needs_snapshot {
+                collab_types::DocumentMutation::Snapshot(document.save())
+            } else {
+                collab_types::DocumentMutation::Incremental(document.save_after(from))
+            };
+            let Ok(authorization) = provenance.capture(&mut document, from, &mutation) else {
+                return OwnedDocumentPublication::Blocked;
+            };
+            OwnedDocumentPublication::Changed {
+                mutation,
+                authorization,
+                heads,
+            }
+        }
+
+        let (store, checkout) = self.store_checkout();
+        let provenance = store
+            .invocation_provenance(&checkout.id)
+            .map_err(|_| HistoryRegistrationError::UnsupportedOwner)?;
+        match &self.0 {
+            OwnerKind::Component(binding) => binding
+                .read_document(outer, |document, _| {
+                    inspect(
+                        document,
+                        sent_heads,
+                        needs_snapshot,
+                        blocked,
+                        &provenance.borrow(),
+                    )
+                })
+                .map_err(|_| HistoryRegistrationError::UnsupportedOwner),
+            OwnerKind::Legacy {
+                store,
+                checkout,
+                lifetime,
+            } => {
+                if !lifetime.upgrade().is_some_and(|life| life.active.get()) {
+                    return Err(HistoryRegistrationError::UnsupportedOwner);
+                }
+                store
+                    .open_existing_record_checked(checkout)
+                    .map_err(|_| HistoryRegistrationError::UnsupportedOwner)?;
+                store
+                    .read_checked(&checkout.id, |document| {
+                        inspect(
+                            document,
+                            sent_heads,
+                            needs_snapshot,
+                            blocked,
+                            &provenance.borrow(),
+                        )
+                    })
+                    .map_err(|_| HistoryRegistrationError::UnsupportedOwner)
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod publication_tests {
+    use super::*;
+
+    #[test]
+    fn legacy_publication_rejects_same_id_with_stale_checkout_metadata() {
+        let store = RecordStore::in_memory();
+        let live = RecordCheckout::new(
+            crate::RecordId::for_tab(919),
+            crate::record::RecordKind::new("note"),
+        );
+        store.open_record(&live);
+        let stale = RecordCheckout::new(
+            live.id.clone(),
+            crate::record::RecordKind::new("different-kind"),
+        );
+        let lifetime = LegacyHistoryLifetime::new();
+        let owner = HistoryOwner::legacy(store, stale, &lifetime);
+
+        assert!(matches!(
+            owner.prepare_publication(&AutoCommit::new(), &[], true, false),
+            Err(HistoryRegistrationError::UnsupportedOwner)
+        ));
     }
 }
 
@@ -185,15 +343,25 @@ impl HistoryOwner {
             OwnerKind::Legacy {
                 store, checkout, ..
             } => {
+                if store.is_local_compatibility(checkout) {
+                    return None;
+                }
                 let (_, package, workspace) = store.history_namespace(&checkout.id).ok()?;
                 if package.is_empty() {
                     return None;
                 }
-                Some(crate::collaboration::RouteSpec::record(
-                    package,
-                    uuid::Uuid::parse_str(&workspace).ok()?,
-                    checkout.id.as_str(),
-                ))
+                if checkout.id.is_package_primary() {
+                    Some(crate::collaboration::RouteSpec::app(
+                        package,
+                        uuid::Uuid::parse_str(&workspace).ok()?,
+                    ))
+                } else {
+                    Some(crate::collaboration::RouteSpec::record(
+                        package,
+                        uuid::Uuid::parse_str(&workspace).ok()?,
+                        checkout.id.as_str(),
+                    ))
+                }
             }
         }
     }
@@ -246,5 +414,11 @@ impl HistoryOwner {
     pub(crate) fn schedule_committed_history(&self) {
         let (store, checkout) = self.store_checkout();
         store.schedule_committed_history(&checkout.id);
+    }
+}
+
+impl Drop for LegacyHistoryLifetime {
+    fn drop(&mut self) {
+        self.control_domain.close();
     }
 }

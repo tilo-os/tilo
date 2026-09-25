@@ -83,6 +83,102 @@ pub(crate) fn needs_refresh(
     });
     needed
 }
+pub(crate) fn capture_entries(root: &mut dyn Widget, doc: &automerge::AutoCommit) {
+    root.visit_framework_history_mut(&mut |history, live| {
+        if history.captures_input() {
+            history.capture_embedded_pending_controls(live, doc);
+        }
+    });
+}
+pub(crate) fn discard_active_output(root: &mut dyn Widget) {
+    root.visit_framework_history_mut(&mut |history, live| {
+        if history.captures_input() {
+            history.discard_pending_output(live);
+        }
+    });
+}
+pub(crate) struct PendingCommand {
+    pub(crate) surface: uuid::Uuid,
+    pub(crate) command: super::pending_controls::ContinuationCommand,
+}
+pub(crate) fn drain_pending_commands(root: &mut dyn Widget) -> Vec<PendingCommand> {
+    let mut commands = Vec::new();
+    root.visit_framework_history_mut(&mut |history, _| {
+        let surface = history.pending_control_surface_lifetime();
+        commands.extend(
+            history
+                .drain_pending_control_commands()
+                .into_iter()
+                .map(|command| PendingCommand { surface, command }),
+        );
+    });
+    commands
+}
+pub(crate) fn prepare_pending_command(
+    root: &mut dyn Widget,
+    surface: uuid::Uuid,
+    token: &super::pending_controls::ContinuationToken,
+    confirmed: bool,
+) -> Option<super::pending_controls::PreparedContinuation> {
+    let mut prepared = None;
+    root.visit_framework_history_mut(&mut |history, _| {
+        if history.pending_control_surface_lifetime() == surface {
+            prepared = history.prepare_pending_control(token, confirmed);
+        }
+    });
+    prepared
+}
+pub(crate) fn prepare_pending_command_typed(
+    root: &mut dyn Widget,
+    surface: uuid::Uuid,
+    token: &super::pending_controls::ContinuationToken,
+    value: &str,
+) -> Option<super::pending_controls::PreparedContinuation> {
+    let mut prepared = None;
+    root.visit_framework_history_mut(&mut |history, _| {
+        if history.pending_control_surface_lifetime() == surface {
+            prepared = history.prepare_pending_control_typed(token, value);
+        }
+    });
+    prepared
+}
+pub(crate) fn cancel_pending_command(
+    root: &mut dyn Widget,
+    surface: uuid::Uuid,
+    token: &super::pending_controls::ContinuationToken,
+) {
+    root.visit_framework_history_mut(&mut |history, _| {
+        if history.pending_control_surface_lifetime() == surface {
+            history.cancel_pending_control(token);
+        }
+    });
+}
+pub(crate) enum PendingCommandOutcome {
+    Consumed,
+    NeedsConfirmation,
+    Refused(String),
+}
+pub(crate) fn finish_pending_command(
+    root: &mut dyn Widget,
+    surface: uuid::Uuid,
+    id: super::pending_controls::PendingControlId,
+    outcome: &PendingCommandOutcome,
+) {
+    root.visit_framework_history_mut(&mut |history, _| {
+        if history.pending_control_surface_lifetime() != surface {
+            return;
+        }
+        match outcome {
+            PendingCommandOutcome::Consumed => history.pending_control_consumed(id),
+            PendingCommandOutcome::NeedsConfirmation => {
+                history.pending_control_needs_confirmation(id);
+            }
+            PendingCommandOutcome::Refused(reason) => {
+                history.pending_control_refused(id, reason.clone());
+            }
+        }
+    });
+}
 /// Called only after the runner has discarded all raw widget maps.
 pub(crate) fn refresh(
     root: &mut dyn Widget,
@@ -106,11 +202,15 @@ pub(crate) fn refresh(
         let was_history = history.captures_input();
         history.set_width(width);
         history.refresh(doc);
-        if was_history || history.captures_input() {
+        let returning_live = history.returning_live();
+        if was_history || returning_live || history.captures_input() {
             // Only this surface's retained live subtree: other tiles keep
             // their unadmitted local controls and independently running effects.
-            let _ = crate::bound_dispatch::drain_control_invocations(live);
-            while live.take_control_invocation().is_some() {}
+            history.discard_pending_output(live);
+        }
+        if returning_live {
+            history.finish_return_to_live();
+            history.flush_pending_toolbar();
         }
     });
 }
@@ -207,7 +307,19 @@ pub(crate) unsafe fn restore_focus(
         }
     });
     // No retained child borrow overlaps raw map access.
-    unsafe { saved?.restore(nodes, bindings, None) }
+    saved.and_then(|focus| unsafe { focus.restore(nodes, bindings, None) })
+}
+
+/// The runner calls this after its remaining exit layout/draw/focus callbacks.
+/// Restoring one surface's focus must not end its custody halfway through the
+/// same return frame, or release any other surface's independent lease.
+pub(crate) fn finish_returns(root: &mut dyn Widget) {
+    root.visit_framework_history_mut(&mut |history, live| {
+        if history.has_settled_control_return() {
+            history.discard_pending_output(live);
+            history.finish_control_return();
+        }
+    });
 }
 
 pub(crate) fn keyboard_captured(
@@ -220,5 +332,11 @@ pub(crate) fn keyboard_captured(
         captured |= focused.is_some_and(|node| history.owns_node(node, tree))
             || (history.keyboard_is_active() && history.captures_input());
     });
+    captured
+}
+
+pub(crate) fn captures_input(root: &dyn Widget) -> bool {
+    let mut captured = false;
+    root.visit_framework_history(&mut |history, _| captured |= history.captures_input());
     captured
 }

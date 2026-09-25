@@ -112,6 +112,43 @@ mod rename_compatibility_tests {
     }
 }
 
+/// Resolve one settings file, reusing an existing qOS file in place.
+/// Current Tilo files take precedence independently of unrelated config files.
+pub fn config_path(relative: &Path) -> Option<PathBuf> {
+    let root = config_root()?;
+    Some(compatible_config_path(root.parent()?, relative))
+}
+
+fn compatible_config_path(base: &Path, relative: &Path) -> PathBuf {
+    let current = base.join("tilo").join(relative);
+    let legacy = base.join("qos").join(relative);
+    if !current.exists() && legacy.exists() {
+        legacy
+    } else {
+        current
+    }
+}
+
+#[cfg(test)]
+mod rename_compatibility_tests {
+    use super::*;
+    #[test]
+    fn settings_survive_unrelated_new_directories_and_current_file_wins() {
+        let root = super::tests::tmpdir();
+        let relative = Path::new("settings.json");
+        let legacy = root.join("qos/settings.json");
+        let current = root.join("tilo/settings.json");
+        assert_eq!(compatible_config_path(&root, relative), current);
+        std::fs::create_dir_all(legacy.parent().unwrap()).unwrap();
+        std::fs::write(&legacy, "{}").unwrap();
+        std::fs::create_dir_all(root.join("tilo/identity")).unwrap();
+        assert_eq!(compatible_config_path(&root, relative), legacy);
+        std::fs::write(&current, "{}").unwrap();
+        assert_eq!(compatible_config_path(&root, relative), current);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+}
+
 /// The shared settings file: `<config root>/settings.json`.
 pub fn settings_path() -> Option<PathBuf> {
     config_path(Path::new(FILE))
@@ -500,5 +537,99 @@ mod tests {
             .collect();
         assert!(leftovers.is_empty(), "atomic write left {leftovers:?}");
         std::fs::remove_dir_all(&dir).ok();
+    }
+}
+
+#[cfg(all(test, unix))]
+mod parent_durability_tests {
+    use super::*;
+    use atomic_file::test_support::{
+        ProvisionCheckpoint, with_provision_failure, with_provision_observer,
+    };
+    use atomic_file::{DirectoryState, directory_state};
+    use std::{cell::RefCell, rc::Rc};
+
+    #[test]
+    fn public_update_preserves_file_publication_phase_and_visible_format() {
+        use atomic_file::test_support::{Checkpoint, with_failure};
+        use atomic_file::{PublicationState, publication_state};
+        for (point, state, visible) in [
+            (
+                Checkpoint::BeforePublish,
+                PublicationState::NotPublished,
+                false,
+            ),
+            (
+                Checkpoint::AfterPublish,
+                PublicationState::PublicationUnknown,
+                true,
+            ),
+            (
+                Checkpoint::BeforeCommit,
+                PublicationState::PublishedDurabilityUnknown,
+                true,
+            ),
+        ] {
+            let root = tempfile::tempdir().unwrap();
+            let path = root.path().join("settings.json");
+            std::fs::write(&path, b"{\n  \"previous\": true\n}\n").unwrap();
+            let values = serde_json::from_str::<Map<String, Value>>(r#"{"theme":"dark"}"#).unwrap();
+            let error =
+                with_failure(point, || update_section_at(&path, "display", values)).unwrap_err();
+            assert_eq!(publication_state(&error), Some(state));
+            let bytes = std::fs::read_to_string(&path).unwrap();
+            assert!(bytes.ends_with('\n'));
+            assert!(bytes.starts_with("{\n  "));
+            assert_eq!(load_at(&path).get("display").is_some(), visible);
+            assert_eq!(load_at(&path)["previous"], true);
+        }
+    }
+
+    #[test]
+    fn public_update_propagates_parent_failure_and_preserves_pretty_json_format() {
+        let root = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(root.path()).unwrap();
+        let profile = root.join("profile");
+        let path = profile.join("config/settings.json");
+        let values = || serde_json::from_str::<Map<String, Value>>(r#"{"theme":"dark"}"#).unwrap();
+        let error = with_provision_failure(ProvisionCheckpoint::BeforeSync, &profile, || {
+            update_section_at(&path, "display", values())
+        })
+        .unwrap_err();
+        assert_eq!(
+            directory_state(&error),
+            Some(DirectoryState::CreatedDurabilityUnknown)
+        );
+        assert!(profile.join("config").is_dir());
+        assert!(!path.exists());
+        assert_eq!(
+            std::fs::read_dir(profile.join("config")).unwrap().count(),
+            0
+        );
+        drop(error);
+        let visits = Rc::new(RefCell::new(Vec::new()));
+        let observed = visits.clone();
+        with_provision_observer(
+            move |event| {
+                if event.checkpoint == ProvisionCheckpoint::Synced {
+                    observed.borrow_mut().push(event.path.clone());
+                }
+            },
+            || update_section_at(&path, "display", values()),
+        )
+        .unwrap();
+        assert_eq!(
+            *visits.borrow(),
+            path.parent()
+                .unwrap()
+                .ancestors()
+                .map(Path::to_owned)
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "{\n  \"display\": {\n    \"theme\": \"dark\"\n  }\n}\n"
+        );
+        assert_eq!(load_at(&path)["display"]["theme"], "dark");
     }
 }

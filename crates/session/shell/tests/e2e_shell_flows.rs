@@ -518,7 +518,8 @@ fn probe_topbar(
     chrome: shell::shell::chrome_state::Chrome,
     extract: impl FnOnce(&TopBarChrome) -> vello::kurbo::Rect,
 ) -> (vello::kurbo::Rect, Point) {
-    let mut bar = TopBarChrome::from_tree(tree).with_chrome(chrome);
+    let mut bar = TopBarChrome::from_tree(tree)
+        .with_chrome(shell::shell::topbar_chrome::native_source(chrome));
     let mut taffy: TaffyTree<()> = TaffyTree::new();
     let mut map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
     let node = bar.build_layout(&mut taffy, theme, &mut map);

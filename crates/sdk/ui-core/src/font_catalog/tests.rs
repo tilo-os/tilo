@@ -200,3 +200,99 @@ fn adwaita_axis_order_is_part_of_the_fixture_contract() {
         .unwrap();
     assert_eq!(tags, ["opsz", "wght"]);
 }
+
+// A browser must verify the same asset bytes and produce actual toolkit shaping.
+// Skipping a missing/corrupt asset or using ambient fonts makes these fail.
+#[test]
+fn byte_catalog_rejects_missing_and_corrupt_assets() {
+    let catalog = fixture_catalog();
+    assert!(catalog.load_bytes(|_| None).is_err());
+    assert!(
+        catalog
+            .load_bytes(|name| {
+                let mut bytes = std::fs::read(catalog.root().join(name)).ok()?;
+                bytes[0] ^= 1;
+                Some(bytes)
+            })
+            .is_err()
+    );
+}
+
+#[test]
+fn byte_catalog_preserves_canonical_faces_and_locale() {
+    let catalog = fixture_catalog();
+    let fonts = catalog
+        .load_bytes(|name| std::fs::read(catalog.root().join(name)).ok())
+        .unwrap();
+    assert_eq!(fonts.locale(), "en-US");
+    assert!(fonts.db().faces().any(|f| {
+        f.families
+            .iter()
+            .any(|n| n.0 == crate::text_render::UI_SANS_FAMILY)
+    }));
+    let _renderer = crate::TextRenderer::with_font_system(fonts);
+}
+
+#[test]
+fn browser_startup_catalog_requires_only_the_five_core_family_assets() {
+    let catalog = FontCatalog::product("", "en-US");
+    let root = fixture().root().to_path_buf();
+    let mut requested = Vec::new();
+    let fonts = catalog
+        .load_browser_startup_bytes(|name| {
+            requested.push(name.to_owned());
+            std::fs::read(root.join(name)).ok()
+        })
+        .unwrap();
+    assert_eq!(
+        requested,
+        [
+            "NotoSans[wght].ttf",
+            "NotoSans-Italic[wght].ttf",
+            "NotoSerif[wght].ttf",
+            "NotoSerif-Italic[wght].ttf",
+            "NotoSansMono[wght].ttf",
+        ]
+    );
+    assert_eq!(
+        requested
+            .iter()
+            .map(|name| std::fs::metadata(root.join(name)).unwrap().len())
+            .sum::<u64>(),
+        3_681_672
+    );
+    assert_eq!(fonts.db().len(), 5);
+}
+
+#[test]
+fn incremental_browser_asset_install_is_idempotent_and_integrity_checked() {
+    let catalog = FontCatalog::product("", "en-US");
+    let root = fixture().root().to_path_buf();
+    let mut fonts = catalog
+        .load_browser_startup_bytes(|name| std::fs::read(root.join(name)).ok())
+        .unwrap();
+    let name = "NotoSansArabic[wght].ttf";
+    let bytes = std::fs::read(root.join(name)).unwrap();
+    assert!(
+        catalog
+            .install_browser_asset(&mut fonts, name, bytes.clone())
+            .unwrap()
+    );
+    assert!(
+        !catalog
+            .install_browser_asset(&mut fonts, name, bytes.clone())
+            .unwrap()
+    );
+    let mut corrupt = bytes;
+    *corrupt.last_mut().unwrap() ^= 1;
+    assert!(
+        catalog
+            .install_browser_asset(&mut fonts, "NotoSansThai[wght].ttf", corrupt)
+            .is_err()
+    );
+    assert!(
+        catalog
+            .install_browser_asset(&mut fonts, "../font.ttf", vec![1])
+            .is_err()
+    );
+}

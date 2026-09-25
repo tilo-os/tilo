@@ -224,7 +224,7 @@ pub struct NoteTreeView {
     /// floating ghost, the live reflow gap, and the insertion index; the
     /// model is only mutated on drop (or not at all on cancel).
     drag: DragController<PageId>,
-    drag_hover: Option<(PageId, std::time::Instant)>,
+    drag_hover: Option<(PageId, ui::clock::Instant)>,
     /// Right-click context menu on a page row.
     menu: ContextMenu,
     /// The page the open context menu targets. Its rows map back to
@@ -260,7 +260,7 @@ struct RowEntry {
 
 struct ClickRecord {
     page: PageId,
-    at: std::time::Instant,
+    at: ui::clock::Instant,
     pos: Point,
 }
 
@@ -291,6 +291,29 @@ impl NoteTreeView {
 
     fn row_height(&self) -> f64 {
         ROW_HEIGHT * self.text_scale
+    }
+
+    fn scrollbar_thumb_height(
+        &self,
+        track_height: f64,
+        viewport_height: f64,
+        content_height: f64,
+    ) -> f64 {
+        let minimum = self.scaled(24.0).min(track_height);
+        (track_height * viewport_height / content_height).clamp(minimum, track_height)
+    }
+
+    /// The selected row's pill: inset `margin` from the pane's sides and
+    /// half an `s1` from the row's top and bottom, so two neighbouring rows'
+    /// pills sit one `s1` apart (HIG §7: nothing touches).
+    fn selection_pill(row: Rect, margin: f64, tokens: &ui::tokens::Tokens) -> Rect {
+        let half_gap = f64::from(tokens.spacing.s1) / 2.0;
+        Rect::new(
+            row.x0 + margin,
+            row.y0 + half_gap,
+            row.x1 - margin,
+            row.y1 - half_gap,
+        )
     }
 
     fn row_action_rects(&self, row_rect: Rect) -> (Rect, Rect) {
@@ -987,8 +1010,8 @@ impl Widget for NoteTreeView {
             let track_height = (track_bottom - track_top).max(1.0);
             let content_height = num::f64_of_usize(self.flat_rows.len()) * self.row_height();
             let viewport_height = (self.rect.height() - self.header_height()).max(1.0);
-            let thumb_height = (track_height * viewport_height / content_height)
-                .clamp(self.scaled(24.0), track_height);
+            let thumb_height =
+                self.scrollbar_thumb_height(track_height, viewport_height, content_height);
             let travel = (track_height - thumb_height).max(0.0);
             let fraction = (self.scroll_y / self.max_scroll_y).clamp(0.0, 1.0);
             let y0 = track_top + travel * fraction;
@@ -1240,6 +1263,7 @@ impl Widget for NoteTreeView {
         }
         Some(
             AccessNode::new(Role::Tree)
+                .with_semantic_key("notes.page-tree")
                 .with_name(ui::i18n!("notes-title"))
                 .with_state(AccessState::new().focusable(true).focused(self.is_focused))
                 .with_children(children),
@@ -1339,7 +1363,36 @@ impl Widget for NoteTreeView {
             self.dirty |= handled;
             return handled;
         }
-        false
+        // The root new-note and visible page targets share the canonical
+        // pointer/keyboard event queue; nested row actions were handled above.
+        let visible = self.accessibility().is_some_and(|node| {
+            node.children
+                .iter()
+                .any(|child| child.action_target.as_deref() == Some(target))
+        });
+        if !visible {
+            return false;
+        }
+        if matches!(action, ui::a11y::Action::Focus) {
+            return true;
+        }
+        if !matches!(action, ui::a11y::Action::Activate) {
+            return false;
+        }
+        let event = if target == "notes:new-page" {
+            OutEvent::CreateChild { parent: None }
+        } else if let Some(page) = target
+            .strip_prefix("notes:page:")
+            .and_then(|id| id.parse::<PageId>().ok())
+        {
+            self.selected = Some(page);
+            OutEvent::Select(page)
+        } else {
+            return false;
+        };
+        self.pending_events.push(event);
+        self.dirty = true;
+        true
     }
 
     fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {
@@ -1578,6 +1631,15 @@ impl NoteTreeView {
                 Colors::hairline_on(lifted, GLOW_ALPHA),
                 None,
                 &edge_outline(pill_rect.inset(-1.0), (radius - 1.0).max(0.0)),
+            );
+        } else if hovered {
+            let pill = Self::selection_pill(row_rect, self.scaled(ROW_PILL_MARGIN), tokens);
+            scene.fill(
+                vello::peniko::Fill::NonZero,
+                transform,
+                tokens.colors.lift(0.72),
+                None,
+                &RoundedRect::from_rect(pill, f64::from(tokens.radii.md)),
             );
         }
         // Indicative mist: glow this row in a peer's color when that
@@ -1988,12 +2050,12 @@ impl NoteTreeView {
             }
             let metrics = self.list_metrics();
             self.drag.pointer_moved(pt, &metrics);
-            self.update_drag_hover(pt, std::time::Instant::now());
+            self.update_drag_hover(pt, ui::clock::Instant::now());
             self.dirty = true;
         }
     }
 
-    fn update_drag_hover(&mut self, pt: Point, now: std::time::Instant) {
+    fn update_drag_hover(&mut self, pt: Point, now: ui::clock::Instant) {
         let target = self
             .drag
             .is_active()
@@ -2170,7 +2232,7 @@ impl NoteTreeView {
                 return;
             }
             // Double-click on the label → enter rename mode.
-            let now = std::time::Instant::now();
+            let now = ui::clock::Instant::now();
             let is_double = self.last_click.as_ref().is_some_and(|c| {
                 c.page == row_id
                     && now.duration_since(c.at).as_millis() < DOUBLE_CLICK_INTERVAL_MS
@@ -2863,6 +2925,70 @@ mod tests {
         );
         tree.reveal_row(0);
         assert!(tree.scroll_y.abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn sidebar_scrollbar_draw_survives_short_startup_viewports() {
+        let mut workspace = Workspace::new();
+        for _ in 0..8 {
+            workspace.create_page(None);
+        }
+        let catalog = ui::font_catalog::FontCatalog::controlled_fixture(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../crates/sdk/ui-core/assets/fonts"),
+            "en-US",
+        );
+        let mut text = TextRenderer::with_font_catalog(&catalog).unwrap();
+        for scale in [1.0, 2.0] {
+            for viewport in [1.0, 8.0, 16.0] {
+                let mut tree = NoteTreeView::new();
+                tree.sync_from_workspace(&workspace);
+                tree.text_scale = scale;
+                tree.rect = Rect::new(0.0, 0.0, 240.0, tree.header_height() + viewport);
+                tree.max_scroll_y = 600.0;
+                let mut scene = Scene::new();
+                Widget::draw(
+                    &mut tree,
+                    &mut scene,
+                    Affine::IDENTITY,
+                    &mut text,
+                    &Theme::dark(),
+                    &PresenceCtx::empty(),
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn populated_sidebar_draws_when_scroll_track_is_shorter_than_minimum_thumb() {
+        let mut workspace = Workspace::new();
+        for _ in 0..12 {
+            workspace.create_page(None);
+        }
+        let mut tree = NoteTreeView::new();
+        tree.sync_from_workspace(&workspace);
+        tree.rect = Rect::new(0.0, 0.0, 240.0, tree.header_height() + 9.0);
+        tree.max_scroll_y = 500.0;
+
+        let mut scene = Scene::new();
+        let catalog = ui::font_catalog::FontCatalog::controlled_fixture(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../crates/sdk/ui-core/assets/fonts"),
+            "en-US",
+        );
+        let mut text_renderer = TextRenderer::with_font_catalog(&catalog).unwrap();
+
+        Widget::draw(
+            &mut tree,
+            &mut scene,
+            Affine::IDENTITY,
+            &mut text_renderer,
+            &Theme::dark(),
+            &PresenceCtx::empty(),
+        );
+
+        assert_eq!(tree.scrollbar_thumb_height(1.0, 1.0, 360.0), 1.0);
+        assert_eq!(tree.scrollbar_thumb_height(80.0, 200.0, 2_000.0), 24.0);
     }
 
     #[test]

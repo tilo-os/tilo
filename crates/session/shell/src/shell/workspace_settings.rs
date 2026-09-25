@@ -28,11 +28,11 @@ use ui::widget::{Avatar, Badge, Button, ButtonFace, SegmentedFace, SegmentedStyl
 
 use crate::shell::state::{
     CapOverride, CapRole, Effect, Expiry, Principal, Scope, Subject, UserId, Verb, Workspace,
-    WorkspaceId,
+    WorkspaceExt as _, WorkspaceId,
 };
 
-pub const OWNERSHIP_TRANSFER_ACTION_TYPE: &str = "tilo.workspace.ownership-transfer.v1";
-pub const PERMISSION_PROFILE_ACTION_TYPE: &str = "tilo.workspace.permission-profile.v1";
+pub const OWNERSHIP_TRANSFER_ACTION_TYPE: &str = "qos.workspace.ownership-transfer.v1";
+pub const PERMISSION_PROFILE_ACTION_TYPE: &str = "qos.workspace.permission-profile.v1";
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
 #[serde(tag = "operation", rename_all = "kebab-case", deny_unknown_fields)]
@@ -4391,7 +4391,7 @@ mod members_pane_tests {
                 description: "Read Builds and approve releases".into(),
                 rules: vec![collab_types::PermissionProfileRule::grant(
                     Scope::Action {
-                        app: "org.tilo.Builds".into(),
+                        app: "org.qos.Builds".into(),
                         action: "release.approve".into(),
                     },
                     Verb::Write,

@@ -524,3 +524,32 @@ fn revealing_a_deep_block_scrolls_its_caret_into_view_and_allows_manual_scrollin
         panel.get_rect()
     );
 }
+
+#[test]
+fn external_primary_region_is_measured_editor_and_matches_wheel() {
+    use ui::widget::PrimaryScrollAction;
+    let tmp = TempDir::new().unwrap();
+    let mut app = NotesApp::spawn_with_starter_page(tmp.path().into()).unwrap();
+    let id = app.selected_for_test().unwrap();
+    let body = tall_body();
+    notes::storage::write_page_body(tmp.path(), id, &body).unwrap();
+    app.main_panel_mut().load_page(id, "Long page", body);
+    app.bypass_seed_grace_for_test();
+    let mut state = ui::State::new();
+    let (tree, node) = settle(&mut app, &mut state, 1000, 300).unwrap();
+    let m = app.primary_vertical_scroll().unwrap().metrics;
+    assert!(m.max_scroll() > 0.0);
+    let heads = state.doc.get_heads();
+    app.apply_primary_vertical_scroll(PrimaryScrollAction::End);
+    settle(&mut app, &mut state, 1000, 300).unwrap();
+    let m = app.primary_vertical_scroll().unwrap().metrics;
+    assert_eq!(m.offset, m.max_scroll());
+    assert_eq!(m.offset, app.main_panel_mut().scroll_y_for_test());
+    dispatch(&mut app, &mut state, &tree, node, &wheel(2.0));
+    settle(&mut app, &mut state, 1000, 300).unwrap();
+    assert!(app.primary_vertical_scroll().unwrap().metrics.offset < m.offset);
+    assert_eq!(state.doc.get_heads(), heads);
+    settle(&mut app, &mut state, 1000, 1200).unwrap();
+    let m = app.primary_vertical_scroll().unwrap().metrics;
+    assert!(m.offset <= m.max_scroll());
+}

@@ -223,7 +223,7 @@ else
 fi
 
 if python3 "$repo/apps/imager/packaging/test_release_catalog.py" \
-    && [ "$(grep -c -- '--copy-to apps/imager/release-catalog.json' "$workflow")" -eq 3 ] \
+    && [ "$(grep -c -- '--copy-to crates/packaging/install-artifacts/release-catalog.json' "$workflow")" -eq 3 ] \
     && grep -Fq 'sign-installer-release.sh' "$workflow" \
     && grep -Fq 'media_list="$(python3' "$repo/apps/imager/packaging/verify-linux-release.sh"; then
   ok 'all native consumers select one supported catalog and release trust covers its media inventory'

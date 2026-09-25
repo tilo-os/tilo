@@ -14,9 +14,14 @@ impl FrameHarness {
     /// Enable the same standalone chrome used by a native App window. Widget
     /// and embedded-component harnesses retain their original content viewport.
     pub fn enable_document_history_chrome(&mut self) {
+        if self.history.is_some() || crate::history_mode::embedded::has_surfaces(self.root.as_ref())
+        {
+            return;
+        }
         if !self.history_chrome_enabled {
             self.history_chrome_enabled = true;
             self.remember_history_content();
+            self.invalidate_layout_tree();
             self.relayout();
         }
     }
@@ -156,6 +161,12 @@ impl FrameHarness {
         self.drain_component_wakes();
         self.try_presentation(|root, _| InspectionSnapshot {
             viewport: [self.viewport.0, self.viewport.1],
+            keyboard_focus_owner: self.focused.and_then(|focused| {
+                self.named_target_nodes()
+                    .into_iter()
+                    .filter_map(|(path, node)| (node == focused).then_some(path))
+                    .min()
+            }),
             root: collect_inspection(root, "", &mut HashMap::new()),
             presentation: None,
         })
@@ -170,6 +181,12 @@ impl FrameHarness {
     pub fn presentation_inspection(&self) -> InspectionSnapshot {
         self.presentation(|root, _| InspectionSnapshot {
             viewport: [self.viewport.0, self.viewport.1],
+            keyboard_focus_owner: self.focused.and_then(|focused| {
+                self.named_target_nodes()
+                    .into_iter()
+                    .filter_map(|(path, node)| (node == focused).then_some(path))
+                    .min()
+            }),
             root: collect_inspection(root, "", &mut HashMap::new()),
             presentation: None,
         })
@@ -338,10 +355,12 @@ impl FrameHarness {
         result
     }
 
-    pub(super) fn prepare_history_frame(&mut self) {
+    pub(super) fn prepare_history_frame(&mut self) -> (bool, bool) {
         if !self.history_chrome_enabled {
-            return;
+            return (false, false);
         }
+        let revision = self.document_history.revision();
+        let presented_open = self.history_layout.and_then(|layout| layout.pane).is_some();
         self.remember_history_content();
         // A revoked session is purged by the shared controller before rebuilding.
         let _ = self
@@ -363,9 +382,13 @@ impl FrameHarness {
         }
         self.document_history
             .sync(&mut self.state.doc, &self.state.root);
+        (
+            revision != self.document_history.revision(),
+            presented_open != self.document_history.is_open(),
+        )
     }
 
-    pub(super) fn build_history_frame(&mut self) -> NodeId {
+    pub(super) fn build_history_frame(&mut self, palette_node: Option<NodeId>) -> NodeId {
         if !self.history_chrome_enabled {
             self.history_layout = None;
             // SAFETY: the original retained root and freshly built arena are exclusive.
@@ -386,6 +409,11 @@ impl FrameHarness {
             &mut self.node_map,
             f64::from(self.viewport.0),
         );
+        if let Some(node) = palette_node {
+            self.taffy
+                .add_child(layout.root, node)
+                .expect("palette belongs to the standalone presentation tree");
+        }
         self.history_layout = Some(layout);
         let context = HistoryReadContext {
             document: &self.state.doc,
@@ -409,6 +437,14 @@ impl FrameHarness {
                 .into_iter()
                 .zip(std::iter::once(layout.toolbar).chain(layout.pane)),
         );
+        if let Some(node) = palette_node {
+            roots.push((
+                self.action_palette
+                    .as_deref()
+                    .expect("presented palette was just built"),
+                node,
+            ));
+        }
         // SAFETY: all retained roots use the same fresh arena, admitted independently
         // so app callback authority never propagates into host chrome.
         unsafe {

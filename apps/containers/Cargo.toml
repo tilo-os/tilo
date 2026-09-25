@@ -19,6 +19,7 @@ path = "src/main.rs"
 
 [features]
 thin = ["dep:runtime-dylib"]
+test-support = ["ui/test-support"]
 
 [dependencies]
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
@@ -33,6 +34,10 @@ serde_json.workspace = true
 vello.workspace = true
 winit.workspace = true
 taffy.workspace = true
+
+[dev-dependencies]
+containers = { path = ".", default-features = false, features = ["test-support"] }
+ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
 
 [lints]
 workspace = true

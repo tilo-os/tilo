@@ -5,14 +5,14 @@
 //! Also exposes the `Relay` struct so integration tests can spin up
 //! two relays in the same process and let them merge.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use iroh::endpoint::{Endpoint, RecvStream, SendStream, presets};
-use iroh::protocol::{AcceptError, ProtocolHandler, Router};
+use iroh::protocol::{AcceptError, DynProtocolHandler, ProtocolHandler, Router};
 use iroh_base::{EndpointAddr, PublicKey};
 use tokio::sync::Mutex as AsyncMutex;
 use tokio::task::JoinHandle;
@@ -21,21 +21,22 @@ use tilo_user_identity::{
     DeviceCert, RevocationList, verify_device_cert_at, verify_revocation_entry,
 };
 
-use crate::auth::{self, Hello, HelloAck2, PeerRole};
+use crate::auth::{self, AuthDomain, Hello, HelloAck2, PeerRole};
 use crate::client::RelayClient;
 use crate::compute_session::ComputeProtocol;
 use crate::compute_transport::COMPUTE_ALPN;
 use crate::compute_worker::{ProductionComputeWorkerConfig, run_production_compute_worker};
 use crate::config::{PeerRelayConfig, RelayConfig};
-use crate::frame::{read_frame, write_frame};
 use crate::metrics::Metrics;
 use crate::peer::{
-    PeerContext, WorkspaceAutobind, WorkspaceRegistry, get_or_autobind_workspace, now_ns, run_peer,
+    PeerContext, WorkspaceAutobind, WorkspaceRegistry, get_or_autobind_workspace, now_ns,
+    run_peer_version,
 };
 use crate::policy::TrustPolicy;
 use crate::transport::{
     ALPN, ContentEndpointAdvertisement, ContentEndpointRequest, DISCOVERY_ALPN, Envelope,
-    HomePeerManagementRequest, HomePeerManagementResponse, MANAGEMENT_ALPN, MAX_FRAME_BYTES,
+    HomePeerManagementRequest, HomePeerManagementResponse, LEGACY_ALPN, LEGACY_DISCOVERY_ALPN,
+    LEGACY_MANAGEMENT_ALPN, MANAGEMENT_ALPN, MAX_FRAME_BYTES,
 };
 use crate::workspace::{Membership, SharedWorkspace, WorkspaceRuntime};
 
@@ -92,6 +93,96 @@ pub enum RelayError {
     /// Identity file missing / malformed.
     #[error("identity: {0}")]
     Identity(String),
+    /// Governed workspace admission could not be reconciled safely.
+    #[error("governed access: {0}")]
+    GovernedAccess(String),
+    /// An additional endpoint protocol conflicts with the relay router.
+    #[error("protocol registration: {0}")]
+    ProtocolRegistration(String),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RelayStartupMode {
+    CertifiedHost,
+    NativeInteractiveWorkspaceOwner,
+}
+
+#[derive(Clone)]
+struct HandshakeTrust {
+    base_roots: Arc<HashSet<[u8; 32]>>,
+    authority_roots: Arc<std::sync::RwLock<HashSet<[u8; 32]>>>,
+    live_policy: Arc<std::sync::RwLock<TrustPolicy>>,
+    allow_any: bool,
+}
+
+impl HandshakeTrust {
+    fn new(
+        operator_policy: &TrustPolicy,
+        effective_policy: &TrustPolicy,
+        own_user: [u8; 32],
+    ) -> Self {
+        let allow_any = matches!(operator_policy, TrustPolicy::AllowAny);
+        Self {
+            base_roots: Arc::new(policy_roots(operator_policy, own_user)),
+            authority_roots: Arc::new(std::sync::RwLock::new(policy_roots(
+                effective_policy,
+                own_user,
+            ))),
+            live_policy: Arc::new(std::sync::RwLock::new(if allow_any {
+                TrustPolicy::AllowAny
+            } else {
+                TrustPolicy::AllowList { users: Vec::new() }
+            })),
+            allow_any,
+        }
+    }
+
+    fn replace_authority_roots(&self, roots: HashSet<[u8; 32]>) {
+        *self
+            .authority_roots
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = roots;
+    }
+
+    async fn refresh(&self, workspaces: &WorkspaceRegistry) {
+        if self.allow_any {
+            return;
+        }
+        let mut roots = self.base_roots.as_ref().clone();
+        roots.extend(
+            self.authority_roots
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .iter()
+                .copied(),
+        );
+        let runtimes = workspaces
+            .lock()
+            .await
+            .values()
+            .cloned()
+            .collect::<Vec<_>>();
+        for runtime in runtimes {
+            roots.extend(runtime.lock().await.governed_user_roots.iter().copied());
+        }
+        let mut users = roots.into_iter().map(hex::encode).collect::<Vec<_>>();
+        users.sort_unstable();
+        *self
+            .live_policy
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = TrustPolicy::AllowList { users };
+    }
+}
+
+fn policy_roots(policy: &TrustPolicy, own_user: [u8; 32]) -> HashSet<[u8; 32]> {
+    let mut roots = HashSet::from([own_user]);
+    if let TrustPolicy::AllowList { users } = policy {
+        roots.extend(users.iter().filter_map(|encoded| {
+            let bytes = hex::decode(encoded).ok()?;
+            <[u8; 32]>::try_from(bytes).ok()
+        }));
+    }
+    roots
 }
 
 /// A running relay. Prefer [`Relay::shutdown`]; dropping the handle also
@@ -106,12 +197,14 @@ pub struct Relay {
     workspaces: WorkspaceRegistry,
     /// Metrics — cheap counters.
     metrics: Arc<Metrics>,
-    /// Own cert (device cert, cap `can_act_as_host`).
+    /// Own certified device. Dedicated hosts require `can_act_as_host`; the
+    /// typed interactive-owner path is instead bound to one shell authority.
     own_cert: DeviceCert,
     /// Own device signing key.
     own_signing_key: ed25519_dalek::SigningKey,
     /// Own user pubkey — the one this relay chains to.
     own_user_public_key: [u8; 32],
+    live_revocations: Arc<std::sync::RwLock<RevocationList>>,
     /// Federation dial tasks — one per known peer relay. Aborted
     /// (per-handle) when the `Relay` drops.
     peer_relay_tasks: Arc<std::sync::Mutex<Vec<AbortOnDrop>>>,
@@ -124,6 +217,13 @@ pub struct Relay {
     /// Live proof that the owned signed-package compute worker completed all
     /// health checks and still owns its authenticated session.
     compute_ready: Arc<AtomicBool>,
+    handshake_trust: HandshakeTrust,
+    governed_access_update: Arc<AsyncMutex<()>>,
+    state_root: PathBuf,
+    /// Exact server-side room ceiling for native interactive startup. A
+    /// certified host retains the existing dynamic multi-workspace behavior.
+    interactive_workspace_id: Option<u64>,
+    interactive_owner_trust: Option<crate::workspace_join::InteractiveOwnerTrust>,
 }
 
 /// A tokio `JoinHandle` that aborts on drop — used so that dropping
@@ -185,6 +285,122 @@ pub struct RelayIdentity {
 }
 
 impl Relay {
+    /// Start on an explicitly selected packet relay without public address lookup.
+    ///
+    /// Device certificate validation, workspace membership and relay/1 framing
+    /// remain identical to [`Self::start`]. The default constructor retains N0.
+    ///
+    /// # Errors
+    /// Returns the same identity, storage and endpoint errors as [`Self::start`].
+    pub async fn start_with_relay_mode(
+        cfg: RelayConfig,
+        identity: RelayIdentity,
+        relay_mode: iroh::RelayMode,
+    ) -> Result<Self, RelayError> {
+        Self::start_inner(
+            cfg,
+            identity,
+            Some(relay_mode),
+            None,
+            Vec::new(),
+            RelayStartupMode::CertifiedHost,
+            None,
+        )
+        .await
+    }
+
+    /// Start the relay and register one host-owned protocol on the same pinned
+    /// Iroh endpoint. The router owns the handler lifecycle, including its
+    /// shutdown hook. Relay, discovery, management, compute, and compatibility
+    /// ALPNs remain reserved.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RelayError::ProtocolRegistration`] for an empty or reserved
+    /// ALPN, otherwise the same startup errors as [`Self::start_with_relay_mode`].
+    pub async fn start_with_relay_mode_and_protocol<H>(
+        cfg: RelayConfig,
+        identity: RelayIdentity,
+        relay_mode: iroh::RelayMode,
+        alpn: &'static [u8],
+        handler: H,
+    ) -> Result<Self, RelayError>
+    where
+        H: ProtocolHandler,
+    {
+        Self::start_inner(
+            cfg,
+            identity,
+            Some(relay_mode),
+            None,
+            vec![(alpn.to_vec(), Box::<dyn DynProtocolHandler>::from(handler))],
+            RelayStartupMode::CertifiedHost,
+            None,
+        )
+        .await
+    }
+
+    /// Start relay services on an already-bound endpoint and compose any
+    /// number of caller-owned protocols into the same router. This is the
+    /// production shell path: relay state/action traffic, workspace joining,
+    /// surfaces, gossip, and personal-fabric protocols retain one stable node
+    /// address and one shutdown lifecycle.
+    ///
+    /// Ownership of `endpoint` transfers to the returned relay. Calling
+    /// [`Self::shutdown`] closes the router and invokes every additional
+    /// handler's shutdown hook.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RelayError::ProtocolRegistration`] if an ALPN is empty,
+    /// duplicates another additional protocol, or collides with a protocol
+    /// owned by the relay.
+    pub async fn start_on_endpoint_with_protocols(
+        cfg: RelayConfig,
+        identity: RelayIdentity,
+        endpoint: Endpoint,
+        protocols: Vec<(Vec<u8>, Box<dyn DynProtocolHandler>)>,
+    ) -> Result<Self, RelayError> {
+        Self::start_inner(
+            cfg,
+            identity,
+            None,
+            Some(endpoint),
+            protocols,
+            RelayStartupMode::CertifiedHost,
+            None,
+        )
+        .await
+    }
+
+    /// Start a single native-owned governed workspace on the shell's already
+    /// bound endpoint. This path accepts an interactive primary certificate
+    /// only when the one configured binding carries the exact local shell
+    /// authority and durable-baseline contract for that same device and room.
+    /// It never grants general host capability or relay federation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RelayError::Identity`] unless the binding is unambiguous,
+    /// canonically room-bound, and governed by the exact configured identity.
+    pub async fn start_native_interactive_workspace_on_endpoint_with_protocols(
+        cfg: RelayConfig,
+        identity: RelayIdentity,
+        endpoint: Endpoint,
+        protocols: Vec<(Vec<u8>, Box<dyn DynProtocolHandler>)>,
+    ) -> Result<Self, RelayError> {
+        Self::start_inner(
+            cfg,
+            identity,
+            None,
+            Some(endpoint),
+            protocols,
+            RelayStartupMode::NativeInteractiveWorkspaceOwner,
+            None,
+        )
+        .await
+    }
+
     /// Start the daemon with the given config + identity.
     ///
     /// Binds an iroh endpoint (using the persistent secret at
@@ -222,16 +438,51 @@ impl Relay {
         reason = "the ordered startup transaction keeps identity validation, endpoint binding, protocol wiring, and background-task ownership auditable in one place"
     )]
     pub async fn start_with_app_serving(
-        mut cfg: RelayConfig,
+        cfg: RelayConfig,
         identity: RelayIdentity,
         app_serving: Option<Arc<dyn crate::app_serving::AppServingPlane>>,
     ) -> Result<Self, RelayError> {
-        import_home_peer_bindings(&mut cfg)?;
-        validate_relay_identity(&identity)?;
-        if !cfg.device_role.can_serve() {
-            return Err(RelayError::Identity(
-                "tilo-relay requires an always-on-server or hybrid device role".into(),
-            ));
+        Self::start_inner(
+            cfg,
+            identity,
+            None,
+            None,
+            Vec::new(),
+            RelayStartupMode::CertifiedHost,
+            app_serving,
+        )
+        .await
+    }
+
+    #[allow(
+        clippy::too_many_lines,
+        reason = "ordered startup preserves native identity, policy and task ownership"
+    )]
+    async fn start_inner(
+        mut cfg: RelayConfig,
+        identity: RelayIdentity,
+        relay_mode: Option<iroh::RelayMode>,
+        endpoint: Option<Endpoint>,
+        additional_protocols: Vec<(Vec<u8>, Box<dyn DynProtocolHandler>)>,
+        startup_mode: RelayStartupMode,
+        app_serving: Option<Arc<dyn crate::app_serving::AppServingPlane>>,
+    ) -> Result<Self, RelayError> {
+        validate_additional_protocols(&additional_protocols)?;
+        let operator_trust_policy = cfg.trust_policy.clone();
+        match startup_mode {
+            RelayStartupMode::CertifiedHost => {
+                import_home_peer_bindings(&mut cfg)?;
+                validate_relay_identity(&identity)?;
+                if !cfg.device_role.can_serve() {
+                    return Err(RelayError::Identity(
+                        "tilo-relay requires an always-on-server or hybrid device role".into(),
+                    ));
+                }
+            }
+            RelayStartupMode::NativeInteractiveWorkspaceOwner => {
+                validate_native_interactive_workspace_identity(&cfg, &identity)?;
+                cfg.services = crate::mesh::ServiceCapabilities::default();
+            }
         }
         // A certificate authorises a service, but it cannot make a service
         // exist. The composite process starts relay + filesystem planes; live
@@ -261,13 +512,63 @@ impl Relay {
             filesystem_endpoints: Vec::new(),
         });
         std::fs::create_dir_all(&cfg.state_root)?;
-        let endpoint = bind_endpoint(&cfg, &identity.device_signing_key).await?;
-        let workspaces = build_workspace_registry(&cfg)?;
+        let endpoint = match endpoint {
+            Some(endpoint) => endpoint,
+            None => bind_endpoint(&cfg, &identity.device_signing_key, relay_mode).await?,
+        };
+        let interactive_owner_trust =
+            if startup_mode == RelayStartupMode::NativeInteractiveWorkspaceOwner {
+                let binding = cfg.workspaces.first().ok_or_else(|| {
+                    RelayError::Identity("interactive workspace binding disappeared".into())
+                })?;
+                let authority = binding.shell_authority.as_ref().ok_or_else(|| {
+                    RelayError::Identity("interactive shell authority disappeared".into())
+                })?;
+                Some(
+                    crate::workspace_join::interactive_owner_trust(
+                        authority.room().to_owned(),
+                        binding.id,
+                        authority.governor().clone(),
+                        *endpoint.id().as_bytes(),
+                    )
+                    .map_err(|error| RelayError::Identity(error.to_string()))?,
+                )
+            } else {
+                None
+            };
+        let workspaces = build_workspace_registry(
+            &cfg,
+            startup_mode == RelayStartupMode::NativeInteractiveWorkspaceOwner,
+        )?;
+        if startup_mode == RelayStartupMode::NativeInteractiveWorkspaceOwner {
+            let runtimes = workspaces
+                .lock()
+                .await
+                .values()
+                .cloned()
+                .collect::<Vec<_>>();
+            for runtime in runtimes {
+                let mut runtime = runtime.lock().await;
+                runtime.membership_ceiling = Some(HashSet::new());
+                runtime.governed_user_roots.clear();
+                runtime.governed_access = true;
+                runtime.admit_authenticated = false;
+            }
+        }
         let metrics = Arc::new(Metrics::default());
         let revocations = Arc::new(std::sync::RwLock::new(identity.revocations.clone()));
 
-        let live_trust_policy = Arc::new(std::sync::RwLock::new(cfg.trust_policy.clone()));
+        let handshake_trust = HandshakeTrust::new(
+            &operator_trust_policy,
+            &cfg.trust_policy,
+            identity.user_public_key,
+        );
+        handshake_trust.refresh(&workspaces).await;
+        let live_trust_policy = handshake_trust.live_policy.clone();
         let handler = RelayProtocol {
+            v2: false,
+            agent_reads_v1: false,
+            auth_domain: AuthDomain::Tilo,
             workspaces: workspaces.clone(),
             trust_policy: live_trust_policy.clone(),
             revocations: revocations.clone(),
@@ -275,14 +576,15 @@ impl Relay {
             own_cert: identity.device_cert.clone(),
             own_sk: identity.device_signing_key.clone(),
             metrics: metrics.clone(),
-            autobind: matches!(cfg.trust_policy, TrustPolicy::AllowMatchingUser).then(|| {
-                WorkspaceAutobind {
-                    state_root: cfg.state_root.clone(),
-                }
+            autobind: (startup_mode == RelayStartupMode::CertifiedHost
+                && matches!(cfg.trust_policy, TrustPolicy::AllowMatchingUser))
+            .then(|| WorkspaceAutobind {
+                state_root: cfg.state_root.clone(),
             }),
             app_serving,
         };
         let discovery = DiscoveryProtocol {
+            auth_domain: AuthDomain::Tilo,
             workspaces: workspaces.clone(),
             own_user_pk: identity.user_public_key,
             trust_policy: live_trust_policy.clone(),
@@ -293,13 +595,14 @@ impl Relay {
             full_replica_status: cfg.full_replica_status.clone(),
             compute_ready: Arc::clone(&compute_ready),
             home_peer_bundle: cfg.home_peer_bundle.clone(),
-            autobind: matches!(cfg.trust_policy, TrustPolicy::AllowMatchingUser).then(|| {
-                WorkspaceAutobind {
-                    state_root: cfg.state_root.clone(),
-                }
+            autobind: (startup_mode == RelayStartupMode::CertifiedHost
+                && matches!(cfg.trust_policy, TrustPolicy::AllowMatchingUser))
+            .then(|| WorkspaceAutobind {
+                state_root: cfg.state_root.clone(),
             }),
         };
         let management = ManagementProtocol {
+            auth_domain: AuthDomain::Tilo,
             endpoint: endpoint.clone(),
             own_user_pk: identity.user_public_key,
             own_cert: identity.device_cert.clone(),
@@ -317,12 +620,64 @@ impl Relay {
             identity.device_signing_key.clone(),
             revocations.clone(),
         );
-        let router = Router::builder(endpoint.clone())
-            .accept(ALPN, handler)
-            .accept(DISCOVERY_ALPN, discovery)
-            .accept(MANAGEMENT_ALPN, management)
-            .accept(COMPUTE_ALPN, compute)
-            .spawn();
+        let mut router = Router::builder(endpoint.clone())
+            .accept(
+                crate::transport_v2::ALPN_AGENT_READS_V1,
+                RelayProtocol {
+                    v2: true,
+                    agent_reads_v1: true,
+                    auth_domain: AuthDomain::Tilo,
+                    ..handler.clone()
+                },
+            )
+            .accept(
+                crate::transport_v2::ALPN_V2,
+                RelayProtocol {
+                    v2: true,
+                    auth_domain: AuthDomain::Tilo,
+                    ..handler.clone()
+                },
+            )
+            .accept(
+                crate::transport_v2::LEGACY_ALPN_V2,
+                RelayProtocol {
+                    v2: true,
+                    auth_domain: AuthDomain::LegacyQos,
+                    ..handler.clone()
+                },
+            )
+            .accept(ALPN, handler.clone())
+            .accept(
+                LEGACY_ALPN,
+                RelayProtocol {
+                    auth_domain: AuthDomain::LegacyQos,
+                    ..handler
+                },
+            );
+        if startup_mode == RelayStartupMode::CertifiedHost {
+            router = router
+                .accept(DISCOVERY_ALPN, discovery.clone())
+                .accept(
+                    LEGACY_DISCOVERY_ALPN,
+                    DiscoveryProtocol {
+                        auth_domain: AuthDomain::LegacyQos,
+                        ..discovery
+                    },
+                )
+                .accept(MANAGEMENT_ALPN, management.clone())
+                .accept(
+                    LEGACY_MANAGEMENT_ALPN,
+                    ManagementProtocol {
+                        auth_domain: AuthDomain::LegacyQos,
+                        ..management
+                    },
+                )
+                .accept(COMPUTE_ALPN, compute);
+        }
+        for (alpn, handler) in additional_protocols {
+            router = router.accept(alpn, handler);
+        }
+        let router = router.spawn();
 
         let peer_relay_tasks = spawn_background_tasks(
             &cfg,
@@ -330,7 +685,7 @@ impl Relay {
             &endpoint,
             &workspaces,
             &metrics,
-            revocations,
+            revocations.clone(),
         );
         if cfg.services.compute {
             for workspace in workspaces.lock().await.values() {
@@ -357,7 +712,8 @@ impl Relay {
             });
             push_peer_relay_task(&peer_relay_tasks, worker_task);
         }
-        if matches!(cfg.trust_policy, TrustPolicy::AllowList { .. })
+        if startup_mode == RelayStartupMode::CertifiedHost
+            && matches!(cfg.trust_policy, TrustPolicy::AllowList { .. })
             && cfg.home_peer_bundle.exists()
         {
             push_peer_relay_task(
@@ -365,12 +721,15 @@ impl Relay {
                 spawn_home_peer_authority_refresh(
                     cfg.home_peer_bundle.clone(),
                     identity.user_public_key,
-                    live_trust_policy,
+                    handshake_trust.clone(),
                     workspaces.clone(),
                 ),
             );
         }
 
+        let interactive_workspace_id = interactive_owner_trust
+            .as_ref()
+            .map(crate::workspace_join::InteractiveOwnerTrust::workspace_id);
         Ok(Self {
             endpoint,
             _router: router,
@@ -379,11 +738,39 @@ impl Relay {
             own_cert: identity.device_cert,
             own_signing_key: identity.device_signing_key,
             own_user_public_key: identity.user_public_key,
+            live_revocations: revocations,
             peer_relay_tasks,
             mesh_profile,
             full_replica_status: cfg.full_replica_status.clone(),
             compute_ready,
+            handshake_trust,
+            governed_access_update: Arc::new(AsyncMutex::new(())),
+            state_root: cfg.state_root,
+            interactive_workspace_id,
+            interactive_owner_trust,
         })
+    }
+
+    /// Install the original native owner's bounded refresh mailbox for one bound room.
+    /// Replacing an installed owner requires closing/recreating this relay.
+    pub async fn install_sync_refresh(
+        &self,
+        workspace_id: u64,
+        mailbox: crate::peer::sync_refresh::Mailbox,
+    ) -> Result<(), String> {
+        let workspace = self
+            .workspaces
+            .lock()
+            .await
+            .get(&workspace_id)
+            .cloned()
+            .ok_or("checkpoint refresh workspace is not bound")?;
+        let mut workspace = workspace.lock().await;
+        if workspace.sync_refresh.is_some() {
+            return Err("checkpoint refresh owner already installed".into());
+        }
+        workspace.sync_refresh = Some(mailbox);
+        Ok(())
     }
 
     /// Whether this relay currently counts `device` as subscribed to
@@ -416,7 +803,9 @@ impl Relay {
         // Stop reconnecting first: the dial loop would otherwise open a
         // fresh connection while the endpoint is closing.
         lock_peer_relay_tasks(&self.peer_relay_tasks).clear();
-        self.endpoint.close().await;
+        if let Err(error) = self._router.shutdown().await {
+            tracing::debug!(%error, "relay router shutdown task failed");
+        }
     }
 
     /// Add a peer relay after startup — used by tests + the eventual
@@ -443,7 +832,7 @@ impl Relay {
             self.own_user_public_key,
             self.own_cert.clone(),
             self.own_signing_key.clone(),
-            RevocationList::new(),
+            self.live_revocations.clone(),
             self.workspaces.clone(),
             self.metrics.clone(),
         );
@@ -472,8 +861,10 @@ impl Relay {
     ///
     /// # Errors
     ///
-    /// Returns [`RelayError::Store`] if opening a not-yet-bound
-    /// workspace, or persisting its membership list, fails.
+    /// Returns [`RelayError::GovernedAccess`] when native interactive mode is
+    /// asked to mutate any workspace other than its configured room, or
+    /// [`RelayError::Store`] if opening a not-yet-bound workspace or
+    /// persisting its membership list fails.
     pub async fn set_workspace_membership(
         &self,
         workspace_id: u64,
@@ -481,28 +872,106 @@ impl Relay {
         members: Vec<[u8; 32]>,
         state_root: PathBuf,
     ) -> Result<(), RelayError> {
-        let existing = {
-            let map = self.workspaces.lock().await;
-            map.get(&workspace_id).cloned()
-        };
-        if let Some(existing) = existing {
-            let mut existing = existing.lock().await;
-            existing.membership.set(members);
-            existing
-                .store
-                .save_membership(&existing.membership.devices)?;
-            drop(existing);
-            return Ok(());
-        }
-        let mut rt =
-            WorkspaceRuntime::open(&state_root, workspace_id, pinned, Membership::default())?;
-        rt.membership.set(members);
-        rt.store.save_membership(&rt.membership.devices)?;
-        self.workspaces
-            .lock()
-            .await
-            .insert(workspace_id, Arc::new(AsyncMutex::new(rt)));
+        self.ensure_workspace_mutation_scope(workspace_id)?;
+        let workspace = crate::workspace_io::get_or_initialize(
+            &self.workspaces,
+            state_root,
+            workspace_id,
+            pinned,
+            false,
+            crate::peer::MAX_AUTOBOUND_WORKSPACES,
+        )
+        .await?;
+        crate::workspace_io::replace_membership(&workspace, members).await?;
         Ok(())
+    }
+
+    /// Atomically replace the native governor's exact member devices and the
+    /// user roots those devices need at the relay handshake. This is a
+    /// trusted, server-local reconciliation API: roots open only the global
+    /// handshake, while the exact device set continues to gate this room.
+    ///
+    /// Removals narrow live room access before disk I/O and additions become
+    /// reachable only after one crash-safe access record commits. The global
+    /// handshake allowlist is then rebuilt from configured pins and every
+    /// room's projection, so removing one room cannot revoke another room or
+    /// widen either room to sibling devices under the same user root.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RelayError::GovernedAccess`] when called for an `allow_any`
+    /// relay or with a state root other than the relay's configured root, and
+    /// [`RelayError::Store`] when workspace initialization or durable
+    /// replacement fails.
+    pub async fn replace_governed_workspace_access(
+        &self,
+        workspace_id: u64,
+        pinned: bool,
+        access: qos_peer_state::GovernedAccess,
+        state_root: PathBuf,
+    ) -> Result<(), RelayError> {
+        if self.handshake_trust.allow_any {
+            return Err(RelayError::GovernedAccess(
+                "allow_any cannot host governed workspace admission".into(),
+            ));
+        }
+        if state_root != self.state_root {
+            return Err(RelayError::GovernedAccess(
+                "state root does not match the running relay".into(),
+            ));
+        }
+        self.ensure_workspace_mutation_scope(workspace_id)?;
+        let _update = self.governed_access_update.lock().await;
+        let workspace = crate::workspace_io::get_or_initialize(
+            &self.workspaces,
+            state_root,
+            workspace_id,
+            pinned,
+            false,
+            crate::peer::MAX_AUTOBOUND_WORKSPACES,
+        )
+        .await?;
+        let mut member_devices = access.member_devices;
+        member_devices.sort_unstable();
+        member_devices.dedup();
+        let mut member_user_roots = access.member_user_roots;
+        member_user_roots.sort_unstable();
+        member_user_roots.dedup();
+        let result = crate::workspace_io::replace_governed_access(
+            &workspace,
+            crate::store::GovernedAccessRecord {
+                member_devices,
+                member_user_roots,
+            },
+        )
+        .await;
+        // Also run after an I/O error: replace_governed_access keeps every
+        // requested removal narrowed in memory, and the handshake union must
+        // reflect that fail-closed ceiling.
+        self.handshake_trust.refresh(&self.workspaces).await;
+        result?;
+        Ok(())
+    }
+
+    fn ensure_workspace_mutation_scope(&self, workspace_id: u64) -> Result<(), RelayError> {
+        if self
+            .interactive_workspace_id
+            .is_some_and(|configured| configured != workspace_id)
+        {
+            return Err(RelayError::GovernedAccess(
+                "interactive workspace owner cannot mutate an unconfigured workspace".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    /// Return the opaque one-room trust token derived during interactive
+    /// startup. Certified-host relays return `None`.
+    #[must_use]
+    pub fn native_interactive_owner_trust(
+        &self,
+    ) -> Option<crate::workspace_join::InteractiveOwnerTrust> {
+        self.interactive_owner_trust.clone()
     }
 
     /// Own user identity — for tests.
@@ -587,7 +1056,7 @@ fn import_home_peer_bindings(cfg: &mut RelayConfig) -> Result<(), RelayError> {
                 .map(|governor| vec![hex::encode(governor)])
                 .unwrap_or_default();
             if let Some(authority) = authority.as_ref()
-                && id != crate::personal_continuity_workspace_id(&authority.governor)
+                && !crate::personal_continuity_workspace_id_matches(&authority.governor, id)
             {
                 let room = id.to_string();
                 for capability in &authority.capabilities {
@@ -610,6 +1079,8 @@ fn import_home_peer_bindings(cfg: &mut RelayConfig) -> Result<(), RelayError> {
                     pin: true,
                     replication: crate::mesh::ReplicationIntent::FullWorkspace,
                     admitted_users: room_users.clone(),
+                    shell_authority: None,
+                    checkpoint_prefix_recovery: crate::config::CheckpointPrefixRecovery::Disabled,
                 });
             } else if let Some(binding) = cfg.workspaces.iter_mut().find(|binding| binding.id == id)
             {
@@ -684,12 +1155,17 @@ pub fn relay_service_node_id(device_key: &ed25519_dalek::SigningKey) -> [u8; 32]
 async fn bind_endpoint(
     cfg: &RelayConfig,
     device_key: &ed25519_dalek::SigningKey,
+    relay_mode: Option<iroh::RelayMode>,
 ) -> Result<Endpoint, RelayError> {
     let secret = iroh::SecretKey::from_bytes(&blake3::derive_key(
         "tilo-relay-iroh-service-key-v1",
         &device_key.to_bytes(),
     ));
-    Endpoint::builder(presets::N0)
+    let builder = match relay_mode {
+        Some(mode) => Endpoint::builder(presets::Minimal).relay_mode(mode),
+        None => Endpoint::builder(presets::N0),
+    };
+    builder
         .secret_key(secret)
         .bind_addr(cfg.iroh_listen)
         .map_err(|e| RelayError::Iroh(format!("invalid iroh listen address: {e}")))?
@@ -698,19 +1174,90 @@ async fn bind_endpoint(
         .map_err(|e| RelayError::Iroh(e.to_string()))
 }
 
+fn validate_additional_alpn(alpn: &[u8]) -> Result<(), RelayError> {
+    let reserved: &[&[u8]] = &[
+        ALPN,
+        LEGACY_ALPN,
+        crate::transport_v2::ALPN_V2,
+        crate::transport_v2::ALPN_AGENT_READS_V1,
+        crate::transport_v2::LEGACY_ALPN_V2,
+        DISCOVERY_ALPN,
+        LEGACY_DISCOVERY_ALPN,
+        MANAGEMENT_ALPN,
+        LEGACY_MANAGEMENT_ALPN,
+        COMPUTE_ALPN,
+    ];
+    if alpn.is_empty() {
+        return Err(RelayError::ProtocolRegistration(
+            "additional ALPN must not be empty".into(),
+        ));
+    }
+    if reserved.contains(&alpn) {
+        return Err(RelayError::ProtocolRegistration(format!(
+            "{} is reserved by tilo-relay",
+            String::from_utf8_lossy(alpn)
+        )));
+    }
+    Ok(())
+}
+
+fn validate_additional_protocols(
+    protocols: &[(Vec<u8>, Box<dyn DynProtocolHandler>)],
+) -> Result<(), RelayError> {
+    validate_additional_alpns(protocols.iter().map(|(alpn, _)| alpn.as_slice()))
+}
+
+fn validate_additional_alpns<'a>(
+    alpns: impl IntoIterator<Item = &'a [u8]>,
+) -> Result<(), RelayError> {
+    let mut seen = HashSet::new();
+    for alpn in alpns {
+        validate_additional_alpn(alpn)?;
+        if !seen.insert(alpn) {
+            return Err(RelayError::ProtocolRegistration(format!(
+                "{} is registered more than once",
+                String::from_utf8_lossy(alpn)
+            )));
+        }
+    }
+    Ok(())
+}
+
 /// Open every configured workspace binding on disk and build the
 /// shared registry `run_peer` and the peer-relay session loop route
 /// through.
-fn build_workspace_registry(cfg: &RelayConfig) -> Result<WorkspaceRegistry, RelayError> {
+fn build_workspace_registry(
+    cfg: &RelayConfig,
+    require_durable_snapshot: bool,
+) -> Result<WorkspaceRegistry, RelayError> {
     let mut wsmap: HashMap<u64, SharedWorkspace> = HashMap::new();
     for binding in &cfg.workspaces {
-        let mut rt = WorkspaceRuntime::open(
-            &cfg.state_root,
-            binding.id,
-            binding.pin,
-            Membership::default(),
-        )?;
-        rt.admit_authenticated = matches!(cfg.trust_policy, TrustPolicy::AllowMatchingUser);
+        let mut rt = if require_durable_snapshot {
+            WorkspaceRuntime::open_with_required_snapshot(
+                &cfg.state_root,
+                binding.id,
+                binding.pin,
+                Membership::default(),
+            )
+            .map_err(|error| {
+                RelayError::Identity(format!(
+                    "interactive workspace owner requires a valid durable snapshot: {error}"
+                ))
+            })?
+        } else {
+            WorkspaceRuntime::open(
+                &cfg.state_root,
+                binding.id,
+                binding.pin,
+                Membership::default(),
+            )?
+        };
+        if let Some(authority) = &binding.shell_authority {
+            rt.store.bind_shell_authority(authority.clone())?;
+        }
+        rt.checkpoint_prefix_recovery = binding.checkpoint_prefix_recovery;
+        rt.admit_authenticated =
+            matches!(cfg.trust_policy, TrustPolicy::AllowMatchingUser) && !rt.governed_access;
         rt.admitted_users = binding
             .admitted_users
             .iter()
@@ -728,8 +1275,8 @@ fn build_workspace_registry(cfg: &RelayConfig) -> Result<WorkspaceRegistry, Rela
 ///
 /// Each peer-relay task dials via `RelayClient::connect` (same code
 /// path any client uses), exchanges `PeerRelayHello`, subscribes to
-/// the intersection, then feeds inbound Deltas into the local
-/// `WorkspaceRuntime::fanout_delta` — no new fan-out.
+/// the intersection, then feeds inbound deltas into the shared ordered
+/// state persistence owner.
 fn spawn_background_tasks(
     cfg: &RelayConfig,
     identity: &RelayIdentity,
@@ -744,7 +1291,7 @@ fn spawn_background_tasks(
     let revocation_task = spawn_revocation_refresh_task(
         cfg.state_root.clone(),
         identity.revocations.clone(),
-        revocations,
+        revocations.clone(),
     );
     push_peer_relay_task(&peer_relay_tasks, revocation_task);
 
@@ -756,6 +1303,7 @@ fn spawn_background_tasks(
             peer_cfg,
             endpoint.clone(),
             identity.clone(),
+            revocations.clone(),
             workspaces.clone(),
             metrics.clone(),
         );
@@ -899,7 +1447,7 @@ fn verify_and_advance_authority(
 }
 
 async fn apply_home_peer_projection(
-    live_policy: &Arc<std::sync::RwLock<TrustPolicy>>,
+    handshake_trust: &HandshakeTrust,
     workspaces: &WorkspaceRegistry,
     own_user: [u8; 32],
     state: &mut AuthorityRefreshState,
@@ -907,9 +1455,16 @@ async fn apply_home_peer_projection(
     room_users: HashMap<u64, std::collections::HashSet<[u8; 32]>>,
     next_governed_rooms: std::collections::HashSet<u64>,
 ) {
-    if let Ok(mut policy) = live_policy.write() {
-        *policy = TrustPolicy::AllowList { users };
-    }
+    handshake_trust.replace_authority_roots(
+        users
+            .into_iter()
+            .filter_map(|encoded| {
+                hex::decode(encoded)
+                    .ok()
+                    .and_then(|bytes| bytes.try_into().ok())
+            })
+            .collect(),
+    );
     let affected_rooms = state
         .governed_rooms
         .union(&next_governed_rooms)
@@ -922,8 +1477,10 @@ async fn apply_home_peer_projection(
                 room_users.get(&room).cloned().unwrap_or_default();
         }
     }
+    drop(runtimes);
     state.governed_rooms = next_governed_rooms;
-    let _ = own_user; // Documents that the always-admitted local user is in `users`.
+    let _ = own_user; // The configured base pins always retain the relay owner.
+    handshake_trust.refresh(workspaces).await;
 }
 
 type HomePeerAuthorityProjection = (
@@ -939,7 +1496,7 @@ type HomePeerAuthorityProjection = (
 async fn refresh_home_peer_authority_once(
     bundle_path: &std::path::Path,
     own_user: [u8; 32],
-    live_policy: &Arc<std::sync::RwLock<TrustPolicy>>,
+    handshake_trust: &HandshakeTrust,
     workspaces: &WorkspaceRegistry,
     state: &mut AuthorityRefreshState,
     now: u64,
@@ -985,7 +1542,7 @@ async fn refresh_home_peer_authority_once(
                     continue;
                 };
                 if (!global_namespace && !workspace.relay_workspace_ids.contains(&room))
-                    || room == crate::personal_continuity_workspace_id(&authority.governor)
+                    || crate::personal_continuity_workspace_id_matches(&authority.governor, room)
                     || capability.effect != collab_types::Effect::Grant
                     || !capability.is_live_at(Some(now))
                 {
@@ -1007,7 +1564,7 @@ async fn refresh_home_peer_authority_once(
     match refresh() {
         Ok((users, room_users, governed_rooms)) => {
             apply_home_peer_projection(
-                live_policy,
+                handshake_trust,
                 workspaces,
                 own_user,
                 state,
@@ -1022,7 +1579,7 @@ async fn refresh_home_peer_authority_once(
             tracing::warn!(path = %bundle_path.display(), "home-peer authority refresh failed closed: {error}");
             let governed_rooms = std::mem::take(&mut state.governed_rooms);
             apply_home_peer_projection(
-                live_policy,
+                handshake_trust,
                 workspaces,
                 own_user,
                 state,
@@ -1041,7 +1598,7 @@ async fn refresh_home_peer_authority_once(
 fn spawn_home_peer_authority_refresh(
     bundle_path: PathBuf,
     own_user: [u8; 32],
-    live_policy: Arc<std::sync::RwLock<TrustPolicy>>,
+    handshake_trust: HandshakeTrust,
     workspaces: WorkspaceRegistry,
 ) -> JoinHandle<()> {
     tokio::spawn(async move {
@@ -1053,7 +1610,7 @@ fn spawn_home_peer_authority_refresh(
             let _ = refresh_home_peer_authority_once(
                 &bundle_path,
                 own_user,
-                &live_policy,
+                &handshake_trust,
                 &workspaces,
                 &mut state,
                 unix_now_secs(),
@@ -1129,31 +1686,90 @@ fn push_peer_relay_task(tasks: &Arc<std::sync::Mutex<Vec<AbortOnDrop>>>, task: J
 }
 
 fn validate_relay_identity(identity: &RelayIdentity) -> Result<(), RelayError> {
+    validate_relay_device_identity(identity)?;
+    if !identity.device_cert.capabilities.can_act_as_host {
+        return Err(RelayError::Identity(
+            "device certificate is not host-capable".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_relay_device_identity(identity: &RelayIdentity) -> Result<(), RelayError> {
     verify_device_cert_at(&identity.device_cert, now_ns())
-        .map_err(|error| RelayError::Identity(format!("invalid host certificate: {error}")))?;
+        .map_err(|error| RelayError::Identity(format!("invalid device certificate: {error}")))?;
     if identity.device_cert.user_public_key != identity.user_public_key {
         return Err(RelayError::Identity(
-            "host certificate does not chain to the configured user public key".into(),
+            "device certificate does not chain to the configured user public key".into(),
         ));
     }
     if identity.device_cert.device_public_key
         != identity.device_signing_key.verifying_key().to_bytes()
     {
         return Err(RelayError::Identity(
-            "host certificate does not match the configured device signing key".into(),
-        ));
-    }
-    if !identity.device_cert.capabilities.can_act_as_host {
-        return Err(RelayError::Identity(
-            "device certificate is not host-capable".into(),
+            "device certificate does not match the configured device signing key".into(),
         ));
     }
     if identity
         .revocations
         .is_revoked(&identity.device_cert.device_public_key)
     {
+        return Err(RelayError::Identity("device certificate is revoked".into()));
+    }
+    Ok(())
+}
+
+fn validate_native_interactive_workspace_identity(
+    cfg: &RelayConfig,
+    identity: &RelayIdentity,
+) -> Result<(), RelayError> {
+    validate_relay_device_identity(identity)?;
+    if !identity.device_cert.capabilities.can_own_workspaces {
         return Err(RelayError::Identity(
-            "host device certificate is revoked".into(),
+            "interactive workspace owner cannot govern workspaces".into(),
+        ));
+    }
+    if cfg.device_role != crate::mesh::DeviceRole::Interactive {
+        return Err(RelayError::Identity(
+            "interactive workspace owner requires the interactive device role".into(),
+        ));
+    }
+    if !cfg.peer_relays.is_empty() {
+        return Err(RelayError::Identity(
+            "interactive workspace owner cannot configure relay federation".into(),
+        ));
+    }
+    let [binding] = cfg.workspaces.as_slice() else {
+        return Err(RelayError::Identity(
+            "interactive workspace owner requires exactly one workspace binding".into(),
+        ));
+    };
+    if matches!(cfg.trust_policy, TrustPolicy::AllowAny) || !binding.admitted_users.is_empty() {
+        return Err(RelayError::Identity(
+            "interactive workspace owner requires exact governed admission".into(),
+        ));
+    }
+    let Some(authority) = binding.shell_authority.as_ref() else {
+        return Err(RelayError::Identity(
+            "interactive workspace owner requires local shell authority".into(),
+        ));
+    };
+    if !binding.pin
+        || binding.checkpoint_prefix_recovery
+            != crate::config::CheckpointPrefixRecovery::NativeOwnerDurableBaseline
+    {
+        return Err(RelayError::Identity(
+            "interactive workspace owner requires a pinned native durable baseline".into(),
+        ));
+    }
+    if !crate::room_workspace_id_matches(authority.room(), binding.id) {
+        return Err(RelayError::Identity(
+            "interactive shell authority room does not match its workspace".into(),
+        ));
+    }
+    if authority.governor() != &identity.device_cert {
+        return Err(RelayError::Identity(
+            "interactive shell authority is not the configured device certificate".into(),
         ));
     }
     Ok(())
@@ -1162,6 +1778,9 @@ fn validate_relay_identity(identity: &RelayIdentity) -> Result<(), RelayError> {
 /// The `ProtocolHandler` iroh wires to the ALPN.
 #[derive(Clone)]
 struct RelayProtocol {
+    v2: bool,
+    agent_reads_v1: bool,
+    auth_domain: AuthDomain,
     workspaces: WorkspaceRegistry,
     trust_policy: Arc<std::sync::RwLock<TrustPolicy>>,
     revocations: Arc<std::sync::RwLock<RevocationList>>,
@@ -1175,6 +1794,7 @@ struct RelayProtocol {
 
 #[derive(Clone)]
 struct DiscoveryProtocol {
+    auth_domain: AuthDomain,
     workspaces: WorkspaceRegistry,
     own_user_pk: [u8; 32],
     trust_policy: Arc<std::sync::RwLock<TrustPolicy>>,
@@ -1190,6 +1810,7 @@ struct DiscoveryProtocol {
 
 #[derive(Clone)]
 struct ManagementProtocol {
+    auth_domain: AuthDomain,
     endpoint: Endpoint,
     own_user_pk: [u8; 32],
     own_cert: DeviceCert,
@@ -1237,6 +1858,7 @@ impl ProtocolHandler for ManagementProtocol {
         let mut nonce = [0; 32];
         rand::Rng::fill_bytes(&mut rand::rng(), &mut nonce);
         let ack = auth::build_hello_ack(
+            self.auth_domain,
             self.own_cert.clone(),
             &self.own_sk,
             nonce,
@@ -1253,7 +1875,7 @@ impl ProtocolHandler for ManagementProtocol {
         .map_err(AcceptError::from_err)?;
         let ack2: HelloAck2 = postcard::from_bytes(&read_frame(&mut recv, MAX_FRAME_BYTES).await?)
             .map_err(|error| AcceptError::from_err(std::io::Error::other(error.to_string())))?;
-        auth::verify_hello_ack2(&ack2, &peer.device_public_key, &nonce)
+        auth::verify_hello_ack2(self.auth_domain, &ack2, &peer.device_public_key, &nonce)
             .map_err(|error| AcceptError::from_err(std::io::Error::other(error.to_string())))?;
         let request: HomePeerManagementRequest =
             postcard::from_bytes(&read_frame(&mut recv, MAX_FRAME_BYTES).await?)
@@ -1394,6 +2016,7 @@ impl ProtocolHandler for DiscoveryProtocol {
             rand::rng().fill_bytes(&mut nonce);
         }
         let ack = auth::build_hello_ack(
+            self.auth_domain,
             self.own_cert.clone(),
             &self.own_sk,
             nonce,
@@ -1408,7 +2031,7 @@ impl ProtocolHandler for DiscoveryProtocol {
         .map_err(AcceptError::from_err)?;
         let ack2: HelloAck2 = postcard::from_bytes(&read_frame(&mut recv, MAX_FRAME_BYTES).await?)
             .map_err(|error| AcceptError::from_err(std::io::Error::other(error.to_string())))?;
-        auth::verify_hello_ack2(&ack2, &peer.device_public_key, &nonce)
+        auth::verify_hello_ack2(self.auth_domain, &ack2, &peer.device_public_key, &nonce)
             .map_err(|error| AcceptError::from_err(std::io::Error::other(error.to_string())))?;
         let request: ContentEndpointRequest =
             postcard::from_bytes(&read_frame(&mut recv, MAX_FRAME_BYTES).await?)
@@ -1565,6 +2188,7 @@ async fn handle_conn(
         rand::rng().fill_bytes(&mut server_nonce);
     }
     let ack = auth::build_hello_ack(
+        ctx.auth_domain,
         ctx.own_cert.clone(),
         &ctx.own_sk,
         server_nonce,
@@ -1581,7 +2205,12 @@ async fn handle_conn(
         .map_err(|e| RelayError::Iroh(format!("read ack2: {e}")))?;
     let ack2: HelloAck2 = postcard::from_bytes(&client_ack2_bytes)
         .map_err(|e| RelayError::Iroh(format!("decode ack2: {e}")))?;
-    if let Err(e) = auth::verify_hello_ack2(&ack2, &client_peer.device_public_key, &server_nonce) {
+    if let Err(e) = auth::verify_hello_ack2(
+        ctx.auth_domain,
+        &ack2,
+        &client_peer.device_public_key,
+        &server_nonce,
+    ) {
         ctx.metrics.inc_auth_rejected();
         return Err(RelayError::Iroh(format!("auth ack2 reject: {e}")));
     }
@@ -1589,7 +2218,7 @@ async fn handle_conn(
     ctx.metrics.inc_conns_authed();
 
     // 4. Hand off to the peer loop.
-    let peer_result = run_peer(
+    let peer_result = run_peer_version(
         client_peer,
         connection.clone(),
         recv,
@@ -1600,10 +2229,13 @@ async fn handle_conn(
             revocations: ctx.revocations,
             trust_policy: ctx.trust_policy,
             own_user_public_key: ctx.own_user_pk,
+            own_device_cert: ctx.own_cert.clone(),
             metrics: ctx.metrics,
             own_device_public_key: ctx.own_cert.device_public_key,
             app_serving: ctx.app_serving,
         },
+        ctx.v2,
+        ctx.agent_reads_v1,
     )
     .await;
     if let Err(e) = peer_result {
@@ -1613,6 +2245,9 @@ async fn handle_conn(
     Ok(())
 }
 
+/// The relay frame codec, re-exported under the daemon path older callers use.
+pub use crate::frame::{read_frame, write_frame};
+
 /// Spawn the outbound reconnect-with-backoff task for one peer
 /// relay identified by its config entry. Parses the iroh id and
 /// hands off to [`spawn_peer_relay_dial_at`].
@@ -1620,6 +2255,7 @@ fn spawn_peer_relay_dial(
     peer_cfg: PeerRelayConfig,
     endpoint: Endpoint,
     identity: RelayIdentity,
+    revocations: Arc<std::sync::RwLock<RevocationList>>,
     workspaces: WorkspaceRegistry,
     metrics: Arc<Metrics>,
 ) -> JoinHandle<()> {
@@ -1640,7 +2276,7 @@ fn spawn_peer_relay_dial(
             identity.user_public_key,
             identity.device_cert,
             identity.device_signing_key,
-            identity.revocations,
+            revocations,
             workspaces,
             metrics,
         )
@@ -1652,13 +2288,11 @@ fn spawn_peer_relay_dial(
 /// relay, with a fully-resolved endpoint address. The task loops
 /// forever (until the returned join handle is aborted) — reconnect
 /// gap is `1s, 2s, 4s, 8s, …, capped at 60s`. While connected it
-/// holds a `RelayClient` session and mirrors every inbound Delta
-/// into the local workspace runtime via the SAME `fanout_delta`
-/// device peers use — that's the reuse: no separate federation
-/// delivery path.
+/// holds a `RelayClient` session and admits inbound deltas through the
+/// same ordered persistence owner used by device peers.
 #[allow(
     clippy::too_many_arguments,
-    reason = "a federation dial carries the target, its ranking, and this relay's full signing identity and shared state"
+    reason = "The relay task receives its complete endpoint, enrollment and persistence context at spawn."
 )]
 fn spawn_peer_relay_dial_at(
     addr: EndpointAddr,
@@ -1668,7 +2302,7 @@ fn spawn_peer_relay_dial_at(
     own_user_pk: [u8; 32],
     own_cert: DeviceCert,
     own_sk: ed25519_dalek::SigningKey,
-    revocations: RevocationList,
+    revocations: Arc<std::sync::RwLock<RevocationList>>,
     workspaces: WorkspaceRegistry,
     metrics: Arc<Metrics>,
 ) -> JoinHandle<()> {
@@ -1691,7 +2325,7 @@ fn spawn_peer_relay_dial_at(
 
 #[allow(
     clippy::too_many_arguments,
-    reason = "the reconnect loop owns the same target, ranking, identity and shared state as the dial that spawned it"
+    reason = "Reconnect attempts retain the same endpoint, enrollment and persistence context for the task lifetime."
 )]
 async fn peer_relay_dial_loop(
     addr: EndpointAddr,
@@ -1701,27 +2335,39 @@ async fn peer_relay_dial_loop(
     own_user_pk: [u8; 32],
     own_cert: DeviceCert,
     own_sk: ed25519_dalek::SigningKey,
-    revocations: RevocationList,
+    revocations: Arc<std::sync::RwLock<RevocationList>>,
     workspaces: WorkspaceRegistry,
-    _metrics: Arc<Metrics>,
+    metrics: Arc<Metrics>,
 ) {
     let mut backoff_ms: u64 = 1_000;
     loop {
         let ep = endpoint.clone();
+        let current_revocations = revocations
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
         match RelayClient::connect(
             ep,
             addr.clone(),
             own_user_pk,
             own_cert.clone(),
             own_sk.clone(),
-            revocations.clone(),
+            current_revocations,
         )
         .await
         {
             Ok(client) => {
                 tracing::info!(%label, "peer relay federated");
                 backoff_ms = 1_000;
-                if let Err(e) = run_peer_relay_session(&client, &workspaces).await {
+                if let Err(e) = run_peer_relay_session(
+                    &client,
+                    &workspaces,
+                    revocations.clone(),
+                    own_user_pk,
+                    metrics.clone(),
+                )
+                .await
+                {
                     tracing::debug!(%label, "peer relay session ended: {e}");
                 }
             }
@@ -1737,17 +2383,52 @@ async fn peer_relay_dial_loop(
 /// One iteration of the federated peer-relay session. Sends a
 /// `PeerRelayHello` with the workspaces we host, waits for the
 /// peer's `PeerRelayHello`, `Subscribe`s to the intersection, then
-/// drains inbound Deltas + Presence into the LOCAL workspace
-/// runtime via `fanout_delta` / `fanout_presence` — the very same
-/// entry points a device peer's incoming envelope hits.
+/// drains inbound deltas through the local ordered persistence owner and
+/// routes ephemeral presence through the local workspace runtime.
+struct FederationLease(Arc<std::sync::atomic::AtomicBool>);
+impl Drop for FederationLease {
+    fn drop(&mut self) {
+        self.0.store(false, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
 async fn run_peer_relay_session(
     client: &RelayClient,
     workspaces: &WorkspaceRegistry,
+    revocations: Arc<std::sync::RwLock<RevocationList>>,
+    own_user: [u8; 32],
+    metrics: Arc<Metrics>,
 ) -> Result<(), String> {
     let hosted_local = advertise_hosted_workspaces(client, workspaces).await?;
     let intersection = negotiate_intersection(client, &hosted_local).await?;
     subscribe_to_intersection(client, &intersection)?;
-    drain_peer_relay_session(client, workspaces, &intersection).await
+    let lease = FederationLease(Arc::new(std::sync::atomic::AtomicBool::new(true)));
+    let (failed, mut failures) = tokio::sync::mpsc::channel(1);
+    let source = crate::peer::StateSource::federated(
+        client.relay_peer.clone(),
+        client.outbound.clone(),
+        failed,
+        revocations,
+        own_user,
+        lease.0.clone(),
+    );
+    for id in &intersection {
+        let workspace = workspaces.lock().await.get(id).cloned();
+        if let Some(workspace) = workspace {
+            let mut runtime = workspace.lock().await;
+            runtime.record_peer_relay(client.relay_peer.device_public_key);
+            if let Some(previous) = runtime
+                .outbound_federation
+                .insert(client.relay_peer.device_public_key, lease.0.clone())
+            {
+                previous.store(false, std::sync::atomic::Ordering::SeqCst);
+            }
+        }
+    }
+    tokio::select! {
+        result = drain_peer_relay_session(client, workspaces, &intersection, &source, &metrics) => result,
+        _ = failures.recv() => Err("federated state persistence/authorization failed".into()),
+    }
 }
 
 /// Step 1: advertise what we host, returning the list sent — needed
@@ -1823,9 +2504,8 @@ fn subscribe_to_intersection(client: &RelayClient, intersection: &[u64]) -> Resu
 /// Step 4: drain inbound envelopes for the life of this connection AND
 /// periodically run anti-entropy against the upstream relay.
 ///
-/// Live fan-out (Delta / Presence) is forwarded LOCALLY via the same
-/// `fanout_delta` / `fanout_presence` device peers use; `PeerRole::PeerRelay`
-/// suppresses re-echo to other peer relays.
+/// Live deltas use the shared ordered state owner; ephemeral presence uses
+/// the workspace router. `PeerRole::PeerRelay` suppresses re-echo to peers.
 ///
 /// Anti-entropy is the recovery tier layered on top: on a timer we
 /// advertise our local materialized heads (`SyncRequest`) so the
@@ -1840,6 +2520,8 @@ async fn drain_peer_relay_session(
     client: &RelayClient,
     workspaces: &WorkspaceRegistry,
     intersection: &[u64],
+    source: &crate::peer::StateSource,
+    metrics: &Arc<Metrics>,
 ) -> Result<(), String> {
     let mut resync = tokio::time::interval(Duration::from_millis(500));
     resync.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -1849,12 +2531,12 @@ async fn drain_peer_relay_session(
             // resync goes out as soon as we enter the loop.
             _ = resync.tick() => {
                 for id in intersection {
-                    send_sync_request_for(client, workspaces, *id).await;
+                    send_sync_request_for(client, workspaces, *id, source).await?;
                 }
             }
             maybe = client.recv() => {
                 let Some(env) = maybe else { return Ok(()) }; // clean EOF
-                handle_peer_relay_envelope(workspaces, client, env).await;
+                handle_peer_relay_envelope(workspaces, client, env, source, metrics).await?;
             }
         }
     }
@@ -1868,24 +2550,25 @@ async fn handle_peer_relay_envelope(
     workspaces: &WorkspaceRegistry,
     client: &RelayClient,
     env: Envelope,
-) {
+    source: &crate::peer::StateSource,
+    metrics: &Arc<Metrics>,
+) -> Result<(), String> {
     match &env {
-        Envelope::Delta {
-            workspace_id,
-            author_device_public_key,
-            delta,
-            ..
-        } => {
+        Envelope::Delta { workspace_id, .. } => {
             let ws = {
                 let map = workspaces.lock().await;
                 map.get(workspace_id).cloned()
             };
             if let Some(ws) = ws {
-                let mut wr = ws.lock().await;
-                let raw = delta.clone();
-                let seq = now_ns();
-                let author = *author_device_public_key;
-                let _ = wr.fanout_delta(&author, PeerRole::PeerRelay, &env, &raw, seq);
+                crate::peer::enqueue_federated(
+                    &ws,
+                    env.clone(),
+                    source.clone(),
+                    metrics.clone(),
+                    false,
+                )
+                .await
+                .map_err(|e| e.to_string())?;
             }
         }
         Envelope::Presence { workspace_id, .. } => {
@@ -1918,11 +2601,16 @@ async fn handle_peer_relay_envelope(
                     map.get(workspace_id).cloned()
                 };
                 if let Some(ws) = ws {
-                    let seq = now_ns();
-                    let _ = ws
-                        .lock()
+                    let env = Envelope::Delta {
+                        workspace_id: *workspace_id,
+                        author_device_public_key: [0; 32],
+                        authored_at_ns: now_ns(),
+                        delta: delta_since.clone(),
+                        signature: [0; 64],
+                    };
+                    crate::peer::enqueue_federated(&ws, env, source.clone(), metrics.clone(), true)
                         .await
-                        .ingest_sync_changes(*workspace_id, delta_since, seq);
+                        .map_err(|e| e.to_string())?;
                 }
             }
         }
@@ -1937,23 +2625,54 @@ async fn handle_peer_relay_envelope(
         }
         _ => {}
     }
+    Ok(())
 }
 
 /// Advertise our local materialized heads for `ws_id` to the upstream
 /// peer relay via a [`Envelope::SyncRequest`]. Best-effort: a workspace
 /// we don't host, or a closed outbound, is silently skipped.
-async fn send_sync_request_for(client: &RelayClient, workspaces: &WorkspaceRegistry, ws_id: u64) {
-    let have_heads = {
-        let map = workspaces.lock().await;
-        match map.get(&ws_id) {
-            Some(ws) => ws.lock().await.current_heads(),
-            None => return,
-        }
+async fn send_sync_request_for(
+    client: &RelayClient,
+    workspaces: &WorkspaceRegistry,
+    ws_id: u64,
+    source: &crate::peer::StateSource,
+) -> Result<(), String> {
+    let Some(ws) = workspaces.lock().await.get(&ws_id).cloned() else {
+        return Ok(());
     };
-    let _ = client.send(Envelope::SyncRequest {
-        workspace_id: ws_id,
-        have_heads,
-    });
+    let owner = crate::persistence::handle(&ws).await;
+    let outbound = client.outbound.clone();
+    let source = source.clone();
+    owner
+        .submit(
+            1,
+            |state| Ok(state.heads()),
+            move |result| async move {
+                let result = async {
+                    let heads = result?;
+                    let runtime = crate::workspace_io::fresh_membership(&ws).await?;
+                    if !source.authorized(&runtime) {
+                        return Err(crate::persistence::error("federation session changed"));
+                    }
+                    outbound
+                        .try_send(Envelope::SyncRequest {
+                            workspace_id: ws_id,
+                            have_heads: heads.clone(),
+                        })
+                        .map_err(|_| {
+                            crate::persistence::error("federation outbound backpressure")
+                        })?;
+                    Ok(heads)
+                }
+                .await;
+                if result.is_err() {
+                    source.failed();
+                }
+                result
+            },
+        )
+        .map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 /// Parse the hex-encoded iroh node id string into an iroh
@@ -1972,6 +2691,18 @@ fn parse_iroh_node_id(hex_id: &str) -> Option<PublicKey> {
 mod tests {
     use super::*;
     use tilo_user_identity::{DeviceCapabilities, DeviceIdentity, UserIdentity, sign_device_cert};
+
+    fn test_handshake_trust(
+        live_policy: Arc<std::sync::RwLock<TrustPolicy>>,
+        own_user: [u8; 32],
+    ) -> HandshakeTrust {
+        HandshakeTrust {
+            base_roots: Arc::new(HashSet::from([own_user])),
+            authority_roots: Arc::new(std::sync::RwLock::new(HashSet::new())),
+            live_policy,
+            allow_any: false,
+        }
+    }
 
     fn identity(capabilities: DeviceCapabilities) -> RelayIdentity {
         let (root, user) = UserIdentity::generate("test user", 1);
@@ -2003,6 +2734,66 @@ mod tests {
     fn ordinary_device_cannot_start_a_relay() {
         let error = validate_relay_identity(&identity(DeviceCapabilities::member())).unwrap_err();
         assert!(error.to_string().contains("not host-capable"));
+    }
+
+    #[test]
+    fn additional_protocol_rejects_relay_owned_alpns() {
+        for alpn in [
+            ALPN,
+            LEGACY_ALPN,
+            crate::transport_v2::ALPN_V2,
+            crate::transport_v2::ALPN_AGENT_READS_V1,
+            crate::transport_v2::LEGACY_ALPN_V2,
+            DISCOVERY_ALPN,
+            LEGACY_DISCOVERY_ALPN,
+            MANAGEMENT_ALPN,
+            LEGACY_MANAGEMENT_ALPN,
+            COMPUTE_ALPN,
+        ] {
+            assert!(matches!(
+                validate_additional_alpn(alpn),
+                Err(RelayError::ProtocolRegistration(_))
+            ));
+        }
+        validate_additional_alpn(b"tilo-workspace-join/1").unwrap();
+        assert!(matches!(
+            validate_additional_alpns([
+                b"tilo-workspace-join/1".as_slice(),
+                b"tilo-workspace-join/1".as_slice(),
+            ]),
+            Err(RelayError::ProtocolRegistration(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn dynamic_handshake_refresh_preserves_operator_root_pins() {
+        let own_user = [1; 32];
+        let operator_pin = [2; 32];
+        let authority_root = [3; 32];
+        let trust = HandshakeTrust::new(
+            &TrustPolicy::AllowList {
+                users: vec![hex::encode(operator_pin)],
+            },
+            &TrustPolicy::AllowList {
+                users: vec![hex::encode(operator_pin), hex::encode(authority_root)],
+            },
+            own_user,
+        );
+        let workspaces = Arc::new(AsyncMutex::new(HashMap::new()));
+
+        trust.replace_authority_roots(HashSet::new());
+        trust.refresh(&workspaces).await;
+
+        assert_eq!(
+            trust
+                .live_policy
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone(),
+            TrustPolicy::AllowList {
+                users: vec![hex::encode(own_user), hex::encode(operator_pin)]
+            }
+        );
     }
 
     #[test]
@@ -2218,7 +3009,7 @@ mod tests {
             workspaces: Vec::new(),
             ..RelayConfig::default()
         };
-        let workspaces = build_workspace_registry(&config).unwrap();
+        let workspaces = build_workspace_registry(&config, false).unwrap();
         get_or_autobind_workspace(
             &workspaces,
             Some(&WorkspaceAutobind {
@@ -2232,10 +3023,11 @@ mod tests {
         let policy = Arc::new(std::sync::RwLock::new(TrustPolicy::AllowList {
             users: Vec::new(),
         }));
+        let trust = test_handshake_trust(policy, governor.verifying_key().to_bytes());
         let task = spawn_home_peer_authority_refresh(
             bundle_path,
             governor.verifying_key().to_bytes(),
-            policy,
+            trust,
             workspaces.clone(),
         );
         tokio::time::sleep(Duration::from_millis(1100)).await;
@@ -2330,7 +3122,7 @@ mod tests {
             workspaces: Vec::new(),
             ..RelayConfig::default()
         };
-        let workspaces = build_workspace_registry(&config).unwrap();
+        let workspaces = build_workspace_registry(&config, false).unwrap();
         get_or_autobind_workspace(
             &workspaces,
             Some(&WorkspaceAutobind {
@@ -2343,13 +3135,14 @@ mod tests {
         let policy = Arc::new(std::sync::RwLock::new(TrustPolicy::AllowList {
             users: Vec::new(),
         }));
+        let trust = test_handshake_trust(policy, governor.verifying_key().to_bytes());
         let mut state = AuthorityRefreshState::default();
 
         assert!(
             refresh_home_peer_authority_once(
                 &bundle_path,
                 governor.verifying_key().to_bytes(),
-                &policy,
+                &trust,
                 &workspaces,
                 &mut state,
                 19,
@@ -2372,7 +3165,7 @@ mod tests {
             refresh_home_peer_authority_once(
                 &bundle_path,
                 governor.verifying_key().to_bytes(),
-                &policy,
+                &trust,
                 &workspaces,
                 &mut state,
                 20,
@@ -2454,7 +3247,7 @@ mod tests {
             workspaces: Vec::new(),
             ..RelayConfig::default()
         };
-        let workspaces = build_workspace_registry(&config).unwrap();
+        let workspaces = build_workspace_registry(&config, false).unwrap();
         get_or_autobind_workspace(
             &workspaces,
             Some(&WorkspaceAutobind {
@@ -2468,12 +3261,13 @@ mod tests {
             users: Vec::new(),
         }));
         let own_user = governor.verifying_key().to_bytes();
+        let trust = test_handshake_trust(policy.clone(), own_user);
         let mut first_process = AuthorityRefreshState::default();
         assert!(
             refresh_home_peer_authority_once(
                 &bundle_path,
                 own_user,
-                &policy,
+                &trust,
                 &workspaces,
                 &mut first_process,
                 1,
@@ -2504,7 +3298,7 @@ mod tests {
             !refresh_home_peer_authority_once(
                 &bundle_path,
                 own_user,
-                &policy,
+                &trust,
                 &workspaces,
                 &mut restarted,
                 1,
@@ -2526,7 +3320,7 @@ mod tests {
             !refresh_home_peer_authority_once(
                 &bundle_path,
                 own_user,
-                &policy,
+                &trust,
                 &workspaces,
                 &mut restarted_after_deletion,
                 1,
@@ -2553,7 +3347,7 @@ mod tests {
             !refresh_home_peer_authority_once(
                 &bundle_path,
                 own_user,
-                &policy,
+                &trust,
                 &workspaces,
                 &mut restarted_after_governor_change,
                 1,
@@ -2681,6 +3475,8 @@ mod tests {
                     pin: true,
                     replication: crate::mesh::ReplicationIntent::FullWorkspace,
                     admitted_users: vec![hex::encode(user.public_key)],
+                    shell_authority: None,
+                    checkpoint_prefix_recovery: crate::config::CheckpointPrefixRecovery::Disabled,
                 }],
                 ..RelayConfig::default()
             },

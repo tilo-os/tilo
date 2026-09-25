@@ -118,6 +118,26 @@ impl WakeScope {
         Ok(())
     }
 
+    /// Drain wakes recorded while no destination is bound, as
+    /// `(pending, requires_sync)`. A hosted application worker has no event
+    /// loop: its model pump is the consumer. `None` means the wakes are not
+    /// observable here (a sink is bound and received them, or the scope is
+    /// closed), so a caller must assume a model-dirty wake.
+    pub(crate) fn take_unbound(&self) -> Option<(bool, bool)> {
+        let mut destination = self
+            .route
+            .destination
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if !self.route.open.load(Ordering::Acquire) || destination.sink.is_some() {
+            return None;
+        }
+        Some((
+            std::mem::take(&mut destination.pending),
+            std::mem::take(&mut destination.pending_sync),
+        ))
+    }
+
     /// Receiver-side validation remains mandatory after sender-side checks.
     pub fn accepts(&self, event: &WakeEvent) -> bool {
         self.route.open.load(Ordering::Acquire)

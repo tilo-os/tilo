@@ -19,7 +19,9 @@ use tokio::sync::{Mutex as AsyncMutex, mpsc};
 use tilo_user_identity::{DeviceCert, RevocationList};
 
 use crate::frame::{FrameReader, read_frame, write_frame};
-use tilo_relay_protocol::auth::{self, AuthError, AuthenticatedPeer, Hello, HelloAck, now_ns};
+use tilo_relay_protocol::auth::{
+    self, AuthDomain, AuthError, AuthenticatedPeer, Hello, HelloAck, now_ns,
+};
 use tilo_relay_protocol::transport::{
     ALPN, ContentEndpointAdvertisement, ContentEndpointRequest, ContentPeerRegistration,
     DISCOVERY_ALPN, Envelope, HomePeerManagementRequest, HomePeerManagementResponse,
@@ -144,11 +146,11 @@ impl RelayClient {
         .await?;
         let ack: HelloAck = postcard::from_bytes(&read_frame(&mut recv, MAX_FRAME_BYTES).await?)
             .map_err(|error| ClientError::Codec(error.to_string()))?;
-        auth::verify_hello_ack(&ack, &expected_server_user, &revocations, now_ns(), &nonce)?;
+        auth::verify_hello_ack(AuthDomain::Tilo, &ack, &expected_server_user, &revocations, now_ns(), &nonce)?;
         if ack.cert.device_public_key != expected_server_device {
             return Err(ClientError::Auth(AuthError::PolicyReject));
         }
-        let ack2 = auth::build_hello_ack2(&own_sk, &ack.server_nonce);
+        let ack2 = auth::build_hello_ack2(AuthDomain::Tilo, &own_sk, &ack.server_nonce);
         write_frame(
             &mut send,
             &postcard::to_allocvec(&ack2).map_err(|error| ClientError::Codec(error.to_string()))?,
@@ -302,15 +304,15 @@ impl RelayClient {
         let ack: HelloAck = postcard::from_bytes(&read_frame(&mut recv, MAX_FRAME_BYTES).await?)
             .map_err(|error| ClientError::Codec(error.to_string()))?;
         match expected_server.as_ref() {
-            Some((user, _)) => auth::verify_hello_ack(&ack, user, &revocations, now_ns(), &nonce)?,
-            None => auth::verify_pinned_host_ack(&ack, &revocations, now_ns(), &nonce)?,
+            Some((user, _)) => auth::verify_hello_ack(AuthDomain::Tilo, &ack, user, &revocations, now_ns(), &nonce)?,
+            None => auth::verify_pinned_host_ack(AuthDomain::Tilo, &ack, &revocations, now_ns(), &nonce)?,
         };
         if let Some((_, expected_device)) = expected_server
             && ack.cert.device_public_key != expected_device
         {
             return Err(ClientError::Auth(AuthError::PolicyReject));
         }
-        let ack2 = auth::build_hello_ack2(&own_sk, &ack.server_nonce);
+        let ack2 = auth::build_hello_ack2(AuthDomain::Tilo, &own_sk, &ack.server_nonce);
         write_frame(
             &mut send,
             &postcard::to_allocvec(&ack2).map_err(|error| ClientError::Codec(error.to_string()))?,
@@ -484,7 +486,7 @@ impl RelayClient {
         let relay_peer = match expected_server_user.as_ref() {
             Some(expected_user) => {
                 let relay_peer =
-                    auth::verify_hello_ack(&ack, expected_user, &revocations, now, &client_nonce)?;
+                    auth::verify_hello_ack(AuthDomain::Tilo, &ack, expected_user, &revocations, now, &client_nonce)?;
                 if expected_server_device.is_some_and(|expected_device| {
                     relay_peer.cert.device_public_key != expected_device
                 }) {
@@ -492,10 +494,10 @@ impl RelayClient {
                 }
                 relay_peer
             }
-            None => auth::verify_pinned_host_ack(&ack, &revocations, now, &client_nonce)?,
+            None => auth::verify_pinned_host_ack(AuthDomain::Tilo, &ack, &revocations, now, &client_nonce)?,
         };
 
-        let ack2 = auth::build_hello_ack2(&own_sk, &ack.server_nonce);
+        let ack2 = auth::build_hello_ack2(AuthDomain::Tilo, &own_sk, &ack.server_nonce);
         let own_ack2_bytes =
             postcard::to_allocvec(&ack2).map_err(|e| ClientError::Codec(e.to_string()))?;
         write_frame(&mut send, &own_ack2_bytes).await?;

@@ -1158,6 +1158,31 @@ fn max_bottom_edge(w: &dyn Widget) -> f64 {
 }
 
 impl Widget for Scrollable {
+    fn primary_vertical_scroll(&self) -> Option<crate::widget::PrimaryScrollRegion> {
+        Some(crate::widget::PrimaryScrollRegion {
+            key: "primary",
+            owner_generation: None,
+            metrics: self.v_metrics(),
+        })
+    }
+    fn apply_primary_vertical_scroll(
+        &mut self,
+        action: crate::widget::PrimaryScrollAction,
+    ) -> crate::widget::PrimaryScrollResult {
+        use crate::widget::PrimaryScrollResult;
+        let Some(region) = self.primary_vertical_scroll() else {
+            return PrimaryScrollResult::Unsupported;
+        };
+        let Some(next) = action.offset(region.metrics) else {
+            return PrimaryScrollResult::Unsupported;
+        };
+        if next == region.metrics.offset {
+            return PrimaryScrollResult::Unchanged(region);
+        }
+        self.set_offset_y(next as f32);
+        PrimaryScrollResult::Changed(self.primary_vertical_scroll().unwrap())
+    }
+
     fn has_action_control_bindings(&self) -> bool {
         let mut found = false;
         self.for_each_child(&mut |child| {
@@ -2437,6 +2462,28 @@ mod tests {
         );
     }
 
+    #[test]
+    fn primary_scroll_shares_inset_geometry_and_native_offset() {
+        use crate::widget::PrimaryScrollAction;
+        let mut scroll = Scrollable::new_vertical().with_bottom_content_inset(12.0);
+        scroll.set_viewport_rect(Rect::new(0.0, 0.0, 400.0, 300.0));
+        scroll.set_content_size(400.0, 500.0);
+        scroll.apply_primary_vertical_scroll(PrimaryScrollAction::End);
+        let m = scroll.primary_vertical_scroll().unwrap().metrics;
+        assert_eq!(m.offset, 212.0);
+        assert_eq!(m.viewport, 288.0);
+        assert_eq!(scroll.offset_y(), 212.0);
+        scroll.set_offset_y(48.0);
+        assert_eq!(
+            scroll.primary_vertical_scroll().unwrap().metrics.offset,
+            48.0
+        );
+        scroll.set_content_size(400.0, 100.0);
+        assert_eq!(
+            scroll.primary_vertical_scroll().unwrap().metrics.offset,
+            0.0
+        );
+    }
     #[test]
     fn bottom_content_inset_does_not_create_overflow_when_content_already_fits() {
         let mut scroll = Scrollable::new_vertical().with_bottom_content_inset(12.0);

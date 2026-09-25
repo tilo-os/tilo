@@ -714,12 +714,15 @@ fn clipped_ink_cache_groups_glyphs_by_font_instance() {
         vec![],
         vec![],
     );
+    // Horizontally outside but vertically overlapping the line, so the line
+    // is not culled whole (`rich_run_outside_clip`) and reaches the glyph
+    // batch cull, which looks up ink once per font instance.
     renderer.draw_rich_in_clip(
         &mut Scene::new(),
         &layout,
         Affine::IDENTITY,
         Color::WHITE,
-        Rect::new(0.0, 1000.0, 400.0, 1100.0),
+        Rect::new(1000.0, 0.0, 1100.0, 100.0),
     );
     assert_eq!(
         renderer.ink_bounds.len(),

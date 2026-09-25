@@ -70,6 +70,8 @@ notifications = ["native", "dep:windows", "windows/UI_Notifications", "windows/D
 xdg-paths = { path = "../../system/xdg-paths" }
 private-fs = { path = "../../system/private-fs" }
 advisory-lock = { path = "../../system/advisory-lock" }
+# Canonical committed-document merge shared with the Cloud peer runtime.
+qos-peer-state = { path = "../../collab/qos-peer-state" }
 tilo-ui-graph = { path = "../../dev/ui-graph" }
 atomic-file = { path = "../../system/atomic-file" }
 settings-store = { path = "../../system/settings-store" }
@@ -219,6 +221,7 @@ sha2.workspace = true
 blake3.workspace = true
 toml.workspace = true
 unicode-script = "=0.5.8"
+unicode-properties = "=0.1.4"
 # Pairing-channel authentication. HMAC binds the round-1 broadcast to
 # the one-time pairing secret; XChaCha20-Poly1305 separately encrypts
 # and authenticates the exchanged DKG payloads.
@@ -280,6 +283,8 @@ windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Secur
 pkg-config = "0.3"
 
 [dev-dependencies]
+serial_test.workspace = true
+atomic-file = { path = "../../system/atomic-file", features = ["test-support"] }
 regex.workspace = true
 tilo-automerge = { workspace = true, features = ["heap-probe"] }
 # The `diag!` tests reproduce the crash they prevent: they need `dup2` to point

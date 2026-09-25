@@ -23,7 +23,6 @@ path = "src/lib.rs"
 [dependencies]
 thiserror.workspace = true
 tracing.workspace = true
-bounded-command = { path = "../bounded-command" }
 
 [target.'cfg(unix)'.dependencies]
 rustix = { workspace = true, features = ["process"] }
@@ -33,3 +32,6 @@ ssip-client = "0.10"
 
 [lints]
 workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+bounded-command = { path = "../bounded-command" }

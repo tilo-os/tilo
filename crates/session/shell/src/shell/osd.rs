@@ -749,4 +749,122 @@ mod tests {
             e.b
         );
     }
+
+    /// HIG §7a: the caption is scaled exactly once. The pass paints the
+    /// theme-resolved `sm` with the renderer reset to 1×, so at 200 % the
+    /// line is twice the 1× line — not four times — and the renderer's own
+    /// scale is handed back to the widgets that follow.
+    #[test]
+    fn caption_type_is_scaled_once_at_large_text() {
+        let base = Theme::dark();
+        let large = Theme::dark().with_text_scale(2.0);
+        let mut tr = TextRenderer::new();
+        tr.set_text_scale(2.0);
+        let viewport = Rect::new(0.0, 0.0, 640.0, 360.0);
+        let mut scene = Scene::new();
+        Osd::brightness(0.5).draw(&mut scene, Affine::IDENTITY, &mut tr, &large, viewport, 1.0);
+        assert_eq!(
+            tr.text_scale(),
+            2.0,
+            "the pass restores the renderer's scale"
+        );
+        // What the pass painted with: the theme's `sm` on a 1× renderer.
+        let caption = Osd::brightness(0.5).caption();
+        let mut at_pass = TextRenderer::new();
+        let (_, h1) = at_pass.measure_weighted(
+            &caption,
+            base.tokens.typography.scale.sm,
+            None,
+            TextWeight::Medium,
+        );
+        let (_, h2) = at_pass.measure_weighted(
+            &caption,
+            large.tokens.typography.scale.sm,
+            None,
+            TextWeight::Medium,
+        );
+        assert!(
+            (h2 - 2.0 * h1).abs() < 1.0,
+            "200 % caption line {h2} should be twice the 1× line {h1}"
+        );
+    }
+
+    /// Review fixtures: the ux-bench cannot raise an OSD on macOS, so the
+    /// slab is photographed straight from its paint path — each kind, at 1×
+    /// and 200 % text, on the dark, light and high-contrast palettes. The
+    /// rendered pixels are asserted, not just the file: the slab's interior
+    /// is the Panel ground, whatever the palette.
+    #[test]
+    fn osd_review_fixtures_are_written() {
+        let out =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../target/ui-review/s2-r2/osd");
+        let (w, h) = (640_u32, 360_u32);
+        let viewport = Rect::new(0.0, 0.0, f64::from(w), f64::from(h));
+        let mut renderer = review_offscreen::OffscreenRenderer::new(w, h);
+        let variants = [
+            ("dark-1x", Theme::dark(), 1.0_f32),
+            ("dark-2x", Theme::dark().with_text_scale(2.0), 2.0),
+            ("light-1x", Theme::light(), 1.0),
+            ("high-contrast-1x", Theme::high_contrast(), 1.0),
+        ];
+        for (name, theme, scale) in variants {
+            for (kind, osd) in [
+                ("volume", Osd::volume(0.62, false)),
+                ("mic-muted", Osd::mic_mute(true)),
+                ("transport", Osd::transport(Transport::Next)),
+            ] {
+                let mut text = TextRenderer::new();
+                text.set_text_scale(scale);
+                let mut scene = Scene::new();
+                osd.draw(
+                    &mut scene,
+                    Affine::IDENTITY,
+                    &mut text,
+                    &theme,
+                    viewport,
+                    1.0,
+                );
+                let path = out.join(format!("{name}-{kind}.png"));
+                let ground = theme.tokens.colors.surfaces.base;
+                renderer.render_png(&scene, ground, &path);
+                assert!(path.is_file(), "OSD fixture missing: {}", path.display());
+                let rgba = renderer.render_resilient(&scene, ground);
+                let slab = Osd::rect_in(viewport);
+                let probe = Point::new(slab.x0 + 12.0, slab.center().y);
+                assert_pixel_is(
+                    &rgba,
+                    w,
+                    probe,
+                    ui::chrome::shell::panel_ground(&theme),
+                    &format!("{name}-{kind}: slab interior is the Panel ground"),
+                );
+            }
+        }
+    }
+
+    /// The rendered pixel at `at` is `expected` to within rounding.
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "probe points are inside a positive viewport"
+    )]
+    fn assert_pixel_is(
+        rgba: &[u8],
+        width: u32,
+        at: Point,
+        expected: vello::peniko::Color,
+        what: &str,
+    ) {
+        let (r, g, b, _) =
+            review_offscreen::OffscreenRenderer::sample(rgba, width, at.x as u32, at.y as u32);
+        let e = expected.to_rgba8();
+        let close = |a: u8, b: u8| a.abs_diff(b) <= 2;
+        assert!(
+            close(r, e.r) && close(g, e.g) && close(b, e.b),
+            "{what}: got ({r},{g},{b}) expected ({},{},{})",
+            e.r,
+            e.g,
+            e.b
+        );
+    }
 }

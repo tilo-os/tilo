@@ -8,6 +8,17 @@ use std::sync::Arc;
 
 use super::state::{AppKind, TabId};
 
+/// Resolve only the two native provider IDs emitted by older profiles. New
+/// registrations and persisted references remain on the canonical IDs.
+#[cfg(any(target_os = "macos", test))]
+fn native_provider_lookup_id(provider_id: &str) -> &str {
+    match provider_id {
+        "org.tilo.Files" => "org.nirios.Files",
+        "org.tilo.Editor" => "org.nirios.Editor",
+        provider_id => provider_id,
+    }
+}
+
 /// An application the native shell can construct in-process.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct NativeAppRegistration {
@@ -76,16 +87,19 @@ impl HostedTileInputs {
                 remote_accounts: Vec::new(),
                 trusted_humans: file_explorer::identity_directory::TrustedHumanDirectory::default(),
             }),
+            file_services: Some(
+                file_explorer::files_app::HostedFileServices::deferred_document_open(),
+            ),
             native_apps: Arc::from([
                 NativeAppRegistration {
-                    package_id: "org.tilo.Files",
+                    package_id: "org.nirios.Files",
                     display_name: "Files",
                     kind: AppKind::FileExplorer,
                     opens_extensions: &[],
                     opens_mime_types: &[],
                 },
                 NativeAppRegistration {
-                    package_id: "org.tilo.Editor",
+                    package_id: "org.nirios.Editor",
                     display_name: "Editor",
                     kind: AppKind::Other("Editor".into()),
                     opens_extensions: &["txt"],
@@ -121,7 +135,7 @@ impl HostedTileInputs {
             parent,
             Some(file_explorer::files_app::HostedFileServices {
                 thumbnails: None,
-                document_opener: None,
+                document_opener: file_explorer::files_app::DocumentOpenRoute::Unavailable,
             }),
         )
     }
@@ -156,6 +170,18 @@ impl HostedTileInputs {
 
     pub(crate) fn file_services(&self) -> Option<&file_explorer::files_app::HostedFileServices> {
         self.file_services.as_ref()
+    }
+
+    /// Accept only the opaque deferred-open capability installed with this
+    /// host's real Files services. Other mounted apps can construct the public
+    /// intent shape, but cannot authorize a native document read/publication.
+    pub(crate) fn accepts_document_open_capability(
+        &self,
+        capability: &ui::widget::DocumentOpenCapability,
+    ) -> bool {
+        self.file_services
+            .as_ref()
+            .is_some_and(|services| services.accepts_document_open_capability(capability))
     }
 
     pub(crate) fn is_fixture(&self) -> bool {
@@ -213,7 +239,6 @@ impl HostedTileInputs {
 
     /// Release launch data once its tab leaves any workspace, without rereading files.
     /// Returns whether persisted references changed.
-    #[cfg(target_os = "macos")]
     pub(crate) fn prune_documents(&self, tree: &mut super::state::WorkspaceTree) -> bool {
         if tree.native_document_tabs.is_empty() && self.documents.borrow().is_empty() {
             return false;
@@ -241,10 +266,11 @@ impl HostedTileInputs {
         self.prune_documents(tree);
         let references = &tree.native_document_tabs;
         for (&tab, reference) in references {
+            let provider_id = native_provider_lookup_id(&reference.provider_id);
             let Some(app) = self
                 .native_apps
                 .iter()
-                .find(|app| app.package_id == reference.provider_id)
+                .find(|app| app.package_id == provider_id)
             else {
                 continue;
             };
@@ -373,6 +399,7 @@ mod tests {
 #[cfg(test)]
 mod desktop_catalog_tests {
     use super::*;
+
     #[test]
     fn desktop_native_catalog_includes_constructible_files() {
         let dir = tempfile::tempdir().unwrap();
@@ -382,6 +409,26 @@ mod desktop_catalog_tests {
                 .native_apps()
                 .iter()
                 .any(|app| app.display_name == "Files" && app.kind == AppKind::FileExplorer)
+        );
+    }
+
+    #[test]
+    fn persisted_native_provider_lookup_maps_only_the_finite_legacy_ids() {
+        assert_eq!(
+            native_provider_lookup_id("org.tilo.Files"),
+            "org.nirios.Files"
+        );
+        assert_eq!(
+            native_provider_lookup_id("org.tilo.Editor"),
+            "org.nirios.Editor"
+        );
+        assert_eq!(
+            native_provider_lookup_id("org.nirios.Editor"),
+            "org.nirios.Editor"
+        );
+        assert_eq!(
+            native_provider_lookup_id("org.example.Unknown"),
+            "org.example.Unknown"
         );
     }
 }
@@ -481,7 +528,7 @@ mod document_lifecycle_tests {
             "stale references must be filtered before restoration"
         );
         assert!(
-            matches!(restored.document(tabs[0]), Some(HostedDocumentState::Ready(document)) if document.text == "live document\n")
+            matches!(restored.document(tabs[0]), Some(HostedDocumentState::Ready(document)) if document.provider_id == "org.nirios.Editor" && document.text == "live document\n")
         );
         let mut driver =
             ui::headless::Driver::new(ui::State::new(), Box::new(reopened.host), (1280, 800));

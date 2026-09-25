@@ -75,6 +75,21 @@ struct SigningView<'a> {
     signed_by: Ed25519PublicKey,
 }
 
+#[derive(Clone, Copy)]
+enum SigningDomainV1 {
+    CurrentTilo,
+    LegacyQos,
+}
+
+impl SigningDomainV1 {
+    const fn bytes(self) -> &'static [u8] {
+        match self {
+            Self::CurrentTilo => b"tilo.mls-governance.v1",
+            Self::LegacyQos => b"qos.mls-governance.v1",
+        }
+    }
+}
+
 /// Live authoritative membership inputs required to accept a frame.
 pub struct MlsGovernanceContext<'a> {
     pub channel: ChannelId,
@@ -137,13 +152,13 @@ impl MlsGovernanceFrameV1 {
             signed_by,
             signature: Signature::from_bytes([0; 64]),
         };
-        frame.signature = sign_event(&frame.signing_view(), signer)?;
+        frame.signature = sign_event(&frame.signing_view(SigningDomainV1::CurrentTilo), signer)?;
         Ok(frame)
     }
 
-    fn signing_view(&self) -> SigningView<'_> {
+    fn signing_view(&self, domain: SigningDomainV1) -> SigningView<'_> {
         SigningView {
-            domain: b"tilo.mls-governance.v1",
+            domain: domain.bytes(),
             version: self.version,
             transaction_id: self.transaction_id,
             channel: self.channel,
@@ -171,7 +186,37 @@ impl MlsGovernanceFrameV1 {
     /// Returns [`VerifyError`] for malformed keys, encoding failures, or a
     /// signature mismatch.
     pub fn verify_signature(&self) -> Result<(), VerifyError> {
-        verify_event(&self.signing_view(), &self.signature, &self.signed_by)
+        self.verify_signature_for_domain(SigningDomainV1::CurrentTilo)
+    }
+
+    /// Verify a frame while reopening a persisted governance journal.
+    ///
+    /// This compatibility boundary accepts only the current Tilo V1 signing
+    /// domain and the original qOS V1 domain. Live validation remains bound
+    /// to [`Self::verify_signature`] and therefore accepts current Tilo
+    /// signatures only.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MlsGovernanceError::Version`] for an unsupported embedded
+    /// frame version, or [`MlsGovernanceError::Signature`] for malformed
+    /// keys, encoding failures, or a signature that matches neither known V1
+    /// journal domain.
+    pub fn verify_journal_signature(&self) -> Result<(), MlsGovernanceError> {
+        if self.version != MLS_GOVERNANCE_VERSION {
+            return Err(MlsGovernanceError::Version(self.version));
+        }
+        let verification = match self.verify_signature() {
+            Err(VerifyError::BadSignature) => {
+                self.verify_signature_for_domain(SigningDomainV1::LegacyQos)
+            }
+            result => result,
+        };
+        verification.map_err(|error| MlsGovernanceError::Signature(error.to_string()))
+    }
+
+    fn verify_signature_for_domain(&self, domain: SigningDomainV1) -> Result<(), VerifyError> {
+        verify_event(&self.signing_view(domain), &self.signature, &self.signed_by)
     }
 
     /// Validate signature, replay link, live revision/capability, membership
@@ -195,7 +240,7 @@ impl MlsGovernanceFrameV1 {
         if !context.governors.contains(&self.signed_by) {
             return Err(MlsGovernanceError::Unauthorized);
         }
-        verify_event(&self.signing_view(), &self.signature, &self.signed_by)
+        self.verify_signature()
             .map_err(|error: VerifyError| MlsGovernanceError::Signature(error.to_string()))?;
         match &self.action {
             MlsGovernanceAction::Add {
@@ -241,5 +286,36 @@ impl MlsGovernanceFrameV1 {
             }
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::generate_keypair;
+
+    #[test]
+    fn journal_verification_rejects_correctly_signed_non_v1_frame() {
+        let (signer, _) = generate_keypair();
+        let mut frame = MlsGovernanceFrameV1::signed(
+            ChannelId::new(),
+            [0x11; 32],
+            1,
+            [0; 32],
+            0,
+            MlsGovernanceAction::EnableEncryption {
+                encrypted_snapshot_digest: [0x22; 32],
+            },
+            &signer,
+        )
+        .unwrap();
+        frame.version = MLS_GOVERNANCE_VERSION + 1;
+        frame.signature =
+            sign_event(&frame.signing_view(SigningDomainV1::CurrentTilo), &signer).unwrap();
+
+        assert_eq!(
+            frame.verify_journal_signature(),
+            Err(MlsGovernanceError::Version(MLS_GOVERNANCE_VERSION + 1))
+        );
     }
 }

@@ -59,6 +59,22 @@ mod macos_tests {
             })
     }
 
+    fn click_rendered_file_row(driver: &mut ui::headless::Driver, name: &str) {
+        let inspection = driver.inspection();
+        let node = find_semantic(&inspection.root, name)
+            .unwrap_or_else(|| panic!("{name} semantic node is absent"));
+        let bounds = node
+            .bounds
+            .unwrap_or_else(|| panic!("{name} semantic node has no bounds"))
+            .to_rect();
+        assert!(
+            bounds.area() > 0.0,
+            "{name} needs a nonempty pointer target"
+        );
+        let center = bounds.center();
+        driver.click_at(center.x, center.y);
+    }
+
     fn files_driver(
         root: &std::path::Path,
     ) -> (
@@ -75,7 +91,7 @@ mod macos_tests {
             )
             .unwrap();
         }
-        let session = prepare(&Options {
+        let mut session = prepare(&Options {
             state_dir: root.join("state"),
             files_dir: files,
             shots: None,
@@ -86,6 +102,10 @@ mod macos_tests {
             shell::shell::state::AppKind::FileExplorer,
             "Files",
             shell::shell::window_actions::Destination::Beside,
+        );
+        assert!(
+            session.host.tick_workspace_content_for_tests(),
+            "the out-of-band fixture open must reconcile into the hosted desktop"
         );
         let tree = session.tree.clone();
         let records = session.records.clone();
@@ -247,6 +267,36 @@ mod macos_tests {
 
     #[test]
     #[serial_test::serial]
+    fn hosted_files_empty_host_intent_poll_preserves_history_owner() {
+        let directory = tempfile::tempdir().unwrap();
+        let (_tree, _records, mut driver) = files_driver(directory.path());
+        let heads = driver.state_mut().doc.get_heads();
+        let inspection = driver.inspection();
+        assert!(
+            find_semantic(&inspection.root, "Document-000.txt").is_some(),
+            "the real hosted Files draw must retain its History owner"
+        );
+        assert!(
+            driver.targets().contains_key("history-open"),
+            "the real hosted Files draw must retain its History control"
+        );
+        driver.click_named("history-open").unwrap();
+        assert!(
+            driver
+                .inspection_json()
+                .unwrap()
+                .contains("Select a file with versioned history"),
+            "History must remain live after an empty host-intent poll"
+        );
+        assert_eq!(
+            driver.state_mut().doc.get_heads(),
+            heads,
+            "an empty host-intent poll must not mutate the incidental outer document"
+        );
+    }
+
+    #[test]
+    #[serial_test::serial]
     fn hosted_files_receive_physical_pixel_wheel_at_each_scale() {
         for (scale, physical_delta) in [(1.0, -60.0), (2.0, -120.0)] {
             let directory = tempfile::tempdir().unwrap();
@@ -295,7 +345,7 @@ mod macos_tests {
     fn hosted_files_pointer_selection_and_enter_open_the_seeded_document() {
         let directory = tempfile::tempdir().unwrap();
         let (tree_handle, records, mut driver) = files_driver(directory.path());
-        driver.click_at(590.0, 235.0);
+        click_rendered_file_row(&mut driver, "Document-000.txt");
         assert!(
             find_semantic(&driver.inspection().root, "Document-000.txt")
                 .is_some_and(|node| node.state.selected),
@@ -321,7 +371,7 @@ mod macos_tests {
         );
         drop(tree);
         let inspection = driver.inspection();
-        let document = find_semantic_description(&inspection.root, "org.tilo.Editor")
+        let document = find_semantic_description(&inspection.root, "org.nirios.Editor")
             .expect("the registered native Editor must expose the opened document");
         assert_eq!(document.name.as_deref(), Some("Document-000.txt"));
         assert_eq!(document.value.as_deref(), Some("Fixture document 0\n"));
@@ -355,13 +405,13 @@ mod macos_tests {
             .next()
             .cloned()
             .expect("the local profile keeps the hosted document identity");
-        assert_eq!(reference.provider_id, "org.tilo.Editor");
+        assert_eq!(reference.provider_id, "org.nirios.Editor");
         assert_eq!(reference.path.file_name().unwrap(), "Document-000.txt");
         let reopened_driver =
             ui::headless::Driver::new(ui::State::new(), Box::new(reopened.host), (1280, 800));
         let reopened_inspection = reopened_driver.inspection();
         let reopened_document =
-            find_semantic_description(&reopened_inspection.root, "org.tilo.Editor")
+            find_semantic_description(&reopened_inspection.root, "org.nirios.Editor")
                 .expect("normal restart restores the real hosted document");
         assert_eq!(
             reopened_document.value.as_deref(),
@@ -371,11 +421,57 @@ mod macos_tests {
 
     #[test]
     #[serial_test::serial]
+    fn hosted_files_refuse_conflicting_document_record_without_publishing_a_tab() {
+        let directory = tempfile::tempdir().unwrap();
+        let (tree_handle, records, mut driver) = files_driver(directory.path());
+        let path = directory
+            .path()
+            .join("Documents/Document-000.txt")
+            .canonicalize()
+            .unwrap();
+        let conflicting = ui::record::RecordCheckout::new(
+            ui::record::RecordId::for_file(&path),
+            ui::record::RecordKind::new("another-document-kind"),
+        );
+        records.create_record(&conflicting).unwrap();
+
+        click_rendered_file_row(&mut driver, "Document-000.txt");
+        driver.key("Enter");
+        driver.profile_frame();
+
+        let tree = tree_handle.read();
+        let titles = tree
+            .active_workspace()
+            .unwrap()
+            .strips
+            .iter()
+            .flat_map(|strip| strip.window_groups.iter())
+            .flat_map(|group| group.tabs.iter())
+            .map(|tab| tab.title.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(titles, vec!["Files"]);
+        assert!(tree.native_document_tabs.is_empty());
+        drop(tree);
+
+        let inspection = driver.inspection();
+        let status = find_semantic(&inspection.root, "Files activity")
+            .and_then(|node| node.value.as_deref())
+            .unwrap_or("");
+        assert!(status.contains("document storage unavailable"));
+        assert!(
+            find_semantic_description(&inspection.root, "org.nirios.Editor").is_none(),
+            "a refused record identity must not publish an Editor document"
+        );
+    }
+
+    #[test]
+    #[serial_test::serial]
     fn deleted_hosted_document_reopens_as_a_visible_unavailable_file() {
         let directory = tempfile::tempdir().unwrap();
         let (_tree, records, mut driver) = files_driver(directory.path());
-        driver.click_at(590.0, 235.0);
+        click_rendered_file_row(&mut driver, "Document-000.txt");
         driver.key("Enter");
+        driver.profile_frame();
         let document_path = directory
             .path()
             .join("Documents/Document-000.txt")
@@ -403,7 +499,7 @@ mod macos_tests {
         assert!(detail.contains(document_path.to_string_lossy().as_ref()));
         assert!(detail.contains("unavailable"));
         assert!(
-            find_semantic_description(&inspection.root, "org.tilo.Editor").is_none(),
+            find_semantic_description(&inspection.root, "org.nirios.Editor").is_none(),
             "an unavailable file must not masquerade as editable document content"
         );
     }
@@ -413,8 +509,9 @@ mod macos_tests {
     fn externally_changed_hosted_document_reopens_with_current_disk_content() {
         let directory = tempfile::tempdir().unwrap();
         let (tree, records, mut driver) = files_driver(directory.path());
-        driver.click_at(590.0, 235.0);
+        click_rendered_file_row(&mut driver, "Document-000.txt");
         driver.key("Enter");
+        driver.profile_frame();
         records.try_flush().unwrap();
         let document_path = directory
             .path()
@@ -435,7 +532,7 @@ mod macos_tests {
         let reopened_driver =
             ui::headless::Driver::new(ui::State::new(), Box::new(reopened.host), (1280, 800));
         let inspection = reopened_driver.inspection();
-        let document = find_semantic_description(&inspection.root, "org.tilo.Editor")
+        let document = find_semantic_description(&inspection.root, "org.nirios.Editor")
             .expect("the changed file must remain a real Editor document");
         assert_eq!(document.name.as_deref(), Some("Document-000.txt"));
         assert_eq!(

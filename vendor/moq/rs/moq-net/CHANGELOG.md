@@ -1,0 +1,475 @@
+# Changelog
+
+All notable changes to this project will be documented in this file.
+
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
+and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+## [Unreleased]
+
+## [0.2.22](https://github.com/moq-dev/moq/compare/moq-net-v0.2.21...moq-net-v0.2.22) - 2026-09-17
+
+### Fixed
+
+- *(moq-net)* a remote source never displaces a local publisher ([#3694](https://github.com/moq-dev/moq/pull/3694))
+
+## [0.2.21](https://github.com/moq-dev/moq/compare/moq-net-v0.2.20...moq-net-v0.2.21) - 2026-09-13
+
+### Fixed
+
+- *(kio)* bound waiter registration work ([#3635](https://github.com/moq-dev/moq/pull/3635))
+- *(moq-net)* scope-check the dynamic fallback in request_broadcast ([#3624](https://github.com/moq-dev/moq/pull/3624))
+- *(net)* never reuse generated track names ([#3594](https://github.com/moq-dev/moq/pull/3594))
+- satisfy the nightly license audit ([#3592](https://github.com/moq-dev/moq/pull/3592))
+- *(moq-net)* reject incompatible copies during failover ([#3521](https://github.com/moq-dev/moq/pull/3521))
+
+## [0.2.19](https://github.com/moq-dev/moq/compare/moq-net-v0.2.18...moq-net-v0.2.19) - 2026-09-09
+
+### Added
+
+- *(obs)* add connection stats and encoding controls to the MoQ dock ([#3453](https://github.com/moq-dev/moq/pull/3453))
+- *(moq-net)* stitch a draft-20 fill into the group it joined ([#3325](https://github.com/moq-dev/moq/pull/3325))
+
+### Fixed
+
+- *(moq-net)* prune origin nodes that nothing is using ([#3537](https://github.com/moq-dev/moq/pull/3537))
+- *(moq-net)* a group consumer is one cursor, so an evicted group skips instead of ending the export ([#3515](https://github.com/moq-dev/moq/pull/3515))
+- *(moq-net)* keep the draft-14/15 namespace map consistent and let it shrink ([#3481](https://github.com/moq-dev/moq/pull/3481))
+- *(relay)* stop the cache headroom governor with its pool ([#3487](https://github.com/moq-dev/moq/pull/3487))
+- *(moq-net)* answer for a name the broadcast never served ([#3366](https://github.com/moq-dev/moq/pull/3366))
+- *(moq-net)* give control streams a send order above the media ([#3389](https://github.com/moq-dev/moq/pull/3389))
+
+### Other
+
+- fold the moq-net fuzz harness into the workspace ([#3543](https://github.com/moq-dev/moq/pull/3543))
+- run orphaned test suites nightly ([#3538](https://github.com/moq-dev/moq/pull/3538))
+- make the agent guides minimal and situational ([#3469](https://github.com/moq-dev/moq/pull/3469))
+- *(moq-net)* guard the fuzz workspace lockfile ([#3465](https://github.com/moq-dev/moq/pull/3465))
+- abandon the track re-announce quest ([#3459](https://github.com/moq-dev/moq/pull/3459))
+
+## [0.2.18](https://github.com/moq-dev/moq/compare/moq-net-v0.2.17...moq-net-v0.2.18) - 2026-09-02
+
+### Added
+
+- *(moq-net)* expose broadcast demand on the read handle ([#3330](https://github.com/moq-dev/moq/pull/3330))
+
+### Fixed
+
+- *(moq-net)* serve the rest of a group whose front evicted ([#3323](https://github.com/moq-dev/moq/pull/3323))
+- *(moq-net)* drop an incoming group that starts after object 0 ([#3308](https://github.com/moq-dev/moq/pull/3308))
+- *(moq-net)* walk every spliced segment when resolving the live edge ([#3290](https://github.com/moq-dev/moq/pull/3290))
+- *(moq-net)* stop stamping objects with an undeclared timescale ([#3310](https://github.com/moq-dev/moq/pull/3310))
+
+## [0.2.17](https://github.com/moq-dev/moq/compare/moq-net-v0.2.16...moq-net-v0.2.17) - 2026-09-01
+
+### Other
+
+- *(rs)* simplify poll propagation ([#3307](https://github.com/moq-dev/moq/pull/3307))
+
+## [0.2.16](https://github.com/moq-dev/moq/compare/moq-net-v0.2.15...moq-net-v0.2.16) - 2026-09-01
+
+### Added
+
+- *(moq-net)* add moq-transport draft-20 (moqt-20) ([#3255](https://github.com/moq-dev/moq/pull/3255))
+- *(json)* add a sliding-window mode ([#3168](https://github.com/moq-dev/moq/pull/3168))
+- add local regression benchmark suite ([#3093](https://github.com/moq-dev/moq/pull/3093))
+- *(net)* batch frame reads and writes through a reusable buffer ([#3090](https://github.com/moq-dev/moq/pull/3090))
+
+### Fixed
+
+- *(net)* send registered PUBLISH_DONE statuses ([#3232](https://github.com/moq-dev/moq/pull/3232))
+- *(net)* escape slashes in IETF namespaces ([#3226](https://github.com/moq-dev/moq/pull/3226))
+- *(net)* bound lite message sizes ([#3222](https://github.com/moq-dev/moq/pull/3222))
+
+### Other
+
+- *(net)* fuzz the wire codecs ([#3198](https://github.com/moq-dev/moq/pull/3198))
+- *(net)* reduce priority queue churn ([#3211](https://github.com/moq-dev/moq/pull/3211))
+- *(rs)* point shared dependencies at [workspace.dependencies] ([#3098](https://github.com/moq-dev/moq/pull/3098))
+- *(net)* seek instead of scan for the next in-range group ([#3088](https://github.com/moq-dev/moq/pull/3088))
+- *(net)* assert a stalled write releases the group it was serving ([#3095](https://github.com/moq-dev/moq/pull/3095))
+
+## [0.2.15](https://github.com/moq-dev/moq/compare/moq-net-v0.2.14...moq-net-v0.2.15) - 2026-08-26
+
+### Fixed
+
+- *(net)* track lite announces the peer sent, not the ones we kept ([#3065](https://github.com/moq-dev/moq/pull/3065))
+- *(net)* count reads as cache accesses for eviction and expiry ([#3062](https://github.com/moq-dev/moq/pull/3062))
+- *(net)* scope what an assigned identity actually suppresses ([#3057](https://github.com/moq-dev/moq/pull/3057))
+- *(net)* assign anonymous server peers an origin ([#3042](https://github.com/moq-dev/moq/pull/3042))
+- *(net)* restore dynamic routing APIs ([#3038](https://github.com/moq-dev/moq/pull/3038))
+- *(net)* deprecate unsupported dynamic routing ([#3029](https://github.com/moq-dev/moq/pull/3029))
+
+## [0.2.14](https://github.com/moq-dev/moq/compare/moq-net-v0.2.13...moq-net-v0.2.14) - 2026-08-24
+
+### Added
+
+- *(moq-gst)* publish opaque application data tracks
+
+### Fixed
+
+- *(moq-net)* let a ready response beat local abandonment ([#3004](https://github.com/moq-dev/moq/pull/3004))
+- *(moq-net)* cancel IETF subscriptions instead of only closing the stream ([#2993](https://github.com/moq-dev/moq/pull/2993))
+
+### Other
+
+- *(moq-net)* hand lite group chunks to the transport by reference ([#2975](https://github.com/moq-dev/moq/pull/2975))
+
+## [0.2.13](https://github.com/moq-dev/moq/compare/moq-net-v0.2.12...moq-net-v0.2.13) - 2026-08-20
+
+### Added
+
+- *(moq-net)* add Path::relative, replacing moq_transcode::source_reference ([#2906](https://github.com/moq-dev/moq/pull/2906))
+
+### Fixed
+
+- *(moq-net)* report PROBE partially, and only advertise Probe we can honour ([#2945](https://github.com/moq-dev/moq/pull/2945))
+- *(moq-net)* keep an anonymous publisher's source across a NAMESPACE update ([#2908](https://github.com/moq-dev/moq/pull/2908))
+- *(net)* encode draft 17 message parameters by type ([#2884](https://github.com/moq-dev/moq/pull/2884))
+
+### Other
+
+- *(kio)* dedup waiter registration so Park can reuse a parked waiter ([#2905](https://github.com/moq-dev/moq/pull/2905))
+
+## [0.2.12](https://github.com/moq-dev/moq/compare/moq-net-v0.2.11...moq-net-v0.2.12) - 2026-08-14
+
+### Fixed
+
+- *(path)* resolve catalog references like URLs ([#2855](https://github.com/moq-dev/moq/pull/2855))
+- *(moq-net)* serve an IETF subscribe from the live edge ([#2862](https://github.com/moq-dev/moq/pull/2862))
+- *(net)* stop blocking connect on the initial announce set ([#2856](https://github.com/moq-dev/moq/pull/2856))
+- *(net)* wake a capped subscriber when its parked group is evicted ([#2844](https://github.com/moq-dev/moq/pull/2844))
+- *(net)* decode largest object in subscribe ok ([#2837](https://github.com/moq-dev/moq/pull/2837))
+
+## [0.2.11](https://github.com/moq-dev/moq/compare/moq-net-v0.2.10...moq-net-v0.2.11) - 2026-08-13
+
+### Added
+
+- *(net)* announce namespaces unasked, with a SETUP opt-out ([#2748](https://github.com/moq-dev/moq/pull/2748))
+
+### Fixed
+
+- *(net)* keep a live-edge subscriber at the live edge across a takeover ([#2785](https://github.com/moq-dev/moq/pull/2785))
+- *(net)* serve subscriptions in arrival order so reordered groups aren't dropped ([#2771](https://github.com/moq-dev/moq/pull/2771))
+- *(net)* only a new publisher re-arms the origin takeover gate ([#2746](https://github.com/moq-dev/moq/pull/2746))
+- *(native)* generate protocol version help ([#2719](https://github.com/moq-dev/moq/pull/2719))
+- *(net)* re-arm the takeover gate on every route observation ([#2742](https://github.com/moq-dev/moq/pull/2742))
+- *(net)* restore displaced broadcast publishers ([#2740](https://github.com/moq-dev/moq/pull/2740))
+- *(net)* invert stream priority to match transport send-order semantics ([#2720](https://github.com/moq-dev/moq/pull/2720))
+- *(net)* tolerate incoming streams that die before their first byte ([#2721](https://github.com/moq-dev/moq/pull/2721))
+
+### Other
+
+- *(net)* cover multi-track failover and a partial-list standby ([#2713](https://github.com/moq-dev/moq/pull/2713))
+
+## [0.2.10](https://github.com/moq-dev/moq/compare/moq-net-v0.2.9...moq-net-v0.2.10) - 2026-08-07
+
+### Fixed
+
+- *(net)* keep UNKNOWN publishers announced across relay loops ([#2718](https://github.com/moq-dev/moq/pull/2718))
+
+## [0.2.9](https://github.com/moq-dev/moq/compare/moq-net-v0.2.8...moq-net-v0.2.9) - 2026-08-06
+
+### Fixed
+
+- *(moq-net)* stop a reflected announce from evicting the source we publish ([#2684](https://github.com/moq-dev/moq/pull/2684))
+- *(moq-wasm)* repair the consume path and gate wasm32 in CI ([#2683](https://github.com/moq-dev/moq/pull/2683))
+- *(moq-net)* close the session on a malformed NAMESPACE ([#2667](https://github.com/moq-dev/moq/pull/2667))
+- *(moq-net)* move the publisher group order out of message parameters ([#2677](https://github.com/moq-dev/moq/pull/2677))
+- *(net)* let the accepting side pick the retention window when the wire carries none ([#2657](https://github.com/moq-dev/moq/pull/2657))
+- *(moq-net)* send IETF subscribe/fetch rejections without resetting the stream ([#2673](https://github.com/moq-dev/moq/pull/2673))
+
+### Other
+
+- *(moq-net)* describe what with_cost actually prices ([#2668](https://github.com/moq-dev/moq/pull/2668))
+- *(moq-net)* give lite::start a Config, like ietf::start ([#2686](https://github.com/moq-dev/moq/pull/2686))
+
+## [0.2.8](https://github.com/moq-dev/moq/compare/moq-net-v0.2.7...moq-net-v0.2.8) - 2026-08-05
+
+### Added
+
+- *(net)* implement the MoQ Cluster extension over moq-transport ([#2629](https://github.com/moq-dev/moq/pull/2629))
+- *(net)* solicited PUBLISH_NAMESPACE and rejected PUBLISH ([#2643](https://github.com/moq-dev/moq/pull/2643))
+
+### Fixed
+
+- *(moq-net)* harden origin resume/route serving ([#2666](https://github.com/moq-dev/moq/pull/2666))
+- *(moq-net)* key the v14/v15 namespace lookup by direction ([#2664](https://github.com/moq-dev/moq/pull/2664))
+- *(moq-net)* let the last owner out decide the detach ([#2659](https://github.com/moq-dev/moq/pull/2659))
+- *(moq-net)* preserve abrupt detach across owners ([#2654](https://github.com/moq-dev/moq/pull/2654))
+- *(moq-net)* detach an abnormally-lost namespace stream abruptly ([#2616](https://github.com/moq-dev/moq/pull/2616))
+- *(moq-stats)* hold subscriptions for uncreated tier tracks open with zeros ([#2642](https://github.com/moq-dev/moq/pull/2642))
+- *(net)* abort a refused track instantly instead of sweeping and retrying ([#2637](https://github.com/moq-dev/moq/pull/2637))
+- *(moq-net)* subscribe to the ietf peer's namespace, not our own root ([#2612](https://github.com/moq-dev/moq/pull/2612))
+
+### Other
+
+- *(moq-net)* drive the NAMESPACE response through the real read loop ([#2634](https://github.com/moq-dev/moq/pull/2634))
+- render gate, Hop ID 0, cluster rename, and a simplification pass ([#2607](https://github.com/moq-dev/moq/pull/2607))
+- Don't warn on Alive::drop if aborted ([#2580](https://github.com/moq-dev/moq/pull/2580))
+
+## [0.2.7](https://github.com/moq-dev/moq/compare/moq-net-v0.2.6...moq-net-v0.2.7) - 2026-08-03
+
+### Added
+
+- *(kio)* add WaiterCell and Queue ([#2560](https://github.com/moq-dev/moq/pull/2560))
+
+### Fixed
+
+- *(loc)* adopt the draft-ietf-moq-loc-04 Timestamp code point, and align relay-hops with lite-06 ([#2581](https://github.com/moq-dev/moq/pull/2581))
+- *(native)* send the request path and query in the SETUP on every URI-less transport ([#2572](https://github.com/moq-dev/moq/pull/2572))
+
+### Other
+
+- *(kio)* rename WaiterCell to Park ([#2583](https://github.com/moq-dev/moq/pull/2583))
+- add Client::with_peer_origin for peers that declare no identity ([#2577](https://github.com/moq-dev/moq/pull/2577))
+
+## [0.2.6](https://github.com/moq-dev/moq/compare/moq-net-v0.2.5...moq-net-v0.2.6) - 2026-07-31
+
+### Added
+
+- *(relay)* expose internal nodes endpoint ([#2555](https://github.com/moq-dev/moq/pull/2555))
+
+### Fixed
+
+- *(net)* stop a lingering track spinning on its departed route, and still release it when idle ([#2565](https://github.com/moq-dev/moq/pull/2565))
+
+## [0.2.5](https://github.com/moq-dev/moq/compare/moq-net-v0.2.4...moq-net-v0.2.5) - 2026-07-29
+
+### Added
+
+- *(net)* fail over across redundant publishers via per-peer route selection ([#2473](https://github.com/moq-dev/moq/pull/2473))
+- *(net)* drop Exclude Hop from ANNOUNCE_REQUEST in lite-06 ([#2550](https://github.com/moq-dev/moq/pull/2550))
+
+### Fixed
+
+- *(net)* prefer the newest route so a reconnect takes over immediately ([#2556](https://github.com/moq-dev/moq/pull/2556))
+
+### Other
+
+- *(kio,net)* model-check the concurrent handoffs with loom ([#2543](https://github.com/moq-dev/moq/pull/2543))
+
+## [0.2.4](https://github.com/moq-dev/moq/compare/moq-net-v0.2.3...moq-net-v0.2.4) - 2026-07-27
+
+### Added
+
+- *(kio)* add a poll-native Deadline and adopt it in moq-net ([#2536](https://github.com/moq-dev/moq/pull/2536))
+
+### Fixed
+
+- *(net)* release cache-pool registrations so publishers stop leaking ([#2525](https://github.com/moq-dev/moq/pull/2525))
+
+### Other
+
+- *(net)* replace the global LRU cache pool with per-track write-time eviction ([#2526](https://github.com/moq-dev/moq/pull/2526))
+
+## [0.2.3](https://github.com/moq-dev/moq/compare/moq-net-v0.2.2...moq-net-v0.2.3) - 2026-07-25
+
+### Added
+
+- *(net)* release idle spliced tracks after a linger ([#2505](https://github.com/moq-dev/moq/pull/2505))
+- *(relay)* add --cache-duration ceiling on cached group age ([#2494](https://github.com/moq-dev/moq/pull/2494))
+
+### Fixed
+
+- *(net)* avoid duplicate subscribe streams ([#2513](https://github.com/moq-dev/moq/pull/2513))
+- *(moq-net)* keep the clean end of a finished group that ages out ([#2506](https://github.com/moq-dev/moq/pull/2506))
+- *(net)* tear down idle upstream subscriptions ([#2500](https://github.com/moq-dev/moq/pull/2500))
+
+## [0.2.2](https://github.com/moq-dev/moq/compare/moq-net-v0.2.1...moq-net-v0.2.2) - 2026-07-24
+
+### Added
+
+- *(moq-net)* linger a broadcast across an ungraceful source loss ([#2469](https://github.com/moq-dev/moq/pull/2469))
+
+## [0.2.1](https://github.com/moq-dev/moq/compare/moq-net-v0.2.0...moq-net-v0.2.1) - 2026-07-23
+
+### Other
+
+- *(rust)* pin the toolchain and correct the MSRV claims ([#2462](https://github.com/moq-dev/moq/pull/2462))
+
+## [0.2.0](https://github.com/moq-dev/moq/compare/moq-net-v0.1.18...moq-net-v0.2.0) - 2026-07-22
+
+### Added
+
+- *(stats)* count datagrams in the model layer ([#2430](https://github.com/moq-dev/moq/pull/2430))
+- *(net)* route by cumulative cost on lite-06 announcements ([#2424](https://github.com/moq-dev/moq/pull/2424))
+- *(net)* [**breaking**] accept an empty PATH and default it to "" across protocols ([#2414](https://github.com/moq-dev/moq/pull/2414))
+- *(net)* [**breaking**] extract stats publishing into moq-stats with compressed tracks ([#2380](https://github.com/moq-dev/moq/pull/2380))
+- *(moq-net)* coalesce concurrent group fetches behind a shared Requests queue ([#2328](https://github.com/moq-dev/moq/pull/2328))
+- *(moq-net)* [**breaking**] unify the latency budget as latency_max ([#2176](https://github.com/moq-dev/moq/pull/2176))
+- *(moq-video)* [**breaking**] adapt the encoder bitrate to the congestion-control estimate ([#2303](https://github.com/moq-dev/moq/pull/2303))
+
+### Fixed
+
+- [**breaking**] correct catalog, timeline, token, and teardown contracts found in API review ([#2439](https://github.com/moq-dev/moq/pull/2439))
+- *(moq-net)* exclude dropped subscribers from the aggregate ([#2351](https://github.com/moq-dev/moq/pull/2351)) ([#2370](https://github.com/moq-dev/moq/pull/2370))
+- *(net)* [**breaking**] align js/net and the moq-lite draft on the exclusive SUBSCRIBE_END ([#2333](https://github.com/moq-dev/moq/pull/2333))
+- *(bindings)* [**breaking**] honor declared track ends, unify abort error codes, and dedupe libmoq's native link list ([#2306](https://github.com/moq-dev/moq/pull/2306))
+
+### Other
+
+- *(moq-net)* cover the announce loop's demand/linger state machine ([#2429](https://github.com/moq-dev/moq/pull/2429))
+- *(stats)* [**breaking**] collect traffic counters in the model layer ([#2427](https://github.com/moq-dev/moq/pull/2427))
+- Merge branch 'main' into dev
+- *(stats)* [**breaking**] remove internal tier defaults ([#2411](https://github.com/moq-dev/moq/pull/2411))
+- *(net)* [**breaking**] route everything through create_broadcast, gate announce on Route.live ([#2396](https://github.com/moq-dev/moq/pull/2396))
+- migrate subscriptions transparently across connections ([#2241](https://github.com/moq-dev/moq/pull/2241))
+- *(net)* [**breaking**] drop moq-net's direct tokio dependency ([#2377](https://github.com/moq-dev/moq/pull/2377))
+- *(moq-net)* [**breaking**] rename Error::CacheFull to Lagged; document the App/Remote asymmetry ([#2367](https://github.com/moq-dev/moq/pull/2367))
+- *(moq-net)* [**breaking**] model Timestamp as an instant; drop panicking arithmetic operators ([#2366](https://github.com/moq-dev/moq/pull/2366))
+- *(kio)* [**breaking**] rename Future to Pollable, return Closed from the async API ([#2343](https://github.com/moq-dev/moq/pull/2343))
+- *(moq-net)* [**breaking**] expose a real stats module and make Role::Both unrepresentable ([#2348](https://github.com/moq-dev/moq/pull/2348))
+- *(moq-net)* [**breaking**] clamp the subscription latency budget once, in the aggregate ([#2349](https://github.com/moq-dev/moq/pull/2349))
+- *(moq-net)* [**breaking**] remove Subscriber::get_group; make the sync peek a test hook ([#2339](https://github.com/moq-dev/moq/pull/2339))
+- *(moq-net)* [**breaking**] fix Request::accept's lying doc + panic path and Session::closed's fake Result ([#2334](https://github.com/moq-dev/moq/pull/2334))
+- align media docs and priorities ([#2336](https://github.com/moq-dev/moq/pull/2336))
+- *(net)* [**breaking**] caller-driven sessions via a (Session, Driver) pair ([#2302](https://github.com/moq-dev/moq/pull/2302))
+- *(moq-net)* [**breaking**] remove Announced::Restart; a replacement is an unannounce/announce pair ([#2307](https://github.com/moq-dev/moq/pull/2307))
+- *(kio)* [**breaking**] delete Consumer write access, add role-less Shared for reverse queues ([#2074](https://github.com/moq-dev/moq/pull/2074))
+- Merge branch 'main' into dev
+- Merge branch 'main' into dev
+
+## [0.1.18](https://github.com/moq-dev/moq/compare/moq-net-v0.1.17...moq-net-v0.1.18) - 2026-07-15
+
+### Fixed
+
+- *(moq-net)* resolve reordered track aliases ([#2262](https://github.com/moq-dev/moq/pull/2262))
+
+## [0.1.17](https://github.com/moq-dev/moq/compare/moq-net-v0.1.16...moq-net-v0.1.17) - 2026-07-12
+
+### Other
+
+- expose a Prometheus /metrics endpoint for node traffic ([#2172](https://github.com/moq-dev/moq/pull/2172))
+- Path memory sharing + 32 max parts enforcement ([#2156](https://github.com/moq-dev/moq/pull/2156))
+
+## [0.1.16](https://github.com/moq-dev/moq/compare/moq-net-v0.1.15...moq-net-v0.1.16) - 2026-07-09
+
+### Added
+
+- *(moq-net,js/net)* add moq-transport draft-19 (moqt-19) ([#2106](https://github.com/moq-dev/moq/pull/2106))
+
+## [0.1.15](https://github.com/moq-dev/moq/compare/moq-net-v0.1.14...moq-net-v0.1.15) - 2026-07-05
+
+### Fixed
+
+- moq-net wasm compatibility ([#2085](https://github.com/moq-dev/moq/pull/2085))
+
+### Other
+
+- Route subscribes through dynamic origins ([#2094](https://github.com/moq-dev/moq/pull/2094))
+- [codex] backport moq-wasm to main ([#2086](https://github.com/moq-dev/moq/pull/2086))
+
+## [0.1.14](https://github.com/moq-dev/moq/compare/moq-net-v0.1.13...moq-net-v0.1.14) - 2026-07-04
+
+### Added
+
+- *(moq-net)* hook up the rest of moq-lite-05 wire (TRACK_INFO, SUBSCRIBE_END, frame timestamps) ([#1963](https://github.com/moq-dev/moq/pull/1963))
+- *(moq-net)* moq-lite-05 SETUP message + PATH parameter ([#1954](https://github.com/moq-dev/moq/pull/1954))
+
+### Other
+
+- Avoid moq-net and hang release breakage ([#2077](https://github.com/moq-dev/moq/pull/2077))
+- [codex] Future-proof moq-net metadata structs ([#2046](https://github.com/moq-dev/moq/pull/2046))
+- track announcement byte usage in stats ([#1953](https://github.com/moq-dev/moq/pull/1953))
+
+## [0.1.13](https://github.com/moq-dev/moq/compare/moq-net-v0.1.12...moq-net-v0.1.13) - 2026-06-30
+
+### Added
+
+- *(moq-net)* add OriginProducer::dynamic + infallible OriginConsumer::request_broadcast ([#1913](https://github.com/moq-dev/moq/pull/1913))
+
+### Other
+
+- Backport moq-mux to main (adapted to main's moq-net, no wire/API breaks) ([#1918](https://github.com/moq-dev/moq/pull/1918))
+
+## [0.1.12](https://github.com/moq-dev/moq/compare/moq-net-v0.1.11...moq-net-v0.1.12) - 2026-06-23
+
+### Added
+
+- *(moq-net)* raise max frame size to 32 MiB to match the group cache cap ([#1816](https://github.com/moq-dev/moq/pull/1816))
+
+### Fixed
+
+- *(moq-net)* bound frame size in create_frame/append_frame ([#1882](https://github.com/moq-dev/moq/pull/1882))
+
+## [0.1.11](https://github.com/moq-dev/moq/compare/moq-net-v0.1.10...moq-net-v0.1.11) - 2026-06-16
+
+### Fixed
+
+- *(moq-net)* don't tear down session on unauthorized announce-interest ([#1717](https://github.com/moq-dev/moq/pull/1717))
+- *(moq-net)* release cached state when a producer is aborted or dropped ([#1715](https://github.com/moq-dev/moq/pull/1715))
+
+### Other
+
+- rework Producer::poll/wait to a read-only predicate that returns a Mut ([#1735](https://github.com/moq-dev/moq/pull/1735))
+
+## [0.1.10](https://github.com/moq-dev/moq/compare/moq-net-v0.1.9...moq-net-v0.1.10) - 2026-06-10
+
+### Added
+
+- *(moq-net)* tag broadcasts with a per-connection origin hop when the wire carries none ([#1635](https://github.com/moq-dev/moq/pull/1635))
+
+### Fixed
+
+- *(moq-net,js/net)* draft-18 SUBSCRIBE_NAMESPACE, subgroup headers, and announce race ([#1668](https://github.com/moq-dev/moq/pull/1668))
+
+## [0.1.9](https://github.com/moq-dev/moq/compare/moq-net-v0.1.8...moq-net-v0.1.9) - 2026-06-03
+
+### Other
+
+- *(deps)* bump the cargo group (with code fixes for rand/rubato/rcgen) ([#1603](https://github.com/moq-dev/moq/pull/1603))
+
+## [0.1.8](https://github.com/moq-dev/moq/compare/moq-net-v0.1.7...moq-net-v0.1.8) - 2026-06-01
+
+### Other
+
+- count connected sessions per auth root for billing ([#1574](https://github.com/moq-dev/moq/pull/1574))
+- deterministic route tie-break for equal-length paths ([#1570](https://github.com/moq-dev/moq/pull/1570))
+- wire session stats into the IETF protocol path ([#1560](https://github.com/moq-dev/moq/pull/1560))
+- count viewers as distinct per-session subscriptions ([#1553](https://github.com/moq-dev/moq/pull/1553))
+
+## [0.1.7](https://github.com/moq-dev/moq/compare/moq-net-v0.1.6...moq-net-v0.1.7) - 2026-05-30
+
+### Other
+
+- release ([#1496](https://github.com/moq-dev/moq/pull/1496))
+
+## [0.1.6](https://github.com/moq-dev/moq/compare/moq-net-v0.1.5...moq-net-v0.1.6) - 2026-05-30
+
+### Other
+
+- retain entries by liveness instead of a tick retention window ([#1548](https://github.com/moq-dev/moq/pull/1548))
+- auto-reconnect sessions; conducer-based Reconnect notifications ([#1544](https://github.com/moq-dev/moq/pull/1544))
+- rename conducer crate to kio ([#1547](https://github.com/moq-dev/moq/pull/1547))
+
+## [0.1.4](https://github.com/moq-dev/moq/compare/moq-net-v0.1.3...moq-net-v0.1.4) - 2026-05-24
+
+### Other
+
+- *(stats)* allow multi-segment --stats-node values; move cargo-deny to ci ([#1489](https://github.com/moq-dev/moq/pull/1489))
+
+## [0.1.3](https://github.com/moq-dev/moq/compare/moq-net-v0.1.2...moq-net-v0.1.3) - 2026-05-23
+
+### Other
+
+- Add stats via MoQ broadcasts ([#1442](https://github.com/moq-dev/moq/pull/1442))
+
+## [0.1.2](https://github.com/moq-dev/moq/compare/moq-net-v0.1.1...moq-net-v0.1.2) - 2026-05-21
+
+### Other
+
+- Replace mpsc with conducer for coalesced origin consumer updates ([#1433](https://github.com/moq-dev/moq/pull/1433))
+
+## [0.1.1](https://github.com/moq-dev/moq/compare/moq-net-v0.1.0...moq-net-v0.1.1) - 2026-05-20
+
+### Other
+
+- rename moq-lite package to moq-net ([#1428](https://github.com/moq-dev/moq/pull/1428))
+
+## [0.1.0] - 2026-05-18
+
+### Added
+
+- Initial release as `moq-net`, the networking layer that negotiates either
+  the `moq-lite` or `moq-transport` wire protocol at session setup.

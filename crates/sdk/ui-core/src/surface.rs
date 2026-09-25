@@ -1551,3 +1551,28 @@ mod tests {
         }
     }
 }
+
+pub fn local_surface_id() -> String {
+    let package_id = std::env::var("QOS_PACKAGE_ID").ok();
+    let binary = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()));
+    resolve_app_id(package_id.as_deref(), binary.as_deref())
+}
+
+/// A shared generic id would collapse every id-keyed compositor lookup (tab
+/// label, launch placement, "is this document already open") onto every
+/// other app; it's a last resort for no-package, no-binary-name.
+pub(crate) fn resolve_app_id(package_id: Option<&str>, binary: Option<&str>) -> String {
+    let non_blank = |s: &str| {
+        let t = s.trim();
+        (!t.is_empty()).then(|| t.to_string())
+    };
+    if let Some(id) = package_id.and_then(non_blank) {
+        return id;
+    }
+    if let Some(bin) = binary.and_then(non_blank) {
+        return bin;
+    }
+    "org.qos.app".to_string()
+}

@@ -5316,11 +5316,15 @@ mod tests {
             .clone();
         let remove_a = match &remove_a.input {
             tilo_actions::ActionInput::Immediate(encoded) => encoded.clone(),
-            tilo_actions::ActionInput::Prompted { .. } => panic!("remove must be immediate"),
+            tilo_actions::ActionInput::Prompted { .. }
+            | tilo_actions::ActionInput::Deferred { .. } => panic!("remove must be immediate"),
         };
         let set_b = match &set_b.input {
             tilo_actions::ActionInput::Prompted { build, .. } => build("later"),
-            tilo_actions::ActionInput::Immediate(_) => panic!("set-mode must prompt for one mode"),
+            tilo_actions::ActionInput::Immediate(_)
+            | tilo_actions::ActionInput::Deferred { .. } => {
+                panic!("set-mode must prompt for one mode")
+            }
         };
         assert_ne!(set_b.type_id, "tilo.invalid_arguments");
 

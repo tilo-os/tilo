@@ -84,12 +84,23 @@ impl PopulatedShellFixture {
         let inputs =
             crate::shell::fixture_inputs::ShellFixtureInputs::new(parent.path(), renderer, theme)
                 .expect("owned populated shell fixture files");
-        let frame = crate::shell::frame::FrameBuilder::with_fixture_inputs(
-            crate::shell::state::WorkspaceTree::bootstrap_demo(),
-            viewport,
-            inputs,
-        )
-        .expect("explicit populated shell fixture");
+        let tree = crate::shell::state::WorkspaceTree::bootstrap_demo();
+        let tab_ids = tree
+            .active_workspace()
+            .expect("populated fixture has an active workspace")
+            .strips
+            .iter()
+            .flat_map(|strip| &strip.window_groups)
+            .flat_map(|group| &group.tabs)
+            .map(|tab| tab.id)
+            .collect::<Vec<_>>();
+        let frame = crate::shell::frame::FrameBuilder::with_fixture_inputs(tree, viewport, inputs)
+            .expect("explicit populated shell fixture");
+        let records = frame.chrome().records().clone();
+        for tab in tab_ids {
+            crate::shell::tab_documents::create_scratch_tab_record(&records, tab)
+                .expect("populated fixture explicitly creates each presented tab record");
+        }
         Self { frame, parent }
     }
 }

@@ -63,6 +63,9 @@ impl Source {
     pub fn is_ready(&self) -> bool {
         match self {
             Source::Remote { .. } => true,
+            #[cfg(target_arch = "wasm32")]
+            _ => false,
+            #[cfg(not(target_arch = "wasm32"))]
             _ => self.abs_path().is_some_and(|p| p.exists()),
         }
     }
@@ -97,21 +100,38 @@ impl Source {
                 "remote sources are streamed by the decode pipeline, not read here",
             ));
         }
-        let abs = self.abs_path().ok_or_else(|| {
-            std::io::Error::new(
+        #[cfg(target_arch = "wasm32")]
+        {
+            return Err(std::io::Error::new(
                 std::io::ErrorKind::Unsupported,
-                "source has no local path to read",
-            )
-        })?;
-        let f = std::fs::File::open(abs)?;
-        Ok(Box::new(f))
+                "filesystem media sources are unavailable on this platform",
+            ));
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let abs = self.abs_path().ok_or_else(|| {
+                std::io::Error::new(
+                    std::io::ErrorKind::Unsupported,
+                    "source has no local path to read",
+                )
+            })?;
+            let f = std::fs::File::open(abs)?;
+            Ok(Box::new(f))
+        }
     }
 
     /// The total byte length of a file source, if known (a stat on the mount).
     /// `None` for remote streams and unhydrated / missing files.
     pub fn byte_len(&self) -> Option<u64> {
-        let abs = self.abs_path()?;
-        std::fs::metadata(abs).ok().map(|m| m.len())
+        #[cfg(target_arch = "wasm32")]
+        {
+            return None;
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let abs = self.abs_path()?;
+            std::fs::metadata(abs).ok().map(|m| m.len())
+        }
     }
 }
 
@@ -121,6 +141,7 @@ impl Source {
 /// # Errors
 /// Returns an error when the current directory cannot be resolved or the path
 /// names a host device that cannot be represented as a file URL.
+#[cfg(not(target_arch = "wasm32"))]
 pub fn path_to_file_uri(path: &Path) -> std::io::Result<String> {
     let absolute = std::path::absolute(path)?;
     url::Url::from_file_path(absolute)
@@ -131,6 +152,14 @@ pub fn path_to_file_uri(path: &Path) -> std::io::Result<String> {
                 "media path cannot be represented as a file URL",
             )
         })
+}
+
+#[cfg(target_arch = "wasm32")]
+pub fn path_to_file_uri(_: &Path) -> std::io::Result<String> {
+    Err(std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        "filesystem media sources are unavailable on this platform",
+    ))
 }
 
 #[cfg(test)]

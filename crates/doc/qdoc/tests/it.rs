@@ -24,6 +24,10 @@ mod blob_state;
 mod blobstore_fixture;
 #[path = "codec_scaling.rs"]
 mod codec_scaling;
+#[path = "concurrent_block_text.rs"]
+mod concurrent_block_text;
+#[path = "concurrent_regions.rs"]
+mod concurrent_regions;
 #[path = "convergence.rs"]
 mod convergence;
 #[path = "docx_header_footer.rs"]

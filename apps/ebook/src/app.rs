@@ -5069,6 +5069,10 @@ impl Widget for BooksApp {
                         encoded.type_id.hash(&mut action_hasher);
                         encoded.payload.hash(&mut action_hasher);
                     }
+                    tilo_actions::ActionInput::Deferred { type_id, .. } => {
+                        2_u8.hash(&mut action_hasher);
+                        type_id.hash(&mut action_hasher);
+                    }
                     tilo_actions::ActionInput::Prompted {
                         prompt,
                         placeholder,

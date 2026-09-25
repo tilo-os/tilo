@@ -126,7 +126,13 @@ impl<I> ActionBinding<I> {
     /// violates the exported action's parameter contract.
     pub fn invoke(&self, input: I) -> Result<ControlInvocation, ActionBindingError> {
         let arguments = (self.arguments)(input);
-        self.spec.build_json(&arguments)?;
+        if self.spec.deferred_invocation_type().is_some()
+            || matches!(self.spec.input, ActionInput::Deferred { .. })
+        {
+            self.spec.validate_json(&arguments)?;
+        } else {
+            self.spec.build_json(&arguments)?;
+        }
         Ok(ControlInvocation {
             address: self.address.clone(),
             arguments,
@@ -147,7 +153,13 @@ impl ActionBinding<()> {
     pub fn unit(resource: &Resource, spec: &ActionSpec) -> Result<Self, ActionBindingError> {
         let binding = Self::new(resource, spec, |()| serde_json::Map::new())?;
         // Refuse a required-argument action at construction, not first click.
-        binding.spec.build_json(&serde_json::Map::new())?;
+        if binding.spec.deferred_invocation_type().is_some()
+            || matches!(binding.spec.input, ActionInput::Deferred { .. })
+        {
+            binding.spec.validate_json(&serde_json::Map::new())?;
+        } else {
+            binding.spec.build_json(&serde_json::Map::new())?;
+        }
         Ok(binding)
     }
 
@@ -181,7 +193,13 @@ impl ActionBinding<()> {
         arguments: serde_json::Map<String, serde_json::Value>,
     ) -> Result<Self, ActionBindingError> {
         let binding = Self::new(resource, spec, move |()| arguments.clone())?;
-        binding.spec.build_json(&(binding.arguments)(()))?;
+        if binding.spec.deferred_invocation_type().is_some()
+            || matches!(binding.spec.input, ActionInput::Deferred { .. })
+        {
+            binding.spec.validate_json(&(binding.arguments)(()))?;
+        } else {
+            binding.spec.build_json(&(binding.arguments)(()))?;
+        }
         Ok(binding)
     }
 
@@ -509,9 +527,13 @@ pub enum Collects {
 pub enum ActionInput {
     /// Fires immediately with this pre-encoded action.
     Immediate(EncodedAction),
-    /// Collects one free-text argument first (the palette shows an argument
-    /// step), then builds the action from it. The closure is
-    /// presentation-side — only its output [`EncodedAction`] crosses a boundary.
+    /// A no-argument operation built only at final admitted owner execution.
+    /// Enumeration and confirmation retain declared intent, not minted bytes.
+    Deferred {
+        type_id: String,
+        build: Arc<dyn Fn() -> EncodedAction + Send + Sync>,
+    },
+    /// Collects one free-text argument first, then builds its encoded action.
     Prompted {
         prompt: String,
         placeholder: String,
@@ -519,6 +541,114 @@ pub enum ActionInput {
         collects: Collects,
         build: Arc<dyn Fn(&str) -> EncodedAction + Send + Sync>,
     },
+}
+
+/// Collision-free, provider-defined identity for one continuation target or
+/// handler. Tuple components remain separate; callers never join or hash them.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ContinuationKey {
+    namespace: String,
+    parts: Vec<Vec<u8>>,
+}
+
+impl ContinuationKey {
+    pub fn new(
+        namespace: impl Into<String>,
+        parts: impl IntoIterator<Item = impl Into<Vec<u8>>>,
+    ) -> Self {
+        Self {
+            namespace: namespace.into(),
+            parts: parts.into_iter().map(Into::into).collect(),
+        }
+    }
+}
+
+pub enum ContinuationArguments<'a> {
+    Immediate,
+    Text(&'a str),
+    Json(&'a serde_json::Map<String, serde_json::Value>),
+}
+
+pub enum ContinuationQuery<'a> {
+    Exact(ContinuationArguments<'a>),
+    Draft,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ContinuationEvidence {
+    Exact {
+        target: ContinuationKey,
+        handler: ContinuationKey,
+    },
+    Draft {
+        resolution_domain: ContinuationKey,
+        handler: ContinuationKey,
+    },
+}
+
+impl ContinuationEvidence {
+    /// Stream unambiguous comparison data without allocating a serialized copy.
+    /// The format is private to comparison consumers, not a wire protocol.
+    ///
+    /// # Errors
+    /// Propagates a sink failure or an unrepresentable component length.
+    pub fn write_canonical_identity(&self, sink: &mut impl std::io::Write) -> std::io::Result<()> {
+        fn length(sink: &mut impl std::io::Write, value: usize) -> std::io::Result<()> {
+            let value = u64::try_from(value).map_err(|_| {
+                std::io::Error::new(std::io::ErrorKind::InvalidInput, "identity length overflow")
+            })?;
+            sink.write_all(&value.to_le_bytes())
+        }
+        fn bytes(sink: &mut impl std::io::Write, value: &[u8]) -> std::io::Result<()> {
+            length(sink, value.len())?;
+            sink.write_all(value)
+        }
+        fn key(sink: &mut impl std::io::Write, value: &ContinuationKey) -> std::io::Result<()> {
+            bytes(sink, value.namespace.as_bytes())?;
+            length(sink, value.parts.len())?;
+            for part in &value.parts {
+                bytes(sink, part)?;
+            }
+            Ok(())
+        }
+        sink.write_all(b"tilo.continuation-identity\0v1")?;
+        match self {
+            Self::Exact { target, handler } => {
+                sink.write_all(&[0])?;
+                key(sink, target)?;
+                key(sink, handler)
+            }
+            Self::Draft {
+                resolution_domain,
+                handler,
+            } => {
+                sink.write_all(&[1])?;
+                key(sink, resolution_domain)?;
+                key(sink, handler)
+            }
+        }
+    }
+}
+
+type ContinuationResolver =
+    Arc<dyn for<'a> Fn(ContinuationQuery<'a>) -> Option<ContinuationEvidence> + Send + Sync>;
+
+#[derive(Clone)]
+enum InvocationBuilder {
+    Fixed(Arc<EncodedAction>),
+    Dynamic {
+        build: ArgsBuilder,
+        deferred_type: Option<String>,
+    },
+}
+
+impl InvocationBuilder {
+    fn build(&self, args: &ActionArgs) -> EncodedAction {
+        match self {
+            Self::Fixed(encoded) => encoded.as_ref().clone(),
+            Self::Dynamic { build, .. } => build(args),
+        }
+    }
 }
 
 /// One action a resource exports to the palette.
@@ -550,10 +680,11 @@ pub struct ActionSpec {
     /// Builds the encoded action from arguments bound against `params`. Shares
     /// the app's closure with `input` rather than duplicating it, which is what
     /// makes the palette path and the external path provably one function.
-    build: ArgsBuilder,
+    build: InvocationBuilder,
     /// Classifies one invocation's bound arguments when the action's risk
     /// depends on them. See [`ActionSpec::with_risk`].
     risk_of: Option<RiskClassifier>,
+    continuation_resolver: Option<ContinuationResolver>,
 }
 
 /// Classifies the risk of one invocation from its bound arguments.
@@ -570,6 +701,151 @@ struct TypedActionSeed {
 }
 
 impl ActionSpec {
+    /// Borrow the actual fixed encoding used by the typed invocation builder.
+    /// `None` means the builder is opaque, even if its palette input is Immediate.
+    /// This is comparison data, never permission to invoke an action.
+    pub fn fixed_invocation_encoding(&self) -> Option<&EncodedAction> {
+        match &self.build {
+            InvocationBuilder::Fixed(encoded) => Some(encoded),
+            InvocationBuilder::Dynamic { .. } => None,
+        }
+    }
+
+    /// Whether a provider installed continuation evidence. An installed provider
+    /// returning unknown is distinct from having no provider.
+    pub fn has_continuation_identity(&self) -> bool {
+        self.continuation_resolver.is_some()
+    }
+
+    /// Declared type of an explicit deferred invocation. This is inert metadata,
+    /// never an encoding or authorization to execute the retained builder.
+    pub fn deferred_invocation_type(&self) -> Option<&str> {
+        match &self.build {
+            InvocationBuilder::Dynamic { deferred_type, .. } => deferred_type.as_deref(),
+            InvocationBuilder::Fixed(_) => None,
+        }
+    }
+
+    pub(crate) fn validate_deferred_shape(&self) -> Result<(), ArgError> {
+        match (&self.input, self.deferred_invocation_type()) {
+            (ActionInput::Deferred { type_id, .. }, Some(expected))
+                if !type_id.is_empty()
+                    && type_id == expected
+                    && self.params.is_empty()
+                    && match self.kind {
+                        OperationKind::Document => self.operation_type.is_none(),
+                        OperationKind::Effect | OperationKind::View => {
+                            self.operation_type.as_deref() == Some(expected)
+                        }
+                    } =>
+            {
+                Ok(())
+            }
+            (ActionInput::Deferred { .. }, _) | (_, Some(_)) => Err(ArgError::Constraint {
+                name: "deferred".into(),
+                reason: "deferred input and retained declaration disagree".into(),
+            }),
+            (_, None) => Ok(()),
+        }
+    }
+
+    fn validate_built(&self, encoded: EncodedAction) -> Result<EncodedAction, ArgError> {
+        if let Some(expected) = self.deferred_invocation_type() {
+            if encoded.type_id != expected {
+                return Err(ArgError::Constraint {
+                    name: "deferred".into(),
+                    reason: format!(
+                        "builder returned `{}` but declared `{expected}`",
+                        encoded.type_id
+                    ),
+                });
+            }
+        }
+        Ok(encoded)
+    }
+
+    /// Strict argument validation without invoking an encoder.
+    pub fn validate_json(
+        &self,
+        supplied: &serde_json::Map<String, serde_json::Value>,
+    ) -> Result<(), ArgError> {
+        self.validate_deferred_shape()?;
+        ActionArgs::bind_json(&self.params, supplied).map(|_| ())
+    }
+
+    /// A document operation whose no-argument builder runs only at execution.
+    /// Both invocation lanes share this one closure; construction never runs it.
+    pub fn deferred(
+        id: impl Into<String>,
+        label: impl Into<String>,
+        locus: ExecutionLocus,
+        type_id: impl Into<String>,
+        build: impl Fn() -> EncodedAction + Send + Sync + 'static,
+    ) -> Self {
+        Self::deferred_with_kind(
+            id.into(),
+            label.into(),
+            locus,
+            OperationKind::Document,
+            type_id.into(),
+            build,
+        )
+    }
+
+    /// An effect/view operation with deferred no-argument encoding.
+    pub fn deferred_operation(
+        id: impl Into<String>,
+        label: impl Into<String>,
+        kind: OperationKind,
+        type_id: impl Into<String>,
+        build: impl Fn() -> EncodedAction + Send + Sync + 'static,
+    ) -> Self {
+        Self::deferred_with_kind(
+            id.into(),
+            label.into(),
+            ExecutionLocus::ClientLocal,
+            kind,
+            type_id.into(),
+            build,
+        )
+    }
+
+    fn deferred_with_kind(
+        id: String,
+        label: String,
+        locus: ExecutionLocus,
+        kind: OperationKind,
+        type_id: String,
+        build: impl Fn() -> EncodedAction + Send + Sync + 'static,
+    ) -> Self {
+        let build: Arc<dyn Fn() -> EncodedAction + Send + Sync> = Arc::new(build);
+        let shared = build.clone();
+        Self {
+            id,
+            label,
+            description: None,
+            locus,
+            kind,
+            operation_type: (kind != OperationKind::Document).then(|| type_id.clone()),
+            contract: if kind == OperationKind::View {
+                ActionContract::view()
+            } else {
+                ActionContract::default()
+            },
+            input: ActionInput::Deferred {
+                type_id: type_id.clone(),
+                build,
+            },
+            params: vec![],
+            build: InvocationBuilder::Dynamic {
+                build: Arc::new(move |_| shared()),
+                deferred_type: Some(type_id),
+            },
+            risk_of: None,
+            continuation_resolver: None,
+        }
+    }
+
     /// An action that fires immediately. `type_id` must match the app's
     /// registry registration for `A`.
     ///
@@ -601,8 +877,9 @@ impl ActionSpec {
             contract: ActionContract::default(),
             input: ActionInput::Immediate(encoded),
             params: Vec::new(),
-            build: Arc::new(move |_| for_build.clone()),
+            build: InvocationBuilder::Fixed(Arc::new(for_build)),
             risk_of: None,
+            continuation_resolver: None,
         })
     }
 
@@ -631,8 +908,9 @@ impl ActionSpec {
             contract: ActionContract::default(),
             input: ActionInput::Immediate(encoded),
             params: Vec::new(),
-            build: Arc::new(move |_| for_build.clone()),
+            build: InvocationBuilder::Fixed(Arc::new(for_build)),
             risk_of: None,
+            continuation_resolver: None,
         }
     }
 
@@ -669,14 +947,18 @@ impl ActionSpec {
                 ParamType::Text,
                 prompt.clone(),
             )],
-            build: Arc::new(move |args| for_args(args.text(PROMPTED_PARAM).unwrap_or(""))),
-            risk_of: None,
+            build: InvocationBuilder::Dynamic {
+                build: Arc::new(move |args| for_args(args.text(PROMPTED_PARAM).unwrap_or(""))),
+                deferred_type: None,
+            },
             input: ActionInput::Prompted {
                 prompt,
                 placeholder: placeholder.into(),
                 collects: Collects::Words,
                 build,
             },
+            risk_of: None,
+            continuation_resolver: None,
         }
     }
 
@@ -713,8 +995,9 @@ impl ActionSpec {
             },
             input: ActionInput::Immediate(encoded),
             params: Vec::new(),
-            build: Arc::new(move |_| for_build.clone()),
+            build: InvocationBuilder::Fixed(Arc::new(for_build)),
             risk_of: None,
+            continuation_resolver: None,
         })
     }
 
@@ -752,14 +1035,18 @@ impl ActionSpec {
                 ParamType::Text,
                 prompt.clone(),
             )],
-            build: Arc::new(move |args| for_args(args.text(PROMPTED_PARAM).unwrap_or(""))),
-            risk_of: None,
+            build: InvocationBuilder::Dynamic {
+                build: Arc::new(move |args| for_args(args.text(PROMPTED_PARAM).unwrap_or(""))),
+                deferred_type: None,
+            },
             input: ActionInput::Prompted {
                 prompt,
                 placeholder: placeholder.into(),
                 collects: Collects::Words,
                 build,
             },
+            risk_of: None,
+            continuation_resolver: None,
         }
     }
 
@@ -857,8 +1144,40 @@ impl ActionSpec {
             },
             input,
             params: seed.params,
-            build,
+            build: InvocationBuilder::Dynamic {
+                build,
+                deferred_type: None,
+            },
             risk_of: None,
+            continuation_resolver: None,
+        }
+    }
+
+    /// Opt one action into inert, provider-defined continuation evidence.
+    #[must_use]
+    pub fn with_continuation_identity(
+        mut self,
+        resolver: impl for<'a> Fn(ContinuationQuery<'a>) -> Option<ContinuationEvidence>
+        + Send
+        + Sync
+        + 'static,
+    ) -> Self {
+        self.continuation_resolver = Some(Arc::new(resolver));
+        self
+    }
+
+    /// Resolve comparison-only evidence for the exact input or draft domain.
+    /// A mismatched response variant is rejected as unsupported.
+    pub fn continuation_identity(
+        &self,
+        query: ContinuationQuery<'_>,
+    ) -> Option<ContinuationEvidence> {
+        let exact = matches!(query, ContinuationQuery::Exact(_));
+        let evidence = self.continuation_resolver.as_ref()?(query)?;
+        match (exact, &evidence) {
+            (true, ContinuationEvidence::Exact { .. })
+            | (false, ContinuationEvidence::Draft { .. }) => Some(evidence),
+            _ => None,
         }
     }
 
@@ -1086,8 +1405,9 @@ impl ActionSpec {
         &self,
         supplied: impl IntoIterator<Item = (String, ArgValue)>,
     ) -> Result<EncodedAction, ArgError> {
+        self.validate_deferred_shape()?;
         let bound = ActionArgs::bind(&self.params, supplied)?;
-        Ok((self.build)(&bound))
+        self.validate_built(self.build.build(&bound))
     }
 
     /// [`build_args`](Self::build_args) for arguments that arrived as JSON.
@@ -1100,8 +1420,9 @@ impl ActionSpec {
         &self,
         supplied: &serde_json::Map<String, serde_json::Value>,
     ) -> Result<EncodedAction, ArgError> {
+        self.validate_deferred_shape()?;
         let bound = ActionArgs::bind_json(&self.params, supplied)?;
-        Ok((self.build)(&bound))
+        self.validate_built(self.build.build(&bound))
     }
 }
 
@@ -1226,6 +1547,61 @@ pub trait ResourceProvider {
             None
         }
         find(self.resources(doc), id)
+    }
+
+    /// The resource tree as seen by one participant (a window or an agent
+    /// task), built from that participant's own view state.
+    ///
+    /// `None` is the provider's default view (the local window). Single-view
+    /// providers keep this default, which ignores the participant.
+    /// Multi-participant providers (Writer) override it and must never let
+    /// one participant's view leak into another's tree.
+    fn resources_for(
+        &self,
+        participant: Option<&crate::ParticipantId>,
+        doc: &automerge::AutoCommit,
+    ) -> Vec<Resource> {
+        let _ = participant;
+        self.resources(doc)
+    }
+
+    /// Resolve one resource id in `participant`'s tree. The default searches
+    /// [`Self::resources_for`], and keeps [`Self::resource`]'s indexed lookup
+    /// for the default view.
+    fn resource_for(
+        &self,
+        participant: Option<&crate::ParticipantId>,
+        doc: &automerge::AutoCommit,
+        id: &str,
+    ) -> Option<Resource> {
+        let Some(participant) = participant else {
+            return self.resource(doc, id);
+        };
+        fn find(resources: Vec<Resource>, id: &str) -> Option<Resource> {
+            for resource in resources {
+                if resource.id.as_str() == id {
+                    return Some(resource);
+                }
+                if let Some(found) = find(resource.children, id) {
+                    return Some(found);
+                }
+            }
+            None
+        }
+        find(self.resources_for(Some(participant), doc), id)
+    }
+
+    /// The participant-independent catalogue this provider publishes to
+    /// the broker and grants are checked against (see [`crate::schema`]).
+    ///
+    /// It must not depend on any participant's caret, selection or Find
+    /// state: stable addresses only, with context preconditions declared as
+    /// [`ContextRequirement`](crate::ContextRequirement) flags. Every
+    /// operation reachable in any participant's
+    /// [`resources_for`](Self::resources_for) tree must have an entry here
+    /// with the same contract. Single-view providers keep this default.
+    fn catalogue_schema(&self, doc: &automerge::AutoCommit) -> Vec<Resource> {
+        self.resources(doc)
     }
 }
 
@@ -1493,4 +1869,105 @@ mod tests {
             .is_valid()
         );
     }
+
+    #[test]
+    fn continuation_identity_is_explicit_argument_aware_and_variant_checked() {
+        let plain =
+            ActionSpec::operation("run", "Run", OperationKind::Effect, "test.run", &()).unwrap();
+        assert!(
+            plain
+                .continuation_identity(ContinuationQuery::Exact(ContinuationArguments::Immediate))
+                .is_none()
+        );
+        let immediate = ActionSpec::immediate_encoded(
+            "open",
+            "Open",
+            ExecutionLocus::ClientLocal,
+            EncodedAction::encode_operation("test.open", &()).unwrap(),
+        );
+        let prompted = ActionSpec::prompted(
+            "rename",
+            "Rename",
+            "Name",
+            "name",
+            ExecutionLocus::ClientLocal,
+            |value| EncodedAction::encode_operation("test.rename", &value).unwrap(),
+        );
+        let typed = ActionSpec::typed(
+            "count",
+            "Count",
+            "count",
+            ExecutionLocus::ClientLocal,
+            vec![ActionParam::required("count", ParamType::Integer, "Count")],
+            |args| EncodedAction::encode_operation("test.count", &args.integer("count")).unwrap(),
+        );
+        for spec in [&immediate, &prompted, &typed] {
+            assert!(
+                spec.continuation_identity(ContinuationQuery::Draft)
+                    .is_none(),
+                "every constructor is unsupported unless its provider opts in"
+            );
+        }
+
+        let spec = plain.with_continuation_identity(|query| match query {
+            ContinuationQuery::Exact(ContinuationArguments::Text(value)) => {
+                Some(ContinuationEvidence::Exact {
+                    target: ContinuationKey::new("target", [value.as_bytes()]),
+                    handler: ContinuationKey::new("handler", [b"v1".as_slice()]),
+                })
+            }
+            ContinuationQuery::Draft => Some(ContinuationEvidence::Draft {
+                resolution_domain: ContinuationKey::new("domain", [b"aliases-v4".as_slice()]),
+                handler: ContinuationKey::new("handler", [b"v1".as_slice()]),
+            }),
+            ContinuationQuery::Exact(_) => None,
+        });
+        assert!(matches!(
+            spec.continuation_identity(ContinuationQuery::Exact(ContinuationArguments::Text("a"))),
+            Some(ContinuationEvidence::Exact { target, .. })
+                if target == ContinuationKey::new("target", [b"a".as_slice()])
+        ));
+        assert!(matches!(
+            spec.continuation_identity(ContinuationQuery::Draft),
+            Some(ContinuationEvidence::Draft { .. })
+        ));
+        assert!(
+            spec.continuation_identity(ContinuationQuery::Exact(ContinuationArguments::Json(
+                serde_json::json!({PROMPTED_PARAM:"a"}).as_object().unwrap()
+            )))
+            .is_none(),
+            "exact Text and exact JSON remain distinct provider inputs"
+        );
+
+        let mismatched =
+            ActionSpec::operation("run", "Run", OperationKind::Effect, "test.run", &())
+                .unwrap()
+                .with_continuation_identity(|_| {
+                    Some(ContinuationEvidence::Draft {
+                        resolution_domain: ContinuationKey::new("domain", [b"v1".as_slice()]),
+                        handler: ContinuationKey::new("handler", [b"v1".as_slice()]),
+                    })
+                });
+        assert!(
+            mismatched
+                .continuation_identity(ContinuationQuery::Exact(ContinuationArguments::Immediate))
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn continuation_keys_preserve_tuple_boundaries_and_clone_by_value() {
+        let first = ContinuationKey::new("scope", [b"ab".as_slice(), b"c".as_slice()]);
+        let second = ContinuationKey::new("scope", [b"a".as_slice(), b"bc".as_slice()]);
+        assert_ne!(first, second);
+        assert_eq!(first, first.clone());
+    }
 }
+
+#[cfg(test)]
+#[path = "resource/effective_invocation_tests.rs"]
+mod effective_invocation_tests;
+
+#[cfg(test)]
+#[path = "resource/deferred_tests.rs"]
+mod deferred_tests;

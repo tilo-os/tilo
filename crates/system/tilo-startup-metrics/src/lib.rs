@@ -46,7 +46,7 @@
 
 use serde::Serialize;
 use std::sync::{Mutex, OnceLock, PoisonError};
-use std::time::{Instant, SystemTime};
+use web_time::{Instant, SystemTime};
 
 /// Global capture state. Cheap to check on every [`mark`] call: the `OnceLock` reads a
 /// single atomic pointer.

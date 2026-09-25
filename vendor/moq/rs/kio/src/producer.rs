@@ -1,0 +1,472 @@
+use std::{
+	ops::{Deref, DerefMut},
+	sync::atomic::Ordering,
+	task::Poll,
+};
+
+use crate::{
+	Closed, Counts, State,
+	consumer::Consumer,
+	lock::*,
+	sync::Arc,
+	waiter::*,
+	weak::{ProducerWeak, Weak},
+};
+
+/// The producing side of a shared state channel.
+///
+/// Producers hold mutable access to the shared value. When the state is modified
+/// through [`Mut`], all registered consumers are automatically notified.
+/// Cloning a producer increments the producer reference count. When the last
+/// producer is dropped, the channel is closed.
+#[derive(Debug)]
+pub struct Producer<T> {
+	pub(crate) state: Lock<State<T>>,
+	pub(crate) counts: Arc<Counts>,
+}
+
+impl<T: Default> Default for Producer<T> {
+	fn default() -> Self {
+		Self {
+			state: Lock::new(State::default()),
+			counts: Arc::new(Counts::default()),
+		}
+	}
+}
+
+impl<T> Producer<T> {
+	/// Heap bytes this channel occupies, for callers budgeting memory per channel.
+	///
+	/// A channel owns two allocations regardless of how it is used: the state cell
+	/// holding `T`, its mutex and the three waiter lists, plus the reference counts
+	/// beside it. Both are sized at compile time, so a caller charging per channel can
+	/// derive its constant from this rather than measuring a process and pasting the
+	/// number.
+	///
+	/// [`Consumer`] has no counterpart because it shares these same two allocations:
+	/// [`consume`](Self::consume) hands back two more pointers and bumps a count, so a
+	/// channel costs this whether it has one consumer or a thousand.
+	///
+	/// Excludes whatever `T` allocates on its own.
+	pub const HEAP: usize = crate::arc_heap::<crate::sync::Mutex<State<T>>>() + crate::arc_heap::<Counts>();
+
+	/// Create a new producer with the given initial value.
+	pub fn new(value: T) -> Self {
+		Self {
+			state: Lock::new(State::new(value)),
+			counts: Arc::new(Counts::default()),
+		}
+	}
+
+	/// Create a new [`Consumer`] that shares this producer's state.
+	pub fn consume(&self) -> Consumer<T> {
+		let prev = self.counts.consumers.fetch_add(1, Ordering::AcqRel);
+
+		// Wake `used()` waiters when the first consumer appears.
+		if prev == 0 {
+			let mut waiters = self.state.lock().waiters_consumer.take();
+			waiters.wake();
+		}
+
+		Consumer {
+			state: self.state.clone(),
+			counts: self.counts.clone(),
+		}
+	}
+
+	/// Close the channel, notifying all consumers.
+	pub fn close(&self) -> Result<(), Ref<'_, T>> {
+		self.write()?.close();
+		Ok(())
+	}
+
+	/// Acquire mutable access to the shared state.
+	///
+	/// Returns `Ok(Mut)` if the channel is open, or `Err(Ref)` with
+	/// read-only access if closed. Only locks once.
+	pub fn write(&self) -> Result<Mut<'_, T>, Ref<'_, T>> {
+		let state = self.state.lock();
+		if state.closed {
+			Err(Ref { state })
+		} else {
+			Ok(Mut::new(state))
+		}
+	}
+
+	/// Poll a read-only predicate; on [`Poll::Ready`] hand back a [`Mut`] with the
+	/// lock still held, so the caller can inspect and mutate atomically.
+	///
+	/// Unlike [`Consumer::poll`], the predicate returns `Poll<()>` (it just gates
+	/// readiness) and a satisfied poll yields write access via [`Mut`]. The
+	/// predicate only sees a [`Ref`], so it can't accidentally flag the state
+	/// modified (e.g. via a `&mut`-taking method like `Vec::pop`). That sidesteps
+	/// the footgun where a no-op mutation during a *pending* poll would wake this
+	/// producer's own waiter and spin into an infinite loop. Decide readiness in
+	/// the predicate, then mutate through the returned `Mut`. Registers `waiter`
+	/// while pending.
+	///
+	/// Returns `Poll::Ready(Err(`[`Ref`]`))` if the channel is closed.
+	pub fn poll<F>(&self, waiter: &Waiter, mut f: F) -> Poll<Result<Mut<'_, T>, Ref<'_, T>>>
+	where
+		F: FnMut(&Ref<'_, T>) -> Poll<()>,
+	{
+		let state = self.state.lock();
+		if state.closed {
+			return Poll::Ready(Err(Ref { state }));
+		}
+
+		let mut guard = Ref { state };
+		match f(&guard) {
+			// Upgrade the Ref to a Mut, keeping the same lock guard.
+			Poll::Ready(()) => Poll::Ready(Ok(Mut::new(guard.state))),
+			Poll::Pending => {
+				waiter.register(&mut guard.state.waiters_value);
+				Poll::Pending
+			}
+		}
+	}
+
+	/// Poll read-only access with waker registration.
+	///
+	/// Like [`Self::poll`] but hands `f` a [`Ref`] instead of returning a
+	/// [`Mut`], so it never flags the state modified and never wakes consumers.
+	/// Use it to wait on a read condition from the producer side without creating
+	/// a [`Consumer`].
+	pub fn poll_ref<F, R>(&self, waiter: &Waiter, mut f: F) -> Poll<Result<R, Ref<'_, T>>>
+	where
+		F: FnMut(&Ref<'_, T>) -> Poll<R>,
+	{
+		let state = self.state.lock();
+		let mut guard = Ref { state };
+
+		if let Poll::Ready(res) = f(&guard) {
+			return Poll::Ready(Ok(res));
+		}
+
+		if guard.state.closed {
+			return Poll::Ready(Err(guard));
+		}
+
+		waiter.register(&mut guard.state.waiters_value);
+		Poll::Pending
+	}
+
+	/// Wait until the read-only predicate holds, then acquire write access.
+	///
+	/// The async sibling of [`poll`](Self::poll): returns `Ok(Mut)` once `f` returns
+	/// [`Poll::Ready`], or [`Closed`] if the channel closes first. The `Ok` guard is the
+	/// write access you asked for, so it's yours to hold; the `Err` case hands back no
+	/// guard at all. Call [`read`](Self::read) if you need the final state.
+	pub async fn wait<F>(&self, mut f: F) -> Result<Mut<'_, T>, Closed>
+	where
+		F: FnMut(&Ref<'_, T>) -> Poll<()> + Unpin,
+	{
+		// The `Ref` is dropped here inside the closure, releasing the lock before the
+		// caller ever sees the error.
+		crate::wait(move |waiter| self.poll(waiter, &mut f).map(|res| res.map_err(|_| Closed))).await
+	}
+
+	/// Wait until the channel is closed.
+	pub async fn closed(&self) {
+		crate::wait(move |waiter| self.poll_closed(waiter)).await
+	}
+
+	/// Poll for channel closure (an explicit [`Mut::close`], e.g. an abort),
+	/// registering the waiter if still open.
+	pub fn poll_closed(&self, waiter: &Waiter) -> Poll<()> {
+		let mut state = self.state.lock();
+		if state.closed {
+			return Poll::Ready(());
+		}
+
+		waiter.register(&mut state.waiters_closed);
+		Poll::Pending
+	}
+
+	/// Wait until all consumers have been dropped.
+	///
+	/// Returns `Ok(())` when no consumers remain, or [`Closed`] if the channel closes first.
+	pub async fn unused(&self) -> Result<(), Closed> {
+		match crate::wait(move |waiter| self.poll_unused(waiter)).await {
+			Some(()) => Ok(()),
+			None => Err(Closed),
+		}
+	}
+
+	/// Poll-based variant of [`Self::unused`]: `Ready(Some(()))` when no consumers
+	/// remain, `Ready(None)` if the channel closed first, else `Pending`.
+	pub fn poll_unused(&self, waiter: &Waiter) -> Poll<Option<()>> {
+		let mut state = self.state.lock();
+		if state.closed {
+			return Poll::Ready(None);
+		}
+
+		if self.counts.consumers.load(Ordering::Relaxed) == 0 {
+			return Poll::Ready(Some(()));
+		}
+
+		waiter.register(&mut state.waiters_consumer);
+
+		// Re-check after registration to avoid TOCTOU race where the last
+		// consumer drops between the initial check and waiter registration.
+		if self.counts.consumers.load(Ordering::Relaxed) == 0 {
+			return Poll::Ready(Some(()));
+		}
+
+		Poll::Pending
+	}
+
+	/// Whether any consumer handle currently exists.
+	///
+	/// A point-in-time snapshot with no registration; use [`Self::poll_used`] /
+	/// [`Self::poll_unused`] to wait for the edge instead.
+	pub fn is_used(&self) -> bool {
+		self.counts.consumers.load(Ordering::Relaxed) > 0
+	}
+
+	/// Wait until at least one consumer exists.
+	///
+	/// Returns `Ok(())` when a consumer is created, or [`Closed`] if the channel closes first.
+	pub async fn used(&self) -> Result<(), Closed> {
+		match crate::wait(move |waiter| self.poll_used(waiter)).await {
+			Some(()) => Ok(()),
+			None => Err(Closed),
+		}
+	}
+
+	/// Poll-based variant of [`Self::used`]: `Ready(Some(()))` once a consumer
+	/// exists, `Ready(None)` if the channel closed first, else `Pending`.
+	pub fn poll_used(&self, waiter: &Waiter) -> Poll<Option<()>> {
+		let mut state = self.state.lock();
+		if state.closed {
+			return Poll::Ready(None);
+		}
+
+		if self.counts.consumers.load(Ordering::Relaxed) > 0 {
+			return Poll::Ready(Some(()));
+		}
+
+		waiter.register(&mut state.waiters_consumer);
+
+		// Re-check after registration to avoid TOCTOU race where a consumer
+		// is created between the initial check and waiter registration.
+		if self.counts.consumers.load(Ordering::Relaxed) > 0 {
+			return Poll::Ready(Some(()));
+		}
+
+		Poll::Pending
+	}
+
+	/// Get read-only access to the shared state.
+	pub fn read(&self) -> Ref<'_, T> {
+		Ref {
+			state: self.state.lock(),
+		}
+	}
+
+	/// Returns `true` if both producers share the same underlying state.
+	pub fn same_channel(&self, other: &Self) -> bool {
+		self.state.is_clone(&other.state)
+	}
+
+	/// Returns `true` if this is the only remaining producer.
+	#[doc(hidden)]
+	#[deprecated(
+		note = "racy: a clone, or a Weak upgraded by another thread, can invalidate the answer \
+		        before you act on it. Run last-handle cleanup from the Drop of a shared guard instead."
+	)]
+	pub fn is_last(&self) -> bool {
+		self.counts.producers.load(Ordering::Acquire) == 1
+	}
+
+	/// Create a [`ProducerWeak`] reference that doesn't affect the producer/consumer ref counts.
+	pub fn weak(&self) -> ProducerWeak<T> {
+		ProducerWeak {
+			state: self.state.clone(),
+			counts: self.counts.clone(),
+		}
+	}
+
+	/// Create a [`Weak`] reference that owns nothing, not even the state allocation.
+	///
+	/// Use this instead of [`Self::weak`] for a handle stored inside the state itself,
+	/// where a [`ProducerWeak`] would keep the allocation alive through its own value.
+	pub fn downgrade(&self) -> Weak<T> {
+		Weak {
+			state: self.state.downgrade(),
+			counts: self.counts.clone(),
+		}
+	}
+}
+
+impl<T> Clone for Producer<T> {
+	fn clone(&self) -> Self {
+		self.counts.producers.fetch_add(1, Ordering::Relaxed);
+
+		Self {
+			state: self.state.clone(),
+			counts: self.counts.clone(),
+		}
+	}
+}
+
+impl<T> Drop for Producer<T> {
+	fn drop(&mut self) {
+		let mut waiters = {
+			// The count moves under the state lock, in step with the closed flag it
+			// decides. Decrementing outside it would let `ProducerWeak::produce` slip
+			// between the decrement and the close, handing back a producer for a
+			// channel that is about to close.
+			let mut state = self.state.lock();
+			if self.counts.producers.fetch_sub(1, Ordering::AcqRel) > 1 {
+				return;
+			}
+			if state.closed {
+				return;
+			}
+
+			// We were the last producer, so close. Every waiter reacts to closure
+			// (value/closed resolve, `used`/`unused` resolve to `None`), so drain
+			// every list and wake them once the lock is released.
+			state.closed = true;
+			state.take_close_waiters()
+		};
+
+		for list in &mut waiters {
+			list.wake();
+		}
+	}
+}
+
+/// A mutable guard over the shared state.
+///
+/// Derefs to `T` for direct access. Automatically notifies all waiting consumers
+/// when dropped if the state was accessed mutably.
+#[derive(Debug)]
+pub struct Mut<'a, T> {
+	// Its an option so we can drop it before notifying consumers.
+	pub(crate) state: Option<LockGuard<'a, State<T>>>,
+	pub(crate) modified: bool,
+}
+
+impl<'a, T> Mut<'a, T> {
+	pub(crate) fn new(state: LockGuard<'a, State<T>>) -> Self {
+		Self {
+			state: Some(state),
+			modified: false,
+		}
+	}
+
+	/// NOTE: This takes self so it's impossible to be in a closed state.
+	pub fn close(mut self) {
+		let state = self.state.as_mut().unwrap();
+		// We don't need to check for state.closed because we checked when making Mut
+		state.closed = true;
+		self.modified = true;
+	}
+}
+
+impl<T> Deref for Mut<'_, T> {
+	type Target = T;
+
+	fn deref(&self) -> &Self::Target {
+		&self.state.as_ref().unwrap().value
+	}
+}
+
+impl<T> DerefMut for Mut<'_, T> {
+	fn deref_mut(&mut self) -> &mut Self::Target {
+		// If we use the &mut then notify on Drop.
+		self.modified = true;
+		&mut self.state.as_mut().unwrap().value
+	}
+}
+
+impl<T> Drop for Mut<'_, T> {
+	fn drop(&mut self) {
+		let mut state = self.state.take().unwrap();
+
+		if !self.modified {
+			return;
+		}
+
+		// Drain wakers while holding lock, then wake after releasing.
+		// A modification that also closed the channel (e.g. `close()`) must
+		// wake the closed and consumer-count waiters too, since they resolve
+		// on closure. A plain modification touches only the value waiters.
+		let mut waiters_value = state.waiters_value.take();
+		let extra = state
+			.closed
+			.then(|| [state.waiters_closed.take(), state.waiters_consumer.take()]);
+		drop(state); // Release Mutex BEFORE waking
+
+		waiters_value.wake();
+		if let Some(mut extra) = extra {
+			for list in &mut extra {
+				list.wake();
+			}
+		}
+	}
+}
+
+/// A read-only guard over the shared state.
+///
+/// Derefs to `T` for direct access. Does not notify consumers when dropped.
+pub struct Ref<'a, T> {
+	pub(crate) state: LockGuard<'a, State<T>>,
+}
+
+impl<T> Ref<'_, T> {
+	/// Returns `true` if the channel has been closed.
+	pub fn is_closed(&self) -> bool {
+		self.state.closed
+	}
+}
+
+impl<T> Deref for Ref<'_, T> {
+	type Target = T;
+
+	fn deref(&self) -> &Self::Target {
+		&self.state.value
+	}
+}
+
+#[cfg(all(test, not(loom)))]
+mod test {
+	use super::*;
+
+	#[test]
+	fn poll_gates_on_predicate_then_writes() {
+		let producer = Producer::<Vec<u32>>::default();
+		let waiter = Waiter::noop();
+
+		let predicate = |state: &Ref<'_, Vec<u32>>| {
+			if state.is_empty() {
+				Poll::Pending
+			} else {
+				Poll::Ready(())
+			}
+		};
+
+		// Empty queue: the read-only predicate is pending, so no Mut is handed out
+		// (and crucially nothing flags the state modified to wake our own waiter).
+		assert!(matches!(producer.poll(&waiter, predicate), Poll::Pending));
+
+		let Ok(mut write) = producer.write() else {
+			panic!("channel should be open");
+		};
+		write.push(1);
+		drop(write);
+
+		// Now satisfied: poll upgrades to a Mut with the lock still held.
+		let Poll::Ready(Ok(mut state)) = producer.poll(&waiter, predicate) else {
+			panic!("expected a writable guard");
+		};
+		assert_eq!(state.pop(), Some(1));
+		drop(state);
+
+		// Closed channel reports back through Err.
+		assert!(producer.close().is_ok());
+		assert!(matches!(producer.poll(&waiter, predicate), Poll::Ready(Err(_))));
+	}
+}

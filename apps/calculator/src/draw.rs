@@ -64,6 +64,13 @@ pub fn wash(base: Color, t: f64) -> Color {
     mix(base, ui::tokens::Colors::hairline_on(base, 255), t)
 }
 
+/// `base` washed `t` of the way toward whichever extreme moves it more —
+/// white on a dark key, black on a light one — so hover / press feedback
+/// keeps its polarity on every palette instead of a literal white veneer.
+pub fn wash(base: Color, t: f64) -> Color {
+    mix(base, ui::tokens::Colors::hairline_on(base, 255), t)
+}
+
 pub fn line(scene: &mut Scene, t: Affine, a: Point, b: Point, color: Color, width: f64) {
     scene.stroke(&Stroke::new(width), t, color, None, &Line::new(a, b));
 }

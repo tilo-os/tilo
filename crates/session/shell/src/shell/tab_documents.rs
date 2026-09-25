@@ -401,7 +401,15 @@ mod tests {
             let mut b = Tile::notes(TAB_B, &store);
             a.type_str(&mut shared, "first tab");
             b.type_str(&mut shared, "second tab");
-            store.flush();
+            assert_eq!(
+                tab_body(&store, TAB_A, BODY_KEY).as_deref(),
+                Some("first tab")
+            );
+            assert_eq!(
+                tab_body(&store, TAB_B, BODY_KEY).as_deref(),
+                Some("second tab")
+            );
+            store.try_flush().expect("both tab records reached storage");
         }
 
         // A fresh session: same tab ids out of the persisted window tree,

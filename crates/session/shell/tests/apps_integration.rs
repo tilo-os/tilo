@@ -30,7 +30,7 @@ fn default_workspace_hosts_terminal_files_and_real_browser_widget() {
         .iter()
         .flat_map(|w| w.strips.iter())
         .flat_map(|s| s.window_groups.iter())
-        .flat_map(|g| g.tabs.iter().map(|t| &t.tile))
+        .flat_map(|g| g.tabs.iter().filter_map(|t| shell.runtime_tile(t.id)))
         .collect();
 
     let kinds: Vec<AppKind> = tabs

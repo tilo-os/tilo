@@ -21,8 +21,8 @@
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::time::SystemTime;
 use thiserror::Error;
+use web_time::SystemTime;
 
 use crate::canonical::{CanonicalError, canonical_bytes, from_canonical_bytes};
 use crate::channel::ArtifactId;
@@ -250,7 +250,7 @@ mod tests {
     use crate::channel::ArtifactId;
     use crate::crypto::generate_keypair;
     use crate::identity::AttestationId;
-    use std::time::SystemTime;
+    use web_time::SystemTime;
 
     fn dummy_op(seq: u64) -> SignedOp {
         let (_, pk) = generate_keypair();
@@ -452,7 +452,7 @@ mod tests {
             target_op_hash: [2; 32],
             reason: "compliance".into(),
             redacted_by: pk,
-            redacted_at: SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(123_456),
+            redacted_at: SystemTime::UNIX_EPOCH + web_time::Duration::from_secs(123_456),
         };
         let bytes = canonical_bytes(&req).expect("encode");
         let back: RedactRequest = from_canonical_bytes(&bytes).expect("decode");

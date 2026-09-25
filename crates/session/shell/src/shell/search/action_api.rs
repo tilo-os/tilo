@@ -303,6 +303,45 @@ impl ActionCatalog {
         }
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "resource resolution keeps its address and query context separate from chrome, CRDT location and visibility policy"
+    )]
+    pub fn build_for_resource(
+        registry: &SearchRegistry,
+        resource: &ResourceRef,
+        scope: SearchScope,
+        active_provider_id: Option<&str>,
+        chrome: &ChromeState,
+        doc: &AutoCommit,
+        doc_root: &ObjId,
+        visibility: &dyn ActionVisibility,
+    ) -> Self {
+        let results = registry
+            .resolve(
+                &resource.provider,
+                &resource.id,
+                &QueryArgs {
+                    needle: "",
+                    scope,
+                    active_provider_id,
+                    wanted_kinds: &[],
+                    chrome,
+                    doc,
+                    doc_root,
+                },
+            )
+            .into_iter()
+            .collect::<Vec<_>>();
+        let visible = results
+            .iter()
+            .enumerate()
+            .filter(|(_, result)| visibility.can_see(resource, &result.kind))
+            .map(|(index, _)| index)
+            .collect();
+        Self { results, visible }
+    }
+
     /// Enumerate the typed descriptors the caller may see. Render-free —
     /// no scene is built, no widget is touched.
     pub fn enumerate(&self) -> Vec<ExportedAction> {

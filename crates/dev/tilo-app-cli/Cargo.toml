@@ -19,7 +19,7 @@ clap.workspace = true
 fluent.workspace = true
 fluent-syntax.workspace = true
 libc.workspace = true
-notify.workspace = true
+notify = { workspace = true, default-features = true }
 image = { workspace = true, features = ["png"] }
 tilo-app-package = { path = "../../packaging/tilo-app-package" }
 atomic-file = { path = "../../system/atomic-file" }

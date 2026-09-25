@@ -100,12 +100,14 @@ pub mod protocol;
 pub mod registry;
 pub mod remote;
 pub mod resource;
+pub mod schema;
 
 pub use action::{
     Action, ActionError, ActionId, Doc, EncodedAction, ExecutionLocus, OperationKind,
 };
 pub use context::{
-    ActionApp, ActionContext, ActionFacet, ActionGroup, ActionResource, CHANGE_MESSAGE_PREFIX,
+    AGENT_TASK_PARTICIPANT_PREFIX, ActionApp, ActionContext, ActionFacet, ActionGroup,
+    ActionInvoker, ActionResource, CHANGE_MESSAGE_PREFIX, MAX_PARTICIPANT_ID_BYTES, ParticipantId,
 };
 pub use contract::{
     ARGUMENT_RISK_TAG, ActionContract, Availability, ConfirmationPolicy, DiscoveryScope,
@@ -137,8 +139,13 @@ pub use protocol::{ContractViolation, validate_surface, validate_surface_contrac
 pub use registry::ActionRegistry;
 pub use resource::{
     ActionBinding, ActionBindingError, ActionInput, ActionSpec, ArgsBuilder, Collects,
+    ContinuationArguments, ContinuationEvidence, ContinuationKey, ContinuationQuery,
     ControlInvocation, FlatAction, KEY_SEP, PROMPTED_PARAM, Resource, ResourceId,
     ResourcePresentation, ResourceProvider, ResourceViewMountSpec, ResourceViewSpec, flatten,
+};
+pub use schema::{
+    CatalogueSchemaEntry, ContextRequirement, PARTICIPANT_VIEW_TAG, REQUIRES_TAG_PREFIX,
+    catalogue_schema, catalogue_schema_bytes,
 };
 
 #[cfg(test)]

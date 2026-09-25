@@ -19,6 +19,24 @@
 //! toolkit evaluates.
 
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
+
+#[derive(Clone)]
+struct PolicyTimeSampler(Arc<dyn Fn() -> Result<u64, String> + Send + Sync>);
+
+impl std::fmt::Debug for PolicyTimeSampler {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("PolicyTimeSampler(..)")
+    }
+}
+
+impl PartialEq for PolicyTimeSampler {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+impl Eq for PolicyTimeSampler {}
 
 pub use collab_types::caps::{
     Actor, CapDecision, CapOverride, Effect, Expiry, Principal, ResourceRef, Scope, Subject, Verb,
@@ -141,9 +159,19 @@ pub struct PermissionContext {
     actor: Actor,
     caps: Vec<CapOverride>,
     /// The instant expiry is evaluated against (seconds since the Unix
-    /// epoch). `None` disables expiry evaluation entirely and should be
-    /// used only where there is deliberately no trustworthy clock.
+    /// epoch) for legacy contexts without a retained sampler. `None` disables
+    /// expiry evaluation and is only for deliberately unclocked local contexts.
     now: Option<u64>,
+    policy_time: Option<PolicyTimeSampler>,
+}
+
+/// Inert directory cache identity. It cannot make a permission decision.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct DirectoryPermissionWitness {
+    user: UserId,
+    actor: Actor,
+    caps: Vec<CapOverride>,
+    live: Vec<bool>,
 }
 
 impl PermissionContext {
@@ -187,15 +215,58 @@ impl PermissionContext {
             actor,
             caps,
             now: unix_now(),
+            policy_time: None,
         }
     }
 
-    /// Evaluate expiry against a fixed instant instead of the wall clock,
-    /// so tests can prove a lapsed capability is dead.
+    /// Retain the actual host's fallible policy-time sampler (Unix seconds).
+    /// This supplies time only, not authority. The host must validate its exact
+    /// clock/origin and current guarded policy, including the captured role.
+    /// Every decision resamples; failure denies without consulting the wall
+    /// clock or a numeric pin. Clones retain this same sampler.
+    #[must_use]
+    pub fn with_policy_time_sampler(
+        mut self,
+        sampler: Arc<dyn Fn() -> Result<u64, String> + Send + Sync>,
+    ) -> Self {
+        self.policy_time = Some(PolicyTimeSampler(sampler));
+        self
+    }
+
+    /// Pin a legacy context's expiry time. An installed host sampler always
+    /// takes precedence, including when it fails.
     #[must_use]
     pub fn at_unix_time(mut self, now: u64) -> Self {
         self.now = Some(now);
         self
+    }
+
+    /// Compare the current policy meaning, not callback allocation or elapsed
+    /// seconds. Sampling is fallible; no cached/empty witness replaces failure.
+    pub(crate) fn directory_witness(&self) -> Result<DirectoryPermissionWitness, String> {
+        let now = match &self.policy_time {
+            Some(sampler) => Some((sampler.0)()?),
+            None => self.now,
+        };
+        Ok(DirectoryPermissionWitness {
+            user: self.user.clone(),
+            actor: self.actor.clone(),
+            caps: self.caps.clone(),
+            live: self
+                .caps
+                .iter()
+                .map(|cap| cap.expiry.is_live_at(now))
+                .collect(),
+        })
+    }
+
+    /// Refresh an execution check, preserving the actual host's retained clock.
+    pub(crate) fn at_current_time(&self) -> Result<Self, String> {
+        let now = match &self.policy_time {
+            Some(sampler) => (sampler.0)()?,
+            None => unix_now().ok_or("execution time unavailable")?,
+        };
+        Ok(self.clone().at_unix_time(now))
     }
 
     #[must_use]
@@ -225,7 +296,14 @@ impl PermissionContext {
     }
 
     pub fn decide(&self, resource: &ResourceRef, op: Verb) -> CapDecision {
-        decide_capability(&self.actor, resource, op, &self.caps, self.now)
+        let now = match &self.policy_time {
+            Some(sampler) => match (sampler.0)() {
+                Ok(now) => Some(now),
+                Err(_) => return CapDecision::DeniedByRole,
+            },
+            None => self.now,
+        };
+        decide_capability(&self.actor, resource, op, &self.caps, now)
     }
 
     /// May the actor do this? Fail-closed: anything not affirmatively
@@ -253,6 +331,9 @@ fn unix_now() -> Option<u64> {
         .ok()
         .map(|d| d.as_secs())
 }
+
+#[cfg(test)]
+mod policy_time_tests;
 
 #[cfg(test)]
 mod tests {

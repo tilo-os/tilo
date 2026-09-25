@@ -20,7 +20,7 @@
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use web_time::{Duration, Instant};
 
 use crate::cache::{FrameCache, FrameKey, SourceKey, bucket_ms_for_fps, bucket_of};
 use crate::engine::{EngineConfig, MediaEngine};

@@ -42,9 +42,49 @@ fn shot_root(args: &LaunchArgs) -> Result<Box<dyn Widget>, LaunchError> {
 extern crate runtime_dylib;
 
 pub fn main() {
-    ui::launch::run_or_exit(
-        &LaunchSpec::new("so.tilo.containers", containers::app_root)
-            .shot_root(shot_root)
-            .scenarios(&["confirm", "prompt"]),
-    );
+    ui::launch::run_or_exit(&launch_spec(containers::app_root));
+}
+
+fn launch_spec(root: fn() -> Box<dyn Widget>) -> LaunchSpec {
+    LaunchSpec::new("so.tilo.containers", root)
+        .shot_root(shot_root)
+        .scenarios(&["confirm", "prompt"])
+        .history(&containers::framework_history::HISTORY)
+}
+
+#[cfg(test)]
+mod launch_tests {
+    use super::*;
+
+    fn inert_root() -> Box<dyn Widget> {
+        Box::new(containers::history_test_root())
+    }
+
+    fn memory_state(_: &'static str) -> (ui::State, ui::persist::Autosave) {
+        (
+            ui::State::new(),
+            ui::persist::Autosave::disabled("controlled Containers launch"),
+        )
+    }
+
+    #[test]
+    fn production_launch_installs_containers_history() {
+        let spec = launch_spec(inert_root).open_app_global_state(memory_state);
+        let mut app = spec.build_controlled_app_for_test().unwrap();
+        let (installed, root) = app.controlled_history_definitions_for_test();
+        assert!(std::ptr::eq(
+            installed.unwrap(),
+            std::ptr::addr_of!(containers::framework_history::HISTORY)
+        ));
+        assert!(std::ptr::eq(
+            root.unwrap(),
+            std::ptr::addr_of!(containers::framework_history::HISTORY)
+        ));
+        assert!(
+            app.build_a11y_tree_update(1.0)
+                .nodes
+                .iter()
+                .any(|(_, node)| node.label() == Some("History"))
+        );
+    }
 }

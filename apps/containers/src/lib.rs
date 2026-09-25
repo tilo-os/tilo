@@ -40,13 +40,56 @@ pub mod app;
 pub mod combobox;
 pub mod doc;
 pub mod draw;
+pub mod framework_history;
+#[cfg(test)]
+mod framework_history_tests;
 pub mod model;
 pub mod panels;
 pub mod podman;
+pub mod presentation;
 pub mod search_provider;
 pub mod terminal;
 
 pub use app::ContainersApp;
+
+#[cfg(any(test, feature = "test-support"))]
+pub fn history_test_root() -> ContainersApp {
+    ContainersApp::history_test_root()
+}
+
+#[cfg(any(test, feature = "test-support"))]
+pub fn history_test_open_create_root() -> ContainersApp {
+    ContainersApp::history_test_open_create_root()
+}
+
+#[cfg(any(test, feature = "test-support"))]
+pub fn history_test_palette_root() -> ContainersApp {
+    ContainersApp::history_test_palette_root()
+}
+
+#[cfg(any(test, feature = "test-support"))]
+pub fn history_test_prompt_root() -> ContainersApp {
+    ContainersApp::history_test_prompt_root()
+}
+
+#[cfg(any(test, feature = "test-support"))]
+pub fn history_test_confirm_root() -> ContainersApp {
+    ContainersApp::history_test_confirm_root()
+}
+
+#[cfg(any(test, feature = "test-support"))]
+pub fn history_test_pull_root() -> ContainersApp {
+    ContainersApp::history_test_pull_root()
+}
+
+#[cfg(any(test, feature = "test-support"))]
+pub fn history_test_retention_root() -> (
+    ContainersApp,
+    std::sync::mpsc::Receiver<app::ControlledRuntimeRequest>,
+    std::rc::Rc<std::cell::RefCell<Option<app::HistoryRetentionSnapshot>>>,
+) {
+    ContainersApp::history_test_retention_root()
+}
 
 use ui::widget::Widget;
 

@@ -330,6 +330,8 @@ pub(crate) fn settle_widget_composition(
 pub(crate) struct CompositionFocus {
     ambiguous: bool,
     key: Option<String>,
+    semantic_key: Option<String>,
+    qualified_semantic: bool,
     binding: Option<crate::bound_dispatch::CallbackBinding>,
     legacy: Option<crate::history_mode::HistoryOwner>,
     state: Option<String>,
@@ -384,6 +386,10 @@ impl CompositionFocus {
                 CompositionFocus {
                     ambiguous: false,
                     key: CompositionFocus::key(widget),
+                    semantic_key: widget
+                        .accessibility()
+                        .and_then(|access| access.semantic_key),
+                    qualified_semantic: false,
                     binding: binding.clone(),
                     legacy: legacy.clone(),
                     state: widget.get_state(),
@@ -455,6 +461,10 @@ impl CompositionFocus {
             crate::bound_dispatch::inspect_bound_node(bindings, nodes, node, |widget| Self {
                 ambiguous: false,
                 key: Self::key(widget),
+                semantic_key: widget
+                    .accessibility()
+                    .and_then(|access| access.semantic_key),
+                qualified_semantic: false,
                 binding: bindings.binding_for(node),
                 legacy: bindings.legacy_for(node),
                 state: None,
@@ -490,6 +500,9 @@ impl CompositionFocus {
             let _ = unsafe {
                 crate::bound_dispatch::inspect_bound_node(bindings, nodes, *aggregate, |widget| {
                     focus.key = Self::key(widget);
+                    focus.semantic_key = widget
+                        .accessibility()
+                        .and_then(|access| access.semantic_key);
                     state_node = *aggregate;
                 })
             };
@@ -514,6 +527,28 @@ impl CompositionFocus {
                 })
                 .take(2)
                 .count();
+            // A unique named control keeps its identity through delegate/role
+            // changes. Repeated generic names need a unique canonical qualifier.
+            let matches = if matches > 1 && focus.semantic_key.is_some() {
+                focus.qualified_semantic = true;
+                nodes
+                    .keys()
+                    .filter(|&&node| unsafe {
+                        crate::bound_dispatch::inspect_bound_node(bindings, nodes, node, |widget| {
+                            focus.same_owner(bindings, node)
+                                && Self::key(widget).as_ref() == Some(key)
+                                && widget
+                                    .accessibility()
+                                    .and_then(|access| access.semantic_key)
+                                    == focus.semantic_key
+                        })
+                        .unwrap_or(false)
+                    })
+                    .take(2)
+                    .count()
+            } else {
+                matches
+            };
             focus.ambiguous |= matches != 1;
         }
         if !focus.ambiguous {
@@ -555,6 +590,8 @@ impl CompositionFocus {
             let owner = Self {
                 ambiguous: false,
                 key: None,
+                semantic_key: None,
+                qualified_semantic: false,
                 state: None,
                 binding: bindings.binding_for(candidate),
                 legacy: bindings.legacy_for(candidate),
@@ -578,7 +615,7 @@ impl CompositionFocus {
         bindings: &BoundNodeMap,
         allowed: Option<&[NodeId]>,
     ) -> Option<NodeId> {
-        let candidates: Vec<_> = nodes
+        let mut candidates: Vec<_> = nodes
             .keys()
             .copied()
             .filter(|&node| {
@@ -596,6 +633,17 @@ impl CompositionFocus {
                 .unwrap_or(false)
             })
             .collect();
+        if (self.qualified_semantic || candidates.len() > 1) && self.semantic_key.is_some() {
+            candidates.retain(|&node| unsafe {
+                crate::bound_dispatch::inspect_bound_node(bindings, nodes, node, |widget| {
+                    widget
+                        .accessibility()
+                        .and_then(|access| access.semantic_key)
+                        == self.semantic_key
+                })
+                .unwrap_or(false)
+            });
+        }
         let target = candidates
             .first()
             .copied()
@@ -1114,6 +1162,69 @@ mod tests {
                 unsafe { CompositionFocus::current(&nodes, &bindings, None) },
                 Some(root)
             );
+        }
+    }
+
+    #[test]
+    fn canonical_tab_focus_survives_reorder_but_never_transfers_to_a_remaining_peer() {
+        use crate::widget::{
+            Column,
+            tabs::{TabBar, TabDescriptor},
+        };
+        let bar = |id| {
+            Box::new(TabBar::new(
+                &format!("g{id}"),
+                vec![TabDescriptor::new(id, "Tab")],
+                id,
+            )) as Box<dyn Widget>
+        };
+        let mut old = Column::new().push(bar(3)).push(bar(4));
+        let mut tree = TaffyTree::new();
+        let mut nodes = HashMap::new();
+        let mut bindings = BoundNodeMap::new();
+        let root = old.build_layout(&mut tree, &crate::Theme::dark(), &mut nodes);
+        unsafe {
+            bindings.rebuild(&old, &tree, root, &nodes);
+        }
+        let source = *nodes
+            .keys()
+            .find(|&&node| unsafe {
+                crate::bound_dispatch::inspect_bound_node(&bindings, &nodes, node, |widget| {
+                    widget
+                        .accessibility()
+                        .and_then(|a| a.semantic_key)
+                        .as_deref()
+                        == Some("tabbar:g3")
+                })
+                .unwrap_or(false)
+            })
+            .unwrap();
+        let focus = unsafe { CompositionFocus::capture(Some(source), &nodes, &bindings) }.unwrap();
+        for ids in [vec![4, 3], vec![4]] {
+            nodes.clear();
+            bindings.clear();
+            let mut rebuilt = Column::new();
+            for id in &ids {
+                rebuilt = rebuilt.push(bar(*id));
+            }
+            let root = rebuilt.build_layout(&mut tree, &crate::Theme::dark(), &mut nodes);
+            unsafe {
+                bindings.rebuild(&rebuilt, &tree, root, &nodes);
+            }
+            let restored = unsafe { focus.restore(&nodes, &bindings, None) };
+            assert_eq!(restored.is_some(), ids.contains(&3));
+            if let Some(node) = restored {
+                assert!(unsafe {
+                    crate::bound_dispatch::inspect_bound_node(&bindings, &nodes, node, |widget| {
+                        widget
+                            .accessibility()
+                            .and_then(|a| a.semantic_key)
+                            .as_deref()
+                            == Some("tabbar:g3")
+                    })
+                    .unwrap()
+                });
+            }
         }
     }
 

@@ -57,3 +57,6 @@ tilo-test-env = { path = "../../crates/dev/test-env" }
 
 [lints]
 workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["portal"] }

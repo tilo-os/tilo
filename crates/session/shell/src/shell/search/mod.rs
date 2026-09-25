@@ -24,17 +24,12 @@ use automerge::{AutoCommit, ObjId};
 use crate::shell::chrome_state::{Chrome, ChromeState, SearchScope};
 use action_api::{ActionArgs, ActionError, ActionParam};
 
-/// Keep shell-only providers (including network directories) behind the same
-/// per-keystroke Unicode input ceiling as app-side [`ui::search::SearchCatalog`]
-/// providers.  The check happens before provider routing, so no provider gets
-/// to lower-case or otherwise allocate from an arbitrarily pasted query.
-fn query_input_is_bounded(needle: &str) -> bool {
-    needle
-        .chars()
-        .take(ui::search::MAX_SEARCH_QUERY_SCALARS.saturating_add(1))
-        .count()
-        <= ui::search::MAX_SEARCH_QUERY_SCALARS
-}
+use ui::search::system::{self, query_input_is_bounded};
+
+/// Portable search vocabulary and provider page contract, retained at the native API path.
+pub use ui::search::system::{ResourceKind, SearchBudget, SearchCursor};
+pub type SearchPage = system::SearchPage<SearchResult>;
+pub type KindGroup = system::KindGroup<SearchResult>;
 
 /// Provider-independent lexical fit used at the global merge boundary. A
 /// provider still contributes domain knowledge through its normalized score,
@@ -92,75 +87,6 @@ const ACTIVE_APP_PROXIMITY_BOOST: f32 = 0.25;
 /// the same word, while an exact action (strength 5.0) still beats an
 /// unrelated app that merely received a weak provider score.
 const PERFECT_APPLICATION_INTENT_BOOST: f32 = 3.0;
-
-/// One well-known category a result can belong to — the domain vocabulary
-/// the chip strip and grouping use. Providers pick from it or, via
-/// [`ResourceKind::Custom`], mint a new one.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub enum ResourceKind {
-    /// A palette-registered chrome action (e.g. "Open workspace settings").
-    Action,
-    /// An installed Tilo application. Enter launches it, sandboxed, into
-    /// the workspace you are looking at.
-    Application,
-    /// An app Tilo did not package (Flatpak, distro binary). Its own kind
-    /// because a Tilo app runs sandboxed in a room; a host app runs unconfined.
-    HostApplication,
-    /// A note document (title + body). Enter opens/focuses the note tab.
-    Note,
-    /// A record an app made, collected or imported. Enter brings it into
-    /// the current room (a reference, not a copy) and opens it if openable.
-    Record,
-    File,
-    Folder,
-    /// A creator/channel-style entity — pre-declared so a future provider
-    /// plugs into the same registry without teaching the palette a new kind.
-    Creator,
-    Video,
-    Playlist,
-    /// Escape hatch for provider-specific kinds, shown verbatim in the chip strip.
-    Custom(String),
-}
-
-impl ResourceKind {
-    /// Human-readable label used in the filter chip strip and group
-    /// headers. `Custom` variants surface their own string verbatim.
-    pub fn label(&self) -> &str {
-        match self {
-            ResourceKind::Action => "Actions",
-            ResourceKind::Application => "Applications",
-            ResourceKind::HostApplication => "Host Apps",
-            ResourceKind::Note => "Notes",
-            ResourceKind::Record => "Records",
-            ResourceKind::File => "Files",
-            ResourceKind::Folder => "Folders",
-            ResourceKind::Creator => "Creators",
-            ResourceKind::Video => "Videos",
-            ResourceKind::Playlist => "Playlists",
-            ResourceKind::Custom(s) => s.as_str(),
-        }
-    }
-
-    /// Stable sort key pinning the well-known kinds to a fixed palette
-    /// order. Applications rank above content kinds because Enter
-    /// activates the top row — a typed app name must launch the app, not
-    /// surface a source file that merely contains the word.
-    fn sort_key(&self) -> (u8, String) {
-        match self {
-            ResourceKind::Action => (0, String::new()),
-            ResourceKind::Application => (1, String::new()),
-            ResourceKind::HostApplication => (2, String::new()),
-            ResourceKind::Note => (3, String::new()),
-            ResourceKind::Record => (4, String::new()),
-            ResourceKind::File => (5, String::new()),
-            ResourceKind::Folder => (6, String::new()),
-            ResourceKind::Creator => (7, String::new()),
-            ResourceKind::Video => (8, String::new()),
-            ResourceKind::Playlist => (9, String::new()),
-            ResourceKind::Custom(s) => (10, s.clone()),
-        }
-    }
-}
 
 /// Fired by the shell after the user picks a result, with the live
 /// Automerge doc, its root, and the chrome handle to mutate persisted state
@@ -244,89 +170,9 @@ pub struct SearchResult {
     pub on_begin_invoke: Option<Rc<BeginInvokeFn>>,
 }
 
-/// Hard ceilings for one provider page.  These are deliberately expressed in
-/// the protocol rather than as palette constants: the same limits protect the
-/// visual palette, headless agents, and a future remote directory source.
-/// A provider may stop sooner, but must never exceed any non-zero ceiling.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct SearchBudget {
-    pub max_results: usize,
-    pub max_bytes: usize,
-    pub max_work: usize,
-}
-
-impl SearchBudget {
-    pub const PALETTE: Self = Self {
-        max_results: 48,
-        max_bytes: 48 * 1024,
-        max_work: 4_096,
-    };
-}
-
 const HEADLESS_MAX_PAGES: usize = 256;
 const HEADLESS_MAX_RESULTS: usize = 16_384;
 const HEADLESS_MAX_BYTES: usize = 16 * 1024 * 1024;
-
-/// An opaque provider-owned continuation.  The revision is carried alongside
-/// the provider-local payload, so a result page can never silently advance
-/// across a changed ordering.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub struct SearchCursor {
-    pub revision: String,
-    pub token: String,
-}
-
-/// One bounded answer from a [`SearchProvider`].  `stale_cursor` is a
-/// protocol outcome rather than an empty page: callers restart explicitly,
-/// preserving the distinction between "there are no more hits" and "the
-/// source changed while you were paging".
-#[derive(Clone)]
-pub struct SearchPage {
-    pub revision: String,
-    pub results: Vec<SearchResult>,
-    pub next_cursor: Option<SearchCursor>,
-    pub exhausted: bool,
-    pub stale_cursor: bool,
-    pub budget_exhausted: bool,
-}
-
-impl std::fmt::Debug for SearchPage {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("SearchPage")
-            .field("revision", &self.revision)
-            .field("results", &self.results)
-            .field("next_cursor", &self.next_cursor)
-            .field("exhausted", &self.exhausted)
-            .field("stale_cursor", &self.stale_cursor)
-            .field("budget_exhausted", &self.budget_exhausted)
-            .finish()
-    }
-}
-
-impl SearchPage {
-    pub fn exhausted(revision: impl Into<String>, results: Vec<SearchResult>) -> Self {
-        Self {
-            revision: revision.into(),
-            results,
-            next_cursor: None,
-            exhausted: true,
-            stale_cursor: false,
-            budget_exhausted: false,
-        }
-    }
-
-    pub fn stale(revision: impl Into<String>) -> Self {
-        Self {
-            revision: revision.into(),
-            results: Vec::new(),
-            next_cursor: None,
-            exhausted: false,
-            stale_cursor: true,
-            budget_exhausted: false,
-        }
-    }
-}
-
 impl SearchResult {
     /// Build a row whose invocation takes no arguments — most rows: opening
     /// a note, launching an app, toggling an overlay.
@@ -1186,52 +1032,8 @@ impl SearchRegistry {
     /// push a correctly-ranked app off the bottom. A lone group is exempt
     /// — narrowing to one kind means "show me all of these".
     pub fn query_grouped(&self, args: &QueryArgs<'_>, row_budget: usize) -> Vec<KindGroup> {
-        let ranked = self.query(args);
-        let mut groups: Vec<KindGroup> = Vec::new();
-        for r in ranked {
-            match groups.last_mut() {
-                Some(g) if g.kind == r.kind => {
-                    g.total = g.total.saturating_add(1);
-                    g.results.push(r);
-                }
-                _ => groups.push(KindGroup {
-                    kind: r.kind.clone(),
-                    total: 1,
-                    results: vec![r],
-                }),
-            }
-        }
-        if row_budget == 0
-            || groups.len() < 2
-            || groups.iter().map(|g| g.total).sum::<usize>() <= row_budget
-        {
-            return groups;
-        }
-        // Fair share, front to back: each group takes an equal cut of
-        // whatever budget remains, and what it can't fill rolls forward
-        // (never backward, or later headers push further down the card).
-        let n = groups.len();
-        let mut remaining = row_budget;
-        for (i, g) in groups.iter_mut().enumerate() {
-            let groups_left = n.saturating_sub(i).max(1);
-            let share = remaining.checked_div(groups_left).unwrap_or(1).max(1);
-            let keep = share.min(g.total);
-            g.results.truncate(keep);
-            remaining = remaining.saturating_sub(keep);
-        }
-        groups
+        system::group(self.query(args), row_budget)
     }
-}
-
-/// One contiguous run of same-kind results, as
-/// [`SearchRegistry::query_grouped`] arranges them.
-#[derive(Debug)]
-pub struct KindGroup {
-    pub kind: ResourceKind,
-    /// The rows to render — at most the cap the caller asked for.
-    pub results: Vec<SearchResult>,
-    /// How many results this kind actually had, before the cap.
-    pub total: usize,
 }
 
 fn scope_allows(
@@ -1249,6 +1051,24 @@ fn scope_allows(
             // leaking unrelated workspace results into "This app".
             None => provider.available_in_active_app_scope(),
         },
+    }
+}
+
+impl system::SearchRow for SearchResult {
+    fn kind(&self) -> &ResourceKind {
+        &self.kind
+    }
+    fn score(&self) -> i32 {
+        self.score
+    }
+    fn title(&self) -> &str {
+        &self.title
+    }
+    fn subtitle(&self) -> Option<&str> {
+        self.subtitle.as_deref()
+    }
+    fn shortcut(&self) -> Option<&str> {
+        (self.id == "room.activity.open").then_some("Super+H")
     }
 }
 
@@ -2333,7 +2153,7 @@ mod tests {
     /// Driven through the applications provider against an installed-app
     /// registry on disk rather than the fixtures above.
     #[test]
-    #[serial_test::serial]
+    #[serial_test::serial(process_env)]
     fn typing_an_installed_apps_name_offers_the_app_first() {
         use crate::shell::search::providers::applications::ApplicationsProvider;
         let tmp = tempfile::tempdir().expect("temp app registry");
@@ -2405,7 +2225,7 @@ mod tests {
     /// The app group must survive the trim that keeps a forty-hit file
     /// group from filling the card.
     #[test]
-    #[serial_test::serial]
+    #[serial_test::serial(process_env)]
     fn a_capped_palette_still_leads_with_the_app() {
         use crate::shell::search::providers::applications::ApplicationsProvider;
         let tmp = tempfile::tempdir().expect("temp app registry");

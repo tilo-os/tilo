@@ -39,7 +39,7 @@ use super::driver::ShellDriver;
 #[derive(Debug, Clone)]
 #[allow(
     dead_code,
-    reason = "the screenshot scenario DSL intentionally keeps actions available before every variant has a catalogue caller"
+    reason = "the scenario DSL retains implemented actions that the current catalogue does not construct"
 )]
 pub enum Action {
     /// Click at raw screen coordinates (cursor-move + press + release).
@@ -2213,7 +2213,7 @@ fn strip_scroll_across_apps() -> Scenario {
         // Back to the first window, which pans the strip home the way
         // focus always does — the starting position for the travel.
         Action::SelectGroup(Some(0)),
-        Action::Wait(6),
+        Action::Wait(PAN_SETTLE_FRAMES),
         Action::Snapshot("05-strip-at-rest"),
     ];
     // Pull well past the final app and hold: the visual position remains
@@ -4651,3 +4651,9 @@ mod tests {
         assert!(json.contains("\"palette_visible\":true"));
     }
 }
+
+#[allow(
+    unused_imports,
+    reason = "The native WorkspaceExt methods are selected by host-specific workspace code and test configurations."
+)]
+use shell::shell::state::WorkspaceExt as _;

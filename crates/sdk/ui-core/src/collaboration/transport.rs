@@ -183,6 +183,57 @@ pub trait CollabTransport: Send {
     fn set_wake(&mut self, wake: Box<dyn Fn() + Send + Sync>) {
         let _ = wake;
     }
+
+    /// Crate-internal access to the concrete transport behind the seam, for
+    /// facilities that share the built-in worker's queues.
+    #[doc(hidden)]
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        None
+    }
+
+    /// Whether committed-document custody allows publishing a document
+    /// mutation on `channel` (the primary route when `None` is not yet
+    /// acknowledged). Transports without committed reads always allow it.
+    fn document_publishable(&self, channel: Option<&str>) -> bool {
+        let _ = channel;
+        true
+    }
+
+    /// Hand one native media command for `channel` to the transport's media
+    /// side channel. Returns whether it was admitted.
+    fn send_native_media(
+        &mut self,
+        channel: String,
+        request_id: u64,
+        command: runtime_collab::native_media::Request,
+    ) -> bool {
+        let _ = (channel, request_id, command);
+        false
+    }
+
+    /// Whether the transport latched a terminal document publication failure.
+    fn document_publication_failed(&self) -> bool {
+        false
+    }
+
+    /// Withdraw the transport after an unrecoverable publication outcome.
+    fn fail_closed(&self, reason: &'static str) {
+        let _ = reason;
+    }
+
+    /// Whether the original committed history of `channel` is required
+    /// before any local publication on it.
+    fn committed_document_required(&self, channel: &str) -> bool {
+        let _ = channel;
+        false
+    }
+
+    /// Join `route` through the existing worker when committed custody needs
+    /// it, returning the original committed history once it is available.
+    fn prepare_committed_document(&mut self, route: RouteSpec) -> Option<super::CommittedDocument> {
+        let _ = route;
+        None
+    }
 }
 
 /// Failure to complete a prefix of document publications.
@@ -220,25 +271,42 @@ impl std::error::Error for DocumentPublicationError {}
 /// acknowledge peer observation, CRDT application or durability.
 pub struct DocumentPublicationReceipt {
     receiver: mpsc::Receiver<Result<(), DocumentPublicationError>>,
+    /// The transport's latched failure, reported when it dropped the receipt
+    /// unresolved (for example after a terminal publication failure).
+    disconnect_cause: Option<Box<dyn Fn() -> Option<DocumentPublicationError> + Send>>,
 }
 
 impl DocumentPublicationReceipt {
     /// Wrap the receiving half a transport resolves exactly once.
     pub fn new(receiver: mpsc::Receiver<Result<(), DocumentPublicationError>>) -> Self {
-        Self { receiver }
+        Self {
+            receiver,
+            disconnect_cause: None,
+        }
+    }
+
+    /// Report `cause` instead of [`DocumentPublicationError::WorkerStopped`]
+    /// when the transport drops this receipt unresolved.
+    #[must_use]
+    pub fn with_disconnect_cause(
+        mut self,
+        cause: impl Fn() -> Option<DocumentPublicationError> + Send + 'static,
+    ) -> Self {
+        self.disconnect_cause = Some(Box::new(cause));
+        self
     }
 
     /// Inspect completion without waiting. A completed receipt is consumed.
     ///
     /// # Errors
     ///
-    /// Returns the prefix failure, or [`DocumentPublicationError::WorkerStopped`]
-    /// when the transport dropped the receipt unresolved.
+    /// Returns the prefix failure, or the transport's disconnection cause
+    /// when it dropped the receipt unresolved.
     pub fn try_complete(&self) -> Result<Option<()>, DocumentPublicationError> {
         match self.receiver.try_recv() {
             Ok(result) => result.map(Some),
             Err(mpsc::TryRecvError::Empty) => Ok(None),
-            Err(mpsc::TryRecvError::Disconnected) => Err(DocumentPublicationError::WorkerStopped),
+            Err(mpsc::TryRecvError::Disconnected) => Err(self.disconnected()),
         }
     }
 
@@ -263,15 +331,20 @@ impl DocumentPublicationReceipt {
                     Err(mpsc::RecvTimeoutError::Timeout) => {
                         Err(DocumentPublicationError::DeadlineElapsed)
                     }
-                    Err(mpsc::RecvTimeoutError::Disconnected) => {
-                        Err(DocumentPublicationError::WorkerStopped)
-                    }
+                    Err(mpsc::RecvTimeoutError::Disconnected) => Err(self.disconnected()),
                 }
             }
             None => self
                 .receiver
                 .recv()
-                .unwrap_or(Err(DocumentPublicationError::WorkerStopped)),
+                .unwrap_or_else(|_| Err(self.disconnected())),
         }
+    }
+
+    fn disconnected(&self) -> DocumentPublicationError {
+        self.disconnect_cause
+            .as_ref()
+            .and_then(|cause| cause())
+            .unwrap_or(DocumentPublicationError::WorkerStopped)
     }
 }

@@ -385,6 +385,11 @@ impl UndoLog {
         self.record_committed_action_authored(doc, before, focused_node_idx, metadata, None)
     }
 
+    /// Observe the recorded committed frontier without closing pending work.
+    pub(crate) fn matches_recorded_frontier(&self, doc: &AutoCommit) -> bool {
+        owned_restore::same_frontier(&self.last_heads, &doc.base_heads())
+    }
+
     /// As [`Self::record_committed_action`], naming who performed it — for a
     /// change that reached this document from *outside* the window (an agent,
     /// or a collaborator's own published operation), applied under the

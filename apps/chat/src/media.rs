@@ -1,35 +1,8 @@
-//! Real-time media transport for calls.
+//! Legacy custom-Iroh media protocol and simulator for replay/diagnostic tests.
 //!
-//! Voice, camera and screen-share frames travel as a MoQ-style publish/subscribe
-//! of timestamped media objects, carried by **iroh QUIC** for direct P2P (a
-//! host relay is selected above the mesh threshold — see [`crate::model::CallSession`]).
-//! Microphone capture/playback and the Opus audio codec go through **`GStreamer`**
-//! elements ([`crate::audio`]); camera + screen video use the in-tree **openh264**
-//! codec ([`crate::video`]); screen capture is requested from the host's
-//! screen-capture service (natively the **xdg-desktop-portal `ScreenCast`**
-//! API, see `ui::capture`). None of ALSA / `PulseAudio` /
-//! ffmpeg / the `opus` crate are used — only `GStreamer`, the portal, and openh264,
-//! matching the Tilo build env.
-//!
-//! ## Real vs. gated
-//! The *transport contract* ([`MediaTransport`]) and a *simulated*
-//! implementation ([`SimulatedTransport`]) are always compiled; the *real* iroh
-//! transport ([`live::IrohTransport`]) is gated behind the `live-media` cargo
-//! feature. The live transport binds a genuine iroh endpoint, dials peers by the
-//! ticket they publish into the shared voice map, and streams
-//! length-prefixed [`MediaObject`]s over QUIC — proven by a real two-peer
-//! loopback test (see the `tests` module) that moves encoded Opus audio between
-//! two in-process endpoints over the network stack, not a mock.
-//!
-//! Live end-to-end *capture* still needs audio/camera hardware and (for
-//! screen-share) a desktop portal — none of which exist headless — so the
-//! capture/playback pipelines gate cleanly and yield the honest "no device"
-//! state when absent. The transport + codec contract does not: it runs fully
-//! headless.
-//!
-//! [`MediaEngine::new`] picks the live transport when the feature is on and the
-//! environment is a real session, otherwise the simulated one — reported via
-//! [`MediaEngine::is_live`].
+//! `tilo-chat-media/0` is not MOQT and cannot provide governed-call readiness.
+//! Native Chat calls use the shell's typed media service; this module is never
+//! selected as a compatibility fallback for denied or unavailable native calls.
 
 use std::collections::VecDeque;
 use std::time::Duration;

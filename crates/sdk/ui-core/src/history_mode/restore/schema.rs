@@ -155,12 +155,14 @@ impl HistoryRootPattern {
         })
     }
     fn reserved(self) -> bool {
-        self.lengths().any(|length| {
-            length >= 4
-                && b"qos:".iter().enumerate().all(|(index, byte)| {
-                    self.byte_at(length, index)
-                        .map_or_else(|| capture_byte(*byte), |fixed| fixed == *byte)
-                })
+        ["qos:", "tilo:"].into_iter().any(|prefix| {
+            self.lengths().any(|length| {
+                length >= prefix.len()
+                    && prefix.bytes().enumerate().all(|(index, byte)| {
+                        self.byte_at(length, index)
+                            .map_or_else(|| capture_byte(byte), |fixed| fixed == byte)
+                    })
+            })
         })
     }
 }
@@ -199,28 +201,53 @@ pub(super) fn validate(schema: &HistoryRestoreSchema) -> Result<(), RestoreError
     Ok(())
 }
 fn validate_node(node: HistoryRestoreNode, depth: usize) -> Result<(), RestoreError> {
-    if depth > MAX_DEPTH {
-        return Err(invalid("selector nesting exceeds 256 (possibly cyclic)"));
-    }
-    if let HistoryRestoreNode::MapOverlay(overlay) = node {
-        if overlay.fields.is_empty() && overlay.entries.is_none() {
-            return Err(invalid("empty map overlay"));
+    let mut pending = vec![(node, depth)];
+    while let Some((node, depth)) = pending.pop() {
+        if depth > MAX_DEPTH {
+            return Err(invalid("selector nesting exceeds 256 (possibly cyclic)"));
         }
-        let mut keys = BTreeSet::new();
-        for field in overlay.fields {
-            if field.key.is_empty() || !keys.insert(field.key) {
-                return Err(invalid("empty or duplicate overlay field"));
+        match node {
+            HistoryRestoreNode::Whole { .. } => {}
+            HistoryRestoreNode::MapContentExcept { preserved_fields } => {
+                if !(1..=64).contains(&preserved_fields.len()) {
+                    return Err(invalid("preserved field count must be 1..=64"));
+                }
+                let mut keys = BTreeSet::new();
+                for field in preserved_fields {
+                    if field.is_empty() || field.len() > MAX_ENTRY_BYTES || !keys.insert(*field) {
+                        return Err(invalid(
+                            "preserved fields must be unique nonempty names of at most 1024 bytes",
+                        ));
+                    }
+                }
             }
-            validate_node(field.node, depth.saturating_add(1))?;
-        }
-        if let Some(entries) = overlay.entries {
-            match entries.membership {
-                super::HistoryMembership::TargetAuthoritative => {}
+            HistoryRestoreNode::MapOverlay(overlay) => {
+                if overlay.fields.is_empty() && overlay.entries.is_none() {
+                    return Err(invalid("empty map overlay"));
+                }
+                let mut keys = BTreeSet::new();
+                for field in overlay.fields {
+                    if field.key.is_empty() || !keys.insert(field.key) {
+                        return Err(invalid("empty or duplicate overlay field"));
+                    }
+                }
+                if let Some(entries) = overlay.entries {
+                    match entries.membership {
+                        super::HistoryMembership::TargetAuthoritative => {}
+                    }
+                    if entries.key_limit_bytes == 0 || entries.key_limit_bytes > MAX_ENTRY_BYTES {
+                        return Err(invalid("entity key bound must be 1..=1024 bytes"));
+                    }
+                    pending.push((entries.node, depth.saturating_add(1)));
+                }
+                pending.extend(
+                    overlay
+                        .fields
+                        .iter()
+                        .rev()
+                        .map(|field| (field.node, depth.saturating_add(1))),
+                );
             }
-            if entries.key_limit_bytes == 0 || entries.key_limit_bytes > MAX_ENTRY_BYTES {
-                return Err(invalid("entity key bound must be 1..=1024 bytes"));
-            }
-            validate_node(entries.node, depth.saturating_add(1))?;
         }
     }
     Ok(())

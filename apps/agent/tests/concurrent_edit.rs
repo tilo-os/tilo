@@ -397,6 +397,7 @@ fn a_person_typing_and_the_agent_working_both_land() {
         app_id: APP.into(),
         cluster: room,
         record: Some(RECORD.into()),
+        agent_id: "Scribe".into(),
         name: "Scribe".into(),
         // Slow enough that the person's keystrokes genuinely arrive
         // between the agent's actions rather than after all of them.

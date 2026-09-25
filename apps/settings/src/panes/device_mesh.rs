@@ -734,6 +734,10 @@ impl DeviceMeshPane {
                                 pin: self.config.device_role.can_serve(),
                                 replication: ReplicationIntent::OnDemand,
                                 admitted_users: Vec::new(),
+                                // Workspace discovery proves only that the room exists. It
+                                // cannot confer the native shell governor's retained authority.
+                                shell_authority: None,
+                                checkpoint_prefix_recovery: Default::default(),
                             });
                     } else if !*enabled {
                         self.config.remove_workspace(*id);
@@ -801,6 +805,8 @@ impl DeviceMeshPane {
                         pin: true,
                         replication: ReplicationIntent::FullWorkspace,
                         admitted_users: Vec::new(),
+                        shell_authority: None,
+                        checkpoint_prefix_recovery: Default::default(),
                     })
                     .collect();
             }
@@ -2199,6 +2205,8 @@ mod tests {
             pin: true,
             replication: ReplicationIntent::OnDemand,
             admitted_users: Vec::new(),
+            shell_authority: None,
+            checkpoint_prefix_recovery: Default::default(),
         });
         config.save(&path).unwrap();
 
@@ -2318,6 +2326,8 @@ mod tests {
             pin: false,
             replication: ReplicationIntent::OnDemand,
             admitted_users: Vec::new(),
+            shell_authority: None,
+            checkpoint_prefix_recovery: Default::default(),
         });
         config.save(&path).unwrap();
 

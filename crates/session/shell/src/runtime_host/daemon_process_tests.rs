@@ -34,7 +34,7 @@ impl DaemonProfile {
         use std::os::unix::fs::PermissionsExt;
         let root = tempfile::Builder::new()
             .prefix("qos-d-")
-            .tempdir_in("/tmp")
+            .tempdir_in(std::fs::canonicalize("/tmp").unwrap())
             .unwrap();
         std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
         Self { root }
@@ -239,7 +239,12 @@ fn independent_sdk_apps_late_join_and_survive_another_app_exit() {
     while UnixStream::connect(profile.path().join("native.sock")).is_err() {
         assert!(
             Instant::now() < deadline,
-            "first SDK process did not start daemon"
+            "first SDK process did not start daemon; child log: {}",
+            std::fs::read_to_string(profile.path().join("dev.qos.independent-first.log"))
+                .unwrap_or_else(|error| format!("child log unavailable: {error}"))
+                .chars()
+                .take(8192)
+                .collect::<String>()
         );
         std::thread::sleep(Duration::from_millis(25));
     }

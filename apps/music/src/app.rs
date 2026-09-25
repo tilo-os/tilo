@@ -1026,7 +1026,9 @@ impl MusicApp {
                 // still initialised (so `is_seeded`, persistence and sync all
                 // work) but carries no fabricated tracks/playlists — the real
                 // library fills in from playback and search.
-                doc::seed(state, &Library::default(), &Playback::default());
+                // The shared canonical seed, so peers that open the same
+                // unseeded record concurrently hold one set of containers.
+                doc::seed_empty_shared(state);
             }
         }
         self.seeded = true;

@@ -136,7 +136,7 @@ mod tests {
     use super::*;
     use crate::crypto::generate_keypair;
     use crate::identity::AttestationId;
-    use std::time::SystemTime;
+    use web_time::SystemTime;
 
     fn dummy_op(seq: u64) -> SignedOp {
         let (_, pk) = generate_keypair();

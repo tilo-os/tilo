@@ -16,8 +16,19 @@
 //! action with stale or hostile arguments is atomically refused before it can
 //! write, so callers can surface a useful error without leaving a partial edit.
 
+pub(crate) mod continuation;
+/// Pure editor input primitives shared by keyboard, palette and agents
+/// (parity contract A0).
+pub mod editing;
+/// Per-participant view state and its pure resource-context projection
+/// (parity contract A0).
+pub mod participant;
+/// Per-participant view operations (caret, selection, Find) and their
+/// published `word-processor.view-operation` specs.
+pub mod view_ops;
+
 use automerge::transaction::Transactable;
-use automerge::{AutoCommit, ObjId, ReadDoc};
+use automerge::{AutoCommit, ReadDoc};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 
@@ -27,9 +38,9 @@ use qdoc::{Containers, DocMut};
 use crate::num;
 
 use tilo_actions::{
-    Action, ActionArgs, ActionContract, ActionError, ActionParam, ActionRegistry, ActionSpec, Doc,
-    EncodedAction, ExecutionLocus, ExecutionMode, OperationKind, ParamType, Resource,
-    ResourceProvider, ResultSpec,
+    Action, ActionArgs, ActionContract, ActionError, ActionParam, ActionRegistry, ActionSpec,
+    ContextRequirement, Doc, EncodedAction, ExecutionLocus, ExecutionMode, OperationKind,
+    ParamType, Resource, ResourceProvider, ResultSpec,
 };
 
 /// Registry `type_id` for every word-processor action.
@@ -38,6 +49,10 @@ pub const WORD_PROCESSOR_OPERATION_TYPE: &str = "word-processor.operation";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum WordProcessorOperation {
+    ResolveFileChoice {
+        generation: u64,
+        use_selected: bool,
+    },
     Open {
         path: Option<String>,
     },
@@ -105,6 +120,15 @@ fn operation(
         return None;
     };
     match value {
+        WordProcessorOperation::ResolveFileChoice { use_selected, .. } => Some(
+            spec.with_contract(if *use_selected {
+                ActionContract::default()
+            } else {
+                ActionContract::view()
+            })
+            .execution(ExecutionMode::Background { cancellable: false })
+            .returns(ResultSpec::Job),
+        ),
         WordProcessorOperation::Open { .. }
         | WordProcessorOperation::Save { .. }
         | WordProcessorOperation::SaveAs { .. } => Some(
@@ -374,10 +398,23 @@ pub enum WordProcessorAction {
         adopt_first_style: bool,
     },
     /// Insert a fresh paragraph carrying `text` directly after block `after`.
-    /// The action-level way to add a line: Enter is a live-edit path, not an
-    /// action, so a headless participant (an agent, a script) had no way to
-    /// append a paragraph with the same ops the app produces.
+    /// Enter itself is [`Self::SplitBlock`] (published as `new-paragraph`);
+    /// this inserts a whole paragraph after a named block in one envelope.
     InsertParagraph { after: String, text: String },
+    /// Append `text` as a new paragraph at the end of the body. The target is
+    /// resolved from the document at apply time (not captured in the payload),
+    /// so a catalogue captured before other appends still lands at the end.
+    /// An empty trailing `paragraph` (a fresh document's only line) is filled
+    /// instead of leaving a blank line above the new text.
+    AppendParagraph { text: String },
+    /// Append `text` at the end of the last body block, which must be a text
+    /// block (paragraph, heading or list item). Resolved at apply time, so
+    /// repeated invocations append in order.
+    ///
+    /// Deprecated as a writing primitive: `move-caret {to: document-end}`
+    /// then `type-text` does the same at a real caret. Kept decodable and
+    /// applicable because it is already in document histories.
+    ContinueParagraph { text: String },
     /// Remove `blocks` (an image, or every cell of a table). Ids are sorted
     /// before removal so replicas emit the identical op sequence.
     RemoveBlocks { blocks: Vec<String> },
@@ -423,6 +460,21 @@ enum ActionDomain {
 }
 
 impl WordProcessorAction {
+    /// Whether applying this action can mint a block/comment/change id.
+    /// Conservative: only the per-keystroke text and formatting edits, which
+    /// splice text, set marks/attributes or tombstone blocks, say no.
+    fn mints_ids(&self) -> bool {
+        !matches!(
+            self,
+            Self::SpliceText { .. }
+                | Self::ReplaceSelection { .. }
+                | Self::SetMark { .. }
+                | Self::SetParagraphStyle { .. }
+                | Self::ApplyNamedStyle { .. }
+                | Self::SetBlockAttr { .. }
+        )
+    }
+
     fn domain(&self) -> ActionDomain {
         match self {
             Self::SpliceText { .. }
@@ -430,6 +482,8 @@ impl WordProcessorAction {
             | Self::SetMark { .. }
             | Self::PasteFragment { .. }
             | Self::InsertParagraph { .. }
+            | Self::AppendParagraph { .. }
+            | Self::ContinueParagraph { .. }
             | Self::RemoveBlocks { .. }
             | Self::ReplaceBody { .. } => ActionDomain::Text,
             Self::SetParagraphStyle { .. }
@@ -473,31 +527,19 @@ fn splice_target_len(
     region: RegionKind,
     id: &str,
 ) -> Option<usize> {
-    use automerge::{ObjType, ScalarValue, Value};
-    use qdoc::schema::{BLOCK_ORDER, BLOCK_TEXT, KEY_FOOTER, KEY_HEADER};
+    use automerge::{ScalarValue, Value};
+    use qdoc::schema::BLOCK_ORDER;
 
-    let optional_region = |cached: &Option<ObjId>, key: &str| {
-        cached.clone().or_else(|| match doc.get(&c.root, key) {
-            Ok(Some((Value::Object(ObjType::Map), obj))) => Some(obj),
-            _ => None,
-        })
-    };
-    let container = match region {
-        RegionKind::Body => c.blocks.clone(),
-        RegionKind::Header => optional_region(&c.header, KEY_HEADER)?,
-        RegionKind::Footer => optional_region(&c.footer, KEY_FOOTER)?,
-    };
-    let Ok(Some((Value::Object(ObjType::Map), block))) = doc.get(&container, id) else {
-        return None;
-    };
+    // qdoc's own resolution, so a header/footer block that lives in a
+    // concurrently created legacy container validates like it writes.
+    let block = qdoc::model::region_block_obj(doc, c, region.to_region(), id)?;
     match doc.get(&block, BLOCK_ORDER) {
         Ok(Some((Value::Scalar(value), _))) if matches!(value.as_ref(), ScalarValue::Bytes(_)) => {}
         _ => return None,
     }
-    let text = match doc.get(&block, BLOCK_TEXT) {
-        Ok(Some((Value::Object(ObjType::Text), text))) => doc.text(&text).unwrap_or_default(),
-        _ => String::new(),
-    };
+    // Same projection as `materialize_block` (including a legacy scalar or
+    // conflicted `text` value), so validation and the write agree on offsets.
+    let text = qdoc::model::block_text_on(doc, &block).unwrap_or_default();
     Some(text.chars().count())
 }
 
@@ -524,37 +566,120 @@ fn action_is_valid(action: &WordProcessorAction, doc: &AutoCommit, c: &Container
             .is_some_and(|len| *at <= len && *del <= len.saturating_sub(*at))
             && ins.chars().take(MAX_ACTION_TEXT_CHARS + 1).count() <= MAX_ACTION_TEXT_CHARS;
     }
-    ActionValidator::new(doc, c).validate(action)
+    ActionValidator::new(doc, c, false).validate(action)
 }
 
+/// The previous, materializing validator: kept only so tests can prove the
+/// block-local validator accepts and refuses exactly the same actions.
+#[cfg(test)]
+fn action_is_valid_materialized(
+    action: &WordProcessorAction,
+    doc: &AutoCommit,
+    c: &Containers,
+) -> bool {
+    ActionValidator::new(doc, c, true).validate(action)
+}
+
+/// Validates against the document without materializing it: block
+/// membership, length and relative order are read from the addressed blocks
+/// only, so validating a keystroke costs the same in a 5-block and a
+/// 5,000-block document. The full snapshot is built lazily, only for the
+/// validators that inspect other blocks (image kind, style instances, tracked
+/// changes).
 struct ActionValidator<'a> {
     doc: &'a AutoCommit,
     containers: &'a Containers,
-    snapshot: qdoc::snapshot::DocSnapshot,
+    snapshot: std::cell::OnceCell<qdoc::snapshot::DocSnapshot>,
+    /// Test-only reference mode: read everything from the snapshot, as the
+    /// validator did before it became block-local.
+    materialized: bool,
 }
 
 impl<'a> ActionValidator<'a> {
-    fn new(doc: &'a AutoCommit, containers: &'a Containers) -> Self {
+    fn new(doc: &'a AutoCommit, containers: &'a Containers, materialized: bool) -> Self {
         Self {
             doc,
             containers,
-            snapshot: qdoc::model::materialize(doc, containers),
+            snapshot: std::cell::OnceCell::new(),
+            materialized,
         }
     }
 
+    fn snapshot(&self) -> &qdoc::snapshot::DocSnapshot {
+        self.snapshot
+            .get_or_init(|| qdoc::model::materialize(self.doc, self.containers))
+    }
+
     fn blocks_for(&self, region: RegionKind) -> &[qdoc::snapshot::BlockView] {
+        let snapshot = self.snapshot();
         match region {
-            RegionKind::Body => &self.snapshot.blocks,
-            RegionKind::Header => &self.snapshot.header,
-            RegionKind::Footer => &self.snapshot.footer,
+            RegionKind::Body => &snapshot.blocks,
+            RegionKind::Header => &snapshot.header,
+            RegionKind::Footer => &snapshot.footer,
         }
     }
 
     fn block_len(&self, region: RegionKind, id: &str) -> Option<usize> {
+        if !self.materialized {
+            return splice_target_len(self.doc, self.containers, region, id);
+        }
         self.blocks_for(region)
             .iter()
             .find(|block| block.id == id)
             .map(|block| block.text.chars().count())
+    }
+
+    /// The fractional order key region order sorts by (with the id as tie
+    /// break), for one existing region block.
+    fn order_key(&self, region: RegionKind, id: &str) -> Option<Vec<u8>> {
+        use automerge::{ScalarValue, Value};
+        let block =
+            qdoc::model::region_block_obj(self.doc, self.containers, region.to_region(), id)?;
+        match self.doc.get(&block, qdoc::schema::BLOCK_ORDER) {
+            Ok(Some((Value::Scalar(value), _))) => match value.as_ref() {
+                ScalarValue::Bytes(bytes) => Some(bytes.clone()),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
+    /// `(start_block, start)` is at or before `(end_block, end)` in region
+    /// order and both offsets are inside their blocks.
+    fn ordered_range(
+        &self,
+        region: RegionKind,
+        start_block: &str,
+        start: usize,
+        end_block: &str,
+        end: usize,
+    ) -> bool {
+        let (Some(start_len), Some(end_len)) = (
+            self.block_len(region, start_block),
+            self.block_len(region, end_block),
+        ) else {
+            return false;
+        };
+        if start > start_len || end > end_len {
+            return false;
+        }
+        if start_block == end_block {
+            return start <= end;
+        }
+        if self.materialized {
+            let blocks = self.blocks_for(region);
+            let index = |id: &str| blocks.iter().position(|block| block.id == id);
+            return matches!((index(start_block), index(end_block)), (Some(s), Some(e)) if s < e);
+        }
+        match (
+            self.order_key(region, start_block),
+            self.order_key(region, end_block),
+        ) {
+            (Some(a), Some(b)) => qdoc::order::cmp_keys(&a, &b)
+                .then_with(|| start_block.cmp(end_block))
+                .is_lt(),
+            _ => false,
+        }
     }
 
     fn unique_existing(&self, region: RegionKind, ids: &[String]) -> bool {
@@ -656,23 +781,8 @@ impl<'a> ActionValidator<'a> {
                 end,
                 ins,
             } => {
-                let blocks = self.blocks_for(*region);
-                let start_index = blocks.iter().position(|block| block.id == *start_block);
-                let end_index = blocks.iter().position(|block| block.id == *end_block);
-                match (
-                    start_index,
-                    end_index,
-                    self.block_len(*region, start_block),
-                    self.block_len(*region, end_block),
-                ) {
-                    (Some(start_index), Some(end_index), Some(start_len), Some(end_len)) => {
-                        (start_index < end_index || (start_index == end_index && start <= end))
-                            && *start <= start_len
-                            && *end <= end_len
-                            && Self::safe_text(ins)
-                    }
-                    _ => false,
-                }
+                self.ordered_range(*region, start_block, *start, end_block, *end)
+                    && Self::safe_text(ins)
             }
             WordProcessorAction::SetMark {
                 region,
@@ -711,24 +821,7 @@ impl<'a> ActionValidator<'a> {
                 blocks,
                 ..
             } => {
-                let region_blocks = self.blocks_for(*region);
-                let start_index = region_blocks
-                    .iter()
-                    .position(|block| block.id == *start_block);
-                let end_index = region_blocks
-                    .iter()
-                    .position(|block| block.id == *end_block);
-                let valid_range = match (
-                    start_index,
-                    end_index,
-                    self.block_len(*region, start_block),
-                    self.block_len(*region, end_block),
-                ) {
-                    (Some(si), Some(ei), Some(sl), Some(el)) => {
-                        (si < ei || (si == ei && start <= end)) && *start <= sl && *end <= el
-                    }
-                    _ => false,
-                };
+                let valid_range = self.ordered_range(*region, start_block, *start, end_block, *end);
                 valid_range
                     && !blocks.is_empty()
                     && blocks.len() <= 10_000
@@ -745,6 +838,14 @@ impl<'a> ActionValidator<'a> {
             }
             WordProcessorAction::InsertParagraph { after, text } => {
                 self.block_len(RegionKind::Body, after).is_some() && Self::safe_text(text)
+            }
+            WordProcessorAction::AppendParagraph { text } => {
+                !text.is_empty() && Self::safe_text(text)
+            }
+            WordProcessorAction::ContinueParagraph { text } => {
+                !text.is_empty()
+                    && Self::safe_text(text)
+                    && body_end(self.doc, self.containers).is_some_and(|end| end.text_block)
             }
             WordProcessorAction::RemoveBlocks { blocks } => {
                 self.unique_existing(RegionKind::Body, blocks)
@@ -803,7 +904,7 @@ impl<'a> ActionValidator<'a> {
                 && !crate::styles::StyleSheet::is_builtin(style)
                 && qdoc::model::style_ids(self.doc, self.containers).contains(style)
                 && fallback_blocks.iter().all(|block| {
-                    self.snapshot.blocks.iter().any(|entry| {
+                    self.snapshot().blocks.iter().any(|entry| {
                         entry.id == *block
                             && matches!(entry.attrs.get("style"), Some(qdoc::AttrVal::Str(id)) if id == style)
                     })
@@ -823,7 +924,7 @@ impl<'a> ActionValidator<'a> {
                 bottom,
             } => {
                 self.block_len(RegionKind::Body, block).is_some()
-                && self.snapshot.blocks.iter().any(|b| b.id == *block && b.kind == "image")
+                && self.snapshot().blocks.iter().any(|b| b.id == *block && b.kind == "image")
                 && [left, top, right, bottom]
                     .iter()
                     .all(|edge| (0_i64..=9_500).contains(*edge))
@@ -840,7 +941,7 @@ impl<'a> ActionValidator<'a> {
             } => {
                 self.block_len(RegionKind::Body, block).is_some()
                     && self
-                        .snapshot
+                        .snapshot()
                         .blocks
                         .iter()
                         .any(|b| b.id == *block && b.kind == "image")
@@ -857,7 +958,7 @@ impl<'a> ActionValidator<'a> {
             } => {
                 self.block_len(RegionKind::Body, block).is_some()
                     && self
-                        .snapshot
+                        .snapshot()
                         .blocks
                         .iter()
                         .any(|b| b.id == *block && b.kind == "image")
@@ -897,7 +998,7 @@ impl<'a> ActionValidator<'a> {
             }
             WordProcessorAction::EditTable { table, edit } => {
                 let cells: Vec<_> = self
-                    .snapshot
+                    .snapshot()
                     .blocks
                     .iter()
                     .filter(|block| {
@@ -973,7 +1074,7 @@ impl<'a> ActionValidator<'a> {
                             && Self::safe_text(&entry.text)
                             && entry.page.is_none_or(|page| page <= 100_000)
                             && self
-                                .snapshot
+                                .snapshot()
                                 .blocks
                                 .iter()
                                 .any(|block| block.id == entry.heading && block.kind == "heading")
@@ -986,13 +1087,16 @@ impl<'a> ActionValidator<'a> {
     fn validate_review(&self, action: &WordProcessorAction) -> bool {
         match action {
             WordProcessorAction::AcceptChanges { id }
-            | WordProcessorAction::RejectChanges { id } => id
-                .as_ref()
-                .is_none_or(|id| self.snapshot.changes.iter().any(|change| &change.id == id)),
+            | WordProcessorAction::RejectChanges { id } => id.as_ref().is_none_or(|id| {
+                self.snapshot()
+                    .changes
+                    .iter()
+                    .any(|change| &change.id == id)
+            }),
             WordProcessorAction::ResolveComment { id } => {
                 !id.is_empty()
                     && self
-                        .snapshot
+                        .snapshot()
                         .comments
                         .iter()
                         .any(|comment| comment.id == *id)
@@ -1018,7 +1122,7 @@ impl<'a> ActionValidator<'a> {
                 date,
                 text,
             } => {
-                self.snapshot
+                self.snapshot()
                     .comments
                     .iter()
                     .any(|entry| entry.id == *comment)
@@ -1036,29 +1140,6 @@ impl<'a> ActionValidator<'a> {
 // Region-aware mark helpers (mirroring `WordProcessor::region_*`), so `apply`
 // writes marks the same way the live editor does across body / header / footer.
 // ---------------------------------------------------------------------------
-
-fn region_map_obj(doc: &AutoCommit, root: &ObjId, key: &str) -> Option<ObjId> {
-    match doc.get(root, key) {
-        Ok(Some((automerge::Value::Object(automerge::ObjType::Map), oid))) => Some(oid),
-        _ => None,
-    }
-}
-
-fn region_block_obj(doc: &AutoCommit, container: &ObjId, id: &str) -> Option<ObjId> {
-    match doc.get(container, id) {
-        Ok(Some((automerge::Value::Object(automerge::ObjType::Map), oid))) => Some(oid),
-        _ => None,
-    }
-}
-
-/// Resolve a region's block-container map object live from the document root.
-fn region_container_obj(doc: &AutoCommit, c: &Containers, region: Region) -> Option<ObjId> {
-    match region {
-        Region::Body => Some(c.blocks.clone()),
-        Region::Header => region_map_obj(doc, &c.root, qdoc::schema::KEY_HEADER),
-        Region::Footer => region_map_obj(doc, &c.root, qdoc::schema::KEY_FOOTER),
-    }
-}
 
 fn add_mark_region(dm: &mut DocMut, region: Region, span: &Span, name: &str, value: &MarkVal) {
     match region {
@@ -1085,10 +1166,8 @@ fn remove_mark_region(dm: &mut DocMut, c: &Containers, region: Region, span: &Sp
     // Header/Footer: no `remove_mark_in` op — clear the mark directly on the
     // region block's Text object (mirrors the body `remove_mark`'s
     // `unmark(.., ExpandMark::After)`).
-    if let Some(container) = region_container_obj(dm.doc, c, region)
-        && let Some(obj) = region_block_obj(dm.doc, &container, &span.block)
-        && let Ok(Some((automerge::Value::Object(automerge::ObjType::Text), tid))) =
-            dm.doc.get(&obj, qdoc::schema::BLOCK_TEXT)
+    if let Some(obj) = qdoc::model::region_block_obj(dm.doc, c, region, &span.block)
+        && let Some(tid) = qdoc::model::ensure_block_text(dm.doc, &obj)
     {
         let _ = dm.doc.unmark(
             &tid,
@@ -1120,9 +1199,7 @@ fn set_attr_region(dm: &mut DocMut, region: Region, block: &str, key: &str, valu
 fn set_kind_region(dm: &mut DocMut, region: Region, block: &str, kind: &str) {
     if region == Region::Body {
         dm.set_kind(block, kind);
-    } else if let Some(container) = region_container_obj(dm.doc, dm.c, region)
-        && let Some(block_obj) = region_block_obj(dm.doc, &container, block)
-    {
+    } else if let Some(block_obj) = qdoc::model::region_block_obj(dm.doc, dm.c, region, block) {
         let _ = dm.doc.put(&block_obj, qdoc::schema::BLOCK_KIND, kind);
     }
 }
@@ -1669,6 +1746,49 @@ fn apply_insert_paragraph(dm: &mut DocMut, after: &str, text: &str) {
     }
 }
 
+/// The last body block as `append-paragraph`/`continue-paragraph` resolve it
+/// at apply time. Validation and the write share this one reading.
+pub(super) struct BodyEnd {
+    id: String,
+    kind: Option<String>,
+    /// Characters, the unit [`WordProcessorAction::SpliceText`] `at` uses.
+    chars: usize,
+    /// A paragraph, heading or list item: text that can be continued.
+    text_block: bool,
+}
+
+pub(super) fn body_end(doc: &AutoCommit, c: &Containers) -> Option<BodyEnd> {
+    let id = qdoc::model::blocks_in_order(doc, c).pop()?;
+    let kind = qdoc::model::block_kind(doc, c, &id);
+    let chars = qdoc::model::block_text(doc, c, &id)
+        .unwrap_or_default()
+        .chars()
+        .count();
+    let text_block = matches!(kind.as_deref(), Some("paragraph" | "heading" | "list_item"));
+    Some(BodyEnd {
+        id,
+        kind,
+        chars,
+        text_block,
+    })
+}
+
+fn apply_append_paragraph(dm: &mut DocMut, text: &str) {
+    let target = match body_end(dm.doc, dm.c) {
+        Some(end) if end.chars == 0 && end.kind.as_deref() == Some("paragraph") => end.id,
+        Some(end) => dm.insert_block(Some(&end.id), "paragraph"),
+        None => dm.insert_block(None, "paragraph"),
+    };
+    dm.splice_text(&target, 0, 0, text);
+}
+
+fn apply_continue_paragraph(dm: &mut DocMut, text: &str) {
+    // Validated before the mutable view: the last body block is a text block.
+    if let Some(end) = body_end(dm.doc, dm.c).filter(|end| end.text_block) {
+        dm.splice_text(&end.id, end.chars, 0, text);
+    }
+}
+
 fn apply_remove_blocks(dm: &mut DocMut, blocks: &[String]) {
     let mut sorted = blocks.to_vec();
     sorted.sort();
@@ -1828,6 +1948,8 @@ fn apply_text_action(dm: &mut DocMut<'_>, action: &WordProcessorAction) {
         WordProcessorAction::InsertParagraph { after, text } => {
             apply_insert_paragraph(dm, after, text);
         }
+        WordProcessorAction::AppendParagraph { text } => apply_append_paragraph(dm, text),
+        WordProcessorAction::ContinueParagraph { text } => apply_continue_paragraph(dm, text),
         WordProcessorAction::RemoveBlocks { blocks } => apply_remove_blocks(dm, blocks),
         WordProcessorAction::ReplaceBody { markdown } => apply_replace_body(dm, markdown),
         _ => {}
@@ -2037,7 +2159,17 @@ impl Action for WordProcessorAction {
         // A generator seeded past every existing id, under the executor's pinned
         // actor — so any freshly-minted block id is `{action-actor}.{n}`,
         // byte-identical on origin and replay.
-        let mut ids = qdoc::model::seeded_id_gen(doc, &c);
+        //
+        // Seeding scans every block id of every region, so only actions that
+        // mint an id pay for it: typing, selection replacement and formatting
+        // never do, and must cost the same in any document size.
+        let mut ids = if self.mints_ids() {
+            qdoc::model::seeded_id_gen(doc, &c)
+        } else {
+            // Never minted from; should that change, the one id it could
+            // mint cannot collide with a real `{actor}.{n}` counter.
+            qdoc::IdGen::with_counter(doc.get_actor().to_hex_string(), u64::MAX)
+        };
         let mut dm = DocMut {
             doc,
             c: &c,
@@ -2399,6 +2531,20 @@ pub fn insert_paragraph_action(after: &str, text: &str) -> WordProcessorAction {
     }
 }
 
+/// Append `text` as a new paragraph at the end of the body (resolved at apply).
+pub fn append_paragraph_action(text: &str) -> WordProcessorAction {
+    WordProcessorAction::AppendParagraph {
+        text: text.to_string(),
+    }
+}
+
+/// Append `text` to the end of the last body paragraph (resolved at apply).
+pub fn continue_paragraph_action(text: &str) -> WordProcessorAction {
+    WordProcessorAction::ContinueParagraph {
+        text: text.to_string(),
+    }
+}
+
 pub fn remove_blocks_action(blocks: Vec<String>) -> WordProcessorAction {
     WordProcessorAction::RemoveBlocks { blocks }
 }
@@ -2513,7 +2659,7 @@ pub struct WpResourceCtx {
 }
 
 /// One non-empty selection expressed as stable block ids and character offsets.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SelectionTarget {
     pub start_block: String,
     pub start: usize,
@@ -2590,15 +2736,16 @@ fn document_resource() -> Resource {
         "word_processor.document",
         "Document",
     )
+    .with_action(crate::semantic_read::action::spec())
 }
 
-fn add_file_operations(root: &mut Resource) {
+fn add_file_operations(root: &mut Resource, file: Option<&continuation::FileContext>) {
     for (id, label, variant) in [
         ("open", "Open document", 0_u8),
         ("save", "Save document", 1_u8),
         ("save-as", "Save document as", 2_u8),
     ] {
-        root.actions.push(
+        root.actions.push(continuation::file(
             ActionSpec::typed_operation(
                 id,
                 label,
@@ -2630,7 +2777,9 @@ fn add_file_operations(root: &mut Resource) {
             .destructive()
             .execution(ExecutionMode::Background { cancellable: false })
             .returns(ResultSpec::Job),
-        );
+            variant,
+            file,
+        ));
     }
 }
 
@@ -2678,73 +2827,98 @@ fn add_view_operations(root: &mut Resource) {
 }
 
 fn add_caret_actions(root: &mut Resource, ctx: &WpResourceCtx) {
-    root.actions.push(immediate_spec(
-        "insert-table",
-        "Insert table",
-        &insert_table_action(&ctx.caret_block, 2, 2),
-    ));
+    root.actions.push(
+        immediate_spec(
+            "insert-table",
+            "Insert table",
+            &insert_table_action(&ctx.caret_block, 2, 2),
+        )
+        .requires(ContextRequirement::Caret),
+    );
     if ctx.format_spans.is_empty() {
         return;
     }
     let spans = ctx.format_spans.clone();
     let region = ctx.region;
-    root.actions.push(ActionSpec::typed(
-        "set-hyperlink",
-        "Add or change hyperlink",
-        "Web URL (https://… or mailto:…) or #bookmark",
-        ExecutionLocus::ClientLocal,
-        vec![ActionParam::required_owned(
-            "target",
-            ParamType::Text,
-            "A safe external URL, mail address, or document-local #bookmark target",
-        )],
-        move |args: &ActionArgs| {
-            let target = args.text("target").unwrap_or_default().trim();
-            if !valid_hyperlink_target(target) {
-                return EncodedAction {
-                    type_id: tilo_actions::resource::INVALID_ARGUMENTS_TYPE.into(),
-                    payload: b"hyperlink target must use https:, mailto:, or #bookmark".to_vec(),
-                };
-            }
-            encode(&set_hyperlink_action(region, spans.clone(), target))
-        },
+    root.actions.push(continuation::pure(
+        ActionSpec::typed(
+            "set-hyperlink",
+            "Add or change hyperlink",
+            "Web URL (https://… or mailto:…) or #bookmark",
+            ExecutionLocus::ClientLocal,
+            vec![ActionParam::required_owned(
+                "target",
+                ParamType::Text,
+                "A safe external URL, mail address, or document-local #bookmark target",
+            )],
+            move |args: &ActionArgs| {
+                let target = args.text("target").unwrap_or_default().trim();
+                if !valid_hyperlink_target(target) {
+                    return EncodedAction {
+                        type_id: tilo_actions::resource::INVALID_ARGUMENTS_TYPE.into(),
+                        payload: b"hyperlink target must use https:, mailto:, or #bookmark"
+                            .to_vec(),
+                    };
+                }
+                encode(&set_hyperlink_action(region, spans.clone(), target))
+            },
+        )
+        .requires(ContextRequirement::Selection),
+        "set-hyperlink.v1",
+        continuation::spans(region, &ctx.format_spans),
     ));
 }
 
-fn add_selection_resources(root: &mut Resource, ctx: &WpResourceCtx) {
+/// `large`: the selection is over [`editing::LARGE_REMOVAL_CHARS`], and the
+/// replacement refuses like the editing primitives do.
+fn add_selection_resources(root: &mut Resource, ctx: &WpResourceCtx, large: bool) {
     let Some(selection) = &ctx.selection else {
         return;
     };
     let selection = selection.clone();
     let root_selection = selection.clone();
     let region = ctx.region;
-    root.actions.push(ActionSpec::typed(
-        "replace-selection",
-        "Replace selection",
-        "Replacement text for the selected document range",
-        ExecutionLocus::ClientLocal,
-        vec![ActionParam::required_owned(
-            "text",
-            ParamType::Text,
-            "Text that replaces the current selection (empty deletes it)",
-        )],
-        move |args: &ActionArgs| {
-            let Some(text) = args.text("text") else {
-                return EncodedAction {
-                    type_id: tilo_actions::resource::INVALID_ARGUMENTS_TYPE.into(),
-                    payload: b"replacement text is required".to_vec(),
-                };
-            };
-            encode(&replace_selection_action(
-                region,
-                &root_selection.start_block,
-                root_selection.start,
-                &root_selection.end_block,
-                root_selection.end,
-                text,
-            ))
-        },
-    ));
+    let domain = continuation::selection(region, &selection);
+    root.actions.push(
+        continuation::pure(
+            ActionSpec::typed(
+                "replace-selection",
+                "Replace selection",
+                "Replacement text for the selected document range",
+                ExecutionLocus::ClientLocal,
+                vec![ActionParam::required_owned(
+                    "text",
+                    ParamType::Text,
+                    "Text that replaces the current selection (empty deletes it)",
+                )],
+                move |args: &ActionArgs| {
+                    if large {
+                        return EncodedAction {
+                            type_id: tilo_actions::resource::INVALID_ARGUMENTS_TYPE.into(),
+                            payload: editing::LARGE_REFUSAL.as_bytes().to_vec(),
+                        };
+                    }
+                    let Some(text) = args.text("text") else {
+                        return EncodedAction {
+                            type_id: tilo_actions::resource::INVALID_ARGUMENTS_TYPE.into(),
+                            payload: b"replacement text is required".to_vec(),
+                        };
+                    };
+                    encode(&replace_selection_action(
+                        region,
+                        &root_selection.start_block,
+                        root_selection.start,
+                        &root_selection.end_block,
+                        root_selection.end,
+                        text,
+                    ))
+                },
+            ),
+            "replace-selection.v1",
+            domain.clone(),
+        )
+        .requires(ContextRequirement::Selection),
+    );
     root.children.push(
         Resource::new(
             format!(
@@ -2754,34 +2928,131 @@ fn add_selection_resources(root: &mut Resource, ctx: &WpResourceCtx) {
             "word_processor.selection",
             "Current selection",
         )
-        .with_action(ActionSpec::typed(
-            "replace",
-            "Replace selection",
-            "Replacement text for this exact selection",
+        .with_action(
+            continuation::pure(
+                ActionSpec::typed(
+                    "replace",
+                    "Replace selection",
+                    "Replacement text for this exact selection",
+                    ExecutionLocus::ClientLocal,
+                    vec![ActionParam::required_owned(
+                        "text",
+                        ParamType::Text,
+                        "Replacement text",
+                    )],
+                    move |args: &ActionArgs| {
+                        if large {
+                            return EncodedAction {
+                                type_id: tilo_actions::resource::INVALID_ARGUMENTS_TYPE.into(),
+                                payload: editing::LARGE_REFUSAL.as_bytes().to_vec(),
+                            };
+                        }
+                        let Some(text) = args.text("text") else {
+                            return EncodedAction {
+                                type_id: tilo_actions::resource::INVALID_ARGUMENTS_TYPE.into(),
+                                payload: b"replacement text is required".to_vec(),
+                            };
+                        };
+                        encode(&replace_selection_action(
+                            region,
+                            &selection.start_block,
+                            selection.start,
+                            &selection.end_block,
+                            selection.end,
+                            text,
+                        ))
+                    },
+                ),
+                "replace-selection.v1",
+                domain,
+            )
+            .requires(ContextRequirement::Selection),
+        ),
+    );
+}
+
+/// Contract tag prefix declaring that a Text parameter may be delivered in
+/// order across several invocations: `tilo.incremental-text:<param>:<next>`
+/// says the first part goes through this action and every later part through
+/// action `<next>` on the same resource, with `<param>` set to that part, and
+/// that the parts applied in order equal one invocation with the whole text.
+/// Any caller (a person's tool, a script, an agent) may rely on it; the
+/// declaration is the app's, not the caller's.
+pub const INCREMENTAL_TEXT_TAG: &str = "tilo.incremental-text:";
+
+/// Contract tag marking an operation kept only for compatibility:
+/// `tilo.deprecated:<replacement>` names the operation to use instead.
+/// Callers choosing an operation (an agent planner) should skip it.
+pub const DEPRECATED_TAG: &str = "tilo.deprecated:";
+
+/// Root-level text writes that need no caret or selection, for anyone
+/// writing into the document (a person from the palette, a script, an
+/// agent). Their payload names no position; the end of the body is read at
+/// apply time. `append-paragraph` is an ordinary document operation that,
+/// like typing, leaves the invoker's caret at the end of the text it wrote,
+/// so it declares [`INCREMENTAL_TEXT_TAG`] continued by `type-text`: the rest
+/// of a long paragraph is typed at that caret. `continue-paragraph` is
+/// deprecated in favour of `type-text` at a caret (`move-caret {to:
+/// document-end}` first).
+fn add_body_append_actions(root: &mut Resource, ctx: &WpResourceCtx, doc: &AutoCommit) {
+    let appended = editing::AppendTarget::new(&participant::ParticipantView::from_ctx(ctx), doc);
+    for (id, label, description, handler, append) in [
+        (
+            "append-paragraph",
+            "Append paragraph",
+            "Add a new paragraph containing the text at the end of the document",
+            "append-paragraph.v1",
+            true,
+        ),
+        (
+            "continue-paragraph",
+            "Continue last paragraph",
+            "Deprecated: move-caret to document-end, then type-text. Appends the text to the end of the document's last paragraph",
+            "continue-paragraph.v1",
+            false,
+        ),
+    ] {
+        let appended = appended.clone();
+        let spec = ActionSpec::typed(
+            id,
+            label,
+            "Text to write",
             ExecutionLocus::ClientLocal,
             vec![ActionParam::required_owned(
                 "text",
                 ParamType::Text,
-                "Replacement text",
+                "The text to write (not empty)",
             )],
             move |args: &ActionArgs| {
-                let Some(text) = args.text("text") else {
+                let text = args.text("text").unwrap_or_default();
+                if text.is_empty() || text.chars().count() > MAX_ACTION_TEXT_CHARS {
                     return EncodedAction {
                         type_id: tilo_actions::resource::INVALID_ARGUMENTS_TYPE.into(),
-                        payload: b"replacement text is required".to_vec(),
+                        payload: b"text must be non-empty and within Writer's limits".to_vec(),
                     };
-                };
-                encode(&replace_selection_action(
-                    region,
-                    &selection.start_block,
-                    selection.start,
-                    &selection.end_block,
-                    selection.end,
-                    text,
-                ))
+                }
+                if append {
+                    crate::widget::note_participant_outcome(&appended.caret_after(text));
+                    encode(&append_paragraph_action(text))
+                } else {
+                    encode(&continue_paragraph_action(text))
+                }
             },
-        )),
-    );
+        )
+        .with_description(description)
+        .reversible();
+        let mut spec = spec;
+        spec.contract.tags.push(if append {
+            format!("{INCREMENTAL_TEXT_TAG}text:{}", editing::op::TYPE_TEXT)
+        } else {
+            format!("{DEPRECATED_TAG}{}", editing::op::TYPE_TEXT)
+        });
+        root.actions.push(continuation::pure(
+            spec,
+            handler,
+            vec![b"body-end".to_vec()],
+        ));
+    }
 }
 
 fn add_comment_resource_action(root: &mut Resource, ctx: &WpResourceCtx) {
@@ -2795,34 +3066,41 @@ fn add_comment_resource_action(root: &mut Resource, ctx: &WpResourceCtx) {
         return;
     }
     let target = selection.clone();
-    root.actions.push(ActionSpec::typed(
-        "add-comment",
-        "Add comment",
-        "Comment text and author for the selected text",
-        ExecutionLocus::ClientLocal,
-        vec![
-            ActionParam::required_owned("author", ParamType::Text, "Comment author"),
-            ActionParam::required_owned("text", ParamType::Text, "Comment text"),
-            ActionParam::optional_owned("date", ParamType::Text, "ISO-8601 comment date"),
-        ],
-        move |args: &ActionArgs| {
-            let author = args.text("author").unwrap_or_default().trim();
-            let text = args.text("text").unwrap_or_default();
-            if author.is_empty() || text.chars().count() > MAX_ACTION_TEXT_CHARS {
-                return EncodedAction {
-                    type_id: tilo_actions::resource::INVALID_ARGUMENTS_TYPE.into(),
-                    payload: b"comment author is required and comment text is too long".to_vec(),
-                };
-            }
-            encode(&add_comment_action(
-                &target.start_block,
-                target.start,
-                target.end,
-                author,
-                args.text("date").unwrap_or_default(),
-                text,
-            ))
-        },
+    let domain = continuation::selection(RegionKind::Body, &target);
+    root.actions.push(continuation::pure(
+        ActionSpec::typed(
+            "add-comment",
+            "Add comment",
+            "Comment text and author for the selected text",
+            ExecutionLocus::ClientLocal,
+            vec![
+                ActionParam::required_owned("author", ParamType::Text, "Comment author"),
+                ActionParam::required_owned("text", ParamType::Text, "Comment text"),
+                ActionParam::optional_owned("date", ParamType::Text, "ISO-8601 comment date"),
+            ],
+            move |args: &ActionArgs| {
+                let author = args.text("author").unwrap_or_default().trim();
+                let text = args.text("text").unwrap_or_default();
+                if author.is_empty() || text.chars().count() > MAX_ACTION_TEXT_CHARS {
+                    return EncodedAction {
+                        type_id: tilo_actions::resource::INVALID_ARGUMENTS_TYPE.into(),
+                        payload: b"comment author is required and comment text is too long"
+                            .to_vec(),
+                    };
+                }
+                encode(&add_comment_action(
+                    &target.start_block,
+                    target.start,
+                    target.end,
+                    author,
+                    args.text("date").unwrap_or_default(),
+                    text,
+                ))
+            },
+        )
+        .requires(ContextRequirement::Selection),
+        "add-comment.v1",
+        domain,
     ));
 }
 
@@ -2859,7 +3137,11 @@ fn add_search_resources(
             "Go to result",
             OperationKind::View,
             &view_operation,
-        ) {
+        )
+        .map(|spec| {
+            spec.requires(ContextRequirement::FindHits)
+                .participant_view()
+        }) {
             search.children.push(
                 Resource::new(
                     format!(
@@ -2907,24 +3189,31 @@ fn add_document_edit_actions(root: &mut Resource, ctx: &WpResourceCtx) {
         .with_description(
             "Place the single content result of the immediately preceding action at the caret",
         )
-        .reversible(),
+        .reversible()
+        .requires(ContextRequirement::Caret),
     );
-    root.actions.push(immediate_spec(
-        "insert-page-break",
-        "Insert page break",
-        &insert_page_break_action(&ctx.caret_block, ctx.caret_offset),
-    ));
+    root.actions.push(
+        immediate_spec(
+            "insert-page-break",
+            "Insert page break",
+            &insert_page_break_action(&ctx.caret_block, ctx.caret_offset),
+        )
+        .requires(ContextRequirement::Caret),
+    );
     for (id, label, align) in [
         ("align-left", "Align left", "left"),
         ("align-center", "Align centre", "center"),
         ("align-right", "Align right", "right"),
         ("align-justify", "Justify", "justify"),
     ] {
-        root.actions.push(immediate_spec(
-            id,
-            label,
-            &set_align_action(ctx.target_blocks.clone(), align),
-        ));
+        root.actions.push(
+            immediate_spec(
+                id,
+                label,
+                &set_align_action(ctx.target_blocks.clone(), align),
+            )
+            .requires(ContextRequirement::Caret),
+        );
     }
 }
 
@@ -2962,6 +3251,7 @@ fn comment_resource(comment: &qdoc::snapshot::CommentView) -> Resource {
                 end: *end,
             },
         )
+        .map(ActionSpec::participant_view)
     {
         resource.actions.push(spec);
     }
@@ -2983,32 +3273,37 @@ fn comment_resource(comment: &qdoc::snapshot::CommentView) -> Resource {
         ));
     }
     let parent = comment.id.clone();
-    resource.actions.push(ActionSpec::typed(
-        "reply",
-        "Reply to comment",
-        "Reply text and author, stored in the shared comment thread",
-        ExecutionLocus::ClientLocal,
-        vec![
-            ActionParam::required_owned("author", ParamType::Text, "Reply author"),
-            ActionParam::required_owned("text", ParamType::Text, "Reply text"),
-            ActionParam::optional_owned("date", ParamType::Text, "ISO-8601 reply date"),
-        ],
-        move |args: &ActionArgs| {
-            let author = args.text("author").unwrap_or_default().trim();
-            let text = args.text("text").unwrap_or_default();
-            if author.is_empty() || text.chars().count() > MAX_ACTION_TEXT_CHARS {
-                return EncodedAction {
-                    type_id: tilo_actions::resource::INVALID_ARGUMENTS_TYPE.into(),
-                    payload: b"reply author is required and reply text is too long".to_vec(),
-                };
-            }
-            encode(&reply_to_comment_action(
-                &parent,
-                author,
-                args.text("date").unwrap_or_default(),
-                text,
-            ))
-        },
+    let domain = vec![parent.as_bytes().to_vec()];
+    resource.actions.push(continuation::pure(
+        ActionSpec::typed(
+            "reply",
+            "Reply to comment",
+            "Reply text and author, stored in the shared comment thread",
+            ExecutionLocus::ClientLocal,
+            vec![
+                ActionParam::required_owned("author", ParamType::Text, "Reply author"),
+                ActionParam::required_owned("text", ParamType::Text, "Reply text"),
+                ActionParam::optional_owned("date", ParamType::Text, "ISO-8601 reply date"),
+            ],
+            move |args: &ActionArgs| {
+                let author = args.text("author").unwrap_or_default().trim();
+                let text = args.text("text").unwrap_or_default();
+                if author.is_empty() || text.chars().count() > MAX_ACTION_TEXT_CHARS {
+                    return EncodedAction {
+                        type_id: tilo_actions::resource::INVALID_ARGUMENTS_TYPE.into(),
+                        payload: b"reply author is required and reply text is too long".to_vec(),
+                    };
+                }
+                encode(&reply_to_comment_action(
+                    &parent,
+                    author,
+                    args.text("date").unwrap_or_default(),
+                    text,
+                ))
+            },
+        ),
+        "reply-to-comment.v1",
+        domain,
     ));
     resource
 }
@@ -3019,16 +3314,24 @@ fn add_review_resources(root: &mut Resource, snapshot: &qdoc::snapshot::DocSnaps
     }
     let mut review = Resource::new("word-processor.review", "word_processor.review", "Review");
     if !snapshot.changes.is_empty() {
-        review.actions.push(immediate_spec(
-            "accept-all",
-            "Accept all changes",
-            &WordProcessorAction::AcceptChanges { id: None },
-        ));
-        review.actions.push(immediate_spec(
-            "reject-all",
-            "Reject all changes",
-            &WordProcessorAction::RejectChanges { id: None },
-        ));
+        // Bulk review rewrites everyone's tracked changes at once: confirmed
+        // for people, refused for unattended callers (security review T5).
+        review.actions.push(
+            immediate_spec(
+                "accept-all",
+                "Accept all changes",
+                &WordProcessorAction::AcceptChanges { id: None },
+            )
+            .privileged(),
+        );
+        review.actions.push(
+            immediate_spec(
+                "reject-all",
+                "Reject all changes",
+                &WordProcessorAction::RejectChanges { id: None },
+            )
+            .privileged(),
+        );
     }
     review
         .children
@@ -3065,7 +3368,9 @@ fn add_review_resources(root: &mut Resource, snapshot: &qdoc::snapshot::DocSnaps
 
 fn add_revision_resources(root: &mut Resource, doc: &AutoCommit) {
     let mut history_doc = doc.clone();
-    let changes = history_doc.get_changes(&[]);
+    // Revision resources need labels and hashes, not reconstructed operation
+    // payloads for every change in the document's history.
+    let changes = history_doc.get_changes_meta(&[]);
     if changes.is_empty() {
         return;
     }
@@ -3076,7 +3381,7 @@ fn add_revision_resources(root: &mut Resource, doc: &AutoCommit) {
     );
     let start = changes.len().saturating_sub(MAX_RESOURCE_REVISIONS);
     for (index, change) in changes.iter().enumerate().skip(start) {
-        let label = change.message().map_or_else(
+        let label = change.message.as_deref().map_or_else(
             || format!("Revision {}", index + 1),
             |message| short(message, "Revision"),
         );
@@ -3088,7 +3393,7 @@ fn add_revision_resources(root: &mut Resource, doc: &AutoCommit) {
         ) {
             history.children.push(
                 Resource::new(
-                    format!("word-processor.revision:{}", change.hash()),
+                    format!("word-processor.revision:{}", change.hash),
                     "word_processor.revision",
                     label,
                 )
@@ -3293,7 +3598,9 @@ fn table_resource(table_id: &str, table_blocks: &[&qdoc::snapshot::BlockView]) -
                 start: 0,
                 end: cell.text.chars().count(),
             },
-        ) {
+        )
+        .map(ActionSpec::participant_view)
+        {
             cell_resource.actions.push(spec);
         }
         resource.children.push(cell_resource);
@@ -3353,19 +3660,184 @@ fn add_structural_resources(root: &mut Resource, snapshot: &qdoc::snapshot::DocS
     }
 }
 
+/// Stable id standing for every view-derived `word-processor.selection:…`
+/// resource in the catalogue schema.
+pub const SCHEMA_SELECTION_RESOURCE: &str = "word-processor.selection";
+/// Stable id standing for every `word-processor.search-hit:…` resource in
+/// the catalogue schema.
+pub const SCHEMA_SEARCH_HIT_RESOURCE: &str = "word-processor.search-hit";
+
+/// Writer's participant-independent catalogue schema
+/// ([`ResourceProvider::catalogue_schema`]): the tree every participant can
+/// reach, with no participant's caret, selection or Find hits in it.
+///
+/// - Root operations are all present, whatever any view holds; context
+///   preconditions are declared as [`ContextRequirement`] flags, and each
+///   operation's contract, params and input shape equal those in every
+///   participant's tree.
+/// - Selection- and Find-derived resources appear once under stable ids
+///   ([`SCHEMA_SELECTION_RESOURCE`], [`SCHEMA_SEARCH_HIT_RESOURCE`]), never
+///   as `selection:<range>` / `search-hit:<range>`.
+/// - Document-derived resources (images, tables, sections, review,
+///   revisions, styles) are included: they do not depend on any view.
+pub fn catalogue_schema(doc: &AutoCommit) -> Vec<Resource> {
+    let block = qdoc::model::open(doc, &automerge::ROOT)
+        .ok()
+        .and_then(|containers| {
+            qdoc::model::blocks_in_order(doc, &containers)
+                .first()
+                .cloned()
+        })
+        .unwrap_or_else(|| "word-processor.schema".to_owned());
+    // A synthetic view that switches on every view-dependent builder; its
+    // positions never reach the schema (ids are replaced below, and the
+    // schema is declaration, never invoked).
+    let ctx = WpResourceCtx {
+        caret_block: block.clone(),
+        caret_offset: 0,
+        target_blocks: vec![block.clone()],
+        format_spans: vec![Span {
+            block: block.clone(),
+            start: 0,
+            end: 1,
+        }],
+        selection: Some(SelectionTarget {
+            start_block: block.clone(),
+            start: 0,
+            end_block: block.clone(),
+            end: 1,
+        }),
+        region: RegionKind::Body,
+        search_hits: vec![SearchTarget {
+            block,
+            start: 0,
+            end: 1,
+        }],
+    };
+    let mut resources = provide_resources_with_file(&ctx, doc, None);
+    resources.iter_mut().for_each(declarations_only);
+    for root in &mut resources {
+        for child in &mut root.children {
+            if child.kind == "word_processor.selection" {
+                child.id = tilo_actions::ResourceId(SCHEMA_SELECTION_RESOURCE.to_owned());
+                child.label = "Selection".into();
+            }
+            if child.kind == "word_processor.search-results" {
+                child.children.truncate(1);
+                for hit in &mut child.children {
+                    hit.id = tilo_actions::ResourceId(SCHEMA_SEARCH_HIT_RESOURCE.to_owned());
+                    hit.label = "Search result".into();
+                }
+            }
+        }
+    }
+    resources
+}
+
+const DECLARATION_ONLY: &[u8] =
+    b"catalogue schema is a declaration only: resolve this operation in the invoker's own tree";
+
+/// Replace every builder in a schema tree by a refusal, keeping each
+/// operation's id, label, description, kind, locus, operation type,
+/// contract, params and input shape. The schema is built on a synthetic view;
+/// resolving an invocation against it must never encode a positional
+/// envelope from that view. Fixed-encoding and no-argument operations become
+/// deferred ones declaring their registered type (a fixed sentinel would fail
+/// surface validation); argument-taking ones keep their prompt.
+fn declarations_only(resource: &mut Resource) {
+    for spec in &mut resource.actions {
+        *spec = declaration_only(spec);
+    }
+    resource.children.iter_mut().for_each(declarations_only);
+}
+
+fn declaration_only(spec: &ActionSpec) -> ActionSpec {
+    let refuse = || EncodedAction {
+        type_id: tilo_actions::resource::INVALID_ARGUMENTS_TYPE.into(),
+        payload: DECLARATION_ONLY.to_vec(),
+    };
+    let document = spec.kind == OperationKind::Document;
+    let declared_type = |fallback: &str| {
+        spec.operation_type
+            .clone()
+            .unwrap_or_else(|| fallback.to_owned())
+    };
+    let mut out = match &spec.input {
+        tilo_actions::ActionInput::Immediate(encoded) => {
+            let type_id = declared_type(&encoded.type_id);
+            if document {
+                ActionSpec::deferred(&spec.id, &spec.label, spec.locus, type_id, refuse)
+            } else {
+                ActionSpec::deferred_operation(&spec.id, &spec.label, spec.kind, type_id, refuse)
+            }
+        }
+        tilo_actions::ActionInput::Deferred { type_id, .. } => {
+            let type_id = declared_type(type_id);
+            if document {
+                ActionSpec::deferred(&spec.id, &spec.label, spec.locus, type_id, refuse)
+            } else {
+                ActionSpec::deferred_operation(&spec.id, &spec.label, spec.kind, type_id, refuse)
+            }
+        }
+        tilo_actions::ActionInput::Prompted {
+            prompt,
+            placeholder,
+            collects: tilo_actions::Collects::Content,
+            ..
+        } => ActionSpec::prompted_content(
+            &spec.id,
+            &spec.label,
+            prompt,
+            placeholder,
+            spec.locus,
+            move |_| refuse(),
+        ),
+        tilo_actions::ActionInput::Prompted { placeholder, .. } if document => ActionSpec::typed(
+            &spec.id,
+            &spec.label,
+            placeholder,
+            spec.locus,
+            spec.params().to_vec(),
+            move |_| refuse(),
+        ),
+        tilo_actions::ActionInput::Prompted { placeholder, .. } => ActionSpec::typed_operation(
+            &spec.id,
+            &spec.label,
+            placeholder,
+            spec.kind,
+            declared_type(WORD_PROCESSOR_OPERATION_TYPE),
+            spec.params().to_vec(),
+            move |_| refuse(),
+        ),
+    };
+    out.description = spec.description.clone();
+    out.with_contract(spec.contract.clone())
+}
+
 /// Build the resource tree the word processor currently has open.
 pub fn provide_resources(ctx: &WpResourceCtx, doc: &AutoCommit) -> Vec<Resource> {
+    provide_resources_with_file(ctx, doc, None)
+}
+
+pub(crate) fn provide_resources_with_file(
+    ctx: &WpResourceCtx,
+    doc: &AutoCommit,
+    file: Option<&continuation::FileContext>,
+) -> Vec<Resource> {
     let mut root = document_resource();
-    add_file_operations(&mut root);
+    add_file_operations(&mut root, file);
     add_view_operations(&mut root);
     add_caret_actions(&mut root, ctx);
-    add_selection_resources(&mut root, ctx);
+    add_selection_resources(&mut root, ctx, editing::large_selection(ctx, doc));
+    add_body_append_actions(&mut root, ctx, doc);
     add_comment_resource_action(&mut root, ctx);
 
     let Ok(containers) = qdoc::model::open(doc, &automerge::ROOT) else {
         return vec![root];
     };
     let snapshot = qdoc::model::materialize(doc, &containers);
+    editing::add_operations(&mut root, ctx, doc);
+    view_ops::add_operations(&mut root, ctx);
     add_search_resources(&mut root, ctx, &snapshot);
     add_document_edit_actions(&mut root, ctx);
     add_review_resources(&mut root, &snapshot);
@@ -3376,12 +3848,75 @@ pub fn provide_resources(ctx: &WpResourceCtx, doc: &AutoCommit) -> Vec<Resource>
     vec![root]
 }
 
+pub(crate) fn file_choice_resource(generation: u64) -> Result<Resource, String> {
+    let mut resource = Resource::new(
+        format!("word-processor.file-choice:{generation}"),
+        "word_processor.file_choice",
+        crate::i18n::t("file-choice-title"),
+    );
+    for (id, label, use_selected) in [
+        ("keep-workspace", "file-choice-keep", false),
+        ("use-selected", "file-choice-use", true),
+    ] {
+        resource.actions.push(
+            operation(
+                id,
+                &crate::i18n::t(label),
+                OperationKind::Effect,
+                &WordProcessorOperation::ResolveFileChoice {
+                    generation,
+                    use_selected,
+                },
+            )
+            .ok_or("file choice operation could not be encoded")?,
+        );
+    }
+    Ok(resource)
+}
+
+/// Exact inputs of `provide_resources_with_file` for a committed document.
+fn resource_memo_key(
+    doc: &AutoCommit,
+    ctx: &WpResourceCtx,
+    file: &continuation::FileContext,
+) -> String {
+    let heads: Vec<String> = doc.base_heads().iter().map(ToString::to_string).collect();
+    format!(
+        "{heads:?}|{ctx:?}|{:?}|{:?}|{}|{}",
+        file.path,
+        file.format,
+        file.canonical,
+        crate::i18n::t("file-choice-title"),
+    )
+}
+
 impl ResourceProvider for crate::widget::WordProcessorWidget {
     fn resources(&self, doc: &AutoCommit) -> Vec<Resource> {
-        match self.wp_resource_ctx(doc) {
-            Some(ctx) => provide_resources(&ctx, doc),
-            None => Vec::new(),
+        if let Some(resource) = self.file_choice_resource() {
+            return vec![resource];
         }
+        let Some(ctx) = self.wp_resource_ctx(doc) else {
+            return Vec::new();
+        };
+        let file = self.file_continuation_context();
+        // Heads identify the committed document exactly; pending (uncommitted)
+        // operations are not covered by them, so those frames rebuild.
+        if doc.pending_ops() != 0 {
+            return provide_resources_with_file(&ctx, doc, Some(&file));
+        }
+        let key = resource_memo_key(doc, &ctx, &file);
+        if let Some((cached, resources)) = self.resource_memo.borrow().as_ref()
+            && *cached == key
+        {
+            return resources.clone();
+        }
+        let resources = provide_resources_with_file(&ctx, doc, Some(&file));
+        *self.resource_memo.borrow_mut() = Some((key, resources.clone()));
+        resources
+    }
+
+    fn catalogue_schema(&self, doc: &AutoCommit) -> Vec<Resource> {
+        catalogue_schema(doc)
     }
 }
 
@@ -3401,7 +3936,9 @@ mod tests {
     fn immediate_encode(spec: &ActionSpec) -> EncodedAction {
         match &spec.input {
             ActionInput::Immediate(enc) => enc.clone(),
-            ActionInput::Prompted { .. } => panic!("expected an immediate action: {}", spec.id),
+            ActionInput::Prompted { .. } | ActionInput::Deferred { .. } => {
+                panic!("expected an immediate action: {}", spec.id)
+            }
         }
     }
 
@@ -3973,6 +4510,158 @@ mod tests {
         }));
     }
 
+    fn root_for(state: &ui::State, block: &str) -> Resource {
+        let ctx = WpResourceCtx {
+            format_spans: Vec::new(),
+            selection: None,
+            region: RegionKind::Body,
+            caret_block: block.to_string(),
+            caret_offset: 0,
+            target_blocks: vec![block.to_string()],
+            search_hits: Vec::new(),
+        };
+        provide_resources(&ctx, &state.doc).pop().unwrap()
+    }
+
+    fn text_arg(text: &str) -> [(String, tilo_actions::ArgValue); 1] {
+        [(
+            "text".to_string(),
+            tilo_actions::ArgValue::Text(text.into()),
+        )]
+    }
+
+    #[test]
+    fn body_append_operations_are_root_level_pure_document_writes() {
+        let (state, ids) = seeded("Intro\n");
+        let root = root_for(&state, &ids[0]);
+        assert_eq!(root.id.0, "word-processor.document");
+        for id in ["append-paragraph", "continue-paragraph"] {
+            let spec = root
+                .actions
+                .iter()
+                .find(|action| action.id == id)
+                .unwrap_or_else(|| panic!("{id} is on the root resource"));
+            assert_eq!(spec.params().len(), 1);
+            assert_eq!(spec.params()[0].name, "text");
+            assert!(spec.params()[0].required);
+            assert_eq!(spec.kind, OperationKind::Document);
+            assert_eq!(spec.locus, ExecutionLocus::ClientLocal);
+            assert!(matches!(
+                spec.contract.confirmation,
+                tilo_actions::ConfirmationPolicy::None
+            ));
+            assert!(spec.contract.reversible);
+            // append-paragraph streams: its first part appends, the rest is
+            // typed at the caret it leaves. continue-paragraph is deprecated.
+            let expected: &[&str] = if id == "continue-paragraph" {
+                &["tilo.deprecated:type-text"]
+            } else {
+                &["tilo.incremental-text:text:type-text"]
+            };
+            assert_eq!(spec.contract.tags, expected, "{id}");
+            assert!(
+                spec.contract.validate_declaration().is_empty(),
+                "{:?}",
+                spec.contract.validate_declaration()
+            );
+            assert!(spec.has_continuation_identity());
+            // Empty text is refused before anything is encoded.
+            let refused = spec.build_args(text_arg(""));
+            assert!(
+                refused.is_err()
+                    || refused
+                        .as_ref()
+                        .is_ok_and(|encoded| encoded.type_id
+                            == tilo_actions::resource::INVALID_ARGUMENTS_TYPE),
+                "{id}: {refused:?}"
+            );
+        }
+    }
+
+    /// The host offers every Document operation of its workers as one grant
+    /// set, and withdraws the offer above 64. A fresh document's catalogue,
+    /// with both paragraph operations, stays well inside that bound.
+    #[test]
+    fn a_fresh_document_publishes_few_grantable_document_operations() {
+        fn document_ops(resource: &Resource, out: &mut Vec<String>) {
+            for action in &resource.actions {
+                if action.kind == OperationKind::Document {
+                    out.push(format!("{}#{}", resource.id.0, action.id));
+                }
+            }
+            for child in &resource.children {
+                document_ops(child, out);
+            }
+        }
+        let (state, ids) = seeded("");
+        let block = ids.first().cloned().unwrap_or_default();
+        let mut ops = Vec::new();
+        document_ops(&root_for(&state, &block), &mut ops);
+        assert!(ops.contains(&"word-processor.document#append-paragraph".to_owned()));
+        assert!(ops.contains(&"word-processor.document#continue-paragraph".to_owned()));
+        assert!(
+            ops.len() <= 32,
+            "{} document operations: {ops:?}",
+            ops.len()
+        );
+    }
+
+    #[test]
+    fn append_then_repeated_continue_builds_one_paragraph_in_order() {
+        let (mut state, ids) = seeded("Intro\n");
+        // The catalogue is captured once, before any write; every invocation
+        // resolves the end of the body when it is applied.
+        let root = root_for(&state, &ids[0]);
+        let op = |id: &str| {
+            root.actions
+                .iter()
+                .find(|action| action.id == id)
+                .unwrap()
+                .clone()
+        };
+        let (append, cont) = (op("append-paragraph"), op("continue-paragraph"));
+        for (spec, text) in [
+            (&append, "The ocean "),
+            (&cont, "covers most "),
+            (&cont, "of the "),
+            (&cont, "planet."),
+        ] {
+            let encoded = spec.build_args(text_arg(text)).unwrap();
+            let action: WordProcessorAction = serde_json::from_slice(&encoded.payload).unwrap();
+            dispatch(&mut state.doc, &action);
+        }
+        let blocks = body_blocks(&state.doc);
+        assert_eq!(blocks.len(), 2, "one new paragraph after the intro");
+        assert_eq!(blocks[0].text, "Intro");
+        assert_eq!(blocks[1].text, "The ocean covers most of the planet.");
+        assert_eq!(blocks[1].kind, "paragraph");
+    }
+
+    #[test]
+    fn append_fills_an_empty_trailing_paragraph_and_empty_text_is_refused() {
+        let (mut state, _) = seeded("");
+        let before = body_blocks(&state.doc);
+        dispatch(&mut state.doc, &append_paragraph_action("Hello"));
+        dispatch(&mut state.doc, &continue_paragraph_action(", world"));
+        let blocks = body_blocks(&state.doc);
+        assert!(blocks.len() <= before.len().max(1));
+        assert_eq!(blocks.last().unwrap().text, "Hello, world");
+        for action in [append_paragraph_action(""), continue_paragraph_action("")] {
+            assert!(
+                matches!(action.apply(&mut state.doc), Err(ActionError::Refused(_))),
+                "{action:?}"
+            );
+        }
+        assert_eq!(body_blocks(&state.doc).last().unwrap().text, "Hello, world");
+    }
+
+    #[test]
+    fn continue_counts_characters_like_splice_text() {
+        let (mut state, _) = seeded("Aé🦀\n");
+        dispatch(&mut state.doc, &continue_paragraph_action("z"));
+        assert_eq!(body_blocks(&state.doc)[0].text, "Aé🦀z");
+    }
+
     #[test]
     fn hyperlink_targets_are_limited_to_safe_authored_schemes() {
         for target in [
@@ -4389,7 +5078,32 @@ mod tests {
 
     #[test]
     fn resource_results_and_revisions_are_bounded_and_precisely_addressable() {
-        let (state, ids) = seeded(&format!("{}\n", "x".repeat(MAX_RESOURCE_SEARCH_HITS + 16)));
+        let (mut state, ids) = seeded(&format!("{}\n", "x".repeat(MAX_RESOURCE_SEARCH_HITS + 16)));
+        for index in 0..MAX_RESOURCE_REVISIONS + 8 {
+            state
+                .doc
+                .put(automerge::ROOT, "revision-fixture", index as u64)
+                .unwrap();
+            state.doc.commit_with(
+                automerge::transaction::CommitOptions::default()
+                    .with_message(format!("Edit {index}")),
+            );
+        }
+        let mut remote = state.doc.fork();
+        remote.put(automerge::ROOT, "remote-fixture", true).unwrap();
+        remote.commit();
+        state
+            .doc
+            .put(automerge::ROOT, "local-fixture", true)
+            .unwrap();
+        state.doc.commit();
+        state.doc.merge(&mut remote).unwrap();
+        state
+            .doc
+            .put(automerge::ROOT, "unfinished-fixture", true)
+            .unwrap();
+        let pending = (state.doc.base_heads(), state.doc.pending_ops());
+        let expected = state.doc.clone().get_changes(&[]);
         let block = ids[0].clone();
         let ctx = WpResourceCtx {
             caret_block: block.clone(),
@@ -4433,7 +5147,44 @@ mod tests {
             .iter()
             .find(|resource| resource.id.as_str() == "word-processor.revisions")
             .expect("history resource group");
-        assert!(revisions.children.len() <= MAX_RESOURCE_REVISIONS);
+        assert_eq!(revisions.children.len(), MAX_RESOURCE_REVISIONS);
+        let start = expected.len() - MAX_RESOURCE_REVISIONS;
+        for (index, (revision, change)) in revisions
+            .children
+            .iter()
+            .zip(&expected[start..])
+            .enumerate()
+        {
+            let index = start + index;
+            assert_eq!(
+                revision.id.as_str(),
+                format!("word-processor.revision:{}", change.hash())
+            );
+            let label = change.message().map_or_else(
+                || format!("Revision {}", index + 1),
+                |message| short(message, "Revision"),
+            );
+            assert_eq!(revision.label, label);
+            let show = revision
+                .actions
+                .iter()
+                .find(|action| action.id == "show")
+                .unwrap();
+            assert_eq!(
+                show.build_args(std::iter::empty::<(String, tilo_actions::ArgValue)>())
+                    .unwrap(),
+                EncodedAction::encode_operation(
+                    WORD_PROCESSOR_OPERATION_TYPE,
+                    &WordProcessorOperation::ShowRevision { index }
+                )
+                .unwrap()
+            );
+        }
+        assert_eq!(
+            (state.doc.base_heads(), state.doc.pending_ops()),
+            pending,
+            "resource discovery must not commit the owner"
+        );
         assert!(
             revisions
                 .children
@@ -4694,5 +5445,139 @@ mod tests {
         assert!(body_blocks(&merged_a)
             .iter()
             .all(|block| !matches!(block.attrs.get("table"), Some(qdoc::AttrVal::Str(id)) if id == &table)));
+    }
+
+    /// The block-local validator accepts and refuses exactly what the old
+    /// materializing one did, over positions inside, at and past block ends,
+    /// forward/backward/cross-block ranges, stale ids and other regions.
+    #[test]
+    fn block_local_validation_matches_the_materializing_validator() {
+        let (mut state, ids) = seeded("# Title\n\nalpha beta\n\n- item\n\ngamma\n");
+        // A header block, so region mismatches are covered.
+        dispatch(&mut state.doc, &append_paragraph_action("tail"));
+        let doc = &state.doc;
+        let c = qdoc::model::open(doc, &automerge::ROOT).unwrap();
+        let mut ids = ids;
+        ids.push("stale.block".into());
+        let regions = [RegionKind::Body, RegionKind::Header];
+        let offsets = [0usize, 2, 5, 10, 11, 99];
+        let mut actions = Vec::new();
+        for region in regions {
+            for a in &ids {
+                for &at in &offsets {
+                    actions.push(splice_text_action(region, a, at, at + 1, "x"));
+                    for b in &ids {
+                        for &end in &[0usize, 3, 10, 50] {
+                            actions.push(replace_selection_action(region, a, at, b, end, "y"));
+                            actions.push(paste_fragment_action(
+                                region,
+                                SelectionTarget {
+                                    start_block: a.clone(),
+                                    start: at,
+                                    end_block: b.clone(),
+                                    end,
+                                },
+                                vec![crate::word_processor::ClipBlock {
+                                    kind: "paragraph".into(),
+                                    text: "p".into(),
+                                    marks: vec![],
+                                    level: None,
+                                    ordered: None,
+                                    align: None,
+                                }],
+                                false,
+                            ));
+                        }
+                    }
+                    actions.push(set_mark_action(
+                        region,
+                        vec![Span {
+                            block: a.clone(),
+                            start: at,
+                            end: at + 2,
+                        }],
+                        "strong",
+                        Some(MarkVal::Bool(true)),
+                        vec![],
+                    ));
+                }
+                actions.push(set_paragraph_style_action(
+                    region,
+                    vec![a.clone()],
+                    "heading",
+                    Some(2),
+                    None,
+                ));
+                actions.push(set_paragraph_style_action(
+                    region,
+                    vec![a.clone(), a.clone()],
+                    "paragraph",
+                    None,
+                    None,
+                ));
+                actions.push(set_block_attr_action(
+                    region,
+                    vec![a.clone()],
+                    "align",
+                    AttrVal::Str("center".into()),
+                ));
+                actions.push(split_block_action(region, a, 1, "paragraph", None));
+                actions.push(insert_page_break_in_action(region, a, 3));
+            }
+        }
+        for a in &ids {
+            actions.push(set_image_size_action(a, 10, 10));
+            actions.push(insert_paragraph_action(a, "p"));
+            actions.push(remove_blocks_action(vec![a.clone()]));
+            actions.push(insert_table_action(a, 2, 2));
+        }
+        actions.push(continue_paragraph_action("more"));
+        actions.push(WordProcessorAction::AcceptChanges { id: None });
+        actions.push(WordProcessorAction::AcceptChanges {
+            id: Some("nope".into()),
+        });
+        let mut accepted = 0;
+        for action in &actions {
+            let fast = action_is_valid(action, doc, &c);
+            assert_eq!(
+                fast,
+                action_is_valid_materialized(action, doc, &c),
+                "{action:?}"
+            );
+            accepted += usize::from(fast);
+        }
+        assert!(
+            accepted > 50 && accepted < actions.len(),
+            "{accepted}/{}",
+            actions.len()
+        );
+    }
+
+    /// Typing, same-block replacement and formatting neither materialize nor
+    /// scan the block order when validated and applied.
+    #[test]
+    fn keystroke_actions_do_not_scan_block_order() {
+        let (mut state, ids) = seeded("alpha\n\nbeta\n");
+        for action in [
+            splice_text_action(RegionKind::Body, &ids[0], 1, 1, "x"),
+            replace_selection_action(RegionKind::Body, &ids[1], 0, &ids[1], 2, "B"),
+            set_mark_action(
+                RegionKind::Body,
+                vec![Span {
+                    block: ids[0].clone(),
+                    start: 0,
+                    end: 2,
+                }],
+                "em",
+                Some(MarkVal::Bool(true)),
+                vec![],
+            ),
+        ] {
+            let scans = qdoc::model::ordered_keys_scan_count();
+            dispatch(&mut state.doc, &action);
+            assert_eq!(qdoc::model::ordered_keys_scan_count(), scans, "{action:?}");
+        }
+        assert_eq!(text_of(&state.doc, &ids[0]), "axlpha");
+        assert_eq!(text_of(&state.doc, &ids[1]), "Bta");
     }
 }

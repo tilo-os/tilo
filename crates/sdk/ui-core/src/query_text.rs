@@ -6,6 +6,7 @@
 //! with IME preedit excluded from application state until commit.
 
 use std::ops::Range;
+use std::sync::Arc;
 
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
@@ -47,6 +48,7 @@ pub struct QueryComposition {
     layout: Option<RichTextLayout>,
     layout_text: String,
     signature: u64,
+    layout_epoch: Option<Arc<()>>,
     caret: Option<Rect>,
 }
 
@@ -64,6 +66,7 @@ impl QueryComposition {
             layout: None,
             layout_text: String::new(),
             signature: u64::MAX,
+            layout_epoch: None,
             caret: None,
         }
     }
@@ -79,6 +82,7 @@ impl QueryComposition {
         self.layout_text.clear();
         self.caret = None;
         self.signature = u64::MAX;
+        self.layout_epoch = None;
     }
 
     /// Apply one platform IME event. Preedit changes only this helper; commit
@@ -299,7 +303,10 @@ impl QueryComposition {
     /// Paint an unwrapped query into a clipped viewport. The shaped caret is
     /// kept visible by horizontal scrolling; placeholder, selection and
     /// preedit use the same layout and baseline.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Query text, selection, viewport and paint colors share one shaped layout and baseline."
+    )]
     pub fn draw(
         &mut self,
         scene: &mut Scene,
@@ -324,15 +331,27 @@ impl QueryComposition {
             self.display_text(text, selection)
         };
         let signature = self.signature(&display, style, selection);
-        if self.layout.is_none() || self.signature != signature {
-            let mut layout =
-                RichTextLayout::shape_plain(&mut renderer.font_system, &display, style, None);
+        let epoch_stale = self
+            .layout_epoch
+            .as_ref()
+            .is_none_or(|epoch| !Arc::ptr_eq(epoch, renderer.layout_epoch()));
+        if self.layout.is_none() || self.signature != signature || epoch_stale {
+            let browser_emoji = renderer.browser_color_emoji_installed();
+            let mut layout = RichTextLayout::shape_plain_browser(
+                &mut renderer.font_system,
+                &display,
+                style,
+                None,
+                browser_emoji,
+            );
+            renderer.note_browser_rich_layout(&layout);
             if composing {
                 layout.add_underline(self.preedit_range(selection));
             }
             self.layout = Some(layout);
             self.layout_text.clone_from(&display);
             self.signature = signature;
+            self.layout_epoch = Some(Arc::clone(renderer.layout_epoch()));
         }
 
         let caret_byte = if shows_placeholder {
@@ -744,5 +763,64 @@ mod tests {
             &selection,
         );
         assert_ne!(composition.signature, composing_signature);
+    }
+
+    #[test]
+    fn unchanged_browser_query_reshapes_after_font_failure_and_install() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/fonts");
+        let fonts = crate::font_catalog::FontCatalog::product("", "en-US")
+            .load_browser_startup_bytes(|name| std::fs::read(root.join(name)).ok())
+            .unwrap();
+        let mut renderer = TextRenderer::with_browser_font_system(fonts);
+        let mut composition = QueryComposition::new();
+        let text = "مَرْحَبًا".to_owned();
+        let selection = Selection::collapsed(text.len());
+        let mut scene = Scene::new();
+        let style = TextStyle::new(16.0).with_family(FontChoice::SansSerif);
+        let mut draw = |composition: &mut QueryComposition, renderer: &mut TextRenderer| {
+            composition.draw(
+                &mut scene,
+                Affine::IDENTITY,
+                renderer,
+                &text,
+                &selection,
+                "",
+                Rect::new(0.0, 0.0, 220.0, 36.0),
+                &style,
+                Color::WHITE,
+                Color::WHITE,
+                Color::WHITE,
+                Color::WHITE,
+                true,
+            );
+        };
+        draw(&mut composition, &mut renderer);
+        assert_eq!(
+            renderer.take_browser_font_demands(),
+            ["NotoSansArabic[wght].ttf"]
+        );
+        renderer.browser_font_failed();
+        draw(&mut composition, &mut renderer);
+        assert_eq!(
+            renderer.take_browser_font_demands(),
+            ["NotoSansArabic[wght].ttf"]
+        );
+        renderer
+            .install_browser_font(
+                "NotoSansArabic[wght].ttf",
+                std::fs::read(root.join("NotoSansArabic[wght].ttf")).unwrap(),
+            )
+            .unwrap();
+        draw(&mut composition, &mut renderer);
+        assert!(
+            composition
+                .layout
+                .as_ref()
+                .unwrap()
+                .buffer
+                .layout_runs()
+                .flat_map(|run| run.glyphs)
+                .all(|glyph| glyph.glyph_id != 0)
+        );
     }
 }

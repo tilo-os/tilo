@@ -87,7 +87,7 @@ impl GovernanceJournal {
                 return Err(Error::InvalidState("broken governance hash chain".into()));
             }
             frame
-                .verify_signature()
+                .verify_journal_signature()
                 .map_err(|error| Error::Governance(error.to_string()))?;
             previous = frame
                 .digest()

@@ -9,6 +9,9 @@ license.workspace = true
 
 [features]
 netns-e2e = []
+# Integration-only native broker fixtures. This forwards the shared broker's
+# equally gated fixture entry point; ordinary shell spawning never selects it.
+test-support = ["qos-action-broker/test-support"]
 # When set, the hosted-mode compositor (`shell --backend winit`) binds
 # the TILO_TEST_CONTROL Unix socket the same way the headless backend
 # does. A background thread reads JSON commands and injects equivalent
@@ -71,6 +74,13 @@ dev-overrides = []
 
 [dependencies]
 advisory-lock = { path = "../../system/advisory-lock" }
+qos-action-broker = { path = "../../collab/qos-action-broker" }
+qos-desktop = { path = "../qos-desktop" }
+qos-peer-state = { path = "../../collab/qos-peer-state" }
+qos-moq = { path = "../../hosting/qos-moq", features = ["relay"] }
+# Native media HTTP client. TLS comes from the workspace's rustls-no-provider
+# configuration (reqwest 0.13 has no `rustls-tls-native-roots`).
+reqwest.workspace = true
 # Crash-safe file replacement (temp + fsync + rename + dir fsync).
 atomic-file = { path = "../../system/atomic-file", features = ["json"] }
 bounded-command = { path = "../../system/bounded-command" }
@@ -142,7 +152,7 @@ mime_guess = "2.0.5"
 os-actions = { path = "../../system/os-actions" }
 # Session-owned balance/mono policy and PipeWire graph enumeration. Settings
 # persists intent; the compositor is the single long-lived actuator.
-media = { path = "../../media/core" }
+media = { path = "../../media/core", features = ["voice"] }
 hex.workspace = true
 sha2.workspace = true
 xattr = "1.6.1"
@@ -246,6 +256,9 @@ tilo-relay-protocol = { path = "../../hosting/tilo-relay-protocol" }
 # `RelayCoeditSession`) that carry workspace deltas through a home or
 # provider host.
 tilo-relay-client = { path = "../../hosting/tilo-relay-client" }
+# The Cloud native-owner path (workspace join, delivery v3, peer actions,
+# sync refresh) still lives in the relay crate itself.
+tilo-relay = { path = "../../hosting/tilo-relay" }
 # `network::identity` verifies raw Ed25519 signatures directly
 # against a peer's device pubkey (as recovered from their
 # DeviceCert). Same version + features shape as the dev-deps entry
@@ -273,9 +286,10 @@ tar.workspace = true
 tantivy = { version = "0.22", default-features = false, features = ["mmap"] }
 
 [dev-dependencies]
-# Network actor tests run an in-process relay to talk to.
-tilo-relay = { path = "../../hosting/tilo-relay" }
 runtime-portal = { path = "../../runtime/runtime-portal" }
+atomic-file = { path = "../../system/atomic-file", features = ["test-support"] }
+qos-session-peer = { path = "../../hosting/qos-session-peer", default-features = false, features = ["test-support"] }
+qos-action-broker = { path = "../../collab/qos-action-broker", features = ["test-support"] }
 collab-fixtures = { path = "../../collab/collab-fixtures" }
 rand_chacha.workspace = true
 pollster.workspace = true

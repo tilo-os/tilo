@@ -15,7 +15,7 @@ use vello::kurbo::{Affine, Rect, Stroke, Vec2};
 use vello::peniko::Color;
 
 use crate::text_metrics::centered_text_top;
-use crate::text_render::{TextRenderer, TextWeight};
+use crate::text_render::{TextRenderer, TextStyle, TextWeight};
 use crate::theme::Theme;
 
 /// How long the bubble lingers after a poke (or after the pointer leaves its
@@ -122,19 +122,36 @@ impl StatusBubble {
 /// through [`crate::text_metrics::renderer_type_size`] — never a raw
 /// `theme.tokens.typography.scale.*` value, which paints 4× at 200 %.
 pub fn pill_size(text: &str, tr: &mut TextRenderer, text_size: f32, control: f64) -> (f64, f64) {
-    let (tw, _th) = tr.measure_weighted(text, text_size, None, TextWeight::Medium);
+    let (tw, th) = tr.measure_weighted(text, text_size, None, TextWeight::Medium);
     let pad_x = 14.0;
     let w = f64::from(tw) + 2.0 * pad_x + 2.0 * control;
     // `TextRenderer` applies the user's text scale to metrics, so the pill
     // geometry must use the same effective font size.  Otherwise at 200% the
     // glyphs extend through the lower edge of a 30px bubble.
-    let h = pill_height(text_size, tr.text_scale());
+    let h = pill_height(text_size, tr.text_scale()).max(f64::from(th) + 12.0);
     (w, h)
 }
 
 /// Height shared by layout reservations and the rendered status pill.
+///
+/// This is the same renderer-relative `TextStyle` that
+/// [`TextRenderer::measure_weighted`] scales before measuring, plus the
+/// pill's vertical padding. Keeping this metric free of a renderer lets the
+/// layout pass reserve exactly the line box the later draw pass needs.
 pub fn pill_height(text_size: f32, text_scale: f32) -> f64 {
-    (f64::from(text_size) * f64::from(text_scale) + 16.0).max(30.0)
+    let text_scale = sanitized_text_scale(text_scale);
+    let style = TextStyle::new(text_size * text_scale).with_weight(TextWeight::Medium);
+    f64::from(style.line_height_px() + 12.0).max(30.0)
+}
+
+/// Mirrors [`TextRenderer::set_text_scale`] so layout and renderer-relative
+/// status geometry handle invalid accessibility preferences identically.
+fn sanitized_text_scale(text_scale: f32) -> f32 {
+    if text_scale.is_finite() {
+        text_scale.clamp(0.5, 4.0)
+    } else {
+        1.0
+    }
 }
 
 /// The caller sets opacity by wrapping this in a `scene.push_layer(...
@@ -203,13 +220,19 @@ mod tests {
     use super::*;
 
     #[test]
-    fn pill_geometry_follows_the_text_renderer_scale() {
-        let mut tr = TextRenderer::new();
-        let (_, normal_h) = pill_size("Compiled", &mut tr, 12.0, 0.0);
-        tr.set_text_scale(2.0);
-        let (_, enlarged_h) = pill_size("Compiled", &mut tr, 12.0, 0.0);
-        assert_eq!(normal_h, 30.0);
-        assert_eq!(enlarged_h, 40.0);
+    fn pill_reservation_matches_the_renderer_line_box_at_supported_scales() {
+        for scale in [1.0, 1.5, 2.0, 4.0] {
+            let mut tr = TextRenderer::new();
+            tr.set_text_scale(scale);
+            let (_, measured) = pill_size("Saved", &mut tr, 12.0, 0.0);
+            let reserved = pill_height(12.0, tr.text_scale());
+            assert_eq!(
+                reserved, measured,
+                "layout reservation must equal draw geometry at {scale}x"
+            );
+        }
+        assert_eq!(pill_height(12.0, 1.0), 30.0);
+        assert_eq!(pill_height(12.0, 2.0), 42.0);
     }
 
     #[test]

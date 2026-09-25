@@ -182,6 +182,8 @@ pub struct GroupTopology {
               any call site clearer"
 )]
 pub struct GroupRow {
+    external_navigation: bool,
+    close_reports: Vec<crate::application::ComponentCloseReport>,
     pub groups: Vec<WindowGroup>,
     /// One resize handle per gap: `max(0, groups.len() - 1)`.
     handles: Vec<ResizeHandle>,
@@ -204,6 +206,8 @@ pub struct GroupRow {
     /// At rest it is bounded by [`Self::pan_max_scroll_x`]; an active direct
     /// gesture may hold a resisted transient value just outside either end.
     scroll_x: f64,
+    /// Absolute external viewport navigation stays bounded through geometry changes.
+    absolute_pan: bool,
     /// Scroll offset at the start of the current direct-manipulation gesture.
     /// Gesture updates carry total travel, so this remains fixed until End.
     strip_pan_origin: Option<f64>,
@@ -345,6 +349,8 @@ impl GroupRow {
     pub fn new(groups: Vec<WindowGroup>) -> Self {
         Self {
             groups,
+            close_reports: vec![],
+            external_navigation: false,
             handles: Vec::new(),
             handle_node_ids: Vec::new(),
             rect: Rect::ZERO,
@@ -354,6 +360,7 @@ impl GroupRow {
             tab_drop_target: None,
             cross_strip_drop_target: None,
             scroll_x: 0.0,
+            absolute_pan: false,
             strip_pan_origin: None,
             content_w: 0.0,
             group_left_edges: Vec::new(),
@@ -387,6 +394,15 @@ impl GroupRow {
     /// Set (or clear) the transient fullscreen override, driven by the
     /// shell each frame from compositor state. `(None, false)` restores
     /// normal tiling exactly.
+    pub fn set_external_navigation(&mut self, external: bool) {
+        if self.external_navigation != external {
+            self.external_navigation = external;
+            self.structure_dirty = true;
+        }
+        for group in &mut self.groups {
+            group.set_external_navigation(external);
+        }
+    }
     pub fn set_fullscreen(&mut self, fullscreen_group: Option<u64>, hidden: bool) {
         if self.fullscreen_group != fullscreen_group || self.hidden != hidden {
             self.fullscreen_group = fullscreen_group;
@@ -595,6 +611,9 @@ impl GroupRow {
 
     pub fn remove_group_by_id(&mut self, id: u64) -> bool {
         let before = self.groups.len();
+        if let Some(group) = self.groups.iter_mut().find(|g| g.id == id) {
+            self.close_reports.extend(group.close_components());
+        }
         self.groups.retain(|g| g.id != id);
         let removed = self.groups.len() != before;
         if removed {
@@ -605,6 +624,27 @@ impl GroupRow {
 
     pub fn scroll_x(&self) -> f64 {
         self.scroll_x
+    }
+
+    /// Set the real strip viewport to an absolute finite offset. Browser and
+    /// other external navigation controllers use this narrow seam instead of
+    /// synthesizing wheel input or moving rendered output independently.
+    pub fn pan_to(&mut self, requested: f64) -> bool {
+        if !requested.is_finite() {
+            return false;
+        }
+        self.absolute_pan = true;
+        let next = requested.clamp(0.0, self.max_scroll_x());
+        let changed = (next - self.scroll_x).abs() > f64::EPSILON
+            || self.snap_anim.is_some()
+            || self.last_wheel_at.is_some();
+        if changed {
+            self.scroll_x = next;
+            self.snap_anim = None;
+            self.last_wheel_at = None;
+            self.scroll_dirty = true;
+        }
+        changed
     }
 
     pub fn handle_count(&self) -> usize {
@@ -620,6 +660,19 @@ impl GroupRow {
     #[cfg(any(test, debug_assertions))]
     pub fn group_at_for_test(&self, idx: usize) -> Option<&WindowGroup> {
         self.groups.get(idx)
+    }
+
+    /// Carry peer-local viewport presentation through a retained hierarchy
+    /// rebuild. The next layout still validates/clamps against its new geometry.
+    pub fn inherit_viewport(&mut self, previous: &Self) {
+        self.rect = previous.rect;
+        self.scroll_x = previous.scroll_x;
+        self.absolute_pan = previous.absolute_pan;
+        self.content_w = previous.content_w;
+        self.laid_spans.clone_from(&previous.laid_spans);
+        self.output_spans.clone_from(&previous.output_spans);
+        self.snap_anim = previous.snap_anim;
+        self.last_wheel_at = previous.last_wheel_at;
     }
 
     /// `0.0` before the first layout pass.
@@ -715,11 +768,45 @@ impl GroupRow {
             .is_some_and(|g| g.get_rect().width() > 0.0)
     }
 
+    /// Resolve an admitted keyboard owner through its actual layout ancestry.
+    /// Stored layout identities prevent stale child indices after a splice.
+    pub fn group_for_focus_target(&self, mut target: NodeId, tree: &TaffyTree<()>) -> Option<u64> {
+        loop {
+            if let Some(index) = self.node_ids.iter().position(|node| *node == target) {
+                let id = self.laid_spans.get(index)?.0;
+                return self
+                    .groups
+                    .iter()
+                    .any(|group| group.id == id && !group.is_closing())
+                    .then_some(id);
+            }
+            target = tree.parent(target)?;
+        }
+    }
+
+    /// Whether the stored geometry still belongs to the current group order.
+    /// A splice/reorder must complete layout before a host frames its selection.
+    pub fn group_layout_is_current(&self) -> bool {
+        self.laid_spans
+            .iter()
+            .map(|(id, _, _)| *id)
+            .eq(self.groups.iter().map(|group| group.id))
+            && self.width_basis_is_current()
+    }
+
+    fn width_basis_is_current(&self) -> bool {
+        self.groups
+            .iter()
+            .zip(self.usable_per_group())
+            .all(|(group, usable)| (group.strip_usable_px() - usable).abs() <= 0.5)
+    }
+
     /// Pan `scroll_x` so `group_id` is fully inside the viewport (Niri's
     /// "focused column follows into view"). Must be called after a layout
     /// pass (uses the group's live rect). Cancels any in-flight wheel-snap
     /// so this isn't immediately overridden by a snap-back.
     pub fn scroll_group_into_view(&mut self, group_id: u64) -> bool {
+        self.absolute_pan = false;
         let Some(sx) = self.scroll_target_for(group_id) else {
             return false;
         };
@@ -734,6 +821,7 @@ impl GroupRow {
     /// wheel-snap curve instead of teleporting, so a focus jump reads as
     /// motion rather than a cut.
     pub fn scroll_group_into_view_animated(&mut self, group_id: u64, now: Instant) -> bool {
+        self.absolute_pan = false;
         let Some(sx) = self.scroll_target_for(group_id) else {
             return false;
         };
@@ -759,17 +847,22 @@ impl GroupRow {
         let left_bound = self.rect.x0 + self.leading_inset;
         let right_bound = self.rect.x1;
         let mut sx = self.scroll_x;
-        // Reveal the right edge first, then the left — so for a group wider
-        // than the clear viewport the left (start) edge wins and the user
-        // sees the group's beginning.
-        if gr.x1 > right_bound {
+        // An oversized group cannot fit; reveal its start consistently.
+        // Otherwise use the nearest edge. Checking the original left rect
+        // after a right-edge correction would right-align an oversized card.
+        if gr.width() > right_bound - left_bound {
+            sx += gr.x0 - left_bound;
+        } else if gr.x1 > right_bound {
             sx += gr.x1 - right_bound;
-        }
-        if gr.x0 < left_bound {
+        } else if gr.x0 < left_bound {
             sx -= left_bound - gr.x0;
         }
         let viewport = self.rect.width().max(1.0);
-        let upper = self.max_scroll_x().max(viewport * 3.0);
+        let upper = if self.absolute_pan {
+            self.max_scroll_x()
+        } else {
+            self.max_scroll_x().max(viewport * 3.0)
+        };
         sx = sx.clamp(0.0, upper);
         ((sx - self.scroll_x).abs() > f64::EPSILON).then_some(sx)
     }
@@ -1203,6 +1296,23 @@ impl GroupRow {
 
     pub fn group_drag_active(&self) -> bool {
         self.group_drag.is_some_and(|d| d.moved)
+    }
+
+    /// Live whole-group reorder drag once past the threshold, for
+    /// collaborator previews: `(group id, press point, current pointer)`
+    /// in this row's scene coordinates.
+    pub fn group_drag_preview(&self) -> Option<(u64, Point, Point)> {
+        self.group_drag
+            .filter(|drag| drag.moved)
+            .map(|drag| (drag.group_id, drag.start, self.last_cursor))
+    }
+
+    /// The resize handle being dragged, if any: handle `i` sits between
+    /// groups `i` and `i + 1`.
+    pub fn dragging_handle(&self) -> Option<usize> {
+        self.handles
+            .iter()
+            .position(super::resize_handle::ResizeHandle::is_dragging)
     }
 
     pub fn group_reorder_target(&self) -> Option<usize> {
@@ -1644,6 +1754,125 @@ impl FloatingSurfaceProvider for GroupRow {
 }
 
 impl Widget for GroupRow {
+    // Modal capture and presentation polling follow visible content, never inactive tabs.
+    fn modal_capture(&self) -> Option<Rect> {
+        self.children().into_iter().find_map(Widget::modal_capture)
+    }
+    fn next_wake_deadline(&self) -> Option<Instant> {
+        self.children()
+            .into_iter()
+            .filter_map(Widget::next_wake_deadline)
+            .min()
+    }
+
+    fn set_platform_conventions(&mut self, conventions: crate::platform::PlatformConventions) {
+        for child in self.groups.iter_mut().map(|group| group as &mut dyn Widget) {
+            child.set_platform_conventions(conventions);
+        }
+    }
+
+    fn set_interaction_environment(
+        &mut self,
+        environment: crate::interaction::InteractionEnvironment,
+    ) {
+        for child in self.groups.iter_mut().map(|group| group as &mut dyn Widget) {
+            child.set_interaction_environment(environment);
+        }
+    }
+
+    fn mount_native_views(&mut self, host: &crate::widget::native_view::NativeViewHost<'_>) {
+        for child in self.groups.iter_mut().map(|group| group as &mut dyn Widget) {
+            child.mount_native_views(host);
+        }
+    }
+
+    fn unmount_native_views(&mut self) {
+        for child in self.groups.iter_mut().map(|group| group as &mut dyn Widget) {
+            child.unmount_native_views();
+        }
+    }
+
+    fn native_view_frame_start(&mut self) {
+        for child in self.groups.iter_mut().map(|group| group as &mut dyn Widget) {
+            child.native_view_frame_start();
+        }
+    }
+
+    // Presentation traversal exposes only visible groups; resources/lifecycle retain all owners.
+    fn children(&self) -> Vec<&dyn Widget> {
+        if self.hidden {
+            return vec![];
+        }
+        if let Some(index) = self
+            .fullscreen_idx()
+            .or_else(|| self.groups.iter().position(|g| g.maximized))
+        {
+            return vec![&self.groups[index]];
+        }
+        self.groups
+            .iter()
+            .map(|group| group as &dyn Widget)
+            .collect()
+    }
+    fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
+        if self.hidden {
+            return vec![];
+        }
+        if let Some(index) = self
+            .fullscreen_idx()
+            .or_else(|| self.groups.iter().position(|g| g.maximized))
+        {
+            return vec![&mut self.groups[index]];
+        }
+        self.groups
+            .iter_mut()
+            .map(|group| group as &mut dyn Widget)
+            .collect()
+    }
+
+    // Read-only resource discovery follows retained owners, including inactive tabs.
+    fn for_each_child(&self, visitor: &mut dyn FnMut(&dyn Widget)) {
+        for group in &self.groups {
+            visitor(group);
+        }
+    }
+
+    #[allow(private_interfaces, reason = "toolkit-only checked custody traversal")]
+    fn visit_components(
+        &mut self,
+        request: &mut crate::bound_dispatch::ComponentRequest<'_>,
+    ) -> Result<(), crate::bound_dispatch::BoundDispatchError> {
+        for child in self.groups.iter_mut() {
+            child.visit_components(request)?;
+        }
+        Ok(())
+    }
+    fn close_components(&mut self) -> Vec<crate::application::ComponentCloseReport> {
+        for child in self.groups.iter_mut() {
+            self.close_reports.extend(child.close_components());
+        }
+        self.take_component_close_reports()
+    }
+    fn take_component_close_reports(&mut self) -> Vec<crate::application::ComponentCloseReport> {
+        let mut reports = std::mem::take(&mut self.close_reports);
+        for child in self.groups.iter_mut() {
+            reports.extend(child.take_component_close_reports());
+        }
+        reports
+    }
+    fn collaboration_children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
+        self.groups
+            .iter_mut()
+            .map(|group| group as &mut dyn Widget)
+            .collect()
+    }
+
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        Some(self)
+    }
     fn sync(&mut self, state: &mut AutoCommit, root: &ObjId) {
         for g in &mut self.groups {
             g.sync(state, root);
@@ -1651,6 +1880,9 @@ impl Widget for GroupRow {
     }
 
     fn update(&mut self, state: &mut AutoCommit, root: &ObjId) -> bool {
+        // Animation needs one layout refresh per host frame, not an endless
+        // structural invalidation inside bounded composition settlement.
+        self.structure_dirty |= self.snap_in_flight();
         let mut any = false;
         for g in &mut self.groups {
             if g.update(state, root) {
@@ -1667,6 +1899,19 @@ impl Widget for GroupRow {
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         self.node_ids.clear();
+        if self.external_navigation && self.hidden {
+            // Retained groups remain lifecycle owners, but none of their
+            // History handles belong to this hidden row's one-node layout.
+            for group in &mut self.groups {
+                group.discard_layout_nodes();
+            }
+            let node = taffy.leaf_node(Style {
+                display: Display::None,
+                ..Default::default()
+            });
+            node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
+            return node;
+        }
         // Resolve every group's width fraction before it builds its node
         // (walking left to right so each group's basis is the display its
         // left edge lands on), with no dependency on a previous frame's
@@ -1692,7 +1937,11 @@ impl Widget for GroupRow {
         // Grow/truncate the handle pool to `max(0, N-1)`; truncating from
         // the tail is fine since an active drag's handle would have had
         // its neighbours change structurally anyway.
-        let desired_handles = self.groups.len().saturating_sub(1);
+        let desired_handles = if self.external_navigation {
+            0
+        } else {
+            self.groups.len().saturating_sub(1)
+        };
         if self.handles.len() < desired_handles {
             self.handles
                 .extend((self.handles.len()..desired_handles).map(|_| ResizeHandle::new()));
@@ -1790,6 +2039,10 @@ impl Widget for GroupRow {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
+        if self.external_navigation && self.hidden {
+            self.rect = Rect::ZERO;
+            return;
+        }
         let l = taffy.layout(node).copied().unwrap_or_default();
         self.rect = Rect::new(
             origin.x + f64::from(l.location.x),
@@ -1797,6 +2050,9 @@ impl Widget for GroupRow {
             origin.x + f64::from(l.location.x) + f64::from(l.size.width),
             origin.y + f64::from(l.location.y) + f64::from(l.size.height),
         );
+        // Portable hosts learn their width here. Rebuild provisional widths
+        // in the same bounded settlement, including a same-viewport root swap.
+        self.structure_dirty |= !self.width_basis_is_current();
         // `group_left_edges` (the snap targets) is CANVAS-x, not
         // taffy-local-x: canvas-x = leading_inset + taffy.x, and
         // `scroll_x` is how far that's panned past the viewport's left
@@ -1869,6 +2125,9 @@ impl Widget for GroupRow {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
+        if self.external_navigation && self.hidden {
+            return;
+        }
         self.scroll_dirty = false;
         // Clip to the row's rect: `content_width` routinely exceeds
         // `rect.width()`, so off-screen-right groups would bleed past
@@ -1914,6 +2173,9 @@ impl Widget for GroupRow {
         _node_id: NodeId,
         taffy: &TaffyTree<()>,
     ) {
+        if self.external_navigation && self.hidden {
+            return;
+        }
         // Track the cursor so our post-dispatch detach sweep can hit-test
         // sibling bars even after a child has swallowed the event.
         if let WindowEvent::CursorMoved { position, .. } = event {
@@ -2023,18 +2285,7 @@ impl Widget for GroupRow {
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         use crate::a11y::{AccessNode, Role};
 
-        let mut children = Vec::new();
-        for group in &self.groups {
-            let Some(host) = group.active_host() else {
-                continue;
-            };
-            collect_accessibility(host, &mut children);
-        }
-        Some(
-            AccessNode::new(Role::Group)
-                .with_name("Hosted applications")
-                .with_children(children),
-        )
+        Some(AccessNode::new(Role::Group).with_name("Hosted applications"))
     }
 
     fn get_rect(&self) -> Rect {
@@ -2079,10 +2330,8 @@ impl Widget for GroupRow {
             .find_map(|group| group.cursor_shape(point))
     }
 
-    /// Neither this nor [`WindowGroup`] exposes `children()` (groups lay
-    /// out outside taffy), so any rect a test needs has to be republished
-    /// here. Each affordance is keyed by group id, plus the bare name for
-    /// the leftmost, so a single-group scenario can stay unqualified.
+    /// Publish qualified affordances by group id, plus bare aliases for
+    /// the leftmost group, so single-group scenarios stay unqualified.
     fn test_rects(&self) -> Vec<(String, Rect)> {
         let mut out = Vec::new();
         for g in &self.groups {
@@ -2142,6 +2391,9 @@ impl Widget for GroupRow {
     }
 
     fn needs_redraw(&self) -> bool {
+        if self.hidden {
+            return false;
+        }
         // A wheel-pan changes `scroll_x` without touching the row's rect
         // or any child's dirty bit, so without this the parent's cached
         // scene would keep painting pre-scroll positions.
@@ -2153,9 +2405,11 @@ impl Widget for GroupRow {
     }
 
     fn needs_animation_frame(&self) -> bool {
-        // Must bubble up child groups explicitly: the default
-        // `children()` returns empty, so a TabBar drop-zone curve would
-        // otherwise never reach the shell's overlay host.
+        if self.hidden {
+            return false;
+        }
+        // The row owns drag animations outside its presentation children;
+        // propagate them alongside child animation requests.
         self.snap_in_flight()
             || self.shift_in_flight()
             || self.group_drag_active()
@@ -2175,10 +2429,7 @@ impl Widget for GroupRow {
             .iter_mut()
             .map(super::Widget::take_structure_dirty)
             .fold(false, |acc, d| acc || d);
-        // Forces a rebuild next frame while snapping, since `apply_layout`
-        // (where `tick_snap_at` lives) otherwise only runs on events.
-        let snap = self.snap_in_flight();
-        own || children || snap
+        own || children
     }
 }
 
@@ -2229,6 +2480,7 @@ impl GroupRow {
                 .iter()
                 .any(super::resize_handle::ResizeHandle::is_dragging);
         if geometry_moved
+            && !self.absolute_pan
             && steady
             && let Some(target) = self.strip_frame_target(&self.laid_spans)
         {
@@ -2244,7 +2496,11 @@ impl GroupRow {
     fn sync_handle_neighbours(&mut self) {
         debug_assert_eq!(
             self.handles.len(),
-            self.groups.len().saturating_sub(1),
+            if self.external_navigation {
+                0
+            } else {
+                self.groups.len().saturating_sub(1)
+            },
             "ResizeHandle pool must mirror inter-group gap count after build_layout",
         );
         for (i, h) in self.handles.iter_mut().enumerate() {
@@ -2649,7 +2905,8 @@ impl GroupRow {
         let prune_count = prune.len();
         prune.sort_unstable_by(|a, b| b.cmp(a));
         for i in prune {
-            self.groups.remove(i);
+            let mut group = self.groups.remove(i);
+            self.close_reports.extend(group.close_components());
         }
         debug_assert_eq!(
             self.node_ids.len(),
@@ -2838,22 +3095,6 @@ fn collect_named_rects(w: &dyn Widget, out: &mut Vec<(String, Rect)>) {
     }
     for child in w.children() {
         collect_named_rects(child, out);
-    }
-}
-
-/// Hosted app widgets are deliberately not retained as `GroupRow::children`
-/// because resize handles are interleaved with groups in the taffy child list.
-/// Publish their real semantic subtrees explicitly, attaching each retained
-/// widget's laid-out bounds while preserving any more precise synthetic bounds.
-fn collect_accessibility(w: &dyn Widget, out: &mut Vec<crate::a11y::AccessNode>) {
-    if let Some(mut node) = w.accessibility() {
-        if node.bounds.is_none() {
-            node.bounds = Some(w.get_rect().into());
-        }
-        out.push(node);
-    }
-    for child in w.children() {
-        collect_accessibility(child, out);
     }
 }
 
@@ -5756,6 +5997,44 @@ mod tests {
             2,
             "resize handles rebuilt on fullscreen exit",
         );
+    }
+
+    #[test]
+    fn hidden_row_retains_session_collaboration_delivery() {
+        let first = crate::history_mode::isolation_tests::native_effect_probe_parts(
+            "hidden-session-a",
+            "fixture.hidden-session-a",
+        );
+        let second = crate::history_mode::isolation_tests::native_effect_probe_parts(
+            "hidden-session-b",
+            "fixture.hidden-session-b",
+        );
+        let first_events = std::rc::Rc::clone(&first.collab_events);
+        let second_events = std::rc::Rc::clone(&second.collab_events);
+        let first_group = WindowGroup::new(
+            100,
+            vec![(TabDescriptor::new(1, "First"), TileContent::App(first.root))],
+            1,
+            WindowWidth::Normal,
+        );
+        let second_group = WindowGroup::new(
+            200,
+            vec![(
+                TabDescriptor::new(2, "Second"),
+                TileContent::App(second.root),
+            )],
+            2,
+            WindowWidth::Normal,
+        );
+        let mut row = GroupRow::new(vec![first_group, second_group]);
+        row.set_fullscreen(None, true);
+
+        crate::widget::handle_collab_event(
+            &mut row,
+            &crate::collaboration::CollabEvent::FollowChanged { peer_id: None },
+        );
+        assert_eq!(first_events.get(), 1);
+        assert_eq!(second_events.get(), 1);
     }
 
     #[test]

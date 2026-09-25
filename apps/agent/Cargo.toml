@@ -18,6 +18,7 @@ path = "src/main.rs"
 thin = ["dep:runtime-dylib"]
 
 [dependencies]
+collab-types = { path = "../../crates/collab/collab-types" }
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 runtime-collab = { path = "../../crates/runtime/runtime-collab" }
 # The blocking agent facade delegates to the toolkit's typed
@@ -54,8 +55,7 @@ tracing-subscriber = { workspace = true, features = ["env-filter"] }
 [dev-dependencies]
 tempfile.workspace = true
 hex.workspace = true
-shell = { path = "../../crates/session/shell", default-features = false }
-collab-types = { path = "../../crates/collab/collab-types" }
+shell = { path = "../../crates/session/shell", default-features = false, features = ["test-support"] }
 tilo-user-identity = { path = "../../crates/collab/tilo-user-identity" }
 runtime-identity = { path = "../../crates/runtime/runtime-identity" }
 ed25519-dalek.workspace = true

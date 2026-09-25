@@ -22,6 +22,7 @@
 //!   there is one.
 
 use std::cell::RefCell;
+use std::sync::Arc;
 
 use vello::Scene;
 use vello::kurbo::{Affine, Line, Point, Rect, RoundedRect, Stroke};
@@ -74,6 +75,7 @@ pub struct NameField {
 struct NameFieldVisual {
     layout: Option<RichTextLayout>,
     signature: u64,
+    layout_epoch: Option<Arc<()>>,
     caret: Option<Rect>,
 }
 
@@ -82,6 +84,7 @@ impl Default for NameFieldVisual {
         Self {
             layout: None,
             signature: u64::MAX,
+            layout_epoch: None,
             caret: None,
         }
     }
@@ -340,14 +343,26 @@ impl NameField {
             hash.finish()
         };
         let mut visual = self.visual.borrow_mut();
-        if visual.layout.is_none() || visual.signature != signature {
-            let mut layout =
-                RichTextLayout::shape_plain(&mut tr.font_system, display, &style, None);
+        let epoch_stale = visual
+            .layout_epoch
+            .as_ref()
+            .is_none_or(|epoch| !Arc::ptr_eq(epoch, tr.layout_epoch()));
+        if visual.layout.is_none() || visual.signature != signature || epoch_stale {
+            let browser_emoji = tr.browser_color_emoji_installed();
+            let mut layout = RichTextLayout::shape_plain_browser(
+                &mut tr.font_system,
+                display,
+                &style,
+                None,
+                browser_emoji,
+            );
+            tr.note_browser_rich_layout(&layout);
             if !self.preedit.is_empty() {
                 layout.add_underline(self.buffer.len()..display.len());
             }
             visual.layout = Some(layout);
             visual.signature = signature;
+            visual.layout_epoch = Some(Arc::clone(tr.layout_epoch()));
         }
     }
 
@@ -643,5 +658,45 @@ mod tests {
         let mut tr = TextRenderer::new();
         assert_eq!(fit_tail(&mut tr, "anything", 13.0, 0.0), "");
         assert_eq!(fit_tail(&mut tr, "anything", 13.0, -5.0), "");
+    }
+
+    #[test]
+    fn unchanged_browser_name_reshapes_after_font_generation_changes() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/fonts");
+        let fonts = crate::font_catalog::FontCatalog::product("", "en-US")
+            .load_browser_startup_bytes(|name| std::fs::read(root.join(name)).ok())
+            .unwrap();
+        let mut renderer = TextRenderer::with_browser_font_system(fonts);
+        let field = NameField::new("مَرْحَبًا");
+        field.reshape_if_stale(&mut renderer, field.text(), 14.0);
+        assert_eq!(
+            renderer.take_browser_font_demands(),
+            ["NotoSansArabic[wght].ttf"]
+        );
+        renderer.browser_font_failed();
+        field.reshape_if_stale(&mut renderer, field.text(), 14.0);
+        assert_eq!(
+            renderer.take_browser_font_demands(),
+            ["NotoSansArabic[wght].ttf"]
+        );
+        renderer
+            .install_browser_font(
+                "NotoSansArabic[wght].ttf",
+                std::fs::read(root.join("NotoSansArabic[wght].ttf")).unwrap(),
+            )
+            .unwrap();
+        field.reshape_if_stale(&mut renderer, field.text(), 14.0);
+        assert!(
+            field
+                .visual
+                .borrow()
+                .layout
+                .as_ref()
+                .unwrap()
+                .buffer
+                .layout_runs()
+                .flat_map(|run| run.glyphs)
+                .all(|glyph| glyph.glyph_id != 0)
+        );
     }
 }

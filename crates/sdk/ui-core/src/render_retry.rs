@@ -385,4 +385,45 @@ mod tests {
         );
         assert_eq!(widget_deadline(Some(now), None), Some(now));
     }
+
+    #[test]
+    fn production_wake_preserves_animation_deadline_when_other_work_is_overdue() {
+        let now = crate::time::now();
+        let animation = now + Duration::from_millis(4);
+        assert_eq!(
+            next_wake(
+                now,
+                None,
+                true,
+                WakeDemand {
+                    animation: true,
+                    ..Default::default()
+                },
+                Some(now - Duration::from_millis(1)),
+                None,
+                Some(animation),
+            ),
+            Some(animation)
+        );
+    }
+
+    #[test]
+    fn production_wake_services_animation_deadline_elapsed_during_callback() {
+        let now = crate::time::now();
+        assert_eq!(
+            next_wake(
+                now,
+                None,
+                true,
+                WakeDemand {
+                    animation: true,
+                    ..Default::default()
+                },
+                None,
+                None,
+                Some(now - Duration::from_millis(1)),
+            ),
+            Some(now)
+        );
+    }
 }

@@ -1,4 +1,5 @@
 mod animation_frame;
+mod animation_frame_request;
 mod canvas;
 pub mod event;
 mod event_handle;

@@ -1147,7 +1147,8 @@ mod tests {
         let dnd_spec = notif.actions.iter().find(|a| a.id == "dnd").unwrap();
         let from_spec = match &dnd_spec.input {
             tilo_actions::ActionInput::Immediate(enc) => enc.clone(),
-            tilo_actions::ActionInput::Prompted { .. } => {
+            tilo_actions::ActionInput::Prompted { .. }
+            | tilo_actions::ActionInput::Deferred { .. } => {
                 panic!("the DND flip is an immediate action")
             }
         };

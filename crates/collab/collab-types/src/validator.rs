@@ -12,7 +12,7 @@
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::collections::VecDeque;
-use std::time::{Duration, SystemTime};
+use web_time::{Duration, SystemTime};
 
 use thiserror::Error;
 

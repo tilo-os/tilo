@@ -175,6 +175,110 @@ fn list_at(doc: &AutoCommit, obj: &ObjId, key: &str) -> Option<ObjId> {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Conflicting containers
+//
+// A container created on first use is a per-replica object: two peers that
+// each `put_object` the same key before syncing leave a map-key conflict, and
+// `doc.get` shows only the winner — the loser's whole subtree (a channel's
+// first messages, a peer's read marks, a draft) disappears from view. New
+// documents create these containers up front (seed / channel creation, both
+// replayed deterministically), but documents written before that still carry
+// lazy containers, so every read below joins *all* candidates and writes go
+// to the winner. Automerge orders the candidates identically on every replica.
+// ---------------------------------------------------------------------------
+
+/// Every object of type `ty` stored under `obj[key]`, the `doc.get` winner
+/// first, then the concurrent losers in Automerge's deterministic order.
+fn object_candidates(doc: &AutoCommit, obj: &ObjId, key: &str, ty: ObjType) -> Vec<ObjId> {
+    let mut found: Vec<ObjId> = doc
+        .get_all(obj, key)
+        .map(|values| {
+            values
+                .into_iter()
+                .filter_map(|(value, id)| {
+                    matches!(value, Value::Object(t) if t == ty).then_some(id)
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    if let Ok(Some((Value::Object(t), winner))) = doc.get(obj, key)
+        && t == ty
+        && let Some(at) = found.iter().position(|id| *id == winner)
+    {
+        let winner = found.remove(at);
+        found.insert(0, winner);
+    }
+    found
+}
+
+fn map_candidates(doc: &AutoCommit, obj: &ObjId, key: &str) -> Vec<ObjId> {
+    object_candidates(doc, obj, key, ObjType::Map)
+}
+
+/// Every message list of `channel`, across every `messages` map candidate.
+fn message_lists(doc: &AutoCommit, channel: &str) -> Vec<ObjId> {
+    map_candidates(doc, &ROOT, "messages")
+        .iter()
+        .flat_map(|root_map| object_candidates(doc, root_map, channel, ObjType::List))
+        .collect()
+}
+
+/// One text-bearing value stored for a draft.
+enum DraftValue {
+    Text(ObjId),
+    Legacy(String),
+}
+
+/// Every text-bearing value stored for `key` across every `drafts` map
+/// candidate, each with the map holding it, winner map first.
+fn draft_values(doc: &AutoCommit, key: &str) -> Vec<(ObjId, DraftValue)> {
+    let mut out = Vec::new();
+    for drafts in map_candidates(doc, &ROOT, "drafts") {
+        let Ok(values) = doc.get_all(&drafts, key) else {
+            continue;
+        };
+        for (value, id) in values {
+            match value {
+                Value::Object(ObjType::Text) => out.push((drafts.clone(), DraftValue::Text(id))),
+                Value::Scalar(scalar) => {
+                    if let ScalarValue::Str(text) = scalar.as_ref() {
+                        out.push((drafts.clone(), DraftValue::Legacy(text.to_string())));
+                    }
+                }
+                Value::Object(_) => {}
+            }
+        }
+    }
+    out
+}
+
+/// The single `(pos, del, ins)` char splice turning `from` into `to`, from
+/// their common prefix and suffix; `None` when they are equal.
+fn char_splice(from: &str, to: &str) -> Option<(usize, usize, String)> {
+    if from == to {
+        return None;
+    }
+    let a: Vec<char> = from.chars().collect();
+    let b: Vec<char> = to.chars().collect();
+    let prefix = a.iter().zip(&b).take_while(|(x, y)| x == y).count();
+    let a_tail = a.get(prefix..).unwrap_or(&[]);
+    let b_tail = b.get(prefix..).unwrap_or(&[]);
+    let suffix = a_tail
+        .iter()
+        .rev()
+        .zip(b_tail.iter().rev())
+        .take_while(|(x, y)| x == y)
+        .count();
+    let del = a_tail.len().saturating_sub(suffix);
+    let ins: String = b_tail
+        .get(..b_tail.len().saturating_sub(suffix))
+        .unwrap_or(&[])
+        .iter()
+        .collect();
+    Some((prefix, del, ins))
+}
+
 /// Positional trace keys emitted by the short-lived pre-stable-id schema.
 /// Current step ids always begin with `step_`; this deliberately recognises
 /// only exactly eight ASCII digits so a user-authored id is never migrated.
@@ -344,6 +448,7 @@ impl ChatDoc {
             return;
         }
         let _ = doc.put(&ROOT, "seeded", true);
+        Self::put_shared_roots(doc);
 
         Self::put_user(doc, me_id, me_name, me_initials, 0, Presence::Online);
         Self::put_workspace(doc, "ws_home", "My Workspace", "MW", 0, 0);
@@ -379,6 +484,7 @@ impl ChatDoc {
             return;
         }
         let _ = doc.put(&ROOT, "seeded", true);
+        Self::put_shared_roots(doc);
 
         Self::seed_demo_users(doc);
         Self::seed_demo_workspaces(doc);
@@ -778,6 +884,17 @@ impl ChatDoc {
     // Writers
     // -----------------------------------------------------------------------
 
+    /// Create the root containers other peers write into on first use, in the
+    /// seed change every peer adopts. Created lazily instead, two peers that
+    /// each send the first message, mark a channel read, or start a draft
+    /// before syncing would each mint their own root map and a merge would
+    /// show only one of them (see "Conflicting containers" above).
+    fn put_shared_roots(doc: &mut AutoCommit) {
+        for key in ["messages", "read", "drafts"] {
+            let _ = get_or_map(doc, &ROOT, key);
+        }
+    }
+
     fn put_user(
         doc: &mut AutoCommit,
         id: &str,
@@ -857,6 +974,16 @@ impl ChatDoc {
         if kind == ChannelKind::Voice {
             let voice = get_or_map(doc, &ROOT, "voice");
             let _ = get_or_map(doc, &voice, id);
+        }
+        // The same for the channel's message list and composer draft: created
+        // here, inside the one (replayed, content-addressed) channel-creation
+        // change, so two peers' first messages or first keystrokes land in one
+        // shared list / Text instead of two conflicting ones.
+        let messages = get_or_map(doc, &ROOT, "messages");
+        let _ = get_or_list(doc, &messages, id);
+        let drafts = get_or_map(doc, &ROOT, "drafts");
+        if draft_values(doc, id).is_empty() {
+            let _ = get_or_text(doc, &drafts, id);
         }
     }
 
@@ -1202,6 +1329,7 @@ impl ChatDoc {
         attachment: Option<&Attachment>,
     ) -> bool {
         Self::channel_exists(doc, channel)
+            && Self::channel_has_timeline(doc, channel)
             && Self::valid_message_id(id)
             && !Self::message_id_exists(doc, id)
             && text.len() <= MAX_MESSAGE_TEXT_BYTES
@@ -1213,16 +1341,70 @@ impl ChatDoc {
     /// namespace.  This makes direct resolution deterministic and makes an
     /// action replay idempotent before it reaches the list writer.
     fn message_id_exists(doc: &AutoCommit, id: &str) -> bool {
-        let Some(channels) = map_at(doc, &ROOT, "messages") else {
-            return false;
-        };
-        doc.keys(&channels).any(|channel| {
-            list_at(doc, &channels, &channel).is_some_and(|list| {
-                (0..doc.length(&list)).any(|index| {
-                    matches!(doc.get(&list, index), Ok(Some((Value::Object(ObjType::Map), row))) if read_str(doc, &row, "id").unwrap_or_default() == id)
+        map_candidates(doc, &ROOT, "messages").iter().any(|channels| {
+            doc.keys(channels).any(|channel| {
+                message_lists(doc, &channel).into_iter().any(|list| {
+                    (0..doc.length(&list)).any(|index| {
+                        matches!(doc.get(&list, index), Ok(Some((Value::Object(ObjType::Map), row))) if read_str(doc, &row, "id").unwrap_or_default() == id)
+                    })
                 })
             })
         })
+    }
+
+    /// Record `name` as the agent display name of `author`, beside the
+    /// message `id` it just wrote (`agent_authors/<author> = name`). Only an
+    /// agent task participant author is labelled, only when that message
+    /// exists with that author, and only when the stored name differs.
+    pub fn label_agent_author(doc: &mut AutoCommit, id: &str, author: &str, name: &str) {
+        if !author.starts_with(tilo_actions::AGENT_TASK_PARTICIPANT_PREFIX)
+            || name.trim().is_empty()
+            || name.len() > crate::actions::MAX_AGENT_AUTHOR_NAME_BYTES
+        {
+            return;
+        }
+        let authored = map_candidates(doc, &ROOT, "messages").iter().any(|channels| {
+            doc.keys(channels).any(|channel| {
+                message_lists(doc, &channel).into_iter().any(|list| {
+                    (0..doc.length(&list)).any(|index| {
+                        matches!(doc.get(&list, index), Ok(Some((Value::Object(ObjType::Map), row)))
+                            if read_str(doc, &row, "id").unwrap_or_default() == id && read_str(doc, &row, "author").unwrap_or_default() == author)
+                    })
+                })
+            })
+        });
+        if !authored {
+            return;
+        }
+        let agents = get_or_map(doc, &ROOT, "agent_authors");
+        if read_str(doc, &agents, author).unwrap_or_default() != name {
+            let _ = doc.put(&agents, author, name);
+        }
+    }
+
+    /// Agent display names of agent-authored message authors.
+    pub fn agent_authors(doc: &AutoCommit) -> std::collections::HashMap<String, String> {
+        let Some(agents) = map_at(doc, &ROOT, "agent_authors") else {
+            return std::collections::HashMap::new();
+        };
+        doc.keys(&agents)
+            .filter(|author| author.starts_with(tilo_actions::AGENT_TASK_PARTICIPANT_PREFIX))
+            .filter_map(|author| {
+                let name = read_str(doc, &agents, author.as_str()).unwrap_or_default();
+                (!name.trim().is_empty()).then_some((author, name))
+            })
+            .collect()
+    }
+
+    /// Only a text channel shows a message timeline: opening a voice channel
+    /// joins the call and no view ever renders its message list. A new message
+    /// there would be durable but seen by no one (an agent's post reported as
+    /// sent while every member looked at `#general`), so it is refused.
+    /// Rows that already exist stay readable; this gates new actions only.
+    fn channel_has_timeline(doc: &AutoCommit, channel: &str) -> bool {
+        map_at(doc, &ROOT, "channels")
+            .and_then(|channels| map_at(doc, &channels, channel))
+            .is_some_and(|row| read_str(doc, &row, "kind").unwrap_or_default() != ChannelKind::Voice.as_str())
     }
 
     fn channel_exists(doc: &AutoCommit, channel: &str) -> bool {
@@ -1299,13 +1481,13 @@ impl ChatDoc {
     }
 
     fn find_message_obj(doc: &AutoCommit, channel: &str, msg_id: &str) -> Option<ObjId> {
-        let root_map = map_at(doc, &ROOT, "messages")?;
-        let list = list_at(doc, &root_map, channel)?;
-        for i in 0..doc.length(&list) {
-            if let Ok(Some((Value::Object(ObjType::Map), m))) = doc.get(&list, i)
-                && read_str(doc, &m, "id").unwrap_or_default() == msg_id
-            {
-                return Some(m);
+        for list in message_lists(doc, channel) {
+            for i in 0..doc.length(&list) {
+                if let Ok(Some((Value::Object(ObjType::Map), m))) = doc.get(&list, i)
+                    && read_str(doc, &m, "id").unwrap_or_default() == msg_id
+                {
+                    return Some(m);
+                }
             }
         }
         None
@@ -1425,18 +1607,14 @@ impl ChatDoc {
     /// no-op. Threaded replies (if any) are left in place; they simply lose their
     /// parent card, which is recoverable.
     pub fn delete_message(doc: &mut AutoCommit, channel: &str, msg_id: &str) {
-        let Some(root_map) = map_at(doc, &ROOT, "messages") else {
-            return;
-        };
-        let Some(list) = list_at(doc, &root_map, channel) else {
-            return;
-        };
-        for i in 0..doc.length(&list) {
-            if let Ok(Some((Value::Object(ObjType::Map), m))) = doc.get(&list, i)
-                && read_str(doc, &m, "id").unwrap_or_default() == msg_id
-            {
-                let _ = doc.delete(&list, i);
-                return;
+        for list in message_lists(doc, channel) {
+            for i in 0..doc.length(&list) {
+                if let Ok(Some((Value::Object(ObjType::Map), m))) = doc.get(&list, i)
+                    && read_str(doc, &m, "id").unwrap_or_default() == msg_id
+                {
+                    let _ = doc.delete(&list, i);
+                    return;
+                }
             }
         }
     }
@@ -1487,30 +1665,105 @@ impl ChatDoc {
         let _ = doc.put(&block, "edited", true);
     }
 
-    /// The per-channel draft `Text` object, created on demand. The composer
-    /// splices directly into this so a draft is collaborative state too.
+    /// The per-channel draft `Text` object the composer splices into, so a
+    /// draft is collaborative state too.
+    ///
+    /// Channel drafts are created with the channel (see `put_channel`); a
+    /// thread draft, or a draft in a document written before that, is created
+    /// here on first write. A draft that is not exactly one `Text` — a legacy
+    /// string, or several `Text`s left by concurrent lazy creation — is
+    /// upgraded in place to one `Text` holding exactly [`Self::draft_text`]'s
+    /// projection, so offsets computed against a read stay valid for the write.
+    #[allow(
+        clippy::expect_used,
+        reason = "the target is the drafts map just resolved or created in this call, so put_object cannot fail short of a corrupted document"
+    )]
     pub fn draft_obj(doc: &mut AutoCommit, channel: &str) -> ObjId {
-        let drafts = get_or_map(doc, &ROOT, "drafts");
-        get_or_text(doc, &drafts, channel)
-    }
-
-    pub fn draft_text(doc: &AutoCommit, channel: &str) -> String {
-        match map_at(doc, &ROOT, "drafts") {
-            Some(drafts) => read_text(doc, &drafts, channel).unwrap_or_default(),
-            None => String::new(),
+        let mut values = draft_values(doc, channel);
+        if let [(_, DraftValue::Text(id))] = values.as_slice() {
+            return id.clone();
         }
+        let projected = Self::draft_text(doc, channel);
+        let drafts = map_candidates(doc, &ROOT, "drafts")
+            .into_iter()
+            .next()
+            .unwrap_or_else(|| get_or_map(doc, &ROOT, "drafts"));
+        values.retain(|(map, _)| *map != drafts);
+        for (map, _) in values {
+            let _ = doc.delete(&map, channel);
+        }
+        let text = doc
+            .put_object(&drafts, channel, ObjType::Text)
+            .expect("put draft text");
+        if !projected.is_empty() {
+            let _ = doc.splice_text(&text, 0, 0, &projected);
+        }
+        text
     }
 
-    /// Replace the draft body with `text`, diff-spliced so only the changed
-    /// span is written (never a whole-text rewrite per keystroke — see
-    /// `crates/sdk/ui-core/HIG.md` §6). The composer calls this on every edit so the draft
-    /// stays collaborative + persistent.
+    /// The draft the composer shows: its `Text`, or — for a draft left in
+    /// conflict by concurrent lazy creation — every stored value joined in
+    /// Automerge's deterministic order, so no peer's keystrokes are hidden.
+    pub fn draft_text(doc: &AutoCommit, channel: &str) -> String {
+        let mut out = String::new();
+        for (_, value) in draft_values(doc, channel) {
+            match value {
+                DraftValue::Text(id) => out.push_str(&doc.text(&id).unwrap_or_default()),
+                DraftValue::Legacy(text) => out.push_str(&text),
+            }
+        }
+        out
+    }
+
+    /// Replace the draft body with `text`, diff-spliced against the current
+    /// CRDT text so only the changed span is written (never a whole-text
+    /// rewrite per keystroke — see `crates/sdk/ui-core/HIG.md` §6).
+    ///
+    /// Prefer [`Self::set_draft_from`] when the composer's own base is known:
+    /// a diff against the live text deletes characters a collaborator added
+    /// since the composer last loaded the draft.
     pub fn set_draft(doc: &mut AutoCommit, channel: &str, text: &str) {
         let obj = Self::draft_obj(doc, channel);
         ui::doc::splice_text_diffed(doc, &obj, text);
     }
 
+    /// Apply the composer edit `base → text` to the draft as a character
+    /// splice. `base` is the draft text the composer was last loaded from; a
+    /// collaborator's characters merged into the CRDT since then are kept by
+    /// rebasing the local splice over that remote change. Only when the two
+    /// edits overlap does this fall back to diffing against the live text.
+    pub fn set_draft_from(doc: &mut AutoCommit, channel: &str, base: &str, text: &str) {
+        let Some((pos, del, ins)) = char_splice(base, text) else {
+            return;
+        };
+        let obj = Self::draft_obj(doc, channel);
+        let current = doc.text(&obj).unwrap_or_default();
+        let at = match char_splice(base, &current) {
+            None => Some(pos),
+            Some((rpos, rdel, rins)) => {
+                if pos + del <= rpos {
+                    Some(pos)
+                } else if pos >= rpos + rdel {
+                    Some(pos - rdel + rins.chars().count())
+                } else {
+                    None
+                }
+            }
+        };
+        match at {
+            Some(at) => {
+                let _ = doc.splice_text(&obj, at, isize::try_from(del).unwrap_or(isize::MAX), &ins);
+            }
+            None => {
+                ui::doc::splice_text_diffed(doc, &obj, text);
+            }
+        }
+    }
+
     pub fn clear_draft(doc: &mut AutoCommit, channel: &str) {
+        if Self::draft_text(doc, channel).is_empty() && draft_values(doc, channel).len() <= 1 {
+            return;
+        }
         let obj = Self::draft_obj(doc, channel);
         ui::doc::splice_text_diffed(doc, &obj, "");
     }
@@ -1578,10 +1831,13 @@ impl ChatDoc {
 
     /// A peer's read watermark for `channel` (0 if never opened).
     pub fn read_watermark(doc: &AutoCommit, channel: &str, user: &str) -> i64 {
-        match map_at(doc, &ROOT, "read").and_then(|r| map_at(doc, &r, user)) {
-            Some(m) => read_i64_coerced(doc, &m, channel).unwrap_or(0),
-            None => 0,
-        }
+        // The winner first (where `read_map` writes), then any concurrently
+        // created `read` map that still holds this peer's marks.
+        map_candidates(doc, &ROOT, "read")
+            .iter()
+            .filter_map(|r| map_at(doc, r, user))
+            .find_map(|m| read_i64_coerced(doc, &m, channel))
+            .unwrap_or(0)
     }
 
     /// Unread top-level messages in `channel` for `user`.
@@ -1753,13 +2009,13 @@ impl ChatDoc {
         if let Some(chans) = map_at(doc, &ROOT, "channels") {
             let _ = doc.delete(&chans, id);
         }
-        if let Some(msgs) = map_at(doc, &ROOT, "messages") {
+        for msgs in map_candidates(doc, &ROOT, "messages") {
             let _ = doc.delete(&msgs, id);
         }
         if let Some(voice) = map_at(doc, &ROOT, "voice") {
             let _ = doc.delete(&voice, id);
         }
-        if let Some(drafts) = map_at(doc, &ROOT, "drafts") {
+        for drafts in map_candidates(doc, &ROOT, "drafts") {
             let _ = doc.delete(&drafts, id);
         }
     }
@@ -2044,17 +2300,18 @@ impl ChatDoc {
     }
 
     pub fn list_messages(doc: &AutoCommit, channel: &str) -> Vec<Message> {
-        let Some(root_map) = map_at(doc, &ROOT, "messages") else {
-            return vec![];
-        };
-        let Some(list) = list_at(doc, &root_map, channel) else {
-            return vec![];
-        };
+        let lists = message_lists(doc, channel);
+        let rows: Vec<ObjId> = lists
+            .iter()
+            .flat_map(|list| {
+                (0..doc.length(list)).filter_map(move |i| match doc.get(list, i) {
+                    Ok(Some((Value::Object(ObjType::Map), m))) => Some(m),
+                    _ => None,
+                })
+            })
+            .collect();
         let mut out = Vec::new();
-        for i in 0..doc.length(&list) {
-            let Ok(Some((Value::Object(ObjType::Map), m))) = doc.get(&list, i) else {
-                continue;
-            };
+        for m in rows {
             let parent = read_str(doc, &m, "parent").unwrap_or_default();
             out.push(Message {
                 id: read_str(doc, &m, "id").unwrap_or_default(),
@@ -2076,6 +2333,11 @@ impl ChatDoc {
                 work: Self::read_work(doc, &m),
                 pinned: read_bool(doc, &m, "pinned").unwrap_or(false),
             });
+        }
+        if lists.len() > 1 {
+            // Rows from concurrently created lists interleave by time; the
+            // sort is stable, so one list's own order is kept on ties.
+            out.sort_by_key(|m| m.ts);
         }
         out
     }
@@ -2641,6 +2903,157 @@ mod tests {
              body — edit_message is rewriting the whole text",
             body.len()
         );
+    }
+
+    /// A document written before the shared containers were created up
+    /// front: the seed without `drafts`/`messages`/`read`, so the first write
+    /// on each replica creates them lazily.
+    fn legacy_seeded() -> AutoCommit {
+        let mut doc = seeded();
+        for key in ["drafts", "messages", "read"] {
+            let _ = doc.delete(&ROOT, key);
+        }
+        doc.commit();
+        doc
+    }
+
+    fn msg(text: &str, ts: i64) -> NewMessage {
+        NewMessage {
+            author: model::ME.into(),
+            ts,
+            text: text.into(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn concurrent_first_drafts_on_two_replicas_both_survive() {
+        for mut base in [seeded(), legacy_seeded()] {
+            for _ in 0..8 {
+                let mut a = base.fork();
+                let mut b = base.fork();
+                ChatDoc::set_draft_from(&mut a, "c_crit", "", "left");
+                ChatDoc::set_draft_from(&mut b, "c_crit", "", "right");
+                a.merge(&mut b).unwrap();
+                let draft = ChatDoc::draft_text(&a, "c_crit");
+                assert!(
+                    draft.contains("left") && draft.contains("right"),
+                    "both replicas' first draft keystrokes survive; got {draft:?}"
+                );
+                // The next write upgrades a conflicted draft to one Text
+                // holding exactly what was shown, then edits it in place.
+                let shown = draft.clone();
+                ChatDoc::set_draft_from(&mut a, "c_crit", &shown, &format!("{shown}!"));
+                assert_eq!(ChatDoc::draft_text(&a, "c_crit"), format!("{shown}!"));
+                assert_eq!(draft_values(&a, "c_crit").len(), 1);
+            }
+        }
+    }
+
+    #[test]
+    fn a_stale_composer_edit_keeps_a_collaborators_characters() {
+        let mut a = seeded();
+        ChatDoc::set_draft_from(&mut a, "c_crit", "", "hello");
+        let mut b = a.fork();
+        // B appends while A's composer still shows "hello".
+        ChatDoc::set_draft_from(&mut b, "c_crit", "hello", "hello world");
+        a.merge(&mut b).unwrap();
+        // A capitalises against its stale base; B's characters must survive.
+        ChatDoc::set_draft_from(&mut a, "c_crit", "hello", "Hello");
+        assert_eq!(ChatDoc::draft_text(&a, "c_crit"), "Hello world");
+        // Concurrent (unsynced) edits merge per character too.
+        let mut c = a.fork();
+        ChatDoc::set_draft_from(&mut a, "c_crit", "Hello world", "Hello, world");
+        ChatDoc::set_draft_from(&mut c, "c_crit", "Hello world", "Hello world!");
+        a.merge(&mut c).unwrap();
+        assert_eq!(ChatDoc::draft_text(&a, "c_crit"), "Hello, world!");
+    }
+
+    #[test]
+    fn concurrent_first_messages_on_two_replicas_both_survive() {
+        // A channel created after the seed: its list must come with it.
+        let mut origin = seeded();
+        ChatDoc::insert_channel(
+            &mut origin,
+            "c_new",
+            "ws_acme",
+            "cat_acme_main",
+            "new",
+            ChannelKind::Text,
+        );
+        origin.commit();
+        let cases = [(origin, "c_new"), (legacy_seeded(), "c_crit")];
+        for (mut base, channel) in cases {
+            for _ in 0..8 {
+                let mut a = base.fork();
+                let mut b = base.fork();
+                ChatDoc::push_message_with_id(&mut a, channel, "m_left", msg("left", NOW));
+                ChatDoc::push_message_with_id(&mut b, channel, "m_right", msg("right", NOW + 1));
+                a.merge(&mut b).unwrap();
+                let mut texts: Vec<String> = ChatDoc::list_messages(&a, channel)
+                    .into_iter()
+                    .map(|m| m.text)
+                    .collect();
+                // Concurrent appends to one shared list order by actor, not
+                // time; only membership is the property under test here.
+                texts.sort();
+                assert_eq!(texts, ["left", "right"], "channel {channel}");
+                // Resolution and deletion reach the losing list too.
+                ChatDoc::delete_message(&mut a, channel, "m_left");
+                ChatDoc::delete_message(&mut a, channel, "m_right");
+                assert!(ChatDoc::list_messages(&a, channel).is_empty());
+            }
+        }
+    }
+
+    #[test]
+    fn concurrent_first_read_marks_on_two_replicas_both_survive() {
+        for _ in 0..8 {
+            let mut base = legacy_seeded();
+            let mut a = base.fork();
+            let mut b = base.fork();
+            ChatDoc::set_read_watermark(&mut a, "c_crit", "u_a", 3);
+            ChatDoc::set_read_watermark(&mut b, "c_crit", "u_b", 5);
+            a.merge(&mut b).unwrap();
+            assert_eq!(ChatDoc::read_watermark(&a, "c_crit", "u_a"), 3);
+            assert_eq!(ChatDoc::read_watermark(&a, "c_crit", "u_b"), 5);
+        }
+    }
+
+    /// Regression (frame-performance Chat workload): consecutive sends from
+    /// one composer while a collaborator syncs every change must each start
+    /// from an empty draft, on a fresh and on a legacy (lazy-draft) document.
+    #[test]
+    fn consecutive_sends_with_a_syncing_collaborator_start_from_an_empty_draft() {
+        for mut origin in [seeded(), legacy_seeded()] {
+            let mut a = origin.fork();
+            let mut b = origin.fork();
+            let mut shown = String::new();
+            for n in 0..5 {
+                assert_eq!(
+                    ChatDoc::draft_text(&a, "c_crit"),
+                    "",
+                    "send {n} starts empty"
+                );
+                let text = format!("m{n:04} hello");
+                ChatDoc::set_draft_from(&mut a, "c_crit", &shown, &text);
+                b.merge(&mut a).unwrap();
+                a.merge(&mut b).unwrap();
+                let draft = ChatDoc::draft_text(&a, "c_crit");
+                assert_eq!(draft, text);
+                ChatDoc::push_message(&mut a, "c_crit", msg(&draft, NOW + n));
+                ChatDoc::clear_draft(&mut a, "c_crit");
+                b.merge(&mut a).unwrap();
+                a.merge(&mut b).unwrap();
+                shown = ChatDoc::draft_text(&a, "c_crit");
+                assert_eq!(shown, "", "send {n} consumes the draft");
+                assert_eq!(
+                    ChatDoc::draft_text(&b, "c_crit"),
+                    "",
+                    "collaborator sees it consumed"
+                );
+            }
+        }
     }
 
     #[test]

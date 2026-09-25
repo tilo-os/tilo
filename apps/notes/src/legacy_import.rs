@@ -114,14 +114,30 @@ fn hex(bytes: &[u8; 32]) -> String {
 /// # Errors
 /// Returns an error if the directory cannot be resolved.
 pub fn source_key(root: &Path) -> Result<LegacySourceKey, ImportError> {
+    source_key_with_domain(root, b"tilo-notes-legacy-source-v1\0")
+}
+
+pub(crate) fn qos_source_key(root: &Path) -> Result<LegacySourceKey, ImportError> {
+    source_key_with_domain(root, b"qos-notes-legacy-source-v1\0")
+}
+
+fn source_key_with_domain(root: &Path, domain: &[u8]) -> Result<LegacySourceKey, ImportError> {
     let canonical = root.canonicalize().map_err(|e| source_error(root, e))?;
     if !canonical.is_dir() {
         return Err(source_error(root, "source is not a directory"));
     }
     let mut hash = blake3::Hasher::new();
-    hash.update(b"tilo-notes-legacy-source-v1\0");
+    hash.update(domain);
     hash.update(canonical.as_os_str().as_encoded_bytes());
     Ok(LegacySourceKey::from_bytes(*hash.finalize().as_bytes()))
+}
+
+pub(crate) fn qos_destination(key: LegacySourceKey) -> String {
+    format!("derived:notes-legacy-v1@{}", hex(&key.0))
+}
+
+pub(crate) fn source_key_hex(key: LegacySourceKey) -> String {
+    hex(&key.0)
 }
 
 /// The fixed destination for a source identity, independent of source content.

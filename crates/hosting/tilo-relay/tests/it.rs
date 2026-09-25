@@ -17,6 +17,8 @@ mod common;
 mod anti_entropy_recovers_lost_delta;
 #[path = "auth_reject.rs"]
 mod auth_reject;
+#[path = "browser_transport.rs"]
+mod browser_transport;
 #[path = "client_owns_its_endpoint.rs"]
 mod client_owns_its_endpoint;
 #[path = "coedit_through_host.rs"]
@@ -41,13 +43,24 @@ mod federation_three_node_chain;
 mod federation_two_relays;
 #[path = "federation_workspace_shard.rs"]
 mod federation_workspace_shard;
+#[path = "governed_workspace_access.rs"]
+mod governed_workspace_access;
+#[path = "interactive_workspace_owner.rs"]
+mod interactive_workspace_owner;
 #[path = "multi_host.rs"]
 mod multi_host;
 #[path = "personal_device_process.rs"]
 mod personal_device_process;
+#[path = "protocol_compat.rs"]
+mod protocol_compat;
 #[path = "relay_daemon.rs"]
 mod relay_daemon;
 #[path = "remote_action_routing.rs"]
 mod remote_action_routing;
 #[path = "store_and_forward.rs"]
 mod store_and_forward;
+
+#[path = "additional_protocol.rs"]
+mod additional_protocol;
+#[path = "addressed_actions.rs"]
+mod addressed_actions;

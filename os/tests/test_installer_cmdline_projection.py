@@ -12,6 +12,7 @@ KARGS = REPO / "os/usr/lib/bootc/kargs.d"
 COMMAND = re.compile(
     r"tilo-uki-cmdline\s+(remove|append)\s+(\S+)(?:\s+(/boot/tilo-target/tilo-target\.efi))?"
 )
+TARGET_COPY = 'cp "$target_uki" /boot/tilo-target/tilo-target.efi'
 
 
 def base_tokens():
@@ -38,12 +39,18 @@ class InstallerCmdlineProjectionTest(unittest.TestCase):
     def test_live_and_target_projections_are_unique_and_fit_ukify_section(self):
         source = base_tokens()
         live = list(source)
-        target_operations = []
-        for action, argument, target_path in COMMAND.findall(
-            CONTAINERFILE.read_text(encoding="utf-8")
-        ):
+        target = None
+        for line in CONTAINERFILE.read_text(encoding="utf-8").splitlines():
+            if TARGET_COPY in line:
+                self.assertIsNone(target)
+                target = list(live)
+            match = COMMAND.search(line)
+            if not match:
+                continue
+            action, argument, target_path = match.groups()
             if target_path:
-                target_operations.append((action, argument))
+                self.assertIsNotNone(target)
+                target = apply(target, action, argument)
             else:
                 live = apply(live, action, argument)
 
@@ -62,9 +69,7 @@ class InstallerCmdlineProjectionTest(unittest.TestCase):
         self.assertFalse(any(token.startswith("tilo.luks=") for token in live))
         self.assertFalse(any(token.startswith("tilo.unlock=") for token in live))
 
-        target = list(live)
-        for action, argument in target_operations:
-            target = apply(target, action, argument)
+        self.assertIsNotNone(target)
         self.assertIn("root=tilo-auto", target)
         self.assertIn(
             "rd.luks.options=tpm2-device=auto,fido2-device=auto", target

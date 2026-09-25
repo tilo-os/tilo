@@ -493,18 +493,24 @@ fn validate_receipt(doc: &AutoCommit) -> Result<(), String> {
     }
     let key = string(doc, &receipt, "source_key")?;
     let digest = string(doc, &receipt, "snapshot_digest")?;
+    let destination = string(doc, &receipt, "destination_id")?;
+    let historical_destination = destination == format!("derived:notes-legacy-v1@{key}");
     if key.len() != 64
         || !key
             .bytes()
             .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
         || digest.len() != 64
         || !digest.bytes().all(|b| b.is_ascii_hexdigit())
+        || (historical_destination
+            && !digest
+                .bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)))
     {
         return Err("import receipt has invalid digest or source key".into());
     }
     if string(doc, &receipt, "format")? != "workspace-json-markdown-v1"
         || integer(doc, &receipt, "version")? != 1
-        || ui::record::RecordId::parse(&string(doc, &receipt, "destination_id")?).is_none()
+        || (!historical_destination && ui::record::RecordId::parse(&destination).is_none())
     {
         return Err("unsupported import receipt".into());
     }

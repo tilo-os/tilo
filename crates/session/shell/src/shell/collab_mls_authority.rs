@@ -1360,3 +1360,21 @@ mod tests {
         assert_ne!(digest, [0; 32]);
     }
 }
+
+#[allow(
+    unused_imports,
+    reason = "The native WorkspaceExt methods are selected by host-specific workspace code and test configurations."
+)]
+use crate::shell::state::WorkspaceExt as _;
+
+impl qos_action_broker::collab_core::SnapshotReceiptVault for SecretServiceMlsVault {
+    fn mint_snapshot_receipt(
+        &self,
+        channel: ChannelId,
+        envelope: &collab_types::SignedOp,
+    ) -> Result<(), String> {
+        SecretServiceMlsVault::mint_snapshot_receipt(self, channel, envelope)
+            .map(|_| ())
+            .map_err(|error| error.to_string())
+    }
+}

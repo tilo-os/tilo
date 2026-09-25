@@ -16,6 +16,7 @@ exclude = [
     "vendor/wgpu-hal",
     "vendor/openh264-sys2",
     "vendor/wayland-backend",
+    "vendor/web-transport-quinn",
 ]
 # Build `runtime-dylib` with `cargo build -p runtime-dylib --profile thin-app`;
 # it requires unwind support, unlike the default release profile.
@@ -30,6 +31,20 @@ default-members = [
     "crates/runtime/runtime",
 ]
 members = [
+    "crates/agent/control-protocol",
+    "crates/agent/control-service",
+    "crates/packaging/install-artifacts",
+    "crates/system/folder-service",
+    "crates/collab/qos-action-broker",
+    "crates/session/qos-desktop",
+    "crates/collab/qos-peer-state",
+    "crates/browser/qos-browser-runtime",
+    "crates/hosting/qos-session-peer",
+    "crates/hosting/qos-moq",
+    "crates/hosting/qos-cloud-host",
+    "vendor/moq/rs/kio",
+    "vendor/moq/rs/moq-net",
+    "vendor/moq/rs/moq-native",
     "crates/session/qos-ntfs-helper",
     "crates/session/qos-ntfs-protocol",
     "crates/browser/chromium-blocker",
@@ -530,6 +545,12 @@ debug-assertions = true
 # Vendored winit fork adds Wayland `zwp_pointer_gestures_v1` support and maps
 # pinch events to winit's existing `PinchGesture` API.
 [patch.crates-io]
+# Preserve raw HTTP/3 routing fields before URL normalization.
+# See vendor/web-transport-proto/PROVENANCE.md.
+web-transport-proto = { path = "vendor/web-transport-proto" }
+# Adds `Request::from_parts` so one QUIC endpoint serves plain HTTP/3 delivery
+# requests and WebTransport. See vendor/web-transport-quinn/PROVENANCE.md.
+web-transport-quinn = { path = "vendor/web-transport-quinn" }
 # Keep native archive inputs independent of registry filesystem enumeration.
 # See vendor/openh264-sys2/TILO-PATCH.md.
 openh264-sys2 = { path = "vendor/openh264-sys2" }

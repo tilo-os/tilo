@@ -76,6 +76,26 @@ pub mod prelude {
     };
 }
 
+/// Portable folder copy and readiness operations; native authority stays private.
+///
+/// ```
+/// use tilo_app::folders::{copy::MigrationJob, review::DirectoryIdentity, scan::FolderScan};
+/// ```
+/// ```compile_fail
+/// use tilo_app::folders::connection::endpoint::EndpointContext;
+/// ```
+/// ```compile_fail
+/// use tilo_app::folders::copy::MigrationStore;
+/// fn steal(store: MigrationStore) { let _ = store.root.file; }
+/// ```
+#[cfg(feature = "folder-copy")]
+pub mod folders {
+    pub use tilo_folder_service::{connected, copy, review, scan, session, startup};
+}
+
+#[cfg(feature = "install-artifacts")]
+pub mod install_artifacts;
+
 #[cfg(test)]
 mod tests {
     use super::prelude::*;

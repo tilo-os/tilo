@@ -167,7 +167,7 @@ mod tests {
         send(&mut app, &mut doc, &named_event(NamedKey::Enter));
         app.dispatch_palette_invocation_for_test(&mut doc);
         assert_eq!(
-            ViewDoc::selected(&mut doc).as_deref(),
+            ViewDoc::selected(&doc).as_deref(),
             Some(expected.as_str()),
             "activating a palette row selects that container (navigation)",
         );
@@ -233,8 +233,8 @@ mod tests {
         app.create_open = true;
         app.create_focus = CreateField::Name;
 
-        // A base both replicas share, with the create draft materialised.
-        let before = ViewDoc::create_field(&mut doc, CreateField::Name);
+        // A base both replicas share before any create draft exists.
+        let before = ViewDoc::create_field(&doc, CreateField::Name);
         assert_eq!(before, "", "draft starts empty");
         doc.commit();
         let base = doc.save();
@@ -249,7 +249,7 @@ mod tests {
         send(&mut app, &mut doc, &char_event("w"));
         doc.commit();
         assert_eq!(
-            ViewDoc::create_field(&mut doc, CreateField::Name),
+            ViewDoc::create_field(&doc, CreateField::Name),
             "w",
             "the keystroke spliced into the create-draft Text on the native path",
         );
@@ -261,7 +261,7 @@ mod tests {
             "byte-identical convergence after merge"
         );
         assert_eq!(
-            ViewDoc::create_field(&mut peer, CreateField::Name),
+            ViewDoc::create_field(&peer, CreateField::Name),
             "w",
             "the peer sees the same create draft",
         );

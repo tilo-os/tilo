@@ -133,6 +133,31 @@ impl Harness {
     fn new() -> Self {
         let (tree, strip, groups, tabs) = strip_tree();
         let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&tree);
+        // This fixture minted the tabs, so it explicitly creates their
+        // documents before presentation attempts existing-only admission.
+        let (records, rendered_tabs) = {
+            let chrome = chrome.borrow();
+            let rendered = chrome.tree();
+            let tabs = rendered
+                .workspaces
+                .iter()
+                .flat_map(|workspace| &workspace.strips)
+                .flat_map(|strip| &strip.window_groups)
+                .flat_map(|group| &group.tabs)
+                .map(|tab| tab.id)
+                .collect::<Vec<_>>();
+            (chrome.records().clone(), tabs)
+        };
+        for tab in rendered_tabs {
+            let checkout = shell::shell::tab_documents::scratch_tab_record(tab);
+            shell::shell::tab_documents::create_scratch_tab_record(&records, tab)
+                .expect("the fixture must create each rendered tab's document");
+            assert_eq!(
+                records.read(&checkout.id, ui::record::identity),
+                Some(Some(checkout)),
+                "the rendered tab must have its own existing document before input"
+            );
+        }
         host.set_shortcut_config(settings_store::hardware::ShortcutConfig::default())
             .expect("the built-in shortcut table is valid");
         let mut h = Harness {
@@ -640,6 +665,10 @@ fn the_rail_maps_the_strip_and_marks_what_is_on_screen() {
 #[test]
 fn clicking_a_rail_segment_travels_to_that_window() {
     let mut h = Harness::new();
+    // App's bounded composition settlement admits the final output-width
+    // basis before accepting input. This manual harness needs its next
+    // layout pass too, before advancing the resulting focus animation.
+    h.tick();
     let home = h.scroll_x();
     let seg = h
         .host

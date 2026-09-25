@@ -1,3 +1,6 @@
+mod action_directory_identity;
+pub use action_directory_identity::ActionDirectoryInvocationDomain;
+
 use crate::dnd::DragPayload;
 use crate::permissions::PermissionScope;
 use crate::presence::{PresenceCtx, PresenceKey};
@@ -12,7 +15,6 @@ use winit::event::WindowEvent;
 use crate::time::Instant;
 use std::collections::HashMap;
 use std::collections::HashSet;
-use std::collections::VecDeque;
 
 /// Shared disabled-state opacity: wrap draw output in
 /// `scene.push_layer(.., DISABLED_ALPHA, ..)` / `pop_layer()`.
@@ -124,6 +126,9 @@ pub(crate) fn collect_widget_resources(
         inherited: Option<crate::bound_dispatch::CallbackBinding>,
         resources: &mut Vec<tilo_actions::Resource>,
     ) {
+        if widget.has_separate_document_owner() && widget.callback_binding().is_none() {
+            return;
+        }
         let boundary = widget.callback_binding();
         let binding = boundary.clone().or(inherited);
         let Ok(_entry) = binding
@@ -290,11 +295,13 @@ pub(crate) fn humanize_control_id(id: &str) -> String {
 }
 
 /// A reusable action-intent queue for controls, including custom widgets.
-/// Widgets call [`emit`](Self::emit) from any interaction path and expose the
-/// queue through [`Widget::take_control_invocation`].
+/// Widgets call [`emit`](Self::emit) from any interaction path. Mounted shared
+/// controls install independent host custody; custom producers should use
+/// [`new_in`](Self::new_in) with their actual owner domain. The private `take`
+/// path remains only as explicitly unqualified migration compatibility.
 pub struct ActionEmitter<I> {
     binding: tilo_actions::ActionBinding<I>,
-    pending: VecDeque<tilo_actions::ControlInvocation>,
+    pending: crate::control_custody::ControlHolder,
     available: bool,
 }
 
@@ -304,9 +311,32 @@ impl<I> ActionEmitter<I> {
     pub fn new(binding: tilo_actions::ActionBinding<I>) -> Self {
         Self {
             binding,
-            pending: VecDeque::new(),
+            pending: crate::control_custody::ControlHolder::new(
+                crate::control_custody::ControlProducerDiscipline::Fifo {
+                    limit: ACTION_EMITTER_QUEUE_LIMIT,
+                },
+            ),
             available: true,
         }
+    }
+
+    /// Construct already registered, including for emitting inside a builder.
+    pub fn new_in(binding: tilo_actions::ActionBinding<I>, domain: &crate::ControlDomain) -> Self {
+        let mut emitter = Self::new(binding);
+        emitter.pending = crate::control_custody::ControlHolder::registered(
+            domain,
+            crate::control_custody::ControlProducerDiscipline::Fifo {
+                limit: ACTION_EMITTER_QUEUE_LIMIT,
+            },
+        );
+        emitter
+    }
+    pub fn install_custody(
+        &mut self,
+        domain: &crate::ControlDomain,
+        attachment: crate::control_custody::CustodyAttachment,
+    ) -> Result<(), crate::control_custody::CustodyError> {
+        self.pending.install(domain, attachment)
     }
 
     /// Queues the typed invocation when the action is currently available.
@@ -318,21 +348,13 @@ impl<I> ActionEmitter<I> {
     pub fn emit(&mut self, input: I) -> Result<(), tilo_actions::ActionBindingError> {
         if self.available {
             let invocation = self.binding.invoke(input)?;
-            if self.pending.len() >= ACTION_EMITTER_QUEUE_LIMIT {
-                self.pending.pop_front();
-                tracing::warn!(
-                    action = ?self.binding.address(),
-                    limit = ACTION_EMITTER_QUEUE_LIMIT,
-                    "control invocation backlog full; evicting oldest intent"
-                );
-            }
-            self.pending.push_back(invocation);
+            self.pending.emit(invocation);
         }
         Ok(())
     }
 
     pub fn take(&mut self) -> Option<tilo_actions::ControlInvocation> {
-        self.pending.pop_front()
+        self.pending.take()
     }
 
     pub fn binding(&self) -> &tilo_actions::ActionBinding<I> {
@@ -641,6 +663,20 @@ impl EventCtx<'_> {
     }
 }
 
+/// One remote participant's live presence (caret/selection), published by a
+/// multi-participant widget under that participant's identity. Same key and
+/// payload shape as the local window's own presence (Writer: `wp_block` key,
+/// byte offsets into the caret block).
+#[derive(Clone, Debug, PartialEq)]
+pub struct ParticipantPresence {
+    pub participant: tilo_actions::ParticipantId,
+    /// Name to show beside the caret, when the host set one
+    /// ([`Widget::set_participant_label`]).
+    pub label: Option<String>,
+    pub key: PresenceKey,
+    pub payload: crate::collaboration::PresencePayload,
+}
+
 pub trait Widget {
     /// Concrete identity for host-side frame maps that must distinguish a
     /// wrapper from its first field even when they share a data address.
@@ -675,6 +711,14 @@ pub trait Widget {
         crate::history_mode::HistoryRegistrationError,
     > {
         Ok(None)
+    }
+    /// Additional read-only veto for uncommitted app-local drafts in this scope.
+    /// This does not confer authority or recursively consult independent owners.
+    ///
+    /// # Errors
+    /// Returns a reason when this exact root is not ready to restore the scope.
+    fn history_restore_readiness(&self, _scope: &str) -> Result<(), String> {
+        Ok(())
     }
     /// Presentation declaration for a legacy tile's eventual checked record.
     /// The `TileHost` resolves custody after binding; this grants no authority.
@@ -771,6 +815,17 @@ pub trait Widget {
             .collect()
     }
 
+    /// Explicit app-owned region; never search secondary children implicitly.
+    fn primary_vertical_scroll(&self) -> Option<PrimaryScrollRegion> {
+        None
+    }
+    fn apply_primary_vertical_scroll(
+        &mut self,
+        _action: PrimaryScrollAction,
+    ) -> PrimaryScrollResult {
+        PrimaryScrollResult::Unsupported
+    }
+
     /// Transitional durable writer owned by this root rather than the host.
     /// `None` means no such writer exists. Implementations must wait for all
     /// pending writes and report failure; a queued flush is not success.
@@ -838,14 +893,82 @@ pub trait Widget {
         Ok(())
     }
 
+    #[doc(hidden)]
+    #[allow(
+        private_interfaces,
+        reason = "finite toolkit resource ownership requests"
+    )]
+    fn visit_resource_owners(
+        &self,
+        request: &mut crate::bound_dispatch::legacy_document::ResourceReadRequest<'_>,
+    ) -> Result<(), tilo_actions::DoorError> {
+        request.visit(self)
+    }
+    #[doc(hidden)]
+    #[allow(
+        private_interfaces,
+        reason = "finite toolkit resource ownership requests"
+    )]
+    fn visit_resource_owners_mut(
+        &mut self,
+        request: &mut crate::bound_dispatch::legacy_document::ResourceRequest<'_>,
+    ) -> Result<(), tilo_actions::DoorError> {
+        for child in self.children_mut() {
+            request.visit(child)?;
+        }
+        Ok(())
+    }
+
     /// Expose session collaboration only for widgets that own it.
     fn collaborative_mut(&mut self) -> Option<&mut dyn Collaborative> {
         None
     }
 
+    /// Retained session topology. Presentation children are the ordinary
+    /// default; owners with hidden or inactive live sessions override this
+    /// without exposing those descendants to drawing or input traversal.
+    #[doc(hidden)]
+    fn collaboration_children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
+        self.children_mut()
+    }
+
     /// Expose platform-native child lifecycle only for widgets that own it.
     fn native_view_lifecycle_mut(&mut self) -> Option<&mut dyn NativeViewLifecycle> {
         None
+    }
+
+    /// Attach native child views through this owner's retained lifecycle topology.
+    ///
+    /// Presentation containers with inactive or hidden live descendants override
+    /// this traversal so lifecycle ownership remains independent of drawing and
+    /// input visibility.
+    fn mount_native_views(&mut self, host: &crate::widget::native_view::NativeViewHost<'_>) {
+        if let Some(lifecycle) = self.native_view_lifecycle_mut() {
+            lifecycle.mount_native_view(host);
+        }
+        for child in self.children_mut() {
+            child.mount_native_views(host);
+        }
+    }
+
+    /// Tear native children down while their parent window still exists.
+    fn unmount_native_views(&mut self) {
+        for child in self.children_mut() {
+            child.unmount_native_views();
+        }
+        if let Some(lifecycle) = self.native_view_lifecycle_mut() {
+            lifecycle.unmount_native_view();
+        }
+    }
+
+    /// Begin a native-view frame through this owner's retained lifecycle topology.
+    fn native_view_frame_start(&mut self) {
+        if let Some(lifecycle) = self.native_view_lifecycle_mut() {
+            lifecycle.native_view_frame_start();
+        }
+        for child in self.children_mut() {
+            child.native_view_frame_start();
+        }
     }
 
     /// Expose detachable/capture surfaces only for widgets that own them.
@@ -920,6 +1043,7 @@ pub trait Widget {
     fn continuable_mut(&mut self) -> Option<&mut dyn Continuable> {
         None
     }
+
     fn update(&mut self, _state: &mut AutoCommit, _path: &ObjId) -> bool {
         false
     }
@@ -1053,6 +1177,13 @@ pub trait Widget {
             .iter()
             .map(|handler| (*handler).to_string())
             .collect::<HashSet<_>>();
+        // The actual widget's registered readers also declare their selectors.
+        // Descriptor availability and qualified owner admission remain separate.
+        handlers.extend(
+            self.semantic_readers()
+                .iter()
+                .map(|reader| reader.operation_type().to_string()),
+        );
         self.for_each_child(&mut |child| handlers.extend(child.resource_operation_handlers()));
         handlers
     }
@@ -1067,6 +1198,9 @@ pub trait Widget {
     /// Lets a screenshot harness hold an animation at a chosen millisecond
     /// and render the real `draw` at that instant. Default `None`; a widget
     /// opts in with `Some(self)`.
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        None
+    }
     fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
         None
     }
@@ -1139,7 +1273,30 @@ pub trait Widget {
     fn is_focusable(&self) -> bool {
         false
     }
+    /// Preferred control when its app is explicitly activated without a valid
+    /// saved control. Hosts still enforce visibility, enabled state and scope.
+    fn is_default_keyboard_focus(&self) -> bool {
+        false
+    }
+
+    /// Exact app instance whose non-text shortcuts this subtree owns when
+    /// activation has no control target. Unbound desktop chrome may declare
+    /// the active tab; component boundaries default to their captured owner.
+    fn keyboard_input_scope(&self) -> Option<crate::application::InstanceId> {
+        self.callback_binding().map(|binding| binding.instance_id)
+    }
+
     fn set_focus(&mut self, _focused: bool) {}
+
+    /// An explicit runner focus request, after resolving the actual keyboard
+    /// owner. Retained flags and layout restoration are not user gestures.
+    /// Containers can observe this to reveal the owning viewport.
+    fn focus_requested(&mut self, target: Option<NodeId>, tree: &TaffyTree<()>) {
+        for child in self.children_mut() {
+            child.focus_requested(target, tree);
+        }
+    }
+
     fn is_focused(&self) -> bool {
         false
     }
@@ -1372,6 +1529,17 @@ pub trait Widget {
             .into_iter()
             .find_map(Widget::take_commit_context)
     }
+    /// Bind retained producers before their first callback. Private holders must
+    /// override this hook; child traversal alone never certifies full coverage.
+    fn install_control_custody(
+        &mut self,
+        domain: &crate::ControlDomain,
+        attachment: crate::control_custody::CustodyAttachment,
+    ) {
+        for child in self.children_mut() {
+            child.install_control_custody(domain, attachment);
+        }
+    }
     /// Drain one queued action-bound control intent from this subtree.
     /// Custom-painted widgets can own an [`ActionEmitter`] and override this
     /// method; they do not need to use the toolkit's [`Button`].
@@ -1390,7 +1558,9 @@ pub trait Widget {
         result: &Result<ResourceOperationStart, tilo_actions::DoorError>,
     ) {
         for child in self.children_mut() {
-            child.on_control_invocation_result(address, result);
+            if !child.has_separate_document_owner() {
+                child.on_control_invocation_result(address, result);
+            }
         }
     }
     /// Recursively inventory action-native and explicitly legacy controls.
@@ -1521,6 +1691,19 @@ pub trait Widget {
     /// instance drew last.
     fn set_record_scope(&mut self, _record: &crate::record::RecordId) {}
 
+    /// Detach every receiver, queued result and deferred document write owned by
+    /// the current record before a host can retain this root under another
+    /// record owner. This runs without a document loan. Returning `Ok(())`
+    /// certifies that no later lifecycle callback can apply old-owner work to a
+    /// replacement document. Opaque roots refuse by default.
+    ///
+    /// # Errors
+    /// Returns an explanatory refusal when the widget cannot yet detach every
+    /// continuation associated with its current record owner.
+    fn release_record_scope(&mut self) -> Result<(), String> {
+        Err("This application cannot release retained work from its current document owner".into())
+    }
+
     // --- Collab / DnD contract extensions ---
     /// Stable identity for presence/permission lookup. Default: opt-out.
     fn presence_key(&self) -> Option<PresenceKey> {
@@ -1550,6 +1733,12 @@ pub trait Widget {
         Vec::new()
     }
 
+    /// Explicit host-local presentation/request controls for the portable caller
+    /// palette. Only View operations are accepted; shared effects remain broker-owned.
+    fn caller_view_resources(&self, _doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+        Vec::new()
+    }
+
     /// One cursor-addressable page of resource roots safe to expose through
     /// the broker pull directory. `max_results` is a hard ceiling; a live
     /// provider must return a non-empty opaque cursor when it has a tail.
@@ -1572,10 +1761,99 @@ pub trait Widget {
         None
     }
 
+    /// Continuity coverage for this owning subtree's effective invocation domain.
+    /// Independent component/provider owners are checked separately. Returning a
+    /// value is a semantic promise, not authority; unknown coverage stays closed.
+    fn action_directory_invocation_domain(
+        &self,
+        _doc: &AutoCommit,
+    ) -> ActionDirectoryInvocationDomain {
+        ActionDirectoryInvocationDomain::Unsupported
+    }
+
     /// Resolve an addressable resource omitted from the contextual snapshot.
     /// Large apps override this through their `ResourceProvider` index.
     fn resource(&self, _doc: &AutoCommit, _id: &str) -> Option<tilo_actions::Resource> {
         None
+    }
+
+    /// The tree as one participant (an agent task) sees it, built from that
+    /// participant's own view state (caret, selection, Find). A delivered
+    /// invocation resolves against this, rebuilt at invoke time, for the
+    /// host-set invoker ([`crate::invocation_scope::current_participant`]).
+    ///
+    /// `None` is this widget's own view. Single-view widgets keep the
+    /// default, which is the same tree for everybody. Multi-participant
+    /// widgets (Writer) override this and [`Self::resource_for`], and must
+    /// never put one participant's selection or Find text into another's
+    /// tree.
+    fn resources_for(
+        &self,
+        participant: Option<&tilo_actions::ParticipantId>,
+        doc: &AutoCommit,
+    ) -> Vec<tilo_actions::Resource> {
+        let _ = participant;
+        self.resources(doc)
+    }
+
+    /// [`Self::resource`] in `participant`'s tree.
+    fn resource_for(
+        &self,
+        participant: Option<&tilo_actions::ParticipantId>,
+        doc: &AutoCommit,
+        id: &str,
+    ) -> Option<tilo_actions::Resource> {
+        let _ = participant;
+        self.resource(doc, id)
+    }
+
+    /// A participant (an agent task) joined the record this tree serves. A
+    /// multi-participant widget creates that participant's own view here
+    /// (Writer: caret at the document end) and publishes it as presence.
+    /// Idempotent. The default reaches retained descendants; returns whether
+    /// a view was newly created (so the host drops resource caches only then).
+    fn join_participant(&mut self, participant: &tilo_actions::ParticipantId) -> bool {
+        let mut joined = false;
+        for child in self.collaboration_children_mut() {
+            joined |= child.join_participant(participant);
+        }
+        joined
+    }
+
+    /// Drop a participant's view (its task ended). Idempotent.
+    fn leave_participant(&mut self, participant: &tilo_actions::ParticipantId) {
+        for child in self.collaboration_children_mut() {
+            child.leave_participant(participant);
+        }
+    }
+
+    /// Name shown beside a participant's caret (the agent's display name).
+    /// The default reaches retained descendants.
+    fn set_participant_label(&mut self, participant: &tilo_actions::ParticipantId, label: &str) {
+        for child in self.collaboration_children_mut() {
+            child.set_participant_label(participant, label);
+        }
+    }
+
+    /// Current presence of every remote participant this tree holds a view
+    /// for, derived from that participant's own view exactly as the local
+    /// window derives its own presence. The default collects descendants.
+    fn participant_presence(&self, doc: &AutoCommit) -> Vec<ParticipantPresence> {
+        let mut out = Vec::new();
+        self.for_each_child(&mut |child| out.extend(child.participant_presence(doc)));
+        out
+    }
+
+    /// The host serves only remote participants and has no local person (a
+    /// headless host worker). A multi-participant widget then publishes its
+    /// participant-independent catalogue schema
+    /// ([`tilo_actions::ResourceProvider::catalogue_schema`]) as its own
+    /// view's tree instead of one caret's snapshot, so the publication and
+    /// its revision do not change when a caret moves.
+    fn set_participant_host(&mut self, host: bool) {
+        for child in self.collaboration_children_mut() {
+            child.set_participant_host(host);
+        }
     }
 
     /// Explicit disclosure authority for an actionless resource container in
@@ -1784,6 +2062,43 @@ pub trait Widget {
         path: &ObjId,
     ) -> Result<Option<ResourceOperationStart>, String> {
         self.start_resource_operation(invocation, kind, type_id, payload, doc, path)
+    }
+
+    /// Inert immutable-reader registrations owned by this actual widget.
+    /// Registration alone supplies no qualified owner frame or disclosure.
+    fn semantic_readers(
+        &self,
+    ) -> &'static [crate::semantic_document_read::RegisteredSemanticReader] {
+        &[]
+    }
+
+    /// Required hosted operations enter here with immutable original-caller
+    /// custody. Async implementations must retain `scope` with their own job
+    /// and use its checked callbacks at each later effect or document mutation.
+    /// The default never calls an unscoped handler, even speculatively.
+    fn start_resource_operation_scoped(
+        &mut self,
+        scope: &crate::invocation_scope::ResourceInvocationScope,
+        kind: tilo_actions::OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        doc: &mut AutoCommit,
+        path: &ObjId,
+    ) -> Result<Option<ResourceOperationStart>, String> {
+        scope.check()?;
+        for child in self.children_mut() {
+            // A nested canonical owner is an independent destination. Its
+            // handler must be selected by that owner's checked dispatch frame.
+            if child.has_separate_document_owner() {
+                continue;
+            }
+            if let Some(started) =
+                child.start_resource_operation_scoped(scope, kind, type_id, payload, doc, path)?
+            {
+                return Ok(Some(started));
+            }
+        }
+        Ok(None)
     }
 
     /// Poll one admitted operation without blocking the UI thread.
@@ -2243,59 +2558,51 @@ impl<T: Widget + ?Sized> CompleteContentWidgetExt for T {
 pub(crate) fn take_collab_requests(
     widget: &mut dyn Widget,
 ) -> Vec<crate::collaboration::CollabRequest> {
+    let Ok(_entry) = crate::bound_dispatch::enter_widget(widget) else {
+        return Vec::new();
+    };
     let mut requests = widget
         .collaborative_mut()
         .map_or_else(Vec::new, Collaborative::take_collab_requests);
-    for child in widget.children_mut() {
+    for child in widget.collaboration_children_mut() {
         requests.extend(take_collab_requests(child));
     }
     requests
 }
 
-/// Deliver a collaboration event to every explicit capability in the tree.
+/// Deliver one session event to each explicit collaboration capability once.
+/// Bound callback context remains entered for the complete descendant walk.
 pub(crate) fn handle_collab_event(
     widget: &mut dyn Widget,
     event: &crate::collaboration::CollabEvent,
 ) {
+    let Ok(_entry) = crate::bound_dispatch::enter_widget(widget) else {
+        return;
+    };
     if let Some(collaborative) = widget.collaborative_mut() {
         collaborative.handle_collab_event(event);
     }
-    for child in widget.children_mut() {
+    for child in widget.collaboration_children_mut() {
         handle_collab_event(child, event);
     }
 }
 
-/// Mount every native-view capability in a retained widget tree.
+/// Mount native views through each owner's retained lifecycle topology.
 pub(crate) fn mount_native_views(
     widget: &mut dyn Widget,
     host: &crate::widget::native_view::NativeViewHost<'_>,
 ) {
-    if let Some(lifecycle) = widget.native_view_lifecycle_mut() {
-        lifecycle.mount_native_view(host);
-    }
-    for child in widget.children_mut() {
-        mount_native_views(child, host);
-    }
+    widget.mount_native_views(host);
 }
 
-/// Unmount every native-view capability before the parent window disappears.
+/// Unmount native views through each owner's retained lifecycle topology.
 pub(crate) fn unmount_native_views(widget: &mut dyn Widget) {
-    for child in widget.children_mut() {
-        unmount_native_views(child);
-    }
-    if let Some(lifecycle) = widget.native_view_lifecycle_mut() {
-        lifecycle.unmount_native_view();
-    }
+    widget.unmount_native_views();
 }
 
-/// Begin a frame for every native-view capability in the retained tree.
+/// Begin a frame through each owner's retained lifecycle topology.
 pub(crate) fn native_view_frame_start(widget: &mut dyn Widget) {
-    if let Some(lifecycle) = widget.native_view_lifecycle_mut() {
-        lifecycle.native_view_frame_start();
-    }
-    for child in widget.children_mut() {
-        native_view_frame_start(child);
-    }
+    widget.native_view_frame_start();
 }
 
 /// Panic-free node construction, used by every `build_layout` implementation
@@ -2450,7 +2757,10 @@ pub use dropdown::Dropdown;
 pub mod tabs;
 pub use tabs::{TabBar, TabDescriptor};
 pub mod scrollbar;
-pub use scrollbar::{PressOutcome, ScrollMetrics, Scrollbar};
+pub use scrollbar::{
+    PressOutcome, PrimaryScrollAction, PrimaryScrollRegion, PrimaryScrollResult, ScrollMetrics,
+    Scrollbar,
+};
 pub mod date_indexed_scrollbar;
 pub use date_indexed_scrollbar::{
     DateIndexIntent, DateIndexMarker, DateIndexMarkerKind, DateIndexPreview, DateIndexedScrollbar,
@@ -2464,7 +2774,10 @@ mod tile_host;
 pub use tile_host::{AppKind, TileContent, TileHost};
 mod app_widget;
 pub(crate) use app_widget::BoundAppWidget;
-pub use app_widget::{AppCommand, AppHostIntent, AppWidget, IconDescriptor};
+pub use app_widget::{
+    AppCommand, AppHostIntent, AppWidget, DocumentOpenCapability, DocumentOpenOutcome,
+    DocumentOpenReply, IconDescriptor,
+};
 pub mod command_palette;
 pub mod input_hint;
 pub mod shortcut_recorder;
@@ -2718,7 +3031,7 @@ mod tests {
     use std::rc::Rc;
 
     struct CollabProbe {
-        events: Rc<Cell<u32>>,
+        events: std::rc::Rc<std::cell::Cell<u32>>,
         child: Option<Box<dyn Widget>>,
     }
 
@@ -2729,7 +3042,7 @@ mod tests {
             }]
         }
 
-        fn handle_collab_event(&mut self, _event: &crate::collaboration::CollabEvent) {
+        fn handle_collab_event(&mut self, _: &crate::collaboration::CollabEvent) {
             self.events.set(self.events.get().saturating_add(1));
         }
     }
@@ -2760,41 +3073,35 @@ mod tests {
         fn build_layout(
             &mut self,
             taffy: &mut TaffyTree<()>,
-            _theme: &Theme,
-            _node_map: &mut HashMap<NodeId, *mut dyn Widget>,
+            _: &Theme,
+            _: &mut HashMap<NodeId, *mut dyn Widget>,
         ) -> NodeId {
             taffy.leaf_node(taffy::Style::default())
         }
 
-        fn apply_layout(
-            &mut self,
-            _taffy: &TaffyTree<()>,
-            _node: NodeId,
-            _origin: vello::kurbo::Point,
-        ) {
-        }
+        fn apply_layout(&mut self, _: &TaffyTree<()>, _: NodeId, _: vello::kurbo::Point) {}
 
         fn draw(
             &mut self,
-            _scene: &mut Scene,
-            _transform: Affine,
-            _text_renderer: &mut TextRenderer,
-            _theme: &Theme,
-            _presence: &PresenceCtx,
+            _: &mut Scene,
+            _: Affine,
+            _: &mut TextRenderer,
+            _: &Theme,
+            _: &PresenceCtx,
         ) {
         }
 
         fn handle_event(
             &mut self,
-            _event: &WindowEvent,
-            _scale_factor: f64,
-            _modifiers: &winit::event::Modifiers,
-            _state: &mut AutoCommit,
-            _path: &ObjId,
-            _handled: &mut bool,
-            _focus_target: &mut Option<NodeId>,
-            _node_id: NodeId,
-            _taffy: &TaffyTree<()>,
+            _: &WindowEvent,
+            _: f64,
+            _: &winit::event::Modifiers,
+            _: &mut AutoCommit,
+            _: &ObjId,
+            _: &mut bool,
+            _: &mut Option<NodeId>,
+            _: NodeId,
+            _: &TaffyTree<()>,
         ) {
         }
 
@@ -2813,6 +3120,26 @@ mod tests {
         fn get_rect(&self) -> vello::kurbo::Rect {
             vello::kurbo::Rect::ZERO
         }
+    }
+
+    #[test]
+    fn collaboration_capabilities_visit_parent_and_child_exactly_once() {
+        let events = std::rc::Rc::new(std::cell::Cell::new(0));
+        let child = CollabProbe {
+            events: std::rc::Rc::clone(&events),
+            child: None,
+        };
+        let mut root = CollabProbe {
+            events: std::rc::Rc::clone(&events),
+            child: Some(Box::new(child)),
+        };
+
+        assert_eq!(take_collab_requests(&mut root).len(), 2);
+        handle_collab_event(
+            &mut root,
+            &crate::collaboration::CollabEvent::FollowChanged { peer_id: None },
+        );
+        assert_eq!(events.get(), 2);
     }
 
     #[test]
@@ -2966,12 +3293,13 @@ mod tests {
             emitter.emit(false).expect("valid boolean intent");
         }
         emitter.emit(true).expect("valid boolean intent");
-        assert_eq!(emitter.pending.len(), ACTION_EMITTER_QUEUE_LIMIT);
-
+        let mut count = 0;
         let mut last = None;
         while let Some(invocation) = emitter.take() {
+            count += 1;
             last = invocation.arguments.get("value").cloned();
         }
+        assert_eq!(count, ACTION_EMITTER_QUEUE_LIMIT);
         assert_eq!(last, Some(serde_json::Value::Bool(true)));
     }
 }
@@ -2980,6 +3308,7 @@ mod tests {
 pub(crate) mod control_result_probe {
     use super::*;
     use std::cell::{Cell, RefCell};
+    use std::collections::VecDeque;
     use std::rc::Rc;
 
     #[derive(Clone, Default)]

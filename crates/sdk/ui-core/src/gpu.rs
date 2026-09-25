@@ -103,6 +103,7 @@ fn create_targets(width: u32, height: u32, device: &Device) -> (Texture, Texture
         sample_count: 1,
         dimension: wgpu::TextureDimension::D2,
         usage: wgpu::TextureUsages::STORAGE_BINDING
+            | wgpu::TextureUsages::COPY_SRC
             | wgpu::TextureUsages::TEXTURE_BINDING
             | wgpu::TextureUsages::COPY_DST,
         format: TextureFormat::Rgba8Unorm,

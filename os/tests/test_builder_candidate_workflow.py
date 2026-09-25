@@ -367,30 +367,95 @@ class CanaryIdentity(unittest.TestCase):
         self.assertNotRegex(tools, r'install .*\bawscli\b')
         self.assertIn('bash ./os/dev/install-aws-cli.sh', tools)
 
-    def test_aws_cli_rejects_corrupt_download_before_extraction(self):
+    def test_aws_cli_installer_publishes_only_verified_pinned_version(self):
+        source = ROOT / 'os/dev/install-aws-cli.sh'
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            bin_dir = root / 'bin'
-            bin_dir.mkdir()
-            # A successful transfer containing invalid bytes must never execute.
+            stubs = root / 'bin'
+            stubs.mkdir()
             scripts = {
-                'curl': '#!/bin/sh\nwhile [ "$1" != "-o" ]; do shift; done\nprintf corrupt > "$2"\n',
-                'unzip': '#!/bin/sh\ntouch "$RUNNER_TEMP/extracted"\nexit 99\n',
+                'uname': '''#!/usr/bin/env bash
+printf '%s\\n' "${UNAME_ARCH:-x86_64}"
+''',
+                'curl': '''#!/usr/bin/env bash
+set -euo pipefail
+[ "${CURL_RESULT:-ok}" = ok ] || exit 9
+while [ "$1" != -o ]; do shift; done
+printf archive > "$2"
+''',
+                'sha256sum': '''#!/usr/bin/env bash
+set -euo pipefail
+cat >/dev/null
+[ "${HASH_RESULT:-ok}" = ok ] || exit 10
+''',
+                'unzip': '''#!/usr/bin/env bash
+set -euo pipefail
+[ "${UNZIP_RESULT:-ok}" = ok ] || exit 11
+: > "${UNZIP_MARKER:?}"
+while [ "$#" -gt 0 ]; do
+    if [ "$1" = -d ]; then destination="$2"; break; fi
+    shift
+done
+mkdir -p "$destination/aws"
+cat > "$destination/aws/install" <<'INSTALL'
+#!/usr/bin/env bash
+set -euo pipefail
+while [ "$#" -gt 0 ]; do
+    if [ "$1" = --bin-dir ]; then bin_dir="$2"; shift 2; continue; fi
+    shift
+done
+mkdir -p "$bin_dir"
+cat > "$bin_dir/aws" <<'AWS'
+#!/usr/bin/env bash
+printf '%s\\n' "${AWS_VERSION:?}"
+AWS
+chmod 0755 "$bin_dir/aws"
+INSTALL
+chmod 0755 "$destination/aws/install"
+''',
             }
             for name, body in scripts.items():
-                path = bin_dir / name
+                path = stubs / name
                 path.write_text(body)
                 path.chmod(0o755)
-            result = subprocess.run(
-                ['bash', str(ROOT / 'os/dev/install-aws-cli.sh')],
-                env={**os.environ, 'PATH': str(bin_dir) + ':' + os.environ['PATH'],
-                     'RUNNER_TEMP': directory, 'GITHUB_PATH': str(root / 'path')},
-                capture_output=True, text=True,
-            )
-            self.assertNotEqual(result.returncode, 0)
-            self.assertFalse((root / 'extracted').exists())
-            self.assertFalse((root / 'path').exists())
-            self.assertEqual(list(root.glob('aws-cli-download.*')), [])
+
+            def run(**values):
+                run_root = root / f"run-{len(list(root.glob('run-*')))}"
+                run_root.mkdir()
+                path_file = run_root / 'github-path'
+                path_file.touch()
+                unzip_marker = run_root / 'unzipped'
+                environment = os.environ | {
+                    'RUNNER_TEMP': str(run_root),
+                    'GITHUB_PATH': str(path_file),
+                    'UNZIP_MARKER': str(unzip_marker),
+                    'AWS_VERSION': 'aws-cli/2.34.29 Python/3.11 Linux/x86_64',
+                    'PATH': str(stubs) + os.pathsep + os.environ['PATH'],
+                } | values
+                result = subprocess.run(
+                    ['bash', str(source)], env=environment, text=True, capture_output=True,
+                )
+                return result, path_file.read_text(), unzip_marker, run_root
+
+            result, published, _, run_root = run()
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(len(published.splitlines()), 1)
+            self.assertTrue(published.rstrip().endswith('/bin'))
+            roots = list(run_root.glob('tilo-awscli-tools.*'))
+            self.assertEqual(len(roots), 1)
+            self.assertTrue((roots[0] / 'bin/aws').is_file())
+            self.assertFalse((roots[0] / 'download').exists())
+
+            for values, extracted in (
+                ({'HASH_RESULT': 'failed'}, False),
+                ({'AWS_VERSION': 'aws-cli/2.34.28 Python/3.11 Linux/x86_64'}, True),
+                ({'CURL_RESULT': 'failed'}, False),
+                ({'UNAME_ARCH': 's390x'}, False),
+            ):
+                result, published, marker, _ = run(**values)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertEqual(published, '')
+                self.assertEqual(marker.exists(), extracted)
 
     def test_reuse_never_reaches_signing_or_promotion(self):
         signing = BUILD.split('  signing-preflight:', 1)[1].split('\n  build:', 1)[0]

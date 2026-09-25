@@ -957,7 +957,9 @@ mod tests {
             .unwrap();
         let built = match &hostname.input {
             ActionInput::Prompted { build, .. } => build("lab01"),
-            ActionInput::Immediate(_) => panic!("hostname is a prompted action"),
+            ActionInput::Immediate(_) | ActionInput::Deferred { .. } => {
+                panic!("hostname is a prompted action")
+            }
         };
         assert_eq!(
             built,
@@ -973,7 +975,9 @@ mod tests {
             .unwrap();
         let built = match &filesystem.input {
             ActionInput::Prompted { build, .. } => build("xfs"),
-            ActionInput::Immediate(_) => panic!("filesystem is a prompted action"),
+            ActionInput::Immediate(_) | ActionInput::Deferred { .. } => {
+                panic!("filesystem is a prompted action")
+            }
         };
         assert_eq!(
             built,

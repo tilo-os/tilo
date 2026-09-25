@@ -19,6 +19,7 @@ path = "src/lib.rs"
 
 [dependencies]
 getrandom.workspace = true
+web-time = { version = "1", features = ["serde"] }
 ed25519-dalek = { workspace = true, features = ["serde", "rand_core"] }
 rand.workspace = true
 serde.workspace = true

@@ -1,0 +1,33 @@
+[package]
+name = "qos-desktop"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+qdoc = { path = "../../doc/qdoc" }
+automerge.workspace = true
+blake3.workspace = true
+taffy.workspace = true
+vello.workspace = true
+winit.workspace = true
+tracing.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+uuid.workspace = true
+parking_lot.workspace = true
+collab-types = { path = "../../collab/collab-types" }
+tilo-actions = { path = "../../collab/actions" }
+qos-peer-state = { path = "../../collab/qos-peer-state" }
+desktop-policy = { path = "../../system/desktop-policy" }
+ui = { package = "tilo-ui", path = "../../sdk/ui-core" }
+
+[dev-dependencies]
+vello_encoding.workspace = true
+word-processor = { path = "../../../apps/word-processor" }
+chat = { path = "../../../apps/chat", default-features = false }
+notes = { path = "../../../apps/notes" }
+
+[lints]
+workspace = true

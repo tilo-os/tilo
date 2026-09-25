@@ -10,6 +10,7 @@ description = "CRDT-native canonical document model and format-provider API for 
 
 [dependencies]
 advisory-lock = { path = "../../system/advisory-lock" }
+web-time = { version = "1", features = ["serde"] }
 automerge.workspace = true
 tilo-automerge.workspace = true
 # HTML import and export carry images as `data:…;base64,` URIs.

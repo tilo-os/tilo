@@ -95,6 +95,7 @@ struct Results {
     sequence: u64,
     last_progress: Option<(usize, &'static str, u64)>,
     error: bool,
+    publication_error: Option<atomic_file::PublicationError>,
 }
 struct Control {
     cancel: AtomicBool,
@@ -111,11 +112,17 @@ impl FsJob {
     }
     /// Drain this job's bounded updates. Durable host reports survive consumption.
     /// # Errors
-    /// Returns `StoreUnavailable` if terminal receipt durability failed.
+    /// After queued updates drain, returns the first owned `Publication` error
+    /// once, then sticky `StoreUnavailable` on later polls. The error may outlive
+    /// this job, but carries no writer lock: keep the OperationOwner alive before
+    /// manually retrying its commit. A retry does not resume or repair bookkeeping.
     pub fn poll(&mut self) -> Result<Vec<FsUpdate>, FsError> {
         let mut results = lock(&self.control.results)?;
         if results.error && results.queue.is_empty() {
-            return Err(FsError::StoreUnavailable);
+            return Err(results
+                .publication_error
+                .take()
+                .map_or(FsError::StoreUnavailable, FsError::Publication));
         }
         Ok(results.queue.drain(..).collect())
     }
@@ -309,6 +316,7 @@ fn admit(
             sequence: 0,
             last_progress: None,
             error: false,
+            publication_error: None,
         }),
     });
     #[cfg(test)]
@@ -466,6 +474,13 @@ impl Context<'_> {
             record.acknowledged = false;
         }
         let saved = self.work.owner.checkpoint(&self.work.id, &step);
+        // The first publication failure owns its phase/commit obligation. A
+        // subsequent poisoned-store save cannot replace it with a generic code.
+        let error = match (error, saved) {
+            (original @ FsError::Publication(_), _) => original,
+            (_, Err(followup)) => followup,
+            (original, Ok(())) => original,
+        };
         ItemOutcome {
             item: self.item,
             state: match kind {
@@ -476,7 +491,7 @@ impl Context<'_> {
                 RecoveryKind::PublishedSourceRetained => ItemState::CopiedSourceRetained,
             },
             destination,
-            error: Some(saved.err().unwrap_or(error)),
+            error: Some(error),
             recoveries: vec![recovery],
         }
     }
@@ -502,7 +517,7 @@ fn execute(work: Work) {
         if index == 1 {
             ctx.barrier("before-item-two");
         }
-        let outcome = match ctx.cancelled() {
+        let mut outcome = match ctx.cancelled() {
             Err(e) => ctx.failure(e),
             Ok(()) => match &work.request {
                 Request::Operation(operation) => perform(&mut ctx, operation),
@@ -526,9 +541,16 @@ fn execute(work: Work) {
             ItemState::Cancelled => cancelled = cancelled.saturating_add(1),
             _ => failed = failed.saturating_add(1),
         }
-        if work.owner.item(&work.id, &outcome).is_err() {
+        if let Err(error) = work.owner.item(&work.id, &outcome) {
             if let Ok(mut results) = work.control.results.lock() {
                 results.error = true;
+                let first = match outcome.error.take() {
+                    Some(original @ FsError::Publication(_)) => original,
+                    _ => error,
+                };
+                if let FsError::Publication(publication) = first {
+                    results.publication_error.get_or_insert(publication);
+                }
             }
             return;
         }
@@ -538,9 +560,12 @@ fn execute(work: Work) {
             return;
         }
     }
-    if work.owner.finish(&work.id).is_err() {
+    if let Err(error) = work.owner.finish(&work.id) {
         if let Ok(mut results) = work.control.results.lock() {
             results.error = true;
+            if let FsError::Publication(publication) = error {
+                results.publication_error.get_or_insert(publication);
+            }
         }
         return;
     }
@@ -1359,7 +1384,7 @@ struct VerifiedRemoval {
 }
 #[allow(
     clippy::too_many_arguments,
-    reason = "source removal needs the verified grant, destination and rollback context together"
+    reason = "Source removal keeps pinned directories, grants, identity and transaction evidence together at the mutation boundary."
 )]
 fn remove_source_object(
     ctx: &Context<'_>,
@@ -1800,6 +1825,310 @@ pub(super) mod tests {
     };
     use tempfile::TempDir;
 
+    fn assert_publication(error: &FsError, expected: atomic_file::PublicationState) {
+        let source = std::error::Error::source(error).expect("owned publication source");
+        let publication = source
+            .downcast_ref::<atomic_file::PublicationError>()
+            .expect("typed publication error");
+        assert_eq!(publication.state(), expected);
+    }
+
+    #[test]
+    fn receipt_publication_initial_admission_phases() {
+        use atomic_file::{
+            PublicationState as State,
+            test_support::{Checkpoint, with_failure},
+        };
+        for (fault, state) in [
+            (Checkpoint::BeforeDataFlush, State::NotPublished),
+            (Checkpoint::PublishSubmitted, State::PublicationUnknown),
+            (Checkpoint::AfterPublish, State::PublicationUnknown),
+            (Checkpoint::BeforeCommit, State::PublishedDurabilityUnknown),
+        ] {
+            let f = Fixture::new();
+            fs::write(f.source("a"), b"source").unwrap();
+            let failed = with_failure(fault, || f.session.start(f.copy("a")));
+            let error = failed
+                .err()
+                .expect("receipt publication must fail before job admission");
+            assert_publication(&error, state);
+            assert_eq!(f.store.submissions.load(Ordering::SeqCst), 0);
+            assert!(!f.dest("a").exists());
+            if state == State::NotPublished {
+                let mut job = f.session.start(f.copy("a")).unwrap();
+                drain(&mut job);
+            } else {
+                assert!(matches!(
+                    f.session.start(f.copy("a")),
+                    Err(FsError::StoreUnavailable)
+                ));
+            }
+        }
+    }
+
+    #[test]
+    fn receipt_publication_worker_preserves_first_failure_and_drains_updates() {
+        use atomic_file::{PublicationState as State, test_support::Checkpoint};
+        for phase in ["Staged", "Published", "Item", "Finished"] {
+            for (fault, expected) in [
+                (Checkpoint::BeforeDataFlush, State::NotPublished),
+                (Checkpoint::PublishSubmitted, State::PublicationUnknown),
+                (Checkpoint::AfterPublish, State::PublicationUnknown),
+                (Checkpoint::BeforeCommit, State::PublishedDurabilityUnknown),
+            ] {
+                let f = Fixture::new();
+                fs::write(f.source("a"), b"source").unwrap();
+                f.hooks(Hooks {
+                    publication_failure: Some((phase, fault)),
+                    ..Hooks::default()
+                });
+                let mut job = f.session.start(f.copy("a")).unwrap();
+                let id = job.operation_id();
+                let deadline = Instant::now() + Duration::from_secs(10);
+                let mut updates = vec![];
+                let error = loop {
+                    match job.poll() {
+                        Ok(batch) => updates.extend(batch),
+                        Err(error) => break error,
+                    }
+                    assert!(
+                        Instant::now() < deadline,
+                        "terminal receipt failure was not surfaced"
+                    );
+                    std::thread::yield_now();
+                };
+                assert_publication(&error, expected);
+                assert!(matches!(job.poll(), Err(FsError::StoreUnavailable)));
+                assert!(
+                    !updates
+                        .iter()
+                        .any(|u| matches!(u, FsUpdate::Finished { .. }))
+                );
+                assert!(!f.store.checkpoints(&id).unwrap().iter().any(|p| p == phase));
+                assert!(matches!(
+                    f.store.admit(uuid::Uuid::nil(), 1),
+                    Err(FsError::StoreUnavailable)
+                ));
+                assert_eq!(fs::read(f.source("a")).unwrap(), b"source");
+                if phase != "Staged" {
+                    assert_eq!(fs::read(f.dest("a")).unwrap(), b"source");
+                }
+                if phase == "Finished" {
+                    assert!(updates.iter().any(|u| matches!(u, FsUpdate::Item(_))));
+                }
+                if phase == "Staged" {
+                    assert_eq!(fs::read(f.stage()).unwrap(), b"source");
+                }
+                drop(job);
+                // The original error can outlive the job. A successful manual
+                // commit while retaining the owner cannot repair its bookkeeping.
+                if fault == Checkpoint::BeforeCommit {
+                    let FsError::Publication(publication) = error else {
+                        panic!("publication lost")
+                    };
+                    publication.retry_commit().unwrap();
+                    assert!(matches!(
+                        f.store.admit(uuid::Uuid::nil(), 1),
+                        Err(FsError::StoreUnavailable)
+                    ));
+                } else {
+                    drop(error);
+                }
+                let f = f.reopen();
+                if phase == "Staged" {
+                    assert_eq!(fs::read(f.stage()).unwrap(), b"source");
+                    assert_eq!(
+                        f.store.report(&id).unwrap().state,
+                        OperationState::RecoveryRequired
+                    );
+                } else {
+                    assert_eq!(fs::read(f.dest("a")).unwrap(), b"source");
+                    if phase == "Published" {
+                        assert_eq!(
+                            f.store.report(&id).unwrap().state,
+                            OperationState::RecoveryRequired
+                        );
+                        assert_eq!(
+                            f.store.recoveries().unwrap()[0].kind,
+                            RecoveryKind::PublishedSourceRetained
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn receipt_publication_later_failure_drains_already_queued_success_first() {
+        let f = Fixture::new();
+        fs::write(f.source("a"), b"first").unwrap();
+        fs::write(f.source("b"), b"second").unwrap();
+        let barrier = Arc::new(Barrier::default());
+        let _release = Release(Arc::clone(&barrier));
+        f.hooks(Hooks {
+            barrier: Some(("before-item-two", Arc::clone(&barrier))),
+            ..Hooks::default()
+        });
+        let mut job = f
+            .session
+            .start(FsOperation::Copy {
+                entries: vec![f.entry("a"), f.entry("b")],
+                into: f.dst.clone(),
+                conflict: ConflictPolicy::Fail,
+            })
+            .unwrap();
+        barrier.entered();
+        f.store.hooks.lock().unwrap().publication_failure =
+            Some(("Item", atomic_file::test_support::Checkpoint::BeforeCommit));
+        barrier.release();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        // Wait for the terminal error without consuming the queued first item.
+        while !job.control.results.lock().unwrap().error {
+            assert!(Instant::now() < deadline);
+            std::thread::yield_now();
+        }
+        let updates = job.poll().unwrap();
+        assert!(updates.iter().any(|u| matches!(u, FsUpdate::Item(item) if item.item == 0 && item.state == ItemState::Completed)));
+        assert!(
+            !updates
+                .iter()
+                .any(|u| matches!(u, FsUpdate::Finished { .. }))
+        );
+        assert_publication(
+            &job.poll().unwrap_err(),
+            atomic_file::PublicationState::PublishedDurabilityUnknown,
+        );
+        assert!(matches!(job.poll(), Err(FsError::StoreUnavailable)));
+        assert_eq!(fs::read(f.dest("a")).unwrap(), b"first");
+        assert_eq!(fs::read(f.dest("b")).unwrap(), b"second");
+    }
+
+    #[test]
+    fn receipt_publication_native_move_effect_is_not_undone_by_unpublished_receipt() {
+        let f = Fixture::new();
+        fs::write(f.source("a"), b"moved").unwrap();
+        f.hooks(Hooks {
+            publication_failure: Some((
+                "Published",
+                atomic_file::test_support::Checkpoint::BeforeDataFlush,
+            )),
+            ..Hooks::default()
+        });
+        let mut job = f.session.start(f.moving("a")).unwrap();
+        let id = job.operation_id();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let error = loop {
+            if let Err(error) = job.poll() {
+                break error;
+            }
+            assert!(Instant::now() < deadline);
+            std::thread::yield_now();
+        };
+        assert_publication(&error, atomic_file::PublicationState::NotPublished);
+        assert!(!f.source("a").exists());
+        assert_eq!(fs::read(f.dest("a")).unwrap(), b"moved");
+        drop(job);
+        drop(error);
+        let f = f.reopen();
+        assert_eq!(
+            f.store.recoveries().unwrap()[0].kind,
+            RecoveryKind::UnknownNativeCommit
+        );
+        assert_eq!(
+            f.store.report(&id).unwrap().items[0].state,
+            ItemState::OutcomeUnknown
+        );
+        assert_eq!(fs::read(f.dest("a")).unwrap(), b"moved");
+    }
+
+    #[test]
+    fn receipt_publication_restore_preserves_committed_user_bytes() {
+        let f = Fixture::new();
+        fs::write(f.source("a"), b"restore bytes").unwrap();
+        f.hooks(Hooks {
+            stop_after_stage: true,
+            ..Hooks::default()
+        });
+        f.run(f.copy("a"));
+        let recovery = f.store.recoveries().unwrap().remove(0);
+        let stage = f.stage();
+        f.hooks(Hooks {
+            publication_failure: Some((
+                "Published",
+                atomic_file::test_support::Checkpoint::BeforeDataFlush,
+            )),
+            ..Hooks::default()
+        });
+        let mut job = f
+            .store
+            .resolve(
+                &recovery.id,
+                &f.session,
+                RecoveryResolution::RestoreKnown {
+                    parent: f.dst.clone(),
+                    name: name("restored"),
+                },
+            )
+            .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let error = loop {
+            if let Err(error) = job.poll() {
+                break error;
+            }
+            assert!(Instant::now() < deadline);
+            std::thread::yield_now();
+        };
+        assert_publication(&error, atomic_file::PublicationState::NotPublished);
+        assert_eq!(fs::read(f.dest("restored")).unwrap(), b"restore bytes");
+        assert!(!stage.exists());
+        assert!(
+            !f.store
+                .recoveries()
+                .unwrap()
+                .iter()
+                .find(|r| r.id == recovery.id)
+                .unwrap()
+                .acknowledged
+        );
+        assert!(matches!(job.poll(), Err(FsError::StoreUnavailable)));
+    }
+
+    #[test]
+    fn receipt_publication_recovery_save_surfaces_publication_after_native_failure() {
+        let f = Fixture::new();
+        fs::write(f.source("a"), b"retained source").unwrap();
+        let barrier = Arc::new(Barrier::default());
+        let _release = Release(Arc::clone(&barrier));
+        f.hooks(Hooks {
+            rename_error: Some(rustix::io::Errno::XDEV),
+            remove_error: true,
+            barrier: Some(("before-source-removal", Arc::clone(&barrier))),
+            ..Hooks::default()
+        });
+        let mut job = f.session.start(f.moving("a")).unwrap();
+        barrier.entered();
+        f.store.hooks.lock().unwrap().publication_failure = Some((
+            "SourceRemovalStarted",
+            atomic_file::test_support::Checkpoint::BeforeCommit,
+        ));
+        barrier.release();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let error = loop {
+            if let Err(error) = job.poll() {
+                break error;
+            }
+            assert!(Instant::now() < deadline);
+            std::thread::yield_now();
+        };
+        assert_publication(
+            &error,
+            atomic_file::PublicationState::PublishedDurabilityUnknown,
+        );
+        assert_eq!(fs::read(f.source("a")).unwrap(), b"retained source");
+        assert_eq!(fs::read(f.dest("a")).unwrap(), b"retained source");
+        assert!(matches!(job.poll(), Err(FsError::StoreUnavailable)));
+    }
+
     #[derive(Clone, Default)]
     #[allow(
         clippy::struct_excessive_bools,
@@ -1808,6 +2137,7 @@ pub(super) mod tests {
     pub(crate) struct Hooks {
         pub rename_error: Option<rustix::io::Errno>,
         pub fail_checkpoint: Option<&'static str>,
+        pub publication_failure: Option<(&'static str, atomic_file::test_support::Checkpoint)>,
         pub stop_after_stage: bool,
         pub copy_eio: bool,
         pub remove_error: bool,
@@ -1889,7 +2219,12 @@ pub(super) mod tests {
     impl Fixture {
         fn new() -> Self {
             let disk = tempfile::tempdir().unwrap();
-            let meta = tempfile::tempdir().unwrap();
+            let meta = tempfile::Builder::new()
+                .permissions(
+                    <fs::Permissions as std::os::unix::fs::PermissionsExt>::from_mode(0o700),
+                )
+                .tempdir()
+                .unwrap();
             fs::create_dir(disk.path().join("src")).unwrap();
             fs::create_dir(disk.path().join("dst")).unwrap();
             let authority = NativeGrantAuthority::new();

@@ -55,29 +55,32 @@ extern crate runtime_dylib;
 ///
 /// Returns an error if launching the app or running a `--shots` capture fails.
 pub fn main() -> Result<(), Box<dyn std::error::Error>> {
-    ui::launch::run(
-        &LaunchSpec::new_with_args("so.tilo.video-player", live_root)
-            .configure_app(|app| video_player::actions::register(app.action_registry_mut()))
-            .shot_handler(render_shot)
-            .allowed_live_options(&["--open"])
-            .max_positionals(1)
-            .scenarios(&[
-                "empty",
-                "loading",
-                "error",
-                "native-error",
-                "playing",
-                "paused",
-                "settings",
-                "metadata",
-                "library",
-                "library-focus",
-                "recent",
-                "shared",
-                "fullscreen",
-            ]),
-    )?;
+    ui::launch::run(&launch_spec(live_root))?;
     Ok(())
+}
+
+fn launch_spec(root: fn(&LaunchArgs) -> Result<Box<dyn Widget>, LaunchError>) -> LaunchSpec {
+    LaunchSpec::new_with_args("so.tilo.video-player", root)
+        .configure_app(|app| video_player::actions::register(app.action_registry_mut()))
+        .shot_handler(render_shot)
+        .allowed_live_options(&["--open"])
+        .max_positionals(1)
+        .scenarios(&[
+            "empty",
+            "loading",
+            "error",
+            "native-error",
+            "playing",
+            "paused",
+            "settings",
+            "metadata",
+            "library",
+            "library-focus",
+            "recent",
+            "shared",
+            "fullscreen",
+        ])
+        .history(&video_player::framework_history::HISTORY)
 }
 
 fn requested_path(args: &LaunchArgs) -> Option<PathBuf> {
@@ -164,4 +167,46 @@ fn render_shot_to_png(
     ui::launch::render_widget_png(widget.as_mut(), viewport, theme, out)?;
     println!("video-player: wrote shot to {}", out.display());
     Ok(())
+}
+
+#[cfg(test)]
+mod launch_tests {
+    use super::*;
+
+    #[allow(
+        clippy::unnecessary_wraps,
+        reason = "signature is fixed by the production argument-aware LaunchSpec"
+    )]
+    fn inert_root(_: &LaunchArgs) -> Result<Box<dyn Widget>, LaunchError> {
+        Ok(Box::new(video_player::PlayerApp::history_test_root()))
+    }
+
+    fn memory_state(_: &'static str) -> (ui::State, ui::persist::Autosave) {
+        (
+            ui::State::new(),
+            ui::persist::Autosave::disabled("controlled Video Player launch"),
+        )
+    }
+
+    #[test]
+    fn production_argument_aware_launch_spec_installs_the_root_history_definition() {
+        let spec = launch_spec(inert_root).open_app_global_state(memory_state);
+        spec.validate_history_declaration().unwrap();
+        let mut app = spec.build_controlled_app_for_test().unwrap();
+        let (installed, root) = app.controlled_history_definitions_for_test();
+        assert!(std::ptr::eq(
+            installed.unwrap(),
+            std::ptr::addr_of!(video_player::framework_history::HISTORY)
+        ));
+        assert!(std::ptr::eq(
+            root.unwrap(),
+            std::ptr::addr_of!(video_player::framework_history::HISTORY)
+        ));
+        assert!(
+            app.build_a11y_tree_update(1.0)
+                .nodes
+                .iter()
+                .any(|(_, node)| node.label() == Some("History"))
+        );
+    }
 }

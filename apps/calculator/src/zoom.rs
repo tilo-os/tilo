@@ -18,7 +18,7 @@
 //!    animation settles — mirroring how the map keeps drawing cached tiles
 //!    while new ones stream in.
 
-use std::time::Instant;
+use ui::clock::Instant;
 
 use vello::kurbo::{Affine, Point};
 

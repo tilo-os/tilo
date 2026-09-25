@@ -2731,7 +2731,7 @@ mod tests {
     }
 
     #[test]
-    fn accessibility_text_scale_reserves_metadata_width_without_double_zooming_items() {
+    fn accessibility_text_scale_reserves_metadata_width_and_rows_without_item_zoom() {
         let sink = new_sink();
         let sel = SelectionModel::new();
         let mut v = FileView::new(&items(4), &sel, &sink).with_text_scale(2.0);

@@ -41,11 +41,13 @@ case "$mode" in
         if [ "$mode" = prepare ] && [ -n "${GITHUB_ENV:-}" ]; then
           printf 'RUSTC_WRAPPER=%s\n' "$path" >> "$GITHUB_ENV"
           printf 'SCCACHE_DIRECT=false\n' >> "$GITHUB_ENV"
+          printf 'CARGO_INCREMENTAL=%s\n' "${CARGO_INCREMENTAL:-0}" >> "$GITHUB_ENV"
           if [ -n "${TILO_SCCACHE_KEY_PREFIX:-}" ]; then
             printf 'SCCACHE_S3_KEY_PREFIX=%s\n' "$TILO_SCCACHE_KEY_PREFIX" >> "$GITHUB_ENV"
           fi
         else
           export RUSTC_WRAPPER="$path"
+          export CARGO_INCREMENTAL="${CARGO_INCREMENTAL:-0}"
         fi
         echo "remote compiler cache enabled: $($path --version)"
       else

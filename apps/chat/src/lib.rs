@@ -16,15 +16,13 @@
 //! it behind a scrim on a narrow one — a GNOME Adwaita overlay-flap.
 //!
 //! ## Calls
-//! Conferencing ([`call`]) is a movable floating overlay (drag to
-//! reposition) or an expanded grid, with an active-speaker ring, an
-//! adaptive participant list, voice-channel presence in the sidebar, and
-//! join/leave sounds. App call actions are checked against the host-provided
-//! [`permissions::ChatPermissions`] context; capture additionally requires a
-//! source the user selected through the system portal. Chat makes no claim of
-//! room encryption or its own ACL system. The real-time media engine ([`media`])
-//! defines a MoQ-over-iroh transport trait with a simulated local backend and a
-//! feature-gated live one.
+//! Voice controls send typed local commands to the privileged native media
+//! service. Joins begin muted; microphone use requires fresh local consent.
+//! Current audio streams come only from its verified publisher inventory;
+//! durable voice rows remain replayable history. Read access permits listening,
+//! while publication also requires current Write authority and a capture lease.
+//! The legacy custom-Iroh and simulator module is diagnostic infrastructure;
+//! it does not provide or advertise governed MOQT readiness.
 //!
 //! `app_root()` is the single integration point used by the live event
 //! loop; [`app_root_for_shot`] stages a scenario for the offscreen renderer.
@@ -56,9 +54,9 @@
 
 pub mod actions;
 pub mod app;
-// Live call media (real microphone/Opus audio + camera/screen H.264) — compiled
-// only under `live-media`; the default build carries no GStreamer/openh264/iroh.
-#[cfg(feature = "live-media")]
+pub mod semantic_read;
+// Native device-free diagnostics reuse the privileged service codec.
+#[cfg(all(feature = "live-media", not(target_arch = "wasm32")))]
 pub mod audio;
 pub mod call;
 pub mod continuity;
@@ -69,6 +67,7 @@ pub mod geometry;
 pub mod i18n;
 pub mod identity;
 pub mod images;
+mod local_voice;
 pub mod media;
 pub mod mention;
 pub mod model;
@@ -120,3 +119,11 @@ pub fn app_root_for_shot(scenario: &str) -> Box<dyn Widget> {
     app.seed_shot_scenario(scenario);
     Box::new(app)
 }
+
+#[cfg(test)]
+mod component_tests;
+
+pub mod component;
+pub use component::definition;
+
+mod local_view;

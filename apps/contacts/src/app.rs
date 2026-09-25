@@ -97,7 +97,8 @@ fn contacts_export_request(current_name: &str) -> PickRequest {
 /// pointer target, both grown with these lines (see `toolbar_h`).
 const TOOLBAR_BUTTON_TEXT: f32 = 13.0;
 /// Authored 1× widths of the toolbar faces: the primary New button and the
-/// two file buttons (Import / Export). Grown by the measured label growth.
+/// two file buttons (Import / Export), and duplicate-review action. Grown by
+/// the measured label growth.
 const TOOLBAR_NEW_W: f64 = 104.0;
 const TOOLBAR_FILE_W: f64 = 86.0;
 const TOOLBAR_DUPLICATE_W: f64 = 142.0;
@@ -105,6 +106,7 @@ const TOOLBAR_DUPLICATE_W: f64 = 142.0;
 /// the face is always sized for the text it actually shows.
 const TOOLBAR_IMPORT_LABEL: &str = "Import";
 const TOOLBAR_EXPORT_LABEL: &str = "Export";
+const TOOLBAR_DUPLICATE_LABEL: &str = "Review duplicate";
 const TOOLBAR_NEW_LABEL: &str = "+ New";
 /// Authored 1× list row height; rows grow past it only when the measured
 /// name + subtitle lines need more (see [`ContactRowMetrics`]).
@@ -243,6 +245,7 @@ const FORM_CANCEL_LABEL: &str = "Cancel";
 struct LabelGrowth {
     import: f64,
     export: f64,
+    duplicate: f64,
     new: f64,
     add_phone: f64,
     add_email: f64,
@@ -276,6 +279,11 @@ impl LabelGrowth {
                 TOOLBAR_BUTTON_TEXT,
                 TextWeight::Medium,
             ),
+            duplicate: growth(
+                TOOLBAR_DUPLICATE_LABEL,
+                TOOLBAR_BUTTON_TEXT,
+                TextWeight::Medium,
+            ),
             new: growth(TOOLBAR_NEW_LABEL, TOOLBAR_BUTTON_TEXT, TextWeight::Medium),
             add_phone: growth(FORM_ADD_PHONE_LABEL, text_sm(), TextWeight::Medium),
             add_email: growth(FORM_ADD_EMAIL_LABEL, text_sm(), TextWeight::Medium),
@@ -292,6 +300,7 @@ impl LabelGrowth {
         let pairs = [
             (self.import, other.import),
             (self.export, other.export),
+            (self.duplicate, other.duplicate),
             (self.new, other.new),
             (self.add_phone, other.add_phone),
             (self.add_email, other.add_email),
@@ -3276,16 +3285,18 @@ impl ContactsApp {
         let new_w = face_w(TOOLBAR_NEW_W, g.new);
         self.hit.new = Rect::new(x - new_w, btn_y, x, btn_y + btn_h);
         x -= new_w + if compact_toolbar { 6.0 } else { 10.0 };
-        if self.has_duplicate_candidate() {
-            let duplicate_w = face_w(TOOLBAR_DUPLICATE_W, 0.0);
-            self.hit.duplicates = Rect::new(x - duplicate_w, btn_y, x, btn_y + btn_h);
-            x -= duplicate_w + if compact_toolbar { 6.0 } else { 10.0 };
-        } else {
-            self.hit.duplicates = Rect::ZERO;
-        }
         let exp_w = face_w(TOOLBAR_FILE_W, g.export);
         self.hit.export = Rect::new(x - exp_w, btn_y, x, btn_y + btn_h);
-        x -= exp_w + if compact_toolbar { 6.0 } else { 10.0 };
+        let gap = if compact_toolbar { 6.0 } else { 10.0 };
+        x -= exp_w + gap;
+        self.hit.duplicates = Rect::ZERO;
+        if self.has_duplicate_candidate() {
+            // This is the exact face drawn by `draw_toolbar`; its accessible
+            // and pointer targets therefore share one responsive rectangle.
+            let duplicate_w = face_w(TOOLBAR_DUPLICATE_W, g.duplicate);
+            self.hit.duplicates = Rect::new(x - duplicate_w, btn_y, x, btn_y + btn_h);
+            x -= duplicate_w + gap;
+        }
         let imp_w = face_w(TOOLBAR_FILE_W, g.import);
         self.hit.import = Rect::new(x - imp_w, btn_y, x, btn_y + btn_h);
     }
@@ -4280,7 +4291,11 @@ impl ContactsApp {
                     tr,
                     theme,
                     self.hit.duplicates,
-                    if compact { "2×" } else { "Review duplicate" },
+                    if compact {
+                        "2×"
+                    } else {
+                        TOOLBAR_DUPLICATE_LABEL
+                    },
                     false,
                     hov(self.hit.duplicates),
                     false,
@@ -6565,9 +6580,9 @@ impl ContactsApp {
         ];
         for input in &form.inputs {
             let (name, _) = form_field_metadata(input.slot);
-            let (anchor, focus) = input.ti.selection_range_public().unwrap_or_else(|| {
-                let end = input.ti.value().len();
-                (end, end)
+            let (anchor, focus) = input.ti.selection_anchor_focus_public().unwrap_or_else(|| {
+                let cursor = input.ti.cursor_pos();
+                (cursor, cursor)
             });
             let role = if input.slot == Slot::Notes {
                 Role::MultilineTextInput

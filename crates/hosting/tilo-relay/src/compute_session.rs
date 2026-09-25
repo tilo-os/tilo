@@ -14,7 +14,7 @@ use thiserror::Error;
 use tilo_user_identity::{DeviceCert, RevocationList};
 use tokio::sync::mpsc;
 
-use crate::auth::{self, AuthenticatedPeer, Hello, HelloAck, HelloAck2};
+use crate::auth::{self, AuthDomain, AuthenticatedPeer, Hello, HelloAck, HelloAck2};
 use crate::compute::ComputeJobSpec;
 use crate::compute_transport::{
     COMPUTE_ALPN, ComputeEnvelope, ComputeJobBinding, ComputeRouteOutcome, ComputeTransportError,
@@ -205,6 +205,7 @@ async fn authenticate_server(
     let mut nonce = [0; 32];
     rand::Rng::fill_bytes(&mut rand::rng(), &mut nonce);
     let acknowledgement = auth::build_hello_ack(
+        AuthDomain::Tilo,
         protocol.own_cert.clone(),
         &protocol.own_signing_key,
         nonce,
@@ -213,7 +214,12 @@ async fn authenticate_server(
     write_frame(send, &postcard::to_allocvec(&acknowledgement)?).await?;
     let final_ack: HelloAck2 =
         postcard::from_bytes(&read_frame(receive, MAX_COMPUTE_FRAME_BYTES).await?)?;
-    auth::verify_hello_ack2(&final_ack, &peer.device_public_key, &nonce)?;
+    auth::verify_hello_ack2(
+        AuthDomain::Tilo,
+        &final_ack,
+        &peer.device_public_key,
+        &nonce,
+    )?;
     Ok(peer)
 }
 
@@ -496,6 +502,7 @@ impl ComputeClient {
         let acknowledgement: HelloAck =
             postcard::from_bytes(&read_frame(&mut receive, MAX_COMPUTE_FRAME_BYTES).await?)?;
         let relay_peer = auth::verify_hello_ack(
+            AuthDomain::Tilo,
             &acknowledgement,
             &expected_server_user,
             &revocations,
@@ -507,7 +514,11 @@ impl ComputeClient {
                 "relay device does not match the pinned enrollment".into(),
             ));
         }
-        let final_ack = auth::build_hello_ack2(&own_signing_key, &acknowledgement.server_nonce);
+        let final_ack = auth::build_hello_ack2(
+            AuthDomain::Tilo,
+            &own_signing_key,
+            &acknowledgement.server_nonce,
+        );
         write_frame(&mut send, &postcard::to_allocvec(&final_ack)?).await?;
         Ok(Self {
             relay_peer,

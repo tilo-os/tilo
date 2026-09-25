@@ -651,6 +651,10 @@ pub struct PlayerApp {
     /// painted in the no-frame state, preserving a successfully playing video
     /// when a later picker request fails.
     open_error: Option<String>,
+    /// Test-only observation of the authoritative retained portal failure.
+    /// Production builds carry no observer or additional settlement path.
+    #[cfg(test)]
+    history_test_open_error_observer: Option<std::rc::Rc<std::cell::RefCell<Option<String>>>>,
     dirty: bool,
 }
 
@@ -865,6 +869,14 @@ impl PlayerApp {
                 source: entry.source,
             })
             .collect();
+        Self::from_prepared(player, preferences, recent)
+    }
+
+    fn from_prepared(
+        player: VideoPlayer,
+        preferences: PlaybackPreferences,
+        recent: VecDeque<LocalMediaEntry>,
+    ) -> Self {
         let action_ctx = crate::actions::PlayerResourceCtx {
             title: "No media",
             media: crate::actions::MediaAvailability {
@@ -939,8 +951,97 @@ impl PlayerApp {
             metadata_revision: 0,
             search_metadata: DecoderMetadata::default(),
             open_error: None,
+            #[cfg(test)]
+            history_test_open_error_observer: None,
             dirty: true,
         }
+    }
+
+    /// Construct the real root type from inert prepared inputs. This is kept
+    /// behind test support so launch-composition tests can exercise the
+    /// production widget without reading settings, registering MPRIS, opening
+    /// a decoder/provider, or attaching collaboration.
+    #[cfg(any(test, feature = "test-support"))]
+    #[doc(hidden)]
+    pub fn history_test_root() -> Self {
+        let preferences = PlaybackPreferences {
+            autoplay: false,
+            loop_enabled: true,
+        };
+        let mut player = VideoPlayer::new()
+            .with_engine(media::MediaEngine::new_synthesized())
+            .with_test_id("video_surface");
+        configure_player_settings(&mut player, preferences.autoplay, preferences.loop_enabled);
+        let current = LocalMediaEntry {
+            id: "controlled-queue-current".into(),
+            title: "Controlled history clip".into(),
+            source: media::Source::Remote {
+                url: "https://fixture.invalid/current.mp4".into(),
+            },
+        };
+        let recent = VecDeque::from([
+            LocalMediaEntry {
+                id: "controlled-recent-autumn".into(),
+                title: "Autumn reel".into(),
+                source: media::Source::Remote {
+                    url: "https://fixture.invalid/autumn.mp4".into(),
+                },
+            },
+            LocalMediaEntry {
+                id: "controlled-recent-city".into(),
+                title: "City study".into(),
+                source: media::Source::Remote {
+                    url: "https://fixture.invalid/city.mp4".into(),
+                },
+            },
+        ]);
+        let mut app = Self::from_prepared(player, preferences, recent);
+        app.queue = vec![
+            current.clone(),
+            LocalMediaEntry {
+                id: "controlled-queue-next".into(),
+                title: "Next controlled clip".into(),
+                source: media::Source::Remote {
+                    url: "https://fixture.invalid/next.mp4".into(),
+                },
+            },
+        ];
+        app.title = current.title;
+        app.current_queue_id = Some(current.id);
+        app.current_source_id = Some("source-7".into());
+        app.source_generation = 7;
+        app.library_visible = true;
+        app.library_tab = LibraryTab::Recent;
+        app.library_focus_id = Some("controlled-recent-city".into());
+        app.shot_metadata = Some(DecoderMetadata {
+            audio_tracks: vec![crate::actions::TrackState {
+                stream_id: "audio-1".into(),
+                index: 0,
+                label: "Controlled stereo".into(),
+                selected: true,
+            }],
+            ..DecoderMetadata::default()
+        });
+        app
+    }
+
+    #[cfg(test)]
+    pub(crate) fn history_test_with_pending_portal() -> (
+        Self,
+        std::sync::mpsc::Sender<PortalOutcome>,
+        std::rc::Rc<std::cell::RefCell<Option<String>>>,
+    ) {
+        let mut app = Self::history_test_root();
+        let (sender, channel) = std::sync::mpsc::channel();
+        let observed_error = std::rc::Rc::new(std::cell::RefCell::new(None));
+        app.history_test_open_error_observer = Some(observed_error.clone());
+        app.portal_generation = 11;
+        app.portal_open = Some(PendingPortalOpen {
+            channel,
+            generation: 11,
+            invocation: None,
+        });
+        (app, sender, observed_error)
     }
 
     /// Open a filesystem `path` immediately (used by `--open PATH` and the
@@ -3346,6 +3447,10 @@ impl FullscreenProvider for PlayerApp {
 }
 
 impl Widget for PlayerApp {
+    fn document_history_definition(&self) -> Option<&'static ui::history_mode::HistoryDefinition> {
+        Some(&crate::framework_history::HISTORY)
+    }
+
     fn fullscreen_provider(&self) -> Option<&dyn FullscreenProvider> {
         Some(self)
     }
@@ -3572,6 +3677,10 @@ impl Widget for PlayerApp {
             self.dirty = true;
         }
         self.drain_portal();
+        #[cfg(test)]
+        if let Some(observer) = &self.history_test_open_error_observer {
+            observer.replace(self.open_error.clone());
+        }
         self.tick_collab();
         self.player.sync(state, path);
         self.drain_player_media_events();

@@ -2470,6 +2470,7 @@ impl Widget for TabBar {
             .and_then(|i| self.tabs.get(i))
             .map(|t| t.title.clone());
         let mut node = AccessNode::new(Role::TabBar)
+            .with_semantic_key(format!("tabbar:{}", self.group_id_tag))
             .with_optional_value(value)
             .with_state(AccessState {
                 focusable: self.is_focusable(),
@@ -2572,6 +2573,11 @@ impl Widget for TabBar {
 
     fn get_rect(&self) -> Rect {
         self.rect
+    }
+    /// A fixed-height strip sized by its parent: only its first layout is a
+    /// size change. Tab additions and removals are structural.
+    fn is_layout_dirty(&self) -> bool {
+        self.rect == Rect::ZERO
     }
     fn is_focusable(&self) -> bool {
         !self.tabs.is_empty()

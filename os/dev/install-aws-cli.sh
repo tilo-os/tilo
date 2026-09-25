@@ -17,14 +17,28 @@ case "$(uname -m)" in
   *) echo "Unsupported AWS CLI architecture: $(uname -m)" >&2; exit 1 ;;
 esac
 
-download="$(mktemp -d "$RUNNER_TEMP/aws-cli-download.XXXXXX")"
-trap 'rm -rf -- "$download"' EXIT
+tool_dir="$(mktemp -d "$RUNNER_TEMP/tilo-awscli-tools.XXXXXX")"
+download="$tool_dir/download"
+install_dir="$tool_dir/aws-cli"
+bin_dir="$tool_dir/bin"
+cleanup_download() {
+  rm -rf -- "$download"
+}
+trap cleanup_download EXIT
+mkdir -p "$download" "$bin_dir"
 curl --fail --silent --show-error --location --retry 3 \
   "https://awscli.amazonaws.com/awscli-exe-linux-$arch-$version.zip" \
   -o "$download/aws.zip"
 printf '%s  %s\n' "$sha256" "$download/aws.zip" | sha256sum --check --status
 unzip -q "$download/aws.zip" -d "$download"
-"$download/aws/install" --install-dir "$RUNNER_TEMP/aws-cli" \
-  --bin-dir "$RUNNER_TEMP/aws-cli-bin" --update
-"$RUNNER_TEMP/aws-cli-bin/aws" --version
-printf '%s\n' "$RUNNER_TEMP/aws-cli-bin" >> "$GITHUB_PATH"
+"$download/aws/install" --install-dir "$install_dir" --bin-dir "$bin_dir"
+reported_version="$("$bin_dir/aws" --version 2>&1)"
+case "$reported_version" in
+  'aws-cli/2.34.29 '*) ;;
+  *)
+    printf 'AWS CLI bundle reported an unexpected version: %s\n' "$reported_version" >&2
+    exit 1
+    ;;
+esac
+printf '%s\n' "$bin_dir" >> "$GITHUB_PATH"
+printf '%s\n' "$reported_version"

@@ -1,0 +1,34 @@
+[package]
+name = "tilo-install-artifacts"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+
+[features]
+default = []
+test-support = ["atomic-file/test-support"]
+
+[dependencies]
+atomic-file = { path = "../../system/atomic-file" }
+dirs.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+reqwest = { workspace = true, features = ["blocking"] }
+
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+cap-fs-ext = "3.4.6"
+cap-primitives = "3.4.6"
+cap-std = "3.4.6"
+windows-sys = { version = "0.61.2", features = ["Wdk_Foundation", "Wdk_Storage_FileSystem", "Win32_System_Memory", "Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_Storage_FileSystem", "Win32_System_Threading", "Win32_System_IO", "Win32_System_Ioctl"] }
+
+[dev-dependencies]
+atomic-file = { path = "../../system/atomic-file", features = ["test-support"] }
+tempfile.workspace = true
+
+[lints]
+workspace = true

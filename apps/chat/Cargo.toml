@@ -23,6 +23,7 @@ default = ["live-media"]
 # the shipped app; disable default features only for explicitly media-free
 # builds and hermetic tests.
 live-media = [
+    "media/voice",
     "dep:gstreamer",
     "dep:gstreamer-app",
     "dep:iroh",
@@ -45,10 +46,6 @@ tilo-actions = { path = "../../crates/collab/actions" }
 # summons is recorded in (`Message::work`, `ChatAction::SetAgentWork`).
 tilo-reference = { path = "../../crates/collab/reference" }
 qdoc = { path = "../../crates/doc/qdoc" }
-# The Tilo runtime user-identity loader (TILO_USER_IDENTITY) — the canonical
-# per-peer identity the collab layer signs with. Chat uses its public key +
-# display name so every running instance is a distinct participant.
-runtime-identity = { path = "../../crates/runtime/runtime-identity" }
 automerge.workspace = true
 tilo-automerge.workspace = true
 serde.workspace = true
@@ -82,3 +79,10 @@ tilo-test-env = { path = "../../crates/dev/test-env" }
 
 [lints]
 workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+media = { path = "../../crates/media/core", default-features = false }
+# The Tilo runtime user-identity loader (TILO_USER_IDENTITY) — the canonical
+# per-peer identity the collab layer signs with. Chat uses its public key +
+# display name so every running instance is a distinct participant.
+runtime-identity = { path = "../../crates/runtime/runtime-identity" }

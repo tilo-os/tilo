@@ -737,3 +737,9 @@ fn the_draft_survives_a_tab_round_trip() {
 
     assert_eq!(chrome.borrow().ws_grant_draft, composed);
 }
+
+#[allow(
+    unused_imports,
+    reason = "The native WorkspaceExt methods are selected by host-specific workspace code and test configurations."
+)]
+use shell::shell::state::WorkspaceExt as _;

@@ -14,8 +14,9 @@
 //! # Wire model
 //!
 //! The daemon binds a single iroh endpoint. Every inbound
-//! connection speaks the `tilo-relay/1` ALPN and performs a small
-//! authenticated handshake ([`auth`]):
+//! connection speaks a current Tilo ALPN or an explicit frozen qOS
+//! compatibility ALPN and performs a small
+//! authenticated handshake ([`transport::hello`]):
 //!
 //! 1. Client sends its `DeviceCert` + a challenge nonce.
 //! 2. Server verifies the cert chains to *this relay's* user
@@ -68,46 +69,87 @@
     )
 )]
 
+pub mod agent_reads;
 pub mod antientropy;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod app_serving;
+// The Cloud stack's relay session client (v2 actions, agent reads, legacy
+// qOS ALPNs, interactive owners) needs the daemon's delivery and join
+// records, so it stays in the daemon crate. `tilo-relay-client` remains the
+// dependency-light client for devices that only need the v1 session.
+pub mod client;
+pub mod clock;
+pub mod coedit;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod compute;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod compute_session;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod compute_transport;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod compute_worker;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod daemon;
+pub mod delivery_v3;
+pub mod framing;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod metrics;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod peer;
+pub mod peer_actions;
+#[cfg(not(target_arch = "wasm32"))]
+mod persistence;
+mod session_carrier;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod store;
+pub mod transport_v2;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod workspace;
+#[cfg(not(target_arch = "wasm32"))]
+mod workspace_io;
+pub mod workspace_join;
 
 // The records and wire messages shared with relay clients live in
-// `tilo-relay-protocol`, and the dialing side plus the frame codec in
-// `tilo-relay-client`, so clients need not link the daemon. The daemon keeps
-// addressing them here.
-pub use tilo_relay_client::{client, coedit, frame};
-pub use tilo_relay_protocol::{auth, config, home_peer, mesh, policy, process_lease, transport};
+// `tilo-relay-protocol`, and the frame codec in `tilo-relay-client`, so
+// clients need not link the daemon. The daemon keeps addressing them here.
+pub use tilo_relay_client::frame;
+pub use tilo_relay_protocol::{auth, config, home_peer, mesh, policy, process_lease};
+
+/// The relay wire messages ([`tilo_relay_protocol::transport`]) together with
+/// the envelope frame codec ([`frame`]), under the path the daemon and its
+/// callers have always used for both.
+pub mod transport {
+    pub use crate::frame::{FrameError, FrameReader, decode, encode};
+    pub use tilo_relay_protocol::transport::*;
+}
 
 pub use antientropy::{SyncError, apply_sync_response, heads_wire, reconcile, send_sync_request};
+#[cfg(not(target_arch = "wasm32"))]
 pub use app_serving::{ActionHostPlane, AppServingPlane};
 pub use auth::PeerRole;
 pub use client::{ClientError, RelayClient};
 pub use coedit::{AttributedPresence, CoeditError, CoeditPayload, Inbound, RelayCoeditSession};
+#[cfg(not(target_arch = "wasm32"))]
 pub use compute::{
     ComputeContentStore, ComputeError, ComputeExecutionError, ComputeJobLifecycle, ComputeJobPhase,
     ComputeJobResult, ComputeJobSpec, ComputePackageCatalogue, ComputeResourceLimits,
     ComputeSandbox, ComputeSandboxInvocation, ComputeWorker, InstalledComputeCatalogue,
     LauncherComputeSandbox, admit_compute_job,
 };
+#[cfg(not(target_arch = "wasm32"))]
 pub use compute_session::{ComputeClient, ComputeDelivery, ComputeSessionError};
+#[cfg(not(target_arch = "wasm32"))]
 pub use compute_transport::{
     ComputeEnvelope, ComputeJobBinding, ComputeResultUpdate, ComputeRouteOutcome,
     ComputeStatusUpdate, ComputeTransportError, ComputeWorkerAdvertisement,
 };
+#[cfg(not(target_arch = "wasm32"))]
 pub use compute_worker::{
     ComputeWorkerError, FileComputeContentStore, ProductionComputeWorkerConfig,
     run_production_compute_worker,
 };
-pub use config::{PeerRelayConfig, RelayConfig, WorkspaceBinding};
+pub use config::{CheckpointPrefixRecovery, PeerRelayConfig, RelayConfig, WorkspaceBinding};
+#[cfg(not(target_arch = "wasm32"))]
 pub use daemon::{Relay, RelayError, RelayHandle};
 pub use home_peer::{HomePeerRegistration, valid_home_peer_label};
 pub use mesh::{
@@ -124,4 +166,8 @@ pub use transport::{ALPN, Envelope};
 /// crate version.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
-pub use tilo_relay_protocol::{personal_continuity_workspace_id, room_workspace_id};
+pub use tilo_relay_protocol::{
+    legacy_personal_continuity_workspace_id, legacy_room_workspace_id,
+    personal_continuity_workspace_id, personal_continuity_workspace_id_matches, room_workspace_id,
+    room_workspace_id_matches, room_workspace_ids,
+};

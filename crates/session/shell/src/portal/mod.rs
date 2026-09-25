@@ -74,7 +74,7 @@ pub mod inhibit;
 #[cfg(any(test, target_os = "linux"))]
 pub mod input_capture;
 pub mod lifecycle;
-#[cfg(any(test, target_os = "linux"))]
+// Native media observes this policy on every supported shell host.
 pub mod lockdown;
 #[cfg(any(test, target_os = "linux"))]
 pub mod notification;
@@ -310,13 +310,9 @@ impl GrantStoreHandle {
     /// Build a single-workspace store for unit tests / examples.
     pub fn test_with_workspace(ws: Workspace) -> (Self, WorkspaceId) {
         let ws_id = ws.id;
-        let mut tree = WorkspaceTree {
-            desktop: crate::shell::state::DesktopTree {
-                active: ws_id,
-                ..Default::default()
-            },
-            ..Default::default()
-        };
+        // Type-agnostic over the desktop model backing `WorkspaceTree::desktop`.
+        let mut tree = WorkspaceTree::default();
+        tree.desktop.active = ws_id;
         tree.desktop.workspaces.push(ws);
         (Self::with_consent_path(tree.shared(), None), ws_id)
     }
@@ -744,6 +740,21 @@ impl PromptQueueHandle {
             // The request may be between lifecycle registration and prompt
             // enqueue; retain the key so that race resolves as Deny instead.
             true
+        }
+    }
+
+    /// Cancel a request that this in-process owner already enqueued. Unlike a
+    /// D-Bus close-before-enqueue race, it needs no retained cancellation key.
+    pub(crate) fn cancel_enqueued_request(&self, request_key: &str) {
+        let removed = self.state.lock().ok().and_then(|mut state| {
+            state
+                .pending
+                .iter()
+                .position(|pending| pending.request_key.as_deref() == Some(request_key))
+                .map(|index| state.pending.remove(index))
+        });
+        if let Some(pending) = removed {
+            let _ = pending.reply.send(PromptOutcome::Deny);
         }
     }
 
@@ -1560,13 +1571,9 @@ mod tests {
     fn always_portal_consent_is_private_and_survives_restart() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("consents.json");
-        let mut tree = WorkspaceTree {
-            desktop: crate::shell::state::DesktopTree {
-                active: WorkspaceId(31),
-                ..Default::default()
-            },
-            ..Default::default()
-        };
+        // Type-agnostic over the desktop model backing `WorkspaceTree::desktop`.
+        let mut tree = WorkspaceTree::default();
+        tree.desktop.active = WorkspaceId(31);
         tree.desktop.workspaces.push(empty_ws(31));
         let shared = tree.shared();
         let caller = PortalCaller::new(WorkspaceId(31), "private-app");
@@ -1647,3 +1654,9 @@ mod tests {
         assert!(m.lookup(":1.43").is_none());
     }
 }
+
+#[allow(
+    unused_imports,
+    reason = "The native WorkspaceExt methods are selected by host-specific workspace code and test configurations."
+)]
+use crate::shell::state::WorkspaceExt as _;

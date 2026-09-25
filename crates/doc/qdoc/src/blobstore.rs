@@ -752,13 +752,13 @@ pub fn transport() -> Option<Arc<dyn BlobTransport>> {
 }
 
 /// How long to wait before asking again for the same content. A renderer calls [`get`] every frame, so without this one missing image would flood the room's topic.
-const ASK_AGAIN_AFTER: std::time::Duration = std::time::Duration::from_secs(1);
+const ASK_AGAIN_AFTER: web_time::Duration = web_time::Duration::from_secs(1);
 
-static ASKED: OnceLock<RwLock<BTreeMap<String, std::time::Instant>>> = OnceLock::new();
+static ASKED: OnceLock<RwLock<BTreeMap<String, web_time::Instant>>> = OnceLock::new();
 
 fn may_ask(hash: &str) -> bool {
     let cell = ASKED.get_or_init(|| RwLock::new(BTreeMap::new()));
-    let now = std::time::Instant::now();
+    let now = web_time::Instant::now();
     let Ok(mut m) = cell.write() else {
         return false;
     };
@@ -798,15 +798,15 @@ pub enum BlobState {
 /// "arriving". Sized against the fetching layer: the shell asks the room and retries a handful of
 /// times, taking well under a minute — sooner would call an in-flight image lost, much later leaves
 /// a reader watching a box that says "arriving" long after it stopped.
-pub const GIVE_UP_AFTER: std::time::Duration = std::time::Duration::from_secs(45);
+pub const GIVE_UP_AFTER: web_time::Duration = web_time::Duration::from_secs(45);
 
-static FIRST_WANTED: OnceLock<RwLock<BTreeMap<String, std::time::Instant>>> = OnceLock::new();
+static FIRST_WANTED: OnceLock<RwLock<BTreeMap<String, web_time::Instant>>> = OnceLock::new();
 
 /// When this process first went looking for `hash`, recorded once. The [`BlobState::Pending`]
 /// clock starts here rather than when the reference arrived, since a document can hold a reference long before anything draws it.
-fn first_wanted(hash: &str) -> std::time::Instant {
+fn first_wanted(hash: &str) -> web_time::Instant {
     let cell = FIRST_WANTED.get_or_init(|| RwLock::new(BTreeMap::new()));
-    let now = std::time::Instant::now();
+    let now = web_time::Instant::now();
     let Ok(mut m) = cell.write() else { return now };
     if m.len() > 512
         && let Some(k) = m.iter().min_by_key(|(_, t)| **t).map(|(k, _)| k.clone())

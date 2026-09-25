@@ -1729,6 +1729,78 @@ mod tests {
         assert_eq!(invite.y1, join.y1);
     }
 
+    /// HIG §9.5: the footer separator (derived against the Panel ground) and
+    /// the activity row's edge (derived against its lift floor) must both
+    /// register on every shipped palette.
+    #[test]
+    fn footer_separator_and_row_edge_register_on_every_palette() {
+        for theme in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
+            let ground = ui::chrome::shell::panel_ground(&theme);
+            let floor = theme.tokens.colors.lift(0.35);
+            for (what, fill) in [("separator", ground), ("activity row", floor)] {
+                let delta = ui::surface::edge_delta(ui::surface::edge_on(fill), fill);
+                assert!(
+                    delta >= ui::tokens::colors::HAIRLINE_MIN_DELTA,
+                    "{}: the {what} must separate from its ground (Δ luminance {delta:.4})",
+                    theme.name
+                );
+            }
+        }
+    }
+
+    /// Nothing in the footer touches (HIG §7): the separator clears the
+    /// action band, the row clears the separator and the panel's edge, and
+    /// the row keeps its inset from the panel sides.
+    #[test]
+    fn footer_keeps_a_token_gap_around_the_activity_row() {
+        let s1 = f64::from(ui::tokens::Spacing::BASE.s1);
+        let mut overlay = CollaboratorsOverlay::default();
+        overlay.layout(Rect::new(0.0, 0.0, 1280.0, 800.0), 2, false, true, false);
+        let panel = overlay.panel_rect();
+        let activity = overlay.activity_rect();
+        let (invite, _join) = overlay.action_rects();
+        let separator_y = activity.y0 - 4.0;
+        assert!(
+            separator_y - invite.y1 >= s1,
+            "separator clears the action band"
+        );
+        assert!(activity.y0 - separator_y >= s1, "row clears the separator");
+        assert!(panel.y1 - activity.y1 >= s1, "row clears the panel edge");
+        assert!(activity.x0 - panel.x0 >= s1 && panel.x1 - activity.x1 >= s1);
+    }
+
+    #[test]
+    fn every_button_is_at_least_one_pointer_target_and_centred_in_its_band() {
+        let mut overlay = CollaboratorsOverlay::default();
+        overlay.layout(Rect::new(0.0, 0.0, 1200.0, 800.0), 3, false, true, false);
+        let (invite, join) = overlay.action_rects();
+        for rect in [invite, join]
+            .into_iter()
+            .chain(overlay.row_action_rects().iter().copied())
+        {
+            assert!(
+                rect.height() >= MIN_TARGET && rect.width() >= MIN_TARGET,
+                "{rect:?} is at least 32 x 32"
+            );
+        }
+        for (index, rect) in overlay.row_action_rects().iter().enumerate() {
+            let row = overlay.row_rects[index];
+            assert!(
+                (rect.center().y - row.center().y).abs() < f64::EPSILON,
+                "row {index}'s button is centred in its row"
+            );
+            assert!(rect.y0 >= row.y0 && rect.y1 <= row.y1);
+        }
+        let band_top = overlay.panel_rect().y1 - FOOTER_H - ACTIONS_H;
+        assert!(invite.y0 >= band_top && invite.y1 <= band_top + ACTIONS_H);
+        assert!(
+            (invite.center().y - (band_top + ACTIONS_H / 2.0)).abs() < f64::EPSILON,
+            "footer buttons are centred in the action band"
+        );
+        assert_eq!(invite.y0, join.y0);
+        assert_eq!(invite.y1, join.y1);
+    }
+
     #[test]
     fn agent_classification_uses_stable_identity_not_display_label() {
         use crate::shell::state::{CapOverride, Subject, Verb, Workspace, WorkspaceId};
@@ -2022,3 +2094,5 @@ mod tests {
         );
     }
 }
+
+use crate::shell::state::WorkspaceExt as _;

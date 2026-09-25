@@ -19,6 +19,13 @@ license.workspace = true
 name = "tilo-launcher"
 path = "src/main.rs"
 
+[[bin]]
+name = "managed-tree-fixture"
+path = "tests/fixtures/managed-tree/main.rs"
+test = false
+bench = false
+required-features = ["managed-tree-test"]
+
 [lib]
 name = "launcher"
 path = "src/lib.rs"
@@ -28,6 +35,8 @@ path = "src/lib.rs"
 # release build. Debug builds always honour them; shipped images never enable
 # this.
 dev-overrides = []
+# Explicit opt-in Linux process-tree qualification fixture.
+managed-tree-test = []
 
 [dependencies]
 clap.workspace = true
@@ -47,6 +56,7 @@ runtime-bundle = { path = "../runtime-bundle" }
 # sides must agree on (portal policy) come from here rather than
 # being duplicated.
 tilo-app-package = { path = "../tilo-app-package" }
+install = { path = "../install" }
 # The capability vocabulary. Workspace grants arrive as `CapOverride`
 # records and are evaluated with the same fail-closed decision function
 # the compositor and the filesystem use — a launcher-local permission

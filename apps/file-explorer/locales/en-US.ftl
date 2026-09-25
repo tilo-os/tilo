@@ -20,6 +20,8 @@ files-shortcuts-context = Context menu: Menu key or right-click
 files-shortcuts-close = Show this reference: ? or F1 · close sheets and menus: Escape
 
 ## Availability actions and status
+files-opening-document = Opening document…
+files-document-opening-cancelled = Document opening was cancelled
 files-keep-offline = Keep Offline
 files-use-automatic-storage = Use Automatic Storage
 files-pinned-by-parent = Pinned by Parent Folder

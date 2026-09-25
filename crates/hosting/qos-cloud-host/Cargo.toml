@@ -1,0 +1,56 @@
+[package]
+name = "qos-cloud-host"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+[dependencies]
+chrono.workspace = true
+launcher = { path = "../../packaging/launcher" }
+tilo-app-package = { path = "../../packaging/tilo-app-package" }
+runtime-identity = { path = "../../runtime/runtime-identity" }
+runtime-collab = { path = "../../runtime/runtime-collab" }
+tilo-model-gateway = { path = "../../agent/model-gateway" }
+qos-agent-control-protocol = { path = "../../agent/control-protocol" }
+qos-agent-control-service = { path = "../../agent/control-service" }
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+postcard = {workspace=true, features=["use-std"]}
+ed25519-dalek.workspace = true
+rand.workspace = true
+blake3.workspace = true
+hex.workspace = true
+reqwest = { workspace = true, features = ["json"] }
+url.workspace = true
+zeroize.workspace = true
+libc.workspace = true
+uuid.workspace = true
+automerge.workspace = true
+tokio = {workspace=true,features=["macros","rt-multi-thread","signal","time"]}
+tracing.workspace = true
+tracing-subscriber = {workspace=true, features=["env-filter"]}
+iroh.workspace = true
+iroh-base.workspace = true
+web-time = "1"
+qos-user-identity = { package = "tilo-user-identity", path = "../../collab/tilo-user-identity" }
+qos-peer-state = {path="../../collab/qos-peer-state"}
+qos-session-peer = {path="../qos-session-peer", features=["media"]}
+qos-moq = {path="../qos-moq", features=["relay"]}
+qos-action-broker = {path="../../collab/qos-action-broker"}
+qos-desktop = {path="../../session/qos-desktop"}
+collab-types = {path="../../collab/collab-types"}
+qos-actions = { package = "tilo-actions", path = "../../collab/actions" }
+qos-relay = { package = "tilo-relay", path = "../tilo-relay" }
+atomic-file = {path="../../system/atomic-file"}
+ui = { package = "tilo-ui", path = "../../sdk/ui-core" }
+word-processor = {path="../../../apps/word-processor"}
+chat = {path="../../../apps/chat",default-features=false}
+qdoc = {path="../../doc/qdoc"}
+[dev-dependencies]
+qos-action-broker = {path="../../collab/qos-action-broker", features=["test-support"]}
+atomic-file = {path="../../system/atomic-file", features=["test-support"]}
+tempfile.workspace = true
+moq-net = { path = "../../../vendor/moq/rs/moq-net" }
+web-transport-quinn = { version = "0.12.1", default-features = false, features = ["ring"] }
+rustls.workspace = true

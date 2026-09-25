@@ -275,7 +275,11 @@ impl HistoryRegistration {
                     | HistoryPresentation::DomainWithAssets { .. },
                     HistorySourceRegistration::HostDocument { resource, .. }
                     | HistorySourceRegistration::OwnedDocument { resource, .. },
-                ) if resource.app_id == self.definition.app_id => {
+                ) if crate::application::lookup_compatible_first_party_app_ids(
+                    &resource.app_id,
+                    self.definition.app_id,
+                ) =>
+                {
                     if resource.profile_id.trim().is_empty()
                         || resource.workspace_id.trim().is_empty()
                     {
@@ -286,7 +290,11 @@ impl HistoryRegistration {
                     _,
                     HistorySourceRegistration::HostDocument { resource, .. }
                     | HistorySourceRegistration::OwnedDocument { resource, .. },
-                ) if resource.app_id != self.definition.app_id => {
+                ) if !crate::application::lookup_compatible_first_party_app_ids(
+                    &resource.app_id,
+                    self.definition.app_id,
+                ) =>
+                {
                     return Err(HistoryRegistrationError::ForeignSource);
                 }
                 (

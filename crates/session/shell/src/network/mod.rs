@@ -6,6 +6,7 @@ pub mod hub;
 pub mod identity;
 pub mod input_firewall;
 pub mod invite;
+pub(crate) mod native_media;
 pub mod protocol;
 pub mod replica;
 pub mod streaming;

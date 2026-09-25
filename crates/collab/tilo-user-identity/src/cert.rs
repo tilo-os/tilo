@@ -290,9 +290,23 @@ pub fn device_cert_signing_digest(cert: &DeviceCert) -> Result<[u8; 32], DeviceC
 /// [`DeviceCertError::BadSignature`] if the signature does not verify
 /// under it.
 pub fn verify_device_cert(cert: &DeviceCert) -> Result<(), DeviceCertError> {
+    let digest = signing_digest(DEVCERT_PREIMAGE_TAG, &cert.view())?;
+    // Hosts re-check the same certificates on every request and pump turn.
+    // A signature check is a pure function of (key, signed digest, signature):
+    // an exact triple that verified before verifies again. Only successes are
+    // remembered; every other input takes the full path below.
+    let mut triple = [0u8; 128];
+    triple[..32].copy_from_slice(&cert.user_public_key);
+    triple[32..64].copy_from_slice(&digest);
+    triple[64..].copy_from_slice(&cert.signature);
+    if verified_signatures()
+        .lock()
+        .is_ok_and(|seen| seen.contains(&triple))
+    {
+        return Ok(());
+    }
     let vk = ed25519_dalek::VerifyingKey::from_bytes(&cert.user_public_key)
         .map_err(|_| DeviceCertError::InvalidUserPublicKey)?;
-    let digest = signing_digest(DEVCERT_PREIMAGE_TAG, &cert.view())?;
     let sig = ed25519_dalek::Signature::from_bytes(&cert.signature);
     if vk.verify(&digest, &sig).is_err() {
         // The product rename must not revoke certificates already issued with
@@ -301,7 +315,21 @@ pub fn verify_device_cert(cert: &DeviceCert) -> Result<(), DeviceCertError> {
         vk.verify(&legacy_digest, &sig)
             .map_err(|_| DeviceCertError::BadSignature)?;
     }
+    if let Ok(mut seen) = verified_signatures().lock() {
+        if seen.len() >= VERIFIED_SIGNATURE_LIMIT {
+            seen.clear();
+        }
+        seen.insert(triple);
+    }
     Ok(())
+}
+
+const VERIFIED_SIGNATURE_LIMIT: usize = 4096;
+
+fn verified_signatures() -> &'static std::sync::Mutex<std::collections::HashSet<[u8; 128]>> {
+    static SEEN: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<[u8; 128]>>> =
+        std::sync::OnceLock::new();
+    SEEN.get_or_init(Default::default)
 }
 
 /// Full validation: signature + not-before + expiry.
@@ -423,6 +451,25 @@ mod tests {
             verify_device_cert(&cert).unwrap_err(),
             DeviceCertError::BadSignature
         );
+    }
+
+    #[test]
+    fn remembered_verification_never_accepts_a_changed_certificate() {
+        let (_root, cert) = fresh_cert(DeviceCapabilities::primary());
+        // Verify twice: the second check is answered by the remembered triple.
+        verify_device_cert(&cert).unwrap();
+        verify_device_cert(&cert).unwrap();
+        for tamper in [0usize, 1, 2, 3] {
+            let mut changed = cert.clone();
+            match tamper {
+                0 => changed.signature[5] ^= 0x01,
+                1 => changed.device_public_key[3] ^= 0x01,
+                2 => changed.issued_at_ns ^= 1,
+                _ => changed.user_public_key[7] ^= 0x01,
+            }
+            assert!(verify_device_cert(&changed).is_err(), "tamper {tamper}");
+        }
+        verify_device_cert(&cert).unwrap();
     }
 
     #[test]

@@ -434,3 +434,9 @@ fn _suppress_unused() {
     let _ = Duration::from_secs(1);
     let _: VecDeque<u8> = VecDeque::new();
 }
+
+#[allow(
+    unused_imports,
+    reason = "The native WorkspaceExt methods are selected by host-specific workspace code and test configurations."
+)]
+use shell::shell::state::WorkspaceExt as _;

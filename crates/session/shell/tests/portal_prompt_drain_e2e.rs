@@ -342,3 +342,9 @@ async fn a_request_that_cannot_be_shown_is_denied_rather_than_parked() {
     }
     panic!("dropping the prompt left the caller hung — the sender was not released");
 }
+
+#[allow(
+    unused_imports,
+    reason = "The native WorkspaceExt methods are selected by host-specific workspace code and test configurations."
+)]
+use shell::shell::state::WorkspaceExt as _;

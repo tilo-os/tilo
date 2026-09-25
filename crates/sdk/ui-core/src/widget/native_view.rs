@@ -731,7 +731,7 @@ mod tests {
         let mut view = NativeView::new("Calendar", backend(&calls));
         view.rect = Rect::new(10.0, 20.0, 110.0, 70.0);
         let host = NativeViewHost::headless(PlatformConventions::new(Platform::Windows), 1.5);
-        view.mount_native_view(&host);
+        crate::widget::mount_native_views(&mut view, &host);
         assert!(view.is_mounted());
         assert!(calls.borrow().contains(&Call::Geometry(NativeViewGeometry {
             logical: view.rect,
@@ -749,8 +749,8 @@ mod tests {
             &Theme::dark(),
             &PresenceCtx::default(),
         );
-        view.native_view_frame_start();
-        view.unmount_native_view();
+        crate::widget::native_view_frame_start(&mut view);
+        crate::widget::unmount_native_views(&mut view);
 
         let calls = calls.borrow();
         assert!(calls.contains(&Call::Platform(host.platform())));

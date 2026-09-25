@@ -23,7 +23,7 @@ use crate::envelope::ActionEnvelope;
 use crate::registry::ActionRegistry;
 
 fn now_secs() -> i64 {
-    use std::time::{SystemTime, UNIX_EPOCH};
+    use web_time::{SystemTime, UNIX_EPOCH};
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         // `i64::MAX` seconds since the epoch is ~292 billion years out —

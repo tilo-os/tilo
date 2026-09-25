@@ -127,6 +127,8 @@ fn decode_envelope(bytes: &[u8]) -> Result<SavedInstanceView, ThawError> {
 /// Exact explicit namespace retained across construction, close and save retry.
 pub struct InstanceViewStore {
     store: Rc<dyn DurableStore>,
+    /// The same explicit profile/device browser cache the record owner uses.
+    portable: Option<crate::portable_storage::PortableStorage>,
     device_id: String,
     workspace_id: String,
     #[allow(
@@ -179,10 +181,44 @@ impl InstanceViewStore {
         validate_identity(workspace_id)?;
         Ok(Self {
             store,
+            portable: None,
             device_id: device_id.into(),
             workspace_id: workspace_id.into(),
             profile_lifetime: None,
         })
+    }
+    /// Use the same explicit profile/device cache as the record owner.
+    pub fn portable(
+        cache: crate::portable_storage::PortableStorage,
+        workspace: &str,
+    ) -> Result<Self, ThawError> {
+        validate_identity(workspace)?;
+        let crate::portable_storage::ProfileNamespace::Portable { device, .. } = cache.namespace()
+        else {
+            return Err(ThawError::BindingMismatch);
+        };
+        Ok(Self {
+            // Views over a portable cache never open this store.
+            store: Rc::new(durable_store::MemoryStore::new()),
+            device_id: device.clone(),
+            workspace_id: workspace.into(),
+            portable: Some(cache),
+            profile_lifetime: None,
+        })
+    }
+    /// The explicit profile namespace these views are bound to; equal to the
+    /// record owner's canonical namespace for the same profile.
+    fn namespace(&self) -> String {
+        match &self.portable {
+            Some(cache) => crate::record::portable_namespace(cache),
+            None => self.store.namespace().to_owned(),
+        }
+    }
+    fn cache_key(&self, instance: u64) -> crate::portable_storage::StorageKey {
+        crate::portable_storage::StorageKey::View {
+            workspace: self.workspace_id.clone(),
+            instance,
+        }
     }
     pub(crate) fn with_profile_lifetime(
         mut self,
@@ -192,7 +228,7 @@ impl InstanceViewStore {
         self
     }
     pub(crate) fn matches_namespace(&self, namespace: &str, device: &str, workspace: &str) -> bool {
-        self.store.namespace() == namespace
+        self.namespace() == namespace
             && self.device_id == device
             && self.workspace_id == workspace
     }
@@ -216,14 +252,21 @@ impl InstanceViewStore {
     /// Reports I/O, malformed/versioned envelopes, invalid geometry and foreign bindings.
     /// Invalid source bytes are never repaired or replaced.
     pub fn load(&self, instance_id: u64) -> Result<Option<SavedInstanceView>, ThawError> {
-        let Some(stored) = self
-            .store
-            .read(&self.key(instance_id))
-            .map_err(storage_error)?
-        else {
-            return Ok(None);
+        let bytes = if let Some(cache) = &self.portable {
+            let Some(value) = cache.get(&self.cache_key(instance_id)) else {
+                return Ok(None);
+            };
+            value.bytes
+        } else {
+            let Some(stored) = self
+                .store
+                .read(&self.key(instance_id))
+                .map_err(storage_error)?
+            else {
+                return Ok(None);
+            };
+            stored.bytes
         };
-        let bytes = stored.bytes;
         let instance = decode_envelope(&bytes)?;
         self.validate(&instance, instance_id)?;
         Ok(Some(instance))
@@ -235,6 +278,13 @@ impl InstanceViewStore {
     pub fn save(&self, instance: &SavedInstanceView) -> Result<(), ThawError> {
         self.validate(instance, instance.instance_id)?;
         let bytes = postcard::to_stdvec(instance).map_err(ThawError::Envelope)?;
+        if let Some(cache) = &self.portable {
+            let key = self.cache_key(instance.instance_id);
+            return cache
+                .put(key.clone(), bytes, None)
+                .and_then(|()| cache.flush(&key))
+                .map_err(|e| ThawError::Io(std::io::Error::other(e)));
+        }
         let key = self.key(instance.instance_id);
         self.store
             .write(&key, WriteOp::Replace(bytes), None)

@@ -222,7 +222,7 @@ mod tests {
             if progress.is_done() {
                 break;
             }
-            std::thread::sleep(std::time::Duration::from_millis(5));
+            std::thread::sleep(web_time::Duration::from_millis(5));
         }
         assert!(progress.is_done(), "prefetch completed");
         assert_eq!(progress.bytes_read(), total);
@@ -238,7 +238,7 @@ mod tests {
             if progress.is_done() {
                 break;
             }
-            std::thread::sleep(std::time::Duration::from_millis(5));
+            std::thread::sleep(web_time::Duration::from_millis(5));
         }
         assert_eq!(progress.percent(), 100, "no total → 100 once done");
     }

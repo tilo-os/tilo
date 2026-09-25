@@ -50,6 +50,8 @@ on:
   pull_request:
     branches: ["main"]
     paths:
+      - "vendor/automerge/**"
+      - "vendor/hexane/**"
       - ".cargo/**"
       - "Cargo.toml"
       - "Cargo.lock"

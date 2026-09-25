@@ -41,6 +41,15 @@ impl WorkspaceView {
             rect: Rect::ZERO,
         }
     }
+    /// Apply the canonical workspace count and host-local selection.
+    pub fn reconcile(&mut self, count: usize, active: usize) -> bool {
+        let count = count.max(1);
+        let active = active.min(count.saturating_sub(1));
+        let changed = self.workspace_count != count || self.active_index != active;
+        self.workspace_count = count;
+        self.active_index = active;
+        changed
+    }
     pub fn active_index(&self) -> usize {
         self.active_index
     }
@@ -82,6 +91,12 @@ impl WorkspaceView {
 }
 
 impl Widget for WorkspaceView {
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        Some(self)
+    }
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
     fn sync(&mut self, _s: &mut AutoCommit, _p: &ObjId) {}
     fn update(&mut self, _s: &mut AutoCommit, _p: &ObjId) -> bool {
         if self.slide.is_settled() {

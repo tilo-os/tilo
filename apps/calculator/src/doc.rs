@@ -168,6 +168,19 @@ pub fn store(doc: &mut AutoCommit, model: &CalcModel) {
         put_if_changed(doc, &row, "deleted", false);
     }
 }
+
+/// Initialize one checked New record with the live empty Calculator model.
+/// Screenshot/demo fixtures never enter this path.
+pub fn initialize_empty(doc: &mut AutoCommit) -> Result<(), String> {
+    initialize(doc, &CalcModel::default())
+}
+
+/// Initialize the Calculator schema from an explicit model. Native live roots
+/// pass the empty model; screenshot/demo roots may pass their explicit fixture.
+pub fn initialize(doc: &mut AutoCommit, model: &CalcModel) -> Result<(), String> {
+    store(doc, model);
+    crate::framework_history::validate(doc)
+}
 fn put_graph_fixture(
     doc: &mut AutoCommit,
     rows: &ObjId,
@@ -206,6 +219,26 @@ pub fn load_into(doc: &AutoCommit, model: &mut CalcModel) -> bool {
 pub fn load(doc: &AutoCommit) -> Option<CalcModel> {
     let mut m = CalcModel::default();
     load_into(doc, &mut m).then_some(m)
+}
+
+/// Read a checked Existing record without migrating, seeding, or repairing it.
+/// Both current map documents and the Calculator's legacy list documents are
+/// projected by the same history schema used by native version restoration.
+pub fn load_existing(doc: &AutoCommit) -> Result<CalcModel, String> {
+    if !is_seeded(doc) {
+        return Err("Calculator record is missing its schema marker".into());
+    }
+    // Current keyed-map documents have one strict schema. Validate before the
+    // lossy UI projection can skip an invalid row or default an invalid field.
+    // Legacy list documents are validated by `project`'s dedicated list path.
+    if doc
+        .get(&ROOT, SCHEMA)
+        .map_err(|error| error.to_string())?
+        .is_some()
+    {
+        crate::framework_history::validate(doc)?;
+    }
+    crate::framework_history::project(doc)
 }
 
 #[cfg(test)]

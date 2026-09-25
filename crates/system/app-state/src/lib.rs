@@ -540,6 +540,20 @@ impl DocStore {
         )?)
     }
 
+    /// The existing room-scoped package-primary directory, with explicit custody.
+    ///
+    /// # Errors
+    /// Rejects relative roots and invalid package or room identifiers.
+    pub fn room_primary_dir_at(
+        profile_root: &Path,
+        package: &str,
+        room: &str,
+    ) -> Result<PathBuf, StoreError> {
+        validate_record_namespace(package, room)?;
+        validate_absolute_directory(profile_root)?;
+        Ok(profile_root.join(package).join(ROOMS_DIR).join(room))
+    }
+
     /// Resolve one record under an explicit profile root without consulting the environment.
     ///
     /// # Errors
@@ -1010,6 +1024,24 @@ pub fn decode_canonical(
     validate_canonical_schema_of(&doc, label)?;
     let repair = repair.then(|| doc.save());
     Ok((doc, repair))
+}
+
+/// Validate a canonical package/workspace identity independently of its storage adapter.
+///
+/// # Errors
+/// Rejects an invalid package id or workspace key.
+pub fn validate_record_namespace(package: &str, workspace: &str) -> Result<(), StoreError> {
+    validate_package_id(package)?;
+    validate_record_key(workspace)
+}
+
+/// Validate portable or filesystem document schema assignments without
+/// mutating bytes; the portable-record name for [`validate_canonical_schema_of`].
+///
+/// # Errors
+/// Rejects malformed, conflicting and newer schemas.
+pub fn validate_document_schema(doc: &AutoCommit, path: &Path) -> Result<(), StoreError> {
+    validate_canonical_schema_of(doc, path)
 }
 
 /// Validate every live schema assignment of a canonical document without

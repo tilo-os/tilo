@@ -7,6 +7,8 @@ license.workspace = true
 
 [features]
 default = []
+# Opus voice capture/playback without the video decoder stack.
+voice = ["dep:gstreamer", "dep:gstreamer-app"]
 # GStreamer decode: `playbin` diverts video through
 # `videoconvert ! appsink(RGBA)` and routes audio to `autoaudiosink`. Off by
 # default so hermetic builds, `--shots`, and CI do not require GStreamer.
@@ -21,8 +23,7 @@ decode = ["dep:gstreamer", "dep:gstreamer-app", "dep:gstreamer-video"]
 encode = ["dep:gstreamer"]
 
 [dependencies]
-bounded-command = { path = "../../system/bounded-command" }
-libc.workspace = true
+web-time = { version = "1", features = ["serde"] }
 # Transport CRDT. A tiny automerge document carries follow-the-host playback
 # state (playing / position / rate / epoch) between peers so a joiner follows
 # the host with drift correction. Same pin as `ui` so a single copy resolves.
@@ -64,3 +65,11 @@ tilo-test-env = { path = "../../dev/test-env" }
 
 [lints]
 workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+bounded-command = { path = "../../system/bounded-command" }
+libc.workspace = true
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+# Enable Automerge's own browser entropy and clock support.
+automerge = { workspace = true, features = ["wasm"] }

@@ -1,0 +1,45 @@
+[package]
+name = "kio"
+description = "Easy async"
+authors = ["Luke Curley"]
+repository = "https://github.com/moq-dev/moq"
+license = "MIT OR Apache-2.0"
+
+version = "0.5.9"
+edition = "2024"
+rust-version = "1.91"
+
+keywords = ["async", "producer", "consumer", "state", "sync"]
+categories = ["asynchronous", "concurrency"]
+
+[features]
+# Opt-in poll-driven wall-clock deadlines, backed by `web-async` (tokio on native,
+# wasmtimer in the browser). Off by default so kio stays runtime-free.
+time = ["dep:web-async"]
+tokio = ["dep:tokio"]
+
+[dependencies]
+smallvec = "1.15"
+tokio = { version = "1.48", features = ["time"], optional = true }
+web-async = { version = "0.1.5", features = ["tracing"], optional = true }
+
+# Loom swaps in its own Arc/Mutex/atomics so it can permute every interleaving.
+# It's a normal (not dev) dependency because `sync.rs` re-exports it from the
+# library itself, but `cfg(loom)` is never set outside `just rs loom`.
+[target.'cfg(loom)'.dependencies]
+loom = { version = "0.7.2", features = ["futures"] }
+
+[dev-dependencies]
+criterion = { version = "0.8" }
+tokio = { version = "1.48", features = ["macros", "rt", "test-util", "time"] }
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(loom)'] }
+
+[[bench]]
+name = "waiter"
+harness = false
+
+[[bench]]
+name = "channel"
+harness = false

@@ -17,7 +17,8 @@
 //! - [`process_lease`] — the PID + start-time pair carried across the
 //!   enrollment privilege boundary;
 //! - [`room_workspace_id`] / [`personal_continuity_workspace_id`] — the
-//!   stable relay shard ids every peer must derive identically.
+//!   stable relay shard ids every peer must derive identically, plus the
+//!   frozen qOS aliases an authenticated existing binding may still use.
 //!
 //! The serialized forms are persisted on disk and exchanged on the wire, so
 //! they are compatibility surfaces: `tests/formats.rs` pins an encoded
@@ -84,4 +85,78 @@ pub fn personal_continuity_workspace_id(user_public_key: &[u8; 32]) -> u64 {
     first8.copy_from_slice(&hash[..8]);
     let id = u64::from_le_bytes(first8);
     if id == 0 { 1 } else { id }
+}
+
+/// Both frozen room namespaces, derived only from the authenticated room UUID.
+/// The first entry is the current Tilo namespace; the second is deployed qOS.
+///
+/// # Errors
+/// Returns an error when the room is not a UUID.
+pub fn room_workspace_ids(room: &str) -> Result<[u64; 2], uuid::Error> {
+    let room = uuid::Uuid::parse_str(room)?;
+    Ok([
+        room_workspace_id(&room.to_string())?,
+        legacy_room_workspace_id(&room.to_string())?,
+    ])
+}
+
+/// Preserve the frozen qOS shard for an existing, authenticated room binding.
+///
+/// # Errors
+/// Returns an error when the room is not a UUID.
+pub fn legacy_room_workspace_id(room: &str) -> Result<u64, uuid::Error> {
+    let room = uuid::Uuid::parse_str(room)?;
+    let hash = blake3::derive_key("qos-room-transport-v1", room.to_string().as_bytes());
+    let mut first = [0; 8];
+    first.copy_from_slice(&hash[..8]);
+    Ok(u64::from_le_bytes(first).max(1))
+}
+
+/// Match a retained or subscribed binding without aliasing arbitrary numeric IDs.
+pub fn room_workspace_id_matches(room: &str, workspace: u64) -> bool {
+    room_workspace_ids(room).is_ok_and(|ids| ids.contains(&workspace))
+}
+
+/// Frozen legacy private shard; never changes an existing continuity directory.
+pub fn legacy_personal_continuity_workspace_id(user_public_key: &[u8; 32]) -> u64 {
+    let hash = blake3::derive_key("qos-personal-continuity-v1\0", user_public_key);
+    let mut first = [0; 8];
+    first.copy_from_slice(&hash[..8]);
+    u64::from_le_bytes(first).max(1)
+}
+
+/// Only the two namespaces derived from this authenticated identity are private.
+pub fn personal_continuity_workspace_id_matches(
+    user_public_key: &[u8; 32],
+    workspace: u64,
+) -> bool {
+    workspace == personal_continuity_workspace_id(user_public_key)
+        || workspace == legacy_personal_continuity_workspace_id(user_public_key)
+}
+
+#[cfg(test)]
+mod binding_tests {
+    #[test]
+    fn aliases_are_scoped_to_exact_room_and_root_identity() {
+        let room = "11111111-1111-4111-8111-111111111111";
+        let other = "22222222-2222-4222-8222-222222222222";
+        let ids = super::room_workspace_ids(room).unwrap();
+        assert_ne!(ids[0], ids[1]);
+        for id in ids {
+            assert!(super::room_workspace_id_matches(room, id));
+            assert!(!super::room_workspace_id_matches(other, id));
+            assert!(!super::room_workspace_id_matches("invalid", id));
+        }
+        for id in [
+            super::personal_continuity_workspace_id(&[7; 32]),
+            super::legacy_personal_continuity_workspace_id(&[7; 32]),
+        ] {
+            assert!(super::personal_continuity_workspace_id_matches(
+                &[7; 32], id
+            ));
+            assert!(!super::personal_continuity_workspace_id_matches(
+                &[8; 32], id
+            ));
+        }
+    }
 }

@@ -1,0 +1,245 @@
+use crate::origin;
+use crate::{
+	Error, Origin, bandwidth,
+	coding::{Reader, Stream, Writer},
+	lite::SessionInfo,
+	util::{MaybeBoxedExt, MaybeSendBox, TaskSet, err_only},
+};
+
+use std::task::Poll;
+
+use super::{DataType, PeerSetup, Publisher, PublisherConfig, Setup, Subscriber, SubscriberConfig, Version};
+
+pub(crate) struct SessionStart {
+	pub recv_bandwidth: Option<bandwidth::Consumer>,
+	pub driver: MaybeSendBox<'static, Result<(), Error>>,
+}
+
+/// Server: read the peer's single SETUP message off its Setup Stream before starting
+/// the session, so the caller can inspect the advertised path (and gate on it) before
+/// serving. lite-05+ only.
+///
+/// Blocks on the peer's Setup Stream, which every lite-05 endpoint opens at startup.
+/// Almost always the first unidirectional stream; any other uni stream that races
+/// ahead of it is `STOP_SENDING`-ed and skipped (we don't support proactive uni
+/// PUBLISH, so nothing legitimate precedes the SETUP today). The eventual home for
+/// out-of-order tolerance is the full session loop with deferred origin binding.
+///
+/// Pass the returned [`Setup`] to [`start`] as its `peer_setup` so PROBE gating still
+/// resolves without re-reading the (consumed) stream.
+pub async fn accept_setup<S: web_transport_trait::Session>(session: &S, version: Version) -> Result<Setup, Error> {
+	loop {
+		let stream = session.accept_uni().await.map_err(Error::from_transport)?;
+		let mut reader = Reader::new(stream, version);
+
+		match reader.decode::<DataType>().await? {
+			DataType::Setup => return reader.decode::<Setup>().await,
+			// A non-SETUP uni stream this early is unexpected (GROUP needs a prior
+			// subscribe). Reject it and keep waiting rather than failing the session.
+			_ => reader.abort(&Error::UnexpectedStream),
+		}
+	}
+}
+
+/// Everything one moq-lite session needs to start.
+pub struct Config<S: web_transport_trait::Session> {
+	/// The transport carrying the session. Cloned into every loop that outlives
+	/// [`start`], so the connection closes when the last of them drops.
+	pub session: S,
+
+	/// The stream used to set up the session, after exchanging setup messages.
+	/// NOTE: No longer used in draft-03.
+	pub setup_stream: Option<Stream<S, Version>>,
+
+	/// We will publish any local broadcasts from this origin, when set.
+	pub publish: Option<origin::Consumer>,
+
+	/// We will consume any remote broadcasts, inserting them into this origin, when
+	/// set. Traffic stats are attributed through these origin handles: tag them with
+	/// `origin::{Consumer, Producer}::with_stats` before calling [`start`].
+	pub subscribe: Option<origin::Producer>,
+
+	/// The origin (hop) id assigned to the peer, used whenever the peer doesn't
+	/// declare one itself. See `Client::with_peer_origin`.
+	pub peer_origin: Option<Origin>,
+
+	/// The version of the protocol to use.
+	pub version: Version,
+
+	/// The capabilities (and optional request path) we advertise in our SETUP message.
+	/// Only sent on versions with a Setup Stream (lite-05+); ignored otherwise.
+	/// Its `origin` is filled in here from the attached origin handles.
+	pub our_setup: Setup,
+
+	/// The peer's SETUP, when it was already read before [`start`] (e.g. a server that
+	/// gated on the client's path via [`accept_setup`]). Seeds the peer-setup slot so
+	/// the Setup Stream isn't expected again. `None` reads it from the wire as usual.
+	pub peer_setup: Option<Setup>,
+}
+
+/// Start a lite session.
+///
+/// Returns the receive-bandwidth consumer (if any) plus the driver that runs the session.
+pub fn start<S: web_transport_trait::Session>(config: Config<S>) -> Result<SessionStart, Error> {
+	let Config {
+		session,
+		setup_stream,
+		publish,
+		subscribe,
+		peer_origin,
+		version,
+		mut our_setup,
+		peer_setup,
+	} = config;
+
+	let recv_bw = bandwidth::Producer::new();
+
+	let recv_bw_consumer = match version {
+		Version::Lite01 | Version::Lite02 => None,
+		_ => Some(recv_bw.consume()),
+	};
+
+	let recv_bw_for_sub = match version {
+		Version::Lite01 | Version::Lite02 => None,
+		_ => Some(recv_bw),
+	};
+
+	// Declare our origin (hop) id in SETUP so the peer can serve our
+	// subscriptions from a route that does not flow through us. Taken from the
+	// caller's real handles before the empty-half defaulting below, since those
+	// placeholders carry throwaway ids that never appear in a hop chain. The
+	// publish identity is what we stamp onto forwarded announcements, so it
+	// wins when both halves are wired (they share it in practice).
+	if our_setup.origin.is_none() {
+		our_setup.origin = publish
+			.as_deref()
+			.or(subscribe.as_deref())
+			.copied()
+			.filter(|origin| origin.id() != 0);
+	}
+
+	// Always run both loops so inbound control (Subscribe/Announce/Probe/Goaway)
+	// and GROUP streams are accepted regardless of which halves the caller wired.
+	// An unset half gets an empty origin: an empty publish origin announces nothing
+	// (and answers the peer's announce-interest with an empty set), and an empty
+	// subscribe origin issues no ANNOUNCE_PLEASE.
+	let publish = publish.unwrap_or_else(|| origin::Producer::empty(Origin::random()).consume());
+	let subscribe = subscribe.unwrap_or_else(|| origin::Producer::empty(Origin::random()));
+
+	// Publisher and Subscriber each derive their identity from their own
+	// attached origin (publish.info / subscribe.info). This is what gets
+	// stamped onto outbound hops and checked against incoming hops, so it
+	// must be stable across every session that shares the local origin.
+	// Required for cross-session cluster loop detection.
+	// Shared slot for the peer's SETUP (lite-05+). The subscriber writes it when it
+	// reads the peer's Setup stream; capability-gated streams (PROBE) wait on it.
+	// When the caller already read it (a gated server accept), seed the slot so the
+	// Setup stream isn't expected on the wire again.
+	let peer_setup_slot = PeerSetup::default();
+	if let Some(setup) = peer_setup {
+		peer_setup_slot.set(setup);
+	}
+	let peer_setup = peer_setup_slot;
+	let (tasks, task_set) = TaskSet::new();
+
+	// Read out before the setup task takes ownership below.
+	let our_cost = our_setup.cost;
+
+	// Advertise our own capabilities on a uni Setup Stream, then FIN. Best-effort:
+	// a failure here just means the peer falls back to "no capabilities" for us.
+	if version.has_setup_stream() {
+		let session = session.clone();
+		tasks.push(async move {
+			if let Err(err) = send_setup(&session, our_setup, version).await {
+				tracing::debug!(%err, "failed to send setup");
+			}
+		});
+	}
+
+	let publisher = Publisher::new(PublisherConfig {
+		session: session.clone(),
+		origin: publish,
+		version,
+		peer_setup: peer_setup.clone(),
+		peer_origin,
+	});
+	let subscriber = Subscriber::new(SubscriberConfig {
+		session: session.clone(),
+		origin: subscribe,
+		recv_bandwidth: recv_bw_for_sub,
+		version,
+		peer_setup,
+		peer_origin,
+		// Local policy for what pulling from this peer costs. Set only when we
+		// configured a price; otherwise the subscriber charges what the peer declared
+		// for its own egress.
+		cost: our_cost,
+		tasks,
+	});
+
+	let driver = async move {
+		let res = {
+			// Only a session-stream error ends the race; its clean completion (no
+			// stream) parks so the publisher and subscriber keep running.
+			let mut session = std::pin::pin!(err_only(run_session(setup_stream)));
+			let mut publisher = std::pin::pin!(publisher.run());
+			let mut subscriber = std::pin::pin!(subscriber.run(task_set));
+			kio::wait(|waiter| {
+				if let Poll::Ready(err) = waiter.poll_future(session.as_mut()) {
+					return Poll::Ready(Err(err));
+				}
+				if let Poll::Ready(res) = waiter.poll_future(publisher.as_mut()) {
+					return Poll::Ready(res);
+				}
+				if let Poll::Ready(res) = waiter.poll_future(subscriber.as_mut()) {
+					return Poll::Ready(res);
+				}
+				Poll::Pending
+			})
+			.await
+		};
+
+		match &res {
+			Err(Error::Transport(_)) => {
+				tracing::info!("session terminated");
+				session.close(1, "");
+			}
+			Err(err) => {
+				tracing::warn!(%err, "session error");
+				session.close(err.to_code(), err.to_string().as_ref());
+			}
+			_ => {
+				tracing::info!("session closed");
+				session.close(0, "");
+			}
+		}
+
+		res
+	}
+	.maybe_boxed();
+
+	Ok(SessionStart {
+		recv_bandwidth: recv_bw_consumer,
+		driver,
+	})
+}
+
+/// Open a unidirectional Setup Stream, send our single SETUP message, and FIN.
+async fn send_setup<S: web_transport_trait::Session>(session: &S, setup: Setup, version: Version) -> Result<(), Error> {
+	let stream = session.open_uni().await.map_err(Error::from_transport)?;
+	let mut writer = Writer::new(stream, version);
+	writer.encode(&super::DataType::Setup).await?;
+	writer.encode(&setup).await?;
+	writer.finish()?;
+	writer.closed().await
+}
+
+// TODO do something useful with this
+async fn run_session<S: web_transport_trait::Session>(stream: Option<Stream<S, Version>>) -> Result<(), Error> {
+	if let Some(mut stream) = stream {
+		while let Some(_info) = stream.reader.decode_maybe::<SessionInfo>().await? {}
+		return Err(Error::Cancel);
+	}
+
+	Ok(())
+}

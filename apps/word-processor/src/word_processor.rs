@@ -2176,6 +2176,54 @@ impl WordProcessor {
         }
     }
 
+    /// Initialize a new canonical document before an application projects it.
+    pub fn initialize_empty_document(state: &mut AutoCommit) -> Result<(), String> {
+        let mut editor = Self::new();
+        editor.bind(state, &automerge::ROOT);
+        Ok(())
+    }
+
+    /// Project an admitted document without seeding schema, styles or paragraphs.
+    pub fn from_document(state: &AutoCommit) -> Result<Self, String> {
+        let containers =
+            qdoc::model::open(state, &automerge::ROOT).map_err(|error| error.to_string())?;
+        let mut editor = Self::new();
+        editor.ids = Some(qdoc::model::seeded_id_gen(state, &containers));
+        editor.containers = Some(containers);
+        editor.reconcile(state);
+        Ok(editor)
+    }
+
+    /// Reconcile caret state without authoring document changes.
+    pub fn reconcile(&mut self, state: &AutoCommit) {
+        // The caret's block has to exist in the *active region's* blocks, not
+        // the body's — otherwise a caret seated in a header or footer reads as
+        // stray on every body-only check and gets dragged back to the body.
+        let mut blocks = self.region_blocks_in_order(state);
+        if blocks.is_empty() {
+            // The running head being edited has lost its last block, so there
+            // is nothing there to type into and the body is the context again.
+            self.region = Region::Body;
+            blocks = self.region_blocks_in_order(state);
+        }
+        if blocks.contains(&self.caret.block) {
+            // clamp offset to the (possibly remotely-shrunk) block length
+            let len = self.block_len(state, &self.caret.block);
+            if self.caret.offset > len {
+                self.caret.offset = len;
+            }
+        } else if let Some(first) = blocks.first().cloned() {
+            // Nothing seated yet, or the block the caret was on is gone. The
+            // first position of this region is where to be, and an anchor
+            // into a vanished block must not survive it.
+            self.caret = Caret {
+                block: first,
+                offset: 0,
+            };
+            self.selection_anchor = None;
+        }
+    }
+
     /// Resolve the document model under `root` (initialising the schema if
     /// absent), guarantee at least one block, and keep the caret on a real block.
     pub fn bind(&mut self, state: &mut AutoCommit, root: &ObjId) {
@@ -2229,32 +2277,7 @@ impl WordProcessor {
             };
             dm.insert_block(None, "paragraph");
         }
-        // The caret's block has to exist in the *active region's* blocks, not
-        // the body's — otherwise a caret seated in a header or footer reads as
-        // stray on every body-only check and gets dragged back to the body.
-        let mut blocks = self.region_blocks_in_order(state);
-        if blocks.is_empty() {
-            // The running head being edited has lost its last block, so there
-            // is nothing there to type into and the body is the context again.
-            self.region = Region::Body;
-            blocks = self.region_blocks_in_order(state);
-        }
-        if blocks.contains(&self.caret.block) {
-            // clamp offset to the (possibly remotely-shrunk) block length
-            let len = self.block_len(state, &self.caret.block);
-            if self.caret.offset > len {
-                self.caret.offset = len;
-            }
-        } else if let Some(first) = blocks.first().cloned() {
-            // Nothing seated yet, or the block the caret was on is gone. The
-            // first position of this region is where to be, and an anchor
-            // into a vanished block must not survive it.
-            self.caret = Caret {
-                block: first,
-                offset: 0,
-            };
-            self.selection_anchor = None;
-        }
+        self.reconcile(state);
     }
 
     // ---- region-aware primitives -------------------------------------------
@@ -2518,8 +2541,7 @@ impl WordProcessor {
         // `DocMut::remove_mark`, which uses `unmark(.., ExpandMark::After)`).
         if let Some(container) = self.region_container_obj(state)
             && let Some(obj) = region_block_obj(state, &container, block)
-            && let Ok(Some((automerge::Value::Object(automerge::ObjType::Text), tid))) =
-                state.get(&obj, qdoc::schema::BLOCK_TEXT)
+            && let Some(tid) = qdoc::model::ensure_block_text(state, &obj)
         {
             let _ = state.unmark(&tid, name, start, end, automerge::marks::ExpandMark::After);
         }

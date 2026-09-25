@@ -2177,6 +2177,7 @@ impl Widget for DbClientApp {
             self.modal.open_new();
             self.dirty = true;
         }
+        crate::doc::adopt_shared_schema(state);
         if !self.seeded {
             // Only the demo build seeds a starter query; the live editor
             // opens empty so nothing references a database that isn't there.

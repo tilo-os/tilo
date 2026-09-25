@@ -27,6 +27,8 @@
 //! [`take_dispatch`](ActionPalette::take_dispatch) (actions) and
 //! [`take_navigation`](ActionPalette::take_navigation) (content).
 
+use crate::bound_dispatch::{DeferredIntent, PreparedActionIntent};
+
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 
@@ -91,8 +93,8 @@ enum RowResolution {
 #[derive(Clone)]
 enum ActionKind {
     /// Fires immediately with this pre-encoded action.
-    Immediate {
-        encoded: EncodedAction,
+    NoArgument {
+        intent: PreparedActionIntent,
         context: ActionContext,
         kind: OperationKind,
         confirmation: ConfirmationPolicy,
@@ -120,13 +122,21 @@ enum ActionKind {
 struct ArgState {
     bound: Option<crate::bound_dispatch::BoundActionTarget>,
     address: tilo_actions::ActionAddress,
+    history_target: Option<crate::bound_dispatch::legacy_document::LocalResourceTarget>,
+    history_draft_identity: Option<Result<crate::bound_dispatch::ControlIdentity, String>>,
 }
 
+#[derive(Clone)]
 struct ConfirmState {
     pending: PendingOperation,
     expected: String,
 }
 
+fn confirmation_instruction(expected: &str) -> String {
+    format!("Type {expected} to confirm")
+}
+
+#[derive(Clone)]
 enum PendingInput {
     Immediate,
     Text(String),
@@ -135,16 +145,23 @@ enum PendingInput {
 }
 
 /// A palette activation after address resolution and argument collection.
+#[derive(Clone)]
 pub struct PendingOperation {
+    pub(crate) ordinary: Option<crate::bound_dispatch::OrdinaryConfirmation>,
     pub(crate) bound: Option<crate::bound_dispatch::BoundActionTarget>,
     /// The address whose current authority must still be present at dispatch.
     pub address: tilo_actions::ActionAddress,
-    pub encoded: EncodedAction,
+    intent: PreparedActionIntent,
     pub context: ActionContext,
     pub kind: OperationKind,
     input: PendingInput,
     confirmation: ConfirmationPolicy,
     confirmation_evidence: serde_json::Value,
+    pub(crate) history_target: Option<crate::bound_dispatch::legacy_document::LocalResourceTarget>,
+    pub(crate) history_draft_identity:
+        Option<Result<crate::bound_dispatch::ControlIdentity, String>>,
+    pub(crate) history_identity: Option<Result<crate::bound_dispatch::ControlIdentity, String>>,
+    pub(crate) history_witness: Option<Result<crate::bound_dispatch::ControlWitness, String>>,
 }
 
 /// The confirmation `spec` needs for exactly this collected input. A generic
@@ -168,6 +185,32 @@ fn effective_confirmation(
 }
 
 impl PendingOperation {
+    /// A fixed/prepared value, when this intent already has one. Deferred
+    /// creation deliberately has no encoding until final owner execution.
+    pub fn encoded(&self) -> Option<&EncodedAction> {
+        self.intent.encoded()
+    }
+
+    pub(crate) fn encode_at_local_owner(
+        &self,
+        resources: &[Resource],
+    ) -> Result<EncodedAction, tilo_actions::DoorError> {
+        let spec = tilo_actions::door::resolve(resources, &self.address)
+            .ok_or_else(|| tilo_actions::DoorError::Unknown(self.address.clone()))?;
+        match &self.intent {
+            PreparedActionIntent::Encoded(encoded) => Ok(encoded.clone()),
+            PreparedActionIntent::Deferred(intent) => {
+                intent.validate(spec)?;
+                if spec.locus != tilo_actions::ExecutionLocus::ClientLocal {
+                    return Err(tilo_actions::DoorError::Failed(
+                        "Deferred server execution must use the address-based broker door".into(),
+                    ));
+                }
+                tilo_actions::door::encode(resources, &self.address, None)
+            }
+        }
+    }
+
     /// Reconstruct the door argument collected by the palette. Keeping the
     /// typed JSON prefix makes palette, semantic, button, and agent calls use
     /// the same strict binder in the application host.
@@ -181,8 +224,44 @@ impl PendingOperation {
         }
     }
 
+    pub(crate) fn has_valid_input(&self) -> bool {
+        !matches!(self.input, PendingInput::Invalid)
+    }
+
     pub fn confirmation_evidence(&self) -> &serde_json::Value {
         &self.confirmation_evidence
+    }
+
+    pub(crate) fn control_invocation(&self) -> Option<tilo_actions::ControlInvocation> {
+        let arguments = match &self.input {
+            PendingInput::Immediate => serde_json::Map::new(),
+            // Text is retained in continuation_arguments/wire_argument. This
+            // address-only descriptor must never invent a JSON parameter schema.
+            PendingInput::Text(_) => serde_json::Map::new(),
+            PendingInput::Json(value) => serde_json::from_str(value).ok()?,
+            PendingInput::Invalid => return None,
+        };
+        Some(tilo_actions::ControlInvocation {
+            address: self.address.clone(),
+            arguments,
+        })
+    }
+
+    pub(crate) fn continuation_arguments(
+        &self,
+    ) -> Option<crate::bound_dispatch::ControlContinuationArguments> {
+        match &self.input {
+            PendingInput::Immediate => {
+                Some(crate::bound_dispatch::ControlContinuationArguments::Immediate)
+            }
+            PendingInput::Text(value) => Some(
+                crate::bound_dispatch::ControlContinuationArguments::Text(value.clone()),
+            ),
+            PendingInput::Json(value) => serde_json::from_str(value)
+                .ok()
+                .map(crate::bound_dispatch::ControlContinuationArguments::Json),
+            PendingInput::Invalid => None,
+        }
     }
 }
 
@@ -216,6 +295,8 @@ pub struct ActionPalette {
     provider_complete: Vec<bool>,
     next_provider: usize,
     search_query: String,
+    /// A revoked selection stays unselected until restored or deliberately changed.
+    missing_selection: Option<String>,
     search_generation: u64,
     search_announcement: Option<String>,
     open: bool,
@@ -226,6 +307,9 @@ pub struct ActionPalette {
     confirm: Option<ConfirmState>,
     /// A ready-to-dispatch action, set on activation, drained by `take_dispatch`.
     pending_dispatch: Option<PendingOperation>,
+    history_suspended: bool,
+    history_review_required: bool,
+    history_resolution_error: Option<String>,
     ambient_context: Option<ActionContext>,
     /// A navigation target, set on activation, drained by `take_navigation`.
     pending_nav: Option<(String, Option<crate::bound_dispatch::CallbackBinding>)>,
@@ -239,6 +323,10 @@ pub struct ActionPalette {
     /// does not construct a font system every frame the palette is open.
     measure: Option<TextRenderer>,
     field_source: PaletteFieldSource,
+    request_generation: uuid::Uuid,
+    controls: crate::widget::Row,
+    controls_node: Option<NodeId>,
+    command: std::rc::Rc<std::cell::Cell<Option<bool>>>,
 }
 
 enum PaletteFieldSource {
@@ -282,6 +370,18 @@ impl ActionPalette {
     }
 
     fn with_source(measure: Option<TextRenderer>, field_source: PaletteFieldSource) -> Self {
+        let command = std::rc::Rc::new(std::cell::Cell::new(None));
+        let submit = command.clone();
+        let cancel = command.clone();
+        let controls = crate::widget::Row::new()
+            .push(Box::new(
+                crate::widget::Button::new("palette-submit", "Confirm", None)
+                    .on_click(move || submit.set(Some(true))),
+            ))
+            .push(Box::new(
+                crate::widget::Button::new("palette-cancel", "Cancel", None)
+                    .on_click(move || cancel.set(Some(false))),
+            ));
         Self {
             field: field_source
                 .build()
@@ -303,12 +403,16 @@ impl ActionPalette {
             provider_complete: Vec::new(),
             next_provider: 0,
             search_query: String::new(),
+            missing_selection: None,
             search_generation: 0,
             search_announcement: None,
             open: false,
             arg: None,
             confirm: None,
             pending_dispatch: None,
+            history_suspended: false,
+            history_review_required: false,
+            history_resolution_error: None,
             ambient_context: None,
             pending_nav: None,
             rect: Rect::ZERO,
@@ -316,6 +420,10 @@ impl ActionPalette {
             field_node: None,
             measure,
             field_source,
+            request_generation: uuid::Uuid::new_v4(),
+            controls,
+            controls_node: None,
+            command,
         }
     }
 
@@ -338,7 +446,32 @@ impl ActionPalette {
     /// a selected row can then disappear/refuse safely instead of changing the
     /// user's selection to a different action during the same key press.
     pub fn refresh_open_resources(&mut self, resources: &[Resource]) {
+        if self.history_suspended {
+            return;
+        }
         self.resources = resources.to_vec();
+    }
+
+    /// Refresh displayed authority asynchronously without moving an existing
+    /// selection onto a different control. Argument/confirmation fields retain
+    /// their original address; dispatch still rechecks the fresh authority.
+    pub fn refresh_visible_resources(&mut self, resources: &[Resource]) {
+        self.resources = resources.to_vec();
+        if self.in_argument_mode() {
+            return;
+        }
+        let selected = self
+            .results
+            .selected_action_id()
+            .map(str::to_owned)
+            .or_else(|| self.missing_selection.take());
+        let query = self.field.value().to_owned();
+        self.rebuild(&query);
+        if let Some(id) = selected {
+            if !self.results.restore_action_selection(&id) {
+                self.missing_selection = Some(id);
+            }
+        }
     }
 
     /// Resource ids referenced by the current canonical search rows.
@@ -383,12 +516,361 @@ impl ActionPalette {
         self.open
     }
 
+    pub(crate) fn activate_ordinary(
+        &mut self,
+        request: crate::bound_dispatch::OrdinaryConfirmation,
+    ) {
+        use crate::bound_dispatch::ControlContinuationArguments;
+        let input = match &request.arguments {
+            ControlContinuationArguments::Immediate => PendingInput::Immediate,
+            ControlContinuationArguments::Text(value) => PendingInput::Text(value.clone()),
+            ControlContinuationArguments::Json(value) => {
+                PendingInput::Json(serde_json::Value::Object(value.clone()).to_string())
+            }
+        };
+        let bound = match &request.target {
+            crate::bound_dispatch::legacy_document::LocalResourceTarget::Component(target) => {
+                Some(target.clone())
+            }
+            _ => None,
+        };
+        let pending = PendingOperation {
+            address: request.address.clone(),
+            intent: request.intent().clone(),
+            context: request.context.clone(),
+            kind: request.kind(),
+            input,
+            confirmation: request.confirmation().clone(),
+            confirmation_evidence: serde_json::json!({}),
+            bound,
+            ordinary: Some(request),
+            history_target: None,
+            history_draft_identity: None,
+            history_identity: None,
+            history_witness: None,
+        };
+        self.open = true;
+        self.arg = None;
+        self.pending_dispatch = None;
+        self.queue_or_confirm(pending.clone(), pending.confirmation);
+    }
+
+    pub(crate) fn ordinary_request(&self) -> Option<&crate::bound_dispatch::OrdinaryConfirmation> {
+        self.pending_dispatch
+            .as_ref()
+            .or_else(|| self.confirm.as_ref().map(|s| &s.pending))?
+            .ordinary
+            .as_ref()
+    }
+
+    /// Capture a palette-row request immediately after the real argument/row
+    /// transition, before any later host frame can change its owner or value.
+    pub(crate) fn ordinary_capture_request(&self) -> Option<PendingOperation> {
+        self.pending_dispatch
+            .as_ref()
+            .or_else(|| self.confirm.as_ref().map(|s| &s.pending))
+            .filter(|p| {
+                p.ordinary.is_none()
+                    && p.history_target.is_none()
+                    && !matches!(p.confirmation, ConfirmationPolicy::None)
+            })
+            .cloned()
+    }
+    pub(crate) fn retain_ordinary(&mut self, request: crate::bound_dispatch::OrdinaryConfirmation) {
+        if let Some(p) = self.pending_dispatch.as_mut() {
+            p.ordinary = Some(request);
+        } else if let Some(c) = self.confirm.as_mut() {
+            c.pending.ordinary = Some(request);
+        }
+    }
+    pub(crate) fn is_presented(&self) -> bool {
+        self.open && !self.history_suspended
+    }
+    fn target(&self, part: &str) -> String {
+        format!("ordinary-confirmation:{}:{part}", self.request_generation)
+    }
+    fn drain_command(&mut self, doc: &mut AutoCommit, path: &ObjId) {
+        match self.command.take() {
+            Some(true) => {
+                self.focus_part(0);
+                self.handle_key(
+                    &crate::synthetic_input::key_event(
+                        &Key::Named(NamedKey::Enter),
+                        ElementState::Pressed,
+                    ),
+                    &Modifiers::default(),
+                    doc,
+                    path,
+                );
+            }
+            Some(false) => self.close(),
+            None => {}
+        }
+    }
+
+    fn focus_part(&mut self, index: usize) {
+        self.field.set_focused(index == 0);
+        for (child, control) in self.controls.children_mut().into_iter().enumerate() {
+            control.set_focus(index == child + 1);
+        }
+    }
+    pub(crate) fn route_event(
+        &mut self,
+        event: &WindowEvent,
+        scale: f64,
+        modifiers: &Modifiers,
+        doc: &mut AutoCommit,
+        path: &ObjId,
+    ) -> bool {
+        if !self.is_presented() {
+            return false;
+        }
+        if self.handle_key(event, modifiers, doc, path) {
+            return true;
+        }
+        let mut handled = false;
+        let mut focus = None;
+        if let Some(node) = self.controls_node {
+            self.controls.handle_event(
+                event,
+                scale,
+                modifiers,
+                doc,
+                path,
+                &mut handled,
+                &mut focus,
+                node,
+                &self.field_taffy,
+            );
+            if let Some(focus) = focus {
+                if let Some(index) = self
+                    .field_taffy
+                    .children(node)
+                    .ok()
+                    .and_then(|children| children.iter().position(|child| *child == focus))
+                {
+                    self.focus_part(index + 1);
+                }
+            }
+        }
+        if !handled {
+            if let Some(node) = self.field_node {
+                let mut focus = None;
+                self.field.handle_event(
+                    event,
+                    scale,
+                    modifiers,
+                    doc,
+                    path,
+                    &mut handled,
+                    &mut focus,
+                    node,
+                    &self.field_taffy,
+                );
+                if focus.is_some() {
+                    self.focus_part(0);
+                }
+            }
+        }
+        self.drain_command(doc, path);
+        true
+    }
+
+    pub(crate) fn suspend_for_history(&mut self) {
+        self.history_suspended = true;
+        self.request_generation = uuid::Uuid::new_v4();
+    }
+
+    pub(crate) fn history_has_custody(&self) -> bool {
+        self.history_resolution_error.is_some()
+            || self
+                .pending_dispatch
+                .as_ref()
+                .is_some_and(|pending| pending.history_target.is_some())
+            || self
+                .confirm
+                .as_ref()
+                .is_some_and(|confirm| confirm.pending.history_target.is_some())
+            || self
+                .arg
+                .as_ref()
+                .is_some_and(|arg| arg.history_target.is_some())
+    }
+
+    pub(crate) fn history_pending_bound_target(
+        &self,
+    ) -> Option<crate::bound_dispatch::BoundActionTarget> {
+        self.pending_dispatch
+            .as_ref()
+            .and_then(|pending| pending.bound.clone())
+            .or_else(|| {
+                self.confirm
+                    .as_ref()
+                    .and_then(|confirm| confirm.pending.bound.clone())
+            })
+            .or_else(|| self.arg.as_ref().and_then(|arg| arg.bound.clone()))
+    }
+
+    pub(crate) fn history_pending_address(&self) -> Option<tilo_actions::ActionAddress> {
+        self.pending_dispatch
+            .as_ref()
+            .map(|pending| pending.address.clone())
+            .or_else(|| {
+                self.confirm
+                    .as_ref()
+                    .map(|state| state.pending.address.clone())
+            })
+            .or_else(|| self.arg.as_ref().map(|state| state.address.clone()))
+    }
+
+    pub(crate) fn history_pending_invocation(&self) -> Option<tilo_actions::ControlInvocation> {
+        self.pending_dispatch
+            .as_ref()
+            .and_then(PendingOperation::control_invocation)
+            .or_else(|| {
+                self.confirm
+                    .as_ref()
+                    .and_then(|state| state.pending.control_invocation())
+            })
+    }
+
+    pub(crate) fn history_pending_continuation_arguments(
+        &self,
+    ) -> Option<crate::bound_dispatch::ControlContinuationArguments> {
+        self.pending_dispatch
+            .as_ref()
+            .and_then(PendingOperation::continuation_arguments)
+            .or_else(|| {
+                self.confirm
+                    .as_ref()
+                    .and_then(|state| state.pending.continuation_arguments())
+            })
+    }
+
+    pub(crate) fn history_exact_capture_request(
+        &self,
+    ) -> Option<(
+        crate::bound_dispatch::legacy_document::LocalResourceTarget,
+        tilo_actions::ControlInvocation,
+        crate::bound_dispatch::ControlContinuationArguments,
+    )> {
+        let pending = self
+            .pending_dispatch
+            .as_ref()
+            .or_else(|| self.confirm.as_ref().map(|state| &state.pending))?;
+        if pending.history_witness.is_some() {
+            return None;
+        }
+        Some((
+            pending.history_target.clone()?,
+            pending.control_invocation()?,
+            pending.continuation_arguments()?,
+        ))
+    }
+
+    pub(crate) fn retain_history_exact_witness(
+        &mut self,
+        witness: Result<crate::bound_dispatch::ControlWitness, String>,
+    ) {
+        let identity = witness
+            .as_ref()
+            .map(crate::bound_dispatch::ControlWitness::identity)
+            .cloned()
+            .map_err(Clone::clone);
+        if let Some(pending) = self.pending_dispatch.as_mut() {
+            pending.history_identity = Some(identity);
+            pending.history_witness = Some(witness);
+        } else if let Some(confirm) = self.confirm.as_mut() {
+            confirm.pending.history_identity = Some(identity);
+            confirm.pending.history_witness = Some(witness);
+        }
+    }
+
+    pub(crate) fn retain_history_custody(
+        &mut self,
+        target: crate::bound_dispatch::legacy_document::LocalResourceTarget,
+        identity: Option<Result<crate::bound_dispatch::ControlIdentity, String>>,
+        witness: Option<Result<crate::bound_dispatch::ControlWitness, String>>,
+    ) {
+        // An unfinished request gets one baseline, including failed evidence.
+        if self.history_has_custody() {
+            return;
+        }
+        if let Some(pending) = self.pending_dispatch.as_mut() {
+            pending.history_target = Some(target);
+            pending.history_identity = identity;
+            pending.history_witness = witness;
+        } else if let Some(confirm) = self.confirm.as_mut() {
+            confirm.pending.history_target = Some(target);
+            confirm.pending.history_identity = identity;
+            confirm.pending.history_witness = witness;
+        } else if let Some(arg) = self.arg.as_mut() {
+            arg.history_target = Some(target);
+            arg.history_draft_identity = identity;
+        }
+    }
+
+    pub(crate) fn retain_history_resolution_error(&mut self, reason: impl Into<String>) {
+        if !self.history_has_custody() {
+            self.history_resolution_error = Some(reason.into());
+        }
+    }
+
+    pub(crate) fn retain_history_refusal(
+        &mut self,
+        pending: PendingOperation,
+        reason: impl Into<String>,
+    ) {
+        let reason = reason.into();
+        self.pending_dispatch = Some(pending);
+        self.history_review_required = true;
+        self.open = true;
+        self.search_announcement = Some(reason);
+    }
+
+    pub(crate) fn resume_after_history(&mut self) {
+        self.history_suspended = false;
+        let Some(mut pending) = self
+            .pending_dispatch
+            .take()
+            .or_else(|| self.confirm.take().map(|state| state.pending))
+        else {
+            return;
+        };
+        pending.confirmation_evidence = serde_json::json!({});
+        let expected = match &pending.confirmation {
+            ConfirmationPolicy::None => {
+                self.pending_dispatch = Some(pending);
+                self.history_review_required = true;
+                self.open = true;
+                return;
+            }
+            ConfirmationPolicy::Confirm => "CONFIRM".to_owned(),
+            ConfirmationPolicy::Phrase { phrase } => phrase.clone(),
+        };
+        self.field = self.field_source.build();
+        self.field
+            .set_placeholder(&confirmation_instruction(&expected));
+        self.focus_part(0);
+        self.results.set_groups(Vec::new());
+        self.confirm = Some(ConfirmState { pending, expected });
+        self.open = true;
+    }
+
+    #[cfg(test)]
+    pub(crate) fn is_history_suspended(&self) -> bool {
+        self.history_suspended
+    }
+
     /// Open (focus) the palette: reset the query, argument, and any pending
     /// outcome, and rebuild the (empty-query) result set.
     pub(crate) fn load_bound_resources(
         &mut self,
         snapshots: Vec<crate::bound_dispatch::BoundResourceSnapshot>,
     ) {
+        if self.history_suspended {
+            return;
+        }
         self.bound_resources = snapshots;
         let query = self.field.value().to_string();
         self.rebuild(&query);
@@ -428,23 +910,28 @@ impl ActionPalette {
     }
 
     pub fn open(&mut self) {
+        self.history_resolution_error = None;
         self.open = true;
         self.arg = None;
         self.confirm = None;
         self.pending_dispatch = None;
+        self.history_review_required = false;
         self.pending_nav = None;
         self.field = self
             .field_source
             .build()
             .with_placeholder("Search actions and results");
-        self.field.set_focused(true);
+        self.focus_part(0);
         self.rebuild("");
     }
 
     pub fn close(&mut self) {
+        self.history_resolution_error = None;
+        self.pending_dispatch = None;
         self.open = false;
         self.arg = None;
         self.confirm = None;
+        self.history_review_required = false;
     }
 
     pub fn query(&self) -> &str {
@@ -479,6 +966,12 @@ impl ActionPalette {
     /// A completed-query external redraw may start a fresh validation pass;
     /// its final step returns pending=false so it never schedules another pass.
     pub fn advance_search_page(&mut self) -> SearchAdvance {
+        if self.history_suspended {
+            return SearchAdvance {
+                generation: self.search_generation,
+                ..SearchAdvance::default()
+            };
+        }
         // Prompt/confirmation owns the empty result surface. Preserve any
         // partial pass until the existing exit/open rebuild restarts search.
         if self.in_argument_mode() {
@@ -831,6 +1324,7 @@ impl ActionPalette {
 
     /// Move the highlight to a flat row index (clamped).
     pub fn set_cursor(&mut self, index: usize) {
+        self.missing_selection = None;
         self.results.set_cursor(index);
     }
 
@@ -922,14 +1416,19 @@ impl ActionPalette {
         let confirmation = flattened.action.confirmation_for_json(arguments);
         self.queue_or_confirm(
             PendingOperation {
+                ordinary: None,
                 bound,
                 address,
-                encoded,
+                intent: PreparedActionIntent::Encoded(encoded),
                 context,
                 kind: flattened.action.kind,
                 input: PendingInput::Json(serde_json::Value::Object(arguments.clone()).to_string()),
                 confirmation: confirmation.clone(),
                 confirmation_evidence: serde_json::json!({}),
+                history_target: None,
+                history_draft_identity: None,
+                history_identity: None,
+                history_witness: None,
             },
             confirmation,
         );
@@ -953,9 +1452,24 @@ impl ActionPalette {
                 pending.kind.as_str()
             ))));
         }
+        let resources = self.authority_for(&pending.address, pending.bound.as_ref())?;
+        let encoded = match pending.encode_at_local_owner(&resources) {
+            Ok(encoded) => encoded,
+            Err(error) => return Some(Err(tilo_actions::ActionError::Refused(error.to_string()))),
+        };
+        if let PreparedActionIntent::Deferred(_) = &pending.intent {
+            match registry.decode(&encoded) {
+                Ok(action) if action.locus() == tilo_actions::ExecutionLocus::ClientLocal => (),
+                _ => {
+                    return Some(Err(tilo_actions::ActionError::Refused(
+                        "Deferred action declaration does not match the local registry".into(),
+                    )));
+                }
+            }
+        }
         Some(Self::dispatch_encoded(
             doc,
-            &pending.encoded,
+            &encoded,
             registry,
             transport,
             pending.context,
@@ -966,7 +1480,20 @@ impl ActionPalette {
     /// The application host uses this to route effects/views to the owning
     /// widget and document operations to the deterministic executor.
     pub fn take_operation(&mut self) -> Option<PendingOperation> {
-        let mut pending = self.pending_dispatch.take()?;
+        if self.history_suspended || self.history_review_required {
+            return None;
+        }
+        if let Some(reason) = self.history_resolution_error.clone() {
+            self.search_announcement = Some(reason);
+            self.history_review_required = true;
+            self.open = true;
+            return None;
+        }
+        let pending = self.pending_dispatch.as_ref()?.clone();
+        if pending.history_target.is_some() || pending.ordinary.is_some() {
+            self.pending_dispatch = None;
+            return Some(pending);
+        }
         let authority = self.authority_for(&pending.address, pending.bound.as_ref())?;
         let spec = tilo_actions::door::resolve(&authority, &pending.address)?;
         if !spec.contract.availability.is_available()
@@ -975,7 +1502,16 @@ impl ActionPalette {
         {
             return None;
         }
-        pending.encoded = match &pending.input {
+        if let PreparedActionIntent::Deferred(intent) = &pending.intent {
+            if intent.validate(spec).is_err() {
+                self.pending_dispatch = None;
+                return None;
+            }
+            self.pending_dispatch = None;
+            return Some(pending);
+        }
+        let encoded = pending.encoded()?;
+        let current = match &pending.input {
             PendingInput::Immediate => {
                 tilo_actions::door::encode(&authority, &pending.address, None).ok()?
             }
@@ -988,8 +1524,13 @@ impl ActionPalette {
                         .ok()?;
                 tilo_actions::door::encode_json(&authority, &pending.address, &arguments).ok()?
             }
-            PendingInput::Invalid => pending.encoded.clone(),
+            PendingInput::Invalid => encoded.clone(),
         };
+        if current != *encoded {
+            self.pending_dispatch = None;
+            return None;
+        }
+        self.pending_dispatch = None;
         Some(pending)
     }
 
@@ -1092,22 +1633,28 @@ impl ActionPalette {
                     return;
                 };
                 match kind {
-                    ActionKind::Immediate {
-                        encoded,
+                    ActionKind::NoArgument {
+                        intent,
                         context,
                         kind,
                         confirmation,
                     } => {
+                        let history_target = None;
                         self.queue_or_confirm(
                             PendingOperation {
+                                ordinary: None,
                                 bound,
                                 address,
-                                encoded,
+                                intent,
                                 context,
                                 kind,
                                 input: PendingInput::Immediate,
                                 confirmation: confirmation.clone(),
                                 confirmation_evidence: serde_json::json!({}),
+                                history_target,
+                                history_draft_identity: None,
+                                history_identity: None,
+                                history_witness: None,
                             },
                             confirmation,
                         );
@@ -1117,16 +1664,28 @@ impl ActionPalette {
                         // list so only the prompt shows.
                         self.field = self.field_source.build();
                         self.field.set_placeholder(&prompt);
-                        self.field.set_focused(true);
+                        self.focus_part(0);
                         self.results.set_groups(Vec::new());
-                        self.arg = Some(ArgState { bound, address });
+                        let history_target = None;
+                        self.arg = Some(ArgState {
+                            bound,
+                            address,
+                            history_target,
+                            history_draft_identity: None,
+                        });
                     }
                     ActionKind::Typed { prompt, .. } => {
                         self.field = self.field_source.build();
                         self.field.set_placeholder(&prompt);
-                        self.field.set_focused(true);
+                        self.focus_part(0);
                         self.results.set_groups(Vec::new());
-                        self.arg = Some(ArgState { bound, address });
+                        let history_target = None;
+                        self.arg = Some(ArgState {
+                            bound,
+                            address,
+                            history_target,
+                            history_draft_identity: None,
+                        });
                     }
                 }
             }
@@ -1166,8 +1725,14 @@ impl ActionPalette {
                 .first()
                 .is_some_and(|parameter| parameter.ty != tilo_actions::ParamType::Text);
         Some(match &fa.action.input {
-            ActionInput::Immediate(enc) => ActionKind::Immediate {
-                encoded: enc.clone(),
+            ActionInput::Immediate(enc) => ActionKind::NoArgument {
+                intent: PreparedActionIntent::Encoded(enc.clone()),
+                context,
+                kind: fa.action.kind,
+                confirmation: fa.action.contract.confirmation.clone(),
+            },
+            ActionInput::Deferred { .. } => ActionKind::NoArgument {
+                intent: PreparedActionIntent::Deferred(DeferredIntent::capture(fa.action).ok()?),
                 context,
                 kind: fa.action.kind,
                 confirmation: fa.action.contract.confirmation.clone(),
@@ -1200,6 +1765,7 @@ impl ActionPalette {
     /// Rebuild the result set for `query`: exported actions (fuzzy-filtered)
     /// as the **Actions** group, then each provider's hits as its own group.
     fn rebuild(&mut self, query: &str) {
+        self.missing_selection = None;
         let mut rows: Vec<SearchResult> = Vec::new();
         let mut index: HashMap<String, RowResolution> = HashMap::new();
 
@@ -1343,9 +1909,9 @@ impl ActionPalette {
     /// # Panics
     /// Internal host-text palettes must use `layout_with_text` with their owning renderer.
     pub fn layout(&mut self, theme: &Theme, origin: Point, width: f64) {
-        let text = self
+        let mut text = self
             .measure
-            .as_mut()
+            .take()
             .expect("host-text palette requires layout_with_text");
         Self::layout_field(
             &mut self.field,
@@ -1356,8 +1922,10 @@ impl ActionPalette {
             theme,
             origin,
             width,
-            text,
+            &mut text,
         );
+        self.layout_controls(theme, &mut text);
+        self.measure = Some(text);
     }
 
     #[cfg(feature = "native")]
@@ -1380,6 +1948,7 @@ impl ActionPalette {
             width,
             text,
         );
+        self.layout_controls(theme, text);
     }
 
     #[allow(
@@ -1432,6 +2001,38 @@ impl ActionPalette {
         *rect = Rect::new(origin.x, origin.y, origin.x + width, top + h);
     }
 
+    fn layout_controls(&mut self, theme: &Theme, text: &mut TextRenderer) {
+        if self.confirm.is_none() && !self.history_review_required {
+            self.controls_node = None;
+            return;
+        }
+        let mut nodes = HashMap::new();
+        let node = self
+            .controls
+            .build_layout(&mut self.field_taffy, theme, &mut nodes);
+        self.field_taffy
+            .compute_layout_with_measure(
+                node,
+                Size {
+                    width: AvailableSpace::Definite(self.rect.width() as f32),
+                    height: AvailableSpace::MaxContent,
+                },
+                |known, available, id, _, _| {
+                    nodes.get(&id).map_or(Size::ZERO, |&p| unsafe {
+                        (*p).measure(known, available, text)
+                    })
+                },
+            )
+            .expect("palette controls layout");
+        self.controls.apply_layout(
+            &self.field_taffy,
+            node,
+            Point::new(self.rect.x0, self.rect.y1),
+        );
+        self.rect.y1 = self.controls.get_rect().y1;
+        self.controls_node = Some(node);
+    }
+
     /// The palette's outer rect after the last `layout`.
     pub fn rect(&self) -> Rect {
         self.rect
@@ -1450,6 +2051,91 @@ impl ActionPalette {
             .draw(scene, transform, text_renderer, theme, presence);
         self.results
             .draw(scene, transform, text_renderer, theme, presence);
+        if self.controls_node.is_some() {
+            self.controls
+                .draw(scene, transform, text_renderer, theme, presence);
+        }
+    }
+
+    pub(crate) fn presentation_widgets(&self) -> (&dyn Widget, &dyn Widget) {
+        (&self.field, &self.results)
+    }
+
+    pub(crate) fn perform_host_semantic(
+        &mut self,
+        results_owner: bool,
+        target: Option<&str>,
+        action: &crate::a11y::Action,
+        doc: &mut AutoCommit,
+        root: &ObjId,
+    ) -> bool {
+        // The caller resolves this owner against the current inspection before
+        // entering the widget. No guessed path or substring is an authority.
+        let handled = if results_owner {
+            target.is_some_and(|target| {
+                self.results
+                    .perform_semantic_action(target, action, doc, root)
+            })
+        } else if matches!(action, crate::a11y::Action::Focus) {
+            true
+        } else {
+            self.field.perform_action(action, doc, root)
+        };
+        if let Some(query) = self.field.take_dirty() {
+            if self.arg.is_none() && self.confirm.is_none() {
+                self.rebuild(&query);
+            }
+        }
+        self.poll_view_activation();
+        handled
+    }
+
+    pub(crate) fn handle_host_event(
+        &mut self,
+        event: &WindowEvent,
+        scale: f64,
+        modifiers: &Modifiers,
+        doc: &mut AutoCommit,
+        root: &ObjId,
+    ) -> bool {
+        if self.handle_key(event, modifiers, doc, root) {
+            return true;
+        }
+        let normalized;
+        let event = if let WindowEvent::CursorMoved {
+            device_id,
+            position,
+        } = event
+        {
+            normalized = WindowEvent::CursorMoved {
+                device_id: *device_id,
+                position: winit::dpi::PhysicalPosition::new(position.x / scale, position.y / scale),
+            };
+            &normalized
+        } else {
+            event
+        };
+        match event {
+            WindowEvent::Ime(_) => {
+                self.route_to_field(event, *modifiers, doc, root);
+                if let Some(query) = self.field.take_dirty() {
+                    if self.arg.is_none() && self.confirm.is_none() {
+                        self.rebuild(&query);
+                    }
+                }
+                true
+            }
+            WindowEvent::CursorMoved { .. }
+            | WindowEvent::MouseInput { .. }
+            | WindowEvent::MouseWheel { .. } => {
+                self.route_to_field(event, *modifiers, doc, root);
+                self.route_to_results(event, *modifiers, doc, root);
+                self.poll_view_activation();
+                true
+            }
+            WindowEvent::Touch(_) => true,
+            _ => false,
+        }
     }
 
     /// Feed a keyboard event to the open palette; returns whether consumed.
@@ -1466,6 +2152,9 @@ impl ActionPalette {
         doc: &mut AutoCommit,
         path: &ObjId,
     ) -> bool {
+        if self.history_suspended {
+            return false;
+        }
         if !self.open {
             return false;
         }
@@ -1474,6 +2163,41 @@ impl ActionPalette {
         };
         if key.state != ElementState::Pressed {
             // Swallow releases so nothing leaks to the app behind the modal.
+            return true;
+        }
+        if self.confirm.is_some() || self.history_review_required {
+            let focused = self
+                .controls
+                .children()
+                .iter()
+                .position(|control| control.is_focused())
+                .map_or(0, |index| index + 1);
+            if matches!(&key.logical_key, Key::Named(NamedKey::Tab)) {
+                self.focus_part((focused + if modifiers.state().shift_key() { 2 } else { 1 }) % 3);
+                return true;
+            }
+            if focused > 0
+                && matches!(
+                    &key.logical_key,
+                    Key::Named(NamedKey::Enter | NamedKey::Space)
+                )
+            {
+                self.controls.children_mut()[focused - 1].perform_action(
+                    &crate::a11y::Action::Activate,
+                    doc,
+                    path,
+                );
+                self.drain_command(doc, path);
+                return true;
+            }
+        }
+        if self.history_review_required {
+            if matches!(&key.logical_key, Key::Named(NamedKey::Escape)) {
+                self.close();
+            } else if matches!(&key.logical_key, Key::Named(NamedKey::Enter)) {
+                self.history_review_required = false;
+                self.open = false;
+            }
             return true;
         }
         // Escape: cancel the argument step, or close the palette.
@@ -1518,13 +2242,25 @@ impl ActionPalette {
         if self.arg.is_some() {
             if matches!(&key.logical_key, Key::Named(NamedKey::Enter)) {
                 let value = self.field.value().to_string();
+                let state = self.arg.as_ref().expect("argument stage checked above");
+                let fresh = self.action_kind_for_address(&state.address, state.bound.as_ref());
+                if fresh.is_none() || matches!(fresh, Some(ActionKind::NoArgument { .. })) {
+                    if self.history_has_custody() {
+                        self.search_announcement = Some(
+                            "The retained action was removed, changed, or is currently unavailable"
+                                .into(),
+                        );
+                    } else {
+                        self.exit_argument_mode();
+                    }
+                    return true;
+                }
                 if let Some(state) = self.arg.take() {
                     let address = state.address;
                     let bound = state.bound;
-                    let Some(fresh) = self.action_kind_for_address(&address, bound.as_ref()) else {
-                        self.exit_argument_mode();
-                        return true;
-                    };
+                    let history_target = state.history_target;
+                    let history_draft_identity = state.history_draft_identity;
+                    let fresh = fresh.expect("current argument action checked above");
                     let (encoded, context, kind, confirmation, input) = match fresh {
                         ActionKind::Prompted {
                             build,
@@ -1571,21 +2307,26 @@ impl ActionPalette {
                             };
                             (encoded, context, kind, confirmation, input)
                         }
-                        ActionKind::Immediate { .. } => {
+                        ActionKind::NoArgument { .. } => {
                             self.exit_argument_mode();
                             return true;
                         }
                     };
                     self.queue_or_confirm(
                         PendingOperation {
+                            ordinary: None,
                             bound,
                             address,
-                            encoded,
+                            intent: PreparedActionIntent::Encoded(encoded),
                             context,
                             kind,
                             input,
                             confirmation: confirmation.clone(),
                             confirmation_evidence: serde_json::json!({}),
+                            history_target,
+                            history_draft_identity,
+                            history_identity: None,
+                            history_witness: None,
                         },
                         confirmation,
                     );
@@ -1603,6 +2344,12 @@ impl ActionPalette {
             Key::Named(NamedKey::ArrowUp | NamedKey::ArrowDown | NamedKey::Enter)
         );
         if nav {
+            if matches!(
+                &key.logical_key,
+                Key::Named(NamedKey::ArrowUp | NamedKey::ArrowDown)
+            ) {
+                self.missing_selection = None;
+            }
             self.route_to_results(event, *modifiers, doc, path);
             self.poll_view_activation();
         } else {
@@ -1617,11 +2364,13 @@ impl ActionPalette {
     /// Drain the results view's latched activation into a pending outcome.
     fn poll_view_activation(&mut self) {
         if let Some(id) = self.results.take_activated() {
+            self.missing_selection = None;
             self.resolve_activation(&id);
         }
     }
 
     fn exit_argument_mode(&mut self) {
+        self.history_resolution_error = None;
         self.arg = None;
         self.confirm = None;
         // Restore the query field and result set.
@@ -1629,7 +2378,7 @@ impl ActionPalette {
             .field_source
             .build()
             .with_placeholder("Search actions and results");
-        self.field.set_focused(true);
+        self.focus_part(0);
         self.rebuild("");
     }
 
@@ -1638,15 +2387,39 @@ impl ActionPalette {
         mut pending: PendingOperation,
         confirmation: ConfirmationPolicy,
     ) {
-        // Decide against the collected input, not only the declaration.
-        let confirmation = self
-            .authority_for(&pending.address, pending.bound.as_ref())
-            .and_then(|resources| {
-                tilo_actions::door::resolve(&resources, &pending.address)
-                    .map(|spec| effective_confirmation(spec, &pending.input))
-            })
-            .unwrap_or(confirmation);
+        if !pending.has_valid_input() {
+            let message = format!(
+                "Invalid arguments: {}",
+                pending
+                    .encoded()
+                    .map(|encoded| String::from_utf8_lossy(&encoded.payload).into_owned())
+                    .unwrap_or_else(|| "invalid deferred intent".into())
+            );
+            self.arg = Some(ArgState {
+                bound: pending.bound,
+                address: pending.address,
+                history_target: pending.history_target,
+                history_draft_identity: pending.history_draft_identity,
+            });
+            self.results.set_groups(Vec::new());
+            self.results.set_empty_text(&message);
+            self.search_announcement = Some(message);
+            return;
+        }
+        // Decide against the collected input, not only the declaration. An
+        // ordinary/History continuation already carries its captured policy.
+        let confirmation = if pending.ordinary.is_some() || pending.history_target.is_some() {
+            confirmation
+        } else {
+            self.authority_for(&pending.address, pending.bound.as_ref())
+                .and_then(|resources| {
+                    tilo_actions::door::resolve(&resources, &pending.address)
+                        .map(|spec| effective_confirmation(spec, &pending.input))
+                })
+                .unwrap_or(confirmation)
+        };
         pending.confirmation = confirmation.clone();
+        self.request_generation = uuid::Uuid::new_v4();
         let expected = match confirmation {
             ConfirmationPolicy::None => {
                 self.pending_dispatch = Some(pending);
@@ -1658,9 +2431,11 @@ impl ActionPalette {
         };
         self.field = self.field_source.build();
         self.field
-            .set_placeholder(&format!("Type {expected} to confirm"));
-        self.field.set_focused(true);
+            .set_placeholder(&confirmation_instruction(&expected));
+        self.focus_part(0);
         self.results.set_groups(Vec::new());
+        self.results
+            .set_empty_text("Confirm this action in the field above");
         self.confirm = Some(ConfirmState { pending, expected });
     }
 
@@ -1747,13 +2522,208 @@ fn rank_and_group(query: &str, rows: Vec<SearchResult>) -> Vec<SearchGroup> {
     groups
 }
 
+impl Widget for ActionPalette {
+    fn name(&self) -> &str {
+        "ActionPalette"
+    }
+    fn test_id(&self) -> Option<&str> {
+        Some("action-palette")
+    }
+    fn resets_callback_binding(&self) -> bool {
+        true
+    }
+    fn is_focusable(&self) -> bool {
+        self.is_presented()
+    }
+    fn is_focused(&self) -> bool {
+        self.is_presented()
+            && (self
+                .field
+                .accessibility()
+                .is_some_and(|field| field.state.focused)
+                || self
+                    .controls
+                    .children()
+                    .iter()
+                    .any(|control| control.is_focused()))
+    }
+    fn set_focus(&mut self, focused: bool) {
+        if focused {
+            if !self.is_focused() {
+                self.focus_part(0);
+            }
+        } else {
+            self.field.set_focused(false);
+            for control in self.controls.children_mut() {
+                control.set_focus(false);
+            }
+        }
+    }
+    fn traps_focus(&self) -> bool {
+        self.is_presented()
+    }
+    fn modal_capture(&self) -> Option<Rect> {
+        self.is_presented().then_some(self.rect)
+    }
+    fn sync(&mut self, _: &mut AutoCommit, _: &ObjId) {}
+    fn build_layout(
+        &mut self,
+        tree: &mut TaffyTree<()>,
+        _: &Theme,
+        nodes: &mut HashMap<NodeId, *mut dyn Widget>,
+    ) -> NodeId {
+        use crate::widget::TaffyTreeExt;
+        let node = tree.leaf_node(Style {
+            position: taffy::Position::Absolute,
+            ..Style::default()
+        });
+        nodes.insert(node, std::ptr::from_mut::<dyn Widget>(self));
+        node
+    }
+    fn apply_layout(&mut self, _: &TaffyTree<()>, _: NodeId, _: Point) {}
+    fn get_rect(&self) -> Rect {
+        self.rect
+    }
+    fn draw(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+    ) {
+        ActionPalette::draw(self, scene, transform, text, theme, presence);
+    }
+    fn handle_event(
+        &mut self,
+        event: &WindowEvent,
+        scale: f64,
+        modifiers: &Modifiers,
+        doc: &mut AutoCommit,
+        path: &ObjId,
+        handled: &mut bool,
+        _: &mut Option<NodeId>,
+        _: NodeId,
+        _: &TaffyTree<()>,
+    ) {
+        *handled |= self.route_event(event, scale, modifiers, doc, path);
+    }
+    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
+        if !self.is_presented() {
+            return None;
+        }
+        let mut children = Vec::new();
+        if let Some(mut field) = self.field.accessibility() {
+            if let Some(confirm) = &self.confirm {
+                field = field.with_description(confirmation_instruction(&confirm.expected));
+            }
+            let target = self.target("field");
+            children.push(
+                field
+                    .with_name(if self.confirm.is_some() {
+                        "Confirmation"
+                    } else {
+                        "Search"
+                    })
+                    .with_hashed_key(&target)
+                    .with_action_target(target)
+                    .with_bounds(self.field.get_rect()),
+            );
+        }
+        if self.confirm.is_some() || self.history_review_required {
+            for (button, part) in self
+                .controls
+                .children()
+                .into_iter()
+                .zip(["submit", "cancel"])
+            {
+                if let Some(node) = button.accessibility() {
+                    let target = self.target(part);
+                    children.push(
+                        node.with_hashed_key(&target)
+                            .with_action_target(target)
+                            .with_bounds(button.get_rect()),
+                    );
+                }
+            }
+        }
+        Some(
+            crate::a11y::AccessNode::new(crate::a11y::Role::Dialog)
+                .with_name("Action confirmation")
+                .with_state(crate::a11y::AccessState::new().modal(true))
+                .with_children(children),
+        )
+    }
+    fn perform_semantic_action(
+        &mut self,
+        target: &str,
+        action: &crate::a11y::Action,
+        doc: &mut AutoCommit,
+        path: &ObjId,
+    ) -> bool {
+        if !self.is_presented() {
+            return false;
+        }
+        if target == self.target("field") {
+            if matches!(action, crate::a11y::Action::Focus) {
+                self.focus_part(0);
+            }
+            return self.field.perform_action(action, doc, path);
+        }
+        if self.confirm.is_none() && !self.history_review_required {
+            return false;
+        }
+        for (index, part) in ["submit", "cancel"].into_iter().enumerate() {
+            if target == self.target(part) {
+                if matches!(action, crate::a11y::Action::Focus) {
+                    self.focus_part(index + 1);
+                }
+                let handled = self.controls.children_mut()[index].perform_action(action, doc, path);
+                self.drain_command(doc, path);
+                return handled;
+            }
+        }
+        false
+    }
+}
+
 #[cfg(test)]
 pub(crate) fn observed_field_language(palette: &ActionPalette) -> &str {
     crate::widget::search_field::observed_language(&palette.field)
 }
 
 #[cfg(test)]
+pub(crate) fn observed_history_pending(palette: &ActionPalette) -> Option<PendingOperation> {
+    palette
+        .pending_dispatch
+        .clone()
+        .or_else(|| palette.confirm.as_ref().map(|state| state.pending.clone()))
+}
+
+#[cfg(test)]
+pub(crate) fn observed_history_editor(
+    palette: &ActionPalette,
+) -> (String, Option<(usize, usize)>, &'static str) {
+    let selection = palette
+        .field
+        .accessibility()
+        .and_then(|node| node.text_selection)
+        .map(|selection| (selection.anchor, selection.focus));
+    let stage = if palette.arg.is_some() {
+        "argument"
+    } else if palette.confirm.is_some() {
+        "confirmation"
+    } else if palette.pending_dispatch.is_some() {
+        "ready"
+    } else {
+        "search"
+    };
+    (palette.field.value().to_owned(), selection, stage)
+}
+
+#[cfg(test)]
 mod tests {
+    include!("action_palette/deferred_tests.rs");
     use super::*;
     use automerge::transaction::Transactable;
     use automerge::{ROOT, ReadDoc, ScalarValue};
@@ -1910,7 +2880,10 @@ mod tests {
     #[test]
     fn large_lazy_provider_is_budgeted_but_cannot_supply_its_own_authority() {
         let materialized = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let mut palette = ActionPalette::new();
+        let mut palette =
+            ActionPalette::with_inputs(crate::font_catalog::fixture_renderer(), || {
+                SearchField::with_language("en_US")
+            });
         palette.load_open_resources(&[]);
         palette.set_providers(vec![Box::new(LazyCorpus {
             materialized: Arc::clone(&materialized),
@@ -1959,7 +2932,10 @@ mod tests {
             )
             .expect("valid exact target");
 
-        let mut palette = ActionPalette::new();
+        let mut palette =
+            ActionPalette::with_inputs(crate::font_catalog::fixture_renderer(), || {
+                SearchField::with_language("en_US")
+            });
         palette.set_providers(vec![Box::new(catalog)]);
         // The whitespace-bearing query intentionally cannot take the token
         // fast path. Every false candidate shares its n-grams, so this proves
@@ -2009,7 +2985,9 @@ mod tests {
     /// (from a folded-in provider) surface, grouped, for one query.
     #[test]
     fn actions_and_content_both_surface_grouped() {
-        let mut p = ActionPalette::new();
+        let mut p = ActionPalette::with_inputs(crate::font_catalog::fixture_renderer(), || {
+            SearchField::with_language("en_US")
+        });
         p.load_open_resources(&[thing_resource()]);
         p.set_providers(vec![Box::new(People)]);
         p.open();
@@ -2033,7 +3011,9 @@ mod tests {
     /// CRDT — the real replay path.
     #[test]
     fn activating_an_action_dispatches_and_mutates() {
-        let mut p = ActionPalette::new();
+        let mut p = ActionPalette::with_inputs(crate::font_catalog::fixture_renderer(), || {
+            SearchField::with_language("en_US")
+        });
         p.load_open_resources(&[thing_resource()]);
         p.open();
 
@@ -2076,8 +3056,176 @@ mod tests {
     }
 
     #[test]
+    fn history_suspends_the_same_palette_draft_and_ready_dispatch() {
+        let mut palette =
+            ActionPalette::with_inputs(crate::font_catalog::fixture_renderer(), || {
+                SearchField::with_language("en_US")
+            });
+        palette.load_open_resources(&[thing_resource()]);
+        palette.open();
+        palette.set_query("mark");
+        let idx = palette
+            .result_labels()
+            .iter()
+            .position(|label| label.contains("Mark done"))
+            .unwrap();
+        palette.set_cursor(idx);
+        palette.activate_selected();
+        assert!(!palette.is_open());
+
+        palette.suspend_for_history();
+        assert!(palette.is_history_suspended());
+        assert!(
+            palette.take_operation().is_none(),
+            "return cannot auto-take ready work"
+        );
+        assert_eq!(
+            palette.query(),
+            "mark",
+            "the original field instance keeps its draft"
+        );
+
+        palette.resume_after_history();
+        assert!(!palette.is_history_suspended());
+        assert!(
+            palette.take_operation().is_none(),
+            "Back to live keeps ready work behind explicit continuation"
+        );
+        let mut doc = AutoCommit::new();
+        palette.handle_key(&enter(), &Modifiers::default(), &mut doc, &ROOT);
+        let pending = palette
+            .take_operation()
+            .expect("ready work remains in the same palette");
+        assert_eq!(pending.address.resource, "test.thing:1");
+        assert_eq!(pending.address.action, "mark");
+    }
+
+    #[test]
+    fn history_requires_fresh_palette_confirmation_for_ready_work() {
+        let mut resource = thing_resource();
+        resource
+            .actions
+            .iter_mut()
+            .find(|action| action.id == "mark")
+            .unwrap()
+            .contract
+            .confirmation = ConfirmationPolicy::Phrase {
+            phrase: "MARK THING".into(),
+        };
+        let mut palette =
+            ActionPalette::with_inputs(crate::font_catalog::fixture_renderer(), || {
+                SearchField::with_language("en_US")
+            });
+        palette.load_open_resources(&[resource]);
+        palette.open();
+        let idx = palette
+            .result_labels()
+            .iter()
+            .position(|label| label.contains("Mark done"))
+            .unwrap();
+        palette.set_cursor(idx);
+        palette.activate_selected();
+        let mut doc = AutoCommit::new();
+        palette.field.set_query("MARK THING");
+        palette.handle_key(&enter(), &Modifiers::default(), &mut doc, &ROOT);
+        assert!(palette.pending_dispatch.is_some());
+
+        palette.suspend_for_history();
+        palette.resume_after_history();
+        assert!(palette.take_operation().is_none());
+        assert!(palette.in_argument_mode());
+        assert!(palette.query().is_empty(), "old affirmative is not reused");
+        palette.field.set_query("MARK THING");
+        palette.handle_key(&enter(), &Modifiers::default(), &mut doc, &ROOT);
+        assert_eq!(
+            palette.take_operation().unwrap().confirmation_evidence(),
+            &serde_json::json!({ "confirmation_phrase": "MARK THING" })
+        );
+    }
+
+    #[test]
+    fn visible_refresh_keeps_exact_selection_through_reorder_revocation_and_restore() {
+        let resource = |id: &str, label: &str| {
+            let mut value = thing_resource();
+            value.id = tilo_actions::ResourceId::new(id);
+            value.label = label.into();
+            value.actions.truncate(1);
+            value
+        };
+        let a = resource("a", "Alpha");
+        let b = resource("b", "Beta");
+        let c = resource("c", "Aardvark");
+        let mut palette = ActionPalette::new();
+        palette.load_open_resources(&[a.clone(), b.clone()]);
+        palette.open();
+        palette.set_cursor(1);
+        palette.refresh_visible_resources(&[c, a.clone(), b.clone()]);
+        assert_eq!(palette.results.selected_action_id(), Some("b\u{1f}mark"));
+        palette.refresh_visible_resources(&[a.clone()]);
+        assert_eq!(palette.result_labels(), vec!["Alpha — Mark done"]);
+        assert!(palette.results.selected().is_none());
+        palette.activate_selected();
+        assert!(palette.take_operation().is_none());
+        palette.refresh_visible_resources(&[a, b]);
+        palette.activate_selected();
+        assert_eq!(palette.take_operation().unwrap().address.resource, "b");
+    }
+
+    #[test]
+    fn invalid_arguments_stay_visible_before_confirmation_and_can_be_corrected() {
+        let mut spec = ActionSpec::typed(
+            "number",
+            "Number",
+            "",
+            ExecutionLocus::ClientLocal,
+            vec![tilo_actions::ActionParam::required(
+                "rows",
+                tilo_actions::ParamType::Number,
+                "Rows",
+            )],
+            |_| EncodedAction {
+                type_id: "fixture".into(),
+                payload: vec![],
+            },
+        );
+        spec.contract.confirmation = ConfirmationPolicy::Confirm;
+        let resource = Resource::new("document", "document", "Document").with_action(spec);
+        let mut palette = ActionPalette::new();
+        palette.load_open_resources(&[resource]);
+        palette.open();
+        palette.activate_selected();
+        palette.field.set_query("{\"rows\":\"bad\"}");
+        let mut doc = AutoCommit::new();
+        let root = automerge::ROOT;
+        let enter =
+            crate::synthetic_input::key_event(&Key::Named(NamedKey::Enter), ElementState::Pressed);
+        palette.handle_key(&enter, &Modifiers::default(), &mut doc, &root);
+        assert!(palette.confirm.is_none());
+        assert!(palette.arg.is_some());
+        assert!(palette.is_open());
+        assert!(palette.take_operation().is_none());
+        assert!(
+            serde_json::to_string(&palette.results.accessibility())
+                .unwrap()
+                .contains("Invalid arguments")
+        );
+        palette.field.set_query("{\"rows\":2}");
+        palette.handle_key(&enter, &Modifiers::default(), &mut doc, &root);
+        assert!(palette.confirm.is_some());
+        assert!(palette.take_operation().is_none());
+        palette.field.set_query("CONFIRM");
+        palette.handle_key(&enter, &Modifiers::default(), &mut doc, &root);
+        assert_eq!(
+            palette.take_operation().unwrap().confirmation_evidence(),
+            &serde_json::json!({"confirm":true})
+        );
+    }
+
+    #[test]
     fn ambient_task_context_reaches_palette_actions_without_overwriting_resource() {
-        let mut p = ActionPalette::new();
+        let mut p = ActionPalette::with_inputs(crate::font_catalog::fixture_renderer(), || {
+            SearchField::with_language("en_US")
+        });
         p.load_open_resources(&[thing_resource()]);
         p.set_ambient_context(Some(
             ActionContext::default()
@@ -2114,7 +3262,9 @@ mod tests {
     /// dispatch.
     #[test]
     fn activating_content_navigates_not_dispatches() {
-        let mut p = ActionPalette::new();
+        let mut p = ActionPalette::with_inputs(crate::font_catalog::fixture_renderer(), || {
+            SearchField::with_language("en_US")
+        });
         p.set_providers(vec![Box::new(People)]);
         p.open();
         p.set_query("ada");
@@ -2145,7 +3295,9 @@ mod tests {
     /// callbacks. This is the per-app migration contract.
     #[test]
     fn activating_canonical_search_hit_queues_pending_operation() {
-        let mut p = ActionPalette::new();
+        let mut p = ActionPalette::with_inputs(crate::font_catalog::fixture_renderer(), || {
+            SearchField::with_language("en_US")
+        });
         p.load_open_resources(&[thing_resource()]);
         p.set_providers(vec![Box::new(CanonicalPeople)]);
         p.open();
@@ -2159,7 +3311,10 @@ mod tests {
             pending.address,
             tilo_actions::ActionAddress::new("test.thing:1", "mark")
         );
-        assert_eq!(pending.encoded.type_id, NOTE_TYPE);
+        assert_eq!(
+            pending.encoded().expect("fixed encoding").type_id,
+            NOTE_TYPE
+        );
         assert_eq!(pending.kind, OperationKind::Document);
         assert_eq!(
             pending
@@ -2178,7 +3333,9 @@ mod tests {
 
     #[test]
     fn removed_canonical_action_is_refused_at_activation() {
-        let mut p = ActionPalette::new();
+        let mut p = ActionPalette::with_inputs(crate::font_catalog::fixture_renderer(), || {
+            SearchField::with_language("en_US")
+        });
         p.load_open_resources(&[thing_resource()]);
         p.set_providers(vec![Box::new(CanonicalPeople)]);
         p.open();
@@ -2206,7 +3363,9 @@ mod tests {
             reason: "The service went offline".into(),
         };
 
-        let mut p = ActionPalette::new();
+        let mut p = ActionPalette::with_inputs(crate::font_catalog::fixture_renderer(), || {
+            SearchField::with_language("en_US")
+        });
         p.load_open_resources(&[thing_resource()]);
         p.set_providers(vec![Box::new(CanonicalPeople)]);
         p.open();
@@ -2221,7 +3380,9 @@ mod tests {
 
     #[test]
     fn removed_action_is_refused_again_at_dispatch_boundary() {
-        let mut p = ActionPalette::new();
+        let mut p = ActionPalette::with_inputs(crate::font_catalog::fixture_renderer(), || {
+            SearchField::with_language("en_US")
+        });
         p.load_open_resources(&[thing_resource()]);
         p.set_providers(vec![Box::new(CanonicalPeople)]);
         p.open();
@@ -2239,7 +3400,9 @@ mod tests {
     /// action built from the typed text.
     #[test]
     fn prompted_action_collects_argument_then_dispatches() {
-        let mut p = ActionPalette::new();
+        let mut p = ActionPalette::with_inputs(crate::font_catalog::fixture_renderer(), || {
+            SearchField::with_language("en_US")
+        });
         p.load_open_resources(&[thing_resource()]);
         p.open();
 
@@ -2298,7 +3461,10 @@ mod tests {
                 ..tilo_actions::ActionContract::default()
             }),
         );
-        let mut palette = ActionPalette::new();
+        let mut palette =
+            ActionPalette::with_inputs(crate::font_catalog::fixture_renderer(), || {
+                SearchField::with_language("en_US")
+            });
         palette.load_open_resources(&[resource]);
         palette.open();
         palette.activate_selected();
@@ -2334,10 +3500,10 @@ mod tests {
         );
         ActionPalette::dispatch_encoded(
             &mut doc,
-            &pending.encoded,
+            pending.encoded().expect("fixed encoding"),
             &registry(),
             &mut transport,
-            pending.context,
+            pending.context.clone(),
         )
         .expect("confirmed dispatch succeeds");
         assert_eq!(

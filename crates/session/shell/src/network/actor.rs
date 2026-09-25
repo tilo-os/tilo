@@ -3,6 +3,9 @@
 //! Direct paths, NAT traversal and stateless relay fallback are selected by
 //! iroh. Tilo only names authenticated endpoint ids and workspace topics.
 
+pub(crate) mod native_ingress;
+mod native_publication;
+
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -141,6 +144,77 @@ pub struct HostIdentity {
 }
 
 impl HostIdentity {
+    /// Read current selected custody for enrolled operations. Configured disk failures
+    /// never fall back to an old in-memory certificate or revocation snapshot.
+    pub(crate) fn current_native_material(
+        &self,
+        ws: WorkspaceId,
+    ) -> Result<(DeviceCert, Vec<tilo_user_identity::RevocationEntry>), String> {
+        let (cert, revocations) = if let Some(paths) = &self.identity_paths {
+            let stored_key = tilo_user_identity::persist::read_device_key(&paths.device_privkey)
+                .map_err(|e| e.to_string())?;
+            if stored_key.verifying_key() != self.device_signing_key.verifying_key() {
+                return Err("native device custody changed".into());
+            }
+            let store = crate::identity_registry::IdentityRegistryStore::from_env()
+                .map_err(|e| e.to_string())?;
+            let registry = store.migrate_legacy_primary().map_err(|e| e.to_string())?;
+            let mut selected = registry
+                .workspace_identities
+                .iter()
+                .filter_map(|(room, id)| {
+                    let room = crate::shell::state::RoomId::parse(room)?;
+                    (crate::shell::network::room_topic_id(room) == ws).then_some(id)
+                });
+            let selected_id = selected
+                .next()
+                .or(registry.default_identity.as_ref())
+                .ok_or("native identity selection missing")?;
+            if selected.next().is_some() {
+                return Err("ambiguous native identity topic".into());
+            }
+            let profile = registry
+                .identities
+                .get(selected_id)
+                .ok_or("selected native identity is absent")?;
+            let cert = tilo_user_identity::persist::read_device_cert(
+                &paths.device_cert_for_user(&profile.user_public_key),
+            )
+            .map_err(|e| e.to_string())?;
+            if cert.user_public_key != profile.user_public_key {
+                return Err("native certificate root differs from selection".into());
+            }
+            let fleet =
+                crate::device_fleet::DeviceFleetStore::at(store.identity_dir(), paths.clone())
+                    .load(selected_id)
+                    .map_err(|e| e.to_string())?;
+            (cert, fleet.revocations)
+        } else {
+            (
+                self.workspace_device_certs
+                    .get(&ws)
+                    .unwrap_or(&self.device_cert)
+                    .clone(),
+                self.workspace_revocations
+                    .get(&ws)
+                    .cloned()
+                    .unwrap_or_default(),
+            )
+        };
+        tilo_user_identity::verify_device_cert(&cert).map_err(|e| e.to_string())?;
+        if cert.device_public_key != self.device_signing_key.verifying_key().to_bytes() {
+            return Err("native certificate does not match retained device custody".into());
+        }
+        let mut checked = RevocationList::new();
+        for entry in &revocations {
+            checked.insert(entry.clone()).map_err(|e| e.to_string())?;
+        }
+        if checked.is_revoked(&cert.device_public_key) {
+            return Err("native selected device is revoked".into());
+        }
+        Ok((cert, revocations))
+    }
+
     pub(crate) fn material_for(
         &self,
         ws: WorkspaceId,
@@ -198,6 +272,12 @@ impl HostIdentity {
 
 #[derive(Debug)]
 pub enum NetCmd {
+    NativeConnect(native_ingress::Connect),
+    NativePublish {
+        ws: u64,
+    },
+    NativeMedia(super::native_media::Command),
+    NativeEnrollment(super::invite::enrollment_driver::Command),
     JoinWorkspace {
         ws: WorkspaceId,
         on_event: mpsc::Sender<NetEvent>,
@@ -287,6 +367,11 @@ pub enum NetCmd {
     DisconnectHost {
         id: EndpointId,
     },
+    AttachActionBroker {
+        queue: crate::shell::peer_actions::PeerActionQueue,
+        host: uuid::Uuid,
+        rooms: Vec<uuid::Uuid>,
+    },
 }
 
 /// Concrete data-plane route for one workspace-control session.
@@ -298,6 +383,7 @@ pub enum WorkspaceControlRoute {
 
 #[derive(Debug, Clone)]
 pub enum NetEvent {
+    NativeInput(native_ingress::Input),
     PeerJoined {
         ws: WorkspaceId,
         peer: PeerId,
@@ -312,7 +398,10 @@ pub enum NetEvent {
     /// An authenticated durable host finished subscribing to this workspace.
     /// Distinct from a direct peer arrival: the shell uses this edge to seed
     /// transport-level checkpoints for future first-time/offline devices.
-    HostReady { ws: WorkspaceId, peer: PeerId },
+    HostReady {
+        ws: WorkspaceId,
+        peer: PeerId,
+    },
     Msg {
         ws: WorkspaceId,
         peer: PeerId,
@@ -381,12 +470,26 @@ pub enum PeerDepartureCause {
 }
 
 enum InternalEvent {
+    NativeHostConnected {
+        ws: u64,
+        serial: u64,
+        hint: qos_peer_state::join::TransportHint,
+        certificate: DeviceCert,
+        continuity: u64,
+        result: Box<Result<RelayCoeditSession, String>>,
+    },
+    ActionClosed {
+        ws: WorkspaceId,
+        peer: EndpointId,
+        session: std::sync::Weak<RelayCoeditSession>,
+    },
     Topic {
         ws: WorkspaceId,
         event: GossipEvent,
     },
     Host {
         ws: WorkspaceId,
+        session: std::sync::Weak<RelayCoeditSession>,
         peer: EndpointId,
         event: HostEvent,
     },
@@ -447,6 +550,7 @@ struct SurfaceFanoutOutcome {
 }
 
 enum HostEvent {
+    NativeInput(native_ingress::Input),
     Ready,
     Message {
         author: EndpointId,
@@ -462,6 +566,8 @@ struct TopicRuntime {
 }
 
 struct HostRuntime {
+    native_scope: Option<Arc<native_ingress::Scope>>,
+    actions: Option<tokio::task::JoinHandle<()>>,
     session: Arc<RelayCoeditSession>,
     pump: tokio::task::JoinHandle<()>,
 }
@@ -687,6 +793,9 @@ struct ActorState {
     endpoint: Endpoint,
     lookup: MemoryLookup,
     host_identity: Option<HostIdentity>,
+    native_media: super::native_media::Registry,
+    native_enrollment: super::invite::enrollment_driver::Registry,
+    native_routes: native_ingress::Routes,
     listen_addrs: Arc<Mutex<Vec<EndpointAddr>>>,
     gossip: Gossip,
     internal_tx: mpsc::Sender<InternalEvent>,
@@ -695,6 +804,11 @@ struct ActorState {
     peers: HashMap<EndpointId, EndpointAddr>,
     hosts: HashMap<EndpointId, (EndpointAddr, Option<HomePeerExpectation>)>,
     host_sessions: HashMap<(WorkspaceId, EndpointId), HostRuntime>,
+    action_broker: Option<(
+        crate::shell::peer_actions::PeerActionQueue,
+        uuid::Uuid,
+        HashMap<WorkspaceId, uuid::Uuid>,
+    )>,
     connecting_hosts: HashSet<(WorkspaceId, EndpointId)>,
     content_discovery_tasks: HashMap<(WorkspaceId, EndpointId), tokio::task::JoinHandle<()>>,
     peers_seen: HashMap<(WorkspaceId, EndpointId), PeerMembership>,
@@ -782,6 +896,18 @@ fn revoke_personal_fabric_ingress(
     }
 }
 
+impl Drop for HostRuntime {
+    fn drop(&mut self) {
+        if let Some(scope) = &self.native_scope {
+            scope.close();
+        }
+        self.pump.abort();
+        if let Some(task) = &self.actions {
+            task.abort();
+        }
+    }
+}
+
 impl ActorState {
     fn touch_or_mint_membership(
         &mut self,
@@ -844,10 +970,35 @@ impl ActorState {
     )]
     async fn handle_command(&mut self, command: Option<NetCmd>) -> bool {
         match command {
+            Some(NetCmd::NativeMedia(command)) => self
+                .native_media
+                .handle(command, self.host_identity.as_ref()),
+            Some(NetCmd::NativeConnect(connect)) => self.native_connect(connect),
+            Some(NetCmd::NativePublish { ws }) => self.drive_native_publication(ws),
+            Some(NetCmd::NativeEnrollment(command)) => self.native_enrollment.handle(
+                command,
+                self.endpoint.clone(),
+                self.host_identity.as_ref(),
+            ),
+            Some(NetCmd::AttachActionBroker { queue, host, rooms }) => {
+                let rooms: HashMap<_, _> = rooms
+                    .into_iter()
+                    .filter_map(|room| {
+                        tilo_relay_protocol::room_workspace_id(&room.to_string())
+                            .ok()
+                            .map(|ws| (ws, room))
+                    })
+                    .collect();
+                self.action_broker = Some((queue, host, rooms));
+                // Reconnect existing state-only subscriptions once. There is
+                // never a competing same-device private subscriber.
+                self.host_sessions.clear();
+            }
             Some(NetCmd::JoinWorkspace { ws, on_event }) => {
                 self.handle_join_workspace(ws, on_event).await;
             }
             Some(NetCmd::LeaveWorkspace { ws }) => {
+                self.native_routes.remove(ws);
                 let subscriber = self.subscribers.get(&ws).cloned();
                 let leaving = self
                     .peers_seen
@@ -903,6 +1054,19 @@ impl ActorState {
                 }
             }
             Some(NetCmd::Publish { ws, msg }) => {
+                if self.native_routes.contains(ws)
+                    && matches!(
+                        &msg,
+                        NeighbourMsg::AppDocument { .. }
+                            | NeighbourMsg::SyncReq { .. }
+                            | NeighbourMsg::SyncResp { .. }
+                    )
+                {
+                    if matches!(msg, NeighbourMsg::AppDocument { .. }) {
+                        self.drive_native_publication(ws);
+                    }
+                    return true;
+                }
                 if matches!(msg, NeighbourMsg::SurfaceFrame { .. }) {
                     // The host plane is already connected and independently
                     // useful. Enqueue it before any direct-peer dial timeout;
@@ -950,6 +1114,9 @@ impl ActorState {
                 self.publish_remote_action(ws, target, msg).await;
             }
             Some(NetCmd::PublishCheckpoint { ws, msg }) => {
+                if self.native_routes.contains(ws) {
+                    return true;
+                }
                 publish(&self.topics, &self.host_sessions, ws, msg, true, true, true).await;
             }
             Some(NetCmd::PublishPersonalFabric {
@@ -1051,6 +1218,9 @@ impl ActorState {
                     return true;
                 };
                 for ws in self.topics.keys().copied() {
+                    if self.native_routes.contains(ws) {
+                        continue;
+                    }
                     schedule_host_topic(
                         &self.endpoint,
                         identity,
@@ -1061,6 +1231,9 @@ impl ActorState {
                         &self.host_sessions,
                         &mut self.connecting_hosts,
                         &mut self.content_discovery_tasks,
+                        self.action_broker
+                            .as_ref()
+                            .is_some_and(|(_, _, rooms)| rooms.contains_key(&ws)),
                     );
                 }
             }
@@ -1683,7 +1856,9 @@ impl ActorState {
                 Err(error) => tracing::warn!(ws, %error, "could not join iroh workspace topic"),
             }
         }
-        if let Some(identity) = self.host_identity.as_ref() {
+        if !self.native_routes.contains(ws)
+            && let Some(identity) = self.host_identity.as_ref()
+        {
             for (addr, expectation) in self.hosts.values().cloned() {
                 schedule_host_topic(
                     &self.endpoint,
@@ -1695,6 +1870,9 @@ impl ActorState {
                     &self.host_sessions,
                     &mut self.connecting_hosts,
                     &mut self.content_discovery_tasks,
+                    self.action_broker
+                        .as_ref()
+                        .is_some_and(|(_, _, rooms)| rooms.contains_key(&ws)),
                 );
             }
         }
@@ -1704,6 +1882,13 @@ impl ActorState {
     /// channel has closed, so [`run`]'s loop should stop.
     async fn handle_internal(&mut self, internal: Option<InternalEvent>) -> bool {
         match internal {
+            Some(InternalEvent::ActionClosed { ws, peer, session }) => {
+                if self.host_sessions.get(&(ws, peer)).is_some_and(|runtime| {
+                    std::sync::Weak::ptr_eq(&session, &Arc::downgrade(&runtime.session))
+                }) {
+                    self.handle_host_event(ws, peer, HostEvent::Closed).await;
+                }
+            }
             Some(InternalEvent::Topic { ws, event }) => {
                 self.handle_topic_event(ws, event).await;
             }
@@ -1718,8 +1903,25 @@ impl ActorState {
             }) => {
                 self.handle_host_connected(ws, peer, &addr, result);
             }
-            Some(InternalEvent::Host { ws, peer, event }) => {
-                self.handle_host_event(ws, peer, event).await;
+            Some(InternalEvent::NativeHostConnected {
+                ws,
+                serial,
+                hint,
+                certificate,
+                continuity,
+                result,
+            }) => self.native_host_connected(ws, serial, hint, certificate, continuity, result),
+            Some(InternalEvent::Host {
+                ws,
+                peer,
+                session,
+                event,
+            }) => {
+                if self.host_sessions.get(&(ws, peer)).is_some_and(|runtime| {
+                    std::sync::Weak::ptr_eq(&session, &Arc::downgrade(&runtime.session))
+                }) {
+                    self.handle_host_event(ws, peer, event).await;
+                }
             }
             Some(InternalEvent::SurfaceFrame {
                 ws,
@@ -2069,6 +2271,9 @@ impl ActorState {
         result: Box<Result<RelayCoeditSession, String>>,
     ) {
         self.connecting_hosts.remove(&(ws, peer));
+        if self.native_routes.contains(ws) {
+            return;
+        }
         if !self.topics.contains_key(&ws)
             || self
                 .hosts
@@ -2080,10 +2285,57 @@ impl ActorState {
         match *result {
             Ok(session) => {
                 let session = Arc::new(session);
-                let pump =
-                    spawn_host_pump(ws, peer, Arc::clone(&session), self.internal_tx.clone());
-                self.host_sessions
-                    .insert((ws, peer), HostRuntime { session, pump });
+                let pump = spawn_host_pump(
+                    ws,
+                    peer,
+                    Arc::clone(&session),
+                    self.internal_tx.clone(),
+                    None,
+                );
+                self.host_sessions.insert(
+                    (ws, peer),
+                    HostRuntime {
+                        native_scope: None,
+                        actions: self
+                            .action_broker
+                            .as_ref()
+                            .and_then(|(queue, host, rooms)| {
+                                // State-only/pinned compatibility and relay-role
+                                // certificates never advertise an effect endpoint.
+                                if self
+                                    .hosts
+                                    .get(&peer)
+                                    .and_then(|(_, expected)| expected.as_ref())
+                                    .is_none()
+                                    || self.host_identity.as_ref().is_none_or(|identity| {
+                                        identity.material_for(ws).0.capabilities.can_act_as_host
+                                    })
+                                {
+                                    return None;
+                                }
+                                let room = *rooms.get(&ws)?;
+                                let (queue, host, session, tx) = (
+                                    queue.clone(),
+                                    *host,
+                                    session.clone(),
+                                    self.internal_tx.clone(),
+                                );
+                                Some(tokio::spawn(async move {
+                                    let generation = Arc::downgrade(&session);
+                                    let _ = queue.serve(session, room, host).await;
+                                    let _ = tx
+                                        .send(InternalEvent::ActionClosed {
+                                            ws,
+                                            peer,
+                                            session: generation,
+                                        })
+                                        .await;
+                                }))
+                            }),
+                        session,
+                        pump,
+                    },
+                );
             }
             Err(error) => {
                 tracing::warn!(ws, peer = %peer, %error, "workspace host connection failed");
@@ -2095,7 +2347,11 @@ impl ActorState {
     /// to keep that dispatcher short.
     async fn handle_host_event(&mut self, ws: WorkspaceId, peer: EndpointId, event: HostEvent) {
         let mapped = match event {
-            HostEvent::Ready => Some(NetEvent::HostReady { ws, peer }),
+            HostEvent::NativeInput(input) => Some(NetEvent::NativeInput(input)),
+            HostEvent::Ready => {
+                self.request_native_refresh(ws);
+                Some(NetEvent::HostReady { ws, peer })
+            }
             HostEvent::Message {
                 author,
                 fingerprint,
@@ -2167,12 +2423,21 @@ impl ActorState {
     /// yet connected, and broadcast this device's identity + a liveness
     /// heartbeat on every joined topic.
     async fn run_heartbeat_tick(&mut self) {
+        self.retry_native_routes();
+        let rooms: Vec<_> = self.host_sessions.keys().map(|(ws, _)| *ws).collect();
+        for ws in rooms {
+            self.request_native_refresh(ws);
+            self.drive_native_publication(ws);
+        }
         if let Ok(mut out) = self.listen_addrs.lock() {
             out.clear();
             out.push(self.endpoint.addr());
         }
         if let Some(identity) = self.host_identity.as_ref() {
             for ws in self.topics.keys().copied() {
+                if self.native_routes.contains(ws) {
+                    continue;
+                }
                 for (addr, expectation) in self.hosts.values().cloned() {
                     schedule_host_topic(
                         &self.endpoint,
@@ -2184,6 +2449,9 @@ impl ActorState {
                         &self.host_sessions,
                         &mut self.connecting_hosts,
                         &mut self.content_discovery_tasks,
+                        self.action_broker
+                            .as_ref()
+                            .is_some_and(|(_, _, rooms)| rooms.contains_key(&ws)),
                     );
                 }
             }
@@ -2631,6 +2899,9 @@ async fn run(
         endpoint,
         lookup,
         host_identity,
+        native_media: Default::default(),
+        native_enrollment: Default::default(),
+        native_routes: Default::default(),
         listen_addrs,
         gossip,
         internal_tx,
@@ -2639,6 +2910,7 @@ async fn run(
         peers: HashMap::new(),
         hosts: HashMap::new(),
         host_sessions: HashMap::new(),
+        action_broker: None,
         connecting_hosts: HashSet::new(),
         content_discovery_tasks: HashMap::new(),
         peers_seen: HashMap::new(),
@@ -2807,6 +3079,7 @@ fn schedule_host_topic(
     sessions: &HashMap<(WorkspaceId, EndpointId), HostRuntime>,
     connecting: &mut HashSet<(WorkspaceId, EndpointId)>,
     content_discovery_tasks: &mut HashMap<(WorkspaceId, EndpointId), tokio::task::JoinHandle<()>>,
+    action_v2: bool,
 ) {
     let host = addr.id;
     if let Some(expectation) = expectation.clone()
@@ -2870,6 +3143,7 @@ fn schedule_host_topic(
     let endpoint = endpoint.clone();
     let identity = identity.clone();
     let (device_cert, revocation_entries) = identity.material_for(ws);
+    let action_v2 = action_v2 && !device_cert.capabilities.can_act_as_host;
     let mut revocations = RevocationList::new();
     for entry in revocation_entries {
         if revocations.insert(entry).is_err() {
@@ -2917,18 +3191,31 @@ fn schedule_host_topic(
     };
     let tx = internal_tx.clone();
     tokio::spawn(async move {
-        let result = tokio::time::timeout(
-            Duration::from_secs(10),
-            RelayClient::connect_to_enrolled_home_peer(
-                endpoint,
-                addr.clone(),
-                expectation.user_public_key,
-                expectation.device_public_key,
-                device_cert,
-                identity.device_signing_key.clone(),
-                revocations,
-            ),
-        )
+        let result = tokio::time::timeout(Duration::from_secs(10), async {
+            if action_v2 {
+                RelayClient::connect_v2_to_enrolled_home_peer(
+                    endpoint,
+                    addr.clone(),
+                    expectation.user_public_key,
+                    expectation.device_public_key,
+                    device_cert,
+                    identity.device_signing_key.clone(),
+                    revocations,
+                )
+                .await
+            } else {
+                RelayClient::connect_to_enrolled_home_peer(
+                    endpoint,
+                    addr.clone(),
+                    expectation.user_public_key,
+                    expectation.device_public_key,
+                    device_cert,
+                    identity.device_signing_key.clone(),
+                    revocations,
+                )
+                .await
+            }
+        })
         .await
         .map_err(|_| "workspace host connection timed out".to_string())
         .and_then(|result| result.map_err(|error| error.to_string()))
@@ -3090,11 +3377,16 @@ fn spawn_host_pump(
     host: EndpointId,
     session: Arc<RelayCoeditSession>,
     tx: mpsc::Sender<InternalEvent>,
+    native_scope: Option<Arc<native_ingress::Scope>>,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
+        let mut replay = true;
         while let Some(inbound) = session.recv().await {
             let event = match inbound {
-                HostInbound::Ready { .. } => HostEvent::Ready,
+                HostInbound::Ready { .. } => {
+                    replay = false;
+                    HostEvent::Ready
+                }
                 HostInbound::RemoteAction { from, frame } => {
                     let Ok(author) = EndpointId::from_bytes(&from) else {
                         continue;
@@ -3105,6 +3397,17 @@ fn spawn_host_pump(
                         fingerprint: [0; 32],
                         msg: NeighbourMsg::RemoteAction { frame },
                     }
+                }
+                HostInbound::Delta { author, data } if native_scope.is_some() => {
+                    let Ok(msg) = postcard::from_bytes(&data) else {
+                        continue;
+                    };
+                    HostEvent::NativeInput(
+                        native_scope
+                            .as_ref()
+                            .expect("matched scope")
+                            .input(author, replay, msg),
+                    )
                 }
                 HostInbound::Delta { author, data }
                 | HostInbound::Presence {
@@ -3129,6 +3432,7 @@ fn spawn_host_pump(
                 .send(InternalEvent::Host {
                     ws,
                     peer: host,
+                    session: Arc::downgrade(&session),
                     event,
                 })
                 .await
@@ -3137,10 +3441,15 @@ fn spawn_host_pump(
                 return;
             }
         }
+        // Fence already queued evidence before notifying the actor of closure.
+        if let Some(scope) = native_scope {
+            scope.close();
+        }
         let _ = tx
             .send(InternalEvent::Host {
                 ws,
                 peer: host,
+                session: Arc::downgrade(&session),
                 event: HostEvent::Closed,
             })
             .await;
@@ -4006,6 +4315,8 @@ mod tests {
                 pin: true,
                 replication: ReplicationIntent::FullWorkspace,
                 admitted_users: Vec::new(),
+                shell_authority: None,
+                checkpoint_prefix_recovery: Default::default(),
             }],
             ..RelayConfig::default()
         };
@@ -4051,6 +4362,8 @@ mod tests {
                     pin: true,
                     replication: ReplicationIntent::FullWorkspace,
                     admitted_users: Vec::new(),
+                    shell_authority: None,
+                    checkpoint_prefix_recovery: Default::default(),
                 }],
                 ..RelayConfig::default()
             },
@@ -4101,6 +4414,7 @@ mod tests {
                         &HashMap::new(),
                         &mut connecting,
                         &mut discoveries,
+                        false,
                     );
                     let rejected = matches!(
                         timeout(Duration::from_secs(5), rx.recv()).await,

@@ -279,7 +279,8 @@ impl MainPanel {
             title_label: EditableLabel::new("")
                 .with_font_family(FontChoice::SansSerif)
                 .with_font_size(TITLE_SIZE)
-                .with_id("note_title"),
+                .with_id("note_title")
+                .with_accessible_name("Page title"),
             title_rect: Rect::ZERO,
             last_pointer: Point::ZERO,
             pending_rename: None,
@@ -332,6 +333,8 @@ impl MainPanel {
         self.title_label.cancel();
         let _ = self.title_label.take_outcome();
         self.title_label.set_value(title);
+        self.title_label
+            .set_semantic_target(self.page_id.map(|page| format!("notes:page-title:{page}")));
         self.pending_rename = None;
         self.dirty = true;
     }
@@ -340,23 +343,10 @@ impl MainPanel {
     /// host drains this after each event and applies it as a rename. Cleared
     /// on read.
     pub fn take_title_rename(&mut self) -> Option<String> {
-        self.pending_rename.take()
-    }
-
-    /// Accept an assistive-technology value change for the painted page title.
-    /// It deliberately only queues the rename: [`NotesApp`](crate::NotesApp)
-    /// drains it into the same typed page action as a pointer/keyboard commit,
-    /// preserving undo, history and collaboration rather than bypassing them.
-    fn set_title_from_semantics(&mut self, value: &str) -> bool {
-        let value = value.trim();
-        if self.page_id.is_none() || value.is_empty() || self.title_label.value() == value {
-            return false;
+        if let EditOutcome::Committed(value) = self.title_label.take_outcome() {
+            self.pending_rename = Some(value);
         }
-        self.title_label.cancel();
-        self.title_label.set_value(value);
-        self.pending_rename = Some(value.to_string());
-        self.dirty = true;
-        true
+        self.pending_rename.take()
     }
 
     /// Load a page into the panel. The body is parsed and handed to
@@ -364,7 +354,8 @@ impl MainPanel {
     /// caret) is discarded — switching pages is a hard cut.
     /// Parsing goes through `notes::markdown`, which owns the inline-mark
     /// grammar that `BlockEditor::from_markdown` does not handle.
-    pub fn load_page(&mut self, id: PageId, title: &str, body: &str) {
+    pub fn load_page(&mut self, id: PageId, title: &str, body: impl AsRef<str>) {
+        let body = body.as_ref();
         self.page_id = Some(id);
         self.dates = self.date_index.get(id);
         self.empty_action_focused = false;
@@ -399,11 +390,12 @@ impl MainPanel {
         &mut self,
         id: PageId,
         title: &str,
-        body: &str,
+        body: impl AsRef<str>,
         resolver: F,
     ) where
         F: FnMut(&str) -> Option<PageId>,
     {
+        let body = body.as_ref();
         self.page_id = Some(id);
         self.dates = self.date_index.get(id);
         self.set_title_value(title);
@@ -1250,6 +1242,34 @@ impl Default for MainPanel {
 }
 
 impl Widget for MainPanel {
+    fn primary_vertical_scroll(&self) -> Option<ui::widget::PrimaryScrollRegion> {
+        Some(ui::widget::PrimaryScrollRegion {
+            key: "primary",
+            owner_generation: None,
+            metrics: self.scroll_metrics(),
+        })
+    }
+    fn apply_primary_vertical_scroll(
+        &mut self,
+        action: ui::widget::PrimaryScrollAction,
+    ) -> ui::widget::PrimaryScrollResult {
+        use ui::widget::PrimaryScrollResult;
+        let Some(region) = self.primary_vertical_scroll() else {
+            return PrimaryScrollResult::Unsupported;
+        };
+        let Some(next) = action.offset(region.metrics) else {
+            return PrimaryScrollResult::Unsupported;
+        };
+        if next == region.metrics.offset {
+            return PrimaryScrollResult::Unchanged(region);
+        }
+        self.set_scroll_offset(next);
+        self.primary_vertical_scroll().map_or(
+            PrimaryScrollResult::Unsupported,
+            PrimaryScrollResult::Changed,
+        )
+    }
+
     fn children(&self) -> Vec<&dyn Widget> {
         if self.page_id.is_some() {
             vec![&self.title_label, &self.editor]
@@ -2265,16 +2285,6 @@ impl Widget for MainPanel {
             self.empty_action_focused = true;
             self.dirty = true;
             true
-        } else if self.page_id.is_some() {
-            match action {
-                ui::a11y::Action::Activate | ui::a11y::Action::Focus => {
-                    self.title_label.begin_edit();
-                    self.dirty = true;
-                    true
-                }
-                ui::a11y::Action::SetValue(value) => self.set_title_from_semantics(value),
-                _ => false,
-            }
         } else {
             false
         }
@@ -2314,8 +2324,11 @@ impl Widget for MainPanel {
             self.set_scroll_offset(offset);
             return true;
         }
-        if target == "notes.page-title" {
+        if target == "notes.first_note" && self.page_id.is_none() {
             return self.perform_action(action, state, path);
+        }
+        if target == "notes.page-title" {
+            return Widget::perform_action(&mut self.title_label, action, state, path);
         }
         if let Some(page) = target
             .strip_prefix("notes.backlink-chip:")
@@ -2485,13 +2498,19 @@ mod tests {
             .expect("header exposes the page title");
         assert_eq!(title.role, ui::a11y::Role::TextInput);
         assert_eq!(title.action_target.as_deref(), Some("notes.page-title"));
-
+        let target = title.action_target.as_deref().unwrap();
         let mut doc = AutoCommit::new();
-        assert!(panel.perform_action(
+        assert!(panel.perform_semantic_action(
+            target,
             &ui::a11y::Action::SetValue("Launch plan".into()),
             &mut doc,
-            &ObjId::Root,
+            &automerge::ROOT,
         ));
+        assert!(
+            panel.take_title_rename().is_none(),
+            "typing remains an uncommitted inline rename"
+        );
+        panel.title_label.commit();
         assert_eq!(panel.take_title_rename().as_deref(), Some("Launch plan"));
     }
 

@@ -653,3 +653,9 @@ async fn a_second_request_while_a_dialog_is_up_is_answered_not_stacked() {
     let (code1, _) = await_response(&mut host, "the first request", first).await;
     assert_eq!(code1, 1);
 }
+
+#[allow(
+    unused_imports,
+    reason = "The native WorkspaceExt methods are selected by host-specific workspace code and test configurations."
+)]
+use shell::shell::state::WorkspaceExt as _;

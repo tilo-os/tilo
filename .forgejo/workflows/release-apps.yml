@@ -244,6 +244,11 @@ jobs:
       publish: ${{ steps.plan.outputs.publish }}
       collection: ${{ steps.plan.outputs.collection }}
     steps:
+      - name: Disable automatic Git maintenance in the disposable job container
+        # Git 2.54 maintenance can rewrite shallow history between fetches.
+        # Checkout copies this global config before its first fetch.
+        run: git config --global maintenance.auto false
+
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           ref: ${{ github.sha }}

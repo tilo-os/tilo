@@ -9,6 +9,7 @@ use uuid::Uuid;
 /// content-collecting action may then consume the hash without asking a model
 /// to copy or invent it.
 pub const CONTENT_RESOURCE_KIND: &str = "tilo.content";
+const LEGACY_CONTENT_RESOURCE_KIND: &str = "qos.content";
 
 /// Build the canonical resource address for content-addressed bytes.
 ///
@@ -21,7 +22,8 @@ pub fn content_resource(hash: &str) -> Option<String> {
 /// Read a content hash from its canonical resource address.
 pub fn content_hash(address: &str) -> Option<&str> {
     address
-        .strip_prefix(CONTENT_RESOURCE_KIND)?
+        .strip_prefix(CONTENT_RESOURCE_KIND)
+        .or_else(|| address.strip_prefix(LEGACY_CONTENT_RESOURCE_KIND))?
         .strip_prefix(':')
         .filter(|hash| !hash.is_empty() && !hash.contains(':'))
 }
@@ -200,6 +202,13 @@ mod tests {
         assert_eq!(content_resource(""), None);
         assert_eq!(content_resource("two:parts"), None);
         assert_eq!(content_hash("files.entry:/tmp/a"), None);
+    }
+
+    #[test]
+    fn content_hash_accepts_the_deployed_durable_resource_namespace() {
+        assert_eq!(content_hash("qos.content:abc123"), Some("abc123"));
+        assert_eq!(content_hash("qos.content:"), None);
+        assert_eq!(content_hash("qos.content:two:parts"), None);
     }
 
     #[test]

@@ -996,7 +996,11 @@ pub fn remove_tab(tree: &mut WorkspaceTree, tab_id: TabId) -> bool {
     let removed = group.tabs.remove(tab_idx);
     tree.local_app_records.remove(&tab_id);
     if group.active_tab == tab_id {
-        group.active_tab = group.tabs.last().map_or(0, |tab| tab.id);
+        group.active_tab = group
+            .tabs
+            .get(tab_idx)
+            .or_else(|| group.tabs.last())
+            .map_or(0, |tab| tab.id);
     }
     if remove_group {
         let removed_was_active = tree.desktop.active_group.get(&strip_id) == Some(&group_id);
@@ -2133,6 +2137,23 @@ mod tests {
         assert_ne!(
             group.active_tab, tab_id,
             "the group must not point at the tab it no longer has",
+        );
+    }
+
+    #[test]
+    fn remove_tab_selects_the_immediate_right_tab_when_the_active_middle_tab_closes() {
+        let mut tree = WorkspaceTree::bootstrap_demo();
+        let group = &mut tree.desktop.workspaces[0].strips[0].window_groups[0];
+        group.tabs.truncate(4);
+        let middle = group.tabs[1].id;
+        let right = group.tabs[2].id;
+        group.active_tab = middle;
+
+        assert!(remove_tab(&mut tree, middle));
+
+        assert_eq!(
+            tree.desktop.workspaces[0].strips[0].window_groups[0].active_tab, right,
+            "the tab immediately to the right in visible order remains selected"
         );
     }
 

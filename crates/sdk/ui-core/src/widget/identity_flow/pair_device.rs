@@ -433,68 +433,102 @@ impl PairDeviceScreen {
         payload: &PairingPayload,
         hs: &PairingHandshake,
     ) -> Result<ThresholdIdentity, IdentityFlowError> {
-        let nonce = payload.nonce()?;
-        let host_round1 = payload.initiator_round1()?;
-        // Build the pairer's own DKG session (share index 2 in a 2-of-2 group).
-        let mut rng = UnwrapErr(SysRng);
-        let mut my_identity = ThresholdIdentity::bootstrap_single_device(&mut rng)?;
-        let (mut my_session, my_round1) = my_identity.begin_enrolment(2, 2, 2, &mut rng)?;
-        // Process the host's round-1 → produce our round-2 reply.
-        let outgoing = my_session.receive_round1(std::slice::from_ref(&host_round1))?;
-        let reply = outgoing
-            .into_iter()
-            .find(|(idx, _)| *idx == 1)
-            .map(|(_, r)| r)
-            .ok_or_else(|| {
-                IdentityFlowError::DecodeFailed("DKG produced no round-2 reply to share 1".into())
-            })?;
-        let mac = super::pairing_transcript_mac(payload, "pairer-to-host", &my_round1, &reply)?;
-        // Publication is one acknowledged, idempotent exchange. A transient
-        // TLS timeout must not strand round 1 or round 2 while both screens
-        // continue to say they are waiting for the other device.
-        let publish_deadline = crate::time::now()
-            .checked_add(crate::time::Duration::from_secs(15))
-            .ok_or_else(|| IdentityFlowError::DecodeFailed("pairing deadline overflow".into()))?;
-        loop {
-            if hs.publish_pairer_exchange(&nonce, my_round1.clone(), reply.clone(), mac) {
-                break;
-            }
-            if crate::time::now() >= publish_deadline {
-                return Err(IdentityFlowError::DecodeFailed(
-                    "pairing broker did not acknowledge the DKG exchange".into(),
-                ));
-            }
-            std::thread::sleep(crate::time::Duration::from_millis(20));
+        self.perform_pairing_on_platform(payload, hs, cfg!(not(target_arch = "wasm32")))
+    }
+
+    fn perform_pairing_on_platform(
+        &mut self,
+        payload: &PairingPayload,
+        hs: &PairingHandshake,
+        native: bool,
+    ) -> Result<ThresholdIdentity, IdentityFlowError> {
+        if !native || cfg!(target_arch = "wasm32") {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::Unsupported,
+                "Device pairing unavailable without a browser pairing executor",
+            )
+            .into());
         }
-        // The pairer also needs the host's round-1 contribution, sent as the
-        // host's own round-2 message; bounded-poll the broker mailbox for it.
-        let mut host_reply: Option<EnrolmentRound2> = None;
-        let deadline = crate::time::now()
-            .checked_add(crate::time::Duration::from_secs(15))
-            .ok_or_else(|| IdentityFlowError::DecodeFailed("pairing deadline overflow".into()))?;
-        loop {
-            if let Some((r, host_mac)) = hs.take_host_round2(&nonce) {
-                let expected =
-                    super::pairing_transcript_mac(payload, "host-to-pairer", &my_round1, &r)?;
-                if expected != host_mac {
-                    return Err(IdentityFlowError::PairingMacInvalid);
+        #[cfg(target_arch = "wasm32")]
+        {
+            let _ = (payload, hs);
+            Err(std::io::Error::new(
+                std::io::ErrorKind::Unsupported,
+                "Device pairing unavailable without a browser pairing executor",
+            )
+            .into())
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let nonce = payload.nonce()?;
+            let host_round1 = payload.initiator_round1()?;
+            // Build the pairer's own DKG session (share index 2 in a 2-of-2 group).
+            let mut rng = UnwrapErr(SysRng);
+            let mut my_identity = ThresholdIdentity::bootstrap_single_device(&mut rng)?;
+            let (mut my_session, my_round1) = my_identity.begin_enrolment(2, 2, 2, &mut rng)?;
+            // Process the host's round-1 → produce our round-2 reply.
+            let outgoing = my_session.receive_round1(std::slice::from_ref(&host_round1))?;
+            let reply = outgoing
+                .into_iter()
+                .find(|(idx, _)| *idx == 1)
+                .map(|(_, r)| r)
+                .ok_or_else(|| {
+                    IdentityFlowError::DecodeFailed(
+                        "DKG produced no round-2 reply to share 1".into(),
+                    )
+                })?;
+            let mac = super::pairing_transcript_mac(payload, "pairer-to-host", &my_round1, &reply)?;
+            // Publication is one acknowledged, idempotent exchange. A transient
+            // TLS timeout must not strand round 1 or round 2 while both screens
+            // continue to say they are waiting for the other device.
+            let publish_deadline = crate::time::now()
+                .checked_add(crate::time::Duration::from_secs(15))
+                .ok_or_else(|| {
+                    IdentityFlowError::DecodeFailed("pairing deadline overflow".into())
+                })?;
+            loop {
+                if hs.publish_pairer_exchange(&nonce, my_round1.clone(), reply.clone(), mac) {
+                    break;
                 }
-                host_reply = Some(r);
-                break;
+                if crate::time::now() >= publish_deadline {
+                    return Err(IdentityFlowError::DecodeFailed(
+                        "pairing broker did not acknowledge the DKG exchange".into(),
+                    ));
+                }
+                std::thread::sleep(crate::time::Duration::from_millis(20));
             }
-            if crate::time::now() >= deadline {
-                break;
+            // The pairer also needs the host's round-1 contribution, sent as the
+            // host's own round-2 message; bounded-poll the broker mailbox for it.
+            let mut host_reply: Option<EnrolmentRound2> = None;
+            let deadline = crate::time::now()
+                .checked_add(crate::time::Duration::from_secs(15))
+                .ok_or_else(|| {
+                    IdentityFlowError::DecodeFailed("pairing deadline overflow".into())
+                })?;
+            loop {
+                if let Some((r, host_mac)) = hs.take_host_round2(&nonce) {
+                    let expected =
+                        super::pairing_transcript_mac(payload, "host-to-pairer", &my_round1, &r)?;
+                    if expected != host_mac {
+                        return Err(IdentityFlowError::PairingMacInvalid);
+                    }
+                    host_reply = Some(r);
+                    break;
+                }
+                if crate::time::now() >= deadline {
+                    break;
+                }
+                std::thread::sleep(crate::time::Duration::from_millis(20));
             }
-            std::thread::sleep(crate::time::Duration::from_millis(20));
+            let host_reply = host_reply.ok_or_else(|| {
+                IdentityFlowError::DecodeFailed("host never published round-2 to pairer".into())
+            })?;
+            my_session.receive_round2(&[host_reply])?;
+            my_identity.adopt_dkg_outcome(my_session)?;
+            self.completed = true;
+            self.status = "Paired.".to_string();
+            Ok(my_identity)
         }
-        let host_reply = host_reply.ok_or_else(|| {
-            IdentityFlowError::DecodeFailed("host never published round-2 to pairer".into())
-        })?;
-        my_session.receive_round2(&[host_reply])?;
-        my_identity.adopt_dkg_outcome(my_session)?;
-        self.completed = true;
-        self.status = "Paired.".to_string();
-        Ok(my_identity)
     }
 
     /// Connect to the exact pinned broker carried by `payload` and run the
@@ -508,8 +542,17 @@ impl PairDeviceScreen {
         &mut self,
         payload: &PairingPayload,
     ) -> Result<ThresholdIdentity, IdentityFlowError> {
-        let broker = payload.remote_broker()?;
-        self.perform_pairing(payload, &broker)
+        #[cfg(target_arch = "wasm32")]
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            "Device pairing unavailable without a browser pairing executor",
+        )
+        .into());
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let broker = payload.remote_broker()?;
+            self.perform_pairing(payload, &broker)
+        }
     }
 
     /// Companion to `perform_pairing` that *exposes* the round-1 the
@@ -1051,6 +1094,25 @@ impl Widget for PairDeviceScreen {
 mod tests {
     use super::*;
 
+    #[test]
+    fn portable_review_pairing_is_unavailable_before_decode_or_retry() {
+        let payload = PairingPayload {
+            ty: String::new(),
+            channel: String::new(),
+            initiator_pk: String::new(),
+            initiator_dkg_round1: String::new(),
+            broker_endpoint: String::new(),
+            broker_certificate: String::new(),
+        };
+        let result = PairDeviceScreen::new().perform_pairing_on_platform(
+            &payload,
+            &PairingHandshake::new(),
+            false,
+        );
+        assert!(
+            matches!(result, Err(IdentityFlowError::Io(error)) if error.kind() == std::io::ErrorKind::Unsupported)
+        );
+    }
     #[test]
     fn set_code_handles_partial_input() {
         let mut s = PairDeviceScreen::new();

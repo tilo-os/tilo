@@ -17,6 +17,7 @@ use std::path::Path;
 use crate::shell::state::{
     AppKind, GroupId, StripId, Tab, TileContent, WindowGroup, WindowWidth, WorkspaceTree, next_id,
 };
+use crate::shell::state::DesktopTree as RuntimeTree;
 use crate::shell::tab_binding::Placement;
 
 /// `is_folder` collapses the concept's `'folder' | 'file'` drag data
@@ -152,6 +153,53 @@ pub fn apply_workspace_drop_at_from_path(
 ) -> Option<u64> {
     let item = DraggedItem::from_path(path)?;
     apply_workspace_drop_at(tree, &item, strip_id, group_id)
+}
+
+/// Appends a Stub tile, not a live `Box<dyn AppWidget>` — materialising
+/// one synchronously could spawn subprocesses; content hydrates on focus.
+#[allow(
+    clippy::needless_pass_by_value,
+    reason = "public API called across the shell/compositor boundary; changing the signature \
+              would require editing call sites outside this file's scope"
+)]
+pub fn apply_runtime_workspace_drop(tree: &mut RuntimeTree, item: DraggedItem) -> Option<u64> {
+    let kind = decide_app_for_drop(&item);
+    let label = tab_label_for(&item, &kind);
+    let tab = crate::shell::state::Tab {
+        id: crate::shell::state::next_id(),
+        title: label.clone(),
+        tile: crate::shell::state::TileContent::Stub { kind, label },
+    };
+    let tab_id = tab.id;
+
+    let ws = tree.workspaces.iter_mut().find(|w| w.id == tree.active)?;
+    let strip = ws.strips.first_mut()?;
+    if let Some(group) = strip.window_groups.first_mut() {
+        group.tabs.push(tab);
+        group.active_tab = tab_id;
+    } else {
+        let group = crate::shell::state::WindowGroup {
+            id: crate::shell::state::next_id(),
+            tabs: vec![tab],
+            active_tab: tab_id,
+            width: WindowWidth::Normal,
+            maximized: false,
+        };
+        strip.window_groups.push(group);
+        let Some(group) = strip.window_groups.last_mut() else {
+            // Unreachable — the line above just pushed one — but a
+            // dropped tab that silently doesn't focus is a far better
+            // failure than panicking this panic=abort process.
+            return Some(tab_id);
+        };
+        group.active_tab = tab_id;
+    }
+    Some(tab_id)
+}
+
+pub fn apply_runtime_workspace_drop_from_path(tree: &mut RuntimeTree, path: &Path) -> Option<u64> {
+    let item = DraggedItem::from_path(path)?;
+    apply_runtime_workspace_drop(tree, item)
 }
 
 pub fn apply_workspace_drop_from_path(tree: &mut WorkspaceTree, path: &Path) -> Option<u64> {
@@ -299,6 +347,81 @@ mod tests {
         apply_workspace_drop(&mut tree, &DraggedItem::file("main.tsx")).unwrap();
         let group = &tree.desktop.active_workspace().unwrap().strips[0].window_groups[0];
         assert_eq!(group.tabs.last().unwrap().title, "main.tsx");
+    }
+
+    fn runtime_tree_with_empty_workspace() -> RuntimeTree {
+        let mut workspace = crate::shell::state::Workspace::new(crate::shell::state::WorkspaceId::new(), "Home");
+        let mut strip = crate::shell::state::Strip::new(StripId::new(), "Main");
+        strip.window_groups.push(WindowGroup {
+            id: 1,
+            tabs: vec![],
+            active_tab: 0,
+            width: WindowWidth::Normal,
+            maximized: false,
+        });
+        workspace.strips = vec![strip];
+        RuntimeTree {
+            active: workspace.id,
+            workspaces: vec![workspace],
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn runtime_drop_appends_stub_tab_to_active_workspace() {
+        let mut tree = runtime_tree_with_empty_workspace();
+        let tab_id =
+            apply_runtime_workspace_drop(&mut tree, DraggedItem::file("main.ts")).expect("tab_id");
+        let ws = tree
+            .workspaces
+            .iter()
+            .find(|w| w.id == tree.active)
+            .unwrap();
+        let group = &ws.strips[0].window_groups[0];
+        assert_eq!(group.tabs.len(), 1);
+        assert_eq!(group.tabs[0].id, tab_id);
+        assert_eq!(group.tabs[0].title, "main.ts");
+        // Runtime sidecars use the same canonical application identity.
+        match &group.tabs[0].tile {
+            crate::shell::state::TileContent::Stub { kind, .. } => {
+                assert_eq!(*kind, AppKind::Other("Editor".into()));
+            }
+            _ => panic!("expected Stub tile"),
+        }
+    }
+
+    #[test]
+    fn runtime_drop_from_path_routes_through_the_same_logic() {
+        let mut tree = runtime_tree_with_empty_workspace();
+        // Use a nonexistent path — is_dir() → false, so it's classified
+        // as a file. Extension .md routes to Editor.
+        let path = std::path::PathBuf::from("/no/such/file.md");
+        let tab_id = apply_runtime_workspace_drop_from_path(&mut tree, &path).expect("tab_id");
+        let ws = tree
+            .workspaces
+            .iter()
+            .find(|w| w.id == tree.active)
+            .unwrap();
+        let group = &ws.strips[0].window_groups[0];
+        assert_eq!(group.active_tab, tab_id);
+        assert_eq!(group.tabs[0].title, "file.md");
+    }
+
+    #[test]
+    fn runtime_drop_creates_group_when_strip_is_empty() {
+        let mut tree = runtime_tree_with_empty_workspace();
+        tree.workspaces[0].strips[0].window_groups.clear();
+        let tab_id =
+            apply_runtime_workspace_drop(&mut tree, DraggedItem::folder("src")).expect("tab_id");
+        let ws = tree
+            .workspaces
+            .iter()
+            .find(|w| w.id == tree.active)
+            .unwrap();
+        let strip = &ws.strips[0];
+        assert_eq!(strip.window_groups.len(), 1);
+        assert_eq!(strip.window_groups[0].active_tab, tab_id);
+        assert_eq!(strip.window_groups[0].tabs[0].title, "Files — src");
     }
 
     #[test]

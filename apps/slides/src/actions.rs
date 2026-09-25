@@ -1579,7 +1579,9 @@ mod tests {
     fn immediate_encode(spec: &ActionSpec) -> EncodedAction {
         match &spec.input {
             ActionInput::Immediate(enc) => enc.clone(),
-            ActionInput::Prompted { .. } => panic!("expected an immediate action: {}", spec.id),
+            ActionInput::Prompted { .. } | ActionInput::Deferred { .. } => {
+                panic!("expected an immediate action: {}", spec.id)
+            }
         }
     }
 

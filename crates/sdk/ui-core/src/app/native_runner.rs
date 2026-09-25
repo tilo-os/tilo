@@ -1414,21 +1414,24 @@ impl AppHandler {
         // synchronization. A worker's `Wake` event reaches this pass without
         // requiring the app to own a proxy or poll inside its model.
         mark_first_frame("first-frame-update-start");
-        if app.root_widget.update(&mut app.state.doc, &app.state.root) {
+        if app.update_model() {
             floating_content_changed = true;
             full_redraw_required = true;
-            app.invalidate_widget_resource_cache();
-            app.needs_sync = true;
-            app.layout.layout_dirty = true;
         }
         mark_first_frame("first-frame-update-done");
         mark_first_frame("first-frame-sync-start");
-        if app.needs_sync {
+        if app.sync_model(false) {
             floating_content_changed = true;
             full_redraw_required = true;
-            app.root_widget.sync(&mut app.state.doc, &app.state.root);
-            app.invalidate_widget_resource_cache();
-            app.needs_sync = false;
+        }
+        if app.root_widget.take_window_close_intent() {
+            if app.admit_native_close_request() {
+                event_loop.exit();
+                return;
+            }
+            if let Some(window) = self.window.as_ref() {
+                window.request_redraw();
+            }
         }
         if app.root_widget.take_window_close_intent() {
             event_loop.exit();
@@ -1664,19 +1667,22 @@ impl AppHandler {
         }
         // This must follow damage collection: widget `draw` may update
         // damage geometry and `mark_drawn` consumes persistent dirty flags.
-        app.root_widget.mark_drawn();
-        record_main_stage(&mut native_main_stages, MainStage::AfterDamageMarkDrawn);
+        complete_native_frame_content(app, |app| {
+            record_main_stage(&mut native_main_stages, MainStage::AfterDamageMarkDrawn);
 
-        // `update_if_active` only builds + sends when an AT is
-        // attached, so this is free on the common no-reader path.
-        if let Some(adapter) = self.a11y_adapter.as_mut() {
-            let app_ref: &mut App = app;
-            let scale = f64::from(scale_factor);
-            adapter.update_if_active(|| {
-                crate::accesskit_bridge::native_tree_update(app_ref.build_a11y_tree_update(scale))
-            });
-        }
-        record_main_stage(&mut native_main_stages, MainStage::AfterAccessibility);
+            // `update_if_active` only builds + sends when an AT is
+            // attached, so this is free on the common no-reader path.
+            if let Some(adapter) = self.a11y_adapter.as_mut() {
+                let app_ref: &mut App = app;
+                let scale = f64::from(scale_factor);
+                adapter.update_if_active(|| {
+                    crate::accesskit_bridge::native_tree_update(
+                        app_ref.build_a11y_tree_update(scale),
+                    )
+                });
+            }
+            record_main_stage(&mut native_main_stages, MainStage::AfterAccessibility);
+        });
 
         // Painted last, after the frame timing was committed above,
         // so the HUD's own cost never enters its numbers.
@@ -1938,8 +1944,16 @@ impl AppHandler {
                         .command_modifier_down(app.input.modifiers.state())
             );
             if !is_ctrl_k
-                && matches!(event, WindowEvent::KeyboardInput { .. })
-                && app.action_palette_handle_key(&event)
+                && matches!(
+                    event,
+                    WindowEvent::KeyboardInput { .. }
+                        | WindowEvent::Ime(_)
+                        | WindowEvent::CursorMoved { .. }
+                        | WindowEvent::CursorLeft { .. }
+                        | WindowEvent::MouseInput { .. }
+                        | WindowEvent::MouseWheel { .. }
+                )
+                && app.action_palette_handle_event(&event, window.scale_factor())
             {
                 handled = true;
             }
@@ -2224,6 +2238,12 @@ impl AppHandler {
             }
         }
 
+        // Alt+Arrow remains host directional navigation when the focused
+        // widget leaves it unhandled. Running this after widget dispatch lets
+        // editors consume platform word/selection shortcuts first, while
+        // keeping Alt navigation ahead of the plain range-control fallback.
+        app.handle_unconsumed_directional_key(&event, modal_rect, true, &mut handled);
+
         // If no widget consumed Enter/Space (text inputs do), activate
         // the focused control the same way a mouse click would.
         app.handle_unconsumed_activation_key(&event, &mut handled);
@@ -2284,30 +2304,7 @@ impl AppHandler {
             }
         }
 
-        if !handled
-            && app.keyboard_nav_allowed(modal_rect)
-            && let WindowEvent::KeyboardInput {
-                event:
-                    winit::event::KeyEvent {
-                        logical_key: winit::keyboard::Key::Named(logical_key),
-                        state: winit::event::ElementState::Pressed,
-                        ..
-                    },
-                ..
-            } = event
-        {
-            let dir = match logical_key {
-                winit::keyboard::NamedKey::ArrowUp => Some(Direction::Up),
-                winit::keyboard::NamedKey::ArrowDown => Some(Direction::Down),
-                winit::keyboard::NamedKey::ArrowLeft => Some(Direction::Left),
-                winit::keyboard::NamedKey::ArrowRight => Some(Direction::Right),
-                _ => None,
-            };
-            if let Some(d) = dir {
-                app.navigate_focus(d);
-                handled = true;
-            }
-        }
+        app.handle_unconsumed_directional_key(&event, modal_rect, false, &mut handled);
 
         if app.dispatch_control_invocations() != 0 {
             handled = true;
@@ -2961,9 +2958,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         if app.pump_collab_presence() {
             request_primary_redraw();
         }
-        if app.poll_directed_invocations() {
-            app.needs_sync = true;
-            app.layout.layout_dirty = true;
+        if app.poll_model_invocations() {
             request_primary_redraw();
         }
         app.publish_playback_handoff();
@@ -2977,19 +2972,12 @@ impl ApplicationHandler<UserEvent> for AppHandler {
             request_primary_redraw();
         }
 
-        if app.dispatch_control_invocations() != 0 {
-            app.needs_sync = true;
-            app.layout.layout_dirty = true;
+        let idle_model = app.service_idle_model();
+        if idle_model.changed {
             request_primary_redraw();
         }
 
-        if app.service_history() {
-            app.needs_sync = true;
-            app.layout.layout_dirty = true;
-            request_primary_redraw();
-        }
-
-        if app.root_widget.needs_commit() {
+        if idle_model.local_commit {
             if let Some(origin) = self.native_input_origin {
                 crate::native_scenario::log::emit_json(
                     "qos-native-commit-redraw",
@@ -2999,16 +2987,6 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                     }),
                 );
             }
-            app.commit_action();
-            app.root_widget.on_commit();
-            app.needs_sync = true;
-            request_primary_redraw();
-        }
-
-        // Level-triggered rather than hooked into individual mutations:
-        // widgets write to the document from many places.
-        if let Err(error) = app.autosave_tick() {
-            crate::diag!("[app] component autosave tick refused: {error:?}");
         }
 
         if app.reconcile_fullscreen(&window) {
@@ -3240,13 +3218,20 @@ impl AppHandler {
         }
         self.dispatch_touch_pointer_events(window, &event);
         match event {
-            WindowEvent::CloseRequested => {
-                if self.app.request_close() && self.app.finish_close_if_ready() {
-                    event_loop.exit();
-                } else {
+            WindowEvent::CloseRequested => match self.app.root_widget.on_window_close_requested() {
+                crate::widget::WindowCloseAdmission::Allow => {
+                    if self.app.admit_native_close_request() {
+                        event_loop.exit();
+                    } else {
+                        window.request_redraw();
+                    }
+                }
+                crate::widget::WindowCloseAdmission::Defer => {
+                    self.app.needs_sync = true;
+                    self.app.layout.layout_dirty = true;
                     window.request_redraw();
                 }
-            }
+            },
             WindowEvent::Resized(_) => {
                 self.app.layout.layout_dirty = true;
                 window.request_redraw();

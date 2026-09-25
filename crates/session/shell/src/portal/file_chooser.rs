@@ -344,6 +344,42 @@ mod tests {
     }
 
     #[test]
+    fn open_options_default_to_file_selection() {
+        let opts = decode_open_options(
+            PortalCaller::new(WorkspaceId(30), "org.example"),
+            "Open".into(),
+            &HashMap::new(),
+        );
+        assert!(!opts.directory);
+        assert!(!opts.multiple);
+    }
+
+    #[test]
+    fn open_options_decode_directory_independently_of_multiple_and_label() {
+        let mut options = HashMap::new();
+        options.insert(
+            "directory".into(),
+            OwnedValue::try_from(Value::Bool(true)).unwrap(),
+        );
+        options.insert(
+            "multiple".into(),
+            OwnedValue::try_from(Value::Bool(true)).unwrap(),
+        );
+        options.insert(
+            "accept_label".into(),
+            OwnedValue::try_from(Value::new("Attach folder".to_string())).unwrap(),
+        );
+        let opts = decode_open_options(
+            PortalCaller::new(WorkspaceId(31), "org.example"),
+            "Choose".into(),
+            &options,
+        );
+        assert!(opts.directory);
+        assert!(opts.multiple);
+        assert_eq!(opts.accept_label.as_deref(), Some("Attach folder"));
+    }
+
+    #[test]
     fn paths_allow_returns_response_zero_and_uri() {
         let (code, results) = paths_to_open_response(
             Some(vec![PathBuf::from("/tmp/x.txt")]),
@@ -572,3 +608,9 @@ mod tests {
         }
     }
 }
+
+#[allow(
+    unused_imports,
+    reason = "The native WorkspaceExt methods are selected by host-specific workspace code and test configurations."
+)]
+use crate::shell::state::WorkspaceExt as _;

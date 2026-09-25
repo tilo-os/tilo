@@ -3,9 +3,43 @@ struct DeclaredDirectory {
     calls: std::rc::Rc<Cell<usize>>,
     semantic_calls: std::rc::Rc<Cell<usize>>,
     count: usize,
+    domain_provider: Option<DirectoryDomainProvider>,
+    sync_change: Option<std::rc::Rc<Cell<Option<&'static str>>>>,
 }
 impl Widget for DeclaredDirectory {
-    fn sync(&mut self, _: &mut automerge::AutoCommit, _: &automerge::ObjId) {}
+    fn action_directory_invocation_domain(
+        &self,
+        doc: &automerge::AutoCommit,
+    ) -> crate::widget::ActionDirectoryInvocationDomain {
+        // This fixture has no lazy provider or hidden handler state: every
+        // target is the fixed CounterAction encoded in resources() below.
+        if doc.get(ROOT, "unknown-domain").unwrap().is_some() {
+            return crate::widget::ActionDirectoryInvocationDomain::Unsupported;
+        }
+        if doc.get(ROOT, "changed-domain").unwrap().is_some() {
+            return crate::widget::ActionDirectoryInvocationDomain::versioned(
+                &tilo_actions::ContinuationEvidence::Draft {
+                    resolution_domain: tilo_actions::ContinuationKey::new(
+                        "root",
+                        [b"changed".as_slice()],
+                    ),
+                    handler: tilo_actions::ContinuationKey::new("handler", [b"v1".as_slice()]),
+                },
+            );
+        }
+        crate::widget::ActionDirectoryInvocationDomain::MaterializedOnly
+    }
+    fn search_providers(&self) -> Vec<Box<dyn crate::search::SearchProvider>> {
+        self.domain_provider
+            .clone()
+            .map(|provider| vec![Box::new(provider) as Box<dyn crate::search::SearchProvider>])
+            .unwrap_or_default()
+    }
+    fn sync(&mut self, doc: &mut automerge::AutoCommit, _: &automerge::ObjId) {
+        if let Some(change) = self.sync_change.as_ref().and_then(|change| change.take()) {
+            doc.put(ROOT, change, true).unwrap();
+        }
+    }
     fn build_layout(
         &mut self,
         t: &mut TaffyTree<()>,
@@ -47,7 +81,7 @@ impl Widget for DeclaredDirectory {
         self.calls.set(self.calls.get() + 1);
         let effect = doc.get(ROOT, "effect").unwrap().is_some();
         let wide = doc.get(ROOT, "wide").unwrap().is_some();
-        (0..self.count)
+        let mut resources: Vec<Resource> = (0..self.count)
             .map(|index| {
                 let mut resource = Resource::new(
                     format!("declared:{index}"),
@@ -65,7 +99,11 @@ impl Widget for DeclaredDirectory {
                                 OperationKind::View
                             },
                             COUNTER_TYPE,
-                            &CounterAction::Bump,
+                            &if doc.get(ROOT, "changed-payload").unwrap().is_some() {
+                                CounterAction::Reset
+                            } else {
+                                CounterAction::Bump
+                            },
                         )
                         .unwrap()
                         .with_contract(if effect {
@@ -74,6 +112,42 @@ impl Widget for DeclaredDirectory {
                             tilo_actions::ActionContract::view()
                         }),
                     );
+                }
+                if doc.get(ROOT, "prompted").unwrap().is_some() {
+                    let domain = doc.get(ROOT, "changed-prompt-domain").unwrap().is_some();
+                    let handler = doc.get(ROOT, "changed-prompt-handler").unwrap().is_some();
+                    let unknown = doc.get(ROOT, "lost-prompt-identity").unwrap().is_some();
+                    resource.actions = vec![
+                        ActionSpec::prompted_operation(
+                            "inspect",
+                            "Inspect",
+                            "Value",
+                            "",
+                            OperationKind::View,
+                            COUNTER_TYPE,
+                            |value| {
+                                EncodedAction::encode(
+                                    COUNTER_TYPE,
+                                    &CounterAction::SetLabel(value.into()),
+                                )
+                                .unwrap()
+                            },
+                        )
+                        .with_contract(tilo_actions::ActionContract::view())
+                        .with_continuation_identity(move |query| {
+                            (!unknown && matches!(query, tilo_actions::ContinuationQuery::Draft))
+                                .then(|| tilo_actions::ContinuationEvidence::Draft {
+                                    resolution_domain: tilo_actions::ContinuationKey::new(
+                                        "prompt-domain",
+                                        [vec![u8::from(domain)]],
+                                    ),
+                                    handler: tilo_actions::ContinuationKey::new(
+                                        "prompt-handler",
+                                        [vec![u8::from(handler)]],
+                                    ),
+                                })
+                        }),
+                    ];
                 }
                 if doc.get(ROOT, "changed-contract").unwrap().is_some() {
                     for action in &mut resource.actions {
@@ -97,7 +171,12 @@ impl Widget for DeclaredDirectory {
                 }
                 resource
             })
-            .collect()
+            .collect();
+        if doc.get(ROOT, "hierarchy").unwrap().is_some() && resources.len() > 1 {
+            let child = resources.pop().unwrap();
+            resources[0].children.push(child);
+        }
+        resources
     }
 }
 fn declared_directory(count: usize) -> (App, std::rc::Rc<Cell<usize>>) {
@@ -105,6 +184,8 @@ fn declared_directory(count: usize) -> (App, std::rc::Rc<Cell<usize>>) {
     let mut app = App::new_with_controlled_inputs(
         State::new(),
         Box::new(DeclaredDirectory {
+            domain_provider: None,
+            sync_change: None,
             calls: calls.clone(),
             semantic_calls: std::rc::Rc::new(Cell::new(0)),
             count,
@@ -521,6 +602,8 @@ fn directory_snapshot_remote_requests_do_not_rebuild_semantics_or_execute_prompt
     let mut app = App::new_with_controlled_inputs(
         State::new(),
         Box::new(DeclaredDirectory {
+            domain_provider: None,
+            sync_change: None,
             calls: calls.clone(),
             semantic_calls: semantics.clone(),
             count: 1,

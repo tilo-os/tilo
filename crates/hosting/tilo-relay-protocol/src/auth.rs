@@ -1,7 +1,7 @@
 //! Authenticated handshake between a relay and a peer.
 //!
-//! The relay accepts on the `tilo-relay/1` ALPN. As soon as a
-//! connection opens, both sides perform this challenge/response:
+//! The negotiated relay ALPN selects exactly one challenge-signature domain.
+//! As soon as a connection opens, both sides perform this challenge/response:
 //!
 //! ```text
 //! client → server:   Hello { cert: DeviceCert, nonce: [u8;32] }
@@ -35,10 +35,30 @@ use tilo_user_identity::{DeviceCert, DeviceCertError, RevocationList, verify_dev
 
 use crate::policy::TrustPolicy;
 
-/// Domain-separation tag for the auth-nonce signature. Frozen wire
-/// ABI: `tilo-relay-auth-v1` + NUL. Any change breaks connections
-/// against previously-deployed relays.
-pub const AUTH_NONCE_TAG: &[u8] = b"tilo-relay-auth-v1\0";
+const TILO_AUTH_NONCE_TAG: &[u8] = b"tilo-relay-auth-v1\0";
+const LEGACY_QOS_AUTH_NONCE_TAG: &[u8] = b"qos-relay-auth-v1\0";
+
+/// Closed domain for mutual-authentication challenge signatures.
+///
+/// The selected value is bound to the negotiated ALPN. Callers must never
+/// retry verification under the other domain: doing so would turn a failed
+/// authentication into a protocol downgrade.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AuthDomain {
+    /// Current Tilo protocols.
+    Tilo,
+    /// Frozen compatibility for already-deployed qOS protocols.
+    LegacyQos,
+}
+
+impl AuthDomain {
+    fn nonce_tag(self) -> &'static [u8] {
+        match self {
+            Self::Tilo => TILO_AUTH_NONCE_TAG,
+            Self::LegacyQos => LEGACY_QOS_AUTH_NONCE_TAG,
+        }
+    }
+}
 
 /// First message: client → server.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -142,11 +162,10 @@ pub enum AuthError {
     BadChallengeSig,
 }
 
-/// Compute `blake3(AUTH_NONCE_TAG || nonce)` — the 32 bytes both
-/// sides sign.
-pub fn challenge_digest(nonce: &[u8; 32]) -> [u8; 32] {
+/// Compute the domain-bound challenge digest both sides sign.
+pub fn challenge_digest(domain: AuthDomain, nonce: &[u8; 32]) -> [u8; 32] {
     let mut hasher = blake3::Hasher::new();
-    hasher.update(AUTH_NONCE_TAG);
+    hasher.update(domain.nonce_tag());
     hasher.update(nonce);
     *hasher.finalize().as_bytes()
 }
@@ -197,12 +216,13 @@ pub fn accept_hello(
 /// Server-side: build the `HelloAck` reply — signs the client's
 /// nonce with the relay's device signing key.
 pub fn build_hello_ack(
+    domain: AuthDomain,
     own_cert: DeviceCert,
     own_signing_key: &ed25519_dalek::SigningKey,
     server_nonce: [u8; 32],
     client_nonce: &[u8; 32],
 ) -> HelloAck {
-    let digest = challenge_digest(client_nonce);
+    let digest = challenge_digest(domain, client_nonce);
     let sig = own_signing_key.sign(&digest).to_bytes();
     HelloAck {
         cert: own_cert,
@@ -224,6 +244,7 @@ pub fn build_hello_ack(
 /// its device is revoked, or [`AuthError::BadChallengeSig`] if the
 /// nonce signature doesn't verify.
 pub fn verify_hello_ack(
+    domain: AuthDomain,
     ack: &HelloAck,
     own_user_public_key: &[u8; 32],
     revocations: &RevocationList,
@@ -231,6 +252,7 @@ pub fn verify_hello_ack(
     challenge_client_nonce: &[u8; 32],
 ) -> Result<AuthenticatedPeer, AuthError> {
     verify_hello_ack_inner(
+        domain,
         ack,
         Some(own_user_public_key),
         revocations,
@@ -252,27 +274,33 @@ pub fn verify_hello_ack(
 /// [`AuthError::BadChallengeSig`] if the nonce signature doesn't
 /// verify.
 pub fn verify_pinned_host_ack(
+    domain: AuthDomain,
     ack: &HelloAck,
     revocations: &RevocationList,
     now_ns: u64,
     challenge_client_nonce: &[u8; 32],
 ) -> Result<AuthenticatedPeer, AuthError> {
-    verify_hello_ack_inner(ack, None, revocations, now_ns, challenge_client_nonce)
+    verify_hello_ack_inner(
+        domain,
+        ack,
+        None,
+        revocations,
+        now_ns,
+        challenge_client_nonce,
+    )
 }
 
 fn verify_hello_ack_inner(
+    domain: AuthDomain,
     ack: &HelloAck,
     expected_user_public_key: Option<&[u8; 32]>,
     revocations: &RevocationList,
     now_ns: u64,
     challenge_client_nonce: &[u8; 32],
 ) -> Result<AuthenticatedPeer, AuthError> {
-    verify_device_cert_at(&ack.cert, now_ns)?;
+    verify_hello_ack_cryptographic(domain, ack, revocations, now_ns, challenge_client_nonce)?;
     if !ack.cert.capabilities.can_act_as_host {
         return Err(AuthError::PolicyReject);
-    }
-    if revocations.is_revoked_at(&ack.cert.device_public_key, now_ns) {
-        return Err(AuthError::Revoked);
     }
     // A same-owner client pins the expected user root. A hosted-service
     // client instead pins the Iroh EndpointAddr and accepts any valid server
@@ -282,18 +310,60 @@ fn verify_hello_ack_inner(
     {
         return Err(AuthError::PolicyReject);
     }
-    let vk = ed25519_dalek::VerifyingKey::from_bytes(&ack.cert.device_public_key)
-        .map_err(|_| AuthError::BadChallengeSig)?;
-    let digest = challenge_digest(challenge_client_nonce);
-    let sig = ed25519_dalek::Signature::from_bytes(&ack.sig_over_client_nonce);
-    vk.verify(&digest, &sig)
-        .map_err(|_| AuthError::BadChallengeSig)?;
     Ok(AuthenticatedPeer {
         role: PeerRole::from_cert(&ack.cert),
         cert: ack.cert.clone(),
         user_public_key: ack.cert.user_public_key,
         device_public_key: ack.cert.device_public_key,
     })
+}
+
+/// Verify the exact primary device authorized by a signed, room-scoped
+/// interactive-owner hint. This exception does not grant host capability and
+/// cannot be reached from the generic pinned-host API.
+///
+/// # Errors
+///
+/// Returns [`AuthError`] unless the ACK certificate is the exact expected
+/// governor, is current and non-revoked, can govern workspaces, and proves the
+/// challenge with its certified device key.
+pub fn verify_interactive_owner_ack(
+    domain: AuthDomain,
+    ack: &HelloAck,
+    expected_governor: &DeviceCert,
+    revocations: &RevocationList,
+    now_ns: u64,
+    challenge_client_nonce: &[u8; 32],
+) -> Result<AuthenticatedPeer, AuthError> {
+    verify_hello_ack_cryptographic(domain, ack, revocations, now_ns, challenge_client_nonce)?;
+    if &ack.cert != expected_governor || !ack.cert.capabilities.can_own_workspaces {
+        return Err(AuthError::PolicyReject);
+    }
+    Ok(AuthenticatedPeer {
+        role: PeerRole::from_cert(&ack.cert),
+        cert: ack.cert.clone(),
+        user_public_key: ack.cert.user_public_key,
+        device_public_key: ack.cert.device_public_key,
+    })
+}
+
+fn verify_hello_ack_cryptographic(
+    domain: AuthDomain,
+    ack: &HelloAck,
+    revocations: &RevocationList,
+    now_ns: u64,
+    challenge_client_nonce: &[u8; 32],
+) -> Result<(), AuthError> {
+    verify_device_cert_at(&ack.cert, now_ns)?;
+    if revocations.is_revoked_at(&ack.cert.device_public_key, now_ns) {
+        return Err(AuthError::Revoked);
+    }
+    let vk = ed25519_dalek::VerifyingKey::from_bytes(&ack.cert.device_public_key)
+        .map_err(|_| AuthError::BadChallengeSig)?;
+    let digest = challenge_digest(domain, challenge_client_nonce);
+    let sig = ed25519_dalek::Signature::from_bytes(&ack.sig_over_client_nonce);
+    vk.verify(&digest, &sig)
+        .map_err(|_| AuthError::BadChallengeSig)
 }
 
 /// Server-side: verify the client's `HelloAck2` — its signature
@@ -305,13 +375,14 @@ fn verify_hello_ack_inner(
 /// is not a valid Ed25519 key or the signature over `server_nonce`
 /// doesn't verify.
 pub fn verify_hello_ack2(
+    domain: AuthDomain,
     ack: &HelloAck2,
     client_device_pubkey: &[u8; 32],
     server_nonce: &[u8; 32],
 ) -> Result<(), AuthError> {
     let vk = ed25519_dalek::VerifyingKey::from_bytes(client_device_pubkey)
         .map_err(|_| AuthError::BadChallengeSig)?;
-    let digest = challenge_digest(server_nonce);
+    let digest = challenge_digest(domain, server_nonce);
     let sig = ed25519_dalek::Signature::from_bytes(&ack.sig_over_server_nonce);
     vk.verify(&digest, &sig)
         .map_err(|_| AuthError::BadChallengeSig)?;
@@ -321,10 +392,11 @@ pub fn verify_hello_ack2(
 /// Client-side: build the final `HelloAck2` — signs the server's
 /// nonce with our device signing key.
 pub fn build_hello_ack2(
+    domain: AuthDomain,
     own_signing_key: &ed25519_dalek::SigningKey,
     server_nonce: &[u8; 32],
 ) -> HelloAck2 {
-    let digest = challenge_digest(server_nonce);
+    let digest = challenge_digest(domain, server_nonce);
     let sig = own_signing_key.sign(&digest).to_bytes();
     HelloAck2 {
         sig_over_server_nonce: sig,
@@ -399,13 +471,76 @@ mod tests {
         .unwrap();
         assert_eq!(server_peer.device_public_key, client.cert.device_public_key);
 
-        let ack = build_hello_ack(relay.cert.clone(), &relay.sk, server_nonce, &client_nonce);
-        let client_peer =
-            verify_hello_ack(&ack, &user.public_key, &revs, 1000, &client_nonce).unwrap();
+        let ack = build_hello_ack(
+            AuthDomain::Tilo,
+            relay.cert.clone(),
+            &relay.sk,
+            server_nonce,
+            &client_nonce,
+        );
+        let client_peer = verify_hello_ack(
+            AuthDomain::Tilo,
+            &ack,
+            &user.public_key,
+            &revs,
+            1000,
+            &client_nonce,
+        )
+        .unwrap();
         assert_eq!(client_peer.device_public_key, relay.cert.device_public_key);
 
-        let ack2 = build_hello_ack2(&client.sk, &server_nonce);
-        verify_hello_ack2(&ack2, &client.cert.device_public_key, &server_nonce).unwrap();
+        let ack2 = build_hello_ack2(AuthDomain::Tilo, &client.sk, &server_nonce);
+        verify_hello_ack2(
+            AuthDomain::Tilo,
+            &ack2,
+            &client.cert.device_public_key,
+            &server_nonce,
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn deployed_qos_challenge_is_accepted_only_in_legacy_domain() {
+        let (root_sk, user) = UserIdentity::generate("Alice", 1);
+        let relay = enrol(
+            &root_sk,
+            user.public_key,
+            "server",
+            DeviceCapabilities::host(),
+        );
+        let client_nonce = [0x51; 32];
+        let mut old_hasher = blake3::Hasher::new();
+        old_hasher.update(b"qos-relay-auth-v1\0");
+        old_hasher.update(&client_nonce);
+        let old_digest = *old_hasher.finalize().as_bytes();
+        let ack = HelloAck {
+            cert: relay.cert,
+            server_nonce: [0x52; 32],
+            sig_over_client_nonce: relay.sk.sign(&old_digest).to_bytes(),
+        };
+
+        assert!(
+            verify_hello_ack(
+                AuthDomain::LegacyQos,
+                &ack,
+                &user.public_key,
+                &RevocationList::new(),
+                1000,
+                &client_nonce,
+            )
+            .is_ok()
+        );
+        assert!(matches!(
+            verify_hello_ack(
+                AuthDomain::Tilo,
+                &ack,
+                &user.public_key,
+                &RevocationList::new(),
+                1000,
+                &client_nonce,
+            ),
+            Err(AuthError::BadChallengeSig)
+        ));
     }
 
     #[test]
@@ -492,9 +627,16 @@ mod tests {
         let client_nonce = [7u8; 32];
         // Bob's device tries to answer Alice's client — signature
         // is valid but wrong-user policy rejects.
-        let ack = build_hello_ack(bob_dev.cert.clone(), &bob_dev.sk, [0u8; 32], &client_nonce);
+        let ack = build_hello_ack(
+            AuthDomain::Tilo,
+            bob_dev.cert.clone(),
+            &bob_dev.sk,
+            [0u8; 32],
+            &client_nonce,
+        );
         assert!(matches!(
             verify_hello_ack(
+                AuthDomain::Tilo,
                 &ack,
                 &alice.public_key,
                 &RevocationList::new(),
@@ -518,6 +660,7 @@ mod tests {
         );
         let client_nonce = [8u8; 32];
         let ack = build_hello_ack(
+            AuthDomain::Tilo,
             ordinary_device.cert,
             &ordinary_device.sk,
             [9u8; 32],
@@ -525,7 +668,14 @@ mod tests {
         );
 
         assert!(matches!(
-            verify_pinned_host_ack(&ack, &RevocationList::new(), 1000, &client_nonce,).unwrap_err(),
+            verify_pinned_host_ack(
+                AuthDomain::Tilo,
+                &ack,
+                &RevocationList::new(),
+                1000,
+                &client_nonce,
+            )
+            .unwrap_err(),
             AuthError::PolicyReject
         ));
     }
@@ -540,10 +690,17 @@ mod tests {
             DeviceCapabilities::host(),
         );
         let client_nonce = [4u8; 32];
-        let mut ack = build_hello_ack(relay.cert.clone(), &relay.sk, [0u8; 32], &client_nonce);
+        let mut ack = build_hello_ack(
+            AuthDomain::Tilo,
+            relay.cert.clone(),
+            &relay.sk,
+            [0u8; 32],
+            &client_nonce,
+        );
         ack.sig_over_client_nonce[0] ^= 0x01;
         assert!(matches!(
             verify_hello_ack(
+                AuthDomain::Tilo,
                 &ack,
                 &user.public_key,
                 &RevocationList::new(),
@@ -564,10 +721,17 @@ mod tests {
             "server",
             DeviceCapabilities::host(),
         );
-        let ack = build_hello_ack(relay.cert.clone(), &relay.sk, [0u8; 32], &[9u8; 32]);
+        let ack = build_hello_ack(
+            AuthDomain::Tilo,
+            relay.cert.clone(),
+            &relay.sk,
+            [0u8; 32],
+            &[9u8; 32],
+        );
         // Verify with a *different* client nonce.
         assert!(matches!(
             verify_hello_ack(
+                AuthDomain::Tilo,
                 &ack,
                 &user.public_key,
                 &RevocationList::new(),

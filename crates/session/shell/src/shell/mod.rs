@@ -19,6 +19,7 @@
 //! - A simulated remote cursor floats over the active tile.
 
 pub mod actions;
+pub(crate) mod broker_services;
 pub(crate) mod capture_surface;
 pub mod catalogue;
 pub mod chrome_state;
@@ -58,6 +59,8 @@ pub mod input_policy;
 pub mod launcher;
 pub mod media_keys;
 pub mod mpris;
+pub(crate) mod native_media;
+pub(crate) mod native_workspace_owner;
 pub mod nearby_transfer;
 pub mod network;
 pub mod notes_app;
@@ -65,6 +68,7 @@ pub mod notification;
 pub mod osd;
 pub mod overlay_host;
 pub mod overview;
+pub mod peer_actions;
 pub mod peer_join_toast;
 pub mod peer_presence;
 pub mod peer_sync_overlay;
@@ -1221,50 +1225,141 @@ pub fn to_ui_window_group_with_inputs(
 pub fn install_document_opener(chrome: &chrome_state::Chrome) {
     let chrome = chrome.clone();
     file_explorer::files_app::set_document_opener(move |path| {
-        let native_app = { chrome.borrow().hosted_inputs.native_app_for_path(path) };
-        if let Some(app) = native_app {
-            let path = path
-                .canonicalize()
-                .map_err(|error| format!("cannot open {}: {error}", path.display()))?;
-            let text = std::fs::read_to_string(&path)
-                .map_err(|error| format!("cannot read {}: {error}", path.display()))?;
-            let title = path.file_name().map_or_else(
-                || path.display().to_string(),
-                |name| name.to_string_lossy().into_owned(),
-            );
-            window_actions::open_hosted_after_setup(
-                &mut chrome.borrow_mut(),
-                app.kind,
-                title,
-                window_actions::Destination::Here,
-                |state, tab| {
-                    {
-                        let mut tree = state.tree_mut();
-                        tree.native_document_tabs.insert(
-                            tab,
-                            state::NativeDocumentReference {
-                                provider_id: app.package_id.to_string(),
-                                path: path.clone(),
-                            },
-                        );
-                        tree.flush_to_disk();
-                    }
-                    state.hosted_inputs.bind_document(
+        open_legacy_document_from_files(&chrome, path)
+    });
+}
+
+/// Preserve the standalone synchronous opener for legacy embeddings. It runs
+/// inside the Files event path, where an admission preflight would re-enter
+/// the tile's record loan. Hosted native Files use the deferred owner route
+/// below instead.
+fn open_legacy_document_from_files(
+    chrome: &chrome_state::Chrome,
+    path: &std::path::Path,
+) -> Result<(), String> {
+    let native_app = { chrome.borrow().hosted_inputs.native_app_for_path(path) };
+    if let Some(app) = native_app {
+        let path = path
+            .canonicalize()
+            .map_err(|error| format!("cannot open {}: {error}", path.display()))?;
+        let text = std::fs::read_to_string(&path)
+            .map_err(|error| format!("cannot read {}: {error}", path.display()))?;
+        let title = path.file_name().map_or_else(
+            || path.display().to_string(),
+            |name| name.to_string_lossy().into_owned(),
+        );
+        window_actions::open_hosted_after_setup(
+            &mut chrome.borrow_mut(),
+            app.kind,
+            title,
+            window_actions::Destination::Here,
+            |state, tab| {
+                {
+                    let mut tree = state.tree_mut();
+                    tree.native_document_tabs.insert(
                         tab,
-                        hosted_inputs::HostedDocument {
-                            provider_id: app.package_id,
-                            path,
-                            text,
+                        state::NativeDocumentReference {
+                            provider_id: app.package_id.to_string(),
+                            path: path.clone(),
                         },
                     );
-                },
-            );
-            return Ok(());
+                    tree.flush_to_disk();
+                }
+                state.hosted_inputs.bind_document(
+                    tab,
+                    hosted_inputs::HostedDocument {
+                        provider_id: app.package_id,
+                        path,
+                        text,
+                    },
+                );
+            },
+        );
+        return Ok(());
+    }
+    doc_open::open_in_workspace(path, chrome)
+        .map(|_| ())
+        .map_err(|error| error.user_message())
+}
+
+/// Admit an exact native document record before publishing its tab/input pair.
+/// This is called only by the owning Files open route after its record loan has
+/// ended, so TileHost can retain its existing-only record-follow contract.
+pub(crate) fn open_document_from_files(
+    chrome: &chrome_state::Chrome,
+    path: &std::path::Path,
+) -> Result<(), String> {
+    let native_app = { chrome.borrow().hosted_inputs.native_app_for_path(path) };
+    if let Some(app) = native_app {
+        let path = path
+            .canonicalize()
+            .map_err(|error| format!("cannot open {}: {error}", path.display()))?;
+        let text = std::fs::read_to_string(&path)
+            .map_err(|error| format!("cannot read {}: {error}", path.display()))?;
+        let checkout = ui::record::RecordCheckout::new(
+            ui::record::RecordId::for_file(&path),
+            ui::record::RecordKind::new("text-document"),
+        );
+        let records = { chrome.borrow().records().clone() };
+        match records.try_open_record(&checkout) {
+            Ok(_) => {}
+            Err(ui::record::RecordOpenError::MissingRecord) => {
+                records.create_record(&checkout).map_err(|error| {
+                    format!(
+                        "cannot open {}: document storage unavailable: {error}",
+                        path.display()
+                    )
+                })?;
+                records.try_open_record(&checkout).map_err(|error| {
+                    format!(
+                        "cannot open {}: document storage unavailable: {error}",
+                        path.display()
+                    )
+                })?;
+            }
+            Err(error) => {
+                return Err(format!(
+                    "cannot open {}: document storage unavailable: {error}",
+                    path.display()
+                ));
+            }
         }
-        doc_open::open_in_workspace(path, &chrome)
-            .map(|_| ())
-            .map_err(|e| e.user_message())
-    });
+        let title = path.file_name().map_or_else(
+            || path.display().to_string(),
+            |name| name.to_string_lossy().into_owned(),
+        );
+        window_actions::open_hosted_after_setup(
+            &mut chrome.borrow_mut(),
+            app.kind,
+            title,
+            window_actions::Destination::Here,
+            |state, tab| {
+                {
+                    let mut tree = state.tree_mut();
+                    tree.native_document_tabs.insert(
+                        tab,
+                        state::NativeDocumentReference {
+                            provider_id: app.package_id.to_string(),
+                            path: path.clone(),
+                        },
+                    );
+                    tree.flush_to_disk();
+                }
+                state.hosted_inputs.bind_document(
+                    tab,
+                    hosted_inputs::HostedDocument {
+                        provider_id: app.package_id,
+                        path,
+                        text,
+                    },
+                );
+            },
+        );
+        return Ok(());
+    }
+    doc_open::open_in_workspace(path, chrome)
+        .map(|_| ())
+        .map_err(|error| error.user_message())
 }
 
 /// The production entry point: threads the *shared* [`WorkspaceTreeHandle`]
@@ -1656,5 +1751,193 @@ mod hosted_app_tests {
     fn an_unhosted_title_is_carried_through_unchanged() {
         assert_eq!(hosted_label_for_title("Inkscape"), "Inkscape");
         assert_eq!(hosted_label_for_title("report.odt"), "report.odt");
+    }
+}
+
+#[cfg(test)]
+mod legacy_files_opener_regressions {
+    use super::*;
+
+    struct ClearDocumentOpener;
+
+    impl Drop for ClearDocumentOpener {
+        fn drop(&mut self) {
+            file_explorer::files_app::clear_document_opener();
+        }
+    }
+
+    struct MultiClickInterval(std::time::Duration);
+
+    impl MultiClickInterval {
+        fn extend_for_fixture() -> Self {
+            let previous = ui::gesture::multi_click_interval();
+            ui::gesture::set_multi_click_interval(std::time::Duration::from_secs(60));
+            Self(previous)
+        }
+    }
+
+    impl Drop for MultiClickInterval {
+        fn drop(&mut self) {
+            ui::gesture::set_multi_click_interval(self.0);
+        }
+    }
+
+    fn legacy_chrome(
+        root: &std::path::Path,
+        records: ui::record::RecordStore,
+    ) -> chrome_state::Chrome {
+        let tree = std::sync::Arc::new(parking_lot::RwLock::new(
+            state::WorkspaceTree::bootstrap_demo(),
+        ));
+        let chrome = chrome_state::ChromeState::new_with_handle(tree);
+        chrome.borrow_mut().hosted_inputs =
+            hosted_inputs::HostedTileInputs::for_host_directory(root).expect("owned Files root");
+        chrome.borrow_mut().set_records(records);
+        install_document_opener(&chrome);
+        chrome
+    }
+
+    fn find_semantic_bounds(
+        node: &ui::headless::InspectionNode,
+        name: &str,
+    ) -> Option<vello::kurbo::Rect> {
+        fn in_access(node: &ui::a11y::AccessNode, name: &str) -> Option<vello::kurbo::Rect> {
+            if node.name.as_deref() == Some(name) {
+                return node.bounds.map(|bounds| bounds.to_rect());
+            }
+            node.children
+                .iter()
+                .find_map(|child| in_access(child, name))
+        }
+
+        node.semantics
+            .as_ref()
+            .and_then(|access| in_access(access, name))
+            .or_else(|| {
+                node.children
+                    .iter()
+                    .find_map(|child| find_semantic_bounds(child, name))
+            })
+    }
+
+    fn semantic_selected(node: &ui::headless::InspectionNode, name: &str) -> Option<bool> {
+        fn in_access(node: &ui::a11y::AccessNode, name: &str) -> Option<bool> {
+            if node.name.as_deref() == Some(name) {
+                return Some(node.state.selected);
+            }
+            node.children
+                .iter()
+                .find_map(|child| in_access(child, name))
+        }
+
+        node.semantics
+            .as_ref()
+            .and_then(|access| in_access(access, name))
+            .or_else(|| {
+                node.children
+                    .iter()
+                    .find_map(|child| semantic_selected(child, name))
+            })
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn legacy_files_tile_activation_does_not_reenter_the_mounted_record_loan() {
+        let directory = tempfile::tempdir().expect("temporary Files root");
+        let document = directory.path().join("legacy.txt");
+        std::fs::write(&document, "legacy contents\n").expect("fixture document");
+        let document = document.canonicalize().expect("canonical fixture document");
+        let records = ui::record::RecordStore::in_memory();
+        let chrome = legacy_chrome(directory.path(), records.clone());
+        let _clear = ClearDocumentOpener;
+        let _multi_click_interval = MultiClickInterval::extend_for_fixture();
+
+        let mut tile = ui::widget::TileHost::new(ui::widget::TileContent::App(Box::new(
+            file_explorer::FileExplorerWidget::with_startup_inputs(file_explorer::StartupInputs {
+                initial_dir: directory.path().to_path_buf(),
+                workspace_roots: Vec::new(),
+                record_roots: Vec::new(),
+                remote_accounts: Vec::new(),
+                trusted_humans: file_explorer::identity_directory::TrustedHumanDirectory::default(),
+            }),
+        )));
+        let files_checkout = ui::record::RecordCheckout::new(
+            ui::record::RecordId::for_tab(700),
+            ui::record::RecordKind::new("files-view-state"),
+        );
+        tile.bind_or_create_record(records.clone(), files_checkout);
+        let mut driver =
+            ui::headless::FrameHarness::new(ui::State::new(), Box::new(tile), (1000, 700));
+        let row = find_semantic_bounds(&driver.inspection().root, "legacy.txt")
+            .expect("legacy File row reaches the TileHost semantic tree");
+        assert!(row.area() > 0.0, "legacy File row has physical bounds");
+        let center = row.center();
+
+        driver.click_at(center.x, center.y);
+        assert_eq!(
+            semantic_selected(&driver.inspection().root, "legacy.txt"),
+            Some(true),
+            "the first physical click must select the mounted Files row before activation"
+        );
+        assert!(
+            chrome
+                .borrow()
+                .hosted_inputs
+                .native_app_for_path(&document)
+                .is_some(),
+            "the configured shell owner must recognize the selected native document"
+        );
+        driver.click_at(center.x, center.y);
+
+        assert!(
+            chrome
+                .borrow()
+                .tree()
+                .native_document_tabs
+                .values()
+                .any(|reference| reference.path == document),
+            "the legacy double-click opener must finish while TileHost retains the Files record loan"
+        );
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn deferred_native_file_admission_preserves_existing_file_record_heads() {
+        use automerge::transaction::Transactable;
+
+        let directory = tempfile::tempdir().expect("temporary Files root");
+        let document = directory.path().join("existing.txt");
+        std::fs::write(&document, "existing contents\n").expect("fixture document");
+        let document = document.canonicalize().expect("canonical fixture document");
+        let mut owners = ui::record::RecordOwners::new(directory.path().join("profile"));
+        let records = owners
+            .open(SHELL_RECORDS_PACKAGE, "deferred-file-admission")
+            .expect("canonical profile record store");
+        let checkout = ui::record::RecordCheckout::new(
+            ui::record::RecordId::for_file(&document),
+            ui::record::RecordKind::new("text-document"),
+        );
+        records
+            .create_record(&checkout)
+            .expect("existing document record");
+        let before = records
+            .with(&checkout.id, |doc| {
+                doc.put(automerge::ROOT, "body", "preserved existing body")
+                    .expect("seed existing document");
+                doc.get_heads()
+            })
+            .expect("existing document writable");
+        let chrome = legacy_chrome(directory.path(), records.clone());
+        let _clear = ClearDocumentOpener;
+
+        open_document_from_files(&chrome, &document).expect("deferred native admission");
+
+        assert_eq!(
+            records
+                .with(&checkout.id, automerge::AutoCommit::get_heads)
+                .expect("existing document remains available"),
+            before,
+            "deferred admission must not replace or mutate an already-open canonical file record"
+        );
     }
 }

@@ -179,6 +179,22 @@ impl SearchProvider for NoteSearchProvider {
         NOTE_KIND
     }
 
+    fn action_directory_invocation_domain(&self) -> ui::widget::ActionDirectoryInvocationDomain {
+        // This actual retained catalogue owns all omitted search addresses,
+        // order and cursors. Its rows target only canonical page/block Open;
+        // the owning Notes surface independently versions lazy action dispatch.
+        let generation = self.catalog.stats().generation;
+        // SearchCatalog saturates its counter. Exhaustion cannot certify an
+        // unchanged omitted domain after another catalogue update.
+        if generation == u64::MAX {
+            return ui::widget::ActionDirectoryInvocationDomain::Unsupported;
+        }
+        crate::continuation::provider(
+            "notes-retained-search-canonical-page-block-open/v1",
+            vec![generation.to_be_bytes().to_vec()],
+        )
+    }
+
     fn action_directory_generation(&self) -> Option<u64> {
         Some(self.catalog.stats().generation)
     }

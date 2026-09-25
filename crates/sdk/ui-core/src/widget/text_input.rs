@@ -226,6 +226,7 @@ pub struct TextInput {
     single_attributes: Option<SingleLineAttributes>,
     single_origin: Point,
     shaped_layout_signature: u64,
+    /// Renderer epoch invalidates cached glyph geometry when canonical fonts change.
     shaped_layout_epoch: Option<Arc<()>>,
     /// Complete authored runs supplied by a shared rich-text widget. They
     /// participate in the same shaping as wrapping, carets and hit-testing.
@@ -480,6 +481,19 @@ impl TextInput {
         self.crdt_bound = true;
     }
 
+    /// Detach an explicit nested-Text binding without changing live input state.
+    ///
+    /// A direct binding replaces any earlier local or flat-path mode. Detaching
+    /// therefore leaves the input intentionally unbound until an owner calls
+    /// [`Self::bind_text`] again; it does not revive a discarded fallback.
+    pub fn clear_text_binding(&mut self) {
+        if self.bound_text.take().is_none() {
+            return;
+        }
+        self.crdt_bound = false;
+        self.path_was_present = false;
+    }
+
     /// For `BlockEditor` to match local blocks to doc list elements by object identity.
     pub fn bound_obj(&self) -> Option<&ObjId> {
         self.bound_text.as_ref()
@@ -587,7 +601,7 @@ impl TextInput {
 
     pub fn set_font_size(&mut self, size: f32) {
         if self.font_size_override != Some(size) {
-            self.model_layout_dirty |= self.single_attributes.is_some();
+            self.model_layout_dirty |= self.multiline || self.single_attributes.is_some();
             self.font_size_override = Some(size);
         }
     }
@@ -605,7 +619,7 @@ impl TextInput {
 
     pub fn set_mono(&mut self, mono: bool) {
         if self.mono != mono {
-            self.model_layout_dirty |= self.single_attributes.is_some();
+            self.model_layout_dirty |= self.multiline || self.single_attributes.is_some();
         }
         self.mono = mono;
         if mono {
@@ -729,7 +743,7 @@ impl TextInput {
 
     pub fn set_font_family(&mut self, family: Option<FontChoice>) {
         if self.family != family {
-            self.model_layout_dirty |= self.single_attributes.is_some();
+            self.model_layout_dirty |= self.multiline || self.single_attributes.is_some();
             self.family = family;
         }
     }
@@ -864,6 +878,10 @@ impl TextInput {
             spans.clone_from(authored);
         }
 
+        self.insert_preedit_span(spans)
+    }
+
+    fn insert_preedit_span(&self, spans: Vec<RichSpan>) -> Vec<RichSpan> {
         if self.preedit.is_empty() {
             return spans;
         }
@@ -894,48 +912,6 @@ impl TextInput {
                     // happen since `cursor_pos` is always kept on one, but
                     // fall back to keeping the span intact rather than
                     // panicking on a slice.
-                    display.push(span);
-                    display.push(RichSpan::new(&self.preedit));
-                }
-                inserted = true;
-            } else {
-                display.push(span);
-            }
-            consumed = end;
-        }
-        if !inserted {
-            display.push(RichSpan::new(&self.preedit));
-        }
-        display
-    }
-
-    fn insert_preedit_span(&self, spans: Vec<RichSpan>) -> Vec<RichSpan> {
-        if self.preedit.is_empty() {
-            return spans;
-        }
-        let at = self.cursor_pos.min(self.text.len());
-        let mut display = Vec::with_capacity(spans.len().saturating_add(2));
-        let mut consumed = 0usize;
-        let mut inserted = false;
-        for span in spans {
-            let end = consumed.saturating_add(span.text.len());
-            if !inserted && at <= end {
-                let local = at.saturating_sub(consumed);
-                if let (Some(before_str), Some(after_str)) =
-                    (span.text.get(..local), span.text.get(local..))
-                {
-                    if !before_str.is_empty() {
-                        let mut before = span.clone();
-                        before.text = before_str.to_string();
-                        display.push(before);
-                    }
-                    display.push(RichSpan::new(&self.preedit));
-                    if !after_str.is_empty() {
-                        let mut after = span.clone();
-                        after.text = after_str.to_string();
-                        display.push(after);
-                    }
-                } else {
                     display.push(span);
                     display.push(RichSpan::new(&self.preedit));
                 }
@@ -1020,7 +996,8 @@ impl TextInput {
     }
 
     /// Explicit host language without discovery or background dictionary warmup.
-    pub(crate) fn local_with_language(language: &str) -> Self {
+    #[doc(hidden)]
+    pub fn local_with_language(language: &str) -> Self {
         Self::with_language(Vec::new(), language.to_owned())
     }
 
@@ -1198,6 +1175,14 @@ impl TextInput {
 
     pub fn selection_range_public(&self) -> Option<(usize, usize)> {
         self.selection_range()
+    }
+
+    /// The live selection endpoints in anchor/focus order for accessibility
+    /// bridges. Unlike [`Self::selection_range_public`], this preserves the
+    /// direction in which the user extended the selection.
+    pub fn selection_anchor_focus_public(&self) -> Option<(usize, usize)> {
+        let anchor = self.selection_anchor?;
+        (anchor != self.cursor_pos).then_some((anchor, self.cursor_pos))
     }
 
     /// `len()` is `text.len() + 1`; empty until the first draw lands.
@@ -1869,7 +1854,8 @@ impl TextInput {
             &spans,
         );
         if self.single_layout.is_none() || self.shaped_layout_signature != signature {
-            let mut layout = RichTextLayout::shape_styled_reusing(
+            let browser_emoji = tr.browser_color_emoji_installed();
+            let mut layout = RichTextLayout::shape_styled_reusing_browser(
                 &mut tr.font_system,
                 &spans,
                 style,
@@ -1878,7 +1864,9 @@ impl TextInput {
                 Vec::new(),
                 Vec::new(),
                 self.single_layout.take(),
+                browser_emoji,
             );
+            tr.note_browser_rich_layout(&layout);
             if !self.preedit.is_empty() {
                 let start = self.cursor_pos.min(self.text.len());
                 layout.add_underline(start..start.saturating_add(self.preedit.len()));
@@ -1952,7 +1940,8 @@ impl TextInput {
         let available = (f64::from(width) - self.ml_left() - ML_PAD_X).max(1.0);
         let style = self.multiline_style(theme.text_scale);
         #[allow(clippy::cast_possible_truncation, reason = "bounded widget width")]
-        self.ensure_shaped_layout(tr, theme, &style, available as f32);
+        let available_width = available as f32;
+        self.ensure_shaped_layout(tr, theme, &style, available_width);
         let minimum = self.effective_font_size() * theme.text_scale * LINE_HEIGHT_RATIO;
         let height = self
             .single_layout
@@ -2650,6 +2639,10 @@ impl TextInput {
         self
     }
 
+    pub(crate) fn set_id(&mut self, id: &str) {
+        self.id = id.to_string();
+    }
+
     /// Bind this input to one root-level document string.
     ///
     /// Prefer [`Self::from_document_string`] when constructing a new field;
@@ -3125,6 +3118,9 @@ impl TextInput {
             self.caret_affinity = TextAffinity::Before;
             insert_char_at = char_idx;
         }
+        // A drag can leave an anchor equal to the old caret. Insertion must
+        // collapse that anchor too, or the newly inserted text becomes selected.
+        self.selection_anchor = None;
         // Latest-wins per position, so a peer typing into another's text splits their run correctly.
         if let (Some(obj_id), Some(author)) = (obj_id, &self.local_author) {
             let nchars = s.chars().count();
@@ -3223,8 +3219,9 @@ impl TextInput {
     fn do_cut(&mut self, state: &mut AutoCommit, obj_id: Option<&ObjId>) {
         if let Some(s) = self.selected_str() {
             let owned = s.to_string();
-            clipboard_copy(&owned);
-            self.delete_selection(state, obj_id);
+            if crate::text_selection::try_clipboard_copy(&owned) {
+                self.delete_selection(state, obj_id);
+            }
         }
     }
 
@@ -4031,12 +4028,15 @@ impl Widget for TextInput {
             let signature =
                 self.shaped_signature(&display, &style.family, style.size, Some(available_width));
             if self.single_layout.is_none() || self.shaped_layout_signature != signature {
-                let mut layout = RichTextLayout::shape_plain(
+                let browser_emoji = text_renderer.browser_color_emoji_installed();
+                let mut layout = RichTextLayout::shape_plain_browser(
                     &mut text_renderer.font_system,
                     &display,
                     &style,
                     Some(available_width),
+                    browser_emoji,
                 );
+                text_renderer.note_browser_rich_layout(&layout);
                 if !self.preedit.is_empty() {
                     let start = self.cursor_pos.min(self.text.len());
                     layout.add_underline(start..start.saturating_add(self.preedit.len()));
@@ -4261,6 +4261,15 @@ impl Widget for TextInput {
         "TextInput"
     }
 
+    fn install_control_custody(
+        &mut self,
+        domain: &crate::ControlDomain,
+        attachment: crate::control_custody::CustodyAttachment,
+    ) {
+        if let Some(action) = &mut self.action {
+            let _ = action.install_custody(domain, attachment);
+        }
+    }
     fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
         self.action.as_mut().and_then(ActionEmitter::take)
     }
@@ -4318,6 +4327,15 @@ impl Widget for TextInput {
     /// so it only needs re-measure before its first layout or right after a
     /// user edit — never blocking the scroll fast path while idle.
     fn layout_needs_measure(&self) -> bool {
+        self.rect == Rect::ZERO || self.dirty || self.model_layout_dirty
+    }
+
+    /// Same inputs as [`Self::layout_needs_measure`]: an input's size follows
+    /// its content only through a user edit (`dirty`, drained by the owner's
+    /// `take_dirty`) or a model change that reshapes multiline or attributed
+    /// text (`model_layout_dirty`, cleared by `measure`). Idle inputs would
+    /// otherwise be re-measured on every retained frame.
+    fn is_layout_dirty(&self) -> bool {
         self.rect == Rect::ZERO || self.dirty || self.model_layout_dirty
     }
 
@@ -4464,7 +4482,13 @@ impl Widget for TextInput {
                 self.selection_anchor = (!self.text.is_empty()).then_some(0);
                 self.cursor_pos = self.text.len();
                 let obj = self.resolve_text_obj(state, root);
-                self.insert_str(&cleaned, state, obj.as_ref());
+                // SetValue replaces the complete value, including an empty
+                // replacement. insert_str intentionally ignores empty typing.
+                if cleaned.is_empty() {
+                    self.delete_selection(state, obj.as_ref());
+                } else {
+                    self.insert_str(&cleaned, state, obj.as_ref());
+                }
                 if obj.is_none() {
                     self.persist_first_path_edit(&previous_text, state, root);
                 }
@@ -4767,8 +4791,9 @@ impl TextInput {
                 Self::attributed_signature(base ^ Self::single_attributes_signature(a), &a.spans)
             });
             if self.single_layout.is_none() || self.shaped_layout_signature != signature {
+                let browser_emoji = text_renderer.browser_color_emoji_installed();
                 let mut layout = if let Some(attributes) = attributes {
-                    RichTextLayout::shape_styled(
+                    RichTextLayout::shape_styled_browser(
                         &mut text_renderer.font_system,
                         &self.insert_preedit_span(attributes.spans.clone()),
                         &style,
@@ -4776,15 +4801,18 @@ impl TextInput {
                         TextAlign::Left,
                         self.display_ranges(&attributes.underlines),
                         self.display_ranges(&attributes.strikes),
+                        browser_emoji,
                     )
                 } else {
-                    RichTextLayout::shape_plain(
+                    RichTextLayout::shape_plain_browser(
                         &mut text_renderer.font_system,
                         display,
                         &style,
                         None,
+                        browser_emoji,
                     )
                 };
+                text_renderer.note_browser_rich_layout(&layout);
                 if !self.preedit.is_empty() {
                     let start = self.cursor_pos.min(self.text.len());
                     layout.add_underline(start..start.saturating_add(self.preedit.len()));
@@ -5698,43 +5726,270 @@ mod tests {
     use super::*;
 
     #[test]
-    fn drag_preview_suppresses_caret_paint_without_blurring_or_clearing_ime() {
-        let mut input = TextInput::local().with_initial_value("editable");
-        input.set_focus(true);
-        input.set_selection(1, 4);
-        input.preedit = "composing".into();
-        let before = (
-            input.cursor_pos(),
-            input.selection_range(),
-            input.preedit.clone(),
+    fn attributed_single_line_is_shaped_during_measure_before_draw() {
+        use crate::widget::marks::{Mark, MarkSpan};
+        use crate::widget::rich_text_line::RichTextLine;
+        for scale in [1.0, 2.0] {
+            let theme = Theme::dark().with_text_scale(scale);
+            let mut line = RichTextLine::new().with_text("aBz");
+            line.set_marks(vec![MarkSpan::new(1..2, Mark::Bold)]);
+            let mut taffy = TaffyTree::new();
+            line.build_layout(&mut taffy, &theme, &mut Default::default());
+            let mut renderer = TextRenderer::new(); // intentionally stale 1x
+            line.measure(
+                Size::NONE,
+                Size {
+                    width: taffy::AvailableSpace::MaxContent,
+                    height: taffy::AvailableSpace::MaxContent,
+                },
+                &mut renderer,
+            );
+            let layout = line
+                .inner()
+                .single_layout
+                .as_ref()
+                .expect("measurement must shape styled text");
+            let weights: Vec<_> = layout
+                .buffer
+                .layout_runs()
+                .flat_map(|r| r.glyphs.iter().map(|g| g.font_weight.0))
+                .collect();
+            assert_eq!(weights, [400, 700, 400]);
+            assert_eq!(layout.buffer.metrics().font_size, 16.0 * scale);
+        }
+    }
+
+    fn draw_rich_line_for_test(line: &mut crate::widget::RichTextLine, theme: &Theme) -> Scene {
+        let mut renderer = TextRenderer::new();
+        renderer.set_text_scale(theme.text_scale);
+        let mut scene = Scene::new();
+        line.draw(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut renderer,
+            theme,
+            &crate::presence::PresenceCtx::empty(),
         );
-        let theme = Theme::dark();
-        let mut visible = Scene::new();
-        input.draw_single_line_caret(&mut visible, Affine::IDENTITY, &theme);
-        assert!(!visible.encoding().draw_tags.is_empty());
-        input.suppress_caret_paint(true);
-        let mut hidden = Scene::new();
-        input.draw_single_line_caret(&mut hidden, Affine::IDENTITY, &theme);
+        scene
+    }
+
+    #[test]
+    fn attributed_single_line_preedit_preserves_utf8_marks_and_commit_route() {
+        use crate::widget::marks::{Mark, MarkSpan};
+        for scale in [1.0, 2.0] {
+            let theme = Theme::dark().with_text_scale(scale);
+            let mut line = crate::widget::RichTextLine::new().with_text("éW");
+            line.set_marks(vec![
+                MarkSpan::new(0..3, Mark::Bold),
+                MarkSpan::new(0..3, Mark::Code),
+                MarkSpan::new(0..3, Mark::Underline),
+                MarkSpan::new(0..3, Mark::Strikethrough),
+            ]);
+            line.apply_layout_external(Rect::new(0.0, 0.0, 400.0, 60.0));
+            line.set_focus(true);
+            line.set_cursor_pos(2);
+            let mut doc = AutoCommit::new();
+            let (taffy, node) = test_node();
+            let mut send = |line: &mut crate::widget::RichTextLine, event: WindowEvent| {
+                line.handle_event(
+                    &event,
+                    1.0,
+                    &Modifiers::default(),
+                    &mut doc,
+                    &automerge::ROOT,
+                    &mut false,
+                    &mut None,
+                    node,
+                    &taffy,
+                );
+            };
+            send(
+                &mut line,
+                WindowEvent::Ime(winit::event::Ime::Preedit("漢".into(), Some((3, 3)))),
+            );
+            draw_rich_line_for_test(&mut line, &theme);
+            assert_eq!(line.value(), "éW");
+            let input = line.inner();
+            let layout = input.single_layout.as_ref().unwrap();
+            assert_eq!(layout.buffer.lines[0].text(), "é漢W");
+            assert_eq!(layout.underlines, [(0, 2), (5, 6), (2, 5)]);
+            assert_eq!(layout.strikes, [(0, 2), (5, 6)]);
+            let weights: Vec<_> = layout
+                .buffer
+                .layout_runs()
+                .flat_map(|r| r.glyphs.iter().map(|g| g.font_weight.0))
+                .collect();
+            assert_eq!(weights, [700, 400, 700]);
+            let anchor = input.ime_cursor_rect().unwrap();
+            assert!(anchor.x0 > line.caret_rect(&theme, 2).x0);
+            assert_eq!(
+                input.display_ranges(&input.single_attributes.as_ref().unwrap().chips),
+                [(0, 2), (5, 6)]
+            );
+            send(
+                &mut line,
+                WindowEvent::Ime(winit::event::Ime::Commit("漢".into())),
+            );
+            let scene = draw_rich_line_for_test(&mut line, &theme);
+            assert_eq!(line.value(), "é漢W");
+            assert_eq!(line.cursor_pos(), 5);
+            assert_eq!(scene.encoding().resources.glyphs.len(), 3);
+            assert!(
+                line.marks()
+                    .iter()
+                    .all(|m| line.value().is_char_boundary(m.range.start)
+                        && line.value().is_char_boundary(m.range.end))
+            );
+        }
+    }
+
+    #[test]
+    fn attributed_single_line_chip_and_link_rules_follow_shaped_ranges() {
+        use crate::widget::marks::{Mark, MarkSpan};
+        for scale in [1.0, 2.0] {
+            let theme = Theme::dark().with_text_scale(scale);
+            let mut line = crate::widget::RichTextLine::new().with_text("aWWWz");
+            line.set_marks(vec![
+                MarkSpan::new(1..4, Mark::Bold),
+                MarkSpan::new(1..4, Mark::Code),
+                MarkSpan::new(1..4, Mark::Link(uuid::Uuid::from_u128(1))),
+                MarkSpan::new(1..4, Mark::Strikethrough),
+            ]);
+            line.apply_layout_external(Rect::new(10.0, 20.0, 400.0, 90.0));
+            let scene = draw_rich_line_for_test(&mut line, &theme);
+            assert_eq!(scene.encoding().resources.glyphs.len(), 5);
+            let input = line.inner();
+            let left = input.caret_rect(&theme, 1).x0;
+            let right = input.caret_rect(&theme, 4).x0;
+            let layout = input.single_layout.as_ref().unwrap();
+            assert_eq!(layout.strikes, [(1, 4)]);
+            assert!(
+                layout
+                    .buffer
+                    .layout_runs()
+                    .flat_map(|r| r.glyphs.iter())
+                    .all(|g| g.font_size == 16.0 * scale)
+            );
+            for (background, pad) in [(true, 2.0), (false, 0.0)] {
+                let mut decorations = Scene::new();
+                input.draw_single_line_decorations(
+                    &mut decorations,
+                    Affine::IDENTITY,
+                    &theme,
+                    background,
+                );
+                let xs: Vec<_> = decorations
+                    .encoding()
+                    .path_data
+                    .chunks_exact(2)
+                    .map(|xy| f64::from(f32::from_bits(xy[0])))
+                    .collect();
+                let min = xs.iter().copied().fold(f64::INFINITY, f64::min);
+                let max = xs.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+                assert!((min - (left - pad)).abs() < 0.01);
+                assert!((max - (right + pad)).abs() < 0.01);
+                assert_eq!(
+                    decorations.encoding().resources.glyphs.len(),
+                    0,
+                    "decorations never repaint text"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn attributed_single_line_style_inputs_invalidate_cached_shape() {
+        use crate::richtext::{BaselineShift, FontFamily};
+        let mut input = TextInput::local().with_initial_value("WWW");
+        input.apply_layout_external(Rect::new(0.0, 0.0, 400.0, 60.0));
+        let mut attributes = SingleLineAttributes {
+            spans: vec![RichSpan::new("WWW")],
+            ..Default::default()
+        };
+        input.set_single_line_attributes(attributes.clone());
+        draw_to_populate(&mut input);
+        let original_width = input.single_layout.as_ref().unwrap().width();
+        attributes.spans[0].size = Some(28.0);
+        input.set_single_line_attributes(attributes.clone());
+        draw_to_populate(&mut input);
+        let sized_width = input.single_layout.as_ref().unwrap().width();
+        assert!(sized_width > original_width * 1.5);
+        attributes.spans[0].family = Some(FontFamily::Mono);
+        input.set_single_line_attributes(attributes.clone());
+        draw_to_populate(&mut input);
+        assert!((input.single_layout.as_ref().unwrap().width() - sized_width).abs() > 1.0);
+        attributes.spans[0].background = Some([40, 50, 60]);
+        attributes.spans[0].baseline = BaselineShift::Super;
+        attributes.spans[0].color = Some([100, 110, 120]);
+        attributes.underlines = vec![(0, 1)];
+        attributes.strikes = vec![(1, 3)];
+        input.set_single_line_attributes(attributes);
+        draw_to_populate(&mut input);
+        let layout = input.single_layout.as_ref().unwrap();
+        assert_eq!(layout.backgrounds, [(0, 3, [40, 50, 60])]);
+        assert_eq!(layout.baselines, [(0, 3, BaselineShift::Super)]);
+        assert_eq!(layout.underlines, [(0, 1)]);
+        assert_eq!(layout.strikes, [(1, 3)]);
         assert!(
-            hidden.encoding().draw_tags.is_empty(),
-            "drag scenes must contain no local caret"
+            layout
+                .buffer
+                .layout_runs()
+                .flat_map(|r| r.glyphs.iter())
+                .all(|g| g.color_opt == Some(cosmic_text::Color::rgb(100, 110, 120)))
         );
-        assert!(input.is_focused());
-        assert_eq!(
-            (
-                input.cursor_pos(),
-                input.selection_range(),
-                input.preedit.clone()
-            ),
-            before
-        );
-        input.suppress_caret_paint(false);
-        let mut restored = Scene::new();
-        input.draw_single_line_caret(&mut restored, Affine::IDENTITY, &theme);
-        assert_eq!(
-            restored.encoding().draw_tags.len(),
-            visible.encoding().draw_tags.len()
-        );
+    }
+
+    #[test]
+    fn attributed_single_line_sync_undo_redo_rebuilds_runs() {
+        use crate::widget::marks::{Mark, MarkSpan};
+        let mut state = crate::State::new();
+        let text = state
+            .doc
+            .put_object(&state.root, "body", ObjType::Text)
+            .unwrap();
+        state.doc.splice_text(&text, 0, 0, "WWW").unwrap();
+        state.commit_action(None, None);
+        let mut line = crate::widget::RichTextLine::new();
+        line.bind_text(text.clone());
+        line.sync(&mut state.doc, &state.root);
+        line.set_marks(vec![MarkSpan::new(0..3, Mark::Bold)]);
+        line.apply_layout_external(Rect::new(0.0, 0.0, 400.0, 60.0));
+        let theme = Theme::dark().with_text_scale(2.0);
+        draw_rich_line_for_test(&mut line, &theme);
+        let wide = line.pixel_x_for_byte(&theme, 3);
+        state.doc.splice_text(&text, 0, 3, "iii").unwrap();
+        state.commit_action(None, None);
+        for (step, expected) in [(0, "iii"), (1, "WWW"), (2, "iii")] {
+            if step == 1 {
+                state.undo(None, None).unwrap();
+            }
+            if step == 2 {
+                state.redo(None, None).unwrap();
+            }
+            line.sync(&mut state.doc, &state.root);
+            let _ = line.take_dirty(); // preserve direct-binding reconciliation semantics
+            assert!(line.layout_needs_measure());
+            draw_rich_line_for_test(&mut line, &theme);
+            assert_eq!(line.value(), expected);
+            let input = line.inner();
+            assert!(
+                input
+                    .single_layout
+                    .as_ref()
+                    .unwrap()
+                    .buffer
+                    .layout_runs()
+                    .flat_map(|r| r.glyphs.iter())
+                    .all(|g| g.font_weight.0 == 700)
+            );
+            let x = line.pixel_x_for_byte(&theme, 3);
+            if expected == "WWW" {
+                assert!((x - wide).abs() < 0.01);
+            } else {
+                assert!(x < wide * 0.6);
+            }
+            assert_eq!(line.byte_for_pixel_x(&theme, x), 3);
+        }
     }
 
     #[test]
@@ -5939,6 +6194,16 @@ mod tests {
             rebuilt.caret_position(),
             TextPosition::with_affinity(4, TextAffinity::After)
         );
+    }
+
+    #[test]
+    fn accessible_selection_preserves_anchor_and_focus_direction() {
+        let mut input = TextInput::local().with_initial_value("Ae\u{301}👋B");
+        input.selection_anchor = Some(8);
+        input.cursor_pos = 1;
+
+        assert_eq!(input.selection_range_public(), Some((1, 8)));
+        assert_eq!(input.selection_anchor_focus_public(), Some((8, 1)));
     }
 
     #[test]
@@ -7055,6 +7320,24 @@ mod tests {
         assert_eq!(ti.take_dirty().as_deref(), Some("B2:D4"));
     }
 
+    #[test]
+    fn insertion_collapses_an_empty_drag_selection() {
+        for (text, caret, expected) in [("", 0, "Nx"), ("ab", 1, "aNxb")] {
+            let mut ti = TextInput::new(Vec::new());
+            ti.set_text(text);
+            // A real same-position drag may retain an anchor at its caret.
+            ti.cursor_pos = caret;
+            ti.selection_anchor = Some(caret);
+            let mut doc = AutoCommit::new();
+            ti.insert_str("N", &mut doc, None);
+            assert_eq!(ti.selection_range_public(), None);
+            assert_eq!(ti.cursor_pos(), caret + 1);
+            ti.insert_str("x", &mut doc, None);
+            assert_eq!(ti.value(), expected);
+            assert_eq!(ti.selection_range_public(), None);
+        }
+    }
+
     /// The path Ctrl+V uses when pasting over selected text.
     #[test]
     fn insert_str_replaces_selection() {
@@ -7460,6 +7743,100 @@ mod tests {
         ));
         assert_eq!(input.value(), "before!", "optimistic text remains visible");
         assert_eq!(doc.text(&text).expect("document text"), "before");
+    }
+
+    #[test]
+    fn clearing_direct_binding_preserves_interaction_and_cannot_write_stale_object() {
+        let mut doc = AutoCommit::new();
+        let stale = doc
+            .put_object(&automerge::ROOT, "stale", ObjType::Text)
+            .expect("stale text");
+        doc.splice_text(&stale, 0, 0, "draft")
+            .expect("seed stale text");
+        let mut input = TextInput::from_document_string("fallback");
+        input.bind_text(stale.clone());
+        input.sync(&mut doc, &automerge::ROOT);
+        input.set_focus(true);
+        input.cursor_pos = 4;
+        input.selection_anchor = Some(1);
+        input.preedit = "編".into();
+        input.preedit_cursor = Some((0, "編".len()));
+        input.scroll_x = 17.0;
+        input.scroll_y = 23.0;
+
+        let heads = doc.get_heads();
+        input.clear_text_binding();
+        assert_eq!(
+            doc.get_heads(),
+            heads,
+            "detach does not mutate the document"
+        );
+        assert_eq!(input.bound_obj(), None);
+        assert_eq!(input.value(), "draft");
+        assert!(input.is_focused);
+        assert_eq!(input.cursor_pos, 4);
+        assert_eq!(input.selection_anchor, Some(1));
+        assert_eq!(input.preedit, "編");
+        assert_eq!(input.preedit_cursor, Some((0, "編".len())));
+        assert_eq!(input.scroll_x, 17.0);
+        assert_eq!(input.scroll_y, 23.0);
+
+        doc.splice_text(&stale, 0, 5, "historical")
+            .expect("replace stale text");
+        input.sync(&mut doc, &automerge::ROOT);
+        assert_eq!(input.value(), "draft", "sync ignores the stale object");
+
+        input.preedit.clear();
+        input.preedit_cursor = None;
+        input.selection_anchor = None;
+        input.cursor_pos = input.value().len();
+        assert!(drive(
+            &mut input,
+            &mut doc,
+            &char_key_event("!"),
+            mods(false, false)
+        ));
+        assert_eq!(input.value(), "draft!");
+        assert_eq!(doc.text(&stale).expect("stale text"), "historical");
+        assert!(
+            doc.get(&automerge::ROOT, "fallback")
+                .expect("fallback lookup")
+                .is_none(),
+            "detach disables the discarded path fallback"
+        );
+    }
+
+    #[test]
+    fn clearing_without_direct_binding_is_a_noop_for_path_and_local_users() {
+        let mut doc = AutoCommit::new();
+        let path = doc
+            .put_object(&automerge::ROOT, "path", ObjType::Text)
+            .expect("path text");
+        doc.splice_text(&path, 0, 0, "path")
+            .expect("seed path text");
+        let mut path_input = TextInput::from_document_string("path");
+        path_input.sync(&mut doc, &automerge::ROOT);
+        path_input.set_focus(true);
+        path_input.set_cursor_pos(path_input.value().len());
+        path_input.clear_text_binding();
+        assert!(drive(
+            &mut path_input,
+            &mut doc,
+            &char_key_event("!"),
+            mods(false, false)
+        ));
+        assert_eq!(doc.text(&path).expect("path text"), "path!");
+
+        let state = crate::LocalState::new(String::from("local"));
+        let mut local_input = TextInput::from_state(&state);
+        local_input.clear_text_binding();
+        assert!(Widget::perform_action(
+            &mut local_input,
+            &crate::a11y::Action::SetValue("updated".into()),
+            &mut doc,
+            &automerge::ROOT,
+        ));
+        assert_eq!(state.get(), "updated");
     }
 
     /// Unfocused, so `scroll_x` stays 0 and click math is simple.
@@ -8918,5 +9295,71 @@ mod tests {
         doc.splice_text(&object, 0, 0, "Remote title").unwrap();
         Widget::sync(&mut input, &mut doc, &automerge::ROOT);
         assert_eq!(input.value(), "Remote title");
+    }
+    #[test]
+    fn controlled_local_input_opt_outs_survive_draw_without_dictionary_work() {
+        let mut input = TextInput::local_with_language("en_US")
+            .with_spellcheck(false)
+            .with_autocorrect(false)
+            .with_initial_value("teh mispeled words");
+        input.set_focus(true);
+        input.rect = Rect::new(0.0, 0.0, 360.0, 42.0);
+        let mut scene = Scene::new();
+        let mut renderer = crate::font_catalog::fixture_renderer();
+        input.draw(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut renderer,
+            &Theme::dark(),
+            &crate::PresenceCtx::empty(),
+        );
+        assert!(input.is_focused);
+        assert!(!input.text.is_empty());
+        assert!(input.rect.width() > 0.0);
+        assert!(input.spell_dictionary.is_none());
+        assert!(input.spell_cache_key.is_none());
+        assert!(input.spell_spans.is_empty());
+        assert!(input.autocorrection_preview_key.is_none());
+        assert!(input.autocorrection_preview.is_none());
+        assert_eq!(input.text, "teh mispeled words");
+    }
+    #[test]
+    fn drag_preview_suppresses_caret_paint_without_blurring_or_clearing_ime() {
+        let mut input = TextInput::local().with_initial_value("editable");
+        input.set_focus(true);
+        input.set_selection(1, 4);
+        input.preedit = "composing".into();
+        let before = (
+            input.cursor_pos(),
+            input.selection_range(),
+            input.preedit.clone(),
+        );
+        let theme = Theme::dark();
+        let mut visible = Scene::new();
+        input.draw_single_line_caret(&mut visible, Affine::IDENTITY, &theme);
+        assert!(!visible.encoding().draw_tags.is_empty());
+        input.suppress_caret_paint(true);
+        let mut hidden = Scene::new();
+        input.draw_single_line_caret(&mut hidden, Affine::IDENTITY, &theme);
+        assert!(
+            hidden.encoding().draw_tags.is_empty(),
+            "drag scenes must contain no local caret"
+        );
+        assert!(input.is_focused());
+        assert_eq!(
+            (
+                input.cursor_pos(),
+                input.selection_range(),
+                input.preedit.clone()
+            ),
+            before
+        );
+        input.suppress_caret_paint(false);
+        let mut restored = Scene::new();
+        input.draw_single_line_caret(&mut restored, Affine::IDENTITY, &theme);
+        assert_eq!(
+            restored.encoding().draw_tags.len(),
+            visible.encoding().draw_tags.len()
+        );
     }
 }

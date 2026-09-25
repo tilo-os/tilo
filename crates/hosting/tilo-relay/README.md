@@ -73,7 +73,10 @@ endpoint id and local addresses on the current network. Set
 ## Wire protocol
 
 1. Iroh QUIC (NAT hole-punched, node id is stable).
-2. `tilo-relay/1` ALPN.
+2. Current `tilo-relay/1` or `tilo-relay/2` ALPN. During rolling upgrades the
+   server also accepts the frozen `qos-relay/1` and `qos-relay/2` ALPNs. Each
+   ALPN selects one exact challenge-signature domain; failed authentication
+   never retries under another domain.
 3. Three-message auth handshake — mutual proof-of-possession of certified
    device signing keys. Home hosts require the same user root; provider hosts
    authenticate their pinned host identity and authorize tenant devices with

@@ -119,12 +119,12 @@ class PushEventTests(unittest.TestCase):
         with patch.object(watch_ci, "run", return_value=subprocess.CompletedProcess([], 0, "git@code.podesta.ai:qos/qos.git", "")):
             self.assertEqual(watch_ci.forgejo_target(Path.cwd()), ("code.podesta.ai", "qos/qos"))
         secret = "dummy-secret-never-deliver"
-        with patch.object(watch_ci, "run", return_value=subprocess.CompletedProcess([], 0, f"https://user:{secret}@code.podesta.ai/invalid", "")):
+        with patch.object(watch_ci, "run", return_value=subprocess.CompletedProcess([], 0, f"https://user:{secret}@code.podesta.ai/invalid", "")):  # Dummy credential fixture.
             with self.assertRaises(ValueError) as error:
                 watch_ci.forgejo_target(Path.cwd())
             self.assertNotIn(secret, str(error.exception))
         event = self.event()
-        with patch.object(watch_ci, "run", side_effect=ValueError(f"https://user:{secret}@host")), patch.object(watch_ci, "deliver") as deliver, patch("sys.stdin", io.StringIO(json.dumps(event))):
+        with patch.object(watch_ci, "run", side_effect=ValueError(f"https://user:{secret}@host")), patch.object(watch_ci, "deliver") as deliver, patch("sys.stdin", io.StringIO(json.dumps(event))):  # Dummy credential fixture.
             self.assertEqual(watch_ci.launch(), 0)
             self.assertNotIn(secret, deliver.call_args.args[1])
 
@@ -174,7 +174,7 @@ class PushEventTests(unittest.TestCase):
                 self.assertEqual(json.loads(receipt.read_text())["state"], "reported")
                 parameters["session_id"] = "a-second-task"
                 secret = "dummy-secret-never-persist"
-                watch.side_effect = ValueError(f"https://user:{secret}@host")
+                watch.side_effect = ValueError(f"https://user:{secret}@host")  # Dummy credential fixture.
                 self.assertEqual(watch_ci.worker(**parameters), 0)
                 self.assertNotIn(secret, deliver.call_args.args[1])
                 for receipt in Path(directory).glob("*.json"):

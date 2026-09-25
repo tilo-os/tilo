@@ -10,12 +10,17 @@ license = "MIT OR Apache-2.0"
 
 # cargo-machete cannot see serde_bytes: it is only named in
 # `#[serde(with = "serde_bytes")]` attributes (compute_transport.rs).
+# getrandom is a feature-only edge that selects JS entropy for transitive
+# WASM cryptography.
 [package.metadata.cargo-machete]
-ignored = ["serde_bytes"]
+ignored = ["serde_bytes", "getrandom"]
 
 [lib]
 name = "tilo_relay"
 path = "src/lib.rs"
+
+[features]
+test-support = []
 
 [[bin]]
 name = "tilo-relay"
@@ -55,17 +60,12 @@ path = "src/home_peer_control.rs"
 #   iroh endpoint so the integration tests spin up two relays + N
 #   peers without any external service.
 [dependencies]
-# Crash-safe file replacement (temp + fsync + rename + dir fsync).
-atomic-file = { path = "../../../crates/system/atomic-file" }
-# Exclusive, owner-only publication of the relay's node secret.
-private-fs = { path = "../../system/private-fs" }
-bounded-command = { path = "../../system/bounded-command" }
-launcher = { path = "../../packaging/launcher" }
-install = { path = "../../packaging/install" }
-# Home-peer configuration is one signed filesystem bundle; the relay imports
-# its workspace tickets rather than asking the operator to duplicate ids.
-fs = { path = "../../system/fs" }
-collab-types = { path = "../../collab/collab-types" }
+qos-agent-control-protocol = { path = "../../agent/control-protocol" }
+web-time = { version = "1", features = ["serde"] }
+qos-peer-state = { path = "../../collab/qos-peer-state" }
+# Remote-action vocabulary: the relay routes these frames between devices and,
+# only when an app-serving plane is supplied, answers them through ActionHost.
+tilo-actions = { path = "../../collab/actions" }
 # Handshake and wire messages plus the mesh, configuration, registry and
 # metrics records shared with the relay's clients; re-exported so the daemon's
 # own module paths stay unchanged.
@@ -73,7 +73,7 @@ tilo-relay-protocol = { path = "../tilo-relay-protocol" }
 # Federation dials other relays as a client, and both ends of every relay
 # stream use its frame codec.
 tilo-relay-client = { path = "../tilo-relay-client" }
-# Iroh 1.0.x — pinned to the same versions the `crates/system/fs/` crate uses so
+# Iroh 1.0.x — pinned to the same versions the `fs/` crate uses so
 # they share a single build of the transport across the workspace.
 # iroh gives us stable node ids + NAT hole punching + n0-hosted relay
 # fallback out of the box, so the relay is reachable from any device
@@ -85,10 +85,6 @@ iroh-base.workspace = true
 
 # Identity + workspace directory + cert-chain verification.
 tilo-user-identity = { path = "../../collab/tilo-user-identity" }
-runtime-identity = { path = "../../runtime/runtime-identity" }
-# Remote-action vocabulary: the relay routes these frames between devices and,
-# only when an app-serving plane is supplied, answers them through ActionHost.
-tilo-actions = { path = "../../collab/actions" }
 
 # Workspace CRDT (same version as identity + shell).
 automerge.workspace = true
@@ -114,23 +110,53 @@ hex.workspace = true
 uuid.workspace = true
 
 # Runtime + config.
-tokio = { workspace = true, features = ["full"] }
-clap.workspace = true
-toml.workspace = true
-anyhow.workspace = true
+tokio = { workspace = true, features = ["sync", "macros", "io-util"] }
+n0-future = "0.3.2"
 thiserror.workspace = true
-libc.workspace = true
-socket2 = "0.6"
 
 # Observability.
 tracing.workspace = true
-tracing-subscriber = { workspace = true, features = ["env-filter"] }
 
 # Systemd sd_notify for `Type=notify` — best-effort, silently no-ops
 # outside a systemd session.
-sd-notify.workspace = true
 
-[dev-dependencies]
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+bounded-command = { path = "../../system/bounded-command" }
+launcher = { path = "../../packaging/launcher" }
+install = { path = "../../packaging/install" }
+# Exclusive, owner-only publication of the relay's node secret.
+private-fs = { path = "../../system/private-fs" }
+clap.workspace = true
+toml.workspace = true
+anyhow.workspace = true
+libc.workspace = true
+sd-notify.workspace = true
+tokio = { workspace = true, features = ["full"] }
+# Crash-safe file replacement (temp + fsync + rename + dir fsync).
+atomic-file = { path = "../../system/atomic-file" }
+# Home-peer configuration is one signed filesystem bundle; the relay imports
+# its workspace tickets rather than asking the operator to duplicate ids.
+fs = { path = "../../system/fs" }
+collab-types = { path = "../../collab/collab-types" }
+qos-peer-state = { path = "../../collab/qos-peer-state" }
+runtime-identity = { path = "../../runtime/runtime-identity" }
+socket2 = "0.6"
+tracing-subscriber = { workspace = true, features = ["env-filter"] }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+getrandom = { workspace = true, features = ["wasm_js"] }
+getrandom03 = { package = "getrandom", version = "0.3", features = ["wasm_js"] }
+uuid = { workspace = true, features = ["js"] }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+atomic-file = { path = "../../system/atomic-file", features = ["test-support"] }
+chat = { path = "../../../apps/chat", default-features = false }
+word-processor = { path = "../../../apps/word-processor" }
+qdoc = { path = "../../doc/qdoc" }
+ui = { package = "tilo-ui", path = "../../sdk/ui-core" }
+qos-peer-state = { path = "../../collab/qos-peer-state" }
+qos-browser-runtime = { path = "../../browser/qos-browser-runtime" }
+iroh-relay = { version = "1.0.3", features = ["server"] }
 tempfile.workspace = true
 tilo-automerge = { workspace = true, features = ["heap-probe"] }
 tilo-app-package = { path = "../../packaging/tilo-app-package" }

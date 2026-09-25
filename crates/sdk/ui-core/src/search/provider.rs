@@ -1338,6 +1338,12 @@ pub trait SearchProvider {
         None
     }
 
+    /// Versions this actual provider's complete lazy invocation domain, including
+    /// hidden targets and argument/handler semantics omitted from search rows.
+    fn action_directory_invocation_domain(&self) -> crate::widget::ActionDirectoryInvocationDomain {
+        crate::widget::ActionDirectoryInvocationDomain::Unsupported
+    }
+
     /// Validate a continuation token before it is used by a remote pull
     /// directory. The conservative default refuses it: only providers that
     /// expose a retained generation may claim continuation safety.

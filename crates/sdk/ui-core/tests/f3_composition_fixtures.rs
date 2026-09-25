@@ -1,0 +1,912 @@
+//! F3 composition/data-display fixtures: renders the immediate-mode data
+//! widgets through the shared `FrameHarness` at 1x and 2x text scale and
+//! checks the alignment contract each widget paints against, on the pixels
+//! it actually produced.
+//!
+//! PNGs land in `target/ui-review/ui/f3_fixture/<F3_FIXTURE_TAG>/` so the
+//! same run doubles as visual evidence; the assertions are the regression.
+//!
+//! Two properties are checked per widget:
+//! - at 1x, a single line of descender-free text sits on the centre line of
+//!   its band (its ink centre is within a pixel of the band centre, which the
+//!   old `(band - font_size) / 2` placement missed by ~1.5 px);
+//! - the ink height grows by ~2x between 1x and 2x text scale. The widgets
+//!   used to grow by 4x because they fed already-scaled theme sizes to the
+//!   renderer, which scales once more.
+
+use std::collections::HashMap;
+use std::path::PathBuf;
+use std::sync::Arc;
+use std::time::{Duration, SystemTime};
+
+use tilo_ui::State;
+use tilo_ui::headless::{FrameHarness, InspectionNode};
+use tilo_ui::icons::Icon;
+use tilo_ui::search::{SearchGroup, SearchResult};
+use tilo_ui::theme::Theme;
+use tilo_ui::widget::data_table::{ColumnDef, ColumnWidth, DataTable};
+use tilo_ui::widget::{
+    Alternative, Banner, Button, Card, Chart, Column, ConflictBanner, ConflictKind, ConflictPicker,
+    Container, Element, IconGrid, IconGridItem, Row, SearchResultsView, Series, StatTile, Text,
+    TreeNode, TreeView, Trend,
+};
+use vello::kurbo::Rect;
+
+// Pinned widget defaults the regions below are built from.
+const TABLE_HEADER_H: f64 = 28.0;
+const TABLE_ROW_H: f64 = 24.0;
+const TREE_ROW_H: f64 = 22.0;
+const TREE_DISCLOSURE_W: f64 = 16.0;
+const SEARCH_PAD: f64 = 8.0;
+const SEARCH_HEADER_H: f64 = 26.0;
+const SEARCH_ROW_ONE_LINE: f64 = 38.0;
+const SEARCH_ROW_TWO_LINE: f64 = 50.0;
+const SEARCH_TEXT_X: f64 = 8.0 + 12.0 + 30.0;
+const CHART_HEADER_H: f64 = 22.0;
+const ICON_CELL: (f64, f64) = (96.0, 88.0);
+const TILE_PAD: f64 = 14.0;
+const TILE_ICON_D: f64 = 18.0;
+const PICKER_PAD: f64 = 16.0;
+const PICKER_TITLE_H: f64 = 28.0;
+const ICON_GLYPH: f64 = 40.0;
+
+// The production formulas the widgets size their bands from — one line of
+// type as the renderer lays it out, and a pinned floor grown by content plus
+// padding — so the expectations below cannot drift from the widgets.
+use tilo_ui::widget::data_table::{text_band as band, type_line_height as line};
+
+fn out_dir() -> PathBuf {
+    let tag = std::env::var("F3_FIXTURE_TAG").unwrap_or_else(|_| "current".into());
+    let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../target/ui-review/ui/f3_fixture")
+        .join(tag);
+    std::fs::create_dir_all(&dir).expect("fixture output directory");
+    dir
+}
+
+struct Capture {
+    harness: FrameHarness,
+    image: image::RgbaImage,
+}
+
+fn capture(name: &str, root: Element, viewport: (u32, u32), scale: f32) -> Capture {
+    capture_with_theme(name, root, viewport, Theme::dark().with_text_scale(scale))
+}
+
+/// [`capture`] under an explicit theme. The dark preset keeps the historical
+/// `<name>-<scale>x.png` file name; any other theme writes
+/// `<name>-<theme>-<scale>x.png` beside it.
+fn capture_with_theme(name: &str, root: Element, viewport: (u32, u32), theme: Theme) -> Capture {
+    let scale = theme.text_scale;
+    let stem = if theme.name == Theme::dark().name {
+        format!("{name}-{scale}x.png")
+    } else {
+        format!("{name}-{}-{scale}x.png", theme.name)
+    };
+    let harness = FrameHarness::new_with_theme(State::new(), root, viewport, theme);
+    let path = out_dir().join(stem);
+    harness.render_window_png(&path);
+    let image = image::open(&path)
+        .unwrap_or_else(|e| panic!("decode {}: {e}", path.display()))
+        .to_rgba8();
+    Capture { harness, image }
+}
+
+fn rect(node: &InspectionNode) -> Rect {
+    let [x, y, w, h] = node.rect;
+    Rect::new(x, y, x + w, y + h)
+}
+
+fn find<'a>(node: &'a InspectionNode, widget: &str) -> &'a InspectionNode {
+    fn walk<'a>(node: &'a InspectionNode, widget: &str) -> Option<&'a InspectionNode> {
+        if node.widget == widget {
+            return Some(node);
+        }
+        node.children.iter().find_map(|child| walk(child, widget))
+    }
+    walk(node, widget).unwrap_or_else(|| panic!("no {widget} in the inspection tree"))
+}
+
+fn luma(p: [u8; 4]) -> f64 {
+    0.2126 * f64::from(p[0]) + 0.7152 * f64::from(p[1]) + 0.0722 * f64::from(p[2])
+}
+
+fn pixels(
+    image: &image::RgbaImage,
+    region: Rect,
+) -> impl Iterator<Item = (u32, u32, [u8; 4])> + '_ {
+    let x0 = region.x0.max(0.0).floor() as u32;
+    let y0 = region.y0.max(0.0).floor() as u32;
+    let x1 = (region.x1.ceil() as u32).min(image.width());
+    let y1 = (region.y1.ceil() as u32).min(image.height());
+    (y0..y1).flat_map(move |y| (x0..x1).map(move |x| (x, y, image.get_pixel(x, y).0)))
+}
+
+/// The region's fill: the most frequent colour inside it.
+fn dominant(image: &image::RgbaImage, region: Rect) -> [u8; 4] {
+    let mut counts: HashMap<[u8; 4], usize> = HashMap::new();
+    for (_, _, p) in pixels(image, region) {
+        *counts.entry(p).or_default() += 1;
+    }
+    // Ties break on the colour bytes so the threshold is run-to-run stable.
+    counts
+        .into_iter()
+        .max_by_key(|(p, n)| (*n, *p))
+        .map(|(p, _)| p)
+        .expect("non-empty region")
+}
+
+/// Bounding box of the pixels clearly brighter than the region's fill: text
+/// and icon strokes on the dark theme, but not borders, zebra fills or grid
+/// rules (which stay within the threshold of their surface).
+fn ink(image: &image::RgbaImage, region: Rect) -> Rect {
+    let floor = luma(dominant(image, region)) + 60.0;
+    let mut bbox: Option<Rect> = None;
+    for (x, y, p) in pixels(image, region) {
+        if luma(p) > floor {
+            let px = Rect::new(
+                f64::from(x),
+                f64::from(y),
+                f64::from(x + 1),
+                f64::from(y + 1),
+            );
+            bbox = Some(bbox.map_or(px, |b| b.union(px)));
+        }
+    }
+    bbox.unwrap_or_else(|| panic!("no ink in {region:?}"))
+}
+
+fn assert_centered(what: &str, ink: Rect, band: Rect, tolerance: f64) {
+    let offset = ink.center().y - band.center().y;
+    assert!(
+        offset.abs() <= tolerance,
+        "{what}: ink {ink:?} sits {offset:+.2} px off the centre of {band:?}"
+    );
+    assert!(
+        ink.y0 >= band.y0 && ink.y1 <= band.y1,
+        "{what}: ink {ink:?} leaves its band {band:?}"
+    );
+}
+
+/// The band is taller than its text: ink keeps at least a pixel of air at
+/// the top and bottom. Text that outgrew a fixed band fills the probe edge to
+/// edge instead, so this is what tells a grown band from a clipped one.
+fn assert_has_air(what: &str, ink: Rect, band: Rect) {
+    assert!(
+        ink.y0 > band.y0 + 0.5 && ink.y1 < band.y1 - 0.5,
+        "{what}: ink {ink:?} touches the edge of its band {band:?}"
+    );
+}
+
+/// The renderer scales once: ink grows ~2x between 1x and 2x, not 4x.
+fn assert_scaled_once(what: &str, base: Rect, large: Rect) {
+    let ratio = large.height() / base.height();
+    assert!(
+        (1.6..=2.6).contains(&ratio),
+        "{what}: ink height {:.1} -> {:.1} (x{ratio:.2}) must follow the text scale once",
+        base.height(),
+        large.height()
+    );
+}
+
+#[derive(Clone)]
+struct Process {
+    name: String,
+    cpu: f32,
+    mem: u32,
+}
+
+fn processes() -> Vec<Process> {
+    (0..14)
+        .map(|index| Process {
+            name: format!("service-daemon-{index:02}"),
+            cpu: (index as f32 * 1.1) % 10.0,
+            mem: 40 + index * 7,
+        })
+        .collect()
+}
+
+fn data_table() -> Element {
+    let mut table = DataTable::new(vec![
+        ColumnDef::new("name", "Process", ColumnWidth::Fixed(220.0))
+            .sortable(true)
+            .with_text(|row: &Process| row.name.clone()),
+        ColumnDef::new("cpu", "CPU%", ColumnWidth::Fixed(90.0))
+            .sortable(true)
+            .with_text(|row: &Process| format!("{:.1}%", row.cpu)),
+        ColumnDef::new("mem", "Mem", ColumnWidth::Fixed(90.0))
+            .with_text(|row: &Process| format!("{} MB", row.mem)),
+    ])
+    .with_id("processes")
+    .with_viewport(220.0, 24.0);
+    table.set_rows(processes());
+    table.sort_by_with(|a, b| a.name.cmp(&b.name), "name", true);
+    Box::new(table)
+}
+
+fn tree_view() -> Element {
+    let root = TreeNode::branch(
+        1,
+        "crates",
+        (),
+        vec![
+            // Cap-height, descender-free label: the second-row probe centres
+            // on its ink, and x-height-only text ("src") sits visibly low.
+            TreeNode::branch(
+                2,
+                "Sources",
+                (),
+                vec![
+                    TreeNode::leaf(3, "main.rs", ()),
+                    TreeNode::leaf(4, "lib.rs", ()),
+                ],
+            ),
+            TreeNode::leaf(5, "README.md", ()),
+            TreeNode::branch(6, "tests", (), vec![]),
+        ],
+    );
+    Box::new(
+        TreeView::new(root)
+            .with_id("tree")
+            .with_expanded([1_u64, 2_u64])
+            .with_selected(Some(3))
+            .with_viewport(200.0, 22.0),
+    )
+}
+
+fn search_results() -> Element {
+    let mut view = SearchResultsView::new().with_test_id("results");
+    view.set_groups(vec![
+        SearchGroup {
+            kind: "Contacts".into(),
+            results: vec![
+                SearchResult::new("Contacts", "Alice Ng", "a")
+                    .with_subtitle("alice@example.com")
+                    .with_icon(Icon::Mail),
+                // Descender-free title and subtitle: the two-line probe
+                // centres on their ink.
+                SearchResult::new("Contacts", "Ada Lovelace", "b")
+                    .with_subtitle("Mathematics")
+                    .with_icon(Icon::Mail),
+            ],
+        },
+        SearchGroup {
+            kind: "Apps".into(),
+            results: vec![
+                SearchResult::new("Apps", "Calculator", "c").with_icon(Icon::Terminal),
+                SearchResult::new("Apps", "Calendar", "d").with_icon(Icon::Calendar),
+                SearchResult::new("Apps", "Camera", "e"),
+            ],
+        },
+    ]);
+    Box::new(view)
+}
+
+fn banners() -> Element {
+    Box::new(
+        Column::new()
+            .with_no_padding()
+            .with_intrinsic_height()
+            .with_gap(8.0)
+            .push(Box::new(
+                Banner::info("A new version is available.").with_message("Restart to finish."),
+            ))
+            .push(Box::new(Banner::success("All set.")))
+            .push(Box::new(
+                Banner::warning("You're offline.")
+                    .with_message("Edits will sync when you reconnect.")
+                    .dismissible(),
+            ))
+            .push(Box::new(Banner::error("Upload failed.").dismissible())),
+    )
+}
+
+fn stat_tiles() -> Element {
+    Box::new(
+        Row::new()
+            .push(Box::new(
+                StatTile::new("Sessions", "1,284")
+                    .with_icon(Icon::Search)
+                    .with_delta("12%", Trend::Up),
+            ))
+            .push(Box::new(
+                StatTile::new("Errors", "3")
+                    .with_icon(Icon::Inbox)
+                    .with_delta("2", Trend::Down),
+            ))
+            .push(Box::new(
+                StatTile::new("Latency", "48 ms").with_delta("0%", Trend::Flat),
+            ))
+            .push(Box::new(
+                StatTile::new("Uptime", "99.9%").with_icon(Icon::Refresh),
+            )),
+    )
+}
+
+fn chart() -> Element {
+    let theme = Theme::dark();
+    Box::new(
+        Chart::new(vec![
+            Series::new(
+                vec![1.0, 3.0, 2.0, 5.0, 4.0, 6.0, 5.5],
+                theme.accent_primary,
+            )
+            .with_legend("Sessions"),
+            Series::new(
+                vec![0.5, 1.0, 0.8, 1.5, 1.2, 1.1, 1.4],
+                theme.status_success,
+            )
+            .with_legend("Errors"),
+        ])
+        .with_title("Sessions over time")
+        .with_axis_labels("6.0", "0")
+        .with_height(180.0),
+    )
+}
+
+fn icon_grid() -> Element {
+    // Inside a Column the grid is stretched to the window width and reflows
+    // into columns, as it does in an app; as a bare root it would measure one
+    // cell wide.
+    Box::new(
+        Column::new()
+            .with_no_padding()
+            .with_intrinsic_height()
+            .push(Box::new(IconGrid::new(vec![
+                IconGridItem::new(Icon::Folder, "Documents"),
+                IconGridItem::new(Icon::Folder, "Downloads"),
+                IconGridItem::new(Icon::Image, "holiday-photo-2026.png"),
+                IconGridItem::new(Icon::FileText, "notes.md"),
+                IconGridItem::new(Icon::Music, "song.flac"),
+                IconGridItem::new(Icon::File, "archive.tar"),
+            ]))),
+    )
+}
+
+/// The picker fills the modal its host allocates and caps its cards to that
+/// band, so the fixture sizes the modal with the text scale as a shell would.
+fn conflict(scale: f32) -> Element {
+    fn alt(label: &str, summary: &str, author: &str, secs_ago: u64) -> Alternative {
+        Alternative {
+            label: label.into(),
+            summary: summary.into(),
+            author: author.into(),
+            timestamp: SystemTime::now()
+                .checked_sub(Duration::from_secs(secs_ago))
+                .unwrap_or_else(SystemTime::now),
+            payload: Arc::from(Vec::<u8>::new()),
+        }
+    }
+    let mut banner = ConflictBanner::new("Kanban move");
+    banner.set_conflict_count(2);
+    let picker = ConflictPicker::new(
+        "Kanban move",
+        ConflictKind::PickOne {
+            alternatives: vec![
+                alt(
+                    "Move to Done",
+                    "Alice marked the card finished",
+                    "Alice",
+                    120,
+                ),
+                alt("Move to In Review", "Bob wants Carol to approve", "Bob", 60),
+            ],
+        },
+    );
+    Box::new(
+        Column::new()
+            .with_no_padding()
+            .with_gap(8.0)
+            .push(Box::new(banner))
+            .push(Box::new(
+                Container::new()
+                    .with_no_padding()
+                    .with_height(320.0 * scale)
+                    .with_child(Box::new(picker)),
+            )),
+    )
+}
+
+fn legacy_cards() -> Element {
+    Box::new(
+        Column::new()
+            .with_no_padding()
+            .with_intrinsic_height()
+            .with_gap(12.0)
+            .push(Box::new(Card::titled(
+                "Region formats",
+                Box::new(Text::new(
+                    "Dates, times and numbers follow the selected region.",
+                )),
+            )))
+            .push(Box::new(Card::titled_with_action(
+                "Email",
+                Box::new(Button::new("add-account", "Add account", None)),
+                Box::new(Text::new("No email accounts yet.")),
+            ))),
+    )
+}
+
+#[test]
+fn data_table_header_and_rows_centre_text_and_scale_once() {
+    let mut header_ink = Vec::new();
+    for scale in [1.0, 2.0] {
+        let cap = capture("data_table", data_table(), (440, 260), scale);
+        let table = rect(find(&cap.harness.inspection().root, "DataTable"));
+        // The bands the table resolves from the theme: the header holds the
+        // `sm` label line plus `s3`; the fixture's authored 24 px row floors
+        // at the line plus `s1`. Both are the pinned constants at 1x.
+        let theme = Theme::dark().with_text_scale(scale);
+        let sm = line(theme.tokens.typography.scale.sm);
+        let header_h = band(TABLE_HEADER_H, sm, f64::from(theme.tokens.spacing.s3));
+        let row_h = band(TABLE_ROW_H, sm, f64::from(theme.tokens.spacing.s1));
+        if scale == 1.0 {
+            assert_eq!(
+                header_h, TABLE_HEADER_H,
+                "1x header band is the pinned default"
+            );
+            assert_eq!(row_h, TABLE_ROW_H, "1x row band is the authored height");
+        } else {
+            assert!(header_h > TABLE_HEADER_H && row_h > TABLE_ROW_H);
+        }
+        // First column only: the sort glyph lives at the column's trailing edge.
+        let header = Rect::new(
+            table.x0 + 4.0,
+            table.y0,
+            table.x0 + 180.0,
+            table.y0 + header_h,
+        );
+        let header_label = ink(&cap.image, header);
+        header_ink.push(header_label);
+        assert_centered("header label", header_label, header, 1.0);
+        assert_has_air("header label", header_label, header);
+        let arrow = Rect::new(
+            table.x0 + 180.0,
+            table.y0,
+            table.x0 + 220.0,
+            table.y0 + header_h,
+        );
+        assert_centered("sort glyph", ink(&cap.image, arrow), arrow, 2.0);
+        // The first two rows: if the rows had stayed 24 px at 2x, the second
+        // probe would straddle two rows' text and neither would centre.
+        for index in 0..2 {
+            let y0 = header.y1 + f64::from(index) * row_h;
+            let row = Rect::new(header.x0, y0, header.x1, y0 + row_h);
+            let cell = ink(&cap.image, row);
+            assert_centered(&format!("row {index} cell"), cell, row, 1.0);
+            assert_has_air(&format!("row {index} cell"), cell, row);
+        }
+    }
+    assert_scaled_once("data table header", header_ink[0], header_ink[1]);
+}
+
+#[test]
+fn tree_view_rows_centre_labels_and_scale_once() {
+    let mut label_ink = Vec::new();
+    for scale in [1.0, 2.0] {
+        let cap = capture("tree_view", tree_view(), (320, 220), scale);
+        let tree = rect(find(&cap.harness.inspection().root, "TreeView"));
+        // The fixture's authored 22 px row floors at the `sm` line plus `s1`;
+        // the disclosure column grows to the line so the glyph clears the
+        // label. Both are the pinned constants at 1x.
+        let theme = Theme::dark().with_text_scale(scale);
+        let sm = line(theme.tokens.typography.scale.sm);
+        let row_h = band(TREE_ROW_H, sm, f64::from(theme.tokens.spacing.s1));
+        let disclosure_w = band(TREE_DISCLOSURE_W, sm, 0.0);
+        let indent = f64::from(theme.tokens.spacing.s4);
+        if scale == 1.0 {
+            assert_eq!(row_h, TREE_ROW_H);
+            assert_eq!(disclosure_w, TREE_DISCLOSURE_W);
+        } else {
+            assert!(row_h > TREE_ROW_H && disclosure_w > TREE_DISCLOSURE_W);
+        }
+        let row = Rect::new(
+            tree.x0 + disclosure_w,
+            tree.y0,
+            tree.x0 + 200.0,
+            tree.y0 + row_h,
+        );
+        let root_label = ink(&cap.image, row);
+        label_ink.push(root_label);
+        assert_centered("root label", root_label, row, 1.0);
+        assert_has_air("root label", root_label, row);
+        let glyph = Rect::new(tree.x0, tree.y0, tree.x0 + disclosure_w, tree.y0 + row_h);
+        let glyph_ink = ink(&cap.image, glyph);
+        assert_centered("disclosure glyph", glyph_ink, glyph, 2.0);
+        assert!(
+            glyph_ink.x1 <= row.x0,
+            "disclosure glyph {glyph_ink:?} must clear the label column starting at {}",
+            row.x0
+        );
+        // Second row (`src`, depth 1): centred in its own band, which only
+        // holds if the first row really is `row_h` tall.
+        let second = Rect::new(
+            tree.x0 + indent + disclosure_w,
+            tree.y0 + row_h,
+            tree.x0 + 200.0,
+            tree.y0 + 2.0 * row_h,
+        );
+        let second_label = ink(&cap.image, second);
+        assert_centered("second row label", second_label, second, 1.0);
+        assert_has_air("second row label", second_label, second);
+    }
+    assert_scaled_once("tree label", label_ink[0], label_ink[1]);
+}
+
+#[test]
+fn search_results_centre_single_line_titles_and_scale_once() {
+    let mut title_ink = Vec::new();
+    for scale in [1.0, 2.0] {
+        let cap = capture("search_results", search_results(), (420, 360), scale);
+        let view = rect(find(&cap.harness.inspection().root, "SearchResultsView"));
+        // The bands the view resolves from the theme: a one-line row holds
+        // the `base` title line plus `s3`, a two-line row the title, `s1` and
+        // the `sm` subtitle plus `s3`, the caption band its `xs` line plus two
+        // `s1` insets. All three are the pinned constants at 1x.
+        let theme = Theme::dark().with_text_scale(scale);
+        let scale_tokens = &theme.tokens.typography.scale;
+        let s1 = f64::from(theme.tokens.spacing.s1);
+        let s3 = f64::from(theme.tokens.spacing.s3);
+        let header_h = band(SEARCH_HEADER_H, line(scale_tokens.xs), 2.0 * s1);
+        let one_line = band(SEARCH_ROW_ONE_LINE, line(scale_tokens.base), s3);
+        let two_line = band(
+            SEARCH_ROW_TWO_LINE,
+            line(scale_tokens.base) + s1 + line(scale_tokens.sm),
+            s3,
+        );
+        if scale == 1.0 {
+            assert_eq!(
+                (header_h, one_line, two_line),
+                (SEARCH_HEADER_H, SEARCH_ROW_ONE_LINE, SEARCH_ROW_TWO_LINE)
+            );
+        } else {
+            assert!(two_line > SEARCH_ROW_TWO_LINE && one_line > SEARCH_ROW_ONE_LINE);
+        }
+        // Second row: "Alan Turing / Computing", a two-line block.
+        let second_y0 = view.y0 + SEARCH_PAD + header_h + two_line;
+        let second = Rect::new(
+            view.x0 + SEARCH_TEXT_X,
+            second_y0,
+            view.x0 + 300.0,
+            second_y0 + two_line,
+        );
+        let block = ink(&cap.image, second);
+        assert_centered("two-line block", block, second, 1.5);
+        assert_has_air("two-line block", block, second);
+        // Third row: "Calculator", after two two-line rows and two headers.
+        let row_y0 = second_y0 + two_line + header_h;
+        let row = Rect::new(
+            view.x0 + SEARCH_TEXT_X,
+            row_y0,
+            view.x0 + 300.0,
+            row_y0 + one_line,
+        );
+        let title = ink(&cap.image, row);
+        title_ink.push(title);
+        assert_centered("single-line title", title, row, 1.0);
+        assert_has_air("single-line title", title, row);
+        let icon = Rect::new(
+            view.x0 + 20.0,
+            row_y0,
+            view.x0 + SEARCH_TEXT_X,
+            row_y0 + one_line,
+        );
+        assert_centered("row icon", ink(&cap.image, icon), icon, 1.5);
+    }
+    assert_scaled_once("search title", title_ink[0], title_ink[1]);
+}
+
+#[test]
+fn banner_text_block_centres_on_the_icon_line_and_scales_once() {
+    let mut text_ink = Vec::new();
+    for scale in [1.0, 2.0] {
+        let cap = capture("banners", banners(), (520, 360), scale);
+        let snapshot = cap.harness.inspection();
+        let banner = rect(&snapshot.root.children[0]);
+        let text = Rect::new(
+            banner.x0 + 44.0,
+            banner.y0 + 1.0,
+            banner.x1 - 40.0,
+            banner.y1 - 1.0,
+        );
+        let block = ink(&cap.image, text);
+        text_ink.push(block);
+        // The band grows with the measured block, so the block keeps one
+        // `s2` of air above and below at every scale.
+        let air = f64::from(Theme::dark().tokens.spacing.s2) - 1.0;
+        assert!(
+            block.y0 - banner.y0 >= air && banner.y1 - block.y1 >= air,
+            "{scale}x: banner text {block:?} needs {air} px of air inside {banner:?}"
+        );
+        if scale == 1.0 {
+            assert_centered("title + message block", block, banner, 1.0);
+            let icon = Rect::new(
+                banner.x0 + 12.0,
+                banner.y0 + 1.0,
+                banner.x0 + 36.0,
+                banner.y1 - 1.0,
+            );
+            assert_centered("banner icon", ink(&cap.image, icon), banner, 1.5);
+        }
+    }
+    assert_scaled_once("banner text", text_ink[0], text_ink[1]);
+}
+
+#[test]
+fn stat_tile_icon_sits_on_the_caption_line_and_scales_once() {
+    let mut caption_ink = Vec::new();
+    for scale in [1.0, 2.0] {
+        let cap = capture("stat_tiles", stat_tiles(), (760, 160), scale);
+        let tile = rect(find(&cap.harness.inspection().root, "StatTile"));
+        // The caption line only: the 24 px value starts at PAD + 12 + 6 at 1x.
+        let caption_band = if scale == 1.0 {
+            Rect::new(
+                tile.x0,
+                tile.y0 + TILE_PAD - 2.0,
+                tile.x1,
+                tile.y0 + TILE_PAD + 17.0,
+            )
+        } else {
+            Rect::new(
+                tile.x0,
+                tile.y0 + TILE_PAD - 2.0,
+                tile.x1,
+                tile.y0 + TILE_PAD + 30.0,
+            )
+        };
+        let caption = Rect::new(
+            tile.x0 + TILE_PAD,
+            caption_band.y0,
+            tile.x0 + 100.0,
+            caption_band.y1,
+        );
+        caption_ink.push(ink(&cap.image, caption));
+        if scale == 1.0 {
+            let icon = Rect::new(
+                tile.x1 - TILE_PAD - TILE_ICON_D - 2.0,
+                caption_band.y0,
+                tile.x1 - TILE_PAD + 2.0,
+                caption_band.y1,
+            );
+            let caption_ink = ink(&cap.image, caption);
+            let icon_ink = ink(&cap.image, icon);
+            let offset = icon_ink.center().y - caption_ink.center().y;
+            assert!(
+                offset.abs() <= 1.0,
+                "tile icon {icon_ink:?} is {offset:+.2} px off the caption line {caption_ink:?}"
+            );
+        }
+    }
+    assert_scaled_once("tile caption", caption_ink[0], caption_ink[1]);
+}
+
+#[test]
+fn chart_header_centres_title_and_legend_and_scales_once() {
+    let mut title_ink = Vec::new();
+    for scale in [1.0, 2.0] {
+        let cap = capture("chart", chart(), (480, 220), scale);
+        let chart = rect(find(&cap.harness.inspection().root, "Chart"));
+        // The header band holds the `sm` title line plus `s1`; the pinned
+        // 22 px at 1x.
+        let theme = Theme::dark().with_text_scale(scale);
+        let header_h = band(
+            CHART_HEADER_H,
+            line(theme.tokens.typography.scale.sm),
+            f64::from(theme.tokens.spacing.s1),
+        );
+        if scale == 1.0 {
+            assert_eq!(header_h, CHART_HEADER_H);
+        } else {
+            assert!(header_h > CHART_HEADER_H);
+        }
+        let header = Rect::new(chart.x0, chart.y0, chart.x0 + 160.0, chart.y0 + header_h);
+        let title = ink(&cap.image, header);
+        title_ink.push(title);
+        assert_centered("chart title", title, header, 1.0);
+        assert_has_air("chart title", title, header);
+        let legend = Rect::new(chart.x1 - 60.0, chart.y0, chart.x1, chart.y0 + header_h);
+        assert_centered("legend label", ink(&cap.image, legend), legend, 1.0);
+    }
+    assert_scaled_once("chart title", title_ink[0], title_ink[1]);
+}
+
+#[test]
+fn icon_grid_centres_glyph_and_label_block_in_the_cell_and_scales_once() {
+    let mut label_ink = Vec::new();
+    for scale in [1.0, 2.0] {
+        let cap = capture("icon_grid", icon_grid(), (440, 260), scale);
+        let grid = rect(find(&cap.harness.inspection().root, "IconGrid"));
+        // The default cell follows the label type: eight ems of `sm` across,
+        // and the glyph, its `s2` gap and one `sm` line plus two `s3` insets
+        // down — the pinned 96×88 at 1x.
+        let theme = Theme::dark().with_text_scale(scale);
+        let sm_size = f64::from(theme.tokens.typography.scale.sm);
+        let sm = line(theme.tokens.typography.scale.sm);
+        let s2 = f64::from(theme.tokens.spacing.s2);
+        let s3 = f64::from(theme.tokens.spacing.s3);
+        let cell_w = band(ICON_CELL.0, sm_size * 8.0, 0.0);
+        let cell_h = band(ICON_CELL.1, ICON_GLYPH + s2 + sm, 2.0 * s3);
+        if scale == 1.0 {
+            assert_eq!((cell_w, cell_h), ICON_CELL);
+        } else {
+            assert!(cell_w > ICON_CELL.0 && cell_h > ICON_CELL.1);
+        }
+        let cell = Rect::new(grid.x0, grid.y0, grid.x0 + cell_w, grid.y0 + cell_h);
+        // The label lives under the glyph; probe below the glyph's lowest
+        // possible bottom edge once the block is centred in the cell.
+        let glyph_bottom = (cell_h - (ICON_GLYPH + s2 + sm)) / 2.0 + ICON_GLYPH;
+        let label = Rect::new(cell.x0, cell.y0 + glyph_bottom + 1.0, cell.x1, cell.y1);
+        let label_run = ink(&cap.image, label);
+        label_ink.push(label_run);
+        let glyph_and_label = ink(&cap.image, cell);
+        assert_centered("glyph + label block", glyph_and_label, cell, 1.5);
+        let drift = glyph_and_label.center().x - cell.center().x;
+        assert!(
+            drift.abs() <= 1.5,
+            "cell content {glyph_and_label:?} is {drift:+.2} px off centre"
+        );
+        // The second cell starts one `s3` gap after the first: the grid
+        // reflowed into columns rather than one cell per row.
+        let second = Rect::new(cell.x1 + s3, cell.y0, cell.x1 + s3 + cell_w, cell.y1);
+        let second_content = ink(&cap.image, second);
+        assert_centered("second cell block", second_content, second, 1.5);
+    }
+    assert_scaled_once("icon label", label_ink[0], label_ink[1]);
+    // "Documents" fits the 2x cell whole: a cell that had stayed 96 px wide
+    // would elide it to "Docum…", a run barely wider than the 1x label.
+    let width_ratio = label_ink[1].width() / label_ink[0].width();
+    assert!(
+        width_ratio >= 1.8,
+        "2x label {:?} must not be elided (x{width_ratio:.2} of the 1x run {:?})",
+        label_ink[1],
+        label_ink[0]
+    );
+}
+
+#[test]
+fn conflict_surfaces_centre_the_title_and_scale_once() {
+    let mut title_ink = Vec::new();
+    for scale in [1.0, 2.0] {
+        // The window grows with the modal so the whole picker stays in frame.
+        #[allow(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "the fixture scale is exactly 1 or 2, so the viewport height is the nonnegative integer 400 or 800"
+        )]
+        let viewport_h = (400.0 * scale) as u32;
+        let cap = capture("conflict", conflict(scale), (820, viewport_h), scale);
+        let snapshot = cap.harness.inspection();
+        let picker = rect(find(&snapshot.root, "ConflictPicker"));
+        // The title band holds the `lg` title line plus `s1`; the banner its
+        // `sm` label line plus its two 8 px paddings. The pinned 28 / 36 at 1x.
+        let theme = Theme::dark().with_text_scale(scale);
+        let title_h = band(
+            PICKER_TITLE_H,
+            line(theme.tokens.typography.scale.lg),
+            f64::from(theme.tokens.spacing.s1),
+        );
+        let banner_h = band(36.0, line(theme.tokens.typography.scale.sm), 16.0);
+        if scale == 1.0 {
+            assert_eq!((title_h, banner_h), (PICKER_TITLE_H, 36.0));
+        } else {
+            assert!(title_h > PICKER_TITLE_H && banner_h > 36.0);
+        }
+        let title = Rect::new(
+            picker.x0 + PICKER_PAD,
+            picker.y0 + PICKER_PAD,
+            picker.x0 + 320.0,
+            picker.y0 + PICKER_PAD + title_h,
+        );
+        let title_run = ink(&cap.image, title);
+        title_ink.push(title_run);
+        assert_centered("picker title", title_run, title, 1.0);
+        assert_has_air("picker title", title_run, title);
+
+        let banner = rect(find(&snapshot.root, "ConflictBanner"));
+        assert!(
+            (banner.height() - banner_h).abs() < 0.5,
+            "{scale}x: the banner lays out its resolved band {banner_h}, got {banner:?}"
+        );
+        let label = Rect::new(banner.x0 + 36.0, banner.y0, banner.x0 + 300.0, banner.y1);
+        assert_centered("conflict banner label", ink(&cap.image, label), banner, 1.0);
+        // The trailing chips end inside the banner's padding: at 2x the
+        // labels widen their chips instead of overrunning the banner.
+        let chips = Rect::new(banner.x1 - 260.0, banner.y0, banner.x1, banner.y1);
+        let chip_ink = ink(&cap.image, chips);
+        assert!(
+            chip_ink.x1 <= banner.x1 - 8.0 + 0.5,
+            "{scale}x: chip labels {chip_ink:?} must end inside the banner padding of {banner:?}"
+        );
+    }
+    assert_scaled_once("picker title", title_ink[0], title_ink[1]);
+}
+
+#[test]
+fn legacy_card_titles_use_the_title_role_and_the_theme_gap() {
+    let mut title_heights = Vec::new();
+    for scale in [1.0_f32, 2.0] {
+        let cap = capture("legacy_cards", legacy_cards(), (520, 320), scale);
+        let snapshot = cap.harness.inspection();
+        // Card -> Container -> Column[title Row, body]; the Text inside the
+        // title Row is the heading.
+        let card = &snapshot.root.children[0];
+        let column = &card.children[0].children[0];
+        let title_row = rect(&column.children[0]);
+        let body = rect(&column.children[1]);
+        let title = rect(find(&column.children[0], "Text"));
+        title_heights.push(title.height());
+        let theme = Theme::dark().with_text_scale(scale);
+        let typography = &theme.tokens.typography;
+        let expected = f64::from(typography.scale.lg * typography.line_height_tight);
+        assert!(
+            (title.height() - expected).abs() < 1.0,
+            "{scale}x: title line box {} must be the Title role's {expected}",
+            title.height()
+        );
+        assert!(
+            (body.y0 - title_row.y1 - f64::from(theme.gap_standard)).abs() < 0.5,
+            "{scale}x: title/body gap {} must be theme.gap_standard {}",
+            body.y0 - title_row.y1,
+            theme.gap_standard
+        );
+    }
+    assert!(
+        (title_heights[1] - 2.0 * title_heights[0]).abs() < 1.5,
+        "title {} -> {} must follow the text scale",
+        title_heights[0],
+        title_heights[1]
+    );
+}
+
+/// HIG §9.5 "Rest edges" on the conflict surfaces, at 1× on the dark and the
+/// light preset: the banner's `Review` / `Dismiss` chips are Neutral faces
+/// whose fill and edge derive from the theme, replacing the
+/// `surface_white_*` / `border_white_*` veneers that were invisible on a
+/// light palette. A glyph-free column through the trailing chip must carry a
+/// face or edge pixel that registers against the banner's own fill in both
+/// themes. (Centring is pinned by `conflict_surfaces_centre_the_title_and_scale_once`;
+/// its `ink` helper reads light-on-dark and is not reused here.)
+#[test]
+fn conflict_surfaces_keep_a_visible_chip_edge_in_both_themes() {
+    for theme in [Theme::dark(), Theme::light()] {
+        let name = theme.name.clone();
+        let cap = capture_with_theme("conflict", conflict(1.0), (820, 400), theme);
+        let snapshot = cap.harness.inspection();
+        let banner = rect(find(&snapshot.root, "ConflictBanner"));
+
+        // The banner fill, sampled on its centre line in the empty band
+        // between the label and the chips.
+        #[allow(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "the banner is laid out inside the 820x400 fixture; flooring its nonnegative center selects the sample pixel"
+        )]
+        let (mid_x, mid_y) = (banner.center().x as u32, banner.center().y as u32);
+        let fill = luma(cap.image.get_pixel(mid_x, mid_y).0);
+        // The trailing chip ends inside the banner's 8 px padding; three
+        // pixels further in is inside the chip's own horizontal padding, so
+        // the column holds only the chip's edge and face, never a glyph.
+        #[allow(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "the 820-pixel-wide fixture banner leaves this inset chip column nonnegative; flooring selects a raster column"
+        )]
+        let x = (banner.x1 - 8.0 - 3.0) as u32;
+        #[allow(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "the fixture banner lies within the 400-pixel image; flooring its nonnegative edges selects the interior scan rows"
+        )]
+        let (y0, y1) = (banner.y0 as u32 + 1, banner.y1 as u32 - 1);
+        let best = (y0..y1)
+            .map(|y| (luma(cap.image.get_pixel(x, y).0) - fill).abs())
+            .fold(0.0_f64, f64::max);
+        // `luma` is the 0..255 weighted average; HIG's floor is 0.02 in
+        // relative-luminance units, which sits well above 4/255 here.
+        assert!(
+            best >= 4.0,
+            "{name}: the trailing chip's face/edge does not register against the banner fill \
+             (max |Δluma| = {best:.2} down column x={x})"
+        );
+    }
+}

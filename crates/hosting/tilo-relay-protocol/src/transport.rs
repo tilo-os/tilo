@@ -23,10 +23,16 @@ use serde::{Deserialize, Serialize};
 /// stops talking to the new version. Change only via a v2 side-by-
 /// side rollout.
 pub const ALPN: &[u8] = b"tilo-relay/1";
+/// Frozen v1 ALPN accepted only for already-deployed qOS peers.
+pub const LEGACY_ALPN: &[u8] = b"qos-relay/1";
 /// Authenticated one-shot discovery of direct filesystem endpoints.
 pub const DISCOVERY_ALPN: &[u8] = b"tilo-relay-discovery/2";
+/// Frozen discovery ALPN accepted only for already-deployed qOS peers.
+pub const LEGACY_DISCOVERY_ALPN: &[u8] = b"qos-relay-discovery/2";
 /// Authenticated owner-only health and lifecycle management protocol.
 pub const MANAGEMENT_ALPN: &[u8] = b"tilo-home-peer-management/1";
+/// Frozen management ALPN accepted only for already-deployed qOS peers.
+pub const LEGACY_MANAGEMENT_ALPN: &[u8] = b"qos-home-peer-management/1";
 
 /// Small, stable discovery reply consumed directly by filesystem workers.
 /// Keeping this separate from the relay's richer placement profile avoids a
@@ -289,7 +295,81 @@ mod tests {
     use super::*;
 
     #[test]
+    fn frozen_v1_envelope_bytes() {
+        // Literal ABI fixtures: changing an existing discriminant or field
+        // ordering would strand deployed readers and retained state.
+        let cases = [
+            (Envelope::Subscribe { workspace_id: 7 }, vec![0, 7]),
+            (Envelope::Unsubscribe { workspace_id: 7 }, vec![1, 7]),
+            (
+                Envelope::Presence {
+                    workspace_id: 7,
+                    payload: vec![9, 8],
+                },
+                vec![3, 7, 2, 9, 8],
+            ),
+            (
+                Envelope::Ready {
+                    workspace_id: 7,
+                    pending_deltas: 2,
+                },
+                vec![4, 7, 2],
+            ),
+            (
+                Envelope::NotAuthorised {
+                    workspace_id: 7,
+                    reason: "no".into(),
+                },
+                vec![5, 7, 2, 110, 111],
+            ),
+            (Envelope::Ping, vec![6]),
+            (Envelope::Pong, vec![7]),
+            (
+                Envelope::PeerRelayHello {
+                    hosted_workspaces: vec![7, 8],
+                },
+                vec![8, 2, 7, 8],
+            ),
+            (
+                Envelope::SyncRequest {
+                    workspace_id: 7,
+                    have_heads: vec![[9; 32]],
+                },
+                [vec![9, 7, 1], vec![9; 32]].concat(),
+            ),
+            (
+                Envelope::SyncResponse {
+                    workspace_id: 7,
+                    delta_since: vec![9, 8],
+                },
+                vec![10, 7, 2, 9, 8],
+            ),
+            (
+                Envelope::Delta {
+                    workspace_id: 7,
+                    author_device_public_key: [1; 32],
+                    authored_at_ns: 8,
+                    delta: vec![9],
+                    signature: [2; 64],
+                },
+                [vec![2, 7], vec![1; 32], vec![8, 1, 9, 64], vec![2; 64]].concat(),
+            ),
+        ];
+        for (envelope, payload) in cases {
+            let mut expected = (payload.len() as u32).to_le_bytes().to_vec();
+            expected.extend_from_slice(&payload);
+            assert_eq!(encode(&envelope).unwrap(), expected);
+            assert_eq!(decode(&payload).unwrap(), envelope);
+        }
+    }
+
+    #[test]
     fn alpn_is_stable() {
         assert_eq!(ALPN, b"tilo-relay/1");
+        assert_eq!(LEGACY_ALPN, b"qos-relay/1");
+        assert_eq!(DISCOVERY_ALPN, b"tilo-relay-discovery/2");
+        assert_eq!(LEGACY_DISCOVERY_ALPN, b"qos-relay-discovery/2");
+        assert_eq!(MANAGEMENT_ALPN, b"tilo-home-peer-management/1");
+        assert_eq!(LEGACY_MANAGEMENT_ALPN, b"qos-home-peer-management/1");
     }
 }

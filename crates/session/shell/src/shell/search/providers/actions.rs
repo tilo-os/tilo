@@ -17,6 +17,7 @@ use crate::shell::chrome_state::{Chrome, ChromeState};
 use crate::shell::search::action_api::{ActionArgs, ActionError, ActionParam, ParamType};
 use crate::shell::search::{ResourceKind, SearchContext, SearchProvider, SearchResult};
 
+mod native_identity;
 mod text_insert;
 
 /// What `record.bring` must be told.
@@ -152,7 +153,9 @@ pub(crate) fn shell_action_contract(id: &str) -> tilo_actions::ActionContract {
         | "projection.open"
         | "capture.open"
         | "collaborators.open"
-        | "room.activity.open" => {
+        | "room.activity.open"
+        | "room.activity.explore"
+        | "room.activity.replay" => {
             contract = ActionContract::view();
         }
         "identity.connect" | "identity.select" => {
@@ -171,7 +174,10 @@ pub(crate) fn shell_action_contract(id: &str) -> tilo_actions::ActionContract {
         "peer.invite.named" | "agent.invite" => {
             contract.permission = PermissionRequirement::Invite;
         }
-        "peer.invite" | "peer.connect" => contract = ActionContract::view(),
+        "peer.invite" | "peer.connect" => {
+            contract = ActionContract::view();
+            contract.permission = PermissionRequirement::Invite;
+        }
         "text.insert" | "record.bring" => {
             contract.permission = PermissionRequirement::Write;
             contract.reversible = true;
@@ -203,6 +209,59 @@ pub(crate) fn shell_action_contract(id: &str) -> tilo_actions::ActionContract {
     contract
 }
 
+/// Viewer-local workspace view rows (switch workspace, open the activity
+/// sheet in a given view). Mirrors
+/// `qos_desktop::activity::view_actions::workspace_view_descriptors`, read
+/// from the shell's own desktop model; the request names workspaces by raw id
+/// and `ChromeState::request_workspace_view` resolves it back.
+fn workspace_view_descriptors(
+    tree: &crate::shell::state::DesktopTree,
+    activity_available: bool,
+) -> Vec<qos_desktop::activity::view_actions::WorkspaceViewDescriptor> {
+    use qos_desktop::activity::view_actions::{WorkspaceViewDescriptor, WorkspaceViewRequest};
+    use qos_desktop::activity::ActivityView;
+    let mut result = tree
+        .workspaces
+        .iter()
+        .map(|workspace| WorkspaceViewDescriptor {
+            id: format!("workspace.select.{}", workspace.id.0),
+            label: format!("Switch to {}", workspace.name),
+            request: WorkspaceViewRequest::Select {
+                workspace: qos_desktop::WorkspaceId(workspace.id.0),
+            },
+        })
+        .collect::<Vec<_>>();
+    if activity_available && let Some(workspace) = tree.active_workspace() {
+        for (id, label, view) in [
+            (
+                "room.activity.open",
+                "Review workspace activity",
+                ActivityView::CatchUp,
+            ),
+            (
+                "room.activity.explore",
+                "Explore workspace activity",
+                ActivityView::Explore,
+            ),
+            (
+                "room.activity.replay",
+                "Replay workspace activity",
+                ActivityView::Replay,
+            ),
+        ] {
+            result.push(WorkspaceViewDescriptor {
+                id: id.into(),
+                label: label.into(),
+                request: WorkspaceViewRequest::OpenActivity {
+                    workspace: qos_desktop::WorkspaceId(workspace.id.0),
+                    view,
+                },
+            });
+        }
+    }
+    result
+}
+
 pub(crate) fn shell_action_kind(id: &str) -> tilo_actions::OperationKind {
     match id {
         "shortcut-help.toggle"
@@ -219,6 +278,8 @@ pub(crate) fn shell_action_kind(id: &str) -> tilo_actions::OperationKind {
         | "capture.open"
         | "collaborators.open"
         | "room.activity.open"
+        | "room.activity.explore"
+        | "room.activity.replay"
         | "peer.invite"
         | "peer.connect" => tilo_actions::OperationKind::View,
         "text.insert" | "record.bring" | "peer.invite.named" | "agent.invite" => {
@@ -822,7 +883,10 @@ impl Action {
                 crate::device_fleet::DeviceFleetStore::at(store.identity_dir(), identity_paths)
                     .register_current_device(&profile.id)
                     .map_err(|error| ActionError::Refused(error.to_string()))?;
-                let delegated = {
+                let enrolled = st.tree().requires_native_owner(room);
+                let delegated = if enrolled {
+                    Some(())
+                } else {
                     let mut tree = st.tree_mut();
                     tree.grant_in_workspace(
                         workspace_id,
@@ -833,6 +897,7 @@ impl Action {
                             crate::shell::state::Verb::Admin,
                         ),
                     )
+                    .map(|_| ())
                 };
                 if delegated.is_none() {
                     return Err(ActionError::Refused(
@@ -843,6 +908,7 @@ impl Action {
                 store
                     .bind_workspace(&room.to_string(), &profile.id)
                     .map_err(|error| ActionError::Refused(error.to_string()))?;
+                fence_native_selection(st, workspace_id, room, &profile.user_public_key)?;
                 st.tree().export_fs_capabilities();
                 st.bump();
                 Ok(())
@@ -865,7 +931,7 @@ impl Action {
                 let profile = registry.identities.get(identity_id).ok_or_else(|| {
                     ActionError::Refused("that identity is not connected to this device".into())
                 })?;
-                {
+                if !st.tree().requires_native_owner(room) {
                     let mut tree = st.tree_mut();
                     if tree
                         .grant_in_workspace(
@@ -887,6 +953,7 @@ impl Action {
                 store
                     .bind_workspace(&room.to_string(), identity_id)
                     .map_err(|error| ActionError::Refused(error.to_string()))?;
+                fence_native_selection(st, workspace_id, room, &profile.user_public_key)?;
                 st.tree().export_fs_capabilities();
                 st.bump();
                 Ok(())
@@ -1967,6 +2034,37 @@ impl SearchProvider for ActionsProvider {
                 });
             }
         }
+        for descriptor in workspace_view_descriptors(&ctx.chrome.tree().desktop, true) {
+            let Some(score) = match_score(
+                &needle_lower,
+                &descriptor.label.to_lowercase(),
+                "workspace activity history",
+                &descriptor.id,
+            ) else {
+                continue;
+            };
+            let request = descriptor.request;
+            out.push(SearchResult {
+                kind: ResourceKind::Action,
+                operation_kind: tilo_actions::OperationKind::View,
+                provider_id: self.id().into(),
+                id: descriptor.id,
+                title: descriptor.label,
+                subtitle: Some("Local workspace view".into()),
+                badge: None,
+                score,
+                params: vec![],
+                contract: Some(tilo_actions::ActionContract::view()),
+                on_open: Rc::new(move |_, _, chrome, _| {
+                    chrome
+                        .borrow_mut()
+                        .request_workspace_view(request.clone())
+                        .map_err(ActionError::Refused)
+                }),
+                on_invoke: None,
+                on_begin_invoke: None,
+            });
+        }
         const QUICK_SETTINGS_ACTIONS: &[(&str, &str, &str)] = &[
             (
                 QS_BRIGHTNESS_ID,
@@ -2463,6 +2561,23 @@ mod tests {
         (result.on_open)(&mut document, &automerge::ROOT, chrome, &ActionArgs::none()).unwrap();
     }
 
+    fn begin_lifecycle_action(
+        results: &[crate::shell::search::SearchResult],
+        id: &str,
+        chrome: &Chrome,
+    ) -> crate::shell::search::InvocationDisposition {
+        let result = results
+            .iter()
+            .find(|result| result.id == id)
+            .unwrap_or_else(|| panic!("action provider did not return {id}"));
+        let begin = result
+            .on_begin_invoke
+            .as_ref()
+            .unwrap_or_else(|| panic!("{id} must use lifecycle dispatch"));
+        let mut document = AutoCommit::new();
+        begin(&mut document, &automerge::ROOT, chrome, &ActionArgs::none()).unwrap()
+    }
+
     #[test]
     fn panel_actions_share_the_provider_dispatch_path() {
         let provider = ActionsProvider::new();
@@ -2503,39 +2618,27 @@ mod tests {
         chrome.borrow_mut().peer_sync_enabled = true;
         let results = action_results(&provider, &chrome);
 
-        let mut document = AutoCommit::new();
         for id in ["peer.invite", "peer.connect"] {
-            let result = results
-                .iter()
-                .find(|result| result.id == id)
-                .unwrap_or_else(|| panic!("action provider did not return {id}"));
-            let disposition = result
-                .on_begin_invoke
-                .as_ref()
-                .expect("peer actions have lifecycle admission")(
-                &mut document,
-                &automerge::ROOT,
-                &chrome,
-                &ActionArgs::none(),
-            )
-            .expect("peer action is admitted");
             assert!(matches!(
-                disposition,
+                begin_lifecycle_action(&results, id, &chrome),
                 crate::shell::search::InvocationDisposition::Pending(_)
             ));
         }
 
+        let queued = chrome.borrow_mut().take_peer_sync_requests();
+        assert_eq!(queued.len(), 2);
+        let actions = queued
+            .into_iter()
+            .map(|request| match request {
+                crate::shell::overlay_host::PeerSyncAction::Tracked { action, .. } => *action,
+                other => panic!("lifecycle request must remain tracked, got {other:?}"),
+            })
+            .collect::<Vec<_>>();
         assert_eq!(
-            chrome.borrow_mut().take_peer_sync_requests(),
+            actions,
             vec![
-                crate::shell::overlay_host::PeerSyncAction::Tracked {
-                    request_id: 1,
-                    action: Box::new(crate::shell::overlay_host::PeerSyncAction::PromptInvite),
-                },
-                crate::shell::overlay_host::PeerSyncAction::Tracked {
-                    request_id: 2,
-                    action: Box::new(crate::shell::overlay_host::PeerSyncAction::PromptConnect),
-                },
+                crate::shell::overlay_host::PeerSyncAction::PromptInvite,
+                crate::shell::overlay_host::PeerSyncAction::PromptConnect,
             ]
         );
     }
@@ -2861,6 +2964,32 @@ mod tests {
             assert!(
                 matches!(&error, ActionError::Refused(message) if message.contains("may not administer devices")),
                 "unexpected refusal for {action_id}: {error:?}",
+            );
+        }
+    }
+
+    #[test]
+    fn workspace_activity_exact_local_actions_are_exported() {
+        let provider = ActionsProvider::new();
+        let chrome = chrome_with_room();
+        let doc = AutoCommit::new();
+        let state = chrome.borrow();
+        let out = provider.query(SearchContext {
+            needle: "activity",
+            wanted: &[ResourceKind::Action],
+            chrome: &state,
+            doc: &doc,
+            doc_root: &automerge::ROOT,
+        });
+        for id in [
+            "room.activity.open",
+            "room.activity.explore",
+            "room.activity.replay",
+        ] {
+            assert!(
+                out.iter().any(|action| action.id == id
+                    && action.operation_kind == tilo_actions::OperationKind::View),
+                "{id}"
             );
         }
     }
@@ -3793,4 +3922,33 @@ mod tests {
             crate::shell::state::Verb::Read,
         ));
     }
+}
+
+#[allow(
+    unused_imports,
+    reason = "The native WorkspaceExt methods are selected by host-specific workspace code and test configurations."
+)]
+use crate::shell::state::WorkspaceExt as _;
+
+/// Called only after the existing identity registry accepted the selection.
+fn fence_native_selection(
+    st: &ChromeState,
+    local: crate::shell::state::WorkspaceId,
+    room: crate::shell::state::RoomId,
+    root: &[u8; 32],
+) -> Result<(), ActionError> {
+    let owner = st.tree().installed_native_owner();
+    let Some(owner) = owner else { return Ok(()) };
+    let paths = crate::firstboot::collaboration_identity_paths();
+    let selected =
+        tilo_user_identity::persist::read_device_cert(&paths.device_cert_for_user(root)).ok();
+    native_identity::fence(&owner, room, selected.as_ref()).map_err(ActionError::Refused)?;
+    if let Some(pending) = owner
+        .pending_enrollment_for_slot(local)
+        .map_err(ActionError::Refused)?
+    {
+        native_identity::fence(&owner, pending.id().room(), selected.as_ref())
+            .map_err(ActionError::Refused)?;
+    }
+    Ok(())
 }

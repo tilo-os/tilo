@@ -10,7 +10,7 @@
 //! allowlist, running as a per-sandbox helper.
 //!
 //! What we do here: locate `xdg-dbus-proxy` (from `flatpak-xdg-utils`,
-//! falling back to the raw-bind path if missing); spawn one proxy per
+//! leaving the bus unavailable if missing); spawn one proxy per
 //! sandbox allowing `org.freedesktop.DBus` (needed for the `Hello`
 //! handshake), the `org.freedesktop.portal.*` tree,
 //! `org.freedesktop.Notifications`, and `org.mpris.MediaPlayer2.*`;
@@ -59,7 +59,8 @@ pub const PROXY_BIN_ENV: &str = crate::dev_env::DBUS_PROXY_BIN_ENV;
 /// session bus into an untrusted sandbox.
 ///
 /// Lookup order: `$TILO_LAUNCHER_DBUS_PROXY_BIN` (test/override, developer
-/// builds only),
+/// builds only; when set it is authoritative, and an invalid or empty path
+/// leaves D-Bus unavailable rather than falling back),
 /// `xdg-dbus-proxy` on `$PATH`,
 /// `/usr/libexec/flatpak-xdg-utils/xdg-dbus-proxy` (Fedora), then
 /// `/usr/lib/flatpak-xdg-utils/xdg-dbus-proxy` (some Debian derivatives).
@@ -322,6 +323,43 @@ mod tests {
             found.is_none(),
             "expected None with bad env + empty PATH, got {found:?}"
         );
+    }
+
+    #[test]
+    fn find_proxy_binary_does_not_fall_back_past_an_invalid_override() {
+        use std::os::unix::ffi::OsStringExt;
+
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("xdg-dbus-proxy"), "#!/bin/sh\n").unwrap();
+        let invalid_paths = [
+            tmp.path().join("missing").into_os_string(),
+            std::ffi::OsString::new(),
+            tmp.path()
+                .join(std::ffi::OsString::from_vec(vec![0xff]))
+                .into_os_string(),
+        ];
+        for invalid in invalid_paths {
+            let mut env = tilo_test_env::ScopedEnv::new();
+            env.set(PROXY_BIN_ENV, &invalid).set("PATH", tmp.path());
+            let found = find_proxy_binary();
+            drop(env);
+            assert!(
+                found.is_none(),
+                "an invalid explicit override must not use the available PATH proxy: {found:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn find_proxy_binary_uses_path_when_override_is_unset() {
+        let tmp = tempfile::tempdir().unwrap();
+        let bin = tmp.path().join("xdg-dbus-proxy");
+        std::fs::write(&bin, "#!/bin/sh\n").unwrap();
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.remove(PROXY_BIN_ENV).set("PATH", tmp.path());
+        let found = find_proxy_binary();
+        drop(env);
+        assert_eq!(found, Some(bin));
     }
 
     /// Mock proxy fixture: writes a marker to `argv[2]` (the socket path)

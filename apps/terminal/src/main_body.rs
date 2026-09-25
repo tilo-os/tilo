@@ -1526,10 +1526,6 @@ impl TerminalWidget {
         self.forced_cell = true;
     }
 
-    fn cell_h(measured_line_h: f32) -> f64 {
-        f64::from(measured_line_h).ceil().max(1.0)
-    }
-
     /// The inner grid content rect (below the header, inside the padding).
     /// Test accessor for the chrome-inset geometry.
     #[cfg(test)]
@@ -1691,6 +1687,15 @@ impl TerminalWidget {
         let sp = &theme.tokens.spacing;
         self.chrome_body_pad = f64::from(sp.s3);
         self.chrome_scrollbar_w = f64::from(sp.s2);
+    }
+
+    /// Row pitch of the cell grid from the renderer's measured line box for
+    /// one cell — the single number `measure`, `draw`, selection bands, the
+    /// block cursor and pointer hit-testing all step rows by. Rounded up so
+    /// rows land on whole pixels (20 px at 1× for the 14 px base font), never
+    /// below one pixel.
+    fn cell_h(measured_line_h: f32) -> f64 {
+        f64::from(measured_line_h).ceil().max(1.0)
     }
 
     /// The inner grid content rect for a given widget rect: the widget rect
@@ -2232,6 +2237,10 @@ impl Widget for TerminalWidget {
         for (index, available) in availability {
             self.context_menu.set_item_enabled(index, available);
         }
+    }
+
+    fn document_history_definition(&self) -> Option<&'static ui::history_mode::HistoryDefinition> {
+        Some(&crate::framework_history::HISTORY)
     }
 
     fn test_id(&self) -> Option<&str> {

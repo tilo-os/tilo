@@ -380,6 +380,16 @@ pub fn spawn(path: &Path) -> shell::shell::collab_broker::BrokerHandle {
     spawn_with_agent_actions(
         path,
         &[
+            ("dev.qos.word-processor", "align-center"),
+            ("dev.qos.word-processor", "delete"),
+            ("dev.qos.word-processor", "insert-table"),
+            ("dev.qos.word-processor", "place-image"),
+            ("dev.tilo.word-processor", "align-center"),
+            ("dev.tilo.word-processor", "delete"),
+            ("dev.tilo.word-processor", "insert-table"),
+            ("dev.tilo.word-processor", "place-image"),
+            ("dev.tilo.photos", "rotate-right"),
+            ("dev.tilo.photos", "export-edited-content"),
             ("so.tilo.word-processor", "align-center"),
             ("so.tilo.word-processor", "delete"),
             ("so.tilo.word-processor", "insert-table"),
@@ -403,6 +413,9 @@ pub fn spawn_with_agent_actions(
     path: &Path,
     actions: &[(&str, &str)],
 ) -> shell::shell::collab_broker::BrokerHandle {
+    let parent = path.parent().expect("typed broker socket has a parent");
+    shell::shell::collab_broker_capnp::tests::secure_socket_parent(parent)
+        .expect("secure typed broker fixture root");
     let root = SigningKey::from_bytes(&ROOT_KEY);
     let collab_types::Principal::Person(principal) = collab_types::Principal::person_from_key(
         collab_types::Ed25519PublicKey::from_bytes(root.verifying_key().to_bytes()),
@@ -450,13 +463,9 @@ pub fn spawn_with_agent_actions(
             )
             .expect("the harness owner grants a reviewed test action");
     }
-    // App fixtures use the same agent-only endpoint as Scribe. Admission and
-    // app authority remain separate, so each host receives only its own app.
-    for (host, app) in [
-        ("quinten", "so.tilo.word-processor"),
-        ("photos", "so.tilo.photos"),
-        ("files", "so.tilo.file-explorer"),
-    ] {
+    // App fixtures use the same agent-only endpoint as Scribe. Device
+    // enrollment, room membership, and exact app authority remain separate.
+    for host in ["quinten", "photos", "files"] {
         workspace
             .grant_as(
                 &principal,
@@ -467,6 +476,20 @@ pub fn spawn_with_agent_actions(
                 ),
             )
             .expect("the harness owner admits an app fixture");
+    }
+    // Integration fixtures exercise the current canonical routes plus the
+    // retained Tilo and qOS routes. Grant each observed route explicitly: the
+    // production capability check deliberately does not alias app authority.
+    for (host, app) in [
+        ("quinten", "dev.qos.chat"),
+        ("quinten", "dev.qos.word-processor"),
+        ("quinten", "dev.tilo.word-processor"),
+        ("quinten", "so.tilo.word-processor"),
+        ("photos", "dev.tilo.photos"),
+        ("photos", "so.tilo.photos"),
+        ("files", "dev.qos.file-explorer"),
+        ("files", "so.tilo.file-explorer"),
+    ] {
         workspace
             .grant_as(
                 &principal,

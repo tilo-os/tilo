@@ -37,6 +37,22 @@ use vello::kurbo::Rect;
 use crate::a11y::{AccessNode, AccessState, Action, Role};
 use crate::widget::Widget;
 
+#[cfg(test)]
+#[path = "a11y_tree/identity_tests.rs"]
+mod identity_tests;
+
+#[cfg(test)]
+#[path = "a11y_tree/continuation_tests.rs"]
+mod continuation_tests;
+
+#[path = "a11y_tree/continuation.rs"]
+mod continuation;
+
+#[path = "a11y_tree/node_identity.rs"]
+mod node_identity;
+pub(crate) use node_identity::AdmittedNodeNames;
+use node_identity::WidgetNodeMap;
+
 type HostedWidget<'a> = (Vec<usize>, &'a dyn Widget);
 type HostedByIndex<'a> = HashMap<usize, Vec<HostedWidget<'a>>>;
 use serde::{Deserialize, Serialize};
@@ -105,6 +121,10 @@ pub enum SemanticActionKind {
     /// `encoded` is the byte-identical [`EncodedAction`] the on-screen affordance
     /// and the Ctrl+K palette dispatch — invoking it replays the *same* action.
     App(EncodedAction),
+    /// Inert address of a no-argument creation; only the current owner encodes it.
+    AppDeferred {
+        address: tilo_actions::ActionAddress,
+    },
     /// An app action that first needs one free-text argument (a rename, a "new
     /// page named…"). The argument is supplied to
     /// [`SemanticTree::build_prompted`] to produce the concrete [`EncodedAction`].
@@ -269,8 +289,8 @@ impl SemanticTree {
     /// Rebuild the tree from the live UI and diff it against the retained frame.
     ///
     /// `node_map` is used *read-only* (never dereferenced) to assign each
-    /// widget its stable id, exactly as
-    /// [`accesskit_bridge`](crate::accesskit_bridge) does. `focused` folds
+    /// widget its stable id. Ambiguous registrations remain structural and
+    /// receive no layout dispatch id. `focused` folds
     /// into each node's [`AccessState::focused`]. `resources` is the focused
     /// app's open-resource forest
     /// ([`Widget::resources`](crate::widget::Widget::resources)); each
@@ -283,26 +303,35 @@ impl SemanticTree {
         focused: Option<TaffyNodeId>,
         resources: &[Resource],
     ) -> TreeDelta {
-        self.refresh_impl::<false>(root, node_map, focused, resources, &[])
+        self.refresh_impl::<false>(root, node_map, None, focused, resources, &[])
     }
     pub(crate) fn refresh_bound(
         &mut self,
         root: &dyn Widget,
         node_map: &HashMap<TaffyNodeId, *mut dyn Widget>,
+        admitted: &AdmittedNodeNames,
         focused: Option<TaffyNodeId>,
         resources: &[Resource],
     ) -> TreeDelta {
-        self.refresh_impl::<true>(root, node_map, focused, resources, &[])
+        self.refresh_impl::<true>(root, node_map, Some(admitted), focused, resources, &[])
     }
     pub(crate) fn refresh_components(
         &mut self,
         root: &dyn Widget,
         node_map: &HashMap<TaffyNodeId, *mut dyn Widget>,
+        admitted: &AdmittedNodeNames,
         focused: Option<TaffyNodeId>,
         resources: &[Resource],
         components: &[crate::bound_dispatch::BoundResourceSnapshot],
     ) -> TreeDelta {
-        self.refresh_impl::<true>(root, node_map, focused, resources, components)
+        self.refresh_impl::<true>(
+            root,
+            node_map,
+            Some(admitted),
+            focused,
+            resources,
+            components,
+        )
     }
     #[cfg(test)]
     pub(crate) fn bound_actions_for_test(
@@ -326,21 +355,12 @@ impl SemanticTree {
         &mut self,
         root: &dyn Widget,
         node_map: &HashMap<TaffyNodeId, *mut dyn Widget>,
+        admitted: Option<&AdmittedNodeNames>,
         focused: Option<TaffyNodeId>,
         resources: &[Resource],
         components: &[crate::bound_dispatch::BoundResourceSnapshot],
     ) -> TreeDelta {
-        // Reverse map widget *data* pointer -> taffy id, keyed on the thin
-        // data address (`*const ()`) rather than the fat `*const dyn Widget`
-        // — the data address of a live object is identical across every
-        // coercion of it, so the lookup is immune to vtable-pointer
-        // differences between the `self`-coercion `node_map` stored during
-        // `build_layout` and the `&dyn Widget` a parent hands back from
-        // `children()`.
-        let mut ptr_to_taffy: HashMap<*const (), TaffyNodeId> = HashMap::new();
-        for (&taffy_id, &w_ptr) in node_map {
-            ptr_to_taffy.insert(w_ptr as *const (), taffy_id);
-        }
+        let ptr_to_taffy = WidgetNodeMap::new::<BOUND>(root, node_map, admitted);
 
         let mut builder = Build::<BOUND> {
             nodes: HashMap::new(),
@@ -521,7 +541,8 @@ impl SemanticTree {
                         }
                         SemanticActionKind::Verb(_)
                         | SemanticActionKind::App(_)
-                        | SemanticActionKind::AppPrompted { .. } => None,
+                        | SemanticActionKind::AppPrompted { .. }
+                        | SemanticActionKind::AppDeferred { .. } => None,
                     })
                     .collect::<Vec<_>>();
                 if verbs.is_empty() {
@@ -591,6 +612,11 @@ impl SemanticTree {
                             Ok(spec) => spec,
                             Err(_) => continue,
                         },
+                    };
+                    let spec = if matches!(verb, Action::SetValue(_)) {
+                        continuation::annotate(spec, node, action)
+                    } else {
+                        spec
                     };
                     resource.actions.push(spec);
                 }
@@ -728,7 +754,7 @@ struct Build<'a, const BOUND: bool> {
     order: Vec<SemanticId>,
     prompted: PromptedMap,
     bound_actions: HashMap<(SemanticId, String), crate::bound_dispatch::BoundActionTarget>,
-    ptr_to_taffy: &'a HashMap<*const (), TaffyNodeId>,
+    ptr_to_taffy: &'a WidgetNodeMap<'a>,
     focused: Option<TaffyNodeId>,
     duplicate_ids: Vec<SemanticId>,
 }
@@ -751,10 +777,7 @@ impl<const BOUND: bool> Build<'_, BOUND> {
         let Ok(_entry) = crate::bound_dispatch::enter_traversal::<BOUND>(w) else {
             return;
         };
-        let taffy_id = self
-            .ptr_to_taffy
-            .get(&std::ptr::from_ref::<dyn Widget>(w).cast::<()>())
-            .copied();
+        let taffy_id = self.ptr_to_taffy.get(w);
         match w.accessibility() {
             Some(access) => {
                 let id = if let Some(key) = &access.semantic_key {
@@ -925,7 +948,7 @@ impl<const BOUND: bool> Build<'_, BOUND> {
 
         let mut actions: Vec<SemanticAction> = Vec::new();
         for spec in &res.actions {
-            actions.push(self.resource_action(&id, spec));
+            actions.push(self.resource_action(&id, res.id.as_str(), spec));
             if let Some(binding) = binding {
                 self.bound_actions.insert(
                     (id.clone(), spec.id.clone()),
@@ -964,9 +987,17 @@ impl<const BOUND: bool> Build<'_, BOUND> {
         id
     }
 
-    fn resource_action(&mut self, node_id: &SemanticId, spec: &ActionSpec) -> SemanticAction {
+    fn resource_action(
+        &mut self,
+        node_id: &SemanticId,
+        resource: &str,
+        spec: &ActionSpec,
+    ) -> SemanticAction {
         let kind = match &spec.input {
             ActionInput::Immediate(enc) => SemanticActionKind::App(enc.clone()),
+            ActionInput::Deferred { .. } => SemanticActionKind::AppDeferred {
+                address: tilo_actions::ActionAddress::new(resource, &spec.id),
+            },
             ActionInput::Prompted {
                 prompt,
                 placeholder,

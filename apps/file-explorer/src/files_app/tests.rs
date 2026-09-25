@@ -4194,8 +4194,12 @@ mod injected_startup_tests {
     fn absent_services() -> HostedFileServices {
         HostedFileServices {
             thumbnails: None,
-            document_opener: None,
+            document_opener: DocumentOpenRoute::Unavailable,
         }
+    }
+
+    fn deferred_services() -> HostedFileServices {
+        HostedFileServices::deferred_document_open()
     }
 
     fn owned_child(parent: &Path) -> PathBuf {
@@ -4277,6 +4281,76 @@ mod injected_startup_tests {
         assert_eq!(calls.get(), 0);
         assert_eq!(guard.attempts(), 0);
         assert_eq!(listings.observations(), vec![(child, false)]);
+    }
+
+    #[test]
+    fn deferred_document_open_reports_the_shell_refusal_on_the_next_sync() {
+        let parent = tempfile::tempdir().unwrap();
+        let child = owned_child(parent.path());
+        let mut widget = FileExplorerWidget::with_startup_inputs_and_services(
+            startup(&child),
+            deferred_services(),
+        );
+        widget.nearby_send.poll_if_due(Instant::now());
+        assert!(
+            Widget::next_wake_deadline(&widget).is_some_and(|deadline| deadline > Instant::now()),
+            "the completed-reply branch, rather than Nearby Send's initial poll, must supply the immediate wake"
+        );
+        widget
+            .request_deferred_document_open(
+                child.join("Welcome.txt"),
+                ui::widget::DocumentOpenCapability::issue(),
+            )
+            .unwrap();
+        let Some(ui::widget::AppHostIntent::OpenDocument { token, reply, .. }) =
+            widget.take_host_intent()
+        else {
+            panic!("deferred route must hand the path to its shell host");
+        };
+        let reply = reply.upgrade().expect("widget retains its pending reply");
+        reply
+            .borrow_mut()
+            .complete(token.wrapping_add(1), Err("stale reply".into()));
+        assert!(
+            reply.borrow().is_pending(token),
+            "a stale shell completion must not replace this request"
+        );
+        reply
+            .borrow_mut()
+            .complete(token, Err("document storage unavailable".into()));
+        assert!(
+            Widget::next_wake_deadline(&widget).is_some_and(|deadline| deadline <= Instant::now()),
+            "a shell reply after draw must schedule the one follow-up Files sync"
+        );
+        let mut document = automerge::AutoCommit::new();
+        Widget::sync(&mut widget, &mut document, &automerge::ROOT);
+        assert_eq!(widget.status_line(), Some("document storage unavailable"));
+        assert!(widget.pending_document_open.is_none());
+    }
+
+    #[test]
+    fn dropped_deferred_document_request_cannot_be_admitted() {
+        let parent = tempfile::tempdir().unwrap();
+        let child = owned_child(parent.path());
+        let reply = {
+            let mut widget = FileExplorerWidget::with_startup_inputs_and_services(
+                startup(&child),
+                deferred_services(),
+            );
+            widget
+                .request_deferred_document_open(
+                    child.join("Welcome.txt"),
+                    ui::widget::DocumentOpenCapability::issue(),
+                )
+                .unwrap();
+            let Some(ui::widget::AppHostIntent::OpenDocument { reply, .. }) =
+                widget.take_host_intent()
+            else {
+                panic!("deferred route must have an owner-bound reply");
+            };
+            reply
+        };
+        assert!(reply.upgrade().is_none());
     }
 
     #[test]

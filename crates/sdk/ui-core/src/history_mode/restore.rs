@@ -4,7 +4,9 @@ use automerge::{
     transaction::Transactable,
 };
 use tilo_automerge::ApplyIncoming;
+mod import;
 mod projection;
+pub use import::prepare_external_content_import;
 mod schema;
 mod selection;
 mod writer;
@@ -61,6 +63,13 @@ pub struct HistoryRootSelector {
 pub enum HistoryRestoreNode {
     Whole {
         expected_type: RestoreValueType,
+    },
+    /// Author every immediate Map property except 1..=64 exact retained names.
+    /// Names are case-sensitive, nonempty, unique, and at most 1024 UTF-8
+    /// bytes. They are literal properties, not paths. Optional structural
+    /// absence normalizes to an empty authored Map.
+    MapContentExcept {
+        preserved_fields: &'static [&'static str],
     },
     /// Retain the current container and reconcile only declared map children.
     /// Lists/text must be selected whole; positional overlays are not supported.
@@ -204,8 +213,10 @@ impl RestoreError {
 /// Both current and historical content must satisfy the registered schema.
 /// Targets with content conflicts or rich-text blocks are unsupported. All
 /// replayed sequence marks use `ExpandMark::None` for their current ranges.
-/// Internal object identities of whole selected nodes may be recreated. Mixed
-/// structural ancestors and retained entities keep their current identities.
+/// Whole Map/Table values at map-addressed properties retain their current
+/// object identities when the current and target kinds match, recursively for
+/// map-addressed descendants. Other changed whole values may be recreated.
+/// Mixed structural ancestors and retained entities keep current identities.
 /// This value grants no authority: the host must check the reviewed resource,
 /// lifetime and current permission inside its exclusive record action frame.
 ///

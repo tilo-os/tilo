@@ -2091,3 +2091,9 @@ fn draw_data_word_table_accounts_for_the_whole_stream() {
          after it is suspect"
     );
 }
+
+#[allow(
+    unused_imports,
+    reason = "The native WorkspaceExt methods are selected by host-specific workspace code and test configurations."
+)]
+use shell::shell::state::WorkspaceExt as _;

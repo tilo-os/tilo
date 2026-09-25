@@ -31,6 +31,7 @@
 use crate::time::{Duration, Instant};
 use std::collections::HashMap;
 use std::ops::Range;
+use std::sync::Arc;
 
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjId, ObjType, ReadDoc, ScalarValue, Value};
@@ -164,6 +165,7 @@ pub struct RichTextEditor {
     layout: Option<RichTextLayout>,
     layout_width: f32,
     layout_dirty: bool,
+    layout_epoch: Option<Arc<()>>,
     redraw: bool,
 
     // --- interaction ---
@@ -201,6 +203,7 @@ impl RichTextEditor {
             layout: None,
             layout_width: 0.0,
             layout_dirty: true,
+            layout_epoch: None,
             redraw: true,
             focused: false,
             last_cursor: Point::ZERO,
@@ -526,7 +529,8 @@ impl RichTextEditor {
         if let Some(pr) = preedit_range {
             underlines.push((pr.start, pr.end));
         }
-        RichTextLayout::shape(
+        let browser_emoji = tr.browser_color_emoji_installed();
+        let layout = RichTextLayout::shape_browser(
             &mut tr.font_system,
             &spans,
             base_bold,
@@ -537,16 +541,26 @@ impl RichTextEditor {
             underlines,
             strikes,
             1.0,
-        )
+            browser_emoji,
+        );
+        tr.note_browser_rich_layout(&layout);
+        layout
     }
 
     fn ensure_layout(&mut self, tr: &mut TextRenderer, width: f32) {
-        let stale =
-            self.layout.is_none() || self.layout_dirty || (self.layout_width - width).abs() > 0.5;
+        let epoch_stale = self
+            .layout_epoch
+            .as_ref()
+            .is_none_or(|epoch| !Arc::ptr_eq(epoch, tr.layout_epoch()));
+        let stale = self.layout.is_none()
+            || self.layout_dirty
+            || (self.layout_width - width).abs() > 0.5
+            || epoch_stale;
         if stale {
             self.layout = Some(self.shape(tr, width.max(1.0)));
             self.layout_width = width;
             self.layout_dirty = false;
+            self.layout_epoch = Some(Arc::clone(tr.layout_epoch()));
         }
     }
 
@@ -1888,6 +1902,45 @@ mod tests {
         assert_eq!(
             state.doc.text(ed.text_obj.as_ref().unwrap()).unwrap(),
             "replacement"
+        );
+    }
+
+    #[test]
+    fn unchanged_browser_rich_text_reshapes_after_font_generation_changes() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/fonts");
+        let fonts = crate::font_catalog::FontCatalog::product("", "en-US")
+            .load_browser_startup_bytes(|name| std::fs::read(root.join(name)).ok())
+            .unwrap();
+        let mut renderer = TextRenderer::with_browser_font_system(fonts);
+        let mut editor = RichTextEditor::new("doc");
+        editor.text = "مَرْحَبًا".to_owned();
+        editor.ensure_layout(&mut renderer, 300.0);
+        assert_eq!(
+            renderer.take_browser_font_demands(),
+            ["NotoSansArabic[wght].ttf"]
+        );
+        renderer.browser_font_failed();
+        editor.ensure_layout(&mut renderer, 300.0);
+        assert_eq!(
+            renderer.take_browser_font_demands(),
+            ["NotoSansArabic[wght].ttf"]
+        );
+        renderer
+            .install_browser_font(
+                "NotoSansArabic[wght].ttf",
+                std::fs::read(root.join("NotoSansArabic[wght].ttf")).unwrap(),
+            )
+            .unwrap();
+        editor.ensure_layout(&mut renderer, 300.0);
+        assert!(
+            editor
+                .layout
+                .as_ref()
+                .unwrap()
+                .buffer
+                .layout_runs()
+                .flat_map(|run| run.glyphs)
+                .all(|glyph| glyph.glyph_id != 0)
         );
     }
 }

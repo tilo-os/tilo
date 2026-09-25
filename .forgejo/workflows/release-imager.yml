@@ -442,7 +442,7 @@ jobs:
             apps/imager/packaging/build-release-catalog.sh release-assets
           else
             mkdir -p dist/tilo-installer-catalog
-            cp apps/imager/release-catalog.json \
+            cp crates/packaging/install-artifacts/release-catalog.json \
               dist/tilo-installer-catalog/tilo-installer-catalog-v1.json
           fi
       - uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
@@ -501,7 +501,7 @@ jobs:
         with:
           name: tilo-installer-catalog
           path: release-catalog
-      - run: python3 apps/imager/packaging/release-catalog.py release-catalog --copy-to apps/imager/release-catalog.json
+      - run: python3 apps/imager/packaging/release-catalog.py release-catalog --copy-to crates/packaging/install-artifacts/release-catalog.json
       - uses: actions/download-artifact@9bc31d5ccc31df68ecc42ccf4149144866c47d8a # v3
         if: startsWith(github.ref, 'refs/tags/imager-v')
         with:
@@ -546,6 +546,19 @@ jobs:
               echo "TILO_VERSION=${GITHUB_REF_NAME#imager-v}" >> "$GITHUB_ENV"
               ;;
           esac
+      - run: cargo test -p tilo-folder-service --lib --locked
+      - run: cargo test -p tilo-folder-service --doc --locked
+      - run: cargo test -p tilo-app --doc --features folder-copy --locked
+      - run: cargo test -p tilo-install-artifacts --lib --locked
+      - run: cargo test -p tilo-install-artifacts --doc --locked
+      - run: cargo test -p tilo-app --doc --features install-artifacts --locked
+      - name: Enforce installer-artifact external API boundaries
+        run: |
+          for group in service-normal sdk-normal service-support sdk-support; do
+            python3 crates/packaging/install-artifacts/tests/privacy_probes.py \
+              --group "$group" \
+              --output-dir "$RUNNER_TEMP/install-artifact-probes/$group"
+          done
       - run: cargo test -p imager --lib --locked
       - name: Prove the packaged host writer is enabled
         run: cargo test -p imager --lib --locked --features host-media-writer
@@ -636,7 +649,7 @@ jobs:
           path: release-catalog
       - shell: powershell
         run: |
-          python apps/imager/packaging/release-catalog.py release-catalog --copy-to apps/imager/release-catalog.json
+          python apps/imager/packaging/release-catalog.py release-catalog --copy-to crates/packaging/install-artifacts/release-catalog.json
           if ($LASTEXITCODE -ne 0) { throw "Installer catalog selection failed" }
       - name: Require native Windows architecture
         shell: powershell
@@ -668,6 +681,28 @@ jobs:
             "TILO_VERSION=$env:GITHUB_REF_NAME" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
             if ($env:TILO_RELEASE_REPOSITORY -notmatch '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$') { throw "release repository must be OWNER/REPOSITORY" }
             "TILO_RELEASE_BASE_URL=$($env:TILO_RELEASE_SERVER.TrimEnd('/'))/$env:TILO_RELEASE_REPOSITORY/releases/download/$env:GITHUB_REF_NAME" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          }
+      - shell: powershell
+        run: cargo test -p tilo-folder-service --lib --locked --target "$env:TILO_WINDOWS_ARCH-pc-windows-msvc"
+      - shell: powershell
+        run: cargo test -p tilo-folder-service --doc --locked --target "$env:TILO_WINDOWS_ARCH-pc-windows-msvc"
+      - shell: powershell
+        run: cargo test -p tilo-app --doc --features folder-copy --locked --target "$env:TILO_WINDOWS_ARCH-pc-windows-msvc"
+      - shell: powershell
+        run: cargo test -p tilo-install-artifacts --lib --locked --target "$env:TILO_WINDOWS_ARCH-pc-windows-msvc"
+      - shell: powershell
+        run: cargo test -p tilo-install-artifacts --doc --locked --target "$env:TILO_WINDOWS_ARCH-pc-windows-msvc"
+      - shell: powershell
+        run: cargo test -p tilo-app --doc --features install-artifacts --locked --target "$env:TILO_WINDOWS_ARCH-pc-windows-msvc"
+      - name: Enforce normal installer-artifact external API boundaries
+        shell: powershell
+        run: |
+          foreach ($Group in @("service-normal", "sdk-normal")) {
+            python crates/packaging/install-artifacts/tests/privacy_probes.py `
+              --group $Group `
+              --target "$env:TILO_WINDOWS_ARCH-pc-windows-msvc" `
+              --output-dir (Join-Path $env:RUNNER_TEMP "install-artifact-probes/$Group")
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           }
       - shell: powershell
         run: cargo test -p imager --lib --locked --target "$env:TILO_WINDOWS_ARCH-pc-windows-msvc"
@@ -744,7 +779,7 @@ jobs:
         with:
           name: tilo-installer-catalog
           path: release-catalog
-      - run: python3 apps/imager/packaging/release-catalog.py release-catalog --copy-to apps/imager/release-catalog.json
+      - run: python3 apps/imager/packaging/release-catalog.py release-catalog --copy-to crates/packaging/install-artifacts/release-catalog.json
       - name: Configure release signing
         env:
           CREDENTIAL_BROKER: ${{ vars.IMAGER_MACOS_CREDENTIAL_BROKER }}
@@ -776,6 +811,19 @@ jobs:
               echo "TILO_VERSION=${GITHUB_REF_NAME#imager-v}" >> "$GITHUB_ENV"
               ;;
           esac
+      - run: cargo test -p tilo-folder-service --lib --locked
+      - run: cargo test -p tilo-folder-service --doc --locked
+      - run: cargo test -p tilo-app --doc --features folder-copy --locked
+      - run: cargo test -p tilo-install-artifacts --lib --locked
+      - run: cargo test -p tilo-install-artifacts --doc --locked
+      - run: cargo test -p tilo-app --doc --features install-artifacts --locked
+      - name: Enforce installer-artifact external API boundaries
+        run: |
+          for group in service-normal sdk-normal service-support sdk-support; do
+            python3 crates/packaging/install-artifacts/tests/privacy_probes.py \
+              --group "$group" \
+              --output-dir "$RUNNER_TEMP/install-artifact-probes/$group"
+          done
       - run: cargo test -p imager --lib --locked
       - name: Prove the packaged host writer is enabled
         run: cargo test -p imager --lib --locked --features host-media-writer

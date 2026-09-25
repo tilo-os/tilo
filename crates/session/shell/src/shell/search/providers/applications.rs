@@ -382,7 +382,7 @@ impl ApplicationsProvider {
         }
         let (sender, receiver) = mpsc::sync_channel(1);
         let spawned = std::thread::Builder::new()
-            .name("tilo-app-search-index".into())
+            .name("qos-app-search-index".into())
             .spawn({
                 #[cfg(test)]
                 let source = self.source.clone();
@@ -892,7 +892,7 @@ pub(crate) fn launch_installed_app(
         launcher::clear_pending_placement(package_id);
         let message = err.user_message();
         tracing::error!(
-            target: "tilo::app_launch",
+            target: "qos::app_launch",
             package_id,
             display_name,
             detail = %message,
@@ -1064,77 +1064,7 @@ impl ApplicationsProvider {
     }
 }
 
-/// Case-insensitive, first matching band wins in the order written below:
-/// name prefix 100, id in full or last segment 100, name substring 50, id
-/// prefix 60, id substring 25, category substring 20, description 15,
-/// fuzzy subsequence on the name 10. Multi-word queries may span metadata
-/// fields, so `office spreadsheet` can find an app whose category and
-/// description carry one word each. Empty needle matches everything at 0, so an empty palette
-/// lists installed apps. Category ranks below the id because it's a bucket,
-/// not an identity. Package ids score by how completely they were named,
-/// not flat "contains" — `hex-editor` typed for `so.tilo.hex-editor` is the
-/// app's identity in full and must outrank an incidental substring.
-pub(crate) fn match_score(
-    needle: &str,
-    name: &str,
-    package_id: &str,
-    category: Option<&str>,
-    description: Option<&str>,
-) -> Option<i32> {
-    if needle.is_empty() {
-        return Some(0);
-    }
-    if name.starts_with(needle) {
-        return Some(100);
-    }
-    // The id in full, or its last segment — both identify exactly one app.
-    if package_id == needle || package_id.rsplit('.').next() == Some(needle) {
-        return Some(100);
-    }
-    if name.contains(needle) {
-        return Some(50);
-    }
-    if package_id.starts_with(needle) {
-        return Some(60);
-    }
-    if package_id.contains(needle) {
-        return Some(25);
-    }
-    if category.is_some_and(|c| c.contains(needle)) {
-        return Some(20);
-    }
-    if description.is_some_and(|d| d.contains(needle)) {
-        return Some(15);
-    }
-    let terms: Vec<&str> = needle.split_whitespace().collect();
-    if terms.len() > 1
-        && terms.iter().all(|term| {
-            name.contains(term)
-                || package_id.contains(term)
-                || category.is_some_and(|value| value.contains(term))
-                || description.is_some_and(|value| value.contains(term))
-        })
-    {
-        return Some(15);
-    }
-    if fuzzy_subsequence(needle, name) {
-        return Some(10);
-    }
-    None
-}
-
-fn fuzzy_subsequence(needle: &str, hay: &str) -> bool {
-    let mut hi = hay.chars();
-    'ch: for nc in needle.chars() {
-        for hc in hi.by_ref() {
-            if hc == nc {
-                continue 'ch;
-            }
-        }
-        return false;
-    }
-    true
-}
+pub(crate) use ui::search::system::application_match_score as match_score;
 
 #[cfg(test)]
 mod tests {
@@ -1317,7 +1247,7 @@ mod tests {
     }
 
     #[test]
-    fn gnome_calendar_does_not_hide_tilo_calendar() {
+    fn gnome_calendar_does_not_hide_qos_calendar() {
         let rows = catalogue_rows_with_host(
             "so.tilo.calendar",
             "Calendar",
@@ -1329,7 +1259,7 @@ mod tests {
     }
 
     #[test]
-    fn host_terminal_does_not_hide_tilo_terminal() {
+    fn host_terminal_does_not_hide_qos_terminal() {
         let rows = catalogue_rows_with_host(
             "so.tilo.terminal",
             "Terminal",
@@ -1521,7 +1451,7 @@ mod tests {
     /// A launch that cannot start must reach both audiences: a notification
     /// for the screen, and a refusal for the caller that invoked the row by
     /// address — without it, a script is told the app opened and waits for
-    /// a window that never arrives. Drives the `on_open` closure.
+    /// a window that never arrives. Drives the real `on_open` closure.
     #[test]
     fn a_failed_launch_notifies_the_user_and_refuses_the_caller() {
         use crate::shell::search::action_api::ActionError;
@@ -1722,7 +1652,7 @@ mod tests {
     }
 
     /// Must say so in the same words an installed app's launch uses, not
-    /// fail silently. Drives the `on_open` closure.
+    /// fail silently. Drives the real `on_open` closure.
     #[test]
     #[serial_test::serial(launch_events)]
     fn activating_with_no_workspace_reports_it_the_same_way() {
@@ -2025,7 +1955,7 @@ mod tests {
             name: "Project board".into(),
             launcher_type: 2,
             target: target.map(str::to_string),
-            icon_kind: "tilo-web".into(),
+            icon_kind: "qos-web".into(),
             icon_bytes: None,
         };
         let out = p.dynamic_results_for(
@@ -2142,7 +2072,7 @@ mod native_application_tests {
             doc_root: &automerge::ROOT,
         });
         assert_eq!(results.len(), 1);
-        assert_eq!(results[0].id, "org.tilo.Files");
+        assert_eq!(results[0].id, "org.nirios.Files");
         (results[0].on_open)(&mut doc, &automerge::ROOT, &chrome, &ActionArgs::none()).unwrap();
         assert_eq!(chrome.borrow().active_app_title().as_deref(), Some("Files"));
         assert!(
@@ -2252,3 +2182,9 @@ mod native_application_tests {
         drop(state);
     }
 }
+
+#[allow(
+    unused_imports,
+    reason = "The native WorkspaceExt methods are selected by host-specific workspace code and test configurations."
+)]
+use crate::shell::state::WorkspaceExt as _;

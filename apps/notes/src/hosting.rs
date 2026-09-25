@@ -79,6 +79,21 @@ pub fn prepare_default(
                 return Err(LaunchError::Record(RecordOpenError::MissingRecord));
             }
             if let Some(root) = legacy_root {
+                let retirement = root.join(".notes-canonical-v1");
+                match std::fs::symlink_metadata(&retirement) {
+                    Ok(_) => {
+                        return Err(LaunchError::Operation(
+                            "this personal notebook was retired into canonical storage; relaunch with its explicit --notebook-dir and, when configured, --notebook-state-dir".into(),
+                        ));
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(error) => {
+                        return Err(LaunchError::Operation(format!(
+                            "{}: {error}",
+                            retirement.display()
+                        )));
+                    }
+                }
                 let metadata_path = crate::storage::workspace_file_path(root);
                 let has_source = match std::fs::metadata(&metadata_path) {
                     Ok(_) => true,

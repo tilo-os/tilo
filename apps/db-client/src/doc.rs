@@ -49,6 +49,46 @@ pub struct SavedQuery {
 /// Stateless helpers over the shared editor document.
 pub struct EditorDoc;
 
+/// The actor of the shared schema change. Nobody edits as it.
+const SCHEMA_GENESIS_ACTOR: &[u8] = b"so.tilo.db-client.schema.genesis.v1";
+
+/// The canonical schema change, built once per process: the `editor` map with
+/// its `sql` Text plus the empty `connections` / `saved_queries` lists, under
+/// a fixed actor at time 0, so the same bytes on every machine.
+fn schema_genesis() -> &'static [u8] {
+    static GENESIS: std::sync::OnceLock<Vec<u8>> = std::sync::OnceLock::new();
+    GENESIS.get_or_init(|| {
+        let mut doc = AutoCommit::new();
+        doc.set_actor(automerge::ActorId::from(SCHEMA_GENESIS_ACTOR));
+        let _ = EditorDoc::sql_text(&mut doc);
+        let _ = doc.put_object(&ROOT, CONNECTIONS_KEY, ObjType::List);
+        let _ = doc.put_object(&ROOT, SAVED_QUERIES_KEY, ObjType::List);
+        doc.commit_with(automerge::transaction::CommitOptions::default().with_time(0));
+        doc.save()
+    })
+}
+
+/// Give a fresh document the shared containers every replica writes into.
+/// Must run outside an open transaction (it applies a change); the app calls
+/// it from `sync`.
+///
+/// Created on first use instead, the SQL buffer (first `sync`), the
+/// connection list and the saved-query list (first add) are per-replica
+/// objects: two people who open the same new record, or add their first
+/// connection, before syncing each mint one, and a merge shows only one of
+/// them. A document that already has any of these keeps what it has.
+pub fn adopt_shared_schema(doc: &mut AutoCommit) {
+    let fresh = ["editor", CONNECTIONS_KEY, SAVED_QUERIES_KEY]
+        .iter()
+        .all(|key| {
+            doc.get_all(&ROOT, *key)
+                .is_ok_and(|values| values.is_empty())
+        });
+    if fresh {
+        let _ = doc.load_incremental(schema_genesis());
+    }
+}
+
 impl EditorDoc {
     /// Get-or-create the `editor` Map under the root.
     #[allow(
@@ -224,6 +264,44 @@ fn int_field(doc: &AutoCommit, obj: &ObjId, key: &str) -> Option<i64> {
 mod tests {
     use super::*;
     use tilo_automerge::ApplyIncoming;
+
+    /// Two replicas open the same new record and each type SQL and save a
+    /// query before syncing: both must survive the merge.
+    #[test]
+    fn concurrent_first_opens_on_two_replicas_keep_both_edits() {
+        use tilo_actions::Action;
+        for _ in 0..8 {
+            let mut base = AutoCommit::new();
+            base.commit();
+            let mut a = base.fork();
+            let mut b = base.fork();
+            for doc in [&mut a, &mut b] {
+                adopt_shared_schema(doc);
+            }
+            let sql = EditorDoc::sql_text(&mut a);
+            a.splice_text(&sql, 0, 0, "left").unwrap();
+            let sql = EditorDoc::sql_text(&mut b);
+            b.splice_text(&sql, 0, 0, "right").unwrap();
+            let (left_id, right_id) = (Uuid::new_v4(), Uuid::new_v4());
+            crate::actions::save_query_action(left_id, "L", "SELECT 1")
+                .apply(&mut a)
+                .unwrap();
+            crate::actions::save_query_action(right_id, "R", "SELECT 2")
+                .apply(&mut b)
+                .unwrap();
+            a.merge(&mut b).unwrap();
+            let text = EditorDoc::read_sql(&a);
+            assert!(
+                text.contains("left") && text.contains("right"),
+                "both SQL edits survive; got {text:?}"
+            );
+            assert_eq!(
+                SavedQueriesDoc::read(&a).len(),
+                2,
+                "both saved queries survive"
+            );
+        }
+    }
 
     #[test]
     fn set_and_read_round_trip() {

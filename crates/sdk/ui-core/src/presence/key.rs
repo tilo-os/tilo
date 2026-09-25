@@ -72,7 +72,42 @@ pub enum PointerSpace {
     Surface { surface: String },
 }
 
+/// First path field of a [`PresenceKey::digest_form`] key.
+pub const DIGEST_KEY_FIELD: &str = "@scope-digest";
+
 impl PresenceKey {
+    /// 16-byte digest of this key's canonical (postcard) encoding. Used where
+    /// a scope does not fit a bounded carrier, e.g. the 64-byte LIVE_V1
+    /// anchor, whose Writer keys can name 130-byte block ids.
+    pub fn scope_digest(&self) -> Option<[u8; 16]> {
+        let bytes = postcard::to_stdvec(self).ok()?;
+        let mut hash = blake3::Hasher::new();
+        hash.update(b"tilo-presence-scope-v1\0");
+        hash.update(&bytes);
+        let mut out = [0; 16];
+        out.copy_from_slice(&hash.finalize().as_bytes()[..16]);
+        Some(out)
+    }
+
+    /// The stand-in key a receiver files a digest-addressed scope under
+    /// (`Widget{[DIGEST_KEY_FIELD, hex(digest)]}`). An editor that draws
+    /// remote presence also looks its own keys up in this form
+    /// ([`Self::digest_form`]), so the two meet without the receiver ever
+    /// knowing the full scope.
+    pub fn from_scope_digest(digest: [u8; 16]) -> Self {
+        PresenceKey::Widget {
+            path: vec![
+                PathSegment::Field(DIGEST_KEY_FIELD.to_owned()),
+                PathSegment::Field(hex::encode(digest)),
+            ],
+        }
+    }
+
+    /// This key's digest-addressed stand-in (see [`Self::from_scope_digest`]).
+    pub fn digest_form(&self) -> Option<Self> {
+        self.scope_digest().map(Self::from_scope_digest)
+    }
+
     /// Wrap a [`ViewSubset`](crate::view::ViewSubset) as a presence key for
     /// broadcast. Encode failure yields empty bytes, which [`Self::as_view`]
     /// decodes back to `None` — a dropped frame, never a panic.
@@ -370,4 +405,39 @@ mod view_key_tests {
             .is_none()
         );
     }
+}
+
+#[cfg(test)]
+mod scope_digest_tests {
+    use super::*;
+
+    #[test]
+    fn digest_form_is_stable_distinct_and_self_describing() {
+        let key = |id: &str| PresenceKey::Widget {
+            path: vec![
+                PathSegment::Field("wp_block".into()),
+                PathSegment::Field(id.into()),
+            ],
+        };
+        let long = format!("{}.7", "ab".repeat(64));
+        let a = key(&long);
+        assert_eq!(a.scope_digest(), key(&long).scope_digest());
+        assert_ne!(a.scope_digest(), key("other").scope_digest());
+        // Known vector shared with the LIVE_V1 anchor tests (host + browser).
+        assert_eq!(
+            hex::encode(key("b1").scope_digest().unwrap()),
+            SCOPE_DIGEST_B1
+        );
+        let PresenceKey::Widget { path } = a.digest_form().unwrap() else {
+            panic!()
+        };
+        assert_eq!(path[0], PathSegment::Field(DIGEST_KEY_FIELD.into()));
+        assert_eq!(
+            a.digest_form(),
+            Some(PresenceKey::from_scope_digest(a.scope_digest().unwrap()))
+        );
+    }
+
+    /// `hex(scope_digest(Widget{[wp_block, "b1"]}))`.
+    const SCOPE_DIGEST_B1: &str = "9c59c4ded04a69ccf5b2ac58797c3b77";
 }

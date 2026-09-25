@@ -38,6 +38,7 @@ pub fn select_speaker() -> (Box<dyn Speaker>, &'static str) {
     }
 
     // 2. espeak-ng subprocess.
+    #[cfg(not(target_arch = "wasm32"))]
     match crate::espeak::EspeakSpeaker::new() {
         Ok(s) => {
             tracing::info!("tilo-tts: using espeak-ng subprocess backend");

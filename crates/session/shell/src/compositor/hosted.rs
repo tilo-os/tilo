@@ -383,9 +383,11 @@ fn attach_peer_sync_bridge(
         }
         crate::shell::overlay_host::PeerSyncRequest::AcceptInvite(token) => {
             let active = tree_for_bridge.read().desktop.active;
-            net.accept_invite(active, &token)
-                .map(|room| room.to_string())
-                .map(crate::shell::overlay_host::PeerSyncResponse::Message)
+            net.accept_peer_invitation(active, &token)
+        }
+        crate::shell::overlay_host::PeerSyncRequest::PollEnrollment(id) => net.poll_enrollment(id),
+        crate::shell::overlay_host::PeerSyncRequest::CancelEnrollment(id) => {
+            net.cancel_enrollment(id)
         }
         crate::shell::overlay_host::PeerSyncRequest::ListPendingInvitations => {
             let room = tree_for_bridge

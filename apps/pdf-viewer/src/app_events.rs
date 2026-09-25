@@ -1412,7 +1412,9 @@ mod event_tests {
         let spec = res.actions.iter().find(|a| a.id == "delete").unwrap();
         let spec_encoded = match &spec.input {
             ActionInput::Immediate(e) => e.clone(),
-            ActionInput::Prompted { .. } => panic!("delete is an immediate action"),
+            ActionInput::Prompted { .. } | ActionInput::Deferred { .. } => {
+                panic!("delete is an immediate action")
+            }
         };
 
         // The real affordance path (Delete key / rail button / context menu).

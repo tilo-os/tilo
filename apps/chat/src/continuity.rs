@@ -66,7 +66,7 @@ impl ChatRealtimeContinuity {
         self.next_request = self.next_request.saturating_add(1);
         ui::collaboration::CollabRequest::RealtimeCommand {
             request_id: self.next_request,
-            app_id: "so.tilo.chat".into(),
+            app_id: ui::collaboration::local_app_id(),
             command,
         }
     }
@@ -74,7 +74,10 @@ impl ChatRealtimeContinuity {
 
 impl ChatApp {
     pub(crate) fn call_continuation(&self) -> Option<ChatCallContinuation> {
-        if !self.call.active {
+        if !self.call.active
+            || self.native_voice.snapshot.state != ui::native_media::State::Live
+            || self.native_voice.channel.as_deref() != Some(&self.call.channel)
+        {
             return None;
         }
         let channel = self.channels.iter().find(|channel| {
@@ -85,15 +88,15 @@ impl ChatApp {
             channel_id: channel.id.clone(),
             media: ui::realtime_continuity::RealtimeMediaFacets {
                 microphone: true,
-                camera: !self.call.audio_only,
-                screen_share: self.call.sharing,
+                camera: false,
+                screen_share: false,
                 // Chat does not currently publish system/share audio as a
                 // distinct track. Never infer it from screen capture.
                 share_audio: false,
             },
             controls: ui::realtime_continuity::RealtimeControlIntent {
-                microphone_muted: self.call.muted,
-                camera_muted: self.call.audio_only,
+                microphone_muted: self.native_voice.snapshot.muted,
+                camera_muted: true,
                 screen_share_paused: false,
                 share_audio_muted: true,
             },
@@ -173,7 +176,11 @@ impl ChatApp {
         let Some((session, offered)) = self.realtime.offer.clone() else {
             return false;
         };
-        if !self.call.active || self.call.channel != offered.channel_id {
+        if !self.call.active
+            || self.call.channel != offered.channel_id
+            || self.native_voice.snapshot.state != ui::native_media::State::Live
+            || self.native_voice.channel.as_deref() != Some(&offered.channel_id)
+        {
             return false;
         }
         let request = self
@@ -194,25 +201,25 @@ impl ChatApp {
         if self.realtime.pending_restore.as_ref() != Some(&offered) {
             return;
         }
-        self.call.join(&offered.channel_id);
-        self.call.muted = offered.controls.microphone_muted;
-        self.call.audio_only = !offered.media.camera || offered.controls.camera_muted;
-        let resume_screen = offered.media.screen_share && !offered.controls.screen_share_paused;
-        if resume_screen {
-            // The share resumes only once the host grants a fresh source; the
-            // answer completes the target (or fails it) in
-            // `settle_screen_capture`.
-            let purpose = crate::call::ScreenCapturePurpose::Resume {
-                session: session.clone(),
-            };
-            if !self.request_screen(purpose) {
-                self.fail_realtime_target(session);
-                return;
-            }
-            self.settle_screen_capture();
+        // Continuity intent never carries microphone consent or device state.
+        // A fresh native Join starts listening muted; unmute remains a separate
+        // local prompt even if the source previously had its microphone open.
+        if self
+            .native_voice_command(
+                &offered.channel_id,
+                ui::native_media::Command::Join {
+                    channel_id: offered.channel_id.clone(),
+                },
+            )
+            .is_err()
+        {
+            let request = self
+                .realtime
+                .request(ui::realtime_continuity::RealtimeCommand::TargetFailed { session });
+            self.realtime.requests.push(request);
+            self.realtime.offer = None;
             return;
         }
-        self.call.sharing = false;
         self.realtime.session = Some(session);
         self.realtime.target_media_ready = true;
     }
@@ -228,28 +235,12 @@ impl ChatApp {
         self.realtime.offer = None;
     }
 
-    pub(crate) fn apply_realtime_stop(&mut self, doc: &mut AutoCommit) {
+    pub(crate) fn apply_realtime_stop(&mut self, _doc: &mut AutoCommit) {
         if self.realtime.stop_source.take().is_none() || !self.call.active {
             return;
         }
         let channel = self.call.channel.clone();
-        self.perform_action(
-            doc,
-            &crate::actions::ChatAction::LeaveCall {
-                channel,
-                user: self.me.id.clone(),
-            },
-        );
-        self.media
-            .transport_mut()
-            .unpublish(crate::media::TrackKind::Audio);
-        self.media
-            .transport_mut()
-            .unpublish(crate::media::TrackKind::Video);
-        self.media
-            .transport_mut()
-            .unpublish(crate::media::TrackKind::Screen);
-        self.call.leave();
+        let _ = self.native_voice_command(&channel, ui::native_media::Command::Leave);
     }
 }
 
@@ -275,10 +266,94 @@ mod tests {
         (app, doc)
     }
 
+    fn service_live(app: &mut ChatApp) {
+        app.native_voice_command(
+            "c_huddle",
+            ui::native_media::Command::Join {
+                channel_id: "c_huddle".into(),
+            },
+        )
+        .unwrap();
+        let requests = app.native_voice.take_requests(ui::clock::Instant::now());
+        let id = requests
+            .iter()
+            .rev()
+            .find_map(|request| match request {
+                ui::collaboration::CollabRequest::NativeMediaCommand {
+                    request_id,
+                    command,
+                } if matches!(command.command, ui::native_media::Command::Join { .. }) => {
+                    Some(*request_id)
+                }
+                _ => None,
+            })
+            .unwrap();
+        let mut snapshot = ui::native_media::Snapshot::unavailable();
+        snapshot.state = ui::native_media::State::Live;
+        snapshot.issue = None;
+        Collaborative::handle_collab_event(
+            app,
+            &ui::collaboration::CollabEvent::NativeMediaCommandResult {
+                request_id: id,
+                result: Ok(snapshot),
+            },
+        );
+    }
+
+    #[test]
+    fn native_continuity_cannot_claim_ready_or_resume_capture_from_view_state() {
+        let (mut app, _) = app_and_doc();
+        let offered = ChatCallContinuation {
+            workspace_id: "ws_acme".into(),
+            channel_id: "c_huddle".into(),
+            media: ui::realtime_continuity::RealtimeMediaFacets {
+                microphone: true,
+                camera: true,
+                ..Default::default()
+            },
+            controls: ui::realtime_continuity::RealtimeControlIntent {
+                microphone_muted: false,
+                camera_muted: false,
+                ..Default::default()
+            },
+        };
+        app.realtime.pending_restore = Some(offered.clone());
+        app.realtime.offer = Some(("target".into(), offered));
+        app.call.join("c_huddle");
+        assert!(!app.realtime_target_media_ready());
+        assert!(app.call_continuation().is_none());
+        app.realtime.accepted_target = true;
+        app.establish_realtime_target();
+        assert!(app.call.muted && app.call.audio_only && !app.call.sharing);
+        assert_eq!(
+            app.native_voice.snapshot.state,
+            ui::native_media::State::Preparing
+        );
+        assert!(!app.realtime_target_media_ready());
+    }
+
+    #[test]
+    fn realtime_request_uses_the_actual_launched_durable_app_identity() {
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("TILO_PACKAGE_ID", "dev.tilo.chat")
+            .set("TILO_DURABLE_APP_ID", "dev.qos.chat");
+        let mut realtime = ChatRealtimeContinuity::default();
+        let request = realtime.request(ui::realtime_continuity::RealtimeCommand::TargetFailed {
+            session: "session-1".into(),
+        });
+        drop(env);
+        assert!(matches!(
+            request,
+            ui::collaboration::CollabRequest::RealtimeCommand { app_id, .. }
+                if app_id == "dev.qos.chat"
+        ));
+    }
+
     #[test]
     fn active_call_projection_is_semantic_and_contains_no_transport_or_capture_state() {
         let (mut app, doc) = app_and_doc();
         app.call.join("c_huddle");
+        service_live(&mut app);
         app.call.muted = true;
         app.call.sharing = true;
         let metadata = Continuable::continuation_metadata(&app, &doc, &ROOT).unwrap();
@@ -295,7 +370,11 @@ mod tests {
             assert!(!json.to_ascii_lowercase().contains(forbidden));
         }
         let projection: ChatCallContinuation = serde_json::from_slice(&metadata.bytes).unwrap();
-        assert!(projection.media.microphone && projection.media.screen_share);
+        assert!(
+            projection.media.microphone
+                && !projection.media.screen_share
+                && !projection.media.camera
+        );
         assert!(projection.controls.microphone_muted);
         assert!(!projection.media.share_audio);
     }
@@ -303,7 +382,7 @@ mod tests {
     #[test]
     fn restore_is_inert_and_requires_a_real_synced_voice_channel() {
         let (mut source, source_doc) = app_and_doc();
-        source.call.join("c_huddle");
+        service_live(&mut source);
         let metadata = Continuable::continuation_metadata(&source, &source_doc, &ROOT).unwrap();
         let (mut target, mut target_doc) = app_and_doc();
         assert!(Continuable::restore_continuation_metadata(
@@ -361,6 +440,8 @@ mod tests {
         ));
         assert!(!app.realtime_target_media_ready());
         app.call.join("c_huddle");
+        assert!(!app.realtime_target_media_ready());
+        service_live(&mut app);
         assert!(app.realtime_target_media_ready());
         assert!(matches!(
             app.realtime.requests.pop(),
@@ -413,11 +494,11 @@ mod tests {
         assert!(!app.call.active);
     }
 
-    /// Drive a target to the point where it establishes an offered call that
-    /// was sharing its screen, with the host answering the capture request.
-    fn establish_shared_screen_target(
-        outcome: ui::capture::ScreenCaptureOutcome,
-    ) -> (ChatApp, AutoCommit, ui::host::HostRecorder) {
+    /// Chat continuity is voice-only through the native media service: an
+    /// offer that claims a screen share never asks the host for a capture
+    /// source and never resumes sharing.
+    #[test]
+    fn an_offered_screen_share_never_requests_host_capture() {
         let (mut app, mut doc) = app_and_doc();
         let offered = ChatCallContinuation {
             workspace_id: "ws_acme".into(),
@@ -437,44 +518,10 @@ mod tests {
         app.realtime.offer = Some(("target-session".into(), offered));
         app.realtime.accepted_target = true;
         let (services, recorder) = ui::host::HostServices::recording();
-        recorder.respond_to_screen_capture(outcome);
         ui::host::scoped(&services, || Widget::sync(&mut app, &mut doc, &ROOT));
-        assert_eq!(recorder.screen_capture_requests().len(), 1);
-        (app, doc, recorder)
-    }
-
-    #[test]
-    fn a_resumed_screen_share_waits_for_a_fresh_host_grant() {
-        let grant = ui::capture::ScreenCaptureOutcome::Granted(ui::capture::ScreenCaptureGrant {
-            stream: ui::capture::CaptureStream::PipeWire { node_id: 7 },
-            size: None,
-        });
-        let (mut app, _doc, _recorder) = establish_shared_screen_target(grant);
-        assert!(app.call.active && app.call.sharing);
-        assert_eq!(app.realtime.session.as_deref(), Some("target-session"));
-        assert!(matches!(
-            Collaborative::take_collab_requests(&mut app).as_slice(),
-            [ui::collaboration::CollabRequest::RealtimeCommand {
-                command: ui::realtime_continuity::RealtimeCommand::MediaReady { .. },
-                ..
-            }]
-        ));
-    }
-
-    #[test]
-    fn a_declined_screen_grant_fails_the_target_and_keeps_the_source_live() {
-        let (mut app, _doc, _recorder) =
-            establish_shared_screen_target(ui::capture::ScreenCaptureOutcome::Cancelled);
-        assert!(!app.call.active && !app.call.sharing);
-        assert!(app.realtime.session.is_none());
-        assert!(app.realtime.offer.is_none());
-        assert!(matches!(
-            Collaborative::take_collab_requests(&mut app).as_slice(),
-            [ui::collaboration::CollabRequest::RealtimeCommand {
-                command: ui::realtime_continuity::RealtimeCommand::TargetFailed { .. },
-                ..
-            }]
-        ));
+        assert!(recorder.screen_capture_requests().is_empty());
+        assert!(!app.call.sharing);
+        assert!(!app.realtime_target_media_ready());
     }
 
     #[test]
@@ -511,11 +558,16 @@ mod tests {
             ),
         );
         assert!(matches!(
-            Collaborative::take_collab_requests(&mut app).as_slice(),
-            [ui::collaboration::CollabRequest::RealtimeCommand {
+            Collaborative::take_collab_requests(&mut app)
+                .iter()
+                .find(|request| matches!(
+                    request,
+                    ui::collaboration::CollabRequest::RealtimeCommand { .. }
+                )),
+            Some(ui::collaboration::CollabRequest::RealtimeCommand {
                 command: ui::realtime_continuity::RealtimeCommand::Accept { .. },
                 ..
-            }]
+            })
         ));
         Collaborative::handle_collab_event(
             &mut app,
@@ -526,14 +578,48 @@ mod tests {
         );
         assert!(!app.call.active);
         Widget::sync(&mut app, &mut doc, &ROOT);
-        assert!(app.call.active && app.call.muted && !app.call.audio_only);
+        assert!(app.call.active && app.call.muted && app.call.audio_only);
         assert_eq!(app.realtime.session.as_deref(), Some("target-session"));
-        assert!(matches!(
-            Collaborative::take_collab_requests(&mut app).as_slice(),
-            [ui::collaboration::CollabRequest::RealtimeCommand {
+        let pending = Collaborative::take_collab_requests(&mut app);
+        assert!(!pending.iter().any(|request| matches!(
+            request,
+            ui::collaboration::CollabRequest::RealtimeCommand {
                 command: ui::realtime_continuity::RealtimeCommand::MediaReady { .. },
                 ..
-            }]
-        ));
+            }
+        )));
+        let id = pending
+            .iter()
+            .find_map(|request| match request {
+                ui::collaboration::CollabRequest::NativeMediaCommand {
+                    request_id,
+                    command,
+                } if matches!(command.command, ui::native_media::Command::Join { .. }) => {
+                    Some(*request_id)
+                }
+                _ => None,
+            })
+            .expect("target must join through native media service");
+        let mut live = ui::native_media::Snapshot::unavailable();
+        live.state = ui::native_media::State::Live;
+        live.issue = None;
+        Collaborative::handle_collab_event(
+            &mut app,
+            &ui::collaboration::CollabEvent::NativeMediaCommandResult {
+                request_id: id,
+                result: Ok(live),
+            },
+        );
+        assert!(
+            Collaborative::take_collab_requests(&mut app)
+                .iter()
+                .any(|request| matches!(
+                    request,
+                    ui::collaboration::CollabRequest::RealtimeCommand {
+                        command: ui::realtime_continuity::RealtimeCommand::MediaReady { .. },
+                        ..
+                    }
+                ))
+        );
     }
 }

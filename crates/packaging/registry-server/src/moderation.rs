@@ -4,12 +4,11 @@
 //! become public. Rejection intentionally accepts malformed/revoked requests,
 //! preserving their original bytes in an audit record while draining the queue.
 
-use std::sync::{Arc, Mutex};
-
 use registry_types::{
     EntryAction, EntryChangeRequest, RegistryEntry, VerifyError, verify_change_request,
     verify_entry_signature,
 };
+use std::sync::{Arc, Mutex};
 use thiserror::Error;
 
 use crate::allowlist::PublisherAllowlist;
@@ -993,7 +992,6 @@ mod tests {
     use ed25519_dalek::SigningKey;
     use getrandom::{SysRng, rand_core::UnwrapErr};
     use registry_types::{RegistryVersion, sign_change_request, sign_entry};
-
     fn setup() -> (tempfile::TempDir, ModerationService) {
         let dir = tempfile::tempdir().unwrap();
         let storage = Storage::open(dir.path()).unwrap();

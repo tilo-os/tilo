@@ -4826,7 +4826,9 @@ mod tests {
             .and_then(|r| r.actions.iter().find(|act| act.id == "delete"))
             .map(|act| match &act.input {
                 ActionInput::Immediate(enc) => enc.clone(),
-                ActionInput::Prompted { .. } => panic!("delete is an immediate action"),
+                ActionInput::Prompted { .. } | ActionInput::Deferred { .. } => {
+                    panic!("delete is an immediate action")
+                }
             })
             .expect("a delete spec for the rule");
 

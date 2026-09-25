@@ -13,11 +13,11 @@ use crate::widget::{
     FullscreenWidgetExt, Widget,
 };
 use automerge::{AutoCommit, ObjId, ROOT};
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex, OnceLock};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect, RoundedRect};
+use vello::kurbo::{Affine, Point, Rect, RoundedRect, Shape};
 use vello::peniko::{
     Blob, Color, ImageAlphaType, ImageBrush, ImageData as Image, ImageFormat as Format,
 };
@@ -300,6 +300,11 @@ struct PendingBinding {
     create: bool,
 }
 
+struct OwnerTransitionError {
+    message: String,
+    retry_pending: bool,
+}
+
 impl Binding {
     fn settle_outgoing(&mut self) -> Option<crate::application::ComponentCloseReport> {
         use automerge::transaction::Transactable;
@@ -386,14 +391,22 @@ pub struct TileHost {
     automatic_history: bool,
     live_callback_node: Option<NodeId>,
     retained_invocations: HashMap<tilo_actions::InvocationId, crate::history_mode::HistoryOwner>,
+    retained_updates: HashMap<tilo_actions::InvocationId, VecDeque<tilo_actions::InvocationUpdate>>,
+    owner_bound_work: bool,
+    owner_bound_custody: Option<crate::history_mode::HistoryOwner>,
     close_reports: Vec<crate::application::ComponentCloseReport>,
     /// `None` when nothing is bound — a bare `ui` host, a stub card, a
     /// test exercising only paint. Unbound tiles edit whatever document
     /// the parent pass carries.
     binding: Option<Binding>,
     history_lifetime: std::rc::Rc<crate::history_mode::owner::LegacyHistoryLifetime>,
+    custody_parent: Option<crate::ControlDomain>,
+    custody_scope: Option<crate::ControlDomain>,
+    custody_renewal: Option<crate::control_custody::CustodyAttachment>,
     pending_binding: Option<PendingBinding>,
     record_error: Option<String>,
+    record_transition_error: Option<String>,
+    record_intent_transition_blocked: bool,
     record_creation_refused: bool,
     announced: Option<RecordId>,
     /// Set by [`TileHost::replace_content`]; drained by
@@ -412,6 +425,9 @@ pub struct TileHost {
     content_was_presented: std::cell::Cell<bool>,
     rect: Rect,
     pub focused: bool,
+    /// Adjacent canvas windows own exactly their layout rectangle, including
+    /// their border; neither outlines nor shadows may spill into a sibling.
+    flush_edges: bool,
     /// `None` by default, matching the "animations only fire for runtime
     /// insertions" rule `TabBar` uses.
     spawned_at: Option<Instant>,
@@ -452,11 +468,66 @@ const OPENING_SPINNER_PX_F32: f32 = 36.0;
 const OPENING_SPINNER_GAP: f64 = 24.0;
 
 impl TileHost {
+    fn install_live_custody(&mut self, attachment: crate::control_custody::CustodyAttachment) {
+        let Some(parent) = self.custody_parent.clone() else {
+            return;
+        };
+        let owner = self.history_owner();
+        let domain = match &owner {
+            Some(owner) => match &owner.0 {
+                crate::history_mode::owner::OwnerKind::Component(binding) => {
+                    binding.control_domain.upgrade()
+                }
+                crate::history_mode::owner::OwnerKind::Legacy { .. } => {
+                    let domain = self.history_lifetime.control_domain.clone();
+                    domain.set_owner(crate::control_custody::ControlOwner::Legacy(owner.clone()));
+                    Some(domain)
+                }
+            },
+            None if self.has_separate_document_owner() => None,
+            None => Some(self.history_lifetime.control_domain.clone()),
+        };
+        if let Some(domain) = domain {
+            if owner.is_none() && domain.inherit_owner(&parent).is_err() {
+                parent.unsafe_attachment();
+                return;
+            }
+            let scope = self.custody_scope.get_or_insert_with(|| parent.child());
+            if scope
+                .attach_to(&parent)
+                .and_then(|()| domain.attach_to(scope))
+                .is_err()
+            {
+                parent.unsafe_attachment();
+                return;
+            }
+            let attachment = self.custody_renewal.take().unwrap_or(attachment);
+            if let TileContent::App(root) = &mut self.content {
+                root.install_control_custody(&domain, attachment);
+            }
+            if let Some(history) = &mut self.history {
+                history.set_control_domain(&domain);
+            }
+        }
+    }
+
     pub fn take_host_intent(&mut self) -> Option<crate::widget::AppHostIntent> {
         match &mut self.content {
             TileContent::App(root) => root.take_host_intent(),
             _ => None,
         }
+    }
+
+    /// Bind a prepared component's wake lifetime before mounting it in a group.
+    /// Setup failure retains the component's record and recovery reports.
+    pub fn mount_component(
+        mut component: crate::application::AppComponent,
+        sink: impl Fn(crate::wake::WakeEvent) + Send + Sync + 'static,
+    ) -> Result<Self, crate::launch::LaunchError> {
+        if let Err(error) = component.mount(sink) {
+            return Err(component.setup_error(error));
+        }
+        Ok(Self::from_component(component))
     }
 
     pub fn from_component(mut component: crate::application::AppComponent) -> Self {
@@ -479,6 +550,7 @@ impl TileHost {
                 history.set_enclosing_owner(owner);
                 history.set_keyboard_active(false);
                 self.history = Some(Box::new(history));
+                self.install_live_custody(crate::control_custody::CustodyAttachment::Dynamic);
                 self.structure_dirty = true;
             }
             Err(error) => {
@@ -491,6 +563,31 @@ impl TileHost {
     /// store/checkout/lifetime. No outer State or invented component is used.
     /// # Errors
     /// Refuses missing, stale or foreign document custody and invalid scope metadata.
+    /// Exact live component token for this retained history owner.
+    pub fn document_history_target(&self) -> Option<String> {
+        self.history.as_ref()?;
+        let TileContent::App(app) = &self.content else {
+            return None;
+        };
+        let binding = app.callback_binding()?;
+        let _entry = binding.enter().ok()?;
+        Some(binding.lifetime_id.to_string())
+    }
+    pub fn request_document_history(&self, target: &str) -> bool {
+        if self.document_history_target().as_deref() != Some(target) {
+            return false;
+        }
+        self.history
+            .as_ref()
+            .is_some_and(|history| history.request_open())
+    }
+    /// Inactive retained tiles have no nodes in the current Taffy tree.
+    pub(crate) fn discard_layout_nodes(&mut self) {
+        self.live_callback_node = None;
+        if let Some(history) = &mut self.history {
+            history.discard_layout_nodes();
+        }
+    }
     pub fn register_document_history(
         &mut self,
         definition: &'static crate::history_mode::HistoryDefinition,
@@ -541,11 +638,19 @@ impl TileHost {
             automatic_history: false,
             live_callback_node: None,
             retained_invocations: HashMap::new(),
+            retained_updates: HashMap::new(),
+            owner_bound_work: false,
+            owner_bound_custody: None,
             close_reports: vec![],
             binding: None,
             history_lifetime: crate::history_mode::owner::LegacyHistoryLifetime::new(),
+            custody_parent: None,
+            custody_scope: None,
+            custody_renewal: None,
             pending_binding: None,
             record_error: None,
+            record_transition_error: None,
+            record_intent_transition_blocked: false,
             record_creation_refused: false,
             announced: None,
             structure_dirty: false,
@@ -553,6 +658,7 @@ impl TileHost {
             content_was_presented: std::cell::Cell::new(false),
             rect: Rect::ZERO,
             focused: false,
+            flush_edges: false,
             spawned_at: None,
             opening_name: String::new(),
             opening_spinner: Spinner::with_size(OPENING_SPINNER_PX_F32),
@@ -565,6 +671,10 @@ impl TileHost {
             Ok(None) => {}
         }
         tile
+    }
+
+    pub(crate) fn set_flush_edges(&mut self, flush: bool) {
+        self.flush_edges = flush;
     }
 
     pub fn set_opening_name(&mut self, name: &str) {
@@ -595,6 +705,7 @@ impl TileHost {
         }
         self.bind_record_intent(store, tab, false);
         self.install_declared_history();
+        self.install_live_custody(crate::control_custody::CustodyAttachment::Dynamic);
     }
 
     /// Admit a newly created scratch resource owned by this caller. Creation
@@ -606,13 +717,22 @@ impl TileHost {
         }
         self.bind_record_intent(store, tab, true);
         self.install_declared_history();
+        self.install_live_custody(crate::control_custody::CustodyAttachment::Dynamic);
     }
 
+    /// External surfaces own no host record: detach any earlier record
+    /// custody so the outer document is never lent to them.
     fn clear_record_binding(&mut self) {
+        if self.binding.is_none() && self.pending_binding.is_none() && self.record_error.is_none()
+        {
+            return;
+        }
         self.settle_outgoing_record();
         self.binding = None;
         self.pending_binding = None;
         self.record_error = None;
+        self.record_transition_error = None;
+        self.record_intent_transition_blocked = false;
         self.record_creation_refused = false;
         self.announced = None;
         self.renew_history_lifetime();
@@ -640,6 +760,11 @@ impl TileHost {
     #[must_use]
     pub fn record_creation_refused(&self) -> bool {
         self.record_creation_refused
+    }
+
+    #[must_use]
+    pub fn record_transition_error(&self) -> Option<&str> {
+        self.record_transition_error.as_deref()
     }
 
     fn install_declared_history(&mut self) {
@@ -671,17 +796,242 @@ impl TileHost {
         }
     }
 
+    fn commit_pending_to_current_record(&mut self) -> Result<(), String> {
+        let (Some(binding), TileContent::App(root)) = (&self.binding, &mut self.content) else {
+            return Ok(());
+        };
+        if !root.needs_commit() {
+            return Ok(());
+        }
+        binding
+            .store
+            .with_action_state(&binding.live, |doc, history, _| {
+                let context = root.take_commit_context();
+                history.commit_action_authored_with_message(
+                    doc,
+                    None,
+                    root.get_state(),
+                    Some(crate::collaboration::local_user_id()),
+                    context.and_then(|context| context.change_message()),
+                );
+                root.on_commit();
+            })
+            .map_err(|error| error.to_string())
+    }
+
+    fn collect_retained_updates_before_release(&mut self) -> Result<(), String> {
+        let invocations = self
+            .retained_invocations
+            .keys()
+            .copied()
+            .collect::<Vec<_>>();
+        for invocation in invocations {
+            if self
+                .retained_updates
+                .get(&invocation)
+                .is_some_and(|updates| !updates.is_empty())
+            {
+                return Err(
+                    "A retained operation update must be delivered before switching documents"
+                        .into(),
+                );
+            }
+            let Some(owner) = self.retained_invocations.get(&invocation).cloned() else {
+                continue;
+            };
+            owner
+                .validate()
+                .map_err(|error| format!("Outgoing document observation unavailable: {error}"))?;
+            let (store, checkout) = owner.store_checkout();
+            let TileContent::App(root) = &mut self.content else {
+                continue;
+            };
+            let update = store
+                .read_checked(&checkout.id, |document| {
+                    root.poll_resource_operation(invocation, false, document, &ROOT)
+                })
+                .map_err(|error| format!("Outgoing document observation unavailable: {error}"))?;
+            if let Some(update) = update {
+                let terminal = update.is_terminal();
+                self.retained_updates
+                    .entry(invocation)
+                    .or_default()
+                    .push_back(update);
+                if terminal {
+                    self.retained_invocations.remove(&invocation);
+                } else {
+                    return Err(
+                        "A retained operation update must be delivered before switching documents"
+                            .into(),
+                    );
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn take_retained_update(
+        &mut self,
+        invocation: tilo_actions::InvocationId,
+    ) -> Option<tilo_actions::InvocationUpdate> {
+        let update = self.retained_updates.get_mut(&invocation)?.pop_front();
+        if self
+            .retained_updates
+            .get(&invocation)
+            .is_some_and(VecDeque::is_empty)
+        {
+            self.retained_updates.remove(&invocation);
+        }
+        update
+    }
+
+    fn unavailable_update(
+        invocation: tilo_actions::InvocationId,
+    ) -> tilo_actions::InvocationUpdate {
+        tilo_actions::InvocationUpdate::Failed {
+            invocation,
+            error: tilo_actions::ActionFailure {
+                code: "owner_unavailable".into(),
+                message: "The admitted operation's document owner is no longer available.".into(),
+                details: None,
+                retryable: false,
+            },
+        }
+    }
+
+    fn prepare_owner_transition(&mut self) -> Result<(), OwnerTransitionError> {
+        if !self.owner_bound_work {
+            self.record_transition_error = None;
+            return Ok(());
+        }
+        if !self.history_lifetime.active.get() {
+            let error = "The current document owner is closed".to_string();
+            self.record_transition_error = Some(error.clone());
+            return Err(OwnerTransitionError {
+                message: error,
+                retry_pending: false,
+            });
+        }
+        if let Err(error) = self.collect_retained_updates_before_release() {
+            self.record_transition_error = Some(error.clone());
+            return Err(OwnerTransitionError {
+                message: error,
+                retry_pending: true,
+            });
+        }
+        if let Err(error) = self.commit_pending_to_current_record() {
+            self.record_transition_error = Some(error.clone());
+            return Err(OwnerTransitionError {
+                message: error,
+                retry_pending: false,
+            });
+        }
+        let release = match &mut self.content {
+            TileContent::App(root) => root.release_record_scope(),
+            TileContent::Stub { .. } | TileContent::Notice { .. } => Ok(()),
+        };
+        if let Err(error) = release {
+            self.record_transition_error = Some(error.clone());
+            return Err(OwnerTransitionError {
+                message: error,
+                retry_pending: false,
+            });
+        }
+        self.settle_outgoing_record();
+        for invocation in self
+            .retained_invocations
+            .drain()
+            .map(|(invocation, _)| invocation)
+        {
+            let updates = self.retained_updates.entry(invocation).or_default();
+            if !updates
+                .iter()
+                .any(tilo_actions::InvocationUpdate::is_terminal)
+            {
+                updates.push_back(Self::unavailable_update(invocation));
+            }
+        }
+        self.owner_bound_work = false;
+        self.owner_bound_custody = None;
+        self.record_transition_error = None;
+        Ok(())
+    }
+
+    fn current_binding_owner(&self) -> Option<crate::history_mode::HistoryOwner> {
+        if let Some(binding) = self.callback_binding() {
+            return Some(crate::history_mode::HistoryOwner::component(binding));
+        }
+        let binding = self.binding.as_ref()?;
+        let checkout = binding.store.verified_checkout(&binding.live).ok()?;
+        Some(crate::history_mode::HistoryOwner::legacy(
+            binding.store.clone(),
+            checkout,
+            &self.history_lifetime,
+        ))
+    }
+
+    fn owner_bound_custody_changed(&self) -> bool {
+        self.owner_bound_work
+            && self.owner_bound_custody.as_ref().is_some_and(|admitted| {
+                self.current_binding_owner()
+                    .is_none_or(|current| !current.same_owner(admitted))
+            })
+    }
+
+    fn checked_old_owner_for_recovery(&self) -> Option<RecordId> {
+        if self.record_transition_error.is_none()
+            || self.record_error.is_some()
+            || !self.history_lifetime.active.get()
+        {
+            return None;
+        }
+        let admitted = self.owner_bound_custody.as_ref()?;
+        admitted.validate().ok()?;
+        let current = self.current_binding_owner()?;
+        current.validate().ok()?;
+        if !current.same_owner(admitted) {
+            return None;
+        }
+        let binding = self.binding.as_ref()?;
+        binding.store.verified_checkout(&binding.live).ok()?;
+        Some(binding.live.clone())
+    }
+
     fn renew_history_lifetime(&mut self) {
         if self.automatic_history {
             self.history = None;
             self.automatic_history = false;
         }
+        self.history_lifetime.control_domain.close();
         self.history_lifetime.active.set(false);
+        let previous = self.history_lifetime.control_domain.clone();
         self.history_lifetime = crate::history_mode::owner::LegacyHistoryLifetime::new();
+        self.custody_renewal = Some(self.history_lifetime.control_domain.renewal_from(&previous));
+    }
+
+    fn prepare_record_resolution(&mut self) -> Result<(), String> {
+        if !self.history_lifetime.active.get() {
+            let error = "The current document owner is closed".to_string();
+            self.record_transition_error = Some(error.clone());
+            return Err(error);
+        }
+        if self.owner_bound_custody_changed() {
+            self.prepare_owner_transition()
+                .map_err(|error| error.message)?;
+        }
+        Ok(())
     }
 
     fn bind_record_intent(&mut self, store: RecordStore, tab: RecordCheckout, create: bool) {
+        // Every explicit request supersedes the older queued intent, even if
+        // this attempt refuses. Observation backpressure may queue it anew.
+        self.pending_binding = None;
         if self.record_creation_refused {
+            return;
+        }
+        if !self.history_lifetime.active.get() {
+            self.record_transition_error = Some("The current document owner is closed".into());
+            self.record_intent_transition_blocked = false;
             return;
         }
         if let Some(b) = &self.binding
@@ -689,6 +1039,36 @@ impl TileHost {
             && b.tab == tab
             && store.open_existing_record_checked(&tab).is_ok()
         {
+            self.pending_binding = None;
+            self.record_transition_error = None;
+            self.record_intent_transition_blocked = false;
+            return;
+        }
+        if let Err(error) = admit_record(&store, &tab, create) {
+            if self.binding.is_some() && self.owner_bound_work {
+                self.pending_binding = Some(PendingBinding { store, tab, create });
+                self.record_transition_error =
+                    Some(format!("Document storage unavailable: {error}"));
+                self.record_intent_transition_blocked = false;
+                return;
+            }
+            // Preserve the existing unavailable-binding behavior, but never
+            // expose the outer document while the requested owner is absent.
+            self.settle_outgoing_record();
+            self.announced = None;
+            self.renew_history_lifetime();
+            self.binding = None;
+            self.pending_binding = Some(PendingBinding { store, tab, create });
+            self.record_error = Some(format!("Document storage unavailable: {error}"));
+            return;
+        }
+        if self.binding.is_some()
+            && let Err(error) = self.prepare_owner_transition()
+        {
+            if error.retry_pending {
+                self.pending_binding = Some(PendingBinding { store, tab, create });
+            }
+            self.record_intent_transition_blocked = false;
             return;
         }
         // A spelling is not custody: a replaced store or checkout must be
@@ -696,6 +1076,10 @@ impl TileHost {
         self.settle_outgoing_record();
         self.announced = None;
         self.renew_history_lifetime();
+        // A new lifetime is a new admission: the retained bindings still
+        // describe the old one, so the host must recompose before it can
+        // route anything to this content again (as `content_mut` does).
+        self.structure_dirty = true;
         if let Err(error) = admit_record(&store, &tab, create) {
             self.binding = None;
             self.pending_binding = Some(PendingBinding { store, tab, create });
@@ -704,6 +1088,8 @@ impl TileHost {
         }
         self.pending_binding = None;
         self.record_error = None;
+        self.record_transition_error = None;
+        self.record_intent_transition_blocked = false;
         let live = tab.id.clone();
         self.binding = Some(Binding {
             store,
@@ -715,27 +1101,84 @@ impl TileHost {
         self.announce_scope();
     }
 
-    fn resolve_record(&mut self) -> Result<Option<RecordId>, crate::record::RecordOpenError> {
+    fn resolve_record(&mut self) -> Result<Option<RecordId>, String> {
+        self.prepare_record_resolution()?;
         let previous_live = self.binding.as_ref().map(|binding| binding.live.clone());
         let was_unavailable = self.record_error.is_some();
         if let Some(pending) = self.pending_binding.take() {
             if let Err(error) = admit_record(&pending.store, &pending.tab, pending.create) {
                 self.pending_binding = Some(pending);
-                self.record_error = Some(format!("Document storage unavailable: {error}"));
+                let error = format!("Document storage unavailable: {error}");
+                if self.binding.is_some() {
+                    self.record_transition_error = Some(error.clone());
+                } else {
+                    self.record_error = Some(error.clone());
+                }
                 return Err(error);
             }
-            self.binding = Some(Binding {
-                store: pending.store,
-                live: pending.tab.id.clone(),
-                tab: pending.tab,
-                established: false,
-                settled_frontier: None,
-            });
+            if self.binding.is_some() {
+                if let Err(error) = self.prepare_owner_transition() {
+                    if error.retry_pending {
+                        self.pending_binding = Some(pending);
+                    }
+                    self.record_intent_transition_blocked = false;
+                    return Err(error.message);
+                }
+                self.announced = None;
+                self.renew_history_lifetime();
+                self.binding = Some(Binding {
+                    store: pending.store,
+                    live: pending.tab.id.clone(),
+                    tab: pending.tab,
+                    established: false,
+                    settled_frontier: None,
+                });
+                self.record_error = None;
+                self.record_transition_error = None;
+                self.record_intent_transition_blocked = false;
+            } else {
+                self.binding = Some(Binding {
+                    store: pending.store,
+                    live: pending.tab.id.clone(),
+                    tab: pending.tab,
+                    established: false,
+                    settled_frontier: None,
+                });
+            }
         }
         let want = match &self.content {
             TileContent::App(w) => w.record_intent(),
             TileContent::Stub { .. } | TileContent::Notice { .. } => None,
         };
+        let changing_owner = match (&self.binding, &want) {
+            (Some(binding), Some(want)) if want.id != binding.live => {
+                if let Err(error) = binding.store.open_existing_record_checked(want) {
+                    let error = format!("Document storage unavailable: {error}");
+                    if self.owner_bound_work {
+                        self.record_transition_error = Some(error.clone());
+                        self.record_intent_transition_blocked = true;
+                    } else {
+                        if !was_unavailable {
+                            self.renew_history_lifetime();
+                        }
+                        self.record_error = Some(error.clone());
+                    }
+                    return Err(error);
+                }
+                true
+            }
+            _ => false,
+        };
+        if changing_owner {
+            if let Err(error) = self.prepare_owner_transition() {
+                self.record_intent_transition_blocked = true;
+                return Err(error.message);
+            }
+            self.record_intent_transition_blocked = false;
+        } else if self.record_intent_transition_blocked {
+            self.record_transition_error = None;
+            self.record_intent_transition_blocked = false;
+        }
         let Some(binding) = self.binding.as_mut() else {
             return Ok(None);
         };
@@ -746,7 +1189,7 @@ impl TileHost {
                     self.renew_history_lifetime();
                 }
                 self.record_error = Some(format!("Document storage unavailable: {error}"));
-                return Err(error);
+                return Err(error.to_string());
             }
         };
         if was_unavailable || previous_live.as_ref() != Some(&live) {
@@ -758,6 +1201,7 @@ impl TileHost {
     }
 
     fn announce_scope(&mut self) {
+        self.install_live_custody(crate::control_custody::CustodyAttachment::Dynamic);
         let Some(live) = self.binding.as_ref().map(|b| b.live.clone()) else {
             return;
         };
@@ -819,7 +1263,14 @@ impl TileHost {
         }
         self.settle_outgoing_record();
         self.renew_history_lifetime();
+        self.retained_invocations.clear();
+        self.retained_updates.clear();
+        self.owner_bound_work = false;
+        self.owner_bound_custody = None;
+        self.record_transition_error = None;
+        self.record_intent_transition_blocked = false;
         self.content = content;
+        self.install_live_custody(crate::control_custody::CustodyAttachment::Dynamic);
         let registration = match &self.content {
             TileContent::App(root) => root.history_registration(),
             _ => Ok(None),
@@ -834,6 +1285,7 @@ impl TileHost {
         self.content_was_presented.set(false);
         self.opening_shown = false;
         self.handed_over_at = None;
+        self.install_live_custody(crate::control_custody::CustodyAttachment::Dynamic);
         self.announced = None;
         self.structure_dirty = true;
     }
@@ -953,6 +1405,7 @@ impl Continuable for TileHost {
             _ => None,
         }
     }
+
     fn restore_continuation_metadata(
         &mut self,
         metadata: &crate::collaboration::ContinuationMetadata,
@@ -1088,55 +1541,6 @@ impl AudiencePresentationProvider for TileHost {
     }
 }
 
-impl crate::widget::NativeViewLifecycle for TileHost {
-    fn mount_native_view(&mut self, host: &crate::widget::native_view::NativeViewHost<'_>) {
-        if let TileContent::App(live) = &mut self.content {
-            if self
-                .history
-                .as_ref()
-                .is_none_or(|history| history.live_interactive())
-            {
-                crate::widget::mount_native_views(live.as_mut(), host);
-            } else {
-                crate::widget::unmount_native_views(live.as_mut());
-            }
-        }
-    }
-
-    fn unmount_native_view(&mut self) {
-        if let TileContent::App(live) = &mut self.content {
-            crate::widget::unmount_native_views(live.as_mut());
-        }
-    }
-
-    fn native_view_frame_start(&mut self) {
-        if self
-            .history
-            .as_ref()
-            .is_none_or(|history| history.live_interactive())
-            && let TileContent::App(live) = &mut self.content
-        {
-            crate::widget::native_view_frame_start(live.as_mut());
-        }
-    }
-}
-
-impl crate::widget::Collaborative for TileHost {
-    fn take_collab_requests(&mut self) -> Vec<crate::collaboration::CollabRequest> {
-        if let TileContent::App(live) = &mut self.content {
-            crate::widget::take_collab_requests(live.as_mut())
-        } else {
-            vec![]
-        }
-    }
-
-    fn handle_collab_event(&mut self, event: &crate::collaboration::CollabEvent) {
-        if let TileContent::App(live) = &mut self.content {
-            crate::widget::handle_collab_event(live.as_mut(), event);
-        }
-    }
-}
-
 impl FullscreenProvider for TileHost {
     fn fullscreen_intent(&self) -> Option<bool> {
         match &self.content {
@@ -1162,6 +1566,22 @@ impl FullscreenProvider for TileHost {
 }
 
 impl Widget for TileHost {
+    fn fullscreen_provider(&self) -> Option<&dyn FullscreenProvider> {
+        Some(self)
+    }
+
+    fn fullscreen_provider_mut(&mut self) -> Option<&mut dyn FullscreenProvider> {
+        Some(self)
+    }
+
+    fn continuable(&self) -> Option<&dyn Continuable> {
+        Some(self)
+    }
+
+    fn continuable_mut(&mut self) -> Option<&mut dyn Continuable> {
+        Some(self)
+    }
+
     fn try_flush_owned_persistence(&mut self) -> Option<Result<(), String>> {
         if let Some(error) = &self.record_error {
             return Some(Err(error.clone()));
@@ -1183,6 +1603,38 @@ impl Widget for TileHost {
         match &mut self.content {
             TileContent::App(widget) => widget.try_flush_owned_persistence(),
             TileContent::Stub { .. } | TileContent::Notice { .. } => None,
+        }
+    }
+
+    fn primary_vertical_scroll(&self) -> Option<crate::widget::PrimaryScrollRegion> {
+        if self
+            .history
+            .as_ref()
+            .is_some_and(|history| !history.live_interactive())
+        {
+            return None;
+        }
+        if let TileContent::App(app) = &self.content {
+            app.primary_vertical_scroll()
+        } else {
+            None
+        }
+    }
+    fn apply_primary_vertical_scroll(
+        &mut self,
+        action: crate::widget::PrimaryScrollAction,
+    ) -> crate::widget::PrimaryScrollResult {
+        if self
+            .history
+            .as_ref()
+            .is_some_and(|history| !history.live_interactive())
+        {
+            return crate::widget::PrimaryScrollResult::Unsupported;
+        }
+        if let TileContent::App(app) = &mut self.content {
+            app.apply_primary_vertical_scroll(action)
+        } else {
+            crate::widget::PrimaryScrollResult::Unsupported
         }
     }
 
@@ -1238,40 +1690,100 @@ impl Widget for TileHost {
         }
     }
 
-    fn native_view_lifecycle_mut(&mut self) -> Option<&mut dyn crate::widget::NativeViewLifecycle> {
-        (self.record_error.is_some()
-            || self
+    #[allow(
+        private_interfaces,
+        reason = "finite toolkit resource ownership requests"
+    )]
+    fn visit_resource_owners(
+        &self,
+        request: &mut crate::bound_dispatch::legacy_document::ResourceReadRequest<'_>,
+    ) -> Result<(), tilo_actions::DoorError> {
+        if let TileContent::App(live) = &self.content {
+            request.tile(
+                self.history_owner(),
+                self.has_separate_document_owner(),
+                self.history.as_ref().is_none_or(|h| h.live_interactive()),
+                live.as_ref(),
+            )
+        } else {
+            Ok(())
+        }
+    }
+    #[allow(
+        private_interfaces,
+        reason = "finite toolkit resource ownership requests"
+    )]
+    fn visit_resource_owners_mut(
+        &mut self,
+        request: &mut crate::bound_dispatch::legacy_document::ResourceRequest<'_>,
+    ) -> Result<(), tilo_actions::DoorError> {
+        let owner = self.history_owner();
+        let separate = self.has_separate_document_owner();
+        let interactive = self.history.as_ref().is_none_or(|h| h.live_interactive());
+        if request.effect_target(owner.as_ref()) {
+            request.deliver_effect(self, interactive);
+            return Ok(());
+        }
+        if let TileContent::App(live) = &mut self.content {
+            request.tile(owner.as_ref(), separate, interactive, live.as_mut())
+        } else {
+            Ok(())
+        }
+    }
+    fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
+        if self.has_separate_document_owner() {
+            return None;
+        }
+        self.children_mut()
+            .into_iter()
+            .find_map(Widget::take_control_invocation)
+    }
+    fn refresh_control_action_availability(
+        &mut self,
+        allowed: &std::collections::HashSet<tilo_actions::ActionAddress>,
+    ) {
+        if self.has_separate_document_owner() {
+            return;
+        }
+        for child in self.children_mut() {
+            child.refresh_control_action_availability(allowed);
+        }
+    }
+
+    fn mount_native_views(&mut self, host: &crate::widget::native_view::NativeViewHost<'_>) {
+        if let TileContent::App(live) = &mut self.content {
+            if self
                 .history
                 .as_ref()
-                .is_some_and(|history| !history.live_interactive()))
-        .then_some(self)
+                .is_none_or(|history| history.live_interactive())
+            {
+                live.mount_native_views(host);
+            } else {
+                live.unmount_native_views();
+            }
+        }
     }
-
-    fn collaborative_mut(&mut self) -> Option<&mut dyn crate::widget::Collaborative> {
-        (self.record_error.is_some()
-            || self
-                .history
-                .as_ref()
-                .is_some_and(|history| !history.live_interactive()))
-        .then_some(self)
+    fn unmount_native_views(&mut self) {
+        if let TileContent::App(live) = &mut self.content {
+            live.unmount_native_views();
+        }
     }
-
-    fn fullscreen_provider(&self) -> Option<&dyn FullscreenProvider> {
-        Some(self)
+    fn native_view_frame_start(&mut self) {
+        if self
+            .history
+            .as_ref()
+            .is_none_or(|history| history.live_interactive())
+            && let TileContent::App(live) = &mut self.content
+        {
+            live.native_view_frame_start();
+        }
     }
-
-    fn fullscreen_provider_mut(&mut self) -> Option<&mut dyn FullscreenProvider> {
-        Some(self)
+    fn collaboration_children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
+        match &mut self.content {
+            TileContent::App(live) => vec![live.as_mut()],
+            TileContent::Stub { .. } | TileContent::Notice { .. } => Vec::new(),
+        }
     }
-
-    fn continuable(&self) -> Option<&dyn Continuable> {
-        Some(self)
-    }
-
-    fn continuable_mut(&mut self) -> Option<&mut dyn Continuable> {
-        Some(self)
-    }
-
     fn on_external_event(&mut self, payload: &str, state: &mut AutoCommit, root: &ObjId) {
         if let TileContent::App(app) = &mut self.content {
             app.on_external_event(payload, state, root);
@@ -1312,6 +1824,56 @@ impl Widget for TileHost {
         }
     }
 
+    fn start_resource_operation_scoped(
+        &mut self,
+        scope: &crate::invocation_scope::ResourceInvocationScope,
+        kind: tilo_actions::OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        doc: &mut AutoCommit,
+        path: &ObjId,
+    ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
+        scope.check()?;
+        if !matches!(&self.content, TileContent::App(_)) {
+            return Ok(None);
+        }
+        if !self.history_lifetime.active.get() {
+            return Err("The current document owner is closed".into());
+        }
+        let live = self.resolve_record()?;
+        let owner = self.history_owner();
+        let TileContent::App(app) = &mut self.content else {
+            return Ok(None);
+        };
+        let started = if let (Some(live), Some(binding)) = (live, &self.binding) {
+            binding
+                .store
+                .with_checked(&live, |document| {
+                    scope.with_document_mutation(document, |document| {
+                        app.start_resource_operation_scoped(
+                            scope, kind, type_id, payload, document, &ROOT,
+                        )
+                    })
+                })
+                .map_err(|error| error.to_string())??
+        } else {
+            scope.with_document_mutation(doc, |doc| {
+                app.start_resource_operation_scoped(scope, kind, type_id, payload, doc, path)
+            })?
+        };
+        if matches!(
+            started,
+            Some(crate::widget::ResourceOperationStart::Accepted)
+        ) && let Some(owner) = owner
+        {
+            self.retained_invocations
+                .insert(scope.invocation(), owner.clone());
+            self.owner_bound_work = true;
+            self.owner_bound_custody.get_or_insert(owner);
+        }
+        Ok(started)
+    }
+
     fn start_resource_operation_with_document(
         &mut self,
         invocation: tilo_actions::InvocationId,
@@ -1324,34 +1886,12 @@ impl Widget for TileHost {
         if !matches!(&self.content, TileContent::App(_)) {
             return Ok(None);
         }
-        if let Some(pending) = &self.pending_binding {
-            // A failed bind is not an unbound tile. Never lend the outer
-            // document (or create the missing record) to mutable admission.
-            pending
-                .store
-                .open_existing_record_checked(&pending.tab)
-                .map_err(|error| error.to_string())?;
-            return Err("Document binding has not completed".into());
+        if !self.history_lifetime.active.get() {
+            return Err("The current document owner is closed".into());
         }
         // Resolve a requested legacy binding before exposing any document.
         // Failure must not advance/announce its scope or fall back to the host.
-        if self.pending_binding.is_some() {
-            self.resolve_record().map_err(|error| error.to_string())?;
-        }
-        let live = match &mut self.binding {
-            Some(binding) => {
-                let want = match &self.content {
-                    TileContent::App(app) => app.record_intent(),
-                    _ => None,
-                };
-                Some(
-                    binding
-                        .follow_checked(want, &mut self.close_reports)
-                        .map_err(|error| error.to_string())?,
-                )
-            }
-            None => None,
-        };
+        let live = self.resolve_record()?;
         self.announce_scope();
         let owner = self.history_owner();
         let TileContent::App(app) = &mut self.content else {
@@ -1371,11 +1911,48 @@ impl Widget for TileHost {
                 Some(crate::widget::ResourceOperationStart::Accepted)
             ) && let Some(owner) = owner
             {
-                self.retained_invocations.insert(invocation, owner);
+                self.retained_invocations.insert(invocation, owner.clone());
+                self.owner_bound_work = true;
+                self.owner_bound_custody.get_or_insert(owner);
             }
             return Ok(started);
         }
         app.start_resource_operation_with_document(invocation, kind, type_id, payload, doc, path)
+    }
+
+    fn unsaved_documents(&self, doc: &AutoCommit) -> Vec<crate::close_admission::UnsavedDocument> {
+        match &self.content {
+            TileContent::App(root) => {
+                if let Some(binding) = &self.binding {
+                    binding
+                        .store
+                        .read(&binding.live, |document| root.unsaved_documents(document))
+                        .unwrap_or_default()
+                } else {
+                    root.unsaved_documents(doc)
+                }
+            }
+            _ => Vec::new(),
+        }
+    }
+    fn checkpoint_components(&mut self) -> Vec<String> {
+        let mut errors = crate::close_admission::retry_reports(&mut self.close_reports);
+        errors.extend(self.record_error.iter().cloned());
+        if let Some(binding) = &self.binding {
+            if let Err(error) = binding.store.try_flush() {
+                errors.push(error);
+            }
+        }
+        if let TileContent::App(root) = &mut self.content {
+            errors.extend(root.checkpoint_components());
+        }
+        errors
+    }
+    fn finish_admitted_close(&mut self) -> Vec<crate::application::ComponentCloseReport> {
+        if let TileContent::App(root) = &mut self.content {
+            self.close_reports.extend(root.finish_admitted_close());
+        }
+        self.take_component_close_reports()
     }
 
     fn poll_resource_operation(
@@ -1385,6 +1962,9 @@ impl Widget for TileHost {
         doc: &AutoCommit,
         path: &ObjId,
     ) -> Option<tilo_actions::InvocationUpdate> {
+        if let Some(update) = self.take_retained_update(invocation) {
+            return Some(update);
+        }
         // Admitted work belongs to the retained owner even while its local
         // presentation is hidden. A replacement must never inherit the id.
         if let Some(owner) = self.retained_invocations.get(&invocation).cloned() {
@@ -1394,16 +1974,7 @@ impl Widget for TileHost {
                     .is_none_or(|current| !current.same_owner(&owner))
             {
                 self.retained_invocations.remove(&invocation);
-                return Some(tilo_actions::InvocationUpdate::Failed {
-                    invocation,
-                    error: tilo_actions::ActionFailure {
-                        code: "owner_unavailable".into(),
-                        message: "The admitted operation's document owner is no longer available."
-                            .into(),
-                        details: None,
-                        retryable: false,
-                    },
-                });
+                return Some(Self::unavailable_update(invocation));
             }
             let (store, checkout) = owner.store_checkout();
             let TileContent::App(app) = &mut self.content else {
@@ -1434,41 +2005,38 @@ impl Widget for TileHost {
         }
     }
 
-    fn unsaved_documents(&self, doc: &AutoCommit) -> Vec<crate::close_admission::UnsavedDocument> {
-        match &self.content {
-            TileContent::App(root) => {
-                if let Some(binding) = &self.binding {
-                    binding
-                        .store
-                        .read(&binding.live, |document| root.unsaved_documents(document))
-                        .unwrap_or_default()
-                } else {
-                    root.unsaved_documents(doc)
+    fn install_control_custody(
+        &mut self,
+        domain: &crate::ControlDomain,
+        attachment: crate::control_custody::CustodyAttachment,
+    ) {
+        // An unbound tile inherits its surrounding owner exactly once. Moving
+        // within that incarnation is presentation reparenting; a different
+        // owner needs an explicit close/renew transition, never this hook.
+        if self.history_owner().is_none() && !self.has_separate_document_owner() {
+            if domain.closed() {
+                domain.unsafe_attachment();
+                return;
+            }
+            if let Some(previous) = self.custody_parent.as_ref() {
+                if domain.permits_renewal(previous, attachment) {
+                    self.history_lifetime.control_domain.close();
+                    self.history_lifetime.active.set(false);
+                    self.history_lifetime =
+                        crate::history_mode::owner::LegacyHistoryLifetime::new();
+                    self.custody_scope = None;
+                    self.custody_renewal = None;
+                } else if previous.closed() || !previous.same_owner_incarnation(domain) {
+                    domain.unsafe_attachment();
+                    return;
                 }
             }
-            _ => Vec::new(),
         }
-    }
-    fn checkpoint_components(&mut self) -> Vec<String> {
-        let mut errors = crate::close_admission::retry_reports(&mut self.close_reports);
-        errors.extend(self.record_error.iter().cloned());
-        if let Some(binding) = &self.binding
-            && let Err(error) = binding.store.try_flush()
-        {
-            errors.push(error);
-        }
-        if let TileContent::App(root) = &mut self.content {
-            errors.extend(root.checkpoint_components());
-        }
-        errors
-    }
-    fn finish_admitted_close(&mut self) -> Vec<crate::application::ComponentCloseReport> {
-        if let TileContent::App(root) = &mut self.content {
-            self.close_reports.extend(root.finish_admitted_close());
-        }
-        self.take_component_close_reports()
+        self.custody_parent = Some(domain.clone());
+        self.install_live_custody(attachment);
     }
     fn close_components(&mut self) -> Vec<crate::application::ComponentCloseReport> {
+        self.history_lifetime.control_domain.close();
         if self.history_lifetime.active.replace(false) {
             self.settle_outgoing_record();
         }
@@ -1486,20 +2054,14 @@ impl Widget for TileHost {
     }
 
     fn history_owner(&self) -> Option<crate::history_mode::HistoryOwner> {
-        if self.pending_binding.is_some()
-            || self.record_error.is_some()
-            || !self.history_lifetime.active.get()
-        {
+        if self.record_error.is_some() || !self.history_lifetime.active.get() {
             return None;
         }
         if let Some(binding) = self.callback_binding() {
             return Some(crate::history_mode::HistoryOwner::component(binding));
         }
         let binding = self.binding.as_ref()?;
-        let checkout = binding
-            .store
-            .read_checked(&binding.live, crate::record::identity)
-            .ok()??;
+        let checkout = binding.store.verified_checkout(&binding.live).ok()?;
         Some(crate::history_mode::HistoryOwner::legacy(
             binding.store.clone(),
             checkout,
@@ -1556,10 +2118,7 @@ impl Widget for TileHost {
     }
 
     fn sync(&mut self, s: &mut AutoCommit, p: &ObjId) {
-        if self
-            .history
-            .as_ref()
-            .is_some_and(|history| !history.live_interactive())
+        if !self.history_lifetime.active.get()
             || crate::history_mode::frame::FrameworkInputFrame::active()
         {
             return;
@@ -1568,6 +2127,7 @@ impl Widget for TileHost {
             return;
         };
         self.install_declared_history();
+        self.install_live_custody(crate::control_custody::CustodyAttachment::Dynamic);
         if self.record_error.is_some() {
             return;
         }
@@ -1592,16 +2152,14 @@ impl Widget for TileHost {
         // durable while History hides the live widget.
         if let Some(binding) = &self.binding {
             binding.store.schedule_committed_history(&binding.live);
-            if let (Ok(status), TileContent::App(app)) =
-                (binding.store.save_status(&binding.live), &mut self.content)
+            if self.history_lifetime.active.get()
+                && let (Ok(status), TileContent::App(app)) =
+                    (binding.store.save_status(&binding.live), &mut self.content)
             {
                 app.record_save_status(status);
             }
         }
-        if self
-            .history
-            .as_ref()
-            .is_some_and(|history| !history.live_interactive())
+        if !self.history_lifetime.active.get()
             || crate::history_mode::frame::FrameworkInputFrame::active()
         {
             return false;
@@ -1610,35 +2168,30 @@ impl Widget for TileHost {
             return false;
         };
         self.install_declared_history();
+        self.install_live_custody(crate::control_custody::CustodyAttachment::Dynamic);
         if self.record_error.is_some() {
             return false;
         }
-        let TileContent::App(w) = &mut self.content else {
-            return false;
-        };
-        let (Some(id), Some(b)) = (live, &self.binding) else {
+        let (store, id) = if let (Some(id), Some(binding)) = (live, self.binding.as_ref()) {
+            (binding.store.clone(), id)
+        } else {
+            let TileContent::App(w) = &mut self.content else {
+                return false;
+            };
             return w.update(s, p);
         };
-        let changed = b
-            .store
-            .with(&id, |doc| w.update(doc, &ROOT))
+        let changed = store
+            .with(&id, |doc| {
+                let TileContent::App(w) = &mut self.content else {
+                    return false;
+                };
+                w.update(doc, &ROOT)
+            })
             .unwrap_or(false);
         // Close the burst against *this* record's history: the host's own
         // commit pass no longer touches the document the tab is editing,
         // and would otherwise leave it open forever.
-        if w.needs_commit() {
-            let context = w.take_commit_context();
-            b.store.with_history(&id, |doc, history| {
-                history.commit_action_authored_with_message(
-                    doc,
-                    None,
-                    w.get_state(),
-                    Some(crate::collaboration::local_user_id()),
-                    context.and_then(|context| context.change_message()),
-                );
-            });
-            w.on_commit();
-        }
+        let _ = self.commit_pending_to_current_record();
         changed
     }
     fn build_layout(
@@ -1679,6 +2232,12 @@ impl Widget for TileHost {
             }),
         };
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
+        // This build composed the current content and admission, so a change
+        // flagged before it (a rebind, a replacement) is satisfied. A host
+        // that inspects the flag only after building must not discard the
+        // maps it just made; a sync that replaces delegates after this build
+        // sets the flag afresh.
+        self.structure_dirty = false;
         node
     }
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
@@ -1780,11 +2339,17 @@ impl Widget for TileHost {
         if *handled {
             return;
         }
-        let Ok(live) = self.resolve_record() else {
-            *handled = true;
-            return;
+        let live = if let Ok(live) = self.resolve_record() {
+            live
+        } else {
+            let Some(live) = self.checked_old_owner_for_recovery() else {
+                *handled = true;
+                return;
+            };
+            Some(live)
         };
         self.install_declared_history();
+        self.install_live_custody(crate::control_custody::CustodyAttachment::Dynamic);
         if self.record_error.is_some() {
             *handled = true;
             return;
@@ -1793,6 +2358,7 @@ impl Widget for TileHost {
             return;
         };
         if let Some(history) = &mut self.history {
+            history.observe_pointer(event, scale_factor);
             if history.controls_event(event, scale_factor) {
                 history.route_event(
                     app.as_mut(),
@@ -1889,6 +2455,15 @@ impl Widget for TileHost {
                 crate::a11y::AccessNode::new(crate::a11y::Role::Group)
                     .with_name("Document unavailable")
                     .with_description(detail.clone())
+                    .with_bounds(self.rect),
+            );
+        }
+        if let Some(detail) = &self.record_transition_error {
+            return Some(
+                crate::a11y::AccessNode::new(crate::a11y::Role::Group)
+                    .with_name("Document switch blocked")
+                    .with_description(detail.clone())
+                    .with_live(crate::a11y::Politeness::Assertive)
                     .with_bounds(self.rect),
             );
         }
@@ -2092,10 +2667,22 @@ impl TileHost {
         } else {
             (EDGE_STROKE_WIDTH, theme.window_edge())
         };
-        let half = edge_width / 2.0;
-        let edge = RoundedRect::from_rect(rect.inflate(half, half), radius + half);
-        scene.stroke(
-            &vello::kurbo::Stroke::new(edge_width),
+        // Fill the border's two contours directly. GPU stroking can leave
+        // solid tiles outside a rounded corner when its top crosses y=0.
+        let outer_offset = if self.flush_edges { 0.0 } else { edge_width };
+        let inner_offset = outer_offset - edge_width;
+        let outer = RoundedRect::from_rect(
+            rect.inflate(outer_offset, outer_offset),
+            radius + outer_offset,
+        );
+        let inner = RoundedRect::from_rect(
+            rect.inflate(inner_offset, inner_offset),
+            (radius + inner_offset).max(0.0),
+        );
+        let mut edge = outer.to_path(0.01);
+        edge.extend(inner.path_elements(0.01));
+        scene.fill(
+            vello::peniko::Fill::EvenOdd,
             transform,
             edge_color,
             None,
@@ -2105,6 +2692,41 @@ impl TileHost {
 
     fn draw_edge(&self, scene: &mut Scene, transform: Affine, theme: &Theme, radius: f64) {
         self.draw_edge_at(scene, transform, theme, radius, self.rect);
+    }
+
+    fn draw_transition_status(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+    ) {
+        if self.record_error.is_some() {
+            return;
+        }
+        let Some(detail) = &self.record_transition_error else {
+            return;
+        };
+        let margin = 12.0;
+        let banner = Rect::new(
+            self.rect.x0 + margin,
+            (self.rect.y1 - 76.0).max(self.rect.y0 + margin),
+            self.rect.x1 - margin,
+            self.rect.y1 - margin,
+        );
+        crate::widget::Banner::paint(
+            scene,
+            transform,
+            tr,
+            theme,
+            banner,
+            crate::widget::BannerKind::Error,
+            crate::icons::Icon::Ban,
+            "Document switch blocked",
+            Some(detail),
+            false,
+            Point::ZERO,
+        );
     }
 
     /// Ambient shadow → focus bloom → white card + border → hosted app or
@@ -2119,7 +2741,9 @@ impl TileHost {
         presence: &PresenceCtx,
     ) {
         let radius = f64::from(theme.tokens.radii.xl);
-        self.draw_shadows(scene, transform, theme);
+        if !self.flush_edges {
+            self.draw_shadows(scene, transform, theme);
+        }
         let shape = RoundedRect::from_rect(self.rect, radius);
         scene.fill(
             vello::peniko::Fill::NonZero,
@@ -2193,6 +2817,7 @@ impl TileHost {
                     }
                 }
             }
+            self.draw_transition_status(scene, transform, tr, theme);
             // Reduced motion takes the cut — the window just being there
             // is the end state.
             if theme.reduce_motion {
@@ -3382,6 +4007,109 @@ mod tests {
         assert_eq!(calls.get(), 0);
     }
 
+    /// Native Shell dispatches directly into TileHost: unlike App and the
+    /// headless Driver, it does not pre-observe embedded History pointers.
+    #[test]
+    fn live_body_pointer_edges_follow_motion_out_of_history_toolbar() {
+        use taffy::prelude::TaffyMaxContent;
+        use winit::event::{ElementState, MouseButton, MouseScrollDelta, TouchPhase};
+
+        for scale in [1.0, 2.0] {
+            let directory = tempfile::tempdir().unwrap();
+            let store = canonical_store(&directory.path().join("records"));
+            let checkout = tab_checkout(3914);
+            store
+                .reserve_record(&checkout)
+                .unwrap()
+                .initialize(|_| Ok(()))
+                .unwrap();
+            let calls = std::rc::Rc::new(std::cell::Cell::new(0));
+            let mut host = TileHost::new(TileContent::App(Box::new(EventProbe(calls.clone()))));
+            host.bind_record(store, checkout);
+            host.register_document_history(&DECLARED_HISTORY).unwrap();
+            let mut tree = TaffyTree::new();
+            let mut nodes = std::collections::HashMap::new();
+            let node = host.build_layout(&mut tree, &Theme::default(), &mut nodes);
+            let mut style = tree.style(node).unwrap().clone();
+            style.size = Size {
+                width: Dimension::length(800.0),
+                height: Dimension::length(480.0),
+            };
+            tree.set_style(node, style).unwrap();
+            tree.compute_layout(node, Size::MAX_CONTENT).unwrap();
+            host.apply_layout(&tree, node, Point::ORIGIN);
+            let history = host.history.as_ref().unwrap();
+            assert!(history.live_interactive());
+            let toolbar = history.children().first().unwrap().get_rect();
+            assert!(toolbar.width() > 0.0 && toolbar.height() > 0.0);
+            let body = Point::new(toolbar.center().x, toolbar.y1 + 40.0);
+            assert!(host.get_rect().contains(body) && !toolbar.contains(body));
+            let device = unsafe { std::mem::zeroed() };
+            let motion = |point: Point| WindowEvent::CursorMoved {
+                device_id: device,
+                position: (point.x * scale, point.y * scale).into(),
+            };
+            let mut doc = AutoCommit::new();
+            let mut send = |event: &WindowEvent| {
+                calls.set(0);
+                let mut handled = false;
+                host.handle_event(
+                    event,
+                    scale,
+                    &winit::event::Modifiers::default(),
+                    &mut doc,
+                    &ROOT,
+                    &mut handled,
+                    &mut None,
+                    node,
+                    &tree,
+                );
+                (handled, calls.get())
+            };
+            let wheel = WindowEvent::MouseWheel {
+                device_id: device,
+                delta: MouseScrollDelta::LineDelta(0.0, -1.0),
+                phase: TouchPhase::Moved,
+            };
+            assert_eq!(
+                send(&motion(toolbar.center())),
+                (true, 0),
+                "toolbar owns its motion"
+            );
+            assert_eq!(
+                send(&wheel),
+                (true, 0),
+                "toolbar input must not reach the app"
+            );
+            assert_eq!(
+                send(&motion(body)),
+                (false, 1),
+                "live body receives pointer motion"
+            );
+            let button = |state| WindowEvent::MouseInput {
+                device_id: device,
+                state,
+                button: MouseButton::Left,
+            };
+            for (edge, event) in [
+                ("press", button(ElementState::Pressed)),
+                ("release", button(ElementState::Released)),
+                ("wheel", wheel),
+            ] {
+                assert_eq!(
+                    send(&event),
+                    (false, 1),
+                    "live body must receive {edge} after leaving toolbar at scale {scale}"
+                );
+            }
+            assert_eq!(
+                send(&motion(toolbar.center())),
+                (true, 0),
+                "returning to toolbar restores its input ownership"
+            );
+        }
+    }
+
     /// A tab with no file is its own record; a tab whose app has a file
     /// open is that file's.
     #[test]
@@ -3850,6 +4578,44 @@ mod tests {
                      the card, on ground the shell knows — over app content it \
                      is a constant on an unknown surface",
                 );
+            }
+        }
+    }
+
+    #[test]
+    fn flush_focus_edge_leaves_rounded_corner_cutouts_clear() {
+        use crate::offscreen::OffscreenRenderer;
+        let theme = Theme::default();
+        let ground = vello::peniko::Color::from_rgb8(0, 255, 0);
+        let mut renderer = OffscreenRenderer::new(256, 256);
+        for right in [62.0, 62.5, 100.0, 120.0] {
+            for top in [0.0, 0.5, 16.0] {
+                let rect = Rect::new(-400.0, top, right, 400.0);
+                let mut host = TileHost::new(TileContent::Stub {
+                    kind: AppKind::Editor,
+                    label: String::new(),
+                });
+                host.rect = rect;
+                host.set_flush_edges(true);
+                host.set_focused(true);
+                let radius = f64::from(theme.tokens.radii.xl);
+                let mut scene = Scene::new();
+                host.draw_edge(&mut scene, Affine::scale(2.0), &theme, radius);
+                let rgba = renderer.render(&scene, ground);
+                for y in 0..px((top + radius) * 2.0) {
+                    for x in px((right - radius) * 2.0)..px(right * 2.0) {
+                        let dx = (f64::from(x) + 0.5) / 2.0 - (right - radius);
+                        let dy = (f64::from(y) + 0.5) / 2.0 - (top + radius);
+                        if dx * dx + dy * dy > (radius + 1.0).powi(2) {
+                            let (r, g, b, _) = OffscreenRenderer::sample(&rgba, 256, x, y);
+                            assert_eq!(
+                                (r, g, b),
+                                (0, 255, 0),
+                                "focus paint outside corner: right={right}, top={top}, pixel=({x},{y})"
+                            );
+                        }
+                    }
+                }
             }
         }
     }

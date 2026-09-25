@@ -72,6 +72,10 @@ mod secure_store;
 #[path = "service_connection_tests.rs"]
 mod service_connection_tests;
 
+#[cfg(test)]
+#[path = "service_connection_tests.rs"]
+mod service_connection_tests;
+
 pub use backup::{
     PortableBackupInfo, export_portable_backup, import_portable_backup,
     import_portable_backup_matching, import_portable_backup_with_provider, verify_portable_backup,
@@ -126,6 +130,7 @@ impl std::fmt::Display for SecretServiceUnavailable {
 #[cfg(not(target_os = "linux"))]
 impl std::error::Error for SecretServiceUnavailable {}
 
+/// Construct the portable marker for an unavailable Secret Service identity item.
 pub fn secret_service_unavailable_error() -> io::Error {
     #[cfg(target_os = "linux")]
     {
@@ -204,18 +209,29 @@ pub struct IdentityMetadata {
 const ACTIVE_FILE: &str = "active";
 const LOCK_FILE: &str = ".identity.lock";
 const MAX_RECORD_BYTES: u64 = 1024 * 1024;
-/// Durable owner-only replacement through atomic-file, with the staging file
-/// opened exclusively and without following links, so a planted symlink can
-/// never redirect identity bytes.
+
+/// Publish privately through the framework's retained parent and preserve its
+/// failure phase. Lifecycle callers admit the identity namespace and hold its
+/// lock; provisioning that parent durably is a separate responsibility.
 fn write_private_atomic(path: &std::path::Path, bytes: &[u8]) -> io::Result<()> {
-    atomic_file::write_with_temp_opener(path, bytes, |temp| {
-        OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(0o600)
-            .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
-            .open(temp)
-    })
+    atomic_file::replace(path, bytes, atomic_file::Privacy::OwnerOnly)
+        .map_err(atomic_file::PublicationError::into_io_error)
+}
+
+#[cfg(test)]
+mod identity_rename_tests {
+    use super::*;
+    #[test]
+    fn existing_identity_is_reused_without_replacing_current_identity() {
+        let root = tempfile::tempdir().unwrap();
+        let legacy = root.path().join("qos/identity");
+        let current = root.path().join("tilo/identity");
+        assert_eq!(compatible_identity_dir(root.path()), current);
+        fs::create_dir_all(&legacy).unwrap();
+        assert_eq!(compatible_identity_dir(root.path()), legacy);
+        fs::create_dir_all(&current).unwrap();
+        assert_eq!(compatible_identity_dir(root.path()), current);
+    }
 }
 
 /// Resolve the per-login-user identity directory using XDG rules.
@@ -497,7 +513,16 @@ fn import_identity_unlocked(
         None => secure_record_unlocked(dir, &path),
     };
     if let Err(error) = secured {
-        let _ = fs::remove_file(&path);
+        // Both securing paths preserve every metadata-writer failure phase,
+        // including across preferred-provider fallback. Their unclassified
+        // errors arise only before metadata publication (read, validation,
+        // provider access or serialization), so the staged v1 may be removed.
+        if matches!(
+            atomic_file::publication_state(&error),
+            None | Some(atomic_file::PublicationState::NotPublished)
+        ) {
+            let _ = fs::remove_file(&path);
+        }
         return Err(error);
     }
     Ok(path)
@@ -553,10 +578,22 @@ fn secure_record_unlocked(
         return Ok(provider.protection());
     }
 
+    #[cfg(not(test))]
     let preferred = secure_store::preferred_provider(dir);
+    #[cfg(test)]
+    let preferred = tests::preferred_provider(dir);
     match secure_record_with_provider_unlocked(dir, path, preferred.as_ref()) {
         Ok(protection) => Ok(protection),
-        Err(preferred_error) if preferred.protection() == KeyProtection::SecretService => {
+        Err(preferred_error)
+            if preferred.protection() == KeyProtection::SecretService
+                && matches!(
+                    atomic_file::publication_state(&preferred_error),
+                    None | Some(atomic_file::PublicationState::NotPublished)
+                ) =>
+        {
+            // Errors without a publication phase occur before this attempt's
+            // metadata write. Once it may have published, preserve its error:
+            // a fallback could hide that phase or replace a referenced key.
             tracing_warning_for_secret_service(&preferred_error);
             let fallback = secure_store::fallback_provider(dir);
             secure_record_with_provider_unlocked(dir, path, &fallback)
@@ -631,7 +668,10 @@ fn secure_record_with_provider_unlocked(
     let metadata = serde_json::to_vec_pretty(&record)
         .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
     if let Err(error) = write_private_atomic(path, &metadata) {
-        if let Some(reference) = record.secret_ref.as_ref() {
+        if atomic_file::publication_state(&error)
+            == Some(atomic_file::PublicationState::NotPublished)
+            && let Some(reference) = record.secret_ref.as_ref()
+        {
             let _ = provider.remove(&reference.locator);
         }
         return Err(error);
@@ -1659,10 +1699,68 @@ mod tests {
     use super::*;
     use getrandom::{SysRng, rand_core::UnwrapErr};
 
+    // Only the external keyring transport is emulated. Both its provider
+    // storage and all identity metadata publication use real files.
+    struct SecretServiceFixture {
+        storage: BrokerFileProvider,
+        reject_store: bool,
+    }
+
+    impl SecretServiceFixture {
+        fn new(dir: &std::path::Path, reject_store: bool) -> Self {
+            Self {
+                storage: BrokerFileProvider::new(&dir.join("test-keyring")),
+                reject_store,
+            }
+        }
+    }
+
+    impl SecretProvider for SecretServiceFixture {
+        fn protection(&self) -> KeyProtection {
+            KeyProtection::SecretService
+        }
+        fn backend_id(&self) -> &'static str {
+            "secret-service-v1"
+        }
+        fn store(&self, locator: &str, secret: &[u8]) -> io::Result<()> {
+            if self.reject_store {
+                return Err(io::Error::other("test keyring refused storage"));
+            }
+            self.storage.store(locator, secret)
+        }
+        fn load(&self, locator: &str) -> io::Result<Zeroizing<Vec<u8>>> {
+            self.storage.load(locator)
+        }
+        fn remove(&self, locator: &str) -> io::Result<()> {
+            self.storage.remove(locator)
+        }
+    }
+
+    thread_local! {
+        static PREFERRED_SECRET_SERVICE: std::cell::Cell<Option<bool>> = const { std::cell::Cell::new(None) };
+    }
+
+    pub(super) fn preferred_provider(dir: &std::path::Path) -> Box<dyn SecretProvider + '_> {
+        match PREFERRED_SECRET_SERVICE.get() {
+            Some(reject_store) => Box::new(SecretServiceFixture::new(dir, reject_store)),
+            None => secure_store::preferred_provider(dir),
+        }
+    }
+
+    fn with_preferred_secret_service<T>(reject_store: bool, operation: impl FnOnce() -> T) -> T {
+        struct Restore(Option<bool>);
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                PREFERRED_SECRET_SERVICE.set(self.0);
+            }
+        }
+        let _restore = Restore(PREFERRED_SECRET_SERVICE.replace(Some(reject_store)));
+        operation()
+    }
+
     #[test]
     fn secret_service_unavailability_has_a_typed_classification() {
-        let unavailable =
-            NotAvailable::ConnectionFailed(io::Error::from_raw_os_error(libc::ENOKEY));
+        let unavailable = NotAvailable::ConnectionFailed(secret_service_unavailable_error());
         assert!(is_secret_service_unavailable(&unavailable));
         let other = NotAvailable::ConnectionFailed(io::Error::from_raw_os_error(libc::EACCES));
         assert!(!is_secret_service_unavailable(&other));
@@ -2144,6 +2242,262 @@ mod tests {
         .unwrap()
     }
 
+    fn assert_published_identity_keeps_secret(
+        path: &std::path::Path,
+        provider: &dyn SecretProvider,
+        seed: u8,
+    ) {
+        let record = read_record(path).expect("published metadata must survive");
+        assert_eq!(record.schema_version, 2);
+        assert!(record.threshold_identity.secret_bytes.is_empty());
+        let reference = record.secret_ref.as_ref().expect("published reference");
+        assert_eq!(reference.backend, provider.backend_id());
+        assert_eq!(
+            reference.locator,
+            hex::encode(
+                SigningKey::from_bytes(&[seed; 32])
+                    .verifying_key()
+                    .to_bytes()
+            )
+        );
+        let secret = provider
+            .load(&reference.locator)
+            .expect("published metadata must still resolve its provider secret");
+        assert!(secret.as_slice() == [seed; 32]);
+        let identity = identity_from_record(record, Some(secret.as_slice())).unwrap();
+        let message = b"publication failure must preserve the signing identity";
+        let signature = identity.sign(message).unwrap();
+        SigningKey::from_bytes(&[seed; 32])
+            .verifying_key()
+            .verify_strict(
+                message,
+                &ed25519_dalek::Signature::from_slice(&signature).unwrap(),
+            )
+            .unwrap();
+    }
+
+    #[test]
+    fn secure_record_publication_cleanup_preserves_published_secret() {
+        use atomic_file::PublicationState;
+        use atomic_file::test_support::{Checkpoint, with_failure};
+
+        for (checkpoint, expected) in [
+            (
+                Checkpoint::AfterPublish,
+                PublicationState::PublicationUnknown,
+            ),
+            (
+                Checkpoint::BeforeCommit,
+                PublicationState::PublishedDurabilityUnknown,
+            ),
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("personal.json");
+            let provider = BrokerFileProvider::new(dir.path());
+            write_private_atomic(&path, &record_bytes("Ada", 71)).unwrap();
+            let error = with_failure(checkpoint, || {
+                secure_identity_with_provider(dir.path(), "personal", &provider)
+            })
+            .expect_err("the real metadata writer must report the injected failure");
+            assert_eq!(atomic_file::publication_state(&error), Some(expected));
+            assert_published_identity_keeps_secret(&path, &provider, 71);
+        }
+    }
+
+    #[test]
+    fn secure_record_publication_cleanup_before_publish_removes_new_secret() {
+        use atomic_file::PublicationState;
+        use atomic_file::test_support::{Checkpoint, with_failure};
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("personal.json");
+        let provider = BrokerFileProvider::new(dir.path());
+        let original = record_bytes("Ada", 72);
+        write_private_atomic(&path, &original).unwrap();
+        let error = with_failure(Checkpoint::BeforePublish, || {
+            secure_identity_with_provider(dir.path(), "personal", &provider)
+        })
+        .expect_err("the real metadata writer must report the injected failure");
+        assert_eq!(
+            atomic_file::publication_state(&error),
+            Some(PublicationState::NotPublished)
+        );
+        assert!(fs::read(&path).unwrap() == original);
+        let locator = hex::encode(SigningKey::from_bytes(&[72; 32]).verifying_key().to_bytes());
+        assert_eq!(
+            provider.load(&locator).unwrap_err().kind(),
+            io::ErrorKind::NotFound
+        );
+    }
+
+    #[test]
+    fn import_publication_cleanup_preserves_second_write_and_secret() {
+        use atomic_file::PublicationState;
+        use atomic_file::test_support::{Checkpoint, with_failure_on_nth, with_observer};
+        for (checkpoint, expected) in [
+            (
+                Checkpoint::AfterPublish,
+                PublicationState::PublicationUnknown,
+            ),
+            (
+                Checkpoint::BeforeCommit,
+                PublicationState::PublishedDurabilityUnknown,
+            ),
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let provider = BrokerFileProvider::new(dir.path());
+            let completed = std::rc::Rc::new(std::cell::Cell::new(0));
+            let observed = completed.clone();
+            let error = with_observer(
+                move |event| {
+                    if event.checkpoint == Checkpoint::Committed {
+                        observed.set(observed.get() + 1);
+                    }
+                },
+                || {
+                    with_failure_on_nth(checkpoint, 2, || {
+                        import_identity_with_provider(
+                            dir.path(),
+                            "personal",
+                            &record_bytes("Ada", 73),
+                            &provider,
+                        )
+                    })
+                },
+            )
+            .expect_err("v2 publication must report the injected failure");
+            assert_eq!(completed.get(), 1, "v1 must commit before v2 fails");
+            assert_eq!(atomic_file::publication_state(&error), Some(expected));
+            assert_published_identity_keeps_secret(
+                &dir.path().join("personal.json"),
+                &provider,
+                73,
+            );
+        }
+    }
+
+    #[test]
+    fn import_publication_cleanup_before_second_publish_removes_record_and_secret() {
+        use atomic_file::PublicationState;
+        use atomic_file::test_support::{Checkpoint, with_failure_on_nth};
+        let dir = tempfile::tempdir().unwrap();
+        let provider = BrokerFileProvider::new(dir.path());
+        let error = with_failure_on_nth(Checkpoint::BeforePublish, 2, || {
+            import_identity_with_provider(
+                dir.path(),
+                "personal",
+                &record_bytes("Ada", 74),
+                &provider,
+            )
+        })
+        .unwrap_err();
+        assert_eq!(
+            atomic_file::publication_state(&error),
+            Some(PublicationState::NotPublished)
+        );
+        assert!(!dir.path().join("personal.json").exists());
+        let locator = hex::encode(SigningKey::from_bytes(&[74; 32]).verifying_key().to_bytes());
+        assert_eq!(
+            provider.load(&locator).unwrap_err().kind(),
+            io::ErrorKind::NotFound
+        );
+    }
+
+    #[test]
+    fn import_publication_cleanup_unknown_before_rename_preserves_record_and_secret() {
+        use atomic_file::PublicationState;
+        use atomic_file::test_support::{Checkpoint, with_failure_on_nth};
+        let dir = tempfile::tempdir().unwrap();
+        let provider = BrokerFileProvider::new(dir.path());
+        let original = record_bytes("Ada", 75);
+        let error = with_failure_on_nth(Checkpoint::PublishSubmitted, 2, || {
+            import_identity_with_provider(dir.path(), "personal", &original, &provider)
+        })
+        .unwrap_err();
+        assert_eq!(
+            atomic_file::publication_state(&error),
+            Some(PublicationState::PublicationUnknown)
+        );
+        assert!(fs::read(dir.path().join("personal.json")).unwrap() == original);
+        let locator = hex::encode(SigningKey::from_bytes(&[75; 32]).verifying_key().to_bytes());
+        assert!(provider.load(&locator).unwrap().as_slice() == [75; 32]);
+    }
+
+    #[test]
+    fn import_publication_cleanup_preferred_provider_does_not_fallback_after_publication() {
+        use atomic_file::PublicationState;
+        use atomic_file::test_support::{Checkpoint, with_failure_on_nth};
+        for (checkpoint, expected) in [
+            (
+                Checkpoint::AfterPublish,
+                PublicationState::PublicationUnknown,
+            ),
+            (
+                Checkpoint::BeforeCommit,
+                PublicationState::PublishedDurabilityUnknown,
+            ),
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let error = with_preferred_secret_service(false, || {
+                with_failure_on_nth(checkpoint, 2, || {
+                    import_identity(dir.path(), "personal", &record_bytes("Ada", 76))
+                })
+            })
+            .expect_err("fallback must not hide an uncertain metadata publication");
+            assert_eq!(atomic_file::publication_state(&error), Some(expected));
+            assert_published_identity_keeps_secret(
+                &dir.path().join("personal.json"),
+                &SecretServiceFixture::new(dir.path(), false),
+                76,
+            );
+            assert!(
+                !dir.path().join("secrets").exists(),
+                "fallback provider must not be used"
+            );
+        }
+    }
+
+    #[test]
+    fn import_publication_cleanup_preferred_provider_may_fallback_before_publication() {
+        use atomic_file::test_support::{Checkpoint, with_failure_on_nth};
+        let dir = tempfile::tempdir().unwrap();
+        let path = with_preferred_secret_service(false, || {
+            with_failure_on_nth(Checkpoint::BeforePublish, 2, || {
+                import_identity(dir.path(), "personal", &record_bytes("Ada", 77))
+            })
+        })
+        .unwrap();
+        assert_published_identity_keeps_secret(&path, &BrokerFileProvider::new(dir.path()), 77);
+        let locator = hex::encode(SigningKey::from_bytes(&[77; 32]).verifying_key().to_bytes());
+        assert_eq!(
+            SecretServiceFixture::new(dir.path(), false)
+                .load(&locator)
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::NotFound
+        );
+    }
+
+    #[test]
+    fn import_publication_cleanup_provider_store_failure_is_prepublication() {
+        let dir = tempfile::tempdir().unwrap();
+        let error = import_identity_with_provider(
+            dir.path(),
+            "personal",
+            &record_bytes("Ada", 78),
+            &SecretServiceFixture::new(dir.path(), true),
+        )
+        .unwrap_err();
+        assert!(atomic_file::publication_state(&error).is_none());
+        assert!(!dir.path().join("personal.json").exists());
+
+        let path = with_preferred_secret_service(true, || {
+            import_identity(dir.path(), "personal", &record_bytes("Ada", 78))
+        })
+        .unwrap();
+        assert_published_identity_keeps_secret(&path, &BrokerFileProvider::new(dir.path()), 78);
+    }
+
     #[test]
     fn multi_identity_store_has_explicit_active_record() {
         let dir = tempfile::tempdir().unwrap();
@@ -2304,5 +2658,23 @@ mod tests {
             }
             other => panic!("unexpected error: {other:?}"),
         }
+    }
+}
+
+#[cfg(test)]
+mod secret_service_error_bridge_tests {
+    #[test]
+    fn only_the_secret_provider_marker_is_classified_as_unavailable() {
+        let error = super::secret_service_unavailable_error();
+        assert!(super::is_secret_service_unavailable_io(&error));
+        assert!(super::is_secret_service_unavailable(
+            &super::NotAvailable::ConnectionFailed(error)
+        ));
+        assert!(!super::is_secret_service_unavailable_io(
+            &std::io::Error::other("unrelated failure")
+        ));
+        assert!(!super::is_secret_service_unavailable_io(
+            &std::io::Error::from(std::io::ErrorKind::NotFound)
+        ));
     }
 }

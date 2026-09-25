@@ -85,6 +85,8 @@ struct Manifest {
 #[derive(Deserialize)]
 struct Asset {
     scope: Scope,
+    #[serde(default)]
+    browser_startup: bool,
     file: String,
     bytes: u64,
     sha256: String,
@@ -218,6 +220,202 @@ impl FontCatalog {
             fallback::TiloFallback,
         ))
     }
+
+    /// Load canonical assets from host-provided bytes, with no filesystem or ambient fonts.
+    /// Every asset is size/hash/face validated before a font system is returned.
+    /// # Errors
+    /// Rejects missing, corrupt, or mismatched assets.
+    pub fn load_bytes(
+        &self,
+        mut bytes: impl FnMut(&str) -> Option<Vec<u8>>,
+    ) -> Result<FontSystem, FontCatalogError> {
+        self.build_from_bytes(
+            Path::new("canonical-fonts"),
+            |_| true,
+            |asset| {
+                let data = bytes(&asset.file)
+                    .ok_or_else(|| FontCatalogError::at(&asset.file, "missing font bytes"))?;
+                verify_asset_bytes(asset, &data)?;
+                Ok(fontdb::Source::Binary(Arc::new(data)))
+            },
+        )
+    }
+
+    /// Load the canonical core families required before a browser can mount.
+    /// Script, symbol, math, and emoji assets remain absent until shaping
+    /// reports demand and the host supplies their verified bytes.
+    /// # Errors
+    /// Rejects a missing or corrupt startup asset.
+    pub fn load_browser_startup_bytes(
+        &self,
+        mut bytes: impl FnMut(&str) -> Option<Vec<u8>>,
+    ) -> Result<FontSystem, FontCatalogError> {
+        self.build_from_bytes(
+            Path::new("canonical-browser-fonts"),
+            |asset| asset.scope == Scope::Product && asset.browser_startup,
+            |asset| {
+                let data = bytes(&asset.file)
+                    .ok_or_else(|| FontCatalogError::at(&asset.file, "missing font bytes"))?;
+                verify_asset_bytes(asset, &data)?;
+                Ok(fontdb::Source::Binary(Arc::new(data)))
+            },
+        )
+    }
+
+    /// Validate and add one canonical optional browser asset to a live font
+    /// system. Returns `false` when the exact asset faces are already present.
+    /// # Errors
+    /// Rejects unknown names, corrupt bytes, or mismatched face metadata.
+    pub fn install_browser_asset(
+        &self,
+        system: &mut FontSystem,
+        name: &str,
+        data: Vec<u8>,
+    ) -> Result<bool, FontCatalogError> {
+        let manifest = parse_manifest(Path::new("canonical-browser-fonts/manifest.toml"))?;
+        let asset = manifest
+            .font
+            .iter()
+            .find(|asset| asset.scope == Scope::Product && asset.file == name)
+            .ok_or_else(|| FontCatalogError::at(name, "unknown canonical font asset"))?;
+        verify_asset_bytes(asset, &data)?;
+        if asset.faces.iter().all(|expected| {
+            system.db().faces().any(|face| {
+                face.index == expected.index
+                    && face.post_script_name == expected.post_script_name
+                    && face
+                        .families
+                        .iter()
+                        .any(|family| family.0 == expected.family)
+            })
+        }) {
+            return Ok(false);
+        }
+        let source = fontdb::Source::Binary(Arc::new(data));
+        // Validate in an isolated database first. Even an internally
+        // inconsistent release manifest must not partially mutate the live
+        // renderer before returning its packaging error.
+        let mut probe = fontdb::Database::new();
+        let probe_ids = probe.load_font_source(source.clone());
+        validate_faces(&probe, asset, &probe_ids, Path::new(name))?;
+        let db = system.db_mut();
+        let ids = db.load_font_source(source);
+        validate_faces(db, asset, &ids, Path::new(name))?;
+        Ok(true)
+    }
+
+    /// Build a portable font system from host-supplied, already verified
+    /// asset sources. No ambient/system fonts are ever discovered here.
+    fn build_from_bytes(
+        &self,
+        root: &Path,
+        include: impl Fn(&Asset) -> bool,
+        mut source: impl FnMut(&Asset) -> Result<fontdb::Source, FontCatalogError>,
+    ) -> Result<FontSystem, FontCatalogError> {
+        let manifest_path = root.join("manifest.toml");
+        let manifest = parse_manifest(&manifest_path)?;
+        let mut db = fontdb::Database::new();
+        let mut canonical = HashSet::new();
+        let mut required = Vec::new();
+        for asset in &manifest.font {
+            if (asset.scope == Scope::Fixture && !self.fixtures) || !include(asset) {
+                continue;
+            }
+            let path = root.join(&asset.file);
+            let ids = db.load_font_source(source(asset)?);
+            validate_faces(&db, asset, &ids, &path)?;
+            canonical.extend(ids);
+            required.extend(
+                asset
+                    .faces
+                    .iter()
+                    .map(|face| (face.family.clone(), face_style(face))),
+            );
+        }
+        db.set_sans_serif_family(crate::text_render::UI_SANS_FAMILY);
+        db.set_serif_family(crate::text_render::UI_SERIF_FAMILY);
+        db.set_monospace_family(crate::text_render::UI_MONOSPACE_FAMILY);
+        for (family, style) in &required {
+            let query = fontdb::Query {
+                families: &[fontdb::Family::Name(family)],
+                style: *style,
+                ..fontdb::Query::default()
+            };
+            if !db.query(&query).is_some_and(|id| canonical.contains(&id)) {
+                return Err(FontCatalogError::at(
+                    root,
+                    format!("required canonical family is unavailable: {family}"),
+                ));
+            }
+        }
+        Ok(FontSystem::new_with_locale_and_db_and_fallback(
+            self.locale.clone(),
+            db,
+            fallback::TiloFallback,
+        ))
+    }
+}
+
+fn face_style(face: &Face) -> fontdb::Style {
+    if face.style == "italic" {
+        fontdb::Style::Italic
+    } else {
+        fontdb::Style::Normal
+    }
+}
+
+fn parse_manifest(path: &Path) -> Result<Manifest, FontCatalogError> {
+    let manifest: Manifest =
+        toml::from_str(MANIFEST).map_err(|error| FontCatalogError::at(path, error))?;
+    if manifest.schema != 1 {
+        return Err(FontCatalogError::at(path, "unsupported catalog schema"));
+    }
+    Ok(manifest)
+}
+
+fn verify_asset_bytes(asset: &Asset, data: &[u8]) -> Result<(), FontCatalogError> {
+    if data.len() as u64 != asset.bytes || hex::encode(Sha256::digest(data)) != asset.sha256 {
+        return Err(FontCatalogError::at(
+            &asset.file,
+            "font size or SHA-256 mismatch",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_faces(
+    db: &fontdb::Database,
+    asset: &Asset,
+    ids: &[fontdb::ID],
+    path: &Path,
+) -> Result<(), FontCatalogError> {
+    if ids.len() != asset.faces.len() {
+        return Err(FontCatalogError::at(
+            path,
+            format!("expected {} faces, loaded {}", asset.faces.len(), ids.len()),
+        ));
+    }
+    for expected in &asset.faces {
+        let found = ids
+            .iter()
+            .filter_map(|id| db.face(*id))
+            .find(|face| face.index == expected.index);
+        let valid = found.is_some_and(|face| {
+            face.families.iter().any(|name| name.0 == expected.family)
+                && face.post_script_name == expected.post_script_name
+                && face.style == face_style(expected)
+        });
+        if !valid {
+            return Err(FontCatalogError::at(
+                path,
+                format!(
+                    "face {} must be {} / {} ({})",
+                    expected.index, expected.family, expected.post_script_name, expected.style
+                ),
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// The catalog's own faces after their manifest, sizes, hashes and face

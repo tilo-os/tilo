@@ -121,6 +121,7 @@ impl View {
     ///
     /// Thin front door for [`FreezeThaw::capture_view`] so callers can write
     /// the natural `View::capture(&app)`.
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn capture(app: &crate::app::App) -> View {
         <crate::app::App as FreezeThaw>::capture_view(app)
     }
@@ -128,6 +129,7 @@ impl View {
     /// Write this View back onto a live [`App`](crate::app::App): move focus
     /// and restore the caret, hand the scroll/view-mode fields to the root
     /// widget. The counterpart to [`View::capture`].
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn restore(&self, app: &mut crate::app::App) {
         <crate::app::App as FreezeThaw>::restore_view(app, self);
     }

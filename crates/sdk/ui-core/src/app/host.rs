@@ -1,16 +1,6 @@
 // Frame layout and drawing shared by every host of App, and App's host-facing
 // behaviour. The native event-loop runner is `app/native_runner.rs`.
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[cfg(feature = "native")]
-struct ImeWindowState {
-    purpose: winit::window::ImePurpose,
-    x: u32,
-    y: u32,
-    width: u32,
-    height: u32,
-}
-
 /// Snapshot widget damage while its draw-updated geometry still describes the
 /// scene being submitted. Callers deliberately clear dirty flags afterwards.
 #[cfg(feature = "native")]
@@ -130,7 +120,12 @@ fn draw_frame_content(
             &app.presence_ctx,
         );
     }
-    if let Some(ap) = app.actions.action_palette.as_mut() {
+    if let Some(ap) = app
+        .actions
+        .action_palette
+        .as_mut()
+        .filter(|p| p.is_presented())
+    {
         let win_w = f64::from(width) / f64::from(scale_factor);
         let card_w = (win_w * 0.6).clamp(360.0, 640.0);
         let x0 = ((win_w - card_w) / 2.0).max(0.0);
@@ -194,6 +189,15 @@ fn draw_visible_tooltip(
         &text,
         viewport,
     );
+}
+
+/// Complete a native CPU frame only after drawing and damage collection.
+/// Deferred or aborted frames retain return custody for the next completed
+/// frame, so dirty state and accessibility publication stay tied to pixels.
+fn complete_native_frame_content(app: &mut App, publish_accessibility: impl FnOnce(&mut App)) {
+    app.root_widget.mark_drawn();
+    publish_accessibility(app);
+    app.finish_history_return_frame();
 }
 
 /// Split out of `AppHandler::handle_redraw_requested` (`clippy::too_many_lines`).
@@ -2367,6 +2371,7 @@ mod action_palette_tests {
         }
     }
 
+
     include!("../resource_projection_tests.rs");
 
     #[test]
@@ -2486,6 +2491,64 @@ mod action_palette_tests {
             event,
             is_synthetic: false,
         }
+    }
+
+    #[test]
+    fn native_directional_keys_reach_the_focused_control_before_host_navigation() {
+        use crate::widget::{Column, TextInput};
+        use winit::keyboard::ModifiersState;
+
+        let mut app = App::new_with_controlled_inputs(
+            State::new(),
+            Box::new(
+                Column::new()
+                    .push(Box::new(
+                        TextInput::local().with_id("editor").with_initial_value("x"),
+                    ))
+                    .push(Box::new(Button::new("done", "Done", None))),
+            ),
+        );
+        app.init_layout();
+        let root = app.layout.root_node.unwrap();
+        run_layout_pass(&mut app, root, 320, 180, 1.0, false, None).unwrap();
+        let editor = app.focusable_order[0];
+        let done = app.focusable_order[1];
+        app.set_focused_node(Some(editor));
+
+        let mut left = synth_enter();
+        if let WindowEvent::KeyboardInput { event, .. } = &mut left {
+            event.logical_key = Key::Named(NamedKey::ArrowLeft);
+        }
+        app.input.modifiers =
+            winit::event::Modifiers::from(ModifiersState::ALT | ModifiersState::SHIFT);
+        let mut handled = false;
+        let mut focus = None;
+        app.presentation_handle_event(&left, 1.0, &mut handled, &mut focus);
+        assert!(handled, "the focused editor consumes exact Alt+Shift+Left");
+        if let Some(focus) = focus {
+            app.set_focused_node(Some(focus));
+        }
+        app.handle_unconsumed_directional_key(&left, None, true, &mut handled);
+        assert_eq!(app.focused_node, Some(editor));
+        assert_eq!(
+            app.inspect_node(editor, |widget| widget.get_state())
+                .unwrap(),
+            Some("0:b:1".into()),
+            "Shift+Left extends the editor selection instead of moving host focus"
+        );
+
+        let mut down = synth_enter();
+        if let WindowEvent::KeyboardInput { event, .. } = &mut down {
+            event.logical_key = Key::Named(NamedKey::ArrowDown);
+        }
+        app.input.modifiers = winit::event::Modifiers::from(ModifiersState::ALT);
+        let mut handled = false;
+        let mut focus = None;
+        app.presentation_handle_event(&down, 1.0, &mut handled, &mut focus);
+        assert!(!handled, "single-line editor leaves Alt+Down to the host");
+        app.handle_unconsumed_directional_key(&down, None, true, &mut handled);
+        assert!(handled);
+        assert_eq!(app.focused_node, Some(done));
     }
 
     #[test]
@@ -3173,6 +3236,7 @@ mod view_presence_tests {
                 DirectedInvocation {
                     wire_id: request_id + 100,
                     cancellation_requested: false,
+                    authorization: None,
                 },
             );
             app.apply_collab_event_for_test(CollabEvent::RemoteAction {
@@ -3212,6 +3276,7 @@ mod view_presence_tests {
             DirectedInvocation {
                 wire_id: 9,
                 cancellation_requested: false,
+                authorization: None,
             },
         );
         assert!(app.poll_directed_invocations());
@@ -3558,6 +3623,14 @@ mod view_presence_tests {
 
 #[cfg(test)]
 mod semantic_tree_app_tests {
+    include!("published_invocation_tests.rs");
+
+    include!("hosted_model_tests.rs");
+
+    include!("hosted_pump_dirty_tests.rs");
+
+    include!("deferred_remote_tests.rs");
+
     use super::*;
     use crate::a11y_tree::{SemanticActionKind, SemanticId};
     use crate::state::State;
@@ -3715,6 +3788,8 @@ mod semantic_tree_app_tests {
         post_bump_reset: bool,
         async_bump: bool,
         pending_bump: Option<tilo_actions::InvocationId>,
+        scoped_jobs: Vec<crate::invocation_scope::ResourceInvocationScope>,
+        scoped_results: Vec<tilo_actions::InvocationUpdate>,
         resource_result: Option<tilo_actions::InvocationUpdate>,
     }
 
@@ -3804,6 +3879,8 @@ mod semantic_tree_app_tests {
                 post_bump_reset: false,
                 async_bump: false,
                 pending_bump: None,
+                scoped_jobs: vec![],
+                scoped_results: vec![],
                 resource_result: None,
             }
         }
@@ -3830,6 +3907,8 @@ mod semantic_tree_app_tests {
                 post_bump_reset: false,
                 async_bump: false,
                 pending_bump: None,
+                scoped_jobs: vec![],
+                scoped_results: vec![],
                 resource_result: None,
             }
         }
@@ -3872,6 +3951,27 @@ mod semantic_tree_app_tests {
     impl Widget for CounterCard {
         fn sync(&mut self, s: &mut automerge::AutoCommit, p: &automerge::ObjId) {
             self.button.sync(s, p);
+            for scope in std::mem::take(&mut self.scoped_jobs) {
+                let invocation = scope.invocation();
+                let result = scope.with_document_mutation(s, |doc| {
+                    CounterAction::Bump.apply(doc).map_err(|e| e.to_string())
+                });
+                self.scoped_results.push(match result {
+                    Ok(()) => tilo_actions::InvocationUpdate::Succeeded {
+                        invocation,
+                        output: tilo_actions::ActionOutput::default(),
+                    },
+                    Err(message) => tilo_actions::InvocationUpdate::Failed {
+                        invocation,
+                        error: tilo_actions::ActionFailure {
+                            code: "expired".into(),
+                            message,
+                            details: None,
+                            retryable: false,
+                        },
+                    },
+                });
+            }
             if let Some(invocation) = self.pending_bump.take() {
                 CounterAction::Bump.apply(s).unwrap();
                 self.resource_result = Some(tilo_actions::InvocationUpdate::Succeeded {
@@ -4009,6 +4109,24 @@ mod semantic_tree_app_tests {
         fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
             &[COUNTER_TYPE, ASYNC_COUNTER_TYPE]
         }
+
+        fn start_resource_operation_scoped(
+            &mut self,
+            scope: &crate::invocation_scope::ResourceInvocationScope,
+            kind: tilo_actions::OperationKind,
+            type_id: &str,
+            payload: &[u8],
+            doc: &mut automerge::AutoCommit,
+            path: &automerge::ObjId,
+        ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
+            scope.check()?;
+            if self.async_bump && type_id == ASYNC_COUNTER_TYPE {
+                self.scoped_jobs.push(scope.clone());
+                return Ok(Some(crate::widget::ResourceOperationStart::Accepted));
+            }
+            self.invoke_resource_operation_v2(kind, type_id, payload, doc, path)
+                .map(|output| output.map(crate::widget::ResourceOperationStart::Completed))
+        }
         fn start_resource_operation(
             &mut self,
             invocation: tilo_actions::InvocationId,
@@ -4032,6 +4150,13 @@ mod semantic_tree_app_tests {
             _doc: &automerge::AutoCommit,
             _path: &automerge::ObjId,
         ) -> Option<tilo_actions::InvocationUpdate> {
+            if let Some(index) = self
+                .scoped_results
+                .iter()
+                .position(|update| update.invocation() == invocation)
+            {
+                return Some(self.scoped_results.remove(index));
+            }
             if self
                 .resource_result
                 .as_ref()
@@ -4284,6 +4409,7 @@ mod semantic_tree_app_tests {
         let publication_attempts = app.actions.action_surface_publication_attempts;
 
         app.apply_collab_event_for_test(CollabEvent::Invocation {
+            invocation: None,
             id: 42,
             resource: "test.counter".into(),
             action: "bump".into(),
@@ -4307,6 +4433,87 @@ mod semantic_tree_app_tests {
     }
 
     #[test]
+    fn broker_invocation_uuid_collision_preserves_original_operation_route() {
+        for (legacy_collision, conflicting_action) in [
+            (false, "bump"),
+            (false, "async-bump"),
+            (true, "bump"),
+            (true, "async-bump"),
+        ] {
+            let mut app = App::new_with_controlled_inputs(
+                State::new(),
+                Box::new(CounterCard::with_async_post_bump_reset()),
+            );
+            app.action_registry_mut()
+                .register::<CounterAction>(COUNTER_TYPE);
+            app.init_layout();
+            let invocation =
+                tilo_actions::InvocationId(uuid::Uuid::from_u128(if legacy_collision {
+                    44
+                } else {
+                    0xa5a5_a5a5_a5a5_a5a5_0000_0000_0000_002b
+                }));
+            app.invoke_published_action(
+                43,
+                Some(invocation),
+                "test.counter".into(),
+                "async-bump".into(),
+                None,
+                "device:first",
+                None,
+            );
+            // A conflicting caller or the numeric legacy path must never replace
+            // the active operation's cancellation/completion route or run a second effect.
+            app.invoke_published_action(
+                44,
+                if legacy_collision {
+                    None
+                } else {
+                    Some(invocation)
+                },
+                "test.counter".into(),
+                conflicting_action.into(),
+                None,
+                "device:second",
+                None,
+            );
+            assert_eq!(
+                counter(&app),
+                0,
+                "conflicting invocation was rejected before its effect"
+            );
+            assert_eq!(
+                app.actions
+                    .directed_invocations
+                    .get(&invocation)
+                    .unwrap()
+                    .wire_id,
+                43
+            );
+            app.request_invocation_cancellation(44);
+            assert!(
+                !app.actions
+                    .directed_invocations
+                    .get(&invocation)
+                    .unwrap()
+                    .cancellation_requested
+            );
+            app.request_invocation_cancellation(43);
+            assert!(
+                app.actions
+                    .directed_invocations
+                    .get(&invocation)
+                    .unwrap()
+                    .cancellation_requested
+            );
+            app.refresh_focus_order();
+            assert_eq!(counter(&app), 1, "only the first operation ran");
+            assert!(app.poll_directed_invocations());
+            assert!(app.actions.directed_invocations.is_empty());
+        }
+    }
+
+    #[test]
     fn accepted_broker_invocation_republishes_when_its_terminal_update_arrives() {
         let mut app = App::new_with_controlled_inputs(
             State::new(),
@@ -4316,8 +4523,11 @@ mod semantic_tree_app_tests {
             .register::<CounterAction>(COUNTER_TYPE);
         app.init_layout();
 
-        let invocation = tilo_actions::InvocationId(uuid::Uuid::from_u128(43));
+        let invocation = tilo_actions::InvocationId(uuid::Uuid::from_u128(
+            0xa5a5_a5a5_a5a5_a5a5_0000_0000_0000_002b,
+        ));
         app.apply_collab_event_for_test(CollabEvent::Invocation {
+            invocation: Some(invocation),
             id: 43,
             resource: "test.counter".into(),
             action: "async-bump".into(),
@@ -5182,6 +5392,7 @@ mod semantic_tree_app_tests {
         assert_eq!(presses.get(), 0);
     }
 
+
     include!("action_directory_snapshot_tests.rs");
 
     fn directory_query(
@@ -5778,6 +5989,35 @@ mod bound_component_tests {
     thread_local! {
         static PAGED_SEARCH_COUNTS: RefCell<Option<Rc<[Cell<usize>; 2]>>> = const { RefCell::new(None) };
     }
+
+    thread_local! {
+        static COLLABORATION_OBSERVATIONS: RefCell<Option<(Rc<Cell<usize>>, Rc<RefCell<Vec<crate::WakeHandle>>>)>> = const { RefCell::new(None) };
+    }
+
+    fn collaboration_probe_factory(
+        mut context: HostContext,
+        _: LaunchTarget,
+        _: RestoreInput,
+    ) -> Result<AppComponent, crate::launch::LaunchError> {
+        context
+            .initialize_new_record(|_| Ok(()))
+            .map_err(crate::launch::LaunchError::Record)?;
+        let probe = crate::history_mode::isolation_tests::native_effect_probe_parts(
+            "bound-collaboration",
+            "fixture.bound-collaboration",
+        );
+        COLLABORATION_OBSERVATIONS.with_borrow_mut(|slot| {
+            *slot = Some((
+                Rc::clone(&probe.collab_events),
+                Rc::clone(&probe.collab_wake_handles),
+            ));
+        });
+        Ok(AppComponent::new(
+            context,
+            probe.root,
+            tilo_actions::ActionRegistry::new(),
+        ))
+    }
     struct PagedProbe {
         catalog: crate::search::SearchCatalog,
         resolutions: Rc<[Cell<usize>; 2]>,
@@ -6152,7 +6392,9 @@ mod bound_component_tests {
                 doc.get(ROOT, "marker").unwrap().unwrap().0.as_str(),
                 Some("child")
             );
-            assert!(!crate::local_state::LocalState::new(0).writer().try_set(1));
+            if !PUBLICATION_NORMAL_POLL.get() {
+                assert!(!crate::local_state::LocalState::new(0).writer().try_set(1));
+            }
             Self::capture("mutable-cancel");
             Some(tilo_actions::InvocationUpdate::Cancelled {
                 invocation,
@@ -6679,6 +6921,8 @@ mod bound_component_tests {
         }
         fn broker() -> Self {
             let mut fixture = Self::with_same_record(true);
+            fixture.app.collaboration.manager =
+                CollaborationManager::connected_for_lifecycle_test();
             fixture.app.actions.bound_broker_route_for_test =
                 Some(crate::collaboration::PrimaryRouteWitness {
                     route: fixture.bindings[0].broker_route().unwrap(),
@@ -6697,6 +6941,11 @@ mod bound_component_tests {
             }
         }
     }
+
+
+    include!("directory_permission_tests.rs");
+
+    include!("owner_publication_tests.rs");
 
     include!("action_directory_snapshot_bound_tests.rs");
     include!("bound_record_sync_tests.rs");
@@ -7657,7 +7906,7 @@ mod bound_component_tests {
         }
         fixture
             .app
-            .invoke_published_action(41, resource, action, None, &actor, None);
+            .invoke_published_action(41, None, resource, action, None, &actor, None);
         assert!(
             fixture
                 .records
@@ -7925,6 +8174,7 @@ mod bound_component_tests {
         assert_eq!(fixture.app.actions.next_broker_request_id, next_id);
         fixture.app.invoke_published_action(
             50,
+            None,
             alias.to_owned(),
             "follow-up".into(),
             None,
@@ -7999,6 +8249,61 @@ mod bound_component_tests {
                 .app
                 .resolve_publication_resource(&alias, "follow-up")
                 .is_some()
+        );
+    }
+
+    #[test]
+    fn collaboration_walk_enters_bound_owner_and_refuses_closing_lifetime() {
+        let host = crate::application_test_support::ProbeHost::new();
+        let definition = crate::application_test_support::definition(collaboration_probe_factory);
+        let target = LaunchTarget::New;
+        let context = host
+            .prepare_with_permissions(
+                &definition,
+                91,
+                &target,
+                crate::application_test_support::runner_permissions(),
+            )
+            .unwrap();
+        let component = definition
+            .instantiate(context, target, RestoreInput::None)
+            .unwrap();
+        let binding = component.callback_binding();
+        let mut app =
+            App::from_component(component, crate::application_test_support::runner_inputs())
+                .unwrap();
+        let (events, wake_handles) =
+            COLLABORATION_OBSERVATIONS.with_borrow(|slot| slot.clone().unwrap());
+
+        crate::widget::handle_collab_event(
+            app.root_widget.as_mut(),
+            &CollabEvent::FollowChanged { peer_id: None },
+        );
+        assert_eq!(events.get(), 1);
+        assert_eq!(wake_handles.borrow().len(), 1);
+        assert!(wake_handles.borrow()[0].is_active());
+
+        assert_eq!(
+            app.root_widget.children().len(),
+            1,
+            "fixture retains its root"
+        );
+        binding.closing.set(true);
+        crate::widget::handle_collab_event(
+            app.root_widget.as_mut(),
+            &CollabEvent::FollowChanged { peer_id: None },
+        );
+        assert_eq!(
+            events.get(),
+            1,
+            "closing owner cannot be reentered by tree traversal"
+        );
+        assert_eq!(wake_handles.borrow().len(), 1);
+        binding.closing.set(false);
+        app.close_components();
+        assert!(
+            !wake_handles.borrow()[0].is_active(),
+            "callback captured the component lifetime, not detached execution"
         );
     }
 
@@ -8699,17 +9004,21 @@ mod prepared_runner_tests {
         assert_eq!(app.text_renderer.text_scale(), 1.5);
     }
     fn activate_palette_action(app: &mut App, action: &str) {
-        app.refresh_semantic_tree();
-        let target = app
-            .accessibility
-            .semantic_tree
-            .bound_actions_for_test()
-            .into_iter()
-            .find(|(_, target)| {
-                target.address.instance_id == 11 && target.address.address.action == action
-            })
-            .unwrap()
-            .1;
+        // This font/lifecycle fixture chooses the same mounted owner directly;
+        // an open modal deliberately does not publish background actions.
+        let resources = crate::bound_dispatch::discover_bound_resources(
+            app.root_widget.as_ref(),
+            &app.state.doc,
+            None,
+        )
+        .unwrap();
+        let target = crate::bound_dispatch::select_bound_target(
+            &resources,
+            &tilo_actions::ActionAddress::new("probe:shared", action),
+            Some(11),
+        )
+        .unwrap()
+        .unwrap();
         assert!(
             app.actions
                 .action_palette

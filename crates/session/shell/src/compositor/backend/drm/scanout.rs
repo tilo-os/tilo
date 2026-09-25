@@ -576,7 +576,7 @@ fn connector_is_scanout_eligible(
     has_usable_mode: bool,
 ) -> bool {
     // `Virtual` is a real scanout sink for virtual GPUs (including the
-    // Parallels display used by qOS). `Writeback` captures a CRTC rather than
+    // Parallels display used by Tilo). `Writeback` captures a CRTC rather than
     // displaying one, and `Unknown` supplies no typed evidence that it can be
     // used for scanout.
     state == connector::State::Connected && has_usable_mode && is_display_connector(interface)
