@@ -29,7 +29,7 @@ use ui_core::vello::Scene;
 use ui_core::vello::kurbo::{Affine, Rect, Vec2};
 use ui_core::widget::Widget;
 
-use super::app::{ResourceApp, build_root, leaked};
+use super::app::{Editing, ResourceApp, build_root, leaked};
 use super::root::ResourceRoot;
 
 struct HistoryKey<A>(std::marker::PhantomData<A>);
@@ -148,7 +148,7 @@ fn preview<A: ResourceApp>(input: PreviewInput) -> Result<Box<dyn HistoryPreview
     let doc = AutoCommit::load(input.snapshot.bytes()).map_err(|error| error.to_string())?;
     let state = <A::Resource as Resource>::read(&doc).map_err(|error| error.to_string())?;
     Ok(Box::new(ViewPreview {
-        root: build_root::<A>(state, true),
+        root: build_root::<A>(state, Editing::ReadOnly),
         doc: Some(doc),
         bounds: Rect::ZERO,
         view: input.initial_view,
@@ -404,7 +404,7 @@ mod tests {
         let frozen = AutoCommit::load(&bytes).unwrap();
         let state = <Page as Resource>::read(&frozen).unwrap();
         let mut preview = ViewPreview {
-            root: build_root::<PageApp>(state, true),
+            root: build_root::<PageApp>(state, Editing::ReadOnly),
             doc: Some(frozen),
             bounds: Rect::ZERO,
             view: PreviewView::default(),
