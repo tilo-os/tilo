@@ -6,7 +6,7 @@
 
 int main(int argc, char **argv) {
     (void)argc;
-    const char *browser = "/run/tilo-runtime/2026.07-browser/lib/browser";
+    const char *browser = "/run/tilo-runtime/2026.7.0-browser/lib/browser";
     execv(browser, argv);
     perror("browser runtime exec");
     return 127;
