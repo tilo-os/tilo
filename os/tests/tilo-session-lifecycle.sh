@@ -95,7 +95,8 @@ grep -Fqx 'Exec=/usr/libexec/tilo-session --backend drm --enable-peer-sync' \
   "$repo/os/usr/share/wayland-sessions/shell-peer-sync.desktop"
 grep -Fq 'missing="$(ldd /usr/bin/shell | awk '\''/not found/ { print $1 }'\'')"' \
   "$repo/os/Containerfile"
-grep -Fq '&& test -z "$missing"' "$repo/os/Containerfile"
+grep -Fq 'if [ -n "$missing" ]; then' "$repo/os/Containerfile"
+grep -Fq 'shell has unresolved runtime libraries:' "$repo/os/Containerfile"
 grep -Fq "pgrep -f '^/usr/bin/shell --backend drm( |$)'" "$release_workflow"
 # First-use actions are now driven through the installed AT-SPI endpoint;
 # keeping stale blind-keyboard assertions here made the FUSE lane reject the
