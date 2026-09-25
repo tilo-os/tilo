@@ -78,7 +78,7 @@ class CompileBoundaries(unittest.TestCase):
                     driver.pinned_inputs('aarch64')
                 self.assertEqual(driver.pinned_inputs('aarch64', candidate)['KERNEL_RPMS_REF'], candidate)
 
-    def test_native_asset_fetch_includes_only_matching_compiler_cache_and_wpe(self):
+    def test_native_asset_fetch_includes_only_matching_compiler_cache_linker_and_wpe(self):
         script = (ROOT / 'os/dev/build-image.sh').read_text()
         block = script.split('if [ "${TILO_NATIVE_BUILDER_ONLY:-0}" = 1 ]; then\n', 1)[1].split('\nelse\n', 1)[0]
         with tempfile.TemporaryDirectory() as temporary:
@@ -95,7 +95,8 @@ class CompileBoundaries(unittest.TestCase):
                     capture_output=True, text=True, check=True)
                 self.assertEqual(set(result.stdout.splitlines()), {
                     'libwpe-1.16.3.tar.xz', 'wpebackend-fdo-1.16.1.tar.xz',
-                    'wpewebkit-2.52.6.tar.xz', f'sccache-v0.17.0-{architecture}-unknown-linux-musl.tar.gz'})
+                    'wpewebkit-2.52.6.tar.xz', f'sccache-v0.17.0-{architecture}-unknown-linux-musl.tar.gz',
+                    f'mold-2.40.4-{architecture}-linux.tar.gz'})
             (directory / 'Containerfile').write_text('ARG SCCACHE_VERSION=invalid\n')
             result = subprocess.run(['bash', '-c', 'set -euo pipefail\ndie() { exit 1; }\n' + block],
                 env=os.environ | {'TILO_OS_DIR': str(directory), 'TILO_WINDOWS_ARCH': 'aarch64'},
