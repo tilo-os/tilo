@@ -759,10 +759,12 @@ impl<'a> ValueState<'a> {
                     log.flag_conflict(obj, &Prop::from(index));
                 }
                 (Some(d), None) if d.expose => {
-                    let replaced = d
-                        .replaced
-                        .clone()
-                        .expect("exposed value must record the value it replaces");
+                    // qOS: a visible op that follows a now-deleted lower
+                    // conflicting op is exposed without a recorded
+                    // replacement (`OpValueOption::set`); it was already the
+                    // rendered winner, so it replaces itself. Upstream
+                    // panicked here on valid history.
+                    let replaced = d.replaced.clone().unwrap_or_else(|| d.value.clone());
                     log.replace_seq(
                         obj,
                         index,
