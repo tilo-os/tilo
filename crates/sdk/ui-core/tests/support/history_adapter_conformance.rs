@@ -229,7 +229,8 @@ fn normal_autosave_fresh_reopen_retains_graph_and_restored_content() {
         let (mut state, mut saver) = ui::persist::try_open(def.app_id).unwrap();
         if stage == "write" {
             let (mut doc, selected, _) = fixture();
-            state.doc.merge(&mut doc).unwrap();
+            // Included into modules that may import the trait already, so it is named in full.
+            tilo_automerge::ApplyIncoming::merge_incoming(&mut state.doc, &mut doc).unwrap();
             state.doc.get_heads();
             saver.request(&mut state.doc);
             saver.try_flush().unwrap();

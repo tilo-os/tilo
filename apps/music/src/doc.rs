@@ -711,6 +711,7 @@ pub fn load_library(doc: &AutoCommit) -> Library {
 mod tests {
     use super::*;
     use crate::seed;
+    use tilo_automerge::ApplyIncoming;
 
     #[test]
     fn seed_then_load_round_trips_library() {
@@ -800,7 +801,7 @@ mod tests {
         // The stale device makes a valid edit to the pre-delete object.
         rename_playlist(&mut stale, "pl_focus", "Should not revive");
         let mut stale_changes = AutoCommit::load(&stale.save()).unwrap();
-        deleted.merge(&mut stale_changes).unwrap();
+        deleted.merge_incoming(&mut stale_changes).unwrap();
         assert!(playlist_is_tombstoned(&deleted, "pl_focus"));
         assert!(!has_playlist(&deleted, "pl_focus"));
         assert!(
@@ -881,7 +882,7 @@ mod tests {
         let mut b = AutoCommit::load(&a.save()).unwrap();
         set_liked(&mut b, "tk_v2", true);
         let mut b_loaded = AutoCommit::load(&b.save()).unwrap();
-        a.merge(&mut b_loaded).unwrap();
+        a.merge_incoming(&mut b_loaded).unwrap();
         assert!(load_library(&a).is_liked("tk_v2"));
     }
 }

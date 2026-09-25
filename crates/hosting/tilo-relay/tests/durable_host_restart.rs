@@ -28,6 +28,7 @@
 )]
 
 use std::time::Duration;
+use tilo_automerge::ApplyIncoming;
 
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ROOT, ReadDoc, ScalarValue, Value};
@@ -160,9 +161,7 @@ async fn catch_up_after_restart(
                 ..
             } => {
                 assert_eq!(workspace_id, ws);
-                doc_b
-                    .load_incremental(&delta)
-                    .expect("B applies queued delta");
+                doc_b.load_incoming(&delta).expect("B applies queued delta");
                 got_delta = true;
             }
             Envelope::Ready {

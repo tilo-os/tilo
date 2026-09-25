@@ -11,6 +11,7 @@ description = "CRDT-native canonical document model and format-provider API for 
 [dependencies]
 advisory-lock = { path = "../../system/advisory-lock" }
 automerge.workspace = true
+tilo-automerge.workspace = true
 # HTML import and export carry images as `data:…;base64,` URIs.
 base64.workspace = true
 blake3.workspace = true
@@ -27,6 +28,7 @@ tracing.workspace = true
 [dev-dependencies]
 proptest.workspace = true
 tempfile.workspace = true
+tilo-automerge = { workspace = true, features = ["heap-probe"] }
 
 [[test]]
 name = "it"
