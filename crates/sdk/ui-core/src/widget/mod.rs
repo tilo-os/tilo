@@ -663,6 +663,20 @@ impl EventCtx<'_> {
     }
 }
 
+/// One remote participant's live presence (caret/selection), published by a
+/// multi-participant widget under that participant's identity. Same key and
+/// payload shape as the local window's own presence (Writer: `wp_block` key,
+/// byte offsets into the caret block).
+#[derive(Clone, Debug, PartialEq)]
+pub struct ParticipantPresence {
+    pub participant: tilo_actions::ParticipantId,
+    /// Name to show beside the caret, when the host set one
+    /// ([`Widget::set_participant_label`]).
+    pub label: Option<String>,
+    pub key: PresenceKey,
+    pub payload: crate::collaboration::PresencePayload,
+}
+
 pub trait Widget {
     /// App-declared external document obligations. An in-memory RecordSet is
     /// not evidence that an editable file has been saved.
@@ -1753,6 +1767,85 @@ pub trait Widget {
     /// Large apps override this through their `ResourceProvider` index.
     fn resource(&self, _doc: &AutoCommit, _id: &str) -> Option<tilo_actions::Resource> {
         None
+    }
+
+    /// The tree as one participant (an agent task) sees it, built from that
+    /// participant's own view state (caret, selection, Find). A delivered
+    /// invocation resolves against this, rebuilt at invoke time, for the
+    /// host-set invoker ([`crate::invocation_scope::current_participant`]).
+    ///
+    /// `None` is this widget's own view. Single-view widgets keep the
+    /// default, which is the same tree for everybody. Multi-participant
+    /// widgets (Writer) override this and [`Self::resource_for`], and must
+    /// never put one participant's selection or Find text into another's
+    /// tree.
+    fn resources_for(
+        &self,
+        participant: Option<&tilo_actions::ParticipantId>,
+        doc: &AutoCommit,
+    ) -> Vec<tilo_actions::Resource> {
+        let _ = participant;
+        self.resources(doc)
+    }
+
+    /// [`Self::resource`] in `participant`'s tree.
+    fn resource_for(
+        &self,
+        participant: Option<&tilo_actions::ParticipantId>,
+        doc: &AutoCommit,
+        id: &str,
+    ) -> Option<tilo_actions::Resource> {
+        let _ = participant;
+        self.resource(doc, id)
+    }
+
+    /// A participant (an agent task) joined the record this tree serves. A
+    /// multi-participant widget creates that participant's own view here
+    /// (Writer: caret at the document end) and publishes it as presence.
+    /// Idempotent. The default reaches retained descendants; returns whether
+    /// a view was newly created (so the host drops resource caches only then).
+    fn join_participant(&mut self, participant: &tilo_actions::ParticipantId) -> bool {
+        let mut joined = false;
+        for child in self.collaboration_children_mut() {
+            joined |= child.join_participant(participant);
+        }
+        joined
+    }
+
+    /// Drop a participant's view (its task ended). Idempotent.
+    fn leave_participant(&mut self, participant: &tilo_actions::ParticipantId) {
+        for child in self.collaboration_children_mut() {
+            child.leave_participant(participant);
+        }
+    }
+
+    /// Name shown beside a participant's caret (the agent's display name).
+    /// The default reaches retained descendants.
+    fn set_participant_label(&mut self, participant: &tilo_actions::ParticipantId, label: &str) {
+        for child in self.collaboration_children_mut() {
+            child.set_participant_label(participant, label);
+        }
+    }
+
+    /// Current presence of every remote participant this tree holds a view
+    /// for, derived from that participant's own view exactly as the local
+    /// window derives its own presence. The default collects descendants.
+    fn participant_presence(&self, doc: &AutoCommit) -> Vec<ParticipantPresence> {
+        let mut out = Vec::new();
+        self.for_each_child(&mut |child| out.extend(child.participant_presence(doc)));
+        out
+    }
+
+    /// The host serves only remote participants and has no local person (a
+    /// headless host worker). A multi-participant widget then publishes its
+    /// participant-independent catalogue schema
+    /// ([`tilo_actions::ResourceProvider::catalogue_schema`]) as its own
+    /// view's tree instead of one caret's snapshot, so the publication and
+    /// its revision do not change when a caret moves.
+    fn set_participant_host(&mut self, host: bool) {
+        for child in self.collaboration_children_mut() {
+            child.set_participant_host(host);
+        }
     }
 
     /// Explicit disclosure authority for an actionless resource container in

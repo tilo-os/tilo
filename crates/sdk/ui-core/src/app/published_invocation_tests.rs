@@ -10,6 +10,7 @@ fn remote_request(
         address: tilo_actions::ActionAddress::new("test.counter", action),
         argument: None,
         actor: "remote:original".into(),
+        participant: None,
     }
 }
 

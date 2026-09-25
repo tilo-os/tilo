@@ -11827,6 +11827,7 @@ dependencies = [
  "futures",
  "qos-action-broker",
  "qos-agent-control-protocol",
+ "qos-desktop",
  "qos-peer-state",
  "serde_json",
  "uuid",

@@ -492,6 +492,62 @@ fn verify_join_identity_with_host_scope(
     Ok(admitted)
 }
 
+/// Admission of a managed agent's join on its host-enrolled descriptor. The
+/// descriptor was bound to exactly one caller certificate and one live managed
+/// process when the host installed it; here the caller certificate is checked
+/// again against the current authority, the live process binding, the route
+/// and workspace membership. No proof is accepted from the agent itself.
+fn verify_enrolled_join_identity(
+    route: &CrdtRoute,
+    connection: &crate::enrolled_dispatch::EnrolledConnection,
+    membership: Option<&WorkspaceTreeHandle>,
+    authority: Option<&dyn super::peer_actions::CertificateAuthority>,
+) -> Result<AdmittedJoinIdentity, String> {
+    let authority = authority.ok_or("no current certificate authority is attached")?;
+    let facts = connection.facts();
+    if route != &CrdtRoute::app(crate::agent_control::APP_ID, &facts.binding.room) {
+        return Err("managed descriptor route mismatch".into());
+    }
+    connection.authorize()?;
+    let cert = connection.caller().clone();
+    if cert.capabilities.can_act_as_host {
+        return Err("managed agent caller cannot be a host certificate".into());
+    }
+    let room = uuid::Uuid::parse_str(&route.cluster_id).map_err(|_| "invalid exact room")?;
+    authority.authorize_join(room, &cert)?;
+    let registered = authority.policy_time()?;
+    let now_ns = policy_context::sample(registered.clone(), registered.as_ref())?.1;
+    tilo_user_identity::verify_device_cert_at(&cert, now_ns)
+        .map_err(|error| format!("device certificate was rejected: {error}"))?;
+    let verified = VerifiedJoinIdentity {
+        user_public_key: cert.user_public_key,
+        device_public_key: cert.device_public_key,
+    };
+    let membership = membership
+        .ok_or_else(|| "certified join has no workspace membership authority".to_string())?;
+    let tree = membership.snapshot()?;
+    let now = now_ns / 1_000_000_000;
+    let mut admitted = admit_verified_join_at(&tree, route, verified, now)?;
+    // The admitted role is the agent's own, never its delegating owner's: a
+    // rostered agent keeps its roster role (Denied refuses the join); a
+    // host-enrolled agent that is not on the roster gets read-only Viewer, so
+    // no signed document operation is accepted from this session. Its task
+    // actions are authorised per step by the enrolled task path instead.
+    let agent_role = tree
+        .workspaces
+        .iter()
+        .find(|workspace| workspace.room.to_string() == route.cluster_id)
+        .ok_or_else(|| "managed agent names an unavailable workspace".to_string())?
+        .role_of_agent_at(&facts.binding.agent, now);
+    admitted.role = match agent_role {
+        Some(CapRole::Denied) => return Err("the managed agent is denied in this workspace".into()),
+        Some(role) => role,
+        None => CapRole::Viewer,
+    };
+    admitted.certificate = Some(cert);
+    Ok(admitted)
+}
+
 /// Envelope pushed onto an [`OpStreamServer`]'s queue. `kind` is what
 /// makes the queue readable: signed, delta and whole-document share
 /// this type and are indistinguishable from the bytes alone.
@@ -1640,6 +1696,8 @@ pub struct CapnpBrokerState {
     admission_lock: Mutex<()>,
     journal: Mutex<Result<Option<InvocationJournal>, String>>,
     stable_invocation_subscribers: Mutex<std::collections::HashSet<u64>>,
+    /// The broker's own desktop command surface (not an app connection).
+    desktop_command_peer: Mutex<Option<u64>>,
     completed_invocations: Mutex<HashMap<u64, (InvocationOwner, tilo_actions::InvocationUpdate)>>,
     confirmation_grants: Mutex<HashMap<String, ConfirmationGrant>>,
     cancellation_requests: Mutex<std::collections::HashSet<u64>>,
@@ -1655,6 +1713,20 @@ pub struct CapnpBrokerState {
     #[cfg(test)]
     thread_callbacks: Mutex<Vec<Box<dyn FnOnce() + Send>>>,
 }
+
+/// Bound on live host-worker provenance entries (`host_workers`): one per
+/// connected RPC session whose join carries a private host-worker scope or a
+/// registered private worker, removed when that connection drops.
+///
+/// Measured use (Cloud host): one headless worker per hosted app record, and
+/// every record ever opened in the room stays hosted (each "Open Notes"
+/// creates a record), plus one registered connection per managed agent. A
+/// workspace with 16 agents and a few dozen records per app must fit: the
+/// former bound of 32 refused the 33rd record, which failed the whole worker
+/// mount and so every agent. Each entry is a small admitted identity (two
+/// certificates and a few ids, under 2 KiB), so this keeps memory bounded
+/// (well under 1 MiB) while leaving room for real workspaces.
+const MAX_HOST_WORKERS: usize = 256;
 
 impl CapnpBrokerState {
     /// Host-local observation only; this predicate is never a wire proof.
@@ -1718,7 +1790,7 @@ impl CapnpBrokerState {
                 ));
             }
         } else {
-            if workers.len() >= 32 {
+            if workers.len() >= MAX_HOST_WORKERS {
                 return Err(capnp::Error::failed(
                     "host worker connection capacity reached".into(),
                 ));
@@ -2246,6 +2318,7 @@ impl CapnpBrokerState {
                 admission_lock: Mutex::new(()),
                 journal: Mutex::new(journal),
                 stable_invocation_subscribers: Mutex::new(std::collections::HashSet::new()),
+                desktop_command_peer: Mutex::new(None),
                 completed_invocations: Mutex::new(HashMap::new()),
                 confirmation_grants: Mutex::new(HashMap::new()),
                 cancellation_requests: Mutex::new(std::collections::HashSet::new()),
@@ -3512,6 +3585,8 @@ impl CapnpBrokerState {
             ),
         };
         owner.validate()?;
+        // Never trust an envelope's invoker: the host sets it (lane C).
+        let context = enrolled_invocation::host_set_invoker(context, actor, &owner)?;
         let policy_time = match (durable, retained_time) {
             (Some(context), None) => self.checked_policy_time(context.time())?.0,
             (None, Some(original)) => self.checked_policy_time(Some(original))?.0,
@@ -3554,6 +3629,30 @@ impl CapnpBrokerState {
             actor,
             now,
         )?;
+        if !actor.is_agent {
+            // Security review MUST-1: the one shared authorize for people also
+            // binds the route record (Artifact), not only (app, action).
+            let tree = self
+                .membership
+                .as_ref()
+                .ok_or("workspace authority unavailable")?
+                .snapshot()?;
+            let workspace = tree
+                .workspaces
+                .iter()
+                .find(|workspace| workspace.room.to_string() == offered.0.route.cluster_id)
+                .ok_or("workspace no longer hosted")?;
+            crate::agent_control::scoped::authorize_published(
+                workspace,
+                now,
+                qos_agent_control_protocol::InvokingActor::Person { id: &actor.id },
+                None,
+                &offered.0,
+                &offered.1,
+                argument,
+            )
+            .map_err(|refusal| refusal.to_string())?;
+        }
         if (durable.is_some() || enrolled_durable.is_some())
             && !self
                 .stable_invocation_subscribers
@@ -3669,6 +3768,7 @@ impl CapnpBrokerState {
                             },
                             argument: argument.map(str::to_string),
                             actor: actor.id.clone(),
+                            participant: enrolled_invocation::invoker_participant(context.as_ref()),
                         },
                         offered.0.route.clone(),
                         &offered.1,
@@ -4779,19 +4879,35 @@ impl collab_service::Server for CapnpCollabService {
                 .to_owned();
             let identity = reader.get_identity()?;
             let route = CrdtRoute::from_channel_key(&channel_id);
-            let mut verified_identity = verify_join_identity_with_host_scope(
-                &route,
-                identity,
-                state.membership.as_ref(),
-                state
-                    .trusted_devices
-                    .as_ref()
-                    .map(|devices| devices.as_slice()),
-                state.certificate_authority.get().map(Arc::as_ref),
-                self.worker
-                    .as_ref()
-                    .and_then(|worker| worker.host_scope.as_ref()),
-            )
+            let enrolled_worker = self
+                .worker
+                .as_ref()
+                .and_then(|worker| worker.enrolled.as_ref());
+            let mut verified_identity = match enrolled_worker {
+                // A managed agent cannot hold its caller's device key (a Cloud
+                // owner's key never leaves the browser). The host authenticated
+                // this descriptor by launch custody and bound it to the caller,
+                // so an empty presentation is admitted from that binding.
+                Some(connection) if identity.is_empty() => verify_enrolled_join_identity(
+                    &route,
+                    connection,
+                    state.membership.as_ref(),
+                    state.certificate_authority.get().map(Arc::as_ref),
+                ),
+                _ => verify_join_identity_with_host_scope(
+                    &route,
+                    identity,
+                    state.membership.as_ref(),
+                    state
+                        .trusted_devices
+                        .as_ref()
+                        .map(|devices| devices.as_slice()),
+                    state.certificate_authority.get().map(Arc::as_ref),
+                    self.worker
+                        .as_ref()
+                        .and_then(|worker| worker.host_scope.as_ref()),
+                ),
+            }
             .map_err(|error| {
                 capnp::Error::failed(format!("collaboration join identity rejected: {error}"))
             })?;
@@ -6079,10 +6195,12 @@ impl channel_handle::Server for CapnpChannelHandle {
         params: channel_handle::InvokeTaskActionParams,
         mut results: channel_handle::InvokeTaskActionResults,
     ) -> Promise<(), capnp::Error> {
+        let began = std::time::Instant::now();
         let current = match self.task_identity() {
             Ok(current) => current,
             Err(error) => return Promise::err(error),
         };
+        let identity_us = crate::agent_timing::us(began);
         let Some(agent_id) = current.agent_id else {
             return Promise::err(capnp::Error::failed(
                 "only an agent may invoke a task action".into(),
@@ -6138,6 +6256,12 @@ impl channel_handle::Server for CapnpChannelHandle {
                 out.set_id(0);
                 out.set_update_json(&reply.update_json);
                 out.set_continuation(&reply.continuation);
+                crate::agent_timing::span(
+                    "step_rpc",
+                    None,
+                    began.elapsed(),
+                    &[("identity_us", identity_us)],
+                );
                 return Ok(());
             }
             let job = if state.enrolled.connection(peer_id).is_ok() {
@@ -13498,5 +13622,113 @@ impl CapnpBrokerState {
             state.record_effect_receipt(&pending, &update);
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod host_worker_capacity_tests {
+    use super::*;
+
+    fn state() -> Arc<CapnpBrokerState> {
+        let fanout = Arc::new(FanoutState::new());
+        CapnpBrokerState::new(
+            &fanout,
+            Arc::new(Mutex::new(BrokerChannels::default())),
+            PeerPublisher::disabled(),
+            None,
+            None,
+        )
+        .0
+    }
+    fn host_worker(record: usize) -> AdmittedJoinIdentity {
+        let root = ed25519_dalek::SigningKey::from_bytes(&[91; 32]);
+        let mut certificate = tilo_user_identity::DeviceCert {
+            user_public_key: root.verifying_key().to_bytes(),
+            device_public_key: [92; 32],
+            device_label: "host".into(),
+            capabilities: tilo_user_identity::DeviceCapabilities::primary(),
+            issued_at_ns: 1,
+            expires_at_ns: None,
+            signature: [0; 64],
+        };
+        tilo_user_identity::sign_device_cert(&mut certificate, &root).unwrap();
+        AdmittedJoinIdentity {
+            host_scope: Some(LocalHostWorkerScope {
+                route: CrdtRoute::from_channel_key(&format!(
+                    "{}#app:so.tilo.notes#record:tab:{record:016x}",
+                    uuid::Uuid::from_u128(7)
+                )),
+                certificate: certificate.clone(),
+            }),
+            worker_registration: None,
+            enrolled: false,
+            certificate: Some(certificate),
+            verified: VerifiedJoinIdentity {
+                user_public_key: root.verifying_key().to_bytes(),
+                device_public_key: [92; 32],
+            },
+            principal_id: "host".into(),
+            display_handle: None,
+            role: CapRole::Owner,
+            agent_id: None,
+        }
+    }
+    fn retained(state: &CapnpBrokerState) -> usize {
+        state.host_workers.lock().unwrap().len()
+    }
+
+    /// Repeated worker mounts (connect, then drop every connection) never
+    /// grow the provenance registry: each disconnect withdraws its entry.
+    #[test]
+    fn host_worker_connect_disconnect_cycles_do_not_grow_the_registry() {
+        let state = state();
+        let mut peer = 0u64;
+        for _cycle in 0..20 {
+            let first = peer;
+            for record in 0..40 {
+                peer += 1;
+                state
+                    .retain_host_worker(peer, &host_worker(record))
+                    .unwrap();
+            }
+            assert_eq!(retained(&state), 40);
+            for connection in first + 1..=peer {
+                state.remove_connection(connection);
+            }
+            assert_eq!(retained(&state), 0);
+        }
+    }
+
+    /// A workspace with 16 agents and dozens of hosted records per app fits;
+    /// the bound still refuses one connection beyond it.
+    #[test]
+    fn host_worker_capacity_fits_sixteen_agents_with_all_apps_and_stays_bounded() {
+        let state = state();
+        let agents = 16;
+        let records = 5 * 40; // five hosted apps with 40 records each
+        for peer in 0..(agents + records) {
+            state
+                .retain_host_worker(peer as u64 + 1, &host_worker(peer))
+                .unwrap();
+        }
+        for peer in (agents + records)..MAX_HOST_WORKERS {
+            state
+                .retain_host_worker(peer as u64 + 1, &host_worker(peer))
+                .unwrap();
+        }
+        assert_eq!(retained(&state), MAX_HOST_WORKERS);
+        assert!(
+            state
+                .retain_host_worker(MAX_HOST_WORKERS as u64 + 1, &host_worker(MAX_HOST_WORKERS))
+                .is_err()
+        );
+        // A reconnect of an already admitted peer with the same scope is idempotent.
+        assert!(state.retain_host_worker(1, &host_worker(0)).is_ok());
+        state.remove_connection(1);
+        assert!(
+            state
+                .retain_host_worker(MAX_HOST_WORKERS as u64 + 1, &host_worker(MAX_HOST_WORKERS))
+                .is_ok()
+        );
     }
 }

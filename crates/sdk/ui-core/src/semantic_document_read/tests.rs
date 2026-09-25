@@ -160,6 +160,7 @@ fn actual_record_loan_stays_unqualified_and_never_commits_pending_text() {
         address: tilo_actions::ActionAddress::new("fixture.document", "read"),
         argument: None,
         actor: "original-reader".into(),
+        participant: None,
     };
     // A concrete local test owner token supplies no bounded read qualification.
     let lease = crate::invocation_scope::PublishedInvocationLease::new(

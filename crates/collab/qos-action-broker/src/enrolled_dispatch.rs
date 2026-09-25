@@ -211,6 +211,11 @@ pub struct EnrolledStepReply {
 }
 pub type EnrolledStepResult = Result<EnrolledStepReply, String>;
 /// Host service that owns the managed sender for enrolled task children.
+/// Notified after an enrolled task child's retained journal row becomes
+/// terminal, so the host's step owner settles its parent step at once instead
+/// of at its next periodic tick. A notification carries and grants nothing.
+pub static CHILD_SETTLED: tokio::sync::Notify = tokio::sync::Notify::const_new();
+
 pub trait EnrolledStepService: Send + Sync {
     /// Queue one step. The reply arrives once the parent committed the step's
     /// exact result; a dropped reply means "still pending, retry the step".
@@ -520,6 +525,15 @@ impl RecipientState {
         }
         retained.callback_pending = true;
         Ok(retained.data.clone())
+    }
+    /// The one accepted, non-terminal task on this connection (the same
+    /// predicate [`EnrolledConnection::task`] resolves a step lease with).
+    /// Dispatch admits at most one non-terminal task at a time.
+    fn active_task_id(&self) -> Option<String> {
+        self.retained
+            .values()
+            .find(|entry| entry.accepted.is_some() && !entry.terminal)
+            .map(|entry| entry.data.envelope.task_id.clone())
     }
     fn finish_acceptance(
         &mut self,
@@ -939,6 +953,16 @@ impl EnrolledConnection {
         )?;
         Ok(witness.envelope().clone())
     }
+    /// The task id whose opened records join this connection's effective
+    /// scopes: its accepted, live task, if any.
+    pub(crate) fn active_task_id(&self) -> Result<Option<String>, String> {
+        self.authorize()?;
+        Ok(self
+            .state
+            .lock()
+            .map_err(|_| "enrolled registry unavailable")?
+            .active_task_id())
+    }
     pub(crate) fn task(&self, run: u64, lease: &str) -> Result<EnrolledTaskEnvelope, String> {
         self.authorize()?;
         let state = self
@@ -1072,6 +1096,29 @@ impl EnrolledRegistry {
             connection.close();
         }
     }
+    /// Owner revocation: close every enrolled connection of `agent`; its
+    /// accepted tasks can take no further step. Returns how many closed.
+    pub(crate) fn close_agent(&self, agent: &str) -> usize {
+        let closed: Vec<_> = self
+            .connections
+            .lock()
+            .map(|mut registry| {
+                let peers: Vec<u64> = registry
+                    .iter()
+                    .filter(|(_, c)| c.facts.binding.agent == agent)
+                    .map(|(peer, _)| *peer)
+                    .collect();
+                peers
+                    .into_iter()
+                    .filter_map(|peer| registry.remove(&peer))
+                    .collect()
+            })
+            .unwrap_or_default();
+        for connection in &closed {
+            connection.close();
+        }
+        closed.len()
+    }
     pub(crate) fn clear(&self) {
         let connections = self
             .connections
@@ -1195,6 +1242,7 @@ mod tests {
             runtime_epoch: id.clone(),
             recipient_agent: id.clone(),
             channel_lease: id.clone(),
+            history: None,
             task: runtime_collab::TaskRunEnvelope {
                 version: 1,
                 task_id: id.clone(),
@@ -1286,6 +1334,24 @@ mod tests {
             state.begin_acceptance(&accepted).is_err(),
             "reservation alone is not delivered"
         );
+    }
+    #[test]
+    fn enrolled_active_task_is_only_the_accepted_live_task() {
+        let data = data(1);
+        let task = data.envelope.task_id.clone();
+        let accepted = acceptance(&data.envelope, 1);
+        let mut state = RecipientState::default();
+        state
+            .retained
+            .insert(accepted.message_id.clone(), retained(data, true));
+        // Delivered but not accepted: no task scopes yet.
+        assert_eq!(state.active_task_id(), None);
+        let id = accepted.message_id.clone();
+        state.retained.get_mut(&id).unwrap().accepted = Some(accepted);
+        assert_eq!(state.active_task_id(), Some(task));
+        // Terminal (finished, cancelled or revoked): gone again.
+        state.retained.get_mut(&id).unwrap().terminal = true;
+        assert_eq!(state.active_task_id(), None);
     }
     #[test]
     fn enrolled_ambiguous_dispatch_stays_busy_and_charged() {

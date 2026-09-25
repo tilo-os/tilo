@@ -3263,6 +3263,7 @@ mod enrolled_tests {
             runtime_epoch: "epoch-1".into(),
             recipient_agent: "agent-1".into(),
             channel_lease: "channel-1".into(),
+            history: None,
             task: TaskRunEnvelope {
                 version: 1,
                 task_id: "task-1".into(),
@@ -3434,7 +3435,15 @@ pub struct EnrolledTaskEnvelope {
     pub recipient_agent: String,
     pub channel_lease: String,
     pub task: TaskRunEnvelope,
+    /// The recipient agent's own earlier tasks (requests, steps, outcomes,
+    /// replies) as compact JSON, composed by the host from its durable
+    /// records. Private to that agent, display input only, never authority.
+    /// Absent on older hosts; omitted from the wire when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub history: Option<String>,
 }
+/// Most bytes of [`EnrolledTaskEnvelope::history`].
+pub const MAX_ENROLLED_HISTORY_BYTES: usize = 12 * 1024;
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct EnrolledTaskAcceptance {
@@ -3459,6 +3468,10 @@ impl EnrolledTaskEnvelope {
             || self.task.title.is_empty()
             || self.task.title.len() > 32 * 1024
             || self.task.title.chars().count() > 8000
+            || self
+                .history
+                .as_ref()
+                .is_some_and(|history| history.len() > MAX_ENROLLED_HISTORY_BYTES)
             || !enrolled_label(&self.task.lease)
             || [
                 &self.message_id,

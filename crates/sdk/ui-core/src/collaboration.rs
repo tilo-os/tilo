@@ -1683,6 +1683,9 @@ struct QueuedSdkCommand {
 struct QueuedCollabEvent {
     event: CollabEvent,
     _reservation: ByteReservation,
+    /// Held while a superseding snapshot (the action catalogue) is queued;
+    /// released when the owner dequeues it, letting its reader pull the next.
+    _turn: Option<tokio::sync::OwnedSemaphorePermit>,
 }
 
 impl BridgeState {
@@ -1800,6 +1803,15 @@ struct InboundBridge {
 
 impl InboundBridge {
     fn send_durable(&self, event: CollabEvent) -> bool {
+        self.send_durable_turn(event, None)
+    }
+
+    /// `send_durable` holding `turn` until the owner dequeues the event.
+    fn send_durable_turn(
+        &self,
+        event: CollabEvent,
+        turn: Option<tokio::sync::OwnedSemaphorePermit>,
+    ) -> bool {
         let Some(reservation) = self.state.event_bytes.reserve(
             event_bytes(&event).unwrap_or(usize::MAX),
             SDK_EVENT_QUEUE_BYTES,
@@ -1812,6 +1824,7 @@ impl InboundBridge {
             .try_send(QueuedCollabEvent {
                 event,
                 _reservation: reservation,
+                _turn: turn,
             })
             .is_ok()
         {
@@ -1835,6 +1848,7 @@ impl InboundBridge {
         match self.tx.try_send(QueuedCollabEvent {
             event,
             _reservation: reservation,
+            _turn: None,
         }) {
             Ok(()) => {
                 self.state.notify_events();
@@ -4255,22 +4269,46 @@ async fn spawn_action_catalogue_stream(
 
     let tx = inbound_tx.clone();
     tokio::task::spawn_local(async move {
-        while let Ok(snapshot) = stream.read().await {
-            match serde_json::from_str::<BrokerActionCatalogueWire>(&snapshot) {
-                Ok(catalogue) => {
-                    if !tx.send_durable(CollabEvent::ActionCatalogue {
-                        surfaces: catalogue.surfaces,
-                    }) {
-                        break;
-                    }
-                }
-                Err(error) => {
-                    tracing::warn!(%error, "collab: invalid broker action catalogue");
-                }
-            }
-        }
+        forward_action_catalogues(async || stream.read().await.map_err(|_| ()), &tx).await;
     });
     Ok(())
+}
+
+/// Forward catalogue snapshots from `read` until it or the bridge fails.
+/// Each read returns the broker's latest full catalogue (a watch), so at
+/// most one catalogue is queued at a time: the next read waits until the
+/// owner has dequeued the previous one, and intermediate snapshots coalesce
+/// in the broker. A busy owner (a headless worker between pumps) otherwise
+/// accumulated one large catalogue per publication until the bounded bridge
+/// failed closed.
+async fn forward_action_catalogues(
+    mut read: impl AsyncFnMut() -> Result<String, ()>,
+    tx: &InboundBridge,
+) {
+    let turns = Arc::new(tokio::sync::Semaphore::new(1));
+    loop {
+        let Ok(turn) = turns.clone().acquire_owned().await else {
+            break;
+        };
+        let Ok(snapshot) = read().await else {
+            break;
+        };
+        match serde_json::from_str::<BrokerActionCatalogueWire>(&snapshot) {
+            Ok(catalogue) => {
+                if !tx.send_durable_turn(
+                    CollabEvent::ActionCatalogue {
+                        surfaces: catalogue.surfaces,
+                    },
+                    Some(turn),
+                ) {
+                    break;
+                }
+            }
+            Err(error) => {
+                tracing::warn!(%error, "collab: invalid broker action catalogue");
+            }
+        }
+    }
 }
 
 /// Bridge broker-addressed task leases only when this connection is an
@@ -8013,6 +8051,69 @@ mod tests {
             2,
             "a closed owner cannot be woken"
         );
+    }
+
+    /// A headless worker is drained only between pumps. Large catalogue
+    /// snapshots (one per host publication) must not pile up in its bounded
+    /// bridge: one stays queued, the rest coalesce to the latest.
+    #[test]
+    fn action_catalogue_reader_keeps_one_snapshot_queued_for_a_busy_owner() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let (tx, mut rx) = tokio_mpsc::channel(SDK_EVENT_QUEUE);
+        let state = BridgeState::new();
+        let inbound = InboundBridge {
+            tx,
+            state: state.clone(),
+        };
+        // ~700 KiB per snapshot, as with 34 mounted workers: six exceed the budget.
+        let snapshot = |sequence: u64| {
+            format!(
+                r#"{{"surfaces":[{{"peer_id":{sequence},"app_id":"so.tilo.notes","cluster_id":"c","record_id":"{}","live":true,"actions":[]}}]}}"#,
+                "r".repeat(700 * 1024)
+            )
+        };
+        let published = std::rc::Rc::new(std::cell::Cell::new(0u64));
+        let reads = published.clone();
+        let local = tokio::task::LocalSet::new();
+        local.block_on(&runtime, async move {
+            let forwarder = inbound.clone();
+            tokio::task::spawn_local(async move {
+                forward_action_catalogues(
+                    async || {
+                        let next = reads.get() + 1;
+                        reads.set(next);
+                        Ok(snapshot(next))
+                    },
+                    &forwarder,
+                )
+                .await;
+            });
+            for _ in 0..64 {
+                tokio::task::yield_now().await;
+            }
+            assert!(state.is_healthy(), "a busy owner does not fail the bridge");
+            let first = rx.try_recv().expect("one catalogue queued");
+            assert!(
+                rx.try_recv().is_err(),
+                "only one catalogue is queued at a time"
+            );
+            drop(first);
+            for _ in 0..64 {
+                tokio::task::yield_now().await;
+            }
+            assert!(matches!(
+                rx.try_recv(),
+                Ok(QueuedCollabEvent {
+                    event: CollabEvent::ActionCatalogue { ref surfaces },
+                    ..
+                }) if surfaces[0].peer_id == 2
+            ));
+            assert!(state.is_healthy());
+        });
+        assert_eq!(published.get(), 2, "no read while a catalogue is queued");
     }
 
     #[test]

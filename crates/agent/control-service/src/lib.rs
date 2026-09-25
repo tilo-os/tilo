@@ -47,6 +47,51 @@ fn error(code: AgentErrorCode, message: impl Into<String>) -> AgentError {
         message: message.into().chars().take(4096).collect(),
     }
 }
+/// Admission of one frozen scope for the current owner (MUST-1..4):
+/// manifest-delegable app (no hard-coded app list), canonical non-reserved
+/// records only, no workspace wildcard without a separate consent path, and
+/// the owner holds the scope's verb on the app, on each exact action and on
+/// each record's document artifact.
+pub fn admissible_scope(
+    workspace: &qos_desktop::Workspace,
+    actor: &collab_types::caps::Actor,
+    room: &str,
+    registry: &qos_agent_control_protocol::DelegationRegistry,
+    scope: &qos_agent_control_protocol::GrantScope,
+) -> bool {
+    use collab_types::caps::{ResourceRef, Verb};
+    use qos_agent_control_protocol::{GrantVerb, RecordScope, route_record};
+    if !registry.is_delegable_app(&scope.app_id) || matches!(scope.record, RecordScope::InWorkspace)
+    {
+        return false;
+    }
+    let verb = match scope.verb {
+        GrantVerb::Read => Verb::Read,
+        GrantVerb::Comment => Verb::Comment,
+        GrantVerb::Write => Verb::Write,
+    };
+    let mut resources = vec![];
+    match &scope.actions {
+        Some(actions) => resources.extend(actions.iter().map(|action| ResourceRef::Action {
+            app: scope.app_id.clone(),
+            action: action.clone(),
+        })),
+        None => resources.push(ResourceRef::App(scope.app_id.clone())),
+    }
+    for record in scope.records() {
+        let Ok(record) = route_record(record) else {
+            return false;
+        };
+        resources.push(ResourceRef::Artifact {
+            app: Some(scope.app_id.clone()),
+            kind: collab_types::ArtifactKind::Note,
+            instance: collab_types::document_artifact_id(&scope.app_id, room, record),
+        });
+    }
+    resources
+        .iter()
+        .all(|resource| workspace.allows(actor, resource, verb))
+}
 fn now() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -80,12 +125,15 @@ impl AgentAdmission {
     ) -> Result<(String, Vec<GrantAction>), AgentError> {
         let (fresh, snapshot) = self.current(caller)?;
         let catalogue = self.catalogue.current(&fresh)?;
-        if catalogue.actions.is_empty() || catalogue.actions.len() > 64 {
-            return Err(error(
-                AgentErrorCode::NoDelegableActions,
-                "No bounded exact action offer is available",
-            ));
-        }
+        // v1 exact tuples or v2 scope carriers; the scope count (at most
+        // MAX_GRANT_SCOPES) replaces the fixed exact-tuple cap.
+        let scopes =
+            qos_agent_control_protocol::scopes_from_grants(&catalogue.actions).map_err(|_| {
+                error(
+                    AgentErrorCode::NoDelegableActions,
+                    "No bounded delegable grant offer is available",
+                )
+            })?;
         let tree = self
             .authority
             .snapshot()
@@ -101,37 +149,10 @@ impl AgentAdmission {
                 "Current owner required",
             ));
         }
-        use collab_types::caps::{ResourceRef, Verb};
         let actor = workspace.actor_for_person(&fresh.person().to_string());
-        for grant in &catalogue.actions {
-            let record = if grant.record_id == "@qos:package-primary" {
-                ""
-            } else {
-                &grant.record_id
-            };
-            if !collab_types::first_party_app_ids::is_any_first_party_app(
-                &grant.app_id,
-                &["so.tilo.word-processor", "so.tilo.chat"],
-            ) || !workspace.allows(
-                &actor,
-                &ResourceRef::Action {
-                    app: grant.app_id.clone(),
-                    action: grant.action.clone(),
-                },
-                Verb::Write,
-            ) || !workspace.allows(
-                &actor,
-                &ResourceRef::Artifact {
-                    app: Some(grant.app_id.clone()),
-                    kind: collab_types::ArtifactKind::Note,
-                    instance: collab_types::document_artifact_id(
-                        &grant.app_id,
-                        fresh.room(),
-                        record,
-                    ),
-                },
-                Verb::Write,
-            ) {
+        let registry = qos_agent_control_protocol::DelegationRegistry::first_party();
+        for scope in &scopes {
+            if !admissible_scope(workspace, &actor, fresh.room(), &registry, scope) {
                 return Err(error(
                     AgentErrorCode::PermissionDenied,
                     "Selected action is not currently delegable",
@@ -350,5 +371,87 @@ impl AgentAdmission {
             task_id: Some(r.ids.task.clone()),
             error: r.error.clone(),
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use collab_types::caps::{CapOverride, Subject, Verb};
+    use qos_agent_control_protocol::{
+        DelegationRegistry, GrantScope, GrantVerb, OperationClass, PackagePin, RecordScope,
+        ResourceScope,
+    };
+
+    fn scope(app: &str, record: RecordScope) -> GrantScope {
+        GrantScope {
+            app_id: app.into(),
+            record,
+            verb: GrantVerb::Write,
+            classes: vec![OperationClass::Document, OperationClass::View],
+            resource: ResourceScope::Any,
+            actions: None,
+            deny_actions: vec![],
+            package: Some(PackagePin {
+                package_id: "so.tilo.word-processor".into(),
+                version: "1".into(),
+                schema_digest: "a".repeat(64),
+            }),
+            budgets: None,
+            explicit_workspace_consent: false,
+        }
+    }
+
+    #[test]
+    fn admission_is_manifest_driven_single_record_and_owner_checked() {
+        let mut workspace =
+            qos_desktop::Workspace::test_default(qos_desktop::WorkspaceId(3), "Room");
+        workspace.set_owner("owner".to_string());
+        let room = workspace.room.to_string();
+        let owner = workspace.actor_for_person(&"owner".to_string());
+        let registry = DelegationRegistry::first_party();
+        let writer = qos_agent_control_protocol::WRITER_APP_ID;
+        assert!(admissible_scope(
+            &workspace,
+            &owner,
+            &room,
+            &registry,
+            &scope(writer, RecordScope::Exact("rec-1".into()))
+        ));
+        // Not in a trusted delegation manifest (no hard-coded app list).
+        assert!(!admissible_scope(
+            &workspace,
+            &owner,
+            &room,
+            &registry,
+            &scope("so.tilo.calculator", RecordScope::Exact("rec-1".into()))
+        ));
+        assert!(!admissible_scope(
+            &workspace,
+            &owner,
+            &room,
+            &DelegationRegistry::empty(),
+            &scope(writer, RecordScope::Exact("rec-1".into()))
+        ));
+        // A workspace wildcard never enters through this admission path.
+        let mut wildcard = scope(writer, RecordScope::InWorkspace);
+        wildcard.explicit_workspace_consent = true;
+        assert!(!admissible_scope(
+            &workspace, &owner, &room, &registry, &wildcard
+        ));
+        // A viewer cannot delegate Write.
+        workspace.grant_capability(CapOverride::membership(
+            Subject::person("viewer"),
+            room.clone(),
+            Verb::Read,
+        ));
+        let viewer = workspace.actor_for_person(&"viewer".to_string());
+        assert!(!admissible_scope(
+            &workspace,
+            &viewer,
+            &room,
+            &registry,
+            &scope(writer, RecordScope::Exact("rec-1".into()))
+        ));
     }
 }

@@ -1246,6 +1246,61 @@ pub trait ResourceProvider {
         }
         find(self.resources(doc), id)
     }
+
+    /// The resource tree as seen by one participant (a window or an agent
+    /// task), built from that participant's own view state.
+    ///
+    /// `None` is the provider's default view (the local window). Single-view
+    /// providers keep this default, which ignores the participant.
+    /// Multi-participant providers (Writer) override it and must never let
+    /// one participant's view leak into another's tree.
+    fn resources_for(
+        &self,
+        participant: Option<&crate::ParticipantId>,
+        doc: &automerge::AutoCommit,
+    ) -> Vec<Resource> {
+        let _ = participant;
+        self.resources(doc)
+    }
+
+    /// Resolve one resource id in `participant`'s tree. The default searches
+    /// [`Self::resources_for`], and keeps [`Self::resource`]'s indexed lookup
+    /// for the default view.
+    fn resource_for(
+        &self,
+        participant: Option<&crate::ParticipantId>,
+        doc: &automerge::AutoCommit,
+        id: &str,
+    ) -> Option<Resource> {
+        let Some(participant) = participant else {
+            return self.resource(doc, id);
+        };
+        fn find(resources: Vec<Resource>, id: &str) -> Option<Resource> {
+            for resource in resources {
+                if resource.id.as_str() == id {
+                    return Some(resource);
+                }
+                if let Some(found) = find(resource.children, id) {
+                    return Some(found);
+                }
+            }
+            None
+        }
+        find(self.resources_for(Some(participant), doc), id)
+    }
+
+    /// The participant-independent catalogue this provider publishes to
+    /// the broker and grants are checked against (see [`crate::schema`]).
+    ///
+    /// It must not depend on any participant's caret, selection or Find
+    /// state: stable addresses only, with context preconditions declared as
+    /// [`ContextRequirement`](crate::ContextRequirement) flags. Every
+    /// operation reachable in any participant's
+    /// [`resources_for`](Self::resources_for) tree must have an entry here
+    /// with the same contract. Single-view providers keep this default.
+    fn catalogue_schema(&self, doc: &automerge::AutoCommit) -> Vec<Resource> {
+        self.resources(doc)
+    }
 }
 
 /// Field separator inside a flattened composite key — a unit-separator

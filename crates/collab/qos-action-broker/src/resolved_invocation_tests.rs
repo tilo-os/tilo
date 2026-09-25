@@ -267,6 +267,7 @@ async fn resolved_invocation_rpc_retains_actual_original_and_exact_worker() {
             },
             argument: delivered.argument,
             actor: delivered.actor,
+            participant: None,
         };
         let lease = authorize(&request)
             .expect("actual signed worker and original RPC caller must mint the exact lease");

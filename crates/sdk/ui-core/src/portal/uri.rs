@@ -119,6 +119,7 @@ mod tests {
                 address: tilo_actions::ActionAddress::new("fixture", "open-uri"),
                 argument: None,
                 actor: "original-caller".into(),
+                participant: None,
             },
             fixture.target.owner.broker_route().unwrap(),
             Arc::new(move || {

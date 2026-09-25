@@ -360,6 +360,7 @@ mod durable_local_matrix {
                 },
                 argument: delivered.argument,
                 actor: delivered.actor,
+                participant: None,
             };
             let lease = (self.authorize)(&request).unwrap();
             lease.check().unwrap();
@@ -536,6 +537,7 @@ mod durable_local_matrix {
                     },
                     argument: delivered.argument,
                     actor: delivered.actor,
+                    participant: None,
                 };
                 let lease = (rig.authorize)(&request).unwrap();
                 lease.check().unwrap();
@@ -1008,6 +1010,7 @@ mod durable_local_matrix {
                     },
                     argument: delivered.argument,
                     actor: delivered.actor,
+                    participant: None,
                 };
                 let lease = (rig.authorize)(&request).unwrap();
                 lease.check().unwrap();
