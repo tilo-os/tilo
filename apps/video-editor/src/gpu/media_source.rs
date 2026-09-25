@@ -210,7 +210,7 @@ impl MediaFrameSource {
             }
             let mut h: u64 = 0xcbf2_9ce4_8422_2325;
             for b in item.id.as_bytes().iter().chain(item.path.as_bytes()) {
-                h ^= *b as u64;
+                h ^= u64::from(*b);
                 h = h.wrapping_mul(0x1000_0000_01b3);
             }
             acc = acc.wrapping_add(h);
@@ -219,6 +219,7 @@ impl MediaFrameSource {
     }
 
     /// How long an `Exact` fetch waits for a picture before giving up.
+    #[must_use]
     pub fn with_timeout(mut self, timeout: Duration) -> Self {
         self.timeout = timeout;
         self
@@ -283,7 +284,10 @@ impl MediaFrameSource {
                     self.converters
                         .push(YuvConverter::new(device, wgpu::TextureFormat::Rgba8Unorm));
                 }
-                let texture = self.converters[slot]
+                // The loop above guarantees a converter at `slot`.
+                let texture = self
+                    .converters
+                    .get_mut(slot)?
                     .convert(device, queue, &planes)
                     .clone();
                 let view = Arc::new(texture.create_view(&wgpu::TextureViewDescriptor::default()));
@@ -384,15 +388,14 @@ impl FrameSource for MediaFrameSource {
                     } else {
                         None
                     };
-                    match frame {
-                        Some(f) => Some(f),
+                    if frame.is_some() {
+                        frame
+                    } else {
                         // Either a jump, or the roll did not reach the
                         // target in time — fall back to the exact seek,
                         // which always lands on the right picture.
-                        None => {
-                            self.rolling.remove(&media);
-                            s.frame_at(target_ms, timeout)
-                        }
+                        self.rolling.remove(&media);
+                        s.frame_at(target_ms, timeout)
                     }
                 }
                 Fetch::Responsive => {
@@ -409,45 +412,42 @@ impl FrameSource for MediaFrameSource {
             }
         };
 
-        match frame {
-            Some(f) => {
-                // It answered, so whatever it missed before was transient.
-                self.failures.remove(&media);
-                // Already painted this exact picture for this source? Reuse
-                // the texture rather than uploading it again.
-                if let Some(last) = self.last.get(&media) {
-                    if last.pts_ms == f.pts_ms {
-                        let texture = last.texture.clone();
-                        self.slot += 1;
-                        self.served_real = true;
-                        return Some(texture);
-                    }
-                }
-                let painted = self.paint(device, queue, media, &f);
-                self.served_real |= painted.is_some();
-                painted
+        if let Some(f) = frame {
+            // It answered, so whatever it missed before was transient.
+            self.failures.remove(&media);
+            // Already painted this exact picture for this source? Reuse
+            // the texture rather than uploading it again.
+            if let Some(last) = self.last.get(&media)
+                && last.pts_ms == f.pts_ms
+            {
+                let texture = last.texture.clone();
+                self.slot += 1;
+                self.served_real = true;
+                return Some(texture);
             }
+            let painted = self.paint(device, queue, media, &f);
+            self.served_real |= painted.is_some();
+            painted
+        } else {
             // Nothing decoded yet. Hold the last picture this source produced
             // so a scrub does not flash the representative fill between
             // seeks; with nothing at all, the compositor falls back.
-            None => {
-                // Count it, and stop asking once a source has answered
-                // nothing this many times running. One miss is an ordinary
-                // seek landing near a damaged GOP; a file that answers
-                // nowhere is not media this editor can play, and retrying it
-                // costs a full frame timeout every frame forever.
-                let n = self.failures.entry(media).or_insert(0);
-                *n += 1;
-                if *n >= crate::thumbnail::FAILURES_BEFORE_GIVING_UP {
-                    self.undecodable.insert(media);
-                    self.rolling.remove(&media);
-                }
-                let texture = self.last.get(&media).map(|l| l.texture.clone());
-                if texture.is_some() {
-                    self.slot += 1;
-                }
-                texture
+            // Count it, and stop asking once a source has answered
+            // nothing this many times running. One miss is an ordinary
+            // seek landing near a damaged GOP; a file that answers
+            // nowhere is not media this editor can play, and retrying it
+            // costs a full frame timeout every frame forever.
+            let n = self.failures.entry(media).or_insert(0);
+            *n += 1;
+            if *n >= crate::thumbnail::FAILURES_BEFORE_GIVING_UP {
+                self.undecodable.insert(media);
+                self.rolling.remove(&media);
             }
+            let texture = self.last.get(&media).map(|l| l.texture.clone());
+            if texture.is_some() {
+                self.slot += 1;
+            }
+            texture
         }
     }
 }

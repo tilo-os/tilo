@@ -2304,7 +2304,7 @@ impl Namespace {
         }
     }
 
-    pub fn export_document(&self, ino: u64, registry: &qdoc::Registry) -> Option<Vec<u8>> {
+    pub fn export_document(&self, ino: u64, registry: &qdoc_codecs::Registry) -> Option<Vec<u8>> {
         let id = self.ino_to_id.get(&ino)?.clone();
         let codec = read_str(&self.doc, &self.node(&id)?, "codec")?;
         let provider = registry.provider_for_ext(&codec)?;
@@ -2323,7 +2323,7 @@ impl Namespace {
     pub fn import_document(
         &mut self,
         ino: u64,
-        registry: &qdoc::Registry,
+        registry: &qdoc_codecs::Registry,
         bytes: &[u8],
         mtime: u64,
     ) -> bool {
@@ -3748,7 +3748,7 @@ mod tests {
 
     #[test]
     fn document_import_export_roundtrips() {
-        let reg = qdoc::builtin_registry();
+        let reg = qdoc_codecs::builtin_registry();
         let mut ns = Namespace::new("a").unwrap();
         let ino = ns.create_document(ROOT_INO, "note.md", "md", 1).unwrap();
         assert_eq!(ns.document_codec(ino).as_deref(), Some("md"));
@@ -3765,7 +3765,7 @@ mod tests {
 
     #[test]
     fn failed_import_preserves_existing_document() {
-        let reg = qdoc::builtin_registry();
+        let reg = qdoc_codecs::builtin_registry();
         let mut ns = Namespace::new("a").unwrap();
         let ino = ns.create_document(ROOT_INO, "doc.md", "md", 1).unwrap();
         assert!(ns.import_document(ino, &reg, b"# Keep\n\nimportant\n", 2));

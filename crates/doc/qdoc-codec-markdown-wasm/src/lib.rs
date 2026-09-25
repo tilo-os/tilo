@@ -13,7 +13,8 @@
 #[cfg(target_arch = "wasm32")]
 mod guest {
     use format_provider_abi::{CodecError, Confidence, Detected, Provider};
-    use qdoc::{Document, FormatProvider, MarkdownCodec};
+    use qdoc::Document;
+    use qdoc_codecs::{FormatProvider, MarkdownCodec};
 
     struct Markdown;
 
@@ -21,10 +22,10 @@ mod guest {
         fn detect(head: &[u8]) -> Detected {
             // qdoc's confidence enum maps onto a coarse (tier, score).
             let (tier, score) = match MarkdownCodec.detect(head) {
-                qdoc::Confidence::None => (0, 0.0),
-                qdoc::Confidence::Low => (0, 0.25),
-                qdoc::Confidence::Medium => (1, 0.5),
-                qdoc::Confidence::High => (2, 0.9),
+                qdoc_codecs::Confidence::None => (0, 0.0),
+                qdoc_codecs::Confidence::Low => (0, 0.25),
+                qdoc_codecs::Confidence::Medium => (1, 0.5),
+                qdoc_codecs::Confidence::High => (2, 0.9),
             };
             Detected {
                 confidence: Confidence { tier, score },

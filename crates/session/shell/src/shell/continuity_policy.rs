@@ -139,7 +139,13 @@ impl ContinuityPolicySnapshot {
             | PersonalFabricAction::BluetoothHandoffCancel { .. } => ContinuityCapability::Media,
             PersonalFabricAction::DisplayMirrorRequest { .. }
             | PersonalFabricAction::DisplayMirrorDecision { .. }
-            | PersonalFabricAction::DisplayMirrorStop { .. } => ContinuityCapability::DisplayInput,
+            | PersonalFabricAction::DisplayMirrorStop { .. }
+            | PersonalFabricAction::SetDisplayPlacement { .. }
+            | PersonalFabricAction::DeviceHealthProbe { .. }
+            | PersonalFabricAction::DeviceHealthReport { .. }
+            | PersonalFabricAction::InputLeaseGranted { .. }
+            | PersonalFabricAction::InputLeaseRevoked { .. }
+            | PersonalFabricAction::Input { .. } => ContinuityCapability::DisplayInput,
             PersonalFabricAction::NearbyDrop { .. }
             | PersonalFabricAction::NearbyDropResult { .. }
             | PersonalFabricAction::NearbyTransferOffer { .. }
@@ -165,12 +171,6 @@ impl ContinuityPolicySnapshot {
             | PersonalFabricAction::GamepadForwardEvent { .. }
             | PersonalFabricAction::GamepadForwardStop { .. } => ContinuityCapability::TypedGamepad,
             PersonalFabricAction::Tethering { .. } => ContinuityCapability::WifiSettings,
-            PersonalFabricAction::SetDisplayPlacement { .. }
-            | PersonalFabricAction::DeviceHealthProbe { .. }
-            | PersonalFabricAction::DeviceHealthReport { .. }
-            | PersonalFabricAction::InputLeaseGranted { .. }
-            | PersonalFabricAction::InputLeaseRevoked { .. }
-            | PersonalFabricAction::Input { .. } => ContinuityCapability::DisplayInput,
         }
     }
 

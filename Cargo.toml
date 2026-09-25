@@ -22,6 +22,7 @@ exclude = [
 # the full workspace nightly.
 default-members = [
     "crates/doc/qdoc",
+    "crates/doc/qdoc-codecs",
     "crates/system/fs",
     "crates/session/shell",
     "crates/sdk/ui-core",
@@ -135,6 +136,7 @@ members = [
     "crates/doc/format-provider-abi",
     "crates/doc/pdf",
     "crates/doc/qdoc",
+    "crates/doc/qdoc-codecs",
     "crates/doc/qdoc-pdf",
     "crates/doc/tilo-automerge",
 

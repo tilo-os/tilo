@@ -1,6 +1,6 @@
 //! End-to-end: HTML *import* via the word processor's open path. HTML *export*
-//! is provided by `qdoc::export_html`; this proves the read side — a `.html` file (whether
-//! hand-written or produced by `qdoc::export_html::render_html`) opens into the canonical
+//! is provided by `qdoc_codecs::export_html`; this proves the read side — a `.html` file (whether
+//! hand-written or produced by `qdoc_codecs::export_html::render_html`) opens into the canonical
 //! CRDT model with its headings, paragraphs, bold runs, and links intact.
 
 #![allow(
@@ -24,7 +24,7 @@ fn temp_path(name: &str) -> PathBuf {
     p
 }
 
-/// Author a document in the canonical model, then return its `qdoc::export_html`-rendered
+/// Author a document in the canonical model, then return its `qdoc_codecs::export_html`-rendered
 /// HTML — the exact bytes the editor's HTML *export* would write.
 fn render_doc_to_html() -> String {
     let mut state = ui::State::new();
@@ -47,12 +47,12 @@ fn render_doc_to_html() -> String {
         dm.add_mark(&p, 13, 19, "link", "https://tilo.so/"); // "a link"
     }
     let snap = qdoc::model::materialize(&state.doc, &c);
-    qdoc::export_html::render_html(&snap, qdoc::export_html::HtmlOptions::default())
+    qdoc_codecs::export_html::render_html(&snap, qdoc_codecs::export_html::HtmlOptions::default())
 }
 
 #[test]
 fn open_html_recovers_headings_bold_link() {
-    // export (`qdoc::export_html`) → file → import (HtmlCodec) round-trip.
+    // export (`qdoc_codecs::export_html`) → file → import (HtmlCodec) round-trip.
     let html = render_doc_to_html();
     let path = temp_path("doc.html");
     std::fs::write(&path, html.as_bytes()).unwrap();

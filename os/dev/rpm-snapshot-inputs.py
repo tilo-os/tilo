@@ -26,6 +26,7 @@ INPUTS = (
     ".forgejo/actions/install-cosign",
     "os/Containerfile.rpms",
     "os/dev/verify-rpm-snapshot-signatures.sh",
+    "os/dev/layer-rpm-snapshot.py",
     "os/external-assets/github-assets.tsv",
     "os/dev/cache-github-assets.sh",
     "os/dev/derive-rpm-package-set.py",

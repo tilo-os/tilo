@@ -198,6 +198,10 @@ fn cli_requires_profile_and_manifest_paths() {
 }
 
 #[test]
+#[expect(
+    clippy::naive_bytecount,
+    reason = "counts the newlines of one short test reply"
+)]
 fn protocol_writer_emits_one_json_line_and_flushes() {
     #[derive(Default)]
     struct Output {
