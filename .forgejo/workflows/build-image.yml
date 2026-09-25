@@ -726,25 +726,7 @@ jobs:
         if: steps.release-mode.outputs.publish == 'true'
         run: |
           set -euo pipefail
-          work="$(mktemp -d /var/tmp/tilo-signer-probe.XXXXXX)"
-          trap 'rm -rf "$work"' EXIT
-          "$TILO_PCR_PREDICTION_SIGNER" export-efi-cert "$work/efi-signing.crt"
-          openssl x509 -in "$work/efi-signing.crt" -outform DER -out "$work/efi-signing.der"
-          openssl x509 -in keys/efi-signing.crt -outform DER -out "$work/tracked.der"
-          actual="$(sha256sum "$work/efi-signing.der" | cut -d' ' -f1)"
-          [[ $actual == "$TILO_EFI_SIGNING_CERT_SHA256" ]] \
-            && cmp --silent "$work/efi-signing.der" "$work/tracked.der" || {
-            echo '::error::the release signer certificate matches neither TILO_EFI_SIGNING_CERT_SHA256 nor keys/efi-signing.crt'
-            exit 1
-          }
-          printf 'tilo release signer probe %s %s\n' "$GITHUB_RUN_ID" "$GITHUB_SHA" > "$work/probe"
-          "$TILO_PCR_PREDICTION_SIGNER" sign-sha256-rsa-pkcs1 "$work/probe" "$work/probe.sig"
-          openssl dgst -sha256 -verify keys/tpm2-pcr-signing.public.pem \
-            -signature "$work/probe.sig" "$work/probe" >/dev/null || {
-            echo '::error::the release signer PCR signature does not verify with keys/tpm2-pcr-signing.public.pem'
-            exit 1
-          }
-          echo "::notice::release signer verified: EFI certificate $actual and KMS PCR signature"
+          ./os/dev/probe-release-signer.py "$TILO_PCR_PREDICTION_SIGNER" "$TILO_EFI_SIGNING_CERT_SHA256"
 
       - name: Load the pinned marketplace owner trust input
         shell: bash
