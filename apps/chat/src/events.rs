@@ -939,6 +939,27 @@ impl ChatApp {
     /// channel — it rides the same collab transport as the messages), dial the
     /// peers already there, set call state, and play the join cue. Gated by the
     /// real permission context.
+    /// Signalling: announce how peers dial our media transport in the current
+    /// call. The ticket itself comes from the transport — external, and
+    /// minted here — but writing it into the shared map is a document
+    /// mutation like any other, so it goes down the one route. A live
+    /// transport still binding has no ticket yet; it is announced once bound.
+    pub(crate) fn announce_call_ticket(&mut self, doc: &mut AutoCommit) {
+        if !self.call.active {
+            return;
+        }
+        if let Some(ticket) = self.media.local_ticket() {
+            self.perform_action(
+                doc,
+                &actions::ChatAction::SetCallTicket {
+                    channel: self.call.channel.clone(),
+                    user: self.me.id.clone(),
+                    ticket,
+                },
+            );
+        }
+    }
+
     fn join_voice(&mut self, channel: &str, doc: &mut AutoCommit) {
         if !self.call_allows(CallAction::Join) {
             return;
@@ -961,23 +982,10 @@ impl ChatApp {
             doc,
             &actions::ChatAction::JoinCall {
                 channel: channel.to_string(),
-                user: me.clone(),
+                user: me,
             },
         );
-        // Signalling: announce how peers dial our media transport. The ticket
-        // itself comes from the transport — external, and minted here — but
-        // writing it into the shared map is a document mutation like any other,
-        // so it goes down the one route.
-        if let Some(ticket) = self.media.local_ticket() {
-            self.perform_action(
-                doc,
-                &actions::ChatAction::SetCallTicket {
-                    channel: channel.to_string(),
-                    user: me,
-                    ticket,
-                },
-            );
-        }
+        self.announce_call_ticket(doc);
         self.sync_local_voice(doc);
         // Media: publish the local audio track over the (simulated or live)
         // transport so the pipeline is exercised end to end.

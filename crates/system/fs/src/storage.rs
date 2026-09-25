@@ -368,7 +368,6 @@ impl StorageAuthority {
     }
 
     #[allow(
-        clippy::await_holding_lock,
         clippy::significant_drop_tightening,
         reason = "the availability lock intentionally spans plan revalidation and GC handoff so a pin, receipt, or version cannot race destructive authorization"
     )]
@@ -412,16 +411,14 @@ impl StorageAuthority {
                         Some(request_id) => request_id,
                         None => queue.enqueue(plan, now_ms)?.id,
                     };
-                    tokio::task::block_in_place(|| {
-                        runtime.block_on(store.release_eviction_to_backend_gc(
-                            queue,
-                            request_id,
-                            registry,
-                            catalog,
-                            now_ms,
-                            crate::availability::EvictionRequirements::default(),
-                        ))
-                    })?;
+                    runtime.block_on(store.release_eviction_to_backend_gc(
+                        queue,
+                        request_id,
+                        registry,
+                        catalog,
+                        now_ms,
+                        crate::availability::EvictionRequirements::default(),
+                    ))?;
                     Ok(request_id)
                 },
             )

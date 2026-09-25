@@ -1881,11 +1881,16 @@ async fn handle_peer_relay_envelope(
                 map.get(workspace_id).cloned()
             };
             if let Some(ws) = ws {
-                let mut wr = ws.lock().await;
+                let mut wr = ws.lock_owned().await;
                 let raw = delta.clone();
                 let seq = now_ns();
                 let author = *author_device_public_key;
-                let _ = wr.fanout_delta(&author, PeerRole::PeerRelay, &env, &raw, seq);
+                let env = env.clone();
+                // Persistence and the document merge block; see `handle_delta`.
+                let _ = tokio::task::spawn_blocking(move || {
+                    wr.fanout_delta(&author, PeerRole::PeerRelay, &env, &raw, seq)
+                })
+                .await;
             }
         }
         Envelope::Presence { workspace_id, .. } => {

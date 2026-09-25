@@ -457,8 +457,13 @@ enum Command {
     },
 }
 
-#[tokio::main]
-async fn main() -> Result<()> {
+fn main() -> Result<()> {
+    // FUSE callbacks poll their futures on the fuser threads via the
+    // runtime handle; the workers only serve iroh, sockets and timers.
+    tilo_rt::daemon("tilo-fs").run(run_command())?
+}
+
+async fn run_command() -> Result<()> {
     let cli = Cli::parse();
     if let Some(path) = &cli.test_clock_file {
         fs::clock::install_test_clock_file(path).context("configuring deterministic test clock")?;

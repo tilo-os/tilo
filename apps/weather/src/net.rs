@@ -2,10 +2,10 @@
 //!
 //! `--shots` never touches this module — the offscreen frame renders the
 //! bundled [`crate::sample`] data. In the live app the [`WeatherApp`] owns
-//! one [`WeatherService`]: a detached worker thread running a Tokio runtime
-//! and a `reqwest` client. The widget posts [`Request`]s down an mpsc
-//! channel and drains [`Response`]s (non-blocking) from another, applying
-//! them to the model on the next frame. While a request is in flight the
+//! one [`WeatherService`]: a detached worker thread with a `reqwest` client
+//! that waits on the shared app runtime for each request. The widget posts
+//! [`Request`]s down an mpsc channel and drains [`Response`]s (non-blocking)
+//! from another, applying them to the model on the next frame. While a request is in flight the
 //! widget reports `needs_animation_frame()`, so the event loop keeps
 //! pumping frames and the result surfaces within a few hundred ms of
 //! arrival.
@@ -152,7 +152,8 @@ impl ResponseSender {
 }
 
 impl WeatherService {
-    /// Spawn the worker thread + its Tokio runtime and reqwest client.
+    /// Spawn the worker thread and its reqwest client; requests run on the
+    /// shared app runtime.
     pub fn spawn() -> Self {
         let (req_tx, req_rx) = channel::<Request>();
         let (res_tx, res_rx) = channel::<Response>();
@@ -203,10 +204,7 @@ impl WeatherService {
     reason = "keep the three existing provider branches together with their exact request completion envelopes"
 )]
 fn worker(req_rx: &Receiver<Request>, res_tx: &ResponseSender) {
-    let rt = match tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-    {
+    let rt = match ui::rt::try_app() {
         Ok(rt) => rt,
         Err(e) => {
             while let Ok(req) = req_rx.recv() {
@@ -219,6 +217,12 @@ fn worker(req_rx: &Receiver<Request>, res_tx: &ResponseSender) {
         .user_agent("tilo-weather/0.1 (+https://open-meteo.com)")
         .build()
         .ok();
+    // This worker waits on each request; the app runtime's thread drives the
+    // sockets and timers meanwhile.
+    let get = |url: &str| {
+        rt.block_on(fetch(client.as_ref(), url))
+            .unwrap_or_else(|e| Err(e.to_string()))
+    };
 
     while let Ok(req) = req_rx.recv() {
         let (req, context) = match req {
@@ -238,7 +242,7 @@ fn worker(req_rx: &Receiver<Request>, res_tx: &ResponseSender) {
                 units,
             } => {
                 let url = api::forecast_url(lat, lon, units);
-                match rt.block_on(fetch(client.as_ref(), &url)) {
+                match get(&url) {
                     Ok(body) => match api::parse_forecast(&body, location_id, units, now_secs()) {
                         Ok(snap) => {
                             send_response(res_tx, context, Response::Forecast(snap));
@@ -272,7 +276,7 @@ fn worker(req_rx: &Receiver<Request>, res_tx: &ResponseSender) {
                 lon,
             } => {
                 let url = api::air_quality_url(lat, lon);
-                match rt.block_on(fetch(client.as_ref(), &url)) {
+                match get(&url) {
                     Ok(body) => match api::parse_air_quality(&body, location_id, now_secs()) {
                         Ok(aq) => {
                             send_response(res_tx, context, Response::AirQuality(aq));
@@ -302,7 +306,7 @@ fn worker(req_rx: &Receiver<Request>, res_tx: &ResponseSender) {
             }
             Request::Geocode { seq, query } => {
                 let url = api::geocode_url(&query);
-                match rt.block_on(fetch(client.as_ref(), &url)) {
+                match get(&url) {
                     Ok(body) => match api::parse_geocode(&body) {
                         Ok(results) => {
                             send_response(res_tx, context, Response::Geocode { seq, results });

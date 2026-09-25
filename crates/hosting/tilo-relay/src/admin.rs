@@ -202,10 +202,7 @@ fn remote_home_peer(
     let expected_device = device_key(device)?;
     let service = device_key(service)?;
     let relay_addr = registered_home_peer_addr(identity_root, device, service)?;
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()?;
-    runtime.block_on(async move {
+    tilo_rt::block_on(async move {
         let endpoint = iroh::Endpoint::bind(iroh::endpoint::presets::N0).await?;
         let response = tokio::time::timeout(
             std::time::Duration::from_secs(10),
@@ -224,7 +221,7 @@ fn remote_home_peer(
         .map_err(|_| anyhow::anyhow!("home peer did not answer within 10 seconds"))??;
         endpoint.close().await;
         Ok(response)
-    })
+    })?
 }
 
 fn cmd_home_peer(

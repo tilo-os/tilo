@@ -408,45 +408,33 @@ pub async fn prune_obsolete_workspace_content(
     let mut removed = 0_u64;
     for hashes in obsolete.chunks(MAX_GC_BATCH_BLOBS) {
         // Namespace roots and each physical deletion batch form one generation
-        // lease. A changed generation terminates this sweep; the next pass
-        // recomputes roots before releasing anything else. `evict_blobs` is
-        // async, so drive the bounded batch on a helper thread while retaining
-        // the lease instead of awaiting with a std::Mutex guard.
-        let batch_removed = {
+        // lease: the namespace lock is held from the generation check through
+        // the physical deletion. A changed generation terminates this sweep;
+        // the next pass recomputes roots before releasing anything else. The
+        // lease is a std::Mutex guard, which cannot be held across an await,
+        // so the whole lease — generation hashing included — runs on a
+        // blocking thread that waits on the store through the runtime handle.
+        let selected = hashes.iter().copied().collect::<HashSet<_>>();
+        let store = Arc::clone(&hydrator.store);
+        let namespace = Arc::clone(namespace);
+        let runtime = tokio::runtime::Handle::current();
+        let batch_removed = tokio::task::spawn_blocking(move || -> Result<Option<u64>> {
             let mut namespace = namespace
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            let current = *blake3::hash(&namespace.save()).as_bytes();
-            if current == generation {
-                let selected = hashes.iter().copied().collect::<HashSet<_>>();
-                let store = Arc::clone(&hydrator.store);
-                let batch_removed = std::thread::scope(|scope| {
-                    scope
-                        .spawn(|| {
-                            // A dedicated runtime keeps the generation lease
-                            // usable from both the service's multithreaded
-                            // runtime and current-thread test/embedded hosts.
-                            // GC touches only the local content store; it must
-                            // not depend on the namespace sync executor.
-                            tokio::runtime::Builder::new_current_thread()
-                                .enable_all()
-                                .build()
-                                .map_err(anyhow::Error::from)?
-                                .block_on(store.evict_blobs(&selected))
-                        })
-                        .join()
-                        .map_err(|_| anyhow::anyhow!("replica GC worker panicked"))?
-                })?;
-                // Keep the namespace generation lease through the physical
-                // deletion. This also makes the lease explicit at the point
-                // it is released rather than accidentally shortening it.
-                let lease_held = *blake3::hash(&namespace.save()).as_bytes() == generation;
-                drop(namespace);
-                lease_held.then_some(batch_removed)
-            } else {
-                None
+            if *blake3::hash(&namespace.save()).as_bytes() != generation {
+                return Ok(None);
             }
-        };
+            let batch_removed = runtime.block_on(store.evict_blobs(&selected))?;
+            // Keep the namespace generation lease through the physical
+            // deletion. This also makes the lease explicit at the point
+            // it is released rather than accidentally shortening it.
+            let lease_held = *blake3::hash(&namespace.save()).as_bytes() == generation;
+            drop(namespace);
+            Ok(lease_held.then_some(batch_removed))
+        })
+        .await
+        .map_err(|_| anyhow::anyhow!("replica GC worker panicked"))??;
         let Some(batch_removed) = batch_removed else {
             break;
         };
