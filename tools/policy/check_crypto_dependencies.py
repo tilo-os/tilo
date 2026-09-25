@@ -65,7 +65,6 @@ ALLOWED = {
 # removed by the change that migrates that crate; nothing may be added.
 MIGRATING = {
     "channel-crypto": frozenset({"chacha20poly1305"}),
-    "shell": frozenset({"chacha20poly1305", "x25519-dalek"}),
 }
 
 DEPENDENCY_TABLES = ("dependencies", "dev-dependencies", "build-dependencies")
