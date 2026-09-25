@@ -7,8 +7,9 @@
 //! those machines are in — so exercising it here exercises them.
 //!
 //! The policy is a property of the engine's configuration rather than a
-//! process-wide environment read, so this runs alongside the hardware tests
-//! without either having to mutate global state.
+//! process-wide environment read. Applying it still re-ranks the process-wide
+//! registry, so every test here holds `common::registry_policy_lock` while
+//! its engine autoplugs.
 
 mod common;
 
@@ -19,6 +20,7 @@ mod real {
 
     #[test]
     fn software_only_decodes_the_same_clip_through_a_cpu_decoder() {
+        let _registry = registry_policy_lock();
         let mut e = MediaEngine::with_config(EngineConfig::default().software_only().silent());
         assert!(e.is_real_decode(), "this test needs the real pipeline");
         e.open(fixture_source());
@@ -60,6 +62,7 @@ mod real {
 
     #[test]
     fn the_software_path_seeks_just_as_exactly() {
+        let _registry = registry_policy_lock();
         // Accurate seeking is a property of the seek flags, not of the
         // decoder, and must hold on the fallback too.
         let mut e = MediaEngine::with_config(EngineConfig::default().software_only().silent());
@@ -81,6 +84,7 @@ mod real {
 
     #[test]
     fn an_rgba_only_consumer_is_never_handed_a_gpu_buffer_it_cannot_paint() {
+        let _registry = registry_policy_lock();
         // The compatibility contract every existing consumer relies on: with
         // the default acceptance, `latest_frame()` is always populated.
         let mut e = MediaEngine::new();
