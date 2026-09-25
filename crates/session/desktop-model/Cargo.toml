@@ -22,5 +22,9 @@ thiserror.workspace = true
 tilo-actions = { path = "../../collab/actions" }
 uuid.workspace = true
 
+[dev-dependencies]
+# Tests take a peer's changes in the way production does (clippy.toml).
+tilo-automerge.workspace = true
+
 [lints]
 workspace = true

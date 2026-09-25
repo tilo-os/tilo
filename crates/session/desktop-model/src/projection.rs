@@ -992,6 +992,7 @@ pub fn changed_owned_entries(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tilo_automerge::ApplyIncoming;
 
     fn held(entry: (&str, &str)) -> std::collections::BTreeMap<String, String> {
         std::collections::BTreeMap::from([(entry.0.to_string(), entry.1.to_string())])
@@ -1008,7 +1009,7 @@ mod tests {
             let mut b = base.fork();
             project_room_records(&mut a, &held(("file:/a.md", "document"))).unwrap();
             project_room_records(&mut b, &held(("file:/b.md", "document"))).unwrap();
-            a.merge(&mut b).unwrap();
+            a.merge_incoming(&mut b).unwrap();
             let ids: Vec<String> = room_records_of(&a).into_iter().map(|(id, _)| id).collect();
             assert_eq!(ids, ["file:/a.md", "file:/b.md"]);
         }

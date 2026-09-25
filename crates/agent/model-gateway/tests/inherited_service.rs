@@ -1,4 +1,9 @@
 #![cfg(unix)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::arithmetic_side_effects,
+    reason = "in a test these are the assertion, not a hazard"
+)]
 
 use std::os::fd::AsRawFd;
 use std::os::unix::net::UnixStream;

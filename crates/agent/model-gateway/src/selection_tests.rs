@@ -29,7 +29,9 @@ fn files(root: &Path) -> BTreeMap<PathBuf, Vec<u8>> {
     result
 }
 
-fn child_selection(case: &str) {
+/// Save this case's provider configuration (and key, unless the case has
+/// none) and return the protocol it configured.
+fn save_case_config(case: &str) -> ProviderProtocol {
     let mut profile = ProviderProfile::local_vllm();
     profile.id = "test-provider".into();
     profile.endpoint = std::env::var("SELECTION_TEST_ENDPOINT").unwrap();
@@ -78,6 +80,11 @@ fn child_selection(case: &str) {
         );
         vault.save();
     }
+    protocol
+}
+
+fn child_selection(case: &str) {
+    let protocol = save_case_config(case);
     let root = PathBuf::from(std::env::var("XDG_CONFIG_HOME").unwrap());
     let before = files(&root);
     let mut payload = serde_json::json!({
@@ -146,10 +153,18 @@ fn child_selection(case: &str) {
     .unwrap();
 }
 
-fn run_case(test: &str, case: &str) -> Option<Option<Response>> {
+/// Where a case ran: in the re-executed child, which only writes its
+/// observation, or in the parent, with the handler's response if the request
+/// reached the handler at all.
+enum Outcome {
+    Child,
+    Parent(Option<Response>),
+}
+
+fn run_case(test: &str, case: &str) -> Outcome {
     if let Ok(case) = std::env::var("SELECTION_TEST_CASE") {
         child_selection(&case);
-        return None;
+        return Outcome::Child;
     }
     let nonce = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -210,7 +225,9 @@ fn run_case(test: &str, case: &str) -> Option<Option<Response>> {
         String::from_utf8_lossy(&child.stdout),
         String::from_utf8_lossy(&child.stderr)
     );
-    Some(serde_json::from_slice(&fs::read(temp.0.join("response.json")).unwrap()).unwrap())
+    Outcome::Parent(
+        serde_json::from_slice(&fs::read(temp.0.join("response.json")).unwrap()).unwrap(),
+    )
 }
 
 #[test]
@@ -223,7 +240,7 @@ fn selection_configured_preserves_plan_locations_and_protocols_without_dispatch(
         "hosted",
         "hosted-anthropic",
     ] {
-        let Some(response) = run_case(
+        let Outcome::Parent(response) = run_case(
             "selection_configured_preserves_plan_locations_and_protocols_without_dispatch",
             case,
         ) else {
@@ -259,7 +276,7 @@ fn selection_configured_refuses_unavailable_or_mismatched_prerequisites() {
         "invalid-config",
         "secret-status",
     ] {
-        let Some(response) = run_case(
+        let Outcome::Parent(response) = run_case(
             "selection_configured_refuses_unavailable_or_mismatched_prerequisites",
             case,
         ) else {
@@ -278,7 +295,7 @@ fn selection_configured_refuses_unavailable_or_mismatched_prerequisites() {
 #[test]
 fn selection_configured_refuses_malformed_protocol_and_unknown_caller() {
     for case in ["invalid-protocol", "missing-protocol", "unknown-app"] {
-        let Some(response) = run_case(
+        let Outcome::Parent(response) = run_case(
             "selection_configured_refuses_malformed_protocol_and_unknown_caller",
             case,
         ) else {

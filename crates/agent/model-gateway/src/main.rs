@@ -379,6 +379,17 @@ async fn handle(app_id: &str, request: Request, http: &reqwest::Client) -> Respo
     handle_streaming(app_id, request, http, &mut |_| true).await
 }
 
+/// A successful final response.
+const fn succeeded(output: Option<String>, configured: Option<bool>) -> Response {
+    Response {
+        ok: true,
+        output,
+        configured,
+        error: None,
+        event: None,
+    }
+}
+
 /// Authorize and serve one request. `emit` writes an intermediate streaming
 /// frame and reports whether the client is still there; only a streaming
 /// Plan calls it. Configuration and vault work, which reads and writes
@@ -389,27 +400,9 @@ async fn handle_streaming(
     http: &reqwest::Client,
     emit: Emit<'_>,
 ) -> Response {
-    let output = |output| Response {
-        ok: true,
-        output: Some(output),
-        configured: None,
-        error: None,
-        event: None,
-    };
-    let done = |()| Response {
-        ok: true,
-        output: None,
-        configured: None,
-        error: None,
-        event: None,
-    };
-    let configured = |configured| Response {
-        ok: true,
-        output: None,
-        configured: Some(configured),
-        error: None,
-        event: None,
-    };
+    let output = |output| succeeded(Some(output), None);
+    let done = |()| succeeded(None, None);
+    let configured = |configured| succeeded(None, Some(configured));
     let result = match request {
         Request::SelectionConfigured {
             profile_id,
@@ -833,18 +826,21 @@ async fn read_stream(
         let Some(chunk) = chunk else {
             break;
         };
-        let take = chunk.len().min(MAX_STREAM_BYTES - read);
-        read += take;
-        pending.extend_from_slice(&chunk[..take]);
-        let mut start = 0;
-        while let Some(end) = pending[start..].iter().position(|byte| *byte == b'\n') {
-            let line = &pending[start..start + end + 1];
-            start += end + 1;
+        let take = chunk.len().min(MAX_STREAM_BYTES.saturating_sub(read));
+        read = read.saturating_add(take);
+        pending.extend(chunk.iter().take(take));
+        let mut consumed = 0_usize;
+        for line in pending.split_inclusive(|byte| *byte == b'\n') {
+            if line.last() != Some(&b'\n') {
+                // A partial line waits for the rest of it.
+                break;
+            }
+            consumed = consumed.saturating_add(line.len());
             if sse.line(line, emit, timing, &mut Instant::now)? == Flow::Done {
                 return sse.finish(emit, timing);
             }
         }
-        pending.drain(..start);
+        pending.drain(..consumed);
     }
     // A last line without its newline, as a buffered line reader returns it.
     if !pending.is_empty() {
@@ -1014,13 +1010,16 @@ impl DeltaCoalescer {
         force: bool,
         emit: Emit<'_>,
     ) -> Result<(), ProviderFailure> {
-        let call = &assembly.calls[index];
+        let Some(call) = assembly.calls.get(index) else {
+            return Ok(());
+        };
         while self.sent.len() <= index {
             self.sent.push((0, None));
         }
-        let (sent, last) = self.sent[index];
-        // `arguments` only grows by whole provider strings, so both offsets
-        // are character boundaries.
+        let Some(slot) = self.sent.get_mut(index) else {
+            return Ok(());
+        };
+        let (sent, last) = *slot;
         let buffered = call.arguments.len().saturating_sub(sent);
         if buffered == 0 || self.frames >= MAX_DELTA_EVENTS {
             return Ok(());
@@ -1031,6 +1030,11 @@ impl DeltaCoalescer {
         if !due {
             return Ok(());
         }
+        // `arguments` only grows by whole provider strings, so both offsets
+        // are character boundaries.
+        let Some(delta) = call.arguments.get(sent..) else {
+            return Ok(());
+        };
         let event = Response {
             ok: true,
             output: Some(
@@ -1038,7 +1042,7 @@ impl DeltaCoalescer {
                     "index": index,
                     "id": (!call.id.is_empty()).then_some(call.id.as_str()),
                     "name": call.name,
-                    "delta": &call.arguments[sent..],
+                    "delta": delta,
                 })
                 .to_string(),
             ),
@@ -1046,8 +1050,8 @@ impl DeltaCoalescer {
             error: None,
             event: Some(EVENT_TOOL_CALL_DELTA.into()),
         };
-        self.frames += 1;
-        self.sent[index] = (call.arguments.len(), Some(now));
+        self.frames = self.frames.saturating_add(1);
+        *slot = (call.arguments.len(), Some(now));
         if emit(&event) {
             Ok(())
         } else {
@@ -1068,7 +1072,9 @@ fn emit_complete(
 ) -> Result<usize, ProviderFailure> {
     let mut emitted = emitted;
     while emitted < complete {
-        let call = &assembly.calls[emitted];
+        let Some(call) = assembly.calls.get(emitted) else {
+            break;
+        };
         let now = timing.started.elapsed();
         timing.first_tool_call.get_or_insert(now);
         if call.name == "plan" {
@@ -1099,7 +1105,7 @@ fn emit_complete(
                 ));
             }
         }
-        emitted += 1;
+        emitted = emitted.saturating_add(1);
     }
     Ok(emitted)
 }
@@ -1199,7 +1205,9 @@ impl StreamAssembly {
             }
             // A delta for a later index means every earlier call is complete.
             self.frontier = self.frontier.max(index);
-            let slot = &mut self.calls[index];
+            let Some(slot) = self.calls.get_mut(index) else {
+                continue;
+            };
             if let Some(id) = call.get("id").and_then(serde_json::Value::as_str) {
                 slot.id = id.into();
             }
@@ -1237,15 +1245,18 @@ impl StreamAssembly {
     }
 
     fn into_completion(self) -> serde_json::Value {
-        let mut message = serde_json::json!({
-            "role": "assistant",
-            "content": self.content,
-        });
+        let mut message = serde_json::Map::new();
+        message.insert("role".into(), "assistant".into());
+        message.insert(
+            "content".into(),
+            self.content
+                .map_or(serde_json::Value::Null, serde_json::Value::String),
+        );
         if let Some(refusal) = self.refusal {
-            message["refusal"] = serde_json::Value::String(refusal);
+            message.insert("refusal".into(), serde_json::Value::String(refusal));
         }
         if !self.calls.is_empty() {
-            message["tool_calls"] = self
+            let calls = self
                 .calls
                 .into_iter()
                 .map(|call| {
@@ -1256,6 +1267,7 @@ impl StreamAssembly {
                     })
                 })
                 .collect();
+            message.insert("tool_calls".into(), calls);
         }
         serde_json::json!({
             "id": self.id,
@@ -1398,7 +1410,7 @@ fn log_mark(trace: PlanTrace, event: TraceEvent, at_unix_ms: Option<u64>) {
         "tilo-model-gateway: timing mark trace={:016x}/{} event={event} unix_ms={at} delivered_late_ms={}",
         trace.id,
         trace.turn,
-        now - at
+        now.saturating_sub(at)
     );
 }
 
@@ -1768,14 +1780,14 @@ async fn error_body(mut response: reqwest::Response) -> Vec<u8> {
         let Ok(Some(chunk)) = response.chunk().await else {
             break;
         };
-        let take = chunk.len().min(MAX_ERROR_BODY - detail.len());
-        detail.extend_from_slice(&chunk[..take]);
+        let take = chunk.len().min(MAX_ERROR_BODY.saturating_sub(detail.len()));
+        detail.extend(chunk.iter().take(take));
     }
     detail
 }
 
 /// The provider's machine-readable error classification, and nothing else:
-/// `error.type`, `error.code` and `error.param` (OpenAI) or `error.type`
+/// `error.type`, `error.code` and `error.param` (`OpenAI`) or `error.type`
 /// (Anthropic), each only when it is a short identifier. The free-text
 /// `message` is never passed on, because it can quote request content, and
 /// no header is ever read.
@@ -2119,14 +2131,11 @@ mod tests {
         profile
     }
 
-    fn reasoning(
-        param: ReasoningParam,
-        effort: &str,
-    ) -> Option<agent_provider_config::ReasoningSetting> {
-        Some(agent_provider_config::ReasoningSetting {
+    fn reasoning(param: ReasoningParam, effort: &str) -> agent_provider_config::ReasoningSetting {
+        agent_provider_config::ReasoningSetting {
             param,
             effort: effort.into(),
-        })
+        }
     }
 
     #[test]
@@ -2151,7 +2160,7 @@ mod tests {
         // OpenRouter-style: `max_tokens` and the reasoning object.
         let mut router = hosted_openai();
         router.token_limit_param = Some(agent_provider_config::TokenLimitParam::MaxTokens);
-        router.reasoning = reasoning(ReasoningParam::ReasoningObject, "low");
+        router.reasoning = Some(reasoning(ReasoningParam::ReasoningObject, "low"));
         let body = outbound_body(&router, "vendor/model-a", caller.clone(), false).unwrap();
         assert_eq!(body["max_tokens"], 64);
         assert!(body.get("max_completion_tokens").is_none());
@@ -2162,7 +2171,7 @@ mod tests {
         let mut openai = hosted_openai();
         openai.token_limit_param =
             Some(agent_provider_config::TokenLimitParam::MaxCompletionTokens);
-        openai.reasoning = reasoning(ReasoningParam::ReasoningEffort, "none");
+        openai.reasoning = Some(reasoning(ReasoningParam::ReasoningEffort, "none"));
         let legacy = serde_json::json!({"max_tokens": 9, "reasoning": {"effort": "high"}});
         let body = outbound_body(&openai, "vendor/model-a", legacy, false).unwrap();
         assert_eq!(body["max_completion_tokens"], 9);
@@ -2180,13 +2189,13 @@ mod tests {
 
         // `none` strips every reasoning field.
         let mut omit = hosted_openai();
-        omit.reasoning = reasoning(ReasoningParam::Omit, "");
+        omit.reasoning = Some(reasoning(ReasoningParam::Omit, ""));
         let body = outbound_body(&omit, "vendor/model-a", caller, false).unwrap();
         assert!(body.get("reasoning_effort").is_none() && body.get("reasoning").is_none());
 
         let mut anthropic = ProviderProfile::hosted(ProviderProtocol::Anthropic);
         anthropic.models = vec![agent_provider_config::ModelDescriptor::new("claude-x")];
-        anthropic.reasoning = reasoning(ReasoningParam::ReasoningEffort, "low");
+        anthropic.reasoning = Some(reasoning(ReasoningParam::ReasoningEffort, "low"));
         anthropic.token_limit_param =
             Some(agent_provider_config::TokenLimitParam::MaxCompletionTokens);
         let body = outbound_body(

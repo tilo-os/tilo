@@ -8,7 +8,7 @@ async fn native_media_kernel_peer_death_fences_even_while_descendant_retains_soc
     let directory = tempfile::tempdir().unwrap();
     let socket = directory.path().join("peer.sock");
     let listener = tokio::net::UnixListener::bind(&socket).unwrap();
-    let script = r#"import os, socket, sys
+    let script = r"import os, socket, sys
 s = socket.socket(socket.AF_UNIX)
 s.connect(sys.argv[1])
 s.sendall(b'R')
@@ -19,7 +19,7 @@ if os.fork() == 0:
     try: s.recv(1)
     except TimeoutError: pass
 os._exit(0)
-"#;
+";
     let mut child = std::process::Command::new("python3")
         .args(["-c", script])
         .arg(&socket)
@@ -33,7 +33,7 @@ os._exit(0)
             .unwrap()
             .unwrap();
     assert_eq!(
-        stream.peer_cred().unwrap().pid().unwrap() as u32,
+        u32::try_from(stream.peer_cred().unwrap().pid().unwrap()).unwrap(),
         child.id()
     );
     let mut byte = [0u8; 1];

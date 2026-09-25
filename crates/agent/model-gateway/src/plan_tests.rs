@@ -231,6 +231,8 @@ fn run_case(test: &str, case: &str) -> Option<Observed> {
             };
             stream.write_all(reply.as_bytes()).unwrap();
         }
+        // Held connections stay open, unanswered, until the peer stops.
+        drop(held);
         requests
     });
     let began = Instant::now();
@@ -382,7 +384,7 @@ fn unsupported_gateway_host_refuses_peer_authentication() {
 
 fn request_body(request: &str) -> serde_json::Value {
     // `read_request` keeps header lines, then the JSON body.
-    serde_json::from_str(&request[request.find('{').unwrap()..]).unwrap()
+    serde_json::from_str(request.get(request.find('{').unwrap()..).unwrap()).unwrap()
 }
 
 #[test]
@@ -531,7 +533,9 @@ fn plan_dispatch_streams_argument_deltas_only_when_asked() {
 fn sse(chunks: &[serde_json::Value]) -> String {
     let mut text = String::new();
     for chunk in chunks {
-        text.push_str(&format!("data: {chunk}\n\n"));
+        text.push_str("data: ");
+        text.push_str(&chunk.to_string());
+        text.push_str("\n\n");
     }
     text.push_str("data: [DONE]\n\n");
     text
@@ -567,8 +571,11 @@ fn feed(
     let text = sse(chunks);
     let mut reader = std::io::Cursor::new(text.into_bytes());
     let base = Instant::now();
-    let mut times = times_ms.to_vec().into_iter();
-    let mut clock = move || base + Duration::from_millis(times.next().unwrap_or(u64::MAX / 4));
+    let mut times = times_ms.iter().copied();
+    let mut clock = move || {
+        base.checked_add(Duration::from_millis(times.next().unwrap_or(u64::MAX / 4)))
+            .unwrap()
+    };
     let mut frames = Vec::new();
     let mut timing = PlanTiming::start();
     let body = read_sse(
