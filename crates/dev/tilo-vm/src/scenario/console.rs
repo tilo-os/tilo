@@ -8,7 +8,7 @@
 //! replies to anything else — a request written before the guest was
 //! listening, answered after this client gave up on it — are skipped.
 
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader};
 #[cfg(windows)]
 use std::net::TcpStream;
 #[cfg(unix)]
@@ -197,6 +197,7 @@ impl SocketConsole {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Write as _;
     #[cfg(windows)]
     use std::net::TcpListener;
     #[cfg(unix)]
