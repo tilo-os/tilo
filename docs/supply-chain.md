@@ -158,8 +158,11 @@ operate it. Companion to `docs/superpowers/specs/2026-06-30-tilo-security-archit
   index is signed and verified, the workflow calls `build-kernel.yml` with it,
   and that run pushes one `automation/rpm-kernel-snapshot-<digest16>` branch
   updating both `os/rpms-snapshot.env` and `os/kernel-snapshot.env`, then opens
-  its pull request; merge that PR once its required checks pass. Until then
-  the build fails
+  its pull request; merge that PR once its required checks pass. The pin
+  records the commit the index was built from (`RPMS_SOURCE_REVISION`), and
+  each refresh decision compares against that commit rather than the previous
+  push, so a package change that lands while a pin is in review is still
+  picked up by the next run. Until then the build fails
   `No match for argument: <pkg>`. The package list is auto-derived from
   `os/Containerfile`, so there is no separate list to maintain.
   Before publishing, the snapshot replays the image's erase of base packages it

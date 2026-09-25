@@ -190,7 +190,7 @@ fi
 rebuild_job="$(sed -n '/^  rebuild:/,/^  signing-preflight:/p' "$kernel_workflow")"
 if grep -Fq "if: \${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && !inputs.rpms_ref }}" <<<"$rebuild_job" \
    && grep -Fq "printf 'os/kernel-snapshot.env\\nos/rpms-snapshot.env'" <<<"$rebuild_job" \
-   && grep -Fq 'python3 os/dev/rpm-snapshot-inputs.py --base "$BEFORE" --head "$GITHUB_SHA"' <<<"$rebuild_job" \
+   && grep -Fq 'snapshot_changed --base "$BEFORE" && snapshot_changed --since-pin' <<<"$rebuild_job" \
    && grep -Fq "(needs.rebuild.result == 'skipped' || needs.rebuild.outputs.needed == 'true')" "$kernel_workflow" \
    && ! grep -Fq 'os/kernel-snapshot.env"' <<<"$(sed -n '/^on:/,/^concurrency:/p' "$kernel_workflow")"; then
   ok 'pin-only merges and snapshot-covered pushes do not publish a redundant kernel'
