@@ -140,6 +140,7 @@ impl TryFrom<Action> for ObjType {
             Action::MakeMap => Ok(ObjType::Map),
             Action::MakeList => Ok(ObjType::List),
             Action::MakeText => Ok(ObjType::Text),
+            Action::MakeTable => Ok(ObjType::Table),
             _ => Err(AutomergeError::Fail),
         }
     }
