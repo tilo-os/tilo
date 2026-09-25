@@ -51,6 +51,7 @@ suites = [
   "os/tests/encrypted_boot_mount_contract.sh",
   "os/tests/firstboot_autologin_cleanup.sh",
   "os/tests/firstboot_password_hash.sh",
+  "os/tests/boot_order_enlist_test.py",
   "os/tests/installer_target_artifacts.py",
   "os/tests/installer_target_modes.py",
   "os/tests/internal_bundle_test.py",
