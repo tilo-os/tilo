@@ -16,6 +16,8 @@ import unittest
 ROOT = Path(__file__).resolve().parents[2]
 IMAGE_WORKFLOW = ROOT / ".forgejo/workflows/build-image.yml"
 KERNEL_WORKFLOW = ROOT / ".forgejo/workflows/build-kernel.yml"
+APPS_WORKFLOW = ROOT / ".forgejo/workflows/release-apps.yml"
+DESKTOP_WORKFLOW = ROOT / ".forgejo/workflows/package-desktop.yml"
 CACHE_SETTINGS = (
     "SCCACHE_BUCKET", "SCCACHE_ENDPOINT", "SCCACHE_REGION", "SCCACHE_S3_USE_SSL",
     "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY",
@@ -145,6 +147,51 @@ class KernelPublicationTests(unittest.TestCase):
         self.assertIn("if [[ $KERNEL_COMPILER_CACHE == shared ]]; then", probe)
         outside = probe.replace(probe[probe.index("cache_secrets=(--secret"):probe.index("          fi\n")], "")
         self.assertNotIn("--secret id=aws_access_key_id", outside)
+
+    def test_a_published_kernel_imports_no_layer_cache(self):
+        build = self.steps["Build the tilo-kernel image (push only on tags/dispatch)"]
+        self.assertIn(
+            "cache-from: ${{ github.event_name == 'pull_request' && format('type=registry,"
+            "ref=code.podesta.ai/qos/tilo-kernel-buildcache:{0}', matrix.arch) || '' }}", build)
+        self.assertEqual(self.workflow.count("cache-from:"), 1)
+
+
+class AppCollectionPublicationTests(unittest.TestCase):
+    def setUp(self):
+        self.steps = steps(APPS_WORKFLOW.read_text())
+
+    def test_only_unpublished_runs_prepare_the_shared_cache(self):
+        prepare = self.steps["Prepare compiler cache"]
+        self.assertIn("if: needs.plan.outputs.publish != 'true'", prepare)
+        self.assertIn("run: bash tools/ci/sccache.sh prepare", prepare)
+
+    def test_a_publication_compiles_without_cache_credentials_or_wrapper(self):
+        build = self.steps["Build and verify selected tapps once for this architecture"]
+        script = textwrap.dedent(build.split("        run: |\n", 1)[1])
+        guard = script.split("if [[ -n ${TAPP_PUBLISHER_IDENTITY:-} ]]; then", 1)[0]
+        probe = guard.replace("${{ needs.plan.outputs.publish }}", "true") + (
+            'env | grep -E "^(AWS_|SCCACHE_)" && exit 1\n'
+            '[[ -z ${RUSTC_WRAPPER:-} ]] || exit 1\n')
+        env = {"PATH": os.environ["PATH"], "RUSTC_WRAPPER": "/usr/local/bin/sccache",
+               "SCCACHE_S3_KEY_PREFIX": "tilo/apps", **runner_cache()}
+        result = subprocess.run(["bash", "-c", probe], env=env, text=True,
+                                capture_output=True, check=False)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertLess(script.index(guard), script.index("dist/apps/package-apps.sh"))
+
+
+class DesktopPayloadPublicationTests(unittest.TestCase):
+    def test_only_an_unpublishable_branch_dispatch_uses_the_cache(self):
+        build = steps(DESKTOP_WORKFLOW.read_text())["Build and install-test all five target userspaces"]
+        self.assertIn(
+            "TILO_ENABLE_REMOTE_CACHE: ${{ github.event_name == 'workflow_dispatch' && "
+            "github.ref != 'refs/heads/main' && !startsWith(github.ref, 'refs/tags/') "
+            "&& '1' || '0' }}", build)
+        job = (ROOT / "dist/ci/run-package-job.sh").read_text()
+        disabled = job.split("if [[ ${TILO_ENABLE_REMOTE_CACHE:-0} == 1 ]]; then", 1)[1]
+        disabled = disabled.split("    else\n", 1)[1].split("    fi\n", 1)[0]
+        self.assertIn('unset "$name"', disabled)
+        self.assertIn("grep -E '^(AWS_|SCCACHE_)'", disabled)
 
 
 class ContainerfileTests(unittest.TestCase):
