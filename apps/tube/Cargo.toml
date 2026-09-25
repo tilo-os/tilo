@@ -51,8 +51,6 @@ libc.workspace = true
 # rustls with bundled webpki roots avoids an OpenSSL dependency and keeps the
 # TLS stack consistent with reqwest.
 rustypipe = { workspace = true, optional = true, features = ["rustls-tls-webpki-roots"] }
-# `rt-multi-thread` is required by rustypipe's internal spawned tasks.
-tokio = { workspace = true, optional = true, features = ["rt", "rt-multi-thread", "macros", "time"] }
 
 # Grayjay device sync uses the Noise protocol over TCP. `snow`, `flate2`, and
 # `base64` are gated behind `grayjay-sync`.
@@ -78,7 +76,7 @@ thin = ["dep:runtime-dylib"]
 # also fails closed if the host secret broker is unavailable.
 default = ["live", "media", "grayjay-sync"]
 # YouTube data via yt-dlp with rustypipe as a fallback source.
-live = ["dep:rustypipe", "dep:tokio"]
+live = ["dep:rustypipe"]
 # Video decode, playback, and audio through the shared GStreamer media engine.
 media = [
     "media/decode",

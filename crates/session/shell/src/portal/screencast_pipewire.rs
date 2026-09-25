@@ -219,6 +219,28 @@ impl ScreenCastStreamProvisionerHandle {
         self.inner.provision_stream(req)
     }
 
+    /// [`Self::provision`] from async code. Setting up a stream waits for the
+    /// `PipeWire` producer thread to report its node (up to seconds), so it
+    /// waits on the blocking pool instead of holding a portal worker.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::provision`]; a panicking provisioner reports a stream
+    /// setup failure.
+    pub async fn provision_blocking(
+        &self,
+        req: PipewireStreamRequest,
+    ) -> Result<PipewireStreamInfo, ProvisioningError> {
+        let provisioner = self.clone();
+        tokio::task::spawn_blocking(move || provisioner.provision(&req))
+            .await
+            .unwrap_or_else(|_| {
+                Err(ProvisioningError::StreamSetup(
+                    "stream provisioning panicked".into(),
+                ))
+            })
+    }
+
     /// Release a stream as part of request/session teardown.
     pub fn release(&self, node_id: u32) {
         self.inner.release_stream(node_id);

@@ -4333,6 +4333,7 @@ dependencies = [
  "thumbnail",
  "tilo-automerge",
  "tilo-power-mgmt",
+ "tilo-rt",
  "tilo-user-identity",
  "tokio",
  "toml 1.0.6+spec-1.1.0",
@@ -6468,7 +6469,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.18",
  "tilo-app-package",
- "tokio",
+ "tilo-rt",
  "toml 1.0.6+spec-1.1.0",
  "xdg-paths",
 ]
@@ -9508,7 +9509,7 @@ dependencies = [
  "tilo-bluez",
  "tilo-crypto",
  "tilo-power-mgmt",
- "tokio",
+ "tilo-rt",
  "tracing",
  "zbus",
  "zeroize",
@@ -11340,6 +11341,7 @@ dependencies = [
  "thiserror 2.0.18",
  "tilo-app-package",
  "tilo-net",
+ "tilo-rt",
  "tokio",
  "toml 1.0.6+spec-1.1.0",
  "tracing",
@@ -11839,8 +11841,8 @@ dependencies = [
  "ashpd",
  "tempfile",
  "thiserror 2.0.18",
+ "tilo-rt",
  "tilo-test-env",
- "tokio",
  "url",
 ]
 
@@ -12906,6 +12908,7 @@ dependencies = [
  "tilo-relay",
  "tilo-relay-client",
  "tilo-relay-protocol",
+ "tilo-rt",
  "tilo-startup-metrics",
  "tilo-test-env",
  "tilo-ui",
@@ -14246,6 +14249,7 @@ dependencies = [
  "tar",
  "tempfile",
  "tilo-app-package",
+ "tilo-rt",
  "tokio",
  "toml 1.0.6+spec-1.1.0",
 ]
@@ -14479,6 +14483,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tilo-callstream",
+ "tilo-rt",
  "tokio",
  "xdg-paths",
  "zbus",
@@ -14531,6 +14536,7 @@ dependencies = [
  "tilo-automerge",
  "tilo-relay-client",
  "tilo-relay-protocol",
+ "tilo-rt",
  "tilo-seal",
  "tilo-user-identity",
  "tokio",
@@ -14619,6 +14625,16 @@ dependencies = [
  "tempfile",
  "tilo-crypto",
  "zeroize",
+]
+
+[[package]]
+name = "tilo-rt"
+version = "0.1.0"
+dependencies = [
+ "rayon",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]
@@ -14727,6 +14743,7 @@ dependencies = [
  "tilo-automerge",
  "tilo-desktop-model",
  "tilo-headless-schema",
+ "tilo-rt",
  "tilo-seal",
  "tilo-startup-metrics",
  "tilo-test-env",
@@ -15449,7 +15466,6 @@ dependencies = [
  "tilo-app",
  "tilo-net",
  "tilo-test-env",
- "tokio",
  "tracing",
  "tracing-subscriber",
  "uuid",
@@ -16840,7 +16856,6 @@ dependencies = [
  "tilo-app",
  "tilo-automerge",
  "tilo-net",
- "tokio",
  "tracing-subscriber",
  "uuid",
  "vello",

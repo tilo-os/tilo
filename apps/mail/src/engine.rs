@@ -431,7 +431,7 @@ pub fn spawn_with(
                 let request_id = req.request_id();
                 backend.handle(req, &evt_tx);
                 // `MailEngine::handle` is synchronous from the worker's point
-                // of view (the live backend blocks on its owned runtime), so
+                // of view (the live backend blocks on each request), so
                 // this terminal acknowledgement cannot overtake its result.
                 let _ = evt_tx.send(EngineEvent::Completed { request_id, kind });
             }
@@ -460,11 +460,13 @@ pub mod live {
     use crate::transport::parse_fetched;
     use crate::validate::classify_conn_failure;
 
-    /// Real IMAP fetch/flag/move + SMTP submit + OAuth sign-in. The worker owns
-    /// a Tokio runtime and `block_on`s each request; this module is the only
-    /// place the app opens a socket.
+    /// Real IMAP fetch/flag/move + SMTP submit + OAuth sign-in. The engine
+    /// worker waits on each request with the shared app runtime's
+    /// `block_on`: the protocol futures are polled on the worker while the
+    /// runtime thread drives their sockets and timers. This module is the
+    /// only place the app opens a socket.
     pub struct LiveEngine {
-        rt: tokio::runtime::Runtime,
+        rt: &'static ui::rt::AppRuntime,
         tls: Arc<rustls::ClientConfig>,
     }
 
@@ -478,18 +480,22 @@ pub mod live {
     impl LiveEngine {
         /// # Errors
         ///
-        /// Returns `Err` if the tokio runtime backing the IMAP/SMTP worker
-        /// cannot be built (e.g. the OS refuses the worker threads).
+        /// Returns `Err` if the app runtime that drives the IMAP/SMTP sockets
+        /// cannot be started (e.g. the OS refuses its thread).
         pub fn new() -> Result<Self, String> {
-            let rt = tokio::runtime::Builder::new_multi_thread()
-                .worker_threads(2)
-                .enable_all()
-                .build()
-                .map_err(|e| e.to_string())?;
+            let rt = ui::rt::try_app().map_err(|e| e.to_string())?;
             Ok(Self {
                 rt,
                 tls: build_tls_config(),
             })
+        }
+
+        /// Wait on one protocol future from the engine worker thread.
+        fn block_on<T>(
+            &self,
+            future: impl std::future::Future<Output = Result<T, String>>,
+        ) -> Result<T, String> {
+            self.rt.block_on(future).map_err(|e| e.to_string())?
         }
 
         fn handle_fetch(
@@ -499,13 +505,13 @@ pub mod live {
         ) -> Result<Vec<Message>, String> {
             let creds = resolve_auth(account)?;
             let tls = self.tls.clone();
-            self.rt.block_on(fetch_folder(account, folder, &creds, tls))
+            self.block_on(fetch_folder(account, folder, &creds, tls))
         }
 
         fn handle_store(&self, account: &AccountConfig, message: &Message) -> Result<(), String> {
             let creds = resolve_auth(account)?;
             let tls = self.tls.clone();
-            self.rt.block_on(store_flags(account, message, &creds, tls))
+            self.block_on(store_flags(account, message, &creds, tls))
         }
 
         fn handle_move(
@@ -516,23 +522,20 @@ pub mod live {
         ) -> Result<(), String> {
             let creds = resolve_auth(account)?;
             let tls = self.tls.clone();
-            self.rt
-                .block_on(move_message(account, message, to, &creds, tls))
+            self.block_on(move_message(account, message, to, &creds, tls))
         }
 
         fn handle_purge(&self, account: &AccountConfig, message: &Message) -> Result<(), String> {
             let creds = resolve_auth(account)?;
             let tls = self.tls.clone();
-            self.rt
-                .block_on(purge_message(account, message, &creds, tls))
+            self.block_on(purge_message(account, message, &creds, tls))
         }
 
         fn handle_send(&self, account: &AccountConfig, draft: &Draft) -> Result<usize, String> {
             let creds = resolve_auth(account)?;
             let from = Addr::new(account.display_name.clone(), account.email.clone());
             let bytes = build_mime(&from, draft)?;
-            self.rt
-                .block_on(smtp_send(account, draft, &creds, &bytes))?;
+            self.block_on(smtp_send(account, draft, &creds, &bytes))?;
             Ok(bytes.len())
         }
 
@@ -555,10 +558,7 @@ pub mod live {
                     return;
                 }
             };
-            match self
-                .rt
-                .block_on(list_folders(&account, &creds, self.tls.clone()))
-            {
+            match self.block_on(list_folders(&account, &creds, self.tls.clone())) {
                 Ok(folders) => {
                     let _ = out.send(EngineEvent::Connected {
                         request_id,
@@ -1464,14 +1464,6 @@ pub mod live {
             }
         }
 
-        fn test_runtime() -> tokio::runtime::Runtime {
-            tokio::runtime::Builder::new_multi_thread()
-                .worker_threads(2)
-                .enable_all()
-                .build()
-                .unwrap()
-        }
-
         #[test]
         fn imap_fetch_over_a_real_socket_parses_a_message() {
             let eml = b"From: Ada Lovelace <ada@analytical.example>\r\n\
@@ -1483,7 +1475,7 @@ Message-ID: <live-1@analytical.example>\r\n\
 This message was fetched over a real IMAP socket.\r\n"
                 .to_vec();
 
-            test_runtime().block_on(async move {
+            ui::rt::block_on(async move {
                 let server_tls = server_tls_config();
                 let (listener, port) = bind_local().await;
                 let eml_for_server = eml.clone();
@@ -1535,12 +1527,13 @@ This message was fetched over a real IMAP socket.\r\n"
                 assert_eq!(m.timestamp_min, 1_609_493_400 / 60);
 
                 server.abort();
-            });
+            })
+            .unwrap();
         }
 
         #[test]
         fn smtp_send_over_a_real_socket_delivers_the_mime() {
-            test_runtime().block_on(async move {
+            ui::rt::block_on(async move {
                 let server_tls = server_tls_config();
                 let (listener, port) = bind_local().await;
                 let captured = Arc::new(Mutex::new(Vec::<u8>::new()));
@@ -1598,7 +1591,8 @@ This message was fetched over a real IMAP socket.\r\n"
                 );
 
                 server.abort();
-            });
+            })
+            .unwrap();
         }
     }
 }

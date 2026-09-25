@@ -23,7 +23,8 @@ use crate::mpris::{OBJECT_PATH, track_object_path};
 pub struct DesktopMediaSessions;
 
 /// Serve MPRIS for one player. `None` on non-Unix platforms, without the
-/// `mpris` feature, or when the session bus can't be reached.
+/// `mpris` feature, or when the app runtime cannot start. The bus connection
+/// is made in the background; without a session bus the session stays inert.
 pub fn start_desktop_session(
     config: MprisConfig,
     initial: PlayerSnapshot,
@@ -371,53 +372,54 @@ mod imp {
         Ok(())
     }
 
-    /// Spawn the MPRIS worker thread. Returns the command receiver (bus →
-    /// widget) and the publish sender (widget → bus), or `None` if the session
-    /// bus is unreachable (headless / no D-Bus) — the caller degrades to the stub.
+    /// Start serving MPRIS on the app runtime. Returns the command receiver
+    /// (bus → widget) and the publish sender (widget → bus) at once, or `None`
+    /// when the app runtime cannot start.
+    ///
+    /// Connecting to the session bus and claiming the name are D-Bus round
+    /// trips, so they run on the app runtime rather than on the caller — a
+    /// player usually starts its session from the UI thread. Without a
+    /// reachable session bus (headless / no D-Bus) the task ends: commands
+    /// never arrive and publishes are dropped, like the stub.
     pub(super) fn spawn(
         config: MprisConfig,
         initial: PlayerSnapshot,
     ) -> Option<(Receiver<MprisCommand>, UnboundedSender<PlayerSnapshot>)> {
+        let runtime = tilo_rt::try_app().ok()?;
         let (cmd_tx, cmd_rx) = std::sync::mpsc::channel::<MprisCommand>();
         let (pub_tx, mut pub_rx) = tokio::sync::mpsc::unbounded_channel::<PlayerSnapshot>();
 
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .ok()?;
-        let bus_name = config.bus_name.clone();
-        let connection = rt
-            .block_on(async {
+        runtime.spawn(async move {
+            let bus_name = config.bus_name.clone();
+            let connected = async {
                 zbus::connection::Builder::session()?
                     .name(bus_name)?
                     .build()
                     .await
-            })
-            .ok()?;
-
-        let root = RootIface::new(config, cmd_tx.clone());
-        let player = PlayerIface {
-            snap: initial.clone(),
-            cmd: cmd_tx,
-        };
-        if rt.block_on(serve(&connection, player, root)).is_err() {
-            return None;
-        }
-
-        std::thread::Builder::new()
-            .name("tilo-ui-mpris".into())
-            .spawn(move || {
-                rt.block_on(async move {
-                    let mut last = initial;
-                    while let Some(snap) = pub_rx.recv().await {
-                        if apply_update(&connection, &last, &snap).await.is_ok() {
-                            last = snap;
-                        }
-                    }
-                    drop(connection);
-                });
-            })
-            .ok()?;
+            };
+            let connection = match connected.await {
+                Ok(connection) => connection,
+                Err(error) => {
+                    tracing::debug!(%error, "MPRIS: no session bus; media controls are off");
+                    return;
+                }
+            };
+            let root = RootIface::new(config, cmd_tx.clone());
+            let player = PlayerIface {
+                snap: initial.clone(),
+                cmd: cmd_tx,
+            };
+            if let Err(error) = serve(&connection, player, root).await {
+                tracing::debug!(%error, "MPRIS: could not serve the player; media controls are off");
+                return;
+            }
+            let mut last = initial;
+            while let Some(snap) = pub_rx.recv().await {
+                if apply_update(&connection, &last, &snap).await.is_ok() {
+                    last = snap;
+                }
+            }
+        });
 
         Some((cmd_rx, pub_tx))
     }

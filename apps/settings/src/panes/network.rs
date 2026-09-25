@@ -329,6 +329,10 @@ pub struct NetworkPane {
     wifi_continuity: Arc<dyn WifiContinuityClient>,
     connection_notice: Option<String>,
     ca_picker_rx: Option<std::sync::mpsc::Receiver<Result<Option<String>, String>>>,
+    /// Opening the network sign-in page, run on the app runtime.
+    captive_portal: ui::LatestRequest<Result<(), String>>,
+    /// A diagnostics read from `NetworkManager`, run on the app runtime.
+    diagnostics_request: ui::LatestRequest<Result<os_actions::ConnectionDiagnostics, String>>,
     hotspot_password: Arc<Mutex<String>>,
     hotspot_ssid: String,
     hotspot_band: String,
@@ -421,6 +425,8 @@ impl NetworkPane {
             wifi_continuity: Arc::new(ProductionWifiContinuityClient),
             connection_notice: None,
             ca_picker_rx: None,
+            captive_portal: ui::LatestRequest::new(),
+            diagnostics_request: ui::LatestRequest::new(),
             hotspot_password: Arc::new(Mutex::new(String::new())),
             hotspot_ssid: "Tilo Hotspot".into(),
             hotspot_band: "Automatic".into(),
@@ -477,6 +483,8 @@ impl NetworkPane {
             wifi_continuity: Arc::new(EmptyWifiContinuityClient),
             connection_notice: None,
             ca_picker_rx: None,
+            captive_portal: ui::LatestRequest::new(),
+            diagnostics_request: ui::LatestRequest::new(),
             hotspot_password: Arc::new(Mutex::new(String::new())),
             hotspot_ssid: "Tilo Hotspot".into(),
             hotspot_band: "Automatic".into(),
@@ -528,6 +536,8 @@ impl NetworkPane {
             wifi_continuity: Arc::new(ProductionWifiContinuityClient),
             connection_notice: None,
             ca_picker_rx: None,
+            captive_portal: ui::LatestRequest::new(),
+            diagnostics_request: ui::LatestRequest::new(),
             hotspot_password: Arc::new(Mutex::new(String::new())),
             hotspot_ssid: "Tilo Hotspot".into(),
             hotspot_band: "Automatic".into(),
@@ -2328,7 +2338,27 @@ impl NetworkPane {
             return;
         }
         let _ = state.put(root, DIAGNOSTICS_KEY, false);
-        match os_actions::connection_diagnostics() {
+        // The read is a system-bus round trip; it runs on the app runtime's
+        // blocking pool and reports through `sync_diagnostics_result`.
+        let started = self.diagnostics_request.spawn(async {
+            ui::rt::app()
+                .spawn_blocking(os_actions::connection_diagnostics)
+                .await
+                .unwrap_or_else(|error| Err(format!("the diagnostics task stopped: {error}")))
+        });
+        if !started {
+            self.finish_diagnostics(Err("the settings window is closing".into()));
+        }
+    }
+
+    fn sync_diagnostics_result(&mut self) {
+        if let Some(result) = self.diagnostics_request.try_take() {
+            self.finish_diagnostics(result);
+        }
+    }
+
+    fn finish_diagnostics(&mut self, result: Result<os_actions::ConnectionDiagnostics, String>) {
+        match result {
             Ok(d) => {
                 self.diagnostics = Some(d);
                 self.finish_local_operation(
@@ -2539,11 +2569,32 @@ impl NetworkPane {
             return;
         }
         let _ = state.put(root, CAPTIVE_PORTAL_KEY, false);
-        let result = os_actions::captive_portal_uri().and_then(|uri| {
-            runtime_portal_xdg::OpenUri::open(&uri).map_err(|error| {
-                format!("could not open browser through the desktop portal: {error}")
-            })
+        // Both steps are D-Bus round trips (system bus, then the desktop
+        // portal); they run on the app runtime and report through
+        // `sync_captive_portal_result`.
+        let started = self.captive_portal.spawn(async {
+            let uri = ui::rt::app()
+                .spawn_blocking(os_actions::captive_portal_uri)
+                .await
+                .unwrap_or_else(|error| Err(format!("the lookup task stopped: {error}")))?;
+            runtime_portal_xdg::OpenUri::open_async(&uri)
+                .await
+                .map_err(|error| {
+                    format!("could not open browser through the desktop portal: {error}")
+                })
         });
+        if !started {
+            self.report_captive_portal(Err("the settings window is closing".into()));
+        }
+    }
+
+    fn sync_captive_portal_result(&mut self) {
+        if let Some(result) = self.captive_portal.try_take() {
+            self.report_captive_portal(result);
+        }
+    }
+
+    fn report_captive_portal(&mut self, result: Result<(), String>) {
         if let Err(error) = result {
             self.connection_notice = Some(format!("Could not open network sign-in: {error}"));
             self.structure_dirty = true;
@@ -2727,6 +2778,8 @@ impl Widget for NetworkPane {
         let root = automerge::ROOT;
         self.sync_ca_picker_result(&mut state, &root);
         self.sync_connection_jobs(&mut state, &root);
+        self.sync_diagnostics_result();
+        self.sync_captive_portal_result();
         self.seed_if_needed(&mut state, &root);
         if let Some(crate::actions::LocalPaneCommand::Network(operation)) = self.command_state.get()
         {
@@ -3016,6 +3069,53 @@ mod tests {
         assert!(pane.enterprise_editor_open);
         assert!(pane.take_structure_dirty());
         assert!(!read_bool(&doc, &root, ENTERPRISE_EDITOR_KEY).unwrap_or(false));
+    }
+
+    /// Diagnostics read the system bus. The UI thread only starts the read;
+    /// the outcome — a report or an error, depending on the host — arrives
+    /// through the wake and is applied by the next sync.
+    #[test]
+    fn diagnostics_run_off_the_ui_thread_and_report_through_the_wake() {
+        let outcome = ui::rt::spawn_thread("settings-ui-test", || {
+            ui::rt::mark_ui_thread();
+            let mut scope = ui::WakeScope::new();
+            let (woke, wakes) = std::sync::mpsc::channel();
+            scope
+                .bind(move |_| {
+                    let _ = woke.send(());
+                })
+                .unwrap();
+            let _entry = scope.enter();
+            let rec = Arc::new(RecordingDispatcher::default());
+            let mut pane = NetworkPane::with_dispatcher(
+                rec as Arc<dyn Dispatcher + Send + Sync>,
+                true,
+                sample_networks(),
+            );
+            let mut doc = AutoCommit::new();
+            let root = automerge::ROOT;
+            pane.sync(&mut doc, &root);
+            let _ = doc.put(&root, DIAGNOSTICS_KEY, true);
+            pane.sync(&mut doc, &root);
+            assert!(!read_bool(&doc, &root, DIAGNOSTICS_KEY).unwrap_or(true));
+            assert!(pane.diagnostics_request.is_pending());
+            wakes
+                .recv_timeout(std::time::Duration::from_secs(10))
+                .unwrap();
+            pane.sync(&mut doc, &root);
+            (pane.diagnostics.is_some(), pane.connection_notice.clone())
+        })
+        .unwrap()
+        .join()
+        .unwrap();
+        match outcome {
+            (true, _) => {}
+            (false, Some(notice)) => {
+                assert!(notice.starts_with("Diagnostics unavailable:"), "{notice}");
+                assert!(!notice.contains("UI thread"), "{notice}");
+            }
+            (false, None) => panic!("diagnostics finished without a report or an error"),
+        }
     }
 
     #[test]
