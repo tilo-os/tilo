@@ -9,7 +9,7 @@
 
 use std::any::TypeId;
 
-use tilo_resource::{Resource, Shape};
+use tilo_resource::{Reader, Resource, Shape};
 use ui_core::State;
 use ui_core::Theme;
 use ui_core::automerge::AutoCommit;
@@ -146,9 +146,9 @@ fn readable<R: Resource>(doc: &AutoCommit) -> Result<(), String> {
 
 fn preview<A: ResourceApp>(input: PreviewInput) -> Result<Box<dyn HistoryPreview>, String> {
     let doc = AutoCommit::load(input.snapshot.bytes()).map_err(|error| error.to_string())?;
-    let state = <A::Resource as Resource>::read(&doc).map_err(|error| error.to_string())?;
+    let reader = Reader::<A::Resource>::read(&doc).map_err(|error| error.to_string())?;
     Ok(Box::new(ViewPreview {
-        root: build_root::<A>(state, Editing::ReadOnly),
+        root: build_root::<A>(reader, Editing::ReadOnly),
         doc: Some(doc),
         bounds: Rect::ZERO,
         view: input.initial_view,
@@ -402,9 +402,8 @@ mod tests {
         let bytes = doc.fork_at(&past).unwrap().save();
 
         let frozen = AutoCommit::load(&bytes).unwrap();
-        let state = <Page as Resource>::read(&frozen).unwrap();
         let mut preview = ViewPreview {
-            root: build_root::<PageApp>(state, Editing::ReadOnly),
+            root: build_root::<PageApp>(Reader::read(&frozen).unwrap(), Editing::ReadOnly),
             doc: Some(frozen),
             bounds: Rect::ZERO,
             view: PreviewView::default(),
