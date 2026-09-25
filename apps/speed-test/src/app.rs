@@ -163,7 +163,7 @@ impl SpeedTestApp {
         self.last_animation = Instant::now();
         let (tx, rx) = mpsc::channel();
         self.worker = Some(rx);
-        thread::spawn(move || run_measurement(tx));
+        thread::spawn(move || run_measurement(&tx));
     }
 
     fn stop(&mut self) {
@@ -359,6 +359,10 @@ impl Widget for SpeedTestApp {
         );
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "declarative paint of the whole window, read top to bottom"
+    )]
     fn draw(
         &mut self,
         scene: &mut Scene,
@@ -371,13 +375,17 @@ impl Widget for SpeedTestApp {
         scene.fill(Fill::NonZero, transform, c.surfaces.base, None, &self.rect);
 
         let region = self.region_rect();
+        #[expect(
+            clippy::indexing_slicing,
+            reason = "`region` only ever advances modulo `REGIONS.len()`"
+        )]
+        let region_label = Self::REGIONS[self.region];
         Button::paint(
             scene,
             transform,
             tr,
             theme,
-            &ButtonFace::new(region, Self::REGIONS[self.region])
-                .hovered(region.contains(self.pointer)),
+            &ButtonFace::new(region, region_label).hovered(region.contains(self.pointer)),
         );
         tr.draw_text(
             scene,
@@ -800,6 +808,10 @@ impl Widget for SpeedTestApp {
 }
 
 impl SpeedTestApp {
+    #[expect(
+        clippy::too_many_lines,
+        reason = "declarative paint of the whole results panel, read top to bottom"
+    )]
     fn draw_details(
         &self,
         scene: &mut Scene,
@@ -1072,7 +1084,7 @@ impl SpeedTestApp {
     }
 }
 
-fn run_measurement(tx: mpsc::Sender<WorkerMessage>) {
+fn run_measurement(tx: &mpsc::Sender<WorkerMessage>) {
     let client = match tilo_net::http::blocking_client()
         .timeout(Duration::from_secs(12))
         .user_agent("Tilo Speed Test/0.1")
@@ -1099,6 +1111,10 @@ fn run_measurement(tx: mpsc::Sender<WorkerMessage>) {
     };
     let _ = tx.send(WorkerMessage::Phase(Phase::Download));
     let download_start = Instant::now();
+    #[expect(
+        clippy::redundant_closure_for_method_calls,
+        reason = "the response type lives in `reqwest`, which is only a transitive dependency via `tilo-net`"
+    )]
     let bytes = match client
         .get("https://speed.cloudflare.com/__down?bytes=10000000")
         .send()

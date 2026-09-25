@@ -1528,8 +1528,10 @@ impl Widget for SettingsApp {
             .and_then(serde_json::Value::as_array)
             .is_some_and(|r| {
                 r.iter().all(|v| v.as_f64().is_some_and(f64::is_finite))
-                    && r[2].as_f64() > r[0].as_f64()
-                    && r[3].as_f64() > r[1].as_f64()
+                    && matches!(
+                        r.as_slice(),
+                        [x0, y0, x1, y1, ..] if x1.as_f64() > x0.as_f64() && y1.as_f64() > y0.as_f64()
+                    )
             });
         Some(serde_json::json!({
             "app": "so.tilo.settings",

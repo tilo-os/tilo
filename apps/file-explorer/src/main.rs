@@ -817,10 +817,7 @@ fn apply_post_layout_scenario(
         Some("history") => {
             widget.debug_open_history_demo();
         }
-        Some("archive-menu") => {
-            widget.debug_open_view_menu();
-        }
-        Some("undo-trash") => {
+        Some("archive-menu" | "undo-trash") => {
             widget.debug_open_view_menu();
         }
         _ => {}

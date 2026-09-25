@@ -1492,9 +1492,9 @@ impl BackupsApp {
         // Measure the title at the weight it is painted with; a regular-weight
         // measurement under-reads the bold run and the scope crowded it. The
         // scope and sort note then share the title's measured centre line.
-        let (title_w, title_h) =
+        let (title_width, title_height) =
             tr.measure_weighted("Snapshot timeline", 15.0, None, TextWeight::Bold);
-        let title_h = f64::from(title_h);
+        let title_height = f64::from(title_height);
         paint::text_vc(
             scene,
             tr,
@@ -1502,9 +1502,9 @@ impl BackupsApp {
             &scope,
             12.5,
             theme.accent_primary,
-            main.x0 + f64::from(title_w) + 14.0,
+            main.x0 + f64::from(title_width) + 14.0,
             hy,
-            title_h,
+            title_height,
         );
         let (sort_w, sort_h) = tr.measure("newest first", 11.5, None);
         paint::text(
@@ -1515,11 +1515,11 @@ impl BackupsApp {
             11.5,
             c.text_dim,
             main.x1 - f64::from(sort_w),
-            hy + (title_h - f64::from(sort_h)) / 2.0,
+            hy + (title_height - f64::from(sort_h)) / 2.0,
         );
 
         // The list starts `S2` under the title's measured line.
-        let list = Rect::new(main.x0, hy + title_h + S2, main.x1, main.y1);
+        let list = Rect::new(main.x0, hy + title_height + S2, main.x1, main.y1);
         self.draw_timeline_list(scene, t, tr, theme, list);
     }
 
@@ -1903,7 +1903,7 @@ impl BackupsApp {
     ) {
         let content_h = y_end + self.rail_scroll - rows_clip.y0 - S2 + PAD;
         self.rail_scroll_max = (content_h - rows_clip.height()).max(0.0);
-        let rows: Vec<(Rect, Hit)> = self.hits.drain(first_row_hit..).collect();
+        let rows = self.hits.split_off(first_row_hit);
         self.hits.extend(rows.into_iter().filter_map(|(r, hit)| {
             let r = r.intersect(rows_clip);
             (r.width() > 0.0 && r.height() > 0.0).then_some((r, hit))
@@ -2023,6 +2023,10 @@ impl BackupsApp {
         *y += h + S2;
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "paint helper threads the shared scene, transform, renderer, theme and row geometry"
+    )]
     fn draw_source_row_real(
         &mut self,
         scene: &mut Scene,
@@ -2099,6 +2103,10 @@ impl BackupsApp {
         *y += h + S2;
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "paint helper threads the shared scene, transform, renderer, theme and row geometry"
+    )]
     #[allow(
         clippy::many_single_char_names,
         reason = "t/y/h/c/d are the standard graphics convention: transform, position, row height, colour tokens, and this row's Destination"
@@ -2431,6 +2439,10 @@ impl BackupsApp {
         );
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "paint helper threads the shared scene, transform, renderer, theme and row geometry"
+    )]
     fn draw_snapshot_row(
         &self,
         scene: &mut Scene,
@@ -5324,6 +5336,66 @@ impl BackupsApp {
     }
 }
 
+impl BackupsApp {
+    fn draw_compact_backup_tooltip(
+        &self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+    ) {
+        if self.rect.width() >= NARROW_BREAKPOINT || self.hover != Some(Hit::BackupNow) {
+            return;
+        }
+        let Some((anchor, _)) = self
+            .hits
+            .iter()
+            .rev()
+            .find(|(_, hit)| matches!(hit, Hit::BackupNow))
+        else {
+            return;
+        };
+        ui::widget::tooltip::draw_hover_tooltip(
+            scene,
+            t,
+            tr,
+            theme,
+            *anchor,
+            "Back up now",
+            self.rect,
+        );
+    }
+    fn draw_compact_tab_tooltip(
+        &self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+    ) {
+        if theme.text_scale < 1.5 {
+            return;
+        }
+        let Some((anchor, Hit::Tab(view))) = self
+            .hits
+            .iter()
+            .rev()
+            .find(|(_, hit)| matches!(hit, Hit::Tab(_)))
+            .filter(|(_, hit)| Some(hit) == self.hover.as_ref())
+        else {
+            return;
+        };
+        ui::widget::tooltip::draw_hover_tooltip(
+            scene,
+            t,
+            tr,
+            theme,
+            *anchor,
+            view.title(),
+            self.rect,
+        );
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -6137,65 +6209,5 @@ mod tests {
         let mut renderer = TextRenderer::new();
         let fitted = renderer.elide_to_width(&metadata, 11.5, 342.0);
         assert!(renderer.measure(&fitted, 11.5, None).0 <= 342.0);
-    }
-}
-
-impl BackupsApp {
-    fn draw_compact_backup_tooltip(
-        &self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-    ) {
-        if self.rect.width() >= NARROW_BREAKPOINT || self.hover != Some(Hit::BackupNow) {
-            return;
-        }
-        let Some((anchor, _)) = self
-            .hits
-            .iter()
-            .rev()
-            .find(|(_, hit)| matches!(hit, Hit::BackupNow))
-        else {
-            return;
-        };
-        ui::widget::tooltip::draw_hover_tooltip(
-            scene,
-            t,
-            tr,
-            theme,
-            *anchor,
-            "Back up now",
-            self.rect,
-        );
-    }
-    fn draw_compact_tab_tooltip(
-        &self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-    ) {
-        if theme.text_scale < 1.5 {
-            return;
-        }
-        let Some((anchor, Hit::Tab(view))) = self
-            .hits
-            .iter()
-            .rev()
-            .find(|(_, hit)| matches!(hit, Hit::Tab(_)))
-            .filter(|(_, hit)| Some(hit) == self.hover.as_ref())
-        else {
-            return;
-        };
-        ui::widget::tooltip::draw_hover_tooltip(
-            scene,
-            t,
-            tr,
-            theme,
-            *anchor,
-            view.title(),
-            self.rect,
-        );
     }
 }
