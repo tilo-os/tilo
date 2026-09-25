@@ -1529,9 +1529,10 @@ pub fn complete_asset(
     bytes: Option<Vec<u8>>,
 ) -> Result<bool, JsValue> {
     if let (Some(hash), Some(bytes)) = (url.strip_prefix("qos-blob://"), bytes.as_ref()) {
-        qdoc::blobstore::store()
-            .put_checked(hash, bytes)
-            .map_err(error)?;
+        if !qdoc::blobstore::verify(hash, bytes) {
+            return Err(error("asset bytes do not match their content hash"));
+        }
+        qdoc::blobstore::put(bytes).ok_or_else(|| error("the content store refused the asset"))?;
     }
     MOUNTS.with_borrow_mut(|m| {
         let m = m.get_mut(&id).ok_or_else(|| error("closed mount"))?;
