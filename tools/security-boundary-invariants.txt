@@ -5,6 +5,7 @@ os/tests/kernel_architecture.sh
 os/tests/hardware_profile_test.py
 os/tests/uki_hardware_profile.py
 os/tests/image_build_profile.py
+os/tests/test_verify_kernel_provenance.py
 os/tests/native_index_promotion.py
 os/tests/test_builder_candidate_workflow.py
 os/tests/test_rpm_snapshot_architecture.py
