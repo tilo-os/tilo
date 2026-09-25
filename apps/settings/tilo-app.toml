@@ -55,8 +55,12 @@ mode = "off"
 collab = "optional@1"
 tilo-fs = "optional@1"
 tools = "optional@1"
-models = "required@1"
-model-gateway = "required@1"
+# Settings remains usable when the device has no local-model stack.  The
+# Agent Models pane already reports unavailable lifecycle/credential services;
+# requiring either socket here instead prevents every other settings pane from
+# opening at all.
+models = "optional@1"
+model-gateway = "optional@1"
 
 [entrypoint]
 bin             = "bin/settings"

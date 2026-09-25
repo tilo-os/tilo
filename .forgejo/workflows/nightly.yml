@@ -97,7 +97,7 @@ jobs:
         run: >-
           bash tools/ci/measure.sh "nightly workspace nextest" --
           bash scripts/ci-run.sh "cargo nextest --workspace" --
-          bash tools/with-headless-audio.sh cargo nextest run --workspace --locked --profile ci
+          bash tools/test-env.sh cargo nextest run --workspace --locked --profile ci
           -E "not ($GOLDEN_FILTER)"
 
       # This reuses the artifacts compiled above and executes the same number
@@ -107,7 +107,7 @@ jobs:
         run: >-
           bash tools/ci/measure.sh "nightly isolated visual goldens" --
           bash scripts/ci-run.sh "cargo nextest visual goldens" --
-          cargo nextest run --workspace --locked --profile ci
+          bash tools/test-env.sh cargo nextest run --workspace --locked --profile ci
           -E "$GOLDEN_FILTER"
 
       # The fast and complete workspace suites stay deterministic. This one

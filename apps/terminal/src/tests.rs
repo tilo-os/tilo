@@ -3,6 +3,7 @@ use automerge::{AutoCommit, ObjType, ROOT, ReadDoc, transaction::Transactable};
 use portable_pty::{MasterPty, PtySize};
 use std::io::{Read, Write};
 use std::sync::{Arc, Mutex};
+use tilo_automerge::ApplyIncoming;
 use ui::State;
 use ui::widget::Widget as _;
 use vello::kurbo::Rect;
@@ -138,6 +139,57 @@ fn embedded_terminal_only_requests_frames_for_queued_output() {
         !widget.needs_animation_frame(),
         "the terminal must return to idle after its output queue is drained"
     );
+}
+
+#[test]
+fn pty_reader_retries_interrupts_and_linux_handoff_eio() {
+    use crate::inner::{PtyReadDisposition, classify_pty_read};
+
+    assert_eq!(
+        classify_pty_read(
+            &Err(std::io::Error::from(std::io::ErrorKind::Interrupted)),
+            || false
+        ),
+        PtyReadDisposition::Retry
+    );
+    assert_eq!(
+        classify_pty_read(&Err(std::io::Error::from_raw_os_error(libc::EIO)), || true),
+        PtyReadDisposition::Retry,
+        "a PTY master can report EIO before the guest opens its slave"
+    );
+    assert_eq!(
+        classify_pty_read(&Err(std::io::Error::from_raw_os_error(libc::EIO)), || false),
+        PtyReadDisposition::Closed,
+        "once the session's lifetime socket closes, EIO means the guest exited"
+    );
+    assert_eq!(
+        classify_pty_read(&Ok(19), || true),
+        PtyReadDisposition::Data(19)
+    );
+    assert_eq!(
+        classify_pty_read(&Ok(0), || true),
+        PtyReadDisposition::Closed
+    );
+    assert_eq!(
+        classify_pty_read(&Err(std::io::Error::from_raw_os_error(libc::EBADF)), || {
+            true
+        }),
+        PtyReadDisposition::Closed
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn lifetime_socket_probe_sees_the_supervisor_close_its_end() {
+    use crate::inner::lifetime_socket_open;
+
+    let (terminal_end, supervisor_end) =
+        std::os::unix::net::UnixStream::pair().expect("socket pair");
+    assert!(lifetime_socket_open(&terminal_end));
+    supervisor_end
+        .shutdown(std::net::Shutdown::Both)
+        .expect("supervisor closes the session");
+    assert!(!lifetime_socket_open(&terminal_end));
 }
 
 /// Drain and concatenate everything the PTY-write channel has buffered.
@@ -575,6 +627,31 @@ fn terminal_widget_implements_app_widget() {
         IconDescriptor::Named(_) => panic!("expected glyph icon"),
     }
     assert_eq!(w.permission_hint(), Some(AppKind::Terminal));
+}
+
+#[test]
+fn first_pty_bytes_retire_the_first_run_watermark() {
+    let (mut widget, _writes) = build_test_widget();
+    let mut doc = AutoCommit::new();
+    assert!(!widget.has_received_pty_output());
+
+    widget.feed(&mut doc, &ROOT, b"\x1b[32m\x1b[?25h");
+
+    assert!(
+        widget.has_received_pty_output(),
+        "control-only startup output still proves the PTY is live"
+    );
+}
+
+#[test]
+fn pty_pump_retires_watermark_even_for_nonprinting_output() {
+    let (mut widget, _write_rx, output_tx) = build_test_widget_io();
+    let mut state = AutoCommit::new();
+    assert!(!widget.has_received_pty_output());
+
+    output_tx.send(vec![b'\x1b', b'[', b'0', b'm']).unwrap();
+    assert!(widget.update(&mut state, &ROOT));
+    assert!(widget.has_received_pty_output());
 }
 
 #[test]
@@ -2345,10 +2422,10 @@ fn concurrent_terminal_initialisation_converges_on_one_resource_identity() {
     left_doc.commit();
     right_doc.commit();
     left_doc
-        .merge(&mut right_doc)
+        .merge_incoming(&mut right_doc)
         .expect("merge concurrent terminal initialisation");
     right_doc
-        .merge(&mut left_doc)
+        .merge_incoming(&mut left_doc)
         .expect("return the merged terminal state to the second peer");
 
     assert_eq!(
@@ -3563,7 +3640,7 @@ fn two_peers_converge_on_terminal_grid_via_crdt() {
         !delta.is_empty(),
         "A produced an incremental change to share"
     );
-    doc_b.load_incremental(&delta).unwrap();
+    doc_b.load_incoming(&delta).unwrap();
     b.sync(&mut doc_b, &automerge::ROOT);
     assert!(
         b.grid_text().contains("peer-a-line-two"),

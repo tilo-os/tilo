@@ -2346,7 +2346,7 @@ impl App {
                 continue;
             };
             if !matches!(
-                resolved.contract.confirmation,
+                resolved.confirmation_for_json(&intent.arguments),
                 tilo_actions::ConfirmationPolicy::None
             ) {
                 // A bound control never manufactures confirmation. Hand the

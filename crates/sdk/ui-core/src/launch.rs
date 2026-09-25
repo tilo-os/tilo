@@ -592,15 +592,17 @@ pub enum LaunchError {
     MissingComponentHost,
     IncompatibleComponentSetup,
     RecoveryRequired,
+    /// Setup failed after the record became Ready: `recovery` holds its
+    /// store (and any close reports) so the caller can reopen or flush it.
     ComponentSetup {
         source: Box<LaunchError>,
         record: crate::record::RecordCheckout,
-        records: crate::record::RecordStore,
-        reports: Vec<crate::application::ComponentCloseReport>,
+        recovery: LaunchRecovery,
     },
+    /// A capture failed or closed dirty: `recovery` holds the close reports.
     ComponentCapture {
         source: Box<LaunchError>,
-        reports: Vec<crate::application::ComponentCloseReport>,
+        recovery: LaunchRecovery,
     },
     MissingValue(String),
     Duplicate(String),
@@ -674,18 +676,17 @@ impl fmt::Debug for LaunchError {
             Self::ComponentSetup {
                 source,
                 record,
-                reports,
-                ..
+                recovery,
             } => f
                 .debug_struct("ComponentSetup")
                 .field("source", source)
                 .field("record", record)
-                .field("close_report_count", &reports.len())
+                .field("close_report_count", &recovery.report_count())
                 .finish_non_exhaustive(),
-            Self::ComponentCapture { source, reports } => f
+            Self::ComponentCapture { source, recovery } => f
                 .debug_struct("ComponentCapture")
                 .field("source", source)
-                .field("close_report_count", &reports.len())
+                .field("close_report_count", &recovery.report_count())
                 .finish_non_exhaustive(),
             Self::MissingValue(value) => f.debug_tuple("MissingValue").field(value).finish(),
             Self::Duplicate(value) => f.debug_tuple("Duplicate").field(value).finish(),
@@ -751,6 +752,173 @@ impl LaunchError {
         } else {
             2
         }
+    }
+}
+
+// A launch error is plain data that may cross threads (into `anyhow::Error`,
+// a worker's result, a `Box<dyn Error + Send + Sync>`); only its recovery
+// owners are tied to the launching thread, behind `LaunchRecovery`.
+const _: () = {
+    const fn assert_send_sync<T: Send + Sync + 'static>() {}
+    assert_send_sync::<LaunchError>();
+};
+
+/// What a failed launch still owns, handed back to the caller so nothing
+/// dirty is lost: the record store holding the canonical record (reopen it,
+/// or flush it), and the close reports of components torn down on the way
+/// (retry their view or record durability).
+///
+/// These owners are single-threaded (`Rc` stores). The error carrying them
+/// is still `Send + Sync`: the owners are reachable only on the thread that
+/// launched, and every accessor returns nothing elsewhere. A recovery dropped
+/// on another thread is leaked rather than dropped there — its stores are
+/// never touched off their thread — so move the error back to the launching
+/// thread (or consume the recovery there) when it must be released.
+pub struct LaunchRecovery {
+    owner: std::thread::ThreadId,
+    report_count: usize,
+    parts: std::mem::ManuallyDrop<Box<RecoveryParts>>,
+}
+
+struct RecoveryParts {
+    records: Option<crate::record::RecordStore>,
+    reports: Vec<crate::application::ComponentCloseReport>,
+}
+
+// SAFETY: every access to `parts` (shared or exclusive, including drop) is
+// gated on the current thread being `owner`, the thread that created them.
+// On any other thread the owners are neither read, cloned nor dropped, so
+// their non-atomic reference counts are only ever touched by one thread.
+#[allow(
+    clippy::non_send_fields_in_send_ty,
+    reason = "the single-threaded owners are reachable and droppable only on `owner`"
+)]
+unsafe impl Send for LaunchRecovery {}
+// SAFETY: as above; `&LaunchRecovery` exposes the owners only on `owner`.
+unsafe impl Sync for LaunchRecovery {}
+
+impl LaunchRecovery {
+    /// Recovery owners for the current thread.
+    #[must_use]
+    pub fn new(
+        records: Option<crate::record::RecordStore>,
+        reports: Vec<crate::application::ComponentCloseReport>,
+    ) -> Self {
+        Self {
+            owner: std::thread::current().id(),
+            report_count: reports.len(),
+            parts: std::mem::ManuallyDrop::new(Box::new(RecoveryParts { records, reports })),
+        }
+    }
+
+    /// Only the store still holding the failed launch's record.
+    #[must_use]
+    pub fn records(records: crate::record::RecordStore) -> Self {
+        Self::new(Some(records), Vec::new())
+    }
+
+    /// Only the close reports of torn-down components.
+    #[must_use]
+    pub fn reports(reports: Vec<crate::application::ComponentCloseReport>) -> Self {
+        Self::new(None, reports)
+    }
+
+    fn here(&self) -> bool {
+        std::thread::current().id() == self.owner
+    }
+
+    /// Whether the owners are reachable from this thread.
+    #[must_use]
+    pub fn is_reachable(&self) -> bool {
+        self.here()
+    }
+
+    /// How many close reports this recovery carries, on any thread.
+    #[must_use]
+    pub fn report_count(&self) -> usize {
+        self.report_count
+    }
+
+    /// The record store, on the launching thread.
+    #[must_use]
+    pub fn record_store(&self) -> Option<&crate::record::RecordStore> {
+        if self.here() {
+            self.parts.records.as_ref()
+        } else {
+            None
+        }
+    }
+
+    /// The close reports, on the launching thread (empty elsewhere).
+    #[must_use]
+    pub fn close_reports(&self) -> &[crate::application::ComponentCloseReport] {
+        if self.here() {
+            &self.parts.reports
+        } else {
+            &[]
+        }
+    }
+
+    /// Take the owners out, on the launching thread.
+    ///
+    /// # Errors
+    /// Returns the recovery unchanged on any other thread.
+    pub fn into_parts(
+        mut self,
+    ) -> Result<
+        (
+            Option<crate::record::RecordStore>,
+            Vec<crate::application::ComponentCloseReport>,
+        ),
+        Self,
+    > {
+        if !self.here() {
+            return Err(self);
+        }
+        // SAFETY: on the owning thread; `self` is forgotten right after, so
+        // `parts` is taken exactly once and never dropped again.
+        let parts = unsafe { std::mem::ManuallyDrop::take(&mut self.parts) };
+        std::mem::forget(self);
+        Ok((parts.records, parts.reports))
+    }
+
+    /// The record store, taken out on the launching thread.
+    ///
+    /// # Errors
+    /// Returns the recovery unchanged on any other thread.
+    pub fn into_record_store(self) -> Result<Option<crate::record::RecordStore>, Self> {
+        self.into_parts().map(|(records, _)| records)
+    }
+
+    /// The close reports, taken out on the launching thread.
+    ///
+    /// # Errors
+    /// Returns the recovery unchanged on any other thread.
+    pub fn into_close_reports(self) -> Result<Vec<crate::application::ComponentCloseReport>, Self> {
+        self.into_parts().map(|(_, reports)| reports)
+    }
+}
+
+impl Drop for LaunchRecovery {
+    fn drop(&mut self) {
+        if self.here() {
+            // SAFETY: on the owning thread, and `parts` is dropped only here.
+            unsafe { std::mem::ManuallyDrop::drop(&mut self.parts) };
+        } else {
+            tracing::warn!(
+                report_count = self.report_count,
+                "launch recovery dropped off its thread; its stores are left unflushed"
+            );
+        }
+    }
+}
+
+impl fmt::Debug for LaunchRecovery {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("LaunchRecovery")
+            .field("reachable", &self.here())
+            .field("close_report_count", &self.report_count)
+            .finish_non_exhaustive()
     }
 }
 
@@ -995,7 +1163,7 @@ fn close_component_capture(driver: &mut FrameHarness) -> Result<(), LaunchError>
             source: Box::new(LaunchError::Operation(
                 "component capture close failed".into(),
             )),
-            reports: driver.component_close_reports().to_vec(),
+            recovery: LaunchRecovery::reports(driver.component_close_reports().to_vec()),
         });
     }
     Ok(())
@@ -1097,7 +1265,7 @@ fn dispatch_definition_with_native(
             driver.close_components();
             return Err(LaunchError::ComponentCapture {
                 source: Box::new(source),
-                reports: driver.take_component_close_reports(),
+                recovery: LaunchRecovery::reports(driver.take_component_close_reports()),
             });
         }
         driver.enable_document_history_chrome();
@@ -1648,6 +1816,64 @@ fn parse_text_scale(value: &str) -> Result<f32, LaunchError> {
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicBool, Ordering};
+
+    #[test]
+    fn a_setup_error_crosses_threads_and_its_recovery_returns_home() {
+        let temp = tempfile::tempdir().unwrap();
+        let records = crate::record::RecordOwners::new(temp.path().to_path_buf())
+            .open("so.tilo.launch-fixture", "workspace")
+            .unwrap();
+        let checkout = crate::record::RecordCheckout::new(
+            crate::record::RecordId::minted(),
+            crate::record::RecordKind::new("launch.fixture"),
+        );
+        let error = LaunchError::ComponentSetup {
+            source: Box::new(LaunchError::Operation("factory failed".into())),
+            record: checkout.clone(),
+            recovery: LaunchRecovery::new(Some(records), Vec::new()),
+        };
+        // Off its thread the error is ordinary data: it displays, chains its
+        // source and boxes as a thread-safe error, but lends no owner.
+        let error = std::thread::spawn(move || {
+            let LaunchError::ComponentSetup { recovery, .. } = &error else {
+                unreachable!()
+            };
+            assert!(!recovery.is_reachable());
+            assert!(recovery.record_store().is_none());
+            let boxed: Box<dyn std::error::Error + Send + Sync> = Box::new(error);
+            assert_eq!(
+                boxed.to_string(),
+                "application setup failed: factory failed"
+            );
+            assert_eq!(
+                boxed.source().map(ToString::to_string).as_deref(),
+                Some("factory failed")
+            );
+            boxed
+        })
+        .join()
+        .unwrap();
+        let error = error.downcast::<LaunchError>().unwrap();
+        let LaunchError::ComponentSetup {
+            record, recovery, ..
+        } = *error
+        else {
+            unreachable!()
+        };
+        assert_eq!(record, checkout);
+        assert!(recovery.is_reachable());
+        let store = recovery.into_record_store().unwrap();
+        assert!(store.is_some(), "the record store survives the round trip");
+    }
+
+    #[test]
+    fn recovery_is_withheld_on_another_thread() {
+        let recovery = std::thread::spawn(|| LaunchRecovery::reports(Vec::new()))
+            .join()
+            .unwrap();
+        assert!(!recovery.is_reachable());
+        assert!(recovery.into_parts().is_err());
+    }
 
     #[test]
     fn legacy_preparer_and_live_handler_are_rejected_before_either_runs() {
@@ -3286,13 +3512,15 @@ mod prepared_launch_tests {
                 temp.path().join("never.png").to_string_lossy().into_owned(),
             ],
         );
-        let Err(LaunchError::ComponentCapture { source, reports }) =
+        let Err(LaunchError::ComponentCapture { source, recovery }) =
             dispatch_definition(&spec, &args)
         else {
             panic!("capture must fail")
         };
         assert_eq!(source.to_string(), "scenario failed after editing");
-        let mut failed = reports
+        let mut failed = recovery
+            .into_close_reports()
+            .unwrap()
             .into_iter()
             .find(|report| report.view_error.is_some())
             .unwrap();

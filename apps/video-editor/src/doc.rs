@@ -1585,6 +1585,7 @@ pub fn sample_project() -> Project {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tilo_automerge::ApplyIncoming;
 
     use crate::model::{Speed, TextAlign, TextSource, Transform};
     use crate::param::{Interp, Param};
@@ -2166,7 +2167,7 @@ mod tests {
         VideoDoc::upsert_clip(&mut b, &moved);
 
         let mut b_loaded = AutoCommit::load(&b.save()).unwrap();
-        a.merge(&mut b_loaded).unwrap();
+        a.merge_incoming(&mut b_loaded).unwrap();
         let pa = VideoDoc::load_project(&a);
         assert!((pa.clip(cid).unwrap().start - 42.0).abs() < 1e-9);
     }
@@ -2196,7 +2197,8 @@ mod tests {
         assert!(VideoDoc::add_project_marker(&mut b, &b_marker));
 
         let mut b_for_a = AutoCommit::load(&b.save()).expect("loads B change");
-        a.merge(&mut b_for_a).expect("merges independent entries");
+        a.merge_incoming(&mut b_for_a)
+            .expect("merges independent entries");
         let project = VideoDoc::load_project(&a);
         assert!(
             project

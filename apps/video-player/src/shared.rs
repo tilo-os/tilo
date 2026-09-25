@@ -476,6 +476,7 @@ pub fn register(registry: &mut ActionRegistry) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tilo_automerge::ApplyIncoming;
 
     fn seed() -> Doc {
         let mut doc = Doc::new();
@@ -518,8 +519,8 @@ mod tests {
         right.commit();
         let mut lr = Doc::load(&left.save()).unwrap();
         let mut rl = Doc::load(&right.save()).unwrap();
-        lr.merge(&mut right).unwrap();
-        rl.merge(&mut left).unwrap();
+        lr.merge_incoming(&mut right).unwrap();
+        rl.merge_incoming(&mut left).unwrap();
         assert_eq!(read(&lr), read(&rl));
         assert_eq!(read(&lr).playlists.len(), 2);
         assert!(

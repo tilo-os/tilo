@@ -4917,6 +4917,7 @@ impl Widget for PdfApp {
 mod tests {
     use super::*;
     use serial_test::serial;
+    use tilo_automerge::ApplyIncoming;
 
     /// Two real PDFs on disk, from the bundled fixture. "Open a second
     /// document" has to be a second *file* — the bug is about one document's
@@ -5581,7 +5582,8 @@ mod tests {
         };
         tilo_actions::apply_local(&mut left, &left_action, encode(&left_action)).unwrap();
         tilo_actions::apply_local(&mut right, &right_action, encode(&right_action)).unwrap();
-        left.merge(&mut right).expect("merge concurrent page edits");
+        left.merge_incoming(&mut right)
+            .expect("merge concurrent page edits");
         let merged_ids: Vec<String> = crate::doc::PdfDoc::list_page_plan(&left)
             .into_iter()
             .map(|entry| entry.id)

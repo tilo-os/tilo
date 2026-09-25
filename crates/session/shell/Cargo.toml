@@ -80,6 +80,7 @@ tempfile.workspace = true
 # One owner for ~/.config/tilo/settings.json.
 settings-store = { path = "../../system/settings-store" }
 xdg-paths = { path = "../../system/xdg-paths" }
+tilo-startup-metrics = { path = "../../system/tilo-startup-metrics" }
 desktop-policy = { path = "../../system/desktop-policy" }
 # Canonical desktop model: workspaces, strips, groups, tabs, permissions.
 tilo-desktop-model = { path = "../desktop-model" }
@@ -155,9 +156,9 @@ winit.workspace = true
 pollster.workspace = true
 sysinfo.workspace = true
 automerge.workspace = true
+tilo-automerge.workspace = true
 taffy.workspace = true
 vello.workspace = true
-tilo-startup-metrics = { path = "../../system/tilo-startup-metrics" }
 parking_lot.workspace = true
 
 libc.workspace = true
@@ -275,6 +276,7 @@ tantivy = { version = "0.22", default-features = false, features = ["mmap"] }
 # Network actor tests run an in-process relay to talk to.
 tilo-relay = { path = "../../hosting/tilo-relay" }
 runtime-portal = { path = "../../runtime/runtime-portal" }
+tilo-startup-metrics = { path = "../../system/tilo-startup-metrics", features = ["test-support"] }
 collab-fixtures = { path = "../../collab/collab-fixtures" }
 rand_chacha.workspace = true
 pollster.workspace = true

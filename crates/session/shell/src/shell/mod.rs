@@ -19,6 +19,7 @@
 //! - A simulated remote cursor floats over the active tile.
 
 pub mod actions;
+pub(crate) mod animation_diagnostics;
 pub(crate) mod capture_surface;
 pub mod catalogue;
 pub mod chrome_state;
@@ -149,6 +150,7 @@ pub(crate) struct WorkspaceSceneParts {
     pub backdrop: *mut dyn Widget,
     pub topbar: *mut topbar_chrome::TopBarChrome,
     pub workspace: *mut dyn Widget,
+    pub work_area: *mut Column,
 }
 use crate::shell::topbar::TopBar;
 use crate::shell::workspace_settings::WorkspaceSettings;
@@ -1318,6 +1320,10 @@ pub fn build_workspace_root(
     (root, rows)
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "the workspace root is assembled in one place so its scene-part pointers stay tied to the widgets they address"
+)]
 pub(crate) fn build_workspace_root_with_scene_parts(
     tree: &WorkspaceTree,
     records: &ui::record::RecordStore,
@@ -1351,7 +1357,15 @@ pub(crate) fn build_workspace_root_with_scene_parts(
     let mut topbar = Box::new(topbar.with_chrome(chrome.clone()));
     let topbar_ptr = &raw mut *topbar;
 
-    let mut content_col = Column::new()
+    let workspace_has_maximized_group = tree.desktop.active_workspace().is_some_and(|workspace| {
+        workspace
+            .strips
+            .iter()
+            .flat_map(|strip| &strip.window_groups)
+            .any(|group| group.maximized)
+    });
+
+    let content_col = Column::new()
         // Fills the viewport height remaining after the persistent top bar.
         // sibling in `foreground_col`; without it the column's
         // `percent(1.0)` height overflowed the viewport by the bar height and apps
@@ -1364,9 +1378,20 @@ pub(crate) fn build_workspace_root_with_scene_parts(
         // No horizontal padding: `GroupRow::leading_inset` reserves
         // canvas-x [0, SIDEBAR_WIDTH] for the wheel disc, and wheel/strip
         // pan as one unit — a gutter here would split that canvas in two.
-        .with_horizontal_padding(0.0, 0.0)
-        .push(workspace_view)
-        .push(strip_view);
+        .with_horizontal_padding(0.0, 0.0);
+    // WorkspaceView and StripView are zero-height input/animation drivers.
+    // In a maximized layout their ordinary inter-child gaps and the tiled
+    // safety gutter would become an empty band below the top bar.
+    let mut content_col = if workspace_has_maximized_group {
+        content_col.with_gap(0.0)
+    } else {
+        // `foreground_col` has no gap so a maximized work area can
+        // directly abut the top bar. Preserve the tiled layout's 12px top
+        // rhythm here instead.
+        content_col.with_extra_top_padding(12.0)
+    }
+    .push(workspace_view)
+    .push(strip_view);
 
     let workspace_is_empty = tree.desktop.active_workspace().is_some_and(|workspace| {
         workspace
@@ -1436,9 +1461,15 @@ pub(crate) fn build_workspace_root_with_scene_parts(
         },
     );
     let backdrop_ptr = &raw mut *backdrop;
-    let mut workspace: Box<dyn Widget> = Box::new(content_col);
-    let workspace_ptr = &raw mut *workspace;
-    let foreground_col = Column::new().with_no_padding().push(topbar).push(workspace);
+    let mut workspace = Box::new(content_col);
+    let work_area_ptr = &raw mut *workspace;
+    let workspace_ptr: *mut dyn Widget = &raw mut *workspace;
+    let workspace: Box<dyn Widget> = workspace;
+    let foreground_col = Column::new()
+        .with_no_padding()
+        .with_gap(0.0)
+        .push(topbar)
+        .push(workspace);
     let stack = Stack::new().push(backdrop).push(Box::new(foreground_col));
 
     let root: Box<dyn Widget> = Box::new(
@@ -1454,6 +1485,7 @@ pub(crate) fn build_workspace_root_with_scene_parts(
             backdrop: backdrop_ptr,
             topbar: topbar_ptr,
             workspace: workspace_ptr,
+            work_area: work_area_ptr,
         },
     )
 }

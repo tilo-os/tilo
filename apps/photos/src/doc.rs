@@ -1513,6 +1513,7 @@ mod tests {
     use crate::actions::PhotosAction;
     use crate::model::Rect01;
     use tilo_actions::Action;
+    use tilo_automerge::ApplyIncoming;
 
     #[test]
     fn a_seeded_document_has_no_image_open() {
@@ -1605,7 +1606,7 @@ mod tests {
 
         let mut merged = copy(&mut cropper);
         merged
-            .merge(&mut copy(&mut rotator))
+            .merge_incoming(&mut copy(&mut rotator))
             .expect("independent edit fields merge");
         let edits = PhotosDoc::edits(&merged);
         assert!((edits.crop.x - crop.x).abs() <= f64::EPSILON);
@@ -1635,7 +1636,7 @@ mod tests {
         PhotosDoc::set_edits(&mut rotator, &Edits::default().rotated_right());
         let mut observed = copy(&mut cropper);
         observed
-            .merge(&mut copy(&mut rotator))
+            .merge_incoming(&mut copy(&mut rotator))
             .expect("both edit roots merge for the observing editor");
         assert!(!PhotosDoc::edits(&observed).is_identity());
 
@@ -1714,7 +1715,7 @@ mod tests {
     }
 
     fn merge(left: &mut AutoCommit, right: &mut AutoCommit) -> PhotoLibrary {
-        left.merge(right).expect("replicas merge");
+        left.merge_incoming(right).expect("replicas merge");
         PhotosDoc::library(left)
     }
 
@@ -2012,7 +2013,7 @@ mod tests {
                 ..Default::default()
             },
         );
-        left.merge(&mut right)
+        left.merge_incoming(&mut right)
             .expect("independently created library roots merge");
         let merged = PhotosDoc::library(&left);
         assert!(merged.photo(&left_photo.id).is_some());
@@ -2157,7 +2158,7 @@ mod tests {
                     "the screen that had just started",
                 ),
             ] {
-                doc.merge(&mut incoming)
+                doc.merge_incoming(&mut incoming)
                     .expect("two replicas of one app's document must merge");
                 assert_eq!(
                     PhotosDoc::image(&doc).map(|i| i.name),
@@ -2198,7 +2199,7 @@ mod tests {
         PhotosDoc::set_image(&mut there, None);
 
         let mut back = copy(&mut here);
-        back.merge(&mut copy(&mut there))
+        back.merge_incoming(&mut copy(&mut there))
             .expect("the collaborator's document must merge back");
         assert!(
             PhotosDoc::image(&back).is_none(),

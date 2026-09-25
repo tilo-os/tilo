@@ -59,8 +59,8 @@ impl Model for Id {
     }
 }
 
-const ORDER: &str = "k";
-const VALUE: &str = "v";
+pub(crate) const ORDER: &str = "k";
+pub(crate) const VALUE: &str = "v";
 
 /// An ordered collection of items addressed by [`Id`].
 ///
@@ -247,6 +247,8 @@ fn longest_increasing(keys: &[Option<&str>]) -> Vec<usize> {
 }
 
 impl<T: Model> Model for Collection<T> {
+    const SHAPE: crate::Shape = crate::Shape::Collection(&T::SHAPE);
+
     fn load(doc: &Doc, value: &Value<'_>, id: &ObjId) -> Result<Self, ModelError> {
         if !matches!(value, Value::Object(ObjType::Map)) {
             return Err(ModelError::shape("a collection"));
@@ -338,6 +340,7 @@ mod tests {
     use super::*;
     use crate::model::write_key;
     use automerge::ROOT;
+    use tilo_automerge::ApplyIncoming;
 
     fn ids(collection: &Collection<String>) -> Vec<String> {
         collection.values().cloned().collect()
@@ -369,7 +372,7 @@ mod tests {
         r.insert(1, Id::from_raw("right"), "R".into());
         r.remove(&Id::from_raw("i1"));
         write_key(&mut right, &ROOT, "items", &r).unwrap();
-        left.merge(&mut right).unwrap();
+        left.merge_incoming(&mut right).unwrap();
         let merged: Collection<String> = read_key(&left, &ROOT, "items").unwrap();
         let merged = ids(&merged);
         assert_eq!(merged.len(), 5);

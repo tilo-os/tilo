@@ -20,7 +20,7 @@ grep -Fq "group: \${{ (startsWith(github.ref, 'refs/tags/v') || (github.ref == '
   && ok 'OS generation publication is globally serialized' \
   || bad 'release jobs can race and reuse one generation'
 
-kernel_verify_line="$(grep -n 'cosign verify --key keys/cosign.pub "$ref"' "$workflow" | tail -1 | cut -d: -f1)"
+kernel_verify_line="$(grep -n './os/dev/verify-kernel-provenance.sh "$ref"' "$workflow" | tail -1 | cut -d: -f1)"
 kernel_export_line="$(grep -n 'echo "KERNEL_RPMS_REF=$ref" >> "$GITHUB_ENV"' "$workflow" | head -1 | cut -d: -f1)"
 kernel_build_arg_line="$(grep -n 'KERNEL_RPMS_REF=${{ env.KERNEL_RPMS_REF }}' "$workflow" | head -1 | cut -d: -f1)"
 if [ -n "$kernel_verify_line" ] && [ -n "$kernel_export_line" ] && [ -n "$kernel_build_arg_line" ] \

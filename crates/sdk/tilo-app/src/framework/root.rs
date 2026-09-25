@@ -127,6 +127,19 @@ impl<R: Resource> Widget for ResourceRoot<R> {
         self.content.sync(state, path);
     }
 
+    // A subtree that swaps its children (a `ModelView`, an `Each`) reports
+    // it here; the host rebuilds its layout tree only when a container
+    // passes that on.
+    fn take_structure_dirty(&mut self) -> bool {
+        self.content.take_structure_dirty()
+    }
+
+    // The per-frame update pass drives retained models (a virtual list's
+    // pages, a table's rows); every child must see it.
+    fn update(&mut self, state: &mut AutoCommit, path: &ObjId) -> bool {
+        self.content.update(state, path)
+    }
+
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -224,6 +237,21 @@ impl<R: Resource> Widget for ResourceRoot<R> {
         self.dispatch
             .take()
             .or_else(|| self.content.take_control_invocation())
+    }
+
+    /// An edit this resource's dispatcher submitted was refused, or is held
+    /// for the user's confirmation. Nothing changed in the document, so a
+    /// surface that previewed the edit is re-presented the stored state; a
+    /// confirmed edit then arrives as an ordinary document change.
+    fn on_control_invocation_result(
+        &mut self,
+        address: &tilo_actions::ActionAddress,
+        result: &Result<ui_core::widget::ResourceOperationStart, tilo_actions::DoorError>,
+    ) {
+        if result.is_err() && address.resource == self.dispatch.resource_id() {
+            self.live.represent();
+        }
+        self.content.on_control_invocation_result(address, result);
     }
 
     fn has_pending_control_invocation(&self) -> bool {

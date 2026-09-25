@@ -347,6 +347,7 @@ pub fn register(registry: &mut ActionRegistry) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tilo_automerge::ApplyIncoming;
     fn add(url: &str, tag: &str) -> BrowserAction {
         BrowserAction::AddBookmark {
             url: url.into(),
@@ -366,7 +367,7 @@ mod tests {
         left.commit();
         add("https://two.example", "b").apply(&mut right).unwrap();
         right.commit();
-        left.merge(&mut right).unwrap();
+        left.merge_incoming(&mut right).unwrap();
         let rows = bookmarks_from_doc(&left).unwrap();
         assert!(rows.contains("https://one.example/"));
         assert!(rows.contains("https://two.example/"));
@@ -391,7 +392,7 @@ mod tests {
             .apply(&mut right)
             .unwrap();
         right.commit();
-        left.merge(&mut right).unwrap();
+        left.merge_incoming(&mut right).unwrap();
         assert!(
             bookmarks_from_doc(&left)
                 .unwrap()
@@ -415,7 +416,7 @@ mod tests {
             .apply(&mut right)
             .unwrap();
         right.commit();
-        left.merge(&mut right).unwrap();
+        left.merge_incoming(&mut right).unwrap();
 
         assert_eq!(
             observed_bookmark_tags(&left, "https://example.test"),
@@ -443,7 +444,7 @@ mod tests {
             .apply(&mut right)
             .unwrap();
         right.commit();
-        left.merge(&mut right).unwrap();
+        left.merge_incoming(&mut right).unwrap();
 
         let rows = bookmarks_from_doc(&left).unwrap();
         assert!(rows.contains("https://legacy.example/"));
@@ -472,7 +473,7 @@ mod tests {
             .apply(&mut right)
             .unwrap();
         right.commit();
-        left.merge(&mut right).unwrap();
+        left.merge_incoming(&mut right).unwrap();
 
         assert_eq!(
             observed_bookmark_tags(&left, "https://same.example"),
