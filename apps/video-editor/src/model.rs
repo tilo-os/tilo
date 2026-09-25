@@ -2334,14 +2334,13 @@ impl Project {
     pub fn media_kind_of(&self, id: ClipId) -> TrackKind {
         self.clip(id)
             .and_then(|c| self.media(c.media))
-            .map(|m| {
+            .map_or(TrackKind::Video, |m| {
                 if m.kind.is_visual() {
                     TrackKind::Video
                 } else {
                     TrackKind::Audio
                 }
             })
-            .unwrap_or(TrackKind::Video)
     }
 
     // --- linked audio and video ------------------------------------------
@@ -2708,23 +2707,19 @@ impl Project {
 
     /// [`Self::track_audible`] for the track a clip sits on.
     pub fn clip_audible(&self, id: ClipId) -> bool {
-        self.clip(id)
-            .map(|c| self.track_audible(c.track))
-            .unwrap_or(false)
+        self.clip(id).is_some_and(|c| self.track_audible(c.track))
     }
 
     /// Whether `track` refuses edits. A missing track counts as locked: there
     /// is nothing there to edit.
     pub fn track_locked(&self, track: TrackId) -> bool {
-        self.track(track).map(|t| t.locked).unwrap_or(true)
+        self.track(track).is_none_or(|t| t.locked)
     }
 
     /// Whether the clip that owns `id` may currently be edited — false when
     /// its own track is locked.
     pub fn clip_editable(&self, id: ClipId) -> bool {
-        self.clip(id)
-            .map(|c| !self.track_locked(c.track))
-            .unwrap_or(false)
+        self.clip(id).is_some_and(|c| !self.track_locked(c.track))
     }
 
     /// Whether clip `id` may be placed on `track`: the track must exist, be
@@ -2743,10 +2738,11 @@ impl Project {
     /// The first unlocked track of `kind`, preferring `near` when it already
     /// qualifies — the "sensible track" a paste or a duplicate lands on.
     pub fn placement_track(&self, kind: TrackKind, near: Option<TrackId>) -> Option<TrackId> {
-        if let Some(t) = near.and_then(|id| self.track(id)) {
-            if t.kind == kind && !t.locked {
-                return Some(t.id);
-            }
+        if let Some(t) = near.and_then(|id| self.track(id))
+            && t.kind == kind
+            && !t.locked
+        {
+            return Some(t.id);
         }
         self.display_tracks()
             .into_iter()
@@ -2784,7 +2780,7 @@ impl Project {
                 c.anim = c.anim.sliced(on_timeline, c.duration() + on_timeline);
             }
             c.markers.retain(|m| m.t >= on_timeline);
-            for m in c.markers.iter_mut() {
+            for m in &mut c.markers {
                 m.t -= on_timeline;
             }
         }

@@ -911,13 +911,12 @@ fn parse_ebml(d: &[u8]) -> Option<ProbedMedia> {
                     }
                     // The track's own nanoseconds-per-frame, when it states one.
                     // Absent (the common WebM case) leaves fps unknown at 0.0.
-                    if fps == 0.0 {
-                        if let Some(ns) = ebml_find(entry, EBML_DEFAULT_DURATION)
+                    if fps == 0.0
+                        && let Some(ns) = ebml_find(entry, EBML_DEFAULT_DURATION)
                             .map(ebml_uint)
                             .filter(|&n| n > 0)
-                        {
-                            fps = 1e9 / ns as f64;
-                        }
+                    {
+                        fps = 1e9 / ns as f64;
                     }
                 }
                 Some(2) => saw_audio = true,
@@ -1333,7 +1332,7 @@ mod tests {
         ] {
             match probe_bytes(bytes, Path::new(name)) {
                 Err(ProbeError::NotMedia { detected: d }) => {
-                    assert_eq!(d, detected, "{name} must be named for what it is")
+                    assert_eq!(d, detected, "{name} must be named for what it is");
                 }
                 other => panic!("{name} must be refused as not-media, got {other:?}"),
             }

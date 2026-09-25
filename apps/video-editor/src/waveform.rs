@@ -6,7 +6,7 @@
 //!     directly with no decoder, so peaks are real even on a build with no
 //!     media stack.
 //!   * **Everything else** (MP3, AAC, Opus, FLAC, the audio track of a video
-//!     …) is decoded to PCM under `--features decode`, through a GStreamer
+//!     …) is decoded to PCM under `--features decode`, through a `GStreamer`
 //!     `uridecodebin → appsink` chain fed by the shared [`media::Source`]
 //!     seam, off the UI thread and bounded to one decode at a time.
 //!
@@ -171,7 +171,7 @@ fn peaks_by_decoding(path: &Path, buckets: usize) -> Option<Vec<f32>> {
                     continue;
                 };
                 for pair in map.as_slice().chunks_exact(2) {
-                    let v = i16::from_le_bytes([pair[0], pair[1]]) as f32 / 32768.0;
+                    let v = f32::from(i16::from_le_bytes([pair[0], pair[1]])) / 32768.0;
                     let a = v.abs();
                     if a > acc {
                         acc = a;
@@ -490,15 +490,14 @@ fn run_worker(work: Arc<(Mutex<Work>, Condvar)>, tx: Sender<(MediaId, Option<Vec
                     w.running = false;
                     return;
                 }
-                match w.queue.pop_front() {
-                    Some(task) => task,
-                    None => {
-                        if res.timed_out() {
-                            w.running = false;
-                            return;
-                        }
-                        continue; // spurious wake
+                if let Some(task) = w.queue.pop_front() {
+                    task
+                } else {
+                    if res.timed_out() {
+                        w.running = false;
+                        return;
                     }
+                    continue; // spurious wake
                 }
             };
             drop(w);

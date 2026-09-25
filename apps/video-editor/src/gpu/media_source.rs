@@ -210,7 +210,7 @@ impl MediaFrameSource {
             }
             let mut h: u64 = 0xcbf2_9ce4_8422_2325;
             for b in item.id.as_bytes().iter().chain(item.path.as_bytes()) {
-                h ^= *b as u64;
+                h ^= u64::from(*b);
                 h = h.wrapping_mul(0x1000_0000_01b3);
             }
             acc = acc.wrapping_add(h);
@@ -415,13 +415,13 @@ impl FrameSource for MediaFrameSource {
                 self.failures.remove(&media);
                 // Already painted this exact picture for this source? Reuse
                 // the texture rather than uploading it again.
-                if let Some(last) = self.last.get(&media) {
-                    if last.pts_ms == f.pts_ms {
-                        let texture = last.texture.clone();
-                        self.slot += 1;
-                        self.served_real = true;
-                        return Some(texture);
-                    }
+                if let Some(last) = self.last.get(&media)
+                    && last.pts_ms == f.pts_ms
+                {
+                    let texture = last.texture.clone();
+                    self.slot += 1;
+                    self.served_real = true;
+                    return Some(texture);
                 }
                 let painted = self.paint(device, queue, media, &f);
                 self.served_real |= painted.is_some();

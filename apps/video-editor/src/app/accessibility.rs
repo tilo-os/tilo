@@ -255,8 +255,8 @@ impl VideoEditorApp {
             return vec![Section::Markers, Section::Project];
         };
         let media = self.project.media(clip.media);
-        let is_title = media.map(|m| m.text.is_some()).unwrap_or(false);
-        let is_video = media.map(|m| m.kind.is_visual()).unwrap_or(true);
+        let is_title = media.is_some_and(|m| m.text.is_some());
+        let is_video = media.is_none_or(|m| m.kind.is_visual());
         // The same `is_video` test the layout makes, so the reader is
         // offered exactly the sections that are drawn — no more and no
         // fewer. An audio clip has no picture to place, key, mask or
@@ -339,8 +339,7 @@ impl VideoEditorApp {
     pub(super) fn a11y_clip_name(&self, clip: &Clip) -> String {
         self.project
             .media(clip.media)
-            .map(|m| m.name.clone())
-            .unwrap_or_else(|| "Missing media".into())
+            .map_or_else(|| "Missing media".into(), |m| m.name.clone())
     }
 
     /// What a reader says about a clip beyond its name: where it sits, how long
@@ -352,8 +351,7 @@ impl VideoEditorApp {
         let track = self
             .project
             .track(clip.track)
-            .map(|t| t.name.clone())
-            .unwrap_or_else(|| "track".into());
+            .map_or_else(|| "track".into(), |t| t.name.clone());
         format!(
             "{} to {}, {} long, on {track}",
             crate::timecode::timecode(clip.start, fps),
@@ -706,12 +704,10 @@ impl VideoEditorApp {
         }
         // Re-mark the focused header now that every group exists: a header's
         // focus lives on its group node.
-        if cursor {
-            if let Some(InspectorRow::Header(target)) = rows.get(self.focus.inspector) {
-                for g in groups.iter_mut() {
-                    if g.key == Some(ui::a11y::hash_key(&target.label())) {
-                        g.state.focused = true;
-                    }
+        if cursor && let Some(InspectorRow::Header(target)) = rows.get(self.focus.inspector) {
+            for g in &mut groups {
+                if g.key == Some(ui::a11y::hash_key(&target.label())) {
+                    g.state.focused = true;
                 }
             }
         }
@@ -796,9 +792,10 @@ impl VideoEditorApp {
                 )
             }
             PickField::MatchFormat => (
-                self.format_source()
-                    .map(|m| format!("Match the shape of {}", m.name))
-                    .unwrap_or_else(|| "Match media".to_string()),
+                self.format_source().map_or_else(
+                    || "Match media".to_string(),
+                    |m| format!("Match the shape of {}", m.name),
+                ),
                 Role::Button,
                 false,
             ),
@@ -1065,9 +1062,7 @@ impl VideoEditorApp {
                 }
             }
             (Section::Mask, Some(c)) => {
-                if !c.mask.is_active() {
-                    "off".into()
-                } else {
+                if c.mask.is_active() {
                     format!(
                         "{} {:.0}% by {:.0}%, {}",
                         c.mask.shape.label().to_lowercase(),
@@ -1079,6 +1074,8 @@ impl VideoEditorApp {
                             "keeping the inside"
                         }
                     )
+                } else {
+                    "off".into()
                 }
             }
             (Section::Effects, Some(c)) => {

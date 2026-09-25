@@ -113,13 +113,13 @@ impl TitleRaster {
                 Affine::IDENTITY,
                 Color::new([0.0, 0.0, 0.0, text.backdrop.clamp(0.0, 1.0) as f32]),
                 None,
-                &Rect::new(0.0, 0.0, width as f64, height as f64),
+                &Rect::new(0.0, 0.0, f64::from(width), f64::from(height)),
             );
         }
 
         // Sizes are fractions of the frame height, so the same title reads
         // the same against a 1080p project and a 4K one.
-        let size = (text.size.clamp(0.005, 2.0) * height as f64) as f32;
+        let size = (text.size.clamp(0.005, 2.0) * f64::from(height)) as f32;
         let color = Color::new([
             text.color[0].clamp(0.0, 1.0) as f32,
             text.color[1].clamp(0.0, 1.0) as f32,
@@ -153,7 +153,7 @@ impl TitleRaster {
         // The safe width matches the inset the left- and right-aligned cases
         // already use (8% each side), so a wrapped line never sits closer to
         // the edge than a deliberately aligned one.
-        let safe = width as f64 * 0.84;
+        let safe = f64::from(width) * 0.84;
         let lines: Vec<String> = text
             .content
             .lines()
@@ -170,15 +170,15 @@ impl TitleRaster {
                 )
             })
             .collect();
-        let leading = size as f64 * 1.25;
+        let leading = f64::from(size) * 1.25;
         let block = leading * lines.len().max(1) as f64;
-        let mut y = height as f64 * 0.5 - block * 0.5;
+        let mut y = f64::from(height) * 0.5 - block * 0.5;
         for line in &lines {
             let (w, _h) = tr.measure_font(line.as_str(), size, None, weight, text.italic, &family);
             let x = match text.align {
-                TextAlign::Left => width as f64 * 0.08,
-                TextAlign::Center => (width as f64 - w as f64) * 0.5,
-                TextAlign::Right => width as f64 * 0.92 - w as f64,
+                TextAlign::Left => f64::from(width) * 0.08,
+                TextAlign::Center => (f64::from(width) - f64::from(w)) * 0.5,
+                TextAlign::Right => f64::from(width) * 0.92 - f64::from(w),
             };
             tr.draw_text_font(
                 &mut scene,
@@ -226,7 +226,7 @@ mod tests {
         );
         let rgba = r.render_rgba(&scene);
         let (rr, a) = (rgba[0], rgba[3]);
-        assert!((a as i32 - 128).abs() <= 2, "half alpha, got {a}");
+        assert!((i32::from(a) - 128).abs() <= 2, "half alpha, got {a}");
         assert_eq!(
             rr, 255,
             "straight alpha: a half-transparent white keeps its full colour",
@@ -325,7 +325,7 @@ mod tests {
             let (mut sum, mut n) = (0f64, 0f64);
             for (i, p) in rgba.chunks_exact(4).enumerate() {
                 if p[3] > 128 {
-                    sum += (i as u32 % w) as f64;
+                    sum += f64::from(i as u32 % w);
                     n += 1.0;
                 }
             }
