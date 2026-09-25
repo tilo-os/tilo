@@ -472,11 +472,16 @@ impl<'doc, 'turn> NativeReadSession<'doc, 'turn> {
                     if let Some(steps) = steps {
                         steps.charge(op.succ_inc().len())?;
                     }
-                    // Wrapping, exactly like the native get/list_range sums.
+                    // The 0.8 read contract: an unrepresentable sum (at any
+                    // step, in native successor order) is refused as Invalid
+                    // rather than lent as a wrapped value. Legacy get and
+                    // list_range keep wrapping.
                     let mut value = *initial;
                     for (_, increment) in op.succ_inc() {
                         if let Some(increment) = increment {
-                            value = value.wrapping_add(increment);
+                            value = value
+                                .checked_add(increment)
+                                .ok_or(NativeResourceError::Invalid)?;
                         }
                     }
                     NativeScalar::Counter(value)
