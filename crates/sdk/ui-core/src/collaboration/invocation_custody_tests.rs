@@ -55,7 +55,7 @@ impl HostDocumentCommitter for CustodyCommitter {
                     route.record.as_deref().unwrap_or(""),
                 ),
                 collab_types::OpClass::Splice,
-                crate::clock::SystemTime::now(),
+                crate::time::wall(),
                 1,
             );
             if mode == 2 {
@@ -134,7 +134,7 @@ fn causal_scope_sdk_queue_retains_original_custody_through_host_await_and_termin
             time.store(100, Ordering::Release);
         }
         release.send(()).unwrap();
-        let result = barrier.wait(Some(Instant::now() + Duration::from_secs(2)));
+        let result = barrier.wait(Some(crate::time::now() + Duration::from_secs(2)));
         if result.is_err() != (mode != 0) {
             failures.push(format!("mode {mode}: wrong barrier outcome"));
         }

@@ -1,4 +1,8 @@
 //! Controlled real Cap'n Proto transport. This is not a receiver/effect owner.
+#![allow(
+    refining_impl_trait,
+    reason = "the fake servers return the concrete capnp Promise, as the broker's own fake servers do"
+)]
 use super::*;
 use crate::collaboration::RouteSpec;
 use capnp::capability::Promise;
@@ -473,7 +477,7 @@ async fn managed_sender_transport_real_rpc_ready_reply_after_deadline_is_refused
 #[cfg(target_os = "macos")]
 #[tokio::test(flavor = "current_thread")]
 async fn managed_sender_transport_real_physical_sender_dispatch_and_result_custody() {
-    use crate::collaboration::{
+    use super::super::{
         BridgeState, CollabEvent, CollabRequest, InboundBridge, LocalSdkDocumentSigner,
         QueuedSdkCommand, SdkCommand, SdkDocumentSigner, dispatch_sdk_request, enqueue_sdk_command,
     };
@@ -498,10 +502,7 @@ async fn managed_sender_transport_real_physical_sender_dispatch_and_result_custo
             let state = BridgeState::new();
             let (commands, mut command_rx) = tokio::sync::mpsc::channel(4);
             let (events, mut event_rx) = tokio::sync::mpsc::channel(4);
-            let inbound = InboundBridge {
-                tx: events,
-                state: state.clone(),
-            };
+            let inbound = InboundBridge::new(events, state.clone());
             // The managed dispatch arm never uses document signing. This explicit
             // existing harness signer is not a receiver identity or authority.
             let mut signer = LocalSdkDocumentSigner::Inherited(SdkDocumentSigner::Harness(

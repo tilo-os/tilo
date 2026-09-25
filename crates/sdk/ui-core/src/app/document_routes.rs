@@ -206,7 +206,9 @@ impl App {
         }
         #[cfg(test)]
         let observation = (route.clone(), request.clone());
-        self.collaboration.manager.try_send_to_route(route, request)?;
+        self.collaboration
+            .manager
+            .try_send_to_route(route, request)?;
         #[cfg(test)]
         self.document_routes.sent.push(observation);
         Ok(())
@@ -214,6 +216,7 @@ impl App {
 
     /// Ordinary background/history publication remains best effort. Only a
     /// directed terminal requires the explicit complete-queue result below.
+    #[cfg(any(test, feature = "native"))]
     pub(super) fn publish_owned_documents(&mut self) {
         let _ = self.queue_owned_documents();
     }
@@ -354,6 +357,7 @@ impl App {
             }
         }
     }
+    #[cfg(test)]
     pub(super) fn drain_document_routes(&mut self) {
         self.refresh_document_routes();
         self.drain_document_routes_after_refresh();

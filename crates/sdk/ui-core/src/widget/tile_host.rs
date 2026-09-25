@@ -723,8 +723,7 @@ impl TileHost {
     /// External surfaces own no host record: detach any earlier record
     /// custody so the outer document is never lent to them.
     fn clear_record_binding(&mut self) {
-        if self.binding.is_none() && self.pending_binding.is_none() && self.record_error.is_none()
-        {
+        if self.binding.is_none() && self.pending_binding.is_none() && self.record_error.is_none() {
             return;
         }
         self.settle_outgoing_record();

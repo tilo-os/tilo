@@ -1433,10 +1433,6 @@ impl AppHandler {
                 window.request_redraw();
             }
         }
-        if app.root_widget.take_window_close_intent() {
-            event_loop.exit();
-            return;
-        }
         mark_first_frame("first-frame-sync-done");
         if let Some(p) = app.profiler.as_mut() {
             p.record_since(crate::profiling::Pass::Sync, __prof_frame_start);

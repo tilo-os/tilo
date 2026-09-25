@@ -16,13 +16,13 @@ use super::{
     codec::{CallerView, TargetView},
     lifecycle::{Completion, Failure, Intent, ManagedSender, RECOVERY_SLOTS, ReplyDisposition},
 };
+use crate::time::Instant;
 use crate::{
     collaboration::RouteSpec,
     host_worker::private_actions::{CurrentPrivateState, SenderStorageCode},
 };
 use automerge::resource_limits::NativeAllowance;
 use runtime_collab::PublishedInvocationBinding;
-use std::time::Instant;
 
 /// Digest of one original immutable semantic request, including None versus
 /// Some("") arguments. Confirmation evidence is deliberately excluded.

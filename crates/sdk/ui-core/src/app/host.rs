@@ -194,6 +194,7 @@ fn draw_visible_tooltip(
 /// Complete a native CPU frame only after drawing and damage collection.
 /// Deferred or aborted frames retain return custody for the next completed
 /// frame, so dirty state and accessibility publication stay tied to pixels.
+#[cfg(feature = "native")]
 fn complete_native_frame_content(app: &mut App, publish_accessibility: impl FnOnce(&mut App)) {
     app.root_widget.mark_drawn();
     publish_accessibility(app);
@@ -2371,7 +2372,6 @@ mod action_palette_tests {
         }
     }
 
-
     include!("../resource_projection_tests.rs");
 
     #[test]
@@ -3638,6 +3638,7 @@ mod semantic_tree_app_tests {
     use automerge::transaction::Transactable;
     use automerge::{ROOT, ReadDoc, ScalarValue, Value};
     use serde::{Deserialize, Serialize};
+    use std::cell::RefCell;
     use std::collections::HashMap;
     use tilo_actions::{
         Action as QAction, ActionError, ActionSpec, Doc, EncodedAction, ExecutionLocus,
@@ -5392,7 +5393,6 @@ mod semantic_tree_app_tests {
         assert_eq!(presses.get(), 0);
     }
 
-
     include!("action_directory_snapshot_tests.rs");
 
     fn directory_query(
@@ -6941,7 +6941,6 @@ mod bound_component_tests {
             }
         }
     }
-
 
     include!("directory_permission_tests.rs");
 

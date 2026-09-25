@@ -41,17 +41,19 @@ pub trait PeerTransport {
 ///
 /// Peer adapters are thread-bound (browser transports own `!Send` handles).
 /// Following the seam's contract, this wrapper satisfies `Send` by checking,
-/// at runtime, that it is only ever touched from its creating thread; the
-/// manager is only moved before it is first driven.
+/// at runtime, that it is only ever touched from its creating thread: every
+/// method asserts it, and dropping it anywhere else leaks the peer rather than
+/// running its destructor off the owner thread.
 pub(super) struct PeerTransportAdapter {
-    peer: Box<dyn PeerTransport>,
+    peer: std::mem::ManuallyDrop<Box<dyn PeerTransport>>,
     owner: std::thread::ThreadId,
     closed: Option<String>,
 }
 
-// SAFETY: every method asserts it runs on the thread that created the peer,
-// so the `!Send` handles inside `peer` are never used from another thread.
-// Dropping happens with the owning manager, on that same owner thread.
+// SAFETY: the `!Send` handles inside `peer` are only reached on `owner`:
+// every method asserts the current thread is `owner` before touching `peer`,
+// and `Drop` releases `peer` only on `owner` (elsewhere it is leaked, never
+// dropped), so no non-atomic state inside it is shared across threads.
 #[allow(
     unsafe_code,
     reason = "the collaboration seam's documented runtime-checked Send wrapper for thread-bound transports"
@@ -61,7 +63,7 @@ unsafe impl Send for PeerTransportAdapter {}
 impl PeerTransportAdapter {
     pub(super) fn new(peer: impl PeerTransport + 'static) -> Self {
         Self {
-            peer: Box::new(peer),
+            peer: std::mem::ManuallyDrop::new(Box::new(peer)),
             owner: std::thread::current().id(),
             closed: None,
         }
@@ -81,6 +83,19 @@ impl PeerTransportAdapter {
             self.closed = Some(error);
             super::TransportError::Closed
         })
+    }
+}
+
+impl Drop for PeerTransportAdapter {
+    fn drop(&mut self) {
+        if std::thread::current().id() == self.owner {
+            // SAFETY: on the owner thread, and `peer` is never used again.
+            unsafe { std::mem::ManuallyDrop::drop(&mut self.peer) };
+        } else {
+            tracing::error!(
+                "a thread-bound peer transport was dropped off its owner thread; leaking it"
+            );
+        }
     }
 }
 

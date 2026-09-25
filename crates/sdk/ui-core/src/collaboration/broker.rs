@@ -16,12 +16,12 @@
 )]
 
 use super::{
-    ActionDirectoryRequest, Backend, CollabEvent, CollabRequest, CollabTransport,
-    CollaborationManager, Collaborator, DocumentMutation, DocumentPublicationError,
-    DocumentPublicationReceipt, ExportedAction, ExportedInput, HostDocumentCommit,
-    HostDocumentCommitter, PresenceKey, PresencePayload, PrimaryRouteState, RouteSpec, SignedOp,
-    TransportCommand, TransportError, TransportStatus, Uuid, auto_hello_env, channel_key, mpsc,
-    presence_handle_env,
+    ActionDirectoryRequest, Backend, BrokerActionCatalogueWire, BrokerActionDescriptor,
+    BrokerActionSurface, CollabEvent, CollabRequest, CollabTransport, CollaborationManager,
+    Collaborator, DocumentMutation, DocumentPublicationError, DocumentPublicationReceipt,
+    ExportedAction, ExportedInput, HostDocumentCommitter, PresenceKey, PresencePayload,
+    PrimaryRouteState, RouteSpec, SignedOp, TransportCommand, TransportError, TransportStatus,
+    Uuid, auto_hello_env, channel_key, mpsc, presence_handle_env,
 };
 
 // Worker-owned Cloud facilities: committed-document reads, the paged
@@ -33,10 +33,10 @@ pub(super) mod committed_document;
 mod directory_client;
 #[path = "managed_sender_transport.rs"]
 mod managed_sender_transport;
-#[path = "native_media.rs"]
-mod native_media;
 #[path = "native_initial.rs"]
 pub(crate) mod native_initial;
+#[path = "native_media.rs"]
+mod native_media;
 pub use committed_document::CommittedDocument;
 
 use crate::time::Duration;
@@ -355,7 +355,9 @@ impl SdkCommand {
     fn document_len(&self) -> Option<usize> {
         match self {
             Self::Primary(CollabRequest::Document { mutation, .. })
-            | Self::ToRoute(_, CollabRequest::Document { mutation, .. }) => Some(mutation.data().len()),
+            | Self::ToRoute(_, CollabRequest::Document { mutation, .. }) => {
+                Some(mutation.data().len())
+            }
             _ => None,
         }
     }
@@ -1886,7 +1888,6 @@ struct ConnectedBroker {
 }
 
 impl CollaborationManager {
-
     /// Connect to the launcher-inherited typed collaboration service and
     /// announce an explicit route. Headless participants use this instead of
     /// relying on process-wide `QUICK_APP_ID` / `TILO_WORKSPACE_ID` variables.
@@ -2066,9 +2067,13 @@ impl CollaborationManager {
             .map_err(|error| error.to_string())
     }
 
+    #[cfg(feature = "native")]
     pub(crate) fn for_native_launch() -> Result<Self, String> {
         if runtime_portal::service_fd("collab").is_none() {
-            if std::env::var_os("TILO_SVC_COLLAB_FD").is_some() {
+            if crate::host::environment()
+                .identity
+                .collab_service_configured
+            {
                 return Err("configured native collaboration service is unavailable".into());
             }
             return Ok(Self::disabled());
@@ -2865,7 +2870,7 @@ async fn ensure_sdk_route(
     // This intentionally fails quietly for person sessions. An admitted
     // agent gets a separate broker-addressed queue; a document agent never
     // has to infer task work from room traffic.
-    if std::env::var_os("TILO_MANAGED_AGENT_CONTEXT").is_none() {
+    if !crate::host::environment().identity.managed_agent_context {
         spawn_task_run_stream(&channel, inbound_tx).await;
     }
     let presence = spawn_presence_stream(&channel, inbound_tx).await;
@@ -3410,11 +3415,7 @@ async fn send_document_frame(
     let Some((payload, encryption_metadata)) =
         prepare_document_payload(&route.encryption, cleartext)
     else {
-        return Err(state.publication_failed(
-            "document encryption",
-            "payload unavailable",
-            true,
-        ));
+        return Err(state.publication_failed("document encryption", "payload unavailable", true));
     };
     let now = crate::time::wall();
     let author = match signer {
@@ -3459,11 +3460,7 @@ async fn send_document_frame(
         Ok(bytes) => bytes,
         Err(error) => {
             tracing::warn!(%error, "collab: unsigned document envelope would not encode; dropping");
-            return Err(state.publication_failed(
-                "document signing or encoding",
-                error,
-                true,
-            ));
+            return Err(state.publication_failed("document signing or encoding", error, true));
         }
     };
     let signature = match signer {
@@ -3479,11 +3476,7 @@ async fn send_document_frame(
                     ?error,
                     "collab: identity service denied document operation; dropping"
                 );
-                return Err(state.publication_failed(
-                    "document signing or encoding",
-                    error,
-                    true,
-                ));
+                return Err(state.publication_failed("document signing or encoding", error, true));
             }
         },
         LocalSdkDocumentSigner::Host(identity) => match identity
@@ -4664,9 +4657,9 @@ mod tests {
 
     #[cfg(unix)]
     include!("directory_client_tests.rs");
-    use crate::collaboration::{SignedSendError, SigningIdentity};
+    use crate::collaboration::{HostDocumentCommit, SignedSendError, SigningIdentity};
 
-    use crate::time::Duration;
+    use crate::time::{Duration, Instant};
     use std::cell::RefCell;
     #[cfg(unix)]
     use std::os::fd::IntoRawFd;
@@ -5573,7 +5566,7 @@ mod tests {
         }
     }
 
-    fn assert_document_publication_failure(manager: &CollaborationManager, expected: &str) {
+    fn assert_document_publication_failure(manager: &mut CollaborationManager, expected: &str) {
         let error = manager
             .begin_document_publication_barrier()
             .and_then(|receipt| receipt.wait(Some(Instant::now() + Duration::from_secs(2))))
@@ -5679,7 +5672,7 @@ mod tests {
         assert!(manager.send(CollabRequest::document_incremental(
             b"later allowed change".to_vec()
         )));
-        assert_document_publication_failure(&manager, "fixture role revoked");
+        assert_document_publication_failure(&mut manager, "fixture role revoked");
         assert!(
             manager.is_connected(),
             "policy refusal leaves identity transport usable"
@@ -6362,14 +6355,21 @@ mod tests {
         ));
     }
 
+    /// A receipt wired to the bridge's latched failure, as the transport builds it.
+    fn bridge_receipt(
+        receiver: mpsc::Receiver<Result<(), DocumentPublicationError>>,
+        state: &BridgeState,
+    ) -> DocumentPublicationReceipt {
+        let state = state.clone();
+        DocumentPublicationReceipt::new(receiver)
+            .with_disconnect_cause(move || state.publication_result().err())
+    }
+
     #[test]
     fn document_publication_completed_prefix_is_not_poisoned_by_later_failure() {
         let state = BridgeState::new();
         let (reply, receiver) = mpsc::sync_channel(1);
-        let receipt = DocumentPublicationReceipt {
-            receiver,
-            state: state.clone(),
-        };
+        let receipt = bridge_receipt(receiver, &state);
         reply.send(state.publication_result()).unwrap();
         state.record_publication_failure(DocumentPublicationError::Failed("later".into()));
         assert_eq!(receipt.wait(Some(Instant::now())), Ok(()));
@@ -6379,17 +6379,14 @@ mod tests {
     fn document_publication_disconnection_and_pending_deadline_are_errors() {
         let state = BridgeState::new();
         let (reply, receiver) = mpsc::sync_channel(1);
-        let receipt = DocumentPublicationReceipt {
-            receiver,
-            state: state.clone(),
-        };
+        let receipt = bridge_receipt(receiver, &state);
         assert_eq!(
             receipt.wait(Some(Instant::now())),
             Err(DocumentPublicationError::DeadlineElapsed)
         );
         drop(reply);
         let (reply, receiver) = mpsc::sync_channel(1);
-        let receipt = DocumentPublicationReceipt { receiver, state };
+        let receipt = bridge_receipt(receiver, &state);
         drop(reply);
         assert_eq!(
             receipt.wait(None),
@@ -7194,6 +7191,7 @@ mod tests {
         data.push(0);
         let command = SdkCommand::Primary(CollabRequest::Document {
             mutation: collab_types::DocumentMutation::Snapshot(data),
+            authorization: None,
         });
 
         assert!(enqueue_sdk_command(&tx, command, &state));

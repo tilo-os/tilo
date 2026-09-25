@@ -207,12 +207,6 @@ impl crate::widget::Collaborative for LiveOwner {
     }
 }
 
-impl crate::widget::Collaborative for LiveOwner {
-    fn handle_collab_event(&mut self, _: &crate::collaboration::CollabEvent) {
-        self.collab_events.set(self.collab_events.get() + 1);
-    }
-}
-
 impl Widget for LiveOwner {
     fn collaborative_mut(&mut self) -> Option<&mut dyn crate::widget::Collaborative> {
         Some(self)

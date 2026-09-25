@@ -1,5 +1,3 @@
-//! Monotonic and wall clocks for shared widgets and host-independent services.
-#[cfg(not(target_arch = "wasm32"))]
-pub use std::time::*;
-#[cfg(target_arch = "wasm32")]
-pub use web_time::*;
+//! Compatibility path for [`crate::time`], kept for callers that still name
+//! `ui::clock`. New code names `ui::time` directly.
+pub use crate::time::*;

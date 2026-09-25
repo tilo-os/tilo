@@ -69,7 +69,7 @@ fn deferred_palette_final_local_dispatch_mints_once_per_new_activation() {
         ));
         assert_eq!(calls.load(Ordering::SeqCst), expected + 1);
         assert_eq!(
-            doc.get(ROOT, "created").unwrap().unwrap().0.to_str(),
+            doc.get(ROOT, "created").unwrap().unwrap().0.as_str(),
             Some(expected.to_string().as_str())
         );
     }

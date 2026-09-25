@@ -1,5 +1,12 @@
 //! Private native construction custody. It borrows the existing SDK worker;
 //! neither an environment value nor a data capture is a positive authority.
+#![cfg_attr(
+    not(feature = "native"),
+    allow(
+        dead_code,
+        reason = "construction custody is driven by the native launcher; portable hosts use only the initial-read bridge"
+    )
+)]
 use super::*;
 use std::cell::{Cell, RefCell};
 use std::rc::{Rc, Weak};
@@ -89,7 +96,7 @@ impl NativeConstruction {
             // Applying the capture releases its token before the independent RPC
             // worker confirms the next current read. Wait for that confirmation;
             // a fast component factory must not race the real owner recheck.
-            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+            let deadline = crate::time::now() + crate::time::Duration::from_secs(3);
             loop {
                 bridge.check()?;
                 if bridge
@@ -99,12 +106,12 @@ impl NativeConstruction {
                 {
                     break;
                 }
-                if std::time::Instant::now() >= deadline {
+                if crate::time::now() >= deadline {
                     return Err(
                         "native component history was not confirmed before its factory".into(),
                     );
                 }
-                std::thread::sleep(std::time::Duration::from_millis(10));
+                std::thread::sleep(crate::time::Duration::from_millis(10));
             }
         }
         manager.switch_native_record(&binding.checkout.id)?;
@@ -212,7 +219,10 @@ pub(crate) fn file_bridge() -> Result<Option<InitialReadBridge>, String> {
         }
         return Ok(state.bridge.clone());
     }
-    if std::env::var_os("TILO_SVC_COLLAB_FD").is_some() {
+    if crate::host::environment()
+        .identity
+        .collab_service_configured
+    {
         return Err("file record mode must be resolved by the native launch owner".into());
     }
     Ok(None)
@@ -327,18 +337,18 @@ impl InitialReadBridge {
                 return Err("native initial read queue unavailable".into());
             }
         }
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        let deadline = crate::time::now() + crate::time::Duration::from_secs(3);
         loop {
             self.check()?;
             if let Some(read) = self.state.document_reads.initial(&key) {
                 return Ok(read);
             }
-            if std::time::Instant::now() >= deadline {
+            if crate::time::now() >= deadline {
                 return Err("native initial history unavailable before construction".into());
             }
             // The RPC worker has a separate runtime. No lock or application
             // document borrow crosses this bounded construction wait.
-            std::thread::sleep(std::time::Duration::from_millis(10));
+            std::thread::sleep(crate::time::Duration::from_millis(10));
         }
     }
 }

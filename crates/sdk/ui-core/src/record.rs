@@ -2013,7 +2013,7 @@ fn validate_qos_notes_receipt(
     let Ok(values) = doc.get_all(&receipt, "version") else {
         return false;
     };
-    matches!(values.as_slice(), [(Value::Scalar(value), _)] if value.to_u64() == Some(1))
+    matches!(values.as_slice(), [(Value::Scalar(value), _)] if value.as_u64() == Some(1))
 }
 
 fn validate_local_compatibility(
@@ -2269,7 +2269,11 @@ impl RecordStore {
             .portable
             .as_ref()
             .map(portable_namespace)
-            .or_else(|| set.backend.as_ref().map(|store| store.namespace().to_owned()))
+            .or_else(|| {
+                set.backend
+                    .as_ref()
+                    .map(|store| store.namespace().to_owned())
+            })
             .or_else(|| {
                 parked
                     .autosave

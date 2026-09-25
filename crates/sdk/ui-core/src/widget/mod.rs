@@ -2588,6 +2588,7 @@ pub(crate) fn handle_collab_event(
 }
 
 /// Mount native views through each owner's retained lifecycle topology.
+#[cfg(feature = "native")]
 pub(crate) fn mount_native_views(
     widget: &mut dyn Widget,
     host: &crate::widget::native_view::NativeViewHost<'_>,

@@ -2,13 +2,13 @@
 //! A queued attempt and its result are not durable sender receipts.
 use super::{OutboxFailure, codec::RowView};
 use crate::collaboration::RouteSpec;
+use crate::time::Instant;
 use automerge::resource_limits::NativeReservation;
 use runtime_collab::{PublishedInvocationBinding, PublishedInvocationObservation};
 use std::sync::{
     Arc,
     atomic::{AtomicBool, Ordering},
 };
-use std::time::Instant;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Operation {
@@ -377,7 +377,7 @@ impl ManagedAttempt {
             let deadline = self.deadline();
             match self.claim(route)? {
                 Err(error) => Err(error),
-                Ok(_) if Instant::now() >= deadline => Err(AttemptFailure::Deadline),
+                Ok(_) if crate::time::now() >= deadline => Err(AttemptFailure::Deadline),
                 Ok(view) => {
                     let request = match view {
                         RequestView::Invoke {

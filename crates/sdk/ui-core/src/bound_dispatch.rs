@@ -619,7 +619,6 @@ pub(crate) fn publication_visibility(
 }
 
 /// Opaque legacy navigation remains scoped to the provider that produced it.
-#[cfg(feature = "native")]
 pub(crate) fn activate_bound_search(
     root: &mut dyn Widget,
     doc: &mut AutoCommit,
@@ -1709,16 +1708,6 @@ pub(crate) fn execute_resource_operation_scoped(
             tilo_actions::Dispatched::AppliedLocal(envelope) => Some(envelope),
             tilo_actions::Dispatched::SubmittedToHost(_) => None,
         };
-        if let Some(envelope) = applied {
-            // Reuse the executor's actual admission frontier: this adds no
-            // document loan, commit, replay behavior, or cross-owner traversal.
-            widget.document_action_applied(
-                &envelope.action,
-                &envelope.base_change_hashes(),
-                doc,
-                path,
-            );
-        }
         if let Some(envelope) = applied {
             // Reuse the executor's actual admission frontier: this adds no
             // document loan, commit, replay behavior, or cross-owner traversal.

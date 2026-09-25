@@ -49,13 +49,13 @@ fn native_primary_directory_matches_existing_room_document() {
     let room = "room-a";
     let path = app_state::DocStore::room_primary_dir_at(root.path(), package, room).unwrap();
     assert_eq!(path, root.path().join(package).join("rooms").join(room));
-    let owner = app_state::DocStore::open_canonical_at(package, &path).unwrap();
-    let mut doc = owner.new_canonical_document().unwrap();
+    let mut owner = app_state::DocStore::open_canonical_at(package, &path).unwrap();
+    let mut doc = owner.new_document();
     doc.put(ROOT, "message", "native").unwrap();
     doc.commit();
+    owner.save(&mut doc).unwrap();
     let actor = doc.get_actor().clone();
     let bytes = doc.save();
-    std::fs::write(path.join("state.automerge"), &bytes).unwrap();
     drop(owner);
     let store = RecordOwners::new(root.path().into())
         .open(package, room)

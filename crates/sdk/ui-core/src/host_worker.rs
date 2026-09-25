@@ -90,8 +90,10 @@ impl HostWorker {
             return Err(LaunchError::ComponentSetup {
                 source: Box::new(LaunchError::Operation(error)),
                 record: binding.checkout,
-                records: binding.records,
-                reports: app.take_component_close_reports(),
+                recovery: crate::launch::LaunchRecovery::new(
+                    Some(binding.records),
+                    app.take_component_close_reports(),
+                ),
             });
         }
         app.require_published_invocation_authorizer();
@@ -252,17 +254,21 @@ pub fn retain_setup_error(error: LaunchError, reports: &mut Vec<ComponentCloseRe
     if let LaunchError::ComponentSetup {
         source,
         record,
-        records,
-        reports: nested,
+        recovery,
     } = error
     {
+        // The worker retains setup errors on the thread that launched them.
+        let Ok((records, nested)) = recovery.into_parts() else {
+            retain_setup_error(*source, reports);
+            return;
+        };
         reports.extend(nested);
         reports.push(ComponentCloseReport {
             recovery: None,
             view_error: None,
             view_retry: None,
             record_error: None,
-            record_retry: Some(records),
+            record_retry: records,
             record_retry_target: Some(record.id),
             teardown_error: None,
         });

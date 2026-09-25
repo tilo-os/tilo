@@ -2164,7 +2164,10 @@ fn check_admitted_legacy_effect_owner_retirement(close: bool) {
     let mut app = App::new_with_controlled_inputs(State::new(), tile);
     layout(&mut app);
     let actor = app.collaboration.local_author.0.clone();
-    app.invoke_resource_action(ResourceInvocation::new(&tilo_actions::ActionAddress::new("retained", "export"), &actor))
+    app.invoke_resource_action(ResourceInvocation::new(
+        &tilo_actions::ActionAddress::new("retained", "export"),
+        &actor,
+    ))
     .unwrap();
     assert_eq!(probe.starts.get(), 1);
     app.layout.node_map.clear();

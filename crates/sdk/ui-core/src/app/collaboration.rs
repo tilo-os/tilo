@@ -507,9 +507,9 @@ impl App {
             .then(|| self.begin_model_directory_refresh())
             .flatten();
         self.pump_committed_documents();
-        self.refresh_document_routes();
-        self.drain_document_routes();
-        self.publish_owned_documents();
+        // One route reconcile serves both the inbound drain and the owned
+        // publication queue.
+        self.pump_document_routes();
         for request in crate::widget::take_collab_requests(self.root_widget.as_mut()) {
             self.collaboration.manager.send(request);
         }

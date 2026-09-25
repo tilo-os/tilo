@@ -90,7 +90,7 @@ fn map_content_except_restores_authored_keys_and_preserves_excluded_state() {
     assert_eq!(object(&doc, &ROOT, "profile"), profile);
     assert_eq!(object(&doc, &profile, "presence"), presence);
     assert_eq!(
-        doc.get(&profile, "name").unwrap().unwrap().0.to_str(),
+        doc.get(&profile, "name").unwrap().unwrap().0.as_str(),
         Some("target")
     );
     assert_eq!(
@@ -98,16 +98,16 @@ fn map_content_except_restores_authored_keys_and_preserves_excluded_state() {
             .unwrap()
             .unwrap()
             .0
-            .to_i64(),
+            .as_i64(),
         Some(7)
     );
     assert!(doc.get(&profile, "current-only").unwrap().is_none());
     assert_eq!(
-        doc.get(&profile, "last_used").unwrap().unwrap().0.to_i64(),
+        doc.get(&profile, "last_used").unwrap().unwrap().0.as_i64(),
         Some(9)
     );
     assert_eq!(
-        doc.get(&presence, "status").unwrap().unwrap().0.to_str(),
+        doc.get(&presence, "status").unwrap().unwrap().0.as_str(),
         Some("current")
     );
 }
@@ -969,11 +969,11 @@ fn complement_structural_dispatch_works_at_fixed_entry_and_family_positions() {
     assert_eq!(object(&fixed, &outer, "view"), outer_view);
     assert_eq!(object(&fixed, &profile, "presence"), presence);
     assert_eq!(
-        fixed.get(&profile, "name").unwrap().unwrap().0.to_str(),
+        fixed.get(&profile, "name").unwrap().unwrap().0.as_str(),
         Some("target")
     );
     assert_eq!(
-        fixed.get(&presence, "status").unwrap().unwrap().0.to_str(),
+        fixed.get(&presence, "status").unwrap().unwrap().0.as_str(),
         Some("current")
     );
 
@@ -1007,7 +1007,7 @@ fn complement_structural_dispatch_works_at_fixed_entry_and_family_positions() {
     assert_eq!(object(&family, &ROOT, "record:item-a"), record);
     assert_eq!(object(&family, &record, "presence"), presence);
     assert_eq!(
-        family.get(&record, "name").unwrap().unwrap().0.to_str(),
+        family.get(&record, "name").unwrap().unwrap().0.as_str(),
         Some("target")
     );
 }
@@ -1040,7 +1040,7 @@ fn complement_membership_resurrection_omits_excluded_fields_and_never_revives_id
         assert!(doc.get(row, "last_used").unwrap().is_none());
     }
     assert_eq!(
-        doc.get(&restored_b, "name").unwrap().unwrap().0.to_str(),
+        doc.get(&restored_b, "name").unwrap().unwrap().0.as_str(),
         Some("target-b")
     );
     assert_eq!(doc.length(&restored_empty), 0);
@@ -1125,12 +1125,12 @@ fn complement_live_validator_failure_rolls_back_multiple_writes_and_identities()
     assert_eq!(object(&doc, &ROOT, "profile"), profile);
     assert_eq!(object(&doc, &profile, "presence"), presence);
     assert_eq!(
-        doc.get(&profile, "a").unwrap().unwrap().0.to_str(),
+        doc.get(&profile, "a").unwrap().unwrap().0.as_str(),
         Some("live-a")
     );
     assert!(doc.get(&profile, "b").unwrap().is_none());
     assert_eq!(
-        doc.get(&profile, "c").unwrap().unwrap().0.to_str(),
+        doc.get(&profile, "c").unwrap().unwrap().0.as_str(),
         Some("live-c")
     );
 }
@@ -1212,7 +1212,7 @@ fn complement_preserves_conflicted_excluded_alternatives_absence_and_rich_text()
     assert_eq!(doc.get(&runtime_text, 0).unwrap().unwrap().1, block);
     assert_eq!(doc.marks(&runtime_text).unwrap(), text_marks);
     assert_eq!(
-        doc.get(&profile, "name").unwrap().unwrap().0.to_str(),
+        doc.get(&profile, "name").unwrap().unwrap().0.as_str(),
         Some("target")
     );
 }
@@ -1278,11 +1278,11 @@ fn complement_heterogeneous_authored_content_is_exact_and_unbounded_by_registrat
     assert_eq!(object(&doc, &profile, "table"), nested_table);
     assert_eq!(object(&doc, &nested_table, "nested-map"), table_map);
     assert_eq!(
-        doc.get(&nested_table, "value").unwrap().unwrap().0.to_str(),
+        doc.get(&nested_table, "value").unwrap().unwrap().0.as_str(),
         Some("target-table")
     );
     assert_eq!(
-        doc.get(&table_map, "value").unwrap().unwrap().0.to_str(),
+        doc.get(&table_map, "value").unwrap().unwrap().0.as_str(),
         Some("target-nested-map")
     );
     assert_eq!(
@@ -1290,7 +1290,7 @@ fn complement_heterogeneous_authored_content_is_exact_and_unbounded_by_registrat
             .unwrap()
             .unwrap()
             .0
-            .to_str(),
+            .as_str(),
         Some("long-key")
     );
     assert!(doc.get(&profile, "current-only").unwrap().is_none());
@@ -1463,7 +1463,7 @@ fn complement_codec_depth_and_exact_map_shape_are_enforced_inner() {
         assert_eq!(&retained, expected);
     }
     assert_eq!(
-        boundary.get(&retained, "leaf").unwrap().unwrap().0.to_str(),
+        boundary.get(&retained, "leaf").unwrap().unwrap().0.as_str(),
         Some("target")
     );
     assert_eq!(
@@ -1472,7 +1472,7 @@ fn complement_codec_depth_and_exact_map_shape_are_enforced_inner() {
             .unwrap()
             .unwrap()
             .0
-            .to_str(),
+            .as_str(),
         Some("target-sibling")
     );
     assert_eq!(object(&boundary, &profile, "presence"), presence);
@@ -1482,7 +1482,7 @@ fn complement_codec_depth_and_exact_map_shape_are_enforced_inner() {
             .unwrap()
             .unwrap()
             .0
-            .to_str(),
+            .as_str(),
         Some("current-protected")
     );
     let replacement = object(&boundary, &profile, "replacement");
@@ -1495,7 +1495,7 @@ fn complement_codec_depth_and_exact_map_shape_are_enforced_inner() {
             .unwrap()
             .unwrap()
             .0
-            .to_str(),
+            .as_str(),
         Some("target-map")
     );
     boundary.commit().unwrap();
@@ -1665,7 +1665,7 @@ fn accepted_selector_and_protected_codec_boundaries_inner() {
         RestoreOutcome::Changed
     );
     assert_eq!(
-        selected.get(&parent, "entry").unwrap().unwrap().0.to_str(),
+        selected.get(&parent, "entry").unwrap().unwrap().0.as_str(),
         Some("target")
     );
     drop(prepared);
@@ -1786,7 +1786,7 @@ fn accepted_selector_and_protected_codec_boundaries_inner() {
     assert_eq!(retained_list, list);
     assert_eq!(doc.get_all(&retained_list, 0).unwrap(), list_elements);
     assert_eq!(
-        doc.get(&retained_list, 0).unwrap().unwrap().0.to_str(),
+        doc.get(&retained_list, 0).unwrap().unwrap().0.as_str(),
         Some("protected-list")
     );
 
@@ -1883,14 +1883,14 @@ fn deep_owned_state_restore_stamps_once_undoes_and_refuses_without_action_inner(
     }
     assert_eq!(object(&state.doc, &profile, "presence"), presence);
     assert_eq!(
-        state.doc.get(&deepest, "leaf").unwrap().unwrap().0.to_str(),
+        state.doc.get(&deepest, "leaf").unwrap().unwrap().0.as_str(),
         Some("target")
     );
     state
         .undo_as(Some(&UserId("ada".into())), None, None)
         .unwrap();
     assert_eq!(
-        state.doc.get(&deepest, "leaf").unwrap().unwrap().0.to_str(),
+        state.doc.get(&deepest, "leaf").unwrap().unwrap().0.as_str(),
         Some("current")
     );
     drop(plan);
@@ -2017,7 +2017,7 @@ fn complement_freshness_checks_excluded_changes_before_writing() {
     );
     assert_eq!(doc.clone().save(), before);
     assert_eq!(
-        doc.get(&profile, "name").unwrap().unwrap().0.to_str(),
+        doc.get(&profile, "name").unwrap().unwrap().0.as_str(),
         Some("live")
     );
 }
@@ -2092,7 +2092,7 @@ fn whole_identity_reconciliation_applies_under_fields_entries_and_family_roots()
             .unwrap()
             .unwrap()
             .0
-            .to_str(),
+            .as_str(),
         Some("target")
     );
 

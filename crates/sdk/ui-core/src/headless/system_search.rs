@@ -232,7 +232,7 @@ impl Widget for Overlay {
     fn needs_animation_frame(&self) -> bool {
         self.palette.needs_animation_frame()
     }
-    fn next_wake_deadline(&self) -> Option<crate::clock::Instant> {
+    fn next_wake_deadline(&self) -> Option<crate::time::Instant> {
         self.palette.next_wake_deadline()
     }
     fn is_focusable(&self) -> bool {

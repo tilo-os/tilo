@@ -1601,9 +1601,9 @@ fn auto_hello_env_uncached() -> (String, Uuid) {
     let environment = crate::host::environment();
     let identity = &environment.identity;
     // A renamed first-party launcher keeps its exact durable record route.
-    let app_id = std::env::var("TILO_DURABLE_APP_ID")
-        .ok()
-        .filter(|value| !value.is_empty())
+    let app_id = identity
+        .durable_app_id
+        .clone()
         .or_else(|| identity.package_id.clone())
         .or_else(|| identity.development_app_id.clone())
         .unwrap_or_else(|| {
@@ -1665,7 +1665,6 @@ mod task4_route_tests {
     }
 }
 
-
 /// A host-owned document commit resolving to the broker-signed envelope.
 pub type HostDocumentCommit =
     std::pin::Pin<Box<dyn std::future::Future<Output = Result<SignedOp, String>> + Send + 'static>>;
@@ -1692,7 +1691,6 @@ pub trait HostDocumentCommitter: Send + Sync {
         Box::pin(async { Err("host has no final scoped document evaluator".into()) })
     }
 }
-
 
 #[cfg(test)]
 mod portable_transport_tests {

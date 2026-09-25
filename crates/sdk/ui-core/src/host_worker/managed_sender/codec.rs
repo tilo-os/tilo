@@ -318,6 +318,7 @@ pub(crate) struct EncodedOutbox {
     credit: automerge::resource_limits::NativeReservation,
 }
 impl EncodedOutbox {
+    #[cfg(test)]
     pub(crate) fn bytes(&self) -> &[u8] {
         &self.bytes
     }

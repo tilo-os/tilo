@@ -1189,6 +1189,7 @@ impl PrivateActionsCapture {
     pub fn bytes(&self) -> &[u8] {
         &self.value.bytes
     }
+    #[cfg(test)]
     pub(super) fn finish(
         &mut self,
     ) -> Result<u64, crate::host_worker::private_actions::SenderStorageCode> {

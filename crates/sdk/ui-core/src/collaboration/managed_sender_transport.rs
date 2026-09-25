@@ -1,8 +1,8 @@
 //! Borrowed transport for the managed sender's existing exact-binding calls.
 //! Neither an observation nor a transport failure creates a durable receipt.
 use super::SdkRoute;
+use crate::time::Instant;
 use runtime_collab::{PublishedInvocationBinding, PublishedInvocationObservation};
-use std::time::Instant;
 
 pub(super) enum Request<'a> {
     Invoke {
@@ -42,11 +42,11 @@ pub(super) async fn send(
     request: Request<'_>,
     deadline: Instant,
 ) -> Result<PublishedInvocationObservation, Failure> {
-    let now = Instant::now();
+    let now = crate::time::now();
     if deadline <= now {
         return Err(Failure::Deadline);
     }
-    let deadline = deadline.min(now + std::time::Duration::from_secs(2));
+    let deadline = deadline.min(now + crate::time::Duration::from_secs(2));
     let rpc = async {
         match request {
             Request::Invoke {
@@ -88,7 +88,7 @@ pub(super) async fn send(
     let result = tokio::time::timeout_at(tokio::time::Instant::from_std(deadline), rpc).await;
     // Timeout polls its inner future first: a ready reply can be observed by
     // a delayed task after expiry. Never expose that reply past our deadline.
-    if Instant::now() >= deadline {
+    if crate::time::now() >= deadline {
         return Err(Failure::Deadline);
     }
     result

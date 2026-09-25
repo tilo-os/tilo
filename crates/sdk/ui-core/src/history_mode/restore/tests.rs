@@ -93,7 +93,7 @@ fn automerge_public_api_supports_populated_tables() {
     doc.delete(&table, "nested").unwrap();
     doc.increment(&table, "counter", 3).unwrap();
     assert_eq!(
-        doc.get(&table, "scalar").unwrap().unwrap().0.to_str(),
+        doc.get(&table, "scalar").unwrap().unwrap().0.as_str(),
         Some("changed")
     );
     assert!(doc.get(&table, "nested").unwrap().is_none());
@@ -102,15 +102,15 @@ fn automerge_public_api_supports_populated_tables() {
             .unwrap()
             .unwrap()
             .0
-            .to_scalar()
+            .as_scalar()
             .unwrap()
-            .to_i64(),
+            .as_i64(),
         Some(5)
     );
 
     doc.rollback();
     assert_eq!(
-        doc.get(&table, "scalar").unwrap().unwrap().0.to_str(),
+        doc.get(&table, "scalar").unwrap().unwrap().0.as_str(),
         Some("original")
     );
     assert_eq!(doc.get(&table, "nested").unwrap().unwrap().1, nested);
@@ -119,9 +119,9 @@ fn automerge_public_api_supports_populated_tables() {
             .unwrap()
             .unwrap()
             .0
-            .to_scalar()
+            .as_scalar()
             .unwrap()
-            .to_i64(),
+            .as_i64(),
         Some(2)
     );
 }
@@ -170,7 +170,7 @@ fn automerge_imports_round_trips_forks_and_merges_populated_tables() {
             .unwrap()
             .unwrap()
             .0
-            .to_i64(),
+            .as_i64(),
         Some(7)
     );
 
@@ -194,11 +194,11 @@ fn automerge_imports_round_trips_forks_and_merges_populated_tables() {
         ["later", "same-batch"]
     );
     assert_eq!(
-        doc.get(&table, "same-batch").unwrap().unwrap().0.to_str(),
+        doc.get(&table, "same-batch").unwrap().unwrap().0.as_str(),
         Some("target")
     );
     assert_eq!(
-        doc.get(&table, "later").unwrap().unwrap().0.to_i64(),
+        doc.get(&table, "later").unwrap().unwrap().0.as_i64(),
         Some(7)
     );
     let applied = doc.get_changes(&[]);
@@ -241,7 +241,7 @@ fn automerge_imports_round_trips_forks_and_merges_populated_tables() {
             .unwrap()
             .unwrap()
             .0
-            .to_str(),
+            .as_str(),
         Some("row")
     );
     assert_eq!(
@@ -261,11 +261,11 @@ fn automerge_imports_round_trips_forks_and_merges_populated_tables() {
     left.merge(&mut right).unwrap();
     assert_eq!(left.object_type(&left_table).unwrap(), ObjType::Table);
     assert_eq!(
-        left.get(&left_table, "left").unwrap().unwrap().0.to_bool(),
+        left.get(&left_table, "left").unwrap().unwrap().0.as_bool(),
         Some(true)
     );
     assert_eq!(
-        left.get(&left_table, "right").unwrap().unwrap().0.to_bool(),
+        left.get(&left_table, "right").unwrap().unwrap().0.as_bool(),
         Some(true)
     );
     assert_eq!(left.get_all(&left_table, "conflict").unwrap().len(), 2);
@@ -302,19 +302,19 @@ fn whole_restores_changed_populated_table_and_retains_current_ids() {
     assert_eq!(doc.object_type(&table).unwrap(), ObjType::Table);
     assert_eq!(doc.object_type(&nested_table).unwrap(), ObjType::Table);
     assert_eq!(
-        doc.get(&table, "scalar").unwrap().unwrap().0.to_str(),
+        doc.get(&table, "scalar").unwrap().unwrap().0.as_str(),
         Some("target")
     );
     assert_eq!(
-        doc.get(&nested_map, "value").unwrap().unwrap().0.to_str(),
+        doc.get(&nested_map, "value").unwrap().unwrap().0.as_str(),
         Some("target-map")
     );
     assert_eq!(
-        doc.get(&nested_table, "value").unwrap().unwrap().0.to_str(),
+        doc.get(&nested_table, "value").unwrap().unwrap().0.as_str(),
         Some("target-table")
     );
     assert_eq!(
-        doc.get(&table, "target-only").unwrap().unwrap().0.to_i64(),
+        doc.get(&table, "target-only").unwrap().unwrap().0.as_i64(),
         Some(11)
     );
     assert!(doc.get(&table, "current-only").unwrap().is_none());
@@ -357,7 +357,7 @@ fn whole_retains_same_kind_map_identity_at_map_properties() {
     assert_eq!(doc.get(&root, "changed").unwrap().unwrap().1, changed);
     assert_eq!(doc.get(&root, "untouched").unwrap().unwrap().1, untouched);
     assert_eq!(
-        doc.get(&changed, "value").unwrap().unwrap().0.to_str(),
+        doc.get(&changed, "value").unwrap().unwrap().0.as_str(),
         Some("target")
     );
     assert!(doc.pending_ops() > 0);
@@ -408,7 +408,7 @@ fn whole_retains_nested_map_and_table_identities_with_exact_unknown_keys() {
     );
     assert!(doc.get(&root, "current-only").unwrap().is_none());
     assert_eq!(
-        doc.get(&root, "target-only").unwrap().unwrap().0.to_i64(),
+        doc.get(&root, "target-only").unwrap().unwrap().0.as_i64(),
         Some(7)
     );
     assert_eq!(selection::content(&doc, &MAP).unwrap(), target_projection);
@@ -492,12 +492,12 @@ fn whole_kind_replacements_copy_target_and_use_fresh_object_ids() {
             .unwrap()
             .unwrap()
             .0
-            .to_str(),
+            .as_str(),
         Some("table")
     );
     assert_eq!(doc.text(&restored_text).unwrap(), "text");
     assert_eq!(
-        doc.get(&root, "scalar").unwrap().unwrap().0.to_str(),
+        doc.get(&root, "scalar").unwrap().unwrap().0.as_str(),
         Some("scalar")
     );
 }
@@ -522,7 +522,7 @@ fn whole_same_key_table_replacement_keeps_current_id_and_content_kind() {
     assert_ne!(replacement, historical);
     assert_eq!(doc.object_type(&replacement).unwrap(), ObjType::Table);
     assert_eq!(
-        doc.get(&replacement, "value").unwrap().unwrap().0.to_str(),
+        doc.get(&replacement, "value").unwrap().unwrap().0.as_str(),
         Some("target")
     );
     assert!(doc.get(&replacement, "current-only").unwrap().is_none());
@@ -554,7 +554,7 @@ fn whole_same_key_replacement_keeps_current_id_and_never_revives_old_id() {
     assert_eq!(doc.get(ROOT, "content").unwrap().unwrap().1, replacement);
     assert_ne!(doc.get(ROOT, "content").unwrap().unwrap().1, original);
     assert_eq!(
-        doc.get(&replacement, "value").unwrap().unwrap().0.to_str(),
+        doc.get(&replacement, "value").unwrap().unwrap().0.as_str(),
         Some("target")
     );
 }
@@ -1215,7 +1215,7 @@ fn assert_deep_writer_snapshot(
         *protected_map
     );
     assert_eq!(
-        doc.get(protected_map, "value").unwrap().unwrap().0.to_str(),
+        doc.get(protected_map, "value").unwrap().unwrap().0.as_str(),
         Some("protected")
     );
 }
@@ -1425,11 +1425,11 @@ fn protected_rich_text_blocks_and_marks_remain_intact() {
     assert_eq!(doc.object_type(&table).unwrap(), ObjType::Table);
     assert_eq!(doc.get(&table, "map").unwrap().unwrap().1, table_map);
     assert_eq!(
-        doc.get(&table, "value").unwrap().unwrap().0.to_str(),
+        doc.get(&table, "value").unwrap().unwrap().0.as_str(),
         Some("protected")
     );
     assert_eq!(
-        doc.get(&table_map, "nested").unwrap().unwrap().0.to_i64(),
+        doc.get(&table_map, "nested").unwrap().unwrap().0.as_i64(),
         Some(19)
     );
     assert_eq!(doc.text(&text).unwrap(), "\u{fffc}protected🦀");

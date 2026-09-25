@@ -164,6 +164,7 @@ impl LaunchArgs {
 
 /// Prepared native construction owns its one admitted SDK worker.
 /// No caller-supplied mode or authority can construct this value.
+#[cfg(feature = "native")]
 pub struct PreparedNativeLaunch<'a> {
     spec: LaunchSpec,
     args: &'a LaunchArgs,
@@ -171,6 +172,7 @@ pub struct PreparedNativeLaunch<'a> {
     construction: crate::collaboration::native_initial::NativeConstruction,
     _wake_entry: crate::wake::WakeScopeGuard,
 }
+#[cfg(feature = "native")]
 impl<'a> PreparedNativeLaunch<'a> {
     #[cfg(test)]
     fn with_manager(
@@ -294,6 +296,7 @@ pub struct LaunchSpec {
 
 impl LaunchSpec {
     /// Establish the actual SDK mode before a native root or state opener runs.
+    #[cfg(feature = "native")]
     pub fn prepare_native<'a>(
         &self,
         args: &'a LaunchArgs,
@@ -357,6 +360,7 @@ impl LaunchSpec {
     ///
     /// # Errors
     /// Returns launch, storage, root registration, or History installation failures.
+    #[cfg(feature = "native")]
     pub fn build_prepared_root(
         &self,
         args: &LaunchArgs,
@@ -377,7 +381,7 @@ impl LaunchSpec {
     ///
     /// # Errors
     /// Returns launch, storage, root registration, or History installation failures.
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(all(feature = "native", any(test, feature = "test-support")))]
     pub fn build_controlled_prepared_root_for_test(
         &self,
         args: &LaunchArgs,
@@ -1374,6 +1378,7 @@ fn dispatch_definition_with_native(
     dispatch_definition_with_manager(spec, args, native, || native_launch_manager(spec, args))
 }
 
+#[cfg(feature = "native")]
 fn dispatch_definition_with_manager(
     spec: &LaunchSpec,
     args: &LaunchArgs,
@@ -1527,6 +1532,7 @@ fn prepare_legacy_launch(
     prepare_legacy_launch_in_scope(spec, args, crate::wake::WakeScope::new())
 }
 
+#[cfg(feature = "native")]
 fn prepare_legacy_launch_in_scope(
     spec: &LaunchSpec,
     args: &LaunchArgs,
@@ -1567,6 +1573,7 @@ fn prepare_legacy_launch_in_scope(
     Ok(PreparedLegacyLaunch { scope, inputs })
 }
 
+#[cfg(feature = "native")]
 fn selected_local_construction()
 -> Result<crate::collaboration::native_initial::NativeConstruction, LaunchError> {
     crate::collaboration::native_initial::NativeConstruction::enter(
@@ -1637,6 +1644,7 @@ fn build_native_app(spec: &LaunchSpec, args: &LaunchArgs) -> Result<App, LaunchE
     build_native_app_with_constructor(spec, args, App::from_scoped_parts_with_custody)
 }
 
+#[cfg(feature = "native")]
 fn native_launch_manager(
     spec: &LaunchSpec,
     args: &LaunchArgs,
@@ -1660,6 +1668,7 @@ fn build_native_app_with_constructor(
     build_native_app_with_manager(spec, args, scope, manager, construct)
 }
 
+#[cfg(feature = "native")]
 fn build_native_app_with_manager(
     spec: &LaunchSpec,
     args: &LaunchArgs,
@@ -1683,6 +1692,7 @@ fn build_native_app_with_manager(
     )
 }
 
+#[cfg(feature = "native")]
 fn build_prepared_root_with_constructor(
     spec: &LaunchSpec,
     args: &LaunchArgs,
@@ -1695,6 +1705,7 @@ fn build_prepared_root_with_constructor(
     build_prepared_root_with_manager(spec, args, scope, root, manager, construct)
 }
 
+#[cfg(feature = "native")]
 fn build_prepared_root_with_manager(
     spec: &LaunchSpec,
     args: &LaunchArgs,
@@ -1724,6 +1735,7 @@ fn build_prepared_root_with_manager(
     )
 }
 
+#[cfg(feature = "native")]
 fn finalize_native_app_with_constructor(
     spec: &LaunchSpec,
     args: &LaunchArgs,
@@ -2451,6 +2463,10 @@ mod tests {
     thread_local! {
         static LAUNCH_WAKE_CAPTURES: std::cell::RefCell<Vec<crate::WakeHandle>> =
             const { std::cell::RefCell::new(Vec::new()) };
+        static PREPARED_COUNTS: std::cell::RefCell<(usize, usize)> =
+            const { std::cell::RefCell::new((0, 0)) };
+        static FOREIGN_OPENED_STATE: std::cell::RefCell<Option<(State, crate::persist::DocWriter)>> =
+            const { std::cell::RefCell::new(None) };
     }
 
     fn capture_launch_wake() {
@@ -2800,20 +2816,21 @@ mod tests {
             let spec = LaunchSpec::new(HISTORY.app_id, dummy_root)
                 .open_app_global_state_with_args(open)
                 .history(&HISTORY);
-            let mut app = build_native_app_with_constructor(&spec, &args, |scope, state, root, domain| {
-                assert_eq!(
-                    state
-                        .doc
-                        .get(automerge::ROOT, "selected_argument")
-                        .unwrap()
-                        .unwrap()
-                        .0
-                        .as_str(),
-                    Some(args.value("--open").unwrap_or("saved-state"))
-                );
-                App::from_scoped_parts_with_controlled_custody(scope, state, root, domain)
-            })
-            .unwrap();
+            let mut app =
+                build_native_app_with_constructor(&spec, &args, |scope, state, root, domain| {
+                    assert_eq!(
+                        state
+                            .doc
+                            .get(automerge::ROOT, "selected_argument")
+                            .unwrap()
+                            .unwrap()
+                            .0
+                            .as_str(),
+                        Some(args.value("--open").unwrap_or("saved-state"))
+                    );
+                    App::from_scoped_parts_with_controlled_custody(scope, state, root, domain)
+                })
+                .unwrap();
             assert!(
                 app.build_a11y_tree_update(1.)
                     .nodes
@@ -4639,10 +4656,9 @@ mod tests {
         ));
 
         let temp = tempfile::tempdir().unwrap();
-        let store = app_state::DocStore::open_canonical_at("dev.qos.foreign", temp.path()).unwrap();
-        let saver = crate::persist::DocWriter::spawn(store, std::time::Duration::from_secs(60));
-        FOREIGN_OPENED_STATE.with(|opened| {
-            *opened.borrow_mut() = Some((State::new(), saver));
+        let opened = crate::persist::open_canonical_at("dev.qos.foreign", temp.path());
+        FOREIGN_OPENED_STATE.with(|slot| {
+            *slot.borrow_mut() = Some(opened);
         });
         let foreign_saver = LaunchSpec::new(HISTORY.app_id, poisoned_prepared_root)
             .open_app_global_state(foreign_opened_state)

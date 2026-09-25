@@ -183,6 +183,7 @@ use crate::collaboration::{
     ActionDirectoryRequest, CollabEvent, CollabRequest, CollaborationManager, PresencePayload,
 };
 use crate::focus_navigation::Direction;
+#[cfg(feature = "native")]
 use crate::ime::ImeWindowState;
 use crate::permissions::PermissionContext;
 use crate::presence::{PresenceCtx, PresenceKey};
@@ -1079,6 +1080,7 @@ impl App {
 
     /// Let the focused widget see directional input first. Only an unconsumed
     /// arrow may move host focus, using the same modal/focus-trap fence as Tab.
+    #[cfg(feature = "native")]
     fn handle_unconsumed_directional_key(
         &mut self,
         event: &WindowEvent,
@@ -1658,7 +1660,7 @@ impl App {
     fn publish_playback_handoff(&mut self) {
         let Some(route) = self.private_continuity_route() else {
             return;
-        }
+        };
         let now = crate::time::now();
         if self
             .last_playback_publish
@@ -2943,7 +2945,6 @@ mod legacy_owner_routing_tests {
 #[cfg(test)]
 #[path = "app/legacy_resource_tests.rs"]
 mod legacy_resource_tests;
-
 
 #[cfg(test)]
 mod private_continuity_route_tests {

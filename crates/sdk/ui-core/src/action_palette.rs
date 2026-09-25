@@ -888,27 +888,6 @@ impl ActionPalette {
         }
     }
 
-    /// Enter confirmation with arguments already captured by a bound control.
-    /// This bypasses only argument collection; current authority, strict
-    /// parameter binding, and confirmation still use the palette's normal
-    /// production path.
-    pub(crate) fn activate_bound_with_arguments(
-        &mut self,
-        target: &crate::bound_dispatch::BoundActionTarget,
-        arguments: &serde_json::Map<String, serde_json::Value>,
-    ) -> bool {
-        if !self.index.contains_key(&target.key())
-            && !self.is_programmatic(&target.address.address, Some(target))
-        {
-            return false;
-        }
-        self.activate_with_arguments(
-            target.address.address.clone(),
-            Some(target.clone()),
-            arguments,
-        )
-    }
-
     pub fn open(&mut self) {
         self.history_resolution_error = None;
         self.open = true;
@@ -1358,6 +1337,9 @@ impl ActionPalette {
         }
     }
 
+    // Superseded in production by the ordinary-confirmation flow
+    // (`activate_ordinary`); kept for the argument-capture tests.
+    #[cfg(test)]
     pub(crate) fn activate_address_with_arguments(
         &mut self,
         address: &tilo_actions::ActionAddress,
@@ -1372,6 +1354,7 @@ impl ActionPalette {
     /// Whether `address` names a programmatic action in the current authority.
     /// It is never a row, but a control or surface that submitted one still
     /// gets the palette's confirmation step when its value needs it.
+    #[cfg(test)]
     fn is_programmatic(
         &self,
         address: &tilo_actions::ActionAddress,
@@ -1383,6 +1366,7 @@ impl ActionPalette {
         })
     }
 
+    #[cfg(test)]
     fn activate_with_arguments(
         &mut self,
         address: tilo_actions::ActionAddress,
@@ -1576,7 +1560,6 @@ impl ActionPalette {
         }
     }
 
-    #[cfg(feature = "native")]
     pub(crate) fn take_scoped_navigation(
         &mut self,
     ) -> Option<(String, Option<crate::bound_dispatch::CallbackBinding>)> {
@@ -1928,7 +1911,6 @@ impl ActionPalette {
         self.measure = Some(text);
     }
 
-    #[cfg(feature = "native")]
     pub(crate) fn layout_with_text(
         &mut self,
         theme: &Theme,

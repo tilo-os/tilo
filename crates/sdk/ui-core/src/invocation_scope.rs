@@ -353,6 +353,13 @@ impl ResourceInvocationScope {
 
     /// Verify only the original caller and exact immutable local record loan.
     /// This does not confer a qualified committed read frame or disclosure.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "admission stays closed until a qualified committed read view exists; only the inert semantic reader (tested) checks a read loan"
+        )
+    )]
     pub(crate) fn check_read_loan(&self, document: &AutoCommit) -> Result<(), String> {
         self.check()?;
         let (store, checkout) = self.owner.store_checkout();

@@ -1,5 +1,5 @@
 use super::*;
-use crate::clock::{Duration, Instant};
+use crate::time::{Duration, Instant};
 use crate::widget::{Button, Column, Container, Widget};
 use std::{cell::Cell, rc::Rc};
 

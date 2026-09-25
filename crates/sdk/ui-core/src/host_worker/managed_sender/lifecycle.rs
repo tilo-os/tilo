@@ -5,9 +5,9 @@ use super::{
     codec::{CallerView, RowView},
 };
 use crate::host_worker::private_actions::*;
+use crate::time::Instant;
 use automerge::resource_limits::NativeAllowance;
 use runtime_collab::PublishedInvocationBinding;
-use std::time::Instant;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Failure {

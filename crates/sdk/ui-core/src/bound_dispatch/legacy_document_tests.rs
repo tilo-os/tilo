@@ -24,7 +24,7 @@ pub(crate) struct SetValue {
 }
 impl Action for SetValue {
     fn apply(&self, doc: &mut AutoCommit) -> Result<(), ActionError> {
-        if doc.get(ROOT, "value")?.and_then(|(v, _)| v.to_i64()) != Some(self.value) {
+        if doc.get(ROOT, "value")?.and_then(|(v, _)| v.as_i64()) != Some(self.value) {
             doc.put(ROOT, "value", self.value)?;
         }
         if self.fail {
@@ -188,7 +188,7 @@ impl Widget for Probe {
         if type_id != "controlled.effect" {
             return Ok(None);
         }
-        if doc.get(ROOT, "owner").unwrap().unwrap().0.to_u64() != Some(self.expected_owner.get()) {
+        if doc.get(ROOT, "owner").unwrap().unwrap().0.as_u64() != Some(self.expected_owner.get()) {
             return Err("wrong owner at start".into());
         }
         self.starts.set(self.starts.get() + 1);
@@ -210,7 +210,7 @@ impl Widget for Probe {
             return None;
         }
         assert_eq!(
-            doc.get(ROOT, "owner").unwrap().unwrap().0.to_u64(),
+            doc.get(ROOT, "owner").unwrap().unwrap().0.as_u64(),
             Some(self.expected_owner.get())
         );
         self.polls.set(self.polls.get() + 1);
@@ -234,7 +234,7 @@ impl Widget for Probe {
         self.value.set(
             doc.get(ROOT, "value")
                 .unwrap()
-                .and_then(|(v, _)| v.to_i64())
+                .and_then(|(v, _)| v.as_i64())
                 .unwrap_or(-1),
         );
         if !self.eager.get() {
@@ -556,7 +556,7 @@ fn sealed_qos_notes_admission_executes_a_local_document_action() {
                 .unwrap()
                 .unwrap()
                 .0
-                .to_i64())
+                .as_i64())
             .unwrap(),
         Some(2)
     );
@@ -658,7 +658,7 @@ fn legacy_route_two_owners_exact_envelope_noop_undo_and_no_outer_fallback() {
                 .unwrap()
                 .unwrap()
                 .0
-                .to_i64())
+                .as_i64())
             .unwrap(),
         Some(1)
     );
@@ -677,7 +677,7 @@ fn legacy_route_two_owners_exact_envelope_noop_undo_and_no_outer_fallback() {
                 .unwrap()
                 .unwrap()
                 .0
-                .to_i64())
+                .as_i64())
             .unwrap(),
         Some(2)
     );

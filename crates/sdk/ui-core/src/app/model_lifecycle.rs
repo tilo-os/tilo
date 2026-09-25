@@ -2,6 +2,13 @@
 
 pub(super) struct IdleModelProgress {
     pub(super) changed: bool,
+    #[cfg_attr(
+        not(feature = "native"),
+        expect(
+            dead_code,
+            reason = "only the native window runner reacts to a local commit"
+        )
+    )]
     pub(super) local_commit: bool,
 }
 
@@ -11,17 +18,13 @@ pub(super) struct IdleModelProgress {
 /// does the same for the second host-efficiency lane only.
 fn host_perf_baseline() -> bool {
     static BASELINE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *BASELINE.get_or_init(|| {
-        ["QOS_HOST_PERF_BASELINE", "QOS_HOST_PERF2_BASELINE"]
-            .iter()
-            .any(|name| std::env::var_os(name).is_some_and(|v| v == "1"))
-    })
+    *BASELINE.get_or_init(|| crate::host::environment().diagnostics.host_perf_baseline)
 }
 
 /// `QOS_HOSTED_PUMP_TIMING=1` prints one payload-free line per hosted pump.
 fn hosted_pump_timing() -> bool {
     static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ENABLED.get_or_init(|| std::env::var_os("QOS_HOSTED_PUMP_TIMING").is_some_and(|v| v == "1"))
+    *ENABLED.get_or_init(|| crate::host::environment().diagnostics.hosted_pump_timing)
 }
 
 /// Policy meaning observed by the previous hosted pump: the App's own context
@@ -75,7 +78,7 @@ impl super::App {
     /// no due widget deadline and no model progress keeps the resource cache
     /// and skips the action-surface rebuild.
     pub(super) fn pump_hosted_model_as(&mut self, always_refresh: bool) -> HostedPumpReport {
-        let started = hosted_pump_timing().then(std::time::Instant::now);
+        let started = hosted_pump_timing().then(crate::time::now);
         let _entry = self.enter_wake_scope();
         let (inbound, directory) = self.pump_collab_presence_inner(true);
         // Retire expired/cancelled jobs before their later model continuation.
@@ -94,7 +97,7 @@ impl super::App {
         let deadline_due = self
             .root_widget
             .next_wake_deadline()
-            .is_some_and(|deadline| deadline <= crate::clock::Instant::now());
+            .is_some_and(|deadline| deadline <= crate::time::now());
         let mut force_sync = always_refresh
             || inbound
             || authority_changed
@@ -253,6 +256,7 @@ impl super::App {
         }
         // This is local writer progress, never a durable owner receipt. The
         // existing scoped publication barrier still gates terminal success.
+        #[cfg(feature = "native")]
         if let Err(error) = self.autosave_tick() {
             crate::diag!("[app] component autosave tick refused: {error:?}");
         }

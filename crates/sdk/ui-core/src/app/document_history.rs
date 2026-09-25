@@ -73,22 +73,6 @@ impl App {
                 &exported.names,
             ));
         }
-        let exported = self.bindings.exported_nodes(&self.layout.node_map);
-        if self.history.is_some() {
-            let root = FrameworkPresentation {
-                roots: self.history_presentation_roots(),
-                layout_root: self
-                    .layout
-                    .root_node
-                    .ok_or("History presentation requires layout")?,
-            };
-            return Ok(visit(
-                &root,
-                &exported.nodes,
-                exported.focus(self.focused_node),
-                &self.layout.taffy,
-            ));
-        }
         let Some(layout) = self.history_layout else {
             return Ok(visit(
                 self.root_widget.as_ref(),

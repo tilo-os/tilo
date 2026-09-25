@@ -3381,14 +3381,6 @@ impl FrameHarness {
         roots
     }
 
-    fn with_presentation_roots<R>(&self, visit: impl FnOnce(&[&dyn Widget]) -> R) -> R {
-        if self.history_chrome_enabled {
-            self.presentation(|root, _| visit(&[root]))
-        } else {
-            visit(&self.presentation_roots())
-        }
-    }
-
     pub fn targets(&self) -> HashMap<String, Rect> {
         self.drain_component_wakes();
         let mut out = HashMap::new();
@@ -7435,7 +7427,7 @@ mod tests {
                 .unwrap()
                 .unwrap()
                 .0
-                .to_bool(),
+                .as_bool(),
             Some(true)
         );
         frame.resize((480, 240)).unwrap();

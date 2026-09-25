@@ -39,6 +39,15 @@ pub struct HostIdentity {
     pub continuity_resume: Option<ContinuationMetadata>,
     /// The launcher-issued instance identity of this window.
     pub continuity_instance: Option<String>,
+    /// The durable record app id a renamed first-party launcher keeps, so its
+    /// records stay on their original route.
+    pub durable_app_id: Option<String>,
+    /// The launcher configured a collaboration service for this process, so
+    /// its absence is a failure rather than a standalone launch.
+    pub collab_service_configured: bool,
+    /// The process runs as an admitted managed agent, which receives task work
+    /// on its own broker queue instead of the room's task-run stream.
+    pub managed_agent_context: bool,
 }
 
 /// Where this process's user files live.
@@ -98,6 +107,10 @@ pub struct RunnerDiagnostics {
     pub presentation_profile: bool,
     /// Open windows without taking focus from the active application.
     pub window_no_activate: bool,
+    /// Restore the always-refresh hosted pump for paired host measurements.
+    pub host_perf_baseline: bool,
+    /// Print one payload-free timing line per hosted pump.
+    pub hosted_pump_timing: bool,
 }
 
 /// Everything the host tells a `ui` process about itself.

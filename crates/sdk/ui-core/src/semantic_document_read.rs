@@ -27,7 +27,21 @@ pub enum SemanticReadError {
 /// public inert registration cannot create a frame, response stamp, or permission.
 pub struct RegisteredSemanticReader {
     operation_type: &'static str,
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "admission stays closed until a qualified committed read view exists; only tests select a reader today"
+        )
+    )]
     schema: fn() -> &'static serde_json::Value,
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "admission stays closed until a qualified committed read view exists; only tests select a reader today"
+        )
+    )]
     validate: fn(&Resource, &[u8]) -> Result<(), SemanticReadError>,
 }
 
@@ -51,6 +65,13 @@ impl RegisteredSemanticReader {
 
 /// A borrowed selection from the actual app table and exact current resource.
 /// It owns no copied client contract and exposes no constructor outside the SDK.
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "admission stays closed until a qualified committed read view exists; only tests select a reader today"
+    )
+)]
 pub(crate) struct SelectedSemanticRead<'a> {
     registration: &'a RegisteredSemanticReader,
     resource: &'a Resource,
@@ -58,6 +79,13 @@ pub(crate) struct SelectedSemanticRead<'a> {
     encoded: &'a EncodedAction,
 }
 
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "admission stays closed until a qualified committed read view exists; only tests select a reader today"
+    )
+)]
 pub(crate) fn select<'a>(
     table: &'a [RegisteredSemanticReader],
     resource: &'a Resource,
@@ -88,6 +116,13 @@ pub(crate) fn select<'a>(
     Ok(Some(selected))
 }
 
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "admission stays closed until a qualified committed read view exists; only tests select a reader today"
+    )
+)]
 impl SelectedSemanticRead<'_> {
     fn check_contract(&self) -> Result<(), SemanticReadError> {
         use tilo_actions::{ExecutionMode, OperationKind, PermissionRequirement, ResultSpec};

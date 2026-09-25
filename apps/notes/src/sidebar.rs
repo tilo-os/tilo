@@ -326,16 +326,6 @@ impl NoteTreeView {
         (child, more)
     }
 
-    fn selection_pill(row: Rect, margin: f64, tokens: &ui::tokens::Tokens) -> Rect {
-        let half_gap = f64::from(tokens.spacing.s1) / 2.0;
-        Rect::new(
-            row.x0 + margin,
-            row.y0 + half_gap,
-            row.x1 - margin,
-            row.y1 - half_gap,
-        )
-    }
-
     fn scroll_by(&mut self, delta: f64) -> bool {
         let before = self.scroll_y;
         self.scroll_y = (self.scroll_y + delta).clamp(0.0, self.max_scroll_y);

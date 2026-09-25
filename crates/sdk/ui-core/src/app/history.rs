@@ -559,6 +559,7 @@ impl App {
 
     /// Called only after native exit layout, focus, drawing and publication.
     /// A deferred or failed frame retains its leases until a later completion.
+    #[cfg(feature = "native")]
     pub(super) fn finish_history_return_frame(&mut self) {
         // Keep an outer covering lease through nested discard callbacks too.
         crate::history_mode::embedded::finish_returns(self.root_widget.as_mut());

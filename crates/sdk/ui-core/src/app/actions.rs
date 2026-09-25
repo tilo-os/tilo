@@ -34,6 +34,7 @@ impl<'a> ResourceInvocation<'a> {
         self
     }
 
+    #[cfg(test)]
     fn confirmed(mut self, confirmed: bool) -> Self {
         self.confirmation_satisfied = confirmed;
         self
@@ -49,6 +50,7 @@ impl<'a> ResourceInvocation<'a> {
         self
     }
 
+    #[cfg(test)]
     fn invocation(mut self, invocation: Option<tilo_actions::InvocationId>) -> Self {
         self.invocation = invocation;
         self
@@ -2381,34 +2383,6 @@ impl App {
         ))
     }
 
-    fn invoke_unbound_resource_action(
-        &mut self,
-        request: &ResourceInvocation<'_>,
-    ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::DoorError> {
-        let ResourceInvocation {
-            address,
-            actor,
-            argument,
-            confirmation_satisfied,
-            broker_admitted,
-            confirmation_evidence,
-            invocation,
-            ambient_context,
-        } = *request;
-        self.invoke_unbound_resource_action_scoped(
-            address,
-            argument,
-            actor,
-            confirmation_satisfied,
-            broker_admitted,
-            confirmation_evidence,
-            invocation,
-            ambient_context,
-            None,
-            None,
-        )
-    }
-
     fn invoke_unbound_resource_action_scoped(
         &mut self,
         address: &tilo_actions::ActionAddress,
@@ -3011,7 +2985,18 @@ impl App {
         );
         let actor = self.collaboration.local_author.0.clone();
         match prepared.target {
-            LocalResourceTarget::Component(target) => self.invoke_bound_target_with_broker_scoped(&target, Some(&argument), &actor, prepared.confirmed, false, None, None, None, None, None),
+            LocalResourceTarget::Component(target) => self.invoke_bound_target_with_broker_scoped(
+                &target,
+                Some(&argument),
+                &actor,
+                prepared.confirmed,
+                false,
+                None,
+                None,
+                None,
+                None,
+                None,
+            ),
             LocalResourceTarget::Legacy(target) => self.invoke_legacy_resource_action(
                 &target,
                 Some(&argument),
@@ -3022,7 +3007,18 @@ impl App {
                 None,
                 None,
             ),
-            LocalResourceTarget::Outer => self.invoke_unbound_resource_action_scoped(&prepared.invocation.address, Some(&argument), &actor, prepared.confirmed, false, None, None, None, None, None),
+            LocalResourceTarget::Outer => self.invoke_unbound_resource_action_scoped(
+                &prepared.invocation.address,
+                Some(&argument),
+                &actor,
+                prepared.confirmed,
+                false,
+                None,
+                None,
+                None,
+                None,
+                None,
+            ),
         }
     }
 
@@ -3703,6 +3699,7 @@ impl App {
         }
     }
 
+    #[cfg(feature = "native")]
     fn action_palette_handle_event(&mut self, event: &WindowEvent, scale: f64) -> bool {
         if matches!(event, WindowEvent::KeyboardInput { .. }) {
             return self.action_palette_handle_key(event);
@@ -3925,7 +3922,18 @@ impl App {
                 match &request.target {
                     crate::bound_dispatch::legacy_document::LocalResourceTarget::Component(
                         target,
-                    ) => self.invoke_bound_target_with_broker_scoped(target, argument.as_deref(), &actor, true, false, Some(pending.confirmation_evidence()), None, Some(&pending.context), None, None),
+                    ) => self.invoke_bound_target_with_broker_scoped(
+                        target,
+                        argument.as_deref(),
+                        &actor,
+                        true,
+                        false,
+                        Some(pending.confirmation_evidence()),
+                        None,
+                        Some(&pending.context),
+                        None,
+                        None,
+                    ),
                     crate::bound_dispatch::legacy_document::LocalResourceTarget::Legacy(target) => {
                         self.invoke_legacy_resource_action(
                             target,
@@ -3939,16 +3947,48 @@ impl App {
                         )
                     }
                     crate::bound_dispatch::legacy_document::LocalResourceTarget::Outer => self
-                        .invoke_unbound_resource_action_scoped(&pending.address, argument.as_deref(), &actor, true, false, Some(pending.confirmation_evidence()), None, Some(&pending.context), None, None),
+                        .invoke_unbound_resource_action_scoped(
+                            &pending.address,
+                            argument.as_deref(),
+                            &actor,
+                            true,
+                            false,
+                            Some(pending.confirmation_evidence()),
+                            None,
+                            Some(&pending.context),
+                            None,
+                            None,
+                        ),
                 }
             } else if let Some(result) =
                 self.invoke_history_address_local(&pending.address, argument.as_deref())
             {
                 result
             } else if let Some(target) = pending.bound.as_ref() {
-                self.invoke_bound_target_with_broker_scoped(target, argument.as_deref(), &actor, true, false, Some(pending.confirmation_evidence()), None, Some(&pending.context), None, None)
+                self.invoke_bound_target_with_broker_scoped(
+                    target,
+                    argument.as_deref(),
+                    &actor,
+                    true,
+                    false,
+                    Some(pending.confirmation_evidence()),
+                    None,
+                    Some(&pending.context),
+                    None,
+                    None,
+                )
             } else {
-                self.invoke_resource_action_scoped(&pending.address, argument.as_deref(), &actor, true, false, Some(pending.confirmation_evidence()), None, Some(&pending.context), None)
+                self.invoke_resource_action_scoped(
+                    &pending.address,
+                    argument.as_deref(),
+                    &actor,
+                    true,
+                    false,
+                    Some(pending.confirmation_evidence()),
+                    None,
+                    Some(&pending.context),
+                    None,
+                )
             };
             if let Err(error) = result {
                 tracing::warn!(%error, "resource operation failed");

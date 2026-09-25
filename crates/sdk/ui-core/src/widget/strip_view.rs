@@ -1,4 +1,3 @@
-use crate::clock::{Duration, Instant};
 use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;

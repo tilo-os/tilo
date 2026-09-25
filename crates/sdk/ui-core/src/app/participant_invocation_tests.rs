@@ -130,7 +130,7 @@ impl Widget for TwoViews {
                 if let Some(marker) = self.0.borrow().require_marker
                     && !matches!(
                         doc.get(&ROOT, "marker"),
-                        Ok(Some((value, _))) if value.to_str() == Some(marker)
+                        Ok(Some((value, _))) if value.as_str() == Some(marker)
                     )
                 {
                     return Vec::new();
@@ -534,7 +534,7 @@ fn a_bound_component_builds_participant_trees_against_its_own_record() {
         &task(),
         &mut resources,
     );
-    let resources = resources.expect("a bound component boundary");
+    assert!(resources.is_some(), "a bound component boundary");
     // Resolution of a component target also rebuilds the invoker's tree.
     let snapshots = {
         let _scope = crate::invocation_scope::InvokerScope::enter(

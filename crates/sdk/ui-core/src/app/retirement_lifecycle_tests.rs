@@ -10,6 +10,7 @@ use crate::widget::{AppKind, AppWidget, Container, IconDescriptor};
 use automerge::resource_limits::NativeAllowance;
 use automerge::{AutoCommit, ROOT, transaction::Transactable};
 use std::{
+    cell::RefCell,
     panic::{AssertUnwindSafe, catch_unwind},
     rc::Rc,
 };
