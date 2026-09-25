@@ -30,7 +30,7 @@ on:
         required: false
         default: ""
       generic_target:
-        description: "Preload the signed generic ARM64 child from published_os_image for a complete VM install and first boot."
+        description: "Preload the signed generic ARM64 child for a complete VM install and first boot; combine with lenovo_target_image to test both media in one run."
         type: boolean
         required: false
         default: false
@@ -66,18 +66,21 @@ jobs:
           GENERIC_TARGET: ${{ github.event.inputs.generic_target }}
           INSTALLER_ONLY: ${{ github.event.inputs.installer_only }}
         run: |
-          [[ -z ${LENOVO_TARGET_IMAGE:-} || ${GENERIC_TARGET:-false} != true ]] || {
-            echo '::error::select exactly one offline target variant'; exit 1;
-          }
           if [[ -n ${LENOVO_TARGET_IMAGE:-} || ${GENERIC_TARGET:-false} == true ]]; then
             [[ $GITHUB_EVENT_NAME == workflow_dispatch && $GITHUB_REF == refs/heads/main \
                && ${INSTALLER_ONLY:-false} == true \
-               && ( ${GENERIC_TARGET:-false} == true \
+               && ( -z ${LENOVO_TARGET_IMAGE:-} \
                     || $LENOVO_TARGET_IMAGE =~ ^code\.podesta\.ai/qos/tilo@sha256:[0-9a-f]{64}$ ) ]] || {
               echo '::error::offline medium requires main, installer_only, and an immutable signed target'; exit 1;
             }
             echo 'linux-matrix={"include":[]}' >> "$GITHUB_OUTPUT"
-            echo 'medium-matrix={"include":[{"arch":"aarch64","runner":"imager-linux-aarch64"}]}' >> "$GITHUB_OUTPUT"
+            if [[ -n ${LENOVO_TARGET_IMAGE:-} && ${GENERIC_TARGET:-false} == true ]]; then
+              echo 'medium-matrix={"include":[{"arch":"aarch64","runner":"imager-linux-aarch64","target_profile":"generic"},{"arch":"aarch64","runner":"imager-linux-aarch64","target_profile":"lenovo-83ed"}]}' >> "$GITHUB_OUTPUT"
+            elif [[ ${GENERIC_TARGET:-false} == true ]]; then
+              echo 'medium-matrix={"include":[{"arch":"aarch64","runner":"imager-linux-aarch64","target_profile":"generic"}]}' >> "$GITHUB_OUTPUT"
+            else
+              echo 'medium-matrix={"include":[{"arch":"aarch64","runner":"imager-linux-aarch64","target_profile":"lenovo-83ed"}]}' >> "$GITHUB_OUTPUT"
+            fi
             exit 0
           fi
           if [[ "$GITHUB_REF" == refs/tags/imager-v* || ${FULL_NATIVE:-false} == true ]]; then
@@ -108,8 +111,8 @@ jobs:
       REGISTRY_AUTH_FILE: /tmp/tilo-registry-auth-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.arch }}.json
       TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY: ${{ vars.TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY }}
       TILO_PUBLISHED_OS_IMAGE: ${{ github.event.inputs.published_os_image || vars.TILO_INSTALLER_OS_IMAGE }}
-      TILO_LENOVO_TARGET_IMAGE: ${{ github.event.inputs.lenovo_target_image }}
-      TILO_GENERIC_TARGET: ${{ github.event.inputs.generic_target }}
+      TILO_LENOVO_TARGET_IMAGE: ${{ matrix.target_profile == 'lenovo-83ed' && github.event.inputs.lenovo_target_image || '' }}
+      TILO_GENERIC_TARGET: ${{ matrix.target_profile == 'generic' && 'true' || 'false' }}
       # The live medium must boot QEMU virt; the separately signed Lenovo
       # target carries its physical DTB and is staged as an offline payload.
       TILO_HARDWARE_PROFILE: generic
@@ -131,7 +134,7 @@ jobs:
       - name: Verify documented installation targets
         run: python3 scripts/check-install-contract.py
       - name: Verify offline target transport invariants
-        if: github.event.inputs.lenovo_target_image != '' || github.event.inputs.generic_target == 'true'
+        if: matrix.target_profile == 'generic' || matrix.target_profile == 'lenovo-83ed'
         run: python3 -m unittest discover -s os/tests -p installer_offline_target_test.py
       - name: Restore checksum-verified GitHub build inputs
         id: github-assets-cache
@@ -377,7 +380,7 @@ jobs:
       # passed the native ARM64 cycle so the laptop downloads it once and never
       # reconstructs an OS image or repeats a raw-to-qcow2 conversion.
       - name: Package tested signed-target WHPX qcow2
-        if: github.event.inputs.lenovo_target_image != '' || github.event.inputs.generic_target == 'true'
+        if: matrix.target_profile == 'generic' || matrix.target_profile == 'lenovo-83ed'
         run: |
           set -euo pipefail
           stem="tilo-installer-${TILO_OFFLINE_TARGET_PROFILE:?}-aarch64"
@@ -404,7 +407,7 @@ jobs:
               guest_proof_sha256:$guest_proof_sha256}' \
             > "dist/tilo-installer/$stem.whpx-source.json"
       - name: Sign and verify WHPX medium identity
-        if: github.event.inputs.lenovo_target_image != '' || github.event.inputs.generic_target == 'true'
+        if: matrix.target_profile == 'generic' || matrix.target_profile == 'lenovo-83ed'
         env:
           COSIGN_KEY_REF: ${{ secrets.COSIGN_KEY_REF }}
           AWS_SIGNING_ROLE_ARN: ${{ secrets.AWS_SIGNING_ROLE_ARN }}
@@ -421,9 +424,9 @@ jobs:
           cosign verify-blob --offline --key keys/cosign.pub \
             --bundle "$identity.bundle" --signature "$identity.sig" "$identity"
       - uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
-        if: github.event.inputs.lenovo_target_image != '' || github.event.inputs.generic_target == 'true'
+        if: matrix.target_profile == 'generic' || matrix.target_profile == 'lenovo-83ed'
         with:
-          name: tilo-${{ github.event.inputs.generic_target == 'true' && 'generic' || 'lenovo-83ed' }}-whpx-installer-${{ github.sha }}
+          name: tilo-${{ matrix.target_profile }}-whpx-installer-${{ github.sha }}
           path: |
             dist/tilo-installer/tilo-installer-generic-aarch64.qcow2.zst
             dist/tilo-installer/tilo-installer-generic-aarch64.qcow2.zst.sha256
