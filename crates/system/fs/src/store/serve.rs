@@ -105,7 +105,7 @@ async fn export_bao(loose: Store, files: Option<Arc<FileArea>>, msg: ExportBaoMs
     let read = tokio::task::spawn_blocking(move || {
         let bytes = files.read_at(&location.key, location.offset, u64::from(location.len))?;
         let outboard = PreOrderMemOutboard::create(&bytes, IROH_BLOCK_SIZE);
-        Ok::<_, std::io::Error>((bytes, outboard))
+        Ok::<_, std::io::Error>((bytes::Bytes::from(bytes), outboard))
     })
     .await;
     let (bytes, outboard) = match read {
@@ -132,7 +132,7 @@ async fn export_bao(loose: Store, files: Option<Arc<FileArea>>, msg: ExportBaoMs
         .ok();
         return;
     }
-    traverse_ranges_validated(bytes.as_slice(), outboard, &ranges, &mut Out(&mut tx))
+    traverse_ranges_validated(bytes, outboard, &ranges, &mut Out(&mut tx))
         .await
         .ok();
 }

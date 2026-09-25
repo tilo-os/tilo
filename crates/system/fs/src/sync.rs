@@ -303,8 +303,22 @@ impl Ticket {
 ///
 /// Returns an error if the endpoint fails to bind.
 pub async fn bind_endpoint_with_key(secret: iroh::SecretKey) -> Result<(Endpoint, MemoryLookup)> {
+    use iroh::endpoint::{QuicTransportConfig, VarInt};
+    /// Unacknowledged bytes one stream, and one connection, may have in
+    /// flight. QUIC's defaults (1.25 MB per stream, 10 MB per connection)
+    /// cap a stream at about 30 MB/s and a connection at about 250 MB/s
+    /// over a 40 ms round trip; content transfer needs a window of a few
+    /// bandwidth-delay products.
+    const STREAM_WINDOW: u32 = 16 * 1024 * 1024;
+    const CONNECTION_WINDOW: u32 = 64 * 1024 * 1024;
+    let transport = QuicTransportConfig::builder()
+        .stream_receive_window(VarInt::from_u32(STREAM_WINDOW))
+        .receive_window(VarInt::from_u32(CONNECTION_WINDOW))
+        .send_window(u64::from(CONNECTION_WINDOW))
+        .build();
     let lookup = MemoryLookup::new();
     let endpoint = Endpoint::builder(presets::N0)
+        .transport_config(transport)
         .secret_key(secret)
         .address_lookup(lookup.clone())
         .bind()
