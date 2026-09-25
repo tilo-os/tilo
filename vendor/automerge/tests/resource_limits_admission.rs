@@ -1666,7 +1666,8 @@ mod budget {
             let Ok(credit) = NativeAllowance::new(size) else { continue };
             let mut doc = seeded_doc();
             let before = snapshot(&mut doc);
-            let result = assert_precharged(&credit, || {
+            let label: &'static str = Box::leak(format!("apply_incoming_checked at allowance {size}").into_boxed_str());
+            let result = precharged_as(label, &credit, || {
                 catch_unwind(AssertUnwindSafe(|| {
                     doc.apply_incoming_checked(&input, &NativeLimits::default(), &credit, NativeDependencyPolicy::RequireComplete)
                 }))
@@ -1703,18 +1704,18 @@ mod budget {
             let outcome = catch_unwind(AssertUnwindSafe(|| -> Result<(), NativeResourceError> {
                 let mut registry = NativeAllocationSet::new(credit.clone())?;
                 let turn = registry.work_turn(credit.clone())?;
-                let normalized = assert_precharged(&credit, || turn.normalize_input(&input, &NativeLimits::default()))?;
-                let owned = assert_precharged(&credit, || normalized.reconstruct(&mut registry, &turn))?;
-                let heads = assert_precharged(&credit, || owned.base_heads_bounded(&turn))?;
+                let normalized = precharged_as(Box::leak(format!("normalize_input at allowance {size}").into_boxed_str()), &credit, || turn.normalize_input(&input, &NativeLimits::default()))?;
+                let owned = precharged_as(Box::leak(format!("reconstruct at allowance {size}").into_boxed_str()), &credit, || normalized.reconstruct(&mut registry, &turn))?;
+                let heads = precharged_as(Box::leak(format!("base_heads_bounded at allowance {size}").into_boxed_str()), &credit, || owned.base_heads_bounded(&turn))?;
                 assert_eq!(heads.as_slice(), expected_heads.as_slice());
-                let _missing = assert_precharged(&credit, || owned.has_missing_dependencies());
-                let saved = assert_precharged(&credit, || owned.save_bounded(&turn, SaveOptions::default()))?;
+                let _missing = precharged_as(Box::leak(format!("has_missing_dependencies at allowance {size}").into_boxed_str()), &credit, || owned.has_missing_dependencies());
+                let saved = precharged_as(Box::leak(format!("save_bounded at allowance {size}").into_boxed_str()), &credit, || owned.save_bounded(&turn, SaveOptions::default()))?;
                 assert_eq!(AutoCommit::load(saved.bytes()).unwrap().get_heads(), expected_heads);
                 drop(saved);
-                let history = assert_precharged(&credit, || owned.changes_since_bounded(&[], &turn))?;
+                let history = precharged_as(Box::leak(format!("changes_since_bounded at allowance {size}").into_boxed_str()), &credit, || owned.changes_since_bounded(&[], &turn))?;
                 assert_eq!(history.len(), src.get_changes(&[]).len());
                 drop(history);
-                let clone = assert_precharged(&credit, || owned.clone_bounded(&mut registry, &turn))?;
+                let clone = precharged_as(Box::leak(format!("clone_bounded at allowance {size}").into_boxed_str()), &credit, || owned.clone_bounded(&mut registry, &turn))?;
                 drop(clone);
                 Ok(())
             }))
@@ -1750,10 +1751,11 @@ mod budget {
             let owned = setup.normalize_input(&resident, &NativeLimits::default()).unwrap().reconstruct(&mut registry, &setup).unwrap();
             let before = owned.save_bounded(&setup, SaveOptions::default()).unwrap().bytes().to_vec();
             let candidate = owned.clone_bounded(&mut registry, &setup).unwrap();
-            let normalized = setup.normalize_input(&input, &NativeLimits::default()).unwrap();
             let Ok(credit) = NativeAllowance::new(size) else { continue };
             let Ok(turn) = registry.work_turn(credit.clone()) else { continue };
             let result = catch_unwind(AssertUnwindSafe(|| {
+                // Parse, validation and the batch peak are all charged to this turn.
+                let normalized = assert_precharged(&credit, || turn.normalize_input(&input, &NativeLimits::default()))?;
                 assert_precharged(&credit, || {
                     candidate.apply_checked_bounded(normalized, NativeDependencyPolicy::RequireComplete, &mut registry, &turn)
                 })
@@ -2093,6 +2095,25 @@ mod budget {
         let normalized = foreign_turn.normalize_input(&input, &NativeLimits::default()).unwrap();
         let result = owned.apply_checked_bounded(normalized, NativeDependencyPolicy::RetainOrphans, &mut foreign, &foreign_turn);
         assert!(matches!(result, Err(NativeMutationError::Resource(NativeResourceError::Unaccounted))), "{result:?}");
+    }
+
+    /// Input normalized under one turn's ledger cannot be applied under
+    /// another turn (its credit would be laundered across ledgers).
+    #[test]
+    fn apply_with_input_normalized_under_another_turn_is_refused() {
+        let resident = seeded_doc().save();
+        let credit = allowance();
+        let mut registry = NativeAllocationSet::new(credit.clone()).unwrap();
+        let first = registry.work_turn(credit.clone()).unwrap();
+        let owned = first.normalize_input(&resident, &NativeLimits::default()).unwrap().reconstruct(&mut registry, &first).unwrap();
+        let input = simple_change(0x9a, "k").raw_bytes().to_vec();
+        let normalized = first.normalize_input(&input, &NativeLimits::default()).unwrap();
+        let second = registry.work_turn(allowance()).unwrap();
+        let result = catch_unwind(AssertUnwindSafe(|| {
+            owned.apply_checked_bounded(normalized, NativeDependencyPolicy::RetainOrphans, &mut registry, &second)
+        }))
+        .expect("apply_checked_bounded panicked");
+        assert!(matches!(result, Err(NativeMutationError::Resource(_))), "{result:?}");
     }
 
     /// Reads are step-charged and pre-reserved.
