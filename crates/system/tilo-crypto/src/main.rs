@@ -144,15 +144,11 @@ fn usage() -> String {
 }
 
 fn generate_ed25519_key(private_path: &Path, public_path: &Path) -> Result<(), String> {
-    use ring::rand::{SecureRandom as _, SystemRandom};
-
     if private_path == public_path {
         return Err("private and public key paths must differ".into());
     }
     let mut seed = Zeroizing::new([0_u8; 32]);
-    SystemRandom::new()
-        .fill(&mut *seed)
-        .map_err(|_| "operating-system random generator failed")?;
+    getrandom::fill(&mut *seed).map_err(|_| "operating-system random generator failed")?;
     let signing = ed25519_dalek::SigningKey::from_bytes(&seed);
     write_new(private_path, &*seed, 0o600)?;
     let public = format!("{}\n", hex::encode(signing.verifying_key().to_bytes()));

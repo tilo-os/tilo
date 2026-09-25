@@ -1315,7 +1315,7 @@ impl InviteEnvelope {
     pub fn to_url(&self) -> Result<String, IdentityFlowError> {
         let bytes = postcard::to_allocvec(self)
             .map_err(|e| IdentityFlowError::EncodeFailed(e.to_string()))?;
-        let encoded = base32::encode(base32::Alphabet::Rfc4648 { padding: false }, &bytes);
+        let encoded = data_encoding::BASE32_NOPAD.encode(&bytes);
         Ok(format!("tilo://invite/{encoded}"))
     }
 
@@ -1334,8 +1334,9 @@ impl InviteEnvelope {
                 "invite capability exceeds 16 KiB".into(),
             ));
         }
-        let bytes = base32::decode(base32::Alphabet::Rfc4648 { padding: false }, suffix)
-            .ok_or_else(|| IdentityFlowError::DecodeFailed("base32 decode failed".into()))?;
+        let bytes = data_encoding::BASE32_NOPAD
+            .decode(suffix.as_bytes())
+            .map_err(|e| IdentityFlowError::DecodeFailed(format!("base32: {e}")))?;
         let envelope: Self = postcard::from_bytes(&bytes)
             .map_err(|e| IdentityFlowError::DecodeFailed(format!("postcard: {e}")))?;
         if envelope.redemption_capability.len() != 32

@@ -67,7 +67,6 @@ chrono = { workspace = true, default-features = true }
 uuid.workspace = true
 # `dirs-next` is deprecated; `dirs` 6 is the maintained drop-in. The
 # `home_dir`/`config_dir`/`cache_dir` API is identical.
-dirs.workspace = true
 qcms.workspace = true
 
 iroh.workspace = true
@@ -75,7 +74,6 @@ iroh-base.workspace = true
 iroh-gossip.workspace = true
 iroh-mdns-address-lookup.workspace = true
 bytes.workspace = true
-futures-lite.workspace = true
 blake3.workspace = true
 
 # Structured error type for DRM backend construction. Bubbles up clean error
@@ -208,7 +206,8 @@ ed25519-dalek = { workspace = true, features = ["rand_core"] }
 capnp.workspace = true
 capnp-rpc.workspace = true
 tokio-util.workspace = true
-futures = { workspace = true, default-features = true }
+# capnp-rpc speaks futures-io; `io` supplies its buffered reader/writer.
+futures-util = { workspace = true, features = ["io"] }
 # The shell re-serialises signed op envelopes and presence keys onto
 # the capnp wire; `postcard` matches what apps and the ui toolkit
 # already use for the same envelopes / keys.
@@ -236,7 +235,6 @@ rand_chacha.workspace = true
 pollster.workspace = true
 wgpu.workspace = true
 vello_encoding.workspace = true
-futures-util.workspace = true
 # Serializes tests that share process-wide state (environment variables,
 # static registries).
 serial_test.workspace = true
