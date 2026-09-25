@@ -662,14 +662,6 @@ suite = "os/tests/trust_input_copy_equivalence.py"
 reason = "needs a built tools image (--tools-image) and Podman"
 
 [[unrequired]]
-suite = "os/tests/ush-systemd-terminal-probe.py"
-reason = "drives the socket-activated tilo-ush unit inside an installed Fedora VM session"
-
-[[unrequired]]
-suite = "os/tests/ush-systemd-terminal-vm.sh"
-reason = "runs as the graphical user inside an installed Fedora VM with the shipped tilo-ush units"
-
-[[unrequired]]
 suite = "os/tests/windows_vm_schema.sh"
 reason = "needs the libvirt domain RelaxNG schema as an argument"
 

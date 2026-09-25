@@ -1636,10 +1636,6 @@ pub struct ShellOverlayHost {
         std::sync::mpsc::Sender<SessionActionResult>,
         std::sync::mpsc::Receiver<SessionActionResult>,
     ),
-    /// The compositor power service is the single suspend actuator: unlike a
-    /// generic `systemctl suspend` worker, it coordinates the lock frame and
-    /// reports an eventual logind failure back through `PowerSignal`.
-    power_bridge: Option<tilo_power_mgmt::PowerBridge>,
     /// Portal session-operation inhibitors shared with the backend serving
     /// `org.freedesktop.portal.Inhibit`. A logout/user switch must consult
     /// this exact registry before any irreversible OS action is spawned.
@@ -2930,9 +2926,6 @@ impl ShellOverlayHost {
             ),
         ));
         search_registry.register(std::rc::Rc::new(
-            crate::shell::search::providers::DesktopWindowsProvider::new(),
-        ));
-        search_registry.register(std::rc::Rc::new(
             crate::shell::search::providers::SessionActionsProvider::new(),
         ));
         search_registry.register(std::rc::Rc::new(
@@ -3152,7 +3145,6 @@ impl ShellOverlayHost {
             power_menu: PowerMenu::default(),
             tab_menu: TabContextMenu::default(),
             session_action_channel: std::sync::mpsc::channel(),
-            power_bridge: None,
             session_inhibitors: tilo_power_mgmt::InhibitRegistry::new(),
             strip_ribbon_hover: None,
             strip_rail_hover: None,
@@ -3429,28 +3421,6 @@ impl ShellOverlayHost {
         self.power_menu.is_open()
             || self.screenshot_markup.is_some()
             || self.capture_studio.modal_capture().is_some()
-    }
-
-    /// Whether the pointer is over the shell-owned controls painted above a
-    /// maximized client.  The client fills the output, so ordinary foreign
-    /// hit-testing would otherwise consume Restore/Close presses before the
-    /// `WindowGroup` which draws those controls can see them.
-    pub(crate) fn maximized_chrome_captures_pointer(&self) -> bool {
-        let Some(chrome) = self.chrome.as_ref() else {
-            return false;
-        };
-        let Some(group_id) = chrome.borrow().maximized_group() else {
-            return false;
-        };
-        self.group_row_ptrs.values().any(|&ptr| {
-            // SAFETY: same stable boxed-row contract as the other
-            // `group_row_ptrs` accessors; this is a read-only query.
-            let row: &GroupRow = unsafe { &*ptr };
-            row.groups.iter().any(|group| {
-                group.id == group_id
-                    && group.should_show_maximized_chrome(self.last_cursor.map(|p| p.y))
-            })
-        })
     }
 
     pub fn open_screenshot_markup(
@@ -4032,10 +4002,6 @@ impl ShellOverlayHost {
     /// Headless and screenshot hosts keep an empty private registry.
     pub fn set_session_inhibitors(&mut self, registry: tilo_power_mgmt::InhibitRegistry) {
         self.session_inhibitors = registry;
-    }
-
-    pub fn set_power_bridge(&mut self, bridge: tilo_power_mgmt::PowerBridge) {
-        self.power_bridge = Some(bridge);
     }
 
     /// Whether peer-sync palette entries are registered.
@@ -5774,13 +5740,8 @@ impl ShellOverlayHost {
                 }
                 // Eased, not teleported — matches Niri's focus-column slide.
                 row.scroll_group_into_view_animated(group_id, Instant::now());
-                // Record the edge only after the row could actually inspect
-                // the group's laid-out rectangle.  A freshly adopted app is
-                // spliced before its first layout pass; memoising it earlier
-                // suppresses the next-frame retry and can leave the active
-                // window entirely off-screen in a long restored strip.
-                self.last_scrolled_active_group.insert(strip_id, group_id);
             }
+            self.last_scrolled_active_group.insert(strip_id, group_id);
         }
     }
 
@@ -6045,53 +6006,21 @@ impl ShellOverlayHost {
     /// launch/exit is silent — the window is the feedback). Returns whether
     /// anything was posted, so the caller can mark the frame dirty.
     pub(crate) fn drain_launch_events(&mut self) -> bool {
-        use crate::shell::launcher::LaunchEventKind;
         if self.desktop_controls.is_explicit() {
             return false;
         }
+        use crate::shell::launcher::LaunchEventKind;
         // Expiry is independent of new launcher events: a daemonising parent
         // can exit and never produce another event or window.
-        let timed_out = crate::shell::launcher::expire_pending_placements();
+        crate::shell::launcher::expire_pending_placements();
         let events = crate::shell::launcher::drain_events();
-        if events.is_empty() && timed_out.is_empty() {
+        if events.is_empty() {
             return false;
         }
         let Some(chrome_handle) = self.chrome.clone() else {
             return false;
         };
         let mut posted = false;
-        for package_id in timed_out {
-            if crate::shell::peer_windows::mark_timed_out_host_restore(
-                &mut chrome_handle.borrow().tree_mut(),
-                &package_id,
-            ) {
-                chrome_handle.borrow_mut().bump();
-            }
-            let pending_notice = crate::shell::catalogue::take_pending_notice(&package_id);
-            {
-                let mut st = chrome_handle.borrow_mut();
-                if let Some(notice) = pending_notice {
-                    st.dismiss_notification(notice);
-                }
-                st.push_notification_full(
-                    crate::shell::notification::Notification::new(
-                        "Application did not open",
-                        "The app started but did not create a window. Check the session log and try again.",
-                    )
-                    .with_severity(crate::shell::notification::NotificationSeverity::Error)
-                    .with_app_name("Applications")
-                    .with_dismiss_after(crate::shell::launcher::LAUNCH_FAILURE_NOTICE_LIFETIME),
-                );
-                st.bump();
-            }
-            tracing::error!(
-                target: "tilo::app_launch",
-                %package_id,
-                timeout_seconds = 15_u64,
-                "application started but did not present a window before the launch deadline"
-            );
-            posted = true;
-        }
         for event in events {
             if self.room_activity.observe_agent_launch_event(&event) {
                 chrome_handle.borrow_mut().bump();
@@ -6453,31 +6382,6 @@ impl ShellOverlayHost {
         // SAFETY: see field doc on `group_row_ptrs`.
         let row: &mut GroupRow = unsafe { &mut *ptr };
         row.groups.get_mut(group_idx)
-    }
-
-    /// Live pointer targets for the active group's maximize/restore actions.
-    ///
-    /// This is read-only presentation state. The developer control transport
-    /// serialises it when that transport is enabled, while normal production
-    /// sessions never bind the transport at all.
-    pub fn active_window_control_rects(&self) -> Option<(Rect, Rect)> {
-        let chrome = self.chrome.clone()?;
-        let (strip_id, group_id) = {
-            let st = chrome.borrow();
-            let tree = st.tree();
-            let strip = tree
-                .desktop
-                .active_strip
-                .get(&tree.desktop.active)
-                .copied()?;
-            (strip, tree.desktop.active_group_for(strip)?)
-        };
-        let &ptr = self.group_row_ptrs.get(&strip_id)?;
-        // SAFETY: same ownership contract as `group_at_for_tests` above.
-        let row: &GroupRow = unsafe { &*ptr };
-        let group = row.groups.iter().find(|group| group.id == group_id)?;
-        let maximize = group.active_maximize_rect().unwrap_or(Rect::ZERO);
-        Some((maximize, group.restore_rect()))
     }
 
     /// Test-only: runs the per-frame active-group reconcile outside `update`.
@@ -8920,40 +8824,6 @@ impl ShellOverlayHost {
         });
         let popover_h = desired_h.min((self.rect.y1 - y0 - 16.0).max(1.0));
         Rect::new(x1 - popover_w, y0, x1, y0 + popover_h)
-    }
-
-    /// Convert a pointer in painted coordinates back into Quick Settings'
-    /// stable layout coordinates. The popover's entrance animation scales
-    /// around its top-centre and translates upward; hit-testing the resting
-    /// rectangles made controls visibly move out from under the pointer.
-    fn untransform_quick_settings_pointer(&self, point: Point, now: Instant) -> Point {
-        let openness = self.qs_transition.value(now);
-        let dy = -10.0 * f64::from(1.0 - openness);
-        let scale = 0.95 + 0.05 * f64::from(openness);
-        if !scale.is_finite() || scale <= f64::EPSILON {
-            return point;
-        }
-        let rect = self.quick_settings_rect();
-        let cx = rect.center().x;
-        let cy = rect.y0;
-        Point::new(
-            cx + (point.x - cx) / scale,
-            cy + (point.y - cy - dy) / scale,
-        )
-    }
-
-    #[cfg(test)]
-    fn transform_quick_settings_point_for_test(&self, point: Point, now: Instant) -> Point {
-        let openness = self.qs_transition.value(now);
-        let dy = -10.0 * f64::from(1.0 - openness);
-        let scale = 0.95 + 0.05 * f64::from(openness);
-        let rect = self.quick_settings_rect();
-        let cx = rect.center().x;
-        let cy = rect.y0;
-        Point::new(
-            cx + (point.x - cx) * scale,
-            cy + (point.y - cy) * scale + dy,
-        )
     }
 
     /// A drill-in is a compact continuation of Quick Settings, not a blank
@@ -11696,23 +11566,6 @@ impl ShellOverlayHost {
             *handled = true;
             return true;
         }
-        // Super+L is the conventional immediate lock gesture and is already
-        // reserved by client-input routing and advertised by the shortcut
-        // guide. Publish the same compositor-owned edge as the power menu;
-        // never delegate to logind or let a focused client consume it.
-        if super_down
-            && !mstate.control_key()
-            && !mstate.alt_key()
-            && !shift_down
-            && let Key::Character(key) = logical_key
-            && key.eq_ignore_ascii_case("l")
-        {
-            if !repeat && let Some(chrome) = self.chrome.as_ref() {
-                chrome.borrow_mut().request_session_lock();
-            }
-            *handled = true;
-            return true;
-        }
         // Optional Vim navigation is intentionally a full Super+Ctrl layer,
         // never a bare/Ctrl-only text chord. This keeps H/J/K/L available to
         // terminals and editors and matches the promise in Settings.
@@ -12741,17 +12594,6 @@ impl ShellOverlayHost {
                 true
             }
             PowerMenuClick::Execute(action) => {
-                if action == os_actions::SessionAction::Suspend {
-                    if let Some(bridge) = &self.power_bridge {
-                        bridge.request_suspend();
-                    } else {
-                        let _ = self.session_action_channel.0.send(SessionActionResult {
-                            action,
-                            result: Err("power service is unavailable".into()),
-                        });
-                    }
-                    return true;
-                }
                 let inhibit_scope = match action {
                     os_actions::SessionAction::Logout => {
                         Some(tilo_power_mgmt::inhibit::INHIBIT_LOGOUT)
@@ -12775,19 +12617,6 @@ impl ShellOverlayHost {
                                     .map_or("An app has unsaved work", String::as_str)
                             ),
                         );
-                    }
-                    return true;
-                }
-                // Logout is a tiny, private file write plus an in-process
-                // edge. Do it on this input tick so the native loop observes
-                // the edge before it parks. The other actions may block on
-                // logind/GDM and therefore remain on workers.
-                if action == os_actions::SessionAction::Logout {
-                    if let Err(error) = os_actions::request_logout() {
-                        let _ = self.session_action_channel.0.send(SessionActionResult {
-                            action,
-                            result: Err(error),
-                        });
                     }
                     return true;
                 }
@@ -13019,7 +12848,6 @@ impl ShellOverlayHost {
     /// Reached only once `flags.quick_settings` is true, at which point
     /// every path absorbs the click.
     fn handle_shell_quick_settings_click(&mut self, p: Point, handled: &mut bool) {
-        let p = self.untransform_quick_settings_pointer(p, Instant::now());
         let qs_rect = self.quick_settings_rect();
         if !qs_rect.contains(p) {
             if let Some(chrome) = self.chrome.clone() {
@@ -24866,12 +24694,6 @@ mod overview_panel_tests {
 
     #[test]
     fn workspace_name_accessibility_exposes_current_selection() {
-        fn find(node: &ui::a11y::AccessNode) -> Option<&ui::a11y::AccessNode> {
-            if node.name.as_deref() == Some("Workspace name") {
-                return Some(node);
-            }
-            node.children.iter().find_map(find)
-        }
         let h = host_with(WorkspaceTree::bootstrap_default());
         {
             let mut state = h.chrome.as_ref().unwrap().borrow_mut();
@@ -24883,6 +24705,12 @@ mod overview_panel_tests {
             };
         }
         let node = h.accessibility().unwrap();
+        fn find(node: &ui::a11y::AccessNode) -> Option<&ui::a11y::AccessNode> {
+            if node.name.as_deref() == Some("Workspace name") {
+                return Some(node);
+            }
+            node.children.iter().find_map(find)
+        }
         let selection = find(&node)
             .unwrap()
             .text_selection
@@ -26553,57 +26381,6 @@ mod palette_dispatch_tests {
                 .body
                 .contains("Call is sharing the screen")
         );
-    }
-
-    #[test]
-    fn logout_power_action_publishes_its_edge_before_dispatch_returns() {
-        let (host, _chrome) = host_with_chrome();
-        let directory = tempfile::tempdir().unwrap();
-        let request = directory.path().join("logout-request");
-        let mut env = tilo_test_env::ScopedEnv::new();
-        env.set("TILO_SESSION_LOGOUT_REQUEST", &request);
-
-        assert!(
-            host.apply_power_menu_outcome(PowerMenuClick::Execute(
-                os_actions::SessionAction::Logout
-            ))
-        );
-        assert_eq!(std::fs::read_to_string(&request).unwrap(), "logout\n");
-        assert!(os_actions::take_logout_request());
-        assert!(!os_actions::take_logout_request());
-        drop(env);
-    }
-
-    #[test]
-    fn suspend_power_action_uses_the_coordinated_power_service() {
-        let (mut host, _chrome) = host_with_chrome();
-        let bridge = tilo_power_mgmt::PowerBridge::new();
-        host.set_power_bridge(bridge.clone());
-
-        assert!(
-            host.apply_power_menu_outcome(PowerMenuClick::Execute(
-                os_actions::SessionAction::Suspend
-            ))
-        );
-        assert_eq!(
-            bridge.drain_commands(),
-            vec![tilo_power_mgmt::PowerCommand::Suspend]
-        );
-        assert!(host.session_action_channel.1.try_recv().is_err());
-    }
-
-    #[test]
-    fn suspend_without_the_power_service_reports_failure() {
-        let (mut host, chrome) = host_with_chrome();
-
-        assert!(
-            host.apply_power_menu_outcome(PowerMenuClick::Execute(
-                os_actions::SessionAction::Suspend
-            ))
-        );
-        assert!(host.drain_session_action_results());
-        assert_eq!(chrome.borrow().notifications().len(), 1);
-        assert!(chrome.borrow().notifications()[0].body.contains("suspend"));
     }
 
     #[test]
@@ -28895,7 +28672,6 @@ mod overlay_event_absorb_tests {
     /// rather than guess where the strip wrapped it to.
     #[test]
     fn filter_chips_and_scope_segments_are_bounded_semantic_targets() {
-        use crate::shell::search::ResourceKind;
         use ui::a11y::Role;
         let (vw, vh) = (1280.0, 800.0);
         let mut h = build_harness_sized(vw, vh);
@@ -29029,6 +28805,7 @@ mod overlay_event_absorb_tests {
         // The controls share one centre line: chips and the scope switch
         // are laid out to the same control height in the band's first row.
         // Addresses stay unique and single-segment even for hostile labels.
+        use crate::shell::search::ResourceKind;
         let odd = [
             ResourceKind::Custom("Foo Bar".into()),
             ResourceKind::Custom("foo  bar".into()),
@@ -29653,53 +29430,6 @@ mod overlay_event_absorb_tests {
         );
     }
 
-    #[test]
-    fn app_search_arrows_and_enter_activate_the_visibly_selected_row() {
-        use crate::shell::search::ResourceKind;
-
-        let mut h = build_harness();
-        h.host
-            .search_registry
-            .register(Rc::new(AppSourceFilterFixtureProvider));
-        h.host.active_kind_filter = vec![ResourceKind::Application, ResourceKind::HostApplication];
-        h.host.set_palette_visible(true);
-        h.host.set_palette_focus(true);
-        h.host.force_palette_settled();
-        h.host.palette.set_query("Open");
-        let doc = AutoCommit::new();
-        h.host.refresh_search_results(&doc, &automerge::ROOT);
-
-        let (_, _, initially_selected, rows) = h.host.palette_snapshot();
-        assert!(
-            rows.len() >= 2,
-            "fixture must expose both app sources: {rows:?}"
-        );
-        let initially_selected = initially_selected.expect("first row is visibly selected");
-        assert_eq!(initially_selected, rows[0].0);
-
-        assert!(pump(&mut h, &key_pressed(Key::Named(NamedKey::ArrowDown)),));
-        let (_, _, selected_after_arrow, rows_after_arrow) = h.host.palette_snapshot();
-        let selected_after_arrow = selected_after_arrow.expect("arrow keeps a row selected");
-        assert_eq!(
-            rows_after_arrow, rows,
-            "navigation must not reorder search results"
-        );
-        assert_eq!(
-            selected_after_arrow, rows[1].0,
-            "ArrowDown must move the visible selection to the second app"
-        );
-
-        assert!(pump(&mut h, &key_pressed(Key::Named(NamedKey::Enter)),));
-        assert!(
-            !h.host.palette_visible(),
-            "Enter's activation path must complete the selected app action"
-        );
-        assert_ne!(
-            selected_after_arrow, initially_selected,
-            "activation must follow the arrow-selected row, not stale result zero"
-        );
-    }
-
     /// Same for the scope switch, which shares the band.
     #[test]
     fn clicking_a_scope_segment_switches_scope_without_dismissing() {
@@ -29823,31 +29553,6 @@ mod overlay_event_absorb_tests {
         let _ = pump(&mut h, &cursor_moved_at(power.center()));
         assert!(pump(&mut h, &left_button_pressed()));
         assert!(h.host.power_menu.is_open());
-        assert!(!h.chrome.borrow().overlays.quick_settings);
-    }
-
-    #[test]
-    fn quick_settings_power_tile_tracks_its_entrance_animation() {
-        let mut h = build_harness();
-        h.chrome.borrow_mut().overlays.quick_settings = true;
-        h.host.set_quick_settings_capture_openness(500);
-        paint(&mut h);
-        let stable_power = h
-            .host
-            .quick_settings_semantic_rects()
-            .into_iter()
-            .find_map(|(name, rect)| (name == "quick_settings_power").then_some(rect))
-            .expect("the visible Power tile has semantic geometry");
-        let painted_power = h
-            .host
-            .transform_quick_settings_point_for_test(stable_power.center(), Instant::now());
-
-        let _ = pump(&mut h, &cursor_moved_at(painted_power));
-        assert!(pump(&mut h, &left_button_pressed()));
-        assert!(
-            h.host.power_menu.is_open(),
-            "clicking the visibly transformed Power tile must open its menu"
-        );
         assert!(!h.chrome.borrow().overlays.quick_settings);
     }
 
@@ -31275,24 +30980,6 @@ mod tests {
         build_harness_with_host(host, chrome)
     }
 
-    #[test]
-    fn active_window_controls_report_the_live_painted_geometry() {
-        let tree = WorkspaceTree::bootstrap_demo();
-        let chrome = ChromeState::new(tree.clone());
-        let records = chrome.borrow().records().clone();
-        let (content, ptrs, scene_parts) =
-            crate::shell::build_workspace_root_with_scene_parts(&tree, &records, &chrome);
-        let host = ShellOverlayHost::new(content)
-            .with_chrome(chrome)
-            .with_group_row_ptrs(ptrs)
-            .with_workspace_scene_parts(scene_parts);
-        let (maximize, restore) = host
-            .active_window_control_rects()
-            .expect("demo workspace has an active group");
-        assert!(maximize.width() >= 0.0 && maximize.height() >= 0.0);
-        assert!(restore.width() >= 0.0 && restore.height() >= 0.0);
-    }
-
     fn build_activity_harness() -> Harness {
         let tree = WorkspaceTree::bootstrap_demo();
         let workspace = tree.desktop.active.raw();
@@ -31632,16 +31319,6 @@ mod tests {
             !h.chrome.borrow().overlays.projection,
             "the same familiar chord closes the sheet again"
         );
-    }
-
-    #[test]
-    fn super_l_requests_the_compositor_lock_once() {
-        let mut h = build_harness();
-        let sup = Modifiers::from(ModifiersState::SUPER);
-
-        assert!(pump(&mut h, &key_press(Key::Character("l".into())), sup));
-        assert!(h.chrome.borrow_mut().take_session_lock_request());
-        assert!(!h.chrome.borrow_mut().take_session_lock_request());
     }
 
     #[test]
@@ -33951,84 +33628,6 @@ mod resync_strips_tests {
         assert!(
             host.group_at_for_tests(strip_id, 3).is_none(),
             "no phantom fourth group"
-        );
-    }
-
-    #[test]
-    fn newly_active_group_retries_reveal_after_its_first_layout() {
-        const LAUNCHED_GROUP: GroupId = 999;
-        let (mut tree, strip_id, first_group) = one_group_seed();
-        for id in 201..=206 {
-            tree.desktop.workspaces[0].strips[0]
-                .window_groups
-                .push(make_stub_group(id, &format!("Existing-{id}")));
-        }
-        let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&tree);
-        let mut taffy = TaffyTree::new();
-        let mut node_map = HashMap::new();
-        let root = host.build_layout(&mut taffy, &Theme::dark(), &mut node_map);
-        taffy
-            .compute_layout(
-                root,
-                Size {
-                    width: taffy::AvailableSpace::Definite(1280.0),
-                    height: taffy::AvailableSpace::Definite(800.0),
-                },
-            )
-            .expect("initial wide-strip layout");
-        host.apply_layout(&taffy, root, Point::ORIGIN);
-        let row = host
-            .group_row_mut_for_tests(strip_id)
-            .expect("seed strip has a live row");
-        row.set_scroll_x_for_test(row.max_scroll_x());
-        host.last_scrolled_active_group
-            .insert(strip_id, first_group);
-
-        {
-            let mut st = chrome.borrow_mut();
-            let mut live = st.tree_mut();
-            live.desktop.workspaces[0].strips[0]
-                .window_groups
-                .push(make_stub_group(LAUNCHED_GROUP, "Launched"));
-            live.desktop.active_group.insert(strip_id, LAUNCHED_GROUP);
-            drop(live);
-            st.bump();
-        }
-
-        assert!(host.take_structure_dirty(), "launch splices a new group");
-        host.tick_scroll_active_into_view_for_tests();
-        assert_eq!(
-            host.last_scrolled_active_group.get(&strip_id),
-            Some(&first_group),
-            "an unlaid group must not consume the focus-follow edge"
-        );
-
-        let mut rebuilt = TaffyTree::new();
-        let mut rebuilt_map = HashMap::new();
-        let rebuilt_root = host.build_layout(&mut rebuilt, &Theme::dark(), &mut rebuilt_map);
-        rebuilt
-            .compute_layout(
-                rebuilt_root,
-                Size {
-                    width: taffy::AvailableSpace::Definite(1280.0),
-                    height: taffy::AvailableSpace::Definite(800.0),
-                },
-            )
-            .expect("post-launch layout");
-        host.apply_layout(&rebuilt, rebuilt_root, Point::ORIGIN);
-        host.tick_scroll_active_into_view_for_tests();
-
-        assert_eq!(
-            host.last_scrolled_active_group.get(&strip_id),
-            Some(&LAUNCHED_GROUP),
-            "the first laid-out frame must retry and accept the reveal"
-        );
-        let row = host
-            .group_row_mut_for_tests(strip_id)
-            .expect("launched strip remains live");
-        assert!(
-            row.needs_animation_frame(),
-            "revealing the off-screen launch must start the strip pan"
         );
     }
 

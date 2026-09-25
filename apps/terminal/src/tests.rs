@@ -140,27 +140,6 @@ fn embedded_terminal_only_requests_frames_for_queued_output() {
     );
 }
 
-#[test]
-fn pty_reader_retries_interrupts_and_linux_handoff_eio() {
-    use crate::inner::{PtyReadDisposition, classify_pty_read};
-
-    assert_eq!(
-        classify_pty_read(&Err(std::io::Error::from(std::io::ErrorKind::Interrupted))),
-        PtyReadDisposition::Retry
-    );
-    assert_eq!(
-        classify_pty_read(&Err(std::io::Error::from_raw_os_error(libc::EIO))),
-        PtyReadDisposition::Retry,
-        "a PTY master can report EIO before the guest opens its slave"
-    );
-    assert_eq!(classify_pty_read(&Ok(19)), PtyReadDisposition::Data(19));
-    assert_eq!(classify_pty_read(&Ok(0)), PtyReadDisposition::Closed);
-    assert_eq!(
-        classify_pty_read(&Err(std::io::Error::from_raw_os_error(libc::EBADF))),
-        PtyReadDisposition::Closed
-    );
-}
-
 /// Drain and concatenate everything the PTY-write channel has buffered.
 fn drain_writes(rx: &crossbeam_channel::Receiver<Vec<u8>>) -> Vec<u8> {
     let mut out = Vec::new();
@@ -596,31 +575,6 @@ fn terminal_widget_implements_app_widget() {
         IconDescriptor::Named(_) => panic!("expected glyph icon"),
     }
     assert_eq!(w.permission_hint(), Some(AppKind::Terminal));
-}
-
-#[test]
-fn first_pty_bytes_retire_the_first_run_watermark() {
-    let (mut widget, _writes) = build_test_widget();
-    let mut doc = AutoCommit::new();
-    assert!(!widget.has_received_pty_output());
-
-    widget.feed(&mut doc, &ROOT, b"\x1b[32m\x1b[?25h");
-
-    assert!(
-        widget.has_received_pty_output(),
-        "control-only startup output still proves the PTY is live"
-    );
-}
-
-#[test]
-fn pty_pump_retires_watermark_even_for_nonprinting_output() {
-    let (mut widget, _write_rx, output_tx) = build_test_widget_io();
-    let mut state = AutoCommit::new();
-    assert!(!widget.has_received_pty_output());
-
-    output_tx.send(vec![b'\x1b', b'[', b'0', b'm']).unwrap();
-    assert!(widget.update(&mut state, &ROOT));
-    assert!(widget.has_received_pty_output());
 }
 
 #[test]

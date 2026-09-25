@@ -616,24 +616,12 @@ impl Theme {
         let text = settings
             .and_then(|path| std::fs::read_to_string(path).ok())
             .unwrap_or_default();
-        let reduce_motion_override = crate::host::environment().accessibility.reduce_motion;
-        Self::configured_from_text(&text, reduce_motion_override)
-    }
-
-    fn configured_from_text(text: &str, reduce_motion_override: bool) -> Self {
-        let mut theme = Self::from_settings_json(text).unwrap_or_else(Self::dark);
-        let thick = serde_json::from_str::<serde_json::Value>(text)
+        let mut theme = Self::from_settings_json(&text).unwrap_or_else(Self::dark);
+        let thick = serde_json::from_str::<serde_json::Value>(&text)
             .ok()
             .and_then(|v| v.get("accessibility")?.get("thick_text_caret")?.as_bool())
             .unwrap_or(false);
         theme.caret_width = if thick { 4.0 } else { 2.0 };
-        // Match standalone apps' accessibility override.  The compositor is
-        // itself a UI host, so an explicitly reduced-motion session must not
-        // keep full-desktop transitions running even when settings.json has
-        // not been written yet (notably the disposable software-rendered VM).
-        if reduce_motion_override {
-            theme.reduce_motion = true;
-        }
         theme
     }
 
@@ -1303,12 +1291,6 @@ mod tests {
         assert!(!Theme::dark().reduce_motion, "default is motion on");
         assert!(Theme::dark().with_reduce_motion(true).reduce_motion);
         assert!(!Theme::dark().with_reduce_motion(false).reduce_motion);
-    }
-
-    #[test]
-    fn configured_theme_honours_the_host_reduce_motion_input() {
-        assert!(Theme::configured_from_text("", true).reduce_motion);
-        assert!(!Theme::configured_from_text("", false).reduce_motion);
     }
 
     #[test]

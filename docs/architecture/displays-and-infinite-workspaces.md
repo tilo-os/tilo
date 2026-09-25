@@ -72,10 +72,9 @@ computed.
 
 HDR, VRR and ICC controls are capability gated. EDID HDR support and the kernel
 `vrr_capable` property are reported separately from *usable compositor*
-support. The current DRM presenter uses XRGB8888 buffers (GBM render targets
-or dumb buffers) and sets neither HDR metadata/colorspace nor `VRR_ENABLED`,
-so Settings explains that limitation and provides no inert HDR/VRR toggle even
-when the sink supports it.
+support. The current DRM presenter uses XRGB8888 dumb buffers and sets neither
+HDR metadata/colorspace nor `VRR_ENABLED`, so Settings explains that limitation
+and provides no inert HDR/VRR toggle even when the sink supports it.
 
 ICC profiles are discovered from colord/XDG locations (`/var/lib/colord/icc`,
 system color directories, and the user's XDG data directory), bounded to 16 MiB

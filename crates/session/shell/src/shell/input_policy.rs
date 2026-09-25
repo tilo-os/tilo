@@ -804,7 +804,6 @@ pub fn chrome_captures_input(fb: &FrameBuilder) -> bool {
     }
     let peer_sync_visible = fb.host().peer_sync_card_visible();
     let inner_surface_captures = fb.host().inner_surface_captures_input();
-    let maximized_chrome_captures = fb.host().maximized_chrome_captures_pointer();
     let chrome = fb.chrome();
     chrome.overlays.overview
         || chrome.overlays.quick_settings
@@ -819,7 +818,6 @@ pub fn chrome_captures_input(fb: &FrameBuilder) -> bool {
         // it, a card raised over a focused client sent its Escape to the client, undismissable, with a live invite token exposed.
         || peer_sync_visible
         || inner_surface_captures
-        || maximized_chrome_captures
         || chrome.editing_workspace_name.is_some()
         || !chrome.pending_grants.is_empty()
 }
@@ -1687,31 +1685,6 @@ mod tests {
         assert!(
             chrome_captures_input(&markup),
             "screenshot editing must not leak input into the captured app"
-        );
-    }
-
-    #[test]
-    fn maximized_restore_band_takes_pointer_before_the_client() {
-        let mut tree = crate::shell::state::WorkspaceTree::bootstrap_demo();
-        let first = &mut tree.desktop.workspaces[0].strips[0].window_groups[0];
-        first.maximized = true;
-        let group = first.id;
-        let mut fb = FrameBuilder::with_tree(tree, (1280, 800));
-        fb.with_chrome(|chrome| chrome.set_maximized_group(Some(group)));
-        let _ = fb.paint_settled();
-
-        fb.host_mut()
-            .note_pointer(vello::kurbo::Point::new(1210.0, 109.0));
-        assert!(
-            chrome_captures_input(&fb),
-            "the visible Restore/Close pills must receive their own click"
-        );
-
-        fb.host_mut()
-            .note_pointer(vello::kurbo::Point::new(640.0, 200.0));
-        assert!(
-            !chrome_captures_input(&fb),
-            "below the reveal band the maximized client must remain interactive"
         );
     }
     #[test]
