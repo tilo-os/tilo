@@ -128,6 +128,9 @@ impl HistoryPreview for OutputPreview {
             let count = self.output.lines().count().max(1);
             let (gutter_w, _) = tr.measure(&count.to_string(), 12., None);
             let gutter = f64::from(gutter_w) + f64::from(theme.tokens.spacing.s3);
+            let grammar =
+                crate::highlight::grammar_for_label(self.session.as_deref().unwrap_or_default());
+            let spans = crate::highlight::document(&grammar, self.output.lines());
             for (i, line) in self.output.lines().enumerate() {
                 let y = self.bounds.y0 + inset + i as f64 * pitch - self.view.scroll.1;
                 if y + pitch < self.bounds.y0 {
@@ -144,7 +147,17 @@ impl HistoryPreview for OutputPreview {
                     t * Affine::translate((x, y)),
                     None,
                 );
-                crate::merge_view::draw_code_segments(scene, t, tr, theme, x + gutter, y, line);
+                crate::highlight::draw_line(
+                    scene,
+                    t,
+                    tr,
+                    theme,
+                    x + gutter,
+                    y,
+                    line,
+                    spans.get(i).map_or(&[][..], Vec::as_slice),
+                    crate::merge_view::FONT_SIZE,
+                );
             }
         } else {
             tr.draw_text(

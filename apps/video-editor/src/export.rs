@@ -776,11 +776,29 @@ mod gst_pipeline {
         (at(i + 1) - at(i)) as usize
     }
 
+    /// How long the flush may go without progress before the export gives up.
+    ///
+    /// An **inactivity** timeout, not a total one. This used to be a flat
+    /// two minutes from the start of the flush, which is a duration a long
+    /// 4K mux can legitimately exceed — and exceeding it deleted the file,
+    /// throwing away a render that had taken minutes. "Nothing has
+    /// happened for two minutes" is a wedged pipeline; "this has taken two
+    /// minutes" is just a big timeline.
+    ///
+    /// Progress is the muxer's own output growing, which is the direct
+    /// evidence it is still working, plus any bus traffic. Both reset the
+    /// clock.
+    const QUIET_LIMIT: std::time::Duration = std::time::Duration::from_secs(120);
+
     /// Build + run the real export graph: push every composited frame of the
     /// timeline into an `appsrc`, encode + mux to the container, and write the
     /// file. Blocks until the pipeline reaches EOS (or errors), then returns the
     /// written path. Any failure is surfaced verbatim — nothing claims success
     /// unless a real file was produced.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one export pipeline: probe, encode, mux and finish in order, sharing cleanup on every exit"
+    )]
     pub fn run(
         project: &Project,
         settings: &ExportSettings,
@@ -941,22 +959,12 @@ mod gst_pipeline {
             .bus()
             .ok_or_else(|| "export pipeline bus".to_string())?;
         let mut result = Ok(());
-        // An **inactivity** timeout, not a total one. This used to be a flat
-        // two minutes from the start of the flush, which is a duration a long
-        // 4K mux can legitimately exceed — and exceeding it deleted the file,
-        // throwing away a render that had taken minutes. "Nothing has
-        // happened for two minutes" is a wedged pipeline; "this has taken two
-        // minutes" is just a big timeline.
-        //
-        // Progress is the muxer's own output growing, which is the direct
-        // evidence it is still working, plus any bus traffic. Both reset the
-        // clock.
-        const QUIET_LIMIT: std::time::Duration = std::time::Duration::from_secs(120);
         let mut watch = FlushWatch::new(
             std::fs::metadata(&out).map(|m| m.len()).unwrap_or(0),
             std::time::Instant::now(),
         );
         loop {
+            use gst::MessageView;
             if state.cancel.load(Ordering::Relaxed) {
                 result = Err(super::CANCELLED.to_string());
                 break;
@@ -977,7 +985,6 @@ mod gst_pipeline {
                 continue;
             };
             watch.observe_activity(std::time::Instant::now());
-            use gst::MessageView;
             match msg.view() {
                 MessageView::Eos(_) => break,
                 MessageView::Error(e) => {
@@ -1079,8 +1086,11 @@ mod tests {
     #[test]
     #[serial_test::serial(video_editor_gst)]
     fn a_render_reports_progress_and_finishes_where_it_was_told() {
+        if !generated_clip::media_stack() {
+            return;
+        }
         let clip = demo_clip();
-        let project = project_over(&clip, 4.0, 1.0);
+        let project = project_over(&clip, 2.0, 1.0);
         let out = std::env::temp_dir().join(format!("tilo-ve-job-{}.mp4", std::process::id()));
         std::fs::remove_file(&out).ok();
 
@@ -1123,9 +1133,18 @@ mod tests {
     #[test]
     #[serial_test::serial(video_editor_gst)]
     fn cancelling_a_render_stops_it_and_leaves_no_file() {
+        if !generated_clip::media_stack() {
+            return;
+        }
         let clip = demo_clip();
-        // Long enough that the cancel lands mid-encode rather than after it.
-        let project = project_over(&clip, 2.0, 20.0);
+        // Long enough that the cancel lands mid-encode rather than after it:
+        // twenty seconds of timeline, the whole source played five times.
+        let mut project = project_over(&clip, 0.0, generated_clip::DURATION_SECS);
+        let (track, media) = (project.tracks[0].id, project.media[0].id);
+        for n in 1..5 {
+            let start = f64::from(n) * generated_clip::DURATION_SECS;
+            project.add_clip(track, media, start).unwrap();
+        }
         let out = std::env::temp_dir().join(format!("tilo-ve-cancel-{}.mp4", std::process::id()));
         std::fs::remove_file(&out).ok();
 
@@ -1358,6 +1377,9 @@ mod tests {
     #[test]
     #[serial_test::serial(video_editor_gst)]
     fn the_export_muxes_the_timelines_audio() {
+        if !generated_clip::media_stack() {
+            return;
+        }
         let clip = demo_clip();
         let pid = std::process::id();
         let tone = std::env::temp_dir().join(format!("tilo-ve-tone-{pid}.wav"));
@@ -1404,11 +1426,20 @@ mod tests {
     /// asking for one has to fail rather than come back with a number.
     #[cfg(feature = "gst")]
     #[test]
-    #[should_panic(expected = "no readable audio stream")]
     #[serial_test::serial(video_editor_gst)]
     fn a_file_with_no_audio_track_cannot_be_asked_for_its_level() {
+        if !generated_clip::media_stack() {
+            return;
+        }
         let clip = generated_clip::encoded_video_only();
-        let _ = audio_peak(&clip);
+        let refused = std::panic::catch_unwind(|| audio_peak(&clip))
+            .expect_err("a video-only file has no level to report");
+        let message = refused
+            .downcast_ref::<String>()
+            .map(String::as_str)
+            .or_else(|| refused.downcast_ref::<&str>().copied())
+            .unwrap_or_default();
+        assert!(message.contains("no readable audio stream"), "{message}");
     }
 
     /// Per-clip volume and track mute exist in the CRDT and the inspector but
@@ -1417,6 +1448,9 @@ mod tests {
     #[test]
     #[serial_test::serial(video_editor_gst)]
     fn volume_and_mute_reach_the_encoded_audio() {
+        if !generated_clip::media_stack() {
+            return;
+        }
         let clip = demo_clip();
         let pid = std::process::id();
         let tone = std::env::temp_dir().join(format!("tilo-ve-tone2-{pid}.wav"));
@@ -2101,6 +2135,9 @@ mod tests {
     fn real_export_writes_a_playable_mp4() {
         use crate::model::{MediaItem, MediaKind, TextSource, Track, TrackKind};
         use uuid::Uuid;
+        if !generated_clip::media_stack() {
+            return;
+        }
         // A tiny real project: one 0.2s clip so the export loop runs quickly.
         let mut p = Project::new("Export Test");
         let mid = Uuid::new_v4();
@@ -2305,10 +2342,13 @@ mod tests {
     #[test]
     #[serial_test::serial(video_editor_gst)]
     fn the_export_encodes_the_source_footage() {
+        if !generated_clip::media_stack() {
+            return;
+        }
         let clip = demo_clip();
         // A second and a half of real video, from a second in — far enough
         // past the head that the picture has content.
-        let project = project_over(&clip, 8.0, 1.5);
+        let project = project_over(&clip, 1.0, 1.5);
         let out = std::env::temp_dir().join(format!("tilo-ve-footage-{}.mp4", std::process::id()));
         match export_to(&project, &out) {
             ExportStatus::Done { .. } => {}
@@ -2318,7 +2358,7 @@ mod tests {
         // Three instants across the exported clip, each compared with the
         // source picture it was cut from.
         let mut matched = 0;
-        for (timeline_t, source_t) in [(0.2, 8.2), (0.7, 8.7), (1.2, 9.2)] {
+        for (timeline_t, source_t) in [(0.2, 1.2), (0.7, 1.7), (1.2, 2.2)] {
             let exported = luma_grid(&out, timeline_t, 12);
             let source = luma_grid(&clip, source_t, 12);
             let same = correlation(&exported, &source);
@@ -2369,8 +2409,11 @@ mod tests {
     #[test]
     #[serial_test::serial(video_editor_gst)]
     fn the_grade_changes_the_encoded_footage() {
+        if !generated_clip::media_stack() {
+            return;
+        }
         let clip = demo_clip();
-        let neutral = project_over(&clip, 8.0, 0.6);
+        let neutral = project_over(&clip, 1.0, 0.6);
         let mut bright = neutral.clone();
         let cid = bright.clips[0].id;
         bright.clip_mut(cid).unwrap().filters = crate::model::Filters {
@@ -2444,6 +2487,9 @@ mod tests {
     #[serial_test::serial(video_editor_gst)]
     fn transitions_reach_the_encoded_file_as_distinct_pictures() {
         use crate::model::Transition;
+        if !generated_clip::media_stack() {
+            return;
+        }
         let clip = demo_clip();
         // Two clips over one source, the incoming one inverted so the two
         // pictures are unmistakably different whatever the footage does.
@@ -2454,8 +2500,8 @@ mod tests {
             let second = p.add_clip(track, media, 1.0).unwrap();
             {
                 let c = p.clip_mut(second).unwrap();
-                c.in_point = 40.0;
-                c.out_point = 41.0;
+                c.in_point = 3.0;
+                c.out_point = 4.0;
                 c.transition = kind;
                 c.effects = vec![crate::model::ClipEffect {
                     id: uuid::Uuid::new_v4(),

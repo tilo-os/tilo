@@ -223,6 +223,28 @@ jobs:
           fi
           command -v jq objcopy podman qemu-img "qemu-system-$ARCH" skopeo sshpass socat systemd-repart >/dev/null
 
+      # Kata's job container has a static /dev. Its disposable guest kernel
+      # provides FUSE for Podman's overlay store and loop nodes for the disk
+      # installer, but those nodes are not visible until devtmpfs is mounted.
+      - name: Expose guest FUSE and loop devices
+        run: |
+          set -euo pipefail
+          sudo -n modprobe fuse 2>/dev/null || true
+          sudo -n modprobe loop 2>/dev/null || true
+          if [[ ! -c /dev/fuse || ! -c /dev/loop-control ]]; then
+            sudo -n mount -t devtmpfs devtmpfs /dev
+            sudo -n mkdir -p /dev/pts /dev/shm
+            mountpoint -q /dev/pts || sudo -n mount -t devpts -o gid=5,mode=620,ptmxmode=666 devpts /dev/pts
+            mountpoint -q /dev/shm || sudo -n mount -t tmpfs -o mode=1777 tmpfs /dev/shm
+          fi
+          test -c /dev/fuse && test -c /dev/loop-control || {
+            echo '::error::Kata guest did not expose FUSE and loop devices'
+            exit 1
+          }
+          sudo -n chmod 0666 /dev/fuse
+          python3 -c 'open("/dev/fuse", "rb").close()'
+          sudo -n losetup --find >/dev/null
+
       - name: Install checksum-pinned Cosign
         uses: ./.forgejo/actions/install-cosign
         with:

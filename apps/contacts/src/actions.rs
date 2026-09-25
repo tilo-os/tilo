@@ -1884,15 +1884,6 @@ mod tests {
         r
     }
 
-    fn immediate_encode(spec: &ActionSpec) -> EncodedAction {
-        match &spec.input {
-            ActionInput::Immediate(enc) => enc.clone(),
-            ActionInput::Prompted { .. } | ActionInput::Deferred { .. } => {
-                panic!("expected an immediate action: {}", spec.id)
-            }
-        }
-    }
-
     fn prompted_encode(spec: &ActionSpec, arg: &str) -> EncodedAction {
         match &spec.input {
             ActionInput::Prompted { build, .. } => build(arg),
@@ -1916,6 +1907,102 @@ mod tests {
             .into_iter()
             .next()
             .expect("the sample book is non-empty")
+    }
+
+    /// The sample address book as a document, built by the app's real `sync`.
+    fn seeded_doc() -> AutoCommit {
+        seeded().1
+    }
+
+    /// The resources a Contacts app holding `doc` publishes: a fresh app
+    /// adopts the document's book on its first `sync`, as on session restore.
+    fn resources_for(doc: &AutoCommit) -> Vec<Resource> {
+        let mut app = ContactsApp::sample();
+        let mut adopted = doc.clone();
+        app.sync(&mut adopted, &ROOT);
+        Widget::resources(&app, doc)
+    }
+
+    /// The stored contact a `contacts.contact` resource addresses.
+    fn contact_of(doc: &AutoCommit, res: &Resource) -> Contact {
+        let id = res.id.as_str().trim_start_matches("contacts.contact:");
+        ContactsDoc::list_contacts(doc)
+            .into_iter()
+            .find(|c| c.id.to_string() == id)
+            .expect("the resource addresses a stored contact")
+    }
+
+    fn retitled(doc: &AutoCommit) -> EncodedAction {
+        let base = first_contact(doc);
+        let mut edited = base.clone();
+        edited.title = "Renamed via action".into();
+        encode(&patch_contact_action(&base, &edited))
+    }
+
+    ui::action_contract_tests! {
+        seed: seeded_doc(),
+        registry: registry(),
+        resources: |doc| resources_for(doc),
+        palette: ["New contact", "Delete contact", "Export contact", "Rename contact"],
+        replay: [
+            favorite => |doc| {
+                let target = first_contact(doc);
+                encode(&set_favorite_action(target.id.to_string(), !target.favorite))
+            },
+            patch_contact => |doc| retitled(doc),
+        ],
+        undo: [
+            delete_contact => |doc| encode(&delete_contact_action(first_contact(doc).id.to_string())),
+            patch_contact => |doc| retitled(doc),
+        ],
+        encodes: [
+            delete => ("contacts.contact", "delete", |doc, res| {
+                encode(&delete_contact_action(contact_of(doc, res).id.to_string()))
+            }),
+            favorite => ("contacts.contact", "favorite", |doc, res| {
+                let stored = contact_of(doc, res);
+                encode(&set_favorite_action(stored.id.to_string(), !stored.favorite))
+            }),
+            rename => ("contacts.contact", "edit", arg: "Grace Hopper", |doc, res| {
+                let base = contact_of(doc, res);
+                let mut renamed = base.clone();
+                (renamed.first, renamed.last) = split_name("Grace Hopper");
+                encode(&patch_contact_action(&base, &renamed))
+            }),
+        ],
+    }
+
+    /// Per-contact export is a typed resource operation, not an unmodelled
+    /// context-menu side effect. The portal path stays absent from the
+    /// payload and the action is confirmation-labelled because it can
+    /// disclose contact data outside the address book.
+    #[test]
+    fn export_contact_is_a_typed_sensitive_operation() {
+        let (app, doc) = seeded();
+        let resources = Widget::resources(&app, &doc);
+        let (contact, export_spec) = ui::testing::action_contract::find_spec(
+            &resources,
+            "contacts.contact",
+            "export-contact",
+        );
+        let id = contact.id.as_str().trim_start_matches("contacts.contact:");
+        assert!(matches!(
+            export_spec.contract.risk,
+            tilo_actions::RiskLevel::Sensitive
+        ));
+        assert_eq!(export_spec.contract.execution, ExecutionMode::Immediate);
+        assert_eq!(export_spec.contract.result, ResultSpec::None);
+        let export: ContactsOperation = serde_json::from_slice(
+            &ui::testing::action_contract::spec_encoding(export_spec, None).payload,
+        )
+        .expect("export operation payload is typed");
+        assert_eq!(
+            export,
+            ContactsOperation::ExportContactVcard {
+                id: id.to_string(),
+                path: None,
+            }
+        );
     }
 
     /// Ctrl+K on Contacts yields the tree: the book with a "New contact" action
@@ -1953,10 +2040,7 @@ mod tests {
             "groups export their canonical open action"
         );
 
-        // The full flattened tree exports every action, and the one palette
-        // surfaces them as rows (the Actions group is display-capped, so
-        // reachability is asserted on the flatten and the leading rows on the
-        // palette itself).
+        // The full flattened tree exports every action.
         let flat: Vec<&str> = tilo_actions::flatten(&resources)
             .iter()
             .map(|f| f.action.label.as_str())
@@ -1965,15 +2049,6 @@ mod tests {
         assert!(flat.contains(&"Delete contact"), "{flat:?}");
         assert!(flat.contains(&"Export contact"), "{flat:?}");
         assert!(flat.contains(&"Rename contact"), "{flat:?}");
-
-        let mut palette = ui::ActionPalette::new();
-        palette.load_open_resources(&resources);
-        palette.open();
-        let labels = palette.result_labels();
-        assert!(
-            labels.iter().any(|l| l.contains("New contact")),
-            "{labels:?}"
-        );
     }
 
     #[test]
@@ -2148,56 +2223,6 @@ mod tests {
         );
     }
 
-    /// The full undo covenant on one action: dispatched through the executor it
-    /// mutates the document and records exactly one undo boundary, and Ctrl+Z
-    /// (the host's `undo`) reverts precisely that action.
-    #[test]
-    fn action_records_one_undo_boundary_and_reverts() {
-        let mut app = ContactsApp::sample();
-        let mut state = ui::State::new();
-        app.sync(&mut state.doc, &state.root);
-
-        let victim = first_contact(&state.doc).id;
-        let before_heads = state.doc.get_heads();
-        let before = ContactsDoc::list_contacts(&state.doc).len();
-
-        let action = delete_contact_action(victim.to_string());
-        let encoded = encode(&action);
-        let decoded = registry().decode(&encoded).unwrap();
-        let mut tx = LocalTransport::new();
-        tilo_actions::dispatch(&mut state.doc, decoded.as_ref(), encoded, &mut tx).unwrap();
-        state.record_committed_action(before_heads, None, None);
-
-        assert_eq!(
-            ContactsDoc::list_contacts(&state.doc).len(),
-            before - 1,
-            "the action deleted a contact"
-        );
-        assert!(
-            !ContactsDoc::list_contacts(&state.doc)
-                .iter()
-                .any(|c| c.id == victim),
-            "the right contact is gone"
-        );
-        assert!(
-            state.peek_last_undo().is_some(),
-            "exactly one undo boundary recorded"
-        );
-
-        state.undo(None, None).expect("an undo entry to pop");
-        assert_eq!(
-            ContactsDoc::list_contacts(&state.doc).len(),
-            before,
-            "undo reverted the deletion and nothing else"
-        );
-        assert!(
-            ContactsDoc::list_contacts(&state.doc)
-                .iter()
-                .any(|c| c.id == victim),
-            "the contact is back after undo"
-        );
-    }
-
     #[test]
     fn reviewed_merge_is_destructive_reversible_and_undo_restores_both_contacts() {
         let mut app = ContactsApp::sample();
@@ -2313,76 +2338,6 @@ mod tests {
             peer.get_heads(),
             "reviewed merge converges exactly"
         );
-    }
-
-    /// The collaboration guarantee: replaying the same encoded action on a
-    /// second independent replica (from the same base state) lands on the
-    /// byte-identical document — same head hashes, not merely the same values.
-    #[test]
-    fn favorite_action_replays_byte_identical_on_a_peer() {
-        let (_app, seeded_doc) = seeded();
-        let mut a = seeded_doc;
-        a.commit();
-        let bytes = a.save();
-        let mut b = AutoCommit::load(&bytes).unwrap();
-        assert_eq!(
-            a.get_heads(),
-            b.get_heads(),
-            "precondition: same base state"
-        );
-
-        let target = first_contact(&a);
-        let action = set_favorite_action(target.id.to_string(), !target.favorite);
-        let encoded = encode(&action);
-
-        let env = tilo_actions::apply_local(&mut a, &action, encoded).unwrap();
-        tilo_actions::replay(&mut b, &env, &registry()).unwrap();
-
-        assert_eq!(
-            a.get_heads(),
-            b.get_heads(),
-            "replay reproduced the identical change"
-        );
-        let fav_a = ContactsDoc::list_contacts(&a)
-            .into_iter()
-            .find(|c| c.id == target.id)
-            .unwrap()
-            .favorite;
-        let fav_b = ContactsDoc::list_contacts(&b)
-            .into_iter()
-            .find(|c| c.id == target.id)
-            .unwrap()
-            .favorite;
-        assert_eq!(fav_a, !target.favorite, "the toggle landed on replica A");
-        assert_eq!(fav_b, !target.favorite, "and byte-identically on replica B");
-    }
-
-    /// Replaying a granular field patch also converges
-    /// byte-identically — the create/edit path, not just the favourite toggle.
-    #[test]
-    fn patch_contact_replays_byte_identical() {
-        let (_app, seeded_doc) = seeded();
-        let mut a = seeded_doc;
-        a.commit();
-        let bytes = a.save();
-        let mut b = AutoCommit::load(&bytes).unwrap();
-
-        let mut c = first_contact(&a);
-        c.title = "Renamed via action".into();
-        let base = first_contact(&b);
-        let action = patch_contact_action(&base, &c);
-        let encoded = encode(&action);
-
-        let env = tilo_actions::apply_local(&mut a, &action, encoded).unwrap();
-        tilo_actions::replay(&mut b, &env, &registry()).unwrap();
-
-        assert_eq!(a.get_heads(), b.get_heads(), "edit replayed identically");
-        let title_b = ContactsDoc::list_contacts(&b)
-            .into_iter()
-            .find(|x| x.id == c.id)
-            .unwrap()
-            .title;
-        assert_eq!(title_b, "Renamed via action");
     }
 
     #[test]
@@ -2622,87 +2577,6 @@ mod tests {
             invalid_birthday.apply(&mut doc),
             Err(ActionError::Refused(_))
         ));
-    }
-
-    /// Single source of truth: the palette's "Delete contact" / "Favorite" specs
-    /// and the builders the trash button / star call encode byte-identically,
-    /// and the prompted "Rename" spec matches the patch builder for the same
-    /// name.
-    #[test]
-    fn palette_and_builder_encode_identically() {
-        let (app, doc) = seeded();
-        let resources = Widget::resources(&app, &doc);
-        let book = &resources[0];
-        let contact = book
-            .children
-            .iter()
-            .find(|r| r.kind == "contacts.contact")
-            .unwrap();
-        let id = contact.id.as_str().trim_start_matches("contacts.contact:");
-        let stored = ContactsDoc::list_contacts(&doc)
-            .into_iter()
-            .find(|c| c.id.to_string() == id)
-            .unwrap();
-
-        // Delete: spec == builder.
-        let delete_spec = contact.actions.iter().find(|a| a.id == "delete").unwrap();
-        let from_spec = immediate_encode(delete_spec);
-        let from_builder = encode(&delete_contact_action(id.to_string()));
-        assert_eq!(from_spec.type_id, from_builder.type_id);
-        assert_eq!(
-            from_spec.payload, from_builder.payload,
-            "one source of truth for delete"
-        );
-
-        // Favourite: spec toggles to the negation of the current state, exactly
-        // as the star affordance builds it.
-        let fav_spec = contact.actions.iter().find(|a| a.id == "favorite").unwrap();
-        let from_spec = immediate_encode(fav_spec);
-        let from_builder = encode(&set_favorite_action(id.to_string(), !stored.favorite));
-        assert_eq!(
-            from_spec.payload, from_builder.payload,
-            "one source of truth for favourite"
-        );
-
-        // Per-contact export is a typed resource operation, not an
-        // unmodelled context-menu side effect.  The portal path stays absent
-        // from the payload and the action is confirmation-labelled because it
-        // can disclose contact data outside the address book.
-        let export_spec = contact
-            .actions
-            .iter()
-            .find(|action| action.id == "export-contact")
-            .expect("contact exports its individual vCard operation");
-        assert!(matches!(
-            export_spec.contract.risk,
-            tilo_actions::RiskLevel::Sensitive
-        ));
-        assert_eq!(export_spec.contract.execution, ExecutionMode::Immediate);
-        assert_eq!(export_spec.contract.result, ResultSpec::None);
-        let export: ContactsOperation =
-            serde_json::from_slice(&immediate_encode(export_spec).payload)
-                .expect("export operation payload is typed");
-        assert_eq!(
-            export,
-            ContactsOperation::ExportContactVcard {
-                id: id.to_string(),
-                path: None,
-            }
-        );
-
-        // Rename: prompted spec == patch builder for the renamed record.
-        let edit_spec = contact.actions.iter().find(|a| a.id == "edit").unwrap();
-        let from_spec = prompted_encode(edit_spec, "Grace Hopper");
-        let base = stored.clone();
-        let mut renamed = stored;
-        let (first, last) = split_name("Grace Hopper");
-        renamed.first = first;
-        renamed.last = last;
-        let from_builder = encode(&patch_contact_action(&base, &renamed));
-        assert_eq!(
-            from_spec.payload, from_builder.payload,
-            "rename is one source of truth"
-        );
     }
 
     /// Dispatching the "New contact" prompted action creates a contact in the

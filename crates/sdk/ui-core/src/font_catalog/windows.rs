@@ -178,10 +178,7 @@ mod tests {
                 sha2::Sha256::digest(&bytes).as_slice(),
                 "{path:?}"
             );
-            let hex = actual
-                .iter()
-                .map(|byte| format!("{byte:02x}"))
-                .collect::<String>();
+            let hex = hex::encode(actual);
             assert_eq!(hex, value("sha256"), "{path:?}");
             checked += 1;
         }

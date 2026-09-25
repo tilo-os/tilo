@@ -1566,7 +1566,6 @@ mod tests {
     use crate::app::SlidesApp;
     use crate::model::seed_deck;
     use automerge::{AutoCommit, ROOT};
-    use tilo_actions::{ActionInput, LocalTransport};
     use tilo_automerge::ApplyIncoming;
     use ui::widget::Widget;
 
@@ -1574,15 +1573,6 @@ mod tests {
         let mut r = ActionRegistry::new();
         register(&mut r);
         r
-    }
-
-    fn immediate_encode(spec: &ActionSpec) -> EncodedAction {
-        match &spec.input {
-            ActionInput::Immediate(enc) => enc.clone(),
-            ActionInput::Prompted { .. } | ActionInput::Deferred { .. } => {
-                panic!("expected an immediate action: {}", spec.id)
-            }
-        }
     }
 
     /// The demo deck synced into a fresh document, plus the app that owns it.
@@ -1593,6 +1583,66 @@ mod tests {
         let mut doc = AutoCommit::new();
         app.sync(&mut doc, &ROOT);
         (app, doc)
+    }
+
+    /// A demo app mirroring `doc`, exactly as the live app is once `sync`
+    /// has reloaded the shared deck.
+    fn app_for(doc: &AutoCommit) -> SlidesApp {
+        let mut app = SlidesApp::demo(None);
+        let mut mirror = doc.clone();
+        app.sync(&mut mirror, &ROOT);
+        app
+    }
+
+    fn deck(doc: &AutoCommit) -> crate::model::Deck {
+        SlidesDoc::load(doc).expect("seeded deck")
+    }
+
+    ui::action_contract_tests! {
+        seed: seeded().1,
+        registry: registry(),
+        resources: |doc| Widget::resources(&app_for(doc), doc),
+        palette: ["Add slide", "Delete slide", "Delete element", "Start presentation"],
+        replay: [
+            set_background => |doc| encode(&set_slide_background_action(
+                1,
+                deck(doc).slides[1].id.clone(),
+                Background::Deep,
+            )),
+            raise_element => |doc| encode(&raise_element_action(
+                1,
+                deck(doc).slides[1].elements[0].id.clone(),
+            )),
+            add_element => |doc| encode(&add_element_action(
+                0,
+                deck(doc).slides[0].id.clone(),
+                &Element::shape(ElementKind::Ellipse, 100.0, 100.0, 200.0, 200.0),
+            )),
+        ],
+        undo: [
+            delete_element => |doc| encode(&delete_element_action(
+                0,
+                deck(doc).slides[0].elements[0].id.clone(),
+            )),
+        ],
+        encodes: [
+            delete_slide => ("slides.slide", "delete", |doc, _| {
+                encode(&delete_slide_action(0, deck(doc).slides[0].id.clone()))
+            }),
+            background_deep => ("slides.slide", "background-deep", |doc, _| {
+                encode(&set_slide_background_action(
+                    0,
+                    deck(doc).slides[0].id.clone(),
+                    Background::Deep,
+                ))
+            }),
+            delete_element => ("slides.element", "delete", |_, element| {
+                encode(&delete_element_action(
+                    0,
+                    element.id.as_str().trim_start_matches("slides.element:"),
+                ))
+            }),
+        ],
     }
 
     /// Ctrl+K on Slides yields the deck root exporting "Add slide" + a theme row
@@ -1637,20 +1687,6 @@ mod tests {
         assert!(e_actions.contains(&"delete"), "{e_actions:?}");
         assert!(e_actions.contains(&"bring-front"), "{e_actions:?}");
         assert!(e_actions.contains(&"send-back"), "{e_actions:?}");
-
-        // The one palette surfaces the tree's actions as rows.
-        let mut palette = ui::ActionPalette::new();
-        palette.load_open_resources(&resources);
-        palette.open();
-        palette.set_query("Add slide");
-        let labels = palette.result_labels();
-        assert!(labels.iter().any(|l| l.contains("Add slide")), "{labels:?}");
-        palette.set_query("Delete slide");
-        let labels = palette.result_labels();
-        assert!(
-            labels.iter().any(|l| l.contains("Delete slide")),
-            "{labels:?}"
-        );
     }
 
     #[test]
@@ -1690,148 +1726,6 @@ mod tests {
                 element: element_id.to_string(),
                 edit_text: true,
             })
-        );
-    }
-
-    /// The full undo covenant on one action: dispatched through the executor it
-    /// mutates the document and records exactly one undo boundary, and Ctrl+Z
-    /// (the host's `undo`) reverts precisely that action.
-    #[test]
-    fn action_records_one_undo_boundary_and_reverts() {
-        let mut app = SlidesApp::demo(None);
-        let mut state = ui::State::new();
-        app.sync(&mut state.doc, &state.root);
-
-        let deck = SlidesDoc::load(&state.doc).unwrap();
-        let victim = deck.slides[0].elements[0].id.clone();
-        let before_heads = state.doc.get_heads();
-        let before = deck.slides[0].elements.len();
-
-        let action = delete_element_action(0, victim.clone());
-        let encoded = encode(&action);
-        let decoded = registry().decode(&encoded).unwrap();
-        let mut tx = LocalTransport::new();
-        tilo_actions::dispatch(&mut state.doc, decoded.as_ref(), encoded, &mut tx).unwrap();
-        state.record_committed_action(before_heads, None, None);
-
-        let after = SlidesDoc::load(&state.doc).unwrap();
-        assert_eq!(
-            after.slides[0].elements.len(),
-            before - 1,
-            "the action deleted an element"
-        );
-        assert!(
-            !after.slides[0].elements.iter().any(|e| e.id == victim),
-            "the right element is gone"
-        );
-        assert!(
-            state.peek_last_undo().is_some(),
-            "exactly one undo boundary recorded"
-        );
-
-        state.undo(None, None).expect("an undo entry to pop");
-        let reverted = SlidesDoc::load(&state.doc).unwrap();
-        assert_eq!(
-            reverted.slides[0].elements.len(),
-            before,
-            "undo reverted the deletion and nothing else"
-        );
-        assert!(
-            reverted.slides[0].elements.iter().any(|e| e.id == victim),
-            "the element is back after undo"
-        );
-    }
-
-    /// The collaboration guarantee: replaying the same encoded action on a second
-    /// independent replica (from the same base state) lands on the byte-identical
-    /// document — same head hashes, not merely the same values.
-    #[test]
-    fn action_replays_byte_identical_on_a_peer() {
-        let (_app, seeded_doc) = seeded();
-        let mut a = seeded_doc;
-        a.commit();
-        let bytes = a.save();
-        let mut b = AutoCommit::load(&bytes).unwrap();
-        assert_eq!(
-            a.get_heads(),
-            b.get_heads(),
-            "precondition: same base state"
-        );
-
-        // Set the second slide's background — a whole-value write, deterministic
-        // against the shared base.
-        let slide_id = SlidesDoc::load(&a).unwrap().slides[1].id.clone();
-        let action = set_slide_background_action(1, slide_id, Background::Deep);
-        let encoded = encode(&action);
-        let env = tilo_actions::apply_local(&mut a, &action, encoded).unwrap();
-        tilo_actions::replay(&mut b, &env, &registry()).unwrap();
-
-        assert_eq!(
-            a.get_heads(),
-            b.get_heads(),
-            "replay reproduced the identical change"
-        );
-        assert_eq!(
-            SlidesDoc::load(&b).unwrap().slides[1].background,
-            Background::Deep
-        );
-    }
-
-    /// A z-order raise — recomputed from the document's base state — also replays
-    /// byte-identically on a peer.
-    #[test]
-    fn raise_element_replays_byte_identical() {
-        let (_app, seeded_doc) = seeded();
-        let mut a = seeded_doc;
-        a.commit();
-        let bytes = a.save();
-        let mut b = AutoCommit::load(&bytes).unwrap();
-        assert_eq!(
-            a.get_heads(),
-            b.get_heads(),
-            "precondition: same base state"
-        );
-
-        let deck = SlidesDoc::load(&a).unwrap();
-        // The first (back-most) element of a multi-element slide.
-        let id = deck.slides[1].elements[0].id.clone();
-        let action = raise_element_action(1, id.clone());
-        let encoded = encode(&action);
-        let env = tilo_actions::apply_local(&mut a, &action, encoded).unwrap();
-        tilo_actions::replay(&mut b, &env, &registry()).unwrap();
-
-        assert_eq!(a.get_heads(), b.get_heads(), "restack replayed identically");
-        let ra = SlidesDoc::load(&a).unwrap().slides[1].clone();
-        let raised = ra.element(&id).unwrap();
-        assert!(
-            ra.elements.iter().all(|e| e.id == id || e.z < raised.z),
-            "the raised element is on top"
-        );
-    }
-
-    /// An `AddElement` (insert / paste / duplicate / image) replays
-    /// byte-identically — the create path, from an authoring-minted id.
-    #[test]
-    fn add_element_replays_byte_identical() {
-        let (_app, seeded_doc) = seeded();
-        let mut a = seeded_doc;
-        a.commit();
-        let bytes = a.save();
-        let mut b = AutoCommit::load(&bytes).unwrap();
-
-        let el = Element::shape(ElementKind::Ellipse, 100.0, 100.0, 200.0, 200.0);
-        let id = el.id.clone();
-        let slide_id = SlidesDoc::load(&a).unwrap().slides[0].id.clone();
-        let action = add_element_action(0, slide_id, &el);
-        let encoded = encode(&action);
-        let env = tilo_actions::apply_local(&mut a, &action, encoded).unwrap();
-        tilo_actions::replay(&mut b, &env, &registry()).unwrap();
-
-        assert_eq!(a.get_heads(), b.get_heads(), "add replayed identically");
-        assert!(
-            SlidesDoc::load(&b).unwrap().slides[0]
-                .element(&id)
-                .is_some()
         );
     }
 
@@ -2030,55 +1924,5 @@ mod tests {
             Err(ActionError::Refused(_))
         ));
         assert_eq!(doc.get_heads(), before);
-    }
-
-    /// Single source of truth: the palette's "Delete element" / "Delete slide" /
-    /// "Background" specs encode byte-identically to the builders the on-screen
-    /// affordances call.
-    #[test]
-    fn palette_and_builder_encode_identically() {
-        let (app, doc) = seeded();
-        let resources = Widget::resources(&app, &doc);
-        let deck = &resources[0];
-        let slide = &deck.children[0];
-        let slide_id = SlidesDoc::load(&doc).unwrap().slides[0].id.clone();
-
-        // Delete-slide spec == delete builder (slide 0).
-        let delete_spec = slide.actions.iter().find(|a| a.id == "delete").unwrap();
-        let from_spec = immediate_encode(delete_spec);
-        let from_builder = encode(&delete_slide_action(0, &slide_id));
-        assert_eq!(from_spec.type_id, from_builder.type_id);
-        assert_eq!(
-            from_spec.payload, from_builder.payload,
-            "delete-slide is one source of truth"
-        );
-
-        // Background spec == builder for the same treatment.
-        let bg_spec = slide
-            .actions
-            .iter()
-            .find(|a| a.id == "background-deep")
-            .unwrap();
-        let from_spec = immediate_encode(bg_spec);
-        let from_builder = encode(&set_slide_background_action(0, &slide_id, Background::Deep));
-        assert_eq!(
-            from_spec.payload, from_builder.payload,
-            "background is one source of truth"
-        );
-
-        // Delete-element spec == builder, carrying the element's real id.
-        let element = slide.children.first().unwrap();
-        let el_id = element
-            .id
-            .0
-            .trim_start_matches("slides.element:")
-            .to_string();
-        let del_el = element.actions.iter().find(|a| a.id == "delete").unwrap();
-        let from_spec = immediate_encode(del_el);
-        let from_builder = encode(&delete_element_action(0, el_id));
-        assert_eq!(
-            from_spec.payload, from_builder.payload,
-            "delete-element is one source of truth"
-        );
     }
 }

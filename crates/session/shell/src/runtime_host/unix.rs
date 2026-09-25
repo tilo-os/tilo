@@ -45,19 +45,42 @@ pub(super) fn check_private_profile(path: &Path) -> io::Result<()> {
     private_directory(path)
 }
 
-/// Own both connected sockets until spawn/exec finishes. Preparation is shared
+/// The host's service sockets, as one app connects to them.
+pub(super) struct ServiceSockets<'a> {
+    pub(super) collab: &'a Path,
+    pub(super) identity: &'a Path,
+    pub(super) blobs: &'a Path,
+}
+
+/// Connect the document-media socket with this app's scope fixed before the
+/// app holds the descriptor. A host without the service leaves the app on
+/// its process-local store.
+fn connect_blobs(path: &Path, app_id: &str, room: &str) -> Option<UnixStream> {
+    use runtime_fs::blobs::{BlobPrincipal, BlobScope, write_handoff};
+
+    let scope = BlobScope::new(room, app_id).ok()?;
+    let mut stream = UnixStream::connect(path).ok()?;
+    stream
+        .set_write_timeout(Some(std::time::Duration::from_secs(5)))
+        .ok()?;
+    write_handoff(&mut stream, &BlobPrincipal::App(scope)).ok()?;
+    stream.set_write_timeout(None).ok()?;
+    Some(stream)
+}
+
+/// Own the connected sockets until spawn/exec finishes. Preparation is shared
 /// by the manifest launcher and independently attached native apps.
 pub(super) struct Connections {
     _collab: UnixStream,
     _identity: UnixStream,
+    _blobs: Option<UnixStream>,
 }
 impl Connections {
     pub(super) fn prepare(
         command: &mut Command,
         app_id: &str,
         room: &str,
-        collab_path: &Path,
-        identity_path: &Path,
+        sockets: &ServiceSockets<'_>,
     ) -> io::Result<Self> {
         if app_id.trim().is_empty() || app_id.len() > 4096 || room.len() > 4096 {
             return Err(io::Error::new(
@@ -65,8 +88,8 @@ impl Connections {
                 "app identity is empty",
             ));
         }
-        let collab = UnixStream::connect(collab_path)?;
-        let mut identity = UnixStream::connect(identity_path)?;
+        let collab = UnixStream::connect(sockets.collab)?;
+        let mut identity = UnixStream::connect(sockets.identity)?;
         identity.set_write_timeout(Some(std::time::Duration::from_secs(5)))?;
         let handshake = serde_json::to_vec(&runtime_identity::wire::Handshake {
             workspace_id: room.into(),
@@ -74,7 +97,13 @@ impl Connections {
         })?;
         runtime_identity::wire::HANDSHAKE_FRAMING.write(&mut identity, &handshake)?;
         identity.set_write_timeout(None)?;
-        let fds = [collab.as_raw_fd(), identity.as_raw_fd()];
+        let blobs = connect_blobs(sockets.blobs, app_id, room);
+        let mut fds = vec![collab.as_raw_fd(), identity.as_raw_fd()];
+        command.env_remove("TILO_SVC_BLOBS_FD");
+        if let Some(blobs) = &blobs {
+            fds.push(blobs.as_raw_fd());
+            command.env("TILO_SVC_BLOBS_FD", blobs.as_raw_fd().to_string());
+        }
         command
             // This prepares a fresh transfer, including managed spawn where
             // the future child PID is not yet known. Never carry an ancestor's
@@ -90,7 +119,7 @@ impl Connections {
         // retain CLOEXEC, including endpoints belonging to previously launched apps.
         unsafe {
             command.pre_exec(move || {
-                for fd in fds {
+                for &fd in &fds {
                     let flags = libc::fcntl(fd, libc::F_GETFD);
                     if flags < 0 || libc::fcntl(fd, libc::F_SETFD, flags & !libc::FD_CLOEXEC) < 0 {
                         return Err(io::Error::last_os_error());
@@ -102,6 +131,7 @@ impl Connections {
         Ok(Self {
             _collab: collab,
             _identity: identity,
+            _blobs: blobs,
         })
     }
 }
@@ -110,11 +140,9 @@ pub(super) fn launch(
     mut command: Command,
     app_id: &str,
     room: &str,
-    collab_path: &Path,
-    identity_path: &Path,
+    sockets: &ServiceSockets<'_>,
 ) -> io::Result<Child> {
-    let _connections =
-        Connections::prepare(&mut command, app_id, room, collab_path, identity_path)?;
+    let _connections = Connections::prepare(&mut command, app_id, room, sockets)?;
     command.spawn()
 }
 

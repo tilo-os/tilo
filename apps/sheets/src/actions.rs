@@ -2362,30 +2362,12 @@ pub fn column_label(col: u32) -> String {
 mod tests {
     use super::*;
     use crate::model::CellFormat;
-    use tilo_actions::{ActionInput, LocalTransport};
+    use tilo_actions::LocalTransport;
 
     fn registry() -> ActionRegistry {
         let mut r = ActionRegistry::new();
         register(&mut r);
         r
-    }
-
-    fn immediate_encode(spec: &ActionSpec) -> EncodedAction {
-        match &spec.input {
-            ActionInput::Immediate(enc) => enc.clone(),
-            ActionInput::Prompted { .. } | ActionInput::Deferred { .. } => {
-                panic!("expected an immediate action: {}", spec.id)
-            }
-        }
-    }
-
-    fn prompted_encode(spec: &ActionSpec, arg: &str) -> EncodedAction {
-        match &spec.input {
-            ActionInput::Prompted { build, .. } => build(arg),
-            ActionInput::Immediate(_) | ActionInput::Deferred { .. } => {
-                panic!("expected a prompted action: {}", spec.id)
-            }
-        }
     }
 
     /// Dispatch an action through the executor, as the on-screen affordance path
@@ -2457,26 +2439,6 @@ mod tests {
         assert!(s_actions.contains(&"delete"), "{s_actions:?}");
         assert!(s_actions.contains(&"insert-row"), "{s_actions:?}");
         assert!(s_actions.contains(&"insert-column"), "{s_actions:?}");
-
-        // The one palette surfaces the tree's actions as rows.
-        let mut palette = ui::ActionPalette::new();
-        palette.load_open_resources(&resources);
-        palette.open();
-        palette.set_query("New sheet");
-        let labels = palette.result_labels();
-        assert!(labels.iter().any(|l| l.contains("New sheet")), "{labels:?}");
-        palette.set_query("Rename sheet");
-        let labels = palette.result_labels();
-        assert!(
-            labels.iter().any(|l| l.contains("Rename sheet")),
-            "{labels:?}"
-        );
-        palette.set_query("Delete sheet");
-        let labels = palette.result_labels();
-        assert!(
-            labels.iter().any(|l| l.contains("Delete sheet")),
-            "{labels:?}"
-        );
     }
 
     #[test]
@@ -2561,9 +2523,10 @@ mod tests {
             range.id.0,
             format!("sheets.range:{}:A1:B2", ctx.selection.unwrap().sheet_id)
         );
-        assert_eq!(
-            immediate_encode(&range.actions[0]),
-            immediate_encode(&action)
+        ui::testing::action_contract::assert_spec_encodes_as(
+            &range.actions[0],
+            None,
+            &ui::testing::action_contract::spec_encoding(&action, None),
         );
     }
 
@@ -2734,138 +2697,6 @@ mod tests {
         assert_eq!(SheetsDoc::cell_raw(&mut doc, 0, (0, 0)), "Rent");
     }
 
-    /// The full undo covenant on one action: dispatched through the executor it
-    /// mutates the document and records exactly one undo boundary, and Ctrl+Z
-    /// (the host's `undo`) reverts precisely that action.
-    #[test]
-    fn action_records_one_undo_boundary_and_reverts() {
-        let mut state = ui::State::new();
-        state.doc = seeded();
-        let before_heads = state.doc.get_heads();
-        let before = SheetsDoc::sheet_count(&mut state.doc);
-
-        // Add a sheet via the action + host undo recording.
-        let encoded = encode(&add_sheet_action("Fresh"));
-        let decoded = registry().decode(&encoded).unwrap();
-        let mut tx = LocalTransport::new();
-        tilo_actions::dispatch(&mut state.doc, decoded.as_ref(), encoded, &mut tx).unwrap();
-        state.record_committed_action(before_heads, None, None);
-
-        assert_eq!(
-            SheetsDoc::sheet_count(&mut state.doc),
-            before + 1,
-            "the action added a sheet"
-        );
-        assert!(
-            state.peek_last_undo().is_some(),
-            "exactly one undo boundary recorded"
-        );
-
-        // Ctrl+Z reverts exactly this action.
-        state.undo(None, None).expect("an undo entry to pop");
-        assert_eq!(
-            SheetsDoc::sheet_count(&mut state.doc),
-            before,
-            "undo reverted the added sheet and nothing else"
-        );
-    }
-
-    /// The collaboration guarantee: replaying the same encoded action on a second
-    /// independent replica (from the same base state) lands on the byte-identical
-    /// document — same head hashes, not merely the same values.
-    #[test]
-    fn action_replays_byte_identical_on_a_peer() {
-        let mut a = seeded();
-        a.commit();
-        let bytes = a.save();
-        let mut b = AutoCommit::load(&bytes).unwrap();
-        assert_eq!(
-            a.get_heads(),
-            b.get_heads(),
-            "precondition: same base state"
-        );
-
-        let action = set_cell_action(0, stable(&a, 0), (2, 4), "converge", None);
-        let encoded = encode(&action);
-        let env = tilo_actions::apply_local(&mut a, &action, encoded).unwrap();
-        tilo_actions::replay(&mut b, &env, &registry()).unwrap();
-
-        assert_eq!(
-            a.get_heads(),
-            b.get_heads(),
-            "replay reproduced the identical change"
-        );
-        assert_eq!(SheetsDoc::cell_raw(&mut b, 0, (2, 4)), "converge");
-    }
-
-    /// A row restructure also replays byte-identically — the recompute-from-base
-    /// path, not just a single-cell write.
-    #[test]
-    fn row_restructure_replays_byte_identical() {
-        let mut a = seeded();
-        // Give the sheet a few more cells so the restructure moves several.
-        SheetsDoc::set_cell_raw(&mut a, 0, (0, 2), "Food");
-        SheetsDoc::set_cell_raw(&mut a, 0, (1, 2), "300");
-        a.commit();
-        let bytes = a.save();
-        let mut b = AutoCommit::load(&bytes).unwrap();
-        assert_eq!(
-            a.get_heads(),
-            b.get_heads(),
-            "precondition: same base state"
-        );
-
-        let action = insert_row_action(0, stable(&a, 0), 0);
-        let encoded = encode(&action);
-        let env = tilo_actions::apply_local(&mut a, &action, encoded).unwrap();
-        tilo_actions::replay(&mut b, &env, &registry()).unwrap();
-
-        assert_eq!(
-            a.get_heads(),
-            b.get_heads(),
-            "restructure replayed identically"
-        );
-        assert_eq!(SheetsDoc::cell_raw(&mut b, 0, (0, 1)), "Rent");
-    }
-
-    /// A batched multi-cell write (a paste / fill) is one change and replays
-    /// byte-identically on a peer — the whole batch, one actor, equal heads.
-    #[test]
-    fn batched_set_cells_replays_byte_identical() {
-        let mut a = seeded();
-        a.commit();
-        let bytes = a.save();
-        let mut b = AutoCommit::load(&bytes).unwrap();
-        assert_eq!(
-            a.get_heads(),
-            b.get_heads(),
-            "precondition: same base state"
-        );
-
-        let action = set_cells_action(
-            0,
-            stable(&a, 0),
-            vec![
-                ((0, 5), "=A1+1".to_string(), None),
-                ((1, 5), "42".to_string(), Some(CellFormat::Number)),
-                ((2, 5), "note".to_string(), Some(CellFormat::Text)),
-            ],
-        );
-        let encoded = encode(&action);
-        let env = tilo_actions::apply_local(&mut a, &action, encoded).unwrap();
-        tilo_actions::replay(&mut b, &env, &registry()).unwrap();
-
-        assert_eq!(
-            a.get_heads(),
-            b.get_heads(),
-            "the whole batch replayed identically"
-        );
-        assert_eq!(SheetsDoc::cell_raw(&mut b, 0, (0, 5)), "=A1+1");
-        assert_eq!(SheetsDoc::cell_raw(&mut b, 0, (1, 5)), "42");
-        let snap = SheetsDoc::snapshot_sheet(&mut b, 0, Currency::USD);
-        assert_eq!(snap.fmt.get(&(1, 5)).copied(), Some(CellFormat::Number));
-    }
-
     #[test]
     fn hostile_batch_is_refused_without_a_partial_write() {
         let mut doc = seeded();
@@ -2896,49 +2727,6 @@ mod tests {
             before,
             "refusal leaves the CRDT byte-for-byte unchanged"
         );
-    }
-
-    #[test]
-    fn imported_workbook_is_atomic_and_replays_byte_identically() {
-        let mut a = seeded();
-        a.commit();
-        let bytes = a.save();
-        let mut b = AutoCommit::load(&bytes).expect("same base");
-        let action = import_sheets_action(vec![
-            (
-                "Imported budget".into(),
-                vec![
-                    CellWrite {
-                        col: 0,
-                        row: 0,
-                        raw: "Rent".into(),
-                        fmt: Some("text".into()),
-                    },
-                    CellWrite {
-                        col: 1,
-                        row: 0,
-                        raw: "1200".into(),
-                        fmt: Some("currency:USD".into()),
-                    },
-                ],
-            ),
-            (
-                "Imported totals".into(),
-                vec![CellWrite {
-                    col: 0,
-                    row: 0,
-                    raw: "=SUM(B1:B3)".into(),
-                    fmt: None,
-                }],
-            ),
-        ]);
-        let encoded = encode(&action);
-        let env = tilo_actions::apply_local(&mut a, &action, encoded).expect("import applies");
-        tilo_actions::replay(&mut b, &env, &registry()).expect("import replays");
-        assert_eq!(a.get_heads(), b.get_heads());
-        assert_eq!(SheetsDoc::sheet_count(&mut b), 4);
-        assert_eq!(SheetsDoc::cell_raw(&mut b, 2, (1, 0)), "1200");
-        assert_eq!(SheetsDoc::cell_raw(&mut b, 3, (0, 0)), "=SUM(B1:B3)");
     }
 
     #[test]
@@ -3034,42 +2822,82 @@ mod tests {
         );
     }
 
-    /// Single source of truth: the palette's delete / rename / insert specs
-    /// encode byte-identically to the builders the on-screen affordances call.
-    #[test]
-    fn palette_and_builder_encode_identically() {
+    /// Resources exactly as the app publishes them for `doc`.
+    fn resources_for(doc: &AutoCommit) -> Vec<Resource> {
+        let mut scratch = doc.clone();
+        provide_resources(&ctx_from(&mut scratch), doc)
+    }
+
+    /// `seeded` plus a second row of cells, so a restructure moves several.
+    fn seeded_with_rows() -> AutoCommit {
         let mut doc = seeded();
-        let ctx = ctx_from(&mut doc);
-        let resources = provide_resources(&ctx, &doc);
-        let sheet = &resources[0].children[0]; // Budget, idx 0.
+        SheetsDoc::set_cell_raw(&mut doc, 0, (0, 2), "Food");
+        SheetsDoc::set_cell_raw(&mut doc, 0, (1, 2), "300");
+        doc.commit();
+        doc
+    }
 
-        // Delete spec == delete builder.
-        let delete_spec = sheet.actions.iter().find(|a| a.id == "delete").unwrap();
-        let from_spec = immediate_encode(delete_spec);
-        let from_builder = encode(&delete_sheet_action(0, stable(&doc, 0)));
-        assert_eq!(from_spec.type_id, from_builder.type_id);
-        assert_eq!(
-            from_spec.payload, from_builder.payload,
-            "delete is one source of truth"
-        );
-
-        // Rename spec == rename builder for the same name.
-        let rename_spec = sheet.actions.iter().find(|a| a.id == "rename").unwrap();
-        let from_spec = prompted_encode(rename_spec, "Q1");
-        let from_builder = encode(&rename_sheet_action(0, stable(&doc, 0), "Q1"));
-        assert_eq!(
-            from_spec.payload, from_builder.payload,
-            "rename is one source of truth"
-        );
-
-        // Insert-row spec builds an InsertRow at the parsed (1-based → 0-based) row.
-        let insert_spec = sheet.actions.iter().find(|a| a.id == "insert-row").unwrap();
-        let from_spec = prompted_encode(insert_spec, "5");
-        let from_builder = encode(&insert_row_action(0, stable(&doc, 0), 4));
-        assert_eq!(
-            from_spec.payload, from_builder.payload,
-            "insert-row is one source of truth"
-        );
+    ui::action_contract_tests! {
+        seed: seeded_with_rows(),
+        registry: registry(),
+        resources: |doc| resources_for(doc),
+        palette: ["New sheet", "Rename sheet", "Delete sheet"],
+        replay: [
+            set_cell => |doc| encode(&set_cell_action(0, stable(doc, 0), (2, 4), "converge", None)),
+            insert_row => |doc| encode(&insert_row_action(0, stable(doc, 0), 0)),
+            batched_set_cells => |doc| encode(&set_cells_action(
+                0,
+                stable(doc, 0),
+                vec![
+                    ((0, 5), "=A1+1".to_string(), None),
+                    ((1, 5), "42".to_string(), Some(CellFormat::Number)),
+                    ((2, 5), "note".to_string(), Some(CellFormat::Text)),
+                ],
+            )),
+            import_workbook => |_| encode(&import_sheets_action(vec![
+                (
+                    "Imported budget".into(),
+                    vec![
+                        CellWrite {
+                            col: 0,
+                            row: 0,
+                            raw: "Rent".into(),
+                            fmt: Some("text".into()),
+                        },
+                        CellWrite {
+                            col: 1,
+                            row: 0,
+                            raw: "1200".into(),
+                            fmt: Some("currency:USD".into()),
+                        },
+                    ],
+                ),
+                (
+                    "Imported totals".into(),
+                    vec![CellWrite {
+                        col: 0,
+                        row: 0,
+                        raw: "=SUM(B1:B3)".into(),
+                        fmt: None,
+                    }],
+                ),
+            ])),
+        ],
+        undo: [
+            add_sheet => |_| encode(&add_sheet_action("Fresh")),
+            insert_column => |doc| encode(&insert_column_action(0, stable(doc, 0), 0)),
+        ],
+        encodes: [
+            delete_sheet => ("sheets.sheet", "delete", |doc, _| {
+                encode(&delete_sheet_action(0, stable(doc, 0)))
+            }),
+            rename_sheet => ("sheets.sheet", "rename", arg: "Q1", |doc, _| {
+                encode(&rename_sheet_action(0, stable(doc, 0), "Q1"))
+            }),
+            insert_row => ("sheets.sheet", "insert-row", arg: "5", |doc, _| {
+                encode(&insert_row_action(0, stable(doc, 0), 4))
+            }),
+        ],
     }
 
     #[test]

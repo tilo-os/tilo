@@ -199,15 +199,7 @@ fn plain_body_edits_retain_untouched_views_and_fall_back_for_other_changes() {
 
 #[test]
 fn plain_body_edit_refreshes_a_shifted_virtual_window() {
-    let mut state = ui::State::new();
-    with_doc(&mut state, |dm| {
-        let mut after = None;
-        for i in 0..(VIEWPORT_BLOCK_WINDOW * 4) {
-            let id = dm.insert_block(after.as_deref(), "paragraph");
-            dm.splice_text(&id, 0, 0, &format!("Paragraph {i}"));
-            after = Some(id);
-        }
-    });
+    let mut state = large_body();
     let mut wp = WordProcessorWidget::new();
     wp.sync(&mut state.doc, &state.root);
     let old_start = wp.body_window_start;
@@ -499,15 +491,7 @@ fn draw_lays_out_all_blocks() {
 
 #[test]
 fn large_body_uses_a_bounded_viewport_cache_while_find_remains_complete() {
-    let mut state = ui::State::new();
-    with_doc(&mut state, |dm| {
-        let mut after = None;
-        for i in 0..(VIEWPORT_BLOCK_WINDOW * 4) {
-            let id = dm.insert_block(after.as_deref(), "paragraph");
-            dm.splice_text(&id, 0, 0, &format!("Imported paragraph {i}"));
-            after = Some(id);
-        }
-    });
+    let mut state = large_body();
     let mut wp = WordProcessorWidget::new();
     pipeline_draw(&mut wp, &mut state, 1000, 700);
 
@@ -538,15 +522,7 @@ fn large_body_uses_a_bounded_viewport_cache_while_find_remains_complete() {
 
 #[test]
 fn deep_scrolling_keeps_visible_text_loaded() {
-    let mut state = ui::State::new();
-    with_doc(&mut state, |dm| {
-        let mut after = None;
-        for i in 0..(VIEWPORT_BLOCK_WINDOW * 4) {
-            let id = dm.insert_block(after.as_deref(), "paragraph");
-            dm.splice_text(&id, 0, 0, &format!("Paragraph {i}"));
-            after = Some(id);
-        }
-    });
+    let mut state = large_body();
     let mut wp = WordProcessorWidget::new();
     wp.view.auto_fit_page = false;
     for zoom in [0.5, 1.0, 2.0] {
@@ -572,15 +548,7 @@ fn deep_scrolling_keeps_visible_text_loaded() {
 
 #[test]
 fn returning_to_recent_text_reuses_shapes_and_refreshes_edited_words() {
-    let mut state = ui::State::new();
-    with_doc(&mut state, |dm| {
-        let mut after = None;
-        for i in 0..(VIEWPORT_BLOCK_WINDOW * 4) {
-            let id = dm.insert_block(after.as_deref(), "paragraph");
-            dm.splice_text(&id, 0, 0, &format!("Paragraph {i} with words to render"));
-            after = Some(id);
-        }
-    });
+    let mut state = large_body();
     let mut wp = WordProcessorWidget::new();
     pipeline_draw(&mut wp, &mut state, 1000, 700);
     let first = wp.body_order[0].clone();
@@ -626,15 +594,7 @@ fn returning_to_recent_text_reuses_shapes_and_refreshes_edited_words() {
 
 #[test]
 fn scrolling_to_top_restores_first_blocks_without_moving_deep_caret() {
-    let mut state = ui::State::new();
-    with_doc(&mut state, |dm| {
-        let mut after = None;
-        for i in 0..(VIEWPORT_BLOCK_WINDOW * 4) {
-            let id = dm.insert_block(after.as_deref(), "paragraph");
-            dm.splice_text(&id, 0, 0, &format!("Paragraph {i}"));
-            after = Some(id);
-        }
-    });
+    let mut state = large_body();
     let mut wp = WordProcessorWidget::new();
     pipeline_draw(&mut wp, &mut state, 1000, 700);
     let first = wp.body_order[0].clone();
@@ -676,15 +636,7 @@ fn scrolling_to_top_restores_first_blocks_without_moving_deep_caret() {
 
 #[test]
 fn scrolling_retains_overlap_but_discards_transient_block_previews() {
-    let mut state = ui::State::new();
-    with_doc(&mut state, |dm| {
-        let mut after = None;
-        for i in 0..(VIEWPORT_BLOCK_WINDOW * 4) {
-            let id = dm.insert_block(after.as_deref(), "paragraph");
-            dm.splice_text(&id, 0, 0, &format!("Paragraph {i}"));
-            after = Some(id);
-        }
-    });
+    let mut state = large_body();
     let mut wp = WordProcessorWidget::new();
     wp.sync(&mut state.doc, &state.root);
     let retained_id = wp.blocks[100].id.clone();
@@ -1717,6 +1669,59 @@ fn with_doc(state: &mut ui::State, f: impl FnOnce(&mut qdoc::DocMut)) {
     f(&mut dm);
 }
 
+/// The saved form of [`build_large_body`], checked in because building it one
+/// operation at a time costs seconds of automerge work in every test process
+/// that needs it, while loading it is immediate.
+const LARGE_BODY: &[u8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/tests/fixtures/large-body.automerge"
+));
+
+/// A document whose body holds `VIEWPORT_BLOCK_WINDOW * 4` paragraphs reading
+/// `Paragraph 0` to `Paragraph 767`, enough for the viewport window to move.
+fn large_body() -> ui::State {
+    ui::State::load(LARGE_BODY).expect(
+        "the large-body fixture loads; regenerate it with UPDATE_WP_LARGE_BODY=1 \
+         cargo test -p word-processor --lib large_body_fixture",
+    )
+}
+
+/// How the large-body fixture is made: the same edits a person's typing
+/// would produce, block by block.
+fn build_large_body() -> ui::State {
+    let mut state = ui::State::new();
+    with_doc(&mut state, |dm| {
+        let mut after = None;
+        for i in 0..(VIEWPORT_BLOCK_WINDOW * 4) {
+            let id = dm.insert_block(after.as_deref(), "paragraph");
+            dm.splice_text(&id, 0, 0, &format!("Paragraph {i}"));
+            after = Some(id);
+        }
+    });
+    state
+}
+
+#[test]
+fn large_body_fixture_holds_the_paragraphs_its_tests_expect() {
+    if std::env::var_os("UPDATE_WP_LARGE_BODY").is_some() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/large-body.automerge");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, build_large_body().doc.save()).unwrap();
+        eprintln!("updated {}", path.display());
+        return;
+    }
+    let mut state = large_body();
+    let mut wp = WordProcessorWidget::new();
+    wp.sync(&mut state.doc, &state.root);
+    let blocks = wp.search_blocks(&state.doc);
+    assert_eq!(blocks.len(), VIEWPORT_BLOCK_WINDOW * 4);
+    for (i, block) in blocks.iter().enumerate() {
+        assert_eq!(block.kind, "paragraph", "block {i}");
+        assert_eq!(block.text, format!("Paragraph {i}"), "block {i}");
+    }
+}
+
 #[test]
 fn nested_list_items_indent_and_pick_glyph_by_level() {
     let mut state = ui::State::new();
@@ -2724,8 +2729,13 @@ fn header_edit_mode_renders_a_frame() {
         "header band laid for the active context"
     );
 
-    let out = std::env::var("TILO_WP_HEADER_SHOT")
-        .unwrap_or_else(|_| format!("{}/header-edit-mode.png", std::env::temp_dir().display()));
+    let out = std::env::var("TILO_WP_HEADER_SHOT").unwrap_or_else(|_| {
+        format!(
+            "{}/header-edit-mode-{}.png",
+            std::env::temp_dir().display(),
+            std::process::id()
+        )
+    });
     ui::offscreen::OffscreenRenderer::new(w, h).render_png(
         &scene,
         Color::from_rgb8(0x20, 0x22, 0x28),
@@ -3590,9 +3600,6 @@ fn toolbar_swatches_never_overlap_the_buttons() {
 fn misspelled_word_yields_a_squiggle_span_at_its_x_range() {
     let mut state = ui::State::new();
     let mut wp = WordProcessorWidget::new();
-    // The expected spans are English misspellings; pin the spelling language so the
-    // test does not follow the host's `LANG` (the widget defaults to the locale's).
-    wp.set_spell_language("en_US");
     wp.sync(&mut state.doc, &state.root);
     // "teh" is a classic misspelling flagged by the builtin dictionary; the
     // surrounding words are valid, so exactly one span is expected.
@@ -3662,9 +3669,6 @@ fn spellcheck_toggle_off_suppresses_the_squiggle_pass() {
 fn document_autocorrect_is_reversible_at_a_space_boundary() {
     let mut state = ui::State::new();
     let mut wp = WordProcessorWidget::new();
-    // The expected spans are English misspellings; pin the spelling language so the
-    // test does not follow the host's `LANG` (the widget defaults to the locale's).
-    wp.set_spell_language("en_US");
     wp.sync(&mut state.doc, &state.root);
     wp.model_mut().insert_str(&mut state.doc, "teh");
 
@@ -3990,18 +3994,14 @@ fn right_click_on_misspelled_word_offers_add_to_dictionary_and_clears_squiggle()
     // the test doesn't depend on the host's `LANG` (nextest runs each test
     // in its own process, so this can't leak into a sibling test).
     crate::i18n::set_locale("en-US");
-    // Redirect the persisted user-dict to a throwaway dir so the test never
-    // writes the real `~/.config/tilo/userdict.txt`. (The in-memory add is
-    // what the assertions below check; persistence is best-effort.)
+    // Persist added words to a throwaway file rather than the real
+    // `~/.config/tilo/userdict.txt`.
     let tmp = std::env::temp_dir().join(format!("tilo-userdict-test-{}", std::process::id()));
-    let mut env = tilo_test_env::ScopedEnv::new();
-    env.set("XDG_CONFIG_HOME", &tmp);
+    let userdict = tmp.join("userdict.txt");
 
     let mut state = ui::State::new();
     let mut wp = WordProcessorWidget::new();
-    // The expected spans are English misspellings; pin the spelling language so the
-    // test does not follow the host's `LANG` (the widget defaults to the locale's).
-    wp.set_spell_language("en_US");
+    wp.proofing.user_dictionary = Some(userdict.clone());
     wp.sync(&mut state.doc, &state.root);
     // "qwordz" is not a real word → flagged. Followed by a valid word.
     wp.model_mut().insert_str(&mut state.doc, "qwordz quick");
@@ -4050,15 +4050,45 @@ fn right_click_on_misspelled_word_offers_add_to_dictionary_and_clears_squiggle()
         wp.dictionary().contains("qwordz"),
         "the word is recorded in the (owned) dictionary"
     );
+    assert_eq!(
+        std::fs::read_to_string(&userdict).ok().as_deref(),
+        Some("qwordz"),
+        "the added word persists to the person's word list"
+    );
+
+    // A widget opened later starts with the persisted word already known.
+    let mut reopened = WordProcessorWidget::new();
+    reopened.proofing.user_dictionary = Some(userdict);
+    assert!(
+        reopened.block_spell_spans("b", "qwordz quick").is_empty(),
+        "a persisted word is not flagged in a new session"
+    );
+    let _ = std::fs::remove_dir_all(&tmp);
+}
+
+#[test]
+fn a_german_session_does_not_judge_german_words_against_english() {
+    // The embedded list is English; a German session asks the system Hunspell
+    // `de_DE` dictionary instead, and flags nothing when that dictionary is
+    // absent. Either way a correct German word must never carry a squiggle.
+    let mut wp = WordProcessorWidget::new();
+    let english = wp.block_spell_spans("b", "Straße Mädchen");
+    assert!(
+        !english.is_empty(),
+        "precondition: the English checker flags the German words, got {english:?}"
+    );
+    wp.set_spell_language("de_DE");
+    assert_eq!(
+        wp.block_spell_spans("b", "Straße Mädchen"),
+        Vec::<(usize, usize)>::new(),
+        "German words are correct in a German session"
+    );
 }
 
 #[test]
 fn right_click_suggestion_replaces_the_word() {
     let mut state = ui::State::new();
     let mut wp = WordProcessorWidget::new();
-    // The expected spans are English misspellings; pin the spelling language so the
-    // test does not follow the host's `LANG` (the widget defaults to the locale's).
-    wp.set_spell_language("en_US");
     wp.sync(&mut state.doc, &state.root);
     // "teh" suggests "the".
     wp.model_mut().insert_str(&mut state.doc, "teh end");
@@ -4151,9 +4181,6 @@ fn right_click_with_no_selection_selects_word_and_menu_has_copy() {
 fn spell_cache_reuses_unchanged_blocks_and_rechecks_after_edit() {
     let mut state = ui::State::new();
     let mut wp = WordProcessorWidget::new();
-    // The expected spans are English misspellings; pin the spelling language so the
-    // test does not follow the host's `LANG` (the widget defaults to the locale's).
-    wp.set_spell_language("en_US");
     wp.sync(&mut state.doc, &state.root);
     wp.model_mut().insert_str(&mut state.doc, "wrold");
     let id = wp.blocks[0].id.clone();
@@ -5467,22 +5494,21 @@ fn the_document_canvas_is_wider_than_the_styles_panel_at_every_tile_width() {
 fn recovery_reuses_fresh_complete_views_and_falls_back_for_stale_or_partial_views() {
     for case in ["fresh", "stale", "partial"] {
         let dir = temp_dir(&format!("recovery-views-{case}"));
-        let (mut state, mut wp) = bound();
+        // A partial view needs a body longer than the viewport window.
+        let (mut state, mut wp) = if case == "partial" {
+            let mut state = large_body();
+            let mut wp = WordProcessorWidget::new();
+            wp.sync(&mut state.doc, &state.root);
+            (state, wp)
+        } else {
+            bound()
+        };
         wp.set_recovery_dir(dir.clone());
         wp.inner.insert_str(&mut state.doc, "Unicode café recovery");
         wp.refresh_blocks(&mut state.doc);
         if case == "stale" {
             wp.inner.insert_str(&mut state.doc, " latest pending edit");
         } else if case == "partial" {
-            with_doc(&mut state, |dm| {
-                let mut after = None;
-                for i in 0..(VIEWPORT_BLOCK_WINDOW * 4) {
-                    let id = dm.insert_block(after.as_deref(), "paragraph");
-                    dm.splice_text(&id, 0, 0, &format!("Recovery paragraph {i}"));
-                    after = Some(id);
-                }
-            });
-            wp.refresh_blocks(&mut state.doc);
             assert!(wp.blocks.len() < wp.body_order.len());
         }
         let c = wp.inner.containers.as_ref().unwrap();
@@ -8049,10 +8075,13 @@ fn color_picker_popover_applies_a_colour_to_the_focused_style() {
     );
 
     // Lay the picker out and drive a press into the top-left of its SV square
-    // (high value, some saturation) so it commits a fresh colour.
+    // (high value, some saturation) so it previews a fresh colour.
     wp.color_picker.layout(wp.rect, wp.panel_rect);
-    let pr = wp.color_picker.rect();
-    let sv_pt = Point::new(pr.x0 + 20.0, pr.y0 + 20.0);
+    let sv = wp
+        .color_picker
+        .part("color_picker.sv")
+        .expect("the picker lays out its SV square");
+    let sv_pt = Point::new(sv.x0 + 20.0, sv.y0 + 20.0);
     let style_before = wp.focused_style_key().map(|k| wp.sheet.get(&k).color);
     // CursorMoved (to set the picker's internal cursor) then press.
     let taffy: TaffyTree<()> = TaffyTree::new();
@@ -8094,6 +8123,79 @@ fn color_picker_popover_applies_a_colour_to_the_focused_style() {
         style_before, style_after,
         "dragging in the ColorPicker changed the focused style's colour"
     );
+}
+
+/// Open the picker on a styled paragraph and preview a colour from its SV
+/// square; returns the style colour before the preview.
+fn preview_custom_colour(wp: &mut WordProcessorWidget, state: &mut ui::State) -> Option<[u8; 3]> {
+    wp.model_mut().insert_str(&mut state.doc, "preview me");
+    wp.view.styles_panel_visible = true;
+    pipeline_draw(wp, state, 1000, 700);
+    wp.open_color_picker();
+    assert!(wp.color_picker.is_open(), "Custom… opens the picker");
+    wp.color_picker.layout(wp.rect, wp.panel_rect);
+    let before = wp.focused_style_key().map(|k| wp.sheet.get(&k).color);
+    let sv = wp
+        .color_picker
+        .part("color_picker.sv")
+        .expect("the picker lays out its SV square");
+    left_click(wp, state, Point::new(sv.x0 + 20.0, sv.y0 + 20.0));
+    // End the SV drag the press started, as the pointer would.
+    let mut handled = false;
+    let mut focus: Option<NodeId> = None;
+    wp.handle_event(
+        &WindowEvent::MouseInput {
+            device_id: unsafe { std::mem::zeroed() },
+            state: ElementState::Released,
+            button: MouseButton::Left,
+        },
+        1.0,
+        &Modifiers::default(),
+        &mut state.doc,
+        &state.root,
+        &mut handled,
+        &mut focus,
+        NodeId::new(0),
+        &TaffyTree::new(),
+    );
+    assert_ne!(
+        wp.focused_style_key().map(|k| wp.sheet.get(&k).color),
+        before,
+        "the pending colour previews on the style"
+    );
+    before
+}
+
+/// Escape cancels the confirm-mode picker and restores the opening colour.
+#[test]
+fn color_picker_cancel_reverts_the_previewed_colour() {
+    let (mut state, mut wp) = bound();
+    let before = preview_custom_colour(&mut wp, &mut state);
+    press_named(&mut wp, &mut state, NamedKey::Escape);
+    assert!(!wp.color_picker.is_open(), "Escape closes the picker");
+    assert_eq!(
+        wp.focused_style_key().map(|k| wp.sheet.get(&k).color),
+        before,
+        "Cancel restores the style's colour"
+    );
+}
+
+/// Done keeps the previewed colour.
+#[test]
+fn color_picker_done_keeps_the_previewed_colour() {
+    let (mut state, mut wp) = bound();
+    let before = preview_custom_colour(&mut wp, &mut state);
+    let previewed = wp.focused_style_key().map(|k| wp.sheet.get(&k).color);
+    let done = wp
+        .color_picker
+        .part("color_picker.done")
+        .expect("a confirm-mode picker has a Done button");
+    wp.color_picker.layout(wp.rect, wp.panel_rect);
+    left_click(&mut wp, &mut state, done.center());
+    assert!(!wp.color_picker.is_open(), "Done closes the picker");
+    let after = wp.focused_style_key().map(|k| wp.sheet.get(&k).color);
+    assert_eq!(after, previewed, "Done keeps the preview");
+    assert_ne!(after, before);
 }
 
 /// A click outside the open picker dismisses it.
@@ -8255,9 +8357,18 @@ fn clipped_document_text_matches_reference_raster_and_preserves_review_state() {
 }
 
 // ---- visual review shots ----------------------------------------------
-// A guarded renderer that writes PNGs of the fixed surfaces for eyeballing.
-// Set `TILO_WP_REVIEW_SHOTS=<dir>` to emit them; a normal `cargo test` run
-// leaves it a no-op (no GPU work, no files).
+// Renderers that write PNGs of the fixed surfaces for eyeballing. They assert
+// nothing, so they are not part of an ordinary test run; render them with
+//
+//   TILO_WP_REVIEW_SHOTS=<dir> cargo test -p word-processor --lib review_shots -- --ignored
+
+/// The directory review shots are written to. Asking for shots without saying
+/// where to put them is a mistake worth failing on, not a silent pass.
+fn review_shot_dir() -> std::path::PathBuf {
+    std::env::var_os("TILO_WP_REVIEW_SHOTS")
+        .map(std::path::PathBuf::from)
+        .expect("set TILO_WP_REVIEW_SHOTS=<dir> to choose where review shots are written")
+}
 
 /// Run the full five-pass + overlay draw and write a PNG to `dir/name.png`.
 fn render_review_png(
@@ -8341,11 +8452,10 @@ fn render_review_png_themed(
 }
 
 #[test]
+#[ignore = "writes review PNGs and asserts nothing; run with TILO_WP_REVIEW_SHOTS=<dir> and --ignored"]
 fn menu_ux_review_shots() {
-    let Some(dir) = std::env::var_os("TILO_WP_REVIEW_SHOTS") else {
-        return;
-    };
-    let dir = std::path::Path::new(&dir);
+    let dir = review_shot_dir();
+    let dir = dir.as_path();
     for (name, theme, width) in [
         ("dark", Theme::dark(), 1000),
         ("light", Theme::light(), 1000),
@@ -8381,11 +8491,9 @@ fn menu_ux_review_shots() {
 }
 
 #[test]
+#[ignore = "writes review PNGs and asserts nothing; run with TILO_WP_REVIEW_SHOTS=<dir> and --ignored"]
 fn render_review_shots() {
-    let Some(dir) = std::env::var_os("TILO_WP_REVIEW_SHOTS") else {
-        return;
-    };
-    let dir = std::path::PathBuf::from(dir);
+    let dir = review_shot_dir();
     let (w, h) = (1200u32, 800u32);
 
     // 1. Fixed toolbar: vector Image icon, no duplicated font-size stepper.
@@ -8484,11 +8592,9 @@ fn render_review_shots() {
 /// headless; reviewers can inspect the normal desktop, full-toolbar, narrow
 /// compact, and compact-overflow states from one rendering pass.
 #[test]
+#[ignore = "writes review PNGs and asserts nothing; run with TILO_WP_REVIEW_SHOTS=<dir> and --ignored"]
 fn render_responsive_review_shots() {
-    let Some(dir) = std::env::var_os("TILO_WP_REVIEW_SHOTS") else {
-        return;
-    };
-    let dir = std::path::PathBuf::from(dir);
+    let dir = review_shot_dir();
     let mut state = ui::State::new();
     let mut wp = WordProcessorWidget::new();
     wp.sync(&mut state.doc, &state.root);

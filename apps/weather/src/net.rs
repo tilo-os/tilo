@@ -15,6 +15,8 @@
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::thread;
 
+use tilo_clock::unix_now;
+
 use crate::api;
 use crate::model::{AirQuality, LocationId, SavedLocation, WeatherSnapshot};
 use crate::units::Units;
@@ -243,7 +245,7 @@ fn worker(req_rx: &Receiver<Request>, res_tx: &ResponseSender) {
             } => {
                 let url = api::forecast_url(lat, lon, units);
                 match get(&url) {
-                    Ok(body) => match api::parse_forecast(&body, location_id, units, now_secs()) {
+                    Ok(body) => match api::parse_forecast(&body, location_id, units, unix_now()) {
                         Ok(snap) => {
                             send_response(res_tx, context, Response::Forecast(snap));
                         }
@@ -277,7 +279,7 @@ fn worker(req_rx: &Receiver<Request>, res_tx: &ResponseSender) {
             } => {
                 let url = api::air_quality_url(lat, lon);
                 match get(&url) {
-                    Ok(body) => match api::parse_air_quality(&body, location_id, now_secs()) {
+                    Ok(body) => match api::parse_air_quality(&body, location_id, unix_now()) {
                         Ok(aq) => {
                             send_response(res_tx, context, Response::AirQuality(aq));
                         }
@@ -349,12 +351,6 @@ async fn fetch(client: Option<&reqwest::Client>, url: &str) -> Result<String, St
         return Err(format!("http {}", resp.status()));
     }
     resp.text().await.map_err(|e| format!("read body: {e}"))
-}
-
-fn now_secs() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| d.as_secs())
 }
 
 #[cfg(test)]

@@ -663,7 +663,6 @@ impl ResourceProvider for crate::app::CalculatorApp {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::CalcModel;
     use tilo_actions::{ActionInput, LocalTransport};
 
     fn registry() -> ActionRegistry {
@@ -672,42 +671,12 @@ mod tests {
         r
     }
 
-    /// A shared base document seeded through the real `doc::store` write path
-    /// (plain ops, one actor) — exactly how the live app's document is built
-    /// before any action is dispatched.
-    fn seeded_graph_doc(kind: GraphKind, exprs: &[&str]) -> AutoCommit {
-        let mut m = CalcModel::default();
-        let rows: Vec<PlotFn> = exprs
-            .iter()
-            .map(|e| PlotFn {
-                expr: e.to_string(),
-                visible: true,
-            })
-            .collect();
-        match kind {
-            GraphKind::Curve2d => m.funcs = rows,
-            GraphKind::Surface3d => m.surfaces = rows,
-        }
-        let mut doc = AutoCommit::new();
-        crate::doc::store(&mut doc, &m);
-        doc
-    }
-
     /// Apply an action through the executor exactly as the app's dispatch does.
     fn dispatch(doc: &mut AutoCommit, action: &CalculatorAction) {
         let encoded = encode(action);
         let decoded = registry().decode(&encoded).unwrap();
         let mut tx = LocalTransport::new();
         tilo_actions::dispatch(doc, decoded.as_ref(), encoded, &mut tx).unwrap();
-    }
-
-    fn immediate_encode(spec: &ActionSpec) -> EncodedAction {
-        match &spec.input {
-            ActionInput::Immediate(enc) => enc.clone(),
-            ActionInput::Prompted { .. } | ActionInput::Deferred { .. } => {
-                panic!("expected an immediate action: {}", spec.id)
-            }
-        }
     }
 
     fn prompted_encode(spec: &ActionSpec, arg: &str) -> EncodedAction {
@@ -854,120 +823,6 @@ mod tests {
         );
     }
 
-    /// The full undo covenant on one action: dispatched through the executor it
-    /// mutates the document and records exactly one undo boundary, and Ctrl+Z
-    /// (the host's `undo`) reverts precisely that action.
-    #[test]
-    fn action_records_one_undo_boundary_and_reverts() {
-        // Seed one history entry via the real `store` write path, then move it
-        // into a host State so undo is the real host path.
-        let mut seeded = AutoCommit::new();
-        let model = CalcModel {
-            history: vec![HistoryEntry {
-                expr: "1+1".into(),
-                result: "2".into(),
-            }],
-            ..CalcModel::default()
-        };
-        crate::doc::store(&mut seeded, &model);
-        let mut state = ui::State::new();
-        state.doc = seeded;
-        let before_heads = state.doc.get_heads();
-        let before = read_history(&state.doc).len();
-
-        // Commit a computation via the action + the host's out-of-band undo
-        // recording (the exact path `ui::App` takes after an affordance fires).
-        let action = commit_history_action("6*7", "42");
-        let encoded = encode(&action);
-        let decoded = registry().decode(&encoded).unwrap();
-        let mut tx = LocalTransport::new();
-        tilo_actions::dispatch(&mut state.doc, decoded.as_ref(), encoded, &mut tx).unwrap();
-        state.record_committed_action(before_heads, None, None);
-
-        assert_eq!(
-            read_history(&state.doc).len(),
-            before + 1,
-            "the action added a history row"
-        );
-        assert_eq!(read_history(&state.doc)[0], ("6*7".into(), "42".into()));
-        assert!(
-            state.peek_last_undo().is_some(),
-            "exactly one undo boundary recorded"
-        );
-
-        // Ctrl+Z reverts exactly this action.
-        state.undo(None, None).expect("an undo entry to pop");
-        assert_eq!(
-            read_history(&state.doc).len(),
-            before,
-            "undo reverted only the commit"
-        );
-        assert_eq!(
-            read_history(&state.doc)[0],
-            ("1+1".into(), "2".into()),
-            "the prior entry survives"
-        );
-    }
-
-    /// The collaboration guarantee: replaying the same encoded action on a second
-    /// independent replica (from the same base state) lands on the byte-identical
-    /// document — same head hashes, not merely the same values.
-    #[test]
-    fn action_replays_byte_identical_on_a_peer() {
-        // A shared base with a couple of graph rows, built the way the live app
-        // builds its document (plain `store` writes), then forked to a peer.
-        let mut doc_a = seeded_graph_doc(GraphKind::Curve2d, &["x", "x^2"]);
-        doc_a.commit();
-        let bytes = doc_a.save();
-        let mut doc_b = AutoCommit::load(&bytes).unwrap();
-        assert_eq!(
-            doc_a.get_heads(),
-            doc_b.get_heads(),
-            "precondition: same base state"
-        );
-
-        // A applies a formula edit locally; B replays the envelope.
-        let action = set_graph_expr_action(GraphKind::Curve2d, 1, "x^3+1");
-        let encoded = encode(&action);
-        let env = tilo_actions::apply_local(&mut doc_a, &action, encoded).unwrap();
-        tilo_actions::replay(&mut doc_b, &env, &registry()).unwrap();
-
-        assert_eq!(
-            doc_a.get_heads(),
-            doc_b.get_heads(),
-            "replay reproduced the identical change"
-        );
-        assert_eq!(
-            read_graph(&doc_b, GraphKind::Curve2d)[1].0,
-            "x^3+1",
-            "edit landed on the peer"
-        );
-    }
-
-    /// A toggle also replays byte-identically — the read-then-flip path, proving
-    /// the deterministic "recompute from base" branch converges.
-    #[test]
-    fn toggle_replays_byte_identical() {
-        let mut doc_a = seeded_graph_doc(GraphKind::Surface3d, &["x*y"]);
-        doc_a.commit();
-        let mut doc_b = AutoCommit::load(&doc_a.save()).unwrap();
-
-        let action = toggle_graph_visible_action(GraphKind::Surface3d, 0);
-        let encoded = encode(&action);
-        let env = tilo_actions::apply_local(&mut doc_a, &action, encoded).unwrap();
-        tilo_actions::replay(&mut doc_b, &env, &registry()).unwrap();
-
-        assert_eq!(
-            doc_a.get_heads(),
-            doc_b.get_heads(),
-            "toggle replayed identically"
-        );
-        assert!(
-            !read_graph(&doc_b, GraphKind::Surface3d)[0].1,
-            "hidden on the peer"
-        );
-    }
-
     fn ctx() -> CalcResourceCtx {
         CalcResourceCtx {
             mode: Mode::Graph2d,
@@ -1013,6 +868,50 @@ mod tests {
         doc
     }
 
+    /// The stable row id a graph resource's address ends in.
+    fn row_id(res: &Resource) -> &str {
+        res.id.as_str().rsplit(':').next().expect("stable row id")
+    }
+
+    fn nth_graph_id(doc: &AutoCommit, kind: GraphKind, n: usize) -> String {
+        crate::doc::row_id_at(doc, kind.doc_key(), n).expect("seeded graph row")
+    }
+
+    ui::action_contract_tests! {
+        seed: doc_for_ctx(),
+        registry: registry(),
+        resources: |doc| provide_resources(&ctx(), doc),
+        palette: ["Add function", "Clear history", "Delete formula"],
+        replay: [
+            set_formula => |doc| encode(&set_graph_expr_action(
+                GraphKind::Curve2d,
+                nth_graph_id(doc, GraphKind::Curve2d, 1).as_str(),
+                "x^3+1",
+            )),
+            toggle_surface => |doc| encode(&toggle_graph_visible_action(
+                GraphKind::Surface3d,
+                nth_graph_id(doc, GraphKind::Surface3d, 0).as_str(),
+            )),
+        ],
+        undo: [
+            commit_history => |_| encode(&commit_history_action("6*7", "42")),
+        ],
+        encodes: [
+            clear_history => ("calculator.workspace", "clear-history", |doc, _| {
+                encode(&clear_history_ids_action(crate::doc::visible_ids(doc, "history")))
+            }),
+            toggle_visibility => ("calculator.graph", "toggle-visibility", |_, res| {
+                encode(&toggle_graph_visible_action(GraphKind::Curve2d, row_id(res)))
+            }),
+            delete_formula => ("calculator.graph", "delete", |_, res| {
+                encode(&delete_graph_action(GraphKind::Curve2d, row_id(res)))
+            }),
+            edit_formula => ("calculator.graph", "edit", arg: "cos(x)", |_, res| {
+                encode(&set_graph_expr_action(GraphKind::Curve2d, row_id(res), "cos(x)"))
+            }),
+        ],
+    }
+
     #[test]
     fn ctrl_k_publishes_workspace_history_and_graph_tree() {
         let doc = doc_for_ctx();
@@ -1044,92 +943,15 @@ mod tests {
         assert!(g0_actions.contains(&"edit"), "{g0_actions:?}");
         assert!(g0_actions.contains(&"toggle-visibility"), "{g0_actions:?}");
         assert!(g0_actions.contains(&"delete"), "{g0_actions:?}");
-
-        // The one palette surfaces the tree's actions as rows.
-        let mut palette = ui::ActionPalette::new();
-        palette.load_open_resources(&resources);
-        palette.open();
-        let labels = palette.result_labels();
-        assert!(
-            labels.iter().any(|l| l.contains("Add function")),
-            "{labels:?}"
-        );
-        assert!(
-            labels.iter().any(|l| l.contains("Clear history")),
-            "{labels:?}"
-        );
-        palette.set_query("Delete formula");
-        let labels = palette.result_labels();
-        assert!(
-            labels.iter().any(|l| l.contains("Delete formula")),
-            "{labels:?}"
-        );
     }
 
-    /// Single source of truth: the palette specs encode byte-identically to the
-    /// builders the on-screen affordances call.
+    /// The workspace add-function prompt builds the same `AddGraph` the keypad
+    /// "+" affordance does; its fresh stable id rules out a byte comparison.
     #[test]
-    fn palette_and_builder_encode_identically() {
+    fn add_function_prompt_builds_the_canonical_add_graph() {
         let doc = doc_for_ctx();
         let resources = provide_resources(&ctx(), &doc);
         let ws = &resources[0];
-
-        // Clear-history spec == the button's builder.
-        let clear = ws.actions.iter().find(|a| a.id == "clear-history").unwrap();
-        assert_eq!(
-            immediate_encode(clear).payload,
-            encode(&clear_history_ids_action(crate::doc::visible_ids(
-                &doc, "history"
-            )))
-            .payload,
-            "clear-history is one source of truth"
-        );
-
-        // A curve's toggle/delete specs == the row affordance builders.
-        let graphs: Vec<&Resource> = ws
-            .children
-            .iter()
-            .filter(|r| r.kind == "calculator.graph")
-            .collect();
-        let curve0 = graphs[0];
-        let toggle = curve0
-            .actions
-            .iter()
-            .find(|a| a.id == "toggle-visibility")
-            .unwrap();
-        let curve_id = curve0
-            .id
-            .as_str()
-            .rsplit(':')
-            .next()
-            .expect("stable curve id");
-        assert_eq!(
-            immediate_encode(toggle).payload,
-            encode(&toggle_graph_visible_action(GraphKind::Curve2d, curve_id)).payload,
-            "toggle-visibility is one source of truth"
-        );
-        let delete = curve0.actions.iter().find(|a| a.id == "delete").unwrap();
-        assert_eq!(
-            immediate_encode(delete).payload,
-            encode(&delete_graph_action(GraphKind::Curve2d, curve_id)).payload,
-            "delete-formula is one source of truth"
-        );
-
-        // The curve's edit prompt builds the same action as the set builder.
-        let edit = curve0.actions.iter().find(|a| a.id == "edit").unwrap();
-        assert_eq!(
-            prompted_encode(edit, "cos(x)").payload,
-            encode(&set_graph_expr_action(
-                GraphKind::Curve2d,
-                curve_id,
-                "cos(x)"
-            ))
-            .payload,
-            "edit-formula is one source of truth"
-        );
-
-        // The workspace add-function prompt builds the same AddGraph the keypad
-        // "+" affordance would when given the same formula.
         let add = ws.actions.iter().find(|a| a.id == "add-function").unwrap();
         let encoded = prompted_encode(add, "x^2");
         let decoded: CalculatorAction =

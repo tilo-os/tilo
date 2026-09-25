@@ -31,6 +31,7 @@ use tokio::sync::mpsc;
 
 use crate::acl::{AclHandle, IdentityKey};
 use crate::authenticated_transport::{AuthenticatedTransportConfig, authenticate_fs_peer_parts_at};
+use crate::clock::{unix_now_ms, unix_now_ns};
 use crate::hydration::Hydrator;
 use crate::identity::PeerCredentials;
 use crate::namespace::Namespace;
@@ -95,7 +96,7 @@ impl FsTransportIdentity {
         self
     }
 
-    fn partitioned(&self) -> bool {
+    pub(crate) fn partitioned(&self) -> bool {
         self.gate.partitioned()
     }
 
@@ -177,10 +178,6 @@ impl crate::share_session::LiveActorCertification for FsTransportIdentity {
                 && entry.revoked_at_ns <= now_ns
         })
     }
-}
-
-fn unix_now_ns() -> u64 {
-    crate::clock::unix_now_ns()
 }
 
 async fn authenticate_connection(
@@ -1249,7 +1246,7 @@ impl ReplicaAckProtocol {
         match ReplicaAckV1::signed(
             request,
             actor,
-            now_ms(),
+            unix_now_ms(),
             self.identity.credentials().signing_key(),
         ) {
             Ok(receipt) => ReplicaAckResponseV1::Acknowledged(receipt),
@@ -1655,6 +1652,9 @@ impl Workspace {
                 Some(identity.clone()),
             )),
         );
+        let builder = crate::document_media::accept_media_protocol(
+            builder, &endpoint, &identity, &policy, &store,
+        );
         let builder = match (&record_plane, replica_ack_protocol) {
             (Some(records), Some(replica_ack)) => builder
                 .accept(TILO_FS_RECORD_ALPN, records.protocol.clone())
@@ -1767,10 +1767,6 @@ fn prime_namespace_baseline(namespace: &Arc<Mutex<Namespace>>) {
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .prime_baseline();
-}
-
-fn now_ms() -> u64 {
-    crate::clock::unix_now_ms()
 }
 
 /// The bidirectional pump: broadcast local deltas, apply remote deltas,
@@ -2081,7 +2077,7 @@ async fn pull_record_mesh_from_peer(
                     .highest_sequence(key, &remote_cursor.actor)
                     .unwrap_or(local_sequence);
                 if let Some(materializer) = &records.materializer {
-                    materializer.reconcile_repository(&records.repository)?;
+                    materializer.reconcile_record(&records.repository, key)?;
                 }
             }
         }
@@ -2128,7 +2124,7 @@ async fn request_replica_ack(
             request,
             &peer,
             collab_types::Ed25519PublicKey(identity.device_public_key()),
-            now_ms(),
+            unix_now_ms(),
         )?;
         connection.close(0u32.into(), b"");
         Ok::<_, anyhow::Error>(observed)
@@ -2413,7 +2409,7 @@ async fn reconcile_loop(reconcile: ReconcileLoop) {
                     let mut ns = namespace
                         .lock()
                         .unwrap_or_else(std::sync::PoisonError::into_inner);
-                    crate::conflict::materialize(&mut ns, &c, len, now_ms())
+                    crate::conflict::materialize(&mut ns, &c, len, unix_now_ms())
                 };
                 if !delta.is_empty()
                     && let Some(sender) = &sender

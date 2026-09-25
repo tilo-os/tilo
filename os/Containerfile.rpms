@@ -62,19 +62,29 @@ ARG TARGETARCH
 
 # Resolve the install transaction against the base (captures rich/
 # conditional deps like greetd-selinux and the exact non-conflicting versions),
-# download-only, then collect the cached RPMs into a repo. Preserve the full
-# weak-dependency closure; unavailable packages must fail resolution.
+# store its exact solver transaction, then collect its RPMs into a repo.
+# Preserve the full weak-dependency closure; unavailable packages must fail.
 #
-# --downloadonly skips packages the base already has installed, so a direct
-# spec the image later erases (pkgconf, for its development payloads) could not
-# be installed again when a later stage needs it; download every direct spec too.
+# --downloadonly skips packages the base already has installed. The later OS
+# transaction can update a package that requires the matching version of an
+# already-installed dependency (for example glibc-common or python3-libs), or
+# reinstall a direct spec erased by an intermediate stage (pkgconf). Download
+# the complete dependency closure, including already-installed packages.
+# Upgrading a base-installed direct spec can also require upgrading a package
+# outside that forward closure (openssh-clients pins the openssh version). Store
+# that solver transaction and add its RPMs before the offline proof.
 # After creating the repo, prove it resolves the complete requested transaction
 # (including dependencies) with every network repository hidden.
 RUN test -n "${PACKAGES}" \
- && dnf install -y --downloadonly --exclude='qemu-user-static*' --setopt=install_weak_deps=True ${PACKAGES} \
+ && dnf install -y --best --store=/tmp/tilo-install --exclude='qemu-user-static*' --setopt=install_weak_deps=True ${PACKAGES} \
  && mkdir -p /repo \
- && { find /var/cache/libdnf5 /var/cache/dnf -name '*.rpm' -exec cp -n {} /repo/ \; ; true; } 2>/dev/null \
- && dnf download -y --destdir=/repo --exclude='qemu-user-static*' ${PACKAGES} \
+ && if test -d /tmp/tilo-install/packages; then cp -n /tmp/tilo-install/packages/*.rpm /repo/; fi \
+ && dnf download -y --resolve --alldeps --destdir=/repo --exclude='qemu-user-static*' ${PACKAGES} \
+ && installed_specs="$(for spec in ${PACKAGES}; do rpm -q --quiet "$spec" && printf '%s\n' "$spec"; done)" \
+ && if test -n "$installed_specs"; then \
+      dnf upgrade -y --best --store=/tmp/tilo-upgrade --exclude='qemu-user-static*' --setopt=install_weak_deps=True $installed_specs \
+      && if test -d /tmp/tilo-upgrade/packages; then cp -n /tmp/tilo-upgrade/packages/*.rpm /repo/; fi; \
+    fi \
  && cp /vendor/virtio-win-0.1.302-1.noarch.rpm /repo/ \
  && test -n "$(ls /repo/*.rpm 2>/dev/null)" \
  && printf '%s\n' ${PACKAGES} | sort -u > /repo/tilo-direct-package-specs.txt
@@ -95,7 +105,7 @@ RUN bash /tilo-verify-signatures.sh /repo /tilo-assets.tsv /tilo-fedora44-primar
 FROM ${BASE_REF} AS offline-check
 ARG PACKAGES
 COPY --from=repository /repo /repo
-RUN --network=none dnf install -y --downloadonly --setopt=reposdir=/repo --setopt=install_weak_deps=True ${PACKAGES}
+RUN --network=none dnf install -y --best --downloadonly --setopt=reposdir=/repo --setopt=install_weak_deps=True ${PACKAGES}
 # os/Containerfile erases these base-installed packages once the compositor's
 # development specs resolve, and later stages (Wine's mingw64-libxslt) need them
 # again. Replay the same erase and prove the complete package set still
@@ -105,7 +115,7 @@ RUN --network=none rpm -qa --qf '%{NAME}\n' \
       | awk '/^(pkgconf-pkg-config|pkgconf|pkgconf-m4|libpkgconf)$/' \
       | xargs -r rpm -e --nodeps \
  && ! rpm -qa --qf '%{NAME}\n' | grep -Eq '^(pkgconf-pkg-config|pkgconf|pkgconf-m4|libpkgconf)$' \
- && dnf install -y --downloadonly --setopt=reposdir=/repo --setopt=install_weak_deps=True ${PACKAGES}
+ && dnf install -y --best --downloadonly --setopt=reposdir=/repo --setopt=install_weak_deps=True ${PACKAGES}
 
 # The published artifact contains only the repository.
 FROM scratch

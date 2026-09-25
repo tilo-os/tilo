@@ -22,6 +22,7 @@ mod invocation_journal;
 mod native_media;
 mod published_invocation;
 mod resolved_invocation;
+pub use crate::services::LaunchScope;
 pub use committed_document::{
     DocumentBytes, NativeDocumentRead, NativeDocumentReadContext, NativeDocumentReads,
 };

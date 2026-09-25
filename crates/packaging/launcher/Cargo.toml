@@ -31,14 +31,15 @@ name = "launcher"
 path = "src/lib.rs"
 
 [features]
-# Honour the developer-only environment overrides (`src/dev_env.rs`) in a
-# release build. Debug builds always honour them; shipped images never enable
-# this.
-dev-overrides = []
+# Honour the developer-only environment overrides (`src/dev_env.rs`, and the
+# system store's in `package-store`) in a release build. Debug builds always
+# honour them; shipped images never enable this.
+dev-overrides = ["package-store/dev-overrides"]
 # Explicit opt-in Linux process-tree qualification fixture.
 managed-tree-test = []
 
 [dependencies]
+tilo-clock = { path = "../../system/tilo-clock" }
 clap.workspace = true
 serde.workspace = true
 # Also how `gpu.rs` reads an EGL vendor / Vulkan ICD manifest's
@@ -56,7 +57,8 @@ runtime-bundle = { path = "../runtime-bundle" }
 # sides must agree on (portal policy) come from here rather than
 # being duplicated.
 tilo-app-package = { path = "../tilo-app-package" }
-install = { path = "../install" }
+# Which packages are installed and where: the one registry, read-only.
+package-store = { path = "../package-store" }
 # The capability vocabulary. Workspace grants arrive as `CapOverride`
 # records and are evaluated with the same fail-closed decision function
 # the compositor and the filesystem use — a launcher-local permission
@@ -84,6 +86,9 @@ tokio = { workspace = true, features = ["io-util", "macros", "net", "rt", "sync"
 # Tests whose subject is the environment itself (session variables, service
 # and store lookups) scope their changes through it and restore them.
 tilo-test-env = { path = "../../dev/test-env" }
+# An installed package launches from the store the desktop reads.
+package-store = { path = "../package-store", features = ["store"] }
+hex.workspace = true
 ed25519-dalek.workspace = true
 tempfile.workspace = true
 # Kernel probes proving the resolved seccomp profile is what the kernel enforces.

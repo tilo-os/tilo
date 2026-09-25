@@ -60,6 +60,7 @@ path = "src/home_peer_control.rs"
 #   iroh endpoint so the integration tests spin up two relays + N
 #   peers without any external service.
 [dependencies]
+tilo-clock = { path = "../../system/tilo-clock" }
 qos-agent-control-protocol = { path = "../../agent/control-protocol" }
 web-time = { version = "1", features = ["serde"] }
 qos-peer-state = { path = "../../collab/qos-peer-state" }
@@ -123,7 +124,8 @@ tracing.workspace = true
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 bounded-command = { path = "../../system/bounded-command" }
 launcher = { path = "../../packaging/launcher" }
-install = { path = "../../packaging/install" }
+# Installed packages and their integrity records.
+package-store = { path = "../../packaging/package-store" }
 # Exclusive, owner-only publication of the relay's node secret.
 private-fs = { path = "../../system/private-fs" }
 clap.workspace = true

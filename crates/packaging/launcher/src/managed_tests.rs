@@ -1,6 +1,5 @@
 use crate::managed::*;
 use std::os::unix::fs::PermissionsExt;
-use tilo_app_package::BlobStore;
 
 fn installed() -> (tempfile::TempDir, InstalledManagedPackage, PackageTrust) {
     installed_bytes(b"#!/bin/sh\nexit 0\n")
@@ -47,20 +46,15 @@ type = "cli"
         std::fs::Permissions::from_mode(0o755),
     )
     .unwrap();
-    let mut blobs = tilo_app_package::MemoryBlobStore::new();
-    let id = tilo_app_package::pack(
+    let packed = tilo_app_package::pack(
         &payload,
         &manifest,
         &tilo_app_package::SigningIdentity::from_signing_key(key),
-        &mut blobs,
     )
     .unwrap();
-    let signed = blobs
-        .get(&tilo_app_package::BlobHash(*id.as_bytes()))
-        .unwrap()
-        .unwrap();
-    let signed_root = tilo_app_package::SignedRoot::decode(&signed).unwrap();
-    let manifest_bytes = blobs.get(&signed_root.manifest_hash).unwrap().unwrap();
+    let id = packed.id();
+    let signed = packed.meta.signed_root_bytes();
+    let manifest_bytes = packed.meta.manifest_bytes.clone();
     std::fs::write(root.path().join("manifest.toml"), &manifest_bytes).unwrap();
     std::fs::write(payload.join("manifest.toml"), &manifest_bytes).unwrap();
     let evidence = root.path().join("integrity/so.tilo.agent");
@@ -69,7 +63,7 @@ type = "cli"
     std::fs::write(evidence.join("manifest.toml"), manifest_bytes).unwrap();
     std::fs::write(
         evidence.join("collection.qcl"),
-        blobs.get(&signed_root.payload_root_hash).unwrap().unwrap(),
+        &packed.meta.collection_bytes,
     )
     .unwrap();
     let trust = PackageTrust {
@@ -78,12 +72,7 @@ type = "cli"
         revoked: tilo_app_package::trust::RevocationList::default(),
     };
     let package = InstalledManagedPackage::verify(
-        crate::registry::InstalledPackage {
-            id: "so.tilo.agent".into(),
-            package_id_hex: id.to_hex(),
-            payload_root: payload,
-            manifest_path: root.path().join("manifest.toml"),
-        },
+        agent_package_row(id.to_hex(), payload, root.path().join("manifest.toml")),
         root.path().to_path_buf(),
         id,
         &trust,

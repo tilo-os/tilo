@@ -5,9 +5,9 @@ use super::state::WorkspaceAuthority as _;
 use super::state::WorkspaceTreeHandle;
 mod committed_document;
 use qos_action_broker::services::{
-    ContinuationServices, HostServices, LaunchableApplication, LauncherServices,
-    LegacyWorkspaceProjection, NativeDocumentRead, NativeDocumentReadContext, NativeDocumentReads,
-    WorkspaceAuthority, WorkspaceControlServices, WorkspaceGovernanceRequest,
+    ContinuationServices, HostServices, LaunchContent, LaunchScope, LaunchableApplication,
+    LauncherServices, LegacyWorkspaceProjection, NativeDocumentRead, NativeDocumentReadContext,
+    NativeDocumentReads, WorkspaceAuthority, WorkspaceControlServices, WorkspaceGovernanceRequest,
     WorkspaceGovernanceServices,
 };
 use std::sync::Arc;
@@ -139,11 +139,68 @@ impl LegacyWorkspaceProjection for NativeWorkspaceAuthority {
 /// Upper bound on content a launch may open read-only.
 const MAX_LAUNCH_CONTENT_BYTES: usize = 64 * 1024 * 1024;
 
+/// Reads content an application asked the shell to open, through that
+/// application's own document-media scope. Possessing a hash never grants
+/// access, so the shell cannot be used to read around an app's capability.
+trait LaunchContentReader {
+    fn read(&self, room: &str, app: &str, hash: &str) -> Result<Vec<u8>, String>;
+}
+
+/// The filesystem daemon's content store, reached as the desktop session.
+struct SessionContentStore;
+
+static SESSION_BLOBS: std::sync::Mutex<Option<runtime_fs::blobs::BlobClient>> =
+    std::sync::Mutex::new(None);
+
+impl LaunchContentReader for SessionContentStore {
+    fn read(&self, room: &str, app: &str, hash: &str) -> Result<Vec<u8>, String> {
+        use runtime_fs::blobs::{BlobClient, BlobError, ReadOutcome};
+
+        let mut session = SESSION_BLOBS
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let client = if let Some(client) = session.as_ref() {
+            client.clone()
+        } else {
+            let socket = ::launcher::services::blob_socket();
+            let client = BlobClient::connect_session(&socket)
+                .map_err(|error| format!("launch content store: {error}"))?;
+            *session = Some(client.clone());
+            client
+        };
+        let result = client
+            .scope(room, app)
+            .and_then(|scoped| scoped.read_all(hash));
+        if matches!(result, Err(BlobError::Disconnected(_))) {
+            // Reconnect on the next launch rather than keep a dead session.
+            *session = None;
+        }
+        drop(session);
+        match result {
+            Ok(ReadOutcome::Ready { bytes, .. }) => Ok(bytes),
+            Ok(ReadOutcome::Pending) => {
+                Err("launch content is still arriving on this device".into())
+            }
+            Ok(ReadOutcome::Unavailable) => {
+                Err("launch content is unavailable on this device".into())
+            }
+            Err(error) => Err(format!("launch content store: {error}")),
+        }
+    }
+}
+
+/// Stage the content `content` names as a read-only file granted to
+/// `app_id`. `None` for a plain launch. The bytes are read through the scope
+/// of the application that asked — the room partition its private directory
+/// uses — and never with the shell's own authority: holding a hash is not
+/// access.
 fn stage_launch_content(
     app_id: &str,
-    content_hash: &str,
+    content: LaunchContent<'_>,
     workspace: &mut super::state::Workspace,
+    reader: &dyn LaunchContentReader,
 ) -> Result<Option<std::path::PathBuf>, String> {
+    let content_hash = content.hash;
     if content_hash.is_empty() {
         return Ok(None);
     }
@@ -154,8 +211,14 @@ fn stage_launch_content(
     {
         return Err("launch content hash must be a lowercase 64-character blake3 value".into());
     }
-    let bytes = qdoc::blobstore::get(content_hash)
-        .ok_or_else(|| "launch content is unavailable on this device".to_owned())?;
+    let caller: &LaunchScope = content.caller.ok_or_else(|| {
+        "launch content requires an application the launcher authenticated".to_owned()
+    })?;
+    let bytes = reader.read(
+        &::launcher::appdir::room_slug(Some(&caller.workspace_id)),
+        &caller.app_id,
+        content_hash,
+    )?;
     if bytes.is_empty()
         || bytes.len() > MAX_LAUNCH_CONTENT_BYTES
         || !qdoc::blobstore::verify(content_hash, &bytes)
@@ -244,10 +307,10 @@ impl LauncherServices for NativeLauncher {
         &self,
         app: &str,
         workspace: &qos_desktop::Workspace,
-        content_hash: &str,
+        content: LaunchContent<'_>,
     ) -> Result<(), String> {
         let mut workspace = native_workspace(workspace)?;
-        let document = stage_launch_content(app, content_hash, &mut workspace)?;
+        let document = stage_launch_content(app, content, &mut workspace, &SessionContentStore)?;
         super::launcher::launch_document_in_workspace(app, &workspace, document.as_deref())
             .map(|_| ())
             .map_err(|e| e.to_string())
@@ -882,6 +945,86 @@ impl workspace_control_handle::Server for CapnpWorkspaceControlHandle {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Content keyed by `(room, hash)`, standing in for the content store's
+    /// room-scoped reads.
+    struct ScopedContent {
+        room: String,
+        hash: String,
+        bytes: Vec<u8>,
+    }
+
+    impl LaunchContentReader for ScopedContent {
+        fn read(&self, room: &str, _app: &str, hash: &str) -> Result<Vec<u8>, String> {
+            if room == self.room && hash == self.hash {
+                Ok(self.bytes.clone())
+            } else {
+                Err("launch content is unavailable on this device".into())
+            }
+        }
+    }
+
+    /// The shell stages content through the scope of the application that
+    /// asked, never its own authority: a caller in another room holding the
+    /// hash, or a launch no application asked for, stages nothing.
+    #[cfg(unix)]
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn launch_content_is_read_through_the_calling_applications_scope() {
+        let runtime = tempfile::tempdir().expect("runtime directory");
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("XDG_RUNTIME_DIR", runtime.path());
+        let bytes = b"a photograph".to_vec();
+        let hash = qdoc::blobstore::hash_bytes(&bytes);
+        let content = ScopedContent {
+            room: ::launcher::appdir::room_slug(Some("room-1")),
+            hash: hash.clone(),
+            bytes,
+        };
+        let scope = |workspace_id: &str| LaunchScope {
+            app_id: "so.tilo.photos".into(),
+            workspace_id: workspace_id.into(),
+        };
+        let mut workspace = crate::shell::state::Workspace::new(
+            crate::shell::state::WorkspaceId(1),
+            "launch content test",
+        );
+        let owner = scope("room-1");
+        let staged = stage_launch_content(
+            "so.tilo.photos",
+            LaunchContent {
+                hash: &hash,
+                caller: Some(&owner),
+            },
+            &mut workspace,
+            &content,
+        )
+        .expect("the owning app's content stages")
+        .expect("a staged path");
+        assert_eq!(
+            std::fs::read(&staged).expect("staged bytes"),
+            b"a photograph"
+        );
+        assert!(!workspace.app_capabilities("so.tilo.photos").is_empty());
+
+        let elsewhere = scope("room-2");
+        for caller in [Some(&elsewhere), None] {
+            assert!(
+                stage_launch_content(
+                    "so.tilo.photos",
+                    LaunchContent {
+                        hash: &hash,
+                        caller,
+                    },
+                    &mut workspace,
+                    &content,
+                )
+                .is_err(),
+                "{caller:?} holds the hash but not the content"
+            );
+        }
+    }
+
     #[test]
     fn closed_workspace_control_session_is_terminal_for_rpc_readers() {
         let target = iroh::SecretKey::generate().public();

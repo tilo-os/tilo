@@ -9,7 +9,6 @@ license.workspace = true
 description = "CRDT-native canonical document model and format-provider API for Tilo"
 
 [dependencies]
-advisory-lock = { path = "../../system/advisory-lock" }
 web-time = { version = "1", features = ["serde"] }
 automerge.workspace = true
 tilo-automerge.workspace = true

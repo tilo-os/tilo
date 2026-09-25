@@ -10,11 +10,16 @@ use taffy::{NodeId, TaffyTree};
 use uuid::Uuid;
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
-use winit::event::{Modifiers, WindowEvent};
+use vello::peniko::Color;
+use winit::event::{ElementState, KeyEvent, Modifiers, MouseButton, WindowEvent};
+use winit::keyboard::{Key, NamedKey};
 
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
-use ui::widget::{Button, ButtonFace, NumberInput, TextInput, Widget};
+use ui::widget::{
+    Button, ButtonFace, ColorPicker, ColorPickerOutcome, ColorSwatch, NumberInput, TextInput,
+    Widget,
+};
 
 use crate::model::{Annotation, FontEntry, Settings};
 use crate::paint;
@@ -686,5 +691,248 @@ mod tests {
             Some(NoteAction::Swallow)
         );
         assert_eq!(composer.hit_test(Point::ZERO), Some(NoteAction::Save));
+    }
+}
+
+/// What a scheme colour pick edits.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum PickTarget {
+    /// A new scheme derived from the chosen background.
+    NewScheme,
+    /// One colour slot (page, text, accent) of an existing scheme.
+    Slot(String, usize),
+}
+
+/// A confirmed scheme colour.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ColorEdit {
+    pub(crate) target: PickTarget,
+    pub(crate) rgb: [u8; 3],
+}
+
+/// What the colour sheet did with an event or semantic action it claimed.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum ColorSheetResponse {
+    /// The sheet consumed it without confirming a colour.
+    Consumed,
+    /// The sheet closed with this confirmed edit.
+    Confirmed(ColorEdit),
+}
+
+impl ColorSheetResponse {
+    fn from_edit(edit: Option<ColorEdit>) -> Self {
+        edit.map_or(Self::Consumed, Self::Confirmed)
+    }
+}
+
+/// Quick picks offered under the picker: saturated accents, then paper and
+/// ink tones for page and text colours.
+const SCHEME_SWATCHES: [([u8; 3], &str); 10] = [
+    ([0xEF, 0x44, 0x44], "Red"),
+    ([0xF5, 0x9E, 0x0B], "Amber"),
+    ([0xFA, 0xCC, 0x15], "Yellow"),
+    ([0x10, 0xB9, 0x81], "Green"),
+    ([0x3B, 0x82, 0xF6], "Blue"),
+    ([0xA7, 0x8B, 0xFA], "Violet"),
+    ([0xF6, 0xEC, 0xD8], "Cream"),
+    ([0xFC, 0xFC, 0xFA], "Paper white"),
+    ([0x2A, 0x2A, 0x2E], "Charcoal"),
+    ([0x14, 0x18, 0x22], "Ink"),
+];
+
+/// The modal sheet the colour-scheme manager picks colours in: the toolkit's
+/// [`ColorPicker`] in confirm mode, with the scheme swatches, over a scrim.
+///
+/// The picker owns HSV state, dragging, swatches, *Cancel*/*Done*, keyboard
+/// and semantics; this adapter owns only the sheet geometry and maps the
+/// picker's outcome onto the scheme slot it edits.
+#[derive(Default)]
+pub(crate) struct SchemeColorSheet {
+    open: Option<(PickTarget, ColorPicker)>,
+    panel: Rect,
+    cursor: Point,
+}
+
+impl SchemeColorSheet {
+    fn title(target: &PickTarget) -> &'static str {
+        match target {
+            PickTarget::NewScheme => "New scheme — pick a background",
+            PickTarget::Slot(_, 0) => "Page colour",
+            PickTarget::Slot(_, 1) => "Text colour",
+            PickTarget::Slot(..) => "Accent colour",
+        }
+    }
+
+    pub(crate) fn open(&mut self, target: PickTarget, rgb: [u8; 3]) {
+        let picker = ColorPicker::new(Color::from_rgb8(rgb[0], rgb[1], rgb[2]))
+            .with_swatches(
+                SCHEME_SWATCHES
+                    .iter()
+                    .map(|(c, name)| ColorSwatch::named(Color::from_rgb8(c[0], c[1], c[2]), *name)),
+            )
+            .confirming(Self::title(&target));
+        self.open = Some((target, picker));
+    }
+
+    pub(crate) fn is_open(&self) -> bool {
+        self.open.is_some()
+    }
+
+    /// Close without committing anything.
+    pub(crate) fn cancel(&mut self) {
+        self.open = None;
+    }
+
+    /// Map the picker's outcome onto the edit it confirms, closing the sheet
+    /// on either outcome. `None` while the picker has no outcome or when it
+    /// was cancelled.
+    fn resolve(&mut self) -> Option<ColorEdit> {
+        let outcome = self.open.as_mut()?.1.take_outcome()?;
+        let (target, _) = self.open.take()?;
+        match outcome {
+            ColorPickerOutcome::Confirmed(color) => Some(ColorEdit {
+                target,
+                rgb: ui::color::to_rgb8(color),
+            }),
+            ColorPickerOutcome::Cancelled => None,
+        }
+    }
+
+    /// The sheet as one modal dialog around the picker's own semantics.
+    pub(crate) fn accessibility_nodes(&self) -> Vec<ui::a11y::AccessNode> {
+        use ui::a11y::{AccessNode, AccessState, Role};
+        let Some((_, picker)) = self.open.as_ref() else {
+            return Vec::new();
+        };
+        vec![
+            AccessNode::new(Role::Dialog)
+                .with_name("Choose colour")
+                .with_bounds(self.panel)
+                .with_state(AccessState::new().modal(true))
+                .with_children(picker.accessibility().into_iter().collect()),
+        ]
+    }
+
+    /// Route a semantic action published by the picker. `None` when the
+    /// target is not the sheet's; otherwise whether the action closed the
+    /// sheet with a confirmed edit.
+    pub(crate) fn perform_semantic_action(
+        &mut self,
+        target: &str,
+        action: &ui::a11y::Action,
+        state: &mut AutoCommit,
+        root: &ObjId,
+    ) -> Option<ColorSheetResponse> {
+        let (_, picker) = self.open.as_mut()?;
+        if !target.starts_with("color_picker") {
+            return None;
+        }
+        if !picker.perform_semantic_action(target, action, state, root) {
+            return None;
+        }
+        Some(ColorSheetResponse::from_edit(self.resolve()))
+    }
+
+    pub(crate) fn draw(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        viewport: Rect,
+    ) {
+        let Some((_, picker)) = self.open.as_mut() else {
+            return;
+        };
+        crate::chrome::sheet_scrim(scene, transform, theme, viewport);
+        let pad = f64::from(theme.tokens.spacing.s6);
+        // A utility panel's width: a roomy saturation/value field and every
+        // swatch on one row.
+        let w = f64::from(theme.tokens.metrics.panel_width_utility)
+            .min(viewport.width() - 2.0 * pad)
+            .max(0.0);
+        let h = picker.preferred_height(w);
+        let width = (w + 2.0 * pad).min(viewport.width());
+        let height = (h + 2.0 * pad).min(viewport.height());
+        let x = viewport.x0 + (viewport.width() - width) / 2.0;
+        let y = viewport.y0 + (viewport.height() - height) / 2.0;
+        self.panel = Rect::new(x, y, x + width, y + height);
+        crate::chrome::panel(scene, transform, theme, self.panel);
+        picker.apply_layout_external(Rect::new(x + pad, y + pad, x + pad + w, y + pad + h));
+        picker.draw(
+            scene,
+            transform,
+            text_renderer,
+            theme,
+            &ui::presence::PresenceCtx::empty(),
+        );
+    }
+
+    /// While open the sheet is modal: every pointer and key event is its.
+    /// A press on the scrim outside the panel cancels; `Escape` cancels and
+    /// `Enter` confirms. Returns `None` when closed (the event is not the
+    /// sheet's), else whether this event produced a confirmed edit.
+    pub(crate) fn handle_event(
+        &mut self,
+        ctx: &mut InputEventCtx<'_>,
+    ) -> Option<ColorSheetResponse> {
+        let (_, picker) = self.open.as_mut()?;
+        let closing = match ctx.event {
+            WindowEvent::CursorMoved { position, .. } => {
+                self.cursor =
+                    Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+                false
+            }
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+                ..
+            } if !self.panel.contains(self.cursor) && !picker.wants_pointer_capture() => {
+                picker.cancel();
+                true
+            }
+            WindowEvent::KeyboardInput {
+                event:
+                    KeyEvent {
+                        logical_key: Key::Named(key @ (NamedKey::Escape | NamedKey::Enter)),
+                        state: ElementState::Pressed,
+                        ..
+                    },
+                ..
+            } => {
+                if *key == NamedKey::Enter {
+                    picker.confirm();
+                } else {
+                    picker.cancel();
+                }
+                true
+            }
+            _ => false,
+        };
+        if !closing {
+            let mut focus_target = None;
+            let mut local_handled = false;
+            picker.handle_event(
+                ctx.event,
+                ctx.scale_factor,
+                &ctx.modifiers,
+                ctx.state,
+                ctx.root,
+                &mut local_handled,
+                &mut focus_target,
+                ctx.node_id,
+                ctx.taffy,
+            );
+            if focus_target.is_some() {
+                picker.set_focus(true);
+            }
+        }
+        *ctx.handled = true;
+        Some(ColorSheetResponse::from_edit(self.resolve()))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn picker(&self) -> Option<&ColorPicker> {
+        self.open.as_ref().map(|(_, picker)| picker)
     }
 }

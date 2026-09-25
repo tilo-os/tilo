@@ -10,6 +10,7 @@ name = "settings_store"
 path = "src/lib.rs"
 
 [dependencies]
+tilo-clock = { path = "../tilo-clock" }
 serde.workspace = true
 serde_json.workspace = true
 # Spec-correct `XDG_CONFIG_HOME` resolution (absolute, non-empty, else

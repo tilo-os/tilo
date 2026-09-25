@@ -350,9 +350,8 @@ fi
 SIZE="${SIZE_MIB}M"
 
 mkdir -p "$OUTDIR"
-# Absolute, because the mount point is handed to the installer as /run/host$MNT —
-# a relative path there silently becomes /run/hostos/... and fails as a missing
-# target root.
+# Absolute, because Podman binds this directory into the installer container.
+# A relative source would resolve against Podman's current working directory.
 OUTDIR="$(cd "$OUTDIR" && pwd)"
 RAW="$OUTDIR/disk.raw"
 QCOW="$OUTDIR/disk.qcow2"
@@ -572,12 +571,14 @@ install_args=(to-filesystem --generic-image --skip-fetch-check
   && install_args+=(--boot-mount-spec "UUID=$ESP_UUID")
 [ -n "$SRC_REF" ] && install_args+=(--source-imgref "$SRC_REF")
 install_args+=("${KARGS[@]+"${KARGS[@]}"}")
-install_args+=("/run/host$MNT")
+install_args+=("/run/tilo-install-target")
 
+# Bind only the prepared disk target, not the job container's root filesystem.
+# The recursive bind includes the ESP mounted below $MNT at /boot.
 run_args=(--rm --privileged --pid=host
   --security-opt label=type:unconfined_t
   -v /var/lib/containers:/var/lib/containers
-  -v /dev:/dev -v /:/run/host)
+  -v /dev:/dev -v "$MNT:/run/tilo-install-target:rbind")
 # Older bootc resolves the loop backing device while test-mounting composefs.
 # A container-private udev database knows nothing about host loop devices even
 # though /dev itself is shared, producing "Can't lookup blockdev". Project only

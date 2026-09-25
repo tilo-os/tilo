@@ -19,6 +19,7 @@ path = "src/lib.rs"
 # and the broker-side wire layering are out of scope.
 
 [dependencies]
+hex.workspace = true
 # Sibling crate — re-uses `ChannelId` so the encrypted-metadata field
 # on `SignedOp` names the same identifier this
 # crate keys its groups by.

@@ -461,8 +461,11 @@ fn managed_connection_preparation_clears_ancestor_automatic_metadata() {
         &mut command,
         "dev.qos.child",
         "workspace",
-        &collab_path,
-        &identity_path,
+        &super::unix::ServiceSockets {
+            collab: &collab_path,
+            identity: &identity_path,
+            blobs: &profile.path().join("blobs.sock"),
+        },
     )
     .unwrap();
     for key in [

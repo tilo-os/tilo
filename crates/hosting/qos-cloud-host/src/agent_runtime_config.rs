@@ -113,12 +113,11 @@ impl ManagedConfig {
             .map_err(|e| e.to_string())?,
         };
         let package = InstalledManagedPackage::verify(
-            launcher::registry::InstalledPackage {
-                id: "so.tilo.agent".into(),
-                package_id_hex: self.package_hash.clone(),
-                payload_root: self.package_payload.clone(),
-                manifest_path: self.package_manifest.clone(),
-            },
+            launcher::managed::agent_package_row(
+                self.package_hash.clone(),
+                self.package_payload.clone(),
+                self.package_manifest.clone(),
+            ),
             self.package_data_root.clone(),
             tilo_app_package::PackageId::from_bytes(decode_hash(&self.package_hash)?),
             &trust,

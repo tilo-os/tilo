@@ -20,8 +20,9 @@ const OWNED_FIELDS: [&str; 6] = [
     "assets",
     "notes_import_v1",
 ];
-/// Leaves headroom below the collaboration transport's 3 MiB document-frame
-/// cap for Automerge/action encoding overhead.
+/// Largest image a note accepts. The notebook records only a reference and
+/// the bytes live in the device content store, but the insert action still
+/// carries the bytes once, so this stays well inside one action payload.
 pub const MAX_ASSET_BYTES: usize = 1024 * 1024;
 
 /// Initialize only a new notebook; existing Notes data is never reset or stamped.
@@ -256,6 +257,73 @@ fn assets_map(doc: &AutoCommit) -> Result<Option<ObjId>, String> {
     Ok(Some(id.clone()))
 }
 
+/// One image asset as the notebook stores it.
+///
+/// Notebooks written before images moved into the content store carry the
+/// bytes inline; they stay readable, and
+/// [`NotesAction::MoveAssetsToContentStore`](crate::actions::NotesAction::MoveAssetsToContentStore)
+/// replaces them with references. A reference is a small map
+/// `{len, mime}` under the content digest; the bytes are in `qdoc::blobstore`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StoredAsset {
+    Inline(Vec<u8>),
+    Reference { len: u64, mime: String },
+}
+
+const REFERENCE_MIMES: [&str; 3] = ["image/png", "image/jpeg", "image/webp"];
+
+fn image_mime(bytes: &[u8]) -> Option<&'static str> {
+    if bytes.starts_with(&[137, 80, 78, 71, 13, 10, 26, 10]) {
+        Some("image/png")
+    } else if bytes.starts_with(&[0xff, 0xd8, 0xff]) {
+        Some("image/jpeg")
+    } else if bytes.get(..4) == Some(b"RIFF") && bytes.get(8..12) == Some(b"WEBP") {
+        Some("image/webp")
+    } else {
+        None
+    }
+}
+
+fn stored_asset(doc: &AutoCommit, assets: &ObjId, key: &str) -> Result<StoredAsset, String> {
+    // The key is the content digest, so every value under it names the same
+    // bytes. Two devices adding or moving one image concurrently leave
+    // conflicting values; each must be well formed, and a reference wins over
+    // inline bytes because it is what every device converges on.
+    let values = doc.get_all(assets, key).map_err(|e| e.to_string())?;
+    if values.is_empty() {
+        return Err(format!("missing {key}"));
+    }
+    let mut chosen = None;
+    for (value, id) in values {
+        let asset = match value {
+            Value::Scalar(value) => match value.as_ref() {
+                ScalarValue::Bytes(bytes) => StoredAsset::Inline(bytes.clone()),
+                _ => return Err(format!("asset {key} must be bytes or a reference")),
+            },
+            Value::Object(ObjType::Map) => {
+                let len = integer(doc, &id, "len")?;
+                let mime = string(doc, &id, "mime")?;
+                if len == 0
+                    || len > MAX_ASSET_BYTES as u64
+                    || !REFERENCE_MIMES.contains(&mime.as_str())
+                {
+                    return Err(format!("asset {key} has an invalid reference"));
+                }
+                StoredAsset::Reference { len, mime }
+            }
+            Value::Object(_) => return Err(format!("asset {key} must be bytes or a reference")),
+        };
+        chosen = match (chosen, asset) {
+            (Some(StoredAsset::Reference { len, mime }), _)
+            | (_, StoredAsset::Reference { len, mime }) => {
+                Some(StoredAsset::Reference { len, mime })
+            }
+            (_, inline) => Some(inline),
+        };
+    }
+    chosen.ok_or_else(|| format!("missing {key}"))
+}
+
 fn validate_assets(doc: &AutoCommit) -> Result<(), String> {
     let Some(assets) = assets_map(doc)? else {
         return Ok(());
@@ -264,14 +332,10 @@ fn validate_assets(doc: &AutoCommit) -> Result<(), String> {
         let Some(digest) = asset_digest(&key) else {
             return Err(format!("invalid asset digest {key}"));
         };
-        let (value, _) = required(doc, &assets, &key)?;
-        let Value::Scalar(value) = value else {
-            return Err(format!("asset {key} must be bytes"));
-        };
-        let ScalarValue::Bytes(bytes) = value.as_ref() else {
-            return Err(format!("asset {key} must be bytes"));
-        };
-        validate_asset_payload(digest, bytes).map_err(|error| format!("asset {key}: {error}"))?;
+        if let StoredAsset::Inline(bytes) = stored_asset(doc, &assets, &key)? {
+            validate_asset_payload(digest, &bytes)
+                .map_err(|error| format!("asset {key}: {error}"))?;
+        }
     }
     Ok(())
 }
@@ -284,11 +348,7 @@ fn validate_asset_shape(doc: &AutoCommit) -> Result<(), String> {
         if asset_digest(&key).is_none() {
             return Err(format!("invalid asset digest {key}"));
         }
-        let (value, _) = required(doc, &assets, &key)?;
-        if !matches!(value, Value::Scalar(value) if matches!(value.as_ref(), ScalarValue::Bytes(_)))
-        {
-            return Err(format!("asset {key} must be bytes"));
-        }
+        stored_asset(doc, &assets, &key)?;
     }
     Ok(())
 }
@@ -333,52 +393,216 @@ pub fn validate_asset_payload(digest: &str, bytes: &[u8]) -> Result<(), String> 
     Ok(())
 }
 
-/// Store one validated content-addressed image payload.
+/// Keep the bytes of one validated image in the content store and record
+/// its reference in the notebook. Only the reference reaches collaborators'
+/// replicas; their devices fetch the bytes from the content store.
+///
+/// A process with no content store behind `qdoc::blobstore` (one started
+/// outside the launcher) keeps the bytes inline instead, as notebooks did
+/// before: a reference to bytes held only in memory would dangle after exit.
+/// [`move_inline_assets`] moves them once a content store is available.
 ///
 /// # Errors
-/// Returns an error when validation fails or the collaborative asset map cannot be updated.
+/// Returns an error when validation fails, the content store refuses the
+/// bytes, or the collaborative asset map cannot be updated.
 pub fn put_asset(doc: &mut AutoCommit, digest: &str, bytes: &[u8]) -> Result<(), String> {
+    put_asset_in(&*qdoc::blobstore::store(), doc, digest, bytes)
+}
+
+/// [`put_asset`] against an explicit store.
+///
+/// # Errors
+/// As [`put_asset`].
+pub fn put_asset_in(
+    store: &dyn qdoc::blobstore::BlobStore,
+    doc: &mut AutoCommit,
+    digest: &str,
+    bytes: &[u8],
+) -> Result<(), String> {
     validate_asset_payload(digest, bytes)?;
+    let digest = digest.strip_prefix("asset:").unwrap_or(digest);
     let assets = match assets_map(doc)? {
         Some(assets) => assets,
         None => doc
             .put_object(ROOT, "assets", ObjType::Map)
             .map_err(|e| e.to_string())?,
     };
-    let digest = digest.strip_prefix("asset:").unwrap_or(digest);
-    if let Some((Value::Scalar(existing), _)) =
-        doc.get(&assets, digest).map_err(|e| e.to_string())?
+    let existing = if doc
+        .get_all(&assets, digest)
+        .map_err(|e| e.to_string())?
+        .is_empty()
     {
-        return match existing.as_ref() {
-            ScalarValue::Bytes(existing) if existing.as_slice() == bytes => Ok(()),
-            _ => Err("image asset digest already names different content".into()),
-        };
+        None
+    } else {
+        Some(stored_asset(doc, &assets, digest)?)
+    };
+    match existing {
+        Some(StoredAsset::Inline(existing)) if existing == bytes => Ok(()),
+        Some(StoredAsset::Reference { len, .. }) if len == bytes.len() as u64 => {
+            // Keep this device able to serve the bytes the reference names.
+            store_asset_bytes(store, digest, bytes)
+        }
+        Some(_) => Err("image asset digest already names different content".into()),
+        None if store.shared() => {
+            store_asset_bytes(store, digest, bytes)?;
+            write_reference(doc, &assets, digest, bytes)
+        }
+        None => doc
+            .put(&assets, digest, ScalarValue::Bytes(bytes.to_vec()))
+            .map_err(|e| e.to_string()),
     }
-    doc.put(&assets, digest, ScalarValue::Bytes(bytes.to_vec()))
-        .map_err(|e| e.to_string())
 }
 
-/// Snapshot all validated image assets using their canonical `asset:` keys.
+fn store_asset_bytes(
+    store: &dyn qdoc::blobstore::BlobStore,
+    digest: &str,
+    bytes: &[u8],
+) -> Result<(), String> {
+    let mime = image_mime(bytes).unwrap_or_default();
+    match store.put(bytes, mime) {
+        Ok(stored) if stored == digest => Ok(()),
+        Ok(_) => Err("image asset bytes do not match their digest".into()),
+        Err(error) => Err(format!("the content store refused the image: {error}")),
+    }
+}
+
+fn write_reference(
+    doc: &mut AutoCommit,
+    assets: &ObjId,
+    digest: &str,
+    bytes: &[u8],
+) -> Result<(), String> {
+    let mime = image_mime(bytes).ok_or("image asset must be PNG, JPEG, or WebP")?;
+    let reference = doc
+        .put_object(assets, digest, ObjType::Map)
+        .map_err(|e| e.to_string())?;
+    doc.put(&reference, "len", bytes.len() as u64)
+        .map_err(|e| e.to_string())?;
+    doc.put(&reference, "mime", mime).map_err(|e| e.to_string())
+}
+
+/// Digests of images the notebook still carries inline.
+///
+/// # Errors
+/// Returns an error when the asset map is malformed.
+pub fn inline_asset_digests(doc: &AutoCommit) -> Result<Vec<String>, String> {
+    let Some(assets) = assets_map(doc)? else {
+        return Ok(Vec::new());
+    };
+    let mut digests = Vec::new();
+    for key in doc.keys(&assets) {
+        if asset_digest(&key).is_some()
+            && matches!(stored_asset(doc, &assets, &key)?, StoredAsset::Inline(_))
+        {
+            digests.push(key);
+        }
+    }
+    digests.sort();
+    Ok(digests)
+}
+
+/// Move inline images named by `digests` into the content store and replace
+/// them with references. Idempotent: references and unknown digests are left
+/// alone, so replaying the move, or moving concurrently on two devices,
+/// converges on the same references.
+///
+/// # Errors
+/// Returns an error when an inline payload is invalid or the content store
+/// refuses it; nothing is rewritten in that case.
+pub fn move_inline_assets(doc: &mut AutoCommit, digests: &[String]) -> Result<usize, String> {
+    move_inline_assets_in(&*qdoc::blobstore::store(), doc, digests)
+}
+
+/// [`move_inline_assets`] against an explicit store.
+///
+/// # Errors
+/// As [`move_inline_assets`], and when `store` is local to this process.
+pub fn move_inline_assets_in(
+    store: &dyn qdoc::blobstore::BlobStore,
+    doc: &mut AutoCommit,
+    digests: &[String],
+) -> Result<usize, String> {
+    if !store.shared() {
+        return Err("images stay inline until a content store is available".into());
+    }
+    let Some(assets) = assets_map(doc)? else {
+        return Ok(0);
+    };
+    let mut moves = Vec::new();
+    for digest in digests {
+        let Some(digest) = asset_digest(digest) else {
+            return Err(format!("invalid asset digest {digest}"));
+        };
+        if doc
+            .get_all(&assets, digest)
+            .map_err(|e| e.to_string())?
+            .is_empty()
+        {
+            continue;
+        }
+        if let StoredAsset::Inline(bytes) = stored_asset(doc, &assets, digest)? {
+            validate_asset_payload(digest, &bytes)?;
+            store_asset_bytes(store, digest, &bytes)?;
+            moves.push((digest.to_owned(), bytes));
+        }
+    }
+    for (digest, bytes) in &moves {
+        write_reference(doc, &assets, digest, bytes)?;
+    }
+    Ok(moves.len())
+}
+
+/// Snapshot the image assets whose bytes are readable now, using their
+/// canonical `asset:` keys. A referenced image a collaborator added may still
+/// be on its way from their device; it is absent until it arrives.
 ///
 /// # Errors
 /// Returns an error when the notebook asset schema or any payload is invalid.
 pub fn asset_snapshot(doc: &AutoCommit) -> Result<HashMap<String, Vec<u8>>, String> {
+    asset_snapshot_with(doc, qdoc::blobstore::get)
+}
+
+/// [`asset_snapshot`] reading referenced bytes through `read`.
+///
+/// # Errors
+/// As [`asset_snapshot`].
+pub fn asset_snapshot_with(
+    doc: &AutoCommit,
+    read: impl Fn(&str) -> Option<Vec<u8>>,
+) -> Result<HashMap<String, Vec<u8>>, String> {
     validate_assets(doc)?;
     let Some(assets) = assets_map(doc)? else {
         return Ok(HashMap::new());
     };
     let mut snapshot = HashMap::new();
     for digest in doc.keys(&assets) {
-        let Some((Value::Scalar(value), _)) =
-            doc.get(&assets, &digest).map_err(|e| e.to_string())?
-        else {
-            continue;
+        let bytes = match stored_asset(doc, &assets, &digest)? {
+            StoredAsset::Inline(bytes) => Some(bytes),
+            StoredAsset::Reference { .. } => {
+                read(&digest).filter(|bytes| qdoc::blobstore::verify(&digest, bytes))
+            }
         };
-        if let ScalarValue::Bytes(bytes) = value.as_ref() {
-            snapshot.insert(format!("asset:{digest}"), bytes.clone());
+        if let Some(bytes) = bytes {
+            snapshot.insert(format!("asset:{digest}"), bytes);
         }
     }
     Ok(snapshot)
+}
+
+/// Whether every asset the notebook references is in `snapshot`.
+///
+/// # Errors
+/// Returns an error when the asset map is malformed.
+pub(crate) fn assets_complete(
+    doc: &AutoCommit,
+    snapshot: &HashMap<String, Vec<u8>>,
+) -> Result<bool, String> {
+    let Some(assets) = assets_map(doc)? else {
+        return Ok(true);
+    };
+    Ok(doc
+        .keys(&assets)
+        .all(|digest| snapshot.contains_key(&format!("asset:{digest}"))))
 }
 
 fn validate_blocks(doc: &AutoCommit, page: &ObjId) -> Result<(), String> {
@@ -784,5 +1008,193 @@ mod tests {
                 .unwrap_err()
                 .contains("inconsistent link target")
         );
+    }
+
+    use qdoc::blobstore::BlobStore as _;
+    use tilo_automerge::ApplyIncoming as _;
+
+    /// A content store standing in for the device store behind the launcher's
+    /// capability: shared beyond this process, optionally refusing.
+    #[derive(Default)]
+    struct DeviceStore {
+        bytes: std::sync::Mutex<HashMap<String, Vec<u8>>>,
+        refuse: bool,
+    }
+
+    impl qdoc::blobstore::BlobStore for DeviceStore {
+        fn put(
+            &self,
+            bytes: &[u8],
+            _mime: &str,
+        ) -> Result<String, qdoc::blobstore::BlobStoreError> {
+            if self.refuse {
+                return Err(qdoc::blobstore::BlobStoreError::Unavailable("full".into()));
+            }
+            let hash = qdoc::blobstore::hash_bytes(bytes);
+            self.bytes
+                .lock()
+                .unwrap()
+                .insert(hash.clone(), bytes.to_vec());
+            Ok(hash)
+        }
+        fn cached(&self, hash: &str) -> Option<Vec<u8>> {
+            self.bytes.lock().unwrap().get(hash).cloned()
+        }
+        fn fetch(&self, hash: &str) -> qdoc::blobstore::Fetch {
+            self.cached(hash).map_or(
+                qdoc::blobstore::Fetch::Unavailable,
+                qdoc::blobstore::Fetch::Ready,
+            )
+        }
+        fn shared(&self) -> bool {
+            true
+        }
+    }
+
+    fn png(seed: u8) -> Vec<u8> {
+        let mut bytes = vec![137, 80, 78, 71, 13, 10, 26, 10];
+        bytes.extend(std::iter::repeat_n(seed, 2048));
+        bytes
+    }
+
+    /// A notebook as it was written before images moved to the content
+    /// store: bytes inline under their digest, referenced from a block.
+    fn inline_notebook(images: &[Vec<u8>]) -> (AutoCommit, Vec<String>) {
+        let mut doc = AutoCommit::new();
+        initialize_empty(&mut doc).unwrap();
+        let assets = assets_map(&doc).unwrap().unwrap();
+        let digests = images
+            .iter()
+            .map(|bytes| {
+                let digest = blake3::hash(bytes).to_hex().to_string();
+                doc.put(&assets, &digest, ScalarValue::Bytes(bytes.clone()))
+                    .unwrap();
+                digest
+            })
+            .collect::<Vec<_>>();
+        doc.commit();
+        (doc, digests)
+    }
+
+    fn stored(doc: &AutoCommit, digest: &str) -> StoredAsset {
+        stored_asset(doc, &assets_map(doc).unwrap().unwrap(), digest).unwrap()
+    }
+
+    #[test]
+    fn inline_images_move_to_the_content_store_and_the_notebook_keeps_references() {
+        let images = [png(1), png(2)];
+        let (mut doc, digests) = inline_notebook(&images);
+        validate(&doc).expect("an old notebook with inline images stays loadable");
+        assert_eq!(inline_asset_digests(&doc).unwrap(), {
+            let mut sorted = digests.clone();
+            sorted.sort();
+            sorted
+        });
+
+        let store = DeviceStore::default();
+        assert_eq!(
+            move_inline_assets_in(&store, &mut doc, &digests).unwrap(),
+            2
+        );
+        doc.commit();
+        for (digest, bytes) in digests.iter().zip(&images) {
+            assert_eq!(
+                stored(&doc, digest),
+                StoredAsset::Reference {
+                    len: bytes.len() as u64,
+                    mime: "image/png".into(),
+                }
+            );
+            assert_eq!(store.cached(digest).as_ref(), Some(bytes));
+        }
+        assert!(inline_asset_digests(&doc).unwrap().is_empty());
+
+        // Round trip: the saved notebook reopens with references and every
+        // image readable through the store.
+        let reopened = AutoCommit::load(&doc.save()).unwrap();
+        validate(&reopened).unwrap();
+        let snapshot = asset_snapshot_with(&reopened, |hash| store.cached(hash)).unwrap();
+        for (digest, bytes) in digests.iter().zip(&images) {
+            assert_eq!(snapshot.get(&format!("asset:{digest}")), Some(bytes));
+        }
+        assert!(assets_complete(&reopened, &snapshot).unwrap());
+        // Before a collaborator's bytes arrive, the image is simply absent.
+        let waiting = asset_snapshot_with(&reopened, |_| None).unwrap();
+        assert!(waiting.is_empty());
+        assert!(!assets_complete(&reopened, &waiting).unwrap());
+
+        // Idempotent: a second move changes nothing.
+        let mut again = reopened;
+        let heads = again.get_heads();
+        assert_eq!(
+            move_inline_assets_in(&store, &mut again, &digests).unwrap(),
+            0
+        );
+        again.commit();
+        assert_eq!(again.get_heads(), heads);
+    }
+
+    #[test]
+    fn two_devices_moving_the_same_images_converge() {
+        let images = [png(3)];
+        let (mut doc, digests) = inline_notebook(&images);
+        let mut a = doc.fork();
+        let mut b = doc.fork();
+        let store = DeviceStore::default();
+        move_inline_assets_in(&store, &mut a, &digests).unwrap();
+        move_inline_assets_in(&store, &mut b, &digests).unwrap();
+        a.merge_incoming(&mut b).unwrap();
+        validate(&a).unwrap();
+        assert!(matches!(
+            stored(&a, &digests[0]),
+            StoredAsset::Reference { .. }
+        ));
+    }
+
+    #[test]
+    fn a_refused_move_leaves_the_images_inline() {
+        let images = [png(4)];
+        let (mut doc, digests) = inline_notebook(&images);
+        let refusing = DeviceStore {
+            refuse: true,
+            ..DeviceStore::default()
+        };
+        assert!(move_inline_assets_in(&refusing, &mut doc, &digests).is_err());
+        assert_eq!(
+            stored(&doc, &digests[0]),
+            StoredAsset::Inline(images[0].clone())
+        );
+        // A process-local store never receives the only copy.
+        let local = qdoc::blobstore::MemoryBlobStore::default();
+        assert!(move_inline_assets_in(&local, &mut doc, &digests).is_err());
+        assert_eq!(
+            stored(&doc, &digests[0]),
+            StoredAsset::Inline(images[0].clone())
+        );
+    }
+
+    #[test]
+    fn new_images_are_references_only_when_a_content_store_holds_the_bytes() {
+        let bytes = png(5);
+        let digest = blake3::hash(&bytes).to_hex().to_string();
+
+        let mut shared_doc = AutoCommit::new();
+        initialize_empty(&mut shared_doc).unwrap();
+        let store = DeviceStore::default();
+        put_asset_in(&store, &mut shared_doc, &digest, &bytes).unwrap();
+        assert!(matches!(
+            stored(&shared_doc, &digest),
+            StoredAsset::Reference { .. }
+        ));
+        assert_eq!(store.cached(&digest), Some(bytes.clone()));
+        // Re-adding the same image is a no-op; other bytes under the digest are not.
+        put_asset_in(&store, &mut shared_doc, &digest, &bytes).unwrap();
+
+        let mut local_doc = AutoCommit::new();
+        initialize_empty(&mut local_doc).unwrap();
+        let local = qdoc::blobstore::MemoryBlobStore::default();
+        put_asset_in(&local, &mut local_doc, &digest, &bytes).unwrap();
+        assert_eq!(stored(&local_doc, &digest), StoredAsset::Inline(bytes));
+        validate(&local_doc).unwrap();
     }
 }

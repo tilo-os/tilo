@@ -38,6 +38,11 @@ block-editor-code-keyboard-hint = Ctrl+Enter: darunter schreiben · Ctrl+Shift+E
 widget-block-indent = Block mit Unterelementen einrücken
 widget-block-text = Blocktext
 widget-block-outdent = Block mit Unterelementen ausrücken
+tree-rename-field = Umbenennen
+tree-move-up = Nach oben verschieben
+tree-move-down = Nach unten verschieben
+tree-move-indent = In das Element darüber verschieben
+tree-move-outdent = Aus dem übergeordneten Element verschieben
 
 # Authentication surfaces share the system theme and catalog.
 greeter-welcome-back = Willkommen zurück bei Tilo

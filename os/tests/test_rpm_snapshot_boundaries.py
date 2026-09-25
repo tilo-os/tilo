@@ -14,7 +14,7 @@ RECIPE = REPO / "os/Containerfile.rpms"
 IMAGE = REPO / "os/Containerfile"
 VERIFY = REPO / "os/dev/verify-rpm-snapshot-signatures.sh"
 DERIVE = REPO / "os/dev/derive-rpm-package-set.py"
-FULL_OFFLINE_RESOLVE = ("dnf install -y --downloadonly --setopt=reposdir=/repo "
+FULL_OFFLINE_RESOLVE = ("dnf install -y --best --downloadonly --setopt=reposdir=/repo "
                         "--setopt=install_weak_deps=True ${PACKAGES}")
 # The image's erase of base-installed packages that later stages need again.
 ERASE = re.compile(r"awk '/\^\(([^)]*)\)\$/'\s*\|\s*xargs -r rpm -e --nodeps")
@@ -73,13 +73,14 @@ def validate_boundaries(text):
     ancestor = "resolve"
     while ancestor in stages:
         for line in stages[ancestor]:
-            if re.search(r"\bdnf(?:5)? install\b", line) and "--downloadonly" not in line:
+            if (re.search(r"\bdnf(?:5)? install\b", line)
+                    and "--downloadonly" not in line and "--store=" not in line):
                 raise ValueError("resolver inherits an installed tooling environment")
         ancestor = bases[ancestor]
     if ancestor != "${BASE_REF}" or bases["offline-check"] != "${BASE_REF}":
         raise ValueError("closure must use original pinned base")
     check = " ".join(stages["offline-check"])
-    if any(word not in check for word in ("--network=none", "--downloadonly", "--setopt=reposdir=/repo", "--setopt=install_weak_deps=True")):
+    if any(word not in check for word in ("--network=none", "--best", "--downloadonly", "--setopt=reposdir=/repo", "--setopt=install_weak_deps=True")):
         raise ValueError("offline closure policy differs from resolution")
     if not any("COPY --from=offline-check /repo /repo" in line for line in stages["final"]):
         raise ValueError("final artifact can prune offline closure check")
@@ -105,7 +106,7 @@ class BoundaryTests(unittest.TestCase):
     def test_replay_without_full_offline_resolve_is_rejected(self):
         recipe = RECIPE.read_text()
         head, tail = recipe.split("xargs -r rpm -e --nodeps", 1)
-        tail = tail.replace(FULL_OFFLINE_RESOLVE, "dnf install -y --downloadonly --setopt=reposdir=/repo wine")
+        tail = tail.replace(FULL_OFFLINE_RESOLVE, "dnf install -y --best --downloadonly --setopt=reposdir=/repo wine")
         with self.assertRaisesRegex(ValueError, "complete package set"):
             validate_erase_replay(IMAGE.read_text(), head + "xargs -r rpm -e --nodeps" + tail)
 
@@ -122,6 +123,12 @@ class BoundaryTests(unittest.TestCase):
         recipe = RECIPE.read_text().replace("FROM configured-base AS resolve", "FROM metadata-tools AS resolve")
         with self.assertRaisesRegex(ValueError, "tooling"):
             validate_boundaries(recipe)
+
+    def test_offline_check_without_best_is_rejected(self):
+        recipe = RECIPE.read_text().replace(FULL_OFFLINE_RESOLVE,
+                                            FULL_OFFLINE_RESOLVE.replace("--best ", ""))
+        with self.assertRaisesRegex(ValueError, "offline replay"):
+            validate_erase_replay(IMAGE.read_text(), recipe)
 
     def test_masked_offline_check_is_rejected(self):
         recipe = RECIPE.read_text().replace("FROM ${BASE_REF} AS offline-check", "FROM metadata-tools AS offline-check")

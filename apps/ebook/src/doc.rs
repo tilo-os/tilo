@@ -29,13 +29,14 @@ use automerge::ActorId;
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, ScalarValue, Value};
 use std::collections::BTreeMap;
+use tilo_clock::unix_now_ms;
 use ui::doc::{read_bool, read_number, read_scalar, read_str};
 use uuid::Uuid;
 
 use crate::model::{
     AnnoKind, Annotation, AnnotationAnchor, ColorScheme, FontEntry, FontKind, HiColor,
     LibraryEntry, LibraryPrefs, LibrarySort, Progress, ReadMode, ReadTheme, Settings,
-    default_fonts, default_schemes, now_ms,
+    default_fonts, default_schemes,
 };
 
 /// Pack an sRGB triple into a single int for the CRDT.
@@ -428,7 +429,8 @@ impl BooksDoc {
         let was_shared = entries
             .iter()
             .any(|entry| read_bool(doc, entry, "shared").unwrap_or(false));
-        let added = existing_added.unwrap_or_else(|| if e.added > 0 { e.added } else { now_ms() });
+        let added =
+            existing_added.unwrap_or_else(|| if e.added > 0 { e.added } else { unix_now_ms() });
         for entry in entries {
             // Earlier development snapshots stored a raw source path here.
             // Clear it in every conflicting branch while repairing the row.

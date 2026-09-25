@@ -26,7 +26,6 @@ fn isolated_root(test_name: &str) -> Option<PathBuf> {
         .env("XDG_CACHE_HOME", environment.join("cache"))
         .env("XDG_STATE_HOME", environment.join("state"))
         .env("TILO_IDENTITY_ROOT", environment.join("identity"))
-        .env("TILO_BLOB_STORE", environment.join("blobs"))
         .status()
         .unwrap();
     assert!(status.success());
@@ -218,7 +217,6 @@ fn zero_app_stdio_is_json_only_and_profile_contention_is_refused() {
         "XDG_CACHE_HOME",
         "XDG_STATE_HOME",
         "TILO_IDENTITY_ROOT",
-        "TILO_BLOB_STORE",
     ]
     .map(|name| (name, std::env::var_os(name)));
     let manifest = validate_manifest(AppManifest { apps: vec![] }).unwrap();

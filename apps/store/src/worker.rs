@@ -676,18 +676,7 @@ fn collect_items(
     host: Option<&app_host::client::BlockingClient>,
 ) -> Vec<StoreItem> {
     let registries = load_registries().registries;
-    let installed_tilo = host
-        .and_then(|host| host.list().ok())
-        .unwrap_or_default()
-        .into_iter()
-        .map(|package| crate::installed::InstalledEntry {
-            id: package.app_id,
-            version: package.version,
-            pinned: package.pinned,
-            user_managed: package.user_managed,
-            ..crate::installed::InstalledEntry::default()
-        })
-        .collect::<Vec<_>>();
+    let installed_tilo = host.and_then(|host| host.list().ok()).unwrap_or_default();
     let mut tilo_items = Vec::new();
     for registry in registries.iter().filter(|registry| registry.enabled) {
         match crate::registry_client::fetch_entries(registry) {

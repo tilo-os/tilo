@@ -30,9 +30,10 @@ uuid.workspace = true
 runtime-portal = { path = "../runtime-portal" }
 capnp.workspace = true
 capnp-rpc.workspace = true
-tokio = { workspace = true, features = ["rt", "net", "io-util", "macros", "sync"] }
+tokio = { workspace = true, features = ["rt", "net", "io-util", "macros", "sync", "time"] }
 tokio-util.workspace = true
 serde.workspace = true
+serde_json.workspace = true
 postcard = { workspace = true, features = ["use-std"] }
 wire-frame = { path = "../../system/wire-frame", features = ["postcard"] }
 

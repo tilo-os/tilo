@@ -27,7 +27,7 @@ use std::time::Duration;
 use tilo_relay::{Envelope, RelayClient};
 use tilo_user_identity::{DeviceCapabilities, RevocationList};
 
-use crate::common::{TestUser, client_endpoint, spawn_relay};
+use crate::common::{TestUser, client_endpoint, spawn_relay, wait_for};
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn sharded_topology_isolates_per_workspace() {
@@ -49,7 +49,17 @@ async fn sharded_topology_isolates_per_workspace() {
     relay2
         .relay
         .add_peer_relay_at(relay1.relay.node_addr(), "r1".into(), 0);
-    tokio::time::sleep(Duration::from_millis(1500)).await;
+    // Both peer-relay sessions authenticated, so the relays have met and
+    // found nothing in common rather than not having met yet.
+    let (metrics_1, metrics_2) = (relay1.relay.handle().metrics, relay2.relay.handle().metrics);
+    assert!(
+        wait_for(
+            || metrics_1.snapshot().conns_authed > 0 && metrics_2.snapshot().conns_authed > 0,
+            1000
+        )
+        .await,
+        "the relays never completed a peer-relay handshake"
+    );
 
     // The author dials relay1, subscribes to 20, publishes on 20.
     let ep = client_endpoint().await;

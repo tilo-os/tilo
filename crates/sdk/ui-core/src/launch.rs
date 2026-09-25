@@ -1139,6 +1139,10 @@ fn run_with_args_with_attachment(
     attach: impl FnOnce(&str) -> std::io::Result<()>,
 ) -> Result<(), LaunchError> {
     let _detached = crate::wake::WakeScope::enter_detached();
+    // Document media goes to the content store the launcher connected, in
+    // every mode that was handed one (live, headless drives, captures).
+    #[cfg(all(unix, feature = "native"))]
+    crate::native::blobs::install_from_environment();
     let args = parse_args_extended(
         raw_args,
         spec.allowed_flags,

@@ -635,7 +635,8 @@ pub(super) fn trusted_identity_complete() -> Result<(), String> {
     Err("Continue the saved Desktop imports after logging into Tilo on Linux.".into())
 }
 
-#[cfg(test)]
+// Migration fixtures exercise Linux directory handles and session sockets.
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
     use crate::setup::controller::{FolderChoice, FolderDestination};

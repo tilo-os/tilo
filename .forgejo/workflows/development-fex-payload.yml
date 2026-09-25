@@ -11,6 +11,18 @@ on:
         description: "Optional previously published x86 SDK digest to reuse after a failed FEX build"
         required: false
         type: string
+      payload_candidate:
+        description: "Optional CI-built unsigned payload digest to recover after a signing-only failure"
+        required: false
+        type: string
+      payload_repository_revision:
+        description: "Original repository commit that built payload_candidate"
+        required: false
+        type: string
+      payload_build_run_id:
+        description: "Original Forgejo run ID that built payload_candidate"
+        required: false
+        type: string
 
 # These candidates are CI-built, digest-addressed and retained. They are not
 # release-accepted: the SDK resolves live Fedora RPMs and translated Wine,
@@ -130,11 +142,49 @@ jobs:
         env:
           FEX_BUILDROOT_REF: ${{ needs.buildroot.outputs.ref }}
           FEX_X86_SDK_REF: ${{ needs.sdk.outputs.ref }}
+          FEX_PAYLOAD_CANDIDATE: ${{ inputs.payload_candidate }}
+          FEX_PAYLOAD_REPOSITORY_REVISION: ${{ inputs.payload_repository_revision }}
+          FEX_PAYLOAD_BUILD_RUN_ID: ${{ inputs.payload_build_run_id }}
+          BUILDROOT_CANDIDATE: ${{ inputs.buildroot_candidate }}
+          SDK_CANDIDATE: ${{ inputs.sdk_candidate }}
         run: |
           set -euo pipefail
           test "$(uname -m)" = aarch64
           [[ "$FEX_BUILDROOT_REF" =~ ^code\.podesta\.ai/qos/tilo-fex-buildroot-candidate@sha256:[0-9a-f]{64}$ ]]
           [[ "$FEX_X86_SDK_REF" =~ ^code\.podesta\.ai/qos/tilo-fex-x86-sdk-candidate@sha256:[0-9a-f]{64}$ ]]
+          if [[ -n "$FEX_PAYLOAD_CANDIDATE" ]]; then
+            [[ "$FEX_PAYLOAD_CANDIDATE" =~ ^code\.podesta\.ai/qos/tilo-fex-payload-candidate@sha256:[0-9a-f]{64}$ \
+               && "$FEX_PAYLOAD_REPOSITORY_REVISION" =~ ^[0-9a-f]{40}$ \
+               && "$FEX_PAYLOAD_BUILD_RUN_ID" =~ ^[1-9][0-9]*$ \
+               && "$BUILDROOT_CANDIDATE" == "$FEX_BUILDROOT_REF" \
+               && "$SDK_CANDIDATE" == "$FEX_X86_SDK_REF" ]] || {
+              echo '::error::payload recovery requires the exact digest, original revision/run, and retained input digests'; exit 1;
+            }
+            original_tag="code.podesta.ai/qos/tilo-fex-payload-candidate:${FEX_PAYLOAD_REPOSITORY_REVISION}-${FEX_PAYLOAD_BUILD_RUN_ID}"
+            tag_pull="$(docker pull --platform linux/arm64 "$original_tag")"
+            grep -Fx "Digest: ${FEX_PAYLOAD_CANDIDATE##*@}" <<< "$tag_pull"
+            docker pull --platform linux/arm64 "$FEX_PAYLOAD_CANDIDATE"
+            test "$(docker image inspect --format '{{.Architecture}}' "$FEX_PAYLOAD_CANDIDATE")" = arm64
+            test "$(docker image inspect --format '{{index .Config.Labels "org.tilo.development-only"}}' "$FEX_PAYLOAD_CANDIDATE")" = true
+            test "$(docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' "$FEX_PAYLOAD_CANDIDATE")" = "$FEX_PAYLOAD_REPOSITORY_REVISION"
+            container="$(docker create "$FEX_PAYLOAD_CANDIDATE" /bin/true)"
+            docker cp "$container:/usr/lib/tilo/fex/inputs.env" "$RUNNER_TEMP/fex-inputs.env"
+            docker cp "$container:/usr/lib/tilo/fex/source.txt" "$RUNNER_TEMP/fex-source.txt"
+            docker cp "$container:/usr/lib/tilo/fex/payload-inventory.json" "$RUNNER_TEMP/fex-payload-inventory.json"
+            docker rm "$container"
+            grep -Fx "FEX_BUILDROOT_REF=$FEX_BUILDROOT_REF" "$RUNNER_TEMP/fex-inputs.env"
+            grep -Fx "FEX_X86_SDK_REF=$FEX_X86_SDK_REF" "$RUNNER_TEMP/fex-inputs.env"
+            source os/external-assets/fex-source.env
+            grep -Fx "FEX source revision: $FEX_SOURCE_REVISION" "$RUNNER_TEMP/fex-source.txt"
+            jq -e '.schema_version == 1 and .validation == "installation-layout-only" and (.files | length > 0)' \
+              "$RUNNER_TEMP/fex-payload-inventory.json" >/dev/null
+            echo "ref=$FEX_PAYLOAD_CANDIDATE" >> "$GITHUB_OUTPUT"
+            echo "::notice::recovered CI-built FEX payload $FEX_PAYLOAD_CANDIDATE from run $FEX_PAYLOAD_BUILD_RUN_ID"
+            exit 0
+          fi
+          [[ -z "$FEX_PAYLOAD_REPOSITORY_REVISION" && -z "$FEX_PAYLOAD_BUILD_RUN_ID" ]] || {
+            echo '::error::original payload revision/run require payload_candidate'; exit 1;
+          }
           echo "::notice::ARM runner CPUs=$(nproc); memory=$(awk '/^MemTotal:/ {print $2 " KiB"}' /proc/meminfo); Docker=$(docker info --format 'CPUs={{.NCPU}} memory={{.MemTotal}} bytes')"
           docker_memory_bytes="$(docker info --format '{{.MemTotal}}')"
           [[ "$docker_memory_bytes" =~ ^[0-9]+$ ]]
@@ -156,6 +206,8 @@ jobs:
             --tag "$tag" .
           digest="$(jq -er '."containerimage.digest" | select(test("^sha256:[0-9a-f]{64}$"))' fex-metadata.json)"
           echo "ref=code.podesta.ai/qos/tilo-fex-payload-candidate@$digest" >> "$GITHUB_OUTPUT"
+      - name: Install pinned Cosign
+        run: bash os/dev/install-cached-cosign.sh
       - name: Sign candidate and record its limited provenance
         env:
           COSIGN_KEY_REF: ${{ secrets.COSIGN_KEY_REF }}
@@ -163,6 +215,9 @@ jobs:
           FEX_BUILDROOT_REF: ${{ needs.buildroot.outputs.ref }}
           FEX_X86_SDK_REF: ${{ needs.sdk.outputs.ref }}
           FEX_PAYLOAD_REF: ${{ steps.publish.outputs.ref }}
+          FEX_PAYLOAD_CANDIDATE: ${{ inputs.payload_candidate }}
+          FEX_PAYLOAD_REPOSITORY_REVISION: ${{ inputs.payload_repository_revision }}
+          FEX_PAYLOAD_BUILD_RUN_ID: ${{ inputs.payload_build_run_id }}
         run: |
           set -euo pipefail
           case "$COSIGN_KEY_REF" in
@@ -170,12 +225,16 @@ jobs:
             *) echo '::error::COSIGN_KEY_REF must name a non-exportable KMS/HSM key'; exit 1 ;;
           esac
           . os/dev/configure-cosign-kms.sh
-          jq -n --arg source "$GITHUB_SHA" --arg buildroot "$FEX_BUILDROOT_REF" \
+          source_revision="${FEX_PAYLOAD_REPOSITORY_REVISION:-$GITHUB_SHA}"
+          build_run_id="${FEX_PAYLOAD_BUILD_RUN_ID:-$GITHUB_RUN_ID}"
+          jq -n --arg source "$source_revision" --arg buildroot "$FEX_BUILDROOT_REF" \
             --arg sdk "$FEX_X86_SDK_REF" --arg payload "$FEX_PAYLOAD_REF" \
-            --arg run "$GITHUB_RUN_ID" '{
+            --arg run "$build_run_id" --arg signer_run "$GITHUB_RUN_ID" \
+            --arg recovered "$FEX_PAYLOAD_CANDIDATE" '{
               buildDefinition: {
                 buildType: "https://tilo.sh/buildtypes/development-fex-payload/v1",
-                externalParameters: {developmentOnly: true, runtimeAcceptanceVerified: false},
+                externalParameters: {developmentOnly: true, runtimeAcceptanceVerified: false,
+                  recoveredUnsignedCandidate: ($recovered != "")},
                 resolvedDependencies: [
                   {uri: ("git+ssh://code.podesta.ai/qos/qos@" + $source)},
                   {uri: $buildroot}, {uri: $sdk}
@@ -183,13 +242,15 @@ jobs:
               },
               runDetails: {
                 builder: {id: "https://code.podesta.ai/qos/forgejo/actions/development-fex-v1"},
-                metadata: {invocationId: $run, output: $payload}
+                metadata: {invocationId: $run, signingInvocationId: $signer_run, output: $payload}
               }
             }' > fex-provenance.json
           cosign sign --yes --key "$COSIGN_KEY_REF" "$FEX_PAYLOAD_REF"
           cosign attest --yes --key "$COSIGN_KEY_REF" \
             --predicate fex-provenance.json --type slsaprovenance1 "$FEX_PAYLOAD_REF"
           cosign verify --key keys/cosign.pub "$FEX_PAYLOAD_REF" >/dev/null
+          cosign verify-attestation --key keys/cosign.pub \
+            --type slsaprovenance1 "$FEX_PAYLOAD_REF" >/dev/null
           echo "::notice::CI-signed development FEX candidate: $FEX_PAYLOAD_REF"
       - uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
         if: always()

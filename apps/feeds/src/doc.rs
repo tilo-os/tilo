@@ -307,12 +307,7 @@ impl FeedsDoc {
     }
 
     fn tag_key(tag: &str) -> String {
-        use std::fmt::Write as _;
-        let mut key = String::with_capacity(tag.len().saturating_mul(2));
-        for byte in tag.as_bytes() {
-            let _ = write!(key, "{byte:02x}");
-        }
-        key
+        hex::encode(tag)
     }
 
     pub fn set_folder_collapsed(doc: &mut AutoCommit, id: Id, collapsed: bool) {

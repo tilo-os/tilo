@@ -3075,7 +3075,7 @@ impl SnippetsApp {
             // Highlighted spans.
             let mut sx = code_x;
             for span in spans {
-                let color = highlight::token_color(span.kind, theme);
+                let color = theme.tokens.syntax.color(span.kind);
                 let weight = if span.kind == ui::widget::code_editor::TokenKind::Keyword {
                     TextWeight::Semibold
                 } else {

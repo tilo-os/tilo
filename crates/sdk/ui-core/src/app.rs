@@ -2573,13 +2573,7 @@ fn humanize_ident(ident: &str) -> String {
     ident
         .split(|c: char| c == '-' || c == '_' || c == '.' || c.is_whitespace())
         .filter(|w| !w.is_empty())
-        .map(|w| {
-            let mut chars = w.chars();
-            match chars.next() {
-                Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
-                None => String::new(),
-            }
-        })
+        .map(crate::format::capitalize_first)
         .collect::<Vec<_>>()
         .join(" ")
 }

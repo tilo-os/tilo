@@ -578,22 +578,13 @@ mod tests {
     use super::*;
     use crate::model::{Category, LatLon, Place, Route, TravelMode};
     use automerge::ActorId;
-    use tilo_actions::{ActionInput, LocalTransport};
+    use tilo_actions::ActionInput;
     use tilo_automerge::ApplyIncoming;
 
     fn registry() -> ActionRegistry {
         let mut r = ActionRegistry::new();
         register(&mut r);
         r
-    }
-
-    fn immediate_encode(spec: &ActionSpec) -> EncodedAction {
-        match &spec.input {
-            ActionInput::Immediate(enc) => enc.clone(),
-            ActionInput::Prompted { .. } | ActionInput::Deferred { .. } => {
-                panic!("expected an immediate action: {}", spec.id)
-            }
-        }
     }
 
     fn region(id: &str, name: &str) -> DownloadedRegion {
@@ -640,6 +631,52 @@ mod tests {
         let mut doc = AutoCommit::new();
         MapsDoc::save(&mut doc, model);
         doc
+    }
+
+    /// The full model plus a committed search, so every resource kind with a
+    /// document action is published.
+    fn contract_seed_doc() -> AutoCommit {
+        let mut model = full_model();
+        model.push_recent("art museum");
+        seeded(&model)
+    }
+
+    fn resource_key<'a>(res: &'a Resource, prefix: &str) -> &'a str {
+        res.id
+            .as_str()
+            .strip_prefix(prefix)
+            .expect("a keyed resource")
+    }
+
+    ui::action_contract_tests! {
+        seed: contract_seed_doc(),
+        registry: registry(),
+        resources: |doc| provide_resources(doc),
+        palette: ["Delete region", "Clear route", "Remove from saved", "Clear search history"],
+        replay: [
+            unsave_place => |_| encode(&MapsAction::SetPlaceSaved {
+                id: "marienplatz".to_string(),
+                saved: false,
+            }),
+            add_region => |_| encode(&MapsAction::AddRegion(region("r2", "Schwabing"))),
+        ],
+        undo: [
+            delete_region => |_| encode(&MapsAction::DeleteRegion { id: "r1".to_string() }),
+        ],
+        encodes: [
+            delete_region => ("maps.region", "delete", |_, res| {
+                encode(&MapsAction::DeleteRegion {
+                    id: resource_key(res, "maps.region:").to_string(),
+                })
+            }),
+            unsave_place => ("maps.place", "unsave", |_, res| {
+                encode(&MapsAction::SetPlaceSaved {
+                    id: resource_key(res, "maps.place:").to_string(),
+                    saved: false,
+                })
+            }),
+            clear_route => ("maps.route:active", "clear", |_, _| encode(&MapsAction::ClearRoute)),
+        ],
     }
 
     /// Ctrl+K on Maps yields the workspace tree: a `maps.place` child per saved
@@ -709,20 +746,6 @@ mod tests {
         assert_eq!(
             reg.actions[0].contract.confirmation,
             ConfirmationPolicy::Confirm
-        );
-
-        // The one palette surfaces the tree's actions as rows.
-        let mut palette = ui::ActionPalette::new();
-        palette.load_open_resources(&resources);
-        palette.open();
-        let labels = palette.result_labels();
-        assert!(
-            labels.iter().any(|l| l.contains("Delete region")),
-            "{labels:?}"
-        );
-        assert!(
-            labels.iter().any(|l| l.contains("Clear route")),
-            "{labels:?}"
         );
     }
 
@@ -849,105 +872,6 @@ mod tests {
         assert!(model.recents.is_empty());
     }
 
-    /// The full undo covenant on one action: dispatched through the executor it
-    /// mutates the document and records exactly one undo boundary, and Ctrl+Z
-    /// (the host's `undo`) reverts precisely that action.
-    #[test]
-    fn action_records_one_undo_boundary_and_reverts() {
-        let mut state = ui::State::new();
-        MapsDoc::save(&mut state.doc, &full_model());
-        // `get_heads` flushes the seed write into a committed change; the action
-        // that follows lands in its own change bracketed by these heads.
-        let before_heads = state.doc.get_heads();
-        assert!(
-            MapsDoc::load(&state.doc)
-                .unwrap()
-                .regions
-                .iter()
-                .any(|r| r.id == "r1"),
-            "precondition: the region is present"
-        );
-
-        let action = MapsAction::DeleteRegion {
-            id: "r1".to_string(),
-        };
-        let encoded = encode(&action);
-        let decoded = registry().decode(&encoded).unwrap();
-        let mut tx = LocalTransport::new();
-        tilo_actions::dispatch(&mut state.doc, decoded.as_ref(), encoded, &mut tx).unwrap();
-        state.record_committed_action(before_heads, None, None);
-
-        assert!(
-            !MapsDoc::load(&state.doc)
-                .unwrap()
-                .regions
-                .iter()
-                .any(|r| r.id == "r1"),
-            "the action deleted the region"
-        );
-        assert!(
-            state.peek_last_undo().is_some(),
-            "exactly one undo boundary recorded"
-        );
-
-        state.undo(None, None).expect("an undo entry to pop");
-        assert!(
-            MapsDoc::load(&state.doc)
-                .unwrap()
-                .regions
-                .iter()
-                .any(|r| r.id == "r1"),
-            "undo restored the region and nothing else"
-        );
-    }
-
-    /// The collaboration guarantee: replaying the same encoded action on a second
-    /// independent replica (from the same base state) lands on the byte-identical
-    /// document — same head hashes, not merely the same values.
-    #[test]
-    fn action_replays_byte_identical_on_a_peer() {
-        let mut a = seeded(&full_model());
-        a.commit();
-        let bytes = a.save();
-        let mut b = AutoCommit::load(&bytes).unwrap();
-        assert_eq!(
-            a.get_heads(),
-            b.get_heads(),
-            "precondition: same base state"
-        );
-
-        let action = MapsAction::SetPlaceSaved {
-            id: "marienplatz".to_string(),
-            saved: false,
-        };
-        let encoded = encode(&action);
-
-        let env = tilo_actions::apply_local(&mut a, &action, encoded).unwrap();
-        tilo_actions::replay(&mut b, &env, &registry()).unwrap();
-
-        assert_eq!(
-            a.get_heads(),
-            b.get_heads(),
-            "replay reproduced the identical change"
-        );
-        assert!(
-            !MapsDoc::load(&a)
-                .unwrap()
-                .place("marienplatz")
-                .unwrap()
-                .saved,
-            "the un-save landed on the origin"
-        );
-        assert!(
-            !MapsDoc::load(&b)
-                .unwrap()
-                .place("marienplatz")
-                .unwrap()
-                .saved,
-            "and on the replica"
-        );
-    }
-
     #[test]
     fn divergent_encoded_route_acceptances_converge_without_torn_context() {
         let mut seed = seeded(&full_model());
@@ -1006,72 +930,6 @@ mod tests {
                     && left.dest_name == "Beta destination"
                     && left.mode == TravelMode::Foot),
             "the winning route and its labels/mode must remain one atomic acceptance"
-        );
-    }
-
-    /// Adding a region replays byte-identically too — the create path, carrying a
-    /// pre-minted id so `apply` needs no RNG.
-    #[test]
-    fn add_region_replays_byte_identical() {
-        let mut a = seeded(&full_model());
-        a.commit();
-        let bytes = a.save();
-        let mut b = AutoCommit::load(&bytes).unwrap();
-
-        let action = MapsAction::AddRegion(region("r2", "Schwabing"));
-        let encoded = encode(&action);
-        let env = tilo_actions::apply_local(&mut a, &action, encoded).unwrap();
-        tilo_actions::replay(&mut b, &env, &registry()).unwrap();
-
-        assert_eq!(a.get_heads(), b.get_heads(), "add replayed identically");
-        assert!(
-            MapsDoc::load(&b)
-                .unwrap()
-                .regions
-                .iter()
-                .any(|r| r.id == "r2")
-        );
-    }
-
-    /// Single source of truth: the palette's "Delete region" spec and the builder
-    /// the trash button calls encode byte-identically.
-    #[test]
-    fn palette_and_builder_encode_identically() {
-        let doc = seeded(&full_model());
-        let resources = provide_resources(&doc);
-        let root = &resources[0];
-
-        let reg = root
-            .children
-            .iter()
-            .find(|r| r.kind == "maps.region")
-            .unwrap();
-        let id = reg.id.as_str().trim_start_matches("maps.region:");
-        let spec = reg.actions.iter().find(|a| a.id == "delete").unwrap();
-        let from_spec = immediate_encode(spec);
-        let from_builder = encode(&MapsAction::DeleteRegion { id: id.to_string() });
-        assert_eq!(from_spec.type_id, from_builder.type_id);
-        assert_eq!(
-            from_spec.payload, from_builder.payload,
-            "one source of truth for delete"
-        );
-
-        // And a saved place's un-save spec matches its builder.
-        let place = root
-            .children
-            .iter()
-            .find(|r| r.kind == "maps.place")
-            .unwrap();
-        let pid = place.id.as_str().trim_start_matches("maps.place:");
-        let unsave = place.actions.iter().find(|a| a.id == "unsave").unwrap();
-        let from_spec = immediate_encode(unsave);
-        let from_builder = encode(&MapsAction::SetPlaceSaved {
-            id: pid.to_string(),
-            saved: false,
-        });
-        assert_eq!(
-            from_spec.payload, from_builder.payload,
-            "un-save is one source of truth"
         );
     }
 }

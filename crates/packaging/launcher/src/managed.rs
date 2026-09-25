@@ -1,12 +1,13 @@
 //! Installed, explicitly authorized managed processes and shared supervision.
 //! No ambient identity, package trust or process-global environment is changed.
-use crate::{manifest::MinimalManifest, registry::InstalledPackage};
+use crate::manifest::MinimalManifest;
+use package_store::InstalledPackage;
 use std::{
     collections::{HashMap, VecDeque},
     path::{Path, PathBuf},
     sync::{Arc, Mutex, Weak},
 };
-use tilo_app_package::{BlobStore, PackageId};
+use tilo_app_package::PackageId;
 
 pub const WORKSPACE_AGENT_PACKAGE_ID: &str = "so.tilo.agent";
 /// Non-terminal managed launches one launcher holds. A started agent stays
@@ -22,6 +23,33 @@ pub struct PackageTrust {
     pub publishers: Vec<[u8; 32]>,
     pub attestors: Vec<tilo_app_package::trust::TrustedAttestor>,
     pub revoked: tilo_app_package::trust::RevocationList,
+}
+
+/// The registry row for the workspace agent installed at `payload_root`
+/// with `manifest_path` under the signed package root `package_id_hex`, as an
+/// enrolled host configures it outside the package store.
+#[must_use]
+pub fn agent_package_row(
+    package_id_hex: String,
+    payload_root: PathBuf,
+    manifest_path: PathBuf,
+) -> InstalledPackage {
+    InstalledPackage {
+        id: WORKSPACE_AGENT_PACKAGE_ID.into(),
+        version: String::new(),
+        package_id_hex,
+        payload_root,
+        manifest_path,
+        publisher_key_hex: String::new(),
+        pinned: false,
+        installed_at: 0,
+        last_used: 0,
+        attested_by: String::new(),
+        cli_commands: Vec::new(),
+        runtime: String::new(),
+        source: String::new(),
+        system: false,
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -52,8 +80,6 @@ impl InstalledManagedPackage {
         }
         let this = Self {
             installed: InstalledPackage {
-                id: installed.id,
-                package_id_hex: installed.package_id_hex,
                 payload_root: installed
                     .payload_root
                     .canonicalize()
@@ -62,6 +88,7 @@ impl InstalledManagedPackage {
                     .manifest_path
                     .canonicalize()
                     .map_err(|e| e.to_string())?,
+                ..installed
             },
             data_root: data_root.canonicalize().map_err(|e| e.to_string())?,
             id,
@@ -90,7 +117,7 @@ impl InstalledManagedPackage {
         &self,
         trust: &PackageTrust,
     ) -> Result<(MinimalManifest, tilo_app_package::BlobHash), String> {
-        let evidence = install::integrity::record_dir(&self.data_root, WORKSPACE_AGENT_PACKAGE_ID);
+        let evidence = managed_record_dir(&self.data_root);
         let signed = std::fs::read(evidence.join("signed-root")).map_err(|e| e.to_string())?;
         let root = tilo_app_package::SignedRoot::decode(&signed).map_err(|e| e.to_string())?;
         let manifest = std::fs::read(&self.installed.manifest_path).map_err(|e| e.to_string())?;
@@ -100,13 +127,17 @@ impl InstalledManagedPackage {
         }
         let collection_bytes =
             std::fs::read(evidence.join("collection.qcl")).map_err(|e| e.to_string())?;
-        let collection =
-            tilo_app_package::Collection::decode(&collection_bytes).map_err(|e| e.to_string())?;
-        let mut blobs = tilo_app_package::MemoryBlobStore::new();
-        for bytes in [&signed, &manifest, &collection_bytes] {
-            blobs.put(bytes).map_err(|e| e.to_string())?;
-        }
-        for relative in collection.entries.keys() {
+        // The signed root must name this package and commit to exactly the
+        // installed manifest and the recorded payload collection.
+        let meta = tilo_app_package::PackageMeta::from_parts(
+            self.id,
+            &signed,
+            manifest.clone(),
+            collection_bytes,
+        )
+        .map_err(|e| e.to_string())?;
+        let collection = &meta.collection;
+        for (relative, expected) in &collection.entries {
             let path = self.installed.payload_root.join(relative);
             if Path::new(relative)
                 .components()
@@ -121,13 +152,13 @@ impl InstalledManagedPackage {
             {
                 return Err("installed payload path escapes its verified package".into());
             }
-            blobs
-                .put(&std::fs::read(path).map_err(|e| e.to_string())?)
-                .map_err(|e| e.to_string())?;
+            let bytes = std::fs::read(path).map_err(|e| e.to_string())?;
+            if tilo_app_package::BlobHash::of(&bytes) != *expected {
+                return Err("installed managed payload is not intact".into());
+            }
         }
         let verified = match tilo_app_package::verify_with_trust(
-            self.id,
-            &blobs,
+            &meta,
             &trust.publishers,
             &trust.attestors,
             &trust.revoked,
@@ -142,16 +173,23 @@ impl InstalledManagedPackage {
             return Err("managed package identity or manifest mismatch".into());
         }
         refuse_unusual_entries(&self.installed.payload_root)?;
-        let report = install::integrity::verify(
-            &self.data_root,
+        // Replay the recorded chain (identity, signature, both covered
+        // hashes); every named payload file was hashed above, so what is left
+        // is a file the signed collection does not name.
+        package_store::integrity::read_record(
+            &evidence,
             WORKSPACE_AGENT_PACKAGE_ID,
             &self.id.to_hex(),
-            &self.installed.payload_root,
         )
         .map_err(|e| e.to_string())?;
-        if !report.is_intact() || !report.unexpected.is_empty() {
-            return Err("installed managed payload is not intact".into());
+        // The installer keeps a copy of the signed manifest at the payload
+        // root; it must be exactly the recorded one.
+        let installed_manifest = std::fs::read(self.installed.payload_root.join(MANIFEST_FILE))
+            .map_err(|e| e.to_string())?;
+        if installed_manifest != recorded {
+            return Err("installed manifest differs from signed evidence".into());
         }
+        refuse_unexpected_files(&self.installed.payload_root, collection)?;
         // Parse the exact bytes already verified above, never reread a path
         // that could have changed after signature/integrity validation.
         let manifest: MinimalManifest =
@@ -170,6 +208,42 @@ impl InstalledManagedPackage {
             .ok_or("managed executable is not signed payload")?;
         Ok((manifest, digest))
     }
+}
+
+/// Where the managed agent's signed install evidence lives under its
+/// explicitly configured data root (the pre-content-store installer layout).
+fn managed_record_dir(data_root: &Path) -> PathBuf {
+    package_store::integrity::legacy_record_dir(data_root, WORKSPACE_AGENT_PACKAGE_ID)
+}
+
+/// The manifest copy the installer writes at the payload root.
+const MANIFEST_FILE: &str = "manifest.toml";
+
+/// Refuse a regular file under `root` that neither the signed `collection`
+/// names nor is the installer's manifest copy.
+fn refuse_unexpected_files(
+    root: &Path,
+    collection: &tilo_app_package::Collection,
+) -> Result<(), String> {
+    let mut directories = vec![root.to_path_buf()];
+    while let Some(directory) = directories.pop() {
+        for entry in std::fs::read_dir(directory).map_err(|e| e.to_string())? {
+            let path = entry.map_err(|e| e.to_string())?.path();
+            if path.is_dir() {
+                directories.push(path);
+                continue;
+            }
+            let rel = path
+                .strip_prefix(root)
+                .map_err(|e| e.to_string())?
+                .to_string_lossy()
+                .replace('\\', "/");
+            if !collection.entries.contains_key(&rel) && rel != MANIFEST_FILE {
+                return Err("installed managed payload is not intact".into());
+            }
+        }
+    }
+    Ok(())
 }
 
 /// The existing integrity walker follows directories. Refuse links and unusual
@@ -381,8 +455,7 @@ impl TreeStamp {
 }
 impl RuntimeOwner {
     fn stamp(&self) -> Option<TreeStamp> {
-        let evidence =
-            install::integrity::record_dir(&self.package.data_root, WORKSPACE_AGENT_PACKAGE_ID);
+        let evidence = managed_record_dir(&self.package.data_root);
         TreeStamp::of(&[
             &self.package.installed.payload_root,
             &self.package.installed.manifest_path,

@@ -177,7 +177,7 @@ pub fn build() -> Box<dyn Widget> {
 /// claims it; Settings does not invent handlers.
 pub fn installed_candidates() -> Vec<AppCandidate> {
     let mut out = Vec::new();
-    for entry in launcher::registry::list_installed().unwrap_or_default() {
+    for entry in package_store::list_installed().unwrap_or_default() {
         let Ok(manifest) = launcher::manifest::read_manifest(&entry.manifest_path) else {
             continue;
         };
@@ -209,7 +209,7 @@ pub fn installed_candidates() -> Vec<AppCandidate> {
         out.push(AppCandidate {
             display_name: manifest
                 .name
-                .unwrap_or_else(|| launcher::registry::display_name_for_package_id(&package_id)),
+                .unwrap_or_else(|| package_store::display_name_for_package_id(&package_id)),
             package_id,
             resources,
         });

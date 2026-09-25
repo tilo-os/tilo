@@ -2719,6 +2719,16 @@ mod tests {
         assert_eq!(osk.key_log.len(), MAX_KEY_LOG_ENTRIES);
         assert!(osk.dropped_key_actions() >= 6);
     }
+
+    // The keyboard publishes only device-local configuration effects (layout,
+    // suggestion privacy); keystrokes never become actions, so the registry
+    // is empty.
+    ui::action_contract_tests! {
+        seed: AutoCommit::new(),
+        registry: ui::tilo_actions::ActionRegistry::new(),
+        resources: |doc| Widget::resources(&OskWidget::new(), doc),
+        palette: ["Use QWERTY layout", "Use AZERTY layout", "Clear learned suggestions"],
+    }
 }
 
 #[cfg(test)]

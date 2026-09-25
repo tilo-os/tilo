@@ -179,7 +179,8 @@ fn succeeded(value: &serde_json::Value) -> Result<tilo_actions::ActionOutput> {
 
 #[allow(
     clippy::significant_drop_tightening,
-    reason = "the shell fixture owns long-lived permits by design and lives for the whole run"
+    clippy::too_many_lines,
+    reason = "a scripted proof run whose steps depend on each other in order; the shell fixture owns long-lived permits by design and lives for the whole run"
 )]
 pub(super) fn run(root: PathBuf, photos: PathBuf, writer: PathBuf) -> Result<()> {
     // The isolated fixture grants only Read to a delegated, certified agent.
@@ -253,7 +254,9 @@ pub(super) fn run(root: PathBuf, photos: PathBuf, writer: PathBuf) -> Result<()>
         .strip_prefix("photos.image:")
         .ok_or("missing photo content address")?
         .to_owned();
-    let source_bytes = qdoc::blobstore::get(&source_hash).ok_or("source unavailable")?;
+    let source_bytes = session
+        .read_media(PHOTOS, &source_hash)?
+        .ok_or("source unavailable")?;
     if blake3::hash(&source_bytes).to_hex().as_str() != source_hash {
         return Err("source hash mismatch".into());
     }
@@ -302,7 +305,7 @@ pub(super) fn run(root: PathBuf, photos: PathBuf, writer: PathBuf) -> Result<()>
     }
     // Genuine missing bytes through the same production consumer dispatch.
     let missing = "0".repeat(64);
-    if qdoc::blobstore::get(&missing).is_some() {
+    if session.read_media(PHOTOS, &missing)?.is_some() {
         return Err("missing-byte fixture unexpectedly exists".into());
     }
     let unavailable = caller.invoke(
@@ -349,7 +352,9 @@ pub(super) fn run(root: PathBuf, photos: PathBuf, writer: PathBuf) -> Result<()>
     {
         return Err("noncanonical or original result hash".into());
     }
-    let bytes = qdoc::blobstore::get(hash).ok_or("returned bytes unavailable")?;
+    let bytes = session
+        .read_media(PHOTOS, hash)?
+        .ok_or("returned bytes unavailable")?;
     if blake3::hash(&bytes).to_hex().as_str() != hash || !bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
         return Err("stored PNG/hash mismatch".into());
     }

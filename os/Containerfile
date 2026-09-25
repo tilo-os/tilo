@@ -610,9 +610,7 @@ RUN --mount=type=cache,target=/build/.cargo-home \
          && cp /build/os/app-runtime/runtime-bundle-publisher.hex /out/ \
          && RUNTIME_DYLIB="$(find /usr/lib/tilo-runtime -name libruntime_dylib.so -print -quit)" \
          && [ -n "$RUNTIME_DYLIB" ] \
-         && cp "$RUNTIME_DYLIB" /out/libruntime_dylib.so \
-         && { [ "${TILO_WITH_BROWSER}" = 0 ] \
-              || cp /out/optional/browser /out/browser-app/browser; }; \
+         && cp "$RUNTIME_DYLIB" /out/libruntime_dylib.so; \
        else \
          EXCLUDE_PACKAGES="${THIN_EXCLUDES}" \
          APP_FEATURES="${APP_FEATURES}${THIN_BROWSER_FEATURE}" \
@@ -699,6 +697,38 @@ RUN if [ "${TILO_PREBUILT_APPS}" = 1 ]; then \
       && rm -f /out/runtime-bundle-identity.json; \
     fi
 
+# A full WPE browser is much larger than the 5 MiB application wire limit.
+# Keep its executable in a separately signed runtime and package only a tiny
+# entrypoint. This leaves the canonical app-size policy intact while giving
+# the browser the same app-store and sandbox route as every other app. The
+# special runtime is needed only when the main app collection was prebuilt;
+# source builds already make the browser thin in the unified runtime graph.
+RUN : > /out/browser-runtime-publisher.hex \
+    && if [ "${TILO_PREBUILT_APPS}" = 1 ] && [ "${TILO_WITH_BROWSER}" != 0 ]; then \
+         test "${RUNTIME_VERSION}" = 2026.07 \
+         && test -x /out/optional/browser \
+         && /out/tilo-runtime-bundle key generate --out /out/browser-runtime-identity.json \
+         && /out/tilo-runtime-bundle build \
+              --version 2026.7.0-browser --arch "$(uname -m)" --from / \
+              --include /out/optional/browser \
+              --identity /out/browser-runtime-identity.json \
+              --out /usr/lib/tilo-runtime/2026.7.0-browser \
+         && /out/tilo-runtime-bundle key pubkey \
+              --identity /out/browser-runtime-identity.json \
+              > /out/browser-runtime-publisher.hex \
+         && /out/tilo-runtime-bundle verify \
+              /usr/lib/tilo-runtime/2026.7.0-browser \
+              --require-publisher "$(cat /out/browser-runtime-publisher.hex)" \
+         && test -x /usr/lib/tilo-runtime/2026.7.0-browser/lib/browser \
+         && if [ "$(uname -m)" = x86_64 ]; then cet=-Wl,-z,shstk; else cet=; fi \
+         && cc -std=c11 -Wall -Wextra -Werror -O2 -fPIE -pie \
+              -fstack-protector-strong -Wl,-z,relro,-z,now ${cet} \
+              /build/os/scripts/browser-runtime-launcher.c \
+              -o /out/browser-app/browser \
+         && /build/os/scripts/verify-elf-hardening.sh /out/browser-app/browser \
+         && rm -f /out/browser-runtime-identity.json; \
+       fi
+
 # ---- Pack + install every app into the image-wide app store -----------------
 # Without this the launcher's registry is empty on a fresh install and the
 # command palette's Applications provider has nothing to list, however many
@@ -722,7 +752,14 @@ RUN BIN_DIR=/out/thin-apps \
     /build/os/scripts/pack-apps.sh \
     && { [ "${TILO_PREBUILT_APPS}" != 1 ] \
          || [ "${TILO_WITH_BROWSER}" = 0 ] \
-         || BIN_DIR=/out/browser-app \
+         || { mkdir -p /tmp/browser-package-repo/apps/browser \
+            && sed "s#tilo-runtime/${RUNTIME_VERSION}\"#tilo-runtime/2026.7.0-browser\"#" \
+                 /build/apps/browser/tilo-app.toml \
+                 > /tmp/browser-package-repo/apps/browser/tilo-app.toml \
+            && grep -Eq '^runtime[[:space:]]*=[[:space:]]*"tilo-runtime/2026\.7\.0-browser"$' \
+                 /tmp/browser-package-repo/apps/browser/tilo-app.toml \
+            && REPO=/tmp/browser-package-repo \
+            BIN_DIR=/out/browser-app \
             TAPP_DIR= \
             PKG_BIN=/out/tilo-app-package \
             INSTALL_BIN=/out/tilo-install \
@@ -730,7 +767,8 @@ RUN BIN_DIR=/out/thin-apps \
             SHIM_BIN=/out/tilo-cli-shim \
             REQUIRE_MIN=1 \
             PUBKEY_OUT=/out/browser-publisher.hex \
-            /build/os/scripts/pack-apps.sh; }
+            /build/os/scripts/pack-apps.sh \
+            && rm -rf /tmp/browser-package-repo; }; }
 
 # Enumerated artifact overlays keep the expensive rootfs stage shallow without
 # bulk-copying os/usr (which would accidentally ship development/test-only
@@ -1359,13 +1397,18 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setop
 #   * The signature check the launcher performs before every mount
 #     accepts this bake (the pubkey is the trust root).
 COPY --from=builder /usr/lib/tilo-runtime/ /usr/lib/tilo-runtime/
-COPY --from=builder /out/runtime-bundle-publisher.hex /usr/share/tilo/runtime-bundle-publisher.hex
+COPY --from=builder \
+    /out/runtime-bundle-publisher.hex \
+    /out/browser-runtime-publisher.hex \
+    /usr/share/tilo/
 # Trust list read by the launcher — one hex pubkey per line, `#` for
 # comments. The baked publisher is the only entry by default; operators
 # can extend it via `echo <hex> >> /etc/tilo/runtime-bundle-trusted-publishers.txt`.
 RUN mkdir -p /etc/tilo \
     && cat /usr/share/tilo/runtime-bundle-publisher.hex \
-        > /etc/tilo/runtime-bundle-trusted-publishers.txt
+        > /etc/tilo/runtime-bundle-trusted-publishers.txt \
+    && cat /usr/share/tilo/browser-runtime-publisher.hex \
+        >> /etc/tilo/runtime-bundle-trusted-publishers.txt
 
 # ---- Preinstalled application store -----------------------------------------
 # The registry + unpacked payloads the builder produced with `tilo-app-package pack` and
@@ -1389,9 +1432,14 @@ COPY --from=builder /out/app-publisher.hex /usr/share/tilo/app-publisher.hex
 # commands can be run by name — the only way a CLI package is meant to be run.
 COPY os/etc/profile.d/tilo-apps.sh /etc/profile.d/tilo-apps.sh
 
-# FUSE mount service
+# Collaborative filesystem service. tilo-store-volume.service prepares the
+# room store volume (/var/lib/tilo/store) before it, giving installs without a
+# store partition an image-backed one attached by tilo-store-loop.service;
+# fs.service pulls both in, so neither needs enabling.
 COPY \
     os/usr/lib/systemd/system/fs.service \
+    os/usr/lib/systemd/system/tilo-store-volume.service \
+    os/usr/lib/systemd/system/tilo-store-loop.service \
     os/usr/lib/systemd/system/tilo-fs-start.timer \
     os/usr/lib/systemd/system/fs-identity.path \
     os/usr/lib/systemd/system/tilo-device-key-init.service \
@@ -1408,6 +1456,11 @@ COPY os/usr/lib/systemd/system/systemd-tpm2-setup-early.service.d/10-tilo-live-i
 # edited and survives image updates. See fs.service for why the subject
 # is a principal rather than a key.
 COPY os/usr/share/tilo/fs-capabilities.json /usr/share/tilo/fs-capabilities.json
+# Git compares only the stat fields that sync between devices (mtime and
+# size, not inode or ctime), so a synced repository is clean everywhere
+# without re-hashing; see the snippet and docs/device-local-state.md.
+COPY os/usr/share/tilo/git/synced-worktree.gitconfig /usr/share/tilo/git/synced-worktree.gitconfig
+COPY os/etc/gitconfig /etc/gitconfig
 
 # Wayland session desktop entries. Two files land here:
 #   - shell.desktop          — default session (no peer-sync)
@@ -1631,9 +1684,11 @@ COPY \
 # Used by the installer (os/Containerfile.installer layers tilo-install on top of
 # this image), and afterwards on the installed system — `enrol` is also how a
 # volume is re-sealed to a replaced TPM, which is exactly the case where the
-# machine can only be reached with the recovery key.
+# machine can only be reached with the recovery key. tilo-store-volume plans and
+# formats the room store partition for the installer and runs the store at boot.
 COPY --chmod=0755 \
     os/usr/libexec/tilo-disk-encrypt \
+    os/usr/libexec/tilo-store-volume \
     os/usr/libexec/tilo-verified-boot-install-preflight \
     /usr/libexec/
 
@@ -2395,7 +2450,7 @@ RUN find /usr/lib /usr/lib64 \
          -o -path '*/qt6/plugins/tls/libqopensslbackend.so' \) \
       \( -type f -o -type l \) -delete \
     && rpm -e --nodeps libshout \
-    && rpm -qa --qf '%{NAME}\n' perl-IO-Socket-SSL perl-Net-SSLeay \
+    && rpm -qa --qf '%{NAME}\n' perl-IO-Socket-SSL perl-Net-SSLeay qatlib-service qatlib \
        | xargs -r rpm -e --nodeps \
     && ! find /usr/lib /usr/lib64 \
       \( -path '*/ossl-modules/legacy.so' -o -path '*/engines-3/*.so' \

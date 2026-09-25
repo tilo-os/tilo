@@ -569,7 +569,7 @@ fn assert_historical_qos_custody(imported: bool) {
     perform_named_target(
         &mut live,
         "New note",
-        "notes:new-page",
+        "heading-action",
         &ui::a11y::Action::Activate,
     );
     // Owned semantic dispatch keeps its framework input frame active through

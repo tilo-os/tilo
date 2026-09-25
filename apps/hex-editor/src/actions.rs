@@ -437,7 +437,7 @@ impl ResourceProvider for crate::view::HexView {
 mod tests {
     use super::*;
     use crate::view::HexView;
-    use tilo_actions::{ActionInput, LocalTransport};
+    use tilo_actions::LocalTransport;
     use ui::widget::Widget;
 
     fn registry() -> ActionRegistry {
@@ -483,24 +483,6 @@ mod tests {
         }
     }
 
-    fn immediate_encode(spec: &ActionSpec) -> EncodedAction {
-        match &spec.input {
-            ActionInput::Immediate(enc) => enc.clone(),
-            ActionInput::Prompted { .. } | ActionInput::Deferred { .. } => {
-                panic!("expected an immediate action: {}", spec.id)
-            }
-        }
-    }
-
-    fn prompted_encode(spec: &ActionSpec, arg: &str) -> EncodedAction {
-        match &spec.input {
-            ActionInput::Prompted { build, .. } => build(arg),
-            ActionInput::Immediate(_) | ActionInput::Deferred { .. } => {
-                panic!("expected a prompted action: {}", spec.id)
-            }
-        }
-    }
-
     /// A view with a real local buffer plus the framework document required by
     /// the resource-provider trait. The bytes remain outside that document.
     fn open_view(bytes: &[u8]) -> (HexView, AutoCommit) {
@@ -525,20 +507,24 @@ mod tests {
         assert!(ids.contains(&"insert-byte"), "{ids:?}");
         assert!(ids.contains(&"overwrite-byte"), "{ids:?}");
         assert!(ids.contains(&"delete-byte"), "{ids:?}");
+    }
 
-        // The one palette surfaces the tree's actions as rows.
-        let mut palette = ui::ActionPalette::new();
-        palette.load_open_resources(&resources);
-        palette.open();
-        let labels = palette.result_labels();
-        assert!(
-            labels.iter().any(|l| l.contains("Insert byte")),
-            "{labels:?}"
-        );
-        assert!(
-            labels.iter().any(|l| l.contains("Delete byte")),
-            "{labels:?}"
-        );
+    /// A buffer open with the cursor on its second byte, so every byte-edit
+    /// operation is published.
+    fn view_on_second_byte() -> HexView {
+        let (mut view, _) = open_view(&[0x00, 0x11, 0x22, 0x33]);
+        view.model_mut().move_to(1, false);
+        view
+    }
+
+    // The bytes are device-local: the editor publishes only local effect and
+    // view operations, never a document action, so its surface carries no
+    // collaborative registry and the sweep checks surface and protocol only.
+    ui::action_contract_tests! {
+        seed: open_view(&[0x00, 0x11, 0x22, 0x33]).1,
+        registry: ActionRegistry::new(),
+        resources: |doc| ResourceProvider::resources(&view_on_second_byte(), doc),
+        palette: ["Insert byte", "Overwrite byte", "Delete byte"],
     }
 
     /// The empty state still publishes the file-open effect, while buffer-only
@@ -628,7 +614,7 @@ mod tests {
             .iter()
             .find(|a| a.id == "delete-byte")
             .expect("a delete-byte action");
-        let from_spec = immediate_encode(spec);
+        let from_spec = ui::testing::action_contract::spec_encoding(spec, None);
 
         // The keystroke path records a compact local redo edit.
         view.model_mut().delete_at_cursor();
@@ -655,7 +641,7 @@ mod tests {
             .iter()
             .find(|a| a.id == "overwrite-byte")
             .expect("an overwrite-byte action");
-        let from_spec = prompted_encode(spec, "ab");
+        let from_spec = ui::testing::action_contract::spec_encoding(spec, Some("ab"));
         let expected = HexOperation::Edit {
             edit: (&overwrite_bytes_action(1, vec![0xAB])).into(),
         };

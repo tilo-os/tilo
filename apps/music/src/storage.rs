@@ -7,10 +7,10 @@
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use tilo_clock::unix_now_ms;
 
 use crate::model::{CacheState, Playback};
 
@@ -103,14 +103,6 @@ fn object_matches_entry(path: &Path, entry: &MediaCacheEntry) -> bool {
     hex::encode(hash.finalize()) == entry.content_id
 }
 
-fn now_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |duration| {
-            duration.as_millis().try_into().unwrap_or(u64::MAX)
-        })
-}
-
 /// Load only entries whose content-addressed byte object remains present and
 /// non-empty. A damaged manifest or missing object can never manufacture a
 /// `Cached` badge.
@@ -183,7 +175,7 @@ impl MediaCache {
             MediaCacheEntry {
                 content_id,
                 bytes: bytes.len() as u64,
-                last_access_ms: now_ms(),
+                last_access_ms: unix_now_ms(),
             },
         );
         self.evict_to_quota(root, quota);
@@ -240,7 +232,7 @@ impl MediaCache {
             MediaCacheEntry {
                 content_id,
                 bytes,
-                last_access_ms: now_ms(),
+                last_access_ms: unix_now_ms(),
             },
         );
         self.evict_to_quota(root, quota);
@@ -281,7 +273,7 @@ impl MediaCache {
             self.save(root)?;
             return Ok(None);
         }
-        entry.last_access_ms = now_ms();
+        entry.last_access_ms = unix_now_ms();
         self.save(root)?;
         Ok(Some(path))
     }

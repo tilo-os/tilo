@@ -400,8 +400,8 @@ fn public_v6(ip: Ipv6Addr) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tilo_app_package::Manifest;
     use tilo_app_package::pack::{SigningIdentity, pack};
-    use tilo_app_package::{Manifest, MemoryBlobStore};
 
     #[test]
     fn default_review_policy_enforces_the_app_limit_before_download() {
@@ -545,9 +545,11 @@ type = "gui"
 "#
         ))
         .unwrap();
-        let mut store = MemoryBlobStore::new();
-        let id = pack(&payload, &manifest, identity, &mut store).unwrap();
-        (app_registry::tapp::write_bytes(id, &store).unwrap(), id)
+        let packed = pack(&payload, &manifest, identity).unwrap();
+        (
+            tilo_app_package::tapp::to_bytes(&packed.meta, Some(&packed)).unwrap(),
+            packed.id(),
+        )
     }
 
     fn sample_entry(url: &str) -> RegistryEntry {

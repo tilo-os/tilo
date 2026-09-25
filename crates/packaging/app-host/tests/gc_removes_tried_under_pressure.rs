@@ -1,6 +1,5 @@
-//! GC sweep removes LRU-Tried entries under size pressure and preserves
-//! Pinned ones. Uses .tapp installs so both the payload tree and
-//! the blob store contribute to reported disk usage.
+//! The size-pressure sweep removes least recently used unpinned packages
+//! and preserves pinned ones; removal reclaims only unshared blobs.
 
 #![allow(
     clippy::unwrap_used,
@@ -13,89 +12,82 @@
 )]
 
 use crate::common;
-use app_host::gc;
 use app_host::install::install_tapp;
-use app_host::registry::Pinning;
-use app_host::store::Store;
+use app_host::{PackageStore, Pinning};
+
+fn stored_blob_files(root: &std::path::Path) -> usize {
+    std::fs::read_dir(root.join("content/data")).map_or(0, |entries| entries.flatten().count())
+}
 
 #[test]
 fn sweep_evicts_tried_and_preserves_pinned() {
     let dir = tempfile::tempdir().unwrap();
-    let store = Store::open(dir.path()).unwrap();
+    let store = PackageStore::at(dir.path());
 
-    // Install one Pinned + three Tried, each with ~8 KiB payload.
-    let (pinned_bytes, pinned_id) = common::build_tapp(8);
-    install_tapp(&store, &pinned_bytes, Pinning::Pinned).unwrap();
-
-    let mut tried_ids = Vec::new();
-    for last_used_unix in [1_000, 2_000, 3_000] {
-        let (bytes, id) = common::build_tapp(8);
-        install_tapp(&store, &bytes, Pinning::Tried).unwrap();
-        tried_ids.push(id);
+    // One pinned and three tried packages, each with its own ~24 KiB blob.
+    let (pinned_bytes, _) = common::build_tapp_for("so.tilo.pinned", 24);
+    install_tapp(&store, &pinned_bytes, Pinning::Pinned, None).unwrap();
+    let mut tried = Vec::new();
+    for (index, last_used) in [1_000u64, 2_000, 3_000].into_iter().enumerate() {
+        let app_id = format!("so.tilo.tried{index}");
+        let (bytes, _) = common::build_tapp_for(&app_id, 24);
+        install_tapp(&store, &bytes, Pinning::Tried, None).unwrap();
         // Distinct last-used times give the LRU order a defined answer.
-        let mut entry = store.resolve(id).unwrap();
-        entry.last_used_unix = last_used_unix;
-        store.put_entry(entry).unwrap();
+        store
+            .update_row(&app_id, |row| row.last_used = last_used)
+            .unwrap();
+        tried.push(app_id);
     }
-
-    let before = store.total_bytes_for_gc().unwrap();
-    let before_blobs = store.disk_usage().unwrap().store_bytes;
+    let before = store.disk_usage().unwrap().total_bytes;
+    let before_blobs = stored_blob_files(dir.path());
     assert!(before > 0);
 
-    // Cap the store at ~10 KiB — well under the total of 4 packages.
-    // Two payload trees of 8 KiB + shared blobs is ~16-24 KiB total,
-    // so the sweep will need to evict at least two Tried.
-    let report = gc::sweep(&store, 10 * 1024).unwrap();
-
-    // Some Tried must have been evicted.
-    assert!(
-        report.touched(),
-        "sweep should have evicted at least one Tried"
-    );
-    // Pinned must be untouched.
-    assert!(
-        store.resolve(pinned_id).is_ok(),
-        "Pinned package must survive gc"
-    );
-    // Eviction runs least recently used first: whatever was removed is
-    // the oldest Tried packages, in order.
+    // Cap at ~60 KiB: well under four packages, so at least two tried go.
+    let removed = store.sweep(60 * 1024).unwrap();
+    assert!(removed.len() >= 2, "{removed:?}");
     assert_eq!(
-        report.removed,
-        tried_ids[..report.removed.len()],
-        "gc must evict the least recently used Tried packages first"
+        removed,
+        tried[..removed.len()],
+        "the least recently used packages go first"
     );
-    // Non-decreasing tally: freed_bytes > 0 since we actually removed
-    // payload trees.
-    assert!(report.freed_bytes > 0);
+    let registry = store.registry().unwrap();
+    assert!(registry.find("so.tilo.pinned").is_some(), "pinned survives");
+    assert!(store.disk_usage().unwrap().total_bytes <= 60 * 1024);
     assert!(
-        store.disk_usage().unwrap().store_bytes < before_blobs,
-        "unreferenced content-addressed blobs must be reclaimed too"
+        stored_blob_files(dir.path()) < before_blobs,
+        "blobs of evicted packages are reclaimed"
     );
 }
 
 #[test]
-fn removing_one_package_preserves_shared_and_pinned_content_graphs() {
+fn removing_one_package_preserves_shared_and_pinned_content() {
     let dir = tempfile::tempdir().unwrap();
-    let store = Store::open(dir.path()).unwrap();
-    let (pinned_bytes, pinned_id) = common::build_tapp(8);
-    let (tried_bytes, tried_id) = common::build_tapp(16);
-    install_tapp(&store, &pinned_bytes, Pinning::Pinned).unwrap();
-    install_tapp(&store, &tried_bytes, Pinning::Tried).unwrap();
+    let store = PackageStore::at(dir.path());
+    let (pinned_bytes, _) = common::build_tapp_for("so.tilo.pinned", 24);
+    let (tried_bytes, _) = common::build_tapp_for("so.tilo.tried", 48);
+    install_tapp(&store, &pinned_bytes, Pinning::Pinned, None).unwrap();
+    install_tapp(&store, &tried_bytes, Pinning::Tried, None).unwrap();
 
-    let before_blobs = store.disk_usage().unwrap().store_bytes;
-    store.remove(tried_id).unwrap();
-
-    assert!(store.resolve(pinned_id).is_ok());
-    assert!(store.resolve(tried_id).is_err());
-    assert!(store.disk_usage().unwrap().store_bytes < before_blobs);
+    let before_blobs = stored_blob_files(dir.path());
+    let removed = store.remove("so.tilo.tried", false).unwrap();
+    assert!(removed.evicted_blobs > 0);
+    let registry = store.registry().unwrap();
+    let pinned = registry.find("so.tilo.pinned").unwrap();
+    assert!(registry.find("so.tilo.tried").is_none());
+    assert!(stored_blob_files(dir.path()) < before_blobs);
+    assert!(
+        package_store::integrity::verify(pinned, &pinned.payload_root)
+            .unwrap()
+            .is_intact(),
+        "the remaining package still has every byte"
+    );
 }
 
 #[test]
 fn sweep_disabled_when_cap_is_zero() {
     let dir = tempfile::tempdir().unwrap();
-    let store = Store::open(dir.path()).unwrap();
+    let store = PackageStore::at(dir.path());
     let (bytes, _) = common::build_tapp(2);
-    install_tapp(&store, &bytes, Pinning::Tried).unwrap();
-    let r = gc::sweep(&store, 0).unwrap();
-    assert!(!r.touched());
+    install_tapp(&store, &bytes, Pinning::Tried, None).unwrap();
+    assert!(store.sweep(0).unwrap().is_empty());
 }

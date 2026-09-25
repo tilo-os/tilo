@@ -27,7 +27,6 @@ use std::{
     },
     time::{Duration, Instant},
 };
-use tilo_app_package::BlobStore;
 
 const DEADLINE: Duration = Duration::from_secs(10);
 
@@ -177,14 +176,13 @@ type = "cli"
         source.join("bin/agent"),
     )
     .unwrap();
-    let mut blobs = tilo_app_package::MemoryBlobStore::new();
-    let id = tilo_app_package::pack(
+    let packed = tilo_app_package::pack(
         &source,
         &manifest,
         &tilo_app_package::SigningIdentity::from_signing_key(key),
-        &mut blobs,
     )
     .unwrap();
+    let id = packed.id();
     let trust = PackageTrust {
         publishers: vec![public],
         attestors: vec![],
@@ -192,8 +190,7 @@ type = "cli"
     };
     assert!(matches!(
         tilo_app_package::verify_with_trust(
-            id,
-            &blobs,
+            &packed.meta,
             &trust.publishers,
             &trust.attestors,
             &trust.revoked
@@ -201,32 +198,23 @@ type = "cli"
         tilo_app_package::Verification::Trusted { .. }
     ));
     let payload = root.join("installed-payload");
-    tilo_app_package::unpack(id, &blobs, &payload).unwrap();
-    let signed = blobs
-        .get(&tilo_app_package::BlobHash(*id.as_bytes()))
-        .unwrap()
-        .unwrap();
-    let signed_root = tilo_app_package::SignedRoot::decode(&signed).unwrap();
-    std::fs::write(
-        payload.join("manifest.toml"),
-        blobs.get(&signed_root.manifest_hash).unwrap().unwrap(),
-    )
-    .unwrap();
-    install::integrity::record(
-        root,
-        "so.tilo.agent",
-        &signed,
-        &blobs.get(&signed_root.manifest_hash).unwrap().unwrap(),
-        &blobs.get(&signed_root.payload_root_hash).unwrap().unwrap(),
-    )
-    .unwrap();
+    tilo_app_package::unpack(&packed.meta, &packed, &payload).unwrap();
+    std::fs::write(payload.join("manifest.toml"), &packed.meta.manifest_bytes).unwrap();
+    let evidence = package_store::integrity::legacy_record_dir(root, "so.tilo.agent");
+    std::fs::create_dir_all(&evidence).unwrap();
+    for (name, bytes) in [
+        ("signed-root", packed.meta.signed_root_bytes().to_vec()),
+        ("manifest.toml", packed.meta.manifest_bytes.clone()),
+        ("collection.qcl", packed.meta.collection_bytes.clone()),
+    ] {
+        std::fs::write(evidence.join(name), bytes).unwrap();
+    }
     let package = InstalledManagedPackage::verify(
-        launcher::registry::InstalledPackage {
-            id: "so.tilo.agent".into(),
-            package_id_hex: id.to_hex(),
-            manifest_path: payload.join("manifest.toml"),
-            payload_root: payload,
-        },
+        launcher::managed::agent_package_row(
+            id.to_hex(),
+            payload.clone(),
+            payload.join("manifest.toml"),
+        ),
         root.to_path_buf(),
         id,
         &trust,

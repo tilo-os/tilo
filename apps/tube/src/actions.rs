@@ -947,11 +947,10 @@ fn library_resource(model: &TubeModel) -> Resource {
     // infer membership from the currently rendered route.
     let mut videos = Resource::new("tube.videos", "tube.collection", "Videos");
     for video in model.videos.iter().take(MAX_RESOURCE_ENTITIES) {
-        if let Some(resource) = video_resource(
-            model,
-            &video.id,
-            matches!(&model.route, Route::Watch(id) if id == &video.id),
-        ) {
+        // The watched video's comments are published once, under the current
+        // context resource; repeating them here would give each comment two
+        // resources with the same stable address.
+        if let Some(resource) = video_resource(model, &video.id, false) {
             videos = videos.with_child(resource);
         }
     }
@@ -1739,21 +1738,136 @@ mod tests {
         let comment_actions: Vec<&str> = c0.actions.iter().map(|a| a.id.as_str()).collect();
         assert!(comment_actions.contains(&"like"), "comment exports like");
         assert!(comment_actions.contains(&"reply"), "comment exports reply");
+    }
 
-        // The real Ctrl+K palette, populated from the open resources.
-        let mut palette = ui::ActionPalette::new();
-        palette.load_open_resources(&resources);
-        palette.open();
-        let labels = palette.result_labels();
-        assert!(
-            labels.iter().any(|l| l.contains("Like video")),
-            "palette lists the video's like action: {labels:?}"
-        );
-        assert!(labels.iter().any(|l| l.contains("Add to queue")));
-        assert!(
-            labels.iter().any(|l| l.contains("Reply to comment")),
-            "palette lists a comment reply: {labels:?}"
-        );
+    /// The watched sample video, its creator and its first comment's stable id.
+    fn watched_ids() -> (String, String, String) {
+        let (app, vid, _) = watching();
+        let video = app.model_ref().video(&vid).expect("watched sample video");
+        let comment = comment_key(&vid, &video.comments[0]);
+        (vid.clone(), video.channel_id.clone(), comment)
+    }
+
+    /// A sample video from the catalogue other than the watched one.
+    fn other_video() -> String {
+        let (app, vid, _) = watching();
+        app.model_ref()
+            .videos
+            .iter()
+            .find(|video| video.id != vid)
+            .expect("sample has a second video")
+            .id
+            .clone()
+    }
+
+    /// A shared document written by dispatched actions: the watched video is
+    /// liked and queued, its creator subscribed, its first comment liked and
+    /// the preferred quality chosen.
+    fn seeded_doc() -> AutoCommit {
+        let (vid, channel, comment) = watched_ids();
+        let mut doc = AutoCommit::new();
+        for action in [
+            TubeAction::SetVideoLiked {
+                video_id: vid.clone(),
+                liked: true,
+            },
+            TubeAction::SetQueueMembership {
+                video_id: vid,
+                queued: true,
+            },
+            TubeAction::SetSubscription {
+                channel_id: channel,
+                subscribed: true,
+            },
+            TubeAction::SetCommentLiked {
+                comment_id: comment,
+                liked: true,
+            },
+            TubeAction::SetPreferredQuality {
+                quality: "720p".into(),
+            },
+        ] {
+            tilo_actions::apply_local(&mut doc, &action, encode(&action)).expect("seed applies");
+        }
+        doc
+    }
+
+    /// The live app's resources once its `sync` has reconciled `doc`.
+    fn synced_resources(doc: &AutoCommit) -> Vec<Resource> {
+        let (mut app, _, _) = watching();
+        app.sync(&mut doc.clone(), &ROOT);
+        Widget::resources(&app, doc)
+    }
+
+    ui::action_contract_tests! {
+        seed: seeded_doc(),
+        registry: registry(),
+        resources: |doc| synced_resources(doc),
+        palette: ["Like video", "Remove from queue", "Reply to comment", "Cycle preferred quality"],
+        replay: [
+            like_video => |_| encode(&TubeAction::SetVideoLiked {
+                video_id: other_video(),
+                liked: true,
+            }),
+            unsubscribe => |_| encode(&TubeAction::SetSubscription {
+                channel_id: watched_ids().1,
+                subscribed: false,
+            }),
+        ],
+        undo: [
+            preferred_quality => |_| encode(&TubeAction::SetPreferredQuality {
+                quality: "480p".into(),
+            }),
+            reply => |_| {
+                let comment = watched_ids().2;
+                encode(&TubeAction::SetCommentReply {
+                    reply_id: reply_key(&comment, "Useful explanation"),
+                    comment_id: comment,
+                    text: "Useful explanation".into(),
+                    active: true,
+                })
+            },
+        ],
+        encodes: [
+            unlike_video => (&format!("tube.current:{}", watched_ids().0), "like", |_, _| {
+                encode(&TubeAction::SetVideoLiked {
+                    video_id: watched_ids().0,
+                    liked: false,
+                })
+            }),
+            dequeue => (&format!("tube.current:{}", watched_ids().0), "queue", |_, _| {
+                encode(&TubeAction::SetQueueMembership {
+                    video_id: watched_ids().0,
+                    queued: false,
+                })
+            }),
+            unsubscribe => (&format!("tube.subscription:{}", watched_ids().1), "unsubscribe", |_, _| {
+                encode(&TubeAction::SetSubscription {
+                    channel_id: watched_ids().1,
+                    subscribed: false,
+                })
+            }),
+            unlike_comment => (&format!("tube.comment:{}", watched_ids().2), "like", |_, _| {
+                encode(&TubeAction::SetCommentLiked {
+                    comment_id: watched_ids().2,
+                    liked: false,
+                })
+            }),
+            reply => (&format!("tube.comment:{}", watched_ids().2), "reply", arg: "Thanks", |_, _| {
+                let comment = watched_ids().2;
+                encode(&TubeAction::SetCommentReply {
+                    reply_id: reply_key(&comment, "Thanks"),
+                    comment_id: comment,
+                    text: "Thanks".into(),
+                    active: true,
+                })
+            }),
+            cycle_quality => ("tube.setting:preferred-quality", "cycle", |_, _| {
+                encode(&TubeAction::SetPreferredQuality {
+                    quality: next_quality("720p"),
+                })
+            }),
+        ],
     }
 
     /// Read `root["tube"]["<map>"]["<key>"]` as a bool.

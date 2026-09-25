@@ -3923,23 +3923,14 @@ impl ResourceProvider for crate::widget::WordProcessorWidget {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tilo_actions::ActionInput;
     use tilo_actions::LocalTransport;
     use tilo_automerge::ApplyIncoming;
+    use ui::testing::action_contract::spec_encoding;
 
     fn registry() -> ActionRegistry {
         let mut r = ActionRegistry::new();
         register(&mut r);
         r
-    }
-
-    fn immediate_encode(spec: &ActionSpec) -> EncodedAction {
-        match &spec.input {
-            ActionInput::Immediate(enc) => enc.clone(),
-            ActionInput::Prompted { .. } | ActionInput::Deferred { .. } => {
-                panic!("expected an immediate action: {}", spec.id)
-            }
-        }
     }
 
     #[test]
@@ -3951,7 +3942,7 @@ mod tests {
             .iter()
             .find(|spec| spec.id == "zoom-reset")
             .expect("the visible zoom reset has a resource action");
-        let encoded = immediate_encode(spec);
+        let encoded = spec_encoding(spec, None);
         assert_eq!(encoded.type_id, WORD_PROCESSOR_OPERATION_TYPE);
         assert_eq!(
             decode_operation(&encoded.type_id, &encoded.payload).unwrap(),
@@ -4142,303 +4133,155 @@ mod tests {
         assert_eq!(state.save(), before, "invalid splice must make no writes");
     }
 
-    /// A text splice through an action mutates the document, and replays
-    /// byte-identically on a second, independent replica (equal head hashes).
-    #[test]
-    fn splice_text_mutates_and_replays_byte_identical() {
-        let (mut a, ids) = seeded("Hello world\n");
-        let block = ids[0].clone();
-        a.doc.commit();
-        let bytes = a.save();
-        let mut b = ui::State::load(&bytes).unwrap();
-        assert_eq!(
-            a.doc.get_heads(),
-            b.doc.get_heads(),
-            "precondition: same base state"
-        );
-
-        // Replace "world" with "there".
-        let action = splice_text_action(RegionKind::Body, &block, 6, 11, "there");
-        let encoded = encode(&action);
-        let env = tilo_actions::apply_local(&mut a.doc, &action, encoded).unwrap();
-        tilo_actions::replay(&mut b.doc, &env, &registry()).unwrap();
-
-        assert_eq!(text_of(&a.doc, &block), "Hello there", "the splice landed");
-        assert_eq!(
-            a.doc.get_heads(),
-            b.doc.get_heads(),
-            "replay reproduced the identical change"
-        );
+    /// A heading, two paragraphs, a comment and a tracked insertion, built
+    /// through the markdown import and the document model's review writes.
+    fn wp_seed() -> AutoCommit {
+        let (mut state, ids) = seeded("# Title\n\nHello world\n\nonetwo\n");
+        let c = qdoc::model::open(&state.doc, &automerge::ROOT).unwrap();
+        let mut id_gen = qdoc::IdGen::new(state.doc.get_actor().to_hex_string());
+        {
+            let mut dm = qdoc::DocMut {
+                doc: &mut state.doc,
+                c: &c,
+                ids: &mut id_gen,
+            };
+            dm.add_comment(&ids[1], 0, 5, "Maya", "Please clarify this.");
+            dm.track_insert(&ids[2], 6, " three", "Jonas", "2026-09-05");
+        }
+        state.doc.commit();
+        state.doc
     }
 
-    /// A formatting mark over a selection replays byte-identically (the marks
-    /// path, not just a scalar write).
-    #[test]
-    fn set_mark_replays_byte_identical() {
-        let (mut a, ids) = seeded("Hello world\n");
-        let block = ids[0].clone();
-        a.doc.commit();
-        let bytes = a.save();
-        let mut b = ui::State::load(&bytes).unwrap();
+    /// The `n`th body block's stable id.
+    fn nth_block(doc: &AutoCommit, n: usize) -> String {
+        let c = qdoc::model::open(doc, &automerge::ROOT).unwrap();
+        qdoc::model::blocks_in_order(doc, &c)
+            .into_iter()
+            .nth(n)
+            .expect("seeded block")
+    }
 
-        let action = set_mark_action(
-            RegionKind::Body,
-            vec![Span {
+    /// "Hello" selected in the second block, as the widget reports it.
+    fn wp_ctx(doc: &AutoCommit) -> WpResourceCtx {
+        let block = nth_block(doc, 1);
+        WpResourceCtx {
+            caret_block: block.clone(),
+            caret_offset: 5,
+            target_blocks: vec![block.clone()],
+            format_spans: vec![Span {
                 block: block.clone(),
                 start: 0,
                 end: 5,
             }],
-            "strong",
-            Some(MarkVal::Bool(true)),
-            vec![],
-        );
-        let encoded = encode(&action);
-        let env = tilo_actions::apply_local(&mut a.doc, &action, encoded).unwrap();
-        tilo_actions::replay(&mut b.doc, &env, &registry()).unwrap();
-
-        assert_eq!(
-            a.doc.get_heads(),
-            b.doc.get_heads(),
-            "mark replayed identically"
-        );
-        let marks = body_blocks(&b.doc)
-            .into_iter()
-            .find(|x| x.id == block)
-            .map(|x| x.marks)
-            .unwrap_or_default();
-        assert!(
-            marks
-                .iter()
-                .any(|m| m.name == "strong" && m.start == 0 && m.end == 5),
-            "the bold run is present on the peer: {marks:?}"
-        );
-    }
-
-    /// A paragraph-style change (kind + level) replays byte-identically.
-    #[test]
-    fn set_paragraph_style_replays_byte_identical() {
-        let (mut a, ids) = seeded("Title\n");
-        let block = ids[0].clone();
-        a.doc.commit();
-        let bytes = a.save();
-        let mut b = ui::State::load(&bytes).unwrap();
-
-        let action = set_paragraph_style_action(
-            RegionKind::Body,
-            vec![block.clone()],
-            "heading",
-            Some(1),
-            None,
-        );
-        let encoded = encode(&action);
-        let env = tilo_actions::apply_local(&mut a.doc, &action, encoded).unwrap();
-        tilo_actions::replay(&mut b.doc, &env, &registry()).unwrap();
-
-        assert_eq!(
-            a.doc.get_heads(),
-            b.doc.get_heads(),
-            "style replayed identically"
-        );
-        assert_eq!(
-            body_blocks(&b.doc)
-                .into_iter()
-                .find(|x| x.id == block)
-                .unwrap()
-                .kind,
-            "heading",
-            "the block became a heading on the peer"
-        );
-    }
-
-    /// Inserting a table through an action creates the cells (ids minted under
-    /// the pinned actor) and replays byte-identically — proving deterministic
-    /// id minting inside `apply`.
-    #[test]
-    fn insert_table_replays_byte_identical() {
-        let (mut a, ids) = seeded("Intro\n");
-        let after = ids[0].clone();
-        a.doc.commit();
-        let bytes = a.save();
-        let mut b = ui::State::load(&bytes).unwrap();
-
-        let action = insert_table_action(&after, 2, 3);
-        let encoded = encode(&action);
-        let env = tilo_actions::apply_local(&mut a.doc, &action, encoded).unwrap();
-        tilo_actions::replay(&mut b.doc, &env, &registry()).unwrap();
-
-        assert_eq!(
-            a.doc.get_heads(),
-            b.doc.get_heads(),
-            "table replayed identically"
-        );
-        let cells_a = body_blocks(&a.doc)
-            .into_iter()
-            .filter(|x| x.kind == "cell")
-            .count();
-        let cells_b = body_blocks(&b.doc)
-            .into_iter()
-            .filter(|x| x.kind == "cell")
-            .count();
-        assert_eq!(cells_a, 6, "2x3 = six cells");
-        assert_eq!(cells_a, cells_b, "the same cells on both replicas");
-    }
-
-    /// A page break splits the block and marks the tail's fresh block to start a
-    /// new page, and replays byte-identically.
-    #[test]
-    fn insert_page_break_replays_byte_identical() {
-        let (mut a, ids) = seeded("onetwo\n");
-        let block = ids[0].clone();
-        a.doc.commit();
-        let bytes = a.save();
-        let mut b = ui::State::load(&bytes).unwrap();
-
-        // Break in the middle: "one" | "two".
-        let action = insert_page_break_action(&block, 3);
-        let encoded = encode(&action);
-        let env = tilo_actions::apply_local(&mut a.doc, &action, encoded).unwrap();
-        tilo_actions::replay(&mut b.doc, &env, &registry()).unwrap();
-
-        assert_eq!(
-            a.doc.get_heads(),
-            b.doc.get_heads(),
-            "page break replayed identically"
-        );
-        assert_eq!(
-            text_of(&a.doc, &block),
-            "one",
-            "head keeps the pre-caret text"
-        );
-        let broke = body_blocks(&a.doc).into_iter().any(|x| {
-            x.text == "two"
-                && matches!(
-                    x.attrs.get("page_break_before"),
-                    Some(qdoc::AttrVal::Bool(true))
-                )
-        });
-        assert!(broke, "the tail block starts on a fresh page");
-    }
-
-    /// Replacing the body (template apply / version restore) replays
-    /// byte-identically: same fresh blocks on both replicas.
-    #[test]
-    fn replace_body_replays_byte_identical() {
-        let (mut a, _ids) = seeded("Old content\n");
-        a.doc.commit();
-        let bytes = a.save();
-        let mut b = ui::State::load(&bytes).unwrap();
-
-        let action = replace_body_action("# Fresh\n\nBrand new body\n");
-        let encoded = encode(&action);
-        let env = tilo_actions::apply_local(&mut a.doc, &action, encoded).unwrap();
-        tilo_actions::replay(&mut b.doc, &env, &registry()).unwrap();
-
-        assert_eq!(
-            a.doc.get_heads(),
-            b.doc.get_heads(),
-            "body replace replayed identically"
-        );
-        let first = body_blocks(&a.doc).into_iter().next().unwrap();
-        assert_eq!(first.kind, "heading");
-        assert_eq!(first.text, "Fresh");
-    }
-
-    /// The full undo covenant on one action: dispatched through the executor it
-    /// mutates the document and records exactly one undo boundary, reverted
-    /// precisely by Ctrl+Z. Uses a paragraph-style change (a structural `kind`
-    /// write) since inline formatting *marks* are, by design, not undo-tracked.
-    #[test]
-    fn action_records_one_undo_boundary_and_reverts() {
-        let (mut state, ids) = seeded("Title\n");
-        let block = ids[0].clone();
-        let before_heads = state.doc.get_heads();
-
-        let kind_of = |doc: &AutoCommit| {
-            body_blocks(doc)
-                .into_iter()
-                .find(|x| x.id == block)
-                .map(|x| x.kind)
-        };
-        assert_eq!(
-            kind_of(&state.doc).as_deref(),
-            Some("paragraph"),
-            "starts as a paragraph"
-        );
-
-        let action = set_paragraph_style_action(
-            RegionKind::Body,
-            vec![block.clone()],
-            "heading",
-            Some(1),
-            None,
-        );
-        let result = action.apply(&mut state.doc);
-        assert!(result.is_ok());
-        state.record_committed_action(before_heads, None, None);
-
-        assert_eq!(
-            kind_of(&state.doc).as_deref(),
-            Some("heading"),
-            "the action made it a heading"
-        );
-        assert!(
-            state.peek_last_undo().is_some(),
-            "exactly one undo boundary recorded"
-        );
-
-        state.undo(None, None).expect("an undo entry to pop");
-        assert_eq!(
-            kind_of(&state.doc).as_deref(),
-            Some("paragraph"),
-            "undo reverted the paragraph style and nothing else"
-        );
-    }
-
-    /// Single source of truth: the palette's document-level specs encode
-    /// byte-identically to the builders the on-screen affordances call.
-    #[test]
-    fn palette_and_builder_encode_identically() {
-        let (state, ids) = seeded("Intro\n");
-        let block = ids[0].clone();
-        let ctx = WpResourceCtx {
-            caret_block: block.clone(),
-            caret_offset: 0,
-            target_blocks: vec![block.clone()],
-            format_spans: Vec::new(),
-            selection: None,
+            selection: Some(SelectionTarget {
+                start_block: block.clone(),
+                start: 0,
+                end_block: block,
+                end: 5,
+            }),
             region: RegionKind::Body,
             search_hits: Vec::new(),
-        };
-        let resources = provide_resources(&ctx, &state.doc);
-        let doc_res = &resources[0];
-        assert_eq!(doc_res.kind, "word_processor.document");
+        }
+    }
 
-        // Insert-table spec == insert_table builder.
-        let spec = doc_res
-            .actions
-            .iter()
-            .find(|a| a.id == "insert-table")
-            .unwrap();
-        let from_spec = immediate_encode(spec);
-        let from_builder = encode(&insert_table_action(&block, 2, 2));
-        assert_eq!(from_spec.type_id, from_builder.type_id);
-        assert_eq!(
-            from_spec.payload, from_builder.payload,
-            "insert-table is one source of truth"
-        );
+    fn hello_span(doc: &AutoCommit) -> Vec<Span> {
+        vec![Span {
+            block: nth_block(doc, 1),
+            start: 0,
+            end: 5,
+        }]
+    }
 
-        // Align-center spec == set_align builder over the same target blocks.
-        let spec = doc_res
-            .actions
-            .iter()
-            .find(|a| a.id == "align-center")
-            .unwrap();
-        let from_spec = immediate_encode(spec);
-        let from_builder = encode(&set_align_action(vec![block], "center"));
-        assert_eq!(
-            from_spec.payload, from_builder.payload,
-            "align is one source of truth"
-        );
+    ui::action_contract_tests! {
+        seed: wp_seed(),
+        registry: registry(),
+        resources: |doc| provide_resources(&wp_ctx(doc), doc),
+        palette: [
+            "Insert table",
+            "Insert page break",
+            "Align centre",
+            "Replace selection",
+            "Add or change hyperlink",
+            "Accept change",
+            "Accept all changes",
+        ],
+        replay: [
+            splice_text => |doc| encode(&splice_text_action(
+                RegionKind::Body,
+                &nth_block(doc, 1),
+                6,
+                11,
+                "there",
+            )),
+            set_mark => |doc| encode(&set_mark_action(
+                RegionKind::Body,
+                hello_span(doc),
+                "strong",
+                Some(MarkVal::Bool(true)),
+                vec![],
+            )),
+            set_paragraph_style => |doc| encode(&set_paragraph_style_action(
+                RegionKind::Body,
+                vec![nth_block(doc, 1)],
+                "heading",
+                Some(2),
+                None,
+            )),
+            insert_table => |doc| encode(&insert_table_action(&nth_block(doc, 0), 2, 3)),
+            insert_page_break => |doc| encode(&insert_page_break_action(&nth_block(doc, 2), 3)),
+            replace_body => |_| encode(&replace_body_action("# Fresh\n\nBrand new body\n")),
+        ],
+        undo: [
+            set_paragraph_style => |doc| encode(&set_paragraph_style_action(
+                RegionKind::Body,
+                vec![nth_block(doc, 1)],
+                "heading",
+                Some(1),
+                None,
+            )),
+            insert_table => |doc| encode(&insert_table_action(&nth_block(doc, 0), 2, 3)),
+            splice_text => |doc| encode(&splice_text_action(
+                RegionKind::Body,
+                &nth_block(doc, 1),
+                6,
+                11,
+                "there",
+            )),
+        ],
+        encodes: [
+            insert_table => ("word_processor.document", "insert-table", |doc, _| {
+                encode(&insert_table_action(&nth_block(doc, 1), 2, 2))
+            }),
+            align_center => ("word_processor.document", "align-center", |doc, _| {
+                encode(&set_align_action(vec![nth_block(doc, 1)], "center"))
+            }),
+            replace_selection => (
+                "word_processor.document",
+                "replace-selection",
+                arg: "guide",
+                |doc, _| {
+                    let block = nth_block(doc, 1);
+                    encode(&replace_selection_action(
+                        RegionKind::Body,
+                        &block,
+                        0,
+                        &block,
+                        5,
+                        "guide",
+                    ))
+                }
+            ),
+            set_hyperlink => (
+                "word_processor.document",
+                "set-hyperlink",
+                arg: "https://example.com/guide",
+                |doc, _| encode(&set_hyperlink_action(
+                    RegionKind::Body,
+                    hello_span(doc),
+                    "https://example.com/guide",
+                ))
+            ),
+        ],
     }
 
     #[test]
@@ -4982,12 +4825,13 @@ mod tests {
             .iter()
             .find(|resource| resource.id.as_str() == change_resource_id.as_str())
             .expect("tracked change is a resource");
-        let accept = immediate_encode(
+        let accept = spec_encoding(
             change_resource
                 .actions
                 .iter()
                 .find(|action| action.id == "accept")
                 .unwrap(),
+            None,
         );
         let action: WordProcessorAction = serde_json::from_slice(&accept.payload).unwrap();
         let envelope = tilo_actions::apply_local(&mut a.doc, &action, accept).unwrap();

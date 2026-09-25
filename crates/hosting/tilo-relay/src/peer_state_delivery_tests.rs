@@ -30,7 +30,7 @@ async fn writer_boundary(
         &cert.user_public_key,
         &crate::policy::TrustPolicy::AllowMatchingUser,
         &RevocationList::new(),
-        now_ns(),
+        unix_now_ns(),
     )
     .unwrap();
     let authority = qos_peer_state::retained_proof::RetentionAuthority::new(
@@ -297,7 +297,7 @@ async fn replay_catchup_keeps_selected_activation_pair_without_repeating_baselin
         &cert.user_public_key,
         &crate::policy::TrustPolicy::AllowMatchingUser,
         &RevocationList::new(),
-        now_ns(),
+        unix_now_ns(),
     )
     .unwrap();
     let authority = qos_peer_state::retained_proof::RetentionAuthority::new(

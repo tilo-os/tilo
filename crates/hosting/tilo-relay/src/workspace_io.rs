@@ -52,7 +52,7 @@ fn membership_phase(trace: Option<MembershipTrace>, phase: &'static str) {
             request_id = %trace.request_id,
             workspace_id = trace.workspace_id,
             phase,
-            timestamp_ns = crate::peer::now_ns()
+            timestamp_ns = tilo_clock::unix_now_ns()
         );
     }
 }

@@ -24,6 +24,7 @@ durable-store = { path = "../durable-store" }
 
 automerge.workspace = true
 tilo-automerge.workspace = true
+hex.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 

@@ -128,12 +128,7 @@ impl LocalIdentity {
 /// Lower-hex of the first 8 bytes.
 #[cfg(not(target_arch = "wasm32"))]
 fn hex8(b: &[u8]) -> String {
-    use std::fmt::Write as _;
-    let mut s = String::with_capacity(16);
-    for byte in b.iter().take(8) {
-        let _ = write!(s, "{byte:02x}");
-    }
-    s
+    hex::encode(b.get(..8).unwrap_or(b))
 }
 
 /// A stable palette index (0..8) from arbitrary bytes.
@@ -172,21 +167,13 @@ fn user_display() -> String {
     let display: String = raw
         .split(['.', '_', '-', ' '])
         .filter(|p| !p.is_empty())
-        .map(capitalise)
+        .map(ui::format::capitalize_first)
         .collect::<Vec<_>>()
         .join(" ");
     if display.is_empty() {
         "You".to_string()
     } else {
         display
-    }
-}
-
-fn capitalise(p: &str) -> String {
-    let mut ch = p.chars();
-    match ch.next() {
-        Some(f) => f.to_uppercase().collect::<String>() + ch.as_str(),
-        None => String::new(),
     }
 }
 
@@ -243,7 +230,7 @@ mod tests {
     fn initials_and_display_are_tidy() {
         assert_eq!(initials_of("Ada Lovelace"), "AL");
         assert_eq!(initials_of("mononym"), "M");
-        assert_eq!(capitalise("ada"), "Ada");
+        assert_eq!(ui::format::capitalize_first("ada"), "Ada");
     }
 
     #[test]

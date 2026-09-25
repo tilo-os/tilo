@@ -19,9 +19,10 @@ use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::mpsc;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 #[cfg(test)]
 use tilo_actions::EncodedAction;
+use tilo_clock::unix_now_i64;
 
 use automerge::{AutoCommit, ChangeHash, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
@@ -2202,11 +2203,8 @@ impl CameraApp {
         // `settings://` is delegated to the desktop's registered settings
         // handler, just as scanned URLs use the OS handler. It is deliberately
         // an external effect, never a fabricated in-app permission grant.
-        if open_external("settings://privacy/camera") {
-            self.toast = Some("Opening camera privacy settings".into());
-        } else {
-            self.toast = Some("Couldn't open camera privacy settings".into());
-        }
+        ui::widget::open_external_url("settings://privacy/camera");
+        self.toast = Some("Opening camera privacy settings".into());
     }
 
     fn open_camera_chooser(&mut self) {
@@ -2333,7 +2331,7 @@ impl CameraApp {
         let label = actions.get(i).copied().unwrap_or("Copy");
         match label {
             "Open link" | "Open map" | "Compose" | "Call" => {
-                let _ = open_external(&s.raw);
+                ui::widget::open_external_url(&s.raw);
                 ui::clipboard_copy(&s.raw);
                 self.toast = Some(format!("{label} · copied to clipboard"));
             }
@@ -2471,9 +2469,7 @@ fn now_secs() -> i64 {
     {
         return now.max(0);
     }
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |d| d.as_secs() as i64)
+    unix_now_i64()
 }
 
 fn fmt_dur(ms: i64) -> String {
@@ -2493,12 +2489,6 @@ fn valid_frame(frame: &FrameBuf) -> bool {
         && pixels <= MAX_FRAME_PIXELS
         && expected <= MAX_FRAME_BYTES
         && frame.rgba.len() == expected
-}
-
-/// Best-effort hand-off to the host's URI handler. Never blocks and ignores
-/// failures — the clipboard copy is the guaranteed path.
-fn open_external(uri: &str) -> bool {
-    ui::widget::try_open_external_url(uri).is_ok()
 }
 
 fn frame_image_fill(buf: FrameBuf) -> Image {

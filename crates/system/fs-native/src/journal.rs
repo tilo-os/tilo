@@ -95,6 +95,9 @@ pub struct JournalConfig {
     /// Suppress repeated `FAN_MODIFY` of an open file with an ignore mark
     /// until it is closed or the batch is taken.
     pub rate_limit_modify: bool,
+    /// Sequence number of the first entry. A consumer that persists journal
+    /// positions continues numbering across restarts from here.
+    pub first_seq: u64,
 }
 
 impl JournalConfig {
@@ -104,6 +107,7 @@ impl JournalConfig {
             unlimited_queue: false,
             ignore_pids: Vec::new(),
             rate_limit_modify: true,
+            first_seq: 1,
         }
     }
 }
@@ -162,6 +166,7 @@ impl ChangeJournal {
         )?;
         let mount = sys::open_dir(store_root)?;
         let watch = std::fs::canonicalize(&cfg.watch)?;
+        let first_seq = cfg.first_seq.max(1);
         Ok(Self {
             group,
             mount,
@@ -169,7 +174,7 @@ impl ChangeJournal {
             cfg,
             buf: vec![0u8; 256 * 1024],
             entries: Vec::new(),
-            next_seq: 1,
+            next_seq: first_seq,
             rescan: None,
             pending_barriers: HashMap::new(),
             barriers: HashMap::new(),

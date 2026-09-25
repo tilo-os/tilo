@@ -14,6 +14,7 @@ use crate::store::bounded::Invariant;
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use tilo_clock::unix_now_ns;
 use tokio::io::AsyncWriteExt;
 use tokio::sync::{Mutex as AsyncMutex, mpsc};
 
@@ -193,11 +194,6 @@ pub struct WorkspaceAutobind {
     /// Relay state root under which a newly seen workspace is persisted.
     pub state_root: std::path::PathBuf,
 }
-
-/// Sequence-number source for enqueued deltas — wall-clock nanoseconds,
-/// so filenames sort in delivery order across restarts. The same clock the
-/// handshake checks certificates against.
-pub use crate::auth::now_ns;
 
 /// Relay-wide state a peer session needs for its whole lifetime — the
 /// workspace registry, autobind policy, live revocation list, own
@@ -1815,7 +1811,7 @@ impl StateSource {
     fn cert(&self, peer: &AuthenticatedPeer) -> bool {
         peer.cert
             .expires_at_ns
-            .is_none_or(|expiry| expiry > now_ns())
+            .is_none_or(|expiry| expiry > unix_now_ns())
             && self
                 .revocations
                 .read()
@@ -5019,7 +5015,7 @@ fn current_action_peer(peer: &AuthenticatedPeer, session: &SessionCtx<'_>) -> bo
 fn session_peer_authorized(peer: &AuthenticatedPeer, session: &SessionCtx<'_>) -> bool {
     peer.cert
         .expires_at_ns
-        .is_none_or(|expiry| expiry > now_ns())
+        .is_none_or(|expiry| expiry > unix_now_ns())
         && session
             .revocations
             .read()
@@ -5207,7 +5203,7 @@ fn private_workspace_phase(
             request_id = %action.request_id,
             workspace_id = ?workspace_id,
             phase,
-            timestamp_ns = now_ns()
+            timestamp_ns = unix_now_ns()
         );
     }
 }
@@ -5591,7 +5587,7 @@ mod private_transport_tests {
             &user,
             &crate::policy::TrustPolicy::AllowMatchingUser,
             &RevocationList::new(),
-            now_ns(),
+            unix_now_ns(),
         )
         .unwrap();
         let proof = crate::auth::build_hello_ack2(crate::auth::AuthDomain::Tilo, &key, &[1; 32]);
@@ -9014,7 +9010,7 @@ mod private_transport_tests {
         // queued delivery was created. Re-sign the short-lived certificate so
         // the fixture still uses a valid root-issued chain.
         let mut expiring = delivery.clone();
-        expiring.source.cert.expires_at_ns = Some(now_ns().saturating_add(100_000_000));
+        expiring.source.cert.expires_at_ns = Some(unix_now_ns().saturating_add(100_000_000));
         sign_device_cert(&mut expiring.source.cert, &root).unwrap();
         expiring.source = crate::auth::accept_hello(
             &crate::auth::Hello {
@@ -9024,7 +9020,7 @@ mod private_transport_tests {
             &user.public_key,
             &crate::policy::TrustPolicy::AllowMatchingUser,
             &RevocationList::new(),
-            now_ns(),
+            unix_now_ns(),
         )
         .unwrap();
         crate::auth::verify_hello_ack2(
@@ -9061,7 +9057,7 @@ mod private_transport_tests {
             &user.public_key,
             &crate::policy::TrustPolicy::AllowMatchingUser,
             &RevocationList::new(),
-            now_ns(),
+            unix_now_ns(),
         )
         .unwrap();
         crate::auth::verify_hello_ack2(

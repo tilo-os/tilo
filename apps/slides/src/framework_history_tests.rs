@@ -589,7 +589,7 @@ fn successive_admitted_resource_actions_stay_usable_and_deleted_target_is_refuse
 }
 
 #[test]
-fn frozen_renderer_never_invokes_live_blob_transport_or_uses_current_store() {
+fn frozen_renderer_never_fetches_live_blobs_or_uses_current_store() {
     use std::{
         collections::BTreeMap,
         sync::{
@@ -597,20 +597,30 @@ fn frozen_renderer_never_invokes_live_blob_transport_or_uses_current_store() {
             atomic::{AtomicUsize, Ordering},
         },
     };
-    struct Transport(Arc<AtomicUsize>, Arc<std::sync::Mutex<Vec<String>>>);
-    impl qdoc::blobstore::BlobTransport for Transport {
-        fn offer(&self, _: &str, _: &[u8]) {
+    /// A live content store that counts every request that could leave the
+    /// process: a fetch or a put.
+    struct Spy(Arc<AtomicUsize>, Arc<std::sync::Mutex<Vec<String>>>);
+    impl qdoc::blobstore::BlobStore for Spy {
+        fn put(&self, _: &[u8], _: &str) -> Result<String, qdoc::blobstore::BlobStoreError> {
             self.0.fetch_add(1, Ordering::SeqCst);
+            Err(qdoc::blobstore::BlobStoreError::Unavailable("spy".into()))
         }
-        fn want(&self, hash: &str) {
+        fn cached(&self, _: &str) -> Option<Vec<u8>> {
+            None
+        }
+        fn fetch(&self, hash: &str) -> qdoc::blobstore::Fetch {
             self.0.fetch_add(1, Ordering::SeqCst);
             self.1.lock().unwrap().push(hash.into());
+            qdoc::blobstore::Fetch::Pending
+        }
+        fn shared(&self) -> bool {
+            true
         }
     }
-    if std::env::var_os("QOS_SLIDES_TRANSPORT_PROBE").is_none() {
+    if std::env::var_os("QOS_SLIDES_STORE_PROBE").is_none() {
         let result = std::process::Command::new(std::env::current_exe().unwrap())
-            .args(["--exact", "framework_history_tests::frozen_renderer_never_invokes_live_blob_transport_or_uses_current_store", "--nocapture"])
-            .env("QOS_SLIDES_TRANSPORT_PROBE", "1").output().unwrap();
+            .args(["--exact", "framework_history_tests::frozen_renderer_never_fetches_live_blobs_or_uses_current_store", "--nocapture"])
+            .env("QOS_SLIDES_STORE_PROBE", "1").output().unwrap();
         assert!(
             result.status.success(),
             "{} {}",
@@ -621,9 +631,7 @@ fn frozen_renderer_never_invokes_live_blob_transport_or_uses_current_store() {
     }
     let calls = Arc::new(AtomicUsize::new(0));
     let wants = Arc::new(std::sync::Mutex::new(Vec::new()));
-    let transport: Arc<dyn qdoc::blobstore::BlobTransport> =
-        Arc::new(Transport(calls.clone(), wants.clone()));
-    qdoc::blobstore::set_transport(&transport);
+    qdoc::blobstore::set_store(Arc::new(Spy(calls.clone(), wants.clone())));
     let mut doc = AutoCommit::new();
     let mut deck = crate::model::seed_deck();
     deck.slides.truncate(1);
@@ -659,11 +667,11 @@ fn frozen_renderer_never_invokes_live_blob_transport_or_uses_current_store() {
     assert_eq!(
         calls.load(Ordering::SeqCst),
         0,
-        "presentation-only renderer cannot invoke live blob transport"
+        "presentation-only renderer cannot reach the live content store"
     );
     assert!(
         qdoc::blobstore::store()
-            .get(id.strip_prefix(crate::assets::ASSET_PREFIX).unwrap())
+            .cached(id.strip_prefix(crate::assets::ASSET_PREFIX).unwrap())
             .is_none()
     );
     request_selected_provider(doc, deck, selected);
@@ -676,7 +684,7 @@ fn frozen_renderer_never_invokes_live_blob_transport_or_uses_current_store() {
     assert_eq!(
         calls.load(Ordering::SeqCst),
         1,
-        "one selected read request, no offers"
+        "one selected read request, no puts"
     );
 }
 

@@ -12,7 +12,7 @@ use std::io::{Read, Write};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
 use base64::Engine;
 use getrandom::{SysRng, rand_core::UnwrapErr};
@@ -21,6 +21,7 @@ use reqwest::Certificate;
 use reqwest::blocking::{Body, Client, Response};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use tilo_clock::try_unix_now;
 
 use crate::appliance::HOST_PROTOCOL_MAJOR;
 use crate::{
@@ -1369,10 +1370,8 @@ fn write_private_new_or_equal(path: &Path, value: &[u8]) -> Result<(), AgentErro
 }
 
 fn now_unix() -> Result<u64, AgentError> {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_secs())
-        .map_err(|_| AgentError::Transport("system clock precedes UNIX epoch".to_string()))
+    try_unix_now()
+        .ok_or_else(|| AgentError::Transport("system clock precedes UNIX epoch".to_string()))
 }
 
 fn nonce() -> String {

@@ -19,6 +19,7 @@ use taffy::{
     Dimension, Display, LengthPercentageAuto, NodeId, Position, Rect as TaffyRect, Size, Style,
     TaffyTree,
 };
+use tilo_clock::unix_now_ms;
 use vello::Scene;
 use vello::kurbo::RoundedRect;
 use vello::kurbo::{Affine, Point, Rect, Stroke};
@@ -47,7 +48,7 @@ use history::notification_severity_label;
 use history::{
     HistoryTargetAddress, clipboard_history_matches_query, clipboard_history_relative_time,
     clipboard_history_source_label, history_target_address,
-    notification_history_accessible_description, notification_history_relative_time, unix_time_ms,
+    notification_history_accessible_description, notification_history_relative_time,
 };
 #[cfg(test)]
 use shortcuts::configured_shortcut_matches;
@@ -17254,7 +17255,7 @@ impl Widget for ShellOverlayHost {
                             let fabric = self
                                 .device_fabric_call(DeviceFabricUiAction::Snapshot)
                                 .ok();
-                            let now_unix_ms = unix_time_ms();
+                            let now_unix_ms = unix_now_ms();
                             let visible = self.qs_clipboard_visible_rows();
                             let start = self
                                 .qs_clipboard_history_start
@@ -23758,7 +23759,7 @@ impl ShellOverlayHost {
         let start = self.qs_clipboard_history_start;
         let shown = visible_rows.min(history.len().saturating_sub(start));
         let fabric = self.device_fabric_call(DeviceFabricUiAction::Snapshot).ok();
-        let now_unix_ms = unix_time_ms();
+        let now_unix_ms = unix_now_ms();
 
         let search_label = if !self.qs_clipboard_query.is_empty() {
             format!(

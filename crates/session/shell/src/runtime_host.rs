@@ -32,7 +32,8 @@ pub struct Session {
     pub room: String,
     pub actor: String,
     identity_socket: PathBuf,
-    content_root: PathBuf,
+    blob_socket: PathBuf,
+    _media: MediaHost,
     _membership: crate::shell::state::WorkspaceTreeHandle,
     _lock: advisory_lock::FileLock,
 }
@@ -92,13 +93,16 @@ impl Session {
         let identity_socket = root.join("identity.sock");
         let identity = identity_broker::spawn(identity_socket.clone(), tree.clone())?;
         let broker = collab_broker::spawn_native(root.join("collab.sock"), &None, tree.clone())?;
+        let blob_socket = root.join("blobs.sock");
+        let media = MediaHost::start(&root.join("content"), &blob_socket)?;
         Ok(Self {
             broker,
             _identity: identity,
             room,
             actor,
             identity_socket,
-            content_root: root.join("blobs"),
+            blob_socket,
+            _media: media,
             _membership: tree,
             _lock: lock,
         })
@@ -109,19 +113,87 @@ impl Session {
         self._membership.clone()
     }
 
+    /// Read document media an app in this session's room stored, through
+    /// the same scoped capability the app holds.
+    /// # Errors
+    /// Returns connection errors; `Ok(None)` when the content is not readable.
+    pub fn read_media(&self, app_id: &str, hash: &str) -> io::Result<Option<Vec<u8>>> {
+        use runtime_fs::blobs::{BlobClient, ReadOutcome};
+        let session = BlobClient::connect_session(&self.blob_socket).map_err(io::Error::other)?;
+        let scoped = session
+            .scope(&self.room, app_id)
+            .map_err(io::Error::other)?;
+        match scoped.read_all(hash).map_err(io::Error::other)? {
+            ReadOutcome::Ready { bytes, .. } => Ok(Some(bytes)),
+            ReadOutcome::Pending | ReadOutcome::Unavailable => Ok(None),
+        }
+    }
+
     /// Launch a trusted native app through the existing SDK descriptor contract.
     /// This is a development host, not a replacement for qOS package sandboxing.
     /// # Errors
     /// Returns handshake, descriptor or process-spawn errors.
-    pub fn launch(&self, app_id: &str, mut command: Command) -> io::Result<Child> {
-        command.env("TILO_BLOB_STORE", &self.content_root);
+    pub fn launch(&self, app_id: &str, command: Command) -> io::Result<Child> {
         unix::launch(
             command,
             app_id,
             &self.room,
-            self.broker.capnp_socket(),
-            &self.identity_socket,
+            &unix::ServiceSockets {
+                collab: self.broker.capnp_socket(),
+                identity: &self.identity_socket,
+                blobs: &self.blob_socket,
+            },
         )
+    }
+}
+
+/// Serves the host's apps their document media: the filesystem daemon's
+/// content store and capability, on the host's private profile.
+struct MediaHost {
+    store: std::sync::Arc<tilo_fs::ContentStore>,
+    _server: std::thread::JoinHandle<()>,
+    runtime: Option<tokio::runtime::Runtime>,
+}
+
+impl MediaHost {
+    fn start(content: &Path, socket: &Path) -> io::Result<Self> {
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(1)
+            .thread_name("qos-media")
+            .enable_all()
+            .build()?;
+        let store = std::sync::Arc::new(
+            runtime
+                .block_on(tilo_fs::ContentStore::open(content))
+                .map_err(io::Error::other)?,
+        );
+        let media =
+            tilo_fs::document_media::DocumentMedia::new(std::sync::Arc::clone(&store), None);
+        let server = {
+            let _entered = runtime.enter();
+            tilo_fs::document_media::serve_socket(socket, media).map_err(io::Error::other)?
+        };
+        Ok(Self {
+            store,
+            _server: server,
+            runtime: Some(runtime),
+        })
+    }
+}
+
+impl Drop for MediaHost {
+    /// Release the store's database so the profile can be served again in
+    /// this process; the server thread then only answers with errors.
+    fn drop(&mut self) {
+        let Some(runtime) = self.runtime.take() else {
+            return;
+        };
+        let store = std::sync::Arc::clone(&self.store);
+        let _ = std::thread::spawn(move || {
+            let _ = runtime.block_on(store.store().shutdown());
+            runtime.shutdown_background();
+        })
+        .join();
     }
 }
 

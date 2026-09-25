@@ -44,6 +44,7 @@ tempfile.workspace = true
 # Serialise tests that touch the shared system clipboard.
 serial_test.workspace = true
 # Two distinct files for the multi-document test.
+ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
 
 [lints]
 workspace = true

@@ -1315,15 +1315,6 @@ mod tests {
         assert!(!valid_calendar_invitation(&oversized));
     }
 
-    fn immediate_encode(spec: &ActionSpec) -> EncodedAction {
-        match &spec.input {
-            ActionInput::Immediate(enc) => enc.clone(),
-            ActionInput::Prompted { .. } | ActionInput::Deferred { .. } => {
-                panic!("expected an immediate action: {}", spec.id)
-            }
-        }
-    }
-
     fn prompted_encode(spec: &ActionSpec, arg: &str) -> EncodedAction {
         match &spec.input {
             ActionInput::Prompted { build, .. } => build(arg),
@@ -1397,6 +1388,119 @@ mod tests {
     /// A sample message id (as a string) taken from the Inbox.
     fn an_inbox_id(st: &MailState) -> String {
         st.mailbox.messages_in(Folder::Inbox)[0].id.to_string()
+    }
+
+    /// The sample app a contract seed was synced from, and the message the seed
+    /// moved to Trash. The sample corpus mints fresh message ids per instance,
+    /// so the resources must come from the very app that wrote the seed.
+    struct Seeded {
+        app: MailApp,
+        trashed: String,
+    }
+
+    thread_local! {
+        static SEEDED: std::cell::RefCell<Option<Seeded>> = const { std::cell::RefCell::new(None) };
+    }
+
+    fn with_seeded<R>(f: impl FnOnce(&Seeded) -> R) -> R {
+        SEEDED.with_borrow(|seeded| f(seeded.as_ref().expect("the contract seed ran first")))
+    }
+
+    /// The sample mailbox after a user trashed one message, labelled another,
+    /// created a local folder and started a draft — all through the actions.
+    fn mailbox_seed() -> AutoCommit {
+        let (mut app, mut state) = seeded_app();
+        let ids = inbox_ids(&app, &state.doc);
+        let trashed = ids.last().cloned().expect("sample inbox has messages");
+        dispatch(
+            &mut state.doc,
+            &move_action(vec![trashed.clone()], Folder::Trash),
+        );
+        dispatch(
+            &mut state.doc,
+            &add_label_action(vec![ids[0].clone()], "work"),
+        );
+        dispatch(
+            &mut state.doc,
+            &create_folder_action("receipts", "Receipts"),
+        );
+        dispatch(
+            &mut state.doc,
+            &save_draft_action(&Draft {
+                to: "ada@example.test".into(),
+                subject: "Plans".into(),
+                ..Default::default()
+            }),
+        );
+        app.sync(&mut state.doc, &state.root);
+        SEEDED.set(Some(Seeded { app, trashed }));
+        state.doc
+    }
+
+    fn inbox_ids(app: &MailApp, doc: &AutoCommit) -> Vec<String> {
+        app.mail_resource_ctx(doc)
+            .messages
+            .into_iter()
+            .map(|m| m.id)
+            .collect()
+    }
+
+    fn seeded_inbox_ids(doc: &AutoCommit) -> Vec<String> {
+        with_seeded(|seeded| inbox_ids(&seeded.app, doc))
+    }
+
+    fn message_id(res: &Resource) -> &str {
+        res.id
+            .as_str()
+            .strip_prefix("mail.message:")
+            .expect("a message resource")
+    }
+
+    ui::action_contract_tests! {
+        seed: mailbox_seed(),
+        registry: registry(),
+        resources: |doc| with_seeded(|seeded| ResourceProvider::resources(&seeded.app, doc)),
+        palette: ["New folder", "Compose message", "Archive", "Rename folder", "Discard draft"],
+        replay: [
+            set_starred => |doc| {
+                let id = seeded_inbox_ids(doc)
+                    .into_iter()
+                    .find(|id| MailDoc::get_starred(doc, id) == Some(false))
+                    .expect("an unstarred inbox message");
+                encode(&set_starred_action(vec![id], true))
+            },
+            batched_move => |doc| encode(&move_action(
+                seeded_inbox_ids(doc).into_iter().take(3).collect(),
+                Folder::Archive,
+            )),
+            add_label => |doc| encode(&add_label_action(vec![seeded_inbox_ids(doc)[1].clone()], "urgent")),
+            purge => |_| encode(&purge_action(vec![with_seeded(|seeded| seeded.trashed.clone())])),
+        ],
+        undo: [
+            move_to_trash => |doc| encode(&move_action(vec![seeded_inbox_ids(doc)[0].clone()], Folder::Trash)),
+        ],
+        encodes: [
+            archive => ("mail.message", "archive", |_, res| {
+                encode(&move_action(vec![message_id(res).to_string()], Folder::Archive))
+            }),
+            read => ("mail.message", "read", |doc, res| {
+                let id = message_id(res);
+                let read = MailDoc::get_read(doc, id).expect("an ingested message");
+                encode(&set_read_action(vec![id.to_string()], !read))
+            }),
+            add_label => ("mail.message", "add-label", arg: "work", |_, res| {
+                encode(&add_label_action(vec![message_id(res).to_string()], "work"))
+            }),
+            rename_folder => ("mail.folder:receipts", "rename", arg: "Invoices", |_, _| {
+                encode(&rename_folder_action("receipts", "Invoices"))
+            }),
+            delete_folder => ("mail.folder:receipts", "delete-folder", |_, _| {
+                encode(&delete_folder_action("receipts"))
+            }),
+            discard_draft => ("mail.folder:drafts", "discard-draft", |_, _| {
+                encode(&discard_draft_action())
+            }),
+        ],
     }
 
     /// Ctrl+K on Mail yields the mailbox root exporting "New folder", the open
@@ -1486,15 +1590,6 @@ mod tests {
                 .contract
                 .risk,
             tilo_actions::RiskLevel::Destructive
-        );
-
-        let mut palette = ui::ActionPalette::new();
-        palette.load_open_resources(&resources);
-        palette.open();
-        let labels = palette.result_labels();
-        assert!(
-            labels.iter().any(|l| l.contains("New folder")),
-            "{labels:?}"
         );
     }
 
@@ -1708,71 +1803,6 @@ mod tests {
         );
     }
 
-    /// The full undo covenant on one action: dispatched through the executor a
-    /// move-to-Trash mutates the document and records exactly one undo boundary,
-    /// and Ctrl+Z (the host's `undo`) reverts precisely that action.
-    #[test]
-    fn move_action_records_one_undo_boundary_and_reverts() {
-        let mut state = ui::State::new();
-        // A message currently in the Inbox.
-        let id = "msg-1";
-        MailDoc::set_folder_for(&mut state.doc, id, Folder::Inbox);
-        let before_heads = state.doc.get_heads();
-        assert_eq!(MailDoc::get_folder_for(&state.doc, id), Some(Folder::Inbox));
-
-        let encoded = encode(&move_action(vec![id.to_string()], Folder::Trash));
-        let decoded = registry().decode(&encoded).unwrap();
-        let mut tx = LocalTransport::new();
-        tilo_actions::dispatch(&mut state.doc, decoded.as_ref(), encoded, &mut tx).unwrap();
-        state.record_committed_action(before_heads, None, None);
-
-        assert_eq!(
-            MailDoc::get_folder_for(&state.doc, id),
-            Some(Folder::Trash),
-            "the action moved the message to Trash"
-        );
-        assert!(
-            state.peek_last_undo().is_some(),
-            "exactly one undo boundary recorded"
-        );
-
-        state.undo(None, None).expect("an undo entry to pop");
-        assert_eq!(
-            MailDoc::get_folder_for(&state.doc, id),
-            Some(Folder::Inbox),
-            "undo reverted the move and nothing else"
-        );
-    }
-
-    /// The collaboration guarantee: replaying the same encoded action on a second
-    /// independent replica (from the same base state) lands on the byte-identical
-    /// document — same head hashes, not merely the same values.
-    #[test]
-    fn set_starred_replays_byte_identical_on_a_peer() {
-        let mut a = AutoCommit::new();
-        MailDoc::set_folder_for(&mut a, "m", Folder::Inbox);
-        a.commit();
-        let bytes = a.save();
-        let mut b = AutoCommit::load(&bytes).unwrap();
-        assert_eq!(
-            a.get_heads(),
-            b.get_heads(),
-            "precondition: same base state"
-        );
-
-        let action = set_starred_action(vec!["m".to_string()], true);
-        let encoded = encode(&action);
-        let env = tilo_actions::apply_local(&mut a, &action, encoded).unwrap();
-        tilo_actions::replay(&mut b, &env, &registry()).unwrap();
-
-        assert_eq!(
-            a.get_heads(),
-            b.get_heads(),
-            "replay reproduced the identical change"
-        );
-        assert_eq!(MailDoc::get_starred(&b, "m"), Some(true));
-    }
-
     #[test]
     fn concurrent_same_message_flag_edits_merge_without_losing_either_field() {
         let mut base = AutoCommit::new();
@@ -1796,61 +1826,6 @@ mod tests {
         read_replica.merge_incoming(&mut star_replica).unwrap();
         assert_eq!(MailDoc::get_read(&read_replica, "m"), Some(true));
         assert_eq!(MailDoc::get_starred(&read_replica, "m"), Some(true));
-    }
-
-    /// A batched multi-message move is one change and replays byte-identically on
-    /// a peer — the whole batch, one actor, equal heads.
-    #[test]
-    fn batched_move_replays_byte_identical() {
-        let mut a = AutoCommit::new();
-        for id in ["m1", "m2", "m3"] {
-            MailDoc::set_folder_for(&mut a, id, Folder::Inbox);
-        }
-        a.commit();
-        let bytes = a.save();
-        let mut b = AutoCommit::load(&bytes).unwrap();
-        assert_eq!(
-            a.get_heads(),
-            b.get_heads(),
-            "precondition: same base state"
-        );
-
-        let action = move_action(vec!["m1".into(), "m2".into(), "m3".into()], Folder::Archive);
-        let encoded = encode(&action);
-        let env = tilo_actions::apply_local(&mut a, &action, encoded).unwrap();
-        tilo_actions::replay(&mut b, &env, &registry()).unwrap();
-
-        assert_eq!(
-            a.get_heads(),
-            b.get_heads(),
-            "the whole batch replayed identically"
-        );
-        for id in ["m1", "m2", "m3"] {
-            assert_eq!(MailDoc::get_folder_for(&b, id), Some(Folder::Archive));
-        }
-    }
-
-    /// Adding a label also replays byte-identically — the list-mutating path, not
-    /// just a scalar flag.
-    #[test]
-    fn add_label_replays_byte_identical() {
-        let mut a = AutoCommit::new();
-        MailDoc::set_folder_for(&mut a, "m", Folder::Inbox);
-        a.commit();
-        let bytes = a.save();
-        let mut b = AutoCommit::load(&bytes).unwrap();
-
-        let action = add_label_action(vec!["m".to_string()], "work");
-        let encoded = encode(&action);
-        let env = tilo_actions::apply_local(&mut a, &action, encoded).unwrap();
-        tilo_actions::replay(&mut b, &env, &registry()).unwrap();
-
-        assert_eq!(
-            a.get_heads(),
-            b.get_heads(),
-            "label add replayed identically"
-        );
-        assert_eq!(MailDoc::get_labels(&b, "m"), vec!["work"]);
     }
 
     /// Saving a draft persists it; discarding clears it — both through the action.
@@ -1890,59 +1865,6 @@ mod tests {
         let folders = MailDoc::list_folders(&doc);
         assert_eq!(folders.len(), 1, "one local folder created");
         assert_eq!(folders[0].1, "Receipts");
-    }
-
-    /// Single source of truth #1: the palette's per-message archive / read specs
-    /// encode byte-identically to the builders the on-screen controls call.
-    #[test]
-    fn palette_and_builder_encode_identically() {
-        let (app, state) = seeded_app();
-        let id = app.mail_resource_ctx(&state.doc).messages[0].id.clone();
-        let message = <MailApp as ResourceProvider>::resource(
-            &app,
-            &state.doc,
-            &format!("mail.message:{id}"),
-        )
-        .unwrap();
-
-        // Archive spec == move-to-Archive builder.
-        let archive_spec = message.actions.iter().find(|a| a.id == "archive").unwrap();
-        let from_spec = immediate_encode(archive_spec);
-        let from_builder = encode(&move_action(vec![id.clone()], Folder::Archive));
-        assert_eq!(from_spec.type_id, from_builder.type_id);
-        assert_eq!(
-            from_spec.payload, from_builder.payload,
-            "archive is one source of truth"
-        );
-
-        // Read toggle spec == set-read builder for the negated current state.
-        let read_spec = message.actions.iter().find(|a| a.id == "read").unwrap();
-        let row_read = app
-            .mail_resource_ctx(&state.doc)
-            .messages
-            .iter()
-            .find(|m| m.id == id)
-            .map(|m| m.read)
-            .unwrap();
-        let from_spec = immediate_encode(read_spec);
-        let from_builder = encode(&set_read_action(vec![id.clone()], !row_read));
-        assert_eq!(
-            from_spec.payload, from_builder.payload,
-            "read toggle is one source of truth"
-        );
-
-        // Add-label prompted spec == add-label builder for the same text.
-        let label_spec = message
-            .actions
-            .iter()
-            .find(|a| a.id == "add-label")
-            .unwrap();
-        let from_spec = prompted_encode(label_spec, "work");
-        let from_builder = encode(&add_label_action(vec![id], "work"));
-        assert_eq!(
-            from_spec.payload, from_builder.payload,
-            "add-label is one source of truth"
-        );
     }
 
     /// Single source of truth #2: the on-screen message affordance
@@ -2057,9 +1979,10 @@ mod tests {
             .find(|action| action.id == "delete")
             .expect("delete action");
         assert_eq!(delete.label, "Delete permanently");
-        let encoded = immediate_encode(delete);
-        let expected = encode(&purge_action(vec!["m".into()]));
-        assert_eq!(encoded.type_id, expected.type_id);
-        assert_eq!(encoded.payload, expected.payload);
+        ui::testing::action_contract::assert_spec_encodes_as(
+            delete,
+            None,
+            &encode(&purge_action(vec!["m".into()])),
+        );
     }
 }

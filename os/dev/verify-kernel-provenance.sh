@@ -5,10 +5,8 @@
 #
 # Verifies the kernel's signature and its signed SLSA provenance, which must
 # bind the qOS source commit, the native architecture and the kernel digest,
-# plus exactly one build environment (os/dev/kernel-build-environment.py):
-# the signed native kernel buildroot, or for kernels published before it, the
-# signed RPM snapshot they were built from. That environment's own signature is
-# verified too.
+# plus exactly one signed native kernel buildroot
+# (os/dev/kernel-build-environment.py), whose own signature is verified too.
 #
 # The kernel is deliberately not compared with the OS build's RPM snapshot or
 # base: the kernel builds on its own buildroot, so an OS package or base change
@@ -37,13 +35,9 @@ provenance="$(cosign verify-attestation --key "$key" --type slsaprovenance1 "$re
 # architecture, digest) and the one build environment it names.
 environment="$(printf '%s' "$provenance" | python3 "$repo/os/dev/kernel-build-environment.py" \
   --digest "${ref##*@}" --architecture "$(uname -m)")" \
-  || die "Tilo kernel provenance does not bind its source, architecture, digest, and one signed build environment"
+  || die "Tilo kernel provenance does not bind its source, architecture, digest, and one signed kernel buildroot"
 cosign verify --key "$key" "$environment" >/dev/null \
-  || die "the build environment $environment bound by the Tilo kernel is not signed by the release key"
-case "$environment" in
-  code.podesta.ai/qos/tilo-kernel-buildroot@*) ;;
-  *) printf 'Tilo kernel was built from the signed RPM snapshot %s, before the kernel buildroot\n' "$environment" >&2 ;;
-esac
+  || die "the kernel buildroot $environment bound by the Tilo kernel is not signed by the release key"
 
 actual_arch="$(skopeo inspect "docker://$ref" | jq -er .Architecture)"
 [ "$actual_arch" = "$expected_arch" ] \

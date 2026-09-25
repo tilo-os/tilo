@@ -96,7 +96,10 @@ impl ColorSwatchFace {
                 ),
             ))
         } else {
-            None
+            // At rest the swatch still carries an edge derived from its own
+            // fill (HIG §9.5), so a white chip on paper or a black one on a
+            // dark panel keeps its outline.
+            Some((1.0, crate::surface::edge_on(self.color)))
         };
         if let Some((width, color)) = border {
             scene.stroke(

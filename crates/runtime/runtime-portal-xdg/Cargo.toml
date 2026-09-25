@@ -5,8 +5,8 @@ edition = "2024"
 publish.workspace = true
 license.workspace = true
 
-# Tilo runtime XDG portal client for file chooser, screencast, notifications,
-# secret service, and open-uri operations. Calls return
+# Tilo runtime XDG portal client for screencast, notifications and the secret
+# portal. File choosing and open-uri live in `ui::portal`. Calls return
 # `PortalError::NotAvailable` when no D-Bus session bus is reachable.
 #
 # The layer passes response state through from `ashpd`; apps needing deeper
@@ -19,13 +19,11 @@ path = "src/lib.rs"
 [dependencies]
 # ashpd uses the tokio backend to match the rest of the Tilo runtime stack;
 # default features are disabled to drop async-std.
-ashpd = { workspace = true, features = ["file_chooser", "notification", "open_uri", "screencast", "secret"] }
+ashpd = { workspace = true, features = ["notification", "screencast", "secret"] }
 # The sync wrappers wait on the process's shared app runtime; async callers
 # use the `*_async` variants directly.
 tilo-rt.workspace = true
 thiserror.workspace = true
-# For the URL type in `OpenUri::open`.
-url.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

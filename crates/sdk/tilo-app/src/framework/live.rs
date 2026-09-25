@@ -1,22 +1,22 @@
-//! The resource state views read, refreshed whenever the document changes.
+//! The resource state views read, kept current as the document changes.
 
-use std::cell::{Cell, RefCell};
+use std::cell::RefCell;
 use std::rc::Rc;
 
-use tilo_resource::Resource;
-
-struct Inner<R: Resource> {
-    state: RefCell<Rc<R::State>>,
-    revision: Cell<u64>,
-}
+use tilo_resource::{Demand, Doc, ModelError, Reader, Resource};
 
 /// A shared handle to the current state of one resource.
 ///
-/// The framework replaces the state when the document's heads move — a local
-/// action, a collaborator's edit, an undo — and bumps the revision so bound
+/// The framework brings the state up to date when the document's heads move
+/// — a local action, a collaborator's edit, an undo — reading only what the
+/// change touched ([`Resource::refresh`]), and bumps the revision so bound
 /// widgets refresh. Views never write it: edits are actions.
+///
+/// A view of a large resource says what it shows with
+/// [`demand`](Self::demand), and only that is read
+/// ([`Resource::load`]).
 pub struct Live<R: Resource> {
-    inner: Rc<Inner<R>>,
+    inner: Rc<RefCell<Reader<R>>>,
 }
 
 impl<R: Resource> Clone for Live<R> {
@@ -28,43 +28,60 @@ impl<R: Resource> Clone for Live<R> {
 }
 
 impl<R: Resource> Live<R> {
-    pub fn new(state: R::State) -> Self {
+    pub(crate) fn new(reader: Reader<R>) -> Self {
         Self {
-            inner: Rc::new(Inner {
-                state: RefCell::new(Rc::new(state)),
-                revision: Cell::new(0),
-            }),
+            inner: Rc::new(RefCell::new(reader)),
         }
     }
 
     /// The current state. Cheap: shares the materialised value.
+    ///
+    /// Keep it only as long as a frame needs it. A state still shared when
+    /// the document next changes cannot be updated in place, so the
+    /// framework reads the whole resource again instead; read through
+    /// [`with`](Self::with) or call this again when you need it.
     pub fn get(&self) -> Rc<R::State> {
-        Rc::clone(&self.inner.state.borrow())
+        Rc::clone(self.inner.borrow().state())
     }
 
     /// Read the current state.
     pub fn with<T>(&self, read: impl FnOnce(&R::State) -> T) -> T {
-        read(&self.inner.state.borrow())
+        read(self.inner.borrow().state())
     }
 
-    /// Increases whenever the state is replaced.
+    /// Increases whenever the state changes.
     pub fn revision(&self) -> u64 {
-        self.inner.revision.get()
+        self.inner.borrow().revision()
+    }
+
+    /// Show the parts of a large resource `demand` names, reading those not
+    /// read yet from `doc` — the document the view was synced with, which in
+    /// History mode is the past version on screen. Returns whether the state
+    /// changed.
+    ///
+    /// # Errors
+    /// Returns [`ModelError`] when the document does not hold the resource.
+    pub fn demand(&self, doc: &Doc, demand: Demand) -> Result<bool, ModelError>
+    where
+        R::State: Clone,
+    {
+        self.inner.borrow_mut().demand(doc, demand)
     }
 
     /// Ask everything bound to the state to take it again, unchanged. After
     /// an edit was refused or is waiting for confirmation, a surface that
     /// previewed it optimistically is re-presented the stored state.
     pub(crate) fn represent(&self) {
-        self.inner
-            .revision
-            .set(self.inner.revision.get().wrapping_add(1));
+        self.inner.borrow_mut().represent();
     }
 
-    pub(crate) fn replace(&self, state: R::State) {
-        *self.inner.state.borrow_mut() = Rc::new(state);
-        self.inner
-            .revision
-            .set(self.inner.revision.get().wrapping_add(1));
+    /// What views currently demand.
+    pub fn current_demand(&self) -> Demand {
+        self.inner.borrow().current_demand().clone()
+    }
+
+    /// Apply what changed in `doc` since the last sync.
+    pub(crate) fn sync(&self, doc: &mut Doc) -> Result<bool, ModelError> {
+        self.inner.borrow_mut().sync(doc)
     }
 }

@@ -369,7 +369,8 @@ mod tests {
     use crate::app::VpnApp;
     use crate::model::draft_connection;
     use automerge::ROOT;
-    use tilo_actions::{ActionInput, LocalTransport};
+    use tilo_actions::LocalTransport;
+    use ui::testing::action_contract::{find_spec, spec_encoding};
     use ui::widget::Widget;
     use uuid::Uuid;
 
@@ -407,20 +408,11 @@ mod tests {
             .iter()
             .find(|action| action.id == "provision-local")
             .expect("exact setup action");
-        let encoded = immediate_encode(action);
+        let encoded = spec_encoding(action, None);
         assert_eq!(encoded.type_id, VPN_PROVISION_TYPE);
         let (id, kind): (String, String) = serde_json::from_slice(&encoded.payload).unwrap();
         assert_eq!(id, profile.id.to_string());
         assert_eq!(kind, profile.kind.as_str());
-    }
-
-    fn immediate_encode(spec: &ActionSpec) -> EncodedAction {
-        match &spec.input {
-            ActionInput::Immediate(enc) => enc.clone(),
-            ActionInput::Prompted { .. } | ActionInput::Deferred { .. } => {
-                panic!("expected an immediate action: {}", spec.id)
-            }
-        }
     }
 
     /// The demo (sample-seeded) VPN app synced into a fresh document, plus the
@@ -491,133 +483,65 @@ mod tests {
             .collect();
         assert!(flat.contains(&"Delete connection"), "{flat:?}");
         assert!(flat.contains(&"Import WireGuard profile"), "{flat:?}");
-
-        // The one palette surfaces the tree's actions as rows.
-        let mut palette = ui::ActionPalette::new();
-        palette.load_open_resources(&resources);
-        palette.open();
-        let labels = palette.result_labels();
-        assert!(
-            labels
-                .iter()
-                .any(|l| l.contains("VPN") || l.contains("connection") || l.contains("Tor")),
-            "{labels:?}"
-        );
     }
 
-    /// The full undo covenant on one action: dispatched through the executor it
-    /// mutates the document and records exactly one undo boundary, and Ctrl+Z
-    /// (the host's `undo`) reverts precisely that action.
-    #[test]
-    fn action_records_one_undo_boundary_and_reverts() {
-        let mut app = VpnApp::new_demo();
-        let mut state = ui::State::new();
-        app.sync(&mut state.doc, &state.root);
-
-        let before = VpnDoc::read_vault(&state.doc);
-        let victim = before.connections[0].id;
-        let before_heads = state.doc.get_heads();
-        let before_len = before.connections.len();
-
-        let action = remove_connection_action(victim);
-        let encoded = encode(&action);
-        let decoded = registry().decode(&encoded).unwrap();
-        let mut tx = LocalTransport::new();
-        tilo_actions::dispatch(&mut state.doc, decoded.as_ref(), encoded, &mut tx).unwrap();
-        state.record_committed_action(before_heads, None, None);
-
-        let after = VpnDoc::read_vault(&state.doc);
-        assert_eq!(
-            after.connections.len(),
-            before_len - 1,
-            "the action deleted a connection"
-        );
-        assert!(
-            !after.connections.iter().any(|c| c.id == victim),
-            "the right connection is gone"
-        );
-        assert!(
-            state.peek_last_undo().is_some(),
-            "exactly one undo boundary recorded"
-        );
-
-        state.undo(None, None).expect("an undo entry to pop");
-        let restored = VpnDoc::read_vault(&state.doc);
-        assert_eq!(
-            restored.connections.len(),
-            before_len,
-            "undo reverted the deletion and nothing else"
-        );
-        assert!(
-            restored.connections.iter().any(|c| c.id == victim),
-            "the connection is back after undo"
-        );
+    fn first_conn(doc: &AutoCommit) -> Connection {
+        VpnDoc::read_vault(doc)
+            .connections
+            .into_iter()
+            .next()
+            .expect("a seeded connection")
     }
 
-    /// The collaboration guarantee: replaying the same encoded action on a second
-    /// independent replica (from the same base state) lands on the byte-identical
-    /// document — same head hashes, not merely the same values.
-    #[test]
-    fn action_replays_byte_identical_on_a_peer() {
-        let (_app, seeded_doc) = seeded();
-        let mut a = seeded_doc;
-        a.commit();
-        let bytes = a.save();
-        let mut b = AutoCommit::load(&bytes).unwrap();
-        assert_eq!(
-            a.get_heads(),
-            b.get_heads(),
-            "precondition: same base state"
-        );
-
-        // Toggle a connection's Tor preference: deterministic against the shared
-        // base (both replicas write the carried target state).
-        let vault = VpnDoc::read_vault(&a);
-        let cid = vault.connections[0].id;
-        let was = vault.connections[0].tor;
-        let action = set_conn_tor_action(cid, !was);
-        let encoded = encode(&action);
-
-        let env = tilo_actions::apply_local(&mut a, &action, encoded).unwrap();
-        tilo_actions::replay(&mut b, &env, &registry()).unwrap();
-
-        assert_eq!(
-            a.get_heads(),
-            b.get_heads(),
-            "replay reproduced the identical change"
-        );
-        let after_a = VpnDoc::read_vault(&a);
-        let after_b = VpnDoc::read_vault(&b);
-        let tor_a = after_a.get(cid).unwrap().tor;
-        let tor_b = after_b.get(cid).unwrap().tor;
-        assert_eq!(tor_a, !was, "the toggle landed");
-        assert_eq!(tor_a, tor_b, "both replicas agree");
+    fn conn_id(res: &Resource) -> ConnId {
+        res.id
+            .as_str()
+            .trim_start_matches("vpn.connection:")
+            .parse()
+            .expect("a uuid connection id")
     }
 
-    /// Replaying an `AddConnection` (a create) also converges byte-identically —
-    /// the connection's uuid is carried in the payload, so both replicas write
-    /// the same profile.
-    #[test]
-    fn add_connection_replays_byte_identical() {
-        let (_app, seeded_doc) = seeded();
-        let mut a = seeded_doc;
-        a.commit();
-        let bytes = a.save();
-        let mut b = AutoCommit::load(&bytes).unwrap();
-
-        let conn = draft_connection("Travel", ConnKind::WireGuard);
-        let cid = conn.id;
-        let action = add_connection_action(conn);
-        let encoded = encode(&action);
-
-        let env = tilo_actions::apply_local(&mut a, &action, encoded).unwrap();
-        tilo_actions::replay(&mut b, &env, &registry()).unwrap();
-
-        assert_eq!(a.get_heads(), b.get_heads(), "create replayed identically");
-        assert!(
-            VpnDoc::read_vault(&b).get(cid).is_some(),
-            "the added connection is present on the peer"
-        );
+    ui::action_contract_tests! {
+        seed: seeded().1,
+        registry: registry(),
+        resources: |doc| ResourceProvider::resources(&VpnApp::new_demo(), doc),
+        palette: [
+            "Route all traffic over Tor",
+            "Import WireGuard profile",
+            "Import OpenVPN profile",
+            "Delete connection",
+            "Set up on this device",
+        ],
+        replay: [
+            toggle_conn_tor => |doc| {
+                let conn = first_conn(doc);
+                encode(&set_conn_tor_action(conn.id, !conn.tor))
+            },
+            add_connection => |_| encode(&add_connection_action(draft_connection(
+                "Travel",
+                ConnKind::WireGuard,
+            ))),
+            rename_connection => |doc| encode(&rename_connection_action(
+                first_conn(doc).id,
+                "Renamed".into(),
+            )),
+        ],
+        undo: [
+            remove_connection => |doc| encode(&remove_connection_action(first_conn(doc).id)),
+            toggle_tor_global => |doc| encode(&set_tor_global_action(
+                !VpnDoc::read_vault(doc).tor_global,
+            )),
+        ],
+        encodes: [
+            toggle_tor_global => ("vpn.vault", "toggle-tor-global", |doc, _| {
+                encode(&set_tor_global_action(!VpnDoc::read_vault(doc).tor_global))
+            }),
+            toggle_conn_tor => ("vpn.connection", "toggle-tor", |doc, res| {
+                let id = conn_id(res);
+                let on = VpnDoc::read_vault(doc).get(id).expect("published connection").tor;
+                encode(&set_conn_tor_action(id, !on))
+            }),
+        ],
     }
 
     /// A malformed / out-of-range payload is a no-op, not an error: deleting a
@@ -638,34 +562,13 @@ mod tests {
         );
     }
 
-    /// Profile removal is a privileged OS operation.
+    /// Profile removal is a privileged OS effect, not a document action.
     #[test]
-    fn palette_specs_match_builders() {
+    fn delete_spec_is_the_privileged_profile_effect() {
         let (app, doc) = seeded();
         let resources = Widget::resources(&app, &doc);
-        let root = &resources[0];
-        let home = root
-            .children
-            .iter()
-            .find(|r| r.label.starts_with("Home"))
-            .unwrap();
-
-        let delete_spec = home.actions.iter().find(|a| a.id == "delete").unwrap();
-        let from_spec = immediate_encode(delete_spec);
-        assert_eq!(from_spec.type_id, VPN_DELETE_TYPE);
-
-        let vault = VpnDoc::read_vault(&doc);
-        let global = root
-            .actions
-            .iter()
-            .find(|a| a.id == "toggle-tor-global")
-            .unwrap();
-        let from_spec = immediate_encode(global);
-        let from_builder = encode(&set_tor_global_action(!vault.tor_global));
-        assert_eq!(
-            from_spec.payload, from_builder.payload,
-            "global Tor is one source of truth"
-        );
+        let (_, delete_spec) = find_spec(&resources, "vpn.connection", "delete");
+        assert_eq!(spec_encoding(delete_spec, None).type_id, VPN_DELETE_TYPE);
     }
 
     /// Single source of truth on the *real* affordance path: the on-screen
@@ -687,7 +590,7 @@ mod tests {
                 .find(|r| r.label.starts_with("Home"))
                 .unwrap();
             let spec = home.actions.iter().find(|a| a.id == "toggle-tor").unwrap();
-            (id, immediate_encode(spec))
+            (id, spec_encoding(spec, None))
         };
 
         // Drive the real on-screen affordance.

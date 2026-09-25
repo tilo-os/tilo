@@ -24,7 +24,7 @@ use tilo_actions::{ActionAddress, ActionDescriptor, Collects, ExecutionLocus, In
 
 use super::{
     ActionDirectoryBridgeError, ActionDirectoryBridgeReply, ActionDirectoryBridgeResponse,
-    ActionDirectoryRoot, BrokerActor, CapDecision, CapnpBrokerState, InvocationOwner,
+    ActionDirectoryRoot, BrokerActor, CapDecision, CapnpBrokerState, InvocationOwner, LaunchScope,
     PublishedAction, PublishedInput, PublishedSurface, ResourceRef, Verb, permission_verb,
     published_directory_action, validate_directory_target_input,
 };
@@ -417,25 +417,28 @@ impl CapnpBrokerState {
 
     /// Admit `request` for `caller`, or report the invocation already
     /// admitted under its id. `own_peer` resolves [`OWN_PROVIDER`] for a
-    /// caller that is itself an application connection. Never blocks: an
+    /// caller that is itself an application connection, and `launch` is the
+    /// application the launcher authenticated for it. Never blocks: an
     /// action published through a live directory is re-resolved by its owner
     /// on the broker's local set, and the admission arrives when it has.
     pub fn action_invoke(
         self: &Arc<Self>,
         caller: &Caller,
         own_peer: Option<u64>,
+        launch: Option<&LaunchScope>,
         request: &InvokeRequest,
     ) -> Pending<Result<InvocationReceipt, ActionHostError>> {
         if let Some(root) = self.directory_target(caller, request) {
             return self.invoke_directory(caller, root, request);
         }
-        Pending::ready(self.invoke_eager(caller, own_peer, request))
+        Pending::ready(self.invoke_eager(caller, own_peer, launch, request))
     }
 
     fn invoke_eager(
         &self,
         caller: &Caller,
         own_peer: Option<u64>,
+        launch: Option<&LaunchScope>,
         request: &InvokeRequest,
     ) -> Result<InvocationReceipt, ActionHostError> {
         let mut ledger =
@@ -445,7 +448,7 @@ impl CapnpBrokerState {
                     reason: "the invocation ledger is unavailable".into(),
                 })?;
         let (job, _) = ledger.admit(caller, request, || {
-            self.start_for(caller, own_peer, request)
+            self.start_for(caller, own_peer, launch, request)
         })?;
         let job = *job;
         drop(ledger);
@@ -651,6 +654,7 @@ impl CapnpBrokerState {
         &self,
         caller: &Caller,
         own_peer: Option<u64>,
+        launch: Option<&LaunchScope>,
         request: &InvokeRequest,
     ) -> Result<u64, ActionHostError> {
         let actor = BrokerActor::for_caller(caller);
@@ -658,7 +662,14 @@ impl CapnpBrokerState {
         let argument = request.argument.to_slot();
         let provider = request.target.provider.as_str();
         if let Some(room) = workspace_provider_room(provider) {
-            return self.start_workspace_action(caller, &actor, room, request, argument.as_deref());
+            return self.start_workspace_action(
+                caller,
+                &actor,
+                room,
+                launch,
+                request,
+                argument.as_deref(),
+            );
         }
         let peer_id = if provider == OWN_PROVIDER {
             own_peer.ok_or(ActionHostError::UnknownAction)?
@@ -721,6 +732,7 @@ impl CapnpBrokerState {
         caller: &Caller,
         actor: &BrokerActor,
         room: &str,
+        launch: Option<&LaunchScope>,
         request: &InvokeRequest,
         argument: Option<&str>,
     ) -> Result<u64, ActionHostError> {
@@ -745,7 +757,10 @@ impl CapnpBrokerState {
                     now,
                     actor,
                     app_id,
-                    argument.unwrap_or(""),
+                    crate::services::LaunchContent {
+                        hash: argument.unwrap_or(""),
+                        caller: launch,
+                    },
                 )
                 .map_err(refusal);
         }
@@ -823,7 +838,7 @@ impl CapnpBrokerState {
         now: u64,
         actor: &BrokerActor,
         app_id: &str,
-        content_hash: &str,
+        content: crate::services::LaunchContent<'_>,
     ) -> Result<u64, String> {
         if workspace.decide_at(
             policy,
@@ -834,6 +849,11 @@ impl CapnpBrokerState {
         {
             return Err("the caller is not allowed to launch that application".into());
         }
+        // Content is only ever read through the asking application's own
+        // scope; a caller without one cannot open it by hash.
+        if !content.hash.is_empty() && content.caller.is_none() {
+            return Err("launch content requires an application the launcher authenticated".into());
+        }
         let launcher = self
             .services
             .launcher
@@ -843,7 +863,7 @@ impl CapnpBrokerState {
             .invocation_id
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let invocation = tilo_actions::InvocationId(uuid::Uuid::from_u128(u128::from(id)));
-        let update = match launcher.launch_content(app_id, workspace, content_hash) {
+        let update = match launcher.launch_content(app_id, workspace, content) {
             Ok(()) => tilo_actions::InvocationUpdate::Succeeded {
                 invocation,
                 output: tilo_actions::ActionOutput::default(),

@@ -53,6 +53,7 @@ tracing.workspace = true
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
 
 [dev-dependencies]
+ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
 tempfile.workspace = true
 hex.workspace = true
 shell = { path = "../../crates/session/shell", default-features = false, features = ["test-support"] }

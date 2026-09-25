@@ -446,19 +446,10 @@ mod tests {
             iroh::SecretKey::from_bytes(&[seed.wrapping_add(50); 32]).public(),
         )
         .with_ip_addr("127.0.0.1:4455".parse().unwrap());
-        FileShareLinkV2::bind_at(endpoint, bearer, &issuer, now_ms())
+        FileShareLinkV2::bind_at(endpoint, bearer, &issuer, tilo_clock::unix_now_ms())
             .unwrap()
             .encode_uri()
             .unwrap()
-    }
-
-    fn now_ms() -> u64 {
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_millis()
-            .try_into()
-            .unwrap_or(u64::MAX)
     }
 
     async fn transact(

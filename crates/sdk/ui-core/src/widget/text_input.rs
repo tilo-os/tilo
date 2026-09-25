@@ -25,7 +25,7 @@ use crate::text_selection::{
 use crate::theme::Theme;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
-use crate::widget::code_editor::{Highlighter, Span, token_color};
+use crate::widget::code_editor::{Highlighter, Span};
 use crate::widget::context_menu::{ContextMenu, MenuItem};
 use crate::widget::{ActionEmitter, ControlBindingKind, ControlBindingMetadata};
 use automerge::{AutoCommit, ObjId, ObjType, ReadDoc, Value, transaction::Transactable};
@@ -315,7 +315,7 @@ pub struct TextInput {
     /// Width measured from the same scaled line-number style used to paint.
     measured_gutter_width: f64,
     highlight_current_line: bool,
-    /// `None` renders the whole body in one colour; `Some` colours per [`Span`] via `token_color`.
+    /// `None` renders the whole body in one colour; `Some` colours per [`Span`] from the theme's syntax palette.
     highlighter: Option<Box<dyn Highlighter>>,
     /// `Some(0)` inserts a literal `\t`; `None` leaves Tab for focus traversal.
     tab_spaces: Option<usize>,
@@ -836,7 +836,7 @@ impl TextInput {
                     {
                         continue;
                     }
-                    let color = token_color(span.kind, theme);
+                    let color = theme.tokens.syntax.color(span.kind);
                     colored.push((start, end, [color.r(), color.g(), color.b()]));
                 }
             }
@@ -2545,7 +2545,7 @@ impl TextInput {
                     out.push((
                         mid.to_string(),
                         self.x_in_row(r, a),
-                        token_color(sp.kind, theme),
+                        theme.tokens.syntax.color(sp.kind),
                     ));
                 }
                 cur = b;

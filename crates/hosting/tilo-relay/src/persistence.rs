@@ -162,7 +162,7 @@ impl State {
         let next = previous
             .checked_add(1)
             .ok_or_else(|| error("state sequence exhausted"))?
-            .max(crate::peer::now_ns());
+            .max(tilo_clock::unix_now_ns());
         // Reserve before any data publication, including across restart.
         atomic_file::write(&path, &next.to_le_bytes())?;
         std::fs::File::open(self.store.root())?.sync_all()?;

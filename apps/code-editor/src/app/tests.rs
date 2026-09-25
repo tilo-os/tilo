@@ -778,7 +778,7 @@ fn opening_a_file_in_overlay_dismisses_the_flap() {
         .find(|n| n.name == "prime.rs")
         .unwrap()
         .id;
-    app.apply_tree_event(TreeEvent::OpenFile(prime));
+    app.apply_tree_event(ExplorerEvent::Activate(prime));
     assert_eq!(app.session.active_buffer().unwrap().name, "prime.rs");
     assert!(
         !app.sidebar_open(),
@@ -799,7 +799,7 @@ fn opening_a_file_keeps_docked_sidebar_pinned() {
         .find(|n| n.name == "prime.rs")
         .unwrap()
         .id;
-    app.apply_tree_event(TreeEvent::OpenFile(prime));
+    app.apply_tree_event(ExplorerEvent::Activate(prime));
     assert!(app.sidebar_open(), "docked sidebar stays open after open");
 }
 

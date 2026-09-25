@@ -1,11 +1,11 @@
 //! One lock for every test that touches process-wide blob state.
 //!
-//! A test that needs a store or transport of its own installs it with
+//! A test that needs a store of its own installs it with
 //! `qdoc::blobstore::scope`, which only its own thread sees and which ends with the
 //! test. What stays process-wide is when each hash was last asked for and first
-//! wanted (the transport's rate limit and the pending clock), and all of these test
-//! files are modules of one test binary, so tests that ask for the same content
-//! would otherwise see each other's clocks.
+//! wanted (the ask rate limit and the pending clock), and all of these test files
+//! are modules of one test binary, so tests that ask for the same content would
+//! otherwise see each other's clocks.
 
 #![allow(
     clippy::unwrap_used,
@@ -28,11 +28,10 @@ pub fn serialised() -> MutexGuard<'static, ()> {
         .get_or_init(|| Mutex::new(()))
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    // Serialization alone does not undo a preceding test's quota or transport.
+    // Serialization alone does not undo a preceding test's quota.
     qdoc::blobstore::set_store(std::sync::Arc::new(
         qdoc::blobstore::MemoryBlobStore::default(),
     ));
-    qdoc::blobstore::clear_transport();
     guard
 }
 
@@ -46,7 +45,6 @@ fn every_blob_fixture_starts_with_a_fresh_default_quota() {
             max_blob_bytes: 2,
             max_total_bytes: 2,
             max_entries: 1,
-            max_scan_entries: 1,
         })));
     }
     let _guard = serialised();

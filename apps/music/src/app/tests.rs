@@ -2217,6 +2217,11 @@ fn play_drives_the_audio_pipeline_path() {
 #[ignore = "queries third-party music services; nightly runs it explicitly"]
 fn live_search_and_stream_resolve_through_the_app() {
     let (mut app, mut doc) = app_with_doc();
+    // The render proof below is about the system sink, not a capture.
+    #[cfg(feature = "audio")]
+    {
+        app.audio = crate::audio::AudioEngine::with_output(crate::audio::AudioOutput::System);
+    }
     app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
 
     let first = live_search_top_result(&mut app);
@@ -2497,6 +2502,8 @@ fn full_track_streams_whole_file_or_reports_the_source_truncation() {
     }
 
     let (mut app, mut doc) = app_with_doc();
+    // Real sound through the system sink is what this proves.
+    app.audio = crate::audio::AudioEngine::with_output(crate::audio::AudioOutput::System);
     app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
     app.search_input
         .set_text("rick astley never gonna give you up");

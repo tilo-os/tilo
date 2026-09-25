@@ -16,6 +16,7 @@ use collab_types::caps::CapOverride;
 use compat_catalogue::{ApplicationQuery, Catalogue, VmFallback};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
+use tilo_clock::try_unix_now;
 use wire_frame::{FrameError, Framing};
 
 use crate::service::published_vm_explanation;
@@ -156,7 +157,7 @@ where
                 VmFallback::Disabled,
                 &entry.app_id,
                 capabilities,
-                now_unix(),
+                try_unix_now(),
             )
             .map_err(Into::into)
     }
@@ -168,7 +169,7 @@ where
                 VmFallback::Disabled,
                 "so.tilo.windows.preview",
                 &[],
-                now_unix(),
+                try_unix_now(),
             )
             .map_err(Into::into)
     }
@@ -189,7 +190,7 @@ where
                 query: entry.query.clone(),
                 vm_fallback: VmFallback::Disabled,
                 capabilities,
-                now_unix: now_unix(),
+                now_unix: try_unix_now(),
             })
             .map_err(Into::into)
     }
@@ -201,7 +202,7 @@ where
         capabilities: &[CapOverride],
     ) -> Result<crate::LaunchReceipt, SessionError> {
         self.service
-            .launch_published_vm(application, workspace_id, capabilities, now_unix())
+            .launch_published_vm(application, workspace_id, capabilities, try_unix_now())
             .map_err(Into::into)
     }
 
@@ -239,7 +240,7 @@ where
                 source_name,
                 workspace_id,
                 capabilities,
-                now_unix(),
+                try_unix_now(),
             )
             .map_err(Into::into)
     }
@@ -258,7 +259,7 @@ where
                 source_name,
                 workspace_id,
                 capabilities,
-                now_unix(),
+                try_unix_now(),
                 expected,
             )
             .map_err(Into::into)
@@ -309,7 +310,7 @@ where
         capabilities: &[CapOverride],
     ) -> Result<crate::InstallReceipt, SessionError> {
         self.service
-            .retry_install(capsule_id, workspace_id, capabilities, now_unix())
+            .retry_install(capsule_id, workspace_id, capabilities, try_unix_now())
             .map_err(Into::into)
     }
 
@@ -336,20 +337,13 @@ where
         capabilities: &[CapOverride],
     ) -> Result<crate::InstallReceipt, SessionError> {
         self.service
-            .vendor_uninstall(capsule_id, workspace_id, capabilities, now_unix())
+            .vendor_uninstall(capsule_id, workspace_id, capabilities, try_unix_now())
             .map_err(Into::into)
     }
 
     fn delete_data(&self, capsule_id: &str) -> Result<(), SessionError> {
         self.service.delete_capsule(capsule_id).map_err(Into::into)
     }
-}
-
-fn now_unix() -> Option<u64> {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .ok()
-        .map(|duration| duration.as_secs())
 }
 
 #[derive(Clone)]
@@ -815,7 +809,7 @@ where
                     &application,
                     &handoff.workspace_id,
                     &capabilities,
-                    now_unix(),
+                    try_unix_now(),
                     source,
                     // This protocol action is intentionally read-only. A
                     // future write-back action must have a distinct portal
@@ -834,7 +828,7 @@ where
                     confirmation,
                     input,
                 } => {
-                    let expires_at_unix = now_unix()
+                    let expires_at_unix = try_unix_now()
                         .unwrap_or_default()
                         .saturating_add(VM_INSTALL_CONFIRMATION_SECONDS);
                     *pending_vm_install = Some(PendingVmInstall {
@@ -849,7 +843,7 @@ where
             let source = File::from(descriptor.ok_or(SessionError::DescriptorMissing)?);
             let pending = pending_vm_install
                 .take()
-                .filter(|pending| now_unix().is_some_and(|now| now <= pending.expires_at_unix))
+                .filter(|pending| try_unix_now().is_some_and(|now| now <= pending.expires_at_unix))
                 .ok_or(SessionError::VmInstallConfirmationExpired)?;
             let capabilities = authority
                 .capabilities_for(&handoff.workspace_id, "so.tilo.windows.import")
@@ -868,7 +862,7 @@ where
             let source = File::from(descriptor.ok_or(SessionError::DescriptorMissing)?);
             let pending = pending_vm_install
                 .take()
-                .filter(|pending| now_unix().is_some_and(|now| now <= pending.expires_at_unix))
+                .filter(|pending| try_unix_now().is_some_and(|now| now <= pending.expires_at_unix))
                 .ok_or(SessionError::VmInstallConfirmationExpired)?;
             let installation = managed.install_in_vm(
                 source,

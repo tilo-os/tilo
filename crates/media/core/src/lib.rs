@@ -108,13 +108,3 @@ pub use transport::{
     Correction, CrdtTransport, DRIFT_SEEK_THRESHOLD_MS, LocalTransport, TransportState,
     TransportSync, correction,
 };
-
-/// Wall-clock time in unix milliseconds, for stamping a [`TransportState`]'s
-/// epoch. Followers on other machines project the playhead forward from this,
-/// so it must be a wall clock (roughly synced across peers), not a monotonic
-/// one. Saturates to 0 before the Unix epoch.
-pub fn now_ms() -> u64 {
-    web_time::SystemTime::now()
-        .duration_since(web_time::UNIX_EPOCH)
-        .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
-}

@@ -37,8 +37,8 @@ pub mod prelude {
         ResourceSurface, SurfaceCx, ViewCx,
     };
     pub use tilo_resource::{
-        self, ActionCx, Atom, Collection, Id, Invoke, Json, Model, Refusal, Replica, Resource,
-        resource,
+        self, ActionCx, Atom, Collection, Delta, Demand, Id, Invoke, Json, Model, Refusal, Replica,
+        Resource, resource,
     };
 
     pub use ui_core::application::{

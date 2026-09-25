@@ -64,6 +64,7 @@
 
 use automerge::AutoCommit;
 use serde::{Deserialize, Serialize};
+use tilo_clock::unix_now_i64;
 
 use tilo_actions::{
     Action, ActionError, ActionRegistry, ActionSpec, Doc, EncodedAction, ExecutionLocus,
@@ -1560,7 +1561,16 @@ fn build_channel_resource(
                     encode(&agent_authored(
                         &me,
                         &room,
-                        send_message_action(&cid, &id, &me, now_secs(), text, None, None, mentions),
+                        send_message_action(
+                            &cid,
+                            &id,
+                            &me,
+                            unix_now_i64(),
+                            text,
+                            None,
+                            None,
+                            mentions,
+                        ),
                     ))
                 }
             },
@@ -1777,7 +1787,7 @@ fn build_message_resource(
         {
             let cid = ch.id.clone();
             let mid = m.id.clone();
-            move |text: &str| encode(&edit_message_action(&cid, &mid, text, now_secs()))
+            move |text: &str| encode(&edit_message_action(&cid, &mid, text, unix_now_i64()))
         },
     ));
 
@@ -1944,16 +1954,6 @@ fn message_label(
     format!("{author}: {snippet}")
 }
 
-/// Wall-clock seconds since the epoch, used by the prompted palette closures to
-/// mint a send/edit timestamp at authoring time (presentation-side — the closure
-/// never crosses a boundary, only its self-contained [`EncodedAction`] does).
-fn now_secs() -> i64 {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |d| d.as_secs() as i64)
-}
-
 impl ResourceProvider for crate::app::ChatApp {
     fn resources(&self, doc: &AutoCommit) -> Vec<Resource> {
         let ctx = self.chat_resource_ctx();
@@ -1987,7 +1987,7 @@ mod tests {
     use super::*;
     use crate::doc::ChatDoc;
     use crate::model::{self, ChannelKind};
-    use tilo_actions::{ActionInput, LocalTransport};
+    use tilo_actions::LocalTransport;
 
     /// A fixed authoring timestamp for tests — actions carry it in the payload,
     /// so nothing here reads the wall-clock.
@@ -1997,24 +1997,6 @@ mod tests {
         let mut r = ActionRegistry::new();
         register(&mut r);
         r
-    }
-
-    fn immediate_encode(spec: &ActionSpec) -> EncodedAction {
-        match &spec.input {
-            ActionInput::Immediate(enc) => enc.clone(),
-            ActionInput::Prompted { .. } | ActionInput::Deferred { .. } => {
-                panic!("expected an immediate action: {}", spec.id)
-            }
-        }
-    }
-
-    fn prompted_encode(spec: &ActionSpec, arg: &str) -> EncodedAction {
-        match &spec.input {
-            ActionInput::Prompted { build, .. } => build(arg),
-            ActionInput::Immediate(_) | ActionInput::Deferred { .. } => {
-                panic!("expected a prompted action: {}", spec.id)
-            }
-        }
     }
 
     /// Dispatch an action through the executor, as the on-screen affordance path
@@ -2198,8 +2180,10 @@ mod tests {
             .find(|action| action.id == "join")
             .expect("join action");
         assert_eq!(join.kind, OperationKind::Effect);
-        let operation: ChatOperation =
-            serde_json::from_slice(&immediate_encode(join).payload).unwrap();
+        let operation: ChatOperation = serde_json::from_slice(
+            &ui::testing::action_contract::spec_encoding(join, None).payload,
+        )
+        .unwrap();
         assert!(matches!(
             operation,
             ChatOperation::NativeVoice {
@@ -2221,17 +2205,6 @@ mod tests {
         let flat_labels: Vec<&str> = flat.iter().map(|f| f.action.label.as_str()).collect();
         assert!(flat_labels.contains(&"New channel"), "{flat_labels:?}");
         assert!(!flat_labels.contains(&"Delete message"), "{flat_labels:?}");
-
-        // The one palette loads the same tree without error.
-        let mut palette = ui::ActionPalette::new();
-        palette.load_open_resources(&resources);
-        palette.open();
-        assert!(
-            palette
-                .result_labels()
-                .iter()
-                .any(|l| l.contains("New channel"))
-        );
     }
 
     /// Attachments and reaction aggregates are durable parts of a message, so
@@ -2266,7 +2239,10 @@ mod tests {
             "❤️",
             model::ME,
         ));
-        assert_eq!(immediate_encode(remove).payload, expected.payload);
+        assert_eq!(
+            ui::testing::action_contract::spec_encoding(remove, None).payload,
+            expected.payload
+        );
     }
 
     #[test]
@@ -2408,7 +2384,12 @@ mod tests {
             })
             .unwrap();
         let post = crit.actions.iter().find(|a| a.id == "post").unwrap();
-        let encoded = prompted_encode(post, "thanks @Ada Lovelace, done");
+        // The message id is minted per build, so read the palette's build
+        // directly rather than comparing it with the external path.
+        let tilo_actions::ActionInput::Prompted { build, .. } = &post.input else {
+            panic!("post is a prompted action");
+        };
+        let encoded = build("thanks @Ada Lovelace, done");
         let decoded: ChatAction = serde_json::from_slice(&encoded.payload).unwrap();
         let ChatAction::SendMessage { mentions, text, .. } = decoded else {
             panic!("post encodes a SendMessage")
@@ -2688,190 +2669,79 @@ mod tests {
         );
     }
 
-    /// The full undo covenant on one action: dispatched through the executor it
-    /// mutates the document and records exactly one undo boundary, and Ctrl+Z
-    /// (the host's `undo`) reverts precisely that action.
-    #[test]
-    fn action_records_one_undo_boundary_and_reverts() {
-        let mut state = ui::State::new();
-        state.doc = seeded();
-        let before_heads = state.doc.get_heads();
-        let before = ChatDoc::list_messages(&state.doc, "c_general").len();
-
-        let encoded = encode(&send_message_action(
-            "c_general",
-            "m_undo",
-            model::ME,
-            TS,
-            "undo me",
-            None,
-            None,
-            Vec::new(),
-        ));
-        let decoded = registry().decode(&encoded).unwrap();
-        let mut tx = LocalTransport::new();
-        tilo_actions::dispatch(&mut state.doc, decoded.as_ref(), encoded, &mut tx).unwrap();
-        state.record_committed_action(before_heads, None, None);
-
-        assert_eq!(
-            ChatDoc::list_messages(&state.doc, "c_general").len(),
-            before + 1,
-            "the action posted a message"
+    /// The open workspace snapshot plus the lazily resolved resources Ctrl+K,
+    /// search and agents reach by address: every message of the open channel
+    /// (with its attachment and reaction children) and the voice call.
+    fn published(doc: &AutoCommit) -> Vec<Resource> {
+        let ctx = ctx_from(doc);
+        let mut resources = provide_resources(&ctx, doc);
+        let lazy = ChatDoc::list_messages(doc, "c_crit")
+            .into_iter()
+            .map(|message| format!("chat.message:{}", message.id));
+        resources.extend(
+            lazy.map(|id| {
+                resolve_resource(&ctx, doc, &id).unwrap_or_else(|| panic!("{id} resolves"))
+            }),
         );
-        assert!(
-            state.peek_last_undo().is_some(),
-            "exactly one undo boundary recorded"
-        );
-
-        state.undo(None, None).expect("an undo entry to pop");
-        assert_eq!(
-            ChatDoc::list_messages(&state.doc, "c_general").len(),
-            before,
-            "undo reverted the posted message and nothing else"
-        );
+        resources
     }
 
-    /// The collaboration guarantee: replaying the same encoded action on a second
-    /// independent replica (from the same base state) lands on the byte-identical
-    /// document — same head hashes, not merely the same values.
-    #[test]
-    fn action_replays_byte_identical_on_a_peer() {
-        let mut a = seeded();
-        a.commit();
-        let bytes = a.save();
-        let mut b = AutoCommit::load(&bytes).unwrap();
-        assert_eq!(
-            a.get_heads(),
-            b.get_heads(),
-            "precondition: same base state"
-        );
-
-        let action = send_message_action(
-            "c_general",
-            "m_conv",
-            "u_aria",
-            TS,
-            "converge",
-            None,
-            None,
-            Vec::new(),
-        );
-        let encoded = encode(&action);
-        let env = tilo_actions::apply_local(&mut a, &action, encoded).unwrap();
-        tilo_actions::replay(&mut b, &env, &registry()).unwrap();
-
-        assert_eq!(
-            a.get_heads(),
-            b.get_heads(),
-            "replay reproduced the identical change"
-        );
-        assert!(
-            ChatDoc::list_messages(&b, "c_general")
-                .iter()
-                .any(|m| m.id == "m_conv" && m.text == "converge")
-        );
+    fn first_crit_message(doc: &AutoCommit) -> String {
+        ChatDoc::list_messages(doc, "c_crit").remove(0).id
     }
 
-    /// A channel create replays byte-identically too — the order is derived from
-    /// the shared base state, so both replicas land on the same change.
-    #[test]
-    fn create_channel_replays_byte_identical() {
-        let mut a = seeded();
-        a.commit();
-        let bytes = a.save();
-        let mut b = AutoCommit::load(&bytes).unwrap();
-        assert_eq!(
-            a.get_heads(),
-            b.get_heads(),
-            "precondition: same base state"
-        );
-
-        let action = create_channel_action(
-            "ws_acme",
-            "cat_acme_main",
-            "c_sync",
-            "sync",
-            ChannelKind::Text,
-        );
-        let encoded = encode(&action);
-        let env = tilo_actions::apply_local(&mut a, &action, encoded).unwrap();
-        tilo_actions::replay(&mut b, &env, &registry()).unwrap();
-
-        assert_eq!(a.get_heads(), b.get_heads(), "create replayed identically");
-        assert!(ChatDoc::list_channels(&b).iter().any(|c| c.id == "c_sync"));
-    }
-
-    /// Single source of truth: the palette's delete / rename / pin specs encode
-    /// byte-identically to the builders the on-screen affordances call.
-    #[test]
-    fn palette_and_builder_encode_identically() {
-        let doc = seeded();
-        let resources = provide_resources(&ctx_from(&doc), &doc);
-        let ws = &resources[0];
-        let crit = ws
-            .children
-            .iter()
-            .find(|c| c.id.as_str() == "chat.channel:c_crit")
-            .unwrap();
-
-        // Delete-channel spec == delete builder.
-        let delete_spec = crit.actions.iter().find(|a| a.id == "delete").unwrap();
-        let from_spec = immediate_encode(delete_spec);
-        let from_builder = encode(&delete_channel_action("c_crit"));
-        assert_eq!(from_spec.type_id, from_builder.type_id);
-        assert_eq!(
-            from_spec.payload, from_builder.payload,
-            "delete channel is one source of truth"
-        );
-
-        // Rename-channel spec == rename builder for the same name.
-        let rename_spec = crit.actions.iter().find(|a| a.id == "rename").unwrap();
-        let from_spec = prompted_encode(rename_spec, "planning");
-        let from_builder = encode(&rename_channel_action("c_crit", "planning"));
-        assert_eq!(
-            from_spec.payload, from_builder.payload,
-            "rename channel is one source of truth"
-        );
-
-        // Pin-message spec == pin builder.
-        let source = ChatDoc::list_messages(&doc, "c_crit").remove(0);
-        let msg_id = source.id.clone();
-        let ctx = ctx_from(&doc);
-        let ch = ctx.channels.iter().find(|ch| ch.id == "c_crit").unwrap();
-        let msg = build_message_resource(
-            &ctx,
-            "ws_acme",
-            ch,
-            &MessageResource {
-                id: source.id,
-                label: source.text,
-                pinned: source.pinned,
-                parent: source.parent,
-                attachment: source
-                    .attachment
-                    .as_ref()
-                    .map(|attachment| AttachmentResource {
-                        name: attachment.name().to_owned(),
-                        blob: attachment.blob().to_owned(),
-                    }),
-                reactions: source
-                    .reactions
-                    .iter()
-                    .map(|reaction| ReactionResource {
-                        emoji: reaction.emoji.clone(),
-                        count: reaction.count(),
-                        reacted_by_me: reaction.reacted_by(model::ME),
-                    })
-                    .collect(),
-            },
-        );
-        let pin_spec = msg.actions.iter().find(|a| a.id == "pin").unwrap();
-        let from_spec = immediate_encode(pin_spec);
-        let from_builder = encode(&pin_message_action("c_crit", &msg_id, true));
-        assert_eq!(
-            from_spec.payload, from_builder.payload,
-            "pin message is one source of truth"
-        );
+    ui::action_contract_tests! {
+        seed: seeded(),
+        registry: registry(),
+        resources: |doc| published(doc),
+        palette: ["New channel", "Rename channel", "Pin message", "Join call"],
+        replay: [
+            send_message => |_| encode(&send_message_action(
+                "c_general",
+                "m_conv",
+                "u_aria",
+                TS,
+                "converge",
+                None,
+                None,
+                Vec::new(),
+            )),
+            // The order is derived from the shared base state, so both replicas
+            // land on the same change.
+            create_channel => |_| encode(&create_channel_action(
+                "ws_acme",
+                "cat_acme_main",
+                "c_sync",
+                "sync",
+                ChannelKind::Text,
+            )),
+        ],
+        undo: [
+            send_message => |_| encode(&send_message_action(
+                "c_general",
+                "m_undo",
+                model::ME,
+                TS,
+                "undo me",
+                None,
+                None,
+                Vec::new(),
+            )),
+        ],
+        encodes: [
+            delete_channel => ("chat.channel:c_crit", "delete", |_, _| {
+                encode(&delete_channel_action("c_crit"))
+            }),
+            rename_channel => ("chat.channel:c_crit", "rename", arg: "planning", |_, _| {
+                encode(&rename_channel_action("c_crit", "planning"))
+            }),
+            pin_message => ("chat.message", "pin", |doc, _| {
+                encode(&pin_message_action("c_crit", &first_crit_message(doc), true))
+            }),
+            remove_reaction => ("chat.reaction:m_concept:❤️", "remove", |_, _| {
+                encode(&remove_reaction_action("c_crit", "m_concept", "❤️", model::ME))
+            }),
+        ],
     }
 
     #[test]

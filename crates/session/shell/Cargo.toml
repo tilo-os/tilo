@@ -74,6 +74,7 @@ dev-overrides = []
 
 [dependencies]
 advisory-lock = { path = "../../system/advisory-lock" }
+tilo-clock = { path = "../../system/tilo-clock" }
 qos-action-broker = { path = "../../collab/qos-action-broker" }
 qos-desktop = { path = "../qos-desktop" }
 qos-peer-state = { path = "../../collab/qos-peer-state" }
@@ -235,12 +236,19 @@ rand_core.workspace = true
 # the SDK-side client wrappers we reuse in tests; `runtime-portal`
 # supplies the connected-fd lift + service-fd lookup.
 runtime-collab = { path = "../../runtime/runtime-collab" }
+# Document media: content an app asks the shell to open in another app is read
+# from the filesystem daemon's content store through that app's scope.
+runtime-fs = { path = "../../runtime/runtime-fs" }
+# The compositor-free runtime host serves its apps' document media from the
+# same content store and capability implementation as the filesystem daemon.
+tilo-fs = { package = "fs", path = "../../system/fs", default-features = false, features = ["document-media"] }
 # Launching installed applications: the shell reads the app registry and
 # package manifests through this crate's types, then execs its
 # `tilo-launcher` binary to build the actual bwrap + seccomp + Landlock
 # sandbox. Library-only use here — see `shell::shell::launcher` for why
 # the sandbox itself is built by the binary rather than in-process.
 launcher = { path = "../../packaging/launcher" }
+package-store = { path = "../../packaging/package-store" }
 
 # The host's own applications: `.desktop` entries the compositor reads
 # so a Flatpak or a distribution binary is launchable and searchable.

@@ -5,7 +5,7 @@
 use std::rc::Rc;
 
 use tilo_resource::{Resource, SearchEntry};
-use ui_core::automerge::{AutoCommit, ChangeHash, ObjId};
+use ui_core::automerge::{AutoCommit, ObjId};
 use ui_core::permissions::{LivePermissions, PermissionScope};
 use ui_core::presence::PresenceCtx;
 use ui_core::record::RecordSaveStatus;
@@ -29,7 +29,6 @@ pub(crate) struct ResourceRoot<R: Resource> {
     _alive: Rc<()>,
     dispatch: Dispatcher<R>,
     saved: LocalState<RecordSaveStatus>,
-    heads: Vec<ChangeHash>,
     /// The participant's permissions, re-checked every sync so a role change
     /// while the app runs takes effect at once. `None` for a read-only view
     /// of a past version.
@@ -63,7 +62,6 @@ impl<R: Resource> ResourceRoot<R> {
             _alive: alive,
             dispatch,
             saved,
-            heads: Vec::new(),
             permissions: None,
             write: None,
             content,
@@ -90,19 +88,13 @@ impl<R: Resource> ResourceRoot<R> {
         }
     }
 
-    /// Re-read the resource when the document moved: a local action, a
-    /// collaborator's change, an undo or a restore.
-    fn refresh(&mut self, doc: &mut AutoCommit) {
-        let heads = doc.get_heads();
-        if heads == self.heads {
-            return;
-        }
-        self.heads = heads;
-        match R::read(doc) {
-            Ok(state) => {
-                self.live.replace(state);
-                self.updaters.run(&self.live.get());
-            }
+    /// Follow the document when it moved — a local action, a
+    /// collaborator's change, an undo or a restore — reading only what the
+    /// change touched.
+    fn refresh(&self, doc: &mut AutoCommit) {
+        match self.live.sync(doc) {
+            Ok(true) => self.updaters.run(&self.live.get()),
+            Ok(false) => {}
             Err(error) => tracing::warn!(%error, kind = R::KIND, "resource unreadable"),
         }
     }

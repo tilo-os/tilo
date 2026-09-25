@@ -1,6 +1,6 @@
 //! Live macOS/Linux proof: two unmodified apps and one production service host.
-//! Run with isolated XDG_CONFIG_HOME, TILO_IDENTITY_ROOT, XDG_DATA_HOME,
-//! XDG_CACHE_HOME and TILO_BLOB_STORE. See the proof runner script.
+//! Run with isolated `XDG_CONFIG_HOME`, `TILO_IDENTITY_ROOT`, `XDG_DATA_HOME` and
+//! `XDG_CACHE_HOME`. See the proof runner script.
 use serde_json::json;
 use shell::{
     runtime_host::Session,
@@ -254,7 +254,9 @@ fn main() -> Result<()> {
     if hash.len() != 64 || !hash.bytes().all(|byte| byte.is_ascii_hexdigit()) {
         return Err("invalid photo content hash".into());
     }
-    let bytes = qdoc::blobstore::get(hash).ok_or("published photo bytes unavailable")?;
+    let bytes = session
+        .read_media(PHOTOS, hash)?
+        .ok_or("published photo bytes unavailable")?;
     if blake3::hash(&bytes).to_hex().as_str() != hash {
         return Err("content hash mismatch".into());
     }

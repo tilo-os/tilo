@@ -39,7 +39,7 @@ use automerge::{AutoCommit, ROOT, ReadDoc, ScalarValue, Value};
 use tilo_relay::{Envelope, RelayClient, apply_sync_response, send_sync_request};
 use tilo_user_identity::{DeviceCapabilities, RevocationList};
 
-use crate::common::{TestUser, client_endpoint, spawn_relay};
+use crate::common::{TestUser, client_endpoint, spawn_relay, wait_until_subscribed};
 
 fn read_str(doc: &AutoCommit, key: &str) -> Option<String> {
     match doc.get(ROOT, key) {
@@ -118,6 +118,11 @@ async fn delta_traverses_relay_chain_via_anti_entropy() {
     let b = user.enrol("phone", DeviceCapabilities::member());
     let members = vec![a.device_pubkey(), b.device_pubkey()];
 
+    let (r1_key, r2_key, r3_key) = (
+        r1_dev.device_pubkey(),
+        r2_dev.device_pubkey(),
+        r3_dev.device_pubkey(),
+    );
     let r1 = Box::pin(spawn_relay(&user, r1_dev, &[WS], &members)).await;
     let r2 = Box::pin(spawn_relay(&user, r2_dev, &[WS], &members)).await;
     let r3 = Box::pin(spawn_relay(&user, r3_dev, &[WS], &members)).await;
@@ -133,8 +138,11 @@ async fn delta_traverses_relay_chain_via_anti_entropy() {
     r3.relay
         .add_peer_relay_at(r2.relay.node_addr(), "r2".into(), 0);
 
-    // Let the peer-relay handshakes + subscriptions settle.
-    tokio::time::sleep(Duration::from_millis(2500)).await;
+    // Every link of the chain has subscribed in both directions.
+    wait_until_subscribed(&r1.relay, WS, &r2_key).await;
+    wait_until_subscribed(&r2.relay, WS, &r1_key).await;
+    wait_until_subscribed(&r2.relay, WS, &r3_key).await;
+    wait_until_subscribed(&r3.relay, WS, &r2_key).await;
 
     // ---- Author on R1. ----
     let a_client = RelayClient::connect(

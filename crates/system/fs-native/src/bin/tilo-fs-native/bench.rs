@@ -133,6 +133,7 @@ impl Daemon {
             HydratorConfig {
                 granule,
                 workers: 8,
+                ..HydratorConfig::default()
             },
         )?;
         Ok(Self {

@@ -169,12 +169,12 @@ members = [
 
     # Packaging
     "crates/packaging/app-cli",
-    "crates/packaging/app-fs",
     "crates/packaging/app-host",
     "crates/packaging/app-registry",
     "crates/packaging/cli-shim",
     "crates/packaging/install",
     "crates/packaging/launcher",
+    "crates/packaging/package-store",
     "crates/packaging/tilo-app-package",
     "crates/packaging/tilo-app-package-cli",
     "crates/packaging/registry-server",
@@ -229,6 +229,7 @@ members = [
     "crates/system/system-extension",
     "crates/system/tilo-bluez",
     "crates/system/tilo-cli",
+    "crates/system/tilo-clock",
     "crates/system/tilo-crypto",
     "crates/system/tilo-dav",
     "crates/system/tilo-native-certs",
@@ -416,6 +417,9 @@ iroh-gossip = "0.101.0"
 iroh-mdns-address-lookup = "0.5.0"
 # Content-defined chunking for the native data plane (normalised FastCDC).
 fastcdc = { version = "3.2", default-features = false }
+# Embedded metadata database of the storage daemon (already in the graph
+# through iroh-blobs' store).
+redb = "4.1.0"
 # ---------------------------------------------------------------------------
 # Media: images, codecs, capture and playback
 #

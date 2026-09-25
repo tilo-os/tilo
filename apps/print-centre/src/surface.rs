@@ -1,6 +1,5 @@
 use automerge::{AutoCommit, ObjId};
 use std::collections::HashMap;
-use std::fmt::Write as _;
 use std::io::Write;
 #[cfg(unix)]
 use std::os::unix::fs::OpenOptionsExt;
@@ -390,11 +389,7 @@ fn resource_action(
 /// externally visible address valid and stable even when CUPS reports spaces,
 /// punctuation, or non-ASCII queue names.
 fn resource_key(value: &str) -> String {
-    let mut key = String::with_capacity(value.len().saturating_mul(2));
-    for byte in value.bytes() {
-        let _ = write!(&mut key, "{byte:02x}");
-    }
-    key
+    hex::encode(value)
 }
 
 fn printer_resource(queue: &os_actions::printing::PrinterQueue) -> Resource {
@@ -3492,6 +3487,24 @@ impl Widget for PrintCentre {
 mod tests {
     use super::*;
     use automerge::ROOT;
+
+    /// The surface Print Centre publishes once a refresh has found printers,
+    /// documents and scanners.
+    fn populated_resources(doc: &AutoCommit) -> Vec<Resource> {
+        let mut centre = PrintCentre::demo(DemoScenario::Dashboard);
+        centre.snapshot = Some(demo_snapshot());
+        centre.resources(doc)
+    }
+
+    // Print Centre keeps no document: it publishes only effect and view
+    // operations, so the contract is the surface sweep (protocol validation
+    // over the dashboard and every printer, job and scanner) and Ctrl+K.
+    ui::action_contract_tests! {
+        seed: AutoCommit::new(),
+        registry: tilo_actions::ActionRegistry::new(),
+        resources: |doc| populated_resources(doc),
+        palette: ["Print a document", "Open print queue", "Find network printers", "Open printer"],
+    }
 
     fn queue(
         state: os_actions::printing::QueueState,

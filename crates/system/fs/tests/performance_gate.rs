@@ -152,7 +152,7 @@ async fn collaborative_fs_release_performance_gate() {
         .await
         .expect("write chunked fixture")
         .expect("non-empty fixture has a manifest");
-    let endpoint = Endpoint::bind(presets::N0)
+    let endpoint = Endpoint::bind(presets::Minimal)
         .await
         .expect("bind local hydration endpoint");
     let router = Router::builder(endpoint.clone()).spawn();

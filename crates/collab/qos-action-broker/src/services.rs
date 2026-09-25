@@ -127,6 +127,24 @@ pub struct LaunchableApplication {
     pub package_id: String,
     pub display_name: String,
 }
+/// The application a launcher-authenticated connection belongs to, and the
+/// workspace it was launched into. Launch content is only ever read through
+/// this scope: holding a hash is not access.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LaunchScope {
+    pub app_id: String,
+    pub workspace_id: String,
+}
+
+/// What a launch opens: the lowercase BLAKE3 `hash` of content-addressed
+/// bytes (empty for a plain launch) and the application that asked, whose
+/// scope the bytes are read through.
+#[derive(Clone, Copy, Debug)]
+pub struct LaunchContent<'a> {
+    pub hash: &'a str,
+    pub caller: Option<&'a LaunchScope>,
+}
+
 pub trait LauncherServices: Send + Sync {
     fn applications(&self) -> Vec<LaunchableApplication>;
     /// Launches `app` into `workspace`.
@@ -136,8 +154,9 @@ pub trait LauncherServices: Send + Sync {
     /// Returns a message when the host cannot launch the application.
     fn launch(&self, app: &str, workspace: &Workspace) -> Result<(), String>;
     /// Launch `app` into `workspace`, opening the content-addressed bytes
-    /// named by the lowercase BLAKE3 `content_hash` read-only. An empty hash
-    /// is a plain launch. A host that cannot stage content refuses one.
+    /// `content` names read-only, read through the calling application's own
+    /// scope. An empty hash is a plain launch. A host that cannot stage
+    /// content refuses one.
     ///
     /// # Errors
     ///
@@ -146,9 +165,9 @@ pub trait LauncherServices: Send + Sync {
         &self,
         app: &str,
         workspace: &Workspace,
-        content_hash: &str,
+        content: LaunchContent<'_>,
     ) -> Result<(), String> {
-        if content_hash.is_empty() {
+        if content.hash.is_empty() {
             self.launch(app, workspace)
         } else {
             Err("opening launch content is unsupported on this host".into())

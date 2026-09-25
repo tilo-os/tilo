@@ -220,18 +220,10 @@ pub fn aggregate_status(states: &[FullReplicaStatus]) -> FullReplicaStatus {
 /// Returns an error when serialization or atomic persistence fails.
 pub fn save_status(path: &Path, status: &FullReplicaStatus) -> Result<()> {
     let mut status = status.clone();
-    status.updated_at_ms = unix_now_ms();
+    status.updated_at_ms = tilo_clock::unix_now_ms();
     let bytes = serde_json::to_vec_pretty(&status)?;
     atomic_file::write(path, &bytes).with_context(|| format!("write {}", path.display()))?;
     Ok(())
-}
-
-fn unix_now_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |duration| {
-            u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
-        })
 }
 
 /// Read the last complete status record, if any.

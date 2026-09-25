@@ -1238,6 +1238,26 @@ fn folder_resource(ctx: &CodeEditorResourceCtx, doc: &AutoCommit, folder: &Folde
     let name_revision = record.as_ref().map_or(0, |entry| entry.name_revision);
     let structure_revision = record.as_ref().map_or(0, |entry| entry.structure_revision);
     let deletion_revision = record.as_ref().map_or(0, |entry| entry.deletion_revision);
+    // `apply_delete` refuses a folder with live children, so say so up front
+    // rather than offering an action that can only fail.
+    let has_children = EditorDoc::files(doc)
+        .iter()
+        .any(|entry| !entry.deleted && entry.parent.as_deref() == Some(folder.id.as_str()));
+    let delete = document_action_spec(
+        "delete",
+        "Delete folder",
+        &CodeEditorAction::DeleteFile {
+            id: folder.id.clone(),
+            kind: EntryKind::Folder,
+            expected_revision: deletion_revision,
+        },
+    )
+    .destructive();
+    let delete = if has_children {
+        delete.unavailable("folder_not_empty", "Empty the folder before deleting it")
+    } else {
+        delete
+    };
     Resource::new(
         folder_resource_id(&folder.id),
         "code_editor.folder",
@@ -1276,18 +1296,7 @@ fn folder_resource(ctx: &CodeEditorResourceCtx, doc: &AutoCommit, folder: &Folde
             order: i64::MAX / 2,
         },
     ))
-    .with_action(
-        document_action_spec(
-            "delete",
-            "Delete folder",
-            &CodeEditorAction::DeleteFile {
-                id: folder.id.clone(),
-                kind: EntryKind::Folder,
-                expected_revision: deletion_revision,
-            },
-        )
-        .destructive(),
-    )
+    .with_action(delete)
 }
 
 fn add_catalogue_actions(project: &mut Resource) {
@@ -1725,7 +1734,7 @@ impl ResourceProvider for crate::app::CodeApp {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tilo_actions::{ActionInput, LocalTransport};
+    use tilo_actions::LocalTransport;
 
     fn registry() -> ActionRegistry {
         let mut r = ActionRegistry::new();
@@ -1789,15 +1798,6 @@ mod tests {
         let decoded = registry().decode(&encoded).unwrap();
         let mut tx = LocalTransport::new();
         tilo_actions::dispatch(doc, decoded.as_ref(), encoded, &mut tx).unwrap();
-    }
-
-    fn immediate_encode(spec: &ActionSpec) -> EncodedAction {
-        match &spec.input {
-            ActionInput::Immediate(enc) => enc.clone(),
-            ActionInput::Prompted { .. } | ActionInput::Deferred { .. } => {
-                panic!("expected an immediate action: {}", spec.id)
-            }
-        }
     }
 
     fn test_file_action(id: u64, seed: &str) -> CodeEditorAction {
@@ -1968,9 +1968,183 @@ mod tests {
         );
     }
 
+    const CONTRACT_PROJECT_ID: &str = "00000000-0000-4000-8000-0000000000a0";
+    const CONTRACT_NEXT_FILE: &str = "00000000-0000-4000-8000-0000000000a1";
+    const CONTRACT_NEXT_FOLDER: &str = "00000000-0000-4000-8000-0000000000a2";
+    const MAIN_TEXT: &str = "fn main() {}\n";
+    const MAIN_EDITED: &str = "fn main() { run() }\n";
+    /// `test_file_id(21)`, `(22)` and `(23)` as resource addresses.
+    const SRC_FOLDER: &str = "code_editor.folder:00000000-0000-4000-8000-000000000015";
+    const MAIN_FILE: &str = "code_editor.file:00000000-0000-4000-8000-000000000016";
+    const LIB_FILE: &str = "code_editor.file:00000000-0000-4000-8000-000000000017";
+
+    /// A project folder holding `main.rs` and `src/lib.rs`, built through the
+    /// same create actions the tree's commands dispatch.
+    fn project_seed() -> AutoCommit {
+        let mut doc = AutoCommit::new();
+        EditorDoc::ensure_project_id(&mut doc, CONTRACT_PROJECT_ID);
+        for action in [
+            CodeEditorAction::CreateFolder {
+                id: test_file_id(20),
+                name: "demo".into(),
+                parent: None,
+                order: 0,
+            },
+            CodeEditorAction::CreateFolder {
+                id: test_file_id(21),
+                name: "src".into(),
+                parent: Some(test_file_id(20)),
+                order: 0,
+            },
+            create_file_action(
+                test_file_id(22),
+                "main.rs".into(),
+                Some(test_file_id(20)),
+                1,
+                MAIN_TEXT.into(),
+            ),
+            create_file_action(
+                test_file_id(23),
+                "lib.rs".into(),
+                Some(test_file_id(21)),
+                0,
+                "pub fn lib() {}\n".into(),
+            ),
+        ] {
+            dispatch(&mut doc, &action);
+        }
+        doc.commit();
+        doc
+    }
+
+    /// The presentation context `CodeApp::code_resource_ctx` holds for a
+    /// session whose tree mirrors the document's live file records.
+    fn contract_ctx(doc: &AutoCommit) -> CodeEditorResourceCtx {
+        let live: Vec<CollaborativeFile> = EditorDoc::files(doc)
+            .into_iter()
+            .filter(|entry| !entry.deleted)
+            .collect();
+        CodeEditorResourceCtx {
+            project_name: "demo".into(),
+            project_id: CONTRACT_PROJECT_ID.into(),
+            next_file_id: CONTRACT_NEXT_FILE.into(),
+            next_file_name: "untitled-4.txt".into(),
+            next_folder_id: CONTRACT_NEXT_FOLDER.into(),
+            next_folder_name: "untitled-folder-4".into(),
+            open_files: live
+                .iter()
+                .filter(|entry| entry.kind == "file")
+                .enumerate()
+                .map(|(node, entry)| OpenFileRef {
+                    node: node as u64,
+                    id: entry.id.clone(),
+                    name: entry.name.clone(),
+                    parent: entry.parent.clone(),
+                    path: entry.path.clone(),
+                    order: entry.order,
+                    can_save: true,
+                })
+                .collect(),
+            folders: live
+                .iter()
+                .filter(|entry| entry.kind == "folder")
+                .map(|entry| FolderRef {
+                    id: entry.id.clone(),
+                    name: entry.name.clone(),
+                    parent: entry.parent.clone(),
+                    path: entry.path.clone(),
+                    order: entry.order,
+                })
+                .collect(),
+            symbols: Vec::new(),
+            search_results: Vec::new(),
+        }
+    }
+
+    fn record(doc: &AutoCommit, id: u64) -> CollaborativeFile {
+        EditorDoc::file(doc, &test_file_id(id)).expect("seeded tree entry")
+    }
+
+    fn encoded(action: &CodeEditorAction) -> EncodedAction {
+        encode(action).expect("a code editor action encodes")
+    }
+
+    fn rename_main(doc: &AutoCommit) -> EncodedAction {
+        encoded(&CodeEditorAction::RenameFile {
+            id: test_file_id(22),
+            kind: EntryKind::File,
+            name: "app.rs".into(),
+            expected_revision: record(doc, 22).name_revision,
+        })
+    }
+
+    fn lib_language(doc: &AutoCommit) -> EncodedAction {
+        encoded(&CodeEditorAction::SetFileLanguage {
+            id: test_file_id(23),
+            language: "Python".into(),
+            expected_revision: record(doc, 23).language_revision,
+        })
+    }
+
+    fn edit_main() -> EncodedAction {
+        encoded(&text_edit_action(test_file_id(22), MAIN_TEXT, MAIN_EDITED))
+    }
+
+    ui::action_contract_tests! {
+        seed: project_seed(),
+        registry: registry(),
+        resources: |doc| provide_resources(&contract_ctx(doc), doc),
+        palette: ["New file", "New folder", "Rename file", "Delete file"],
+        replay: [
+            create_file => |_| encoded(&test_file_action(2, MAIN_TEXT)),
+            edit_text => |_| edit_main(),
+            rename_file => |doc| rename_main(doc),
+        ],
+        undo: [
+            create_file => |_| encoded(&test_file_action(9, "hello")),
+            set_language => |doc| lib_language(doc),
+            move_to_project_root => |doc| encoded(&CodeEditorAction::MoveFile {
+                id: test_file_id(23),
+                kind: EntryKind::File,
+                parent: Some(test_file_id(20)),
+                order: 5,
+                expected_revision: record(doc, 23).structure_revision,
+            }),
+        ],
+        encodes: [
+            new_file => ("code_editor.project", "new-file", |_, _| {
+                encoded(&create_file_action(
+                    CONTRACT_NEXT_FILE.into(),
+                    "untitled-4.txt".into(),
+                    None,
+                    i64::MAX / 2,
+                    String::new(),
+                ))
+            }),
+            new_folder_here => (SRC_FOLDER, "new-folder", |_, _| {
+                encoded(&CodeEditorAction::CreateFolder {
+                    id: CONTRACT_NEXT_FOLDER.into(),
+                    name: "untitled-folder-4".into(),
+                    parent: Some(test_file_id(21)),
+                    order: i64::MAX / 2,
+                })
+            }),
+            delete_file => (MAIN_FILE, "delete", |doc, _| {
+                encoded(&CodeEditorAction::DeleteFile {
+                    id: test_file_id(22),
+                    kind: EntryKind::File,
+                    expected_revision: record(doc, 22).deletion_revision,
+                })
+            }),
+            rename_file => (MAIN_FILE, "rename", arg: "app.rs", |doc, _| rename_main(doc)),
+            set_language => (LIB_FILE, "set-language", arg: "Python", |doc, _| lib_language(doc)),
+            replace_text => (MAIN_FILE, "replace-text", arg: MAIN_EDITED, |_, _| edit_main()),
+        ],
+    }
+
     /// Ctrl+K on Code yields the project root exporting "New file" and a
     /// `code_editor.file:<node>` child per open buffer. Drives the real
-    /// resource-builder path and the real palette.
+    /// resource-builder path.
     #[test]
     fn ctrl_k_publishes_the_project_and_file_tree() {
         let ctx = CodeEditorResourceCtx {
@@ -2028,127 +2202,10 @@ mod tests {
         assert_eq!(file_actions[0].kind, OperationKind::View);
         assert_eq!(file_actions[1].kind, OperationKind::Effect);
         assert_eq!(
-            immediate_encode(&file_actions[0]).type_id,
+            ui::testing::action_contract::spec_encoding(&file_actions[0], None).type_id,
             CODE_EDITOR_OPERATION_TYPE
         );
         assert_eq!(file_actions[1].params()[0].name, "path");
-
-        // The one palette surfaces the tree's actions as rows; a query reaches
-        // actions beyond the empty-query display cap as well.
-        let mut palette = ui::ActionPalette::new();
-        palette.load_open_resources(&resources);
-        palette.open();
-        palette.set_query("New file");
-        let labels = palette.result_labels();
-        assert!(labels.iter().any(|l| l.contains("New file")), "{labels:?}");
-    }
-
-    /// The full undo covenant on the action: dispatched through the executor it
-    /// mutates the document and records exactly one undo boundary, and Ctrl+Z
-    /// (the host's `undo`) reverts precisely that action.
-    #[test]
-    fn action_records_one_undo_boundary_and_reverts() {
-        let mut state = ui::State::new();
-        let before_heads = state.doc.get_heads();
-        assert!(EditorDoc::buffer_text_key(&state.doc, &test_file_id(9)).is_none());
-
-        // Create a buffer via the action + host undo recording.
-        let encoded = encode(&test_file_action(9, "hello")).unwrap();
-        let decoded = registry().decode(&encoded).unwrap();
-        let mut tx = LocalTransport::new();
-        tilo_actions::dispatch(&mut state.doc, decoded.as_ref(), encoded, &mut tx).unwrap();
-        state.record_committed_action(before_heads, None, None);
-
-        assert_eq!(
-            EditorDoc::read_buffer_key(&state.doc, &test_file_id(9)).as_deref(),
-            Some("hello"),
-            "the action created the buffer"
-        );
-        assert!(
-            state.peek_last_undo().is_some(),
-            "exactly one undo boundary recorded"
-        );
-
-        // Ctrl+Z reverts exactly this action.
-        state.undo(None, None).expect("an undo entry to pop");
-        assert!(
-            EditorDoc::buffer_text_key(&state.doc, &test_file_id(9)).is_none(),
-            "undo reverted the created buffer and nothing else"
-        );
-    }
-
-    /// The collaboration guarantee: replaying the same encoded action on a second
-    /// independent replica (from the same base state) lands on the byte-identical
-    /// document — same head hashes, not merely the same values.
-    #[test]
-    fn action_replays_byte_identical_on_a_peer() {
-        let mut a = AutoCommit::new();
-        // A pre-existing buffer, so the base state is non-trivial.
-        EditorDoc::ensure_buffer_key(&mut a, "base-file", "base\n");
-        a.commit();
-        let bytes = a.save();
-        let mut b = AutoCommit::load(&bytes).unwrap();
-        assert_eq!(
-            a.get_heads(),
-            b.get_heads(),
-            "precondition: same base state"
-        );
-
-        let action = test_file_action(2, "fn main() {}\n");
-        let encoded = encode(&action).unwrap();
-        let env = tilo_actions::apply_local(&mut a, &action, encoded).unwrap();
-        tilo_actions::replay(&mut b, &env, &registry()).unwrap();
-
-        assert_eq!(
-            a.get_heads(),
-            b.get_heads(),
-            "replay reproduced the identical change"
-        );
-        assert_eq!(
-            EditorDoc::read_buffer_key(&b, &test_file_id(2)).as_deref(),
-            Some("fn main() {}\n")
-        );
-    }
-
-    /// Single source of truth: the palette's "New file" spec encodes
-    /// byte-identically to the builder the on-screen command calls, for the same
-    /// target node id.
-    #[test]
-    fn palette_and_builder_encode_identically() {
-        let ctx = CodeEditorResourceCtx {
-            project_name: "demo".into(),
-            project_id: "00000000-0000-4000-8000-000000000003".into(),
-            next_file_id: "new-file".into(),
-            next_file_name: "untitled.txt".into(),
-            next_folder_id: "new-folder".into(),
-            next_folder_name: "untitled-folder".into(),
-            open_files: Vec::new(),
-            folders: Vec::new(),
-            symbols: Vec::new(),
-            search_results: Vec::new(),
-        };
-        let doc = AutoCommit::new();
-        let resources = provide_resources(&ctx, &doc);
-        let spec = resources[0]
-            .actions
-            .iter()
-            .find(|a| a.id == "new-file")
-            .unwrap();
-
-        let from_spec = immediate_encode(spec);
-        let from_builder = encode(&create_file_action(
-            "new-file".into(),
-            "untitled.txt".into(),
-            None,
-            i64::MAX / 2,
-            String::new(),
-        ))
-        .unwrap();
-        assert_eq!(from_spec.type_id, from_builder.type_id);
-        assert_eq!(
-            from_spec.payload, from_builder.payload,
-            "new-file is one source of truth"
-        );
     }
 
     #[test]

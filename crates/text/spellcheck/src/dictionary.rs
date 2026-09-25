@@ -183,8 +183,14 @@ impl Dictionary {
     /// (e.g. cloned from a process-wide shared copy to avoid re-parsing the 75k
     /// word list) layer in the persisted user words without re-parsing.
     pub fn load_user_dict(&mut self) {
-        let Some(path) = user_dict_path() else { return };
-        if let Ok(contents) = std::fs::read_to_string(&path) {
+        if let Some(path) = user_dict_path() {
+            self.load_user_dict_from(&path);
+        }
+    }
+
+    /// [`Self::load_user_dict`] from an explicit word-list file.
+    pub fn load_user_dict_from(&mut self, path: &std::path::Path) {
+        if let Ok(contents) = std::fs::read_to_string(path) {
             for line in contents.lines() {
                 let w = line.trim();
                 if !w.is_empty() && !self.words.contains(&w.to_lowercase()) {
@@ -279,16 +285,26 @@ impl Dictionary {
     /// be created (`create_dir_all`) or the word list cannot be written
     /// (`write`) — e.g. permission denied, or a read-only filesystem.
     pub fn save_user_dict(&self) -> std::io::Result<()> {
-        let Some(path) = user_dict_path() else {
-            return Ok(());
-        };
+        match user_dict_path() {
+            Some(path) => self.save_user_dict_to(&path),
+            None => Ok(()),
+        }
+    }
+
+    /// [`Self::save_user_dict`] to an explicit word-list file, creating its
+    /// directory.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::save_user_dict`].
+    pub fn save_user_dict_to(&self, path: &std::path::Path) -> std::io::Result<()> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
         let mut words: Vec<&str> = self.user_words.iter().map(String::as_str).collect();
         words.sort_unstable();
         let body = words.join("\n");
-        std::fs::write(&path, body)
+        std::fs::write(path, body)
     }
 
     /// The runtime user-added words, lowercased and unsorted. Mostly useful for
@@ -325,7 +341,7 @@ impl Dictionary {
 /// `$HOME/.config/tilo/userdict.txt`. Returns `None` when neither environment
 /// variable is set (e.g. a locked-down sandbox), in which case the user
 /// dictionary lives only in memory.
-fn user_dict_path() -> Option<std::path::PathBuf> {
+pub fn user_dict_path() -> Option<std::path::PathBuf> {
     let base = xdg_paths::xdg::config_home()?;
     Some(base.join("tilo").join("userdict.txt"))
 }

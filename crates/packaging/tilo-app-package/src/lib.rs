@@ -1,8 +1,7 @@
-//! `tilo-app-package` — the foundation library for Tilo packages
-//! (`.tapp`).
+//! `tilo-app-package` — the format of Tilo packages (`.tapp`).
 //!
 //! Tilo distributes everything (apps, services, format providers,
-//! plugins, runtimes) as content-addressed signed bundles. The
+//! plugins, runtimes) as content-addressed signed packages. The
 //! same packaging machinery handles all kinds; the `Kind`
 //! discriminates *what* the package is, not *how* it is packed.
 //!
@@ -10,15 +9,16 @@
 //!
 //! - [`Manifest`] + supporting types (TOML schema) — see
 //!   [`manifest`].
-//! - [`PackageId`] — BLAKE3 hash that identifies a bundle. See
+//! - [`PackageId`] — BLAKE3 hash that identifies a package. See
 //!   [`id`].
 //! - [`validate_manifest`] / [`validate::ManifestError`] — schema
 //!   checks beyond TOML decode.
-//! - [`BlobStore`] trait + [`MemoryBlobStore`] in-memory
-//!   implementation. The loader supplies an `iroh-blobs`-backed
-//!   implementation. See [`blobs`].
-//! - [`pack`], [`unpack`], [`verify`] — the three operations
-//!   that consumers compose.
+//! - [`BlobHash`], [`Collection`] and the streaming [`BlobSource`] /
+//!   [`BlobSink`] edges — see [`blobs`].
+//! - [`PackageMeta`] — the signed root, manifest and collection with every
+//!   hash link checked. See [`package`].
+//! - [`pack`], [`unpack`], [`verify`] and the [`tapp`] archive codec
+//!   (thin or full) — the operations consumers compose.
 //! - [`SigningIdentity`] — wraps either a plain Ed25519
 //!   `SigningKey` or a 1-of-1 `ThresholdIdentity`. The true
 //!   threshold (`t-of-n`, `t≥2`) signing flow is driven outside
@@ -28,11 +28,10 @@
 //! ## Scope boundaries
 //!
 //! - No tokio. Everything in this crate is synchronous.
-//! - No on-disk file format. That layering is owned by the CLI
-//!   crate (`tilo-app-package-cli`): it dumps a `MemoryBlobStore` into a
-//!   tar archive at pack time and the reverse at unpack time.
-//! - No live iroh-blobs serving. The loader crate provides a
-//!   `BlobStore` adapter over an iroh `Store`.
+//! - No storage. Payload bytes flow through [`BlobSource`] and
+//!   [`BlobSink`]; keeping them is the device content store's job.
+//! - No networking. Fetching the payload of a thin `.tapp` belongs to
+//!   whoever knows where bytes are.
 
 #![cfg_attr(
     test,
@@ -51,22 +50,29 @@ pub mod blobs;
 pub mod id;
 pub mod manifest;
 pub mod pack;
+pub mod package;
 pub mod signed;
+pub mod tapp;
 pub mod trust;
 pub mod unpack;
 pub mod validate;
 pub mod verify;
 pub mod version;
 
-pub use blobs::{BlobHash, BlobStore, BlobStoreError, Collection, MemoryBlobStore};
+pub use blobs::{
+    BlobFetcher, BlobHash, BlobSink, BlobSource, Collection, CollectionDecodeError, DiscardBlobs,
+    HashingReader, OpenBlob,
+};
 pub use id::{Kind, PackageId, ParsePackageIdError};
 pub use manifest::{
     Cli, Entrypoint, EntrypointType, Manifest, ManifestParseError, NetMode, Package, PathPattern,
     Providers, Publisher, Requirement, Sandbox, SandboxFs, SandboxNet, ServiceReq,
     ServiceReqParseError, SplashSegment, SplashSegmentError, Trust, TrustAttestation,
 };
-pub use pack::{PackError, SigningIdentity, pack, pack_with_signature};
+pub use pack::{PackError, Packed, SigningIdentity, pack, pack_with_signature};
+pub use package::{MetaError, PackageMeta, is_safe_path};
 pub use signed::{SIGNED_ROOT_LEN, SIGNING_PREFIX_LEN, SignedRoot, SignedRootError};
+pub use tapp::{TAPP_FORMAT_VERSION, Tapp, TappError};
 pub use trust::{
     ATTESTATION_DOMAIN, AttestorScope, RevocationList, RevokedKey, TrustLoadError, TrustedAttestor,
     TrustedAttestors, attestation_preimage, default_revoked_keys_path,

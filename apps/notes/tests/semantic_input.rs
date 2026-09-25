@@ -48,7 +48,7 @@ fn published_new_note_and_page_tokens_use_the_canonical_component_once() {
     assert_eq!(buttons.len(), 2);
     let sidebar = buttons
         .iter()
-        .find(|r| r.1.as_deref() == Some("notes:new-page"))
+        .find(|r| r.1.as_deref() == Some("heading-action"))
         .unwrap();
     perform(&mut a, sidebar, &Action::Activate);
     assert_eq!(
@@ -60,18 +60,14 @@ fn published_new_note_and_page_tokens_use_the_canonical_component_once() {
     let before = revision(&f, &checkout);
     let page = named(&a, "Untitled")
         .into_iter()
-        .find(|r| r.1.as_deref().is_some_and(|t| t.starts_with("notes:page:")))
+        .find(|r| r.1.as_deref().is_some_and(|t| t.starts_with("node:")))
         .unwrap();
     perform(&mut a, &page, &Action::Activate);
     assert_eq!(revision(&f, &checkout), before, "selection is local");
     for action in [Action::Activate, Action::Focus] {
         assert!(
-            a.perform_semantic_named(
-                &page.0,
-                Some("notes:page:00000000-0000-0000-0000-000000000000"),
-                &action
-            )
-            .is_err()
+            a.perform_semantic_named(&page.0, Some("node:999999999"), &action)
+                .is_err()
         );
     }
     assert_eq!(named(&neighbor, "Page title").len(), 1);
@@ -267,7 +263,7 @@ fn title_route_obeys_remote_refresh_replacement_and_revoked_authority() {
         .unwrap();
     let create = named(&a, "New note")[0].clone();
     perform(&mut a, &create, &Action::Activate);
-    let rect = semantic_rect(&a, "notes:new-page");
+    let rect = semantic_rect(&a, "heading-action");
     a.click_at(rect.center().x, rect.center().y);
     assert_eq!(
         f.records
@@ -294,7 +290,7 @@ fn revoked_authority_rejects_empty_notes_semantic_and_pointer_creation() {
     for route in named(&a, "New note") {
         perform(&mut a, &route, &Action::Activate);
     }
-    let rect = semantic_rect(&a, "notes:new-page");
+    let rect = semantic_rect(&a, "heading-action");
     a.click_at(rect.center().x, rect.center().y);
     assert_eq!(
         f.records

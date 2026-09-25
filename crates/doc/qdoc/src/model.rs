@@ -1336,7 +1336,7 @@ pub fn blob(doc: &AutoCommit, c: &Containers, hash: &str) -> Option<Vec<u8>> {
     match doc.get(&blobs, hash) {
         Ok(Some((Value::Scalar(s), _))) => match s.as_ref() {
             ScalarValue::Bytes(b) => {
-                crate::blobstore::store().put(hash, b);
+                let _ = crate::blobstore::put(b);
                 Some(b.clone())
             }
             _ => None,

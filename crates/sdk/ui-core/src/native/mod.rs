@@ -4,7 +4,8 @@
 //! Everything here talks to the operating system on the app's behalf: the
 //! desktop implementation of [`crate::host::HostServices`] ([`services`]), the
 //! Wayland clipboard, the XDG portal and Windows dialog backends, MPRIS on the
-//! session bus, Windows toasts and cold-start warmup. The winit event-loop
+//! session bus, the launcher's document-media capability, Windows toasts and
+//! cold-start warmup. The winit event-loop
 //! runner lives beside `App` (it drives `App`'s private state) and is compiled
 //! only with this feature too; [`crate::App::run`] and [`crate::launch::run`]
 //! are its entry points.
@@ -13,6 +14,8 @@
 //! layout, rendering and the headless host — and whoever hosts it installs
 //! its own services with [`crate::host::install_default`].
 
+#[cfg(unix)]
+pub mod blobs;
 pub mod capture;
 #[cfg(all(windows, feature = "notifications"))]
 pub mod host_notifications;

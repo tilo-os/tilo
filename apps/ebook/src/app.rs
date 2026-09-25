@@ -31,6 +31,7 @@ use std::thread;
 
 use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+use tilo_clock::unix_now_ms;
 use uuid::Uuid;
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect};
@@ -58,18 +59,17 @@ use ui::widget::{
 };
 
 use crate::chrome::{self as chrome, pointer_target, rhythm};
-use crate::color_picker::{ColorEdit, ColorPicker, PickTarget, PickerPress};
 use crate::comment_overlay::{CommentAction, CommentOverlay, CommentSemanticOutcome};
 use crate::content::{self, is_shared};
 use crate::doc::BooksDoc;
 use crate::input_controls::{
-    InputEventCtx, NoteAction, NoteComposer, NoteSemanticOutcome, NumberControls, NumberField,
+    ColorEdit, ColorSheetResponse, InputEventCtx, NoteAction, NoteComposer, NoteSemanticOutcome,
+    NumberControls, NumberField, PickTarget, SchemeColorSheet,
 };
 use crate::local_library::LocalLibrary;
 use crate::model::{
     AnnoKind, Annotation, AnnotationAnchor, Book, ColorScheme, CompositionStyle, FontEntry,
     FontKind, HiColor, Progress, ReadMode, ReadTheme, Settings, default_fonts, default_schemes,
-    now_ms,
 };
 use crate::paginate::{
     ChapterLayout, ChapterLayoutRequest, LayoutKey, LayoutKind, font_choice, layout_chapter,
@@ -100,8 +100,11 @@ struct ImportRequest {
     path: PathBuf,
     kind: ImportKind,
     expected_book_id: Option<String>,
+    /// A test's hold on the worker: it reports on the first channel that it
+    /// took this request, then parses only once the second one fires or is
+    /// dropped.
     #[cfg(test)]
-    delay: Duration,
+    hold: Option<(std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>)>,
 }
 
 struct ImportResult {
@@ -215,7 +218,10 @@ impl ImportWorker {
                     };
                     let Some(request) = request else { continue };
                     #[cfg(test)]
-                    thread::sleep(request.delay);
+                    if let Some((entered, release)) = &request.hold {
+                        let _ = entered.send(());
+                        let _ = release.recv();
+                    }
                     // The file is copied into the content-addressed workspace
                     // on this worker before its collaborative library row is
                     // written on the UI thread.  A peer therefore receives
@@ -982,7 +988,7 @@ pub struct BooksApp {
     /// Shared spin buttons used by the quick-reading and font-manager panels.
     number_controls: NumberControls,
     /// Modal colour editor; owns HSV state, drawing, hit regions and drags.
-    color_picker: ColorPicker,
+    color_picker: SchemeColorSheet,
     default_font_menu: bool,
     library_prefs: crate::model::LibraryPrefs,
     watched_folders: Vec<PathBuf>,
@@ -1219,7 +1225,7 @@ impl BooksApp {
             settings_tab: SettingsTab::Fonts,
             renaming: None,
             number_controls: NumberControls::default(),
-            color_picker: ColorPicker::default(),
+            color_picker: SchemeColorSheet::default(),
             default_font_menu: false,
             library_prefs: crate::model::LibraryPrefs::default(),
             watched_folders,
@@ -1931,7 +1937,7 @@ impl BooksApp {
                     chapter: 0,
                     page: (f * 6.0) as usize,
                     fraction: f,
-                    opened: now_ms() - (i as u64) * 3_600_000,
+                    opened: unix_now_ms() - (i as u64) * 3_600_000,
                 },
             );
         }
@@ -2253,7 +2259,7 @@ impl BooksApp {
         let nchap = self.num_chapters().saturating_sub(1);
         self.chapter = p.chapter.min(nchap);
         self.page = p.page;
-        p.opened = now_ms();
+        p.opened = unix_now_ms();
         self.perform_action(doc, &crate::actions::set_progress_action(&id, p));
         self.clear_selection();
         self.composing = None;
@@ -2377,7 +2383,7 @@ impl BooksApp {
             kind,
             expected_book_id: expected_book_id.clone(),
             #[cfg(test)]
-            delay: Duration::ZERO,
+            hold: None,
         })?;
         self.import_generation = generation;
         self.import_loading = Some(LoadingImport {
@@ -2496,15 +2502,16 @@ impl BooksApp {
     }
 
     #[cfg(test)]
-    fn begin_import_with_delay(
+    /// Queue an import whose parse waits until the test lets it go. Returns a
+    /// receiver that fires once the worker has taken the request, and the
+    /// sender that releases it (dropping it releases it too).
+    fn begin_import_held(
         &mut self,
         path: &std::path::Path,
         kind: ImportKind,
-        delay: Duration,
-    ) -> Result<(), String> {
-        if self.import_loading.is_some() && kind == ImportKind::Watch {
-            return Ok(());
-        }
+    ) -> Result<(std::sync::mpsc::Receiver<()>, std::sync::mpsc::Sender<()>), String> {
+        let (entered_tx, entered) = std::sync::mpsc::channel();
+        let (release, release_rx) = std::sync::mpsc::channel();
         let generation = self
             .import_generation
             .checked_add(1)
@@ -2518,7 +2525,7 @@ impl BooksApp {
             path: path.to_path_buf(),
             kind,
             expected_book_id: None,
-            delay,
+            hold: Some((entered_tx, release_rx)),
         })?;
         self.import_generation = generation;
         self.import_loading = Some(LoadingImport {
@@ -2527,7 +2534,7 @@ impl BooksApp {
             kind,
             expected_book_id: None,
         });
-        Ok(())
+        Ok((entered, release))
     }
 
     #[cfg(test)]
@@ -3332,26 +3339,10 @@ impl BooksApp {
         self.dispatch(action, doc);
     }
 
-    /// Apply the picker's live colour to its target (called on every drag). For
-    /// a slot, this live-edits the scheme so the manager previews the change;
-    /// for a new scheme, nothing is written until [`Self::commit_picker`].
-    fn apply_live_pick(&mut self, doc: &mut AutoCommit, edit: &ColorEdit) {
-        if let PickTarget::Slot(id, slot) = &edit.target {
-            let mut sc = self.schemes.clone();
-            if let Some(s) = sc.iter_mut().find(|s| &s.id == id && !s.builtin) {
-                s.set_slot(*slot, edit.rgb);
-                let scheme = s.clone();
-                self.perform_action(doc, &crate::actions::upsert_color_scheme_action(scheme));
-            }
-        }
-    }
-
-    /// Commit the colour picker: create the new scheme (for a from-background
-    /// pick) or finalise the slot edit, then close.
-    fn commit_picker(&mut self, doc: &mut AutoCommit) {
-        let Some(edit) = self.color_picker.take() else {
-            return;
-        };
+    /// Apply a confirmed pick: create the new scheme (for a from-background
+    /// pick) or write the slot edit. Nothing is written while the picker is
+    /// open, so *Cancel* leaves the scheme exactly as it was.
+    fn commit_picker(&mut self, doc: &mut AutoCommit, edit: ColorEdit) {
         match edit.target {
             PickTarget::NewScheme => {
                 let sc = self.schemes.clone();
@@ -4153,7 +4144,7 @@ impl BooksApp {
         };
         self.perform_action(
             doc,
-            &crate::actions::finalize_annotation_action(id, created.max(now_ms())),
+            &crate::actions::finalize_annotation_action(id, created.max(unix_now_ms())),
         );
         true
     }
@@ -4967,7 +4958,7 @@ impl Widget for BooksApp {
                 cm.start = hl.start;
                 cm.end = hl.end;
                 cm.note = text.to_string();
-                cm.created = now_ms() + i as u64;
+                cm.created = unix_now_ms() + i as u64;
                 BooksDoc::upsert_annotation(doc, &cm);
             }
             self.comment_overlay.open(group);
@@ -4991,7 +4982,7 @@ impl Widget for BooksApp {
                 } else {
                     format!("Reading note {} — a durable, shared thought.", index + 1)
                 };
-                annotation.created = now_ms().saturating_add(index as u64);
+                annotation.created = unix_now_ms().saturating_add(index as u64);
                 if index == 25 {
                     self.notes_scroll_to_annotation = Some(annotation.id);
                 }
@@ -5315,6 +5306,15 @@ impl Widget for BooksApp {
             taffy,
             handled,
         };
+        // The colour sheet is modal: while open every event is its own.
+        if let Some(response) = self.color_picker.handle_event(&mut input_ctx) {
+            if let ColorSheetResponse::Confirmed(edit) = response {
+                self.commit_picker(input_ctx.state, edit);
+            }
+            self.refresh_from_doc(input_ctx.state);
+            self.dirty = true;
+            return;
+        }
         if self.forward_rename_event(&mut input_ctx) {
             return;
         }
@@ -5617,14 +5617,12 @@ impl Widget for BooksApp {
             self.dirty = true;
             return true;
         }
-        if matches!(action, A11yAction::Activate)
-            && let Some(picker_action) = self.color_picker.semantic_press(target)
+        if let Some(response) = self
+            .color_picker
+            .perform_semantic_action(target, action, doc, path)
         {
-            match picker_action {
-                PickerPress::Swallow => {}
-                PickerPress::Cancel => self.color_picker.cancel(),
-                PickerPress::Done => self.commit_picker(doc),
-                PickerPress::Edit(edit) => self.apply_live_pick(doc, &edit),
+            if let ColorSheetResponse::Confirmed(edit) = response {
+                self.commit_picker(doc, edit);
             }
             self.refresh_from_doc(doc);
             self.dirty = true;
@@ -5880,16 +5878,6 @@ impl BooksApp {
             *handled = true;
             return;
         }
-        // The modal colour picker owns its drag geometry and HSV state; the
-        // app only persists the semantic colour edit it emits.
-        if self.mouse_down
-            && let Some(edit) = self.color_picker.drag_to(p)
-        {
-            self.apply_live_pick(doc, &edit);
-            self.refresh_from_doc(doc);
-            *handled = true;
-            return;
-        }
         // Drag text selection: once the press has moved far enough,
         // the head follows the pointer and the selection spans
         // whatever paragraphs it covers. Dragging into the top/bottom
@@ -5947,19 +5935,6 @@ impl BooksApp {
     fn handle_left_press_overlay(&mut self, doc: &mut AutoCommit, handled: &mut bool) -> bool {
         if let Some(action) = self.reading_settings.hit_test(self.cursor) {
             self.dispatch_reading_settings(action, doc);
-            self.refresh_from_doc(doc);
-            self.dirty = true;
-            *handled = true;
-            return true;
-        }
-        if let Some(action) = self.color_picker.press(self.cursor) {
-            self.mouse_down = true;
-            match action {
-                PickerPress::Swallow => {}
-                PickerPress::Cancel => self.color_picker.cancel(),
-                PickerPress::Done => self.commit_picker(doc),
-                PickerPress::Edit(edit) => self.apply_live_pick(doc, &edit),
-            }
             self.refresh_from_doc(doc);
             self.dirty = true;
             *handled = true;
@@ -6191,10 +6166,6 @@ impl BooksApp {
         }
         self.drag_select.release();
         let was_drag = self.dragging_sel;
-        if self.color_picker.end_drag() {
-            self.dirty = true;
-            *handled = true;
-        }
         if self.dragging_sel {
             self.dragging_sel = false;
             if let Some(s) = self.sel
@@ -10482,8 +10453,7 @@ impl BooksApp {
         }
         // The colour picker floats above everything when open.
         if self.color_picker.is_open() {
-            self.color_picker
-                .draw(scene, t, tr, theme, self.rect, self.cursor);
+            self.color_picker.draw(scene, t, tr, theme, self.rect);
         }
     }
 

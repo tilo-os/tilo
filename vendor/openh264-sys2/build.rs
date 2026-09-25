@@ -261,12 +261,16 @@ mod source_build {
             .cpp(true)
             .warnings(false)
             .files(glob_import(root, ".cpp", "DllEntry.cpp")) // Otherwise fails when compiling on Linux
-            .pic(true)
+            // Windows COFF has no PIC mode; Clang rejects -fPIC for ARM64 MSVC.
+            .pic(!matches!(target.os, TargetOs::Windows))
             // Upstream sets these two and if we don't we get segmentation faults on Linux and MacOS ... Happy times.
             .flag_if_supported("-fno-strict-aliasing")
             .flag_if_supported("-fembed-bitcode")
-            .flag_if_supported("-fno-common")
-            .flag_if_supported("-undefined dynamic_lookup");
+            .flag_if_supported("-fno-common");
+
+        if !matches!(target.os, TargetOs::Windows) {
+            cc_build.flag_if_supported("-undefined dynamic_lookup");
+        }
 
         // disable stack protectors on mingw:
         // (seems to be the way to go https://github.com/rdp/ffmpeg-windows-build-helpers/issues/380)

@@ -8,6 +8,7 @@ description = "Default-deny single Windows appliance and RemoteApp integration f
 
 [dependencies]
 advisory-lock = { path = "../../system/advisory-lock" }
+tilo-clock = { path = "../../system/tilo-clock" }
 base64.workspace = true
 bounded-command = { path = "../../system/bounded-command" }
 atomic-file = { path = "../../system/atomic-file" }

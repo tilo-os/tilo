@@ -10,8 +10,8 @@
 
 use crate::shell::state::WorkspaceAuthority as _;
 use getrandom::{SysRng, rand_core::UnwrapErr};
-use std::fmt::Write as _;
 use std::rc::Rc;
+use tilo_clock::unix_now;
 
 use crate::shell::chrome_state::{Chrome, ChromeState};
 use crate::shell::search::action_api::{ActionArgs, ActionError, ActionParam, ParamType};
@@ -500,7 +500,7 @@ fn apply_ownership_proposal(
     state: &ChromeState,
     arguments: &ActionArgs,
 ) -> Result<(), ActionError> {
-    let now = crate::shell::state::now_unix();
+    let now = unix_now();
     let workspace_id = active_workspace_id(state)?;
     let recipient_text = arguments.text("recipient").unwrap_or_default().trim();
     let recipient_bytes: [u8; 32] = hex::decode(recipient_text)
@@ -562,7 +562,7 @@ fn apply_ownership_proposal(
 }
 
 fn apply_ownership_acceptance(state: &ChromeState) -> Result<(), ActionError> {
-    let now = crate::shell::state::now_unix();
+    let now = unix_now();
     let workspace_id = active_workspace_id(state)?;
     let proposal = state
         .tree()
@@ -596,7 +596,7 @@ fn apply_ownership_acceptance(state: &ChromeState) -> Result<(), ActionError> {
 }
 
 fn apply_ownership_cancellation(state: &ChromeState) -> Result<(), ActionError> {
-    let now = crate::shell::state::now_unix();
+    let now = unix_now();
     let workspace_id = active_workspace_id(state)?;
     let proposal = state
         .tree()
@@ -972,13 +972,7 @@ impl Action {
                     .certificates
                     .iter()
                     .map(|cert| {
-                        let fingerprint = cert.device_public_key.iter().fold(
-                            String::new(),
-                            |mut fingerprint, byte| {
-                                let _ = write!(fingerprint, "{byte:02x}");
-                                fingerprint
-                            },
-                        );
+                        let fingerprint = hex::encode(cert.device_public_key);
                         format!(
                             "{}  {}  {}",
                             cert.device_label,
