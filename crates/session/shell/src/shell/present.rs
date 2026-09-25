@@ -27,6 +27,11 @@ use super::render::OutputId;
 /// Frames accepted beyond the one currently being presented.
 pub const QUEUE_DEPTH: usize = 1;
 
+/// Normal refresh-rate frames stay silent. Anomalous lifecycle records flow
+/// through the session runner's bounded, periodically-synced flight log, so a
+/// hard reboot does not erase the last completed diagnostic boundary.
+const SLOW_FRAME_LIFECYCLE: Duration = Duration::from_millis(100);
+
 /// The half of a backend that turns a finished scene into photons.
 ///
 /// Split off a [`super::backend::Backend`] by [`super::backend::Backend::take_presenter`] and
@@ -61,6 +66,9 @@ enum PresentMsg {
         /// frame: a desktop frame already queued before the lock must not release the logind
         /// delay inhibitor.
         serial: u64,
+        enqueued_at: Instant,
+        input_age_at_enqueue: Option<Duration>,
+        inflight_at_enqueue: usize,
     },
     Resize((u32, u32)),
     Dpms(bool),
@@ -128,12 +136,35 @@ impl PresentPipe {
                             frame,
                             output,
                             serial,
+                            enqueued_at,
+                            input_age_at_enqueue,
+                            inflight_at_enqueue,
                         } => {
+                            let render_started = Instant::now();
+                            let queue_wait = render_started.saturating_duration_since(enqueued_at);
                             presenter.present_frame(&frame, output);
+                            let render_done = Instant::now();
+                            let render = render_done.saturating_duration_since(render_started);
+                            let total = render_done.saturating_duration_since(enqueued_at);
+                            if queue_wait >= SLOW_FRAME_LIFECYCLE
+                                || render >= SLOW_FRAME_LIFECYCLE
+                                || total >= SLOW_FRAME_LIFECYCLE
+                            {
+                                eprintln!(
+                                    "FRAME-LIFECYCLE serial={serial} event=render-retired queue_wait_us={} render_us={} total_us={} inflight_at_enqueue={inflight_at_enqueue} input_age_at_enqueue_us={}",
+                                    queue_wait.as_micros(),
+                                    render.as_micros(),
+                                    total.as_micros(),
+                                    input_age_at_enqueue.map_or_else(
+                                        || "none".to_owned(),
+                                        |age| age.as_micros().to_string()
+                                    ),
+                                );
+                            }
                             *thread_last_retirement
                                 .lock()
                                 .unwrap_or_else(std::sync::PoisonError::into_inner) =
-                                Some((serial, Instant::now()));
+                                Some((serial, render_done));
                             thread_presented.store(serial, Ordering::Release);
                             // Decrement *after* the present so the logic thread's capacity check reflects work actually finished, not work dequeued.
                             thread_inflight.fetch_sub(1, Ordering::Release);
@@ -183,6 +214,17 @@ impl PresentPipe {
     /// Count a tick on which the paint gate declined for lack of capacity.
     pub fn note_backpressure(&mut self) {
         self.backpressured = self.backpressured.saturating_add(1);
+        let count = self.backpressured;
+        // First refusal plus powers of two reconstruct a sustained render
+        // wedge without emitting at the display refresh rate.
+        if count == 1 || count.is_power_of_two() {
+            eprintln!(
+                "FRAME-LIFECYCLE event=backpressure count={count} inflight={} submitted={} retired={}",
+                self.inflight(),
+                self.submitted(),
+                self.presented(),
+            );
+        }
     }
 
     pub fn backpressured(&self) -> u64 {
@@ -234,6 +276,18 @@ impl PresentPipe {
 
     /// Hand a finished scene with retained-damage authority to the render thread.
     pub fn submit_frame(&mut self, frame: FramePaint, output: OutputId) -> Option<u64> {
+        self.submit_frame_with_input_age(frame, output, None)
+    }
+
+    /// Submit while preserving the age of the oldest input represented by
+    /// this frame. This is diagnostic metadata only; presentation semantics
+    /// and FIFO ordering are unchanged.
+    pub fn submit_frame_with_input_age(
+        &mut self,
+        frame: FramePaint,
+        output: OutputId,
+        input_age_at_enqueue: Option<Duration>,
+    ) -> Option<u64> {
         // Serial zero is the unambiguous "no frame" value used by callers
         // before their first successful submit.  A closed pipe may consume a
         // number, but its caller immediately takes the lost-presenter path,
@@ -242,13 +296,20 @@ impl PresentPipe {
             .submitted
             .fetch_add(1, Ordering::AcqRel)
             .saturating_add(1);
-        self.inflight.fetch_add(1, Ordering::AcqRel);
+        let inflight_at_enqueue = self
+            .inflight
+            .fetch_add(1, Ordering::AcqRel)
+            .saturating_add(1);
+        let enqueued_at = Instant::now();
         if self
             .tx
             .send(PresentMsg::Frame {
                 frame: Box::new(frame),
                 output,
                 serial,
+                enqueued_at,
+                input_age_at_enqueue,
+                inflight_at_enqueue,
             })
             .is_err()
         {
@@ -428,6 +489,28 @@ mod tests {
         assert_eq!(pipe.presented(), 0, "the present is still blocked");
         drop(held);
         wait_until(|| pipe.presented() == 1, "the released frame");
+        pipe.shutdown();
+    }
+
+    #[test]
+    fn input_age_metadata_does_not_change_async_submission() {
+        let seen = Arc::new(AtomicU64::new(0));
+        let mut pipe = spawn_with_retire(Box::new(Blocking {
+            gate: Arc::new(Mutex::new(())),
+            seen: seen.clone(),
+            resizes: Arc::new(Mutex::new(Vec::new())),
+            dpms: Arc::new(Mutex::new(Vec::new())),
+        }));
+        assert!(
+            pipe.submit_frame_with_input_age(
+                FramePaint::full(Scene::new()),
+                OutputId(0),
+                Some(Duration::from_secs(2)),
+            )
+            .is_some()
+        );
+        wait_until(|| pipe.presented() == 1, "the annotated frame to retire");
+        assert_eq!(seen.load(Ordering::Acquire), 1);
         pipe.shutdown();
     }
 

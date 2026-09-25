@@ -6,6 +6,7 @@ app="$repo_root/crates/session/greeter/src/greeter_app.rs"
 policy="$repo_root/os/etc/polkit-1/rules.d/49-tilo-greeter-fingerprint.rules"
 container="$repo_root/os/Containerfile"
 lock_auth="$repo_root/crates/session/shell/src/compositor/lock_auth.rs"
+pam="$repo_root/os/etc/pam.d/greetd"
 
 ok() { printf 'ok - %s\n' "$1"; }
 bad() { printf 'not ok - %s\n' "$1" >&2; exit 1; }
@@ -46,4 +47,21 @@ if grep -Fq 'subject.user === "greetd"' "$policy" \
   ok 'image grants only fprintd account selection to the greeter service'
 else
   bad 'greeter fprintd policy is missing, broad, or absent from the image'
+fi
+
+auth_keyring_line=$(grep -n '^auth[[:space:]]\+optional[[:space:]]\+pam_gnome_keyring\.so$' "$pam" | cut -d: -f1)
+password_auth_line=$(grep -n '^auth[[:space:]]\+substack[[:space:]]\+password-auth$' "$pam" | cut -d: -f1)
+session_include_line=$(grep -n '^session[[:space:]]\+include[[:space:]]\+password-auth$' "$pam" | cut -d: -f1)
+session_keyring_line=$(grep -n '^session[[:space:]]\+optional[[:space:]]\+pam_gnome_keyring\.so[[:space:]]\+auto_start$' "$pam" | cut -d: -f1)
+if [ -n "$auth_keyring_line" ] \
+   && [ -n "$password_auth_line" ] \
+   && [ "$auth_keyring_line" -lt "$password_auth_line" ] \
+   && [ -n "$session_include_line" ] \
+   && [ -n "$session_keyring_line" ] \
+   && [ "$session_include_line" -lt "$session_keyring_line" ] \
+   && grep -Eq '^[[:space:]]+gnome-keyring([[:space:]\\]|$)' "$container" \
+   && grep -Eq '^[[:space:]]+gnome-keyring-pam([[:space:]\\]|$)' "$container"; then
+  ok 'greetd password login unlocks the Secret Service used by Tilo identity storage'
+else
+  bad 'greetd can authenticate without making the existing Tilo identity key available'
 fi

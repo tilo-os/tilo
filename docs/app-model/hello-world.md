@@ -272,7 +272,7 @@ tilo-install runtime remove 2026.07
   [`trust.md`](./trust.md) for `tilo-app-package pack --identity`.
 - **Ship a Flatpak alongside** for stock Linux. See
   [`cross-target.md`](./cross-target.md).
-- **Publish a format codec** as a WASM Component. See
+- **Publish a format codec** as a WebAssembly module. See
   [`formats.md`](./formats.md).
 - **Understand the runtime API** you can call. See
   [`runtime.md`](./runtime.md).

@@ -214,6 +214,11 @@ pub struct DirectScanoutTargets {
     imported: [ui::dmabuf_import::ImportedRenderTarget; 2],
     buffers: GbmScanoutBuffers,
     state: DirectScanoutState,
+    /// Complete scene revision last copied into each independent scanout
+    /// image. Sparse Vello rendering retains its own source texture, but a
+    /// partial blit is valid only when the selected GBM destination contains
+    /// the immediately preceding revision too.
+    revisions: [Option<u64>; 2],
 }
 
 /// Result of handing a completed imported target to KMS.
@@ -251,8 +256,8 @@ impl DirectScanoutTargets {
     ///
     /// # Errors
     ///
-    /// Returns the reason when GBM cannot allocate both scanout buffers or
-    /// the bridge cannot import them as render targets.
+    /// Fails when GBM cannot allocate the scanout buffers or the renderer
+    /// cannot import either of them.
     pub fn new(scanout: &DrmScanout, bridge: &VelloDrmBridge) -> Result<Self, String> {
         let buffers = scanout.allocate_gbm_scanout_buffers()?;
         let import = |index: usize| -> Result<ui::dmabuf_import::ImportedRenderTarget, String> {
@@ -283,6 +288,7 @@ impl DirectScanoutTargets {
             // imported target is submitted, so index zero is merely the
             // initial ownership anchor; the first render uses index one.
             state: DirectScanoutState::new(0),
+            revisions: [None, None],
         })
     }
 
@@ -293,6 +299,16 @@ impl DirectScanoutTargets {
 
     fn framebuffer(&self, index: usize) -> Option<framebuffer::Handle> {
         self.buffers.slot(index).map(|slot| slot.framebuffer)
+    }
+
+    pub fn previous_revision_for(&self, index: usize) -> Option<u64> {
+        self.revisions.get(index).copied().flatten()
+    }
+
+    pub fn mark_rendered(&mut self, index: usize, revision: u64) {
+        if let Some(slot) = self.revisions.get_mut(index) {
+            *slot = Some(revision);
+        }
     }
 }
 
@@ -1216,6 +1232,10 @@ pub struct DrmScanout {
     front: usize,
     /// True between requesting a page flip and draining its completion; guards against queuing a second flip before the first retires (kernel rejects with `EBUSY`).
     flip_pending: bool,
+    /// Monotonic instant at which the currently pending page flip was queued.
+    /// Diagnostic only: completion clears it and logs only anomalously slow
+    /// retirements, keeping the normal 144 Hz path silent.
+    flip_queued_at: Option<std::time::Instant>,
     /// Whether the page-flip path is in use; latched `false` if a flip fails with a "not supported" errno, falling back to `dirty_framebuffer/set_crtc`.
     use_pageflip: bool,
     width: u32,
@@ -1409,6 +1429,7 @@ impl DrmScanout {
             fbs: [fb0, fb1],
             front: 0,
             flip_pending: false,
+            flip_queued_at: None,
             use_pageflip: true,
             width,
             height,
@@ -1520,6 +1541,7 @@ impl DrmScanout {
         self.invalidate_xrgb_history();
         // The in-flight flip died with the master lock; clearing this first lets the next frame present at all.
         self.flip_pending = false;
+        self.flip_queued_at = None;
         // Re-binding the mode is what the kernel needs to scan out again.
         if let Some(fb) = self.fb_at(self.front) {
             if let Err(e) = self.card.set_crtc(
@@ -1586,7 +1608,7 @@ impl DrmScanout {
     ///
     /// # Errors
     ///
-    /// Returns whatever error `fill` returns; the frame is then not flipped.
+    /// Returns the error `fill` reports; the frame is then not presented.
     pub fn present_into<F, E>(&mut self, cursor: Option<(f64, f64)>, fill: F) -> Result<bool, E>
     where
         F: FnOnce(&mut [u8], usize) -> Result<(), E>,
@@ -1869,7 +1891,13 @@ impl DrmScanout {
         {
             Ok(()) => {
                 self.flip_pending = true;
+                self.flip_queued_at = Some(std::time::Instant::now());
                 self.front = idx;
+                tracing::trace!(
+                    crtc = ?self.crtc,
+                    buffer = idx,
+                    "FRAME-LIFECYCLE event=drm-flip-queued"
+                );
                 true
             }
             Err(e) => {
@@ -1926,6 +1954,7 @@ impl DrmScanout {
         if let Ok(events) = self.card.receive_events() {
             for ev in events {
                 if let Event::PageFlip(_) = ev {
+                    self.log_flip_completion();
                     self.flip_pending = false;
                 }
             }
@@ -1966,7 +1995,9 @@ impl DrmScanout {
                 return (retirement, completed);
             }
             let remaining = deadline.saturating_duration_since(now);
-            let timeout_ms = i32::try_from(remaining.as_millis().max(1)).unwrap_or(i32::MAX);
+            let timeout_ms = i32::try_from(remaining.as_millis())
+                .unwrap_or(i32::MAX)
+                .max(1);
             let mut fd = libc::pollfd {
                 fd: self.card.as_fd().as_raw_fd(),
                 events: libc::POLLIN,
@@ -1992,7 +2023,22 @@ impl DrmScanout {
     /// Clear `flip_pending` iff `crtc` is this scanout's crtc.
     pub fn mark_flip_complete(&mut self, crtc: crtc::Handle) {
         if crtc == self.crtc {
+            self.log_flip_completion();
             self.flip_pending = false;
+        }
+    }
+
+    fn log_flip_completion(&mut self) {
+        let Some(queued_at) = self.flip_queued_at.take() else {
+            return;
+        };
+        let elapsed = queued_at.elapsed();
+        if elapsed >= std::time::Duration::from_millis(100) {
+            eprintln!(
+                "FRAME-LIFECYCLE event=drm-flip-completed crtc={:?} elapsed_us={}",
+                self.crtc,
+                elapsed.as_micros(),
+            );
         }
     }
 
@@ -2048,6 +2094,7 @@ impl DrmScanout {
         crtc: crtc::Handle,
     ) {
         if crtc == self.crtc {
+            self.log_flip_completion();
             self.flip_pending = false;
             let _ = targets.state.complete();
         }

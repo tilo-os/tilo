@@ -696,9 +696,10 @@ impl RetainedGpuTarget {
                         append,
                         before_submit,
                     )
+                    .map(|stats| (stats, None))
             } else {
                 self.renderer
-                    .render_to_texture_with_post_render_checked(
+                    .render_to_texture_with_post_render_checked_indexed(
                         &self.device,
                         &self.queue,
                         scene,
@@ -707,10 +708,10 @@ impl RetainedGpuTarget {
                         append,
                         before_submit,
                     )
-                    .map(|()| None)
+                    .map(|submission| (None, Some(submission)))
             };
-            let stats = match submitted {
-                Ok(stats) => stats,
+            let (stats, submission_index) = match submitted {
+                Ok(submitted) => submitted,
                 Err(vello::Error::SubmissionAborted) => {
                     self.check_live(policy)?;
                     return Err(BridgeError::Render(
@@ -761,7 +762,12 @@ impl RetainedGpuTarget {
             let map_started = timing.as_ref().map(|_| Instant::now());
             let mapped = match output {
                 FrameOutput::GpuOnly => {
-                    self.wait_marker(policy)?;
+                    // The sparse path does not report its submission; an
+                    // empty submit queued behind it completes no earlier.
+                    let submission = submission_index.unwrap_or_else(|| {
+                        self.queue.submit(std::iter::empty::<wgpu::CommandBuffer>())
+                    });
+                    self.wait_submission(submission, policy)?;
                     None
                 }
                 FrameOutput::Xrgb { buffer, .. } => Some(self.map_framebuffer(buffer)?),
@@ -799,14 +805,17 @@ impl RetainedGpuTarget {
         })
     }
 
-    fn wait_marker(&mut self, policy: CompletionPolicy) -> Result<(), BridgeError> {
+    fn wait_submission(
+        &mut self,
+        submission: wgpu::SubmissionIndex,
+        policy: CompletionPolicy,
+    ) -> Result<(), BridgeError> {
         self.check_live(policy)?;
         let CompletionPolicy::Absolute(deadline) = policy else {
             return Err(BridgeError::DevicePoll(
                 "LinuxPerPhase cannot request a GPU-only marker".to_owned(),
             ));
         };
-        let marker = self.queue.submit(std::iter::empty::<wgpu::CommandBuffer>());
         self.completion_markers = self.completion_markers.saturating_add(1);
         let remaining = deadline.saturating_duration_since(self.now());
         if remaining.is_zero() {
@@ -815,7 +824,7 @@ impl RetainedGpuTarget {
         #[cfg(test)]
         self.before_wait(WaitPhase::Marker, remaining)?;
         let waited = self.device.poll(wgpu::PollType::Wait {
-            submission_index: Some(marker),
+            submission_index: Some(submission),
             timeout: Some(remaining),
         });
         // PollError itself cannot identify device loss. Prefer the context callback's
@@ -824,7 +833,7 @@ impl RetainedGpuTarget {
         waited.map_err(|error| match error {
             wgpu::PollError::Timeout => BridgeError::DeadlineExceeded,
             other @ wgpu::PollError::WrongSubmissionIndex(..) => {
-                BridgeError::DevicePoll(format!("GPU-only marker: {other:?}"))
+                BridgeError::DevicePoll(format!("GPU-only submission: {other:?}"))
             }
         })?;
         self.check_live(policy)
@@ -1320,7 +1329,7 @@ impl VelloDrmBridge {
     ///
     /// # Errors
     ///
-    /// Returns [`BridgeError::Import`] when the device cannot import the dma-buf.
+    /// Fails when the device cannot import the dma-buf as a render target.
     pub fn import_bgra8_target(
         &self,
         image: &ui::dmabuf_import::DmabufRef<'_>,
@@ -1334,8 +1343,8 @@ impl VelloDrmBridge {
     ///
     /// # Errors
     ///
-    /// Returns [`BridgeError::InvalidSize`] when the target does not match the
-    /// bridge's size, or the render/completion error otherwise.
+    /// Fails when the target size does not match this bridge, rendering or
+    /// submission fails, or the completion marker misses `deadline`.
     pub fn paint_imported_bgra8_until(
         &mut self,
         scene: &Scene,
