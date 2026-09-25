@@ -147,7 +147,11 @@ mod tests {
             [0, 0, 0, 2, b'a', b'b']
         );
         assert!(RECIPIENT_CONTROL_FRAMING.encode(&[]).is_err());
-        assert!(RECIPIENT_CONTROL_FRAMING.encode(&vec![0; 128 * 1024]).is_ok());
+        assert!(
+            RECIPIENT_CONTROL_FRAMING
+                .encode(&vec![0; 128 * 1024])
+                .is_ok()
+        );
         assert!(
             RECIPIENT_CONTROL_FRAMING
                 .encode(&vec![0; 128 * 1024 + 1])
