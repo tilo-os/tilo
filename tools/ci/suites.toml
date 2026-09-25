@@ -93,6 +93,7 @@ suites = [
   "os/tests/test_supervised_disk.py",
   "os/tests/test_supervised_install_lane.py",
   "os/tests/test_tls_registry_fixture.py",
+  "os/tests/test_vm_bootc_copy_cache.py",
   "os/tests/test_wpe_stage_artifact.py",
   "os/tests/vm_release_gate_invariants.sh",
   "os/tests/windows_guest_powershell_syntax.py",
