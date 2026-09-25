@@ -18,7 +18,7 @@ use std::{
 };
 
 #[path = "store/journal.rs"]
-mod journal;
+pub mod journal;
 #[path = "store/side_log.rs"]
 mod side_log;
 #[cfg(any(test, feature = "media"))]

@@ -792,7 +792,7 @@ pub(crate) mod ack_log;
 #[path = "delivery/consumer.rs"]
 pub(crate) mod consumer;
 #[path = "delivery/early_forward.rs"]
-pub(crate) mod early_forward;
+pub mod early_forward;
 #[path = "delivery/error.rs"]
 pub(crate) mod error;
 #[cfg(test)]

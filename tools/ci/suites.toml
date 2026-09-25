@@ -414,10 +414,9 @@ inputs = [
   "os/usr/share/tilo/installer-locales.txt", "crates/system/block-devices/tests/fixtures/imager.json",
   "dist/session/tilo.desktop", "dist/session/tilo-session", "dist/session/tilo-session-runner",
   "os/tests/fixtures/internal-bundle-v2.json", "os/usr/libexec/tilo-installer-profile-extract",
-  "crates/packaging/install-artifacts/release-catalog.json",
 ]
 readers = [
-  "apps/imager/src/model.rs", "apps/imager/src/probe.rs", "apps/imager/src/release.rs", "apps/imager/src/setup/desktop_install.rs",
+  "apps/imager/src/model.rs", "apps/imager/src/probe.rs", "apps/imager/src/setup/desktop_install.rs",
   "apps/imager/src/setup/internal_bundle.rs", "apps/imager/src/write.rs",
 ]
 

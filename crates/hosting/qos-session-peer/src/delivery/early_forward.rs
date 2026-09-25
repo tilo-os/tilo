@@ -16,14 +16,13 @@
 use std::{cell::RefCell, sync::Arc};
 
 /// `(author device, exact canonical item)`; must never block.
-pub(crate) type EarlySink = Arc<dyn Fn([u8; 32], &[u8]) + Send + Sync>;
+pub type EarlySink = Arc<dyn Fn([u8; 32], &[u8]) + Send + Sync>;
 
 /// Largest canonical item worth arming: a forwarded frame must fit one
 /// `OpsFrame` (`MAX_STREAM_FRAME_BYTES`) including record and digest, so
 /// larger items are never copied here and reach members by durable replay.
 #[cfg(any(test, feature = "media"))]
-pub(crate) const MAX_FORWARD_BYTES: usize =
-    tilo_relay::delivery_v3::live_wire::MAX_STREAM_FRAME_BYTES;
+pub const MAX_FORWARD_BYTES: usize = tilo_relay::delivery_v3::live_wire::MAX_STREAM_FRAME_BYTES;
 
 thread_local! {
     static SINK: RefCell<Option<EarlySink>> = const { RefCell::new(None) };
@@ -42,14 +41,14 @@ impl Drop for Restore {
 
 /// Run one synchronous owner admission with `sink` installed for this thread.
 #[cfg(any(test, feature = "media"))]
-pub(crate) fn scoped<T>(sink: Option<&EarlySink>, operation: impl FnOnce() -> T) -> T {
+pub fn scoped<T>(sink: Option<&EarlySink>, operation: impl FnOnce() -> T) -> T {
     let _restore = Restore(SINK.with(|slot| slot.replace(sink.cloned())));
     operation()
 }
 
 /// Clears an armed item when its commit attempt ends (success or failure).
 #[cfg(any(test, feature = "media"))]
-pub(crate) struct Disarm(());
+pub struct Disarm(());
 #[cfg(any(test, feature = "media"))]
 impl Drop for Disarm {
     fn drop(&mut self) {
@@ -60,14 +59,14 @@ impl Drop for Disarm {
 /// Arm a newly accepted item for the next [`fire`]. Without an installed sink,
 /// or for an item too large to forward, nothing is copied.
 #[cfg(any(test, feature = "media"))]
-pub(crate) fn arm(device: [u8; 32], canonical: &[u8]) -> Disarm {
+pub fn arm(device: [u8; 32], canonical: &[u8]) -> Disarm {
     arm_group(device, &[canonical])
 }
 
 /// Arm every newly accepted item of one multi-item commit group, in request
 /// order; the group's single [`fire`] forwards each of them before its barrier.
 #[cfg(any(test, feature = "media"))]
-pub(crate) fn arm_group(device: [u8; 32], items: &[&[u8]]) -> Disarm {
+pub fn arm_group(device: [u8; 32], items: &[&[u8]]) -> Disarm {
     let installed = SINK.with(|sink| sink.borrow().is_some());
     if installed {
         ARMED.with(|armed| {
@@ -88,7 +87,7 @@ pub(crate) fn arm_group(device: [u8; 32], items: &[&[u8]]) -> Disarm {
 
 /// Called by the owner immediately before the durable store write: hand each
 /// armed item (if any) to the sink exactly once, in order.
-pub(crate) fn fire() {
+pub fn fire() {
     let armed = ARMED.with(|armed| std::mem::take(&mut *armed.borrow_mut()));
     if armed.is_empty() {
         return;

@@ -2,11 +2,10 @@ use super::{HostedAttemptError as Error, Result, identity, relay};
 use automerge::resource_limits::{NativeAllowance, NativeReservation};
 use ed25519_dalek::SigningKey;
 use qos_peer_state::join::{self, JoinTransportRequest as Request};
+use qos_peer_state::resources::dto_guard::{self as json_guard, GuardLimits};
 use serde::{Deserialize, Serialize};
 #[path = "allocation.rs"]
 pub(super) mod allocation;
-#[path = "json_guard.rs"]
-mod json_guard;
 #[path = "phase.rs"]
 mod phase;
 use std::io::Write;
@@ -73,11 +72,6 @@ impl Bytes {
 }
 // These are enforced visitor ceilings, not input-size estimates. Every
 // allocating visit is debited before invocation; exceeding a ceiling refuses.
-#[derive(Clone, Copy)]
-struct JsonLimits {
-    allocation_bytes: usize,
-    collection_entries: usize,
-}
 pub(super) trait JsonSchema: serde::de::DeserializeOwned {
     const MAXIMUM: usize;
     const ALLOCATION: usize;
@@ -104,17 +98,12 @@ pub(super) fn read_json<T: JsonSchema>(bytes: &[u8], budget: &NativeAllowance) -
     }
     let _parser = allocation::parser(bytes, budget)?;
     let credit = allocation::reserve(budget, T::ALLOCATION)?;
-    let value = json_guard::decode(
-        bytes,
-        JsonLimits {
-            allocation_bytes: T::ALLOCATION,
-            collection_entries: T::MAXIMUM,
+    let value = json_guard::json(bytes, GuardLimits::closed(T::ALLOCATION, T::MAXIMUM)).map_err(
+        |error| match error {
+            json_guard::GuardError::Capacity => Error::Capacity,
+            json_guard::GuardError::Malformed => Error::Material,
         },
-    )
-    .map_err(|error| match error {
-        json_guard::GuardError::Capacity => Error::Capacity,
-        json_guard::GuardError::Malformed => Error::Material,
-    })?;
+    )?;
     Ok(Held {
         value,
         _credit: credit,
@@ -132,17 +121,13 @@ pub(super) fn read_request(bytes: &[u8], budget: &NativeAllowance) -> Result<Hel
     const LIMIT: usize = 1024 * 1024;
     let _diagnostic = allocation::reserve(budget, allocation::signature_diagnostic())?;
     let credit = allocation::reserve(budget, LIMIT)?;
-    let value = json_guard::request(
-        bytes,
-        JsonLimits {
-            allocation_bytes: LIMIT,
-            collection_entries: MAX_JOIN,
-        },
-    )
-    .map_err(|error| match error {
-        json_guard::GuardError::Capacity => Error::Capacity,
-        json_guard::GuardError::Malformed => Error::Material,
-    })?;
+    let value =
+        json_guard::postcard(bytes, GuardLimits::closed(LIMIT, MAX_JOIN)).map_err(|error| {
+            match error {
+                json_guard::GuardError::Capacity => Error::Capacity,
+                json_guard::GuardError::Malformed => Error::Material,
+            }
+        })?;
     let canonical = encode_postcard(&value, MAX_JOIN, budget)?;
     if canonical.value != bytes {
         return Err(Error::Material);

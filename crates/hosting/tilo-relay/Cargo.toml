@@ -71,8 +71,7 @@ tilo-actions = { path = "../../collab/actions" }
 # metrics records shared with the relay's clients; re-exported so the daemon's
 # own module paths stay unchanged.
 tilo-relay-protocol = { path = "../tilo-relay-protocol" }
-# Federation dials other relays as a client, and both ends of every relay
-# stream use its frame codec.
+# Both ends of every relay stream use its frame codec.
 tilo-relay-client = { path = "../tilo-relay-client" }
 # Iroh 1.0.x — pinned to the same versions the `fs/` crate uses so
 # they share a single build of the transport across the workspace.

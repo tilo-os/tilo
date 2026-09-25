@@ -7,6 +7,8 @@ mod encoding;
 mod join;
 pub use join::BoundedJoinResponse;
 pub(crate) mod json;
+/// Budgeted decoding of closed DTOs, shared with the hosts that admit them.
+pub use json::guard as dto_guard;
 pub(crate) mod native;
 pub(crate) mod outer;
 pub use encoding::BoundedSerialized;

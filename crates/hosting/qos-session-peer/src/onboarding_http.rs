@@ -12,7 +12,7 @@ use tilo_relay::delivery_v3::{
     onboarding_wire::{OnboardingOperation, OnboardingRequest, OnboardingScope},
 };
 use tilo_user_identity::DeviceCert;
-mod input;
+pub mod input;
 mod local;
 mod payload;
 mod reply;

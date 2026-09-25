@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use tilo_user_identity::{DeviceCapabilities, DeviceCert};
 
 #[derive(Serialize, Deserialize)]
-pub(super) struct Certificate<'a> {
+pub struct Certificate<'a> {
     user_public_key: [u8; 32],
     device_public_key: [u8; 32],
     #[serde(borrow)]
@@ -25,10 +25,10 @@ impl Certificate<'_> {
         );
         Ok(())
     }
-    pub(super) fn heap(&self) -> usize {
+    pub fn heap(&self) -> usize {
         self.device_label.len()
     }
-    pub(super) fn into_owned(self) -> DeviceCert {
+    pub fn into_owned(self) -> DeviceCert {
         DeviceCert {
             user_public_key: self.user_public_key,
             device_public_key: self.device_public_key,
@@ -41,7 +41,7 @@ impl Certificate<'_> {
     }
 }
 #[derive(Serialize, Deserialize)]
-pub(super) enum Request<'a> {
+pub enum Request<'a> {
     Inspect {
         #[serde(borrow)]
         signed_invitation: &'a [u8],
@@ -52,7 +52,7 @@ pub(super) enum Request<'a> {
     MembershipComplete(#[serde(borrow)] MemberComplete<'a>),
 }
 #[derive(Serialize, Deserialize)]
-pub(super) struct Challenge<'a> {
+pub struct Challenge<'a> {
     #[serde(borrow)]
     signed_invitation: &'a [u8],
     #[serde(borrow)]
@@ -60,7 +60,7 @@ pub(super) struct Challenge<'a> {
     request_id: [u8; 32],
 }
 #[derive(Serialize, Deserialize)]
-pub(super) struct Complete<'a> {
+pub struct Complete<'a> {
     #[serde(borrow)]
     proof: Proof<'a>,
 }
@@ -87,7 +87,7 @@ struct Join<'a> {
     expires_at_ns: u64,
 }
 #[derive(Serialize, Deserialize)]
-pub(super) struct MemberChallenge<'a> {
+pub struct MemberChallenge<'a> {
     #[serde(borrow)]
     room: &'a str,
     workspace_id: u64,
@@ -96,7 +96,7 @@ pub(super) struct MemberChallenge<'a> {
     request_id: [u8; 32],
 }
 #[derive(Serialize, Deserialize)]
-pub(super) struct MemberComplete<'a> {
+pub struct MemberComplete<'a> {
     #[serde(borrow)]
     proof: MemberProof<'a>,
 }
@@ -150,14 +150,14 @@ fn decode<'a, T: Deserialize<'a> + Serialize>(bytes: &'a [u8]) -> Result<T> {
     postcard::serialize_with_flavor(&value, Exact(bytes))?;
     Ok(value)
 }
-pub(super) fn certificate(bytes: &[u8]) -> Result<Certificate<'_>> {
+pub fn certificate(bytes: &[u8]) -> Result<Certificate<'_>> {
     ensure!(bytes.len() <= 4096, "certificate exceeds bound");
     let certificate: Certificate<'_> = decode(bytes)?;
     certificate.validate()?;
     Ok(certificate)
 }
 impl<'a> Request<'a> {
-    pub(super) fn decode(bytes: &'a [u8]) -> Result<Self> {
+    pub fn decode(bytes: &'a [u8]) -> Result<Self> {
         let value: Self = decode(bytes)?;
         match &value {
             Self::Inspect { .. } => {}
@@ -183,7 +183,7 @@ impl<'a> Request<'a> {
         }
         Ok(value)
     }
-    pub(super) fn heap(&self) -> usize {
+    pub fn heap(&self) -> usize {
         match self {
             Self::Inspect { signed_invitation } => signed_invitation.len(),
             Self::Challenge(v) => v.signed_invitation.len() + v.device_cert.heap(),
@@ -194,7 +194,7 @@ impl<'a> Request<'a> {
             Self::MembershipComplete(v) => v.proof.challenge.room.len(),
         }
     }
-    pub(super) fn into_owned(self) -> JoinTransportRequest {
+    pub fn into_owned(self) -> JoinTransportRequest {
         match self {
             Self::Inspect { signed_invitation } => JoinTransportRequest::Inspect {
                 signed_invitation: signed_invitation.to_vec(),

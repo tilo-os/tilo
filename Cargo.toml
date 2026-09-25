@@ -35,8 +35,6 @@ default-members = [
 members = [
     "crates/agent/control-protocol",
     "crates/agent/control-service",
-    "crates/packaging/install-artifacts",
-    "crates/system/folder-service",
     "crates/collab/qos-action-broker",
     "crates/session/qos-desktop",
     "crates/collab/qos-peer-state",

@@ -1,9 +1,13 @@
-//! Append-only commit journal behind the whole-file session checkpoint.
+//! Append-only commit journal behind a whole-file checkpoint.
 //!
-//! `session.bin` stays the atomically replaced, signed checkpoint. Between
-//! checkpoints each commit appends one self-validating record to
-//! `session.journal` and issues one file barrier, instead of rewriting and
-//! barriering the complete aggregate (file plus directory) on every commit.
+//! The session peer's `session.bin` and the Cloud Store's `state.json` each
+//! stay the atomically replaced checkpoint. Between checkpoints each commit
+//! appends one self-validating record to the journal beside it and issues one
+//! file barrier, instead of rewriting and barriering the complete aggregate
+//! (file plus directory) on every commit. Hosts that reconstruct the journal on
+//! every read use `replay_fast`, which applies records without hashing each
+//! intermediate state and checks only the last applied record's digest,
+//! falling back to the per-record checked `replay_bound` on any mismatch.
 //!
 //! Layout: a header binds the journal to one exact checkpoint
 //! (`MAGIC | checkpoint length u64 | blake3(checkpoint)`), followed by records
@@ -17,17 +21,17 @@
 //! whole journal stale (a later checkpoint superseded it).
 use anyhow::{Result, bail, ensure};
 
-pub(super) const NAME: &str = "session.journal";
+pub(crate) const NAME: &str = "session.journal";
 const MAGIC: &[u8; 8] = b"QOSJRN01";
-pub(super) const HEADER_LEN: usize = 8 + 8 + 32;
+pub const HEADER_LEN: usize = 8 + 8 + 32;
 const BLOCK: usize = 64;
 const COPY: u8 = 0;
 const LITERAL: u8 = 1;
 
-pub(super) fn header(checkpoint: &[u8]) -> [u8; HEADER_LEN] {
+pub fn header(checkpoint: &[u8]) -> [u8; HEADER_LEN] {
     header_for(checkpoint.len() as u64, blake3::hash(checkpoint).as_bytes())
 }
-pub(super) fn header_for(checkpoint_len: u64, checkpoint_digest: &[u8; 32]) -> [u8; HEADER_LEN] {
+pub fn header_for(checkpoint_len: u64, checkpoint_digest: &[u8; 32]) -> [u8; HEADER_LEN] {
     let mut header = [0; HEADER_LEN];
     header[..8].copy_from_slice(MAGIC);
     header[8..16].copy_from_slice(&checkpoint_len.to_le_bytes());
@@ -36,7 +40,7 @@ pub(super) fn header_for(checkpoint_len: u64, checkpoint_digest: &[u8; 32]) -> [
 }
 
 /// Result of replaying a journal against its checkpoint.
-pub(super) struct Replay {
+pub struct Replay {
     pub state: Vec<u8>,
     /// Byte length of the valid prefix (header plus complete records); zero
     /// when the journal is absent, empty, stale or has no valid header.
@@ -44,8 +48,20 @@ pub(super) struct Replay {
     pub records: usize,
 }
 
-pub(super) fn replay(checkpoint: Vec<u8>, journal: &[u8], limit: usize) -> Replay {
-    if journal.len() < HEADER_LEN || journal[..HEADER_LEN] != header(&checkpoint) {
+pub fn replay(checkpoint: Vec<u8>, journal: &[u8], limit: usize) -> Replay {
+    let digest = *blake3::hash(&checkpoint).as_bytes();
+    replay_bound(checkpoint, &digest, journal, limit)
+}
+/// `replay` for a checkpoint whose blake3 digest the caller already holds.
+pub fn replay_bound(
+    checkpoint: Vec<u8>,
+    checkpoint_digest: &[u8; 32],
+    journal: &[u8],
+    limit: usize,
+) -> Replay {
+    if journal.len() < HEADER_LEN
+        || journal[..HEADER_LEN] != header_for(checkpoint.len() as u64, checkpoint_digest)
+    {
         return Replay {
             state: checkpoint,
             valid_len: 0,
@@ -76,12 +92,76 @@ pub(super) fn replay(checkpoint: Vec<u8>, journal: &[u8], limit: usize) -> Repla
     }
 }
 
+/// `replay_bound`'s result, hashing only the final state in the common case.
+///
+/// Records are applied structurally (bounds and lengths checked) until the
+/// first that does not frame or apply; the resulting state is accepted when
+/// its blake3 equals the digest the last applied record carries. By
+/// collision resistance that state is then exactly the state its writer
+/// recorded, which is what `replay_bound` reconstructs for every journal this
+/// crate writes (single locked appender; only an unacknowledged torn tail can
+/// follow). Any mismatch falls back to `replay_bound`, which stops at the
+/// first invalid record.
+pub fn replay_fast(
+    checkpoint: Vec<u8>,
+    checkpoint_digest: &[u8; 32],
+    journal: &[u8],
+    limit: usize,
+) -> Replay {
+    if journal.len() < HEADER_LEN
+        || journal[..HEADER_LEN] != header_for(checkpoint.len() as u64, checkpoint_digest)
+    {
+        return Replay {
+            state: checkpoint,
+            valid_len: 0,
+            records: 0,
+        };
+    }
+    let mut current: Option<Vec<u8>> = None;
+    let mut spare = Vec::new();
+    let mut claimed = None;
+    let mut offset = HEADER_LEN;
+    let mut records = 0;
+    while let Some(len) = journal
+        .get(offset..offset + 4)
+        .map(|bytes| u32::from_le_bytes(bytes.try_into().unwrap()) as usize)
+    {
+        let Some(body) = journal.get(offset + 4..(offset + 4).saturating_add(len)) else {
+            break;
+        };
+        let base = current.as_deref().unwrap_or(&checkpoint);
+        match apply_into(base, body, limit, &mut spare) {
+            Ok(digest) => {
+                claimed = Some(digest);
+                let previous = current.replace(std::mem::take(&mut spare));
+                spare = previous.unwrap_or_default();
+            }
+            Err(_) => break,
+        }
+        offset += 4 + len;
+        records += 1;
+    }
+    match (current, claimed) {
+        (None, _) => Replay {
+            state: checkpoint,
+            valid_len: HEADER_LEN as u64,
+            records: 0,
+        },
+        (Some(state), Some(digest)) if *blake3::hash(&state).as_bytes() == digest => Replay {
+            state,
+            valid_len: offset as u64,
+            records,
+        },
+        _ => replay_bound(checkpoint, checkpoint_digest, journal, limit),
+    }
+}
+
 /// One framed record turning `old` into `new`, or `None` when the edit script
 /// would not be meaningfully smaller than rewriting `new` (callers then
 /// checkpoint instead).
 ///
 /// `new_digest` is `blake3(new)`, which the caller already needs.
-pub(super) fn record(old: &[u8], new: &[u8], new_digest: &[u8; 32]) -> Option<Vec<u8>> {
+pub fn record(old: &[u8], new: &[u8], new_digest: &[u8; 32]) -> Option<Vec<u8>> {
     let mut body = Vec::with_capacity(64);
     let mut ops = 0u32;
     body.extend_from_slice(&[0; 4]);
@@ -174,9 +254,20 @@ pub(super) fn record(old: &[u8], new: &[u8], new_digest: &[u8; 32]) -> Option<Ve
 }
 
 fn apply(old: &[u8], body: &[u8], limit: usize) -> Result<Vec<u8>> {
+    let mut out = Vec::new();
+    let digest = apply_into(old, body, limit, &mut out)?;
+    ensure!(
+        blake3::hash(&out).as_bytes() == &digest,
+        "journal state digest mismatch"
+    );
+    Ok(out)
+}
+/// Apply one record's edit script into `out` (cleared first), checking its
+/// structure and resulting length; returns the digest the record claims.
+fn apply_into(old: &[u8], body: &[u8], limit: usize, out: &mut Vec<u8>) -> Result<[u8; 32]> {
     let mut reader = Reader(body);
     let ops = reader.u32()?;
-    let mut out = Vec::new();
+    out.clear();
     for _ in 0..ops {
         match reader.u8()? {
             COPY => {
@@ -200,11 +291,7 @@ fn apply(old: &[u8], body: &[u8], limit: usize) -> Result<Vec<u8>> {
     let digest = reader.take(32)?;
     ensure!(reader.0.is_empty(), "trailing journal record bytes");
     ensure!(out.len() == len, "journal state length mismatch");
-    ensure!(
-        blake3::hash(&out).as_bytes() == digest,
-        "journal state digest mismatch"
-    );
-    Ok(out)
+    Ok(digest.try_into().expect("32-byte digest"))
 }
 
 struct Reader<'a>(&'a [u8]);
@@ -462,6 +549,42 @@ mod tests {
         assert_eq!((replayed.state, replayed.valid_len), (other, 0));
         // The limit bounds reconstruction.
         assert_eq!(replay(base.clone(), &journal, 100).records, 0);
+    }
+
+    #[test]
+    fn fast_replay_equals_checked_replay_for_every_cut_and_corruption() {
+        let base = pseudo(20_000, 5);
+        let mut states = vec![];
+        let mut current = base.clone();
+        for step in 0..6u8 {
+            current[700 + usize::from(step)] ^= 0x5a;
+            current.extend_from_slice(&pseudo(80, u64::from(step) + 40));
+            states.push(current.clone());
+        }
+        let journal = journal_of(&base, &states);
+        let digest = *blake3::hash(&base).as_bytes();
+        let same = |journal: &[u8]| {
+            let fast = replay_fast(base.clone(), &digest, journal, usize::MAX);
+            let checked = replay_bound(base.clone(), &digest, journal, usize::MAX);
+            assert_eq!(fast.state, checked.state);
+            assert_eq!(fast.valid_len, checked.valid_len);
+            assert_eq!(fast.records, checked.records);
+        };
+        for cut in 0..=journal.len() {
+            same(&journal[..cut]);
+        }
+        let mut corrupted = journal.clone();
+        for index in HEADER_LEN..journal.len() {
+            corrupted[index] ^= 0x40;
+            let fast = replay_fast(base.clone(), &digest, &corrupted, usize::MAX);
+            // Never a state no writer recorded.
+            assert!(
+                fast.state == base || states.contains(&fast.state),
+                "byte {index}"
+            );
+            corrupted[index] ^= 0x40;
+        }
+        same(&journal);
     }
 
     #[test]
