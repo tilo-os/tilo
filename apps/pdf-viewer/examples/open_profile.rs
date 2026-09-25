@@ -1,6 +1,6 @@
 //! Open-to-first-paint profiler for the PDF viewer.
 //!
-//! Times the real open path stage by stage — `source::open` (pdfium parse,
+//! Times the real open path stage by stage — `source::open` (engine parse,
 //! per-page size probe, metadata, outline), then the first frame's
 //! sync/layout/draw (the draw is where visible pages + rail thumbnails are
 //! rasterised). Reports the wall-clock cost a user waits between "open file"
@@ -94,7 +94,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     widget.apply_layout(&taffy, child, Point::ORIGIN);
     let layout_ms = ms(t);
 
-    // First real paint: this is where rasterize_visible runs (pdfium renders
+    // First real paint: this is where rasterize_visible runs (the engine renders
     // the first visible page + any visible rail thumbnails).
     let t = Instant::now();
     let mut scene = Scene::new();

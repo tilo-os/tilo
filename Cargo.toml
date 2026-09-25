@@ -132,6 +132,7 @@ members = [
     "crates/doc/bounded-zip",
     "crates/doc/format-host",
     "crates/doc/format-provider-abi",
+    "crates/doc/pdf",
     "crates/doc/qdoc",
     "crates/doc/qdoc-pdf",
     "crates/doc/tilo-automerge",

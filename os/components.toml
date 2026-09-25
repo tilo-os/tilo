@@ -146,6 +146,19 @@ files = [
   { from = "tilo-projector", to = "/usr/libexec/tilo-projector", mode = "0755" },
 ]
 
+# The sandboxed PDF engine process. Every PDF consumer (the PDF viewer,
+# thumbnails) starts it through tilo-pdf, which looks for it here.
+[[component]]
+name = "pdf-helper"
+kind = "userspace"
+scope = "session"
+packages = ["tilo-pdf"]
+bins = ["tilo-pdf-helper"]
+layer = "desktop-binaries"
+files = [
+  { from = "tilo-pdf-helper", to = "/usr/libexec/tilo-pdf-helper", mode = "0755" },
+]
+
 # Standalone release builds of the system apps that are also directly invoked
 # (Files doubles as a recovery surface). Their packaged thin builds belong to
 # apps+runtime below.

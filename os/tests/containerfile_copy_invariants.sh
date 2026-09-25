@@ -33,13 +33,14 @@ containerfile="$repo/os/Containerfile"
 # every destination is unchanged, and /out/optional/ -> /usr/bin/ is now the
 # explicit optional /usr/bin/browser entry it always carried. The VM console
 # port udev rule and the generated bash/fish/zsh completions for app and tilo
-# (with their store/system aliases) are deliberate additions. Sorting
+# (with their store/system aliases) are deliberate additions, as is the
+# sandboxed PDF engine helper at /usr/libexec/tilo-pdf-helper. Sorting
 # intentionally ignores instruction order:
 # destinations are unique, and the source-stage/source/destination triple defines
 # each COPY's installed bytes and path. Modes remain source modes except at the
 # explicitly equivalent COPY --chmod=0755 sites checked below. COPY preserves
 # ownership, mtimes and symlinks through scratch stages; no RUN mutates them.
-expected_contract=6ab35c56e125c6b3aa918fb59408cb22c9bfc1a9262faed288c65244d85c92dd
+expected_contract=78714f2e24e46c8fc3334c7f14ae1364f3e6184c872d30db6a0ebac31d41b303
 actual_contract="$(containerfile_expanded_rootfs_copy_contract "$containerfile" |
   LC_ALL=C sort | sha256sum | awk '{print $1}')"
 [ "$actual_contract" = "$expected_contract" ] || {

@@ -431,6 +431,22 @@ inputs = ["crates/doc/fixtures/"]
 readers = ["crates/doc/qdoc/src/codecs/bulk_equivalence.rs", "crates/doc/qdoc/tests/office_roundtrip.rs"]
 
 [[cargo]]
+package = "tilo-pdf"
+# The helper compiles in the pinned fonts appearance text is set in.
+inputs = ["crates/sdk/ui-core/assets/fonts/"]
+readers = ["crates/doc/pdf/src/bin/tilo-pdf-helper.rs"]
+
+[[cargo]]
+package = "pdf-viewer"
+# The reader's tests open the engine's typeset fixtures.
+inputs = ["crates/doc/pdf/tests/fixtures/"]
+readers = [
+  "apps/pdf-viewer/src/app.rs", "apps/pdf-viewer/src/app/adopt_tests.rs",
+  "apps/pdf-viewer/src/app/links_tests.rs", "apps/pdf-viewer/src/app/records_tests.rs",
+  "apps/pdf-viewer/tests/capture.rs",
+]
+
+[[cargo]]
 package = "format-host"
 inputs = ["docs/app-model/formats.md"]
 readers = ["crates/doc/format-host/tests/integration.rs"]
