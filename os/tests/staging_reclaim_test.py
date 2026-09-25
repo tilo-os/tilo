@@ -21,6 +21,7 @@ REPO = Path(__file__).resolve().parents[2]
 RECLAIM = REPO / 'os/usr/libexec/tilo-staging-reclaim'
 ESP_TYPE = 'c12a7328-f81f-11d2-ba4b-00a0c93ec93b'
 LINUX_TYPE = '0fc63daf-8483-4772-8e79-3d69d8477de4'
+STAGING_ROOT_TYPE = 'd4c4daf6-f72c-43ee-b8e3-5ba32550311d'
 TILO_ROOT = '7a2e8d75-3f01-4e5a-b2c9-51f6ed90b8ab'
 MSFT_TYPE = 'ebd0a0a2-b9e5-4433-87c0-68b6b72699c7'
 GIB_SECTORS = 1024 ** 3 // 512
@@ -117,7 +118,7 @@ def initial_state():
             part(6, 'eeeeeeee-0000-4000-8000-000000000005', TILO_ROOT, TARGET_ROOT,
                  children=[{'name': '/dev/mapper/luks-1234', 'type': 'crypt', 'mountpoints': ['/sysroot']}]),
             part(3, 'aaaaaaaa-0000-4000-8000-000000000001', ESP_TYPE, STAGING_ESP),
-            part(4, 'bbbbbbbb-0000-4000-8000-000000000002', LINUX_TYPE, STAGING_ROOT),
+            part(4, 'bbbbbbbb-0000-4000-8000-000000000002', STAGING_ROOT_TYPE, STAGING_ROOT),
             part(7, '00000000-0000-4000-8000-00000000000d', MSFT_TYPE, RECOVERY),
         ],
     }
@@ -244,6 +245,11 @@ class ReclaimTests(unittest.TestCase):
     def test_changed_staging_identity_leaves_everything_untouched(self):
         state = initial_state()
         next(p for p in state['partitions'] if p['node'] == DISK + '4')['type'] = TILO_ROOT
+        self.write_state(state)
+        self.assertUntouched('staging root type changed')
+        # A generic Linux partition is not a staging root, whatever its extent.
+        state = initial_state()
+        next(p for p in state['partitions'] if p['node'] == DISK + '4')['type'] = LINUX_TYPE
         self.write_state(state)
         self.assertUntouched('staging root type changed')
 

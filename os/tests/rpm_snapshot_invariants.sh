@@ -62,7 +62,7 @@ PY
 done
 
 all_packages="$("$derive" --arch x86_64)"
-for package in wine wine-dxvk qemu-kvm libvirt-client \
+for package in dbus-tools harfbuzz-icu libatomic wine wine-dxvk qemu-kvm libvirt-client \
   libvirt-daemon-kvm libvirt-daemon-config-nwfilter swtpm swtpm-tools \
   edk2-ovmf virtio-win freerdp xwayland-satellite virt-viewer xorriso \
   genisoimage udftools; do

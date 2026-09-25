@@ -93,6 +93,7 @@ STAGING_HANDOFF="${TILO_STAGING_HANDOFF:-/usr/libexec/tilo-staging-handoff}"
 GUIDED_PARTITION="${TILO_GUIDED_PARTITION:-/usr/libexec/tilo-guided-partition}"
 EFI_ARTIFACTS="${TILO_INSTALL_EFI_ARTIFACTS:-/usr/libexec/tilo-install-efi-artifacts}"
 BOOT_MENU="${TILO_INSTALL_BOOT_MENU:-/usr/libexec/tilo-install-boot-menu}"
+BOOT_MOUNT_CONTRACT="${TILO_BOOT_MOUNT_CONTRACT:-/usr/libexec/tilo-boot-mount-contract}"
 LOCALE_CATALOG=/usr/share/tilo/installer-locales.txt
 
 # Alongside installs share a firmware-visible FAT ESP with Tilo's retained,
@@ -551,8 +552,12 @@ while read -r SOURCE MOUNTPOINT; do
   # `\u2514\u2500`, turning /dev/vda into the invalid path `\u2514\u2500/dev/vda`.
   LIVE_DISK="$(lsblk -srpno NAME,TYPE "$SOURCE" 2>/dev/null | awk '$2 == "disk" || $2 == "rom" { print $1; exit }')"
   [ -n "$LIVE_DISK" ] || continue
-  LIVE_MAJ_MIN="$(lsblk -dno MAJ:MIN "$LIVE_DISK" 2>/dev/null || true)"
-  [ -n "$LIVE_MAJ_MIN" ] && break
+  OBSERVED_LIVE_MAJ_MIN="$(lsblk -dno MAJ:MIN "$LIVE_DISK" 2>/dev/null || true)"
+  [ -n "$OBSERVED_LIVE_MAJ_MIN" ] || continue
+  if [ -n "$LIVE_MAJ_MIN" ] && [ "$LIVE_MAJ_MIN" != "$OBSERVED_LIVE_MAJ_MIN" ]; then
+    die "critical live mounts resolve to more than one physical disk"
+  fi
+  LIVE_MAJ_MIN="$OBSERVED_LIVE_MAJ_MIN"
 done < <(findmnt -rn -o SOURCE,TARGET 2>/dev/null)
 [ -n "$LIVE_MAJ_MIN" ] \
   || die "could not resolve the live medium's physical disk; refusing a destructive install"
@@ -584,7 +589,7 @@ fi
 
 validate_alongside() {
   local root_parent efi_parent root_type efi_type efi_fs mountpoints signature_types tool
-  local efi_mountpoints efi_probe efi_available
+  local efi_mountpoints efi_probe efi_available other_tilo_roots
   for tool in blockdev blkid df fsck.fat lsblk wipefs "mkfs.$FILESYSTEM" mount umount sfdisk partx; do
     command -v "$tool" >/dev/null 2>&1 || die "missing required tool for alongside install: $tool"
   done
@@ -606,6 +611,14 @@ validate_alongside() {
     0fc63daf-8483-4772-8e79-3d69d8477de4|7a2e8d75-3f01-4e5a-b2c9-51f6ed90b8ab) : ;;
     *) die "$ROOT_PARTITION is not explicitly typed as a Linux/Tilo root partition" ;;
   esac
+  # The installed UKI resolves root=tilo-auto to the one Tilo root on this disk
+  # and refuses to boot beside a second (tilo-root-discover). A staged
+  # installer's root has its own type and does not count.
+  other_tilo_roots="$(lsblk -lnpo NAME,TYPE,PARTTYPE "$DISK" \
+    | awk -v keep="$(readlink -f "$ROOT_PARTITION")" 'tolower($2)=="part" && tolower($3)=="7a2e8d75-3f01-4e5a-b2c9-51f6ed90b8ab" && $1!=keep {print $1}')" \
+    || die "could not list the partitions of $DISK"
+  [ -z "$other_tilo_roots" ] \
+    || die "$DISK already holds another Tilo root ($other_tilo_roots); a second one would make both unbootable"
   [ "$efi_type" = "c12a7328-f81f-11d2-ba4b-00a0c93ec93b" ] \
     || die "$EFI_PARTITION is not an EFI System Partition"
   efi_fs="$(blkid -s TYPE -o value "$EFI_PARTITION" 2>/dev/null || true)"
@@ -814,6 +827,9 @@ promote_target_uki() {
     || die "installed entry differs from signed target composefs identity"
   /usr/libexec/tilo-uki-cmdline show "$TARGET_VARIANT" | grep -qw root=tilo-auto \
     || die "target UKI lacks Tilo root discovery"
+  /usr/libexec/tilo-uki-cmdline show "$TARGET_VARIANT" \
+    | grep -qw 'systemd.mount-extra=LABEL=TILO_BOOT:/boot:ext4:ro,nosuid,nodev,noexec' \
+    || die "target UKI lacks the signed TILO_BOOT mount contract"
   ! /usr/libexec/tilo-uki-cmdline show "$TARGET_VARIANT" | grep -qw tilo.install \
     || die "target UKI still contains the live installer marker"
   # bootc stores SHA256(.linux + .initrd) in deployment origin metadata.
@@ -900,10 +916,15 @@ if [ "$ENCRYPT" -eq 1 ]; then
   ENC_LUKS="$(printf '%s\n' "$PREP" | sed -n 's/^LUKS_PART=//p')"
   ENC_KEYFILE="$(printf '%s\n' "$PREP" | sed -n 's/^KEY_FILE=//p')"
   ENC_ROOT_UUID="$(printf '%s\n' "$PREP" | sed -n 's/^ROOT_FS_UUID=//p')"
+  ENC_BOOT_PART="$(printf '%s\n' "$PREP" | sed -n 's/^BOOT_PART=//p')"
   ROOT_FS_UUID="$ENC_ROOT_UUID"
   ENC_KARGS="$(printf '%s\n' "$PREP" | sed -n 's/^KARGS=//p')"
-  [ -n "$ENC_MNT" ] && [ -n "$ENC_LUKS" ] && [ -n "$ENC_ROOT_UUID" ] && [ -n "$ENC_KARGS" ] \
+  [ -n "$ENC_MNT" ] && [ -n "$ENC_LUKS" ] && [ -n "$ENC_ROOT_UUID" ] && [ -n "$ENC_BOOT_PART" ] && [ -n "$ENC_KARGS" ] \
     || die "encryption: tilo-disk-encrypt prepare did not report the volume it made"
+  ENC_BOOT_MOUNT_SPEC="$("$BOOT_MOUNT_CONTRACT" --disk "$DISK" --boot-part "$ENC_BOOT_PART" --target-root "$ENC_MNT")" \
+    || die "encryption: invalid prepared /boot contract"
+  [ "$ENC_BOOT_MOUNT_SPEC" = LABEL=TILO_BOOT ] \
+    || die "encryption: prepared /boot contract is not the signed TILO_BOOT label"
 
   # From here the volume is open and the tree is mounted. If anything below fails
   # the installer exits without reaching `finish`, so close them on the way out —
@@ -933,6 +954,7 @@ if [ "$ENCRYPT" -eq 1 ]; then
     --security-opt label=type:unconfined_t \
     "$LOCAL_IMG" \
     bootc install to-filesystem \
+      --boot-mount-spec "$ENC_BOOT_MOUNT_SPEC" \
       --target-imgref "$TILO_TARGET_IMGREF" \
       --skip-finalize \
       /target
@@ -1153,22 +1175,46 @@ fi
 # The payload is the offline installer image, so undo its two live-medium-only
 # /etc changes in the installed deployment. The signed target UKI omits the live kernel argument; restoring greetd and removing the transient privilege drop-in
 # completes the boundary between installer and target.
-install -D -m 0644 /usr/share/tilo/greetd-config.toml "$DEPLOY_ETC/greetd/config.toml"
-printf '\n[initial_session]\ncommand = "/usr/bin/shell --backend drm"\nuser = "%s"\n' \
-  "$USERNAME" >> "$DEPLOY_ETC/greetd/config.toml"
+#
+# The first installed boot launches the new account directly so its OOBE does
+# not ask for a second secret after disk unlock.  That is deliberately a
+# one-boot handoff: the marker is durable before the config is promoted, and
+# tilo-firstboot-autologin-cleanup restores the normal greeter after greetd has
+# read this initial_session.  A power loss can therefore at worst show the
+# normal greeter; it cannot strand the installed account in permanent
+# autologin.
+install -d -m 0755 "$DEPLOY_ETC/greetd"
+GREETD_CONFIG="$DEPLOY_ETC/greetd/config.toml"
+GREETD_CONFIG_TMP="$(mktemp "$DEPLOY_ETC/greetd/.config.toml.XXXXXX")"
+install -m 0644 /usr/share/tilo/greetd-config.toml "$GREETD_CONFIG_TMP"
+printf '\n[initial_session]\ncommand = "/usr/libexec/tilo-session --backend drm"\nuser = "%s"\n' \
+  "$USERNAME" >> "$GREETD_CONFIG_TMP"
 # DEPLOY_ETC is reached through a transient /run mount. SELinux therefore
 # cannot infer the eventual /etc pathname while we are offline and otherwise
 # gives this file var_run_t. Enforcing greetd (xdm_t) then refuses to read its
 # own configuration on the first installed boot. Copy the label from the
 # correctly labelled live /etc counterpart; only the contents differ.
-chcon --reference=/etc/greetd/config.toml "$DEPLOY_ETC/greetd/config.toml"
+chcon --reference=/etc/greetd/config.toml "$GREETD_CONFIG_TMP"
+AUTOLOGIN_PENDING="$DEPLOY_ETC/tilo/firstboot-autologin-pending"
+AUTOLOGIN_PENDING_TMP="$(mktemp "$DEPLOY_ETC/tilo/.firstboot-autologin.XXXXXX")"
+chmod 0600 "$AUTOLOGIN_PENDING_TMP"
+printf 'version=1\n' > "$AUTOLOGIN_PENDING_TMP"
+chcon --reference="$INSTALL_MARKER" "$AUTOLOGIN_PENDING_TMP"
+mv -f -- "$AUTOLOGIN_PENDING_TMP" "$AUTOLOGIN_PENDING"
+# Flush both the marker and its containing directory before publishing the
+# initial_session.  If interrupted after this point, the cleanup unit has an
+# unambiguous instruction to restore normal authentication on the next boot.
+sync -f "$AUTOLOGIN_PENDING" 2>/dev/null || sync
+sync -f "$DEPLOY_ETC/tilo" 2>/dev/null || sync
+mv -f -- "$GREETD_CONFIG_TMP" "$GREETD_CONFIG"
+sync -f "$DEPLOY_ETC/greetd" 2>/dev/null || sync
 rm -f "$DEPLOY_ETC/sudoers.d/tilo-installer"
 # Release media mask sshd, while an explicit diagnostic image may enable it.
 # Neither live-only state belongs on the installed system; the base Tilo image
 # leaves sshd disabled but unmasked.
 rm -f "$DEPLOY_ETC/systemd/system/sshd.service" \
       "$DEPLOY_ETC/systemd/system/multi-user.target.wants/sshd.service"
-log "  configured encrypted-startup handoff to the '$USERNAME' session"
+log "  configured one-boot startup handoff to the '$USERNAME' session"
 
 # NetworkManager creates user-selected Wi-Fi profiles as root-owned regular
 # files in the live medium. Preserve those profiles so a connection made in
