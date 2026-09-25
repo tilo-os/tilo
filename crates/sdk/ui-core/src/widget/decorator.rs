@@ -973,21 +973,32 @@ pub trait Decorator {
         self.inner_mut().release_record_scope()
     }
 
+    /// [`Self::resource`] in `participant`'s tree. The local view (`None`)
+    /// is this decorator's own [`Self::resource`], so an override there is
+    /// honoured; a participant's tree is the inner widget's. A decorator that
+    /// adds resources of its own overrides this too.
     fn resource_for(
         &self,
         participant: Option<&tilo_actions::ParticipantId>,
         doc: &AutoCommit,
         id: &str,
     ) -> Option<tilo_actions::Resource> {
-        self.inner().resource_for(participant, doc, id)
+        match participant {
+            None => Decorator::resource(self, doc, id),
+            Some(_) => self.inner().resource_for(participant, doc, id),
+        }
     }
 
+    /// [`Self::resources`] in `participant`'s tree, as [`Self::resource_for`].
     fn resources_for(
         &self,
         participant: Option<&tilo_actions::ParticipantId>,
         doc: &AutoCommit,
     ) -> Vec<tilo_actions::Resource> {
-        self.inner().resources_for(participant, doc)
+        match participant {
+            None => Decorator::resources(self, doc),
+            Some(_) => self.inner().resources_for(participant, doc),
+        }
     }
 
     fn semantic_readers(
