@@ -70,6 +70,8 @@ pub struct Hydrator {
     scheduler: ranges::Scheduler,
     /// Bytes of file-backed content received so far.
     ranged_bytes: std::sync::atomic::AtomicU64,
+    /// Bytes of loose blobs received so far.
+    blob_bytes: std::sync::atomic::AtomicU64,
     /// One blob-protocol connection per peer, reused by every request.
     blob_connections: AsyncMutex<HashMap<iroh_base::PublicKey, iroh::endpoint::Connection>>,
     pub runtime_handle: tokio::runtime::Handle,
@@ -120,6 +122,7 @@ impl Hydrator {
             flights: ranges::Flights::default(),
             scheduler: ranges::Scheduler::default(),
             ranged_bytes: std::sync::atomic::AtomicU64::new(0),
+            blob_bytes: std::sync::atomic::AtomicU64::new(0),
             blob_connections: AsyncMutex::new(HashMap::new()),
             runtime_handle: tokio::runtime::Handle::current(),
         }
@@ -711,6 +714,20 @@ impl Hydrator {
         Ok(true)
     }
 
+    fn count_blob_bytes(&self, bytes: u64) {
+        self.blob_bytes
+            .fetch_add(bytes, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Content received from peers so far: bytes of file-backed ranges and
+    /// of loose blobs.
+    pub fn received_bytes(&self) -> (u64, u64) {
+        (
+            self.fetched_range_bytes(),
+            self.blob_bytes.load(std::sync::atomic::Ordering::Relaxed),
+        )
+    }
+
     async fn load_manifest(&self, manifest_hash: Hash) -> Result<Manifest> {
         let bytes = self.read_blob(manifest_hash, 0, u64::MAX).await?;
         Ok(Manifest::decode(&bytes)?)
@@ -733,6 +750,7 @@ impl Hydrator {
             let (bytes, _stats) = iroh_blobs::get::request::get_blob(conn, hash)
                 .bytes_and_stats()
                 .await?;
+            self.count_blob_bytes(bytes.len() as u64);
             self.store.store_fetched(hash, bytes.clone()).await?;
             self.remote_sources
                 .write()
