@@ -369,6 +369,27 @@ mod tests {
         broker.await.unwrap();
     }
 
+    /// The async client speaks the same bytes as the blocking one: a
+    /// little-endian `u32` length, then postcard.
+    #[tokio::test]
+    async fn async_wire_bytes_are_pinned() {
+        const REQUEST: [u8; 7] = [3, 0, 0, 0, 2, 1, b'w'];
+        let (mut identity, mut server) = connected(Duration::from_secs(5)).await;
+        let broker = tokio::spawn(async move {
+            let mut request = [0_u8; REQUEST.len()];
+            server.read_exact(&mut request).await.unwrap();
+            let mut response = vec![66, 0, 0, 0, 1, 64];
+            response.extend_from_slice(&[7; 64]);
+            server.write_all(&response).await.unwrap();
+            request
+        });
+        assert_eq!(
+            identity.sign_collaboration_join("w").await.unwrap(),
+            [7; 64]
+        );
+        assert_eq!(broker.await.unwrap(), REQUEST);
+    }
+
     #[tokio::test(start_paused = true)]
     async fn stalled_metadata_obeys_one_absolute_deadline() {
         let (client, mut server) = tokio::io::duplex(64);

@@ -228,6 +228,21 @@ mod tests {
         thread.join().unwrap();
     }
 
+    /// The per-launch broker's bytes: a status or operation byte, a
+    /// big-endian `u32` length, then the payload.
+    #[test]
+    fn broker_wire_bytes_are_pinned() {
+        let (mut left, mut right) = UnixStream::pair().unwrap();
+        write_frame(&mut left, OP_SIGN, b"hi").unwrap();
+        let mut sent = [0_u8; 7];
+        right.read_exact(&mut sent).unwrap();
+        assert_eq!(sent, [OP_SIGN, 0, 0, 0, 2, b'h', b'i']);
+        left.write_all(&[1, 0, 0, 0, 3, 7, 8, 9]).unwrap();
+        assert_eq!(read_frame(&mut right).unwrap(), (1, vec![7, 8, 9]));
+        left.write_all(&[OP_METADATA, 0, 0, 0, 0]).unwrap();
+        assert_eq!(read_frame(&mut right).unwrap(), (OP_METADATA, Vec::new()));
+    }
+
     #[test]
     fn oversized_request_is_rejected_before_allocation() {
         let (mut left, mut right) = UnixStream::pair().unwrap();
