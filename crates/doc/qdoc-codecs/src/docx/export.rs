@@ -1442,7 +1442,7 @@ const EMU_PER_PX: f64 = 914_400.0 / 96.0;
 struct ExportedImage {
     /// Relationship id (e.g. `rIdImg1`) referenced by the drawing's `a:blip`.
     rel_id: String,
-    /// Package part name, e.g. `word/media/image1.png`.
+    /// Package part name, e.g. `word/media/qdoc-0123456789abcdef.png`.
     part: String,
     /// `Target` written into the document rels (relative to `word/`).
     target: String,
@@ -1487,12 +1487,16 @@ impl ImageExport {
         s
     }
 
-    /// Register an image blob, returning its rel id; stored once per occurrence (each drawing gets its own rel).
+    /// Register an image blob, returning its rel id; each drawing gets its own rel. The part is
+    /// named by the image's content address, so it can never overwrite a different image the
+    /// package carries through (a text box's picture, say) under a name of the `imageN` kind.
     fn add(&mut self, bytes: &[u8]) -> String {
         let n = self.images.len().saturating_add(1);
         let (ext, _) = image_ext_and_media(bytes);
         let rel_id = format!("rIdImg{n}");
-        let target = format!("media/image{n}.{ext}");
+        let hash = tilo_content::hash_bytes(bytes);
+        let short = hash.get(..16).unwrap_or(&hash);
+        let target = format!("media/qdoc-{short}.{ext}");
         self.images.push(ExportedImage {
             rel_id: rel_id.clone(),
             part: format!("word/{target}"),
@@ -2096,7 +2100,10 @@ mod tests {
         );
         let rels = std::str::from_utf8(cont.get("word/_rels/document.xml.rels").unwrap()).unwrap();
         assert!(
-            rels.contains(r#"Target="media/image1.png""#),
+            rels.contains(&format!(
+                r#"Target="media/qdoc-{}.png""#,
+                &tilo_content::hash_bytes(&TINY_PNG)[..16]
+            )),
             "image rel wired: {rels}"
         );
         let ct = std::str::from_utf8(cont.get("[Content_Types].xml").unwrap()).unwrap();
