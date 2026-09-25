@@ -1,8 +1,28 @@
 #!/usr/bin/bash
-# Resolve the one Tilo root on the disk whose ESP systemd-stub booted from.
+# Resolve the root on the disk whose ESP systemd-stub booted from.
+#
+# Two GPT types name a root, and each UKI kind selects only its own:
+#
+#   Tilo root          7a2e8d75-3f01-4e5a-b2c9-51f6ed90b8ab
+#                      an installed system, and the root of a removable
+#                      live installer medium
+#   Tilo staging root  d4c4daf6-f72c-43ee-b8e3-5ba32550311d
+#                      the live installer the Imager staged onto an internal
+#                      disk (apps/imager/src/setup/staging), until the
+#                      installed system reclaims it (tilo-staging-reclaim)
+#
+# An installed UKI (no `tilo.install`) boots exactly one Tilo root and never
+# considers a staging root, so the staging root left beside a fresh install
+# cannot make it ambiguous. The live installer UKI (`tilo.install`) boots
+# exactly one staging root when its disk has any, else exactly one Tilo root
+# (its own medium). A staged installer booted again after a failed or
+# interrupted install therefore still finds itself, not the partial target.
+# Zero or several candidates of the selected kind fail closed.
 set -euo pipefail
 
 TILO_ROOT_TYPE=7a2e8d75-3f01-4e5a-b2c9-51f6ed90b8ab
+TILO_STAGING_ROOT_TYPE=d4c4daf6-f72c-43ee-b8e3-5ba32550311d
+cmdline_file="${TILO_ROOT_CMDLINE_FILE:-/proc/cmdline}"
 sysroot="${TILO_ROOT_SYSROOT:-/sys}"
 devroot="${TILO_ROOT_DEVROOT:-/dev}"
 runtime="${TILO_ROOT_RUNTIME:-/run}"
@@ -37,10 +57,29 @@ read -r parent extra <<<"${parents[0]}"
   || die "could not identify the boot ESP's physical disk"
 case "$parent" in /*) disk="$parent" ;; *) disk="$devroot/$parent" ;; esac
 
-mapfile -t roots < <("$lsblk_bin" -lnpo NAME,TYPE,PARTTYPE "$disk" \
-  | awk -v t="$TILO_ROOT_TYPE" 'tolower($2)=="part" && tolower($3)==t {print $1}')
+live=0
+cmdline=()
+read -r -a cmdline <"$cmdline_file" || [ "${#cmdline[@]}" -gt 0 ] \
+  || die "could not read the kernel command line"
+for token in "${cmdline[@]}"; do
+  [ "$token" != tilo.install ] || live=1
+done
+
+partitions="$("$lsblk_bin" -lnpo NAME,TYPE,PARTTYPE "$disk")" \
+  || die "could not list the partitions of the boot ESP's disk"
+of_type() {
+  awk -v t="$1" 'tolower($2)=="part" && tolower($3)==t {print $1}' <<<"$partitions"
+}
+
+roots=()
+kind="Tilo root"
+if [ "$live" -eq 1 ]; then
+  mapfile -t roots < <(of_type "$TILO_STAGING_ROOT_TYPE")
+  [ "${#roots[@]}" -eq 0 ] || kind="Tilo staging root"
+fi
+[ "${#roots[@]}" -gt 0 ] || mapfile -t roots < <(of_type "$TILO_ROOT_TYPE")
 [ "${#roots[@]}" -eq 1 ] \
-  || die "expected exactly one Tilo root on the boot ESP's disk; found ${#roots[@]}"
+  || die "expected exactly one $kind on the boot ESP's disk; found ${#roots[@]}"
 root="${roots[0]}"
 
 install -d -m 0700 "$runtime/tilo-root" "$runtime/cryptsetup-keys.d"

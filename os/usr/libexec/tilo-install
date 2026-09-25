@@ -585,7 +585,7 @@ fi
 
 validate_alongside() {
   local root_parent efi_parent root_type efi_type efi_fs mountpoints signature_types tool
-  local efi_mountpoints efi_probe efi_available
+  local efi_mountpoints efi_probe efi_available other_tilo_roots
   for tool in blockdev blkid df fsck.fat lsblk wipefs "mkfs.$FILESYSTEM" mount umount sfdisk partx; do
     command -v "$tool" >/dev/null 2>&1 || die "missing required tool for alongside install: $tool"
   done
@@ -607,6 +607,14 @@ validate_alongside() {
     0fc63daf-8483-4772-8e79-3d69d8477de4|7a2e8d75-3f01-4e5a-b2c9-51f6ed90b8ab) : ;;
     *) die "$ROOT_PARTITION is not explicitly typed as a Linux/Tilo root partition" ;;
   esac
+  # The installed UKI resolves root=tilo-auto to the one Tilo root on this disk
+  # and refuses to boot beside a second (tilo-root-discover). A staged
+  # installer's root has its own type and does not count.
+  other_tilo_roots="$(lsblk -lnpo NAME,TYPE,PARTTYPE "$DISK" \
+    | awk -v keep="$(readlink -f "$ROOT_PARTITION")" 'tolower($2)=="part" && tolower($3)=="7a2e8d75-3f01-4e5a-b2c9-51f6ed90b8ab" && $1!=keep {print $1}')" \
+    || die "could not list the partitions of $DISK"
+  [ -z "$other_tilo_roots" ] \
+    || die "$DISK already holds another Tilo root ($other_tilo_roots); a second one would make both unbootable"
   [ "$efi_type" = "c12a7328-f81f-11d2-ba4b-00a0c93ec93b" ] \
     || die "$EFI_PARTITION is not an EFI System Partition"
   efi_fs="$(blkid -s TYPE -o value "$EFI_PARTITION" 2>/dev/null || true)"
