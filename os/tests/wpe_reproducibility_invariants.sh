@@ -10,7 +10,6 @@ image_script="$repo/os/dev/build-image.sh"
 manifest="$repo/os/external-assets/github-assets.tsv"
 pins="$repo/os/wpe-buildroot-snapshot.env"
 snapshot_workflow="$repo/.forgejo/workflows/snapshot-wpe-buildroot.yml"
-credential_helper="$repo/os/dev/acquire-wpe-snapshot-credentials.sh"
 arch_helper="$repo/os/dev/assert-native-arch.sh"
 image_workflow="$repo/.forgejo/workflows/build-image.yml"
 fail=0
@@ -20,11 +19,8 @@ has() { grep -Fq -- "$2" "$1" && ok "$3" || bad "$3"; }
 
 bash -n "$build_script" "$image_script" "$repo/os/dev/build-wpe-buildroot.sh" \
   "$arch_helper" \
-  "$credential_helper" "$repo/os/tests/wpe_snapshot_credentials.sh" \
   && ok 'WPE build and bootstrap scripts parse' \
   || bad 'a WPE build or bootstrap script does not parse'
-"$repo/os/tests/wpe_snapshot_credentials.sh" \
-  || bad 'WPE snapshot credential acquisition invariants failed'
 
 while IFS='|' read -r name digest; do
   grep -Fq "$digest"$'\t'"$name"$'\t'https://wpewebkit.org/releases/"$name" "$manifest" \
@@ -111,28 +107,35 @@ has "$snapshot_workflow" "if: github.ref == 'refs/heads/main'" \
 has "$snapshot_workflow" 'no-cache: true' 'WPE snapshot refresh cannot reuse a stale Fedora transaction layer'
 has "$snapshot_workflow" 'actual_arch="$(docker run --rm --entrypoint cat "$ref"' \
   'WPE snapshot proves each image was built on its declared native architecture'
-has "$snapshot_workflow" 'WPE_SNAPSHOT_CREDENTIAL_BROKER' \
-  'WPE snapshots use an OIDC credential broker in steady state'
 has "$snapshot_workflow" 'enable-openid-connect: true' \
-  'WPE snapshot jobs explicitly enable Forgejo OIDC'
-has "$snapshot_workflow" '"$TILO_WPE_SIGNER" "$TILO_WPE_REF"' \
-  'WPE buildroots are signed through a leased non-exportable signer'
-if grep -Eq 'WPE_ALLOW_STATIC_CREDENTIAL_BOOTSTRAP|WPE_STATIC_BOOTSTRAP_EXPIRES_AT|COSIGN_PRIVATE_KEY|COSIGN_PASSWORD' \
-    "$snapshot_workflow" "$credential_helper"; then
-  bad 'WPE snapshot retains an exportable static-credential bootstrap path'
+  'WPE snapshot signing jobs explicitly enable Forgejo OIDC for the KMS role'
+has "$snapshot_workflow" 'cmp --silent keys/cosign.pub "$resolved"' \
+  'WPE snapshot refuses a KMS authority that differs from keys/cosign.pub'
+has "$snapshot_workflow" '. os/dev/configure-cosign-kms.sh' \
+  'WPE snapshot signs through the shared KMS configuration'
+has "$snapshot_workflow" 'cosign sign --yes --key "$COSIGN_KEY_REF" "$TILO_WPE_REF"' \
+  'WPE buildroots are signed with the non-exportable release key'
+has "$snapshot_workflow" 'gcpkms://*|awskms://*|azurekms://*|hashivault://*' \
+  'WPE snapshot accepts only a KMS/HSM signing key reference'
+if grep -Eq 'COSIGN_PRIVATE_KEY|COSIGN_PASSWORD|WPE_SNAPSHOT_CREDENTIAL_BROKER' "$snapshot_workflow"; then
+  bad 'WPE snapshot retains an exportable key or retired credential broker path'
 else
-  ok 'WPE snapshot requires brokered registry and non-exportable signing leases'
+  ok 'WPE snapshot has no exportable signing key path'
 fi
-has "$credential_helper" "bounded_expiry \"\$lease_expiry\" 900" \
-  'brokered WPE credentials expire within fifteen minutes'
-has "$credential_helper" "trusted_root_executable \"\$signer\" 'WPE signer'" \
-  'brokered WPE signer and its path are controlled by root'
+has "$snapshot_workflow" 'REGISTRY_PASSWORD: ${{ secrets.REGISTRY_TOKEN }}' \
+  'WPE snapshot authenticates to the registry like the other snapshot workflows'
 has "$snapshot_workflow" 'token: ${{ github.token }}' \
-  'WPE pin promotion uses only the job-scoped Forgejo repository token'
-if grep -Fq 'token: ${{ secrets.REGISTRY_TOKEN }}' "$snapshot_workflow"; then
-  bad 'WPE promotion still uses the persistent registry PAT for checkout'
+  'WPE pin branch is pushed with the job-scoped Forgejo token'
+has "$snapshot_workflow" 'FORGEJO_TOKEN: ${{ secrets.RELEASE_TOKEN }}' \
+  'WPE pin pull request is opened with the repository-scoped release token'
+has "$snapshot_workflow" 'branch="automation/wpe-buildroot-snapshot-${snapshot_digest:0:16}"' \
+  'WPE pins land through a digest-named branch'
+has "$snapshot_workflow" 'python3 os/dev/open-snapshot-pr.py' \
+  'WPE pins land through a protected-main pull request'
+if grep -Fq 'git push origin HEAD:main' "$snapshot_workflow"; then
+  bad 'WPE promotion still pushes directly to protected main'
 else
-  ok 'persistent registry PAT is not used for repository checkout or promotion'
+  ok 'WPE promotion never pushes directly to protected main'
 fi
 has "$snapshot_workflow" 'cosign verify --key keys/cosign.pub "$ref"' \
   'WPE buildroot promotion verifies both signatures'
@@ -148,12 +151,15 @@ snapshot_inputs=(
   os/dev/assert-native-arch.sh
   os/dev/cache-github-assets.sh
   os/dev/install-cached-cosign.sh
-  os/dev/acquire-wpe-snapshot-credentials.sh
+  os/dev/configure-cosign-kms.sh
+  os/dev/login-registry-with-retry.sh
+  os/dev/open-snapshot-pr.py
+  .forgejo/actions/install-cosign
   keys/cosign.pub
   .forgejo/workflows/snapshot-wpe-buildroot.yml
 )
 trigger_block="$(sed -n '/^[[:space:]]*paths:/,/^$/p' "$snapshot_workflow")"
-input_block="$(sed -n '/^[[:space:]]*WPE_SNAPSHOT_INPUTS:/,/^[[:space:]]*enable-openid-connect:/p' "$snapshot_workflow")"
+input_block="$(sed -n '/^[[:space:]]*WPE_SNAPSHOT_INPUTS:/,/^[[:space:]]*steps:/p' "$snapshot_workflow")"
 has "$snapshot_workflow" "mapfile -t snapshot_inputs < <(printf '%s' \"\$WPE_SNAPSHOT_INPUTS\")" \
   'WPE promotion parses the authoritative input list without an empty pathspec'
 for input in "${snapshot_inputs[@]}"; do
@@ -162,10 +168,11 @@ for input in "${snapshot_inputs[@]}"; do
     && ok "$input triggers a snapshot and blocks stale promotion" \
     || bad "$input is missing from the snapshot trigger or stale-promotion guard"
 done
-if [ "$(grep -Fc -- '"${snapshot_inputs[@]}"' "$snapshot_workflow")" -eq 2 ]; then
-  ok 'both WPE promotion race checks use the complete authoritative input set'
+if grep -Fq 'git diff --quiet "$GITHUB_SHA..origin/main" -- "${snapshot_inputs[@]}"' "$snapshot_workflow" \
+   && grep -Fq 'git checkout --detach origin/main' "$snapshot_workflow"; then
+  ok 'WPE promotion refuses stale inputs and commits the pins on the checked main tip'
 else
-  bad 'both WPE promotion race checks must use the complete authoritative input set'
+  bad 'WPE promotion must refuse stale inputs and commit on the checked main tip'
 fi
 
 has "$image_workflow" 'cosign verify --key keys/cosign.pub "$ref"' \

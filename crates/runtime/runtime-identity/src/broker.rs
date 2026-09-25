@@ -11,12 +11,12 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use serde::{Deserialize, Serialize};
+use wire_frame::{FrameError, Framing};
 
 use super::{NotAvailable, SigningIdentity, SigningSource};
 
 pub const BROKER_ENV_VAR: &str = "TILO_IDENTITY_BROKER_FD";
 pub const BROKER_CHILD_FD: RawFd = 15;
-const MAX_MESSAGE: usize = 4 * 1024 * 1024;
 const OP_METADATA: u8 = 1;
 const OP_SIGN: u8 = 2;
 static BROKER_FD_CLAIMED: AtomicBool = AtomicBool::new(false);
@@ -32,44 +32,20 @@ struct PublicMetadata {
     single_device: bool,
 }
 
+/// A status or operation byte, then one big-endian length-prefixed payload.
+const FRAMING: Framing = Framing::big_endian(4 * 1024 * 1024);
+
 fn write_frame(stream: &mut UnixStream, status: u8, payload: &[u8]) -> io::Result<()> {
-    if payload.len() > MAX_MESSAGE {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "broker frame too large",
-        ));
-    }
+    let frame = FRAMING.encode(payload)?;
     stream.write_all(&[status])?;
-    // Bounded by the MAX_MESSAGE check just above.
-    #[allow(
-        clippy::cast_possible_truncation,
-        reason = "payload.len() is checked <= MAX_MESSAGE just above"
-    )]
-    let len = payload.len() as u32;
-    stream.write_all(&len.to_be_bytes())?;
-    stream.write_all(payload)
+    stream.write_all(&frame)
 }
 
 fn read_frame(stream: &mut UnixStream) -> io::Result<(u8, Vec<u8>)> {
-    let mut header = [0u8; 5];
-    stream.read_exact(&mut header)?;
-    // `header` is a fixed 5-byte array, so this 4-byte slice always converts.
-    let Ok(len_bytes) = header[1..5].try_into() else {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "broker frame header malformed",
-        ));
-    };
-    let len = u32::from_be_bytes(len_bytes) as usize;
-    if len > MAX_MESSAGE {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "broker frame too large",
-        ));
-    }
-    let mut payload = vec![0; len];
-    stream.read_exact(&mut payload)?;
-    Ok((header[0], payload))
+    let mut status = [0_u8; 1];
+    stream.read_exact(&mut status)?;
+    let payload = FRAMING.read(stream)?.ok_or(FrameError::Truncated)?;
+    Ok((status[0], payload))
 }
 
 /// Serve one application's inherited connection until it exits or closes it.
@@ -228,12 +204,27 @@ mod tests {
         thread.join().unwrap();
     }
 
+    /// The per-launch broker's bytes: a status or operation byte, a
+    /// big-endian `u32` length, then the payload.
+    #[test]
+    fn broker_wire_bytes_are_pinned() {
+        let (mut left, mut right) = UnixStream::pair().unwrap();
+        write_frame(&mut left, OP_SIGN, b"hi").unwrap();
+        let mut sent = [0_u8; 7];
+        right.read_exact(&mut sent).unwrap();
+        assert_eq!(sent, [OP_SIGN, 0, 0, 0, 2, b'h', b'i']);
+        left.write_all(&[1, 0, 0, 0, 3, 7, 8, 9]).unwrap();
+        assert_eq!(read_frame(&mut right).unwrap(), (1, vec![7, 8, 9]));
+        left.write_all(&[OP_METADATA, 0, 0, 0, 0]).unwrap();
+        assert_eq!(read_frame(&mut right).unwrap(), (OP_METADATA, Vec::new()));
+    }
+
     #[test]
     fn oversized_request_is_rejected_before_allocation() {
         let (mut left, mut right) = UnixStream::pair().unwrap();
         left.write_all(&[OP_SIGN]).unwrap();
         left.write_all(
-            &(u32::try_from(MAX_MESSAGE).expect("MAX_MESSAGE fits in u32") + 1).to_be_bytes(),
+            &(u32::try_from(FRAMING.max_len()).expect("limit fits in u32") + 1).to_be_bytes(),
         )
         .unwrap();
         assert_eq!(

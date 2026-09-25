@@ -193,6 +193,7 @@ pub fn exported_actions(resources: &[Resource]) -> Vec<ExportedAction> {
             operation_kind: descriptor.kind.as_str().to_string(),
             params_json: serde_json::to_string(&descriptor.params).unwrap(),
             contract_json: serde_json::to_string(&descriptor.contract).unwrap(),
+            view: descriptor.view,
             input: match descriptor.input {
                 tilo_actions::InputSpec::None => ExportedInput::None,
                 tilo_actions::InputSpec::Text {

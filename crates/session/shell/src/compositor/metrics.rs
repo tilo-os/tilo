@@ -2,7 +2,8 @@
 //!
 //! One [`FrameSample`] per loop iteration: `period_us` (real cadence), per-phase durations,
 //! `painted` (idle ticks do no paint work), `input_latency_us` (input-consumed to first painted
-//! submit; `present_async` distinguishes input-to-present from input-to-queued).
+//! submit), and `input_retirement_latency_us` (input-consumed until the presenter retires that
+//! exact submitted serial).
 //!
 //! Entirely env-var driven (`TILO_FRAME_TRACE`, `TILO_FRAME_SUMMARY`, `TILO_FRAME_WARMUP_MS`);
 //! disabled, every [`FrameRecorder`] method is a `bool` branch. [`summarize`] is pure — the same function the live binary and unit tests call, so they can't drift.
@@ -36,10 +37,13 @@ pub struct FrameSample {
     /// Time parked in the event loop waiting for work / the next deadline.
     pub sleep_us: u32,
     pub painted: bool,
-    /// Whether the submit handed off to another thread rather than completing inline — distinguishes input-to-present from input-to-queued in `input_latency_us`.
+    /// Whether the submit handed off to another thread rather than completing inline.
     pub present_async: bool,
     /// Set on the first painted tick after an input was consumed: microseconds from consuming it to the submit returning. `None` on every other tick.
     pub input_latency_us: Option<u32>,
+    /// Input-to-presenter-retirement for an asynchronously presented frame.
+    /// Unlike `input_latency_us`, this cannot be satisfied merely by enqueueing.
+    pub input_retirement_latency_us: Option<u32>,
 }
 
 impl FrameSample {
@@ -54,7 +58,7 @@ impl FrameSample {
     fn write_csv_row(&self, out: &mut impl Write) -> std::io::Result<()> {
         writeln!(
             out,
-            "{},{},{},{},{},{},{},{},{},{},{},{},{},{}",
+            "{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}",
             self.seq,
             self.start_us,
             self.period_us,
@@ -71,13 +75,17 @@ impl FrameSample {
             self.input_latency_us
                 .map(|v| v.to_string())
                 .unwrap_or_default(),
+            self.input_retirement_latency_us
+                .map(|v| v.to_string())
+                .unwrap_or_default(),
         )
     }
 }
 
 /// Header line for the `TILO_FRAME_TRACE` CSV, kept next to [`FrameSample::write_csv_row`] so the two cannot drift.
 pub const CSV_HEADER: &str = "seq,start_us,period_us,input_us,pump_us,layout_us,scene_us,\
-submit_us,testctl_us,clients_us,sleep_us,painted,present_async,input_latency_us";
+submit_us,testctl_us,clients_us,sleep_us,painted,present_async,input_latency_us,\
+input_retirement_latency_us";
 
 /// Percentile bundle for one measured quantity, in microseconds.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize)]
@@ -143,8 +151,9 @@ pub struct FrameSummary {
     pub testctl: Percentiles,
     pub clients: Percentiles,
     pub sleep: Percentiles,
-    /// Input-to-present (or input-to-queued, see [`FrameSample::present_async`]).
+    /// Input-to-submit-return; this is input-to-queue on threaded presenters.
     pub input_latency: Percentiles,
+    pub input_retirement_latency: Percentiles,
     /// Fraction of painted frames whose period was within [`ON_CADENCE_TOLERANCE_US`] of `target_period_us`; meaningless (reported 0.0) when no target was supplied.
     pub on_cadence_ratio: f64,
     /// The refresh interval the loop was aiming at, microseconds.
@@ -251,6 +260,12 @@ pub fn summarize(samples: &[FrameSample], target_period_us: u32) -> FrameSummary
                 .filter_map(|s| s.input_latency_us)
                 .collect::<Vec<_>>(),
         ),
+        input_retirement_latency: percentiles(
+            &samples
+                .iter()
+                .filter_map(|s| s.input_retirement_latency_us)
+                .collect::<Vec<_>>(),
+        ),
         on_cadence_ratio,
         target_period_us,
     }
@@ -274,6 +289,11 @@ pub struct FrameRecorder {
     target_period_us: u32,
     /// When an input was consumed and no painted frame has closed the loop on it yet.
     pending_input: Option<Instant>,
+    /// Async frame which carries the earliest outstanding input. One input is
+    /// tracked at a time so queue pressure cannot make a newer event hide an
+    /// older response.
+    pending_retirement: Option<(u64, Instant)>,
+    completed_retirement_latency_us: Option<u32>,
 }
 
 /// Cap on retained samples: 200k ticks is ~55 minutes at 60 Hz and ~7 MB of `FrameSample`.
@@ -322,6 +342,8 @@ impl FrameRecorder {
             summary_path: None,
             target_period_us: 0,
             pending_input: None,
+            pending_retirement: None,
+            completed_retirement_latency_us: None,
         }
     }
 
@@ -393,6 +415,7 @@ impl FrameRecorder {
             period_us,
             ..Default::default()
         };
+        self.cur.input_retirement_latency_us = self.completed_retirement_latency_us.take();
         self.seq = self.seq.saturating_add(1);
     }
 
@@ -405,6 +428,14 @@ impl FrameRecorder {
         if self.pending_input.is_none() {
             self.pending_input = Some(at);
         }
+    }
+
+    /// Age of the oldest input that has not yet reached a submitted frame.
+    /// The async presenter attaches this clock to the exact frame serial it
+    /// accepts, rather than mistaking queue hand-off for physical retirement.
+    pub fn pending_input_age(&self, now: Instant) -> Option<Duration> {
+        self.pending_input
+            .map(|at| now.saturating_duration_since(at))
     }
 
     /// Cumulative phase marks: each takes the duration *of that phase*, not a cumulative offset, so callers can compute them however is cheapest at the call site.
@@ -431,7 +462,13 @@ impl FrameRecorder {
     }
 
     /// Record the submit phase and close any outstanding input-latency measurement. `async_present` records whether the submit merely queued the frame for another thread.
-    pub fn mark_submit(&mut self, d: Duration, async_present: bool, done: Instant) {
+    pub fn mark_submit(
+        &mut self,
+        d: Duration,
+        async_present: bool,
+        done: Instant,
+        submitted_serial: Option<u64>,
+    ) {
         if !self.enabled {
             return;
         }
@@ -447,10 +484,41 @@ impl FrameRecorder {
                 )
                 .unwrap_or(u32::MAX),
             );
+            if async_present {
+                if let Some(serial) = submitted_serial {
+                    self.pending_retirement = Some((serial, input_at));
+                }
+            } else {
+                self.cur.input_retirement_latency_us = self.cur.input_latency_us;
+            }
         }
     }
 
-    /// Close the tick: stream it to the trace and retain it for the summary.
+    /// Close an async input measurement only when the presenter has retired
+    /// the exact submitted serial (or a later FIFO serial).
+    pub fn note_retirement(&mut self, retired_serial: u64, at: Instant) {
+        if !self.enabled {
+            return;
+        }
+        let Some((wanted, input_at)) = self.pending_retirement else {
+            return;
+        };
+        if retired_serial < wanted {
+            return;
+        }
+        self.pending_retirement = None;
+        self.completed_retirement_latency_us = Some(
+            u32::try_from(
+                at.saturating_duration_since(input_at)
+                    .as_micros()
+                    .min(u128::from(u32::MAX)),
+            )
+            .unwrap_or(u32::MAX),
+        );
+    }
+
+    /// Close the tick: stream it to the trace, periodically flush it for
+    /// hard-reset diagnosis, and retain it for the optional clean-exit summary.
     pub fn end_tick(&mut self) {
         if !self.enabled {
             return;
@@ -499,7 +567,8 @@ impl FrameRecorder {
                 } else {
                     eprintln!(
                         "frame-metrics: {} ticks, {} painted, {:.1} fps, \
-                         paint-period p50={}us p99={}us, input-latency p50={}us p99={}us → {}",
+                         paint-period p50={}us p99={}us, input-to-queue p50={}us p99={}us, \
+                         input-to-retirement p50={}us p99={}us → {}",
                         summary.ticks,
                         summary.painted,
                         summary.fps,
@@ -507,6 +576,8 @@ impl FrameRecorder {
                         summary.paint_period.p99,
                         summary.input_latency.p50,
                         summary.input_latency.p99,
+                        summary.input_retirement_latency.p50,
+                        summary.input_retirement_latency.p99,
                         path.display(),
                     );
                 }
@@ -711,7 +782,7 @@ mod tests {
         let t = Instant::now();
         r.begin_tick(t);
         r.mark_scene(Duration::from_millis(5));
-        r.mark_submit(Duration::from_millis(3), false, Instant::now());
+        r.mark_submit(Duration::from_millis(3), false, Instant::now(), None);
         r.end_tick();
         assert!(
             r.samples().is_empty(),
@@ -733,6 +804,7 @@ mod tests {
             Duration::from_millis(2),
             false,
             base + Duration::from_millis(7),
+            None,
         );
         r.end_tick();
         let s = r.samples();
@@ -767,6 +839,7 @@ mod tests {
             Duration::from_millis(1),
             true,
             base + Duration::from_millis(25),
+            Some(7),
         );
         r.end_tick();
         let s = r.samples();
@@ -784,6 +857,58 @@ mod tests {
         assert!(
             s[2].present_async,
             "a queued (threaded) submit must be flagged so readers don't mistake it for photons"
+        );
+    }
+
+    #[test]
+    fn pending_input_age_exposes_the_oldest_unpresented_input() {
+        let mut r = FrameRecorder::disabled();
+        r.enabled = true;
+        let base = Instant::now();
+        r.note_input(base);
+        r.note_input(base + Duration::from_millis(4));
+        assert_eq!(
+            r.pending_input_age(base + Duration::from_millis(9)),
+            Some(Duration::from_millis(9)),
+            "a newer input must not hide the oldest outstanding latency"
+        );
+    }
+
+    #[test]
+    fn async_input_latency_waits_for_the_exact_retired_serial() {
+        let mut r = FrameRecorder::disabled();
+        r.enabled = true;
+        let base = Instant::now();
+        r.begin_tick(base);
+        r.note_input(base);
+        r.mark_submit(
+            Duration::from_micros(20),
+            true,
+            base + Duration::from_millis(1),
+            Some(42),
+        );
+        r.end_tick();
+
+        r.begin_tick(base + Duration::from_millis(2));
+        r.note_retirement(41, base + Duration::from_millis(2));
+        r.end_tick();
+        assert!(
+            r.samples()
+                .iter()
+                .all(|s| s.input_retirement_latency_us.is_none()),
+            "an older frame must not acknowledge the input-bearing frame"
+        );
+
+        r.begin_tick(base + Duration::from_millis(8));
+        r.note_retirement(42, base + Duration::from_millis(8));
+        r.end_tick();
+        r.begin_tick(base + Duration::from_millis(9));
+        r.end_tick();
+        assert_eq!(
+            r.samples()
+                .last()
+                .and_then(|s| s.input_retirement_latency_us),
+            Some(8_000)
         );
     }
 
@@ -833,6 +958,7 @@ mod tests {
             painted: true,
             present_async: false,
             input_latency_us: Some(12),
+            input_retirement_latency_us: Some(13),
         }
         .write_csv_row(&mut buf)
         .expect("write csv row into a Vec");

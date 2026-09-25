@@ -69,6 +69,42 @@ class SelectorTests(unittest.TestCase):
         # Removing the declaration together with native files cannot hide the check.
         self.assertTrue(ci_select.native_dependencies_required(self.root, ["vendor/openh264-sys2/build.rs"]))
 
+    def test_hermetic_suites_follow_changed_paths_and_run_all_when_asked(self):
+        manifest = ci_select.path_suites.parse(
+            '[[group]]\nname = "os"\ninputs = ["os/"]\nsuites = ["os/tests/a.sh"]\n'
+            '[[group]]\nname = "perf"\ninputs = ["scripts/perf/"]\nsuites = ["scripts/perf/b_test.py"]\n')
+        def plan(changes, **options):
+            return ci_select.make_plan(self.metadata, self.root, changes, 2,
+                                       suite_manifest=manifest, **options)
+        selected = plan(["os/dev/tool.py"])
+        self.assertTrue(selected["suites_required"])
+        self.assertEqual(selected["suites"], ["os/tests/a.sh"])
+        unrelated = plan(["leaf/src/lib.rs"])
+        self.assertFalse(unrelated["suites_required"])
+        self.assertEqual(unrelated["suites"], [])
+        for options in ({"all_suites": True}, {"force_full": True}):
+            with self.subTest(options=options):
+                self.assertEqual(plan(["leaf/src/lib.rs"], **options)["suites"],
+                                 ["os/tests/a.sh", "scripts/perf/b_test.py"])
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "outputs"
+            ci_select.emit_github(selected, output)
+            lines = output.read_text().splitlines()
+        self.assertIn("suites_required=true", lines)
+        self.assertIn("suites=os/tests/a.sh", lines)
+
+    def test_suite_manifest_changes_are_quality_only(self):
+        paths = ("tools/ci/suites.py", "tools/ci/suites.toml", "tools/tests/test_suites.py")
+        for path in paths:
+            (self.root / path).parent.mkdir(parents=True, exist_ok=True)
+            (self.root / path).write_text("")
+        for path in paths:
+            with self.subTest(path=path):
+                plan = ci_select.make_plan(self.metadata, self.root, [path], 2,
+                                           allow_security_skip=True)
+                self.assertFalse(plan["rust_required"])
+                self.assertFalse(plan["security_required"])
+
     def test_unreadable_native_declaration_fails_selection(self):
         (self.root / "Cargo.toml").write_text("[malformed")
         with self.assertRaises(ValueError):

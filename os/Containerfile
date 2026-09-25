@@ -572,6 +572,13 @@ RUN --mount=type=cache,target=/build/.cargo-home \
           /out/ \
     && ln -s app /out/store \
     && ln -s tilo /out/system \
+    && mkdir -p /out/completions/bash /out/completions/fish /out/completions/zsh \
+    && target/release/tilo completions bash > /out/completions/bash/tilo \
+    && target/release/app completions bash > /out/completions/bash/app \
+    && target/release/tilo completions fish > /out/completions/fish/tilo.fish \
+    && target/release/app completions fish > /out/completions/fish/app.fish \
+    && target/release/tilo completions zsh > /out/completions/zsh/_tilo \
+    && target/release/app completions zsh > /out/completions/zsh/_app \
     # Files stays a standalone /usr/bin binary for recovery; its package is the
     # thin build like every other app, matching the release collection.
     && build_phase rust-thin-apps \
@@ -957,7 +964,9 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setop
     && gst-inspect-1.0 rtpstreampay >/dev/null
 
 # Display manager + fingerprint auth (pam_fprintd for the greeter; the
-# greeter's PAM stack references it via a tolerant `-auth` line).
+# greeter's PAM stack references it via a tolerant `-auth` line).  The same
+# PAM stack unlocks Secret Service at password login, so an existing Tilo
+# identity is available before the compositor probes it.
 #
 # `polkit` is required so the greeter's Reboot / Shut down buttons can drive
 # logind: `systemctl reboot` / `poweroff` issue the
@@ -967,6 +976,8 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setop
     greetd \
     fprintd \
     fprintd-pam \
+    gnome-keyring \
+    gnome-keyring-pam \
     polkit \
     && dnf clean all && ${FINALIZE_RPMDB}
 
@@ -1396,7 +1407,8 @@ COPY --from=remote-capture-files / /
 COPY os/etc/greetd/config.toml /etc/greetd/config.toml
 
 # PAM stack for the greetd auth service (adds tolerant pam_fprintd so a
-# fingerprint can satisfy login; falls back to password-auth).
+# fingerprint can satisfy login; falls back to password-auth, and starts /
+# unlocks the user's Secret Service for the authenticated session).
 # PAM stack for in-session unlock (tilo-unlock-helper). Auth + account only.
 COPY \
     os/etc/pam.d/greetd \

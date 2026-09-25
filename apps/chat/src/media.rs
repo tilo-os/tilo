@@ -356,36 +356,28 @@ mod live {
             || std::env::var_os("WAYLAND_DISPLAY").is_some()
     }
 
-    async fn write_frame(
-        send: &mut iroh::endpoint::SendStream,
-        data: &[u8],
-    ) -> std::io::Result<()> {
-        send.write_all(&(data.len() as u32).to_le_bytes())
-            .await
-            .map_err(std::io::Error::other)?;
-        if !data.is_empty() {
-            send.write_all(data).await.map_err(std::io::Error::other)?;
-        }
-        Ok(())
-    }
+    /// Every media object on the stream: a little-endian `u32` length, then
+    /// [`MediaObject::to_wire`]. An empty frame carries nothing and is skipped.
+    const MEDIA_FRAMING: wire_frame::Framing = wire_frame::Framing::little_endian(MAX_FRAME);
 
-    async fn read_frame(recv: &mut iroh::endpoint::RecvStream) -> std::io::Result<Vec<u8>> {
-        let mut len = [0u8; 4];
-        recv.read_exact(&mut len)
-            .await
-            .map_err(std::io::Error::other)?;
-        let n = u32::from_le_bytes(len) as usize;
-        if n == 0 {
-            return Ok(Vec::new());
+    #[cfg(test)]
+    mod wire_tests {
+        use super::{MAX_FRAME, MEDIA_FRAMING};
+
+        /// Peers on other builds read these bytes: a little-endian `u32`
+        /// length, then the object; an empty frame is legal.
+        #[test]
+        fn media_wire_bytes_are_pinned() {
+            let mut wire = Vec::new();
+            MEDIA_FRAMING.write(&mut wire, b"obj").unwrap();
+            MEDIA_FRAMING.write(&mut wire, b"").unwrap();
+            assert_eq!(wire, [3, 0, 0, 0, b'o', b'b', b'j', 0, 0, 0, 0]);
+            let mut reader = wire.as_slice();
+            assert_eq!(MEDIA_FRAMING.read(&mut reader).unwrap().unwrap(), b"obj");
+            assert_eq!(MEDIA_FRAMING.read(&mut reader).unwrap().unwrap(), b"");
+            let oversized = u32::try_from(MAX_FRAME + 1).unwrap().to_le_bytes();
+            assert!(MEDIA_FRAMING.read(&mut oversized.as_slice()).is_err());
         }
-        if n > MAX_FRAME {
-            return Err(std::io::Error::other(format!("media frame too large: {n}")));
-        }
-        let mut buf = vec![0u8; n];
-        recv.read_exact(&mut buf)
-            .await
-            .map_err(std::io::Error::other)?;
-        Ok(buf)
     }
 
     /// The receive half: accepts an incoming QUIC connection, reads a stream of
@@ -407,12 +399,13 @@ mod live {
             &self,
             connection: iroh::endpoint::Connection,
         ) -> Result<(), iroh::protocol::AcceptError> {
-            let mut recv = connection.accept_uni().await?;
+            let recv = connection.accept_uni().await?;
+            let mut frames = wire_frame::FrameReader::new(recv, MEDIA_FRAMING);
             loop {
-                match read_frame(&mut recv).await {
-                    Ok(buf) if buf.is_empty() => {}
-                    Ok(buf) => {
-                        if let Some(obj) = MediaObject::from_wire(&buf) {
+                match frames.read_frame_async().await {
+                    Ok(Some([])) => {}
+                    Ok(Some(buf)) => {
+                        if let Some(obj) = MediaObject::from_wire(buf) {
                             // Bounded, non-blocking admission: never let a
                             // fast peer grow memory or make the receive task
                             // wait indefinitely behind the UI. A realtime
@@ -428,7 +421,7 @@ mod live {
                         }
                     }
                     // Clean EOF or a torn stream: the peer finished sending.
-                    Err(_) => break,
+                    Ok(None) | Err(_) => break,
                 }
             }
             Ok(())
@@ -526,7 +519,7 @@ mod live {
                     return;
                 };
                 while let Some(bytes) = out_rx.recv().await {
-                    if write_frame(&mut send, &bytes).await.is_err() {
+                    if MEDIA_FRAMING.write_async(&mut send, &bytes).await.is_err() {
                         break;
                     }
                 }

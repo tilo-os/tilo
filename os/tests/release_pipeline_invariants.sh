@@ -205,7 +205,9 @@ grep -Fq 'tags: ["desktop-v*"]' "$desktop" \
   || bad 'desktop packaging boundaries or native release lanes regressed'
 
 grep -Fq 'publish-os-payload:' "$desktop" \
-  && grep -Fq 'TILO_DESKTOP_RELEASE_AUDIENCE' "$desktop" \
+  && grep -Fq 'PACKAGE_TOKEN: ${{ secrets.REGISTRY_TOKEN }}' "$desktop" \
+  && grep -Fq 'VARIABLE_TOKEN: ${{ secrets.RELEASE_TOKEN }}' "$desktop" \
+  && ! grep -Fq 'TILO_DESKTOP_RELEASE_AUDIENCE' "$desktop" \
   && grep -Fq 'CONTINUOUS_OS_RELEASE: "0"' "$desktop" \
   && grep -Fq "if: (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main'" "$desktop" \
   && grep -Fq 'TILO_DESKTOP_PAYLOAD_URL_X86_64' "$os" \
@@ -213,6 +215,13 @@ grep -Fq 'publish-os-payload:' "$desktop" \
   && grep -Fq 'DESKTOP_RELEASE_ARGS=""' "$repo/os/Containerfile" \
   && ok 'OS composition reuses the install-tested native desktop payload' \
   || bad 'OS releases still rebuild the desktop component'
+
+grep -Fq 'payload_source=$(jq -r '"'"'.source // empty'"'"' "$work/manifest.json")' "$os" \
+  && grep -Fq 'Cargo.toml Cargo.lock rust-toolchain.toml .cargo crates apps vendor)' "$os" \
+  && grep -Fq 'predates this commit'"'"'s desktop inputs; building the desktop from source' "$os" \
+  && grep -Fq '"source": sys.argv[3]' "$repo/dist/desktop/package-os-payload.sh" \
+  && ok 'OS composition reuses the desktop payload only while no Rust or Cargo input changed since it was built' \
+  || bad 'OS composition can ship a desktop payload older than its own compositor sources'
 
 grep -Fq 'with_browser=0' "$os" \
   && grep -Fq 'WITH_BROWSER: ${{ env.TILO_WITH_BROWSER }}' "$os" \

@@ -15,7 +15,7 @@
 //!
 //! The daemon binds a single iroh endpoint. Every inbound
 //! connection speaks the `tilo-relay/1` ALPN and performs a small
-//! authenticated handshake ([`transport::hello`]):
+//! authenticated handshake ([`auth`]):
 //!
 //! 1. Client sends its `DeviceCert` + a challenge nonce.
 //! 2. Server verifies the cert chains to *this relay's* user
@@ -70,24 +70,22 @@
 
 pub mod antientropy;
 pub mod app_serving;
-pub mod auth;
-pub mod client;
-pub mod coedit;
 pub mod compute;
 pub mod compute_session;
 pub mod compute_transport;
 pub mod compute_worker;
-pub mod config;
 pub mod daemon;
-pub mod home_peer;
-pub mod mesh;
 pub mod metrics;
 pub mod peer;
-pub mod policy;
-pub mod process_lease;
 pub mod store;
-pub mod transport;
 pub mod workspace;
+
+// The records and wire messages shared with relay clients live in
+// `tilo-relay-protocol`, and the dialing side plus the frame codec in
+// `tilo-relay-client`, so clients need not link the daemon. The daemon keeps
+// addressing them here.
+pub use tilo_relay_client::{client, coedit, frame};
+pub use tilo_relay_protocol::{auth, config, home_peer, mesh, policy, process_lease, transport};
 
 pub use antientropy::{SyncError, apply_sync_response, heads_wire, reconcile, send_sync_request};
 pub use app_serving::{ActionHostPlane, AppServingPlane};
@@ -126,29 +124,4 @@ pub use transport::{ALPN, Envelope};
 /// crate version.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
-/// Derive the stable numeric host/gossip shard for a room UUID. This is shared
-/// by the shell and admin CLI so local workspace handles never leak onto the
-/// wire and operators cannot accidentally bind a different shard.
-///
-/// # Errors
-///
-/// Returns an error if `room` is not a valid UUID string.
-pub fn room_workspace_id(room: &str) -> Result<u64, uuid::Error> {
-    let room = uuid::Uuid::parse_str(room)?;
-    let hash = blake3::derive_key("tilo-room-transport-v1", room.to_string().as_bytes());
-    let mut first8 = [0u8; 8];
-    first8.copy_from_slice(&hash[..8]);
-    let id = u64::from_le_bytes(first8);
-    Ok(if id == 0 { 1 } else { id })
-}
-
-/// Stable private relay shard for same-identity continuation checkpoints.
-/// This is not a user-visible workspace and is derived only from the root
-/// identity so every enrolled device/home peer agrees after restart.
-pub fn personal_continuity_workspace_id(user_public_key: &[u8; 32]) -> u64 {
-    let hash = blake3::derive_key("tilo-personal-continuity-v1\0", user_public_key);
-    let mut first8 = [0u8; 8];
-    first8.copy_from_slice(&hash[..8]);
-    let id = u64::from_le_bytes(first8);
-    if id == 0 { 1 } else { id }
-}
+pub use tilo_relay_protocol::{personal_continuity_workspace_id, room_workspace_id};

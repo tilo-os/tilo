@@ -60,10 +60,6 @@ use shortcuts::{
 #[cfg(test)]
 use std::path::PathBuf;
 
-#[cfg(test)]
-#[path = "../../../tests/support/offscreen.rs"]
-mod overlay_test_offscreen;
-
 use ui::ColorCompat;
 use ui::presence::{PresenceCtx, PresenceKey};
 use ui::text_render::{TextRenderer, TextWeight};
@@ -2930,6 +2926,9 @@ impl ShellOverlayHost {
             ),
         ));
         search_registry.register(std::rc::Rc::new(
+            crate::shell::search::providers::SessionActionsProvider::new(),
+        ));
+        search_registry.register(std::rc::Rc::new(
             crate::shell::search::providers::ApplicationsProvider::new(),
         ));
         search_registry.register(std::rc::Rc::new(
@@ -5061,6 +5060,11 @@ impl ShellOverlayHost {
                 // contract; here we only read `group_ids()`.
                 .any(|&p| unsafe { (*p).group_ids().contains(&gid) })
         });
+        // Publish the presentation edge before `take_structure_dirty` can
+        // rebuild the top bar and sidebar. Restore is especially sensitive:
+        // rebuilding while this still says `true` leaves the sidebar node at
+        // `display:none`, with no later structural edge to rebuild it again.
+        chrome.borrow_mut().set_fullscreen_presentation(owned);
         for &row_ptr in self.group_row_ptrs.values() {
             // SAFETY: same contract as every other `group_row_ptrs` accessor —
             // the pointer comes from a `Box<GroupRow>` owned by the content
@@ -27943,9 +27947,9 @@ mod overlay_event_absorb_tests {
     //! overlay must short-circuit rather than leak to the content widget
     //! underneath. The test runs `host.handle_event` with a
     //! [`RecordingContent`] sink.
-    use super::overlay_test_offscreen as offscreen;
     use super::*;
     use crate::shell::chrome_state::ChromeState;
+    use crate::shell::osd::review_offscreen as offscreen;
     use crate::shell::state::WorkspaceTree;
     use std::cell::RefCell;
     use std::collections::HashMap as StdHashMap;

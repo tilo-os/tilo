@@ -50,6 +50,7 @@ class CheckAggregateTests(unittest.TestCase):
     def aggregate(self, builder="success", select="success", security="success", affected="success",
                   required="true", security_required="true", count="4",
                   event="pull_request", native_required="false", native="skipped",
+                  suites_required="false", suites="skipped",
                   test=None, check=None, clippy=None):
         with tempfile.TemporaryDirectory() as directory:
             summary = Path(directory) / "summary"
@@ -64,6 +65,7 @@ class CheckAggregateTests(unittest.TestCase):
                      "SECURITY_REQUIRED": security_required, "EVENT_NAME": event,
                      "NATIVE_DEPENDENCIES_REQUIRED": native_required,
                      "NATIVE_DEPENDENCIES_RESULT": native,
+                     "SUITES_REQUIRED": suites_required, "SUITES_RESULT": suites,
                      "SELECTED_COUNT": count, "GITHUB_STEP_SUMMARY": summary.as_posix()},
                 capture_output=True, text=True,
             )
@@ -165,6 +167,35 @@ class CheckAggregateTests(unittest.TestCase):
             with self.subTest(required=required, result=result):
                 self.assertNotEqual(self.aggregate(native_required=required, native=result)[0], 0)
 
+    def test_path_selected_suites_job_is_observable_and_required_when_selected(self):
+        job = section(self.workflow, "suites", 2)
+        self.assertIn("if: needs.select.outputs.suites_required == 'true'", job)
+        self.assertIn("needs: [select]", job)
+        self.assertIn("SUITES: ${{ needs.select.outputs.suites }}", job)
+        self.assertIn("python3 tools/ci/suites.py run --jobs 2 $SUITES", job)
+        select = section(self.workflow, "select", 2)
+        self.assertIn("suites_required: ${{ steps.plan.outputs.suites_required }}", select)
+        self.assertIn("suites: ${{ steps.plan.outputs.suites }}", select)
+        plan = step_script(self.workflow, "plan")
+        self.assertIn("if [ \"$EVENT_NAME\" = push ]; then\n"
+                      "  # Pull requests run", plan)
+        self.assertIn("selection_args+=(--all-suites)", plan)
+        self.assertEqual(self.aggregate(suites_required="true", suites="success")[0], 0)
+        code, summary = self.aggregate()
+        self.assertEqual(code, 0)
+        self.assertIn("Path-selected suites not applicable", summary)
+        for required, result in (("true", "failure"), ("true", "skipped"),
+                                 ("true", "cancelled"), ("false", "success"),
+                                 ("false", "failure"), ("", "skipped"), ("true", "")):
+            with self.subTest(required=required, result=result):
+                self.assertNotEqual(self.aggregate(suites_required=required, suites=result)[0], 0)
+
+    def test_selected_suites_step_fails_without_a_selection(self):
+        script = step_script(self.workflow, "suites-run")
+        result = subprocess.run([self.bash, "-c", script], cwd=ROOT,
+                                env={**os.environ, "SUITES": ""}, capture_output=True, text=True)
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+
     def test_selected_native_job_fails_without_its_fixture_or_dependency(self):
         script = step_script(self.workflow, "native-check")
         with tempfile.TemporaryDirectory() as directory:
@@ -190,7 +221,8 @@ class CheckAggregateTests(unittest.TestCase):
                 self.assertIn('{"include":[{"runner":"runner","check_runner":"runner"}]}', job)
         checks = section(self.workflow, "checks", 2)
         self.assertIn("if: always()", checks)
-        self.assertIn("needs: [builder, select, security, test, check, clippy, native-dependencies]", checks)
+        self.assertIn(
+            "needs: [builder, select, security, test, check, clippy, native-dependencies, suites]", checks)
         for name in ("test", "check", "clippy"):
             self.assertIn(f"{name.upper()}_RESULT: ${{{{ needs.{name}.result }}}}", checks)
         self.assertIn("BUILDER_RESULT: ${{ needs.builder.result }}", checks)
@@ -200,7 +232,8 @@ class CheckAggregateTests(unittest.TestCase):
         self.assertIn("needs: [builder, select]", security)
         select = section(self.workflow, "select", 2)
         self.assertIn("security_required: ${{ steps.plan.outputs.security_required }}", select)
-        self.assertIn("if [ '${{ github.event_name }}' = pull_request ]; then", select)
+        self.assertIn("EVENT_NAME: ${{ github.event_name }}", select)
+        self.assertIn('if [ "$EVENT_NAME" = pull_request ]; then', select)
         self.assertIn("selection_args+=(--allow-security-skip)", select)
         script = step_script(self.workflow, "plan")
         # Execute the production pipeline with failing selector and benign git.
@@ -210,7 +243,8 @@ class CheckAggregateTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory) / "outputs"
             result = subprocess.run([self.bash, "-c", prefix + script], cwd=directory,
-                env={**os.environ, "GITHUB_OUTPUT": output.as_posix(),
+                env={**os.environ, "GITHUB_OUTPUT": output.as_posix(), "EVENT_NAME": "pull_request",
+                     "PULL_REQUEST_BASE": "", "PUSH_BEFORE": "", "GITHUB_REF": "refs/pull/1/head",
                      "GITHUB_STEP_SUMMARY": (Path(directory) / "summary").as_posix()},
                 capture_output=True, text=True)
         self.assertEqual(result.returncode, 37, result.stderr)

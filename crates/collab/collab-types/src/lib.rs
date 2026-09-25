@@ -153,10 +153,10 @@ pub use permission_profile::{PermissionProfile, PermissionProfileError, Permissi
 pub use recipient_control::{
     MAX_RECIPIENT_CONTROL_CONNECTIONS, MAX_RECIPIENT_CONTROL_FRAME_BYTES,
     MAX_RECIPIENT_CONTROL_REQUESTS_PER_CONNECTION, MAX_RECIPIENT_MOUNT_PATH_BYTES,
-    RECIPIENT_CONTROL_VERSION, RecipientControlErrorCode, RecipientControlOperationV1,
-    RecipientControlRequestV1, RecipientControlResponseV1, RecipientControlResultV1,
-    RecipientFailureCodeV1, RecipientFailureV1, RecipientMountStatusV1, RecipientSubscriptionKeyV1,
-    RecipientSubscriptionStatusV1,
+    RECIPIENT_CONTROL_FRAMING, RECIPIENT_CONTROL_VERSION, RecipientControlErrorCode,
+    RecipientControlOperationV1, RecipientControlRequestV1, RecipientControlResponseV1,
+    RecipientControlResultV1, RecipientFailureCodeV1, RecipientFailureV1, RecipientMountStatusV1,
+    RecipientSubscriptionKeyV1, RecipientSubscriptionStatusV1,
 };
 pub use redaction::{
     MAX_REDACTION_REASON_BYTES, OpId, RedactRequest, RedactedMarker, RedactionError,
@@ -165,8 +165,8 @@ pub use redaction::{
 pub use role::{ArtifactKind, OpClass, Role, role_permits};
 pub use share_control::{
     MAX_SHARE_CONTROL_FRAME_BYTES, NamedGrantMetadataV1, NamedShareDeliveryStateV1,
-    SHARE_CONTROL_VERSION, ShareControlErrorCode, ShareControlOperationV1, ShareControlRequestV1,
-    ShareControlResponseV1, ShareControlResultV1,
+    SHARE_CONTROL_FRAMING, SHARE_CONTROL_VERSION, ShareControlErrorCode, ShareControlOperationV1,
+    ShareControlRequestV1, ShareControlResponseV1, ShareControlResultV1,
 };
 pub use space::{Space, SpaceId};
 pub use validator::{

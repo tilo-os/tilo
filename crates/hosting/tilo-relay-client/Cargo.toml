@@ -1,0 +1,31 @@
+[package]
+name = "tilo-relay-client"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+description = "Client side of the Tilo host + relay: the authenticated relay session, the co-edit session over it, and the length-prefixed frame codec both ends of the relay stream use."
+license = "MIT OR Apache-2.0"
+
+# Devices (the shell, workspace tools) dial a relay through this crate without
+# linking the daemon. The daemon depends on it too, for its federation dials
+# and for the frame codec, so the wire logic exists once. Storage, sandboxing
+# and the accept side stay in `tilo-relay`.
+[dependencies]
+tilo-relay-protocol = { path = "../tilo-relay-protocol" }
+tilo-user-identity = { path = "../../collab/tilo-user-identity" }
+iroh.workspace = true
+iroh-base.workspace = true
+tokio = { workspace = true, features = ["io-util", "macros", "rt", "sync", "time"] }
+ed25519-dalek.workspace = true
+rand.workspace = true
+serde.workspace = true
+postcard = { workspace = true, features = ["use-std"] }
+thiserror.workspace = true
+wire-frame = { path = "../../system/wire-frame", features = ["postcard", "tokio"] }
+
+[dev-dependencies]
+# Proves a raw Automerge delta is never mistaken for a co-edit payload.
+automerge.workspace = true
+
+[lints]
+workspace = true

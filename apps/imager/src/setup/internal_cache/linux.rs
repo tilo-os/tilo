@@ -355,6 +355,16 @@ mod native {
             )
         }
     }
+    /// The per-user cache directory that holds `qos-internal-install`.
+    pub(in crate::setup) fn cache_base() -> Result<std::path::PathBuf> {
+        if let Some(raw) = std::env::var_os("XDG_CACHE_HOME").filter(|p| !p.is_empty()) {
+            Ok(std::path::PathBuf::from(raw))
+        } else {
+            let home = dirs::home_dir().ok_or("Current-user home directory unavailable")?;
+            raw_components(home.as_os_str().as_bytes())?;
+            Ok(home.join(".cache"))
+        }
+    }
     pub(in crate::setup) struct CacheRoot {
         lease: Arc<LockedRoot>,
         manifest: String,
@@ -368,15 +378,7 @@ mod native {
             )
         )]
         pub(in crate::setup) fn acquire(selected: &SelectedManifest) -> Result<Self> {
-            let cache =
-                if let Some(raw) = std::env::var_os("XDG_CACHE_HOME").filter(|p| !p.is_empty()) {
-                    std::path::PathBuf::from(raw)
-                } else {
-                    let home = dirs::home_dir().ok_or("Current-user home directory unavailable")?;
-                    raw_components(home.as_os_str().as_bytes())?;
-                    home.join(".cache")
-                };
-            Self::acquire_at(&cache, selected)
+            Self::acquire_at(&cache_base()?, selected)
         }
         fn acquire_at(cache: &Path, selected: &SelectedManifest) -> Result<Self> {
             let parts = raw_components(cache.as_os_str().as_bytes())?;

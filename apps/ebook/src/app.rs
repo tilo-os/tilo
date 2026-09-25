@@ -144,7 +144,10 @@ struct SearchWorker {
 }
 
 impl SearchWorker {
+    /// `prior` is the published provider; its chapter-prose index is reused
+    /// when the book set has not changed.
     fn spawn(
+        prior: crate::search_provider::BookSearchProvider,
         books: Arc<Vec<Arc<Book>>>,
         annotations: Arc<Vec<Annotation>>,
         registry: Arc<Vec<crate::model::LibraryEntry>>,
@@ -155,7 +158,8 @@ impl SearchWorker {
         thread::Builder::new()
             .name("ebook-search-builder".into())
             .spawn(move || {
-                let provider = crate::search_provider::BookSearchProvider::new_shared(
+                let provider = crate::search_provider::BookSearchProvider::new_shared_after(
+                    &prior,
                     books,
                     annotations,
                     registry,
@@ -5137,6 +5141,7 @@ impl Widget for BooksApp {
             };
             let registry = Arc::new(registry);
             if let Ok(worker) = SearchWorker::spawn(
+                self.search_provider.clone(),
                 Arc::clone(&self.library),
                 Arc::clone(&self.all_annotations),
                 registry,

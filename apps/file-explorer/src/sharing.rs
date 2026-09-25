@@ -8,12 +8,14 @@ use collab_types::{
 };
 #[cfg(unix)]
 use collab_types::{
-    MAX_SHARE_CONTROL_FRAME_BYTES, SHARE_CONTROL_VERSION, ShareControlRequestV1,
-    ShareControlResponseV1, ShareControlResultV1,
+    SHARE_CONTROL_FRAMING, SHARE_CONTROL_VERSION, ShareControlRequestV1, ShareControlResponseV1,
+    ShareControlResultV1,
 };
 #[cfg(unix)]
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::AsyncWriteExt;
 use uuid::Uuid;
+#[cfg(unix)]
+use wire_frame::FrameError;
 
 use crate::i18n::t;
 #[cfg(unix)]
@@ -232,18 +234,9 @@ fn transact(
                 &[arg("error", error.to_string())],
             )
         })?;
-        if request.len() > MAX_SHARE_CONTROL_FRAME_BYTES {
-            return Err(t("files-share-request-too-large"));
-        }
-        stream
-            .write_all(&(request.len() as u32).to_be_bytes())
-            .await
-            .map_err(|error| {
-                t_args(
-                    "files-share-request-failed",
-                    &[arg("error", error.to_string())],
-                )
-            })?;
+        let request = SHARE_CONTROL_FRAMING
+            .encode(&request)
+            .map_err(|_| t("files-share-request-too-large"))?;
         stream.write_all(&request).await.map_err(|error| {
             t_args(
                 "files-share-request-failed",
@@ -256,24 +249,30 @@ fn transact(
                 &[arg("error", error.to_string())],
             )
         })?;
-        let mut length = [0_u8; 4];
-        stream.read_exact(&mut length).await.map_err(|error| {
-            t_args(
-                "files-share-no-response",
-                &[arg("error", error.to_string())],
-            )
-        })?;
-        let length = u32::from_be_bytes(length) as usize;
-        if length == 0 || length > MAX_SHARE_CONTROL_FRAME_BYTES {
-            return Err(t("files-share-response-too-large"));
-        }
-        let mut response = vec![0_u8; length];
-        stream.read_exact(&mut response).await.map_err(|error| {
-            t_args(
-                "files-share-response-truncated",
-                &[arg("error", error.to_string())],
-            )
-        })?;
+        let response = match SHARE_CONTROL_FRAMING.read_async(&mut stream).await {
+            Ok(Some(response)) => response,
+            Err(FrameError::TooLarge(_) | FrameError::EmptyFrame) => {
+                return Err(t("files-share-response-too-large"));
+            }
+            Err(error @ FrameError::Truncated) => {
+                return Err(t_args(
+                    "files-share-response-truncated",
+                    &[arg("error", error.to_string())],
+                ));
+            }
+            Ok(None) => {
+                return Err(t_args(
+                    "files-share-no-response",
+                    &[arg("error", FrameError::Closed.to_string())],
+                ));
+            }
+            Err(error) => {
+                return Err(t_args(
+                    "files-share-no-response",
+                    &[arg("error", error.to_string())],
+                ));
+            }
+        };
         let response: ShareControlResponseV1 =
             collab_types::canonical::from_canonical_bytes(&response).map_err(|error| {
                 t_args(

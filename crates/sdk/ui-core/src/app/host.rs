@@ -4477,6 +4477,51 @@ mod semantic_tree_app_tests {
     }
 
     #[test]
+    fn directed_local_device_effect_cannot_run_for_a_remote_writer() {
+        let action = ActionSpec::operation(
+            "copy-private-folder",
+            "Copy private folder",
+            OperationKind::Effect,
+            COUNTER_TYPE,
+            &CounterAction::Bump,
+        )
+        .unwrap()
+        .with_contract(tilo_actions::ActionContract {
+            tags: vec!["tilo.local-device-only".into()],
+            ..tilo_actions::ActionContract::default()
+        });
+        let mut app = lazy_app(
+            Resource::new(
+                "test.private-folder",
+                "test.private-folder",
+                "Private folder",
+            )
+            .with_action(action),
+        );
+        let address =
+            tilo_actions::ActionAddress::new("test.private-folder", "copy-private-folder");
+        let remote = app.invoke_resource_action(
+            ResourceInvocation::new(&address, "agent:Scribe")
+                .broker_admitted(true)
+                .invocation(Some(tilo_actions::InvocationId::new())),
+        );
+        assert!(matches!(
+            remote,
+            Err(tilo_actions::DoorError::Unavailable { ref code, .. }) if code == "local_device_only"
+        ));
+
+        let actor = app.collaboration.local_author.0.clone();
+        assert!(
+            app.invoke_resource_action(
+                ResourceInvocation::new(&address, &actor)
+                    .broker_admitted(true)
+                    .invocation(Some(tilo_actions::InvocationId::new())),
+            )
+            .is_ok()
+        );
+    }
+
+    #[test]
     fn local_control_result_does_not_broadcast_into_component_siblings() {
         use crate::application_test_support::ProbeHost;
         use crate::widget::{Column, TileHost};
