@@ -58,6 +58,12 @@
 //!   resource's state, submit edits through its [`Dispatcher`], and report
 //!   where its user is with [`ResourceSelection`]. Built from a `ViewCx`, the
 //!   same surface renders past versions read-only in History mode.
+//! * **Extending an existing widget** — adding one hook to a toolkit widget,
+//!   a view or a surface — implements
+//!   [`Decorator`](crate::widget::Decorator) instead of `Widget`: name the
+//!   wrapped widget and override only the hooks that change; every other
+//!   `Widget` method, including the ones containers must forward, reaches
+//!   the wrapped widget by default.
 //! * **Local view state** is a [`LocalState`](crate::LocalState): never
 //!   persisted, never shared, never undone.
 
