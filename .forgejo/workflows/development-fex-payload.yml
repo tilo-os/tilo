@@ -1,0 +1,159 @@
+name: Development / build retained ARM FEX payload
+
+on:
+  workflow_dispatch:
+
+# These candidates are CI-built, digest-addressed and retained. They are not
+# release-accepted: the SDK resolves live Fedora RPMs and translated Wine,
+# Proton and GPU execution still require separate tests.
+concurrency:
+  group: development-fex-payload-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  buildroot:
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
+    runs-on: runner-large-arm64
+    timeout-minutes: 90
+    outputs:
+      ref: ${{ steps.publish.outputs.ref }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: code.sandbox.example
+          username: ${{ github.actor }}
+          password: ${{ secrets.REGISTRY_TOKEN }}
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      - name: Build native ARM toolchain candidate
+        id: publish
+        run: |
+          set -euo pipefail
+          test "$(uname -m)" = aarch64
+          source os/base-snapshot.env
+          bash os/dev/cache-github-assets.sh nasm-2.16.03.tar.xz
+          tag="code.sandbox.example/qos/tilo-fex-buildroot-candidate:${GITHUB_SHA}-${GITHUB_RUN_ID}"
+          docker buildx build --platform linux/arm64 --push --provenance=false \
+            --metadata-file buildroot-metadata.json --file os/Containerfile.fex-buildroot \
+            --build-arg "BASE_REF=$BASE_REF" \
+            --build-context github-assets=os/external-assets/cache \
+            --label org.tilo.development-only=true \
+            --label "org.opencontainers.image.revision=$GITHUB_SHA" \
+            --tag "$tag" .
+          digest="$(jq -er '."containerimage.digest" | select(test("^sha256:[0-9a-f]{64}$"))' buildroot-metadata.json)"
+          echo "ref=code.sandbox.example/qos/tilo-fex-buildroot-candidate@$digest" >> "$GITHUB_OUTPUT"
+
+  sdk:
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
+    runs-on: runner-large
+    timeout-minutes: 90
+    outputs:
+      ref: ${{ steps.publish.outputs.ref }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: code.sandbox.example
+          username: ${{ github.actor }}
+          password: ${{ secrets.REGISTRY_TOKEN }}
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      - name: Build native x86 development SDK candidate
+        id: publish
+        run: |
+          set -euo pipefail
+          test "$(uname -m)" = x86_64
+          source os/base-snapshot.env
+          tag="code.sandbox.example/qos/tilo-fex-x86-sdk-candidate:${GITHUB_SHA}-${GITHUB_RUN_ID}"
+          docker buildx build --platform linux/amd64 --push --provenance=false \
+            --metadata-file sdk-metadata.json --file os/Containerfile.fex-x86-sdk \
+            --build-arg "BASE_REF=$BASE_REF" \
+            --label org.tilo.development-only=true \
+            --label "org.opencontainers.image.revision=$GITHUB_SHA" \
+            --tag "$tag" .
+          digest="$(jq -er '."containerimage.digest" | select(test("^sha256:[0-9a-f]{64}$"))' sdk-metadata.json)"
+          echo "ref=code.sandbox.example/qos/tilo-fex-x86-sdk-candidate@$digest" >> "$GITHUB_OUTPUT"
+
+  payload:
+    needs: [buildroot, sdk]
+    runs-on: runner-large-arm64
+    timeout-minutes: 180
+    enable-openid-connect: true
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: code.sandbox.example
+          username: ${{ github.actor }}
+          password: ${{ secrets.REGISTRY_TOKEN }}
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      - name: Build verified portable FEX candidate
+        id: publish
+        env:
+          FEX_BUILDROOT_REF: ${{ needs.buildroot.outputs.ref }}
+          FEX_X86_SDK_REF: ${{ needs.sdk.outputs.ref }}
+        run: |
+          set -euo pipefail
+          test "$(uname -m)" = aarch64
+          [[ "$FEX_BUILDROOT_REF" =~ ^code\.podesta\.ai/qos/tilo-fex-buildroot-candidate@sha256:[0-9a-f]{64}$ ]]
+          [[ "$FEX_X86_SDK_REF" =~ ^code\.podesta\.ai/qos/tilo-fex-x86-sdk-candidate@sha256:[0-9a-f]{64}$ ]]
+          bash os/dev/fetch-fex-source.sh "$RUNNER_TEMP/fex-source"
+          tag="code.sandbox.example/qos/tilo-fex-payload-candidate:${GITHUB_SHA}-${GITHUB_RUN_ID}"
+          docker buildx build --platform linux/arm64 --push --provenance=false \
+            --metadata-file fex-metadata.json --file os/Containerfile.fex-payload \
+            --build-arg "FEX_BUILDROOT_REF=$FEX_BUILDROOT_REF" \
+            --build-arg "FEX_X86_SDK_REF=$FEX_X86_SDK_REF" \
+            --build-context "fex-source=$RUNNER_TEMP/fex-source" \
+            --label org.tilo.development-only=true \
+            --label "org.opencontainers.image.revision=$GITHUB_SHA" \
+            --tag "$tag" .
+          digest="$(jq -er '."containerimage.digest" | select(test("^sha256:[0-9a-f]{64}$"))' fex-metadata.json)"
+          echo "ref=code.sandbox.example/qos/tilo-fex-payload-candidate@$digest" >> "$GITHUB_OUTPUT"
+      - name: Sign candidate and record its limited provenance
+        env:
+          COSIGN_KEY_REF: ${{ secrets.COSIGN_KEY_REF }}
+          AWS_SIGNING_ROLE_ARN: ${{ secrets.AWS_SIGNING_ROLE_ARN }}
+          FEX_BUILDROOT_REF: ${{ needs.buildroot.outputs.ref }}
+          FEX_X86_SDK_REF: ${{ needs.sdk.outputs.ref }}
+          FEX_PAYLOAD_REF: ${{ steps.publish.outputs.ref }}
+        run: |
+          set -euo pipefail
+          case "$COSIGN_KEY_REF" in
+            gcpkms://*|awskms://*|azurekms://*|hashivault://*) ;;
+            *) echo '::error::COSIGN_KEY_REF must name a non-exportable KMS/HSM key'; exit 1 ;;
+          esac
+          . os/dev/configure-cosign-kms.sh
+          jq -n --arg source "$GITHUB_SHA" --arg buildroot "$FEX_BUILDROOT_REF" \
+            --arg sdk "$FEX_X86_SDK_REF" --arg payload "$FEX_PAYLOAD_REF" \
+            --arg run "$GITHUB_RUN_ID" '{
+              buildDefinition: {
+                buildType: "https://tilo.sh/buildtypes/development-fex-payload/v1",
+                externalParameters: {developmentOnly: true, runtimeAcceptanceVerified: false},
+                resolvedDependencies: [
+                  {uri: ("git+ssh://code.sandbox.example/qos/qos@" + $source)},
+                  {uri: $buildroot}, {uri: $sdk}
+                ]
+              },
+              runDetails: {
+                builder: {id: "https://code.sandbox.example/qos/forgejo/actions/development-fex-v1"},
+                metadata: {invocationId: $run, output: $payload}
+              }
+            }' > fex-provenance.json
+          cosign sign --yes --key "$COSIGN_KEY_REF" "$FEX_PAYLOAD_REF"
+          cosign attest --yes --key "$COSIGN_KEY_REF" \
+            --predicate fex-provenance.json --type slsaprovenance1 "$FEX_PAYLOAD_REF"
+          cosign verify --key keys/cosign.pub "$FEX_PAYLOAD_REF" >/dev/null
+          echo "::notice::CI-signed development FEX candidate: $FEX_PAYLOAD_REF"
+      - uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
+        if: always()
+        with:
+          name: development-fex-payload-${{ github.sha }}-${{ github.run_id }}
+          path: |
+            fex-metadata.json
+            fex-provenance.json
+          if-no-files-found: warn
