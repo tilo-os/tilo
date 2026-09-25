@@ -43,16 +43,16 @@ SSHOPTS=(-F /dev/null -p "${TILO_SSH_PORT:-2222}" -o StrictHostKeyChecking=no
          -o BatchMode=no -o NumberOfPasswordPrompts=1
          -o PreferredAuthentications=password -o PubkeyAuthentication=no
          -o KbdInteractiveAuthentication=no)
+# Automation must never fall through to the desktop's graphical askpass
+# helper; sshpass owns the one permitted password prompt.
+unset SSH_ASKPASS SSH_ASKPASS_REQUIRE
 GUEST="${TILO_VM_USER:-tester}@127.0.0.1"
 GUEST_PW="${TILO_VM_PASS:-tilo}"
-gssh() {
-  env -u SSH_ASKPASS -u SSH_ASKPASS_REQUIRE \
-    sshpass -p "$GUEST_PW" ssh "${SSHOPTS[@]}" "$GUEST" "$@"
-}
+gssh() { sshpass -p "$GUEST_PW" ssh "${SSHOPTS[@]}" "$GUEST" "$@"; }
 runscript() {
   printf '%s\n' "$2" > "$OUT/$1.sh"
-  env -u SSH_ASKPASS -u SSH_ASKPASS_REQUIRE sshpass -p "$GUEST_PW" ssh "${SSHOPTS[@]}" "$GUEST" 'cat > /tmp/step.sh' < "$OUT/$1.sh" || return 1
-  env -u SSH_ASKPASS -u SSH_ASKPASS_REQUIRE sshpass -p "$GUEST_PW" ssh "${SSHOPTS[@]}" "$GUEST" \
+  sshpass -p "$GUEST_PW" ssh "${SSHOPTS[@]}" "$GUEST" 'cat > /tmp/step.sh' < "$OUT/$1.sh" || return 1
+  sshpass -p "$GUEST_PW" ssh "${SSHOPTS[@]}" "$GUEST" \
     "echo $GUEST_PW | sudo -S -p '' bash -euo pipefail /tmp/step.sh 2>&1"
 }
 wait_ssh() {
