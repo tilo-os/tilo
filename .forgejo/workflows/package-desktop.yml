@@ -277,28 +277,28 @@ jobs:
     needs: package
     runs-on: runner
     timeout-minutes: 120
-    enable-openid-connect: true
     steps:
       - uses: actions/download-artifact@9bc31d5ccc31df68ecc42ccf4149144866c47d8a # v3
         with:
           path: release
       - name: Publish immutable desktop payloads and advance their channels
         env:
-          DESKTOP_AUDIENCE: ${{ vars.TILO_DESKTOP_RELEASE_AUDIENCE }}
+          # The CI account's package token writes the immutable payload (as
+          # build-kernel.yml does); the repository-scoped release token
+          # advances the payload channel variables. The Authorized Integration
+          # this used before was rejected ("authGroup.Verify") and Forgejo has
+          # no API to repair it.
+          PACKAGE_TOKEN: ${{ secrets.REGISTRY_TOKEN }}
+          VARIABLE_TOKEN: ${{ secrets.RELEASE_TOKEN }}
           # Keep future chaining available, but never publish OS versions automatically.
           CONTINUOUS_OS_RELEASE: "0"
         shell: bash
         run: |
           set -euo pipefail
-          [[ -n ${DESKTOP_AUDIENCE:-} ]] || {
-            printf 'TILO_DESKTOP_RELEASE_AUDIENCE is required\n' >&2
+          [[ -n ${PACKAGE_TOKEN:-} && -n ${VARIABLE_TOKEN:-} ]] || {
+            printf 'REGISTRY_TOKEN and RELEASE_TOKEN are required\n' >&2
             exit 1
           }
-          jwt=$(curl --fail --silent --show-error \
-            --header "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
-            "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=$DESKTOP_AUDIENCE" \
-            | jq -er .value)
-          echo "::add-mask::$jwt"
           owner=${GITHUB_REPOSITORY%%/*}
           package_api="$GITHUB_SERVER_URL/api/packages/$owner/generic"
           version="0.0.0-$GITHUB_SHA"
@@ -308,14 +308,14 @@ jobs:
             response=$(mktemp "$RUNNER_TEMP/tilo-desktop-response.XXXXXX")
             status=$(curl --silent --show-error --retry 3 --retry-all-errors \
               --output "$response" --write-out '%{http_code}' \
-              --header "Authorization: Bearer $jwt" \
+              --header "Authorization: token $PACKAGE_TOKEN" \
               --request PUT --upload-file "$file" "$url")
             case "$status" in
               200|201|204) ;;
               409)
                 remote=$(mktemp "$RUNNER_TEMP/tilo-existing-desktop.XXXXXX")
                 curl --fail --silent --show-error --retry 3 --retry-all-errors \
-                  --header "Authorization: Bearer $jwt" "$url" --output "$remote"
+                  --header "Authorization: token $PACKAGE_TOKEN" "$url" --output "$remote"
                 cmp --silent "$file" "$remote"
                 ;;
               *) cat "$response" >&2; exit 1 ;;
@@ -325,10 +325,10 @@ jobs:
             local name=$1 value=$2 endpoint status method
             endpoint="$variable_api/$name"
             status=$(curl --silent --output /dev/null --write-out '%{http_code}' \
-              --header "Authorization: Bearer $jwt" "$endpoint")
+              --header "Authorization: token $VARIABLE_TOKEN" "$endpoint")
             case "$status" in 200) method=PUT ;; 404) method=POST ;; *) return 1 ;; esac
             curl --fail --silent --show-error --request "$method" \
-              --header "Authorization: Bearer $jwt" \
+              --header "Authorization: token $VARIABLE_TOKEN" \
               --header 'Content-Type: application/json' \
               --data "$(jq -cn --arg value "$value" '{value:$value}')" "$endpoint"
           }
@@ -356,7 +356,7 @@ jobs:
           if [[ ${CONTINUOUS_OS_RELEASE:-0} == 1 ]]; then
             dispatch_api="${GITHUB_API_URL:-$GITHUB_SERVER_URL/api/v1}/repos/$GITHUB_REPOSITORY/actions/workflows/build-image.yml/dispatches"
             curl --fail --silent --show-error --request POST \
-              --header "Authorization: Bearer $jwt" \
+              --header "Authorization: token $VARIABLE_TOKEN" \
               --header 'Content-Type: application/json' \
               --data '{"ref":"main","inputs":{"with_browser":"1","publish":"true"}}' \
               "$dispatch_api"

@@ -166,6 +166,73 @@ class OsReleaseMatrixTests(unittest.TestCase):
                     self.assertEqual(group, f"tilo-os-image-validate-{ref}")
 
 
+def generation_script() -> str:
+    workflow = WORKFLOW.read_text()
+    marker = "      - name: Resolve the image generation from the published series\n"
+    block = workflow.split(marker, 1)[1].split("\n\n      # Set up buildx", 1)[0]
+    return textwrap.dedent(block.split("        run: |\n", 1)[1])
+
+
+def empty_series_allowed(publish: str, genesis: str, sha: str = SHA) -> bool:
+    """Run the generation step against a resolver that reports its bootstrap mode."""
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        resolver = root / "os/dev/next-generation.sh"
+        resolver.parent.mkdir(parents=True)
+        resolver.write_text('#!/usr/bin/env bash\nprintf "%s\\n" "${TILO_ALLOW_EMPTY_SERIES:-0}"\n')
+        resolver.chmod(0o755)
+        environment = {
+            key: value for key, value in os.environ.items() if key != "TILO_ALLOW_EMPTY_SERIES"
+        }
+        environment.update(
+            {
+                "GITHUB_ENV": str(root / "env"),
+                "GITHUB_SHA": sha,
+                "PUBLISH": publish,
+                "SERIES_GENESIS_REVISION": genesis,
+                "TILO_REGISTRY_CREDS": "user:token",
+            }
+        )
+        subprocess.run(
+            ["bash", "-c", generation_script()], cwd=root, env=environment,
+            check=True, capture_output=True,
+        )
+        values = dict(line.split("=", 1) for line in (root / "env").read_text().splitlines())
+        return values["TILO_GENERATION"] == "1"
+
+
+class GenerationSeriesBootstrapTests(unittest.TestCase):
+    def test_validation_builds_may_find_no_published_series(self):
+        self.assertTrue(empty_series_allowed("false", ""))
+
+    def test_publication_never_restarts_an_unreadable_series_by_default(self):
+        self.assertFalse(empty_series_allowed("true", ""))
+
+    def test_genesis_authorizes_only_the_exact_commit(self):
+        self.assertTrue(empty_series_allowed("true", SHA))
+        self.assertFalse(empty_series_allowed("true", "f" * 40))
+        self.assertFalse(empty_series_allowed("true", SHA[:7], SHA[:7]))
+        self.assertFalse(empty_series_allowed("true", SHA.upper(), SHA.upper()))
+
+    def test_genesis_reads_the_protected_repository_variable(self):
+        self.assertIn(
+            "SERIES_GENESIS_REVISION: ${{ vars.TILO_OS_SERIES_GENESIS_REVISION }}",
+            WORKFLOW.read_text(),
+        )
+
+
+class ReleaseGateTests(unittest.TestCase):
+    def test_validation_gate_tolerates_an_absent_prediction_signer(self):
+        # Only a publication exports the signer, and the gate runs under set -u.
+        workflow = WORKFLOW.read_text()
+        gate = workflow.split("      - name: Reseal, install, boot, and stage the verified image\n", 1)[1]
+        gate = gate.split("\n      - name: ", 1)[0]
+        self.assertIn("set -euo pipefail", gate)
+        condition = next(line for line in gate.splitlines() if "sign-target-prediction.sh" in line)
+        guard = gate.splitlines()[gate.splitlines().index(condition) - 1]
+        self.assertIn('[[ -n "${TILO_PCR_PREDICTION_SIGNER:-}" ]]', guard)
+
+
 def concurrency_group(ref: str, event: str, requested: str) -> str:
     """Evaluate the workflow's concurrency expression for one event."""
     line = next(

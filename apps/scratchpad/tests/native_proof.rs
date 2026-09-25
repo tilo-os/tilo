@@ -15,7 +15,7 @@ fn native_fixture_reloads_production_storage_and_refuses_overwrite() {
     assert_eq!(manifest.body_bytes, body.len());
     assert_eq!(
         manifest.body_hash,
-        iroh_blobs::Hash::new(body.as_bytes()).to_hex()
+        blake3::hash(body.as_bytes()).to_hex().to_string()
     );
     let snapshot = root.native_input_snapshot(&state.doc, &state.root).unwrap();
     assert_eq!(snapshot["body_hash"], manifest.body_hash);
@@ -60,7 +60,7 @@ fn native_editor_click_home_matches_fixture_hash_then_backspace_restores_it() {
         let body = driver.state_mut().doc.text(object).unwrap();
         assert_eq!(body.len(), manifest.prefixed_x_bytes);
         assert_eq!(
-            iroh_blobs::Hash::new(body.as_bytes()).to_hex(),
+            blake3::hash(body.as_bytes()).to_hex().to_string(),
             manifest.prefixed_x_hash
         );
         eprintln!("native-proof phase backspace");

@@ -32,6 +32,8 @@ atomic-file = { path = "../../crates/system/atomic-file" }
 # Portable content store for draft attachments. Drafts carry only a verified
 # content identity; qdoc offers/fetches the bytes across collaborators.
 qdoc = { path = "../../crates/doc/qdoc" }
+# Calendar invitations are validated as parsed iCalendar content lines.
+pim-lines = { path = "../../crates/text/pim-lines" }
 automerge.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -54,7 +56,7 @@ base64.workspace = true
 
 # Live IMAP and SMTP for the account engine. These are optional and gated by
 # `live`; the default build uses the offline backend.
-async-imap = { version = "0.10", optional = true, default-features = false, features = ["runtime-tokio"] }
+async-imap = { workspace = true, optional = true }
 lettre = { version = "0.11", optional = true, default-features = false, features = ["smtp-transport", "tokio1-rustls", "ring", "rustls-native-certs", "tokio1"] }
 # HTTP sender avatars through `ui::ImageStore`; optional and gated by `live`.
 reqwest = { workspace = true, optional = true, features = ["blocking", "form"] }

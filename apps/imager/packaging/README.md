@@ -113,26 +113,19 @@ closed unless the platform release credentials are configured:
   exact public key as `tilo-release-key.asc`, and publishes its fingerprint and
   SHA-256 sidecars beside the artifacts. The final publication job imports only
   that exported key into a fresh keyring and re-verifies every Linux signature
-  against the protected fingerprint. Bootstrap-only fallback:
-  `IMAGER_LINUX_SIGNING_KEY_B64` (armored
-  private key, base64 encoded) and `IMAGER_LINUX_SIGNING_KEY_ID`, imported by CI
-  as `TILO_LINUX_SIGNING_KEY`.
-- Windows steady state: `IMAGER_WINDOWS_CREDENTIAL_BROKER` configures a signer
-  wrapper, or repository variable `IMAGER_WINDOWS_SIGNER` directly names a
-  preinstalled wrapper which performs its own OIDC exchange. It receives the
-  artifact path, uses the job's federated short-lived signing lease, and returns
-  only after timestamping.
-  `signtool verify` independently checks its result. Bootstrap-only fallback:
-  `IMAGER_WINDOWS_CERT_PFX_B64` and `IMAGER_WINDOWS_CERT_PASSWORD`.
+  against the protected fingerprint. CI has no private-key import fallback.
+- Windows steady state: `IMAGER_WINDOWS_CREDENTIAL_BROKER` configures the
+  preinstalled signer wrapper after validating the job's OIDC identity. The
+  wrapper receives the artifact path, uses a federated short-lived signing
+  lease, and returns only after timestamping. `signtool verify` independently
+  checks its result. CI neither imports a PFX nor accepts a direct signer-path
+  bypass.
   `IMAGER_WINDOWS_PUBLISHER` pins the complete Authenticode certificate subject;
   packaging checks the signer of every executable against it.
 - macOS steady state: `IMAGER_MACOS_CREDENTIAL_BROKER` leases the Developer ID
-  signing identity and a notarytool keychain profile. Bootstrap-only fallback:
-  `IMAGER_MAC_CERT_P12_B64`, `IMAGER_MAC_CERT_PASSWORD`,
-  `IMAGER_MAC_SIGNING_IDENTITY`, `IMAGER_APPLE_ID`,
-  `IMAGER_APPLE_TEAM_ID`, and `IMAGER_APPLE_APP_PASSWORD`. The app is signed
-  with the hardened runtime; both the app and signed DMG are notarized and
-  stapled before publication.
+  signing identity and a notarytool keychain profile. CI has no P12 or Apple
+  app-password import fallback. The app is signed with the hardened runtime;
+  both the app and signed DMG are notarized and stapled before publication.
 
 `IMAGER_MAC_TEAM_ID` and `IMAGER_MAC_CERT_SHA256` independently pin the
 ten-character Developer Team ID and complete SHA-256 leaf-certificate
@@ -149,14 +142,13 @@ Linux leases contain exactly one `TILO_LINUX_SIGNER` and one
 token brokers write one non-empty token with no newline. Unknown, duplicate,
 empty, control-character, multiline, or malformed output fails the release.
 Windows applies the equivalent protected-ACL and non-reparse-point contract.
-Bootstrap PFX/P12 files, temporary keychains, and notary profiles are removed
-by `always()` cleanup steps, including after a failed build.
+Temporary notary profiles are removed by an `always()` cleanup step, including
+after a failed build.
 
-The bootstrap credentials are protected Forgejo secrets. Native and promotion
-broker paths are separate protected repository variables because absolute paths
-are platform-specific; public-key identities are protected variables as well.
-Private signing material and OIDC leases must never enter the repository,
-workflow environment files, or ordinary artifacts.
+Native and promotion broker paths are separate protected repository variables
+because absolute paths are platform-specific; public-key identities are
+protected variables as well. Private signing material and OIDC leases must
+never enter the repository, workflow environment files, or ordinary artifacts.
 
 Linux users should download `tilo-release-key.asc` and
 `tilo-release-key.fingerprint`, compare the complete fingerprint through an

@@ -519,3 +519,55 @@ fn the_host_door_reaches_the_same_handler_and_refuses_a_stale_target() {
     assert!(refused.is_err());
     assert!(backend.installs.lock().unwrap().is_empty());
 }
+
+/// A staged (USB-free) installer publishes its way back and its one allowed
+/// plan through the same door as every other control.
+#[test]
+fn a_staged_installer_offers_only_alongside_and_the_way_back() {
+    let backend = Arc::new(FakeBackend {
+        disks: crate::disks::parse_lsblk(&crate::internal_handoff::tests::lsblk_json().to_string()),
+        installs: Mutex::new(Vec::new()),
+        power: Mutex::new(Vec::new()),
+        succeed: true,
+    });
+    let (mut app, mut doc) = app(&backend);
+    app.refresh_disks_with(backend.read_disks());
+    app.apply_internal_handoff(crate::internal_handoff::tests::handoff());
+    let doc = &mut doc;
+    app.step = Step::Disk;
+    let device = app.disks[0].name.clone();
+
+    let selected = invoke(
+        &mut app,
+        doc,
+        &format!("select@{}", op::disk_resource(&device)),
+        &json!({}),
+    );
+    assert!(selected.get("answer").is_some(), "{selected}");
+    let erase = invoke(
+        &mut app,
+        doc,
+        "set-method@installer.storage",
+        &json!({"method": "erase"}),
+    );
+    assert_eq!(refused(&erase), Some("action_failed"), "{erase}");
+    assert_eq!(app.install_method, InstallMethod::Alongside);
+
+    app.install_state = InstallState::Running;
+    let running = invoke(&mut app, doc, "return-to-host@installer", &json!({}));
+    assert_eq!(refused(&running), Some("action_unavailable"), "{running}");
+    assert!(backend.power.lock().unwrap().is_empty());
+
+    app.install_state = InstallState::Failed;
+    let back = invoke(&mut app, doc, "return-to-host@installer", &json!({}));
+    assert!(back.get("answer").is_some(), "{back}");
+    assert_eq!(*backend.power.lock().unwrap(), vec![PowerAction::Reboot]);
+}
+
+#[test]
+fn an_ordinary_installer_publishes_no_way_back() {
+    let backend = FakeBackend::new();
+    let (mut app, mut doc) = app(&backend);
+    let reply = invoke(&mut app, &mut doc, "return-to-host@installer", &json!({}));
+    assert!(refused(&reply).is_some(), "{reply}");
+}

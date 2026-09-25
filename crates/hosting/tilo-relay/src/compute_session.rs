@@ -20,7 +20,7 @@ use crate::compute_transport::{
     COMPUTE_ALPN, ComputeEnvelope, ComputeJobBinding, ComputeRouteOutcome, ComputeTransportError,
     MAX_COMPUTE_FRAME_BYTES,
 };
-use crate::daemon::{read_frame, write_frame};
+use crate::frame::{read_frame, write_frame};
 use crate::peer::WorkspaceRegistry;
 use crate::policy::TrustPolicy;
 use crate::workspace::SharedWorkspace;
