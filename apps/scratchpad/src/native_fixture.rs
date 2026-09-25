@@ -1,10 +1,12 @@
-//! Deterministic note content written through the real application's Save effect.
+//! Deterministic note content written through the real application.
 
+use std::fmt::Write as _;
 use std::path::Path;
 
 use serde::Serialize;
-use tilo_actions::Action;
-use tilo_actions::OperationKind;
+use ui::prelude::HeadlessApp;
+
+use crate::{Note, Scratchpad};
 
 #[derive(Debug, Serialize)]
 pub struct NativeFixtureManifest {
@@ -17,20 +19,24 @@ pub struct NativeFixtureManifest {
     pub prefixed_x_bytes: usize,
 }
 
-/// Seed a fresh isolated directory with 1,000 ASCII lines for native diagnostics.
+/// Seed a fresh isolated `--data-dir` profile with 1,000 ASCII lines for
+/// native diagnostics. The note is written by the app's own edit action,
+/// through the same runtime and storage the app opens.
 ///
 /// This refuses every existing path, including an empty directory or symlink.
-/// Body hashes are deterministic BLAKE3; Automerge serialization need not be.
+/// Body hashes are deterministic BLAKE3; document serialization need not be.
 ///
 /// # Errors
-/// Returns directory creation, production storage, document, or Save errors.
+/// Returns directory creation, launch, action or storage errors.
 pub fn seed_native_fixture(directory: &Path) -> anyhow::Result<NativeFixtureManifest> {
     std::fs::create_dir(directory)?;
-    let body = (0..1000)
-        .map(|line| {
-            format!("Line {line:04}: A deterministic note for native scrolling and editing.\n")
-        })
-        .collect::<String>();
+    let body = (0..1000).fold(String::new(), |mut body, line| {
+        let _ = writeln!(
+            body,
+            "Line {line:04}: A deterministic note for native scrolling and editing."
+        );
+        body
+    });
     let prefixed = format!("x{body}");
     let manifest = NativeFixtureManifest {
         schema_version: 1,
@@ -41,17 +47,10 @@ pub fn seed_native_fixture(directory: &Path) -> anyhow::Result<NativeFixtureMani
         prefixed_x_hash: blake3::hash(prefixed.as_bytes()).to_hex().to_string(),
         prefixed_x_bytes: prefixed.len(),
     };
-    let (mut state, mut root) = crate::open(directory)?;
-    crate::actions::EditNote { text: body }.apply(&mut state.doc)?;
-    let saved = root
-        .invoke_resource_operation(
-            OperationKind::Effect,
-            crate::SAVE,
-            b"null",
-            &state.doc,
-            &state.root,
-        )
-        .map_err(anyhow::Error::msg)?;
-    anyhow::ensure!(saved, "production Save operation was not handled");
+    // Launch errors own the record's recovery handles and stay on this thread.
+    let fail = |error: &dyn std::fmt::Display| anyhow::anyhow!("{error}");
+    let mut app = HeadlessApp::<Scratchpad>::open_data_dir(directory).map_err(|e| fail(&e))?;
+    app.invoke(Note::EDIT.with(body)).map_err(|e| fail(&e))?;
+    app.flush().map_err(|e| fail(&e))?;
     Ok(manifest)
 }
