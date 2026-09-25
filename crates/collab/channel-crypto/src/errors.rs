@@ -83,6 +83,15 @@ pub enum Error {
     /// A signed governance frame failed live membership/capability checks.
     #[error("MLS governance error: {0}")]
     Governance(String),
+
+    /// No content key is held for the ciphertext's epoch: the member joined
+    /// without that epoch's history, or was removed before it.
+    #[error("no content key for epoch {0}")]
+    MissingContentKey(u64),
+
+    /// A content-key or key-history envelope failed to seal or open.
+    #[error("content encryption error: {0}")]
+    ContentCrypto(tilo_seal::Error),
 }
 
 impl Error {

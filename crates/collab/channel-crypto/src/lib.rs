@@ -1,29 +1,34 @@
 //! `channel-crypto` — per-channel MLS group encryption for Tilo.
 //!
-//! Each Tilo channel becomes one MLS group; the group key rotates on
-//! every membership change; `SignedOp.payload` ships encrypted while
-//! the envelope's metadata (author, artifact, `op_class`, timestamp, seq)
-//! stays cleartext so the broker routes by artifact and filters by op
-//! class without decrypting.
+//! Each Tilo channel becomes one MLS group, used for group key agreement:
+//! the group's epoch secrets rotate on every membership change. Ops are not
+//! encrypted with MLS application messages but under per-epoch *content
+//! keys* derived from the MLS exporter ([`content`]), so every member —
+//! including one added later — can read the channel's whole history. The
+//! envelope's metadata (author, artifact, `op_class`, timestamp, seq) stays
+//! cleartext so the broker routes by artifact and filters by op class
+//! without decrypting.
 //!
 //! ## Supported operations
 //!
 //! [`MemberKey::generate`] mints a fresh per-member signer + provider;
 //! [`MemberKey::fresh_key_package`] mints a key package to ship to a
 //! channel owner; [`ChannelGroup::create`] bootstraps a one-member
-//! channel; [`ChannelGroup::add_member`] admits a candidate (returns a
-//! Welcome); [`ChannelGroup::process_welcome`] joins from a Welcome;
-//! [`ChannelGroup::encrypt`]/[`decrypt`] round-trip application
-//! messages; [`add_member_with_commit`]/[`process_commit`] handle
-//! three-or-more-member groups; [`ChannelGroup::remove_member`] emits the
-//! removal commit that advances surviving members and deactivates the removed
-//! member.
+//! channel; [`ChannelGroup::admit`] / [`ChannelGroup::add_member_transactional`]
+//! admit a candidate and return its Welcome, sealed key history and the
+//! commit for existing members; [`ChannelGroup::process_welcome_with_history`]
+//! joins with the full key history; [`ChannelGroup::seal_content`] /
+//! [`ChannelGroup::open_content`] seal and open op payloads (any epoch the
+//! member holds a key for, any number of times); [`process_commit`] advances
+//! existing members; [`ChannelGroup::remove_member`] emits the removal commit
+//! after which the removed member derives no further content keys.
+//! [`ChannelGroup::encrypt`]/[`decrypt`] remain for version-1 MLS
+//! application messages.
 //!
-//! This crate does not support external commits or joins, late-join history
-//! backfill (joiners start at the inviter's current epoch, and older
-//! ciphertexts are dropped), epoch rotation outside membership changes, or
-//! direct-share/cross-channel envelopes. Sealed persistence exists, but
-//! vault-key custody belongs to the production identity service.
+//! This crate does not support external commits or joins, epoch rotation
+//! outside membership changes, or direct-share/cross-channel envelopes.
+//! Sealed persistence exists, but vault-key custody belongs to the
+//! production identity service.
 //!
 //! One fixed ciphersuite: [`crypto::CIPHERSUITE`] =
 //! `MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519` (rationale in
@@ -36,12 +41,13 @@
 //! ## Integration with `collab-types`
 //!
 //! [`collab_types::SignedOp`] carries `encryption:
-//! Option<EncryptionMetadata>` — `None` is plaintext, `Some` is
-//! ciphertext from this crate's [`ChannelGroup::encrypt`], requiring the
-//! recipient to hold a matching `ChannelGroup` (same channel, same or
-//! later epoch). [`collab_types::MlsGovernanceFrameV1`] carries versioned,
-//! signed clear routing metadata around opaque Welcome/commit bytes;
-//! [`GovernanceJournal`] persists its targeted delivery outbox.
+//! Option<EncryptionMetadata>` — `None` is plaintext, `Some` names the
+//! channel, epoch and versioned [`collab_types::EncryptionScheme`]: version 1
+//! MLS application messages (still readable by members at that epoch) or
+//! version 2 content-key envelopes. [`collab_types::MlsGovernanceFrameV1`]
+//! carries versioned, signed clear routing metadata around opaque
+//! Welcome/commit/key-history bytes; [`GovernanceJournal`] persists its
+//! targeted delivery outbox.
 
 #![cfg_attr(
     test,
@@ -56,16 +62,18 @@
     )
 )]
 
+pub mod content;
 pub mod crypto;
 pub mod errors;
 pub mod governance;
 pub mod group;
 pub mod persistence;
 
+pub use content::{ContentKeyring, KeyHistory};
 pub use crypto::{CIPHERSUITE, MemberKey};
 pub use errors::{Error, Result};
 pub use governance::{DeliveryKind, GovernanceDelivery, GovernanceJournal};
-pub use group::ChannelGroup;
+pub use group::{ChannelGroup, MemberAddition};
 pub use persistence::VaultKey;
 // Re-exported so callers can take/return KeyPackage values without
 // pulling openmls into their own Cargo.toml — a version-pinning

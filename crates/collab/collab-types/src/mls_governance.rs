@@ -40,6 +40,47 @@ pub enum MlsGovernanceAction {
     /// Permanently closes the plaintext migration gate after the encrypted
     /// snapshot named by this digest has a durable broker acknowledgement.
     EnableEncryption { encrypted_snapshot_digest: [u8; 32] },
+    /// [`Self::Add`] plus the joiner's content-key history, sealed for the
+    /// post-add epoch, so the joiner can decrypt every earlier op without
+    /// any other member online. Delivered with the Welcome. Appended as a
+    /// new variant so frames written before it keep decoding.
+    AddWithKeyHistory {
+        recipient: Ed25519PublicKey,
+        welcome: Vec<u8>,
+        existing_member_commit: Option<Vec<u8>>,
+        key_history: Vec<u8>,
+    },
+}
+
+impl MlsGovernanceAction {
+    /// The admission fields of an [`Self::Add`] or
+    /// [`Self::AddWithKeyHistory`]: recipient, Welcome, existing-member
+    /// commit and (when present) key history.
+    #[allow(
+        clippy::type_complexity,
+        reason = "a borrowed view of one enum variant's fields"
+    )]
+    pub fn admission(&self) -> Option<(&Ed25519PublicKey, &[u8], Option<&[u8]>, Option<&[u8]>)> {
+        match self {
+            Self::Add {
+                recipient,
+                welcome,
+                existing_member_commit,
+            } => Some((recipient, welcome, existing_member_commit.as_deref(), None)),
+            Self::AddWithKeyHistory {
+                recipient,
+                welcome,
+                existing_member_commit,
+                key_history,
+            } => Some((
+                recipient,
+                welcome,
+                existing_member_commit.as_deref(),
+                Some(key_history),
+            )),
+            Self::Remove { .. } | Self::EnableEncryption { .. } => None,
+        }
+    }
 }
 
 /// Signed, replay-linked governance frame.
@@ -198,23 +239,24 @@ impl MlsGovernanceFrameV1 {
         verify_event(&self.signing_view(), &self.signature, &self.signed_by)
             .map_err(|error: VerifyError| MlsGovernanceError::Signature(error.to_string()))?;
         match &self.action {
-            MlsGovernanceAction::Add {
-                recipient,
-                welcome,
-                existing_member_commit,
-            } => {
+            action @ (MlsGovernanceAction::Add { .. }
+            | MlsGovernanceAction::AddWithKeyHistory { .. }) => {
+                let Some((recipient, welcome, existing_member_commit, key_history)) =
+                    action.admission()
+                else {
+                    return Err(MlsGovernanceError::InvalidControlPayload);
+                };
                 if !context.desired_members.contains(recipient)
                     || context.current_mls_members.contains(recipient)
                 {
                     return Err(MlsGovernanceError::MembershipMismatch);
                 }
                 let needs_commit = context.current_mls_members.len() > 1;
-                if welcome.is_empty()
-                    || welcome.len() > MAX_MLS_CONTROL_BYTES
+                let bad = |v: &[u8]| v.is_empty() || v.len() > MAX_MLS_CONTROL_BYTES;
+                if bad(welcome)
                     || needs_commit != existing_member_commit.is_some()
-                    || existing_member_commit
-                        .as_ref()
-                        .is_some_and(|v| v.is_empty() || v.len() > MAX_MLS_CONTROL_BYTES)
+                    || existing_member_commit.is_some_and(bad)
+                    || key_history.is_some_and(bad)
                 {
                     return Err(MlsGovernanceError::InvalidControlPayload);
                 }

@@ -27,8 +27,10 @@ pub use transport::{
 
 #[cfg(feature = "broker-transport")]
 mod broker;
+mod history;
 #[cfg(feature = "broker-transport")]
 pub use broker::{CertifiedEndpointIdentity, HostSessionConnector, wifi_continuity_command};
+pub use history::{DocumentHistory, HISTORY_PAGE_SIZE, HISTORY_PREFETCH_MARGIN};
 
 #[cfg(any(test, feature = "test-support"))]
 mod loopback;
@@ -448,6 +450,10 @@ pub enum CollabEvent {
         /// empty because they have no MLS keys; SDK endpoints populate one
         /// slot per op and drop undecryptable encrypted entries.
         decrypted_payloads: Vec<Option<Vec<u8>>>,
+        /// Oldest `seq` the host returned, before the endpoint dropped ops
+        /// it could not use yet (an incomplete segment), so paging resumes
+        /// below it rather than re-fetching or stopping early.
+        oldest_seq: Option<u64>,
         exhausted: bool,
     },
     /// One capability-checked invocation addressed to this application
