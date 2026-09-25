@@ -11,6 +11,8 @@ use std::process::Command;
 use std::process::Stdio;
 use std::time::{Duration, Instant};
 
+#[cfg(windows)]
+use serde::Deserialize;
 use serde_json::{Value, json};
 
 use super::{App, Outcome};
@@ -233,13 +235,131 @@ fn write_json(dir: &Path, name: &str, value: &Value) -> Result<(), CliError> {
 }
 
 #[cfg(windows)]
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct VmInstallProof {
+    schema: String,
+    architecture: String,
+    booted_image_digest: String,
+    installed_image_digest: String,
+    composefs_digest: String,
+    target_uki_sha256: String,
+    disk_guid: String,
+    partuuids: VmPartuuids,
+}
+
+#[cfg(windows)]
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct VmPartuuids {
+    efi: String,
+    boot: String,
+    root: String,
+}
+
+#[cfg(windows)]
+fn lowercase_hex(value: &str, len: usize) -> bool {
+    value.len() == len
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+}
+
+#[cfg(windows)]
+fn canonical_uuid(value: &str) -> bool {
+    uuid::Uuid::parse_str(value).is_ok_and(|id| id.to_string() == value)
+}
+
+#[cfg(windows)]
+fn parse_install_proof(bytes: &[u8]) -> Result<VmInstallProof, String> {
+    const PREFIX: &str = "TILO_VM_INSTALL_PROOF_V1=";
+    let line = std::str::from_utf8(bytes).map_err(|_| "VM install proof is not UTF-8")?;
+    let payload = line
+        .strip_prefix(PREFIX)
+        .and_then(|rest| rest.strip_suffix('\n'))
+        .ok_or("VM install proof needs exactly one terminated proof line")?;
+    if payload.contains('\n') || payload.contains('\r') {
+        return Err("VM install proof contains another line or carriage return".into());
+    }
+    let proof: VmInstallProof = serde_json::from_str(payload)
+        .map_err(|error| format!("invalid VM install proof: {error}"))?;
+    if proof.schema != "tilo.vm-install-image-proof.v1"
+        || proof.architecture != "arm64"
+        || !proof
+            .booted_image_digest
+            .strip_prefix("sha256:")
+            .is_some_and(|hex| lowercase_hex(hex, 64))
+        || proof.booted_image_digest != proof.installed_image_digest
+        || !lowercase_hex(&proof.composefs_digest, 128)
+        || !lowercase_hex(&proof.target_uki_sha256, 64)
+        || !canonical_uuid(&proof.disk_guid)
+        || !canonical_uuid(&proof.partuuids.efi)
+        || !canonical_uuid(&proof.partuuids.boot)
+        || !canonical_uuid(&proof.partuuids.root)
+        || proof.partuuids.efi == proof.partuuids.boot
+        || proof.partuuids.efi == proof.partuuids.root
+        || proof.partuuids.boot == proof.partuuids.root
+    {
+        return Err("VM install proof has invalid or inconsistent identities".into());
+    }
+    Ok(proof)
+}
+
+#[cfg(windows)]
+fn check_install_proof(
+    proof: &VmInstallProof,
+    source_check: &Value,
+    installer_composefs: Option<&str>,
+) -> Result<Value, String> {
+    if source_check.get("disk_guid").and_then(Value::as_str) != Some(&proof.disk_guid)
+        || source_check
+            .pointer("/final_partuuids/efi")
+            .and_then(Value::as_str)
+            != Some(&proof.partuuids.efi)
+        || source_check
+            .pointer("/final_partuuids/boot")
+            .and_then(Value::as_str)
+            != Some(&proof.partuuids.boot)
+        || source_check
+            .pointer("/final_partuuids/root")
+            .and_then(Value::as_str)
+            != Some(&proof.partuuids.root)
+        || installer_composefs != Some(&proof.composefs_digest)
+    {
+        return Err(
+            "guest install proof differs from the verified source GPT or installer composefs"
+                .into(),
+        );
+    }
+    Ok(json!({
+        "schema": "tilo.windows-vm-install-proof-check.v1",
+        "guest_proof": {
+            "schema": proof.schema,
+            "architecture": proof.architecture,
+            "booted_image_digest": proof.booted_image_digest,
+            "installed_image_digest": proof.installed_image_digest,
+            "composefs_digest": proof.composefs_digest,
+            "target_uki_sha256": proof.target_uki_sha256,
+            "disk_guid": proof.disk_guid,
+            "partuuids": {
+                "efi": proof.partuuids.efi,
+                "boot": proof.partuuids.boot,
+                "root": proof.partuuids.root,
+            },
+        },
+        "source_check": source_check,
+        "installer_composefs": installer_composefs,
+    }))
+}
+
+#[cfg(windows)]
 fn verify_external_target(
     plan: &Plan,
     expected_final_partitions: u64,
     artifact_name: &str,
-) -> Result<(), CliError> {
+) -> Result<Option<Value>, CliError> {
     let Some(target) = &plan.external_target else {
-        return Ok(());
+        return Ok(None);
     };
     let mut manifest_name = OsString::from(target.as_os_str());
     manifest_name.push(".manifest.json");
@@ -277,7 +397,8 @@ fn verify_external_target(
             plan,
         ));
     }
-    write_json(&plan.out, artifact_name, &proof)
+    write_json(&plan.out, artifact_name, &proof)?;
+    Ok(Some(proof))
 }
 
 impl App {
@@ -652,7 +773,28 @@ impl App {
                 .record("verify-alongside", verify.elapsed().as_secs_f64());
         }
         #[cfg(windows)]
-        verify_external_target(plan, 3, "external-target-after-install.json")?;
+        let source_check = verify_external_target(plan, 3, "external-target-after-install.json")?;
+        #[cfg(windows)]
+        if let Some(source_check) = &source_check {
+            let path = plan.run.join("install-proof.log");
+            let size = std::fs::metadata(&path)
+                .map_err(|error| failed("verify-install-proof", error.to_string(), plan))?
+                .len();
+            if size == 0 || size > 8192 {
+                return Err(failed(
+                    "verify-install-proof",
+                    "VM install proof is empty or oversized",
+                    plan,
+                ));
+            }
+            let bytes = std::fs::read(&path)
+                .map_err(|error| failed("verify-install-proof", error.to_string(), plan))?;
+            let proof = parse_install_proof(&bytes)
+                .map_err(|error| failed("verify-install-proof", error, plan))?;
+            let checked = check_install_proof(&proof, source_check, installed.composefs.as_deref())
+                .map_err(|error| failed("verify-install-proof", error, plan))?;
+            write_json(&plan.out, "vm-install-proof-checked.json", &checked)?;
+        }
 
         let target_boot = Instant::now();
         let booted = self.runner.output(&plan.vm(&[
@@ -802,6 +944,33 @@ fn wait_for_app(console: &mut SocketConsole, app: &str, limit: Duration) -> Opti
 
 #[cfg(test)]
 mod tests {
+    #[cfg(windows)]
+    #[test]
+    fn vm_install_proof_requires_one_valid_guest_line_and_matching_source() {
+        let digest = format!("sha256:{}", "a".repeat(64));
+        let efi = "11111111-1111-4111-8111-111111111111";
+        let boot = "22222222-2222-4222-8222-222222222222";
+        let root = "33333333-3333-4333-8333-333333333333";
+        let disk = "44444444-4444-4444-8444-444444444444";
+        let payload = json!({
+            "schema": "tilo.vm-install-image-proof.v1", "architecture": "arm64",
+            "booted_image_digest": digest, "installed_image_digest": digest,
+            "composefs_digest": "b".repeat(128), "target_uki_sha256": "c".repeat(64),
+            "disk_guid": disk, "partuuids": {"efi": efi, "boot": boot, "root": root},
+        });
+        let line = format!("TILO_VM_INSTALL_PROOF_V1={payload}\n");
+        let proof = super::parse_install_proof(line.as_bytes()).expect("valid guest proof");
+        let source = json!({"disk_guid": disk,
+            "final_partuuids": {"efi": efi, "boot": boot, "root": root}});
+        let checked = super::check_install_proof(&proof, &source, Some(&"b".repeat(128)))
+            .expect("matching source GPT");
+        assert_eq!(checked["guest_proof"]["disk_guid"], disk);
+        assert!(super::parse_install_proof(format!("{line}{line}").as_bytes()).is_err());
+        assert!(super::parse_install_proof(line.trim_end().as_bytes()).is_err());
+        let mut changed = source;
+        changed["final_partuuids"]["root"] = json!(efi);
+        assert!(super::check_install_proof(&proof, &changed, Some(&"b".repeat(128))).is_err());
+    }
     use super::*;
 
     fn plan(layout: Layout) -> Plan {
