@@ -4,9 +4,9 @@
 The VM boots a separate CI installer medium. Its final disk has synthetic,
 empty Windows extents and the exact Windows-assigned Tilo partition GUIDs.
 Only the three Tilo payload extents are ever copied back to the physical disk.
-`receipt` verifies a digest-pinned CI image signature and attestation, then
-hashes the VM-installed final extents. This receipt proves local byte identity;
-the VM install procedure must still establish that it installed that CI image.
+`receipt` verifies a digest-pinned CI image signature and attestation, the
+host-checked VM proof, and the source ESP target UKI before hashing the final
+extents. The guest proof is produced by a separate VM install procedure.
 """
 from __future__ import annotations
 
@@ -29,6 +29,10 @@ _copy_path = Path(__file__).with_name("copy-windows-direct-final-install.py")
 _spec = importlib.util.spec_from_file_location("tilo_windows_direct_copy", _copy_path)
 direct = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(direct)
+_provenance_path = Path(__file__).with_name("windows-direct-provenance.py")
+_provenance_spec = importlib.util.spec_from_file_location("tilo_windows_direct_provenance", _provenance_path)
+provenance = importlib.util.module_from_spec(_provenance_spec)
+_provenance_spec.loader.exec_module(provenance)
 
 SECTOR = 512
 GPT_ENTRIES = 128
@@ -230,15 +234,8 @@ def finalize_source(args):
     print(f"VM source final GPT identities match Windows plan: {raw}")
 
 
-def verified_ci_image(image, key):
-    require(DIGEST_REF.fullmatch(image) is not None, "CI image must be digest-pinned")
-    require(key.is_file() and not key.is_symlink(), "CI verification key is not a regular file")
-    for command in (["cosign", "verify", "--key", str(key), image],
-                    ["cosign", "verify-attestation", "--key", str(key),
-                     "--type", "slsaprovenance1", image]):
-        result = subprocess.run(command, capture_output=True, text=True, timeout=180)
-        require(result.returncode == 0, f"CI image signature/provenance verification failed: {result.stderr.strip()}")
-    return hashlib.sha256(key.read_bytes()).hexdigest()
+def verified_ci_image(image, key, command_json=None, key_arg=None):
+    return provenance.verify_ci_image(image, key, command_json, key_arg)
 
 
 def make_receipt(args):
@@ -249,16 +246,32 @@ def make_receipt(args):
     require(raw.is_file() and not raw.is_symlink()
             and raw.stat().st_size == plan["windows_disk"]["size_bytes"],
             "VM-installed source raw size differs from reviewed disk")
-    key_hash = verified_ci_image(args.ci_image, args.verify_key)
+    index_digest, child_digest = provenance.signed_ci_child(
+        args.ci_image, args.ci_index_manifest, args.ci_child_manifest)
+    checked = provenance.checked_guest_proof(args.vm_proof_checked, child_digest)
+    key_hash = verified_ci_image(args.ci_image, args.verify_key,
+                                 getattr(args, "cosign_command_json", None),
+                                 getattr(args, "cosign_key_arg", None))
     with raw.open("rb", buffering=0) as stream:
-        _, actual = direct.read_gpt(stream, raw.stat().st_size)
+        disk_guid, actual = direct.read_gpt(stream, raw.stat().st_size)
         require(direct.same_gpt_content(actual, rows),
                 "VM-installed source GPT differs from reviewed final map")
+        require(disk_guid == checked["guest_proof"]["disk_guid"],
+                "VM-installed source GPT disk identity differs from guest proof")
+        uki_hash = provenance.installed_uki_sha256(
+            stream, final[0], checked["guest_proof"]["composefs_digest"])
+        require(uki_hash == checked["guest_proof"]["target_uki_sha256"],
+                "VM-installed source ESP UKI differs from guest proof")
         hashes = {role: direct.hash_range(stream, row["offset_bytes"], row["size_bytes"])
                   for role, row in zip(direct.ROLES, final, strict=True)}
     receipt = {"schema": direct.SCHEMA, "raw_size_bytes": raw.stat().st_size,
                "partitions": rows, "final_sha256": hashes,
-               "ci_image": args.ci_image, "ci_verification_key_sha256": key_hash}
+               "ci_image": args.ci_image, "ci_index_digest": index_digest,
+               "ci_child_digest": child_digest,
+               "ci_verification_key_sha256": key_hash,
+               "vm_proof_checked_sha256": hashlib.sha256(
+                   args.vm_proof_checked.read_bytes()).hexdigest(),
+               "installed_uki_sha256": uki_hash}
     direct.stage.atomic_json(args.output, receipt)
     print(f"VM source readback and CI signature receipt: {args.output}")
 
@@ -283,6 +296,11 @@ def main(argv=None):
     receipt.add_argument("--source-raw", type=Path, required=True)
     receipt.add_argument("--ci-image", required=True)
     receipt.add_argument("--verify-key", type=Path, required=True)
+    receipt.add_argument("--cosign-command-json", type=Path)
+    receipt.add_argument("--cosign-key-arg")
+    receipt.add_argument("--ci-index-manifest", type=Path, required=True)
+    receipt.add_argument("--ci-child-manifest", type=Path, required=True)
+    receipt.add_argument("--vm-proof-checked", type=Path, required=True)
     receipt.add_argument("--output", type=Path, required=True)
     receipt.set_defaults(handler=make_receipt)
     args = parser.parse_args(argv)
