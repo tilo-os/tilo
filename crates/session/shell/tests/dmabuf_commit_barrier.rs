@@ -34,8 +34,9 @@ use shell::compositor::state::{ClientState, State};
 
 /// `DRM_FORMAT_ARGB8888`, one of the formats the compositor advertises.
 const DRM_FORMAT_ARGB8888: u32 = 0x3432_5241;
-const WIDTH: u32 = 64;
-const HEIGHT: u32 = 48;
+const WIDTH: i32 = 64;
+const HEIGHT: i32 = 48;
+const STRIDE: u32 = WIDTH.unsigned_abs() * 4;
 
 #[derive(Default)]
 struct Client {
@@ -179,7 +180,7 @@ fn linear_argb_memfd() -> OwnedFd {
     // SAFETY: memfd_create returned a new descriptor that nothing else owns.
     let fd = unsafe { OwnedFd::from_raw_fd(raw) };
     let file = std::fs::File::from(fd);
-    file.set_len(u64::from(WIDTH * HEIGHT * 4))
+    file.set_len(u64::from(STRIDE * HEIGHT.unsigned_abs()))
         .expect("size memfd");
     OwnedFd::from(file)
 }
@@ -223,17 +224,17 @@ fn commit_first_dmabuf() -> bool {
 
     let memfd = linear_argb_memfd();
     let params = dmabuf.create_params(&qh, ());
-    params.add(memfd.as_fd(), 0, 0, WIDTH * 4, 0, 0);
+    params.add(memfd.as_fd(), 0, 0, STRIDE, 0, 0);
     let buffer = params.create_immed(
-        WIDTH as i32,
-        HEIGHT as i32,
+        WIDTH,
+        HEIGHT,
         DRM_FORMAT_ARGB8888,
         zwp_linux_buffer_params_v1::Flags::empty(),
         &qh,
         (),
     );
     surface.attach(Some(&buffer), 0, 0);
-    surface.damage_buffer(0, 0, WIDTH as i32, HEIGHT as i32);
+    surface.damage_buffer(0, 0, WIDTH, HEIGHT);
     surface.commit();
     // Dispatching this commit runs the capture pre-commit hook.
     h.pump();
