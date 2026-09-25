@@ -26,7 +26,7 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use secret_vault::{KEY_LEN, VaultFormat, VaultKey};
+use secret_vault::{VaultFormat, VaultKey};
 use serde::{Deserialize, Serialize};
 use zeroize::Zeroizing;
 
@@ -241,17 +241,18 @@ fn load_or_create_key(dir: &Path, custody: SecretCustody) -> Option<VaultKey> {
     FORMAT.load_or_create_key(dir, custody)
 }
 
-fn seal(key: &[u8; KEY_LEN], plaintext: &[u8]) -> Option<Vec<u8>> {
+fn seal(key: &VaultKey, plaintext: &[u8]) -> Option<Vec<u8>> {
     FORMAT.seal(key, plaintext)
 }
 
-fn open(key: &[u8; KEY_LEN], blob: &[u8]) -> Option<Zeroizing<Vec<u8>>> {
+fn open(key: &VaultKey, blob: &[u8]) -> Option<Zeroizing<Vec<u8>>> {
     FORMAT.open(key, blob)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use secret_vault::KEY_LEN;
     #[cfg(windows)]
     use std::time::Duration;
 
@@ -288,7 +289,7 @@ mod tests {
         let persisted = read_key_bytes(&root.join("vault.key")).unwrap();
         assert!(
             keys.iter()
-                .all(|key| key.as_slice() == persisted.as_slice())
+                .all(|key| key.expose_secret().as_slice() == persisted.as_slice())
         );
         assert_eq!(std::fs::read_dir(&root).unwrap().count(), 1);
         std::fs::remove_dir_all(&root).unwrap();
@@ -423,10 +424,12 @@ mod tests {
         let blob = unhex(LEGACY_BLOB);
         assert_eq!(&blob[..5], b"QASV\x01");
         assert_eq!(
-            open(&[0x42; KEY_LEN], &blob).unwrap().as_slice(),
+            open(&VaultKey::from_bytes([0x42; KEY_LEN]), &blob)
+                .unwrap()
+                .as_slice(),
             b"tilo accounts known answer"
         );
-        assert!(open(&[0x43; KEY_LEN], &blob).is_none());
+        assert!(open(&VaultKey::from_bytes([0x43; KEY_LEN]), &blob).is_none());
     }
 
     #[test]
@@ -453,6 +456,11 @@ mod tests {
             })
         );
         vault.try_save().unwrap();
+        let resaved = std::fs::read(dir.join("vault.enc")).unwrap();
+        assert!(
+            resaved.starts_with(b"TSEAL"),
+            "re-saving writes the current tilo-seal envelope"
+        );
 
         let reopened = SecretVault::open_in(&root);
         assert!(reopened.recovery_error().is_none());
@@ -482,17 +490,17 @@ mod tests {
 
     #[test]
     fn seal_open_round_trips_and_rejects_tampering() {
-        let key = [7u8; KEY_LEN];
+        let key = VaultKey::from_bytes([7u8; KEY_LEN]);
         let plaintext = b"secret vault bytes";
         let blob = seal(&key, plaintext).expect("seal");
         // The sealed blob is not the plaintext.
         assert!(!blob.windows(plaintext.len()).any(|w| w == plaintext));
-        // It carries the magic header.
-        assert_eq!(&blob[..4], FORMAT.magic.as_slice());
+        // It is a versioned `tilo-seal` envelope bound to this vault format.
+        assert!(blob.starts_with(b"TSEAL"));
         // Round-trips under the same key.
         assert_eq!(open(&key, &blob).unwrap().as_slice(), plaintext);
         // A different key can't open it.
-        assert!(open(&[9u8; KEY_LEN], &blob).is_none());
+        assert!(open(&VaultKey::from_bytes([9u8; KEY_LEN]), &blob).is_none());
         // A single flipped ciphertext byte fails authentication.
         let mut tampered = blob;
         let last = tampered.len() - 1;
@@ -696,10 +704,7 @@ mod tests {
             .map(|worker| worker.join().unwrap())
             .collect();
         let persisted = load_or_create_key(&root, SecretCustody::WindowsDpapi).unwrap();
-        assert!(
-            keys.iter()
-                .all(|key| key.as_slice() == persisted.as_slice())
-        );
+        assert!(keys.iter().all(|key| *key == persisted));
         assert!(!root.join("vault.key").exists());
         assert!(private_fs::read(&root.join("vault.key.dpapi")).is_ok());
         std::fs::remove_dir_all(root).unwrap();

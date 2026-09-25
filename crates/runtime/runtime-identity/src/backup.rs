@@ -16,31 +16,49 @@ use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 
-use argon2::{Algorithm, Argon2, Params, Version};
-use chacha20poly1305::aead::{Aead, Payload};
-use chacha20poly1305::{KeyInit, XChaCha20Poly1305, XNonce};
 use getrandom::{SysRng, rand_core::TryRng as _};
+use tilo_seal::envelope::{self, Envelope, KeySource};
+use tilo_seal::{Context, Label, PasswordParams};
 use zeroize::{Zeroize, Zeroizing};
 
 use super::{IdentityLock, MAX_RECORD_BYTES, identity_from_record};
 
 const MAGIC: &[u8; 8] = b"TLOIBK\0\x01";
-const FORMAT_VERSION: u8 = 1;
+/// Format v1: Argon2id with a fixed profile and a hand-rolled
+/// XChaCha20-Poly1305 header. Read-only.
+const FORMAT_V1: u8 = 1;
+/// Format v2: the magic, this version byte, then a `tilo-seal` password
+/// envelope that stores its own Argon2id parameters and salt.
+const FORMAT_V2: u8 = 2;
+const PREFIX_LEN: usize = MAGIC.len() + 1;
 const SALT_LEN: usize = 16;
 const NONCE_LEN: usize = 24;
-const KEY_LEN: usize = 32;
 const AEAD_TAG_LEN: usize = 16;
-const HEADER_LEN: usize = MAGIC.len() + 1 + 4 + 4 + 4 + SALT_LEN + NONCE_LEN;
-const MAX_BACKUP_BYTES: u64 = MAX_RECORD_BYTES + HEADER_LEN as u64 + AEAD_TAG_LEN as u64;
+const V1_HEADER_LEN: usize = PREFIX_LEN + 4 + 4 + 4 + SALT_LEN + NONCE_LEN;
+/// Room for either header (v2's envelope header is well under 256 bytes)
+/// plus the AEAD tag.
+const MAX_BACKUP_BYTES: u64 = MAX_RECORD_BYTES + 256;
 
-// Immutable format-v1 Argon2id profile. These constants must never be raised
-// in place: a stronger future profile gets a new format version so every v1
-// backup remains readable. Parameters are encoded and authenticated too, but
-// exact matching prevents hostile envelopes from selecting a denial-of-service
-// workload.
+// Immutable format-v1 Argon2id profile. Exact matching on read prevents a
+// hostile v1 envelope from selecting a denial-of-service workload.
 const ARGON_MEMORY_KIB: u32 = 19 * 1024;
 const ARGON_ITERATIONS: u32 = 2;
 const ARGON_LANES: u32 = 1;
+const V1_PARAMS: PasswordParams = PasswordParams {
+    m_cost_kib: ARGON_MEMORY_KIB,
+    t_cost: ARGON_ITERATIONS,
+    p_cost: ARGON_LANES,
+};
+/// Parameters for new backups. They equal the v1 profile (the OWASP
+/// Argon2id baseline) so restoring stays fast on low-end devices; v2 stores
+/// them in the authenticated header, so raising them later needs no new
+/// format version.
+const V2_PARAMS: PasswordParams = V1_PARAMS;
+/// The most work a v2 backup may ask a reader to do. Larger stored
+/// parameters are refused before any derivation runs.
+const V2_MAX_MEMORY_KIB: u32 = 1024 * 1024;
+const V2_MAX_ITERATIONS: u32 = 16;
+const V2_MAX_LANES: u32 = 8;
 const MIN_PASSPHRASE_BYTES: usize = 12;
 
 /// Non-secret facts about a successfully written, verified portable backup.
@@ -339,6 +357,14 @@ fn threshold_backup_error() -> io::Error {
     )
 }
 
+fn v2_prefix() -> [u8; PREFIX_LEN] {
+    let mut prefix = [FORMAT_V2; PREFIX_LEN];
+    if let Some(magic) = prefix.get_mut(..MAGIC.len()) {
+        magic.copy_from_slice(MAGIC);
+    }
+    prefix
+}
+
 fn seal_record(record: &[u8], passphrase: &[u8]) -> io::Result<Zeroizing<Vec<u8>>> {
     if record.len() as u64 > MAX_RECORD_BYTES {
         return Err(io::Error::new(
@@ -347,101 +373,93 @@ fn seal_record(record: &[u8], passphrase: &[u8]) -> io::Result<Zeroizing<Vec<u8>
         ));
     }
     validate_passphrase(passphrase)?;
-    let mut salt = [0_u8; SALT_LEN];
-    let mut nonce = [0_u8; NONCE_LEN];
-    SysRng.try_fill_bytes(&mut salt).map_err(random_error)?;
-    SysRng.try_fill_bytes(&mut nonce).map_err(random_error)?;
-
-    let mut key = derive_key(
+    let prefix = v2_prefix();
+    let sealed = envelope::seal_with_password(
         passphrase,
-        &salt,
-        ARGON_MEMORY_KIB,
-        ARGON_ITERATIONS,
-        ARGON_LANES,
-    )?;
-    let header = encode_header(
-        &salt,
-        &nonce,
-        ARGON_MEMORY_KIB,
-        ARGON_ITERATIONS,
-        ARGON_LANES,
-    )?;
-    let cipher = XChaCha20Poly1305::new_from_slice(key.as_slice())
-        .map_err(|_| io::Error::other("could not initialize portable backup encryption"))?;
-    let ciphertext = cipher
-        .encrypt(
-            <&XNonce>::from(&nonce),
-            Payload {
-                msg: record,
-                aad: &header,
-            },
-        )
-        .map_err(|_| io::Error::other("could not encrypt portable backup"))?;
-    key.zeroize();
-
-    let capacity = header
-        .len()
-        .checked_add(ciphertext.len())
+        V2_PARAMS,
+        Context::new(Label::IdentityBackup, &prefix),
+        record,
+    )
+    .map_err(|_| io::Error::other("could not encrypt portable backup"))?;
+    let capacity = PREFIX_LEN
+        .checked_add(sealed.len())
         .ok_or_else(|| io::Error::other("portable backup is too large"))?;
     let mut out = Zeroizing::new(Vec::with_capacity(capacity));
-    out.extend_from_slice(&header);
-    out.extend_from_slice(&ciphertext);
+    out.extend_from_slice(&prefix);
+    out.extend_from_slice(&sealed);
     Ok(out)
 }
 
 fn open_record(blob: &[u8], passphrase: &[u8]) -> io::Result<Zeroizing<Vec<u8>>> {
     validate_passphrase(passphrase)?;
-    let header = parse_header(blob)?;
-    let (authenticated_header, ciphertext) = blob
-        .split_at_checked(HEADER_LEN)
-        .ok_or_else(invalid_backup)?;
-    if ciphertext.len() < AEAD_TAG_LEN {
+    if blob.get(..MAGIC.len()) != Some(MAGIC.as_slice()) {
         return Err(invalid_backup());
     }
-    let mut key = derive_key(
-        passphrase,
-        &header.salt,
-        header.memory_kib,
-        header.iterations,
-        header.lanes,
-    )?;
-    let cipher = XChaCha20Poly1305::new_from_slice(key.as_slice()).map_err(|_| invalid_backup())?;
-    let plaintext = cipher
-        .decrypt(
-            <&XNonce>::from(&header.nonce),
-            Payload {
-                msg: ciphertext,
-                aad: authenticated_header,
-            },
-        )
-        .map(Zeroizing::new)
-        .map_err(|_| invalid_backup());
-    key.zeroize();
-    let plaintext = plaintext?;
+    let plaintext = match blob.get(MAGIC.len()).copied() {
+        Some(FORMAT_V1) => open_v1(blob, passphrase)?,
+        Some(FORMAT_V2) => open_v2(blob, passphrase)?,
+        _ => return Err(invalid_backup()),
+    };
     if plaintext.len() as u64 > MAX_RECORD_BYTES {
         return Err(invalid_backup());
     }
     Ok(plaintext)
 }
 
-fn derive_key(
+fn open_v2(blob: &[u8], passphrase: &[u8]) -> io::Result<Zeroizing<Vec<u8>>> {
+    let (prefix, sealed) = blob
+        .split_at_checked(PREFIX_LEN)
+        .ok_or_else(invalid_backup)?;
+    // Refuse oversized stored parameters before deriving anything.
+    match Envelope::parse(sealed)
+        .map_err(|_| invalid_backup())?
+        .source
+    {
+        KeySource::Password { params, .. }
+            if params.m_cost_kib <= V2_MAX_MEMORY_KIB
+                && params.t_cost <= V2_MAX_ITERATIONS
+                && params.p_cost <= V2_MAX_LANES => {}
+        _ => return Err(invalid_backup()),
+    }
+    envelope::open_with_password(
+        passphrase,
+        Context::new(Label::IdentityBackup, prefix),
+        sealed,
+    )
+    .map_err(|_| invalid_backup())
+}
+
+fn open_v1(blob: &[u8], passphrase: &[u8]) -> io::Result<Zeroizing<Vec<u8>>> {
+    let header = parse_v1_header(blob)?;
+    let (authenticated_header, ciphertext) = blob
+        .split_at_checked(V1_HEADER_LEN)
+        .ok_or_else(invalid_backup)?;
+    if ciphertext.len() < AEAD_TAG_LEN {
+        return Err(invalid_backup());
+    }
+    let key = derive_v1_key(
+        passphrase,
+        &header.salt,
+        header.memory_kib,
+        header.iterations,
+        header.lanes,
+    )?;
+    tilo_seal::legacy::open_xchacha20poly1305(&key, &header.nonce, authenticated_header, ciphertext)
+        .map_err(|_| invalid_backup())
+}
+
+fn derive_v1_key(
     passphrase: &[u8],
     salt: &[u8; SALT_LEN],
     memory_kib: u32,
     iterations: u32,
     lanes: u32,
-) -> io::Result<Zeroizing<[u8; KEY_LEN]>> {
+) -> io::Result<tilo_seal::SymmetricKey> {
     if memory_kib != ARGON_MEMORY_KIB || iterations != ARGON_ITERATIONS || lanes != ARGON_LANES {
         return Err(invalid_backup());
     }
-    let params =
-        Params::new(memory_kib, iterations, lanes, Some(KEY_LEN)).map_err(|_| invalid_backup())?;
-    let argon = Argon2::new(Algorithm::Argon2id, Version::V0x13, params);
-    let mut key = Zeroizing::new([0_u8; KEY_LEN]);
-    argon
-        .hash_password_into(passphrase, salt, key.as_mut_slice())
-        .map_err(|_| io::Error::other("could not derive portable backup key"))?;
-    Ok(key)
+    envelope::derive_password_key(passphrase, salt, V1_PARAMS)
+        .map_err(|_| io::Error::other("could not derive portable backup key"))
 }
 
 fn validate_passphrase(passphrase: &[u8]) -> io::Result<()> {
@@ -462,40 +480,13 @@ struct Header {
     nonce: [u8; NONCE_LEN],
 }
 
-fn encode_header(
-    salt: &[u8; SALT_LEN],
-    nonce: &[u8; NONCE_LEN],
-    memory_kib: u32,
-    iterations: u32,
-    lanes: u32,
-) -> io::Result<[u8; HEADER_LEN]> {
-    let mut out = [0_u8; HEADER_LEN];
-    let mut at = 0;
-    write_header_part(&mut out, &mut at, MAGIC)?;
-    write_header_part(&mut out, &mut at, &[FORMAT_VERSION])?;
-    for value in [memory_kib, iterations, lanes] {
-        write_header_part(&mut out, &mut at, &value.to_le_bytes())?;
-    }
-    write_header_part(&mut out, &mut at, salt)?;
-    write_header_part(&mut out, &mut at, nonce)?;
-    Ok(out)
-}
-
-fn write_header_part(out: &mut [u8], offset: &mut usize, value: &[u8]) -> io::Result<()> {
-    let end = offset.checked_add(value.len()).ok_or_else(invalid_backup)?;
-    let destination = out.get_mut(*offset..end).ok_or_else(invalid_backup)?;
-    destination.copy_from_slice(value);
-    *offset = end;
-    Ok(())
-}
-
-fn parse_header(blob: &[u8]) -> io::Result<Header> {
+fn parse_v1_header(blob: &[u8]) -> io::Result<Header> {
     if blob.get(..MAGIC.len()) != Some(MAGIC.as_slice()) {
         return Err(invalid_backup());
     }
     let mut at = MAGIC.len();
     let [version] = take_array(blob, &mut at)?;
-    if version != FORMAT_VERSION {
+    if version != FORMAT_V1 {
         return Err(invalid_backup());
     }
     let memory_kib = u32::from_le_bytes(take_array(blob, &mut at)?);
@@ -779,7 +770,7 @@ mod tests {
     #[test]
     fn v1_backup_from_an_earlier_build_still_opens() {
         let passphrase = b"correct horse battery staple";
-        let key = derive_key(
+        let key = derive_v1_key(
             passphrase,
             &[1; SALT_LEN],
             ARGON_MEMORY_KIB,
@@ -788,7 +779,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            hex::encode(*key),
+            hex::encode(key.expose_secret()),
             "eb641d1b946edf14c62d7dca0578e4dc9236cb4aaf2bfe103e9751bc8ac66242"
         );
         let blob = hex::decode(KAT_BACKUP_V1).unwrap();
@@ -800,6 +791,47 @@ mod tests {
         let expected: serde_json::Value = serde_json::from_slice(&record_bytes("Ada", 71)).unwrap();
         assert_eq!(opened, expected);
         assert!(open_record(&blob, b"wrong horse battery staple").is_err());
+        // A v1 header claiming a heavier profile is refused before derivation.
+        let mut heavier = blob;
+        heavier[9..13].copy_from_slice(&u32::MAX.to_le_bytes());
+        assert!(open_record(&heavier, passphrase).is_err());
+    }
+
+    #[test]
+    fn v1_backup_file_still_verifies_and_imports() {
+        let dir = tempfile::tempdir().expect("dir");
+        let backup = dir.path().join("old.tilo-identity-backup");
+        fs::write(&backup, hex::decode(KAT_BACKUP_V1).unwrap()).expect("fixture");
+        let passphrase = b"correct horse battery staple";
+        let info = verify_portable_backup(&backup, passphrase).expect("v1 verifies");
+        let restored = tempfile::tempdir().expect("restore");
+        let imported = import_portable_backup(&backup, passphrase, restored.path(), "restored")
+            .expect("v1 imports");
+        let identity = super::super::load_from_path(imported).expect("restored identity loads");
+        assert_eq!(identity.group_public_key(), info.group_public_key);
+    }
+
+    #[test]
+    fn new_backups_are_v2_seal_envelopes_and_reject_tampering() {
+        let passphrase = b"a sufficient passphrase";
+        let blob = seal_record(b"{\"record\":true}", passphrase).expect("seal");
+        assert_eq!(&blob[..MAGIC.len()], MAGIC);
+        assert_eq!(blob[MAGIC.len()], FORMAT_V2);
+        assert!(envelope::is_envelope(&blob[PREFIX_LEN..]));
+        assert_eq!(
+            open_record(&blob, passphrase).unwrap().as_slice(),
+            b"{\"record\":true}"
+        );
+        assert!(open_record(&blob, b"another sufficient passphrase").is_err());
+        for index in [0, MAGIC.len(), PREFIX_LEN + 8, blob.len() - 1] {
+            let mut tampered = blob.to_vec();
+            tampered[index] ^= 0x01;
+            assert!(open_record(&tampered, passphrase).is_err(), "byte {index}");
+        }
+        // Rewriting the version byte cannot downgrade a v2 envelope to v1.
+        let mut downgraded = blob.to_vec();
+        downgraded[MAGIC.len()] = FORMAT_V1;
+        assert!(open_record(&downgraded, passphrase).is_err());
     }
 
     #[test]

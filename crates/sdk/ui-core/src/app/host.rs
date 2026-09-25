@@ -387,6 +387,10 @@ fn run_layout_pass(
             );
         }
     }
+    // Initial redraws and programmatic changes need the same semantic door
+    // as input. Publish only after the retained control tree has settled;
+    // the publisher diffs the surface and checks broker connectivity.
+    app.publish_action_surface();
     Some((true, t_compute_us, t_apply_us))
 }
 

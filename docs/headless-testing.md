@@ -86,6 +86,9 @@ A wrapper binary ships in the same workspace. Subcommands take human-friendly ar
 cargo build -p shell --bin tilo-control      # lands in target/debug, NOT on PATH
 alias qc='cargo run -q --bin tilo-control --' # or: cargo install --locked --path crates/session/shell --bin tilo-control
 
+qc actions list Calculator --json           # inspect search results without opening the palette
+qc actions invoke applications dev.tilo.calculator # invoke the exact discovered identity
+qc actions list --json                      # inspect the running apps' exported actions
 qc list-targets                             # PNAME (X, Y, W, H) per line
 qc click add_workspace                      # click_named
 qc click-at 400 300                         # click_at
@@ -99,6 +102,39 @@ qc raw '{"op":"list_targets"}'              # escape hatch for unwrapped command
 ```
 
 Default socket: `$TILO_TEST_CONTROL` env var, else `$XDG_RUNTIME_DIR/tilo-session/test-control.sock` (an error, not a `/tmp` fallback, when `XDG_RUNTIME_DIR` is unset). Override with `--socket /path`. Errors from the compositor surface as non-zero exit + structured `code: message` on stderr.
+
+### Select search results by identity
+
+Use `actions list QUERY --json` to inspect the same providers used by the palette.
+Enumeration starts asynchronous index refreshes; a cold query can be incomplete.
+Retry within a bounded deadline when the expected app is missing, and report it
+as unavailable if the deadline expires. Opening the palette is unnecessary.
+
+Titles are display text, not identities. For example, two results can both say
+“Open Calculator”:
+
+| Provider | ID | Meaning |
+|---|---|---|
+| `applications` | `dev.tilo.calculator` | Native Tilo Calculator |
+| `host-applications` | `org.gnome.Calculator` | Host GNOME Calculator |
+
+Inspect `kind`, `subtitle`, and the `(provider, id)` pair before choosing. Keep the
+selected pair and pass both to `actions invoke`; never substitute the first
+same-named result when the intended app is absent. `score` ranks results but does
+not establish application identity.
+
+After launch, enumerate again and inspect the app actions' `application`,
+`resource`, `operation`, `params`, and `contract` fields. Invoke the returned
+provider/ID with its declared arguments. Inspect the invocation receipt and,
+when pending, use `actions status INVOCATION_ID` until it reaches a terminal
+state. Then read back the affected resource or desktop state to verify the
+effect. A descriptor alone does not prove execution; a visible tile alone does
+not prove the app has rendered. `raw '{"op":"foreign_frames"}'` exposes the
+presented app identity, surface, frame count, and rendering errors.
+
+`scripts/headless-examples/action-api-demo.py` exercises discovery and semantic
+invocation against an isolated compositor. `app-launch-proof.py` selects native
+applications by provider/ID and checks that a new surface actually paints.
 
 ### Wire protocol (when you can't use the CLI)
 

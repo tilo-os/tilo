@@ -9,7 +9,7 @@ item **E1** — "SELinux policy for Tilo components (drop installer
 The installer live medium used to boot with `enforcing=0` on the kernel
 cmdline (global SELinux permissive). That is now **removed** — the medium boots
 **enforcing**. The privileged install runs in a properly-confined system domain;
-only the installer's UI/launcher session domain is relaxed.
+the installer UI stays enforced as well.
 
 - `os/installer-disk.toml` — kernel append is now `tilo.installer=1` (was
   `tilo.installer=1 enforcing=0`).
@@ -35,16 +35,17 @@ A/B). The cheap unblock was global `enforcing=0`.
 
 ## The fix: run the privileged work as a transient system unit
 
-`tilo-install`, once root, stages stdin and output in a mode-0700 directory under
-`/run`, then re-execs its work via a transient service equivalent to:
+`tilo-install`, once root, asks a short transient service to create and label a
+mode-0700 directory and mode-0600 stdin/output files under `/run`. It then
+re-execs its work via a second transient service equivalent to:
 
 ```
 systemd-run --collect --quiet --wait \
   --unit=tilo-install-$$ \
   --property=Type=exec \
-  --property=StandardInput=file:/run/tilo-install.XXXXXX/stdin \
-  --property=StandardOutput=append:/run/tilo-install.XXXXXX/output \
-  --property=StandardError=append:/run/tilo-install.XXXXXX/output \
+  --property=StandardInput=file:/run/tilo-installer/bridge/run.<random>/stdin \
+  --property=StandardOutput=append:/run/tilo-installer/bridge/run.<random>/output \
+  --property=StandardError=append:/run/tilo-installer/bridge/run.<random>/output \
   --setenv=TILO_INSTALL_TRANSIENT=1 \
   --setenv=TILO_TARGET_IMGREF=... \
   -- /usr/libexec/tilo-install <original args>
@@ -62,11 +63,12 @@ Why this shape:
   Fedora/systemd reset the transient-unit request while passing the greeter's
   anonymous pipe file descriptors. Ordinary root-only files avoid that D-Bus
   FD-passing path. PID 1 creates the root-only `/run/tilo-installer/bridge`
-  below the readable validated-profile directory before greetd, and the wrapper
-  matches every bridge file to that system runtime SELinux label before
-  systemd opens it; without that explicit match, systemd correctly fails with
-  `EXIT_STDIN` (209). Output is tailed while the service runs, so progress still
-  streams and neither the startup secret nor recovery key enters journald.
+  below the readable validated-profile directory before greetd. The transient
+  preparation service creates each run's files and restores their dedicated
+  `tilo_installer_bridge_t` label. The wrapper checks ownership, modes and
+  labels before sending the secret. The greeter domain has no create or
+  relabel permission on the bridge. Output is tailed while the install runs;
+  neither the startup secret nor recovery key enters journald.
 - `--wait` propagates the unit's exit code, so the UI's success/failure
   detection is unchanged.
 - `--collect` reaps the unit; `--quiet` keeps systemd-run's own chatter out of
@@ -83,22 +85,17 @@ permitted for the greeter by `os/etc/polkit-1/rules.d/49-tilo-greeter-power.rule
 
 ## The scoped SELinux module
 
-The one remaining gap is that `xdm_t` must be allowed to **ask** systemd to
-start the transient unit. `os/usr/share/tilo/selinux/tilo-installer.cil` grants
-that, and is loaded **only on the live medium** (the setup service is gated on
-the `tilo.installer` cmdline). The installed system never loads it.
+The enforcing VM reported a `USER_AVC` for `xdm_t` requesting `system:start`
+on `init_t`. The live-only policy grants that operation, plus greeter
+read/write on the dedicated bridge type and service-domain creation/cleanup.
+It grants no access to generic `/run` files and does not make any domain
+permissive. The setup service is gated on `tilo.install`; the installed system
+never loads the module.
 
-Shipped default: `(typepermissive xdm_t)` — the kernel logs-but-allows denials
-whose **source** is `xdm_t`, while every other domain (`init_t`,
-`container_runtime_t`, the install itself, the kernel) stays enforcing. This is
-chosen as the default because the precise allow-rule set for "xdm_t may
-StartTransientUnit" cannot be finalised without live AVCs from a VM install run.
-It is a substantial improvement over global `enforcing=0` and carries no
-regression risk for the privileged path.
-
-The module also carries the **hardening rules** (commented) that should replace
-`typepermissive` once a VM run confirms them. Their CIL syntax + class/perm
-names were validated with `secilc`.
+The setup unit must permit SELinux helper exec transitions for `semodule` and
+`restorecon`. It therefore sets `NoNewPrivileges=no`, retains its other
+sandbox restrictions, and fails before greetd if the policy cannot load while
+SELinux is enabled.
 
 ## VM confirmation
 
@@ -107,9 +104,7 @@ boot-installer`), then:
 
 1. **Does the install complete under enforcing?** Run a full install to a blank
    `/dev/vdb`. If it succeeds, the mechanism works.
-2. **Capture any residual denials** (these would be in enforced domains —
-   `init_t`, `container_runtime_t`, etc. — that `typepermissive xdm_t` does NOT
-   cover):
+2. **Capture any residual denials** in every domain:
    ```
    ausearch -m AVC,USER_AVC -ts boot
    ausearch -m AVC -ts boot | audit2allow -m tilo_install_extra
@@ -117,22 +112,17 @@ boot-installer`), then:
    The operation most worth watching is `bootc image copy-to-storage` writing
    container storage from `init_t`; if it is denied, add the reported
    `init_t`/`container_*` allows to the `.cil`.
-3. **Tighten:** once #2 is clean, replace `(typepermissive xdm_t)` in the
-   `.cil` with the commented allow block (plus anything #2 surfaced), rebuild,
-   and re-run #1 to confirm the install still completes with `xdm_t` enforced.
+3. Add only permissions justified by observed denials, then rebuild and re-run
+   the full install.
 
 ### Hotfix if a VM run shows the install broken under enforcing
 
 If an urgent install is needed before the policy is finalised, either re-add
 `enforcing=0` to `os/installer-disk.toml` (the old behaviour), or — better —
-keep enforcing and widen the scoped module. `(typepermissive xdm_t)` already
-covers the launcher; a residual denial would be in an enforced privileged
-domain and must be allowed explicitly (do **not** reach for global permissive).
+keep enforcing and add the exact observed permission to the scoped module.
 
 ## Scope / safety
 
 - Everything here is **live-medium only** (cmdline-gated). The installed Tilo
   system has never carried `enforcing=0` and is unaffected.
-- The medium is ephemeral and does whole-disk ops; relaxing only its UI session
-  domain while keeping the actual install operations enforced is the right
-  trade.
+- Both the UI and privileged install run under enforced policy.

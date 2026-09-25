@@ -389,8 +389,12 @@ fi
 if grep -Fq 'StandardInput=file:$INPUT' "$backend" \
    && grep -Fq 'StandardOutput=append:$OUTPUT' "$backend" \
    && grep -Fq 'tail --pid="$RUNNER"' "$backend" \
-   && grep -Fq 'mktemp -d /run/tilo-installer/bridge/run.XXXXXX' "$backend" \
-   && grep -Fq 'chcon --reference=/run/tilo-installer/bridge "$BRIDGE" "$INPUT" "$OUTPUT"' "$backend" \
+   && grep -Fq 'tilo-bridge-prepare-$$' "$backend" \
+   && grep -Fq 'tilo-bridge-clean-$$' "$backend" \
+   && grep -Fq 'installer runtime bridge permissions are unsafe' "$backend" \
+   && grep -Fq 'installer runtime bridge has an unexpected SELinux label' "$backend" \
+   && grep -Fq 'systemd-run is required for the enforced installer backend' "$backend" \
+   && ! grep -Fq 'chcon --reference=/run/tilo-installer/bridge' "$backend" \
    && grep -Fq 'ExecStart=/usr/bin/install -d -m 0700 /run/tilo-installer/bridge' "$repo_root/os/usr/lib/systemd/system/tilo-installer-setup.service" \
    && ! grep -Fq -- '--pipe --collect' "$backend"; then
   ok "privileged handoff keeps secrets out of D-Bus fd passing and journald"
@@ -436,7 +440,6 @@ fi
 
 installer_setup_unit="$repo_root/os/usr/lib/systemd/system/tilo-installer-setup.service"
 for policy in \
-  'NoNewPrivileges=yes' \
   'PrivateNetwork=yes' \
   'PrivateIPC=yes' \
   'ProtectHome=yes' \
@@ -449,6 +452,9 @@ for policy in \
   grep -Fqx "$policy" "$installer_setup_unit" \
     || bad "live installer setup sandbox is missing: $policy"
 done
+if ! python3 -B "$repo_root/os/tests/test_installer_selinux_bridge.py"; then
+  bad 'live installer SELinux bridge policy or setup ordering regressed'
+fi
 if grep -Eq '^(PrivateDevices|ProtectKernelTunables)=' "$installer_setup_unit"; then
   bad 'live installer setup cannot inspect its source disk or load its SELinux policy'
 fi
