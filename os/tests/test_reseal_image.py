@@ -26,6 +26,8 @@ if args[0] == '--remote=false': args = args[1:]
 if args[:2] == ['image', 'inspect']:
     print(json.dumps([{'Id': os.environ.get('INSPECT_ID', 'sha256:' + '1'*64),
                       'Architecture': os.environ.get('ARCH', 'arm64'), 'Os': 'linux'}]))
+elif args[:2] == ['build', '--help']:
+    print('--source-date-epoch' if os.environ.get('PODMAN_MAJOR', '5') == '5' else '--timestamp')
 elif args[0] == 'build':
     if '--iidfile' in args:
         open(args[args.index('--iidfile')+1], 'w').write('sha256:' + '2'*64)
@@ -36,7 +38,11 @@ elif args[:2] != ['image', 'exists']: sys.exit(99)
         (self.root / 'uname').write_text('#!/bin/sh\necho aarch64\n')
         (self.root / 'uname').chmod(0o755)
         # Supply only the common helpers and path needed by this script.
-        (self.root / '_common.sh').write_text('TILO_OS_DIR="$FIXTURE"\ndie() { echo "$*" >&2; exit 1; }\n')
+        common = (REPO / 'os/dev/_common.sh').read_text()
+        helper = common[common.index('podman_epoch_args() {'):]
+        helper = helper[:helper.index('\n}\n') + 3]
+        (self.root / '_common.sh').write_text(
+            'TILO_OS_DIR="$FIXTURE"\ndie() { echo "$*" >&2; exit 1; }\n' + helper)
         (self.root / 'dev').mkdir()
         (self.root / 'dev/uki-cmdline.py').write_text('')
         self.env = {'PATH': f'{self.root}:/usr/bin:/bin', 'HOME': str(self.root),
@@ -57,11 +63,32 @@ elif args[:2] != ['image', 'exists']: sys.exit(99)
     def test_immutable_mode_never_retags_or_fetches(self):
         result, calls = self.run_script()
         self.assertEqual(result.returncode, 0, result.stderr)
-        build = next(call for call in calls if 'build' in call)
+        build = next(call for call in calls if 'build' in call and '--help' not in call)
         for flag in ('--remote=false', '--pull=never', '--network=none', '--iidfile'):
             self.assertIn(flag, build)
         self.assertNotIn('-t', build)
         self.assertIn('BASE_IMAGE=' + IMAGE, build)
+
+    def test_podman5_clamps_to_the_epoch(self):
+        result, calls = self.run_script()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        build = next(call for call in calls if 'build' in call and '--help' not in call)
+        self.assertEqual(build[build.index('--source-date-epoch') + 1], '1700000000')
+        self.assertIn('--rewrite-timestamp', build)
+        self.assertNotIn('--timestamp', build)
+
+    def test_podman4_pins_timestamps_to_the_epoch(self):
+        for immutable in (True, False):
+            with self.subTest(immutable=immutable):
+                (self.root / 'calls').unlink(missing_ok=True)
+                (self.root / 'result.iid').unlink(missing_ok=True)
+                result, calls = self.run_script(immutable=immutable, PODMAN_MAJOR='4',
+                                                SOURCE_DATE_EPOCH='1700000000')
+                self.assertEqual(result.returncode, 0, result.stderr)
+                build = next(call for call in calls if 'build' in call and '--help' not in call)
+                self.assertEqual(build[build.index('--timestamp') + 1], '1700000000')
+                self.assertNotIn('--source-date-epoch', build)
+                self.assertNotIn('--rewrite-timestamp', build)
 
     def test_rejects_foreign_architecture_before_build(self):
         result, calls = self.run_script(ARCH='amd64')
@@ -106,7 +133,7 @@ elif args[:2] != ['image', 'exists']: sys.exit(99)
     def test_legacy_call_still_retags(self):
         result, calls = self.run_script(immutable=False)
         self.assertEqual(result.returncode, 0, result.stderr)
-        build = next(call for call in calls if 'build' in call)
+        build = next(call for call in calls if 'build' in call and '--help' not in call)
         self.assertEqual(build[build.index('-t') + 1], IMAGE)
 
     def test_empty_options_cannot_fall_back_to_mutable_legacy_mode(self):
