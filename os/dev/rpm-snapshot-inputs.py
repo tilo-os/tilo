@@ -15,6 +15,34 @@ spec = importlib.util.spec_from_file_location("rpm_packages", ROOT / "os/dev/der
 parser = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(parser)
 
+# Everything that can change what snapshot-rpms.yml publishes. Its push paths
+# mirror this list minus the pin itself: a pin change alone never republishes,
+# but a newer pin on main makes an in-flight publication stale. build-kernel.yml
+# reads the same list, so both workflows agree on when a snapshot is refreshed.
+INPUTS = (
+    "os/Containerfile",
+    "os/base-snapshot.env",
+    "os/dev/rpm-snapshot-inputs.py",
+    ".forgejo/actions/install-cosign",
+    "os/Containerfile.rpms",
+    "os/dev/verify-rpm-snapshot-signatures.sh",
+    "os/external-assets/github-assets.tsv",
+    "os/dev/cache-github-assets.sh",
+    "os/dev/derive-rpm-package-set.py",
+    "keys/cosign.pub",
+    "os/dev/promote-native-index.py",
+    "os/dev/open-snapshot-pr.py",
+    "os/dev/install-cached-cosign.sh",
+    "os/dev/configure-cosign-kms.sh",
+    "os/Containerfile.dev",
+    "os/Containerfile.host",
+    "os/dev/composefs/Containerfile",
+    "os/containers/tilo-relay/Containerfile",
+    "os/kernel/Containerfile",
+    ".forgejo/workflows/snapshot-rpms.yml",
+    "os/rpms-snapshot.env",
+)
+
 
 def git(repo, *args):
     return subprocess.check_output(["git", "-C", str(repo), *args], stderr=subprocess.PIPE)
@@ -60,7 +88,7 @@ def main():
     cli.add_argument("--require-equivalent", action="store_true")
     args = cli.parse_args()
     try:
-        inputs = os.environ["RPM_SNAPSHOT_INPUTS"].split()
+        inputs = list(INPUTS)
         if not inputs or not set(parser.SOURCES).issubset(inputs):
             raise ValueError("incomplete snapshot input manifest")
         if args.event == "workflow_dispatch" and not args.require_equivalent:

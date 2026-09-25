@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""Require every Forgejo workflow job to declare a positive timeout."""
+"""Require every Forgejo workflow job to declare a positive timeout.
+
+A job that calls a local reusable workflow cannot declare one; the called
+workflow's own jobs are audited instead.
+"""
 
 from __future__ import annotations
 
@@ -12,6 +16,7 @@ ROOT = Path(__file__).resolve().parents[2]
 WORKFLOWS = ROOT / ".forgejo" / "workflows"
 JOB = re.compile(r"^  ([A-Za-z0-9_-]+):\s*$")
 TIMEOUT = re.compile(r"^    timeout-minutes:\s*([0-9]+)\s*$")
+LOCAL_CALL = re.compile(r"^    uses:\s*\./\.forgejo/workflows/([A-Za-z0-9_.-]+\.ya?ml)\s*$")
 
 
 @dataclass(frozen=True)
@@ -47,6 +52,9 @@ def jobs_without_timeouts(path: Path) -> list[str]:
         timeout_match = TIMEOUT.match(line)
         if current_job is not None and timeout_match:
             jobs[current_job] = int(timeout_match.group(1)) > 0
+        call_match = LOCAL_CALL.match(line)
+        if current_job is not None and call_match:
+            jobs[current_job] = (path.parent / call_match.group(1)).is_file()
 
     return [job for job, bounded in jobs.items() if not bounded]
 

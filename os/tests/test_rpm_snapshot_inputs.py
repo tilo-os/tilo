@@ -48,7 +48,7 @@ class Inputs(unittest.TestCase):
     def invoke(self,base,event='push',require=False):
         args=['gate','--base',base,'--head',self.base,'--event',event]+(['--require-equivalent'] if require else [])
         output=self.repo/'output'
-        with patch.object(gate,'ROOT',self.repo),patch('sys.argv',args),patch.dict(os.environ,{'RPM_SNAPSHOT_INPUTS':'\n'.join(self.inputs),'GITHUB_OUTPUT':str(output)}),contextlib.redirect_stdout(io.StringIO()):
+        with patch.object(gate,'ROOT',self.repo),patch.object(gate,'INPUTS',tuple(self.inputs)),patch('sys.argv',args),patch.dict(os.environ,{'GITHUB_OUTPUT':str(output)}),contextlib.redirect_stdout(io.StringIO()):
             result=gate.main()
         return result,output.read_text().splitlines()[-1]
     def test_manual_forces_unchanged_inputs(self):self.assertEqual(self.invoke(self.base,'workflow_dispatch'),(0,'changed=true'))
@@ -56,5 +56,10 @@ class Inputs(unittest.TestCase):
         self.assertEqual(self.invoke('0'*40),(0,'changed=true'))
         self.assertEqual(self.invoke('0'*40,require=True),(1,'changed=true'))
     def test_known_unchanged_history_skips(self):self.assertEqual(self.invoke(self.base),(0,'changed=false'))
+    def test_snapshot_workflow_triggers_on_every_input_but_its_pin(self):
+        workflow=(ROOT/'.forgejo/workflows/snapshot-rpms.yml').read_text(encoding='utf-8')
+        push=workflow.split('\n  push:\n',1)[1].split('\n\n',1)[0]
+        paths={line.strip()[2:].strip('"').removesuffix('/**') for line in push.splitlines() if line.strip().startswith('- ') and '/' in line}
+        self.assertEqual(paths,set(gate.INPUTS)-{'os/rpms-snapshot.env'})
 
 if __name__=='__main__':unittest.main()
