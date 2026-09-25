@@ -114,8 +114,14 @@ def checked_guest_proof(path, child_digest, ci_image=None, ci_provenance=None):
         booted_composefs = guest.get("composefs_digest")
         installed_composefs = booted_composefs
     else:
+        require(type(ci_provenance) is dict
+                and ci_provenance.get("image_kind") in ("lenovo-83ed", "generic-index"),
+                "VM selected target has no independently verified CI provenance")
+        board = ci_provenance["image_kind"] == "lenovo-83ed"
         require(guest.get("schema") == "tilo.vm-install-image-proof.v2"
-                and doc.get("first_boot_verified") is False
+                and doc.get("first_boot_verified") is (not board)
+                and type(doc.get("installer_medium_sha256")) is str
+                and HEX.fullmatch(doc["installer_medium_sha256"])
                 and type(guest.get("booted_image_digest")) is str
                 and SHA.fullmatch(guest["booted_image_digest"])
                 and guest.get("composefs_digest") == guest.get("installed_composefs_digest"),
@@ -126,15 +132,20 @@ def checked_guest_proof(path, child_digest, ci_image=None, ci_provenance=None):
         require(type(selected) is dict
                 and selected.get("schema") == "tilo.installer-offline-target.v1"
                 and selected.get("target_digest") == child_digest
-                and selected.get("target_ref") == ci_image
+                and selected.get("target_ref") == "code.sandbox.example/qos/tilo@" + child_digest
                 and selected.get("architecture") == "aarch64"
-                and selected.get("hardware_profile") == "lenovo-83ed"
-                and type(ci_provenance) is dict,
-                "VM selected target differs from signed Lenovo CI image")
+                and selected.get("hardware_profile") == ("lenovo-83ed" if board else "generic"),
+                "VM selected target differs from signed CI image")
         revision = ci_provenance.get("source_revision")
         require(type(revision) is str and re.fullmatch(r"[0-9a-f]{40}", revision),
                 "independently verified CI source revision is invalid")
-        origin = "code.sandbox.example/qos/tilo:lenovo-83ed-" + revision
+        if board:
+            origin = "code.sandbox.example/qos/tilo:lenovo-83ed-" + revision
+        else:
+            generation = ci_provenance.get("generation")
+            require(type(generation) is int and generation > 0,
+                    "generic CI generation is invalid")
+            origin = "code.sandbox.example/qos/tilo:gen" + str(generation)
         signed = selected.get("provenance")
         require(type(signed) is dict
                 and selected.get("update_origin") == origin
@@ -146,6 +157,8 @@ def checked_guest_proof(path, child_digest, ci_image=None, ci_provenance=None):
                 == ci_provenance.get("firmware_manifest_sha256")
                 and signed.get("firmware_candidate")
                 == ci_provenance.get("firmware_candidate")
+                and (signed.get("generation") in (None, 1) if board else
+                     signed.get("generation") == ci_provenance.get("generation"))
                 and signed.get("invocation_id") == ci_provenance.get("invocation_id"),
                 "VM selected target provenance differs from independently verified CI")
     composefs = guest.get("composefs_digest")

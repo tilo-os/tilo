@@ -103,7 +103,8 @@ class ProvenanceTests(unittest.TestCase):
             origin = "code.sandbox.example/qos/tilo:lenovo-83ed-" + revision
             ci = {"source_revision": revision, "firmware_manifest_sha256": "c" * 64,
                   "firmware_candidate": "code.sandbox.example/qos/tilo-lenovo-83ed-firmware@sha256:" + "e" * 64,
-                  "invocation_id": "234", "key_sha256": "d" * 64}
+                  "invocation_id": "234", "key_sha256": "d" * 64,
+                  "image_kind": "lenovo-83ed", "generation": 1}
             ids = {"efi": "00000000-0000-4000-8000-000000000001",
                    "boot": "00000000-0000-4000-8000-000000000002",
                    "root": "00000000-0000-4000-8000-000000000003"}
@@ -127,6 +128,7 @@ class ProvenanceTests(unittest.TestCase):
                          "verifier_key_sha256": "d" * 64}}
             artifact = {"schema": proof.PROOF_SCHEMA_V2,
                         "first_boot_verified": False, "guest_proof": guest,
+                        "installer_medium_sha256": "9" * 64,
                         "installer_composefs": "f" * 128,
                         "source_check": {"schema": "tilo.windows-direct-vm-template-check.v1",
                             "preserved_gpt_verified": True,
@@ -150,6 +152,21 @@ class ProvenanceTests(unittest.TestCase):
                         proof.checked_guest_proof(path, target, image, ci)
                     artifact = broken
                     guest = artifact["guest_proof"]
+            generic = copy.deepcopy(artifact)
+            generic["first_boot_verified"] = True
+            selected = generic["guest_proof"]["selected_target"]
+            selected["hardware_profile"] = "generic"
+            selected["update_origin"] = "code.sandbox.example/qos/tilo:gen7"
+            selected["provenance"].update(generation=7, firmware_candidate=None,
+                                          firmware_manifest_sha256=None)
+            generic["guest_proof"]["installed_update_origin"] = (
+                "ostree-unverified-image:docker://code.sandbox.example/qos/tilo:gen7")
+            generic_ci = dict(ci, image_kind="generic-index", generation=7,
+                              firmware_candidate=None, firmware_manifest_sha256=None)
+            path.write_text(json.dumps(generic))
+            self.assertEqual(proof.checked_guest_proof(
+                path, target, "code.sandbox.example/qos/tilo@sha256:" + "e" * 64,
+                generic_ci), generic)
 
     def test_cosign_runner_uses_argv_prefix_and_explicit_wsl_key_path(self):
         with tempfile.TemporaryDirectory() as directory:
