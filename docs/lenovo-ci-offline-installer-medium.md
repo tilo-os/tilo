@@ -38,7 +38,9 @@ Lenovo target's first boot requires the physical Lenovo firmware and DTB and
 cannot be represented by QEMU `virt`.
 Only after the respective cycle passes does it upload
 `tilo-<profile>-whpx-installer-<source commit>` with a compressed qcow2 and
-SHA-256 files. On Windows, verify the archive SHA-256, decompress once, verify
+SHA-256 files. These offline jobs skip the separate raw imager bundle and its
+large qcow2-to-raw conversion. On Windows, verify the archive SHA-256,
+decompress once, verify
 the qcow2 SHA-256, then pass the qcow2 to `tilo-vm scenario install --medium`.
 Before using it as an install proof source, verify the accompanying
 `*.whpx-source.json` with `cosign verify-blob --offline --key keys/cosign.pub
