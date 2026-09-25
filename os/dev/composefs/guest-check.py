@@ -109,6 +109,7 @@ HARDENING = [
     "randomize_kstack_offset=on",
     "page_alloc.shuffle=1",
     "vsyscall=none",
+    "systemd.import_credentials=no",
 ]
 missing = [k for k in HARDENING if k not in cmdline.split()]
 if missing:

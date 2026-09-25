@@ -435,9 +435,9 @@ inputs = ["crates/system/block-devices/tests/fixtures/disks.json"]
 readers = ["apps/disks/src/probe.rs"]
 
 [[cargo]]
-package = "qdoc"
+package = "qdoc-codecs"
 inputs = ["crates/doc/fixtures/"]
-readers = ["crates/doc/qdoc/src/codecs/bulk_equivalence.rs", "crates/doc/qdoc/tests/office_roundtrip.rs"]
+readers = ["crates/doc/qdoc-codecs/src/bulk_equivalence.rs", "crates/doc/qdoc-codecs/tests/office_roundtrip.rs"]
 
 [[cargo]]
 package = "tilo-pdf"

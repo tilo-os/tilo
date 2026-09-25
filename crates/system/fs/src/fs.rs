@@ -350,7 +350,7 @@ pub struct QuickFS {
     pub hydrator: Arc<Hydrator>,
     pub heuristics: Arc<Heuristics>,
     /// Codecs for recognized rich-text formats (odt/docx/md).
-    registry: Arc<qdoc::Registry>,
+    registry: Arc<qdoc_codecs::Registry>,
     /// Broadcasts local CRDT deltas to peers (None when running standalone).
     sync: Option<Arc<SyncHandle>>,
     /// Per-inode in-flight write buffers (content-addressed on flush/release).
@@ -438,7 +438,7 @@ impl QuickFS {
             namespace,
             hydrator,
             heuristics,
-            Arc::new(qdoc::builtin_registry()),
+            Arc::new(qdoc_codecs::builtin_registry()),
         )
     }
 
@@ -446,7 +446,7 @@ impl QuickFS {
         namespace: Arc<Mutex<Namespace>>,
         hydrator: Arc<Hydrator>,
         heuristics: Arc<Heuristics>,
-        registry: Arc<qdoc::Registry>,
+        registry: Arc<qdoc_codecs::Registry>,
     ) -> Self {
         Self {
             namespace,
