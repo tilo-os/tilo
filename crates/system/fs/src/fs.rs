@@ -418,6 +418,8 @@ pub struct QuickFS {
     replacement_transactions: Option<ReplacementTransactionRuntime>,
     checked_history_workspace: Option<uuid::Uuid>,
     mount_lifetime: uuid::Uuid,
+    /// Run after a record group is durable, to persist what depends on it.
+    durability_hook: std::sync::OnceLock<Arc<dyn Fn() + Send + Sync>>,
     /// Explicit one-time owner migration permission. Joining peers disable
     /// this so unsigned legacy namespace bytes are never automatically
     /// blessed into their certified actor's signed history.
@@ -478,6 +480,7 @@ impl QuickFS {
             replacement_transactions: None,
             checked_history_workspace: None,
             mount_lifetime: uuid::Uuid::new_v4(),
+            durability_hook: std::sync::OnceLock::new(),
             allow_legacy_record_migration: true,
             share_control_path: None,
             #[cfg(test)]

@@ -377,7 +377,7 @@ pub async fn prune_obsolete_workspace_content(
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let roots =
             namespace.live_record_blob_roots(crate::namespace::MAX_LIVE_RECORD_BLOB_SCAN)?;
-        (roots, *blake3::hash(&namespace.save()).as_bytes())
+        (roots, namespace.heads())
     };
     let mut live = HashSet::new();
     for roots in roots {
@@ -404,24 +404,29 @@ pub async fn prune_obsolete_workspace_content(
         // the physical deletion. A changed generation terminates this sweep;
         // the next pass recomputes roots before releasing anything else. The
         // lease is a std::Mutex guard, which cannot be held across an await,
-        // so the whole lease — generation hashing included — runs on a
-        // blocking thread that waits on the store through the runtime handle.
+        // so the whole lease runs on a blocking thread that waits on the
+        // store. It waits through the store's own runtime: this runtime's
+        // workers may be blocked on the lease, and the eviction's timers and
+        // the store's actors must not depend on them.
         let selected = hashes.iter().copied().collect::<HashSet<_>>();
         let store = Arc::clone(&hydrator.store);
         let namespace = Arc::clone(namespace);
-        let runtime = tokio::runtime::Handle::current();
+        let runtime = store
+            .runtime()
+            .unwrap_or_else(tokio::runtime::Handle::current);
+        let generation = generation.clone();
         let batch_removed = tokio::task::spawn_blocking(move || -> Result<Option<u64>> {
             let mut namespace = namespace
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            if *blake3::hash(&namespace.save()).as_bytes() != generation {
+            if namespace.heads() != generation {
                 return Ok(None);
             }
             let batch_removed = runtime.block_on(store.evict_blobs(&selected))?;
             // Keep the namespace generation lease through the physical
             // deletion. This also makes the lease explicit at the point
             // it is released rather than accidentally shortening it.
-            let lease_held = *blake3::hash(&namespace.save()).as_bytes() == generation;
+            let lease_held = namespace.heads() == generation;
             drop(namespace);
             Ok(lease_held.then_some(batch_removed))
         })

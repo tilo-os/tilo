@@ -148,6 +148,43 @@ pub struct ContentStore {
     mutation: tokio::sync::Mutex<()>,
     /// Exact live set supplied only for an authorized selective sweep.
     gc_live: Arc<RwLock<Option<HashSet<Hash>>>>,
+    /// Open deferred-durability groups, and whether a write inside one
+    /// still waits for its database sync; see [`ContentStore::defer_sync`].
+    deferred: std::sync::Mutex<(usize, bool)>,
+    /// The runtime the persistent store's actors run on (declared last, so
+    /// it outlives the store handle).
+    runtime: Option<StoreRuntime>,
+}
+
+/// A runtime of the content store's own. The store's actors batch their
+/// database transactions on timers; on the daemon's runtime they stalled
+/// whenever a worker blocked on the namespace lock while the content pruner
+/// held that lock and waited for the store, and with them every timer and
+/// socket of the daemon.
+struct StoreRuntime(Option<tokio::runtime::Runtime>);
+
+impl StoreRuntime {
+    fn new() -> std::io::Result<Self> {
+        tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .thread_name("fs-content-store")
+            .enable_all()
+            .build()
+            .map(|runtime| Self(Some(runtime)))
+    }
+
+    fn handle(&self) -> Option<&tokio::runtime::Handle> {
+        self.0.as_ref().map(tokio::runtime::Runtime::handle)
+    }
+}
+
+impl Drop for StoreRuntime {
+    fn drop(&mut self) {
+        // Dropping a runtime blocks, which an async caller must not do.
+        if let Some(runtime) = self.0.take() {
+            runtime.shutdown_background();
+        }
+    }
 }
 
 impl ContentStore {
@@ -204,8 +241,18 @@ impl ContentStore {
                 }
             })),
         });
-        let store = FsStore::load_with_opts(dir.join("blobs.db"), options).await?;
-        migrate_legacy_auto_tags(&store, dir).await?;
+        let runtime = StoreRuntime::new()?;
+        let root = dir.to_path_buf();
+        let store = runtime
+            .handle()
+            .ok_or_else(|| anyhow::anyhow!("content store runtime is gone"))?
+            .spawn(async move {
+                let store = FsStore::load_with_opts(root.join("blobs.db"), options).await?;
+                migrate_legacy_auto_tags(&store, &root).await?;
+                Ok::<_, anyhow::Error>(store)
+            })
+            .await
+            .map_err(|error| anyhow::anyhow!("opening the content store failed: {error}"))??;
         gc_ready.store(true, Ordering::Release);
         Ok(Self {
             backend: Backend::Fs(store),
@@ -213,6 +260,8 @@ impl ContentStore {
             owned_tags: tokio::sync::Mutex::new(()),
             mutation: tokio::sync::Mutex::new(()),
             gc_live,
+            deferred: std::sync::Mutex::new((0, false)),
+            runtime: Some(runtime),
         })
     }
 
@@ -228,6 +277,8 @@ impl ContentStore {
             owned_tags: tokio::sync::Mutex::new(()),
             mutation: tokio::sync::Mutex::new(()),
             gc_live,
+            deferred: std::sync::Mutex::new((0, false)),
+            runtime: None,
         }
     }
 
@@ -244,7 +295,20 @@ impl ContentStore {
             owned_tags: tokio::sync::Mutex::new(()),
             mutation: tokio::sync::Mutex::new(()),
             gc_live: Arc::new(RwLock::new(None)),
+            deferred: std::sync::Mutex::new((0, false)),
+            runtime: None,
         }
+    }
+
+    /// The runtime the persistent store runs on, for a caller that must wait
+    /// on the store from a thread that holds a lock the daemon's own runtime
+    /// may be blocked on. `None` for the in-memory store, which runs on the
+    /// caller's runtime.
+    pub fn runtime(&self) -> Option<tokio::runtime::Handle> {
+        self.runtime
+            .as_ref()
+            .and_then(StoreRuntime::handle)
+            .cloned()
     }
 
     pub fn store(&self) -> &Store {
@@ -252,6 +316,49 @@ impl ContentStore {
             Backend::Mem(m) => m,
             Backend::Fs(f) => f,
         }
+    }
+
+    /// Opens a deferred-durability group: until the last open group ends
+    /// ([`Self::end_deferred_sync`]), writes skip their database sync and
+    /// the group's end syncs once. A changeset of many small files then
+    /// costs one sync instead of one per file. Callers end the group before
+    /// anything depending on the writes is made durable or announced.
+    pub fn defer_sync(&self) {
+        let mut deferred = self
+            .deferred
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        deferred.0 = deferred.0.saturating_add(1);
+    }
+
+    /// Closes a group opened by [`Self::defer_sync`]; the last one syncs the
+    /// database if a write inside the groups skipped it.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the database sync fails; the writes stay
+    /// pending for the next sync.
+    pub async fn end_deferred_sync(&self) -> Result<()> {
+        let sync = {
+            let mut deferred = self
+                .deferred
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            deferred.0 = deferred.0.saturating_sub(1);
+            let sync = deferred.0 == 0 && deferred.1;
+            if sync {
+                deferred.1 = false;
+            }
+            sync
+        };
+        if sync && let Err(error) = self.store().sync_db().await {
+            self.deferred
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .1 = true;
+            return Err(error.into());
+        }
+        Ok(())
     }
 
     /// Build a `BlobsProtocol` handler backed by this store (for the router).
@@ -328,6 +435,34 @@ impl ContentStore {
         // no anonymous `auto-*` tag behind.
         let actual = self.persist_owned(data).await?;
         debug_assert_eq!(actual, hash);
+        Ok(())
+    }
+
+    /// [`Self::store_fetched`] for many blobs with one durability barrier:
+    /// a batch of small files costs one database sync instead of one per
+    /// blob. Every blob is checked against its hash before anything is
+    /// stored; a mismatch rejects the whole batch.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on a hash mismatch or when the blob store fails.
+    pub async fn store_fetched_batch(&self, blobs: Vec<(Hash, Bytes)>) -> Result<()> {
+        if blobs.is_empty() {
+            return Ok(());
+        }
+        let mut seen = HashSet::with_capacity(blobs.len());
+        let mut unique = Vec::with_capacity(blobs.len());
+        for (hash, data) in blobs {
+            let actual = Hash::new(&data);
+            anyhow::ensure!(
+                actual == hash,
+                "fetched blob hash mismatch: expected {hash}, got {actual}"
+            );
+            if seen.insert(hash) {
+                unique.push(data);
+            }
+        }
+        self.persist_owned_batch(unique).await?;
         Ok(())
     }
 
@@ -422,9 +557,13 @@ impl ContentStore {
     }
 
     async fn persist_owned_batch(&self, data: Vec<Bytes>) -> Result<Vec<Hash>> {
+        /// Blob-store requests in flight at once: the store's actor serves
+        /// them in parallel, so a batch of small chunks is not a round trip
+        /// per chunk.
+        const IN_FLIGHT: usize = 64;
+
         let _owned_tags = self.owned_tags.lock().await;
-        let mut protected = Vec::with_capacity(data.len());
-        for bytes in data {
+        let adds = data.into_iter().map(|bytes| async move {
             let temporary = self
                 .store()
                 .blobs()
@@ -439,13 +578,31 @@ impl ContentStore {
                     temporary.hash_and_format(),
                 )
                 .await?;
-            protected.push((temporary, bytes));
-        }
+            Ok::<_, anyhow::Error>((temporary, bytes))
+        });
+        let protected: Vec<_> = futures_util::TryStreamExt::try_collect(
+            futures_util::StreamExt::buffered(futures_util::stream::iter(adds), IN_FLIGHT),
+        )
+        .await?;
         // `FsStore` explicitly does not promise that dropping it flushes recent
         // writes. Make the named protection durable before releasing the
         // temporary protection. This is a no-op-compatible boundary for the
-        // in-memory backend.
-        self.store().sync_db().await?;
+        // in-memory backend. Inside a deferred-durability group the group's
+        // end syncs once instead; the owned tags are already installed, so
+        // nothing collects the blobs meanwhile.
+        let deferred = {
+            let mut deferred = self
+                .deferred
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if deferred.0 > 0 {
+                deferred.1 = true;
+            }
+            deferred.0 > 0
+        };
+        if !deferred {
+            self.store().sync_db().await?;
+        }
         let hashes = protected
             .iter()
             .map(|(temporary, _)| temporary.hash())

@@ -599,7 +599,8 @@ impl Engine {
             }
         }
         self.open_changeset(&cs);
-        let published = self.publish(&cs, &snapshot);
+        let fs = Arc::clone(&self.fs);
+        let published = fs.changeset(|| self.publish(&cs, &snapshot));
         self.close_changeset();
         let Published {
             nodes: node_changes,

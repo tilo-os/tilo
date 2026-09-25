@@ -648,8 +648,11 @@ bounds.
   the whole repository after every pulled record, so a 51-file burst took
   quadratic time (the 51st reconciliation alone 7.2 s); it now reconciles
   only the pulled record and the whole repository once per pass. The
-  transfer engine of §9 (one connection per peer, batched pulls) is what
-  removes the remaining per-record round trips.
+  transfer engine of §9 is now in place for the metadata plane and for
+  content (see "What the transfer engine implements" in §9); what remains
+  of the record plane's cost is the author's durable writes per published
+  file (record file with a backup generation, history log), about 20 ms
+  per change on a loop-mounted store.
 - *Content is still stored twice.* The daemon chunks the snapshot file into
   its existing content store (gear CDC, v1 manifests); capture therefore runs
   with `hash_content = false` and the FastCDC manifests of §7 are unused until
@@ -936,6 +939,31 @@ One engine moves record operations, file content, CRDT segments and packages.
   ([§7.1](#71-chunking)). Iroh chooses direct paths and falls back to its
   relay; `tilo-relay` stays a workspace host, not a transport relay
   (`docs/architecture/collaboration.md`, "Workspace hosts").
+**What the transfer engine implements** (`crates/system/fs/src/sync/session.rs`,
+`hydration/batch.rs`, `blob_access.rs`, `record_reconcile.rs`):
+
+- `tilo-fs-session/1`: one connection per peer, authenticated once, a
+  QUIC stream per request, every request authorised against the live
+  policy and certification. It carries the namespace (Automerge sync
+  between writers; changes since the reader's heads for read-only peers),
+  range-based reconciliation of record stream heads, pulls of up to 1024
+  streams per request with files up to 4 KiB inline, batched replica
+  receipts (only for revisions not acknowledged recently), the authority
+  exchange, and announcements that make peers pull at once. Peers without
+  it are served and reached through the per-request protocols, which stay
+  registered.
+- Content goes over one pooled iroh-blobs connection per peer as `GetMany`
+  batches (512 blobs or 8 MiB, 8 in flight per peer, spread over every
+  healthy peer). Each batch names the manifests of its chunks with empty
+  ranges; the serving side authorises chunks through them from an index
+  rebuilt only when the namespace heads change, concurrently and without
+  holding the namespace lock.
+- Not yet: `HashSeq` manifests and BAO range requests into a chunk (content
+  is still gear-CDC v1 manifests), priority classes, hedged multi-peer
+  splitting of one large file, push of content (announcements make peers
+  pull), and signed changesets (§8.3): the author still signs and persists
+  per record.
+
 - **Resumability.** Partial content survives restarts as a range bitmap
   (iroh-blobs partial blobs for loose content, and the per-file bitmap for
   materialised files). Reconciliation resumes from digests, not cursors.
