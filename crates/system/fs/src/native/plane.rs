@@ -1246,7 +1246,15 @@ fn start_placeholders(
                 runtime.clone(),
                 DEFAULT_PARALLEL_CHUNKS,
             )),
-            HydratorConfig::default(),
+            // Content arrives in parallel ranged requests straight into the
+            // store's area and is cloned into place, so a sequential reader
+            // is served best by a deep read-ahead: more windows in flight,
+            // and larger ones.
+            HydratorConfig {
+                readahead_max: 256 * 1024 * 1024,
+                readahead_workers: 8,
+                ..HydratorConfig::default()
+            },
         )
         .context("starting the pre-content group (needs CAP_SYS_ADMIN)")?,
     );
