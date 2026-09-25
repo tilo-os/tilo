@@ -169,6 +169,9 @@ impl AutoCommit {
         let registry = NativeAllocationSet::new(allowance.clone())?;
         let turn = registry.work_turn(allowance.clone())?;
         let input = turn.normalize_input(input, limits)?;
+        if self.native_is_blank() && input.shape().leading_document_bytes != 0 {
+            return self.admit_snapshot(input, allowance, policy);
+        }
         let mut charge = Charge::new(allowance);
         let parse_bytes = parse_reservation(&input, &mut charge)?;
         charge.grow(parse_bytes)?;
@@ -224,4 +227,38 @@ fn parse_reservation(
 /// entries of actor width), from the exact figures of the parsed changes.
 fn superlinear_growth(doc: &AutoCommit, incoming: &IncomingDims) -> Result<usize, NativeResourceError> {
     dims::superlinear_apply_bound(&DocDims::of(doc), incoming)
+}
+
+impl AutoCommit {
+    /// A snapshot (leading document chunk, optionally followed by more
+    /// chunks) into a blank document: the checked strict load that
+    /// `NormalizedStorage::reconstruct` uses, under the same reservation,
+    /// replaces the blank document wholesale. Upstream `load_incremental`
+    /// takes the same shortcut for an empty document; re-applying the
+    /// snapshot's changes one by one through batch apply would cost several
+    /// times the load and retain nothing more.
+    fn admit_snapshot(
+        &mut self,
+        input: NormalizedStorage<'_>,
+        allowance: &NativeAllowance,
+        policy: NativeDependencyPolicy,
+    ) -> Result<NativeIncomingOutcome, NativeMutationError> {
+        {
+            let mut charge = Charge::new(allowance);
+            preflight::validate(input.bytes(), &mut charge)?;
+        }
+        let bound = dims::load_peak_bound(&IncomingDims::from_shape(input.shape()))?;
+        let mut peak = allowance.reserve(bound)?;
+        let doc = super::reconstruct::load::load_strict(input.bytes(), allowance, &mut peak)?;
+        drop(input);
+        if !doc.queue.is_empty() && policy == NativeDependencyPolicy::RequireComplete {
+            return Ok(NativeIncomingOutcome::MissingDependencies);
+        }
+        let changed = !doc.change_graph.is_empty();
+        self.native_replace_blank(doc);
+        // The loaded document is not adopted into custody (as for any
+        // `apply_incoming_checked`); its transient load work has ended.
+        drop(peak);
+        Ok(NativeIncomingOutcome::Applied { changed })
+    }
 }

@@ -212,6 +212,22 @@ impl AutoCommit {
         }
     }
 
+    /// qOS bounded admission: no history, queue, transaction, isolation,
+    /// patch log, diff or save cursor, so a checked snapshot load may replace
+    /// the inner document wholesale.
+    pub(crate) fn native_is_blank(&self) -> bool {
+        self.doc.is_empty()
+            && self.native_mutation_is_closed()
+            && self.doc.text_encoding() == crate::TextEncoding::platform_default()
+    }
+
+    /// qOS bounded admission: replace a blank document's contents with a
+    /// checked load, keeping its actor and author.
+    pub(crate) fn native_replace_blank(&mut self, mut doc: Automerge) {
+        doc.native_adopt_identity(&self.doc);
+        self.doc = doc;
+    }
+
     /// qOS bounded admission: native bounded reads cover the full current view only.
     pub(crate) fn native_read_is_isolated(&self) -> bool {
         self.isolation.is_some()
