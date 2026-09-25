@@ -43,8 +43,12 @@ use crate::store::Retention;
 
 /// Requested bytes per `GET` for background work and read-ahead.
 const REQUEST_BYTES: u64 = 16 * 1024 * 1024;
+/// Requested bytes per `GET` for a blocked read.
+const FOREGROUND_REQUEST_BYTES: u64 = 2 * 1024 * 1024;
 /// `GET` requests in flight per peer.
 const REQUESTS_PER_PEER: usize = 8;
+/// Connections per peer the requests of one transfer are spread over.
+const LANES_PER_PEER: usize = 4;
 /// A request that makes no progress for this long is abandoned for the
 /// next peer.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
@@ -394,9 +398,9 @@ impl Hydrator {
             return Err(anyhow!("no peers to fetch {content} from"));
         }
         let max_bytes = if priority == Priority::Foreground {
-            // A blocked reader's range is usually small; send it as one
-            // request so it arrives on one stream in order.
-            u64::MAX
+            // A blocked reader waits for all of it: smaller requests,
+            // answered in parallel over the lanes.
+            FOREGROUND_REQUEST_BYTES
         } else {
             REQUEST_BYTES
         };
@@ -428,6 +432,7 @@ impl Hydrator {
         let files = Arc::clone(self.store.files());
         let mut rest = Vec::with_capacity(wants.len());
         let mut copied = Vec::new();
+        let mut dest_generation: Option<u64> = files.generation(&key);
         for want in wants {
             let (Some(chunk), Some(range)) = (
                 manifest.chunks().get(want.index).copied(),
@@ -442,20 +447,31 @@ impl Hydrator {
                 let files = Arc::clone(&files);
                 let start = range.start;
                 let copy = tokio::task::spawn_blocking(move || {
-                    let source = files.file(&location.key)?;
-                    let dest = files.file(&key)?;
+                    let (source, source_generation) = files.file_in_generation(&location.key)?;
+                    let (dest, dest_generation) = files.file_in_generation(&key)?;
                     crate::store::area::copy_range(
                         &source,
                         location.offset,
                         &dest,
                         start,
                         u64::from(location.len),
-                    )
+                    )?;
+                    // The source must still be the entry that held the
+                    // chunk: one evicted and created anew meanwhile is
+                    // sparse where the chunk was.
+                    let intact = files.generation(&location.key) == Some(source_generation)
+                        && files.missing(&location.key, &location.range()).is_empty();
+                    if !intact {
+                        return Err(std::io::Error::other("the source entry changed"));
+                    }
+                    Ok::<_, std::io::Error>(dest_generation)
                 })
                 .await?;
-                if copy.is_ok() {
-                    copied.push(range);
-                    continue;
+                if let Ok(generation) = copy {
+                    if *dest_generation.get_or_insert(generation) == generation {
+                        copied.push(range);
+                        continue;
+                    }
                 }
             }
             if let Ok(bytes) = self
@@ -465,8 +481,10 @@ impl Hydrator {
                 .get_bytes(Hash::from(chunk.hash))
                 .await
                 && bytes.len() as u64 == u64::from(chunk.len)
+                && let Ok((dest, generation)) = files.file_in_generation(&key)
+                && *dest_generation.get_or_insert(generation) == generation
             {
-                files.write_at(&key, range.start, &bytes)?;
+                dest.write_all_at(&bytes, range.start)?;
                 copied.push(range);
                 continue;
             }
@@ -474,8 +492,10 @@ impl Hydrator {
         }
         if !copied.is_empty() {
             let files = Arc::clone(&files);
-            tokio::task::spawn_blocking(move || files.mark_resident(&key, &copied, false))
-                .await??;
+            tokio::task::spawn_blocking(move || {
+                files.mark_resident_in(&key, dest_generation, &copied, false)
+            })
+            .await??;
         }
         Ok(rest)
     }
@@ -495,7 +515,8 @@ impl Hydrator {
         let mut last_error = anyhow!("no peer served {content}");
         for peer in later.iter().chain(earlier) {
             let started = std::time::Instant::now();
-            let connection = match self.blob_connection(peer).await {
+            let lane = index.checked_rem(LANES_PER_PEER).unwrap_or(0);
+            let connection = match self.blob_connection_lane(peer, lane).await {
                 Ok(connection) => connection,
                 Err(error) => {
                     self.record_peer_result(peer.id, started.elapsed(), false);
@@ -539,7 +560,7 @@ impl Hydrator {
     ) -> (HashSet<usize>, Option<anyhow::Error>) {
         let key = *content.as_bytes();
         let files = Arc::clone(self.store.files());
-        let file = match files.file(&key) {
+        let (file, generation) = match files.file_in_generation(&key) {
             Ok(file) => file,
             Err(error) => return (HashSet::new(), Some(error.into())),
         };
@@ -628,9 +649,10 @@ impl Hydrator {
         };
         if !written.is_empty() {
             let files = Arc::clone(&files);
-            let mark =
-                tokio::task::spawn_blocking(move || files.mark_resident(&key, &written, false))
-                    .await;
+            let mark = tokio::task::spawn_blocking(move || {
+                files.mark_resident_in(&key, Some(generation), &written, false)
+            })
+            .await;
             if let Err(error) = mark
                 .map_err(anyhow::Error::from)
                 .and_then(|r| r.map_err(Into::into))
@@ -784,6 +806,44 @@ mod tests {
             "{changed} bytes changed"
         );
         assert_eq!(fetched, changed, "only the changed chunks travel");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn concurrent_overlapping_reads_all_see_the_right_bytes() {
+        let data = Arc::new(pseudo(12 * 1024 * 1024 + 4321, 13));
+        let (hydrator, id, _server_store, _router) = pair(&data).await;
+        let hydrator = Arc::new(hydrator);
+        let len = data.len() as u64;
+        let mut readers = Vec::new();
+        for task in 0..16_u64 {
+            let (hydrator, data) = (Arc::clone(&hydrator), Arc::clone(&data));
+            readers.push(tokio::spawn(async move {
+                let mut x = task.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1;
+                for round in 0..12 {
+                    x ^= x << 13;
+                    x ^= x >> 7;
+                    x ^= x << 17;
+                    let start = x % len;
+                    let size = (x >> 20) % (3 * 1024 * 1024) + 1;
+                    let priority = match (task + round) % 3 {
+                        0 => Priority::Foreground,
+                        1 => Priority::ReadAhead,
+                        _ => Priority::Predictive,
+                    };
+                    let got = hydrator.read_with(id, start, size, priority).await.unwrap();
+                    let end = (start + size).min(len) as usize;
+                    assert!(
+                        got == data[start as usize..end],
+                        "task {task} round {round}"
+                    );
+                }
+            }));
+        }
+        for reader in readers {
+            reader.await.unwrap();
+        }
+        let all = hydrator.read(id, 0, len).await.unwrap();
+        assert!(all == *data);
     }
 
     #[tokio::test]
