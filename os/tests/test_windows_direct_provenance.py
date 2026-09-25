@@ -373,7 +373,16 @@ class ProvenanceTests(unittest.TestCase):
                                        "installer_medium_sha256": "d" * 64},
                                       {"first_boot_verified": True,
                                        "installer_medium_sha256": "f" * 64},
-                                      image.split("@", 1)[1], base.split("@", 1)[1], base)
+                                      image.split("@", 1)[1], base.split("@", 1)[1], base,
+                                      "c" * 40)
+            with self.assertRaisesRegex(ValueError, "source revision differs"):
+                proof.checked_medium_pair(board, generic,
+                                          {"first_boot_verified": False,
+                                           "installer_medium_sha256": "d" * 64},
+                                          {"first_boot_verified": True,
+                                           "installer_medium_sha256": "f" * 64},
+                                          image.split("@", 1)[1], base.split("@", 1)[1], base,
+                                          "9" * 40)
             for field, other in (("run_id", "13"), ("run_attempt", "2")):
                 with self.subTest(field=field), self.assertRaisesRegex(ValueError, "paired WHPX"):
                     proof.checked_medium_pair(board, {**generic, field: other},
@@ -381,14 +390,16 @@ class ProvenanceTests(unittest.TestCase):
                                                "installer_medium_sha256": "d" * 64},
                                               {"first_boot_verified": True,
                                                "installer_medium_sha256": "f" * 64},
-                                              image.split("@", 1)[1], base.split("@", 1)[1], base)
+                                              image.split("@", 1)[1], base.split("@", 1)[1], base,
+                                              "c" * 40)
             with self.assertRaisesRegex(ValueError, "paired WHPX"):
                 proof.checked_medium_pair(board, generic,
                                           {"first_boot_verified": False,
                                            "installer_medium_sha256": "0" * 64},
                                           {"first_boot_verified": True,
                                            "installer_medium_sha256": "f" * 64},
-                                          image.split("@", 1)[1], base.split("@", 1)[1], base)
+                                          image.split("@", 1)[1], base.split("@", 1)[1], base,
+                                          "c" * 40)
             ci_proof.write_text(json.dumps({**native, "architecture": "amd64"}))
             with patch.object(proof.subprocess, "run", return_value=SimpleNamespace(
                     returncode=0, stderr="", stdout="")):
