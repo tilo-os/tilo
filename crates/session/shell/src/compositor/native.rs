@@ -200,6 +200,11 @@ impl NativeRedrawReasons {
 
 const LOCK_CLOCK_REFRESH: Duration = Duration::from_secs(60);
 const IDLE_BACKEND_POLL: Duration = Duration::from_millis(50);
+const SLOW_PREPAINT_PHASE: Duration = Duration::from_millis(50);
+
+fn slow_prepaint_phase(elapsed: Duration) -> bool {
+    elapsed >= SLOW_PREPAINT_PHASE
+}
 
 /// Select how long calloop may sleep. Presentation cadence is a deadline only
 /// while visual work is pending; a static desktop instead sleeps until the
@@ -5574,9 +5579,62 @@ pub fn run() {
     let legacy_share_config = crate::config::load_config().flatpak_share;
     // Optional paint-rate diagnostics (`TILO_PAINT_STATS=1`).
     let paint_stats = std::env::var("TILO_PAINT_STATS").is_ok();
-    // Optional per-iteration timing (`TILO_LOOP_TIMING=1`): logs any tick over
-    // 100ms non-sleeping work with a phase breakdown, so a stall is measured, not guessed.
+    // Slow iterations are exceptional and always worth preserving in the
+    // session flight record: a compositor that stops pumping input for 100 ms
+    // is already visibly broken. `TILO_LOOP_TIMING` additionally enables the
+    // verbose aggregate line for development runs.
     let loop_timing = std::env::var("TILO_LOOP_TIMING").is_ok();
+    let mut pump_checkpoint = Instant::now();
+    let mut pump_slowest = ("start", Duration::ZERO);
+    macro_rules! pump_checkpoint {
+        ($name:literal) => {{
+            if loop_timing {
+                let now = Instant::now();
+                let elapsed = now.saturating_duration_since(pump_checkpoint);
+                if elapsed > pump_slowest.1 {
+                    pump_slowest = ($name, elapsed);
+                }
+                pump_checkpoint = now;
+            }
+        }};
+    }
+    macro_rules! pump_phase {
+        ($name:literal, $body:expr) => {{
+            if loop_timing {
+                let started = Instant::now();
+                let value = $body;
+                let elapsed = started.elapsed();
+                if elapsed >= Duration::from_millis(8) {
+                    eprintln!(
+                        "PUMP-PHASE name={} elapsed_us={}",
+                        $name,
+                        elapsed.as_micros()
+                    );
+                }
+                value
+            } else {
+                $body
+            }
+        }};
+        ($name:literal, $count:expr, $body:expr) => {{
+            if loop_timing {
+                let started = Instant::now();
+                let value = $body;
+                let elapsed = started.elapsed();
+                if elapsed >= Duration::from_millis(8) {
+                    eprintln!(
+                        "PUMP-PHASE name={} elapsed_us={} items={}",
+                        $name,
+                        elapsed.as_micros(),
+                        $count
+                    );
+                }
+                value
+            } else {
+                $body
+            }
+        }};
+    }
     // Frame-loop instrumentation (`TILO_FRAME_TRACE`/`TILO_FRAME_SUMMARY`), free
     // when neither is set. See `compositor::metrics`.
     let mut metrics = metrics::FrameRecorder::from_env();
@@ -5597,9 +5655,40 @@ pub fn run() {
     let (mut frames_total, mut frames_painted) = (0u32, 0u32);
     let (mut cause_events, mut cause_revision, mut cause_anim) = (0u32, 0u32, 0u32);
     let (mut cause_session, mut cause_keepalive) = (0u32, 0u32);
+    let mut frame_clock_retired_serial = 0u64;
     while !close_requested {
         let iter_t0 = Instant::now();
         metrics.begin_tick(iter_t0);
+        if let Some((serial, retired_at)) = present_pipe
+            .as_ref()
+            .and_then(present::PresentPipe::latest_retirement)
+        {
+            metrics.note_retirement(serial, retired_at);
+            if serial > frame_clock_retired_serial {
+                frame_clock.note_presented(retired_at);
+                frame_clock_retired_serial = serial;
+            }
+        }
+        // The previous `event_loop.dispatch` only establishes readiness for
+        // nested DRM/libinput and test-control fds. Drain the backend now,
+        // before any frame decision, so its level-triggered poll fd is cleared
+        // in this same iteration instead of immediately waking calloop again.
+        backend.poll_events(&mut |event| pending_events.push(event));
+        let t_backend_poll_done = iter_t0.elapsed();
+        if slow_prepaint_phase(t_backend_poll_done) {
+            tracing::warn!(
+                target: "tilo::latency",
+                elapsed_ms = t_backend_poll_done.as_secs_f64() * 1_000.0,
+                queued_events = pending_events.len(),
+                "backend poll stalled compositor input"
+            );
+        }
+        // Capture workers wake this loop through their eventfd. Apply released
+        // Smithay transactions before deciding whether there is app content
+        // to paint; doing this after painting strands the newly committed
+        // frame until an unrelated event, and a continuously committing client
+        // can deadlock behind its first transaction barrier.
+        state.pump_foreign_capture_barriers(&display_handle_for_outputs);
         // Logout is requested from an off-thread power-menu action. Exit the
         // compositor through this normal cleanup path; its package wrapper
         // then stops Tilo's graphical targets and clears the shared user-manager
@@ -6047,6 +6136,25 @@ pub fn run() {
             eprintln!("tilo compositor: input flush_clients error: {err}");
             break;
         }
+        // Click-to-focus persistence serialises the full workspace tree and
+        // performs two durability barriers (file + containing directory).
+        // Keep that I/O out of `route_mouse_input`: queue and flush
+        // wl_keyboard.enter/wl_pointer.button first so a slow filesystem can
+        // never delay the focused application seeing the click or the next
+        // already-buffered key. Durability still completes in this iteration,
+        // before any paint or event-loop park.
+        if state.client_input.take_focus_persistence_pending() {
+            let started = Instant::now();
+            state.workspace_tree.read().flush_to_disk();
+            let elapsed = started.elapsed();
+            if elapsed > Duration::from_millis(10) {
+                tracing::warn!(
+                    target: "tilo::latency",
+                    elapsed_ms = elapsed.as_secs_f64() * 1_000.0,
+                    "click-focus persistence was slow after input delivery"
+                );
+            }
+        }
 
         // The Settings app writes to a file with no notification, so poll cheaply
         // (once/sec) to reach input devices and display scale.
@@ -6146,7 +6254,12 @@ pub fn run() {
         }
         let t_input_done = iter_t0.elapsed();
         metrics.mark_input(t_input_done);
+        if loop_timing {
+            pump_checkpoint = Instant::now();
+            pump_slowest = ("pump-start", Duration::ZERO);
+        }
 
+        let pump_bookkeeping_started = Instant::now();
         // The power menu is shell UI only.  Its Lock row requests this
         // compositor-owned transition through ChromeState; drain the edge
         // here so it takes the exact same SessionManager path as Super+L and
@@ -6422,6 +6535,7 @@ pub fn run() {
             state.client_input.keyboard_focus(),
             state.text_input_active(),
         );
+        pump_checkpoint!("session-focus-and-surfaces");
         let floating_surfaces = state
             .floating_toplevels
             .iter()
@@ -6496,8 +6610,10 @@ pub fn run() {
         // deciding whether to paint — drains a hosted terminal's PTY;
         // returns true when changed, itself a paint reason. Drain the
         // network actor into the replica: peer changes fold in before this frame's pump reads them, bumping the revision to repaint.
+        let pump_bookkeeping_done = Instant::now();
+        let pump_network_started = pump_bookkeeping_done;
         if let Some(net) = peer_sync.as_ref() {
-            net.tick();
+            pump_phase!("network-tick", net.tick());
             let runtime = device_fabric_runtime.get_or_insert_with(|| {
                 crate::shell::device_fabric_runtime::DeviceFabricRuntime::new(
                     net,
@@ -6523,41 +6639,66 @@ pub fn run() {
                 });
             let app_focus = active_physical_gamepad_binding(&tree_handle.read());
             runtime.set_local_app_focus(app_focus.clone());
-            runtime.pump(
-                net,
-                &state.selection_store(),
-                crate::shell::device_fabric_runtime::LocalFabricCapabilities {
-                    display,
-                    pointer: true,
-                    keyboard: true,
-                    audio_output: system_audio,
-                },
+            pump_phase!(
+                "device-fabric-runtime",
+                runtime.pump(
+                    net,
+                    &state.selection_store(),
+                    crate::shell::device_fabric_runtime::LocalFabricCapabilities {
+                        display,
+                        pointer: true,
+                        keyboard: true,
+                        audio_output: system_audio,
+                    },
+                )
             );
-            crate::shell::physical_gamepad::pump_physical_gamepads(net, app_focus.as_ref());
+            pump_phase!(
+                "physical-gamepads",
+                crate::shell::physical_gamepad::pump_physical_gamepads(net, app_focus.as_ref())
+            );
             if let Some(bridge) = realtime_fabric_bridge.as_ref() {
-                bridge.pump_app_events();
+                pump_phase!("realtime-app-events", bridge.pump_app_events());
             }
-            for (controller, event) in crate::shell::device_fabric_runtime::take_spatial_input() {
-                let _ = state.apply_personal_fabric_input(&controller, event);
-            }
-            for controller in crate::shell::device_fabric_runtime::take_spatial_input_releases() {
-                let _ = state.release_personal_fabric_input(&controller);
-            }
-            for event in crate::shell::device_fabric_runtime::take_personal_display_events() {
-                use crate::shell::device_fabric_runtime::PersonalDisplayEvent;
-                match event {
-                    PersonalDisplayEvent::Started {
-                        session_id,
-                        source,
-                        mirror_only,
-                        ..
-                    } => {
-                        let input_net = Arc::clone(net);
-                        let input_source = source.clone();
-                        let spatial_sink =
-                            Arc::new(move |event: crate::network::streaming::InputEvent| {
-                                use crate::network::streaming::InputEvent;
-                                let mapped = match event {
+            let spatial_input = crate::shell::device_fabric_runtime::take_spatial_input();
+            let spatial_input_count = spatial_input.len();
+            pump_phase!(
+                "spatial-input",
+                spatial_input_count,
+                for (controller, event) in spatial_input {
+                    let _ = state.apply_personal_fabric_input(&controller, event);
+                }
+            );
+            let spatial_releases =
+                crate::shell::device_fabric_runtime::take_spatial_input_releases();
+            let spatial_release_count = spatial_releases.len();
+            pump_phase!(
+                "spatial-input-releases",
+                spatial_release_count,
+                for controller in spatial_releases {
+                    let _ = state.release_personal_fabric_input(&controller);
+                }
+            );
+            let personal_display_events =
+                crate::shell::device_fabric_runtime::take_personal_display_events();
+            let personal_display_event_count = personal_display_events.len();
+            pump_phase!(
+                "personal-display-events",
+                personal_display_event_count,
+                for event in personal_display_events {
+                    use crate::shell::device_fabric_runtime::PersonalDisplayEvent;
+                    match event {
+                        PersonalDisplayEvent::Started {
+                            session_id,
+                            source,
+                            mirror_only,
+                            ..
+                        } => {
+                            let input_net = Arc::clone(net);
+                            let input_source = source.clone();
+                            let spatial_sink =
+                                Arc::new(move |event: crate::network::streaming::InputEvent| {
+                                    use crate::network::streaming::InputEvent;
+                                    let mapped = match event {
                                 InputEvent::PointerMotion { x, y } => Some(
                                     crate::shell::device_fabric::FabricInputEvent::PointerMotion {
                                         x: spatial_coord(x),
@@ -6583,209 +6724,236 @@ pub fn run() {
                                 | InputEvent::PointerLeave { .. }
                                 | InputEvent::KeyboardFocus { .. } => None,
                             };
-                                if let Some(mapped) = mapped {
-                                    let _ = crate::shell::device_fabric_runtime::send_spatial_input(
-                                        &input_net,
-                                        &input_source,
-                                        mapped,
-                                    );
-                                }
-                            });
-                        let sink: Arc<dyn Fn(crate::network::streaming::InputEvent) + Send + Sync> =
-                            if mirror_only {
+                                    if let Some(mapped) = mapped {
+                                        let _ =
+                                            crate::shell::device_fabric_runtime::send_spatial_input(
+                                                &input_net,
+                                                &input_source,
+                                                mapped,
+                                            );
+                                    }
+                                });
+                            let sink: Arc<
+                                dyn Fn(crate::network::streaming::InputEvent) + Send + Sync,
+                            > = if mirror_only {
                                 Arc::new(|_| {})
                             } else {
                                 spatial_sink
                             };
-                        frame_builder
-                            .host_mut()
-                            .mount_personal_display(session_id, sink);
-                    }
-                    PersonalDisplayEvent::Frame {
-                        session_id,
-                        sequence,
-                        annex_b,
-                        ..
-                    } => {
-                        let outcome = frame_builder
-                            .host_mut()
-                            .push_personal_display_frame(session_id, &annex_b);
-                        crate::shell::device_fabric_runtime::report_personal_display_decode(
-                            net, session_id, sequence, outcome,
-                        );
-                    }
-                    PersonalDisplayEvent::Ended { session_id } => {
-                        let _ = frame_builder
-                            .host_mut()
-                            .unmount_personal_display(session_id);
+                            frame_builder
+                                .host_mut()
+                                .mount_personal_display(session_id, sink);
+                        }
+                        PersonalDisplayEvent::Frame {
+                            session_id,
+                            sequence,
+                            annex_b,
+                            ..
+                        } => {
+                            let outcome = frame_builder
+                                .host_mut()
+                                .push_personal_display_frame(session_id, &annex_b);
+                            crate::shell::device_fabric_runtime::report_personal_display_decode(
+                                net, session_id, sequence, outcome,
+                            );
+                        }
+                        PersonalDisplayEvent::Ended { session_id } => {
+                            let _ = frame_builder
+                                .host_mut()
+                                .unmount_personal_display(session_id);
+                        }
                     }
                 }
-            }
-            for event in crate::shell::device_fabric_runtime::take_nearby_drop_events() {
-                use crate::shell::device_fabric_runtime::NearbyDropEvent;
-                let fabric = net.device_fabric();
-                let peer_label = |peer: &crate::shell::personal_continuity::DeviceId| {
-                    fabric.snapshots().get(peer).map_or_else(
-                        || "your device".to_string(),
-                        |snapshot| snapshot.presence.label.clone(),
-                    )
-                };
-                let (title, body) = match event {
-                    NearbyDropEvent::Sending { file_name, peer } => (
-                        "Sending nearby".to_string(),
-                        format!("{file_name} to {}", peer_label(&peer)),
-                    ),
-                    NearbyDropEvent::Sent { file_name, peer } => (
-                        "Sent nearby".to_string(),
-                        format!("{file_name} to {}", peer_label(&peer)),
-                    ),
-                    NearbyDropEvent::Failed { file_name, peer } => (
-                        "Nearby drop failed".to_string(),
-                        format!("{file_name} · {}", peer_label(&peer)),
-                    ),
-                    NearbyDropEvent::Received { path, peer } => (
-                        "Received nearby".to_string(),
-                        format!(
-                            "{} from {}",
-                            path.file_name()
-                                .and_then(|name| name.to_str())
-                                .unwrap_or("File"),
-                            peer_label(&peer)
+            );
+            let nearby_drop_events = crate::shell::device_fabric_runtime::take_nearby_drop_events();
+            let nearby_drop_event_count = nearby_drop_events.len();
+            pump_phase!(
+                "nearby-drop-events",
+                nearby_drop_event_count,
+                for event in nearby_drop_events {
+                    use crate::shell::device_fabric_runtime::NearbyDropEvent;
+                    let fabric = net.device_fabric();
+                    let peer_label = |peer: &crate::shell::personal_continuity::DeviceId| {
+                        fabric.snapshots().get(peer).map_or_else(
+                            || "your device".to_string(),
+                            |snapshot| snapshot.presence.label.clone(),
+                        )
+                    };
+                    let (title, body) = match event {
+                        NearbyDropEvent::Sending { file_name, peer } => (
+                            "Sending nearby".to_string(),
+                            format!("{file_name} to {}", peer_label(&peer)),
                         ),
-                    ),
-                };
-                frame_builder.with_chrome(|chrome| {
-                    chrome.push_notification(title, body);
-                });
-            }
+                        NearbyDropEvent::Sent { file_name, peer } => (
+                            "Sent nearby".to_string(),
+                            format!("{file_name} to {}", peer_label(&peer)),
+                        ),
+                        NearbyDropEvent::Failed { file_name, peer } => (
+                            "Nearby drop failed".to_string(),
+                            format!("{file_name} · {}", peer_label(&peer)),
+                        ),
+                        NearbyDropEvent::Received { path, peer } => (
+                            "Received nearby".to_string(),
+                            format!(
+                                "{} from {}",
+                                path.file_name()
+                                    .and_then(|name| name.to_str())
+                                    .unwrap_or("File"),
+                                peer_label(&peer)
+                            ),
+                        ),
+                    };
+                    frame_builder.with_chrome(|chrome| {
+                        chrome.push_notification(title, body);
+                    });
+                }
+            );
             let desired = {
                 let tree_handle = frame_builder.chrome_handle().borrow().tree_handle();
                 let tree = tree_handle.read();
                 desired_legacy_shares(&tree)
             };
-            state.reconcile_legacy_share_sessions(
-                net.local_peer_id_hash(),
-                &desired,
-                &legacy_share_config,
+            pump_phase!(
+                "legacy-share-reconcile",
+                state.reconcile_legacy_share_sessions(
+                    net.local_peer_id_hash(),
+                    &desired,
+                    &legacy_share_config,
+                )
             );
-            for inbound in net.take_inbound_legacy() {
-                match inbound.message {
-                    crate::network::NeighbourMsg::SurfaceStreamStart {
-                        surface,
-                        source_peer,
-                        app_id,
-                        codec,
-                        hdr_static_metadata,
-                        ..
-                    } => {
-                        let reply_net = Arc::clone(net);
-                        let local_peer = net.local_peer_id_hash();
-                        let workspace_topic = inbound.workspace_topic;
-                        let input_sink = Arc::new(move |input| {
-                            if let Ok(event) = postcard::to_allocvec(&input) {
-                                let _ = reply_net.publish_legacy_message(
-                                    workspace_topic,
-                                    crate::network::NeighbourMsg::RemoteInput {
-                                        peer: local_peer,
-                                        surface,
-                                        event,
-                                    },
-                                );
-                            }
-                        });
-                        let stream = PendingLegacyStream {
-                            source_peer,
+            let inbound_legacy = net.take_inbound_legacy();
+            let inbound_legacy_count = inbound_legacy.len();
+            pump_phase!(
+                "legacy-inbound",
+                inbound_legacy_count,
+                for inbound in inbound_legacy {
+                    match inbound.message {
+                        crate::network::NeighbourMsg::SurfaceStreamStart {
                             surface,
-                            local_peer,
+                            source_peer,
                             app_id,
                             codec,
                             hdr_static_metadata,
-                            input_sink,
-                        };
-                        let mounted = !stream.app_id.is_empty()
-                            && frame_builder.host_mut().mount_peer_stream(
-                                stream.source_peer,
-                                stream.surface,
-                                stream.local_peer,
-                                &stream.app_id,
-                                &stream.codec,
-                                stream.hdr_static_metadata,
-                                Arc::clone(&stream.input_sink),
-                            );
-                        if !mounted {
-                            tracing::warn!(
+                            ..
+                        } => {
+                            let reply_net = Arc::clone(net);
+                            let local_peer = net.local_peer_id_hash();
+                            let workspace_topic = inbound.workspace_topic;
+                            let input_sink = Arc::new(move |input| {
+                                if let Ok(event) = postcard::to_allocvec(&input) {
+                                    let _ = reply_net.publish_legacy_message(
+                                        workspace_topic,
+                                        crate::network::NeighbourMsg::RemoteInput {
+                                            peer: local_peer,
+                                            surface,
+                                            event,
+                                        },
+                                    );
+                                }
+                            });
+                            let stream = PendingLegacyStream {
                                 source_peer,
                                 surface,
-                                app_id = stream.app_id,
-                                "legacy stream is waiting for its peer-window tab"
+                                local_peer,
+                                app_id,
+                                codec,
+                                hdr_static_metadata,
+                                input_sink,
+                            };
+                            let mounted = !stream.app_id.is_empty()
+                                && frame_builder.host_mut().mount_peer_stream(
+                                    stream.source_peer,
+                                    stream.surface,
+                                    stream.local_peer,
+                                    &stream.app_id,
+                                    &stream.codec,
+                                    stream.hdr_static_metadata,
+                                    Arc::clone(&stream.input_sink),
+                                );
+                            if !mounted {
+                                tracing::warn!(
+                                    source_peer,
+                                    surface,
+                                    app_id = stream.app_id,
+                                    "legacy stream is waiting for its peer-window tab"
+                                );
+                            }
+                            pending_legacy_streams.insert((source_peer, surface), stream);
+                        }
+                        crate::network::NeighbourMsg::SurfaceFrame {
+                            surface,
+                            source_peer,
+                            encoded_h264,
+                            ..
+                        } => {
+                            let _ = frame_builder.host_mut().push_peer_stream_frame(
+                                source_peer,
+                                surface,
+                                &encoded_h264,
+                                None,
                             );
                         }
-                        pending_legacy_streams.insert((source_peer, surface), stream);
-                    }
-                    crate::network::NeighbourMsg::SurfaceFrame {
-                        surface,
-                        source_peer,
-                        encoded_h264,
-                        ..
-                    } => {
-                        let _ = frame_builder.host_mut().push_peer_stream_frame(
-                            source_peer,
+                        crate::network::NeighbourMsg::SurfaceStreamEnd {
                             surface,
-                            &encoded_h264,
-                            None,
-                        );
-                    }
-                    crate::network::NeighbourMsg::SurfaceStreamEnd {
-                        surface,
-                        source_peer,
-                        ..
-                    } => {
-                        pending_legacy_streams.remove(&(source_peer, surface));
-                        let _ = frame_builder
-                            .host_mut()
-                            .unmount_peer_stream(source_peer, surface);
-                    }
-                    crate::network::NeighbourMsg::RemoteInput {
-                        peer,
-                        surface,
-                        event,
-                    } => {
-                        match postcard::from_bytes::<crate::network::streaming::InputEvent>(&event)
-                        {
-                            Ok(event) => {
-                                let _ = state.apply_network_remote_input(peer, surface, event);
+                            source_peer,
+                            ..
+                        } => {
+                            pending_legacy_streams.remove(&(source_peer, surface));
+                            let _ = frame_builder
+                                .host_mut()
+                                .unmount_peer_stream(source_peer, surface);
+                        }
+                        crate::network::NeighbourMsg::RemoteInput {
+                            peer,
+                            surface,
+                            event,
+                        } => {
+                            match postcard::from_bytes::<crate::network::streaming::InputEvent>(
+                                &event,
+                            ) {
+                                Ok(event) => {
+                                    let _ = state.apply_network_remote_input(peer, surface, event);
+                                }
+                                Err(error) => tracing::warn!(
+                                    peer,
+                                    surface,
+                                    %error,
+                                    "dropping malformed remote input"
+                                ),
                             }
-                            Err(error) => tracing::warn!(
-                                peer,
-                                surface,
-                                %error,
-                                "dropping malformed remote input"
-                            ),
+                        }
+                        _ => {
+                            tracing::debug!("ignoring non-stream message in the legacy inbox");
                         }
                     }
-                    _ => {
-                        tracing::debug!("ignoring non-stream message in the legacy inbox");
+                }
+            );
+            let pending_legacy_count = pending_legacy_streams.len();
+            pump_phase!(
+                "legacy-remount",
+                pending_legacy_count,
+                for stream in pending_legacy_streams.values() {
+                    if !stream.app_id.is_empty() {
+                        let _ = frame_builder.host_mut().mount_peer_stream(
+                            stream.source_peer,
+                            stream.surface,
+                            stream.local_peer,
+                            &stream.app_id,
+                            &stream.codec,
+                            stream.hdr_static_metadata,
+                            Arc::clone(&stream.input_sink),
+                        );
                     }
                 }
-            }
-            for stream in pending_legacy_streams.values() {
-                if !stream.app_id.is_empty() {
-                    let _ = frame_builder.host_mut().mount_peer_stream(
-                        stream.source_peer,
-                        stream.surface,
-                        stream.local_peer,
-                        &stream.app_id,
-                        &stream.codec,
-                        stream.hdr_static_metadata,
-                        Arc::clone(&stream.input_sink),
-                    );
-                }
-            }
+            );
         }
+        pump_checkpoint!("device-fabric-and-network");
         // Keep the presence relay current, then fold in what peers sent. Pointer
         // is read level-triggered (covers every source: seat, remote peer, test
         // socket); room set is re-read each tick since a workspace can join a
         // room mid-session and the subscription must follow.
+        let pump_network_done = Instant::now();
+        let pump_presence_started = pump_network_done;
         let peers_moved = if let Some(relay) = frame_builder.peer_presence() {
             // The pointer as the input state knows it — "nowhere", not the origin, for
             // a session that never moved one; being level-triggered, `cursor()` would paint a cursor for nobody.
@@ -6821,6 +6989,9 @@ pub fn run() {
         } else {
             false
         };
+        pump_checkpoint!("peer-presence");
+        let pump_presence_done = Instant::now();
+        let pump_apps_started = pump_presence_done;
         let mut apps_changed =
             frame_builder.pump_apps(&mut test_control_ctx.doc, &test_control_ctx.root_obj);
         if desktop_continuation
@@ -6832,6 +7003,8 @@ pub fn run() {
         {
             tracing::warn!(%error, "Could not queue Desktop folder continuation; reopen Add folders to qOS");
         }
+        let pump_apps_done = Instant::now();
+        pump_checkpoint!("widget-pump");
         if take_deferred_peer_sync_activation(
             &mut deferred_peer_sync,
             frame_builder.host().onboarding_active(),
@@ -6876,6 +7049,7 @@ pub fn run() {
             }
             apps_changed = true;
         }
+        let pump_finalize_started = Instant::now();
         let revision = frame_builder.chrome_revision();
         let revision_changed = revision != last_revision;
         let animating = frame_builder.needs_animation_frame();
@@ -6892,12 +7066,45 @@ pub fn run() {
         let keepalive_due = false;
         let lock_clock_due =
             lock_clock_refresh_due(session.is_locked(), iter_t0, &mut last_lock_clock_refresh);
-        metrics.mark_pump(
-            iter_t0
-                .elapsed()
-                .checked_sub(t_input_done)
-                .unwrap_or_default(),
-        );
+        let pump_done = Instant::now();
+        let pump_total = pump_done
+            .duration_since(iter_t0)
+            .checked_sub(t_input_done)
+            .unwrap_or_default();
+        metrics.mark_pump(pump_total);
+        if loop_timing && pump_slowest.1 > Duration::from_millis(100) {
+            eprintln!(
+                "SLOW-PUMP slowest={} elapsed={:?}",
+                pump_slowest.0, pump_slowest.1
+            );
+        }
+        if slow_prepaint_phase(pump_total) {
+            tracing::warn!(
+                target: "tilo::latency",
+                elapsed_ms = pump_total.as_secs_f64() * 1_000.0,
+                bookkeeping_ms = pump_bookkeeping_done
+                    .duration_since(pump_bookkeeping_started)
+                    .as_secs_f64()
+                    * 1_000.0,
+                network_ms = pump_network_done
+                    .duration_since(pump_network_started)
+                    .as_secs_f64()
+                    * 1_000.0,
+                presence_ms = pump_presence_done
+                    .duration_since(pump_presence_started)
+                    .as_secs_f64()
+                    * 1_000.0,
+                apps_ms = pump_apps_done
+                    .duration_since(pump_apps_started)
+                    .as_secs_f64()
+                    * 1_000.0,
+                finalize_ms = pump_done
+                    .duration_since(pump_finalize_started)
+                    .as_secs_f64()
+                    * 1_000.0,
+                "pre-paint pump stalled compositor input"
+            );
+        }
         // Is there anything new to show? This redraw gating lets a static desktop
         // idle at near-zero CPU, orthogonal to *when* a frame may show (the clock's job below).
         let content_changed = NativeRedrawReasons {
@@ -7362,8 +7569,14 @@ pub fn run() {
             }
             let t_submit_start = Instant::now();
             let mut render_thread_lost = false;
+            let mut submitted_serial = None;
             let async_present = if let Some(pipe) = present_pipe.as_mut() {
-                render_thread_lost = !pipe.submit_frame(frame_paint, OutputId(0));
+                submitted_serial = pipe.submit_frame_with_input_age(
+                    frame_paint,
+                    OutputId(0),
+                    metrics.pending_input_age(t_submit_start),
+                );
+                render_thread_lost = submitted_serial.is_none();
                 // This serial belongs to the scene submitted above.  Do not
                 // use a before/after presentation count here: an older
                 // desktop frame can be in flight when sleep locks, and its
@@ -7405,10 +7618,17 @@ pub fn run() {
                 submit_done.saturating_duration_since(t_submit_start),
                 async_present,
                 submit_done,
+                submitted_serial,
             );
-            // Advance the deadline series off the moment the frame was handed to the
-            // display — the clock paces *production*; the render thread's vsync paces consumption behind it.
-            frame_clock.note_presented(submit_done);
+            // An asynchronous presenter advances the cadence only when its
+            // physical retirement is observed at the top of a later loop
+            // iteration. Advancing here at scene handoff used to run the
+            // software clock ahead of KMS page-flip completion, repeatedly
+            // filling the bounded queue and collapsing a 144 Hz panel toward
+            // 60 Hz. Synchronous/headless presentation still retires here.
+            if !async_present {
+                frame_clock.note_presented(submit_done);
+            }
             if sleep_lock_frame_pending
                 && !sleep_lock_frame_failed
                 && session.is_locked()
@@ -7509,12 +7729,17 @@ pub fn run() {
         }
         let t_work_done = iter_t0.elapsed();
         metrics.mark_clients(t_work_done.checked_sub(t_testctl_done).unwrap_or_default());
-        if loop_timing && t_work_done > Duration::from_millis(100) {
+        if (loop_timing || t_work_done > Duration::from_millis(100))
+            && t_work_done > Duration::from_millis(100)
+        {
             eprintln!(
-                "SLOW-ITER total_work={:?} | input={:?} paint=+{:?} testctl=+{:?} dispatch_clients=+{:?}",
+                "SLOW-ITER total_work={:?} | input={:?} pump=+{:?} post_pump_paint=+{:?} testctl=+{:?} dispatch_clients=+{:?}",
                 t_work_done,
                 t_input_done,
-                t_paint_done.checked_sub(t_input_done).unwrap_or_default(),
+                pump_total,
+                t_paint_done
+                    .checked_sub(pump_done.duration_since(iter_t0))
+                    .unwrap_or_default(),
                 t_testctl_done.checked_sub(t_paint_done).unwrap_or_default(),
                 t_work_done.checked_sub(t_testctl_done).unwrap_or_default(),
             );

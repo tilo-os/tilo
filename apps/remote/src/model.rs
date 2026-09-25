@@ -286,7 +286,7 @@ fn profile_issue(kind: ConnectionKind, host: &str, auth: AuthMethod) -> Option<&
     }
     if kind == ConnectionKind::Tilo
         && !host.trim().is_empty()
-        && host.trim().parse::<iroh::EndpointId>().is_err()
+        && host.trim().parse::<iroh_base::EndpointId>().is_err()
     {
         return Some("Tilo device node must be an exact certified endpoint id.");
     }
@@ -492,6 +492,8 @@ impl Workspace {
 
 #[cfg(test)]
 mod tests {
+    use iroh_base::SecretKey;
+
     use super::*;
 
     fn sample(name: &str, kind: ConnectionKind) -> Connection {
@@ -605,7 +607,7 @@ mod tests {
         let d = ConnectionDraft {
             kind: ConnectionKind::Tilo,
             name: "node".into(),
-            host: iroh::SecretKey::from_bytes(&[7; 32]).public().to_string(),
+            host: SecretKey::from_bytes(&[7; 32]).public().to_string(),
             port: String::new(),
             auth: AuthMethod::DeviceIdentity,
             ..Default::default()
@@ -631,7 +633,7 @@ mod tests {
             Some("Tilo device node must be an exact certified endpoint id.")
         );
 
-        connection.host = iroh::SecretKey::generate().public().to_string();
+        connection.host = SecretKey::generate().public().to_string();
         assert_eq!(connection.profile_issue(), None);
     }
 

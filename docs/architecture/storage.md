@@ -1,0 +1,1604 @@
+# Storage, sync and records
+
+Status: design for review. Nothing here is implemented unless it says so. Where
+this document describes today, it cites `file:line` in the tree as of this
+commit's parent. Where evidence is missing, it says so and lists the question
+in [§22](#22-open-questions-for-the-owner) instead of guessing.
+
+This document replaces the storage parts of several documents that grew up
+separately: the collaborative file daemon (`crates/system/fs`), app state
+(`crates/system/app-state`, `crates/sdk/ui-core/src/{persist,record}.rs`),
+document blobs (`crates/doc/qdoc/src/blobstore.rs`) and the package store
+(`crates/packaging/app-host`). They become one system with one content store,
+one record model, one history and one permission model.
+
+Contents
+
+1. [Requirements](#1-requirements)
+2. [Where we are](#2-where-we-are)
+3. [Goals and non-goals](#3-goals-and-non-goals)
+4. [Concepts](#4-concepts)
+5. [Architecture at a glance](#5-architecture-at-a-glance)
+6. [Local data plane](#6-local-data-plane)
+7. [Content format](#7-content-format)
+8. [Metadata plane](#8-metadata-plane)
+9. [Transfer engine](#9-transfer-engine)
+10. [Visibility across files](#10-visibility-across-files)
+11. [Conflicts and leases](#11-conflicts-and-leases)
+12. [Caching, residency and prefetch](#12-caching-residency-and-prefetch)
+13. [The Record Store API](#13-the-record-store-api)
+14. [Permissions](#14-permissions)
+15. [History](#15-history)
+16. [Installed apps](#16-installed-apps)
+17. [The git test](#17-the-git-test)
+18. [Keep, merge, delete](#18-keep-merge-delete)
+19. [Migration stages](#19-migration-stages)
+20. [Risks](#20-risks)
+21. [Alternatives considered](#21-alternatives-considered)
+22. [Open questions for the owner](#22-open-questions-for-the-owner)
+
+---
+
+## 1. Requirements
+
+These are the owner's requirements, quoted. Every decision below names the
+requirement it serves as `[R1]`…`[R9]`.
+
+| | Requirement |
+|---|---|
+| **R1** | "The collaborative/syncing FS works with ALL sizes and kinds of files; normal POSIX reads/writes keep working while background work happens (predictive caching, prefetch, sync)." |
+| **R2** | "Literally native FS read/write performance for files already on disk, for all file sizes." |
+| **R3** | "Sync basically saturates most network connections, including for many small files." |
+| **R4** | "The caching/sync design needs to be absolutely amazing." |
+| **R5** | "The easy path for app developers: all storage/resources collaborative, all versioned with good history, great DX — and very little reason to leave that path regardless of size/kind of files/resources." |
+| **R6** | "One implementation per system (one blob/content store for files, document media, app data and installed apps; one record model; one history; one permission model), done properly." |
+| **R7** | "Installed apps use the same blob storage as everything else, and `.tapp` package files must stay very small." |
+| **R8** | "App data must be fully deduplicated (at least per workspace, ideally beyond), isolated, collaborative with smart syncing and robust permissions." |
+| **R9** | Success indicator, not to be special-cased: "git repositories sync between devices with zero thought". The general design must provide POSIX fidelity (exec bit, symlinks, ownership, `O_EXCL` lock files, atomic rename, honest fsync, mmap), native performance with very many small files, cross-file causal visibility (a ref is never visible before its objects), correct single-writer semantics across devices (leases or versioned conflicts for index, packfiles, SQLite), and throughput dominated by small files. There are no git-specific code paths. |
+
+Five rules follow directly from these, and the rest of the document applies
+them.
+
+1. **The daemon is never on the hot path of a resident file.** Reads, writes,
+   `stat`, `open` and mmap of bytes already on disk go to a native filesystem
+   and never cross into userspace. [R2, R9]
+2. **Real files on a native filesystem are the local source of truth.** The
+   content store indexes them. It does not hold a second copy. [R2, R6]
+3. **Size is never a mode switch.** One API and one format cover a 40-byte
+   ref, 100k source files, a 10 GiB VM image and a million-item collection. The
+   store picks chunking, sharding and residency; the app and the user do not.
+   [R1, R5]
+4. **Everything that crosses the network is batched, pipelined and streamed.**
+   No request is per file, per chunk or per record. [R3]
+5. **Possessing a hash never grants access.** Access comes from a readable
+   record that references the content. [R6, R8]
+
+---
+
+## 2. Where we are
+
+The pieces are strong. What is missing is one model and the performance path.
+
+### 2.1 What is worth keeping
+
+- **Stable record identity and signed per-record replication.**
+  `FileRecordId`, signed `RecordEnvelopeV1` operations
+  (`crates/system/fs/src/record_replication.rs:61-81`), certified device
+  authorship, and a signed placement binding `FileBindingV1 {record_id, parent,
+  name, kind, tombstoned}` (`crates/collab/collab-types/src/files.rs:209-220`).
+- **Share and authority machinery.** Named and link shares, one-use
+  redemption, revocation, exact-version replica receipts, fail-closed eviction
+  and multi-record transactions (`docs/collaborative-files-product.md:7-96`).
+  403 tests cover it (`docs/collaborative-files-product.md:190-197`).
+- **Actions and undo.** Typed `ActionSpec`s behind one door, `ActionContext`
+  written into Automerge change messages (`docs/history-experience.md:101-121`),
+  and author-scoped undo that survives concurrent remote edits
+  (`crates/sdk/ui-core/src/state/mod.rs:161-178`).
+- **The rooms concept.** Records with a home room, rooms hold references, and
+  content is separate from person/device settings (`docs/architecture/rooms.md`).
+- **The substrate.** iroh 1.0 with iroh-blobs 0.103 already provides BAO range
+  requests, `HashSeq`, `GetManyRequest`, a `Downloader` with a connection pool
+  and `SplitStrategy`, and a store interface that can have a custom backend
+  (`iroh-blobs-0.103.0/src/protocol.rs:567-580`,
+  `src/api/downloader.rs:36,317`, `src/store/readonly_mem.rs:1-7`). fuser 0.17
+  supports FUSE passthrough (`fuser-0.17.0/src/ll/request.rs:1019-1020`).
+  Tilo uses almost none of this.
+
+### 2.2 What fails the requirements
+
+| Area | Today | Requirement it fails |
+|---|---|---|
+| Data path | Every read and write goes through plain FUSE on **one** worker thread: `n_threads` is unset, and `init` sets only readahead (`crates/system/fs/src/main.rs:3045-3067`, `fs.rs:4373-4376`). `open` replies with `FopenFlags::empty()`: no keep-cache, no passthrough (`fs.rs:4530`). No real file exists; bytes are ~8 KiB chunks inside redb. | R2, R9 |
+| Local read | `Hydrator::read` decodes the whole manifest and scans it from chunk 0 on every call. Measured in a release build on tmpfs: 216 MB/s at 64 MiB, **25 MB/s at 1 GiB**. | R2 |
+| Local write | The first write loads the whole file into RAM. Every close, flush and fsync re-chunks and re-hashes the whole file, then rewrites the whole-workspace history JSON. Measured: 64 MB/s at 1 GiB, **10.4 s to re-commit a 1-byte edit** to a 1 GiB file. | R1, R2 |
+| Silent loss | `flush` and `fsync` reply OK when the commit failed; the failure is only an `eprintln!` (`fs.rs:479`). | R9 (honest fsync) |
+| Metadata | One Automerge document for the whole workspace. `lookup`, `readdir` and create scan every node. Measured: **12.3 ms per create at 1,000 files**; a single lookup then takes 17 ms. | R1, R2, R9 |
+| Caps | 16,384 records per workspace, 1,024 versions and 4,096 operations per file, 8 MiB per record file (`record_repository.rs:24-31`). SQLite, which fsyncs per transaction, hits the version cap and then loses writes silently. | R1, R9 |
+| POSIX | No symlinks, hardlinks, `statfs`, `fallocate` or locks. `setattr` ignores mode, owner and times. Everything is `0644`/`0755` and owned by root, so git refuses the repo as "dubious ownership". | R9 |
+| Content sync | A new QUIC connection and a whole-blob GET per 8 KiB chunk, sequential; push is disabled (`sync.rs:862`). About two RTTs per chunk, regardless of bandwidth: ~4 MB/s on LAN, ~50 KB/s over an 80 ms relay. | R3 |
+| Serving | Authorising one chunk scans every readable manifest while holding the namespace lock, in one serial task (`sync.rs:737-840`). | R3 |
+| App data | 44 of 54 apps keep all state in one Automerge document per `(package, room)`. Snapshots and deltas are capped at 3 MiB (`crates/collab/collab-types/src/op.rs:30-35`), and an oversized delta is dropped after the frontier has advanced (`crates/sdk/ui-core/src/collaboration.rs:3653-3661`). Room discovery is capped at 64 records (`ui-core/src/record.rs:38`). | R5, R8 |
+| Blobs | Two stores. qdoc's `BlobStore` is process-local, capped at 32 MiB per blob / 256 MiB / 8,192 entries (`crates/doc/qdoc/src/blobstore.rs:33-40`), and `BlobTransport` has no production implementation (`blobstore.rs:650-664`). The fs daemon has the other store. | R5, R6, R8 |
+| Packages | A third store. `app-host` ingests every blob into its own `FsBlobStore` and eagerly unpacks a second copy (`crates/packaging/app-host/src/install.rs:1-20`, `store.rs:1-12`). `app-fs` (lazy FUSE) has no dependents. | R6, R7 |
+| History | Automerge change graphs for app state, signed versions plus a global JSON file for files, and an audit log on the relay. | R6 |
+
+The daemon is correctness- and security-first but performance-naive. The fix
+keeps the record and authority plane and replaces the data path, content
+format, metadata persistence and transfer engine underneath it.
+
+---
+
+## 3. Goals and non-goals
+
+### Goals
+
+- Native local I/O for resident data, at every size. [R2]
+- One content store per device for workspace files, document media, app data,
+  CRDT history segments and installed packages. [R6, R7, R8]
+- One record model (CRDT document, sharded collection, byte/file) with one
+  identity, ACL, history and replication plane. [R5, R6]
+- Sync that is bounded by the link, not by round trips, for both one big file
+  and 100k small ones. [R3]
+- Lazy hydration that never blocks unrelated I/O, and eviction that never loses
+  the only copy. [R1, R4]
+- Crash-consistent, causally ordered cross-file visibility on peers. [R9]
+- An app API where the collaborative, versioned path is also the shortest
+  path. [R5]
+
+### Non-goals
+
+- **Per-identity filtered views of one local tree.** A device materialises only
+  the records its person may read. Different local Unix users get different
+  stores. We do not filter one tree per process (see [§14](#14-permissions)).
+- **Git-, SQLite- or tool-specific sync code.** Tools get general mechanisms:
+  crash-consistent epochs, ordered application, leases and versioned
+  conflicts. [R9]
+- **Automatic semantic merging of arbitrary binary formats.** Binary conflicts
+  are versioned and kept, never silently lost, and never auto-merged.
+- **A kernel module.** It is out of tree, needs Secure Boot signing and adds
+  attack surface ([§21](#21-alternatives-considered)).
+- **Un-sharing bytes.** Revocation stops future flow. It cannot erase what a
+  peer already has (`docs/architecture/rooms.md`, "Rooms hold references").
+- **Replacing Automerge now.** The CRDT engine is hidden behind a typed
+  transaction API so that it can change later ([§21](#21-alternatives-considered)).
+
+---
+
+## 4. Concepts
+
+| Concept | Definition | Change from today |
+|---|---|---|
+| **Person, device** | A certified human root and its certified device keys. The device key is the iroh `EndpointId` (`docs/architecture/collaboration.md`, "Identity"). | Unchanged. |
+| **Workspace = room** | A workspace's durable collaboration identity is its room, 1:1. It has members, roles, a host, a **catalog** of record references and a **file tree root**. The personal room is a real `RoomId` with one member. | Removes the `"personal"` slug / nil UUID split (`launcher/src/appdir.rs:37`, `ui-core/src/record.rs:692-703`). |
+| **Record** | The unit of identity, sharing, ACL, history and sync. It has a minted `RecordId` (never a path), a kind, a home room, a body and references. | One id type. `ui::RecordId::for_file(path)` and `FileRecordId` merge. |
+| **Record kinds** | **CRDT document**: Automerge body (a note, a spreadsheet, a room catalog). **Collection**: a record whose items are sharded into shard documents with an index (a photo library, chat channel, playlist set). **File**: a byte body plus POSIX metadata and a placement in a tree (files, directories, symlinks). A file may also carry a CRDT side-body when a format provider understands it ([§13.5](#135-files-and-format-aware-files)). | Collections are new. CRDT records move from app sandboxes into the record plane. |
+| **Content store** | One per device. It holds content-addressed bytes (BLAKE3) with one index, one GC and one authorisation rule. Physically, bytes live either as ranges of native files and their snapshots or as loose blobs. | Replaces three stores ([§7](#7-content-format)). |
+| **Content id** | For a body ≤ 64 KiB, the BLAKE3 hash of the bytes. For larger bodies, the hash of a file manifest `HashSeq` ([§7.2](#72-manifests)). | Replaces postcard manifests and the separate whole-file hash. |
+| **Changeset** | A set of record operations from one device, cut from one crash-consistent capture epoch, signed once and applied atomically and in order by peers. | New. Multi-record transactions exist today only for replacement rename (`record_transaction.rs`). |
+| **Version** | An immutable node in a record's history DAG: a changeset entry for files, Automerge heads for CRDT records. | One history source ([§15](#15-history)). |
+| **Residency** | Per file: `Placeholder`, `Partial`, `Resident`, `Pinned`, `Dirty`, `LocalOnly`. | Replaces explicit-only eviction ([§12](#12-caching-residency-and-prefetch)). |
+| **Lease** | A time-bounded, fenced single-writer grant on one record, issued by a lease authority. | New ([§11.2](#112-leases)). |
+| **Settings** | Person-, device- or person-in-room-scoped typed values (`Settings<T>`). They follow the person or the device, never the room's members. | Formalises the split in `rooms.md`, "Not all app state is a record". |
+
+**Content versus settings.** Content records are room-scoped, empty in a new
+room, shared with room members and versioned in full. Settings are
+person/device-scoped, synced only between a person's own devices (or not at
+all, for device scope), versioned lightly and never visible to collaborators.
+Ebook font scale, weather's selected city and chat drafts are settings, not
+content (the current placements are the defects listed in
+`docs/architecture/rooms.md`).
+
+---
+
+## 5. Architecture at a glance
+
+```
+   SDK apps                    foreign apps, shell tools, git, compilers
+   ctx.collection / open_file   plain POSIX (open/read/write/mmap/rename)
+        │  capability-scoped Cap'n Proto          │
+        │  (fds passed back for bytes)            │ native VFS, no daemon hop
+        ▼                                         ▼
+ ┌──────────────────────── storage daemon (evolves `fs`) ──────────────────────┐
+ │  Record Store          Tree projector           Change capture              │
+ │  CRDT records,         materialises file        fanotify journal (Tier 1),  │
+ │  collections, query    records as real files,   FUSE callbacks (Tier 2/3),  │
+ │  indexes, Settings     placeholders, residency  epochs, incremental rechunk │
+ │ ─────────────────────────────────────────────────────────────────────────── │
+ │  Authority: ACLs, capabilities, shares, leases, receipts (existing plane)   │
+ │  History: one HistorySource, retention, GC roots                            │
+ │  Content store: one hash space; ChunkStore over native files + loose blobs  │
+ │  Metadata DB (redb): envelopes, indexes, journal, residency, reverse index  │
+ │ ─────────────────────────────────────────────────────────────────────────── │
+ │  Transfer engine: 1 authenticated QUIC connection per peer, set             │
+ │  reconciliation for metadata, pipelined HashSeq/GetMany for content,        │
+ │  multi-peer splitting, push to always-on peers, priority classes            │
+ └──────────────────────────────────────┬──────────────────────────────────────┘
+                                        │ iroh (direct, hole-punched, relayed)
+                      other devices, home host / hosted server (tilo-relay)
+
+ On disk (Tier 1): a dedicated Btrfs filesystem, the "store volume"
+   /var/lib/tilo/store/
+     live/<room-id>/…        real files: the POSIX tree per room (subvolume)
+     live/apps/<room>/<pkg>/  foreign apps' private data dirs (subvolume)
+     pkgs/<package-id>/…     materialised package payloads (read-only)
+     .epochs/<n>/            read-only capture snapshots (short-lived)
+     .versions/…             reflinked retained versions (history)
+     .blobs/                 loose blobs: CRDT segments, remote-only chunks, thumbnails
+     meta.redb               metadata DB
+   /var/workspace → view of live/ (bind mounts), unchanged path for users and apps
+```
+
+**Only one daemon, and it is the existing one.** The `fs` binary and service
+keep their names. The crate is split internally into modules along the lines
+above ([§18](#18-keep-merge-delete)). The shell's collaboration broker keeps
+presence, cursors and live surface streams. Durable app state leaves the
+broker for the record plane.
+
+---
+
+## 6. Local data plane
+
+### 6.1 Kernel tiers
+
+One engine runs on three kernel tiers. Each tier is chosen at startup by
+probing features, not by version string. Tilo builds its own 7.2 kernel
+(`os/kernel/`, `docs/architecture/platform-support.md:72`), so Tilo OS targets
+Tier 1. Tier 2
+exists for Tilo Desktop on other distributions, and as the first shippable
+stage of the migration.
+
+| | **Tier 1: native + fanotify** | **Tier 2: FUSE passthrough** | **Tier 3: tuned FUSE** |
+|---|---|---|---|
+| Kernel | ≥ 6.14: pre-content events (`FAN_PRE_ACCESS`), `FAN_REPORT_DFID_NAME`, `FAN_RENAME` (5.17), `FAN_MARK_EVICTABLE` (5.19) | 6.9–6.13 (or Tier 1 missing prerequisites) | older |
+| What `/var/workspace` is | bind of the real tree on the store volume | FUSE mount; hydrated files are backed by real files and opened with `FOPEN_PASSTHROUGH` | FUSE mount, multi-threaded, writeback cache, `KEEP_CACHE`, readdirplus |
+| read/write/mmap of resident file | **native** | **native** (the kernel forwards to the backing file) | FUSE round trip, degraded |
+| stat/open/readdir | **native** | FUSE round trip; long TTLs, readdirplus and explicit invalidation make repeats cheap | FUSE round trip |
+| Placeholders | sparse file of correct size; the daemon fills ranges on `FAN_PRE_ACCESS` | `open` hydrates the needed ranges before handing out the backing fd | read hydrates |
+| Change capture | fanotify filesystem mark → durable journal; Btrfs epoch snapshots | FUSE `create/rename/unlink/setattr/flush/fsync/release` → the same journal; epoch snapshots when the backing store is Btrfs | same as Tier 2 |
+| Label | normal | normal ("metadata over FUSE") | shown as degraded in Settings |
+
+**Decision:** Tier 1 is the design on Tilo OS, which ships kernel ≥ 6.14 and
+a dedicated Btrfs store volume. Tiers 2 and 3 exist only for Tilo Desktop on
+foreign distributions. The kernel checks in
+[§6.8](#68-kernel-facts-to-verify-before-committing-to-tier-1) were run on 7.2
+and hold (results there). The core of the Tier 1 data plane — probes, journal,
+capture epochs, content format and placeholder hydration — is implemented in
+`crates/system/fs-native`; `tilo-fs-native probe <store>` selects the tier on a
+given machine.
+
+FUSE remains for Tier 2/3 only. Exact-share recipients use the same native
+materialisation as everyone else, because a device only materialises records
+it may read ([§14](#14-permissions)). The separate FUSE recipient mount
+(`crates/system/fs/src/recipient_mount.rs`) is retired once Tier 1 ships.
+
+### 6.2 Store volume and layout
+
+- **Tier 1 needs a dedicated Btrfs filesystem** (its own superblock) for the
+  store. Reasons:
+  - fanotify filesystem marks are per superblock.
+  - A pre-content mark on the root filesystem would put the daemon behind
+    every file access on the machine.
+  - Epoch capture uses Btrfs subvolume snapshots ([§6.4](#64-change-capture-off-the-hot-path)).
+  - The supported root is already Btrfs on the composefs backend
+    (`os/Containerfile:2168`, `os/usr/lib/bootc/install/40-tilo.toml`), but it
+    is one filesystem, and bootc keeps `/var` on it.
+- Recommended: the installer creates a second LUKS2 partition for the store
+  volume, unlocked by a key sealed inside the root filesystem, so there is no
+  second prompt. Existing installs migrate to a loop-mounted Btrfs image file
+  (`chattr +C` to avoid double copy-on-write) or stay on Tier 2. **This is open
+  question Q1.**
+- Each room's tree is a Btrfs subvolume under `live/`. That lets one room be
+  snapshotted, quota-accounted (simple quotas, not qgroups) and removed alone.
+- `/var/workspace` stays the user-visible path. It shows one directory per
+  room. Sandboxes bind their room's tree exactly as the launcher binds paths
+  today (`docs/architecture/security.md:129-134`).
+- Ownership: every materialised file belongs to the local person's uid/gid.
+  Owner and group are **not** replicated. The mode bits `rwx` for user, group
+  and other and the setgid bit on directories **are** replicated. Setuid is
+  never materialised. [R9]
+
+### 6.3 File states
+
+```
+                 metadata arrives            first read / prefetch / pin
+  (not present) ───────────────► Placeholder ──────────────────────► Partial ──► Resident
+                                  ▲   sparse file, real size,          ranges      │   │
+                                  │   mode, mtime; residency xattr     bitmap      │   │ pin
+                                  │                                                ▼   ▼
+                                  └──────── evict (punch holes) ◄──────────── Resident/Pinned
+                                                                                   │ local write
+                                                                                   ▼
+                                                                                 Dirty ─► captured
+                                                                                         (new version)
+  LocalOnly: never synced (sockets, FIFOs, devices; CACHEDIR.TAG trees; user-excluded)
+```
+
+- A **placeholder** is a real inode. `stat`, `readdir`, permissions, `mtime`
+  and size are exact, so `ls -l`, `find` and `git status` never hydrate
+  anything. [R1, R9]
+- A placeholder carries a `FAN_PRE_ACCESS` inode mark; a resident file
+  carries none, so its I/O raises no event at all. The kernel drops the
+  marks with the daemon's fanotify group, and an unserved placeholder then
+  reads as its holes (zeros), not as an error (pinned by a test). The store
+  must therefore only be exposed at `/var/workspace` while the daemon holds
+  its groups: the daemon re-adopts placeholders from their residency xattr
+  before it binds the tree, and the bind's lifetime is tied to the service.
+- Residency is published in a `trusted.tilo.residency` xattr, readable without
+  triggering hydration. Tilo's own search, thumbnail and Files code read the
+  daemon's metadata and never content. The existing thumbnail and metadata
+  planes stay eager (`docs/collaborative-files-product.md:357-364`).
+- Reading a non-resident range blocks **only that reader**, and only until
+  that range arrives. There is no global worker to stall, unlike today's single
+  FUSE thread. When no source is reachable, the read fails with `EIO` after a
+  bounded wait; the wait is short when the daemon already knows it is offline.
+  That keeps today's behaviour ("`NotResident` … observes `EIO` without losing
+  metadata", `docs/collaborative-files-product.md:128-133`).
+
+### 6.4 Change capture off the hot path
+
+Writers write to native files. The daemon observes them and never
+intercepts. [R1, R2]
+
+1. **Journal.** fanotify (Tier 1) or FUSE callbacks (Tier 2/3) feed a durable
+   journal in `meta.redb`. It records create, delete, rename, attribute changes,
+   close-after-write and modify, keyed by record id. `FAN_MODIFY` is
+   journaled once per file per epoch until the file is closed. Measured on
+   7.2: Btrfs refuses the inode ignore mark that would suppress the repeats
+   in the kernel (`EXDEV`) for any subvolume other than the top level, because
+   its fsid differs from the filesystem mark's; room trees are subvolumes, so
+   repeats are dropped in userspace and the kernel only merges queued
+   events. Only `FAN_PRE_ACCESS` is synchronous, and it is delivered only for
+   placeholders, which carry an inode mark until they are fully resident
+   ([§6.8](#68-kernel-facts-to-verify-before-committing-to-tier-1)).
+   Paths are resolved from the directory handles when events are read, so a
+   directory renamed before its earlier events are read reports them under
+   the new name; capture reads the snapshot, so the published state is
+   unaffected.
+2. **Epochs.** When the journal is dirty, the daemon cuts a capture epoch. It
+   drains the queue, takes a read-only Btrfs snapshot of the room subvolume
+   (atomic across all files) and records the journal position. The position
+   is fixed by barrier events (a marker file created outside the tree just
+   before and just after the snapshot): entries between the two barriers are
+   examined in this epoch and again in the next. Without that split a path
+   journaled earlier can be read from a snapshot that already holds a newer
+   version whose dependencies are journaled later — the git test showed a ref
+   published before its commit object in 2 of 9 runs. Epochs are cut:
+   - at quiescence (no new events for 500 ms);
+   - at the latest every 2 s while dirty;
+   - later, up to 5 s, while a file in the dirty set was created less than 1 s
+     ago and is still open for write. This keeps short-lived lock files out
+     of most epochs using a generic signal, not a tool rule.
+
+   All numbers are tunables; stage 3 measures them.
+3. **Diff and hash from the snapshot, never the live file.** For each record
+   changed since the previous epoch:
+   - Compare `FIEMAP` extents with the previous epoch's snapshot. Shared
+     physical extents are unchanged bytes.
+   - Re-run CDC only from the chunk boundary before the first changed extent
+     until boundaries realign after the last one.
+
+   Editing 4 KiB inside a 10 GiB VM image re-hashes about one chunk, not
+   10 GiB. On XFS (Tier 2) the same comparison runs against per-file reflinks.
+   On ext4 there is no reflink: the daemon re-reads the file and checks that
+   `size/mtime/ctime` were stable. [R1, R2]
+4. **Publish.** The changed records' new versions become one **changeset**
+   ([§8.3](#83-changesets-and-signatures)). Old content that history retains is
+   reflinked from the epoch snapshot into `.versions/` before the snapshot is
+   deleted. On Btrfs that shares extents, so a retained version costs only the
+   blocks that later changed.
+5. **Crash recovery.** After a daemon crash, or writes that happened before the
+   daemon started, the daemon finds every inode whose Btrfs generation is newer
+   than the last checkpointed epoch (a tree search, not a full walk) and replays
+   it as dirty. On other filesystems it walks with `ctime` as the fallback. A
+   fanotify queue overflow triggers the same scan. The journal is an
+   optimisation; the filesystem is the truth.
+
+What the writer experiences: nothing. No lock, no pause, no extra fsync. The
+snapshot causes one Btrfs transaction commit per epoch. That is the one cost
+on the write side, and stage 3 gates it ([§20](#20-risks), risk 2).
+
+**Versions are per changeset, not per fsync.** A SQLite database that fsyncs
+200 times a second produces at most one version per epoch. History then thins
+old versions ([§15](#15-history)). This removes the failure mode where SQLite
+hit `MAX_RECORD_VERSIONS` and then lost writes (`record_repository.rs:28`).
+
+### 6.5 Applying remote changes locally
+
+- New content is written into staging files on the store volume. Chunks are
+  verified and then written at their offsets; nothing passes through a CAS copy.
+  The staged file is renamed over the target (`renameat2`). An open reader keeps
+  the old inode, as with native `git checkout` or `rsync`.
+- A placeholder that becomes resident is filled in place, range by range. Its
+  inode never changes.
+- `mtime` is set with nanosecond precision. Mode bits and symlink targets are
+  exact. Hardlinks inside a tree are captured as separate records that share
+  content, and a peer materialises them as reflinks. Link identity is not
+  preserved across devices (Q9).
+- If the local file is `Dirty` (a local write not yet captured) when a remote
+  version arrives, local bytes are never overwritten. The remote version
+  becomes a conflict ([§11](#11-conflicts-and-leases)).
+- Order and atomicity rules are in [§10](#10-visibility-across-files).
+
+### 6.6 POSIX fidelity
+
+| Behaviour | Tier 1 | Tier 2 | Replicated? |
+|---|---|---|---|
+| Exec bit, `chmod` | native | FUSE `setattr` honoured | yes (mode bits) |
+| Symlinks | native | FUSE `symlink/readlink` implemented | yes (target bytes, verbatim) |
+| Hardlinks | native | FUSE `link` within the tree | as reflinked copies (Q9) |
+| Owner | local person's uid/gid | same, via `default_permissions` | no (local) |
+| `O_EXCL` create | native (local atomicity) | FUSE `create` with `O_EXCL` | the file itself, as normal |
+| `rename` atomic, incl. over an existing file | native | FUSE `rename` (+`RENAME_NOREPLACE/EXCHANGE`) | yes, one operation in a changeset |
+| `fsync` | native: durable on local disk | passthrough to the backing file | never implies remote durability; that is a receipt ([§12](#12-caching-residency-and-prefetch)) |
+| mmap shared/private | native | passthrough | n/a |
+| `fallocate`, `SEEK_HOLE/DATA`, `copy_file_range`, reflink | native | forwarded | content only |
+| `flock/fcntl` locks | native, local only | local only | no; cross-device single writer uses leases |
+| xattrs | native | forwarded | `user.*` yes; `trusted/security` no |
+| Sockets, FIFOs, device nodes | native | native | never (LocalOnly) |
+| `statfs` | the store volume's | reported | n/a |
+| Timestamps | native | `setattr` honoured | `mtime` (ns); `atime`/`ctime` local |
+
+A failed capture never makes `close` or `fsync` lie. In Tier 1 they do not
+involve the daemon at all. In Tier 2/3, an error from the backing file is
+returned as is, and publishing is asynchronous, so it cannot fail a syscall.
+This removes the silent-loss path at `fs.rs:472-481`. [R9]
+
+### 6.7 Local-only content
+
+These are general conventions, not tool rules:
+
+- Special files are never synced.
+- A directory containing a `CACHEDIR.TAG` with the standard signature
+  (Cargo's `target/`, many caches) defaults to LocalOnly.
+- A per-directory `.tiloignore` and a Files toggle let the user exclude more.
+
+Whether other rebuildable trees such as `node_modules` sync by default is
+Q10. The design handles 100k-file trees either way, so this is a product
+choice, not a capacity limit.
+
+### 6.8 Kernel facts to verify before committing to Tier 1
+
+The stage 0 spike must answer these on the shipped 7.2 kernel with Btrfs.
+Each has a fallback.
+
+| # | Question | Needed for | Fallback if "no" |
+|---|---|---|---|
+| K1 | Can an evictable **ignore** mark (`FAN_MARK_IGNORE`+`FAN_MARK_EVICTABLE`) on a resident inode suppress `FAN_PRE_ACCESS`, so that resident files cost zero userspace round trips? | R2 | Stay on Tier 2 |
+| K2 | Does a page fault on an mmap of a placeholder range raise a pre-content event before the page is read? | mmap of placeholders (git packs, SQLite, binaries) | Hydrate the **whole** file on `FAN_OPEN_PERM` when no fault hook exists. This is safe and slower for large cold files; mitigated by residency policy ([§12](#12-caching-residency-and-prefetch)) |
+| K3 | Are `splice`, `sendfile`, `copy_file_range` and reflink **from** a placeholder covered by pre-content events? | correctness of `cp`, `rsync` | Same as K2 |
+| K4 | Can `FAN_DENY_ERRNO` return `EIO`/`EROFS`/`EBUSY` from permission events? | offline reads, read-only shares, leases | `EPERM` only (honest but less precise) |
+| K5 | Cost of one epoch snapshot with 100k files and 1 GiB dirty, p50/p99 | R1, R2 | Per-file reflink epochs (weaker cross-file consistency, [§10](#10-visibility-across-files)) |
+| K6 | Can mount marks report directory-entry events on 7.2? If they can, a dedicated superblock may not be needed. | Q1 | Dedicated filesystem (the baseline) |
+
+**Results on 7.2.1 with a loop-mounted Btrfs store** (`tilo-fs-native probe`,
+`crates/system/fs-native`; the host was heavily loaded, so latencies are
+upper bounds):
+
+| # | Answer | Consequence |
+|---|---|---|
+| K1 | **Yes.** An evictable ignore mark on an inode suppresses `FAN_PRE_ACCESS` from a filesystem-wide mark (10 reads, 0 events). | Not needed on the hot path: placeholders carry an inode pre-content mark and resident files carry none, so resident I/O raises no event either way. |
+| K2 | **No fault hook**, but `mmap()` itself raises one `FAN_PRE_ACCESS` for the whole mapped range; 1,024 page faults afterwards raise none. | The daemon hydrates the mapped range before `mmap` returns. Correct for git packs and SQLite; mapping a large cold file hydrates the whole mapping. |
+| K3 | **Yes** for `read`, `splice`, `sendfile`, `copy_file_range` and `FICLONE` from a placeholder. | No whole-file fallback needed. |
+| K4 | **Partly.** `FAN_DENY_ERRNO` accepts `EIO` and `EBUSY`; `EROFS` is rejected (`EINVAL`). | Offline reads get `EIO`, lease conflicts `EBUSY`; read-only shares use `EPERM` or write bits. |
+| K5 | 100k files: snapshot p50 2.7 ms / p99 8.9 ms clean, 49 / 87 ms with 64 MiB dirty, 1.08 / 1.33 s with 1 GiB dirty. The snapshot first flushes the room's dirty data (~1 GB/s here), so the p99 < 50 ms gate holds only for small dirty sets. | Writers are not paused, but time-to-publish includes writeback. Cutting epochs often keeps the dirty set small; streaming writers stay out of epochs until quiescent. |
+| K6 | **No.** A mount mark with create/delete/rename is refused (`EINVAL`). | The dedicated store superblock stays required. |
+
+Found on the way: an inode ignore mark under a filesystem mark is refused
+with `EXDEV` in any subvolume below the top level (its fsid differs), so
+`FAN_MODIFY` repeats are dropped in userspace (§6.4). Pre-content inode marks
+work across subvolumes in one group. Filesystem marks must be placed at the
+top-level subvolume. Rootless: a user namespace can put a filesystem mark on
+a tmpfs it mounted, never on the Btrfs store, and cannot create a
+pre-content group at all, so the journal and hydration need `CAP_SYS_ADMIN`
+(and `CAP_DAC_READ_SEARCH` for `open_by_handle_at`); unprivileged code gets
+directory inode marks and snapshots of subvolumes it owns.
+
+---
+
+## 7. Content format
+
+### 7.1 Chunking
+
+- **FastCDC** (normalised chunking, skipping the minimum region) replaces the
+  byte-at-a-time gear hash with ~8 KiB average (`crates/system/fs/src/content.rs:10-13`).
+  Chunk targets scale with body size. [R1, R3]
+
+  | Body size | Representation | Chunk min / avg / max |
+  |---|---|---|
+  | ≤ 4 KiB | **inline** in the record operation ([§7.3](#73-small-content)) | – |
+  | ≤ 64 KiB | one blob, content id = BLAKE3 of bytes | – |
+  | 64 KiB – 64 MiB | manifest | 16 / 64 / 256 KiB |
+  | 64 MiB – 4 GiB | manifest | 64 / 256 KiB / 1 MiB |
+  | > 4 GiB | manifest | 256 KiB / 1 / 4 MiB |
+
+- The tier is stored in the manifest header and **sticks to the record**. A
+  record changes tier only when its size moves past a boundary by 4×. This
+  keeps a file that hovers at a boundary from losing all dedup on every save.
+- Effect: a 1 GiB file becomes about 4,000 chunks instead of about 130,000
+  blobs plus 130,000 tags (`store.rs:45,819`).
+- Compression is per chunk (zstd level 3), applied only in transfer and only
+  when a sample compresses by at least 10%. It never changes the content id.
+
+### 7.2 Manifests
+
+A file manifest is an iroh-blobs **`HashSeq`**:
+
+```
+HashSeq[ meta, c0, c1, …, cN ]
+meta = { format: 2, total_len, tier, chunk_lengths (varint, zstd) }
+content id = BLAKE3(HashSeq bytes)
+```
+
+- One GET with a `RangeSpecSeq` fetches the header and exactly the missing
+  chunks, or byte ranges within them. Everything is BAO-verified in 16 KiB
+  groups and streamed on one QUIC stream. [R3]
+- A `HashSeq` is itself a BAO-verifiable blob, so even a 100 GiB file's
+  manifest (≈3 MB) can be fetched and verified by range. No second level of
+  manifest is needed.
+- Locally, a `(content id) → chunk offset table` lives in `meta.redb`. A random
+  read of a partial file maps offset to chunk in O(log n) and never decodes a
+  manifest. Today's `Hydrator::read` decodes it on every call
+  (`hydration.rs:388-420`).
+- Version-1 postcard manifests stay readable. They are converted when a record
+  is next written. Nothing is converted in bulk.
+
+### 7.3 Small content
+
+Throughput for many small files is decided here. [R3, R9]
+
+- **Inline ≤ 4 KiB.** The bytes travel inside the signed record operation.
+  Metadata and content therefore arrive together, in one batched stream, with
+  no second request. A 41-byte git ref, a `.gitignore`, most config files and
+  many source files are inline. The threshold is a tunable, measured in
+  stage 2.
+- **Batch everything else.** No request is ever for one blob. The transfer
+  engine builds an ad-hoc request (`GetManyRequest`, or a `HashSeq` of wanted
+  hashes) for hundreds or thousands of blobs at a time ([§9](#9-transfer-engine)).
+  Packing is therefore a *transfer* property, not a storage format. Nothing
+  has to be repacked when one small file changes.
+
+### 7.4 Where bytes live locally: one store, two backings
+
+The content store has one API, one hash space, one GC and one authorisation
+rule, and two physical backings:
+
+| Backing | Holds | How it serves |
+|---|---|---|
+| **File-backed** | Current and retained versions of file records, package payload files. The chunk index points at `(inode or version file, offset, len)`. | The chunk range is read from the native file or the retained `.versions/` reflink and verified against its hash before sending (BLAKE3 runs at several GB/s per core). No second copy exists. |
+| **Loose** | CRDT change segments and snapshots, thumbnails, chunks of remote content that is not materialised (a relay host's replica, prefetch into a partial file), manifests. | iroh-blobs `FsStore` (`store.rs:170-215`). |
+
+- The backend is a Tilo `ChunkStore` that implements the iroh-blobs store
+  protocol. iroh-blobs documents this pattern (`src/store/readonly_mem.rs:1-7`,
+  "a good starting point for custom implementations"). The iroh-blobs provider
+  (`handle_get`, `handle_get_many`, `handle_push`, `src/provider.rs:460-582`),
+  the Downloader and BAO verification are reused unchanged. If 0.103's store
+  protocol turns out not to allow a clean custom backend, the fallback is a
+  Tilo ALPN that speaks the same BAO range format through `bao-tree` directly
+  (Q7).
+- The daemon writes the snapshot file that it hashes, so "the bytes on disk
+  still match the hash" holds by construction. Sending re-verifies anyway: a
+  corrupt disk must never propagate.
+
+### 7.5 Dedup scope and the access rule
+
+- **Physical dedup is device-wide**, across rooms, apps, packages and history:
+  - Identical content ids share bytes. When the same content is materialised a
+    second time (another room, another package, a copied file), it is created
+    as a reflink of the first.
+  - Chunks shared between versions share extents through `.versions/`
+    reflinks. [R8]
+- **Transfer dedup:** a device asks only for chunks it lacks. It learns nothing
+  about other people's content, because it only asks about content it is
+  already authorised for.
+- **Hosts serving several people** dedup physically, invisibly. Whether an
+  upload is skipped because the host "already has it" is decided **only**
+  against content already reachable within the same room, or the same person's
+  rooms. Otherwise the host always takes the bytes. This closes the classic
+  cross-tenant existence side channel of dedup. [R8]
+- **The rule: possessing a hash never grants access.** A blob or chunk is
+  served, or opened for a local app, only if it is reachable from a record the
+  requester may read. For apps, "reachable" means from a record the app's
+  capability covers ([§14](#14-permissions)).
+  - An app that learns a hash cannot probe the device CAS.
+  - `put` always consumes and hashes the whole stream before answering, so its
+    timing does not reveal whether the content was already present.
+- **Encryption at rest on untrusted hosts** is not decided (Q6). Convergent
+  encryption keyed per room would keep dedup within a room and hide content
+  from a hosting operator.
+
+---
+
+## 8. Metadata plane
+
+### 8.1 Records and operations
+
+- A record's durable state is its **operation log**: signed operations,
+  verified once at ingest and then stored as verified. This keeps
+  `RecordEnvelopeV1` semantics (`record_replication.rs:61-81`) and removes the
+  O(m²) re-verification on every persist (`record_repository.rs:1509-1579`).
+- Storage is `meta.redb` tables keyed by `(record, actor, seq)` with a hash
+  chain per `(record, actor)` stream. The per-record JSON files with backup
+  generations (`record_repository.rs:1558-1584`) go away.
+- `durable_backup` stays for small security-sensitive stores: identity, ACLs,
+  shares, receipts. Those must not roll back
+  (`docs/collaborative-files-product.md:167-171`).
+- Old operations are compacted into a **signed checkpoint** per record: the
+  materialised state plus the retained version DAG. Compaction is what bounds
+  a record's size. The hard caps (`record_repository.rs:24-31`,
+  `namespace.rs:35`, `full_replica.rs:23-27`, `store.rs:56-70`) are removed.
+  Defensive bounds remain only on single messages, and anything larger
+  streams. [R1]
+
+### 8.2 The tree is derived from signed placements
+
+- The workspace-wide Automerge namespace document is **retired**. Placement is
+  already signed per record as `FileBindingV1 {parent, name, kind,
+  tombstoned}`. The tree is a deterministic projection of those bindings. That
+  is what `record_materializer.rs` already does for accepted envelopes; today
+  it projects *into* the Automerge document instead of replacing it.
+- **Move semantics.** Keep the Kleppmann move-tree rules the namespace
+  implements today (`namespace.rs:1-10`):
+  - delete means move to trash;
+  - a concurrently created child of a deleted directory ends in trash, never
+    dangling;
+  - a concurrent cross-move cycle is broken deterministically by reverting the
+    lowest-id node.
+
+  Placement operations carry a hybrid logical clock, which gives every device
+  the same total order to apply the rules in.
+- **Indexes in `meta.redb`**, maintained incrementally from applied
+  operations, never rebuilt by scanning:
+  - `(parent, name) → record`
+  - `parent → children` (sorted)
+  - `record → parent chain`
+  - `record → materialised inode`
+
+  Lookup and create are O(log n). Readdir is O(children). The Tier 1 hot path
+  does not use them at all, because the kernel's own directory does that work.
+- **Name collisions.** When two devices concurrently create the same name in
+  one directory, the loser is renamed `<name>.sync-conflict-<short>`, as
+  `conflict.rs` already does. The name is decided deterministically, so every
+  device agrees.
+
+### 8.3 Changesets and signatures
+
+- A changeset is one device's operations from one epoch: bindings, metadata,
+  content revisions and inline bytes.
+- It is signed **once**: an Ed25519 signature over the Merkle root of its
+  per-record operation list.
+  - Each record's operations carry their inclusion proof, about
+    32·log₂(n) bytes.
+  - A peer that may read only some of the records still verifies exactly those
+    records and learns nothing about the others: not names, not hashes, not
+    counts beyond the proof shape. The product rule "a peer receives no names,
+    metadata, history, hashes … for a record it cannot read"
+    (`docs/collaborative-files-product.md:325-327`) holds.
+- Cost: one signature and one verification per changeset, instead of three
+  per edited file (`record_publisher.rs:753-789`). A 100k-file checkout is a
+  handful of changesets. Ingest verifies with `verify_batch` across changesets.
+  [R3]
+- Changesets carry a **causal context**: a version vector of changesets seen
+  from other devices. That is enough to order across devices without a global
+  log.
+
+### 8.4 CRDT record bodies
+
+- A CRDT record's body is an Automerge document stored as **content-addressed
+  segments**:
+  - `save_incremental` chunks, grouped by time into segment blobs;
+  - periodic compacted snapshots, which are `save()` output and signed as
+    checkpoints.
+
+  Segments are loose blobs in the one content store.
+- **Live edits** travel as small signed operations with inline change bytes,
+  gossiped to the room's online peers within one frame (16–50 ms batching).
+  The **same envelope type** is persisted and pulled by set reconciliation. So
+  the live lane and the durable lane share one format and one validator, where
+  today there are two (`collab-types` `SignedOp` routed opaquely by the broker,
+  plus the fs record plane).
+- **A late joiner** fetches the latest checkpoint snapshot as a blob (BAO
+  verified, resumable, any size) plus the later segments. There is no "one
+  message = whole document" path, so the 3 MiB cliff
+  (`collab-types/src/op.rs:30-35`) is gone. [R5]
+- **Collections** are covered in [§13.3](#133-collections).
+
+---
+
+## 9. Transfer engine
+
+One engine moves record operations, file content, CRDT segments and packages.
+[R3, R4, R6]
+
+```
+             ┌────────────── per peer: ONE authenticated QUIC connection ──────────────┐
+ priority    │ stream A: metadata set reconciliation (RBSR over record→head digests)   │
+ queues      │ stream B: live operation gossip (room topic, via iroh-gossip)           │
+ ──────────  │ streams C…: content GETs: GetMany / HashSeq + RangeSpecSeq, pipelined   │
+ foreground  │            window = max(8 MiB, 2 × bandwidth × RTT) outstanding bytes   │
+ lease/pin   └──────────────────────────────────────────────────────────────────────────┘
+ predictive       ▲ Downloader: multi-provider splitting (SplitStrategy), hedging for tail
+ backfill         │ scheduler: dedups wants, merges adjacent ranges, batches small blobs
+```
+
+- **One connection per peer, one authentication per connection.** The
+  certified-device handshake happens once, and every request on that
+  connection is authorised against the authenticated identity. Today there is
+  one handshake per chunk (`hydration.rs:493-520`) and one per record-stream
+  pull (`sync.rs:1871-1892`). Connections come from iroh-blobs'
+  `ConnectionPool`.
+- **Metadata reconciliation.** Range-based set reconciliation over
+  `(record id → digest of the peer-visible log head)` exchanges differences in
+  O(d·log n) with a few round trips, however large the workspace. It replaces
+  both the 3 s full-namespace download for read-only peers (`sync.rs:335-358`)
+  and the one-connection-per-stream pulls. Operations stream back in frames of
+  up to 1 MiB, many records per frame.
+- **Content.** The scheduler turns wants into as few requests as possible:
+  - one `HashSeq`+ranges GET per large file;
+  - one `GetManyRequest` per batch of up to ~1,000 small blobs;
+  - many requests in flight per connection, up to the byte window.
+
+  Throughput is then bounded by bandwidth, not by count × RTT.
+- **Priority classes.** In order: foreground read (a blocked `read()` or
+  `open`), lease and pinned hydration, predictive, replica backfill. A
+  foreground want pre-empts at request granularity. A 10 GiB backfill never
+  delays a 4 KiB foreground read by more than one in-flight request.
+- **Multi-peer.** The Downloader splits large content across providers. Tail
+  latency is hedged: a second provider starts after max(150 ms, 2×RTT), as the
+  current hedging does (`hydration.rs:318-380`).
+- **Push to always-on peers.** After an epoch is published, the author
+  announces it. The home host and pinned devices pull immediately, or the
+  author pushes (`push` re-enabled behind the same record ACL; today it is
+  `RequestMode::Disabled`, `sync.rs:862`). A laptop that closes its lid right
+  after saving has usually already handed off its content. Receipts then let
+  it evict safely ([§12](#12-caching-residency-and-prefetch)).
+- **Authorisation without scans.** `meta.redb` maintains two indexes:
+  - `content id / chunk → {records}` (the reverse index);
+  - `record → readable principals`.
+
+  Both are updated when records and ACLs change. A request is authorised by an
+  O(1) lookup per `HashSeq` root; children of an authorised root are implied.
+  The guard is concurrent and takes no tree lock. It replaces the
+  O(workspace)-per-chunk scan (`sync.rs:737-840`).
+- **Transport tuning.** Stream and connection receive windows sized from
+  measured BDP. BBR where quinn exposes it. zstd per chunk when it helps
+  ([§7.1](#71-chunking)). Iroh chooses direct paths and falls back to its
+  relay; `tilo-relay` stays a workspace host, not a transport relay
+  (`docs/architecture/collaboration.md`, "Workspace hosts").
+- **Resumability.** Partial content survives restarts as a range bitmap
+  (iroh-blobs partial blobs for loose content, and the per-file bitmap for
+  materialised files). Reconciliation resumes from digests, not cursors.
+
+---
+
+## 10. Visibility across files
+
+This section is what makes git, SQLite and anything else crash-safe work
+across devices without knowing about them. [R9]
+
+**Guarantee V1: no torn files.** A file becomes visible on a peer only
+through an atomic rename of a fully verified staged file, or by filling a
+placeholder whose size and content id are already fixed. A reader sees the old
+version or the new one, never a mix.
+
+**Guarantee V2: every published state is a crash image.** A changeset is cut
+from one atomic Btrfs snapshot. It therefore equals the state the writer's
+disk would hold if the machine lost power at that instant *after* all
+completed writes. Programs that are crash-safe on one machine are built to
+recover from exactly that. That includes git (objects before refs, lockfile
+plus rename), SQLite (journal or WAL), and any program that uses the
+write-temp-fsync-rename pattern (`crates/system/atomic-file`).
+
+**Guarantee V3: ordered application.** A peer applies one device's changesets
+in epoch order, and each changeset only after its causal context (other
+devices' changesets it depends on). Within a changeset:
+
+1. **Metadata first.** All bindings, placeholders and inline bytes are
+   staged. Placeholders are safe to expose before their bytes, because reading
+   them fetches exactly the bytes the changeset fixed.
+2. **Then publication in the writer's journal order.** Renames, replacements
+   and deletes happen in the order the writer's journal recorded their
+   **last** modification in the epoch.
+
+So a git ref update is applied after the objects it names, which are
+already visible as resident files or fetchable placeholders. Nothing git-aware
+is involved. The writer created the objects first, so the journal, and
+therefore the peer, orders them first.
+
+**The residual window, stated honestly.** V3 orders by *last* modification.
+If one epoch contains a file that the writer modified twice, with another
+file's change between the two, a reader *on the receiving device* can observe
+a state the writer never had during the few milliseconds the changeset takes
+to apply. Two things bound this:
+
+- Epochs are cut at quiescence, so interleaved rewrites inside one epoch are
+  rare.
+- Files that programs rewrite in place (the kind for which interleaving
+  matters, such as a database and its WAL) are lease-class
+  ([§11.2](#112-leases)). They have one writer, and readers on other devices
+  see them through V1/V2.
+
+Strict multi-file atomicity for application data is available through Record
+Store transactions ([§13](#13-the-record-store-api)). Q8 asks whether the
+POSIX projection should also offer it.
+
+**Two frontiers.** Metadata visibility follows V3 immediately; bytes hydrate
+on demand. For **pinned** subtrees ("Keep offline"), the visible frontier
+advances only when every byte of the changeset is local. Offline, a pinned
+repository therefore always shows a complete, openable older state, never a
+newer ref whose objects are still in flight. [R1, R9]
+
+**Tier differences.** On XFS or ext4 (Tier 2 outside Tilo OS) there is no
+subvolume snapshot. Capture falls back to per-file reflink or a stable
+re-read. V1 and V3 hold. V2 holds per file, and cross-file only in journal
+order. The daemon labels such a store accordingly.
+
+---
+
+## 11. Conflicts and leases
+
+### 11.1 Policy by body type
+
+| Body | Concurrent-edit policy | Where it exists today |
+|---|---|---|
+| CRDT document / collection shard | Merge (Automerge). No conflict record. | ui-core `State`, qdoc merge (`conflict_merge.rs`) |
+| Format-aware file (qdoc, and files a format provider imports) | Merge through the CRDT side-body ([§13.5](#135-files-and-format-aware-files)), then re-project the bytes | canonical `.qdoc` merge |
+| Plain UTF-8 text | Three-way merge when edits do not overlap. Otherwise an open conflict with both heads. | conservative `.txt` merge (`docs/collaborative-files-product.md:70-75`) |
+| Opaque binary, replaced whole (write-temp + rename, or truncate + write) | **Versioned conflict.** Both versions are kept in the DAG and the live head is chosen deterministically. The other head is materialised as a sibling `<name>.sync-conflict-<short>` so POSIX tools see it. Resolving removes the sibling. | signed DAG heads → open conflict (`record_publisher.rs:473`), Keep Both transaction |
+| Mutated in place (written at offsets inside the file, held open across epochs) | **Lease** (§11.2). Without an authority, a versioned conflict as above. | new |
+| Directory structure | Move-tree rules ([§8.2](#82-the-tree-is-derived-from-signed-placements)) | namespace move-tree |
+
+Nothing is ever lost. The worst outcome of any race is two retained versions
+and a visible conflict.
+
+### 11.2 Leases
+
+Leases give single-writer semantics across devices to files that cannot be
+merged or safely forked mid-stream (SQLite, LMDB/redb, VM images, anything
+mmap-written). [R9]
+
+- **Which records.** A file becomes *lease-class* automatically the first time
+  it is modified in place: a write at an offset inside the existing size,
+  without truncation, on a file that is not replaced by rename. The rule is
+  behavioural and generic. A per-directory policy or an app declaration can
+  also mark records lease-class.
+- **Acquiring.** Before the first in-place write of an open-for-write session,
+  the writer needs the lease:
+  - Tier 1: the `FAN_PRE_ACCESS` write event on a lease-class file waits.
+  - Tier 2: FUSE `open` for write waits.
+
+  The wait is one round trip to the authority, once per session, and never
+  per write. The lease is renewed while the file stays open, every 20 s with a
+  60 s TTL (tunables).
+- **Authority.** The room's always-on host (`can_act_as_host`,
+  `docs/device-mesh.md`, "Device roles"). When a room has no host, the
+  authority is the record's most recent lease holder when it is reachable. When
+  nothing is reachable, the writer proceeds **optimistically** and marks its
+  versions "unleased".
+- **Fencing.** Every version written under a lease carries the lease epoch. A
+  version from a stale epoch, or an unleased version that races a leased one,
+  never becomes the head. It becomes a conflict version. So an offline write
+  forks honestly instead of corrupting the database on another device.
+- **Other devices** open a leased file read-only and see V2 snapshots. A write
+  open is denied with `EBUSY` if K4 allows it, else `EPERM`, or waits, per
+  policy (Q5). Files shows who holds the lease.
+- **Checkpoints.** Versions of lease-class files are taken at epochs while the
+  file is quiescent, and always at the last close. The history of a busy
+  database is therefore a set of crash-consistent checkpoints, not every
+  transaction.
+
+---
+
+## 12. Caching, residency and prefetch
+
+[R1, R4]
+
+### 12.1 Residency policy (defaults, per device, all tunable)
+
+| Content | Default |
+|---|---|
+| Metadata of every readable record | always local (it is small, and it is what makes `stat`/`ls`/`git status` native) |
+| Inline bodies (≤ 4 KiB) | always local (they arrive with metadata) |
+| Files ≤ 1 MiB in rooms the device participates in | eagerly hydrated in the background, predictive priority |
+| Anything written by the **same person** on another device in the last 7 days | eagerly hydrated, pinned priority: you continue where you left off |
+| Larger files | placeholder until read, pinned or predicted |
+| Always-on host with `FullWorkspace` intent | everything (`docs/device-mesh.md`, "One replication substrate") |
+
+### 12.2 Eviction
+
+- **Quota-driven and automatic.** There is a user quota for the store volume
+  plus low and high free-space watermarks, 15% and 25% by default. Today
+  eviction is manual only (`docs/collaborative-files-product.md:340-355`).
+- **Candidates** must be clean, unpinned and not open. They must also be
+  durable elsewhere, proven by an **exact-version replica receipt**; this is the
+  existing fail-closed machinery (`eviction.rs`, `replica_ack.rs`), now used as
+  the policy engine.
+- **Scoring:** an ARC-style mix of recency and frequency, weighted by size.
+  Large, cold, well-replicated files go first.
+- **The operation:** `fallocate(PUNCH_HOLE)` over the whole file. The file
+  returns to `Placeholder`, and inode and metadata stay. Retained versions are
+  evicted before current versions, and only if they are replicated.
+- **Two eviction models merge into one.** The Settings namespace path
+  (`docs/sync-storage-hydration.md:22-44`) and the record-plane path become one
+  (`docs/personal-and-workspace-settings.md:94-104` names this debt).
+
+### 12.3 Pinning and offline
+
+- "Keep offline" on a record or directory includes future descendants. It
+  survives rename and restart, as today.
+- Pinned subtrees use the content frontier from
+  [§10](#10-visibility-across-files), so they are always complete offline.
+- `local` never means synced. "Synced" and "safe to free" come only from
+  receipts (`docs/collaborative-files-product.md:300-302`).
+
+### 12.4 Read-ahead and prediction
+
+- **In-file:** sequential reads of a partial file trigger read-ahead. The
+  window doubles up to 64 MiB (at least 2×BDP) and resets on a seek.
+- **Working sets:** the daemon records which files are opened together
+  (a co-access graph per room, bounded, pruned by age). Opening any member of a
+  known working set predicts the rest. Working sets are shared **privately
+  between the same person's devices**, never with collaborators. They are what
+  makes "continue on the desktop what you did on the laptop" instant. The
+  "recently used on another device" hint is the `ReplicationIntent` seam
+  (`docs/device-mesh.md`).
+- **Directory locality:** opening a file hydrates the directory's small
+  siblings. This is today's rule with the limits raised (`smart.rs:19-23` caps
+  it at 32 MiB files, 2 concurrent, 128 MiB queued).
+- **Gates:** predictive and backfill work respects the existing network,
+  battery and disk gates (`smart_monitor.rs`). Foreground and pinned work does
+  not.
+
+### 12.5 Time to first byte
+
+The first read of a placeholder range costs:
+
+- one pre-content event (Tier 1) or open (Tier 2);
+- one round trip to the best provider, over an already-open connection;
+- the needed 16 KiB BAO groups, not the whole chunk.
+
+The target is in [§19](#19-migration-stages).
+
+---
+
+## 13. The Record Store API
+
+The point is that the collaborative, versioned path is the *shortest* path.
+[R5, R8]
+
+### 13.1 Shape
+
+```rust
+use tilo_app::prelude::*;
+
+#[derive(Record, Clone)]
+#[record(kind = "weather.place", version = 1)]
+pub struct Place {
+    #[key]  pub id: Id,            // minted by the SDK at authoring time
+    #[text] pub name: String,      // collaborative text: diff-and-splice, never replace
+    pub lat: f64,
+    pub lon: f64,
+}
+
+#[derive(Record)]
+#[record(kind = "photos.photo", version = 1)]
+pub struct Photo {
+    #[key]   pub id: Id,
+    pub image: BlobRef,            // bytes live in the content store
+    #[index] pub captured_at: Option<Timestamp>,
+    pub tags: Set<String>,         // add-wins or remove-wins declared, not hand-written
+}
+
+fn create(ctx: HostContext, target: LaunchTarget) -> Result<AppComponent, LaunchError> {
+    let places:  Collection<Place> = ctx.collection("places")?;     // room-scoped, shared, versioned
+    let library: Collection<Photo> = ctx.collection("library")?;    // 10^6 items: sharded, lazy
+    let prefs:   Settings<Prefs>   = ctx.settings(Scope::Person)?;  // follows the person
+    let doc: RecordHandle<RichText> = match target {
+        LaunchTarget::Record { checkout, .. } => ctx.open(&checkout)?,
+        LaunchTarget::New => ctx.create::<RichText>()?,
+    };
+    // …
+}
+
+places.dispatch(PlaceAction::Rename { id, name: "Ghent".into() });            // the action door
+let page = library.query().order_by(Photo::captured_at).desc().page(cursor, 200);
+let img  = ctx.blobs().put_stream(reader).await?;                              // chunked, deduped
+let head = ctx.blobs().open(&photo.image)?.range(0..64 * 1024).await?;         // lazy hydration
+let fd   = ctx.blobs().open(&photo.image)?.fd()?;                              // native fd, mmap-able
+
+let file: RecordHandle<FileBody> = ctx.open_file(&record_id)?;                 // stable id, not a path
+let f    = file.fd(Access::ReadWrite)?;                                         // native I/O
+file.history().versions();                                                      // same HistorySource
+```
+
+- **`#[derive(Record)]`** generates:
+  - the projection, validation and migration hooks;
+  - remove-wins deletion (29 apps hand-write tombstone maps today, e.g.
+    `apps/weather/src/doc.rs:9-11`);
+  - conflict surfacing;
+  - the `HistoryRestoreSchema` and a default preview.
+
+  Apps override the preview only where a visual diff matters. Today an app
+  hand-writes 300–3,400 lines of `doc.rs` and up to 480 lines of history
+  preview per app.
+- **Actions stay the mutation door.** `Apply::apply(&self, tx: &mut Tx<T>)` is
+  typed, not a raw `AutoCommit`. The executor keeps writing `ActionContext` into
+  the change message. `ActionSpec`s and resource trees can be derived from
+  `#[action]` attributes. Undo remains `UndoLog` over Automerge heads.
+- **Transport is invisible to the app.** An app never sees routes, frontiers,
+  snapshots or size limits.
+
+### 13.2 CRDT documents
+
+- There is one Automerge document per document record, of any size, stored as
+  segments ([§8.4](#84-crdt-record-bodies)).
+- There is no soft limit the app has to know about. A document that grows past
+  a threshold (Q11: suggested 64 MiB saved) is flagged in developer tooling as
+  a candidate for a collection. It keeps working.
+
+### 13.3 Collections
+
+- **Structure.** A `Collection<T>` is a record with:
+  - a small **index document**: key → shard, plus declared `#[index]` fields;
+  - **shard documents** holding the items. Keyed sets use hash buckets. Logs
+    such as chat and activity use time segments; sealed segments become
+    immutable snapshot blobs that are cheap to serve and to cache.
+- **Lazy.** Shards hydrate on demand, under the same residency and
+  prefetch policy as files.
+- **Queries.** Sort, filter and page come from a **derived, rebuildable local
+  index** maintained by the daemon. The app never walks a CRDT to paginate.
+  This replaces O(n) per-frame projections such as
+  `PhotosDoc::library(doc)` (`apps/photos/src/doc.rs:272-274`).
+- **Promotion.** One item can become its own record when it needs its own
+  sharing ("share this one photo"). The collection keeps a reference.
+- **Transactions.** Operations inside one collection, or across records the
+  app holds, commit atomically. They reuse the multi-record transaction journal
+  (`record_transaction.rs`, `transaction_coordinator.rs`).
+
+### 13.4 Blobs
+
+- `ctx.blobs()` is the content store behind a capability.
+- `put_stream` streams, chunks, dedups and resumes. `open` returns a ranged
+  async reader, or a native read-only **fd** passed over the socket
+  (`SCM_RIGHTS`). mmap then works at native speed.
+- A `BlobRef {content id, len, mime}` is an ordinary CRDT scalar. Referencing
+  it from a record makes it reachable, which means synced, readable by whoever
+  can read the record, and a GC root for as long as history retains that
+  reference.
+- This replaces the process-local qdoc store and its `set_store(FsBlobStore…)`
+  calls (`apps/photos/src/main.rs:90-97`, `apps/chat/src/main.rs:78-83`).
+
+### 13.5 Files and format-aware files
+
+- `ctx.open_file(id)` gives a `RecordHandle<FileBody>` for a file record in the
+  app's room, or one granted through the portal. It exposes metadata, history,
+  lease state and an **fd to the real file**. A sandboxed app gets native I/O
+  on exactly the files it is allowed, without binding the whole workspace.
+  This replaces the RPC-per-read design of `runtime-fs`
+  (`crates/runtime/runtime-fs/schema/fs.capnp`), which has no server anyway.
+- **Format-aware files** are file records with a CRDT side-body registered by
+  a format provider (`crates/doc/format-host`). The CRDT is the source of
+  truth, and the file bytes are its projection.
+  - An app edits the CRDT, and the daemon writes the bytes, debounced, as a
+    normal version.
+  - A foreign tool that writes the bytes is imported by structural diff into
+    the CRDT, never by replacing it.
+  - Word-processor's history then survives export, and "`fs` understands both
+    native resources and `.docx`" (AGENTS.md) becomes true.
+
+### 13.6 Settings
+
+`Settings<T>` has three scopes, all stored as CRDT records in the same Record
+Store:
+
+- **Person:** a record in the personal room, synced to the person's devices.
+- **Device:** a local record, never synced.
+- **PersonInRoom:** a record in the personal room, keyed by room.
+
+They are versioned lightly and never visible to collaborators. `Settings<T>`
+is the typed accessor that `docs/architecture/distribution.md` §6 calls for
+("An application declares its settings schema … and gets a typed accessor").
+How the existing `settings-store` desktop file and the Profile layers fold in
+is Q12.
+
+### 13.7 Foreign apps
+
+Flatpaks, legacy binaries and Wine keep a private per-`(room, package)`
+directory at `/run/tilo/app`, with the same launcher bind and the same room
+confinement (`crates/packaging/launcher/src/appdir.rs:12-26`). The directory
+now lives on the store volume (`live/apps/<room>/<pkg>`). That gives it:
+
+- device-wide dedup;
+- sync across the **person's own devices**, with leases for their SQLite
+  files;
+- history;
+- quota-driven eviction.
+
+It is not shared with room collaborators by default: foreign app internals
+are single-writer. Whether an app can opt into sharing is Q13. [R8]
+
+### 13.8 Optional verified actions
+
+- A record kind can declare `verify = "actions"`. Peers then ship
+  `ActionEnvelope`s alongside the change. Receivers replay each action under
+  the pinned actor, check that the resulting change hash matches, and enforce
+  the action's declared class, such as Comment versus Write.
+- This uses the determinism contract that exists today but is unused in
+  production (`crates/collab/actions/src/executor.rs:1-15`).
+- Structural separation remains the default enforcement ([§14](#14-permissions)).
+  Verification is for the rare record that needs per-action authority inside
+  one document.
+
+---
+
+## 14. Permissions
+
+One model for files, CRDT records, collections, blobs and packages. [R6, R8]
+
+- **Principals.** Person roots, room roles (Viewer, Commenter, Editor, Owner),
+  share grants and device certificates. Authority is granted to the person,
+  and history records the device (`docs/collaborative-files-product.md:306-307`).
+- **Units.** An ACL attaches to a record or a collection. It is inherited
+  from the room catalog unless overridden. Roles map to operation classes per
+  collection. A `comments` collection lets Commenters write while the document
+  itself does not.
+  - This is enforceable on receipt without inspecting CRDT content, because the
+    unit of authorisation is the record or shard.
+  - It fixes the defect that every app delta is signed as `OpClass::Splice`,
+    so a Commenter can write nothing and an Editor anything
+    (`crates/sdk/ui-core/src/collaboration.rs:3682-3700`).
+- **Enforcement on receipt.** Every operation is checked against the record
+  ACL at the time of its causal context, before merge. This is today's fs rule
+  (`docs/collaborative-files-product.md:325-333`), extended to CRDT records.
+- **Sandboxed apps.** The launcher mints a capability per
+  `(package, room, declared record kinds)`. The Record Store answers only for
+  records of those kinds in that room, plus records explicitly granted through
+  the portal. fds returned to an app carry exactly the granted access mode.
+  POSIX access to room trees keeps going through the launcher's binds and
+  Landlock (`docs/architecture/security.md:129-141`).
+- **Blob reachability.** Content is served to a peer, or opened for an app,
+  only when it is reachable from a record the requester may read. The check is
+  indexed ([§9](#9-transfer-engine)). No ambient "anyone with the hash".
+- **Local native tree.** A device materialises only records its person may
+  read. Read-only records are materialised with write bits cleared. On
+  Tier 1, write opens are denied by a permission event, which keeps today's
+  kernel-enforced write denial for View shares
+  (`docs/collaborative-files-product.md:43-49`).
+  - Within one person's session, local processes that are not sandboxed see
+    that person's tree, which is the same as the shipped default policy
+    ("grants the local session read+write on the whole workspace",
+    `docs/architecture/security.md:141`).
+  - `security.md` must state this explicitly when Tier 1 lands.
+- **Wire privacy.** Record ids on the wire are minted ids, never paths. This
+  fixes `RecordId::for_file` leaking absolute paths in
+  `NeighbourMsg::AppDocument` (`ui-core/src/record.rs:55-73`).
+
+---
+
+## 15. History
+
+One `HistorySource` over every record kind. [R5, R6]
+
+| Kind | Versions come from | Restore |
+|---|---|---|
+| File | changeset entries (signed versions) | appends a new version with the old content id (existing `checked_restore.rs`) |
+| CRDT document | Automerge heads plus `ActionContext` messages | appends inverse actions or a restore change (existing history mode) |
+| Collection | roll-up of shard histories, keyed by item | per item or per group |
+| Room | catalog and governance operations | as today |
+
+- **Timeline.** The room timeline shows roll-ups ("Ada changed 140 files in
+  `src/`", "Maren made 12 changes to Chapter 3") that expand into record
+  history. That is the nesting in `rooms.md`, "History nests", and it feeds the
+  existing Glance / Catch up / Investigate surfaces
+  (`docs/history-experience.md`).
+- **One store.** History moves from the global JSON file
+  (`history.rs:615-634`, O(N) rewrite per edit) into `meta.redb`, keyed by
+  `(record, version)`.
+- **Retention.** Per room, with a person override:
+  - keep every version for 24 h;
+  - then hourly for 7 days;
+  - daily for 90 days;
+  - weekly after that;
+  - all within a history quota.
+
+  Named versions, restore points and versions referenced by an open conflict
+  are kept until released. Thinning is itself signed as a checkpoint, so every
+  peer agrees on what was dropped. `docs/history-experience.md:135-136`
+  promises that attribution, counts and restore horizons survive compaction.
+- **CRDT compaction.** An old change graph is compacted into a signed
+  snapshot checkpoint. Changes before the retention horizon may be dropped
+  from local storage once a checkpoint covers them and a host holds them (Q11).
+- **GC roots.**
+  - current heads;
+  - retained versions;
+  - pins;
+  - `BlobRef`s reachable from any retained CRDT head;
+  - installed and running packages;
+  - in-flight transfers;
+  - open files.
+
+  GC uses owned tags and the exact live-set mechanism the fs already has
+  (`store.rs:147-198, 338-412`). qdoc's "never reclaim automatically"
+  (`blobstore.rs:101-105`) goes away.
+
+---
+
+## 16. Installed apps
+
+[R6, R7]
+
+- **Package payload files are content in the one store.**
+  - Each file is a content id: a whole-file hash for ≤ 64 KiB, a manifest root
+    above that. The payload `Collection` maps path → `(content id, mode)`. The
+    format is v2; the current `Collection` maps path → whole-file BLAKE3
+    (`crates/packaging/tilo-app-package/src/blobs.rs:147-259`).
+  - The signed root still commits to the manifest hash, payload root and
+    publisher key (`docs/architecture/distribution.md:516`).
+- **`.tapp` stays small: it is thin by default.** A thin `.tapp` contains
+  only:
+  - the 173-byte signed root;
+  - the manifest;
+  - the payload collection.
+
+  That is typically a few KiB. The payload bytes come from wherever they are
+  available: a peer in the room, the LAN, a mirror, the source, since "bytes
+  come from anywhere" (`distribution.md`, §3). Only the chunks missing from the
+  device's store are fetched. A **fat** `.tapp`, today's tar with `blobs/`
+  (`app-host/src/install.rs:6-20`), remains an export format for offline
+  transfer. Both verify identically.
+- **Small updates.** A new version's manifests share chunks with the old one,
+  so an update fetches only changed chunks. The shared UI runtime
+  (`crates/runtime/runtime-bundle`, `runtime-dylib`) keeps apps around 2 MB,
+  and it is deduplicated across every app that uses it.
+- **Materialisation, stage A: reflink.** The payload tree is materialised
+  once under `pkgs/<package-id>/`, as reflinks of existing content wherever it
+  already exists (another version, another package). It is read-only, bound
+  into the sandbox as today, and runs natively. There is no second copy: this
+  replaces `app-host`'s blob store plus eager `payloads/` copy
+  (`app-host/src/store.rs:1-12`).
+- **Materialisation, stage B (optional): composefs.**
+  - An EROFS image references payload objects that have fs-verity enabled, as
+    the OS root already does. That adds run-time integrity (verified on every
+    page read) and O(1) mounting.
+  - Lazy start for very large bundles can use placeholders, the same mechanism
+    as workspace files.
+  - Which stage becomes the default is Q14.
+- **Records, not a separate registry.** "My added apps" is a Person-scoped
+  settings record, so it syncs across devices. Residency is per device. Unused
+  packages are evicted by the same quota engine ("unused copies are evicted;
+  keeping one is opt-in", AGENTS.md). `app-host/src/registry.rs` becomes that
+  record plus the residency table.
+- `crates/packaging/app-fs`, the lazy FUSE package mount with no dependents,
+  is deleted.
+
+---
+
+## 17. The git test
+
+Git is the success indicator because it stresses everything at once. The
+table shows what git needs, which general mechanism provides it, and how
+stage exit criteria test it. There is no git code path anywhere. [R9]
+
+| Git needs | General mechanism | Section | Verified by |
+|---|---|---|---|
+| Executable hooks and scripts, `core.fileMode` | Mode bits materialised and replicated | 6.6 | `git status` clean after sync; hook executes |
+| Symlinks in the working tree | Native symlinks, target replicated verbatim | 6.6 | round-trip test tree with relative and absolute links |
+| No "dubious ownership" | Files owned by the local person | 6.2 | `git status` without `safe.directory` |
+| `index.lock`, `refs/…lock` via `O_CREAT\|O_EXCL`, then `rename` | Native create and rename locally. Cross-device, lock files are ordinary files inside crash-consistent epochs (a peer sees what a crash would leave), and epochs avoid capturing fresh open files | 6.4, 10 | concurrent `git commit` on one device under capture |
+| `fsync` is real | Native fsync; publishing is asynchronous and cannot lie | 6.6 | fault-injection: capture errors never fail `fsync` |
+| mmap of packfiles and the index | Native mmap. Placeholders hydrate before the fault (K2) or on open | 6.1, 6.8 | `git log -p` on a cold clone |
+| Very many small files: `status` over 100k entries, `checkout` | Native `stat`/`open`/`readdir`, inline ≤ 4 KiB, eager small-file residency, one signature per changeset | 6.1, 7.3, 8.3, 12.1 | `git status` ≤ 1.1× native (stage 4 exit) |
+| A ref is never visible before its objects | V2 crash-image epochs plus V3 journal-order application | 10 | 10k randomised commit/sync trials with a verifying reader on the peer: zero missing-object errors |
+| Concurrent commits on two devices | Refs and index are replaced by rename, so they get versioned conflicts. The losing ref is materialised as `refs/heads/<b>.sync-conflict-<x>`, which git lists as a branch. Objects are write-once, so their union is always consistent | 11.1 | partition test: both commits reachable after reconnect |
+| Packfile rewrite (`gc`, `repack`) racing a peer | New packs are new files. Old packs are deleted in the same changeset, after the new ones (V3). An open fd on the peer keeps the old inode | 6.5, 10 | `git gc` on A while B runs `git log` |
+| `index` stat cache across devices | Replicated `mtime` (ns) and size, and the same uid. Inode and `ctime` cannot be replicated, so see Q4 | 6.5 | `git status` on B after A's commit, then again on A: no ping-pong rewrites |
+| Throughput of clone and checkout (small objects) | Batched RBSR metadata, inline bytes, GetMany batches, one connection | 9 | 100k × 4 KiB sync target (stage 2) |
+| SQLite-like single writers (not git, same tests) | Leases with fencing | 11.2 | two devices open one SQLite database: one writer, zero corruption |
+
+**The index stat cache, stated precisely (Q4).** Git's index caches `stat`
+data for each working-tree file. With git's defaults it compares `ctime`
+(`core.trustctime=true`) and, where the platform provides it, the inode
+number. Neither can be replicated. Unless something changes, the result is:
+
+1. After a sync, git on the receiving device sees every file as modified. It
+   re-hashes the whole tree once and writes a refreshed index.
+2. That index then syncs back, and the other device does the same.
+
+The cause is general, since many tools compare inode or ctime. The Tilo fix
+must be general too. Options:
+
+- (a) ship `core.trustctime=false` and `core.checkStat=minimal` as system git
+  defaults on Tilo OS. This is configuration, not a code path;
+- (b) mark files whose content is a per-device cache (by an app declaration or
+  user policy) as LocalOnly;
+- (c) accept one re-hash per sync and rely on the refreshed index converging.
+  With (a) in place it converges immediately, because `mtime` and size match.
+
+The recommendation is (a). It needs the owner's decision because it touches
+the "no special-casing" rule.
+
+---
+
+## 18. Keep, merge, delete
+
+[R6]
+
+### Keep (and evolve in place)
+
+| Where | What | Change |
+|---|---|---|
+| `crates/system/fs` `record_replication.rs`, `record_publisher.rs`, `record_access.rs`, `acl.rs`, `workspace_authority.rs` | signed operations, authority | changeset signatures (§8.3); storage in redb; verify once |
+| `fs` `record_protocol.rs`, `share_*.rs`, `named_share_delivery.rs`, `recipient_control.rs`, `share_link.rs` | sharing | unchanged semantics; delivery rides the transfer engine |
+| `fs` `identity.rs`, `peer_auth.rs`, `authenticated_transport.rs`, `transport_gate.rs` | device authentication | once per connection |
+| `fs` `replica_ack.rs`, `availability.rs`, `eviction.rs` | receipts, availability, safe eviction | become the automatic quota engine (§12.2) |
+| `fs` `record_transaction.rs`, `transaction_coordinator.rs` | multi-record atomicity | also carries changesets and Record Store transactions |
+| `fs` `conflict.rs`, `conflict_merge.rs`, `checked_restore.rs`, `history_read.rs` | conflicts, merge, restore | policy by body type (§11) |
+| `fs` `rich_metadata.rs`, `thumbs.rs`, `smart.rs`, `smart_monitor.rs`, `clock.rs`, `caps_file.rs` | metadata, thumbnails, prediction gates, clock, live ACL file | limits raised; working sets added |
+| `fs` `durable_backup.rs`, `crates/system/atomic-file` | crash-safe small files | only for security stores |
+| `crates/collab/collab-types` | `SignedOp`, validator, roles, `FileBindingV1`, MLS | `MAX_DOCUMENT_MUTATION_BYTES` stops governing durable state |
+| `crates/collab/actions`, `channel-crypto`, `tilo-user-identity` | actions, crypto, identity | unchanged |
+| `crates/sdk/ui-core` `state/` (`UndoLog`, `DocumentFrontier`), `history_source/`, `history_mode/`, `action_host.rs` | undo, history UI, action door | a `HistorySource` over all kinds |
+| `ui-core` `application.rs` (`ApplicationDefinition`, `RecordOwners`) | the cleanest custody model | becomes the Record Store client and the only launch path |
+| `crates/packaging/tilo-app-package` | signing, manifest, trust, `Collection` | `Collection` v2 (content ids and modes), thin `.tapp` |
+| `crates/packaging/launcher` | sandbox, binds, per-room app dir | source directory moves to the store volume |
+| `crates/runtime/runtime-fs/src/native.rs` | cap-std granted host directories | unchanged |
+| `crates/hosting/tilo-relay` | host, mesh placement, `ReplicationIntent` | stores content and record operations as a normal replica; push target |
+
+### Merge
+
+| From | Into |
+|---|---|
+| `fs` `store.rs` (`ContentStore`), qdoc `blobstore.rs` (`BlobStore`, `FsBlobStore`), `app-host/src/store.rs` (`FsBlobStore`, `payloads/`) | **one content store** (`ChunkStore` + loose `FsStore`) |
+| `fs` `content.rs` (gear CDC) | FastCDC tiers; v1 kept as a reader |
+| `fs` `hydration.rs`, `full_replica.rs`, blob parts of `sync.rs` | the transfer engine (§9) |
+| `fs` `record_mesh.rs` and namespace sync in `sync.rs` (Automerge sync, gossip deltas, 3 s full fetch) | RBSR reconciliation plus live operation gossip |
+| `fs` `namespace.rs` (Automerge move-tree) plus `record_materializer.rs` | tree projection from signed placements plus redb indexes |
+| `fs` `history.rs` (global JSON) | per-record history in redb |
+| `ui-core` `persist.rs` (package document), legacy `RecordSet` in `record.rs`, canonical `RecordOwners`, `crates/system/app-state` (`Autosave`, `DocStore`) | **one Record Store client**. `app-state`'s legacy claim markers (`app-state/src/lib.rs:55-58, 436-491`) carry old data across |
+| `ui::RecordId` (path, uuid, tab, derived) and `FileRecordId` | one minted `RecordId`. Paths become locator attributes |
+| per-app room index (`persist::open_room`), shell `room_records.rs` index and sandbox crawl | the room catalog record |
+| Automerge change-graph history and fs signed versions | one `HistorySource` (§15) |
+| the two eviction models (namespace hydration authority, record plane) | one quota engine |
+| `settings-store` desktop file, ad-hoc app settings in room documents | `Settings<T>` (Q12) |
+| `fs` `fs.rs`, `main.rs` FUSE daemon | Tier 2/3 projector (passthrough, POSIX-complete) |
+| `app-host/src/registry.rs` | Person-scoped "added apps" record plus residency |
+
+### Delete
+
+| What | Why |
+|---|---|
+| `fs` `docstore.rs` | unused. CRDT segments replace it |
+| qdoc documents stored *inside* the namespace document (`fs.rs:4643-4655`, `namespace.rs:2143`) | documents are records |
+| the whole-workspace Automerge namespace document and its periodic full save and validate (`main.rs:2121-2136, 2821-2835`) | O(N) per operation. Replaced by derived indexes |
+| per-chunk tags `tilo/blob/v1/<hash>` (`store.rs:45`) | owned roots are per content id |
+| `fs` `recipient_mount.rs` (after Tier 1) | recipients materialise natively |
+| `crates/packaging/app-fs` | no dependents. Placeholders or composefs cover lazy start |
+| `crates/runtime/runtime-fs/schema/fs.capnp` `WorkspaceFs` read/write RPC | no server. Replaced by the Record Store capability with fd passing |
+| `qdoc::blobstore::BlobTransport`, the process-global store, `set_store` calls | one content store |
+| package-global `state.automerge` as a content store (44 apps), `LegacyLaunchInputs`, `RecordId::for_file`/`for_tab` as identities, the 3 MiB single-message snapshot path, 29 hand-written tombstone maps, inline assets in notes | wrong grain or duplicated |
+| `tilo-relay` `snapshot.automerge` / `pending/*.delta` opaque co-edit store (`tilo-relay/src/store.rs:1-20`) for app documents | hosts store record operations and segments like any replica. Live presence stays |
+| the hard caps at `record_repository.rs:24-31`, `namespace.rs:35`, `full_replica.rs:23-27`, `store.rs:56-70`, `blobstore.rs:33-40`, `record.rs:38` | replaced by compaction, streaming and quotas |
+
+---
+
+## 19. Migration stages
+
+Each stage ships on its own, keeps existing data readable, and has
+measurable exit criteria. Numbers compare against **raw**: the same operation
+on a plain directory of the same filesystem and device, with the daemon
+stopped.
+
+### 19.1 The benchmark suite (built in stage 0, run on every later stage)
+
+| ID | Scenario | Metric |
+|---|---|---|
+| B1 | sequential and random read/write, file sizes 4 KiB, 64 KiB, 1 MiB, 64 MiB, 1 GiB, 10 GiB, resident | MB/s and IOPS vs raw; p99 latency |
+| B2 | mmap read and write of 1 GiB, resident | throughput vs raw |
+| B3 | create 100k files (4 KiB) in 1k directories; `stat` all; `readdir` all; delete all | wall time vs raw |
+| B4 | SQLite: 100k single-row transactions, WAL, `synchronous=NORMAL` | tx/s vs raw; versions produced |
+| B5 | sync 1 × 10 GiB, LAN (1 GbE and 10 GbE) and WAN (100 Mbit/s, 80 ms, 0.1% loss, netem) | throughput vs `iperf3` over QUIC on the same path; CPU per GB |
+| B6 | sync 100k × 4 KiB, same links | wall time; effective bytes/s vs link |
+| B7 | edit 4 KiB inside a 10 GiB file; sync to peer | bytes sent; capture CPU; time to peer visibility |
+| B8 | git: clone a 100k-file repository into a synced room; `git status` (warm); commit; `git status` on the peer after sync; `git gc` | wall time vs raw; correctness (`git fsck`) |
+| B9 | placeholder time to first byte: 64 KiB read, LAN and WAN | ms |
+| B10 | causal visibility: 10k randomised multi-file commit and sync trials with a verifying reader on the peer | violations (must be 0) |
+| B11 | Record Store: 1M-item collection, page query; 200 MiB document late join | ms; success |
+| B12 | daemon RSS during B5 and B6 | MiB (must not scale with file size) |
+
+### 19.2 Stages
+
+**Stage 0: stop the bleeding, measure, decide (weeks).**
+
+- Return `EIO` from `flush`/`fsync`/`release` when a commit fails (`fs.rs:472-481`),
+  and remove the double commit on release.
+- Do not advance the collaboration frontier until encoding succeeds. Surface
+  oversized deltas as errors (`ui-core/src/app/collaboration.rs:163-178`,
+  `collaboration.rs:3653-3661`).
+- Hash record ids on the wire.
+- Build the B1–B12 suite and record baselines of today's system.
+- Run the kernel spike K1–K6 (§6.8).
+- Exit:
+  - no path returns success after a failed commit (fault-injection tests);
+  - B1–B12 run in a scheduled CI job and publish numbers;
+  - a written Tier 1 go/no-go decision.
+
+**Stage 1: metadata at scale (weeks).**
+
+- Per-record operation logs in `meta.redb`, verified once.
+- History in redb.
+- Tree indexes derived from signed placements, with the Automerge namespace
+  kept only as a compatibility projection.
+- Caps removed.
+- Multi-threaded FUSE, `KEEP_CACHE` with `notify_inval_*` on remote change,
+  a cached offset index for reads.
+- Exit:
+  - B3 per-file cost flat from 1k to 100k files, within 20% (today it grows
+    linearly);
+  - 1M records open in ≤ 5 s;
+  - B4 completes 100k transactions with zero failed commits.
+
+**Stage 2: transfer engine and content v2 (weeks to months).**
+
+- Connection pool with one authentication per connection.
+- Indexed authorisation with no tree lock.
+- FastCDC tiers and `HashSeq` manifests (v1 still read).
+- Inline ≤ 4 KiB. GetMany batching. RBSR metadata.
+- Push to the home host. Changeset signatures.
+- Exit:
+  - B5 LAN ≥ 90% of the QUIC `iperf3` baseline on 1 GbE and ≥ 60% on 10 GbE;
+  - B5 WAN ≥ 80%;
+  - B6 LAN in ≤ 3× the time the link needs for the raw bytes, and B6 WAN in
+    ≤ 1.5×;
+  - B7 sends ≤ 2 chunks;
+  - B12 flat.
+
+**Stage 3: native data path, Tier 2, plus POSIX and consistency (months).**
+
+- Real backing files, `FOPEN_PASSTHROUGH`, and POSIX completeness (§6.6).
+- The capture journal. Epochs with snapshot or reflink. Incremental
+  rechunking.
+- V1–V3 application.
+- Automatic residency and quota eviction.
+- Exit:
+  - B1/B2 resident data ≥ 95% of raw at every size;
+  - B3 ≤ 2× raw (metadata still crosses FUSE);
+  - B8 correct: `git fsck` clean on both devices, conflict scenario produces
+    both commits;
+  - B10 zero violations;
+  - capture cost (K5) p99 < 50 ms.
+
+**Stage 4: Tier 1 on Tilo OS (months, gated on stage 0's decision).**
+
+- Store volume created by the installer, with a migration path for existing
+  installs (Q1).
+- fanotify journal and pre-content placeholders. Leases enforced by
+  permission events.
+- Recipient mount retired.
+- Exit:
+  - B1–B3 ≥ 95% of raw (B3 included);
+  - B8 `git status` ≤ 1.1× raw;
+  - B9 ≤ 1 RTT + 10 ms on LAN and ≤ 1 RTT + 30 ms on WAN;
+  - leases: two devices on one SQLite database, zero corruption across
+    1,000 randomised handovers.
+
+**Stage 5: Record Store for apps (months, can overlap stages 3–4).**
+
+- CRDT records in the record plane with segments.
+- `#[derive(Record)]`, `Collection<T>`, `Settings<T>`, `ctx.blobs()` and
+  `ctx.open_file()` with fd passing.
+- qdoc `BlobRef` backed by the content store.
+- Port weather, totp and contacts first, then chat, photos, ebook and sheets.
+- Exit:
+  - B11 page query ≤ 50 ms, and a 200 MiB document late-joins;
+  - ported apps lose their hand-written tombstones and restore schemas, with
+    line counts reported;
+  - Photos holds 100k photos;
+  - a Commenter can comment and cannot edit, enforced on receipt.
+
+**Stage 6: installed apps on the content store (weeks).**
+
+- `Collection` v2, thin `.tapp`, reflink materialisation.
+- `app-host` store and `app-fs` deleted.
+- Exit:
+  - a thin `.tapp` ≤ 16 KiB for every app in the tree;
+  - installed payload bytes counted once (no blob-plus-unpacked copy);
+  - an update transfers only changed chunks (measured on two consecutive
+    releases).
+
+**Stage 7: delete the old paths.**
+
+- Package-document default, legacy `RecordSet`, qdoc local store, shell
+  crawl, path identities, the Automerge namespace compatibility projection,
+  the relay's opaque co-edit store.
+- `LaunchSpec::new` requires a definition.
+- Exit: the deleted code is gone, and the B1–B12 numbers are no worse than
+  after stage 6.
+
+---
+
+## 20. Risks
+
+| # | Risk | Likelihood / impact | Mitigation |
+|---|---|---|---|
+| 1 | Tier 1 kernel semantics (K1–K4) are missing or buggy on 7.2 | medium / high | The spike decides before any Tier 1 work. Tier 2 meets R2 for data. Every fallback is listed in §6.8 |
+| 2 | Btrfs snapshot per epoch stalls writers under heavy write load (it forces writeback of the subvolume) | medium / medium | Adaptive epochs (streaming writers are not published until quiescent). K5 gate. Per-file reflink fallback |
+| 3 | fanotify queue overflow or a daemon crash misses changes | medium / low | Generation-based rescan (§6.4). The filesystem is the truth |
+| 4 | Security model shifts from FUSE-enforced per-identity views to materialisation plus sandbox binds | certain / medium | Stated in §14. `security.md` updated in stage 4. Read-only enforced by permission events |
+| 5 | A dedicated store volume complicates install and existing machines | high / medium | Q1. Loop-image migration, or stay on Tier 2 |
+| 6 | QUIC CPU cost limits 10 GbE | medium / low | Stage 2 measures CPU per GB. Multiple connections per peer if one is CPU-bound |
+| 7 | Ed25519 and Merkle proof cost at 1M records | low / medium | One signature per changeset, batch verification, verify once |
+| 8 | Automerge memory for large documents | medium / medium | Collections for large data. Segments and checkpoints. The engine hidden behind `Tx<T>` |
+| 9 | Lease authority unavailable (no host) | medium / medium | Optimistic unleased versions with fencing, so there is a conflict, not corruption. Files shows it |
+| 10 | Residual cross-file window (§10) bites a program with an unusual update pattern | low / medium | Quiescence epochs, leases, Q8 |
+| 11 | Git index ping-pong (Q4) | high without a decision / low | Q4 option (a) |
+| 12 | History growth under retention | medium / medium | Thinning, quotas, reflinked versions share extents |
+| 13 | Migration of existing stores and app documents | certain / medium | v1 readers kept. `open_migrating` claim markers. Staged, reversible cut-overs |
+| 14 | Scope: this is a large rebuild of the data path | certain / high | Stages ship independently. Stage 0–2 fixes land before the data path changes |
+
+---
+
+## 21. Alternatives considered
+
+| Alternative | For | Against | Verdict |
+|---|---|---|---|
+| **Tuned FUSE only** (multithread, writeback, io_uring) | Least change | Still a round trip per operation. Fails R2 by design | Tier 3 fallback only |
+| **FUSE passthrough everywhere** | Native data I/O, fuser 0.17 ready | `stat`/`open` storms (git, compilers) still cross FUSE | Tier 2; first to ship |
+| **Kernel module** | Anything is possible | Out of tree, Secure Boot signing, attack surface, maintenance | Rejected |
+| **overlayfs / EROFS on-demand for the mutable tree** | In-kernel lazy loading | Built for immutable images | Used for packages only (§16, stage B) |
+| **Full replication, no placeholders (Syncthing model)** | Simplest, fully native | Fails R1 on small disks and for multi-GB rooms. No lazy start | The behaviour of pinned subtrees and hosts, not the default |
+| **Git-aware sync (sync `.git` via the git protocol)** | Perfect git semantics | Special-casing, forbidden by R9. Does not help SQLite or anything else | Rejected |
+| **LWW per file (Dropbox model)** | Simple | Corrupts `.git` and SQLite, and loses writes | Rejected. Versioned conflicts and leases instead |
+| **Fixed-size chunks** | Simpler, block-aligned | An insertion shifts every later chunk, so dedup is lost | Rejected. FastCDC, with FIEMAP diff for in-place edits |
+| **Keep the whole-workspace Automerge namespace, add indexes** | Keeps working code | Still one document for 10⁶ nodes. Saves and sync are O(N). Duplicates the signed placements | Rejected. Indexes over signed placements |
+| **iroh-docs / Willow-style store for metadata** | Ready-made RBSR and entries | Has its own identity, ACL and namespace model. It would duplicate the signed record plane with its shares and receipts | Take RBSR, not the store |
+| **Consensus (Raft) for leases and ordering** | Strong guarantees | Needs a quorum of online devices, and personal device sets are often one device | Rejected. Host authority with fencing |
+| **Records as files (every CRDT a `.automerge` file in the tree)** | One plane end to end | Whole-file versioning is the wrong grain for keystroke CRDT edits | Take the plane, not the POSIX surface. Records live natively, and files are one record kind |
+| **Different CRDT engine (e.g. Loro)** | Shallow snapshots, history trimming | Automerge is baked into undo, frontiers, action replay and qdoc merge | Deferred. The engine is hidden behind `Tx<T>` |
+| **Server-authoritative store** | Simple permissions, easy large collections | Contradicts peer-to-peer and offline-first (`collaboration.md`) | Rejected. Hosts are replicas, not authorities, except for leases |
+| **SQLite as the app data store** | Familiar | Not collaborative or versioned. Would be a second record model | Only as a derived query index (§13.3) |
+| **Per-process filtered local views (keep FUSE ACL for local processes)** | Per-identity local enforcement | Costs R2 for every access. The local session is one person | Rejected. Materialise only readable records, sandbox with binds |
+
+---
+
+## 22. Open questions for the owner
+
+1. **Store volume (Q1).** A separate LUKS2 partition (recommended), a loop
+   image on the root Btrfs, or Tier 2 on Tilo OS until K6 shows mount marks
+   suffice? What happens on existing installs?
+2. **Tier 1 go/no-go (Q2).** Is Tier 2 (native data, FUSE metadata) an
+   acceptable end state for Tilo OS if K1 or K2 fails, or is Tier 1 a hard
+   requirement that justifies carrying kernel patches?
+3. **Multi-user devices (Q3).** One store per local person (recommended), or
+   shared stores with per-uid materialisation?
+4. **Git index stat cache (Q4).** Ship `core.trustctime=false` and
+   `core.checkStat=minimal` as system defaults? This is configuration, not a
+   code path, but it is tool-aware.
+5. **Lease contention (Q5).** When a device opens a leased file for write:
+   deny immediately, wait with a UI prompt, or fork as a conflict?
+6. **Encryption on hosts (Q6).** Must content on a hosted server that other
+   people operate be end-to-end encrypted? Per-room convergent keys keep dedup
+   inside the room. Device-to-device and home hosts would not need it.
+7. **Custom iroh-blobs backend (Q7).** Accept a Tilo-maintained `ChunkStore`
+   against iroh-blobs' store protocol, possibly with an upstream contribution,
+   or speak our own ALPN over `bao-tree`?
+8. **Strict multi-file atomicity for POSIX (Q8).** Is the §10 residual window
+   acceptable, or should subtrees be able to opt into atomic publication, for
+   example by swapping a per-subtree snapshot, at extra complexity?
+9. **Hardlinks (Q9).** Preserve link identity across devices (a new record
+   kind), or materialise as reflinked copies (recommended)?
+10. **Rebuildable trees (Q10).** Sync `node_modules`-like trees by default, or
+    exclude them? `CACHEDIR.TAG` trees are excluded either way.
+11. **Retention defaults (Q11).** Are 24 h / hourly 7 d / daily 90 d / weekly
+    right? May a device drop CRDT history before the horizon once a host holds
+    a checkpoint? What document size triggers the developer-tooling warning?
+12. **Settings (Q12).** Does `Settings<T>` subsume `settings-store` and
+    become the implementation of the Profile layers in `distribution.md` §6,
+    or stay separate from the Profile?
+13. **Foreign app data (Q13).** Is the default "synced across my devices, not
+    shared with the room" right? Can a package manifest opt into room sharing?
+14. **Package materialisation (Q14).** Reflink (simpler), or composefs with
+    fs-verity (run-time integrity, O(1) mount) as the default?
+15. **Record type ownership (Q15).** Should the system own record kinds, so
+    one library view can show books, playlists and documents together, or the
+    apps? This carries forward `rooms.md`, "Still open".
+16. **Offline placeholder read (Q16).** `EIO` (today, honest), or block
+    indefinitely with a UI prompt for interactive apps?

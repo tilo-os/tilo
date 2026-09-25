@@ -218,7 +218,7 @@ its stripped stack remains retained pending a symbol-bearing diagnostic repeat.
 
 The default observer, root fallback, explicit-probe precedence and actual
 Word Processor read-only snapshot tests pass (2sharedUItests,1WPtest).
-The `qos-app` facade forwards the optional `presentation-feedback` feature so
+The `tilo-app` facade forwards the optional `presentation-feedback` feature so
 apps can enable diagnostics using their existing `ui` dependency alias.
 
 

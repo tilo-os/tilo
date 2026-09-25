@@ -139,8 +139,9 @@ pub fn write_app_payload(dir: &Path) -> std::io::Result<()> {
 }
 
 /// Lay out a valid format-provider payload (must contain
-/// `component.wasm` somewhere — we put it at the root).
+/// `provider.wasm` somewhere — we put it at the root).
 pub fn write_format_provider_payload(dir: &Path) -> std::io::Result<()> {
-    std::fs::write(dir.join("component.wasm"), b"\x00asm")?;
+    // Header of an empty core WebAssembly module.
+    std::fs::write(dir.join("provider.wasm"), b"\x00asm\x01\x00\x00\x00")?;
     Ok(())
 }
