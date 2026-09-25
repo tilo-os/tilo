@@ -599,7 +599,7 @@ fn cloud_owner_bootstrap_legacy_receipts_are_pruned_on_next_write() {
             serde_json::json!({"bootstrap": "x".repeat(4096)}),
         ),
     );
-    // Challenge issuance no longer commits (lane M); the next commit prunes.
+    // Challenge issuance is process-local and no longer commits; the next commit prunes.
     let _ = f.request(130);
     let candidate = f.store.state.clone();
     f.store.commit(candidate).unwrap();

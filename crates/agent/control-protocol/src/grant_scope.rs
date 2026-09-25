@@ -1,4 +1,4 @@
-//! Protocol v2 scoped grants (parity contract A0, completed by lane D).
+//! Protocol v2 scoped grants.
 //!
 //! A [`GrantScope`] authorizes a *class* of operations (app + record(s) +
 //! verb + capability classes, optionally narrowed by resource and action
@@ -12,7 +12,7 @@
 //!   scope JSON after [`SCOPE_CARRIER_RESOURCE_PREFIX`], so the retained
 //!   ledgers freeze the literal scope, and a v1 binary that only knows exact
 //!   matching treats the carrier as a tuple no surface publishes: it fails
-//!   closed instead of widening (security review T20).
+//!   closed instead of widening.
 //!
 //! Scope coverage is necessary, never sufficient. The host must still run
 //! [`crate::authorize_operation`] (workspace policy for the agent *and* the
@@ -29,7 +29,7 @@ pub const GRANT_SCOPE_PROTOCOL_VERSION: u8 = 2;
 pub const MAX_GRANT_SCOPES: usize = 16;
 /// Upper bound on an explicit allow or deny action list inside one scope.
 pub const MAX_SCOPE_ACTIONS: usize = 64;
-/// Upper bound on the records one scope may name (security review MUST-16).
+/// Upper bound on the records one scope may name.
 pub const MAX_SCOPE_RECORDS: usize = 32;
 /// Canonical grant spelling of an application's package-primary record,
 /// whose live route record id is `""`.
@@ -39,7 +39,7 @@ pub const SCOPE_CARRIER_RESOURCE_PREFIX: &str = "@qos:grant-scope/v2:";
 /// Action of a v2 scope carrier. No application may publish it.
 pub const SCOPE_CARRIER_ACTION: &str = "@qos:grant-scope";
 
-/// Delegation capability classes (security review MUST-4). They replace the
+/// Delegation capability classes. They replace the
 /// bare `OperationKind` for delegation: an app's `Document` default never
 /// counts, only an explicit class from a trusted delegation manifest.
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -101,7 +101,7 @@ impl OperationClass {
         )
     }
     /// The Cloud host filesystem is not the user's: `effect.fs.*` is never
-    /// delegable to an agent driving a Cloud host worker (MUST-4).
+    /// delegable to an agent driving a Cloud host worker.
     pub fn delegable_on_host_worker(self) -> bool {
         !matches!(self, Self::EffectFsRead | Self::EffectFsWrite)
     }
@@ -131,7 +131,8 @@ pub enum RecordScope {
     /// 2..=[`MAX_SCOPE_RECORDS`] explicit records, sorted and unique.
     AnyOf(Vec<String>),
     /// Any record of `app_id` in the issuing workspace. Covers nothing unless
-    /// the scope also carries `explicitWorkspaceConsent` (MUST-3).
+    /// the scope also carries `explicitWorkspaceConsent`, so workspace-wide
+    /// access is never implied.
     InWorkspace,
 }
 
@@ -147,7 +148,7 @@ pub enum GrantVerb {
 
 /// Which resources inside the app a scope covers. This is a narrowing filter
 /// only: the record always comes from the live route, never from a resource
-/// name (security review T6), so a resource filter can only deny.
+/// name, so a resource filter can only deny.
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub enum ResourceScope {
@@ -160,7 +161,7 @@ pub enum ResourceScope {
     Exact(String),
 }
 
-/// The frozen package and delegation-schema identity (MUST-6). A changed
+/// The frozen package and delegation-schema identity. A changed
 /// delegation schema or package version refuses the scope until re-consent.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -171,8 +172,9 @@ pub struct PackagePin {
     pub schema_digest: String,
 }
 
-/// Host-enforced per-task budgets (MUST-8, MUST-9). Defaults follow the
-/// security review's recommended scope (§4).
+/// Host-enforced per-task budgets: steps, wall-clock time, content removal
+/// and invocation rate. The defaults are conservative limits for one
+/// unattended task.
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ScopeBudgets {
@@ -352,7 +354,8 @@ impl GrantScope {
     }
 }
 
-/// Map a live route record id to its one canonical grant spelling (T7):
+/// Map a live route record id to its one canonical grant spelling, so two
+/// spellings of one record can never be granted differently:
 /// `""` is the package-primary record; reserved spellings (`@qos:*`, `*…`)
 /// are never literal record ids; everything else must be canonical ASCII.
 ///
@@ -1005,7 +1008,7 @@ pub(crate) mod tests {
 
     #[test]
     fn resource_bounds_agree_across_v1_validation_layers() {
-        // MUST-16: one resource bound (4096 bytes) for protocol and retained
+        // One resource bound (4096 bytes) for protocol and retained
         // grant validation; ids other than resource stay 128-byte opaque.
         let long = "r".repeat(crate::MAX_GRANT_RESOURCE_BYTES);
         assert!(validate_grant_set(&[tuple(&long, "a")]).is_ok());

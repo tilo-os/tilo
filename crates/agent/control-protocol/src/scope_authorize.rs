@@ -1,4 +1,5 @@
-//! One authorization function for people and agents (security review MUST-1).
+//! One authorization function for people and agents, so neither path can
+//! grow a check the other lacks.
 //!
 //! [`authorize_operation`] is pure over an [`OperationPolicy`] (the host's
 //! workspace policy) and the live descriptor of one published operation:
@@ -7,11 +8,11 @@
 //!   `decide(Artifact(app, canonical_record(route)), verb)`. The record check
 //!   closes the gap where the human check ignored the record.
 //! - **Agent**: the same two checks for the agent principal *and* for the
-//!   delegating owner (T21), plus: explicit class from a trusted delegation
-//!   manifest (MUST-4), never `effect.fs.*` on a host worker, confirmation
-//!   refused unattended (T4), bulk ops refused unattended (T5), scope coverage
-//!   on the canonical route record (MUST-2) with the frozen schema digest
-//!   (MUST-6), and argument bounds (`delete {count}` ≤ budget).
+//!   delegating owner, plus: explicit class from a trusted delegation
+//!   manifest, never `effect.fs.*` on a host worker, confirmation refused
+//!   unattended, bulk ops refused unattended, scope coverage on the canonical
+//!   route record with the frozen schema digest, and argument bounds
+//!   (`delete {count}` ≤ budget).
 //!
 //! Task state (accepted, not finished, not exited), governance pinning and
 //! step/wall-clock/rate budgets are the host Store's part of the same step;
@@ -286,7 +287,7 @@ pub fn authorize_operation(
     })
 }
 
-/// Argument bounds of a delegated operation (T5): a manifest count field
+/// Argument bounds of a delegated operation: a manifest count field
 /// (`delete {count}`) must parse and stay within the task's budget.
 fn check_arguments(
     entry: Option<&crate::DelegableOp>,
@@ -309,9 +310,10 @@ fn check_arguments(
     Ok(())
 }
 
-/// T21: the agent principal (its explicit role, or the delegated verb when it
-/// has none) and the delegating owner must both allow the operation, on the
-/// Action and on the route record's Artifact.
+/// The agent principal (its explicit role, or the delegated verb when it has
+/// none) and the delegating owner must both allow the operation, on the
+/// Action and on the route record's Artifact. An agent can never do more than
+/// the person who delegated to it.
 fn check_principals(
     policy: &dyn OperationPolicy,
     agent: &str,
@@ -362,7 +364,7 @@ fn check_principals(
     Ok(())
 }
 
-/// Step and wall-clock budget of one task (MUST-9), checked by the host from
+/// Step and wall-clock budget of one task, checked by the host from
 /// its durable step ledger and the task's acceptance time.
 ///
 /// # Errors
@@ -382,7 +384,7 @@ pub fn check_step_budget(
     Ok(())
 }
 
-/// Token bucket for invocations per task (burst and sustained, MUST-9).
+/// Token bucket for invocations per task (burst and sustained rate).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct RateLimiter {
     tokens_milli: u64,
@@ -419,7 +421,7 @@ impl RateLimiter {
 /// Removal floor per task, so a tiny document can still be corrected.
 pub const MIN_TASK_REMOVAL_BYTES: u64 = 256;
 
-/// Content-impact budget (MUST-8), measured by the host from the applied
+/// Content-impact budget, measured by the host from the applied
 /// envelopes: bytes removed this step, removed earlier in the task, and the
 /// document size at the task's first step.
 ///
@@ -450,7 +452,8 @@ pub fn check_removal(
     Ok(())
 }
 
-/// What the host observed when one operation executed (MUST-5).
+/// What the host observed when one operation executed, so an operation is
+/// judged by its actual effects rather than its declared class.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct ExecutionFacts {
     /// Registered document envelopes of the target app it produced.

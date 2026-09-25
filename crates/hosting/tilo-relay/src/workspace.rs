@@ -375,16 +375,14 @@ impl WorkspaceRuntime {
             }
             None => {}
         }
-        // 1. Live fan-out — prune closed subscribers as we go. A full queue
-        // spills non-retained work to the durable per-device queue below.
-        // 1. Live fan-out. A FULL queue is backpressure, never a disconnect
-        //    (Stage 1): the durable delta spills to the slow subscriber's
+        // 1. Live fan-out. A FULL queue is backpressure, never a disconnect:
+        //    the durable delta spills to the slow subscriber's
         //    store-and-forward queue below and the subscriber stays connected.
         //    Only a CLOSED channel (the receiving task is gone) prunes the
         //    subscriber. Dropping slow subscribers here caused the native host
         //    to be disconnected mid-checkpoint, reconnect, receive the room's
         //    retained baselines as a replay, republish, and storm.
-        // Stage 9: a retained checkpoint is a bootstrap/compaction artifact. A
+        // A retained checkpoint is a bootstrap/compaction artifact. A
         // device that is connected and current holds every delta already, so
         // the native's periodic (idle) full checkpoint — multi-megabyte, and a
         // >100 ms frame for a browser that must rebuild its room doc — is fanned
@@ -919,7 +917,7 @@ mod tests {
 
     #[test]
     fn fanout_backpressures_saturated_subscriber_without_dropping_it() {
-        // A full live queue is backpressure, never a disconnect (Stage 1): a
+        // A full live queue is backpressure, never a disconnect: a
         // slow subscriber (a browser on a busy main thread, or the native host
         // publishing a large checkpoint) must stay subscribed while the missed
         // durable delta spills to its store-and-forward queue. Dropping it here
@@ -1016,9 +1014,9 @@ mod tests {
 
     #[test]
     fn live_checkpoint_reaches_a_device_once_per_request_then_stops() {
-        // Stage 9: a connected device already holds every delta, so the
+        // A connected device already holds every delta, so the
         // native's idle checkpoint (2-3 MB, thousands of frames, a 124 ms frame
-        // in the final pointer run) must not be fanned to it live. A device
+        // when measured during pointer input) must not be fanned to it live. A device
         // needs a live checkpoint exactly when it subscribes (its retained
         // replay may be stale) and after it asks again; each request is served
         // by one checkpoint, and the flag clears once one has been fanned.

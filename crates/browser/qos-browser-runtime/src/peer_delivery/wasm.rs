@@ -1285,7 +1285,7 @@ fn install_cuts(peer: &Rc<Peer>, cuts: Vec<ReplayCut>) -> Result<String, JsValue
     // Flush local edits before cloning admission, as for committed desktops.
     crate::browser::prepare_peer_remote(peer.id).map_err(error)?;
     let now = SystemTime::now();
-    // LIVE_V1 lane C: a durable cut builds on durable state, never on the
+    // LIVE_V1: a durable cut builds on durable state, never on the
     // view that includes speculative forwarded changes.
     let basis = super::live_api::take_durable_basis(peer);
     let candidate = {

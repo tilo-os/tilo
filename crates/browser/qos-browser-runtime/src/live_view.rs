@@ -1,4 +1,4 @@
-//! LIVE_V1 lane E, desktop side: what the local desktop publishes (focused
+//! LIVE_V1, desktop side: what the local desktop publishes (focused
 //! record and its window rectangle, the focused editor's caret/selection as
 //! compact CRDT-keyed anchors, window drags) and the projection of remote
 //! carets/selections onto the desktop's collaborator presence, which Writer,

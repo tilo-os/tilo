@@ -567,7 +567,7 @@ mod object_bytes {
     }
 }
 
-// ---- Agent live identity and activity (lane H) -----------------------------
+// ---- Agent live identity and activity ------------------------------------
 
 /// Domain of [`agent_publisher`].
 pub const AGENT_PUBLISHER_DOMAIN: &[u8] = b"tilo-live-agent-v1\0";

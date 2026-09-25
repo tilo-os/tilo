@@ -305,7 +305,7 @@ fn nondurable_bootstrap_batches_coverage_into_one_change() {
     assert_eq!(room_delta(room_stats(&messages[0]), before).changes, 1);
 }
 
-/// Room governance growth per durable generation (lane T): one document
+/// Room governance growth per durable generation: one document
 /// edited per generation among `documents`, each published through
 /// `durable_mutation_messages` exactly as the Cloud owner commits it. The
 /// legacy v1 layout (the whole coverage and receipt maps rewritten as one

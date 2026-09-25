@@ -351,7 +351,7 @@ impl Store {
             // newer) governance revision it is pinned to. Re-run the Spawn
             // admission policy for every inherited scope against the current
             // governance, under this same Store lock: a narrowed policy never
-            // revives Spawn-time grants (security review R1).
+            // revives Spawn-time grants.
             self.inherited_grants_admissible(&current, &peer, &intent.grants)?;
         }
         let spawn = matches!(request, AgentRequest::Spawn { .. });

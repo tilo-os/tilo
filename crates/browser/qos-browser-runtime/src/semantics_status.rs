@@ -1,7 +1,7 @@
 //! Decides when a presented status carries the semantics tree.
 //!
 //! The tree is the bulk of every status and the host mirrors it into the
-//! accessibility DOM. Stage 4 omitted unchanged trees (pointer frames); while
+//! accessibility DOM. Unchanged trees (pointer frames) are omitted; while
 //! typing the tree changes on every key, so this gate additionally throttles
 //! content-only changes to one delivery per window, with a deadline wake so
 //! the final tree always reaches the host within the window. Changes assistive

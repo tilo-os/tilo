@@ -26,7 +26,7 @@ pub(crate) fn latency_baseline() -> bool {
     *BASELINE.get_or_init(|| std::env::var_os("QOS_LATENCY_BASELINE").is_some_and(|v| v == "1"))
 }
 
-/// `QOS_HOST_PERF_BASELINE=1` restores the host-efficiency lane's previous
+/// `QOS_HOST_PERF_BASELINE=1` restores the host's pre-optimisation
 /// behaviour in one binary (action pump cadence as of 2026-09-22, whole-file
 /// session commits), for paired measurement only.
 pub(crate) fn host_perf_baseline() -> bool {
@@ -69,8 +69,8 @@ impl ActionPumpCadence {
         self.last_activity = now;
     }
 
-    /// A data-plane request woke the loop. Before this lane it counted as
-    /// action activity; it now pumps only through committed generation changes.
+    /// A data-plane request woke the loop. It does not count as action
+    /// activity; it pumps only through committed generation changes.
     #[cfg(any(test, feature = "media"))]
     pub(crate) fn data_request(&mut self, now: Instant) {
         if self.baseline {

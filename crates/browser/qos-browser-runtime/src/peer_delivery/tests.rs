@@ -448,7 +448,7 @@ fn staged_parser_retains_shared_raw_credit_until_the_consuming_admission_drops_i
     assert_eq!(budget.available(), before);
 }
 
-// ---- Lane D2: multi-group poll pages (MULTI_GROUP_REPLAY_V1).
+// ---- Multi-group poll pages (MULTI_GROUP_REPLAY_V1).
 
 fn group_frames(
     identity: &CursorIdentity,

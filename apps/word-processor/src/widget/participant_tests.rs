@@ -1,4 +1,4 @@
-//! Participant isolation (parity review test 3): several participants served
+//! Participant isolation: several participants served
 //! by one widget keep independent views, trees and presence, and their views
 //! rebase under concurrent edits without touching the document.
 
@@ -462,7 +462,7 @@ fn probe_keystroke_cost_on_a_large_document() {
     );
 }
 
-// ---- keyboard ↔ action parity (parity review test 1) -----------------------
+// ---- keyboard ↔ action parity ---------------------------------------------
 
 enum Input {
     Char(char),

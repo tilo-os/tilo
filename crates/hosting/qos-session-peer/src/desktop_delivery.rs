@@ -1,5 +1,5 @@
 //! Low-latency delivery of an already durable desktop commit. Retained
-//! publication remains the recovery path; this lane never executes a command.
+//! publication remains the recovery path; this path never executes a command.
 use crate::SessionOwner;
 use qos_peer_state::{
     NeighbourMsg,

@@ -951,7 +951,8 @@ impl CloudService {
         self.live.as_ref().map(|live| live.forwarder.clone())
     }
 
-    /// LIVE_V1 lane C: the forwarder as a pre-barrier admission sink.
+    /// The live forwarder as a pre-barrier admission sink, so forwarding runs
+    /// in parallel with the durability barrier.
     pub(super) fn early_sink(&self) -> Option<crate::delivery::early_forward::EarlySink> {
         self.live_forwarder().map(|live| {
             std::sync::Arc::new(move |device: [u8; 32], canonical: &[u8]| {

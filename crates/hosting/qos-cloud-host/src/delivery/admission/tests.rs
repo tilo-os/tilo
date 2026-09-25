@@ -78,7 +78,7 @@ fn cloud_admission_binds_receipt_in_same_commit_and_survives_reopen() {
     assert!(document_text(dir.path(), "agent-admission").contains("durable"));
 }
 
-// ---- Lane D2: one Store commit and replay group per multi-item request.
+// ---- One Store commit and replay group per multi-item request.
 
 /// Consecutive browser deltas, each building on the previous one.
 pub(crate) fn browser_deltas(

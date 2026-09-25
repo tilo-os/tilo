@@ -1411,7 +1411,7 @@ fn journaled_ack_is_a_durable_side_record_recovered_after_crash() {
     });
 }
 
-// ---- Lane D2: one commit/replay group per multi-item request; multi-group pages.
+// ---- One commit/replay group per multi-item request; multi-group pages.
 
 /// Consecutive edits by one author, each building on the previous one.
 fn native_edits(owner: &SessionOwner, keys: &[&str]) -> Vec<Vec<u8>> {

@@ -1,9 +1,9 @@
 /**
- * LIVE_V1 lane E: other people's live activity on the mounted desktop.
+ * LIVE_V1: other people's live activity on the mounted desktop.
  *
  * Publishes the local pointer (in the focused window's coordinates), focus
  * record, editor caret/selection anchors and window drags through
- * `session.liveV1.publishPresence` (lane B coalesces to one frame per
+ * `session.liveV1.publishPresence` (`live-presence.mjs` coalesces to one frame per
  * animation frame; nothing is buffered here), and draws remote cursors with
  * name labels and remote window-drag ghosts on a separate DOM layer above the
  * WebGPU canvas. Overlay updates are compositor transforms only: they never
@@ -191,7 +191,7 @@ export function createDragTracker() {
  * Receiver side of window drags: live ghosts follow the interpolated remote
  * drag; a released reorder keeps its ghost at the drop position until the
  * durable order change lands here (the window order changes), a durable
- * change is reported, or lane B's released-drag timeout passes. Cancels and
+ * change is reported, or the presence receiver's `ENDED_DRAG_TIMEOUT_MS` passes. Cancels and
  * released resizes disappear at once (the durable layout is unchanged).
  */
 export function createGhostTracker() {
@@ -216,7 +216,7 @@ export function createGhostTracker() {
             let entry = held.get(key);
             if (!entry) held.set(key, entry = {order, done: false});
             // The durable order landed (or a durable change was reported):
-            // the real window is there now. Stays done while lane B still
+            // the real window is there now. Stays done while the presence receiver still
             // reports this released drag.
             if (entry.done || entry.order !== order) { entry.done = true; continue; }
           } else {

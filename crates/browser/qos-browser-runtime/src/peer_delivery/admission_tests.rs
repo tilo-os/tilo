@@ -551,7 +551,7 @@ fn abandoned_snapshot_binding_never_blocks_the_retried_commit() {
     batches.bind_transfer(transfer, cursor(2, 2, 6), 1).unwrap();
 }
 
-// ---- Lane W: a record-only batch inside the publication window.
+// ---- A record-only batch inside the publication window.
 
 /// Hydrate a fresh cache from exactly what the last transactions committed.
 fn reload_cache(cache: &PortableStorage) -> PortableStorage {
@@ -758,7 +758,7 @@ fn stage_journal_only(
         .unwrap();
 }
 
-// ---- Lane D2: one page of several groups admits in order onto one candidate.
+// ---- One page of several groups admits in order onto one candidate.
 
 fn replay_cut(
     incoming: &IncomingBudget,

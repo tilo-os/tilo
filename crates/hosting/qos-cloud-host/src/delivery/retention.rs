@@ -45,7 +45,7 @@ use std::collections::{BTreeMap, BTreeSet};
 /// Rotate once any budget is half used, so the fresh checkpoint still fits.
 const DUE: (usize, usize) = (1, 2);
 /// Retained publication history beyond the baseline that makes a rotation
-/// due (lane T). The whole delivery state is re-saved on every Store commit
+/// due. The whole delivery state is re-saved on every Store commit
 /// (as a JSON number array, ~3.3 bytes per payload byte), so history is kept
 /// near the size of one checkpoint instead of half the 64 MiB pool limit:
 /// a rotation is due once history reaches max(this, the baseline itself).

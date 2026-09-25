@@ -1,4 +1,4 @@
-//! LIVE_V1 lane E: display identity for live publishers. A publisher is the
+//! LIVE_V1: display identity for live publishers. A publisher is the
 //! device key hex of its namespace; the overlay labels it with the member's
 //! governed display name and colours it by the member's user key, so every
 //! device of one person shares one stable colour. The structural owner is not

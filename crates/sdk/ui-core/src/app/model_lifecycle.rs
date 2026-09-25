@@ -14,8 +14,9 @@ pub(super) struct IdleModelProgress {
 
 /// `QOS_HOST_PERF_BASELINE=1` restores the previous always-refresh hosted
 /// pump (sync, cache invalidation and full action-surface rebuild on every
-/// pass) for paired before/after host measurements; `QOS_HOST_PERF2_BASELINE=1`
-/// does the same for the second host-efficiency lane only.
+/// pass) for paired before/after host measurements. `QOS_HOST_PERF2_BASELINE=1`
+/// restores it too, and also the session peer's journaled aggregate ACK
+/// commits (`store::side_log`).
 fn host_perf_baseline() -> bool {
     static BASELINE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *BASELINE.get_or_init(|| crate::host::environment().diagnostics.host_perf_baseline)

@@ -479,7 +479,7 @@ test('presence resumes after the relay withdraws and re-announces a member names
   b.live.close();
 });
 
-// ---- Agent activity (lane H) ---------------------------------------------------
+// ---- Agent activity ------------------------------------------------------------
 const SCRIBE = '5'.repeat(64);
 const HUMAN = 'c'.repeat(64);
 const activity = (fields = {}) => JSON.stringify({v: 1, agent: 'scribe', name: 'Scribe', state: 'writing', label: 'Writing in Writer', tool: null, at_ms: 1700000000000, ...fields});

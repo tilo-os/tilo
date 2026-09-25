@@ -615,7 +615,7 @@ impl AgentSteps {
                 return;
             }
         };
-        // Lane E: the agent's own durable action log (agent_history).
+        // The agent's own durable action log (agent_history).
         crate::agent_history::note_step(
             owner.root(),
             &request.dispatch.envelope().recipient_agent,

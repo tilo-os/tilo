@@ -1,4 +1,4 @@
-//! Agent live streaming (lane H), host side: a process-global, bounded,
+//! Agent live streaming, host side: a process-global, bounded,
 //! non-blocking bus from the Store-owning agent paths to the serve-https live
 //! publisher (`https_owner::agent_live`), plus a small registry of each agent's
 //! latest live state for owner-only reads.
@@ -16,11 +16,10 @@
 //! * The chat reply text stays private: it only enters the registry, read by
 //!   `agent_runtime_reads` for the owning caller, and never reaches the bus.
 //!
-//! Hooks (one line each, in lane G files): `capture_worker_commit` in
+//! Producers (one line each): `capture_worker_commit` in
 //! `Store::commit_agent_document_checked`, `on_worker_commit` in
-//! `apply_worker_document`, `on_progress` / `on_update` in `RuntimeOwner`.
-// Until those hook lines land, the producer half is only reached by tests.
-#![cfg_attr(not(test), allow(dead_code))]
+//! `apply_worker_document`, `on_progress` / `on_update` in `RuntimeOwner`,
+//! and `process_exited` in the Linux runtime.
 use qos_relay::delivery_v3::live_wire::{
     AGENT_ACTIVITY_STATES, MAX_AGENT_LABEL_BYTES, MAX_AGENT_NAME_BYTES, MAX_AGENT_TOOL_BYTES,
     MAX_PREVIEW_TEXT_BYTES, bounded_display_text,
@@ -59,7 +58,7 @@ pub(crate) struct Caret {
     pub(crate) offset: usize,
 }
 
-/// One bus event (design 2c). `name` is the owner's spawn-request name.
+/// One bus event. `name` is the owner's spawn-request name.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum AgentLiveEvent {
     Activity {
@@ -93,8 +92,8 @@ pub(crate) enum AgentLiveEvent {
     },
     /// The agent's managed process exited (no further messages possible).
     Exited { agent_id: String, failed: bool },
-    /// The agent's real caret/selection from its worker participant view
-    /// (parity lanes B/C). Once seen it supersedes the commit-derived caret.
+    /// The agent's real caret/selection from its worker participant view.
+    /// Once seen it supersedes the commit-derived caret.
     /// `caret: None` clears the agent's caret (participant left).
     Presence {
         agent_id: String,
@@ -296,6 +295,7 @@ pub(crate) fn cached_name(agent_id: &str) -> Option<String> {
 }
 
 /// Latest caret known for an agent in `(app, record)`.
+#[cfg(test)]
 pub(crate) fn caret_for(agent_id: &str, app: &str, record: &str) -> Option<Caret> {
     with_registry(|registry| {
         registry.get(agent_id).and_then(|state| {
@@ -569,7 +569,7 @@ pub(crate) fn ended(agent_id: &str, invocation: Uuid, succeeded: bool) {
 
 /// The agent's managed process exited: its member-visible status becomes
 /// `completed` (or `failed`), matching the owner's agent reads. The runtime
-/// calls this when it observes the exit (lane G hook).
+/// calls this when it observes the exit.
 #[cfg(target_os = "linux")]
 pub(crate) fn process_exited(agent_id: &str, failed: bool) {
     emit(AgentLiveEvent::Exited {

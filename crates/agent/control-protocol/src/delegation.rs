@@ -1,5 +1,5 @@
 //! Delegation manifests: which published operations an agent may be granted,
-//! with an explicit capability class each (security review MUST-4, MUST-15).
+//! with an explicit capability class each.
 //!
 //! - An operation is delegable only if a *trusted* manifest lists it with a
 //!   class. The app's own `OperationKind` (default `Document`) never counts,
@@ -48,7 +48,7 @@ pub enum DeclaredKind {
 
 impl OperationClass {
     /// Declared kinds an app may use for an operation of this class. A
-    /// mismatch means the app relabelled the operation (T3) and is refused.
+    /// mismatch means the app relabelled the operation and is refused.
     pub fn accepts_declared(self, declared: DeclaredKind) -> bool {
         match self {
             Self::Document | Self::Disclose => declared == DeclaredKind::Document,
@@ -70,10 +70,10 @@ pub struct DelegableOp {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resource_kind: Option<String>,
     pub class: OperationClass,
-    /// Bulk review/destructive operations are never run unattended (MUST-7/8).
+    /// Bulk review/destructive operations are never run unattended.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub bulk: bool,
-    /// Name of a numeric argument field bounded by `maxDeleteCount` (T5).
+    /// Name of a numeric argument field bounded by `maxDeleteCount`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub count_param: Option<String>,
 }
@@ -348,7 +348,7 @@ fn first_party(package: &str, app: &str, operations: Vec<DelegableOp>) -> Delega
 fn writer_manifest() -> DelegationManifest {
     use OperationClass::{Document, EffectFsRead, EffectFsWrite, Query, View};
     let mut ops = vec![];
-    // Editing primitives (lane A §4.2) and the legacy position-free ops.
+    // Position-addressed editing primitives and the legacy position-free ops.
     for action in [
         "type-text",
         "new-paragraph",
@@ -384,7 +384,7 @@ fn writer_manifest() -> DelegationManifest {
         count_param: Some("count".into()),
         ..op("erase-text", Document)
     });
-    // Tracked-change review in bulk is refused unattended (T5).
+    // Tracked-change review in bulk is refused unattended.
     for action in ["accept-all", "reject-all"] {
         ops.push(DelegableOp {
             bulk: true,
@@ -414,7 +414,7 @@ fn writer_manifest() -> DelegationManifest {
     }
     ops.push(op("read-text", Query));
     // Host filesystem and blob store: classed so they are never delegable
-    // on a Cloud host worker, even if Writer mislabels them (T3, T11).
+    // on a Cloud host worker, even if Writer mislabels them.
     ops.push(op("open", EffectFsRead));
     ops.push(op("place-image", EffectFsRead));
     ops.push(op("save", EffectFsWrite));
@@ -425,7 +425,7 @@ fn writer_manifest() -> DelegationManifest {
 fn chat_manifest() -> DelegationManifest {
     use OperationClass::{Disclose, Document, EffectFsRead, EffectMedia, Query, View};
     let mut ops = vec![];
-    // Sending content to everyone who can read the channel (T9).
+    // Disclose: these send content to everyone who can read the channel.
     for action in ["post", "send-message", "edit", "react"] {
         ops.push(op(action, Disclose));
     }
@@ -480,7 +480,7 @@ fn notes_manifest() -> DelegationManifest {
         "new-and-assign-tag",
         "assign-page",
         "unassign-page",
-        // Destructive: confirmation-requiring, so refused unattended (T4).
+        // Destructive: confirmation-requiring, so refused unattended.
         "delete",
     ] {
         ops.push(op(action, Document));
@@ -488,7 +488,7 @@ fn notes_manifest() -> DelegationManifest {
     for action in ["open", "back", "forward"] {
         ops.push(op(action, View));
     }
-    // Host filesystem: never delegable on a Cloud host worker (T3, T11).
+    // Host filesystem: never delegable on a Cloud host worker.
     ops.push(op("import-markdown", EffectFsRead));
     ops.push(op("insert-image", EffectFsRead));
     ops.push(op("export-markdown", EffectFsWrite));
@@ -597,7 +597,8 @@ pub fn scopes_with_opened_records(
     scopes
 }
 
-/// Consent text derived from frozen scopes only (MUST-19). `record_label`
+/// Consent text derived from the frozen scopes only, never from text the
+/// agent or app supplies. `record_label`
 /// resolves a canonical record id to a user-visible name.
 pub fn consent_text(
     agent: &str,
@@ -724,7 +725,7 @@ mod tests {
             r.classify(WRITER_APP_ID, k, "move-caret", DeclaredKind::View),
             Some(OperationClass::View)
         );
-        // `save` published as Document (T3 relabel) → not delegable.
+        // `save` relabelled as Document → not delegable.
         assert_eq!(
             r.classify(WRITER_APP_ID, k, "save", DeclaredKind::Document),
             None

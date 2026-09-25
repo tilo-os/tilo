@@ -141,7 +141,7 @@ pub(super) fn encoded(
         .map(policy_encode)
         .collect::<Result<Vec<_>>>()?;
     revocations.sort_unstable();
-    // This slice has no partial visibility filter. Deny before revealing any group.
+    // There is no partial visibility filter. Deny before revealing any group.
     for row in peer.rows() {
         peer.check_document_read(device.device_public_key, &row.app_id, &row.record_id, now)
             .map_err(|e| {

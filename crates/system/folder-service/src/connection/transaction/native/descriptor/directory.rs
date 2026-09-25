@@ -182,7 +182,7 @@ fn decode_with_mode(bytes: &[u8], mode: ParseMode) -> Result<Descriptor> {
             let namespace = directory(&mut c)?;
             let admission = c.array()?;
             require(admission != [0; 32])?;
-            c.zero(34)?; // Chain authorization is unavailable in this slice.
+            c.zero(34)?; // Chain authorization is not implemented; its field must be zero.
             let path = c.path()?;
             let chains = [
                 c.chain(path.components().len())?,

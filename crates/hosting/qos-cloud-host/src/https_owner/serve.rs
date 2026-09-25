@@ -345,7 +345,7 @@ async fn serve_inner(
                 None
             }
         };
-        // Lane H: speak for agents in their own host-fed live namespaces. The
+        // Speak for agents in their own host-fed live namespaces. The
         // bus never blocks the Store owner; dropped at shutdown.
         let agent_live = live
             .as_ref()

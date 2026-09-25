@@ -118,7 +118,7 @@ mod report_benchmark {
     }
     /// Manual CPU microbenchmark of what the committed and light report paths
     /// spend on the report Value itself, apart from computing health: the
-    /// Stage 5 cache stored the full Value (dropping the previous one), and the
+    /// previous design cached the full Value (dropping the previous one), and its
     /// light path deep-cloned it, patched three fields and serialized it again.
     #[test]
     #[ignore = "manual CPU microbenchmark, not a browser frame-rate gate"]
@@ -147,12 +147,12 @@ mod report_benchmark {
             let start = std::time::Instant::now();
             let copy = value.clone();
             clone.push(ms(start));
-            // Stage 5 stored the new Value, which dropped the previous report.
+            // The previous design stored the new Value, dropping the previous report.
             let start = std::time::Instant::now();
             cached = Some(value);
             drop_previous.push(ms(start));
             drop(copy);
-            // Stage 5 light path: clone the cache, patch three fields, serialize everything.
+            // Previous light path: clone the cache, patch three fields, serialize everything.
             let start = std::time::Instant::now();
             let mut light = cached.clone().unwrap();
             light["records"] = full_report(0.0)["records"].clone();

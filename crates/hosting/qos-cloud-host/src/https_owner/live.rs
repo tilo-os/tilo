@@ -19,7 +19,7 @@
 //! * Newly accepted state items (inline and staged) are offered
 //!   (non-blocking) to a forwarder task that publishes `OpsFrame::SignedChange`
 //!   with the exact canonical bytes on the author's namespace, host-fed if the
-//!   author has no live session. Lane C: the offer happens inside the Store
+//!   author has no live session. The offer happens inside the Store
 //!   commit after every admission check and immediately before the barrier
 //!   (`crate::delivery::early_forward`), so forwarding runs in parallel with
 //!   durability. Record-less documents use [`PACKAGE_PRIMARY_RECORD`].

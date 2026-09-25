@@ -3939,7 +3939,7 @@ impl CapnpBrokerState {
             ),
         };
         owner.validate()?;
-        // Never trust an envelope's invoker: the host sets it (lane C).
+        // Never trust an envelope's invoker: the host sets it.
         let context = enrolled_invocation::host_set_invoker(context, actor, &owner)?;
         let policy_time = match (durable, retained_time) {
             (Some(context), None) => self.checked_policy_time(context.time())?.0,
@@ -3984,7 +3984,7 @@ impl CapnpBrokerState {
             now,
         )?;
         if !actor.is_agent {
-            // Security review MUST-1: the one shared authorize for people also
+            // The one authorization shared by people and agents also
             // binds the route record (Artifact), not only (app, action).
             let tree = self
                 .membership

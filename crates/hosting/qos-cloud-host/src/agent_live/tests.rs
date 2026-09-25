@@ -358,57 +358,6 @@ fn worker_commit_capture_keeps_exact_canonical_bytes_and_the_writer_caret() {
     );
 }
 
-/// Compile-shape check of the proposed one-line hooks in the lane G files
-/// (`agent_documents.rs`, `agent_runtime_adapter.rs`); never run.
-#[allow(
-    dead_code,
-    clippy::needless_pass_by_value,
-    reason = "type-checks the proposed hook shapes without calling them"
-)]
-#[expect(
-    clippy::too_many_arguments,
-    reason = "each argument is a distinct piece of custody or context the caller already holds"
-)]
-fn proposed_hook_shapes(
-    owner: &crate::agent_runtime_adapter::RuntimeOwner,
-    attempt: std::sync::Arc<crate::agent_runtime_adapter::LiveAttempt>,
-    update: &qos_action_broker::enrolled_dispatch::VerifiedTaskUpdate,
-    route: &ui::collaboration::RouteSpec,
-    certificate: &qos_user_identity::DeviceCert,
-    mutation: collab_types::DocumentMutation,
-    authorization: Option<&ui::invocation_scope::DocumentAuthorization>,
-    message: qos_peer_state::NeighbourMsg,
-    before: qos_peer_state::StatePeer,
-    mut candidate: qos_peer_state::StatePeer,
-) -> Result<
-    (
-        collab_types::SignedOp,
-        qos_peer_state::owner_commit::OwnerCommitReceipt,
-    ),
-    qos_action_broker::host_documents::HostDocumentTurnError,
-> {
-    use qos_action_broker::host_documents::HostDocumentTurnError;
-    let record = route.record.as_deref().unwrap_or("");
-    capture_worker_commit(route, record, &message, &before, &candidate);
-    let _ = &mut candidate;
-    on_progress(owner, &attempt, update.invocation(), update.update());
-    on_update(&attempt, update.invocation(), update.update());
-    let mut store = owner.store().map_err(HostDocumentTurnError::Refused)?;
-    on_worker_commit(
-        owner,
-        authorization,
-        &mut store,
-        |store| match authorization {
-            Some(authorization) => {
-                store.commit_scoped_agent_document(route, certificate, mutation, authorization)
-            }
-            None => store
-                .commit_agent_document(route, certificate, mutation)
-                .map_err(HostDocumentTurnError::Refused),
-        },
-    )
-}
-
 #[test]
 fn worker_participant_presence_becomes_the_agents_real_caret() {
     use ui::{

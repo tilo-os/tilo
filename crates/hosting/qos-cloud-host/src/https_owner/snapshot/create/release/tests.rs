@@ -32,7 +32,7 @@ async fn cloud_snapshot_release_owner_barrier_precedes_physical_cleanup_and_no_a
     assert!(!path.exists());
 }
 
-/// Lane T: pins of abandoned transfers (a failed download, a restart) are
+/// Pins of abandoned transfers (a failed download, a restart) are
 /// released when the same device starts a new one, instead of filling the
 /// `MAX_PINS` table until expiry and refusing every device's snapshots.
 #[tokio::test]

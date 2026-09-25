@@ -60,7 +60,7 @@ fn error(code: AgentErrorCode, message: impl Into<String>) -> AgentError {
         message: message.into().chars().take(4096).collect(),
     }
 }
-/// Admission of one frozen scope for the current owner (MUST-1..4):
+/// Admission of one frozen scope for the current owner:
 /// manifest-delegable app (no hard-coded app list), canonical non-reserved
 /// records only, no workspace wildcard without a separate consent path, and
 /// the owner holds the scope's verb on the app, on each exact action and on

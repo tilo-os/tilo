@@ -465,7 +465,7 @@ mod native {
     }
     impl NtfsVolumeBarrier {
         // Deliberately private. There is no product authority provider or
-        // qualification constructor in this slice. Only explicit native tests
+        // qualification constructor yet. Only explicit native tests
         // may reach this authenticating candidate, never public open_at.
         fn authenticate(root: Arc<WindowsDirectory>) -> io::Result<Arc<Self>> {
             root.validate_destination()?;

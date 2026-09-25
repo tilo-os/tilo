@@ -17,11 +17,9 @@
 //! write, so callers can surface a useful error without leaving a partial edit.
 
 pub(crate) mod continuation;
-/// Pure editor input primitives shared by keyboard, palette and agents
-/// (parity contract A0).
+/// Pure editor input primitives shared by keyboard, palette and agents.
 pub mod editing;
-/// Per-participant view state and its pure resource-context projection
-/// (parity contract A0).
+/// Per-participant view state and its pure resource-context projection.
 pub mod participant;
 /// Per-participant view operations (caret, selection, Find) and their
 /// published `word-processor.view-operation` specs.
@@ -3315,7 +3313,7 @@ fn add_review_resources(root: &mut Resource, snapshot: &qdoc::snapshot::DocSnaps
     let mut review = Resource::new("word-processor.review", "word_processor.review", "Review");
     if !snapshot.changes.is_empty() {
         // Bulk review rewrites everyone's tracked changes at once: confirmed
-        // for people, refused for unattended callers (security review T5).
+        // for people, refused for unattended callers.
         review.actions.push(
             immediate_spec(
                 "accept-all",

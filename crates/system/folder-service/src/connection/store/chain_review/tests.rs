@@ -1801,9 +1801,9 @@ fn whole_review_no_inner_retained_ownership_denies_all_unscoped_entry_points() {
             historical_append(&mut store, intent).unwrap();
         }
         if cut == 2 {
-            // Guard-only retained equality completion fixture: slice 2 supplies
-            // the missing canonical baseline/archive reducer. This is deliberately
-            // not accepted as complete replayable review history in slice 1.
+            // Guard-only retained equality completion fixture. Without a canonical
+            // baseline/archive reducer it is deliberately not accepted as complete
+            // replayable review history.
             let mut c = store.connection(record.id).unwrap();
             c.pending = None;
             c.baseline = Some(5);

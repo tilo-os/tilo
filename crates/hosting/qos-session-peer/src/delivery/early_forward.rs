@@ -1,4 +1,4 @@
-//! LIVE_V1 lane C: forward a verified state item before its durable commit.
+//! Live forwarding: forward a verified state item before its durable commit.
 //!
 //! The installed data routes run each admission synchronously on the owner
 //! thread inside [`scoped`]. Native admission [`arm`]s an item only after

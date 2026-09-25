@@ -1,5 +1,5 @@
-//! Broker side of scoped agent grants (security review MUST-1..9). The
-//! host-set invoker (MUST-11) is lane C's `enrolled_invocation::host_set_invoker`.
+//! Broker side of scoped agent grants. The invoker itself is set by the host,
+//! never taken from the caller: see `enrolled_invocation::host_set_invoker`.
 //!
 //! One `authorize` for people and agents over the live, registered route:
 //! [`authorize_published`] builds the protocol's [`OperationDescriptor`] from
@@ -45,7 +45,8 @@ pub fn delegation_registry() -> &'static DelegationRegistry {
     REGISTRY.get_or_init(DelegationRegistry::first_party)
 }
 
-/// Live schema digest of one app's delegation schema (MUST-6).
+/// Live schema digest of one app's delegation schema, compared against the
+/// digest a scope froze at consent.
 pub fn schema_digest(app_id: &str) -> Option<String> {
     delegation_registry()
         .schema_bytes(app_id)
@@ -172,8 +173,8 @@ impl<W: WorkspacePolicy> OperationPolicy for WorkspaceOperationPolicy<'_, W> {
 
 /// The descriptor of one live published operation. The record comes only
 /// from the registered route. For an agent (`registered_route`), a surface
-/// that is not live or whose app differs from its route's app is refused
-/// (T8); the person path keeps today's surface app id.
+/// that is not live or whose app differs from its route's app is refused,
+/// so a surface cannot borrow another app's grant; the person path keeps today's surface app id.
 ///
 /// # Errors
 ///
@@ -496,7 +497,7 @@ mod tests {
             authorize_published(&w, 10, AGENT_ACTOR, Some(&scopes), &other, &typing, None),
             Err(Refusal::OutsideScope)
         );
-        // Agent set to Commenter by an admin → typing refused (T21).
+        // Agent set to Commenter by an admin → typing refused.
         let mut commenter = workspace();
         commenter.grant_capability(CapOverride::membership(
             Subject::agent(AGENT),
@@ -521,7 +522,7 @@ mod tests {
             delegator: "stranger",
         };
         assert!(authorize_published(&w, 10, stranger, Some(&scopes), &s, &typing, None).is_err());
-        // Surface republished under another app id (T8).
+        // Surface republished under another app id.
         let mut forged = s;
         forged.app_id = "so.tilo.chat".into();
         assert_eq!(

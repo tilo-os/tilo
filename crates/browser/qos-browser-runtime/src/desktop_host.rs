@@ -6019,7 +6019,7 @@ mod tests {
         (frame, handle)
     }
 
-    /// LIVE_V1 lane E: the real desktop publishes the focused Writer's live
+    /// LIVE_V1: the real desktop publishes the focused Writer's live
     /// record, window rectangle and caret anchor, and a remote caret on that
     /// anchor is drawn by the Writer on the next frame without a synchronous
     /// relayout.
@@ -6180,7 +6180,7 @@ mod tests {
 
     #[test]
     fn pointer_motion_over_each_app_body_is_inert_once_settled() {
-        // Stage 3 follow-up: a pointer resting over any app must not keep
+        // A pointer resting over any app must not keep
         // the desktop repainting. The first move may change hover; a second
         // move inside the same spot must be skipped, and when it is not the
         // dirty paths name the widget that still marks itself.
@@ -8041,8 +8041,8 @@ mod tests {
     /// Manual CPU microbenchmark for the semantics status gate on the real
     /// desktop fixture while typing into the Writer: tree serialization (paid
     /// on every frame for the change hash), the structure signature, the gate
-    /// decision, and what the Stage 4 path paid on top when it parsed the bytes
-    /// back into a Value and serialized them again inside the status.
+    /// decision, and what parsing the bytes back into a Value and serializing
+    /// them again inside the status would add on top.
     #[test]
     #[ignore = "manual CPU microbenchmark, not a browser frame-rate gate"]
     fn semantics_serialization_cost_per_typed_key() {

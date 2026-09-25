@@ -1,4 +1,4 @@
-//! Per-participant view state (parity contract A0).
+//! Per-participant view state.
 //!
 //! A participant is a person's window or an agent task. Each owns a
 //! [`ParticipantView`] — caret, selection anchor, region and Find state — and

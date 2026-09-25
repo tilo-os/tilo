@@ -133,7 +133,7 @@ impl ReadBasis {
                 match entry {
                     Entry::Message(message) => messages.push(message.clone()),
                     Entry::Live { agent, invocation } => {
-                        // Lane H: the reply streaming in for this caller's unfinished task
+                        // The reply streaming in for this caller's unfinished task
                         // (owner-private; replaced by the durable result once it exists).
                         if let Some((id, text, at_ms)) =
                             crate::agent_live::live_reply_message(agent, invocation)
@@ -651,7 +651,7 @@ mod tests {
             message: None,
         }
     }
-    /// Lane H: the streaming reply appears in the owner's conversation only,
+    /// The streaming reply appears in the owner's conversation only,
     /// only for the unfinished current task, and disappears once it ends.
     #[test]
     fn agent_runtime_reads_include_live_reply_only_for_the_owner_while_running() {

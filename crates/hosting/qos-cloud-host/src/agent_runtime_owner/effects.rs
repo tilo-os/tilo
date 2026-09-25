@@ -198,7 +198,7 @@ impl Store {
                 }
                 _ => false,
             })
-            // A refused or failed control never re-pins the process (R2).
+            // A refused or failed control never re-pins the process.
             .filter(|receipt| {
                 receipt.change.invocation == spawn
                     || !self.runtime_ledger().is_ok_and(|ledger| {
@@ -229,7 +229,7 @@ impl Store {
         // A task stops at its next step after any policy change: each control
         // (Spawn task or Message task) is pinned to the governance revision
         // it was admitted under. The owner's later Message re-pins the agent
-        // to the then-current governance (security review T12/T13, MUST-10).
+        // to the then-current governance.
         let pinned = match pin {
             GovernancePin::Own => Some(admission.change.expected_governance.clone()),
             GovernancePin::LatestControl => Some(self.latest_control_governance(id)?),
@@ -891,7 +891,7 @@ impl Store {
                 "agent action is outside its immutable task grants",
             ));
         }
-        // v2 budgets (v1 tuples keep today's unbudgeted behaviour, T20).
+        // v2 budgets (v1 tuples stay unbudgeted, exactly as before scopes).
         if let Some(budgets) = covering
             .iter()
             .filter(|scope| !scope.is_degenerate())
@@ -921,7 +921,7 @@ impl Store {
         }
         Ok(())
     }
-    /// Invocation-rate budget of one task (MUST-9): one token per new step,
+    /// Invocation-rate budget of one task: one token per new step,
     /// burst and sustained from the task's v2 scopes. Called once when a new
     /// step binds; v1 tuples are unbudgeted. Process-local and never a grant.
     pub(crate) fn admit_agent_step_rate(
@@ -1006,7 +1006,7 @@ impl Store {
         }
     }
     /// Measure what the committed step removed and stop the task when the
-    /// per-step or per-task content-removal budget is exceeded (MUST-8). A
+    /// per-step or per-task content-removal budget is exceeded. A
     /// human editing the same records during the step window counts against
     /// the agent: the check errs toward stopping.
     pub(crate) fn enforce_agent_step_removal(&mut self, id: &AgentControlId, step: u32) {
@@ -1043,12 +1043,12 @@ impl Store {
             );
         }
     }
-    /// The owner's durable audit of one of its agent tasks (MUST-18): every
+    /// The owner's durable audit of one of its agent tasks: every
     /// step decision with its refusal reason. Only the task's original
     /// owner caller may read it.
     #[allow(
         dead_code,
-        reason = "owner read route in the agents panel lane (integration diff)"
+        reason = "no production caller yet: an owner HTTPS route for the agents panel must serve this audit"
     )]
     pub(crate) fn agent_task_audit(
         &self,
@@ -1061,13 +1061,13 @@ impl Store {
         }
         Ok(scope_audit::read_persisted(&self.root, id.invocation()))
     }
-    /// Owner revocation of one running task (MUST-10): commits a terminal
+    /// Owner revocation of one running task: commits a terminal
     /// task fact, so the next step's Store check refuses. The adapter then
     /// closes the enrolled connection; the one child already dispatched may
     /// still complete.
     #[allow(
         dead_code,
-        reason = "RuntimeOwner::revoke_agent (lane S integration diff) calls it"
+        reason = "only RuntimeOwner::revoke_agent calls it, which has no production caller yet"
     )]
     pub(crate) fn revoke_agent_task(
         &mut self,

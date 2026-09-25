@@ -1,7 +1,7 @@
 /**
  * LIVE_V1 browser client: grant custody (Rust), MoQ live transport, presence
  * publishing/interpolation and ordered ops, exposed as a small API for the
- * renderer (lane E) and the latency harness (lane F).
+ * desktop overlay (`live-overlay.mjs`) and latency measurement.
  *
  * The live path is optional and ephemeral. When the host does not advertise
  * MEDIA_LIVE_V1, UDP/WebTransport is blocked or authorization is refused, the
@@ -43,7 +43,7 @@ const MAX_DEFERRED = 64;
 const RESUBSCRIBE_MAX_MS = 5000;
 
 /**
- * Agent activity (lane H): the host publishes one `OpsFrame::Preview` per
+ * Agent activity: the host publishes one `OpsFrame::Preview` per
  * change (heartbeat 1 s while active) on this record in the agent's own live
  * namespace, `agent_publisher(room, authority, agent_id)`. Receivers recompute
  * that namespace locally and accept nothing else. Mirrors
@@ -618,7 +618,7 @@ export function createLiveClient({
     if ([...remotes.values()].some(remote => remote.deferred.length)) deferredTimer = setTimer(retryDeferred, DEFERRED_RETRY_MS);
   }
   // Forwarded changes are speculative until durable replay confirms them; the
-  // runtime withdraws unconfirmed ones at their deadline (LIVE_V1 lane C).
+  // runtime withdraws unconfirmed ones at their deadline.
   function scheduleReconcile(atWallMs) {
     if (typeof runtime.peer_live_reconcile !== 'function' || !Number.isFinite(atWallMs) || atWallMs >= reconcileAtMs) return;
     if (reconcileTimer !== undefined) clearTimer(reconcileTimer);

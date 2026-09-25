@@ -2,7 +2,7 @@
 //! characters: a paragraph is a character-level CRDT, never a last-writer-wins
 //! register.
 //!
-//! The fault lane found the regression in the product (offline B typing into
+//! Fault testing found the regression in the product (offline B typing into
 //! the first paragraph of a fresh Writer document while A typed into the same
 //! paragraph): after the merge only one side's text survived. The cause was
 //! in the qdoc model, not the renderer: a new block carried no `text` object,

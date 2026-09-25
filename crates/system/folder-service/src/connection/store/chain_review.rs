@@ -973,7 +973,7 @@ impl ConnectionStore {
             {
                 *serial
             }
-            // Completion/archive evidence is deliberately not implemented in slice 1.
+            // Completion/archive evidence is not implemented yet: recovery is required.
             _ => return Err(StoreError::RecoveryRequired),
         };
         if current

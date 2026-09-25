@@ -1,4 +1,4 @@
-//! LIVE_V1 lane C on the installed native data routes: verified items are
+//! Live forwarding on the installed native data routes: verified items are
 //! handed to the live forwarder from inside their commit, before the durable
 //! store barrier; items that fail any admission check never are; a forwarded
 //! item whose barrier fails is absent from durable replay until the author's
@@ -417,7 +417,7 @@ async fn subscribe_ops(
 /// `SignedChange` arriving at the subscriber, the upload's durable receipt,
 /// and the durable replay page. `LIVE_FORWARD_SAMPLES` sets the sample count
 /// (default 5); timings print with `--nocapture`. Samples run in batches of
-/// 16 per fresh live session: the relay (lane A) withdraws a namespace's
+/// 16 per fresh live session: the relay withdraws a namespace's
 /// egress ops track ~2-3 s into steady use and a re-subscription on the same
 /// namespace is not served until that track is gone, so batches pause 3.5 s.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -554,7 +554,7 @@ async fn chat_changes_reach_live_subscribers_ahead_of_durable_replay() {
         client.session.abort(moq_net::Error::Cancel);
         if (batch + 1) * BATCH < samples {
             // Let the relay withdraw this namespace's egress ops track before
-            // the next session subscribes (see the relay note in the report).
+            // the next session subscribes (see the batching note above).
             tokio::time::sleep(Duration::from_millis(3500)).await;
         }
     }
@@ -574,7 +574,7 @@ async fn chat_changes_reach_live_subscribers_ahead_of_durable_replay() {
         );
     }
     // Frames can be lost to a relay-side revocation of the author's live
-    // session under sustained owner load (lane A relay, reported separately);
-    // every frame that did arrive was checked for exact bytes above.
+    // session under sustained owner load; every frame that did arrive was
+    // checked for exact bytes above.
     assert!(measured > 0 || samples == 0, "changes are forwarded live");
 }

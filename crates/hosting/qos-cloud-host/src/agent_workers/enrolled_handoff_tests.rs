@@ -703,8 +703,9 @@ async fn enrolled_agent_without_caller_key_joins_by_host_binding() {
     handoff(false, false).await;
 }
 
-/// Scoped grants (security review MUST-1/2/4/6/10, T1/T6/T20) through the
-/// real Store step check with a real enrolled dispatch witness.
+/// Scoped grants through the real Store step check with a real enrolled
+/// dispatch witness: record coverage, operation class, reserved spellings,
+/// other apps, owner revocation and the owner's audit.
 #[tokio::test(flavor = "current_thread")]
 async fn scoped_grants_authorize_steps_by_record_class_and_revocation() {
     use qos_agent_control_protocol::{
@@ -888,7 +889,7 @@ async fn scoped_grants_authorize_steps_by_record_class_and_revocation() {
     assert!(refused.contains("wall-clock"), "{refused}");
 }
 
-/// v1 exact tuples on a v2 host keep exactly today's allow set (T20).
+/// v1 exact tuples on a v2 host keep their exact allow set, never widened.
 #[tokio::test(flavor = "current_thread")]
 async fn v1_tuple_grants_keep_their_exact_allow_set() {
     let (directory, owner) = super::tests::selected();
@@ -927,7 +928,7 @@ async fn v1_tuple_grants_keep_their_exact_allow_set() {
 }
 
 /// Agent task views follow the live tasks: joined on covered records only,
-/// dropped when the task is no longer active (MUST-12).
+/// dropped when the task is no longer active.
 #[tokio::test(flavor = "current_thread")]
 async fn agent_participants_follow_live_task_scopes() {
     let (directory, owner) = super::tests::selected();

@@ -4057,7 +4057,7 @@ mod live_draft_presence {
     }
 }
 
-/// MUST-13 attribution: an agent task's `post` (the same operation a person
+/// Agent attribution: an agent task's `post` (the same operation a person
 /// uses) is authored by the invoking participant and rendered for every member
 /// as "<agent name> · agent"; a person's post is unchanged.
 #[cfg(test)]

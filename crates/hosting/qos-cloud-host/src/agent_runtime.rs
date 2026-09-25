@@ -996,7 +996,7 @@ pub(crate) fn refresh_offer(
             id: Uuid::new_v4().to_string(),
             revision: revision.to_owned(),
             expires_at: expires(now + lifetime),
-            // Derived from the frozen scopes (security review MUST-19).
+            // Derived from the frozen scopes only, never from agent-supplied text.
             label,
             actions: grants.to_vec(),
         });

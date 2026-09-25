@@ -1,4 +1,4 @@
-//! LIVE_V1 lane C receiver: forwarded signed changes are speculative until
+//! LIVE_V1 receiver: forwarded signed changes are speculative until
 //! durable state confirms them.
 //!
 //! The host forwards a change after every admission check but before its

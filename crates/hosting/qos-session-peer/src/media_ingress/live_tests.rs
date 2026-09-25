@@ -389,7 +389,7 @@ fn only_record_scoped_app_documents_become_signed_change_frames() {
     assert!(crate::live_service::signed_change(&postcard::to_stdvec(&message).unwrap()).is_none());
 }
 
-/// Regression (lane C report): sustained owner commits, including a single
+/// Regression: sustained owner commits, including a single
 /// commit that holds the committed authority for longer than the former
 /// 900 ms outage fence, must never revoke the author's live session, and
 /// every admitted change must still be forwarded on the author's ops track.

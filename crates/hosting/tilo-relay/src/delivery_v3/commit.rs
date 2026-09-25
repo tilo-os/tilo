@@ -246,8 +246,9 @@ impl DeliveryLedgerV1 {
         {
             return Err(CommitError::Quota);
         }
-        // No compaction API exists in this slice. A future certified anchor is
-        // required before deleting a prefix and changing this chain contract.
+        // There is no compaction API: the first replay entry has no predecessor
+        // and each later one links to the one before. Deleting a prefix would
+        // need a certified anchor and a change to this chain contract.
         let mut previous = None;
         for (sequence, entry) in &self.replay {
             if *sequence == 0

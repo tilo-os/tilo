@@ -1223,14 +1223,10 @@ impl AgentWorkers {
     /// Agent task participant views follow the live agent tasks: a task's
     /// view is created on every worker whose record its retained grants
     /// cover (so its presence exists from the spawn) and dropped when the
-    /// task is no longer active (security review MUST-12). `active` is
+    /// task is no longer active. `active` is
     /// every live, unfinished task (host ledger facts only); the participant
     /// is host-derived from the admitted task id, labelled with the agent's
     /// display name.
-    #[allow(
-        dead_code,
-        reason = "called from the runtime tick once the adapter lists live tasks (integration diff)"
-    )]
     pub(crate) fn sync_agent_participants(
         &mut self,
         active: &[ActiveAgentTask],
@@ -1560,8 +1556,8 @@ impl AgentWorkers {
             .map_err(|e| e.to_string())
     }
 }
-/// The recommended default scopes (security review §4) for the live host
-/// worker surfaces, as v2 carriers. Writer: one record, `document + view +
+/// The default scopes offered for the live host worker surfaces, as v2
+/// carriers. Writer: one record, `document + view +
 /// query`, bulk review denied. Chat: posting is `disclose`, never implied by
 /// an edit scope, so each live channel gets its own named, channel-exact
 /// scope. Only manifest-delegable apps; at most `MAX_GRANT_SCOPES` scopes.
@@ -1738,13 +1734,9 @@ pub(crate) fn desktop_open_scope() -> Option<qos_agent_control_protocol::GrantSc
     })
 }
 
-/// Offer label derived from the frozen grants only (MUST-19): what records,
+/// Offer label derived from the frozen grants only: what records,
 /// which classes, and what is explicitly absent. v1 tuple offers keep their
 /// generic label.
-#[allow(
-    dead_code,
-    reason = "offer label in agent_runtime.rs publish_runtime_state (integration diff)"
-)]
 pub(crate) fn consent_label(grants: &[GrantAction]) -> Option<String> {
     let scopes = qos_agent_control_protocol::scopes_from_grants(grants).ok()?;
     if scopes.iter().any(|s| s.is_degenerate()) {

@@ -1,4 +1,4 @@
-//! Pure editor input primitives (parity contract A0).
+//! Pure editor input primitives.
 //!
 //! Every function here is what the keyboard, toolbar, menus, Ctrl+K and an
 //! agent all call to turn "what the participant did" into positional
@@ -44,7 +44,8 @@ use super::{
 use crate::word_processor::ClipBlock;
 
 /// Stable root operation ids published on `word-processor.document` for the
-/// primitives below (§4.2 of the parity review).
+/// primitives below. Agents and the palette address editing by these ids, so
+/// they must not change.
 pub mod op {
     pub const TYPE_TEXT: &str = "type-text";
     pub const NEW_PARAGRAPH: &str = "new-paragraph";
@@ -67,14 +68,16 @@ pub mod op {
 }
 
 /// Most characters one `erase-text` may remove without a selection
-/// (security review T5: `delete {count}` is bounded).
+/// (an unattended caller cannot wipe a document one large delete at a time).
 pub const MAX_ERASE_COUNT: usize = 256;
 /// A selection larger than this (characters, a paragraph join counting as
 /// one) is refused by the published `type-text`, `erase-text`, `paste` and
-/// `replace-selection` operations (security review T5), for every invoker;
+/// `replace-selection` operations, for every invoker, so a remote caller cannot
+/// replace a large selection in one step;
 /// the keyboard path is unaffected.
 pub const LARGE_REMOVAL_CHARS: usize = 2_048;
-/// Longest Find query accepted (security review T15).
+/// Longest Find query accepted, bounding the per-participant state and the
+/// search work one remote caller can request.
 pub const MAX_FIND_QUERY_BYTES: usize = 256;
 /// Bounds of one spelling replacement.
 pub const MAX_SUGGESTION_CHARS: usize = 256;
@@ -1141,7 +1144,10 @@ pub fn append_paragraph(view: &ParticipantView, doc: &AutoCommit, text: &str) ->
 
 /// Paste an already-built rich fragment (the widget's own clipboard) over
 /// the selection or at the caret, exactly like [`paste`] after conversion.
-#[allow(dead_code, reason = "lane B's rich paste adopts it")]
+#[allow(
+    dead_code,
+    reason = "no caller yet: the widget's rich-clipboard paste still builds its paste_fragment_action directly"
+)]
 pub(crate) fn paste_blocks(
     view: &ParticipantView,
     doc: &AutoCommit,

@@ -1,4 +1,4 @@
-//! Per-participant Writer views held by one widget (parity lane B).
+//! Per-participant Writer views held by one widget.
 //!
 //! A widget serving remote invocations (the Cloud headless worker, or a
 //! desktop window an agent is working in) keeps one [`ParticipantView`] per

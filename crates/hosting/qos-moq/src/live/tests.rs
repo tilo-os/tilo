@@ -732,7 +732,7 @@ async fn inject_and_read(
     .expect("injected frame delivered")
 }
 
-/// Regression (lane C report): sustained owner commits make every authority
+/// Regression: sustained owner commits make every authority
 /// observation Unavailable for seconds. That is contention, not revocation:
 /// the author's session must stay admitted and host injections for it must
 /// keep flowing throughout.

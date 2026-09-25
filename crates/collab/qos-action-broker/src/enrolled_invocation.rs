@@ -8,7 +8,7 @@ use super::{
 use crate::enrolled_dispatch::{EnrolledConnection, EnrolledDispatchResult};
 
 impl CapnpBrokerState {
-    /// Owner revocation (security review MUST-10): close every enrolled
+    /// Owner revocation: close every enrolled
     /// connection of `agent`. The host commits the revocation fact first.
     pub fn close_enrolled_agent(&self, agent: &str) -> usize {
         self.enrolled.close_agent(agent)
@@ -41,8 +41,8 @@ impl CapnpBrokerState {
     ) -> Result<Vec<qos_agent_control_protocol::GrantScope>, String> {
         enrolled_task_scopes(&connection.grants()?, self.membership.as_deref(), task)
     }
-    /// The broker half of the shared per-step authorization (security review
-    /// MUST-1): agent principal (`role_of_agent_at`) AND delegating owner, on
+    /// The broker half of the shared per-step authorization for people and
+    /// agents: agent principal (`role_of_agent_at`) AND delegating owner, on
     /// the Action and on the route record's Artifact, scope coverage on the
     /// canonical live route record, explicit manifest class, frozen schema,
     /// confirmation and bulk refused unattended, argument bounds. The Store
@@ -1225,8 +1225,8 @@ mod tests {
     }
 }
 
-/// Host-set invoker of one admitted invocation (security review T15/T16,
-/// MUST-11). Whatever invoker a caller or task envelope put in `context` is
+/// Host-set invoker of one admitted invocation, so a caller cannot act as
+/// someone else by naming them in the envelope. Whatever invoker a caller or task envelope put in `context` is
 /// discarded: the actor is the admitted `actor`, and the participant is
 /// derived by the host from what it admitted, never read from the envelope:
 /// - an enrolled task child: the participant of the owner's admitted task;

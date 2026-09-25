@@ -399,7 +399,7 @@ impl Execution {
             runtime_epoch: facts.runtime.runtime_epoch,
             recipient_agent: ids.agent_id.clone(),
             channel_lease: facts.channel_id,
-            // Lane E: the agent's own durable history (see agent_history).
+            // The agent's own durable history (see agent_history).
             history: crate::agent_history::for_dispatch(
                 &self.owner,
                 &ids.agent_id,

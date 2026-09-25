@@ -4655,7 +4655,8 @@ async fn handle_presence(
         let mut wr = ws.lock().await;
         // A device sends presence only to say hello, to ask for a baseline
         // (`SyncReq`) or after rejecting a checkpoint — each means it needs the
-        // next live checkpoint (Stage 9 gate in `fanout_delta`).
+        // next live checkpoint (the per-device checkpoint gate in
+        // `fanout_delta`).
         if peer.role == crate::auth::PeerRole::Device {
             wr.request_checkpoint(&peer.device_public_key);
         }
@@ -9191,7 +9192,7 @@ mod private_transport_tests {
 
     #[tokio::test]
     async fn a_device_presence_frame_rearms_its_live_checkpoint() {
-        // Wiring for the Stage 9 gate: after a device has been served one live
+        // Wiring for the per-device live checkpoint gate: after a device has been served one live
         // checkpoint the relay stops fanning checkpoints to it; a presence frame
         // from that device (the browser's hello / SyncReq / rejected-checkpoint
         // path) must re-arm exactly that device so the native's fresh

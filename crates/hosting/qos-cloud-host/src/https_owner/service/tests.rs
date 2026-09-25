@@ -1370,10 +1370,10 @@ async fn baseline_snapshot(client: &Client, root: &Path) -> CommitBoundary {
     boundary.expect("final chunk carries the boundary")
 }
 
-/// Lane D (fo6 lockout): a commit that republishes every record's checkpoint
-/// (an owner re-enrollment with ~70 records: one room change plus 67
-/// checkpoints) is one atomic replay group larger than a page. The consumer is
-/// answered SnapshotRequired(HistoryUnavailable), never a 403, and a snapshot
+/// Regression for an owner locked out after re-enrollment: a commit that
+/// republishes every record's checkpoint (a re-enrollment with ~70 records: one
+/// room change plus 67 checkpoints) is one atomic replay group larger than a
+/// page. The consumer is answered SnapshotRequired(HistoryUnavailable), never a 403, and a snapshot
 /// at the head restores it past that group; later commits replay normally.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn cloud_https_oversized_replay_group_resets_to_a_snapshot_instead_of_refusing() {
@@ -2274,7 +2274,7 @@ async fn cloud_https_routes_are_served_over_h3_and_advertised_with_alt_svc() {
     server.await.unwrap().unwrap();
 }
 
-/// Lane D2: a multi-item upload is one commit/replay group; a session that
+/// A multi-item upload is one commit/replay group; a session that
 /// negotiated MULTI_GROUP_REPLAY_V1 catches up in one page, an old one keeps
 /// exactly one group per page.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -2473,7 +2473,7 @@ async fn cloud_https_held_poll_is_woken_by_a_commit_made_under_a_held_lock() {
     server.await.unwrap().unwrap();
 }
 
-/// Lane D wake-on-commit: a commit by another Cloud component (an agent
+/// Wake-on-commit: a commit by another Cloud component (an agent
 /// worker, retention) wakes a held poll right after its durability barrier.
 /// The idle tick is disabled (60 s), so without the commit signal the poll
 /// would wait for its idle deadline; a single commit is answered at once,

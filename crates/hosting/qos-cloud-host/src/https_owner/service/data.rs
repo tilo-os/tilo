@@ -133,7 +133,7 @@ impl CloudService {
             }
             Ok(())
         };
-        // LIVE_V1 lane C: each newly accepted item is offered from inside its
+        // Live forwarding: each newly accepted item is offered from inside its
         // Store commit, after every admission check and before the barrier
         // (`crate::delivery::early_forward`); the offer only enqueues.
         let (session, admissions) =

@@ -21,7 +21,7 @@
 //!   author into the author's own namespace `(room, author device)`, track
 //!   `ops/<record digest>`, as their own groups. The frame carries the exact
 //!   canonical delivery item bytes; receivers admit it like replay.
-//! * Lane C (forward-before-commit): items are offered from inside the
+//! * Forward-before-commit: items are offered from inside the
 //!   durable commit, after every check that can reject them and immediately
 //!   before the store barrier (`owner::delivery::early_forward`), for inline
 //!   and staged uploads alike. Record-less documents use the stable live

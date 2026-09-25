@@ -1,4 +1,4 @@
-//! Lane T: the Cloud Store stays bounded over many agent steps.
+//! The Cloud Store stays bounded over many agent steps.
 //!
 //! A benchmark lab grew its saved Store from 4.5 MB to 17.7 MB over ~45 agent
 //! messages: every member refresh and join retained a whole bootstrap (the

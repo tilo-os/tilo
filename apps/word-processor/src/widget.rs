@@ -2244,7 +2244,7 @@ impl WordProcessorWidget {
         })
     }
 
-    // ---- participant views (parity lane B) -----------------------------------
+    // ---- participant views ---------------------------------------------------
 
     /// This window's own view as a participant view: the caret, the
     /// selection anchor, the active region and the Find bar's query and hits.

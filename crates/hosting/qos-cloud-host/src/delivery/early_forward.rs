@@ -1,4 +1,4 @@
-//! LIVE_V1 lane C on the Cloud host: forward a verified state item before its
+//! Live forwarding on the Cloud host: forward a verified state item before its
 //! durable Store commit (parity with `qos-session-peer`'s `early_forward`).
 //!
 //! The Cloud data routes run each admission synchronously inside one held

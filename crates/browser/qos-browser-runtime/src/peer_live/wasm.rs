@@ -254,7 +254,7 @@ fn apply_rebased(
     Ok(())
 }
 
-/// Durable basis for a durable cut (lane C): the cut builds on it instead of
+/// Durable basis for a durable cut: the cut builds on it instead of
 /// the speculative view. `None` when nothing is outstanding.
 pub(super) fn take_durable_basis(peer: &Peer) -> Option<StatePeer> {
     LIVE.with(|live| {

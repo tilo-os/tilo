@@ -127,7 +127,7 @@ test('ghosts follow a live remote drag, hold at the drop until the durable order
   assert.equal(ghosts.ghosts(snapshotB, [remote({...moving, object: {record: WRITER, id: `01${G1}`}})]).length, 0, 'in-record objects are not windows');
 });
 
-test('drag preview lifecycle through the lane B receiver: interpolated moves, End held, durable snap, Cancel restore', () => {
+test('drag preview lifecycle through the presence receiver: interpolated moves, End held, durable snap, Cancel restore', () => {
   const receiver = createRemotePresence();
   const ghosts = createGhostTracker();
   const frame = (seq, drag, sentAtMs) => ({seq, sentAtMs, focus: null, pointer: [0, 0], selection: null, drag});

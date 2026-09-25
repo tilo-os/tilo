@@ -704,7 +704,8 @@ async fn fifty_open_close_cycles_keep_the_catalogue_bounded() {
     let before = catalogue_len().await;
     for _ in 0..50 {
         let mut store = owner.store().unwrap();
-        // Chat and Notes: the native report saw Chat grow the most.
+        // Chat and Notes: of the apps measured on the native desktop, Chat grew
+        // the catalogue the most.
         for app in ["so.tilo.chat", "so.tilo.notes"] {
             let open = request(&store, &caller, DesktopCommand::OpenApp { app: app.into() });
             let window =

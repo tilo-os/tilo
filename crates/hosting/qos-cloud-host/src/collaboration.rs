@@ -68,7 +68,7 @@ pub(crate) struct StoredJoinChallenge {
 }
 
 /// A completed join or member refresh. It retains only a compact receipt
-/// (lane T): each whole bootstrap carried the room governance document, so a
+/// to keep the Store bounded: each whole bootstrap carried the room governance document, so a
 /// few retained replies dominated the Store and every commit re-saved them.
 /// A lost-reply retry is answered from current governed state instead (see
 /// `replay_member_bootstrap`), byte-identical while nothing changed.
@@ -148,7 +148,7 @@ pub(crate) struct StoredMembershipChallenge {
     completed_proof: Option<[u8; 32]>,
 }
 
-/// Outstanding membership challenges, held in process memory only (lane M).
+/// Outstanding membership challenges, held in process memory only.
 ///
 /// Before, every issuance was a Store commit, and an idle owner + guest
 /// re-challenging every few seconds grew state.json and the journal without
@@ -778,8 +778,8 @@ impl Store {
             .find(|receipt| receipt.device == remote_endpoint)
             .map_or([0; 32], |receipt| receipt.invite_id);
         // Nothing governed changed since the last bootstrap was built from
-        // this exact state: reuse its signed governance without a commit
-        // (lane M). The proof above was fully verified against the host-held
+        // this exact state: reuse its signed governance without a commit.
+        // The proof above was fully verified against the host-held
         // one-use challenge and current membership; the challenge is now bound
         // to this exact proof.
         if crate::live_room_publication(&before, &peer)?.is_none()

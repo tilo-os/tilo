@@ -387,8 +387,8 @@ fn validate_intent(request: &[u8], grants: &[GrantAction]) -> Result<(), String>
         return Err("agent admission requires canonical mutation request".into());
     }
     // v1 exact tuples (at most 64) or v2 scope carriers (at most 16), with
-    // one resource bound shared with the protocol and broker (4096 bytes;
-    // MUST-16): the retained ledger no longer truncates what the broker admits.
+    // one resource bound shared with the protocol and broker (4096 bytes):
+    // the retained ledger no longer truncates what the broker admits.
     qos_agent_control_protocol::validate_grant_set(grants)
         .map_err(|e| format!("agent admission requires bounded grants: {e}"))
 }
@@ -824,7 +824,7 @@ mod scoped_grant_tests {
 
     #[test]
     fn retained_grants_share_the_protocol_resource_bound() {
-        // MUST-16: a 129..=4096-byte resource the broker admits is retained.
+        // A 129..=4096-byte resource the broker admits is retained.
         validate_intent(&spawn(), &[tuple("r".repeat(129))]).unwrap();
         validate_intent(&spawn(), &[tuple("r".repeat(4096))]).unwrap();
         assert!(validate_intent(&spawn(), &[tuple("r".repeat(4097))]).is_err());

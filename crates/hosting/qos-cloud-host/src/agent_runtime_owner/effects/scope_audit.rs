@@ -7,7 +7,7 @@ use std::sync::Mutex;
 const MAX_TASKS: usize = 64;
 const MAX_ENTRIES_PER_TASK: usize = 256;
 
-/// One agent step decision, visible to the owner (MUST-18).
+/// One agent step decision, visible to the owner.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct AuditEntry {
     pub(crate) app: String,
@@ -45,7 +45,7 @@ fn bound<V>(map: &mut BTreeMap<uuid::Uuid, V>, keep: uuid::Uuid) {
     }
 }
 
-/// Durable per-host audit log of agent step decisions (MUST-18), next to the
+/// Durable per-host audit log of agent step decisions, next to the
 /// Store. Owner-private host state; bounded by one rotation.
 pub(crate) const AUDIT_FILE: &str = "agent-audit.jsonl";
 const MAX_AUDIT_FILE_BYTES: u64 = 4 * 1024 * 1024;
@@ -124,7 +124,7 @@ pub(crate) fn record(invocation: uuid::Uuid, app: &str, action: &str, refused: O
 /// The retained decisions of one task, oldest first.
 #[allow(
     dead_code,
-    reason = "owner read path is wired by the agents panel lane"
+    reason = "no production caller yet: an owner HTTPS route for the agents panel must serve these entries"
 )]
 pub(crate) fn entries(invocation: uuid::Uuid) -> Vec<AuditEntry> {
     with(|tasks| {

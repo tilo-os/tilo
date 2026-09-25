@@ -37,7 +37,7 @@ export type LiveRemoteState = {
 /** Agent activity states; `thinking|tool|writing|replying|applying` mean working now. */
 export type LiveAgentState = 'thinking' | 'tool' | 'writing' | 'replying' | 'applying' | 'done' | 'failed' | 'idle';
 /**
- * One verified agent (lane H): the host's activity frame on
+ * One verified agent: the host's activity frame on
  * `{app: 'so.tilo.agent', record: '@qos:agent-activity'}`, accepted only when
  * its publisher equals `agent_publisher(room, authority, agentId)` recomputed
  * locally and is not a roster device. Kept 15 s after the last frame. Display

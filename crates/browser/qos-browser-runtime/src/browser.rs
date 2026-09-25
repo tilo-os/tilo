@@ -2048,7 +2048,7 @@ thread_local! {
     static LIVE_REMOTE: RefCell<HashMap<u64, crate::live_view::RemoteProjection>> =
         RefCell::new(HashMap::new());
 }
-/// LIVE_V1 lane E: the local presence snapshot the overlay publishes and maps
+/// LIVE_V1: the local presence snapshot the overlay publishes and maps
 /// remote pointers with (focus record, window rectangles, editor anchors,
 /// window drag). `null` for a single-record mount.
 #[wasm_bindgen]
@@ -2064,7 +2064,7 @@ pub fn live_view_snapshot(id: u64) -> Result<String, JsValue> {
         Ok(crate::live_view::snapshot_json(&layout, &records, selection).to_string())
     })
 }
-/// LIVE_V1 lane E: replace the remote carets/selections drawn by the
+/// LIVE_V1: replace the remote carets/selections drawn by the
 /// presence-aware editors. Only a change schedules a redraw (no relayout).
 #[wasm_bindgen]
 pub fn live_view_apply(id: u64, remotes: &str) -> Result<bool, JsValue> {

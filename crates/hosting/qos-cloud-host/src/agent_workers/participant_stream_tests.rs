@@ -170,7 +170,7 @@ async fn streamed_type_text_continues_the_appended_paragraph() {
     );
 }
 
-/// MUST-13: an agent task's Chat `post` (the ordinary published operation,
+/// Agent attribution: an agent task's Chat `post` (the ordinary published operation,
 /// through the enrolled step service, so the broker sets the task participant
 /// on the invocation) is authored by that agent task and carries the agent's
 /// display name for every member; the Chat worker's own identity is not the

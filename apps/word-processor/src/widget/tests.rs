@@ -4112,7 +4112,7 @@ fn right_click_suggestion_replaces_the_word() {
     };
     wp.dispatch_context_action(idx, &mut state.doc);
     // The replacement is one replayable envelope through the executor, not a
-    // direct CRDT write (parity review D10).
+    // direct CRDT write.
     let dispatched = wp
         .last_dispatched_for_test()
         .expect("the suggestion dispatched an action");

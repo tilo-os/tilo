@@ -8,7 +8,7 @@ use error::OwnerDataFailureKind as DataFailure;
 use qos_peer_state::{InputDisposition, MissingPrerequisite};
 use tilo_relay::delivery_v3::commit::*;
 
-/// First local owner slice accepts complete small items; no chunk staging owner exists yet.
+/// Largest complete item the local owner accepts; it has no chunk staging owner.
 #[cfg(any(test, feature = "media"))]
 pub(crate) const MAX_DELIVERY_ITEM_BYTES: usize = 1024 * 1024;
 /// A complete replay group that cannot be one page is answered with the

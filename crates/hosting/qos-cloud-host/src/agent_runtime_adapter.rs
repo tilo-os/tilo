@@ -362,7 +362,7 @@ impl RuntimeOwner {
     /// without building its list. In-memory only.
     #[expect(
         dead_code,
-        reason = "wired by the owner agents-panel route (lane S), not merged yet"
+        reason = "no production caller yet: the owner agents-panel route will use this to show whether any agent is running"
     )]
     pub(crate) fn has_active_agent_tasks(&self) -> bool {
         let Ok(live) = self.live.lock() else {
@@ -410,13 +410,13 @@ impl RuntimeOwner {
             })
             .collect()
     }
-    /// Owner revocation of an agent (security review MUST-10): commit a
+    /// Owner revocation of an agent: commit a
     /// terminal fact for each of its live tasks (only the tasks' own owner
     /// may), then close its enrolled connection so no queued step leaves.
     /// Wire from the owner's agents panel (HTTPS owner route).
     #[expect(
         dead_code,
-        reason = "wired by the owner agents-panel route (lane S), not merged yet"
+        reason = "no production caller yet: the owner agents-panel route will call this to revoke an agent"
     )]
     pub(crate) fn revoke_agent(
         &self,
@@ -674,7 +674,7 @@ impl RuntimeOwner {
     }
     #[expect(
         dead_code,
-        reason = "wired by the owner agents-panel route (lane S), not merged yet"
+        reason = "no production caller yet: the owner agents-panel route will call this to read an agent task"
     )]
     pub(crate) fn observe(
         &self,
@@ -792,7 +792,7 @@ impl RuntimeOwner {
     }
     #[expect(
         dead_code,
-        reason = "wired by the owner agents-panel route (lane S), not merged yet"
+        reason = "no production caller yet: the owner agents-panel route will call this to read task progress"
     )]
     pub(crate) fn progress_for(
         &self,
@@ -1215,8 +1215,8 @@ impl qos_action_broker::peer_actions::CertificateAuthority for RuntimeOwner {
 }
 impl RuntimeOwner {
     /// Task-action authorization at `time`: the full Store-side task check on
-    /// every call (security review MUST-10: no caching of grant, scope or
-    /// task verdicts); its inputs (peer, caller) come from exact memos.
+    /// every call (no caching of grant, scope or task verdicts, so a
+    /// revocation or policy change holds from the next step); its inputs (peer, caller) come from exact memos.
     fn authorize_task_action_at(
         &self,
         dispatch: &VerifiedEnrolledDispatch,

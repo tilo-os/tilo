@@ -2799,7 +2799,7 @@ async fn guest_authenticated_action_stream_rejects_forced_owner_operation() {
     .unwrap();
 }
 
-/// Lane M: an idle owner and guest re-running the membership challenge must
+/// An idle owner and guest re-running the membership challenge must
 /// not commit or grow the Store while nothing changed; a real membership
 /// change still commits; a pre-restart challenge cannot be completed.
 #[test]

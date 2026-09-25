@@ -294,7 +294,7 @@ fn durability_join_transport_distinguishes_owner_unavailable_from_rejection() {
     let (updates, _receiver) = tokio::sync::mpsc::channel(1);
     let service = crate::collaboration::CloudJoinService::new(dir.path(), "durability", updates);
     let runtime = runtime();
-    // Issuing a membership challenge is process-local (lane M): no commit.
+    // Issuing a membership challenge is process-local: no commit.
     let challenge = with_failure(Checkpoint::BeforeCommit, || {
         runtime.block_on(service.handle(
             device.verifying_key().to_bytes(),
@@ -847,7 +847,7 @@ fn durability_populated_current_state_and_typed_publications_survive_uncertain_r
         "invitations",
         "join_challenges",
         "join_responses",
-        // Membership challenges are process-local (lane M), never persisted.
+        // Membership challenges are process-local, never persisted.
         "membership_responses",
     ] {
         assert!(

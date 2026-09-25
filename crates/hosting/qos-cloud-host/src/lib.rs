@@ -838,7 +838,7 @@ impl Store {
         collaboration::prune_legacy_receipts(&mut state.consumed);
         collaboration::compact_member_responses(&mut state.join_responses);
         collaboration::compact_member_responses(&mut state.membership_responses);
-        // Membership challenges are process-local (lane M); drop legacy ones.
+        // Membership challenges are process-local; drop legacy ones.
         state.membership_challenges.clear();
         delivery::prepare_commit(&self.state, &mut state, self.policy_now_ns()?)?;
         let prepare_us = qos_action_broker::agent_timing::us(began);
