@@ -9,11 +9,11 @@ use ui::{
 // click gesture detection, or clipboard access.
 use automerge::{AutoCommit, ObjId, ObjType, ReadDoc, Value, transaction::Transactable};
 use base64::Engine as _;
-use crossbeam_channel::{Receiver, bounded};
 use portable_pty::{CommandBuilder, MasterPty, PtySize, native_pty_system};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::{Read, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{Receiver, sync_channel};
 use std::sync::{Arc, Mutex};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use ui::app::UserEvent;
@@ -531,7 +531,9 @@ pub struct TerminalWidget {
     /// At most one reader chunk that did not fit the current bounded pump.
     /// Retaining it locally preserves byte ordering without an unbounded
     /// worklist and lets the next frame resume exactly where parsing stopped.
-    deferred_output: Option<Vec<u8>>,
+    /// `needs_animation_frame` also parks the next queued chunk here, since a
+    /// channel receiver can only be inspected by taking from it.
+    deferred_output: std::cell::Cell<Option<Vec<u8>>>,
     /// Set permanently when the process end of the PTY closes, its reader
     /// fails, or a write fails. A live session cannot be honestly revived by
     /// retrying arbitrary input, so this is local terminal lifecycle state.
@@ -809,7 +811,7 @@ impl TerminalWidget {
             #[cfg(unix)]
             service_lifetime: None,
             output_rx,
-            deferred_output: None,
+            deferred_output: std::cell::Cell::new(None),
             session_disconnected: Arc::new(AtomicBool::new(false)),
             #[cfg(windows)]
             child_killer: None,
@@ -1845,7 +1847,7 @@ impl TerminalWidget {
         // `&mut self`.
         let mut batch = Vec::new();
         while batch.len() < MAX_PUMP_BYTES {
-            let bytes = match self.deferred_output.take() {
+            let bytes = match self.deferred_output.get_mut().take() {
                 Some(bytes) => bytes,
                 None => match self.output_rx.try_recv() {
                     Ok(bytes) => bytes,
@@ -1857,7 +1859,7 @@ impl TerminalWidget {
             // whole chunks. If either constant changes, do not drop the tail:
             // parse that single oversize chunk and resume the budget next frame.
             if bytes.len() > remaining && !batch.is_empty() {
-                self.deferred_output = Some(bytes);
+                self.deferred_output.set(Some(bytes));
                 break;
             }
             batch.extend_from_slice(&bytes);
@@ -2584,7 +2586,13 @@ impl Widget for TerminalWidget {
         // flowing until it is drained even when the reader's coalesced wake is
         // already in flight; otherwise a saturated producer could strand the
         // final queue behind `ControlFlow::Wait`.
-        self.deferred_output.is_some() || !self.output_rx.is_empty()
+        let pending = self
+            .deferred_output
+            .take()
+            .or_else(|| self.output_rx.try_recv().ok());
+        let queued = pending.is_some();
+        self.deferred_output.set(pending);
+        queued
     }
 
     /// The event-loop wake we requested has been delivered. Clear the coalescing
@@ -7326,7 +7334,7 @@ impl TerminalWidget {
     fn from_backend(backend: TerminalBackend) -> Self {
         let writer = std::sync::Arc::new(std::sync::Mutex::new(backend.writer));
         let master = std::sync::Arc::new(std::sync::Mutex::new(backend.master));
-        let (output_tx, output_rx) = bounded(PTY_QUEUE_CHUNKS);
+        let (output_tx, output_rx) = sync_channel(PTY_QUEUE_CHUNKS);
 
         let mut widget = TerminalWidget::new(writer, master, output_rx).with_local_session();
         #[cfg(unix)]
@@ -7532,7 +7540,7 @@ impl TerminalWidget {
             }
         }
         let writer: Box<dyn Write + Send> = Box::new(std::io::sink());
-        let (_tx, output_rx) = crossbeam_channel::unbounded();
+        let (_tx, output_rx) = std::sync::mpsc::channel();
         Ok(TerminalWidget::new(
             std::sync::Arc::new(std::sync::Mutex::new(writer)),
             std::sync::Arc::new(std::sync::Mutex::new(Box::new(NullMaster))),

@@ -125,11 +125,6 @@ impl EvictionCoordinator {
     ///
     /// Returns an error if the exact version, policy roots, queue, or backend
     /// GC authorization cannot be verified and persisted.
-    #[allow(
-        clippy::await_holding_lock,
-        clippy::significant_drop_tightening,
-        reason = "policy must remain stable from exact-plan revalidation through backend tag release"
-    )]
     pub async fn prepare(
         &self,
         record_id: FileRecordId,
@@ -149,16 +144,14 @@ impl EvictionCoordinator {
                     Some(request_id) => request_id,
                     None => queue.enqueue(plan, now_ms)?.id,
                 };
-                tokio::task::block_in_place(|| {
-                    runtime.block_on(store.release_eviction_to_backend_gc(
-                        queue,
-                        request_id,
-                        registry,
-                        catalog,
-                        now_ms,
-                        EvictionRequirements::default(),
-                    ))
-                })?;
+                runtime.block_on(store.release_eviction_to_backend_gc(
+                    queue,
+                    request_id,
+                    registry,
+                    catalog,
+                    now_ms,
+                    EvictionRequirements::default(),
+                ))?;
                 Ok(request_id)
             },
         )
@@ -171,7 +164,10 @@ impl EvictionCoordinator {
     /// enqueue and tag release.
     ///
     /// The handoff deliberately runs while the availability and queue locks
-    /// are held. It is not a preview-time hint.
+    /// are held. It is not a preview-time hint. Those are synchronous guards,
+    /// so the whole critical section runs on a blocking thread, where the
+    /// handoff may wait on async store work with the runtime handle's
+    /// `block_on` — once, never nested.
     ///
     /// # Errors
     ///
@@ -179,7 +175,6 @@ impl EvictionCoordinator {
     /// or an error from `handoff` when its live validation, persistence, or
     /// backend release fails.
     #[allow(
-        clippy::await_holding_lock,
         clippy::significant_drop_tightening,
         reason = "policy must remain stable from exact-plan revalidation through backend tag release"
     )]
@@ -200,7 +195,8 @@ impl EvictionCoordinator {
                 &EvictionCatalog,
                 u64,
             ) -> anyhow::Result<EvictionRequestId>
-            + Send,
+            + Send
+            + 'static,
     {
         let records = self
             .registry
@@ -235,28 +231,27 @@ impl EvictionCoordinator {
         let catalog = self.catalog_for_targets(&records, &[record_id]).await?;
         let registry = Arc::clone(&self.registry);
         let queue = Arc::clone(&self.queue);
-        let runtime = self.hydrator.runtime_handle.clone();
-        tokio::task::block_in_place(|| {
-            runtime.block_on(async {
-                let registry_guard = registry
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
-                if registry_guard.records().cloned().collect::<Vec<_>>() != records {
-                    anyhow::bail!("availability changed during eviction planning");
-                }
-                let plan = plan_for_mode(&registry_guard, &catalog, record_id, mode)?;
-                let mut queue_guard = queue.lock().await;
-                let request_id = handoff(
-                    &plan,
-                    existing_request,
-                    &mut queue_guard,
-                    &registry_guard,
-                    &catalog,
-                    coordinator_now_ms(),
-                )?;
-                Ok((request_id, plan))
-            })
+        tokio::task::spawn_blocking(move || {
+            let registry_guard = registry
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if registry_guard.records().cloned().collect::<Vec<_>>() != records {
+                anyhow::bail!("availability changed during eviction planning");
+            }
+            let plan = plan_for_mode(&registry_guard, &catalog, record_id, mode)?;
+            let mut queue_guard = queue.blocking_lock();
+            let request_id = handoff(
+                &plan,
+                existing_request,
+                &mut queue_guard,
+                &registry_guard,
+                &catalog,
+                coordinator_now_ms(),
+            )?;
+            Ok((request_id, plan))
         })
+        .await
+        .map_err(|_| anyhow::anyhow!("eviction handoff panicked"))?
     }
 
     /// Observe exact backend state once and atomically project completed work

@@ -3,9 +3,10 @@
 //!
 //! `rustypipe` is async (tokio); the [`MusicBackend`] trait is sync because it
 //! is driven from Music's blocking [`crate::stream`] worker. This backend
-//! therefore owns a small current-thread tokio runtime and `block_on`s each
-//! query, keeping the async dependency fully contained here — no other module
-//! learns about tokio.
+//! therefore waits on each query with the shared app runtime's `block_on`
+//! (the query is polled on the worker while the runtime thread drives its
+//! sockets and timers), keeping the async dependency fully contained here —
+//! no other module learns about tokio.
 //!
 //! ## API surface used (rustypipe 0.11.x — verified against the crate source)
 //! * construct: `RustyPipe::builder()…build()?`, then `rp.query()`
@@ -50,7 +51,7 @@ const DESCRIPTION_LIMIT: usize = 16 * 1024;
 /// The live rustypipe-backed data source.
 pub struct RustyPipeBackend {
     rp: RustyPipe,
-    rt: tokio::runtime::Runtime,
+    rt: &'static ui::rt::AppRuntime,
     potoken_desc: &'static str,
 }
 
@@ -60,7 +61,7 @@ impl RustyPipeBackend {
     ///
     /// # Errors
     ///
-    /// Returns a [`BackendError`] if the tokio runtime or the rustypipe
+    /// Returns a [`BackendError`] if the app runtime or the rustypipe
     /// client fails to build.
     pub fn new() -> Result<Self, BackendError> {
         Self::with_potoken(&NullPoToken)
@@ -71,13 +72,10 @@ impl RustyPipeBackend {
     ///
     /// # Errors
     ///
-    /// Returns a [`BackendError`] if the tokio runtime or the rustypipe
-    /// client fails to build.
+    /// Returns a [`BackendError`] if the app runtime cannot be started or the
+    /// rustypipe client fails to build.
     pub fn with_potoken(provider: &dyn PoTokenProvider) -> Result<Self, BackendError> {
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .map_err(|e| BackendError(format!("tokio runtime: {e}")))?;
+        let rt = ui::rt::try_app().map_err(|e| BackendError(format!("tokio runtime: {e}")))?;
 
         let potoken_desc = if provider.can_stream() {
             "youtube-music (live, botguard)"
@@ -105,12 +103,12 @@ impl RustyPipeBackend {
         F: std::future::Future<Output = Result<T, E>>,
         E: std::fmt::Display,
     {
-        block_with_deadline(&self.rt, operation, LIVE_REQUEST_TIMEOUT, fut)
+        block_with_deadline(self.rt, operation, LIVE_REQUEST_TIMEOUT, fut)
     }
 }
 
 fn block_with_deadline<F, T, E>(
-    runtime: &tokio::runtime::Runtime,
+    runtime: &ui::rt::AppRuntime,
     operation: &str,
     deadline: std::time::Duration,
     future: F,
@@ -119,17 +117,19 @@ where
     F: std::future::Future<Output = Result<T, E>>,
     E: std::fmt::Display,
 {
-    runtime.block_on(async {
-        tokio::time::timeout(deadline, future)
-            .await
-            .map_err(|_| {
-                BackendError(format!(
-                    "{operation} timed out after {} seconds",
-                    deadline.as_secs_f64()
-                ))
-            })?
-            .map_err(|error| BackendError(format!("{operation}: {error}")))
-    })
+    runtime
+        .block_on(async {
+            tokio::time::timeout(deadline, future)
+                .await
+                .map_err(|_| {
+                    BackendError(format!(
+                        "{operation} timed out after {} seconds",
+                        deadline.as_secs_f64()
+                    ))
+                })?
+                .map_err(|error| BackendError(format!("{operation}: {error}")))
+        })
+        .map_err(|error| BackendError(format!("{operation}: {error}")))?
 }
 
 fn bounded_text(mut value: String, limit: usize) -> String {
@@ -755,12 +755,8 @@ mod bounded_transport_tests {
 
     #[test]
     fn live_request_deadline_cancels_a_stalled_future() {
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_time()
-            .build()
-            .unwrap();
         let result = block_with_deadline(
-            &runtime,
+            ui::rt::app(),
             "test request",
             std::time::Duration::from_millis(5),
             async {

@@ -29,10 +29,10 @@ use durable_store::{
 
 use crate::{
     ACTOR_FILE, CANONICAL_GATE, DEFAULT_DEBOUNCE, DOCUMENT_FILE, LEGACY_PACKAGE_ROOM_CLAIM,
-    LEGACY_RECORD_ROOM_CLAIM, LOCK_FILE, RECORDS_DIR, ROOMS_DIR, StoreError, acquire_gate,
-    acquire_writer_lock, claim_legacy_room_migration, ensure_state_dir, io_err, open_directory,
-    same_file, sync_directory_ancestors, validate_absolute_directory, validate_package_id,
-    validate_record_key,
+    LEGACY_RECORD_ROOM_CLAIM, LOCK_FILE, RECORD_SUCCESSOR_CLAIM, RECORDS_DIR, ROOMS_DIR,
+    StoreError, acquire_gate, acquire_writer_lock, claim_legacy_room_migration, ensure_state_dir,
+    io_err, open_directory, same_file, sync_directory_ancestors, validate_absolute_directory,
+    validate_package_id, validate_record_key,
 };
 
 /// Directory below the profile root holding every instance's local view.
@@ -597,10 +597,21 @@ impl DurableStore for FsStore {
                     .join(record)
                     .join(LEGACY_RECORD_ROOM_CLAIM)
             }
+            // A room record adopted under a new identity (see
+            // `ui::RecordCheckout::formerly`): the claimant is its successor.
+            StorageKey::Record { .. } => match self.target(key)? {
+                Target::Document(directory) => directory.join(RECORD_SUCCESSOR_CLAIM),
+                Target::View(_) => {
+                    return Err(SeamError::InvalidKey {
+                        key: key.to_string(),
+                        reason: "a record is a document".into(),
+                    });
+                }
+            },
             _ => {
                 return Err(SeamError::InvalidKey {
                     key: key.to_string(),
-                    reason: "only retained package documents are claimed".into(),
+                    reason: "only retained package documents and room records are claimed".into(),
                 });
             }
         };

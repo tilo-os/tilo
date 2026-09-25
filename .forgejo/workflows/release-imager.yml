@@ -208,6 +208,8 @@ jobs:
           else
             echo '::notice::manual rehearsal uses QEMU TCG plus the capturable software framebuffer'
           fi
+      - name: Verify sparse qcow2 installer profile transport
+        run: python3 -m unittest discover -s os/tests -p test_profile_installer_qcow2.py
       - name: Authenticate the native image builder
         env:
           TILO_REGISTRY_TOKEN: ${{ secrets.REGISTRY_TOKEN }}

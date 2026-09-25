@@ -112,7 +112,7 @@ fn guest_unavailable() -> Option<String> {
     if which_bwrap().is_none() {
         return Some("bwrap is not installed".into());
     }
-    let dir = tempfile::TempDir::with_prefix_in("ush-probe-", dirs::data_dir()?).ok()?;
+    let dir = tempfile::TempDir::with_prefix_in("ush-probe-", xdg_paths::data_dir()?).ok()?;
     let upper = dir.path().join("upper");
     let work = dir.path().join("work");
     std::fs::create_dir_all(&upper).ok()?;
@@ -169,7 +169,7 @@ fn run_handoff() {
     // can't be one — putting the store there would test the refusal, not the handoff.
     let dir = tempfile::TempDir::with_prefix_in(
         "ush-handoff-",
-        dirs::data_dir().expect("no data directory on this machine"),
+        xdg_paths::data_dir().expect("no data directory on this machine"),
     )
     .expect("tempdir on disk");
     let socket = dir.path().join("ush.sock");

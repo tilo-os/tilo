@@ -1,4 +1,7 @@
-//! Off-UI-thread client for the owner-only collaborative share service.
+//! Client for the owner-only collaborative share service.
+//!
+//! Every call is async: the UI spawns it on the app runtime
+//! (`ui::rt::app()`) and receives the outcome through its wake mechanism.
 
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -120,12 +123,12 @@ impl ShareComposerRequest {
 ///
 /// Returns a localized error for invalid options or a failed control-service
 /// transaction.
-pub fn create_share(
+pub async fn create_share(
     socket: &Path,
     record_id: FileRecordId,
     request: ShareComposerRequest,
 ) -> Result<ShareActionResult, String> {
-    transact(socket, request.operation_at(record_id, now_ms())?)
+    transact(socket, request.operation_at(record_id, now_ms())?).await
 }
 
 /// Create a one-use, view-only bearer link for one stable record.
@@ -134,7 +137,10 @@ pub fn create_share(
 ///
 /// Returns a localized error when creation fails or the service returns the
 /// wrong response type.
-pub fn create_one_use_view_link(socket: &Path, record_id: FileRecordId) -> Result<String, String> {
+pub async fn create_one_use_view_link(
+    socket: &Path,
+    record_id: FileRecordId,
+) -> Result<String, String> {
     match create_share(
         socket,
         record_id,
@@ -145,7 +151,9 @@ pub fn create_one_use_view_link(socket: &Path, record_id: FileRecordId) -> Resul
             expiry: ShareExpiryChoice::Day,
             link_uses: Some(LinkUseChoice::OneUse),
         },
-    )? {
+    )
+    .await?
+    {
         ShareActionResult::LinkCreated(uri) => Ok(uri),
         ShareActionResult::NamedCreated(_) | ShareActionResult::Revoked { .. } => {
             Err(t("files-share-wrong-response"))
@@ -161,7 +169,7 @@ pub fn create_one_use_view_link(socket: &Path, record_id: FileRecordId) -> Resul
 ///
 /// Returns a localized error when the control transaction fails or returns the
 /// wrong response type.
-pub fn create_named_share(
+pub async fn create_named_share(
     socket: &Path,
     record_id: FileRecordId,
     person: Ed25519PublicKey,
@@ -178,7 +186,7 @@ pub fn create_named_share(
     };
     // Preserve this lower-level compatibility entry point's exact absolute
     // deadline; new UI callers use `create_share` and its bounded choices.
-    match transact(socket, operation)? {
+    match transact(socket, operation).await? {
         ShareActionResult::NamedCreated(metadata) => Ok(metadata),
         ShareActionResult::LinkCreated(_) | ShareActionResult::Revoked { .. } => {
             Err(t("files-share-wrong-response"))
@@ -191,8 +199,8 @@ pub fn create_named_share(
 /// # Errors
 ///
 /// Returns a localized error when the control-service transaction fails.
-pub fn revoke_grant(socket: &Path, grant_id: Uuid) -> Result<ShareActionResult, String> {
-    transact(socket, ShareControlOperationV1::Revoke { grant_id })
+pub async fn revoke_grant(socket: &Path, grant_id: Uuid) -> Result<ShareActionResult, String> {
+    transact(socket, ShareControlOperationV1::Revoke { grant_id }).await
 }
 
 fn now_ms() -> u64 {
@@ -201,101 +209,90 @@ fn now_ms() -> u64 {
         .map_or(0, |duration| duration.as_millis() as u64)
 }
 
+/// One request/response exchange with the share service. Must be polled
+/// in a tokio runtime context (the app runtime), which drives the socket.
 #[cfg(unix)]
-fn transact(
+async fn transact(
     socket: &Path,
     operation: ShareControlOperationV1,
 ) -> Result<ShareActionResult, String> {
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_io()
-        .build()
+    let mut stream = tokio::net::UnixStream::connect(socket)
+        .await
         .map_err(|error| {
             t_args(
-                "files-share-runtime-failed",
+                "files-share-unavailable-error",
                 &[arg("error", error.to_string())],
             )
         })?;
-    runtime.block_on(async {
-        let mut stream = tokio::net::UnixStream::connect(socket)
-            .await
-            .map_err(|error| {
-                t_args(
-                    "files-share-unavailable-error",
-                    &[arg("error", error.to_string())],
-                )
-            })?;
-        let request = ShareControlRequestV1 {
-            protocol_version: SHARE_CONTROL_VERSION,
-            operation,
-        };
-        let request = collab_types::canonical_bytes(&request).map_err(|error| {
-            t_args(
-                "files-share-encode-failed",
-                &[arg("error", error.to_string())],
-            )
-        })?;
-        let request = SHARE_CONTROL_FRAMING
-            .encode(&request)
-            .map_err(|_| t("files-share-request-too-large"))?;
-        stream.write_all(&request).await.map_err(|error| {
-            t_args(
-                "files-share-request-failed",
-                &[arg("error", error.to_string())],
-            )
-        })?;
-        stream.flush().await.map_err(|error| {
-            t_args(
-                "files-share-flush-failed",
-                &[arg("error", error.to_string())],
-            )
-        })?;
-        let response = match SHARE_CONTROL_FRAMING.read_async(&mut stream).await {
-            Ok(Some(response)) => response,
-            Err(FrameError::TooLarge(_) | FrameError::EmptyFrame) => {
-                return Err(t("files-share-response-too-large"));
-            }
-            Err(error @ FrameError::Truncated) => {
-                return Err(t_args(
-                    "files-share-response-truncated",
-                    &[arg("error", error.to_string())],
-                ));
-            }
-            Ok(None) => {
-                return Err(t_args(
-                    "files-share-no-response",
-                    &[arg("error", FrameError::Closed.to_string())],
-                ));
-            }
-            Err(error) => {
-                return Err(t_args(
-                    "files-share-no-response",
-                    &[arg("error", error.to_string())],
-                ));
-            }
-        };
-        let response: ShareControlResponseV1 =
-            collab_types::canonical::from_canonical_bytes(&response).map_err(|error| {
-                t_args(
-                    "files-share-response-invalid",
-                    &[arg("error", error.to_string())],
-                )
-            })?;
-        match response.result {
-            ShareControlResultV1::NamedCreated(metadata) => {
-                Ok(ShareActionResult::NamedCreated(metadata))
-            }
-            ShareControlResultV1::BearerCreatedV2 { uri } => {
-                Ok(ShareActionResult::LinkCreated(uri))
-            }
-            ShareControlResultV1::Revoked { grant_id, revoked } => {
-                Ok(ShareActionResult::Revoked { grant_id, revoked })
-            }
-            ShareControlResultV1::Error { code } => Err(t_args(
-                "files-share-refused",
-                &[arg("code", format!("{code:?}"))],
-            )),
+    let request = ShareControlRequestV1 {
+        protocol_version: SHARE_CONTROL_VERSION,
+        operation,
+    };
+    let request = collab_types::canonical_bytes(&request).map_err(|error| {
+        t_args(
+            "files-share-encode-failed",
+            &[arg("error", error.to_string())],
+        )
+    })?;
+    let request = SHARE_CONTROL_FRAMING
+        .encode(&request)
+        .map_err(|_| t("files-share-request-too-large"))?;
+    stream.write_all(&request).await.map_err(|error| {
+        t_args(
+            "files-share-request-failed",
+            &[arg("error", error.to_string())],
+        )
+    })?;
+    stream.flush().await.map_err(|error| {
+        t_args(
+            "files-share-flush-failed",
+            &[arg("error", error.to_string())],
+        )
+    })?;
+    let response = match SHARE_CONTROL_FRAMING.read_async(&mut stream).await {
+        Ok(Some(response)) => response,
+        Err(FrameError::TooLarge(_) | FrameError::EmptyFrame) => {
+            return Err(t("files-share-response-too-large"));
         }
-    })
+        Err(error @ FrameError::Truncated) => {
+            return Err(t_args(
+                "files-share-response-truncated",
+                &[arg("error", error.to_string())],
+            ));
+        }
+        Ok(None) => {
+            return Err(t_args(
+                "files-share-no-response",
+                &[arg("error", FrameError::Closed.to_string())],
+            ));
+        }
+        Err(error) => {
+            return Err(t_args(
+                "files-share-no-response",
+                &[arg("error", error.to_string())],
+            ));
+        }
+    };
+    let response: ShareControlResponseV1 = collab_types::canonical::from_canonical_bytes(&response)
+        .map_err(|error| {
+            t_args(
+                "files-share-response-invalid",
+                &[arg("error", error.to_string())],
+            )
+        })?;
+    match response.result {
+        ShareControlResultV1::NamedCreated(metadata) => {
+            Ok(ShareActionResult::NamedCreated(metadata))
+        }
+        ShareControlResultV1::BearerCreatedV2 { uri } => Ok(ShareActionResult::LinkCreated(uri)),
+        ShareControlResultV1::Revoked { grant_id, revoked } => {
+            Ok(ShareActionResult::Revoked { grant_id, revoked })
+        }
+        ShareControlResultV1::Error { code } => Err(t_args(
+            "files-share-refused",
+            &[arg("code", format!("{code:?}"))],
+        )),
+    }
 }
 
 #[cfg(test)]
@@ -422,15 +419,17 @@ mod tests {
                 .unwrap();
             stream.write_all(&bytes).unwrap();
         });
-        let metadata = create_named_share(
-            &socket,
-            record_id,
-            person,
-            vec![recipient_device],
-            FilePermission::View,
-            None,
-        )
-        .unwrap();
+        let metadata = ui::rt::app()
+            .block_on(create_named_share(
+                &socket,
+                record_id,
+                person,
+                vec![recipient_device],
+                FilePermission::View,
+                None,
+            ))
+            .unwrap()
+            .unwrap();
         assert_eq!(metadata.person, person);
         server.join().unwrap();
     }
@@ -478,7 +477,10 @@ mod tests {
         });
 
         assert_eq!(
-            create_one_use_view_link(&socket, record_id).unwrap(),
+            ui::rt::app()
+                .block_on(create_one_use_view_link(&socket, record_id))
+                .unwrap()
+                .unwrap(),
             "tilo-file://one-use"
         );
         server.join().unwrap();
@@ -486,7 +488,11 @@ mod tests {
 }
 
 #[cfg(not(unix))]
-fn transact(
+#[allow(
+    clippy::unused_async,
+    reason = "matches the unix transport's signature"
+)]
+async fn transact(
     _socket: &Path,
     _operation: ShareControlOperationV1,
 ) -> Result<ShareActionResult, String> {

@@ -77,8 +77,8 @@ fn client_for(stream: tokio::net::UnixStream) -> capnp_app_host::Client {
     let reader = reader.compat();
     let writer = writer.compat_write();
     let network = Box::new(twoparty::VatNetwork::new(
-        futures::io::BufReader::new(reader),
-        futures::io::BufWriter::new(writer),
+        futures_util::io::BufReader::new(reader),
+        futures_util::io::BufWriter::new(writer),
         rpc_twoparty_capnp::Side::Client,
         capnp::message::ReaderOptions::default(),
     ));

@@ -263,13 +263,7 @@ async fn discover_miracast_on_connection(
 }
 
 fn discover_miracast(timeout: Duration) -> Vec<ProjectionDevice> {
-    let Ok(runtime) = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-    else {
-        return Vec::new();
-    };
-    runtime.block_on(async {
+    tilo_rt::block_on(async {
         let Ok(connection) = zbus::Connection::system().await else {
             return Vec::new();
         };
@@ -277,6 +271,7 @@ fn discover_miracast(timeout: Duration) -> Vec<ProjectionDevice> {
             .await
             .unwrap_or_default()
     })
+    .unwrap_or_default()
 }
 
 fn discover(timeout: Duration) -> Result<Vec<ProjectionDevice>, String> {

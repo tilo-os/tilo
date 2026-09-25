@@ -847,7 +847,7 @@ mod native {
     }
     /// The per-user cache directory that holds `qos-internal-install`.
     pub(in crate::setup) fn cache_base() -> Result<std::path::PathBuf> {
-        dirs::cache_dir().ok_or_else(|| "Current-user LocalAppData cache unavailable".into())
+        xdg_paths::cache_dir().ok_or_else(|| "Current-user LocalAppData cache unavailable".into())
     }
     pub(in crate::setup) struct CacheRoot {
         lease: Arc<LockedRoot>,

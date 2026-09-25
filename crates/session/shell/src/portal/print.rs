@@ -151,6 +151,16 @@ impl PrintSpoolerHandle {
         self.inner.destinations()
     }
 
+    /// [`Self::destinations`] from async code. Listing CUPS destinations runs
+    /// `lpstat`, a subprocess with a deadline of seconds, so it waits on the
+    /// blocking pool instead of holding a portal worker.
+    pub async fn destinations_blocking(&self) -> Vec<String> {
+        let spooler = self.clone();
+        tokio::task::spawn_blocking(move || spooler.destinations())
+            .await
+            .unwrap_or_default()
+    }
+
     /// Submit `job` to the wrapped spooler.
     ///
     /// # Errors
@@ -478,7 +488,7 @@ impl PrintBackend {
             return (1, HashMap::new());
         }
 
-        let available = self.ctx.print_spooler.destinations();
+        let available = self.ctx.print_spooler.destinations_blocking().await;
         let requested = opt_string(&settings, "printer");
         let Some(destination) = choose_destination(&available, requested.as_deref()) else {
             // No printers, or the app named one this machine doesn't have — both "other error" rather than a silent substitution.
@@ -566,7 +576,7 @@ impl PrintBackend {
         let destination = if let Some(job) = prepared.as_ref() {
             job.destination.clone()
         } else {
-            let available = self.ctx.print_spooler.destinations();
+            let available = self.ctx.print_spooler.destinations_blocking().await;
             if let Some(d) = available.first() {
                 d.clone()
             } else {

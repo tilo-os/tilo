@@ -1,9 +1,9 @@
 //! Real SSH transport, built on `russh`.
 //!
-//! A live SSH session runs the async russh event loop on its own OS thread
-//! (a small current-thread tokio runtime); the UI thread talks to it over
-//! channels. Remote PTY output is streamed to a [`crate::vt::VtGrid`] that
-//! the session surface renders; keystrokes flow the other way into the PTY.
+//! A live SSH session runs the async russh event loop as a task on the shared
+//! app runtime; the UI thread talks to it over channels. Remote PTY output is
+//! streamed to a [`crate::vt::VtGrid`] that the session surface renders;
+//! keystrokes flow the other way into the PTY.
 //!
 //! Nothing here is simulated: [`SshSession::connect`] opens a real TCP
 //! connection, runs the SSH key exchange, authenticates with a real
@@ -341,20 +341,20 @@ pub struct SshSession {
     output_rx: Receiver<Vec<u8>>,
     input_tx: Sender<InputMessage>,
     host_key_issue: Arc<Mutex<Option<HostKeyIssue>>>,
-    // Kept so the worker thread isn't detached-orphaned; on drop the input
-    // channel closes, which tells the worker to disconnect.
-    _worker: std::thread::JoinHandle<()>,
+    // The session task on the app runtime. Dropping the handle does not
+    // cancel it: the input channel closes with this session, which tells the
+    // task to disconnect cleanly.
+    _worker: ui::rt::JoinHandle<()>,
 }
 
 impl SshSession {
     /// Start connecting. Returns immediately with a handle whose status is
-    /// `Connecting`; the background thread advances it to `Connected` or
+    /// `Connecting`; a task on the app runtime advances it to `Connected` or
     /// `Failed(reason)`.
     ///
     /// # Errors
     ///
-    /// Returns an error if the operating system refuses to spawn the
-    /// background worker thread.
+    /// Returns an error if the app runtime cannot be started.
     pub fn connect(cfg: SshConfig) -> anyhow::Result<SshSession> {
         let status = Arc::new(Mutex::new(SessionStatus::Connecting));
         let (output_tx, output_rx) = channel::<Vec<u8>>(SSH_OUTPUT_QUEUE_CAPACITY);
@@ -364,37 +364,22 @@ impl SshSession {
 
         let status_worker = status.clone();
         let host_key_issue_worker = host_key_issue.clone();
-        let worker = std::thread::Builder::new()
-            .name("remote-ssh".into())
-            .spawn(move || {
-                let rt = match tokio::runtime::Builder::new_current_thread()
-                    .enable_all()
-                    .build()
-                {
-                    Ok(rt) => rt,
-                    Err(e) => {
-                        *lock_recover(&status_worker) =
-                            SessionStatus::Failed(format!("runtime: {e}"));
-                        return;
-                    }
-                };
-                rt.block_on(async move {
-                    if let Err(e) = run_session(
-                        cfg,
-                        status_worker.clone(),
-                        host_key_issue_worker,
-                        output_tx,
-                        input_rx,
-                    )
-                    .await
-                    {
-                        let mut s = lock_recover(&status_worker);
-                        if !matches!(*s, SessionStatus::Failed(_)) {
-                            *s = SessionStatus::Failed(e.to_string());
-                        }
-                    }
-                });
-            })?;
+        let worker = ui::rt::try_app()?.spawn(async move {
+            if let Err(e) = run_session(
+                cfg,
+                status_worker.clone(),
+                host_key_issue_worker,
+                output_tx,
+                input_rx,
+            )
+            .await
+            {
+                let mut s = lock_recover(&status_worker);
+                if !matches!(*s, SessionStatus::Failed(_)) {
+                    *s = SessionStatus::Failed(e.to_string());
+                }
+            }
+        });
 
         Ok(SshSession {
             grid,
@@ -534,6 +519,19 @@ impl client::Handler for Handler {
 
 /// The async body: connect, authenticate, open a PTY shell, and pump bytes
 /// both ways until either side closes.
+/// Load a private key on the CPU pool: decrypting a passphrase-protected key
+/// runs a deliberately slow KDF, which must not stall the runtime thread.
+async fn load_key(
+    path: &Path,
+    passphrase: Option<&str>,
+) -> anyhow::Result<russh::keys::PrivateKey> {
+    let (key_path, key_passphrase) = (path.to_path_buf(), passphrase.map(str::to_owned));
+    ui::rt::cpu(move || load_secret_key(&key_path, key_passphrase.as_deref()))
+        .await
+        .map_err(|e| anyhow!("load key {}: {e}", path.display()))?
+        .map_err(|e| anyhow!("load key {}: {e}", path.display()))
+}
+
 async fn run_session(
     cfg: SshConfig,
     status: Arc<Mutex<SessionStatus>>,
@@ -572,8 +570,7 @@ async fn run_session(
             .await?
             .success(),
         SshAuth::Key { path, passphrase } => {
-            let key = load_secret_key(path, passphrase.as_deref())
-                .map_err(|e| anyhow!("load key {}: {e}", path.display()))?;
+            let key = load_key(path, passphrase.as_deref()).await?;
             let hash = session.best_supported_rsa_hash().await?.flatten();
             session
                 .authenticate_publickey(
@@ -860,30 +857,27 @@ VYO75vHKVaGSkOCr8Ui2AAAAF3Fvcy1yZW1vdGUtdGVzdC1ob3N0a2V5AQIDBAUG
 
     #[test]
     fn real_ssh_round_trip_over_loopback() {
-        let rt = tokio::runtime::Builder::new_multi_thread()
-            .enable_all()
-            .build()
-            .unwrap();
-
         // Stand up the server, bind an ephemeral port, and serve in the bg.
-        let port = rt.block_on(async {
-            let host_key = russh::keys::decode_secret_key(TEST_HOST_KEY, None).unwrap();
-            let config = Arc::new(server::Config {
-                inactivity_timeout: Some(Duration::from_secs(30)),
-                auth_rejection_time: Duration::from_millis(50),
-                keys: vec![host_key],
-                ..Default::default()
-            });
-            let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
-                .await
-                .unwrap();
-            let port = listener.local_addr().unwrap().port();
-            tokio::spawn(async move {
-                let mut server = TestServer;
-                let _ = server.run_on_socket(config, &listener).await;
-            });
-            port
-        });
+        let port = ui::rt::app()
+            .block_on(async {
+                let host_key = russh::keys::decode_secret_key(TEST_HOST_KEY, None).unwrap();
+                let config = Arc::new(server::Config {
+                    inactivity_timeout: Some(Duration::from_secs(30)),
+                    auth_rejection_time: Duration::from_millis(50),
+                    keys: vec![host_key],
+                    ..Default::default()
+                });
+                let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+                    .await
+                    .unwrap();
+                let port = listener.local_addr().unwrap().port();
+                tokio::spawn(async move {
+                    let mut server = TestServer;
+                    let _ = server.run_on_socket(config, &listener).await;
+                });
+                port
+            })
+            .unwrap();
 
         let known_hosts_path = test_known_hosts_path();
         let host_key = russh::keys::decode_secret_key(TEST_HOST_KEY, None).unwrap();
@@ -897,7 +891,7 @@ VYO75vHKVaGSkOCr8Ui2AAAAF3Fvcy1yZW1vdGUtdGVzdC1ob3N0a2V5AQIDBAUG
         trust_host_key(&known_hosts_path, "127.0.0.1", port, &identity).unwrap();
         let known_hosts_directory = known_hosts_path.parent().unwrap().to_path_buf();
 
-        // Real client — its own thread + runtime, exactly as production.
+        // Real client — a task on the app runtime, exactly as production.
         let mut ssh = SshSession::connect(SshConfig {
             host: "127.0.0.1".into(),
             port,

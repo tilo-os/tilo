@@ -79,7 +79,6 @@ pub mod prelude {
 #[cfg(test)]
 mod tests {
     use super::prelude::*;
-    use std::collections::HashMap;
     // Implementing the toolkit's raw Widget contract is an escape hatch; the
     // document types it names are imported explicitly, not from the prelude.
     use ui_core::automerge::{AutoCommit, ObjId};
@@ -90,59 +89,45 @@ mod tests {
         let _ = (&mut ctx.state, ctx.path, ctx.node_id);
     }
 
+    /// Extending a widget costs only the hooks it changes: a decorator
+    /// forwards every other `Widget` method to the widget it wraps.
     struct CustomWidget {
         inner: Text,
     }
 
-    impl Widget for CustomWidget {
-        fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
-            self.inner.sync(state, path);
+    impl crate::widget::Decorator for CustomWidget {
+        type Inner = Text;
+
+        fn inner(&self) -> &Text {
+            &self.inner
         }
 
-        fn build_layout(
-            &mut self,
-            taffy: &mut TaffyTree<()>,
-            theme: &Theme,
-            node_map: &mut HashMap<NodeId, *mut dyn Widget>,
-        ) -> NodeId {
-            self.inner.build_layout(taffy, theme, node_map)
+        fn inner_mut(&mut self) -> &mut Text {
+            &mut self.inner
         }
 
-        fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-            self.inner.apply_layout(taffy, node, origin);
-        }
-
-        fn draw(
-            &mut self,
-            scene: &mut Scene,
-            transform: Affine,
-            text_renderer: &mut TextRenderer,
-            theme: &Theme,
-            presence: &PresenceCtx,
-        ) {
-            self.inner
-                .draw(scene, transform, text_renderer, theme, presence);
-        }
-
-        fn handle_event_ctx(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) {
-            self.inner.handle_event_ctx(event, ctx);
+        fn native_input_snapshot(
+            &self,
+            _doc: &AutoCommit,
+            _path: &ObjId,
+        ) -> Option<serde_json::Value> {
+            Some(serde_json::json!({ "width": self.inner.get_rect().width() }))
         }
 
         fn name(&self) -> &'static str {
             "CustomWidget"
-        }
-
-        fn get_rect(&self) -> Rect {
-            self.inner.get_rect()
         }
     }
 
     #[test]
     fn prelude_exposes_the_integrated_custom_widget_surface() {
         std::hint::black_box(custom_event_handler);
-        std::hint::black_box(CustomWidget {
+        let custom = CustomWidget {
             inner: Text::new("custom-widget"),
-        });
+        };
+        let widget: &dyn Widget = &custom;
+        assert_eq!(widget.name(), "CustomWidget");
+        assert_eq!(widget.get_rect(), custom.inner.get_rect());
         std::hint::black_box(SearchRegistry::new());
         std::hint::black_box(ActionForm::new("note", "Note", "save", "Save"));
     }

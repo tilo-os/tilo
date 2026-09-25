@@ -560,7 +560,7 @@ mod tests {
         // The data directory, not `/tmp` (often tmpfs, which is what's under test).
         // It may not exist yet — a container running as root has a bare `/root` —
         // so create it first, or a missing parent looks like a rejected filesystem.
-        let base = dirs::data_dir().unwrap_or_else(|| PathBuf::from("."));
+        let base = xdg_paths::data_dir().unwrap_or_else(|| PathBuf::from("."));
         std::fs::create_dir_all(&base).expect("the data directory must be creatable");
         let dir = tempfile::TempDir::with_prefix_in("ush-fs-", &base).expect("tempdir on disk");
         upper_filesystem_supported(&dir.path().join("layers/persistent"))

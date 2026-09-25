@@ -196,27 +196,17 @@ mod live_probe {
     use super::{AccountConfig, classify_conn_failure};
     use crate::model::AuthMethod;
 
-    /// Run a bounded network probe on its worker's own runtime. Cancelling
-    /// drops the network future and closes its sockets instead of leaving a
-    /// detached worker waiting indefinitely for a remote TLS greeting.
-    ///
-    /// # Panics
-    /// Panics if the OS refuses a single current-thread tokio runtime. The
-    /// probe cannot report "your account works" without actually running the
-    /// round-trips, so there is no honest value to return here.
-    #[allow(
-        clippy::expect_used,
-        reason = "without a runtime the probe cannot perform the round-trips it exists to perform; reporting a validation result anyway would be a lie about the account"
-    )]
+    /// Run a bounded network probe from its worker thread on the shared app
+    /// runtime. Cancelling drops the network future and closes its sockets
+    /// instead of leaving a detached worker waiting indefinitely for a remote
+    /// TLS greeting. A runtime that cannot be used fails the probe: without
+    /// the round-trips there is no honest "your account works".
     fn block_on<F: std::future::Future<Output = Result<(), String>>>(
         fut: F,
         cancellation: Option<&std::sync::atomic::AtomicBool>,
     ) -> Result<(), String> {
-        tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .expect("probe runtime")
-            .block_on(async {
+        ui::rt::try_app()
+            .and_then(|runtime| runtime.block_on(async {
                 tokio::select! {
                     biased;
                     () = async {
@@ -231,7 +221,8 @@ mod live_probe {
                         result.unwrap_or_else(|_| Err("Account verification timed out".into()))
                     }
                 }
-            })
+            }))
+            .map_err(|e| e.to_string())?
     }
 
     /// # Panics

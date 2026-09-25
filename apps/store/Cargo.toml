@@ -43,7 +43,7 @@ tilo-automerge.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 toml.workspace = true
-dirs.workspace = true
+xdg-paths = { path = "../../crates/system/xdg-paths" }
 tracing.workspace = true
 vello.workspace = true
 winit.workspace = true

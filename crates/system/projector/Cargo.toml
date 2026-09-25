@@ -15,6 +15,7 @@ libc.workspace = true
 getrandom.workspace = true
 rand.workspace = true
 tokio.workspace = true
+tilo-rt.workspace = true
 zbus = { workspace = true, features = ["tokio", "p2p"] }
 
 [dev-dependencies]

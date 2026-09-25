@@ -8,24 +8,33 @@
 //! listener; existing and new proxy connections then fail closed. This is a
 //! host-side grant boundary, not a claim that arbitrary processes in the one
 //! persistent Windows user session are mutually isolated.
+//!
+//! Connections are tasks on the process's shared egress runtime
+//! ([`launcher::netgate::egress_runtime`]), at most
+//! [`launcher::netgate::MAX_CONNECTIONS`] at once; past that the listener
+//! stops accepting and further guest connections wait in its backlog.
 
 use std::collections::HashMap;
-use std::io::{self, Read, Write};
-use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener, TcpStream};
+use std::future::Future;
+use std::io;
+use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpStream};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use std::thread;
 use std::time::Duration;
 
 use getrandom::{SysRng, rand_core::UnwrapErr};
-use launcher::netgate::{Destination, EgressPolicy, connect_upstream};
+use launcher::netgate::{Destination, EgressPolicy, connect_upstream_async};
 use rand::Rng as _;
 use thiserror::Error;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::sync::{Notify, Semaphore};
 
 /// Tilo's immutable host-only gateway. This is not an internet route.
 pub const HOST_ONLY_GATEWAY: Ipv4Addr = Ipv4Addr::new(192, 168, 251, 1);
 const GUEST_ADDRESS: Ipv4Addr = Ipv4Addr::new(192, 168, 251, 2);
 const MAX_HEAD_BYTES: usize = 16 * 1024;
+/// How long the guest proxy gets for each read and write of a request head.
+const HEAD_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Opaque proxy details carried only over the mutually-authenticated bridge.
 /// The token is not a `NetHost` grant; it merely proves that the guest-local
@@ -53,6 +62,8 @@ pub enum GuestNetworkError {
     InvalidHost(String),
     #[error("could not bind the host-only Windows egress relay: {0}")]
     Bind(#[source] io::Error),
+    #[error("could not start the runtime serving the Windows egress relay: {0}")]
+    Runtime(#[source] io::Error),
     #[error("the guest network lease policy lock is unavailable")]
     PolicyUnavailable,
 }
@@ -65,6 +76,9 @@ pub enum GuestNetworkError {
 pub struct GuestNetworkProxy {
     binding: GuestNetworkBinding,
     shutdown: Arc<AtomicBool>,
+    /// Wakes the accept loop so it observes `shutdown` and closes the
+    /// listener without waiting for another guest request.
+    stop: Arc<Notify>,
     /// Duplicates held solely so revocation can interrupt already-established
     /// tunnels, not just stop accepting a new CONNECT request.
     active_connections: Arc<ActiveTunnels>,
@@ -87,36 +101,57 @@ impl GuestNetworkProxy {
         hosts: Vec<String>,
         require_guest_peer: bool,
     ) -> Result<Self, GuestNetworkError> {
+        Self::start_limited(
+            address,
+            hosts,
+            require_guest_peer,
+            launcher::netgate::MAX_CONNECTIONS,
+        )
+    }
+
+    fn start_limited(
+        address: SocketAddr,
+        hosts: Vec<String>,
+        require_guest_peer: bool,
+        max_connections: usize,
+    ) -> Result<Self, GuestNetworkError> {
         validate_hosts(&hosts)?;
-        let listener = TcpListener::bind(address).map_err(GuestNetworkError::Bind)?;
+        let listener = std::net::TcpListener::bind(address).map_err(GuestNetworkError::Bind)?;
         let endpoint = listener.local_addr().map_err(GuestNetworkError::Bind)?;
+        listener
+            .set_nonblocking(true)
+            .map_err(GuestNetworkError::Bind)?;
+        let runtime = launcher::netgate::egress_runtime().map_err(GuestNetworkError::Runtime)?;
+        let listener = {
+            let _entered = runtime.enter();
+            tokio::net::TcpListener::from_std(listener).map_err(GuestNetworkError::Bind)?
+        };
         let mut random = [0_u8; 32];
         UnwrapErr(SysRng).fill_bytes(&mut random);
         let token = hex::encode(random);
         random.fill(0);
         let binding = GuestNetworkBinding { endpoint, token };
-        let hosts = Arc::new(std::sync::Mutex::new(hosts));
-        let shutdown = Arc::new(AtomicBool::new(false));
-        let active_connections = Arc::new(ActiveTunnels::default());
-        let worker_shutdown = Arc::clone(&shutdown);
-        let worker_token = binding.token.clone();
-        let worker_hosts = Arc::clone(&hosts);
-        let worker_connections = Arc::clone(&active_connections);
-        thread::spawn(move || {
-            serve(
-                listener,
-                worker_hosts,
-                worker_token,
-                require_guest_peer,
-                worker_shutdown,
-                worker_connections,
-            );
+        let lease = Arc::new(Lease {
+            hosts: Mutex::new(hosts),
+            token: binding.token.clone(),
+            shutdown: Arc::new(AtomicBool::new(false)),
+            active_connections: Arc::new(ActiveTunnels::default()),
         });
-        Ok(Self {
+        let stop = Arc::new(Notify::new());
+        let proxy = Self {
             binding,
-            shutdown,
-            active_connections,
-        })
+            shutdown: Arc::clone(&lease.shutdown),
+            stop: Arc::clone(&stop),
+            active_connections: Arc::clone(&lease.active_connections),
+        };
+        runtime.spawn(serve(
+            listener,
+            lease,
+            require_guest_peer,
+            max_connections,
+            stop,
+        ));
+        Ok(proxy)
     }
 
     #[must_use]
@@ -129,9 +164,9 @@ impl GuestNetworkProxy {
     pub fn revoke(&self) {
         self.shutdown.store(true, Ordering::Release);
         self.active_connections.shutdown_all();
-        // Wake `incoming` so the worker observes shutdown without waiting for
-        // another guest request.
-        let _ = TcpStream::connect(self.binding.endpoint);
+        // Stored as a permit if the accept loop is not waiting right now,
+        // so it cannot miss the wake-up.
+        self.stop.notify_one();
     }
 }
 
@@ -158,87 +193,107 @@ fn validate_hosts(hosts: &[String]) -> Result<(), GuestNetworkError> {
     Ok(())
 }
 
-#[allow(
-    clippy::needless_pass_by_value,
-    reason = "the detached relay worker owns its listener and shared lease state"
-)]
-fn serve(
-    listener: TcpListener,
-    hosts: Arc<std::sync::Mutex<Vec<String>>>,
+/// What every connection of one lease shares.
+struct Lease {
+    hosts: Mutex<Vec<String>>,
     token: String,
-    require_guest_peer: bool,
     shutdown: Arc<AtomicBool>,
     active_connections: Arc<ActiveTunnels>,
+}
+
+/// Accept guest connections until revoked, each served as its own task, at
+/// most `limit` at once. A slot is claimed before accepting, so at the limit
+/// the loop stops accepting and new connections wait in the listen backlog.
+async fn serve(
+    listener: tokio::net::TcpListener,
+    lease: Arc<Lease>,
+    require_guest_peer: bool,
+    limit: usize,
+    stop: Arc<Notify>,
 ) {
-    for incoming in listener.incoming() {
-        if shutdown.load(Ordering::Acquire) {
-            break;
+    let slots = Arc::new(Semaphore::new(limit.max(1)));
+    loop {
+        let slot = tokio::select! {
+            () = stop.notified() => return,
+            slot = Arc::clone(&slots).acquire_owned() => match slot {
+                Ok(slot) => slot,
+                Err(_) => return,
+            },
+        };
+        let accepted = tokio::select! {
+            () = stop.notified() => return,
+            accepted = listener.accept() => accepted,
+        };
+        if lease.shutdown.load(Ordering::Acquire) {
+            return;
         }
-        let Ok(stream) = incoming else { continue };
-        if require_guest_peer
-            && !matches!(stream.peer_addr(), Ok(peer) if peer.ip() == IpAddr::V4(GUEST_ADDRESS))
-        {
+        let Ok((stream, peer)) = accepted else {
+            continue;
+        };
+        if require_guest_peer && peer.ip() != IpAddr::V4(GUEST_ADDRESS) {
             continue;
         }
-        let hosts = Arc::clone(&hosts);
-        let token = token.clone();
-        let shutdown = Arc::clone(&shutdown);
-        let active_connections = Arc::clone(&active_connections);
-        thread::spawn(move || {
-            let _ = serve_connect(stream, &hosts, &token, &shutdown, &active_connections);
+        let lease = Arc::clone(&lease);
+        tokio::spawn(async move {
+            let _ = serve_connect(stream, &lease).await;
+            drop(slot);
         });
     }
 }
 
-fn serve_connect(
-    mut client: TcpStream,
-    hosts: &std::sync::Mutex<Vec<String>>,
-    token: &str,
-    shutdown: &AtomicBool,
-    active_connections: &ActiveTunnels,
-) -> io::Result<()> {
-    client.set_read_timeout(Some(Duration::from_secs(30)))?;
-    client.set_write_timeout(Some(Duration::from_secs(30)))?;
-    let head = read_head(&mut client)?;
+/// Bound one read or write of the request head by [`HEAD_TIMEOUT`].
+async fn within_head_timeout<T>(io: impl Future<Output = io::Result<T>>) -> io::Result<T> {
+    tokio::time::timeout(HEAD_TIMEOUT, io)
+        .await
+        .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "proxy request timed out"))?
+}
+
+async fn serve_connect(mut client: tokio::net::TcpStream, lease: &Lease) -> io::Result<()> {
+    let (head, early) = read_head(&mut client).await?;
     let Some((host, port, supplied_token)) = parse_connect(&head) else {
-        return write_response(&mut client, "400 Bad Request");
+        return write_response(&mut client, "400 Bad Request").await;
     };
-    if supplied_token != token {
-        return write_response(&mut client, "502 Bad Gateway");
+    if supplied_token != lease.token {
+        return write_response(&mut client, "502 Bad Gateway").await;
     }
-    // Do not resolve here. `connect_upstream` is the canonical Tilo NetHost
-    // path: it resolves after policy, rejects address-literal bypasses, and
-    // removes loopback/link-local/this-host addresses unless named exactly.
+    // Do not resolve here. `connect_upstream_async` is the canonical Tilo
+    // NetHost path: it resolves after policy, rejects address-literal
+    // bypasses, and removes loopback/link-local/this-host addresses unless
+    // named exactly.
     let policy = EgressPolicy::new(
-        hosts
+        lease
+            .hosts
             .lock()
             .map_err(|_| io::Error::other("network lease policy unavailable"))?
             .clone(),
     );
     if !policy.permits(&host) {
-        return write_response(&mut client, "502 Bad Gateway");
+        return write_response(&mut client, "502 Bad Gateway").await;
     }
-    let Ok(mut upstream) = connect_upstream(&Destination::Domain(host, port), &policy) else {
-        return write_response(&mut client, "502 Bad Gateway");
+    let Ok(upstream) = connect_upstream_async(&Destination::Domain(host, port), &policy).await
+    else {
+        return write_response(&mut client, "502 Bad Gateway").await;
     };
-    if shutdown.load(Ordering::Acquire) {
-        return write_response(&mut client, "502 Bad Gateway");
+    if lease.shutdown.load(Ordering::Acquire) {
+        return write_response(&mut client, "502 Bad Gateway").await;
     }
-    // Keep independent descriptor references in the lease.  Closing these on
-    // revoke causes both halves of the bidirectional copy to unblock.
-    let client_control = client.try_clone()?;
-    let upstream_control = upstream.try_clone()?;
-    let _tunnel = active_connections.register(client_control, upstream_control, shutdown)?;
-    client.write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n")?;
-    client.set_read_timeout(None)?;
-    client.set_write_timeout(None)?;
-    upstream.set_read_timeout(None)?;
-    upstream.set_write_timeout(None)?;
-    let mut reader = client.try_clone()?;
-    let mut upstream_writer = upstream.try_clone()?;
-    let copy = thread::spawn(move || io::copy(&mut reader, &mut upstream_writer));
-    let _ = io::copy(&mut upstream, &mut client);
-    let _ = copy.join();
+    // Keep independent descriptor references in the lease.  Shutting these
+    // down on revoke ends both directions of the copy below.
+    let client = client.into_std()?;
+    let upstream = upstream.into_std()?;
+    let _tunnel = lease.active_connections.register(
+        client.try_clone()?,
+        upstream.try_clone()?,
+        &lease.shutdown,
+    )?;
+    let mut client = tokio::net::TcpStream::from_std(client)?;
+    let mut upstream = tokio::net::TcpStream::from_std(upstream)?;
+    within_head_timeout(client.write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n")).await?;
+    // Bytes the guest proxy sent right behind the head belong to the tunnel.
+    if !early.is_empty() {
+        upstream.write_all(&early).await?;
+    }
+    let _ = tokio::io::copy_bidirectional(&mut client, &mut upstream).await;
     Ok(())
 }
 
@@ -301,21 +356,33 @@ impl Drop for TunnelRegistration<'_> {
     }
 }
 
-fn read_head(stream: &mut TcpStream) -> io::Result<String> {
+/// Read a request head, up to and including the blank line. Returns the
+/// head and whatever arrived after it.
+async fn read_head(stream: &mut tokio::net::TcpStream) -> io::Result<(String, Vec<u8>)> {
     let mut bytes = Vec::new();
-    let mut byte = [0_u8; 1];
-    while bytes.len() < MAX_HEAD_BYTES {
-        stream.read_exact(&mut byte)?;
-        bytes.push(byte[0]);
-        if bytes.ends_with(b"\r\n\r\n") {
-            return String::from_utf8(bytes)
-                .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "non-UTF8 proxy head"));
+    let mut chunk = [0_u8; 4096];
+    loop {
+        if let Some(end) = bytes.windows(4).position(|window| window == b"\r\n\r\n") {
+            let early = bytes.split_off(end.saturating_add(4));
+            let head = String::from_utf8(bytes)
+                .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "non-UTF8 proxy head"))?;
+            return Ok((head, early));
         }
+        if bytes.len() >= MAX_HEAD_BYTES {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "oversized proxy head",
+            ));
+        }
+        let n = within_head_timeout(stream.read(&mut chunk)).await?;
+        if n == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "proxy head ended early",
+            ));
+        }
+        bytes.extend_from_slice(chunk.get(..n).unwrap_or_default());
     }
-    Err(io::Error::new(
-        io::ErrorKind::InvalidData,
-        "oversized proxy head",
-    ))
 }
 
 fn parse_connect(head: &str) -> Option<(String, u16, String)> {
@@ -338,13 +405,18 @@ fn parse_connect(head: &str) -> Option<(String, u16, String)> {
     Some((host.to_ascii_lowercase(), port, token.to_string()))
 }
 
-fn write_response(stream: &mut TcpStream, status: &str) -> io::Result<()> {
-    stream.write_all(format!("HTTP/1.1 {status}\r\nContent-Length: 0\r\n\r\n").as_bytes())
+async fn write_response(stream: &mut tokio::net::TcpStream, status: &str) -> io::Result<()> {
+    within_head_timeout(
+        stream.write_all(format!("HTTP/1.1 {status}\r\nContent-Length: 0\r\n\r\n").as_bytes()),
+    )
+    .await
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
 
     #[test]
     fn rejects_empty_or_unsafe_canonical_nethosts() {
@@ -448,5 +520,118 @@ mod tests {
         let (client, server) = connected_pair();
         assert!(tunnels.register(client, server, &shutdown).is_err());
         assert_eq!(tunnels.len(), 0);
+    }
+
+    /// Send a CONNECT for `localhost:port` carrying the lease token.
+    fn send_connect(stream: &mut TcpStream, port: u16, token: &str) {
+        stream
+            .write_all(
+                format!(
+                    "CONNECT localhost:{port} HTTP/1.1\r\n\
+                     Proxy-Authorization: Bearer {token}\r\n\r\n"
+                )
+                .as_bytes(),
+            )
+            .unwrap();
+    }
+
+    /// Read a response head from the relay.
+    fn read_response(stream: &mut TcpStream) -> String {
+        let mut head = Vec::new();
+        let mut byte = [0_u8; 1];
+        while !head.ends_with(b"\r\n\r\n") {
+            stream.read_exact(&mut byte).unwrap();
+            head.push(byte[0]);
+        }
+        String::from_utf8(head).unwrap()
+    }
+
+    #[test]
+    fn a_tunnel_carries_bytes_both_ways_and_revocation_closes_it() {
+        let service = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = service.local_addr().unwrap().port();
+        let proxy = GuestNetworkProxy::start_at(
+            "127.0.0.1:0".parse().unwrap(),
+            vec!["localhost".into()],
+            false,
+        )
+        .unwrap();
+        let mut client = TcpStream::connect(proxy.binding().endpoint).unwrap();
+        client
+            .set_read_timeout(Some(Duration::from_secs(10)))
+            .unwrap();
+        send_connect(&mut client, port, &proxy.binding().token);
+        assert!(read_response(&mut client).starts_with("HTTP/1.1 200"));
+        let (mut upstream, _) = service.accept().unwrap();
+        upstream
+            .set_read_timeout(Some(Duration::from_secs(10)))
+            .unwrap();
+
+        client.write_all(b"ping").unwrap();
+        let mut buf = [0_u8; 4];
+        upstream.read_exact(&mut buf).unwrap();
+        assert_eq!(&buf, b"ping");
+        upstream.write_all(b"pong").unwrap();
+        client.read_exact(&mut buf).unwrap();
+        assert_eq!(&buf, b"pong");
+
+        proxy.revoke();
+        let mut byte = [0_u8; 1];
+        match client.read(&mut byte) {
+            Ok(0) => {}
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    io::ErrorKind::ConnectionReset | io::ErrorKind::BrokenPipe
+                ) => {}
+            result => panic!("active tunnel survived revoke: {result:?}"),
+        }
+    }
+
+    #[test]
+    fn connections_past_the_limit_wait_for_a_free_slot() {
+        let service = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = service.local_addr().unwrap().port();
+        let proxy = GuestNetworkProxy::start_limited(
+            "127.0.0.1:0".parse().unwrap(),
+            vec!["localhost".into()],
+            false,
+            1,
+        )
+        .unwrap();
+        let token = proxy.binding().token.clone();
+
+        // The one slot: a tunnel that stays open.
+        let mut first = TcpStream::connect(proxy.binding().endpoint).unwrap();
+        first
+            .set_read_timeout(Some(Duration::from_secs(10)))
+            .unwrap();
+        send_connect(&mut first, port, &token);
+        assert!(read_response(&mut first).starts_with("HTTP/1.1 200"));
+        let (held, _) = service.accept().unwrap();
+
+        // The kernel queues a second connection; the relay leaves it there.
+        let mut second = TcpStream::connect(proxy.binding().endpoint).unwrap();
+        send_connect(&mut second, port, &token);
+        second
+            .set_read_timeout(Some(Duration::from_millis(300)))
+            .unwrap();
+        let mut byte = [0_u8; 1];
+        match second.read(&mut byte) {
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+                ) => {}
+            result => panic!("a connection past the limit was served: {result:?}"),
+        }
+
+        // Closing the tunnel frees the slot; the waiting CONNECT is served.
+        drop(first);
+        drop(held);
+        second
+            .set_read_timeout(Some(Duration::from_secs(10)))
+            .unwrap();
+        assert!(read_response(&mut second).starts_with("HTTP/1.1 200"));
     }
 }

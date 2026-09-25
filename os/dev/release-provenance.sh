@@ -64,6 +64,9 @@ hardware_profile="${TILO_HARDWARE_PROFILE:-generic}"
 release_architecture="${TILO_RELEASE_ARCHITECTURE:-}"
 firmware_candidate="${TILO_FIRMWARE_CANDIDATE:-}"
 firmware_manifest="${TILO_FIRMWARE_MANIFEST_SHA256:-}"
+windows_input_class="${TILO_WINDOWS_PROVIDER_INPUT_CLASS:-repository-pinned}"
+fex_payload_ref="${FEX_PAYLOAD_REF:-}"
+windows_guest_ref="${WINDOWS_GUEST_REF:-}"
 case "$hardware_profile" in
   generic)
     [ -z "$firmware_candidate$firmware_manifest" ] \
@@ -76,6 +79,18 @@ case "$hardware_profile" in
        && "$firmware_manifest" =~ ^[0-9a-f]{64}$ ]] \
       || { printf 'Lenovo provenance requires pinned board firmware\n' >&2; exit 1; } ;;
   *) printf 'unsupported hardware profile in provenance\n' >&2; exit 1 ;;
+esac
+case "$windows_input_class" in
+  repository-pinned) ;;
+  development-only)
+    [ "$hardware_profile" = lenovo-83ed ] && [ "$release_architecture" = aarch64 ] \
+      || { printf 'development Windows provider requires Lenovo aarch64 provenance\n' >&2; exit 1; }
+    require_digest_ref FEX_PAYLOAD_REF "$fex_payload_ref"
+    require_digest_ref WINDOWS_GUEST_REF "$windows_guest_ref"
+    [[ "$fex_payload_ref" =~ ^code\.podesta\.ai/qos/[a-z0-9][a-z0-9._/-]*@sha256:[0-9a-f]{64}$ \
+       && "$windows_guest_ref" =~ ^code\.podesta\.ai/qos/[a-z0-9][a-z0-9._/-]*@sha256:[0-9a-f]{64}$ ]] \
+      || { printf 'development Windows provider needs paired registry digests\n' >&2; exit 1; } ;;
+  *) printf 'unsupported Windows provider input class in provenance\n' >&2; exit 1 ;;
 esac
 printf '%s' "$release_children" | jq -e '
   type == "array"
@@ -101,6 +116,9 @@ jq -n \
   --arg release_architecture "$release_architecture" \
   --arg firmware_candidate "$firmware_candidate" \
   --arg firmware_manifest "$firmware_manifest" \
+  --arg windows_input_class "$windows_input_class" \
+  --arg fex_payload_ref "$fex_payload_ref" \
+  --arg windows_guest_ref "$windows_guest_ref" \
   --argjson release_children "$release_children" \
   --arg generation "$TILO_GENERATION" \
   --arg epoch "$SOURCE_DATE_EPOCH" \
@@ -117,7 +135,12 @@ jq -n \
           end
         + if ($kernels | length) == 1 then {}
           else {kernelInputs: $kernels}
-          end),
+          end
+        + if $windows_input_class == "development-only" then
+            {windowsProvider: {inputClass: "development-only",
+              runtimeAcceptanceVerified: false, fexRef: $fex_payload_ref,
+              guestRef: $windows_guest_ref}}
+          else {} end),
       internalParameters: {
         sourceDateEpoch: ($epoch|tonumber),
         expectedReleaseDigest: $digest
@@ -134,6 +157,9 @@ jq -n \
         + if $firmware_candidate == "" then []
           else [{uri: $firmware_candidate}]
           end
+        + if $windows_input_class == "development-only" then
+            [{uri: $fex_payload_ref}, {uri: $windows_guest_ref}]
+          else [] end
       )
     },
     runDetails: {

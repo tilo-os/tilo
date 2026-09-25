@@ -438,6 +438,13 @@ impl SettingsApp {
     /// Dispatch to the per-category pane body.
     fn build_pane_body(&self) -> Box<dyn Widget> {
         match self.selected {
+            // A capture never waits for NetworkManager; it renders the
+            // loaded pane without host networks.
+            Category::Network if self.deterministic_hardware_for_shot => Box::new(
+                panes::network::NetworkPane::new_demo(Vec::new())
+                    .with_command_state(&self.local_pane_command)
+                    .with_operation_status(&self.local_operation_status),
+            ),
             Category::Network => Box::new(
                 panes::network::NetworkPane::new()
                     .with_command_state(&self.local_pane_command)
