@@ -50,10 +50,14 @@ scenario still need to call them as one resumable workflow.
 
 The maintained Windows ARM64 `tilo-vm scenario install` path uses WHPX and
 attaches the reviewed sparse source raw as its target. It drives the guided
-installer, checks the first VM boot, and writes a checked guest proof beside
-the scenario result. Keep the resulting `vm-install-proof-checked.json` for
-the source receipt. Small component changes can continue through `tilo-vm`
-slots without repeating disk installation.
+installer and writes a checked guest proof beside the scenario result. The
+Lenovo target uses `--skip-target-boot` because QEMU virt cannot establish its
+board-specific first boot. This source proof is marked `first_boot_verified:
+false`; a separate generic CI-signed target must complete the full installer
+and first-boot cycle before physical copying. Keep the resulting
+`vm-install-proof-checked.json` for the source receipt. Small component
+changes can continue through `tilo-vm` slots without repeating disk
+installation.
 
 The backend command contract is:
 
@@ -62,7 +66,7 @@ python os/dev/allocate-windows-direct-final-install.py prepare --root-gib 45 --o
 python os/dev/allocate-windows-direct-final-install.py execute --request request.json --confirm-request-sha256 <sha256> --confirm-disk-id <disk-id> --confirm-recovery-protector-id <id> --confirm-recovery-key-backed-up --output realized-plan.json
 python os/dev/prepare-windows-direct-source.py template --plan realized-plan.json --output source.raw
 python os/dev/prepare-windows-direct-source.py verify-template --manifest source.raw.manifest.json --source-raw source.raw
-tilo-vm scenario install --medium C:\path\to\ci-installer.qcow2 --layout guided-alongside --target-disk source.raw --encrypt passphrase --graphics software
+tilo-vm scenario install --medium C:\path\to\ci-installer.qcow2 --layout guided-alongside --target-disk source.raw --encrypt passphrase --graphics software --skip-target-boot
 python os/dev/prepare-windows-direct-source.py verify-template --manifest source.raw.manifest.json --source-raw source.raw
 python os/dev/prepare-windows-direct-source.py finalize --plan realized-plan.json --source-raw source.raw
 python os/dev/prepare-windows-direct-source.py receipt --plan realized-plan.json --source-raw source.raw --ci-image code.podesta.ai/qos/tilo@sha256:<digest> --ci-index-manifest ci-arm64-manifest.json --ci-child-manifest ci-arm64-manifest.json --vm-proof-checked vm-install-proof-checked.json --verify-key keys/cosign.pub --cosign-command-json cosign-runner.json --cosign-key-arg /mnt/c/path/to/keys/cosign.pub --output source-receipt.json
