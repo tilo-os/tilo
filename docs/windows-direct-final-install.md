@@ -69,6 +69,36 @@ python os/dev/prepare-windows-direct-source.py receipt --plan realized-plan.json
 python os/dev/copy-windows-direct-final-install.py execute --plan realized-plan.json --source-raw source.raw --source-receipt source-receipt.json --confirm-disk-id <disk-id> --ci-image code.sandbox.example/qos/tilo@sha256:<digest> --ci-index-manifest ci-arm64-manifest.json --ci-child-manifest ci-arm64-manifest.json --vm-proof-checked vm-install-proof-checked.json --verify-key keys/cosign.pub --cosign-command-json cosign-runner.json --cosign-key-arg /mnt/c/path/to/keys/cosign.pub --output final-readback.json
 ```
 
+For a guest image built with the VM install-proof helper, the WHPX scenario
+attaches a dedicated named virtio serial port, visible in the guest at
+`/dev/virtio-ports/org.tilo.vm-install-proof`. After `tilo-install` has closed
+the LUKS target successfully, it emits one
+`TILO_VM_INSTALL_PROOF_V1=<compact JSON>` line to that port. No backend logs
+or secrets are sent to this channel. The JSON schema is
+`tilo.vm-install-image-proof.v1`; it contains `architecture` (`arm64`),
+`booted_image_digest`,
+`installed_image_digest`, `composefs_digest`, `target_uki_sha256`, `disk_guid`,
+and `partuuids` with `efi`, `boot`, and `root` fields. The guest derives those
+from `bootc status`, the installed deployment `.origin`, the promoted target
+UKI, and `blkid`; it refuses any mismatch. The scenario must compare both
+image digests to the separately verified CI OCI digest and the GPT identities
+to the VM source **before** `finalize` rewrites PARTUUIDs. It must also check
+the UKI in the source ESP against this proof and the CI-signed boot binding.
+The port is the VM-only opt-in signal; the backend also checks
+`systemd-detect-virt --vm`. The line appears only after successful backend
+completion. No supplied `--ci-image` argument alone establishes this
+connection.
+
+The two guest image digest fields are the platform-specific OCI manifest
+digest (`sha256:` plus 64 lowercase hex), as reported by `bootc status` and
+the installed `.origin`. The CI pin may instead name a multiarch index. In
+that case, the host must verify the signed index at its exact digest, parse
+its OCI descriptors, select exactly one `linux/arm64` child manifest, and
+compare the guest digest to that child. If the CI pin names a single image
+manifest, compare it directly. The composefs digest is 128 lowercase hex
+without a prefix; the UKI hash is 64 lowercase hex without a prefix; GPT IDs
+are lowercase hyphenated UUIDs.
+
 `verify-template` prints a JSON record with `disk_guid` and
 `final_partuuids` (`efi`, `boot`, `root`). Before the VM install the latter is
 empty; after the install it contains the guest-created GPT identities. The
