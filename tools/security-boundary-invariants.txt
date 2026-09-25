@@ -44,6 +44,7 @@ os/tests/selinux_policy_store_invariants.sh
 os/tests/first_boot_service_readiness.sh
 os/tests/release_freshness_security.sh
 os/tests/installer_target_invariants.sh
+os/tests/test_target_uki_projection.py
 os/tests/rollback-initrd-hook.sh
 os/tests/tilo_root_discovery.sh
 os/tests/authenticode_envelope.sh
