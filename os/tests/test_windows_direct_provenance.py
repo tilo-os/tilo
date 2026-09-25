@@ -345,7 +345,7 @@ class ProvenanceTests(unittest.TestCase):
                 board = proof.signed_medium_identity(path, ci_proof, key)
                 self.assertIn("verify-blob", runner.call_args.args[0])
             generic = dict(board, target_profile="generic", target_image=base,
-                           qcow2_sha256="f" * 64)
+                           qcow2_sha256="f" * 64, run_id="13", run_attempt="2")
             proof.checked_medium_pair(board, generic,
                                       {"first_boot_verified": False,
                                        "installer_medium_sha256": "d" * 64},
