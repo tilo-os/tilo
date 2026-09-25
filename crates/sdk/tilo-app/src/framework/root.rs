@@ -26,6 +26,8 @@ pub(crate) struct ResourceRoot<R: Resource> {
     label: String,
     live: Live<R>,
     updaters: Updaters<R>,
+    /// The live revision bound controls last followed.
+    followed: std::cell::Cell<u64>,
     _alive: Rc<()>,
     dispatch: Dispatcher<R>,
     saved: LocalState<RecordSaveStatus>,
@@ -59,6 +61,7 @@ impl<R: Resource> ResourceRoot<R> {
             label,
             live,
             updaters,
+            followed: std::cell::Cell::new(0),
             _alive: alive,
             dispatch,
             saved,
@@ -88,14 +91,22 @@ impl<R: Resource> ResourceRoot<R> {
         }
     }
 
+    pub(crate) fn live(&self) -> &Live<R> {
+        &self.live
+    }
+
     /// Follow the document when it moved — a local action, a
     /// collaborator's change, an undo or a restore — reading only what the
     /// change touched.
     fn refresh(&self, doc: &mut AutoCommit) {
-        match self.live.sync(doc) {
-            Ok(true) => self.updaters.run(&self.live.get()),
-            Ok(false) => {}
-            Err(error) => tracing::warn!(%error, kind = R::KIND, "resource unreadable"),
+        if let Err(error) = self.live.sync(doc) {
+            tracing::warn!(%error, kind = R::KIND, "resource unreadable");
+        }
+        // A surface may have synced the state itself after its own edit.
+        let revision = self.live.revision();
+        if revision != self.followed.get() {
+            self.followed.set(revision);
+            self.updaters.run(&self.live.get());
         }
     }
 }
@@ -205,6 +216,18 @@ impl<R: Resource> Decorator for ResourceRoot<R> {
         )];
         resources.extend(self.content.resources(doc));
         resources
+    }
+
+    // The undo boundary of a surface's immediate actions this event; the
+    // host records one step per event and author.
+    fn take_committed_action(&mut self) -> Option<Vec<ui_core::automerge::ChangeHash>> {
+        self.dispatch.take_committed()
+    }
+
+    // A surface's step stays open for the actions that continue it (the
+    // letters of a word), which report no boundary of their own.
+    fn keeps_undo_step_open(&self) -> bool {
+        self.dispatch.keeps_step_open()
     }
 
     fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {

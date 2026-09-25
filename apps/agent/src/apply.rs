@@ -156,11 +156,11 @@ impl Editor {
 
     /// Newest non-genesis revision, suitable as one end of a run step.
     pub fn latest_entry_id(&mut self) -> Option<ui::HistoryEntryId> {
-        qdoc::history::versions(&mut self.doc)
+        tilo_resource::history::versions(&mut self.doc)
             .into_iter()
             .rev()
-            .find(|version| !qdoc::history::is_schema_genesis(version))
-            .map(|version| ui::history_source::entry_id_from_hash(&version.change_hash))
+            .find(|version| !qdoc::model::is_schema_genesis(version))
+            .map(|version| ui::history_source::entry_id_from_hash(&version.hash.to_string()))
     }
 
     /// The tree the app publishes for this document, seen from `view`.
@@ -449,7 +449,7 @@ impl Editor {
         // transaction is the app's call, not this one's, so it is said out
         // loud rather than left to look like a rendering fault elsewhere.
         if self.doc.pending_ops() > 0 {
-            qdoc::history::commit_stamped_with_message(
+            tilo_resource::history::commit_stamped_with_message(
                 &mut self.doc,
                 self.history_context
                     .as_ref()
@@ -615,7 +615,7 @@ impl Editor {
         if self.doc.pending_ops() == 0 {
             return;
         }
-        qdoc::history::commit_stamped_with_message(
+        tilo_resource::history::commit_stamped_with_message(
             &mut self.doc,
             self.history_context
                 .as_ref()
@@ -815,7 +815,7 @@ mod tests {
             .expect("apply")
             .expect("a plain write is a change to send");
 
-        let versions = qdoc::history::versions(&mut ed.doc);
+        let versions = tilo_resource::history::versions(&mut ed.doc);
         assert!(!versions.is_empty(), "the edit produced no version to date");
         assert!(
             versions.iter().all(|v| v.time_ms > 0),
