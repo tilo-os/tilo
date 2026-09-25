@@ -1,0 +1,27 @@
+name: Development / CI disk device probe
+
+on:
+  workflow_dispatch:
+
+jobs:
+  probe:
+    runs-on: runner-large-arm64
+    timeout-minutes: 10
+    steps:
+      - name: Probe disposable guest device access
+        shell: bash
+        run: |
+          set -euxo pipefail
+          uname -a
+          id
+          sudo -n true
+          ls -l /dev/fuse /dev/loop-control /dev/loop* 2>&1 || true
+          for device in fuse loop-control; do
+            if [[ -e /sys/class/misc/$device/dev && ! -e /dev/$device ]]; then
+              IFS=: read -r major minor < "/sys/class/misc/$device/dev"
+              sudo -n mknod -m 0600 "/dev/$device" c "$major" "$minor"
+            fi
+          done
+          ls -l /dev/fuse /dev/loop-control 2>&1 || true
+          if [[ -c /dev/fuse ]]; then sudo -n python3 -c 'open("/dev/fuse", "rb").close()'; fi
+          if [[ -c /dev/loop-control ]]; then sudo -n losetup --find; fi
