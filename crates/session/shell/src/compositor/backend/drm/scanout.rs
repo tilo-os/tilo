@@ -84,7 +84,7 @@ impl Card {
 /// aliases exist; ordinary presentation continues using dumb buffers until
 /// the complete direct path is ready.
 struct GbmScanoutBuffers {
-    _device: GbmDevice<Card>,
+    device: GbmDevice<Card>,
     buffers: [gbm::BufferObject<()>; 2],
     dma_fds: [OwnedFd; 2],
     fbs: [framebuffer::Handle; 2],
@@ -165,7 +165,7 @@ impl GbmScanoutBuffers {
         };
         let fbs = [fb0, fb1];
         Ok(Self {
-            _device: device,
+            device,
             buffers,
             dma_fds,
             fbs,
@@ -191,7 +191,7 @@ impl GbmScanoutBuffers {
 impl Drop for GbmScanoutBuffers {
     fn drop(&mut self) {
         for fb in self.fbs {
-            if let Err(error) = self._device.destroy_framebuffer(fb) {
+            if let Err(error) = self.device.destroy_framebuffer(fb) {
                 tracing::debug!(?fb, %error, "failed to destroy GBM framebuffer during teardown");
             }
         }
@@ -248,6 +248,11 @@ fn retirement_after_poll(
 
 impl DirectScanoutTargets {
     /// Build both targets transactionally. No CRTC state changes here.
+    ///
+    /// # Errors
+    ///
+    /// Returns the reason when GBM cannot allocate both scanout buffers or
+    /// the bridge cannot import them as render targets.
     pub fn new(scanout: &DrmScanout, bridge: &VelloDrmBridge) -> Result<Self, String> {
         let buffers = scanout.allocate_gbm_scanout_buffers()?;
         let import = |index: usize| -> Result<ui::dmabuf_import::ImportedRenderTarget, String> {
@@ -1490,7 +1495,7 @@ impl DrmScanout {
     }
 
     /// Whether event-driven flips are still available. Direct scanout does
-    /// not activate on the legacy dirtyfb/set_crtc fallback because a second
+    /// not activate on the legacy `dirtyfb`/`set_crtc` fallback because a second
     /// renderer-owned buffer could otherwise be reused without a retirement
     /// event.
     pub fn event_pageflips_available(&self) -> bool {
@@ -1578,6 +1583,10 @@ impl DrmScanout {
 
     /// Present one frame, draining this scanout's own page-flip completions first — the single-output
     /// entry point. `fill` writes the back buffer in XRGB8888 given the mapped slice and row pitch; `cursor` is consulted only when the hardware cursor is unavailable.
+    ///
+    /// # Errors
+    ///
+    /// Returns whatever error `fill` returns; the frame is then not flipped.
     pub fn present_into<F, E>(&mut self, cursor: Option<(f64, f64)>, fill: F) -> Result<bool, E>
     where
         F: FnOnce(&mut [u8], usize) -> Result<(), E>,
@@ -1957,7 +1966,7 @@ impl DrmScanout {
                 return (retirement, completed);
             }
             let remaining = deadline.saturating_duration_since(now);
-            let timeout_ms = remaining.as_millis().clamp(1, i32::MAX as u128) as i32;
+            let timeout_ms = i32::try_from(remaining.as_millis().max(1)).unwrap_or(i32::MAX);
             let mut fd = libc::pollfd {
                 fd: self.card.as_fd().as_raw_fd(),
                 events: libc::POLLIN,
@@ -1965,7 +1974,7 @@ impl DrmScanout {
             };
             // SAFETY: `fd` points to one valid pollfd for the duration of the
             // call and the borrowed card descriptor outlives it.
-            let ready = unsafe { libc::poll(&mut fd, 1, timeout_ms) };
+            let ready = unsafe { libc::poll(&raw mut fd, 1, timeout_ms) };
             if ready == 0 {
                 return (DirectRetirement::TimedOut, completed);
             }
@@ -2271,8 +2280,16 @@ fn paint_cursor_argb(dst: &mut [u8], pitch: usize, cursor_size: u32) {
     let bitmap = cursor::bitmap(CursorShape::Default, cursor_size);
     for y in 0..bitmap.height {
         for x in 0..bitmap.width {
-            let source = usize::try_from((y * bitmap.width + x) * 4).unwrap_or(usize::MAX);
-            let Some(pixel) = bitmap.rgba().get(source..source.saturating_add(4)) else {
+            let source = y
+                .saturating_mul(bitmap.width)
+                .saturating_add(x)
+                .saturating_mul(4);
+            let source = usize::try_from(source).unwrap_or(usize::MAX);
+            let Some(&[red, green, blue, alpha]) = bitmap
+                .rgba()
+                .get(source..source.saturating_add(4))
+                .and_then(|pixel| <&[u8; 4]>::try_from(pixel).ok())
+            else {
                 continue;
             };
             let destination = usize::try_from(y)
@@ -2280,7 +2297,7 @@ fn paint_cursor_argb(dst: &mut [u8], pitch: usize, cursor_size: u32) {
                 .saturating_mul(pitch)
                 .saturating_add(usize::try_from(x).unwrap_or(usize::MAX).saturating_mul(4));
             if let Some(target) = dst.get_mut(destination..destination.saturating_add(4)) {
-                target.copy_from_slice(&[pixel[2], pixel[1], pixel[0], pixel[3]]);
+                target.copy_from_slice(&[blue, green, red, alpha]);
             }
         }
     }
@@ -2354,6 +2371,7 @@ fn paint_completed<E>(result: Result<(), E>) -> Result<bool, E> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ui::ColorCompat as _;
 
     #[test]
     fn connected_virtual_connector_with_usable_mode_is_scanout_eligible() {
@@ -2740,13 +2758,16 @@ mod tests {
         paint_cursor_argb(&mut buf, pitch, 24);
 
         // The explicit (0,0) hotspot sits immediately beside the first
-        // antialiased black outline; it need not force an opaque corner.
+        // antialiased dark outline; it need not force an opaque corner.
+        let (fill, outline) = cursor::palette();
+        let outline_max = outline.r().max(outline.g()).max(outline.b());
         assert_eq!(cursor::bitmap(CursorShape::Default, 24).hotspot, (0, 0));
         assert!(
-            buf[..8 * pitch]
-                .chunks_exact(4)
-                .any(|pixel| pixel[0] == 0 && pixel[1] == 0 && pixel[2] == 0 && pixel[3] > 0),
-            "tip neighbourhood should contain the black outline"
+            buf[..8 * pitch].chunks_exact(4).any(|pixel| pixel[3] > 0
+                && pixel[0] <= outline_max
+                && pixel[1] <= outline_max
+                && pixel[2] <= outline_max),
+            "tip neighbourhood should contain the dark outline"
         );
 
         // A blank area (far bottom-right) stays fully transparent.
@@ -2757,11 +2778,11 @@ mod tests {
             "blank cursor area is transparent"
         );
 
-        // There is at least one white fill pixel somewhere.
-        let any_white = buf
+        // There is at least one fully covered fill pixel somewhere (BGRA).
+        let any_fill = buf
             .chunks_exact(4)
-            .any(|p| p[0] == 0xFF && p[1] == 0xFF && p[2] == 0xFF && p[3] == 0xFF);
-        assert!(any_white, "cursor must contain white fill pixels");
+            .any(|p| p == [fill.b(), fill.g(), fill.r(), 0xFF]);
+        assert!(any_fill, "cursor must contain opaque fill pixels");
     }
 
     #[test]

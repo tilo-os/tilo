@@ -1692,14 +1692,11 @@ mod tests {
 
     #[test]
     fn maximized_restore_band_takes_pointer_before_the_client() {
-        let mut fb = FrameBuilder::new((1280, 800));
-        let group = {
-            let chrome = fb.chrome();
-            let mut tree = chrome.tree_mut();
-            let group = tree.desktop.workspaces[0].strips[0].window_groups[0].id;
-            tree.desktop.workspaces[0].strips[0].window_groups[0].maximized = true;
-            group
-        };
+        let mut tree = crate::shell::state::WorkspaceTree::bootstrap_demo();
+        let first = &mut tree.desktop.workspaces[0].strips[0].window_groups[0];
+        first.maximized = true;
+        let group = first.id;
+        let mut fb = FrameBuilder::with_tree(tree, (1280, 800));
         fb.with_chrome(|chrome| chrome.set_maximized_group(Some(group)));
         let _ = fb.paint_settled();
 

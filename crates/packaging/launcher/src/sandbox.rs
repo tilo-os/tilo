@@ -336,7 +336,9 @@ fn push_continuity_environment(argv: &mut Vec<String>) {
     // this diagnostic must never turn into a sandbox write primitive.
     if let Ok(value) = std::env::var("TILO_STARTUP_METRICS_PATH")
         && value.starts_with("/run/tilo/app/startup-")
-        && value.ends_with(".json")
+        && std::path::Path::new(&value)
+            .extension()
+            .is_some_and(|extension| extension == "json")
         && value.len() <= 160
         && value
             .bytes()
