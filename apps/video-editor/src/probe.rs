@@ -117,6 +117,11 @@ impl std::error::Error for ProbeError {}
 /// Fails with a [`ProbeError`] when the file holds nothing that can honestly
 /// be described as media — the caller must refuse the import and show
 /// [`ProbeError`]'s message rather than adding an item with invented metadata.
+///
+/// # Errors
+///
+/// [`ProbeError::Io`] when the file cannot be read, otherwise whatever
+/// [`probe_bytes`] reports for its contents.
 pub fn probe_file(path: &Path) -> Result<ProbedMedia, ProbeError> {
     // Read the file to parse its container header. Cap very large files: the
     // metadata we need lives in the header + `moov`, and a faststart MP4 puts
@@ -146,6 +151,12 @@ pub fn probe_file(path: &Path) -> Result<ProbedMedia, ProbeError> {
 /// The order matters: every container we can genuinely parse is tried first,
 /// so a real file is never mistaken for something else. Only bytes that match
 /// no media header at all reach the not-media check.
+///
+/// # Errors
+///
+/// [`ProbeError::Empty`] for no bytes, [`ProbeError::NotMedia`] when the bytes
+/// are positively something else, and [`ProbeError::Unrecognised`] when neither
+/// the header nor `path`'s extension names a media format.
 pub fn probe_bytes(data: &[u8], path: &Path) -> Result<ProbedMedia, ProbeError> {
     if data.is_empty() {
         return Err(ProbeError::Empty);
@@ -233,7 +244,7 @@ fn non_media_signature(d: &[u8]) -> Option<&'static str> {
 /// read as clean text are never a container we failed to parse.
 fn textual_kind(d: &[u8]) -> Option<&'static str> {
     let d = d.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(d); // UTF-8 BOM
-    let head = &d[..d.len().min(1024)];
+    let head = d.get(..1024).unwrap_or(d);
     if head.is_empty() {
         return None;
     }
@@ -252,13 +263,17 @@ fn textual_kind(d: &[u8]) -> Option<&'static str> {
     }
     // Must decode as UTF-8 up to the last whole character in the window.
     let mut end = head.len();
-    while end > 0 && std::str::from_utf8(&head[..end]).is_err() {
+    while end > 0
+        && head
+            .get(..end)
+            .is_some_and(|h| std::str::from_utf8(h).is_err())
+    {
         end -= 1;
         if head.len() - end > 4 {
             return None; // not a truncated multi-byte char: genuinely not UTF-8
         }
     }
-    let text = std::str::from_utf8(&head[..end]).ok()?;
+    let text = std::str::from_utf8(head.get(..end)?).ok()?;
     let lower = text.trim_start().to_ascii_lowercase();
     if lower.starts_with("<!doctype html") || lower.starts_with("<html") {
         return Some("an HTML page");
@@ -357,36 +372,37 @@ fn fallback_from_extension(path: &Path) -> Result<ProbedMedia, ProbeError> {
 // ---- magic-byte sniffers --------------------------------------------------
 
 fn is_png(d: &[u8]) -> bool {
-    d.len() >= 8 && &d[0..8] == b"\x89PNG\r\n\x1a\n"
+    d.starts_with(b"\x89PNG\r\n\x1a\n")
 }
 fn is_jpeg(d: &[u8]) -> bool {
-    d.len() >= 3 && d[0] == 0xFF && d[1] == 0xD8 && d[2] == 0xFF
+    d.starts_with(&[0xFF, 0xD8, 0xFF])
 }
 fn is_wav(d: &[u8]) -> bool {
-    d.len() >= 12 && &d[0..4] == b"RIFF" && &d[8..12] == b"WAVE"
+    d.starts_with(b"RIFF") && d.get(8..12) == Some(b"WAVE".as_slice())
 }
 fn is_isobmff(d: &[u8]) -> bool {
     // The first box is normally `ftyp`; be lenient and also accept a leading
     // `moov` / `mdat` / `free` / `skip` / `wide` box (some `.mov` files).
-    d.len() >= 8
-        && matches!(
-            &d[4..8],
-            b"ftyp" | b"moov" | b"mdat" | b"free" | b"skip" | b"wide"
-        )
+    matches!(
+        d.get(4..8),
+        Some(b"ftyp" | b"moov" | b"mdat" | b"free" | b"skip" | b"wide")
+    )
 }
 fn is_ebml(d: &[u8]) -> bool {
     // Both Matroska and WebM open with the EBML header magic `1A 45 DF A3`.
-    d.len() >= 4 && d[0..4] == [0x1A, 0x45, 0xDF, 0xA3]
+    d.starts_with(&[0x1A, 0x45, 0xDF, 0xA3])
 }
 /// Whether `d` (with `path`'s extension as a hint) is an MP3 stream: an `ID3v2`
 /// tag, or a raw MPEG audio frame sync in the first bytes. Extension-only files
 /// still fall through to the frame-sync scan, so a mislabelled file is rejected
 /// rather than reported with fabricated numbers.
 fn looks_like_mp3(d: &[u8], path: &Path) -> bool {
-    if d.len() >= 3 && &d[0..3] == b"ID3" {
+    if d.starts_with(b"ID3") {
         return true;
     }
-    if d.len() >= 2 && d[0] == 0xFF && (d[1] & 0xE0) == 0xE0 {
+    if let [0xFF, second, ..] = d
+        && (second & 0xE0) == 0xE0
+    {
         return true;
     }
     let ext = path
@@ -422,7 +438,7 @@ fn be_u16(d: &[u8], at: usize) -> Option<u16> {
 fn png_dimensions(d: &[u8]) -> Option<(u32, u32)> {
     // IHDR is the first chunk: [len:4][ "IHDR" ][ width:4 ][ height:4 ]... at
     // byte 8. Width/height are big-endian at offsets 16 and 20.
-    if d.len() < 24 || &d[12..16] != b"IHDR" {
+    if d.len() < 24 || d.get(12..16) != Some(b"IHDR".as_slice()) {
         return None;
     }
     Some((be_u32(d, 16)?, be_u32(d, 20)?))
@@ -433,11 +449,14 @@ fn jpeg_dimensions(d: &[u8]) -> Option<(u32, u32)> {
     // non-frame markers C4/C8/CC), whose payload holds height then width.
     let mut i = 2usize; // skip SOI (FFD8)
     while i + 9 < d.len() {
-        if d[i] != 0xFF {
+        // `i + 9 < d.len()`, so both of the marker's bytes are in range.
+        let (Some(&lead), Some(&marker)) = (d.get(i), d.get(i + 1)) else {
+            return None;
+        };
+        if lead != 0xFF {
             i += 1;
             continue;
         }
-        let marker = d[i + 1];
         // Standalone markers (RSTn, SOI, EOI, TEM) have no length.
         if (0xD0..=0xD9).contains(&marker) || marker == 0x01 {
             i += 2;
@@ -474,7 +493,8 @@ fn parse_wav(d: &[u8]) -> Option<ProbedMedia> {
     let mut audio_format = 0u16;
     let mut data_len = 0u32;
     while i + 8 <= d.len() {
-        let id = &d[i..i + 4];
+        // The loop condition keeps the four id bytes in range.
+        let id = d.get(i..i + 4)?;
         let size = le_u32(d, i + 4)? as usize;
         let body = i + 8;
         match id {
@@ -573,10 +593,10 @@ fn iter_boxes(data: &[u8]) -> Vec<BoxRef<'_>> {
 }
 
 /// First child box of `typ` within `data`.
-fn child<'a>(data: &'a [u8], typ: &[u8; 4]) -> Option<&'a [u8]> {
+fn child(data: &[u8], typ: [u8; 4]) -> Option<&[u8]> {
     iter_boxes(data)
         .into_iter()
-        .find(|b| &b.typ == typ)
+        .find(|b| b.typ == typ)
         .map(|b| b.body)
 }
 
@@ -584,16 +604,16 @@ fn child<'a>(data: &'a [u8], typ: &[u8; 4]) -> Option<&'a [u8]> {
 fn descend<'a>(data: &'a [u8], path: &[&[u8; 4]]) -> Option<&'a [u8]> {
     let mut cur = data;
     for step in path {
-        cur = child(cur, step)?;
+        cur = child(cur, **step)?;
     }
     Some(cur)
 }
 
 fn parse_isobmff(data: &[u8]) -> Option<ProbedMedia> {
-    let moov = child(data, b"moov")?;
+    let moov = child(data, *b"moov")?;
 
     // Movie duration from mvhd.
-    let (timescale, duration_units) = child(moov, b"mvhd")
+    let (timescale, duration_units) = child(moov, *b"mvhd")
         .and_then(timescale_and_duration)
         .unwrap_or((0, 0));
     let duration = if timescale > 0 {
@@ -623,15 +643,15 @@ fn parse_isobmff(data: &[u8]) -> Option<ProbedMedia> {
         saw_audio |= is_audio;
 
         let stbl = descend(trak, &[b"mdia", b"minf", b"stbl"]);
-        let track_codec = stbl.and_then(|s| child(s, b"stsd")).and_then(stsd_codec);
+        let track_codec = stbl.and_then(|s| child(s, *b"stsd")).and_then(stsd_codec);
 
         if is_video && !saw_video_recorded(width, height, &codec) {
-            if let Some((w, h)) = child(trak, b"tkhd").and_then(tkhd_dims) {
+            if let Some((w, h)) = child(trak, *b"tkhd").and_then(tkhd_dims) {
                 width = w;
                 height = h;
             }
             if let Some(c) = &track_codec {
-                codec = c.clone();
+                codec.clone_from(c);
             }
             // Real frame rate: the track's own sample deltas (`stts`) over its
             // own media timescale (`mdhd`). That is the rate the container
@@ -644,7 +664,7 @@ fn parse_isobmff(data: &[u8]) -> Option<ProbedMedia> {
                 .and_then(timescale_and_duration)
                 .map_or(0, |(ts, _)| ts);
             if let Some(rate) = stbl
-                .and_then(|s| child(s, b"stts"))
+                .and_then(|s| child(s, *b"stts"))
                 .and_then(|stts| stts_frame_rate(stts, media_timescale))
             {
                 fps = rate;
@@ -693,9 +713,7 @@ fn timescale_and_duration(body: &[u8]) -> Option<(u32, u64)> {
             return None;
         }
         let ts = be_u32(body, 20)?;
-        let dur = u64::from_be_bytes([
-            body[24], body[25], body[26], body[27], body[28], body[29], body[30], body[31],
-        ]);
+        let dur = u64::from_be_bytes(body.get(24..32)?.try_into().ok()?);
         Some((ts, dur))
     } else {
         // 1 + 3 + 4 create + 4 modify = 12, then timescale(4), duration(4)
@@ -725,7 +743,7 @@ fn hdlr_type(body: &[u8]) -> Option<String> {
     if body.len() < 12 {
         return None;
     }
-    Some(String::from_utf8_lossy(&body[8..12]).trim().to_string())
+    Some(String::from_utf8_lossy(body.get(8..12)?).trim().to_string())
 }
 
 /// Codec four-CC from an `stsd` payload's first sample entry.
@@ -734,7 +752,7 @@ fn stsd_codec(body: &[u8]) -> Option<String> {
     if body.len() < 16 {
         return None;
     }
-    let fourcc = &body[12..16];
+    let fourcc = body.get(12..16)?;
     Some(String::from_utf8_lossy(fourcc).trim().to_string())
 }
 
@@ -774,7 +792,7 @@ fn stts_frame_rate(body: &[u8], timescale: u32) -> Option<f64> {
 // The EBML element IDs we care about, in their full (marker-retained) form.
 const EBML_SEGMENT: u64 = 0x1853_8067;
 const EBML_INFO: u64 = 0x1549_A966;
-const EBML_TIMESTAMP_SCALE: u64 = 0x2AD7_B1;
+const EBML_TIMESTAMP_SCALE: u64 = 0x2A_D7B1;
 const EBML_DURATION: u64 = 0x4489;
 const EBML_TRACKS: u64 = 0x1654_AE6B;
 const EBML_TRACK_ENTRY: u64 = 0xAE;
@@ -783,7 +801,7 @@ const EBML_VIDEO: u64 = 0xE0;
 const EBML_PIXEL_WIDTH: u64 = 0xB0;
 const EBML_PIXEL_HEIGHT: u64 = 0xBA;
 /// Nanoseconds per frame, stated by the track itself.
-const EBML_DEFAULT_DURATION: u64 = 0x23E3_83;
+const EBML_DEFAULT_DURATION: u64 = 0x23_E383;
 
 /// Read one EBML variable-length integer at `d[i..]`.
 ///
@@ -796,9 +814,7 @@ fn read_vint(d: &[u8], i: usize, keep_marker: bool) -> Option<(u64, usize)> {
         return None; // lengths beyond 8 bytes are not needed here
     }
     let len = first.leading_zeros() as usize + 1; // 1..=8
-    let Some(end) = i.checked_add(len) else {
-        return None;
-    };
+    let end = i.checked_add(len)?;
     if len > 8 || end > d.len() {
         return None;
     }
@@ -812,9 +828,7 @@ fn read_vint(d: &[u8], i: usize, keep_marker: bool) -> Option<(u64, usize)> {
         u64::from(first & mask)
     };
     for k in 1..len {
-        let Some(&byte) = d.get(i.saturating_add(k)) else {
-            return None;
-        };
+        let &byte = d.get(i.saturating_add(k))?;
         value = (value << 8) | u64::from(byte);
     }
     Some((value, len))
@@ -844,7 +858,11 @@ fn ebml_children(d: &[u8]) -> Vec<(u64, &[u8])> {
         } else {
             data_start + size as usize
         };
-        out.push((id, &d[data_start..data_end]));
+        // `data_start <= data_end <= d.len()` by the checks above.
+        let Some(data) = d.get(data_start..data_end) else {
+            break;
+        };
+        out.push((id, data));
         i = data_end;
     }
     out
@@ -864,12 +882,12 @@ fn ebml_uint(d: &[u8]) -> u64 {
 
 /// IEEE float from an EBML element payload (4 or 8 bytes; 0 otherwise).
 fn ebml_float(d: &[u8]) -> Option<f64> {
-    match d.len() {
-        4 => Some(f64::from(f32::from_be_bytes([d[0], d[1], d[2], d[3]]))),
-        8 => Some(f64::from_be_bytes([
-            d[0], d[1], d[2], d[3], d[4], d[5], d[6], d[7],
-        ])),
-        _ => None,
+    if let Ok(b) = <[u8; 4]>::try_from(d) {
+        Some(f64::from(f32::from_be_bytes(b)))
+    } else if let Ok(b) = <[u8; 8]>::try_from(d) {
+        Some(f64::from_be_bytes(b))
+    } else {
+        None
     }
 }
 
@@ -911,13 +929,12 @@ fn parse_ebml(d: &[u8]) -> Option<ProbedMedia> {
                     }
                     // The track's own nanoseconds-per-frame, when it states one.
                     // Absent (the common WebM case) leaves fps unknown at 0.0.
-                    if fps == 0.0 {
-                        if let Some(ns) = ebml_find(entry, EBML_DEFAULT_DURATION)
+                    if fps == 0.0
+                        && let Some(ns) = ebml_find(entry, EBML_DEFAULT_DURATION)
                             .map(ebml_uint)
                             .filter(|&n| n > 0)
-                        {
-                            fps = 1e9 / ns as f64;
-                        }
+                    {
+                        fps = 1e9 / ns as f64;
                     }
                 }
                 Some(2) => saw_audio = true,
@@ -947,11 +964,9 @@ fn parse_ebml(d: &[u8]) -> Option<ProbedMedia> {
 // ---- MP3 (MPEG-1/2/2.5 Layer III) -----------------------------------------
 
 /// Read a 4-byte `ID3v2` syncsafe integer (7 bits per byte).
-fn syncsafe(b: &[u8]) -> usize {
-    ((b[0] as usize & 0x7F) << 21)
-        | ((b[1] as usize & 0x7F) << 14)
-        | ((b[2] as usize & 0x7F) << 7)
-        | (b[3] as usize & 0x7F)
+fn syncsafe(b: [u8; 4]) -> usize {
+    b.iter()
+        .fold(0usize, |acc, &byte| (acc << 7) | usize::from(byte & 0x7F))
 }
 
 /// One decoded MPEG audio frame header.
@@ -966,22 +981,6 @@ struct Mp3Header {
 }
 
 fn parse_mp3_frame_header(d: &[u8]) -> Option<Mp3Header> {
-    if d.len() < 4 || d[0] != 0xFF || (d[1] & 0xE0) != 0xE0 {
-        return None;
-    }
-    let version_bits = (d[1] >> 3) & 0x03; // 0=2.5,2=2,3=1 (1 reserved)
-    let layer_bits = (d[1] >> 1) & 0x03; // 1=Layer III
-    if version_bits == 1 || layer_bits != 1 {
-        return None; // only Layer III is handled
-    }
-    let mpeg1 = version_bits == 3;
-    let bitrate_index = (d[2] >> 4) & 0x0F;
-    let samplerate_index = (d[2] >> 2) & 0x03;
-    let padding = ((d[2] >> 1) & 0x01) as usize;
-    let channel_mode = (d[3] >> 6) & 0x03; // 3 = mono
-    if bitrate_index == 0 || bitrate_index == 0x0F || samplerate_index == 3 {
-        return None; // free-format / reserved
-    }
     // Layer III bitrate tables (kbps), indexed by bitrate_index.
     const BR_V1: [u32; 16] = [
         0, 32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320, 0,
@@ -989,18 +988,39 @@ fn parse_mp3_frame_header(d: &[u8]) -> Option<Mp3Header> {
     const BR_V2: [u32; 16] = [
         0, 8, 16, 24, 32, 40, 48, 56, 64, 80, 96, 112, 128, 144, 160, 0,
     ];
-    let bitrate_kbps = if mpeg1 { BR_V1 } else { BR_V2 }[bitrate_index as usize];
     // Sample-rate tables by MPEG version, indexed by samplerate_index.
-    const SR_V1: [u32; 3] = [44100, 48000, 32000];
-    const SR_V2: [u32; 3] = [22050, 24000, 16000];
-    const SR_V25: [u32; 3] = [11025, 12000, 8000];
-    let sample_rate = match version_bits {
+    const SR_V1: [u32; 3] = [44_100, 48_000, 32_000];
+    const SR_V2: [u32; 3] = [22_050, 24_000, 16_000];
+    const SR_V25: [u32; 3] = [11_025, 12_000, 8_000];
+    let &[b0, b1, b2, b3, ..] = d else {
+        return None;
+    };
+    if b0 != 0xFF || (b1 & 0xE0) != 0xE0 {
+        return None;
+    }
+    let version_bits = (b1 >> 3) & 0x03; // 0=2.5,2=2,3=1 (1 reserved)
+    let layer_bits = (b1 >> 1) & 0x03; // 1=Layer III
+    if version_bits == 1 || layer_bits != 1 {
+        return None; // only Layer III is handled
+    }
+    let mpeg1 = version_bits == 3;
+    let bitrate_index = (b2 >> 4) & 0x0F;
+    let samplerate_index = (b2 >> 2) & 0x03;
+    let padding = ((b2 >> 1) & 0x01) as usize;
+    let channel_mode = (b3 >> 6) & 0x03; // 3 = mono
+    if bitrate_index == 0 || bitrate_index == 0x0F || samplerate_index == 3 {
+        return None; // free-format / reserved
+    }
+    // Both indices are masked to fit their tables, so these lookups always hit.
+    let kbps = *if mpeg1 { BR_V1 } else { BR_V2 }.get(usize::from(bitrate_index))?;
+    let sample_rate = *match version_bits {
         3 => SR_V1,
         2 => SR_V2,
         _ => SR_V25,
-    }[samplerate_index as usize];
+    }
+    .get(usize::from(samplerate_index))?;
     let samples_per_frame = if mpeg1 { 1152 } else { 576 };
-    let bitrate_bps = bitrate_kbps * 1000;
+    let bitrate_bps = kbps * 1000;
     let _ = padding;
     Some(Mp3Header {
         mpeg1,
@@ -1014,17 +1034,19 @@ fn parse_mp3_frame_header(d: &[u8]) -> Option<Mp3Header> {
 fn parse_mp3(d: &[u8]) -> Option<ProbedMedia> {
     // Skip an ID3v2 tag if present.
     let mut off = 0usize;
-    if d.len() >= 10 && &d[0..3] == b"ID3" {
-        off = 10 + syncsafe(&d[6..10]);
+    if d.starts_with(b"ID3")
+        && let Some(size) = d.get(6..10).and_then(|s| <[u8; 4]>::try_from(s).ok())
+    {
+        off = 10 + syncsafe(size);
     }
     // Find the first valid frame sync.
     let mut header = None;
     let mut scan = off;
     let limit = d.len().saturating_sub(4);
     while scan <= limit {
-        if d[scan] == 0xFF
-            && (d[scan + 1] & 0xE0) == 0xE0
-            && let Some(h) = parse_mp3_frame_header(&d[scan..])
+        if d.get(scan) == Some(&0xFF)
+            && d.get(scan + 1).is_some_and(|b| (b & 0xE0) == 0xE0)
+            && let Some(h) = d.get(scan..).and_then(parse_mp3_frame_header)
         {
             header = Some((scan, h));
             break;
@@ -1047,7 +1069,8 @@ fn parse_mp3(d: &[u8]) -> Option<ProbedMedia> {
     };
     let xing_at = frame_off + 4 + side_info;
     if xing_at + 12 <= d.len()
-        && (&d[xing_at..xing_at + 4] == b"Xing" || &d[xing_at..xing_at + 4] == b"Info")
+        && d.get(xing_at..xing_at + 4)
+            .is_some_and(|tag| tag == b"Xing" || tag == b"Info")
     {
         let flags = be_u32(d, xing_at + 4)?;
         if flags & 0x1 != 0 {
@@ -1087,16 +1110,20 @@ mod tests {
     use super::*;
 
     // ---- box builder for crafting deterministic ISOBMFF test bytes ----
-    fn boxed(typ: &[u8; 4], payload: &[u8]) -> Vec<u8> {
+    fn boxed(typ: [u8; 4], payload: &[u8]) -> Vec<u8> {
         let size = (8 + payload.len()) as u32;
         let mut v = Vec::with_capacity(size as usize);
         v.extend_from_slice(&size.to_be_bytes());
-        v.extend_from_slice(typ);
+        v.extend_from_slice(&typ);
         v.extend_from_slice(payload);
         v
     }
 
     #[test]
+    #[expect(
+        clippy::similar_names,
+        reason = "each binding is named after the ISOBMFF box it holds"
+    )]
     fn parses_a_crafted_mp4_for_duration_dims_codec_and_fps() {
         // mvhd: v0, timescale 1000, duration 6000 → 6.0s.
         let mut mvhd = vec![0u8; 20];
@@ -1134,18 +1161,18 @@ mod tests {
         mdhd[16..20].copy_from_slice(&150_150u32.to_be_bytes()); // 150 × 1001
 
         let stbl = boxed(
-            b"stbl",
-            &[boxed(b"stsd", &stsd), boxed(b"stts", &stts)].concat(),
+            *b"stbl",
+            &[boxed(*b"stsd", &stsd), boxed(*b"stts", &stts)].concat(),
         );
-        let minf = boxed(b"minf", &stbl);
+        let minf = boxed(*b"minf", &stbl);
         let mdia = boxed(
-            b"mdia",
-            &[boxed(b"mdhd", &mdhd), boxed(b"hdlr", &hdlr), minf].concat(),
+            *b"mdia",
+            &[boxed(*b"mdhd", &mdhd), boxed(*b"hdlr", &hdlr), minf].concat(),
         );
-        let trak = boxed(b"trak", &[boxed(b"tkhd", &tkhd), mdia].concat());
-        let moov = boxed(b"moov", &[boxed(b"mvhd", &mvhd), trak].concat());
+        let trak = boxed(*b"trak", &[boxed(*b"tkhd", &tkhd), mdia].concat());
+        let moov = boxed(*b"moov", &[boxed(*b"mvhd", &mvhd), trak].concat());
 
-        let mut file = boxed(b"ftyp", b"isom\0\0\0\0isom");
+        let mut file = boxed(*b"ftyp", b"isom\0\0\0\0isom");
         file.extend_from_slice(&moov);
 
         let p = probe_bytes(&file, Path::new("clip.mp4")).expect("a real mp4 probes");
@@ -1163,6 +1190,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::similar_names,
+        reason = "each binding is named after the ISOBMFF box it holds"
+    )]
     fn a_video_track_without_sample_timing_reports_unknown_fps() {
         // A fragmented MP4 carries an empty `stts` in `moov` — the real timing
         // lives in the `moof` boxes. There is nothing to read, so fps must stay
@@ -1181,15 +1212,15 @@ mod tests {
         // stts with zero entries — the fragmented case.
         let mut stts = vec![0u8; 8];
         stts[4..8].copy_from_slice(&0u32.to_be_bytes());
-        let stbl = boxed(b"stbl", &boxed(b"stts", &stts));
-        let minf = boxed(b"minf", &stbl);
+        let stbl = boxed(*b"stbl", &boxed(*b"stts", &stts));
+        let minf = boxed(*b"minf", &stbl);
         let mdia = boxed(
-            b"mdia",
-            &[boxed(b"mdhd", &mdhd), boxed(b"hdlr", &hdlr), minf].concat(),
+            *b"mdia",
+            &[boxed(*b"mdhd", &mdhd), boxed(*b"hdlr", &hdlr), minf].concat(),
         );
-        let trak = boxed(b"trak", &[boxed(b"tkhd", &tkhd), mdia].concat());
-        let moov = boxed(b"moov", &[boxed(b"mvhd", &mvhd), trak].concat());
-        let mut file = boxed(b"ftyp", b"isom\0\0\0\0isom");
+        let trak = boxed(*b"trak", &[boxed(*b"tkhd", &tkhd), mdia].concat());
+        let moov = boxed(*b"moov", &[boxed(*b"mvhd", &mvhd), trak].concat());
+        let mut file = boxed(*b"ftyp", b"isom\0\0\0\0isom");
         file.extend_from_slice(&moov);
 
         let p = probe_bytes(&file, Path::new("frag.mp4")).expect("a real mp4 probes");
@@ -1207,11 +1238,11 @@ mod tests {
         fmt.extend_from_slice(&1u16.to_le_bytes()); // audio format PCM
         fmt.extend_from_slice(&2u16.to_le_bytes()); // channels
         fmt.extend_from_slice(&44100u32.to_le_bytes()); // sample rate
-        fmt.extend_from_slice(&176400u32.to_le_bytes()); // byte rate
+        fmt.extend_from_slice(&176_400u32.to_le_bytes()); // byte rate
         fmt.extend_from_slice(&4u16.to_le_bytes()); // block align
         fmt.extend_from_slice(&16u16.to_le_bytes()); // bits
 
-        let data_bytes = vec![0u8; 176400]; // exactly 1.0s of audio
+        let data_bytes = vec![0u8; 176_400]; // exactly 1.0s of audio
         let mut riff = Vec::new();
         riff.extend_from_slice(b"RIFF");
         riff.extend_from_slice(&0u32.to_le_bytes()); // riff size (ignored)
@@ -1227,6 +1258,49 @@ mod tests {
         assert_eq!(p.kind, MediaKind::Audio);
         assert!((p.duration - 1.0).abs() < 1e-6, "duration {}", p.duration);
         assert_eq!(p.codec, "pcm");
+    }
+
+    #[test]
+    fn every_prefix_of_a_header_probes_without_panicking() {
+        // A cut-short file can end anywhere inside a header. Each sniffer and
+        // parser must answer from what is there rather than read past it.
+        let mut mp3 = b"ID3\x04\x00\x00\x00\x00\x00\x14".to_vec();
+        mp3.extend_from_slice(&[0u8; 20]);
+        mp3.extend_from_slice(&[0xFF, 0xFB, 0x90, 0x64]);
+        mp3.extend_from_slice(&[0u8; 40]);
+        mp3.extend_from_slice(b"Xing\x00\x00\x00\x01\x00\x00\x00\x10");
+        let png = b"\x89PNG\r\n\x1a\n\x00\x00\x00\x0dIHDR\x00\x00\x02\x80\x00\x00\x01\x68";
+        let wav = b"RIFF\x00\x00\x00\x00WAVEfmt \x10\x00\x00\x00\x01\x00\x02\x00";
+        let jpeg = [
+            0xFF, 0xD8, 0xFF, 0xC0, 0x00, 0x11, 0x08, 0x01, 0x68, 0x02, 0x80, 0x03,
+        ];
+        let mkv = [
+            0x1A, 0x45, 0xDF, 0xA3, 0x18, 0x53, 0x80, 0x67, 0x84, 0x15, 0x49, 0xA9,
+        ];
+        let samples: [&[u8]; 5] = [&mp3, png, wav, &jpeg, &mkv];
+        for data in samples {
+            for n in 0..=data.len() {
+                let _ = probe_bytes(&data[..n], Path::new("clip.mp3"));
+            }
+        }
+    }
+
+    #[test]
+    fn fixed_width_fields_decode_exactly() {
+        // Seven bits per byte, most significant first.
+        assert_eq!(syncsafe([0x00, 0x00, 0x02, 0x01]), 257);
+        assert_eq!(syncsafe([0x7F, 0x7F, 0x7F, 0x7F]), (1 << 28) - 1);
+        // The high bit of each byte is not part of the value.
+        assert_eq!(syncsafe([0x80, 0x80, 0x80, 0x81]), 1);
+        // An EBML float is four or eight bytes and nothing else.
+        assert_eq!(ebml_float(&1.5f32.to_be_bytes()), Some(1.5));
+        assert_eq!(ebml_float(&2.25f64.to_be_bytes()), Some(2.25));
+        assert_eq!(ebml_float(&[0; 3]), None);
+        assert_eq!(ebml_float(&[]), None);
+        // A frame header shorter than four bytes is no header.
+        assert!(parse_mp3_frame_header(&[0xFF, 0xFB, 0x90]).is_none());
+        let h = parse_mp3_frame_header(&[0xFF, 0xFB, 0x90, 0x64]).expect("MPEG-1 Layer III");
+        assert_eq!((h.bitrate_bps, h.sample_rate), (128_000, 44_100));
     }
 
     #[test]
@@ -1333,7 +1407,7 @@ mod tests {
         ] {
             match probe_bytes(bytes, Path::new(name)) {
                 Err(ProbeError::NotMedia { detected: d }) => {
-                    assert_eq!(d, detected, "{name} must be named for what it is")
+                    assert_eq!(d, detected, "{name} must be named for what it is");
                 }
                 other => panic!("{name} must be refused as not-media, got {other:?}"),
             }

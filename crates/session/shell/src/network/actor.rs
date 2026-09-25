@@ -820,10 +820,10 @@ impl ActorState {
         peer: EndpointId,
         epoch: MembershipEpoch,
     ) -> bool {
-        if !self
+        if self
             .peers_seen
             .get(&(ws, peer))
-            .is_some_and(|membership| membership.epoch == epoch)
+            .is_none_or(|membership| membership.epoch != epoch)
         {
             return false;
         }
@@ -2203,6 +2203,17 @@ impl ActorState {
                 let _ = topic.sender.broadcast(Bytes::from(bytes.clone())).await;
             }
         }
+        // What this machine can encode and decode rides along with every
+        // heartbeat, so a sharer can pick a codec each viewer takes and
+        // notices when a viewer disappears.
+        let advert = crate::network::media_caps::local_advert(
+            crate::network::behaviour::peer_liveness_handle(&self.endpoint.id()),
+        );
+        if let Ok(bytes) = postcard::to_allocvec(&advert) {
+            for topic in self.topics.values() {
+                let _ = topic.sender.broadcast(Bytes::from(bytes.clone())).await;
+            }
+        }
     }
 
     /// Send this device's certificate to its direct neighbors on `ws`.
@@ -2443,6 +2454,10 @@ async fn stream_nearby_transfer(
     clippy::too_many_arguments,
     reason = "the arguments mirror one immutable transfer manifest and its exact transport route"
 )]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one transfer stream keeps its open, chunk, finish and cancellation steps in order"
+)]
 async fn stream_personal_media(
     endpoint: Endpoint,
     addr: EndpointAddr,
@@ -2467,7 +2482,7 @@ async fn stream_personal_media(
             Ok(Ok(connection)) => connection,
             _ => return PersonalMediaStreamOutcome::Failed,
         },
-        _ = personal_media_cancelled(&mut cancel) => return PersonalMediaStreamOutcome::Cancelled,
+        () = personal_media_cancelled(&mut cancel) => return PersonalMediaStreamOutcome::Cancelled,
     };
     let start = send_personal_media_frame(
         &connection,
@@ -2480,8 +2495,8 @@ async fn stream_personal_media(
         },
     );
     let start_outcome = tokio::select! {
-        result = start => result.map_or(PersonalMediaStreamOutcome::Failed, |_| PersonalMediaStreamOutcome::Completed),
-        _ = personal_media_cancelled(&mut cancel) => PersonalMediaStreamOutcome::Cancelled,
+        result = start => result.map_or(PersonalMediaStreamOutcome::Failed, |()| PersonalMediaStreamOutcome::Completed),
+        () = personal_media_cancelled(&mut cancel) => PersonalMediaStreamOutcome::Cancelled,
     };
     if start_outcome != PersonalMediaStreamOutcome::Completed {
         if start_outcome == PersonalMediaStreamOutcome::Cancelled {
@@ -2512,7 +2527,7 @@ async fn stream_personal_media(
                 .map_err(|_| PersonalMediaStreamOutcome::Failed)?;
             let bytes = tokio::select! {
                 result = tilo_rt::io::read_at(Arc::clone(&file), offset, want) => result.map_err(|_| PersonalMediaStreamOutcome::Failed)?,
-                _ = personal_media_cancelled(&mut cancel) => return Err(PersonalMediaStreamOutcome::Cancelled),
+                () = personal_media_cancelled(&mut cancel) => return Err(PersonalMediaStreamOutcome::Cancelled),
             };
             if bytes.is_empty() {
                 return Err(PersonalMediaStreamOutcome::Failed);
@@ -2530,8 +2545,8 @@ async fn stream_personal_media(
                 },
             );
             tokio::select! {
-                result = send => result.map_err(|_| PersonalMediaStreamOutcome::Failed)?,
-                _ = personal_media_cancelled(&mut cancel) => return Err(PersonalMediaStreamOutcome::Cancelled),
+                result = send => result.map_err(|()| PersonalMediaStreamOutcome::Failed)?,
+                () = personal_media_cancelled(&mut cancel) => return Err(PersonalMediaStreamOutcome::Cancelled),
             }
             offset = offset.saturating_add(
                 u64::try_from(read).map_err(|_| PersonalMediaStreamOutcome::Failed)?,
@@ -2549,7 +2564,7 @@ async fn stream_personal_media(
         }
         let trailing = tokio::select! {
             result = tilo_rt::io::read_at(Arc::clone(&file), offset, 1) => result.map_err(|_| PersonalMediaStreamOutcome::Failed)?,
-            _ = personal_media_cancelled(&mut cancel) => return Err(PersonalMediaStreamOutcome::Cancelled),
+            () = personal_media_cancelled(&mut cancel) => return Err(PersonalMediaStreamOutcome::Cancelled),
         };
         if !trailing.is_empty() {
             return Err(PersonalMediaStreamOutcome::Failed);
@@ -2564,8 +2579,8 @@ async fn stream_personal_media(
             },
         );
         tokio::select! {
-            result = finish => result.map_err(|_| PersonalMediaStreamOutcome::Failed),
-            _ = personal_media_cancelled(&mut cancel) => Err(PersonalMediaStreamOutcome::Cancelled),
+            result = finish => result.map_err(|()| PersonalMediaStreamOutcome::Failed),
+            () = personal_media_cancelled(&mut cancel) => Err(PersonalMediaStreamOutcome::Cancelled),
         }
     }
     .await;
@@ -2591,9 +2606,8 @@ async fn personal_media_cancelled(cancel: &mut tokio::sync::watch::Receiver<bool
     if *cancel.borrow() {
         return;
     }
-    if cancel.changed().await.is_err() {
-        return;
-    }
+    // A changed value and a dropped sender both end the wait.
+    let _ = cancel.changed().await;
 }
 
 async fn run(

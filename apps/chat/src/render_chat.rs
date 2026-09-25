@@ -633,9 +633,10 @@ impl ChatApp {
                     )
                 });
                 let name_x = row.x0 + 32.0;
-                let name_right = badge
-                    .as_ref()
-                    .map_or(row.x1 - f64::from(sp.s2), |(_, b)| b.x0 - f64::from(sp.s2));
+                let name_right = badge.as_ref().map_or_else(
+                    || row.x1 - f64::from(sp.s2),
+                    |(_, b)| b.x0 - f64::from(sp.s2),
+                );
                 let weight = if channel.unread > 0 {
                     TextWeight::Semibold
                 } else {
@@ -683,6 +684,10 @@ impl ChatApp {
     /// Workspace title, online-count pill, and the "+ category" affordance
     /// beneath it. Returns the title-row rect so the caller can anchor the
     /// channel tree below it.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "declarative paint of the header row, read top to bottom"
+    )]
     fn draw_sidebar_header(
         &self,
         scene: &mut Scene,
@@ -821,6 +826,10 @@ impl ChatApp {
 
     /// The channel tree: an uncategorised group first, then each category
     /// with a collapse caret, a "+" to add a channel, and its channels.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "declarative paint of the channel tree, read top to bottom"
+    )]
     fn draw_sidebar_tree(
         &mut self,
         paint: PaintContext<'_>,
@@ -1625,9 +1634,9 @@ impl ChatApp {
         } else {
             "📹 Call"
         };
-        let (call_lw, call_lh) = tr.measure(call_label, label_size, None);
+        let (call_label_width, call_label_height) = tr.measure(call_label, label_size, None);
         let call_pad = f64::from(sp.s3);
-        let call_w = f64::from(call_lw) + 2.0 * call_pad;
+        let call_w = f64::from(call_label_width) + 2.0 * call_pad;
         // call button (accent when a call is live).
         let call_x0 = h.x1 - f64::from(sp.s4) - call_w;
         let call_btn = Rect::new(call_x0, cy - half_h, call_x0 + call_w, cy + half_h);
@@ -1649,15 +1658,15 @@ impl ChatApp {
             label_size,
             ctx,
             call_btn.x0 + call_pad,
-            line_top(cy, f64::from(call_lh)),
+            line_top(cy, f64::from(call_label_height)),
         );
         ChatApp::push_hit(hits, call_btn, Hit::StartCall);
 
         // members pill — toggles the right flap (members / thread).
         let mem_label = format!("👥 {}", self.users.len());
-        let (mem_lw, mem_lh) = tr.measure(&mem_label, label_size, None);
+        let (mem_label_width, mem_label_height) = tr.measure(&mem_label, label_size, None);
         let mem_pad = f64::from(sp.s2);
-        let mem_w = f64::from(mem_lw) + 2.0 * mem_pad;
+        let mem_w = f64::from(mem_label_width) + 2.0 * mem_pad;
         let mem_x0 = call_x0 - gap - mem_w;
         let mem = Rect::new(mem_x0, cy - half_h, mem_x0 + mem_w, cy + half_h);
         let mem_on = self.right_flap_open();
@@ -1674,7 +1683,7 @@ impl ChatApp {
             label_size,
             if mem_on { c.accent[7] } else { c.text_dim },
             mem.x0 + mem_pad,
-            line_top(cy, f64::from(mem_lh)),
+            line_top(cy, f64::from(mem_label_height)),
         );
         ChatApp::push_hit(hits, mem, Hit::ToggleRightFlap);
         mem_x0

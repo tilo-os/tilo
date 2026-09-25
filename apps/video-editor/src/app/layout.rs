@@ -1,5 +1,9 @@
 //! Pane geometry shared by drawing, hit-testing, and accessibility routing.
 
+#[allow(
+    clippy::wildcard_imports,
+    reason = "this file is one part of the `VideoEditorApp` impl split out of `app.rs`; it shares the parent's whole scope"
+)]
 use super::*;
 
 /// Computed region rectangles for one frame, derived purely from the root

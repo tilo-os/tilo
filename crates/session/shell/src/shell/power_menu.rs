@@ -365,6 +365,10 @@ impl PowerMenu {
         scene.pop_layer();
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "a paint routine that lays its elements out top to bottom from shared running offsets"
+    )]
     fn draw_panel(
         &self,
         scene: &mut Scene,
@@ -623,6 +627,10 @@ fn panel_rect_with(viewport: Rect, m: PowerMenuMetrics) -> Rect {
     )
 }
 
+#[expect(
+    clippy::arithmetic_side_effects,
+    reason = "`columns` comes from action_columns, which only returns 1 or 2, so the remainder and quotient cannot divide by zero"
+)]
 fn action_rect_with(viewport: Rect, index: usize, m: PowerMenuMetrics) -> Rect {
     let panel = panel_rect_with(viewport, m);
     let (columns, top, wanted_h, gap) = layout_metrics(viewport, m);
@@ -644,9 +652,11 @@ fn action_columns(viewport: Rect) -> usize {
     // A short viewport needs the compact two-column arrangement so all six
     // actions remain visible and clickable instead of being clipped below
     // the panel's clamped bottom edge.
-    usize::from(
-        viewport.width() >= 640.0 || (viewport.width() >= 420.0 && viewport.height() < 400.0),
-    ) + 1
+    if viewport.width() >= 640.0 || (viewport.width() >= 420.0 && viewport.height() < 400.0) {
+        2
+    } else {
+        1
+    }
 }
 
 fn action_height(viewport: Rect, columns: usize) -> f64 {
@@ -1076,6 +1086,10 @@ mod tests {
     /// rendered pixels are asserted, not just the file: the title band is
     /// the Panel ground and an idle row's interior is its lift floor.
     #[test]
+    #[expect(
+        clippy::many_single_char_names,
+        reason = "menu metrics and sampled colour channels read best as m and r/g/b/e"
+    )]
     fn power_menu_review_fixtures_are_written() {
         use crate::shell::osd::review_offscreen::OffscreenRenderer;
         let out = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))

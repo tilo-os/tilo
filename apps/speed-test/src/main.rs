@@ -3,6 +3,10 @@ extern crate runtime_dylib;
 
 use ui::launch::{LaunchArgs, LaunchError, LaunchSpec};
 
+#[expect(
+    clippy::unnecessary_wraps,
+    reason = "signature is fixed by `LaunchSpec::shot_root`"
+)]
 fn shot(args: &LaunchArgs) -> Result<Box<dyn ui::widget::Widget>, LaunchError> {
     Ok(speed_test::shot_root(
         args.scenario.as_deref().unwrap_or("complete"),

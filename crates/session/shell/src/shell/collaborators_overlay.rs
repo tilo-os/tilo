@@ -227,6 +227,10 @@ impl CollaboratorsOverlay {
         text_renderer.set_text_scale(renderer_scale);
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "a paint routine that lays its elements out top to bottom from shared running offsets"
+    )]
     fn draw_at_theme_scale(
         &mut self,
         scene: &mut Scene,
@@ -337,6 +341,10 @@ impl CollaboratorsOverlay {
                 transform.pre_translate((banner.x0 + 8.0, banner.y0 + 5.0).into()),
                 None,
             );
+            #[expect(
+                clippy::cast_possible_truncation,
+                reason = "a non-negative on-screen width in logical pixels; f32 holds it with sub-pixel precision"
+            )]
             let detail = text_renderer.elide_to_width(
                 exposure,
                 tokens.typography.scale.xs,
@@ -387,6 +395,10 @@ impl CollaboratorsOverlay {
                 0.0
             };
         for (visible_index, index) in self.roster_range.clone().enumerate() {
+            #[expect(
+                clippy::indexing_slicing,
+                reason = "layout() above clamps roster_range to model.rows.len()"
+            )]
             let row = &model.rows[index];
             let relationship = model.relationship_for(&row.id);
             let relationship_partner = relationship.as_ref().and_then(|relationship| {
@@ -605,6 +617,10 @@ impl CollaboratorsOverlay {
         None
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "a declarative accessibility tree for every panel control"
+    )]
     pub fn accessibility_snapshot(&self) -> ui::a11y::AccessNode {
         use ui::a11y::{AccessNode, AccessState, Role};
 
@@ -759,8 +775,7 @@ impl CollaboratorsOverlay {
 
     pub fn accessibility_rect_for_path(&self, path: &[usize]) -> Option<Rect> {
         match path {
-            [] => Some(self.panel),
-            [0] => Some(self.panel),
+            [] | [0] => Some(self.panel),
             [0, row] => self.row_rects.get(*row).copied(),
             [control] if *control > 0 => self
                 .focus_order()
@@ -784,6 +799,10 @@ impl CollaboratorsOverlay {
         true
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one layout pass derives every panel rect from the same running offsets"
+    )]
     fn layout(
         &mut self,
         host: Rect,
@@ -866,26 +885,26 @@ impl CollaboratorsOverlay {
             let pager_y =
                 self.panel.y0 + 48.0 + MY_STATUS_H + exposure_h + warning_h + rows * ROW_H;
             let center = self.panel.x0 + self.panel.width() / 2.0;
-            self.previous_people = (self.roster_offset > 0)
-                .then(|| {
-                    Rect::new(
-                        self.panel.x0 + 12.0,
-                        pager_y + 4.0,
-                        center - 38.0,
-                        pager_y + 32.0,
-                    )
-                })
-                .unwrap_or(Rect::ZERO);
-            self.next_people = (end < member_count)
-                .then(|| {
-                    Rect::new(
-                        center + 38.0,
-                        pager_y + 4.0,
-                        self.panel.x1 - 12.0,
-                        pager_y + 32.0,
-                    )
-                })
-                .unwrap_or(Rect::ZERO);
+            self.previous_people = if self.roster_offset > 0 {
+                Rect::new(
+                    self.panel.x0 + 12.0,
+                    pager_y + 4.0,
+                    center - 38.0,
+                    pager_y + 32.0,
+                )
+            } else {
+                Rect::ZERO
+            };
+            self.next_people = if end < member_count {
+                Rect::new(
+                    center + 38.0,
+                    pager_y + 4.0,
+                    self.panel.x1 - 12.0,
+                    pager_y + 32.0,
+                )
+            } else {
+                Rect::ZERO
+            };
         } else {
             self.previous_people = Rect::ZERO;
             self.next_people = Rect::ZERO;
@@ -1002,6 +1021,10 @@ impl CollaboratorsOverlay {
         }
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "a paint routine that lays its elements out top to bottom from shared running offsets"
+    )]
     fn draw_own_status(
         &self,
         scene: &mut Scene,
@@ -1068,6 +1091,10 @@ impl CollaboratorsOverlay {
         }
         let label = format!("You · {label}");
         let trailing_room = if model.status_editing { 48.0 } else { 28.0 };
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "a non-negative on-screen width in logical pixels; f32 holds it with sub-pixel precision"
+        )]
         let shown = text_renderer.elide_to_width(
             &label,
             theme.tokens.typography.scale.xs,
@@ -1158,6 +1185,10 @@ impl CollaboratorsOverlay {
                 3.0,
             );
             scene.fill(Fill::NonZero, transform, model.own_color, None, &dot);
+            #[expect(
+                clippy::cast_possible_truncation,
+                reason = "a non-negative on-screen width in logical pixels; f32 holds it with sub-pixel precision"
+            )]
             let activity = text_renderer.elide_to_width(
                 activity,
                 theme.tokens.typography.scale.xs,
@@ -1324,6 +1355,10 @@ impl CollaboratorsOverlay {
         }
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "a paint routine that lays its elements out top to bottom from shared running offsets"
+    )]
     fn draw_row_text(
         &self,
         scene: &mut Scene,

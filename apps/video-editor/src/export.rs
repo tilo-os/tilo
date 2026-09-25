@@ -3,7 +3,7 @@
 //! Real encode/decode runs through `GStreamer`, linked by the default `gst`
 //! feature and by the shipped image build. A deliberately minimal
 //! `--no-default-features` developer build keeps the export UI testable without
-//! GStreamer and reports that encoding is unavailable; it is not the product
+//! `GStreamer` and reports that encoding is unavailable; it is not the product
 //! configuration. Headless screenshots remain hermetic because they never
 //! start an encoder, not because the shipped app replaces export with a stub.
 
@@ -61,8 +61,8 @@ pub enum Container {
 impl Container {
     pub const ALL: [Container; 3] = [Container::Mp4, Container::WebM, Container::Mov];
     /// What the encoder actually produces — not what the container is
-    /// capable of. WebM here is VP8 and MOV is H.264, because that is what
-    /// [`encode_chain`] plugs; naming VP9 or ProRes would be telling the
+    /// capable of. `WebM` here is VP8 and MOV is H.264, because that is what
+    /// [`encode_chain`] plugs; naming VP9 or `ProRes` would be telling the
     /// user they are getting a codec this pipeline never writes.
     pub fn label(self) -> &'static str {
         match self {
@@ -234,7 +234,7 @@ pub fn video_codec(container: Container) -> VideoCodec {
     }
 }
 
-/// The audio codec each container carries. MP4 and MOV take AAC; WebM takes
+/// The audio codec each container carries. MP4 and MOV take AAC; `WebM` takes
 /// Opus, which is its companion codec the way VP8 is its video one.
 pub fn audio_codec(container: Container) -> AudioCodec {
     match container {
@@ -255,7 +255,7 @@ pub fn mux_chain(container: Container) -> (Option<&'static str>, &'static str) {
 
 /// Whether an element factory is installed — where this build can look.
 ///
-/// `media`'s registry probe is only compiled where GStreamer is linked, which
+/// `media`'s registry probe is only compiled where `GStreamer` is linked, which
 /// for this crate means a `decode` or `gst` build. Without either, nothing can
 /// be confirmed, and the selection says so ([`Selection::confirmed`]) rather
 /// than assuming an encoder is present or absent.
@@ -269,10 +269,10 @@ fn registry_available(_name: &str) -> bool {
     false
 }
 
-/// The GStreamer element chain that encodes the export, per container: the
+/// The `GStreamer` element chain that encodes the export, per container: the
 /// (video encoder, optional parser, muxer) triple.
 ///
-/// The encoder is **chosen against the machine's real GStreamer registry**,
+/// The encoder is **chosen against the machine's real `GStreamer` registry**,
 /// not hard-coded. For H.264 that means a VA-API, NVENC or QSV encoder when
 /// one is installed — covering AMD, Intel and NVIDIA, integrated and discrete
 /// — then `x264enc`, then `openh264enc`, which is the baseline this workspace
@@ -282,7 +282,7 @@ fn registry_available(_name: &str) -> bool {
 ///
 /// The muxer half stays fixed by the container:
 ///   * MP4 / MOV — `… ! h264parse ! (mp4mux|qtmux)`
-///   * WebM — `… ! webmmux`
+///   * `WebM` — `… ! webmmux`
 pub fn encode_chain(container: Container) -> (Selection, Option<&'static str>, &'static str) {
     let (parse, mux) = mux_chain(container);
     let sel = media::encode::select_video(
@@ -336,7 +336,7 @@ pub const AUDIO_BITRATE_BPS: u64 = 128_000;
 ///
 /// Kept next to [`pipeline_desc`] and built from the same pieces so the two
 /// branches cannot drift, and so the whole graph is unit-testable without a
-/// GStreamer stack.
+/// `GStreamer` stack.
 pub fn audio_branch_desc(container: Container, muxer_name: &str) -> Option<String> {
     let enc = audio_encoder(container);
     Some(format!(
@@ -552,11 +552,7 @@ impl ExportJob {
 
     /// Whether the worker is still going.
     pub fn is_running(&self) -> bool {
-        self.shared
-            .outcome
-            .lock()
-            .map(|o| o.is_none())
-            .unwrap_or(false)
+        self.shared.outcome.lock().is_ok_and(|o| o.is_none())
     }
 
     /// Ask the render to stop. The worker notices between frames, tears the
@@ -622,7 +618,7 @@ pub fn start_export(
     let handle = std::thread::Builder::new()
         .name("video-editor-export".into())
         .spawn(move || {
-            let result = render(&project, &settings, &destination, &state);
+            let result = render(&project, settings, &destination, &state);
             let status = match result {
                 Ok(path) => ExportStatus::Done { path },
                 Err(reason) => ExportStatus::Failed { reason },
@@ -632,12 +628,12 @@ pub fn start_export(
             }
         })
         .ok();
-    if handle.is_none() {
-        if let Ok(mut slot) = shared.outcome.lock() {
-            *slot = Some(ExportStatus::Failed {
-                reason: "could not start the export worker".into(),
-            });
-        }
+    if handle.is_none()
+        && let Ok(mut slot) = shared.outcome.lock()
+    {
+        *slot = Some(ExportStatus::Failed {
+            reason: "could not start the export worker".into(),
+        });
     }
     ExportJob { shared, handle }
 }
@@ -706,7 +702,7 @@ pub fn places_decoded_video(project: &Project) -> bool {
 
 fn render(
     project: &Project,
-    settings: &ExportSettings,
+    settings: ExportSettings,
     destination: &std::path::Path,
     state: &JobState,
 ) -> Result<String, String> {
@@ -756,6 +752,10 @@ pub fn begin_export(project: &Project, settings: &ExportSettings) -> ExportStatu
 
 #[cfg(feature = "gst")]
 mod gst_pipeline {
+    #[allow(
+        clippy::wildcard_imports,
+        reason = "the pipeline module is the gated half of this file and shares its scope"
+    )]
     use super::*;
     use std::sync::atomic::Ordering;
 
@@ -772,7 +772,7 @@ mod gst_pipeline {
     /// accumulates, so an hour of audio still ends where the video does
     /// instead of drifting seconds out of sync.
     fn audio_frames_for(i: u64, fps: f64) -> usize {
-        let at = |n: u64| (n as f64 / fps * super::super::audio::SAMPLE_RATE as f64).round() as u64;
+        let at = |n: u64| (n as f64 / fps * f64::from(crate::audio::SAMPLE_RATE)).round() as u64;
         (at(i + 1) - at(i)) as usize
     }
 
@@ -801,13 +801,13 @@ mod gst_pipeline {
     )]
     pub fn run(
         project: &Project,
-        settings: &ExportSettings,
+        settings: ExportSettings,
         destination: &std::path::Path,
         state: &super::JobState,
     ) -> Result<String, String> {
         gst::init().map_err(|e| format!("GStreamer init failed: {e}"))?;
 
-        let (w, h) = output_dims(settings, project);
+        let (w, h) = output_dims(&settings, project);
         let fps = settings.frame_rate.fps();
         let out = destination.to_path_buf();
         if let Some(parent) = out.parent() {
@@ -826,7 +826,7 @@ mod gst_pipeline {
             "export: {}",
             selected_encoders(settings.container).describe()
         );
-        let desc = pipeline_desc_with_audio(settings, w, h, &out_str, with_audio);
+        let desc = pipeline_desc_with_audio(&settings, w, h, &out_str, with_audio);
         let pipeline = gst::parse::launch(&desc)
             .map_err(|e| format!("build export pipeline: {e}"))?
             .downcast::<gst::Pipeline>()
@@ -909,6 +909,10 @@ mod gst_pipeline {
             let mut buffer = gst::Buffer::with_size(frame_bytes)
                 .map_err(|_| "allocate export frame buffer".to_string())?;
             {
+                #[expect(
+                    clippy::expect_used,
+                    reason = "a buffer allocated on the line above has no other owner"
+                )]
                 let bref = buffer.get_mut().expect("fresh buffer is uniquely owned");
                 bref.set_pts(gst::ClockTime::from_nseconds(ns_per_frame * i));
                 bref.set_duration(frame_dur);
@@ -930,6 +934,10 @@ mod gst_pipeline {
                 let mut buffer = gst::Buffer::with_size(bytes.len())
                     .map_err(|_| "allocate export audio buffer".to_string())?;
                 {
+                    #[expect(
+                        clippy::expect_used,
+                        reason = "a buffer allocated on the line above has no other owner"
+                    )]
                     let bref = buffer.get_mut().expect("fresh buffer is uniquely owned");
                     bref.set_pts(gst::ClockTime::from_nseconds(ns_per_frame * i));
                     bref.set_duration(frame_dur);
@@ -960,7 +968,7 @@ mod gst_pipeline {
             .ok_or_else(|| "export pipeline bus".to_string())?;
         let mut result = Ok(());
         let mut watch = FlushWatch::new(
-            std::fs::metadata(&out).map(|m| m.len()).unwrap_or(0),
+            std::fs::metadata(&out).map_or(0, |m| m.len()),
             std::time::Instant::now(),
         );
         loop {
@@ -1595,8 +1603,8 @@ mod tests {
         for container in Container::ALL {
             for resolution in Resolution::ALL {
                 let s = ExportSettings {
-                    container,
                     resolution,
+                    container,
                     ..Default::default()
                 };
                 let desc = pipeline_desc(&s, 640, 360, "/tmp/o");
@@ -2265,6 +2273,7 @@ mod tests {
                 std::time::Duration::from_secs(20),
             )
             .unwrap_or_else(|| panic!("decode {} at {at_secs}s", path.display()));
+        drop(s);
         frame
             .to_video_frame()
             .unwrap_or_else(|| panic!("{} produced a GPU-resident frame", path.display()))
@@ -2284,9 +2293,9 @@ mod tests {
                 for y in y0..y1.min(h) {
                     for x in x0..x1.min(w) {
                         let i = (y * w + x) * 4;
-                        sum += 0.2126 * frame.rgba[i] as f64
-                            + 0.7152 * frame.rgba[i + 1] as f64
-                            + 0.0722 * frame.rgba[i + 2] as f64;
+                        sum += 0.2126 * f64::from(frame.rgba[i])
+                            + 0.7152 * f64::from(frame.rgba[i + 1])
+                            + 0.0722 * f64::from(frame.rgba[i + 2]);
                         count += 1.0;
                     }
                 }
@@ -2372,7 +2381,10 @@ mod tests {
                 let grid: Vec<f64> = gradient
                     .chunks(4)
                     .map(|p| {
-                        (0.2126 * p[0] as f64 + 0.7152 * p[1] as f64 + 0.0722 * p[2] as f64) / 255.0
+                        (0.2126 * f64::from(p[0])
+                            + 0.7152 * f64::from(p[1])
+                            + 0.0722 * f64::from(p[2]))
+                            / 255.0
                     })
                     .collect();
                 correlation(&exported, &grid)
@@ -2462,7 +2474,7 @@ mod tests {
             let mut spread = 0.0f64;
             let mut n = 0.0f64;
             for px in f.rgba.chunks(4) {
-                let (r, g, bl) = (px[0] as f64, px[1] as f64, px[2] as f64);
+                let (r, g, bl) = (f64::from(px[0]), f64::from(px[1]), f64::from(px[2]));
                 spread += (r - g).abs() + (g - bl).abs();
                 n += 1.0;
             }

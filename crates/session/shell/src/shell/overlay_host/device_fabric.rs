@@ -251,6 +251,10 @@ pub(super) enum DeviceFabricPaneRow {
     Device(FabricDeviceView),
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "a declarative row list for every fabric pane section in display order"
+)]
 pub(super) fn device_fabric_pane_rows(
     view: &DeviceFabricView,
     realtime: &crate::shell::collab_broker_capnp::RealtimeContinuityUiView,

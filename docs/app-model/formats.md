@@ -161,7 +161,7 @@ resource limits (memory, fuel) instead of Landlock.
 
 The reference in-tree provider is
 `crates/doc/qdoc-codec-markdown-wasm/`. It delegates to the same Rust
-codec (`qdoc::MarkdownCodec`) that the editor uses in-process — one code
+codec (`qdoc_codecs::MarkdownCodec`) that the editor uses in-process — one code
 path for host and WASM builds.
 
 ### Cargo.toml
@@ -187,6 +187,7 @@ crate-type = ["cdylib"]
 
 [dependencies]
 qdoc = { path = "../qdoc" }
+qdoc-codecs = { path = "../qdoc-codecs", default-features = false, features = ["markdown"] }
 format-provider-abi = { path = "../format-provider-abi", features = ["entropy"] }
 ```
 
@@ -209,17 +210,18 @@ config.
 #[cfg(target_arch = "wasm32")]
 mod guest {
     use format_provider_abi::{CodecError, Confidence, Detected, Provider};
-    use qdoc::{Document, FormatProvider, MarkdownCodec};
+    use qdoc::Document;
+    use qdoc_codecs::{FormatProvider, MarkdownCodec};
 
     struct Markdown;
 
     impl Provider for Markdown {
         fn detect(head: &[u8]) -> Detected {
             let (tier, score) = match MarkdownCodec.detect(head) {
-                qdoc::Confidence::None => (0, 0.0),
-                qdoc::Confidence::Low => (0, 0.25),
-                qdoc::Confidence::Medium => (1, 0.5),
-                qdoc::Confidence::High => (2, 0.9),
+                qdoc_codecs::Confidence::None => (0, 0.0),
+                qdoc_codecs::Confidence::Low => (0, 0.25),
+                qdoc_codecs::Confidence::Medium => (1, 0.5),
+                qdoc_codecs::Confidence::High => (2, 0.9),
             };
             Detected {
                 confidence: Confidence { tier, score },

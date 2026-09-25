@@ -50,6 +50,12 @@ pub struct Args {
     pub apps: PathBuf,
 }
 
+/// Parse the `--profile PATH --apps MANIFEST` command line.
+///
+/// # Errors
+///
+/// Returns [`io::ErrorKind::InvalidInput`] for an unknown or repeated
+/// argument, a flag without its path, or a missing required flag.
 pub fn parse_args(args: impl IntoIterator<Item = OsString>) -> io::Result<Args> {
     let mut profile = None;
     let mut apps = None;
@@ -83,6 +89,13 @@ pub fn parse_args(args: impl IntoIterator<Item = OsString>) -> io::Result<Args> 
     })
 }
 
+/// Check that every manifest entry names an existing executable by absolute path.
+///
+/// # Errors
+///
+/// Returns [`io::ErrorKind::InvalidInput`] for an empty app id, a relative
+/// executable path or a path that is not an executable file, and the
+/// underlying error kind when the executable cannot be inspected.
 pub fn validate_manifest(manifest: AppManifest) -> io::Result<ValidatedManifest> {
     for (index, app) in manifest.apps.iter().enumerate() {
         if app.id.trim().is_empty() {
@@ -115,6 +128,12 @@ pub fn validate_manifest(manifest: AppManifest) -> io::Result<ValidatedManifest>
     })
 }
 
+/// Read, parse and validate the app manifest at `path`.
+///
+/// # Errors
+///
+/// Returns the read error, [`io::ErrorKind::InvalidInput`] for malformed
+/// JSON, or any [`validate_manifest`] error.
 pub fn load_manifest(path: &Path) -> io::Result<ValidatedManifest> {
     let bytes = std::fs::read(path)?;
     let manifest = serde_json::from_slice(bytes.as_slice()).map_err(|error| {
@@ -156,6 +175,14 @@ pub fn prepare_profile_environment(profile: &Path) -> io::Result<[(&'static str,
     Ok(paths)
 }
 
+/// Read one newline-terminated request line, capped at `MAX_REQUEST_BYTES`.
+///
+/// An oversized line is consumed through its newline and reported as
+/// [`Frame::TooLong`]; end of input yields any partial line, then [`Frame::Eof`].
+///
+/// # Errors
+///
+/// Returns any error from the underlying reader.
 pub fn read_frame(reader: &mut impl BufRead) -> io::Result<Frame> {
     let mut line = Vec::new();
     let mut too_long = false;
@@ -171,14 +198,19 @@ pub fn read_frame(reader: &mut impl BufRead) -> io::Result<Frame> {
             };
         }
         let newline = available.iter().position(|byte| *byte == b'\n');
-        let consumed = newline.map_or(available.len(), |position| position + 1);
-        let content_len = newline.unwrap_or(available.len());
+        // `position` indexes into `available`, so `position + 1` is at most its length.
+        let consumed = newline.map_or(available.len(), |position| position.saturating_add(1));
+        // Everything before the first newline, or the whole buffer when there is none.
+        let content = available
+            .split(|byte| *byte == b'\n')
+            .next()
+            .unwrap_or_default();
         if !too_long {
-            if line.len().saturating_add(content_len) > MAX_REQUEST_BYTES {
+            if line.len().saturating_add(content.len()) > MAX_REQUEST_BYTES {
                 too_long = true;
                 line.clear();
             } else {
-                line.extend_from_slice(&available[..content_len]);
+                line.extend_from_slice(content);
             }
         }
         reader.consume(consumed);
@@ -194,6 +226,11 @@ pub fn read_frame(reader: &mut impl BufRead) -> io::Result<Frame> {
     }
 }
 
+/// Write `reply` as one JSON line and flush it.
+///
+/// # Errors
+///
+/// Returns any serialization or write error.
 pub fn write_reply(writer: &mut impl Write, reply: &Value) -> io::Result<()> {
     serde_json::to_writer(&mut *writer, reply).map_err(io::Error::other)?;
     writer.write_all(b"\n")?;
@@ -313,6 +350,14 @@ fn protocol_error(code: i32, message: &str) -> Value {
 ///
 /// The caller supplies the process environment before invoking this reusable
 /// serving layer. This function never mutates process-global environment.
+///
+/// Returns `Ok(())` when the input reaches end of file.
+///
+/// # Errors
+///
+/// Returns an error when the runtime, session or action broker cannot start,
+/// an app cannot be launched or exits, the input stream fails, or a reply
+/// cannot be written.
 pub fn serve<R, W>(
     profile: &Path,
     manifest: ValidatedManifest,
@@ -371,6 +416,10 @@ where
 }
 
 /// Load a validated manifest and serve with the caller's configured profile environment.
+///
+/// # Errors
+///
+/// Returns any [`load_manifest`] or [`serve`] error.
 pub fn run(profile: &Path, manifest_path: &Path) -> io::Result<()> {
     // The complete startup configuration is parsed and validated before
     // profile services or any application process is started.

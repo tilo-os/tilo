@@ -1,10 +1,20 @@
 //! Files supplies actual mounted-file custody and a pure immutable preview.
-use collab_types::files::*;
+use collab_types::files::{
+    CHECKED_HISTORY_RESTORE_XATTR, CHECKED_HISTORY_RESULT_XATTR_PREFIX,
+    CHECKED_HISTORY_REVIEW_XATTR, CheckedHistoryOutcomeV1, CheckedHistoryRequestV1,
+    CheckedHistoryResponseV1, CheckedHistoryReviewResponseV1, FileHistoryReadErrorV1,
+    FileHistoryReadQueryV1, FileHistoryReadResponseV1, FileHistoryReadScopeV1,
+    FileHistoryReadValueV1, FileRestoreReviewV1, MAX_CHECKED_HISTORY_REQUEST_BYTES,
+    MAX_HISTORY_READ_BYTES,
+};
 #[cfg(unix)]
 use std::fs::File;
 use std::{path::Path, sync::Arc};
 use ui::history_mode::{
-    HistoryDefinition, HistoryPresentation, HistoryScopeDefinition, checked_files::*,
+    HistoryDefinition, HistoryPresentation, HistoryScopeDefinition,
+    checked_files::{
+        FileHistoricalContent, FileHistoryTarget, FileHistoryTransport, FilePreviewInput,
+    },
 };
 #[cfg(unix)]
 use xattr::FileExt;
@@ -26,12 +36,22 @@ pub struct MountedFileHistory {
     file: File,
 }
 impl MountedFileHistory {
+    /// Opens a descriptor on the mounted file at `path`.
+    ///
+    /// # Errors
+    ///
+    /// Returns the I/O error from opening `path`.
     #[cfg(unix)]
     pub fn open(path: &Path) -> std::io::Result<Self> {
         Ok(Self {
             file: File::open(path)?,
         })
     }
+    /// Opens a descriptor on the mounted file at `path`.
+    ///
+    /// # Errors
+    ///
+    /// Always returns `Unsupported`: the filesystem projection needs a Unix host.
     #[cfg(not(unix))]
     pub fn open(_path: &Path) -> std::io::Result<Self> {
         Err(std::io::Error::new(
@@ -52,7 +72,9 @@ impl FileHistoryTransport for MountedFileHistory {
         &self,
         query: FileHistoryReadQueryV1,
     ) -> Result<FileHistoryReadValueV1, FileHistoryReadErrorV1> {
-        let bytes = self.get(&query.xattr_name()).map_err(read_error)?;
+        let bytes = self
+            .get(&query.xattr_name())
+            .map_err(|error| read_error(&error))?;
         if bytes.len() > MAX_HISTORY_READ_BYTES {
             return Err(FileHistoryReadErrorV1::TooLarge);
         }
@@ -76,7 +98,7 @@ impl FileHistoryTransport for MountedFileHistory {
                 }
                 .xattr_name(),
             )
-            .map_err(read_error)?;
+            .map_err(|error| read_error(&error))?;
         if bytes.len() > collab_types::MAX_HISTORY_PREVIEW_BYTES {
             return Err(FileHistoryReadErrorV1::TooLarge);
         }
@@ -85,7 +107,7 @@ impl FileHistoryTransport for MountedFileHistory {
     fn review(&self) -> Result<FileRestoreReviewV1, CheckedHistoryOutcomeV1> {
         let bytes = self
             .get(CHECKED_HISTORY_REVIEW_XATTR)
-            .map_err(outcome_error)?;
+            .map_err(|error| outcome_error(&error))?;
         if bytes.len() > MAX_HISTORY_READ_BYTES {
             return Err(CheckedHistoryOutcomeV1::InvalidRequest);
         }
@@ -118,13 +140,13 @@ impl FileHistoryTransport for MountedFileHistory {
                     review: request.review,
                 }
             }
-            Err(error) => outcome_error(error),
+            Err(error) => outcome_error(&error),
         }
     }
     fn result(&self, intent: uuid::Uuid) -> CheckedHistoryOutcomeV1 {
         let bytes = match self.get(&format!("{CHECKED_HISTORY_RESULT_XATTR_PREFIX}{intent}")) {
             Ok(bytes) => bytes,
-            Err(error) => return outcome_error(error),
+            Err(error) => return outcome_error(&error),
         };
         if bytes.len() > MAX_HISTORY_READ_BYTES {
             return CheckedHistoryOutcomeV1::Unavailable;
@@ -180,7 +202,7 @@ fn unavailable_projection() -> CheckedHistoryOutcomeV1 {
     }
 }
 #[cfg(unix)]
-fn outcome_error(error: std::io::Error) -> CheckedHistoryOutcomeV1 {
+fn outcome_error(error: &std::io::Error) -> CheckedHistoryOutcomeV1 {
     match error.raw_os_error() {
         Some(libc::EBUSY) => CheckedHistoryOutcomeV1::ReviewRequired,
         Some(libc::EAGAIN) => CheckedHistoryOutcomeV1::PendingWrites,
@@ -194,7 +216,7 @@ fn outcome_error(error: std::io::Error) -> CheckedHistoryOutcomeV1 {
     }
 }
 #[cfg(unix)]
-fn read_error(error: std::io::Error) -> FileHistoryReadErrorV1 {
+fn read_error(error: &std::io::Error) -> FileHistoryReadErrorV1 {
     match error.raw_os_error() {
         Some(libc::ENOENT | libc::EACCES | libc::EPERM) => FileHistoryReadErrorV1::NotVisible,
         Some(libc::EBUSY) => FileHistoryReadErrorV1::Stale,
@@ -204,6 +226,11 @@ fn read_error(error: std::io::Error) -> FileHistoryReadErrorV1 {
         _ => FileHistoryReadErrorV1::Unavailable,
     }
 }
+/// Builds a history target bound to the mounted file at `path`.
+///
+/// # Errors
+///
+/// Returns the I/O error from opening `path` (see [`MountedFileHistory::open`]).
 pub fn target(
     path: &Path,
     record: collab_types::FileRecordId,
@@ -223,6 +250,10 @@ struct FilePreview {
     view: ui::history_mode::PreviewView,
     bounds: vello::kurbo::Rect,
 }
+#[expect(
+    clippy::unnecessary_wraps,
+    reason = "signature is fixed by `HistoryPresentation::CheckedFiles::create`"
+)]
 fn preview(input: FilePreviewInput) -> Result<Box<dyn ui::history_mode::HistoryPreview>, String> {
     let content = match input.snapshot.content {
         FileHistoricalContent::Bytes(bytes) => match std::str::from_utf8(&bytes) {
@@ -312,6 +343,7 @@ impl ui::history_mode::HistoryPreview for FilePreview {
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
+    use collab_types::files::CheckedHistoryOperationV1;
     fn scope() -> FileHistoryReadScopeV1 {
         FileHistoryReadScopeV1 {
             workspace_id: uuid::Uuid::from_u128(1),

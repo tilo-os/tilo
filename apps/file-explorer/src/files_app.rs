@@ -4462,7 +4462,7 @@ impl CommandRunner for SystemRunner {
 pub fn is_document(path: &std::path::Path) -> bool {
     path.extension()
         .and_then(|e| e.to_str())
-        .is_some_and(qdoc::is_supported_ext)
+        .is_some_and(qdoc_codecs::is_supported_ext)
 }
 
 /// Presentation-side lower bound for the daemon's fail-closed merge codecs.
@@ -7148,8 +7148,8 @@ impl FileExplorerWidget {
         &self,
         _doc: &automerge::AutoCommit,
         _path: &automerge::ObjId,
-    ) -> Option<serde_json::Value> {
-        Some(native_observer::snapshot(self))
+    ) -> serde_json::Value {
+        native_observer::snapshot(self)
     }
 }
 
@@ -7272,7 +7272,7 @@ impl Widget for FileExplorerWidget {
         doc: &automerge::AutoCommit,
         path: &automerge::ObjId,
     ) -> Option<serde_json::Value> {
-        self.native_input_snapshot_impl(doc, path)
+        Some(self.native_input_snapshot_impl(doc, path))
     }
 
     fn collaborative_mut(&mut self) -> Option<&mut dyn Collaborative> {

@@ -1991,7 +1991,11 @@ mod tests {
         // production timeout with the actual native backend still in NULL.
         engine.current_uri = Some("file:///not-yet-prerolled.wav".into());
         engine.pending_seek = Some(1000);
-        engine.seek_started = Some(std::time::Instant::now() - std::time::Duration::from_secs(6));
+        engine.seek_started = Some(
+            std::time::Instant::now()
+                .checked_sub(std::time::Duration::from_secs(6))
+                .unwrap(),
+        );
         assert!(engine.pump());
         assert!(
             engine

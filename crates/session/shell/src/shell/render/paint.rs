@@ -1418,7 +1418,7 @@ impl VelloDrmBridge {
         Ok(())
     }
 
-    /// LinuxPerPhase timeout errors are recoverable, but only after an explicit cool-down. Other
+    /// `LinuxPerPhase` timeout errors are recoverable, but only after an explicit cool-down. Other
     /// errors retain their existing fail-closed behaviour and may be retried on the next frame.
     fn note_render_failure(&mut self, error: &BridgeError) {
         let timed_out = match error {
@@ -4432,7 +4432,11 @@ mod tests {
             assert!(bytes.iter().all(|byte| *byte == 0xAB));
             // Once the cool-down expires the poisoned target is reconstructed exactly once; the
             // failure fixture belongs to the old target and cannot poison its replacement.
-            bridge.recovery_not_before = Some(Instant::now() - Duration::from_millis(1));
+            bridge.recovery_not_before = Some(
+                Instant::now()
+                    .checked_sub(Duration::from_millis(1))
+                    .expect("monotonic clock is past its first millisecond"),
+            );
             bridge
                 .paint_damage_into_xrgb8888(
                     &Scene::new(),

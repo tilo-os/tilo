@@ -42,7 +42,28 @@ fn upserts(cs: &Changeset) -> Vec<(String, Option<blake3::Hash>)> {
                 path.display().to_string(),
                 node.manifest.as_ref().map(|m| m.content_id),
             )),
-            ChangeOp::Remove { .. } => None,
+            ChangeOp::Remove { .. } | ChangeOp::Move { .. } => None,
+        })
+        .collect()
+}
+
+/// `from -> to` for every move, with `*` when the moved node also changed.
+fn moves(cs: &Changeset) -> Vec<String> {
+    cs.ops
+        .iter()
+        .filter_map(|op| match op {
+            ChangeOp::Move {
+                from,
+                path,
+                changed,
+                ..
+            } => Some(format!(
+                "{} -> {}{}",
+                from.display(),
+                path.display(),
+                if *changed { " *" } else { "" }
+            )),
+            _ => None,
         })
         .collect()
 }
@@ -52,7 +73,7 @@ fn removes(cs: &Changeset) -> Vec<String> {
         .iter()
         .filter_map(|op| match op {
             ChangeOp::Remove { path, .. } => Some(path.display().to_string()),
-            ChangeOp::Upsert { .. } => None,
+            ChangeOp::Upsert { .. } | ChangeOp::Move { .. } => None,
         })
         .collect()
 }
@@ -160,7 +181,7 @@ fn an_in_place_edit_of_a_large_file_rehashes_only_the_changed_extent() {
 }
 
 #[test]
-fn a_rename_reuses_the_manifest_without_reading_the_file() {
+fn a_rename_is_a_move_that_reads_nothing() {
     let Some(s) = btrfs_scratch("capture_rename") else {
         return;
     };
@@ -178,9 +199,75 @@ fn a_rename_reuses_the_manifest_without_reading_the_file() {
             false,
         )]))
         .unwrap();
-    assert_eq!(removes(&cs), ["a.bin"]);
-    assert_eq!(upserts(&cs), [("b.bin".to_owned(), id)]);
+    assert!(removes(&cs).is_empty(), "{:?}", op_paths(&cs));
+    assert!(upserts(&cs).is_empty(), "{:?}", op_paths(&cs));
+    assert_eq!(moves(&cs), ["a.bin -> b.bin"]);
+    let ChangeOp::Move { node, .. } = &cs.ops[0] else {
+        panic!("{:?}", op_paths(&cs));
+    };
+    assert_eq!(node.manifest.as_ref().map(|m| m.content_id), id);
     assert_eq!(cs.stats.chunks.bytes_hashed, 0);
+
+    // Renamed over an existing file and then edited: one move that also
+    // changed, replacing the file that stood there.
+    fs::write(s.live.join("c.bin"), b"victim").unwrap();
+    cap.capture(&batch(&[(JournalOp::Create, "c.bin", false)]))
+        .unwrap();
+    fs::rename(s.live.join("b.bin"), s.live.join("c.bin")).unwrap();
+    OpenOptions::new()
+        .write(true)
+        .open(s.live.join("c.bin"))
+        .unwrap()
+        .write_all_at(b"edit", 4096)
+        .unwrap();
+    let cs = cap
+        .capture(&batch(&[
+            (
+                JournalOp::Rename {
+                    from: Some("b.bin".into()),
+                },
+                "c.bin",
+                false,
+            ),
+            (JournalOp::Modify, "c.bin", false),
+        ]))
+        .unwrap();
+    assert_eq!(moves(&cs), ["b.bin -> c.bin *"], "{:?}", op_paths(&cs));
+    assert!(removes(&cs).is_empty() && upserts(&cs).is_empty());
+    let paths: Vec<&Path> = cap.nodes().map(|(p, _)| p).collect();
+    assert_eq!(paths, [Path::new("c.bin")]);
+    cap.release().unwrap();
+}
+
+#[test]
+fn hard_links_are_separate_files_and_a_write_through_one_updates_both() {
+    let Some(s) = btrfs_scratch("capture_hardlinks") else {
+        return;
+    };
+    fs::write(s.live.join("a"), b"one").unwrap();
+    fs::hard_link(s.live.join("a"), s.live.join("b")).unwrap();
+    let mut cap = EpochCapture::new(CaptureConfig::new(&s.live, &s.epochs)).unwrap();
+    let first = cap.capture(&JournalBatch::default()).unwrap();
+    let mut ups: Vec<String> = upserts(&first).into_iter().map(|(p, _)| p).collect();
+    ups.sort();
+    assert_eq!(ups, ["a", "b"]);
+
+    // The journal names only the path written through.
+    fs::write(s.live.join("a"), b"two").unwrap();
+    let cs = cap
+        .capture(&batch(&[(JournalOp::Modify, "a", false)]))
+        .unwrap();
+    let mut ups: Vec<String> = upserts(&cs).into_iter().map(|(p, _)| p).collect();
+    ups.sort();
+    assert_eq!(ups, ["a", "b"], "both links carry the new bytes");
+
+    // Removing one link of two is a removal, not a move.
+    fs::remove_file(s.live.join("a")).unwrap();
+    let cs = cap
+        .capture(&batch(&[(JournalOp::Delete, "a", false)]))
+        .unwrap();
+    assert_eq!(removes(&cs), ["a"]);
+    assert!(moves(&cs).is_empty());
     cap.release().unwrap();
 }
 
@@ -195,34 +282,79 @@ fn directory_moves_and_deletes_cover_their_subtrees() {
     let mut cap = EpochCapture::new(CaptureConfig::new(&s.live, &s.epochs)).unwrap();
     cap.capture(&JournalBatch::default()).unwrap();
 
+    // Moving the directory moves its subtree in one operation. A file
+    // deleted inside it and one created in it after the move follow it.
+    fs::remove_file(s.live.join("a/g")).unwrap();
     fs::rename(s.live.join("a"), s.live.join("z")).unwrap();
+    fs::write(s.live.join("z/new"), b"n").unwrap();
     let cs = cap
-        .capture(&batch(&[(
+        .capture(&batch(&[
+            (JournalOp::Delete, "a/g", false),
+            (
+                JournalOp::Rename {
+                    from: Some("a".into()),
+                },
+                "z",
+                true,
+            ),
+            (JournalOp::Create, "z/new", false),
+        ]))
+        .unwrap();
+    assert_eq!(
+        op_paths(&cs),
+        ["a>z", "-z/g", "+z/new"],
+        "one move, then what changed inside it, in the moved directory"
+    );
+    let mut paths: Vec<String> = cap.nodes().map(|(p, _)| p.display().to_string()).collect();
+    paths.sort();
+    assert_eq!(paths, ["z", "z/b", "z/b/f", "z/new"]);
+
+    // A directory moved into place, and a subdirectory then moved out of it.
+    fs::rename(s.live.join("z"), s.live.join("y")).unwrap();
+    fs::rename(s.live.join("y/b"), s.live.join("x")).unwrap();
+    let cs = cap
+        .capture(&batch(&[
+            (
+                JournalOp::Rename {
+                    from: Some("z".into()),
+                },
+                "y",
+                true,
+            ),
+            (
+                JournalOp::Rename {
+                    from: Some("y/b".into()),
+                },
+                "x",
+                true,
+            ),
+        ]))
+        .unwrap();
+    assert_eq!(op_paths(&cs), ["z>y", "y/b>x"]);
+    let mut paths: Vec<String> = cap.nodes().map(|(p, _)| p.display().to_string()).collect();
+    paths.sort();
+    assert_eq!(paths, ["x", "x/f", "y", "y/new"]);
+    fs::remove_dir_all(s.live.join("x")).unwrap();
+    fs::rename(s.live.join("y"), s.live.join("z")).unwrap();
+    fs::create_dir(s.live.join("z/b")).unwrap();
+    fs::write(s.live.join("z/b/f"), b"x").unwrap();
+    fs::write(s.live.join("z/g"), b"y").unwrap();
+    fs::remove_file(s.live.join("z/new")).unwrap();
+    cap.capture(&batch(&[
+        (JournalOp::Delete, "x", true),
+        (
             JournalOp::Rename {
-                from: Some("a".into()),
+                from: Some("y".into()),
             },
             "z",
             true,
-        )]))
-        .unwrap();
-    let mut rm = removes(&cs);
-    rm.sort();
-    assert_eq!(rm, ["a", "a/b", "a/b/f", "a/g"]);
-    let ups: Vec<String> = upserts(&cs).into_iter().map(|(p, _)| p).collect();
-    for want in ["z", "z/b", "z/b/f", "z/g"] {
-        assert!(
-            ups.contains(&want.to_owned()),
-            "{want} missing from {ups:?}"
-        );
-    }
-    // Children are removed before their directory.
-    let order: Vec<String> = cs
-        .ops
-        .iter()
-        .map(|o| o.path().display().to_string())
-        .collect();
-    let at = |p: &str| order.iter().position(|x| x == p).unwrap();
-    assert!(at("a/b/f") < at("a/b") && at("a/b") < at("a"));
+        ),
+        (JournalOp::Create, "z/b", true),
+        (JournalOp::Create, "z/b/f", false),
+        (JournalOp::Create, "z/g", false),
+        (JournalOp::Delete, "z/new", false),
+    ]))
+    .unwrap();
 
     fs::remove_dir_all(s.live.join("z")).unwrap();
     let cs = cap
@@ -371,6 +503,9 @@ fn op_paths(cs: &Changeset) -> Vec<String> {
         .map(|op| match op {
             ChangeOp::Upsert { path, .. } => format!("+{}", path.display()),
             ChangeOp::Remove { path, .. } => format!("-{}", path.display()),
+            ChangeOp::Move { from, path, .. } => {
+                format!("{}>{}", from.display(), path.display())
+            }
         })
         .collect()
 }
@@ -516,7 +651,8 @@ fn an_invalidated_path_is_captured_again_or_removed() {
     // Publishing both failed: an unchanged file is captured again...
     cap.invalidate(Path::new("kept"));
     cap.invalidate(Path::new("moved"));
-    // ...and one renamed away before the next epoch is removed.
+    // ...and one renamed away before the next epoch is moved, with its
+    // content published again.
     fs::rename(s.live.join("moved"), s.live.join("elsewhere")).unwrap();
     let cs = cap
         .capture(&batch(&[(
@@ -529,6 +665,7 @@ fn an_invalidated_path_is_captured_again_or_removed() {
         .unwrap();
     let mut got = op_paths(&cs);
     got.sort();
-    assert_eq!(got, ["+elsewhere", "+kept", "-moved"]);
+    assert_eq!(got, ["+kept", "moved>elsewhere"]);
+    assert_eq!(moves(&cs), ["moved -> elsewhere *"]);
     cap.release().unwrap();
 }

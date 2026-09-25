@@ -4911,23 +4911,7 @@ impl Widget for FeedsApp {
                     MouseScrollDelta::LineDelta(_, y) => f64::from(*y) * 48.0,
                     MouseScrollDelta::PixelDelta(p) => p.y / scale_factor,
                 };
-                if self.sidebar_rect.contains(self.last_mouse) {
-                    let visible = (self.sidebar_rect.height() - HEADER_H).max(0.0);
-                    let max = (self.sidebar_content_h - visible).max(0.0);
-                    self.sidebar_scroll = (self.sidebar_scroll - dy).clamp(0.0, max);
-                    self.build_sidebar_rows();
-                } else if self.reader_rect.contains(self.last_mouse) {
-                    let visible = (self.reader_rect.height() - HEADER_H).max(0.0);
-                    let max = (self.reader_content_h - visible + 60.0).max(0.0);
-                    self.reader_scroll = (self.reader_scroll - dy).clamp(0.0, max);
-                } else if self.list_rect.contains(self.last_mouse) {
-                    // The refresh strip (when visible) eats into the row viewport.
-                    let view_h =
-                        (self.list_rect.height() - self.header_h() - self.refresh_strip_h())
-                            .max(0.0);
-                    let max = (self.list_content_h - view_h).max(0.0);
-                    self.list_scroll = (self.list_scroll - dy).clamp(0.0, max);
-                }
+                self.scroll_pane_under_pointer(dy);
                 *handled = true;
             }
             WindowEvent::KeyboardInput {
@@ -5472,10 +5456,10 @@ impl Widget for FeedsApp {
     fn next_wake_deadline(&self) -> Option<Instant> {
         if self.import_rx.is_none()
             && self.export_rx.is_none()
-            && !self
+            && self
                 .worker
                 .as_ref()
-                .is_some_and(|worker| worker.pending() > 0)
+                .is_none_or(|worker| worker.pending() == 0)
             && self.pending_doc_writes.is_empty()
         {
             return None;
@@ -5511,6 +5495,26 @@ impl Widget for FeedsApp {
 }
 
 impl FeedsApp {
+    /// Scrolls whichever pane the pointer is over by `dy` logical pixels.
+    fn scroll_pane_under_pointer(&mut self, dy: f64) {
+        if self.sidebar_rect.contains(self.last_mouse) {
+            let visible = (self.sidebar_rect.height() - HEADER_H).max(0.0);
+            let max = (self.sidebar_content_h - visible).max(0.0);
+            self.sidebar_scroll = (self.sidebar_scroll - dy).clamp(0.0, max);
+            self.build_sidebar_rows();
+        } else if self.reader_rect.contains(self.last_mouse) {
+            let visible = (self.reader_rect.height() - HEADER_H).max(0.0);
+            let max = (self.reader_content_h - visible + 60.0).max(0.0);
+            self.reader_scroll = (self.reader_scroll - dy).clamp(0.0, max);
+        } else if self.list_rect.contains(self.last_mouse) {
+            // The refresh strip (when visible) eats into the row viewport.
+            let view_h =
+                (self.list_rect.height() - self.header_h() - self.refresh_strip_h()).max(0.0);
+            let max = (self.list_content_h - view_h).max(0.0);
+            self.list_scroll = (self.list_scroll - dy).clamp(0.0, max);
+        }
+    }
+
     fn handle_key(
         &mut self,
         key_event: &winit::event::KeyEvent,
@@ -7069,7 +7073,7 @@ mod tests {
             match outcome {
                 PortalOutcome::Cancelled => assert_eq!(message, "Export cancelled"),
                 PortalOutcome::Failed(reason) => {
-                    assert_eq!(message, &format!("Export failed: {reason}"))
+                    assert_eq!(message, &format!("Export failed: {reason}"));
                 }
                 PortalOutcome::Opened(_) => unreachable!(),
             }

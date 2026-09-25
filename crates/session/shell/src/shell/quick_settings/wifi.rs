@@ -680,7 +680,7 @@ impl QuickSettingsWifiPane {
                     theme.tokens.typography.scale.xs,
                     colors.accent[5],
                     transform.pre_translate((row.x0 + 44.0, row.y0 + 38.0).into()),
-                    Some((row.width() - 120.0).max(1.0) as f32),
+                    Some(f32v((row.width() - 120.0).max(1.0))),
                 );
             }
             ui::icons::draw_icon(

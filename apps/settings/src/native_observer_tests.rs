@@ -251,7 +251,7 @@ impl Harness {
                         tilo_actions::OperationKind::View,
                         "tilo.ui.control.invoke",
                         &payload,
-                        &mut self.doc,
+                        &self.doc,
                         &root(),
                     )
                     .unwrap();

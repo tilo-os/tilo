@@ -73,6 +73,15 @@ const MAX_NEARBY_TRANSFER_HANDLES: usize = 256;
 const NEARBY_DESTINATION_HANDLE_TTL: Duration = Duration::from_secs(120);
 const FILES_APP_ID: &str = "so.tilo.file-explorer";
 
+/// When a nearby handle issued or refreshed at `now` stops being valid.
+///
+/// An expiry the clock cannot represent fails closed: the handle expires at
+/// `now` instead of never, so an unrepresentable deadline cannot mint an
+/// immortal capability handle.
+fn nearby_handle_expiry(now: Instant, ttl: Duration) -> Instant {
+    now.checked_add(ttl).unwrap_or(now)
+}
+
 #[derive(Clone)]
 struct NearbyTargetBinding {
     peer_id: u64,
@@ -115,7 +124,7 @@ impl NearbyTargetRegistry {
         if let Some((handle, binding)) = self.bindings.iter_mut().find(|(_, binding)| {
             binding.peer_id == peer_id && binding.route == channel && binding.target == target
         }) {
-            binding.expires_at = now + NEARBY_TARGET_HANDLE_TTL;
+            binding.expires_at = nearby_handle_expiry(now, NEARBY_TARGET_HANDLE_TTL);
             return *handle;
         }
         loop {
@@ -129,7 +138,7 @@ impl NearbyTargetRegistry {
                         peer_id,
                         route: route.channel_key(),
                         target,
-                        expires_at: now + NEARBY_TARGET_HANDLE_TTL,
+                        expires_at: nearby_handle_expiry(now, NEARBY_TARGET_HANDLE_TTL),
                     },
                 );
                 return handle;
@@ -202,7 +211,7 @@ impl NearbyDestinationRegistry {
                 && binding.route == route.channel_key()
                 && binding.grant == grant
         }) {
-            binding.expires_at = now + NEARBY_DESTINATION_HANDLE_TTL;
+            binding.expires_at = nearby_handle_expiry(now, NEARBY_DESTINATION_HANDLE_TTL);
             return runtime_collab::NearbyTransferDestination {
                 handle: *handle,
                 label: binding.label.clone(),
@@ -222,7 +231,7 @@ impl NearbyDestinationRegistry {
                         grant,
                         label: label.clone(),
                         remembered: false,
-                        expires_at: now + NEARBY_DESTINATION_HANDLE_TTL,
+                        expires_at: nearby_handle_expiry(now, NEARBY_DESTINATION_HANDLE_TTL),
                     },
                 );
                 return runtime_collab::NearbyTransferDestination {
@@ -248,7 +257,7 @@ impl NearbyDestinationRegistry {
             return None;
         }
         binding.remembered |= remember;
-        binding.expires_at = now + NEARBY_DESTINATION_HANDLE_TTL;
+        binding.expires_at = nearby_handle_expiry(now, NEARBY_DESTINATION_HANDLE_TTL);
         crate::shell::nearby_transfer::SecureNearbyDestination::open_grant(&binding.grant).ok()
     }
 
@@ -293,7 +302,7 @@ impl NearbyTransferRegistry {
             if binding.peer_id != peer_id || binding.route != route.channel_key() {
                 return None;
             }
-            binding.expires_at = now + NEARBY_TRANSFER_HANDLE_TTL;
+            binding.expires_at = nearby_handle_expiry(now, NEARBY_TRANSFER_HANDLE_TTL);
             return Some(*handle);
         }
         if !allow_claim || self.bindings.len() >= MAX_NEARBY_TRANSFER_HANDLES {
@@ -311,7 +320,7 @@ impl NearbyTransferRegistry {
                         route: route.channel_key(),
                         transfer_id,
                         direction,
-                        expires_at: now + NEARBY_TRANSFER_HANDLE_TTL,
+                        expires_at: nearby_handle_expiry(now, NEARBY_TRANSFER_HANDLE_TTL),
                     },
                 );
                 return Some(handle);
@@ -335,7 +344,7 @@ impl NearbyTransferRegistry {
         {
             return None;
         }
-        binding.expires_at = now + NEARBY_TRANSFER_HANDLE_TTL;
+        binding.expires_at = nearby_handle_expiry(now, NEARBY_TRANSFER_HANDLE_TTL);
         Some(binding.transfer_id)
     }
 
@@ -1948,6 +1957,7 @@ impl RealtimeFabricAppBridge {
             });
             return Err(error.to_string());
         }
+        drop(realtime);
         Ok(())
     }
 
@@ -2023,6 +2033,7 @@ impl RealtimeFabricAppBridge {
             {
                 return Err("capture consent is already being applied".into());
             }
+            drop(realtime);
             result
         };
         if !approved {
@@ -2205,6 +2216,10 @@ fn decode_permission_profile_operation(
 
 /// Apply a permission-profile operation as `caller` to one workspace and
 /// mirror it into the room document.
+#[expect(
+    clippy::indexing_slicing,
+    reason = "the caller resolves workspace_index with `position` under the same tree write guard it passes in, and nothing here removes workspaces"
+)]
 fn apply_permission_profile_operation(
     tree: &mut WorkspaceTree,
     workspace_index: usize,
@@ -3223,6 +3238,10 @@ impl CapnpBrokerState {
     /// forward to: the broker already owns the workspace capability authority,
     /// so it validates, mutates, records history, and returns one terminal
     /// lifecycle update atomically under that authority.
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "workspace_index comes from `position` under the tree write guard held for the whole call, so it stays in bounds"
+    )]
     fn invoke_workspace_profile_action(
         &self,
         cluster_id: &str,
@@ -4969,14 +4988,14 @@ impl CapnpChannelHandle {
 
 fn nearby_transfer_reply(
     results: &mut channel_handle::NearbyTransferCommandResults,
-    reply: runtime_collab::NearbyTransferReply,
+    reply: &runtime_collab::NearbyTransferReply,
 ) -> Promise<(), capnp::Error> {
     if !reply.valid() {
         return Promise::err(capnp::Error::failed(
             "Nearby Send produced an invalid bounded reply".into(),
         ));
     }
-    let bytes = match serde_json::to_vec(&reply) {
+    let bytes = match serde_json::to_vec(reply) {
         Ok(bytes) if bytes.len() <= runtime_collab::MAX_NEARBY_TRANSFER_WIRE_BYTES => bytes,
         Ok(_) => {
             return Promise::err(capnp::Error::failed(
@@ -5225,7 +5244,7 @@ impl channel_handle::Server for CapnpChannelHandle {
                     Err(reason) => {
                         return nearby_transfer_reply(
                             &mut results,
-                            runtime_collab::NearbyTransferReply::Rejected { reason },
+                            &runtime_collab::NearbyTransferReply::Rejected { reason },
                         );
                     }
                 };
@@ -5240,7 +5259,7 @@ impl channel_handle::Server for CapnpChannelHandle {
                 let Some(target) = target else {
                     return nearby_transfer_reply(
                         &mut results,
-                        runtime_collab::NearbyTransferReply::Rejected {
+                        &runtime_collab::NearbyTransferReply::Rejected {
                             reason: "Nearby Send target expired; reopen the device picker".into(),
                         },
                     );
@@ -5301,7 +5320,7 @@ impl channel_handle::Server for CapnpChannelHandle {
                 let Some(transfer_id) = transfer_id else {
                     return nearby_transfer_reply(
                         &mut results,
-                        runtime_collab::NearbyTransferReply::Rejected {
+                        &runtime_collab::NearbyTransferReply::Rejected {
                             reason:
                                 "Nearby Send transfer expired or belongs to another Files workspace"
                                     .into(),
@@ -5339,7 +5358,7 @@ impl channel_handle::Server for CapnpChannelHandle {
                 let Some(transfer_id) = transfer_id else {
                     return nearby_transfer_reply(
                         &mut results,
-                        runtime_collab::NearbyTransferReply::Rejected {
+                        &runtime_collab::NearbyTransferReply::Rejected {
                             reason:
                                 "Nearby Send transfer expired or belongs to another Files workspace"
                                     .into(),
@@ -5367,7 +5386,7 @@ impl channel_handle::Server for CapnpChannelHandle {
                 if accept && destination.is_none() {
                     return nearby_transfer_reply(
                         &mut results,
-                        runtime_collab::NearbyTransferReply::Rejected {
+                        &runtime_collab::NearbyTransferReply::Rejected {
                             reason: "Nearby Send destination expired; choose it again".into(),
                         },
                     );
@@ -5400,7 +5419,7 @@ impl channel_handle::Server for CapnpChannelHandle {
                 let Some(transfer_id) = transfer_id else {
                     return nearby_transfer_reply(
                         &mut results,
-                        runtime_collab::NearbyTransferReply::Rejected {
+                        &runtime_collab::NearbyTransferReply::Rejected {
                             reason:
                                 "Nearby Send transfer expired or belongs to another Files workspace"
                                     .into(),
@@ -5416,7 +5435,7 @@ impl channel_handle::Server for CapnpChannelHandle {
                 }
             }
         };
-        nearby_transfer_reply(&mut results, reply)
+        nearby_transfer_reply(&mut results, &reply)
     }
 
     #[allow(
@@ -6953,7 +6972,7 @@ impl channel_handle::Server for CapnpChannelHandle {
                     metadata,
                 )
             }) {
-            Ok(_) => Promise::ok(()),
+            Ok(()) => Promise::ok(()),
             Err(error) => Promise::err(capnp::Error::failed(error)),
         }
     }
@@ -7281,7 +7300,9 @@ fn permits_directory_row(
             .ok()
     };
     if !row.resource_presentation_json.is_empty()
-        && !presentation.as_ref().is_some_and(|value| value.is_valid())
+        && !presentation
+            .as_ref()
+            .is_some_and(tilo_actions::ResourcePresentation::is_valid)
     {
         return Err(capnp::Error::failed(
             "invalid resource presentation metadata".into(),
@@ -9262,6 +9283,10 @@ pub(crate) mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "an end-to-end test scenario that reads top to bottom"
+    )]
     fn realtime_consent_reserves_once_and_revokes_minted_batch_after_disconnect() {
         use crate::shell::realtime_session::{
             BrokerRealtimeFabricAdapter, RealtimeFabricAdapter, RealtimeFabricSignal,
@@ -9312,7 +9337,7 @@ pub(crate) mod tests {
             room: SemanticRoomLocator::new("meet", "standup").expect("semantic room"),
             semantic_position: None,
             media: RealtimeMediaSet::new([RealtimeMediaFacet::Microphone]).expect("media set"),
-            controls: Default::default(),
+            controls: crate::shell::realtime_session::RealtimeControlState::default(),
         };
         let id = source_broker
             .lock()
@@ -9404,9 +9429,14 @@ pub(crate) mod tests {
             0,
             "stale consent must revoke every minted capability"
         );
+        drop(realtime);
     }
 
     #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "an end-to-end test scenario that reads top to bottom"
+    )]
     fn realtime_policy_disable_tears_down_exact_pending_consent() {
         use crate::shell::realtime_session::{
             BrokerRealtimeFabricAdapter, RealtimeFabricAdapter, RealtimeFabricSignal,
@@ -9457,7 +9487,7 @@ pub(crate) mod tests {
             room: SemanticRoomLocator::new("meet", "standup").expect("semantic room"),
             semantic_position: None,
             media: RealtimeMediaSet::new([RealtimeMediaFacet::Microphone]).expect("media set"),
-            controls: Default::default(),
+            controls: crate::shell::realtime_session::RealtimeControlState::default(),
         };
         let id = source_broker
             .lock()
@@ -9901,6 +9931,10 @@ pub(crate) mod tests {
         }
 
         /// Exercise the production peer-bound update RPC, including result-contract validation.
+        #[expect(
+            clippy::future_not_send,
+            reason = "Cap'n Proto clients are single-threaded; the fixture is awaited on a local set"
+        )]
         pub(crate) async fn complete_invocation(
             &self,
             id: u64,
@@ -9927,7 +9961,7 @@ pub(crate) mod tests {
             request.get().set_id(id);
             request
                 .get()
-                .set_update_json(&serde_json::to_string(update).expect("canonical update"));
+                .set_update_json(serde_json::to_string(update).expect("canonical update"));
             request.send().promise.await?;
             Ok(())
         }
@@ -9943,6 +9977,11 @@ pub(crate) mod tests {
                 .map(|invocation| invocation.actor)
         }
 
+        /// `None` when no invocation arrived; otherwise the invocation's optional argument.
+        #[expect(
+            clippy::option_option,
+            reason = "tests distinguish no invocation from an invocation without an argument"
+        )]
         pub(crate) fn take_invocation_argument(&mut self) -> Option<Option<String>> {
             self.invocation_rx
                 .try_recv()
@@ -11526,6 +11565,7 @@ pub(crate) mod tests {
             collab_types::Verb::Read,
         ));
         assert_eq!(workspace.effect_receipts.len(), 2);
+        drop(tree);
     }
 
     #[allow(
@@ -12023,5 +12063,16 @@ pub(crate) mod tests {
 
         let reader = test_published_view("read", "reader", true);
         assert!(validate_resource_view_descriptors(&[editor, reader]).is_err());
+    }
+
+    #[test]
+    fn nearby_handle_expiry_adds_ttl_and_fails_closed_on_overflow() {
+        let now = Instant::now();
+        assert_eq!(
+            Some(nearby_handle_expiry(now, NEARBY_TARGET_HANDLE_TTL)),
+            now.checked_add(NEARBY_TARGET_HANDLE_TTL)
+        );
+        assert_eq!(nearby_handle_expiry(now, Duration::ZERO), now);
+        assert_eq!(nearby_handle_expiry(now, Duration::MAX), now);
     }
 }

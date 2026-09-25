@@ -57,6 +57,11 @@ pub struct SecureNearbyDestination {
 
 impl SecureNearbyDestination {
     /// Open one approved writable Files grant without following a final link.
+    ///
+    /// # Errors
+    ///
+    /// Returns a message when the grant cannot be resolved or opened, or is
+    /// not a directory.
     pub fn open_grant(grant: &Path) -> Result<Self, String> {
         let display_root = fs::canonicalize(grant).map_err(display)?;
         let directory = OpenOptions::new()
@@ -406,7 +411,7 @@ impl NearbyTransferStore {
             self.ensure_capacity(metadata.len())?;
             copy_open_regular(source.into_file(), &object).map(|()| TransferKind::File)
         } else if metadata.is_dir() {
-            archive_open_folder(source.into_file(), &object).map(|()| TransferKind::FolderArchive)
+            archive_open_folder(&source.into_file(), &object).map(|()| TransferKind::FolderArchive)
         } else {
             return Err("nearby transfer source must be a regular file or folder".into());
         };
@@ -575,6 +580,12 @@ impl NearbyTransferStore {
     }
 
     /// Verify and install through an already-open destination capability.
+    ///
+    /// # Errors
+    ///
+    /// Returns a message when the transfer is unknown, its staged bytes cannot
+    /// be read, fail the integrity check (the transfer is then discarded), or
+    /// cannot be installed into `destination`.
     pub fn finish_secure(
         &mut self,
         id: [u8; 16],
@@ -887,7 +898,7 @@ fn copy_open_regular(mut source: File, destination: &Path) -> Result<(), String>
     output.sync_all().map_err(display)
 }
 
-fn archive_open_folder(source: File, destination: &Path) -> Result<(), String> {
+fn archive_open_folder(source: &File, destination: &Path) -> Result<(), String> {
     if !source.metadata().map_err(display)?.is_dir() {
         return Err("nearby transfer source changed type".into());
     }
@@ -923,7 +934,7 @@ fn archive_open_folder(source: File, destination: &Path) -> Result<(), String> {
     for (relative, is_directory) in entries {
         let relative = relative.as_path();
         validate_relative(relative)?;
-        let mut opened = openat2_beneath(&source, relative, is_directory)?;
+        let mut opened = openat2_beneath(source, relative, is_directory)?;
         let metadata = opened.metadata().map_err(display)?;
         if !metadata.is_dir() && !metadata.is_file() {
             return Err("folder contains a link or special file".into());

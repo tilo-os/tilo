@@ -350,6 +350,10 @@ fn local_resume_snapshot(entries: &[HistoryEntry]) -> Option<ResumeSnapshot> {
     clippy::too_many_arguments,
     reason = "resume card rendering receives the ordinary immediate-mode scene and typography context"
 )]
+#[expect(
+    clippy::too_many_lines,
+    reason = "a paint routine that lays its elements out top to bottom from shared running offsets"
+)]
 fn draw_resume_card(
     scene: &mut Scene,
     transform: Affine,
@@ -539,6 +543,10 @@ fn type_size(tr: &TextRenderer, resolved: f32) -> f32 {
     resolved / tr.text_scale()
 }
 
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "a non-negative on-screen width in logical pixels; f32 holds it with sub-pixel precision"
+)]
 fn text_width(width: f64) -> f32 {
     width.max(0.0) as f32
 }
@@ -3585,6 +3593,10 @@ impl RoomActivityPane {
                 0.0
             };
             let expanded = self.expanded_brief == Some(index);
+            #[expect(
+                clippy::indexing_slicing,
+                reason = "previous_index is an earlier enumerate() index of the same briefs being iterated"
+            )]
             if let Some(newer) = previous_index
                 && (expanded || self.expanded_brief == Some(newer))
             {
@@ -5254,6 +5266,10 @@ impl RoomActivityPane {
         out
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "a declarative focus order covering every activity view"
+    )]
     fn focus_order(&self) -> Vec<ActivityFocus> {
         let mut order = Vec::new();
         order.extend(
@@ -7289,8 +7305,8 @@ fn draw_brief_author_stack(
 ) -> f64 {
     let visible = authors.len().min(2);
     for (index, author) in authors.iter().take(visible).enumerate() {
-        let avatar_x = x + index as f64 * 12.0;
-        let (r, g, b) = ui::widget::history::hue_to_rgb(author.avatar_hue);
+        let avatar_x = x + small_count_to_f64(index) * 12.0;
+        let (red, green, blue) = ui::widget::history::hue_to_rgb(author.avatar_hue);
         let initial = author
             .name
             .chars()
@@ -7303,28 +7319,29 @@ fn draw_brief_author_stack(
             transform,
             Rect::new(avatar_x, y - 2.0, avatar_x + 18.0, y + 16.0),
             &initial,
-            vello::peniko::Color::from_rgba8(r, g, b, 255),
+            vello::peniko::Color::from_rgba8(red, green, blue, 255),
             theme,
             tr,
         );
     }
     if authors.len() > visible {
-        let badge_x = x + visible as f64 * 12.0;
+        let badge_x = x + small_count_to_f64(visible) * 12.0;
         ui::widget::Avatar::draw_at(
             scene,
             transform,
             Rect::new(badge_x, y - 2.0, badge_x + 18.0, y + 16.0),
-            &format!("+{}", authors.len() - visible),
+            &format!("+{}", authors.len().saturating_sub(visible)),
             theme.tokens.colors.surfaces.raised,
             theme,
             tr,
         );
     }
-    let badges = visible + usize::from(authors.len() > visible);
+    // `visible` is at most two, so adding the overflow badge cannot saturate.
+    let badges = visible.saturating_add(usize::from(authors.len() > visible));
     if badges == 0 {
         x
     } else {
-        x + badges as f64 * 12.0 + 10.0
+        x + small_count_to_f64(badges) * 12.0 + 10.0
     }
 }
 
@@ -8311,7 +8328,9 @@ mod tests {
             .find(|workspace| workspace.id != home)
             .expect("demo has another workspace")
             .id;
-        let departed_at = SystemTime::UNIX_EPOCH + Duration::from_secs(10_000);
+        let departed_at = SystemTime::UNIX_EPOCH
+            .checked_add(Duration::from_secs(10_000))
+            .expect("fixed test timestamp");
         let mut pane = RoomActivityPane::new();
         pane.persistent_frontiers = false;
         pane.set_now_for_test(departed_at);
@@ -8334,7 +8353,11 @@ mod tests {
         }
 
         tree.desktop.active = home;
-        pane.set_now_for_test(departed_at + elapsed);
+        pane.set_now_for_test(
+            departed_at
+                .checked_add(elapsed)
+                .expect("test elapsed time fits SystemTime"),
+        );
         pane.observe_workspace(home.raw());
         pane.refresh(&mut tree);
         pane.refresh_records(&mut tree, &records);
@@ -10267,10 +10290,10 @@ mod tests {
             if !chip_names.iter().any(|chip| chip == name) {
                 continue;
             }
-            let rect = node
-                .bounds
-                .map(ui::AccessBounds::to_rect)
-                .unwrap_or_else(|| panic!("{name:?} publishes its hit rect"));
+            let rect = node.bounds.map_or_else(
+                || panic!("{name:?} publishes its hit rect"),
+                ui::AccessBounds::to_rect,
+            );
             assert!(
                 targets.contains(&rect),
                 "{name:?} publishes the rect the pointer hits"
@@ -10450,6 +10473,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "an end-to-end test scenario that reads top to bottom"
+    )]
     fn catch_up_redraws_work_session_boundaries_without_rewriting_history() {
         let (mut tree, _, _) = busy_room();
         let mut pane = pane_over(&mut tree);

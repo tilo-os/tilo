@@ -72,15 +72,15 @@ fn matches(needle: &str, title: &str, subtitle: &str, id: &str) -> Option<i32> {
 }
 
 fn confirmation_params(confirm: bool) -> Vec<ActionParam> {
-    confirm
-        .then(|| {
-            vec![ActionParam::required(
-                "confirm",
-                ParamType::Boolean,
-                "Explicitly confirm this consequential continuity action",
-            )]
-        })
-        .unwrap_or_default()
+    if confirm {
+        vec![ActionParam::required(
+            "confirm",
+            ParamType::Boolean,
+            "Explicitly confirm this consequential continuity action",
+        )]
+    } else {
+        Vec::new()
+    }
 }
 
 fn contract(confirm: bool) -> tilo_actions::ActionContract {
@@ -784,30 +784,46 @@ fn page_results(
     };
     let mut end = start;
     let mut bytes = 0usize;
-    let result_limit = (budget.max_results != 0)
-        .then_some(budget.max_results)
-        .unwrap_or(usize::MAX);
-    let work_limit = (budget.max_work != 0)
-        .then_some(budget.max_work)
-        .unwrap_or(usize::MAX);
-    let byte_limit = (budget.max_bytes != 0)
-        .then_some(budget.max_bytes)
-        .unwrap_or(usize::MAX);
+    let result_limit = if budget.max_results == 0 {
+        usize::MAX
+    } else {
+        budget.max_results
+    };
+    let work_limit = if budget.max_work == 0 {
+        usize::MAX
+    } else {
+        budget.max_work
+    };
+    let byte_limit = if budget.max_bytes == 0 {
+        usize::MAX
+    } else {
+        budget.max_bytes
+    };
     while end < results.len()
         && end.saturating_sub(start) < result_limit
         && end.saturating_sub(start) < work_limit
     {
+        #[expect(
+            clippy::indexing_slicing,
+            reason = "the loop condition keeps end below results.len()"
+        )]
         let next_bytes = result_bytes(&results[end]);
         if bytes.saturating_add(next_bytes) > byte_limit {
             break;
         }
         bytes = bytes.saturating_add(next_bytes);
-        end += 1;
+        // end < results.len(), so this cannot saturate.
+        end = end.saturating_add(1);
     }
     let exhausted = end == results.len();
     SearchPage {
         revision: revision.clone(),
-        results: results.into_iter().skip(start).take(end - start).collect(),
+        // end starts at start and only grows, so this cannot saturate.
+        results: results
+            .into_iter()
+            .skip(start)
+            .take(end.saturating_sub(start))
+            .collect(),
         next_cursor: (!exhausted).then(|| SearchCursor {
             revision,
             token: end.to_string(),
@@ -881,7 +897,7 @@ impl SearchProvider for DeviceContinuityActionsProvider {
     fn id(&self) -> &str {
         DEVICE_PROVIDER_ID
     }
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "Continuity"
     }
     fn resource_kinds(&self) -> &[ResourceKind] {
@@ -1062,7 +1078,7 @@ impl SearchProvider for CallContinuityActionsProvider {
     fn id(&self) -> &str {
         CALL_PROVIDER_ID
     }
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "Call continuity"
     }
     fn resource_kinds(&self) -> &[ResourceKind] {

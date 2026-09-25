@@ -256,7 +256,8 @@ def make_receipt(args):
     if kind == "lenovo-83ed":
         require(checked["schema"] == provenance.PROOF_SCHEMA_V2,
                 "Lenovo physical source requires backend-derived signed target proof v2")
-        dual_gate = provenance.dual_ci_medium_gate(args, checked, child_digest)
+        dual_gate = provenance.dual_ci_medium_gate(
+            args, checked, child_digest, ci_provenance["source_revision"])
     else:
         dual_gate = {}
     with raw.open("rb", buffering=0) as stream:

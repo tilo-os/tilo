@@ -1365,6 +1365,10 @@ mod tests {
     /// gap, a section is an `s3` from the previous one, and every inset is a
     /// token step — so no two neighbours touch at 1×.
     #[test]
+    #[expect(
+        clippy::float_cmp,
+        reason = "the insets are defined as the exact spacing token"
+    )]
     fn rows_and_sections_keep_token_gaps() {
         let sink = new_sink();
         let store = new_store(favorites::defaults(

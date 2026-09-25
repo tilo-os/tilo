@@ -172,12 +172,12 @@ fn cursor_to_publish(
 impl PeerPresence {
     /// Subscribe to `rooms` on `broker` and republish what the local
     /// apps publish in them to `net`.
-    pub fn attach(broker: &BrokerHandle, net: Arc<ShellNetwork>, rooms: Vec<String>) -> Self {
+    pub fn attach(broker: &BrokerHandle, net: &Arc<ShellNetwork>, rooms: Vec<String>) -> Self {
         let cursor: Arc<Mutex<Option<(f64, f64)>>> = Arc::new(Mutex::new(None));
         let inbound = net.inbound_presence_handle();
         let rooms_mirror = rooms.clone();
-        let net_for_desktop = Arc::clone(&net);
-        let net_for_subscription = Arc::clone(&net);
+        let net_for_desktop = Arc::clone(net);
+        let net_for_subscription = Arc::clone(net);
 
         let sink_cursor = Arc::clone(&cursor);
         let typed_inbound: Arc<Mutex<Vec<(String, PresenceKey, PresencePayload)>>> =
@@ -740,7 +740,7 @@ mod tests {
         let old_transport = UserId("peer@41".into());
         let tab = PresenceKey::Tab { id: "2a".into() };
         presence.register_presence(&tab, ada.clone());
-        presence.register_presence(&tab, old_transport.clone());
+        presence.register_presence(&tab, old_transport);
         presence.apply_remote_presence(
             "ada".into(),
             PresenceKey::Workspace {
@@ -756,7 +756,7 @@ mod tests {
         };
         assert!(presence.observe_interaction(*update).unwrap());
 
-        let ids = departure_presence_ids(41, Some("ada"), &Default::default());
+        let ids = departure_presence_ids(41, Some("ada"), &std::collections::BTreeMap::default());
         assert_eq!(ids, vec!["peer@41", "ada"]);
         for id in ids {
             presence.unregister_peer(&id);
@@ -1348,8 +1348,8 @@ mod two_sessions {
         let host_broker = broker(&dir, "h.sock");
         let guest_broker = broker(&dir, "g.sock");
 
-        let host = PeerPresence::attach(&host_broker, Arc::clone(&host_net), Vec::new());
-        let guest = PeerPresence::attach(&guest_broker, Arc::clone(&guest_net), Vec::new());
+        let host = PeerPresence::attach(&host_broker, &host_net, Vec::new());
+        let guest = PeerPresence::attach(&guest_broker, &guest_net, Vec::new());
         host.set_rooms(rooms_of(&host_handle));
         guest.set_rooms(rooms_of(&guest_handle));
 
@@ -1426,8 +1426,8 @@ mod two_sessions {
         std::fs::create_dir_all(&dir).expect("a temp dir");
         let host_broker = broker(&dir, "h.sock");
         let guest_broker = broker(&dir, "g.sock");
-        let host = PeerPresence::attach(&host_broker, Arc::clone(&host_net), Vec::new());
-        let guest = PeerPresence::attach(&guest_broker, Arc::clone(&guest_net), Vec::new());
+        let host = PeerPresence::attach(&host_broker, &host_net, Vec::new());
+        let guest = PeerPresence::attach(&guest_broker, &guest_net, Vec::new());
         host.set_rooms(rooms_of(&host_handle));
         guest.set_rooms(rooms_of(&guest_handle));
 
@@ -1481,8 +1481,8 @@ mod two_sessions {
         std::fs::create_dir_all(&dir).expect("a temp dir");
         let host_broker = broker(&dir, "h.sock");
         let guest_broker = broker(&dir, "g.sock");
-        let host = PeerPresence::attach(&host_broker, Arc::clone(&host_net), Vec::new());
-        let guest = PeerPresence::attach(&guest_broker, Arc::clone(&guest_net), Vec::new());
+        let host = PeerPresence::attach(&host_broker, &host_net, Vec::new());
+        let guest = PeerPresence::attach(&guest_broker, &guest_net, Vec::new());
         host.set_rooms(rooms_of(&host_handle));
         guest.set_rooms(rooms_of(&guest_handle));
 
@@ -1548,9 +1548,8 @@ mod two_sessions {
         std::fs::create_dir_all(&dir).expect("a temp dir");
         let host_broker = broker(&dir, "h.sock");
         let stranger_broker = broker(&dir, "s.sock");
-        let host = PeerPresence::attach(&host_broker, Arc::clone(&host_net), Vec::new());
-        let stranger =
-            PeerPresence::attach(&stranger_broker, Arc::clone(&stranger_net), Vec::new());
+        let host = PeerPresence::attach(&host_broker, &host_net, Vec::new());
+        let stranger = PeerPresence::attach(&stranger_broker, &stranger_net, Vec::new());
         host.set_rooms(rooms_of(&host_handle));
         stranger.set_rooms(rooms_of(&stranger_handle));
 
@@ -1611,7 +1610,7 @@ mod two_sessions {
     ) {
         let (net, cmds) = shell_network_for_test(tree.clone(), handle_of(peer));
         let net = Arc::new(net);
-        let relay = PeerPresence::attach(&broker(dir, sock), Arc::clone(&net), Vec::new());
+        let relay = PeerPresence::attach(&broker(dir, sock), &net, Vec::new());
         relay.set_rooms(rooms_of(tree));
         (relay, net, cmds)
     }

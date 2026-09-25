@@ -745,6 +745,10 @@ mod tests {
     }
 
     #[cfg(feature = "audio")]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one end-to-end scenario: stage, replace the source, then resume, read top to bottom"
+    )]
     fn check_replaced_paused_source(continuation: bool) {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("old-local.wav");
@@ -861,6 +865,10 @@ mod tests {
     #[test]
     #[cfg(feature = "audio")]
     #[serial_test::serial(audio_backend)]
+    #[expect(
+        clippy::float_cmp,
+        reason = "restarting assigns the playhead exactly 0.0"
+    )]
     fn local_file_row_restart_previous_and_repeat_match_canonical_restart_position() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("restart.wav");
@@ -1137,7 +1145,7 @@ mod tests {
         assert!(action.params().is_empty());
         let (services, recorder) = ui::host::HostServices::recording();
         let _host = ui::host::enter(&services);
-        recorder.respond_to_pick(ui::portal::PortalOutcome::Opened(path.clone()));
+        recorder.respond_to_pick(ui::portal::PortalOutcome::Opened(path));
         let encoded = action.build_json(&serde_json::Map::new()).unwrap();
         let payload = encoded.payload;
         assert_eq!(
@@ -1343,7 +1351,7 @@ mod tests {
         let invocation = tilo_actions::InvocationId::new();
         let (services, recorder) = ui::host::HostServices::recording();
         let _host = ui::host::enter(&services);
-        recorder.respond_to_pick(ui::portal::PortalOutcome::Opened(path.clone()));
+        recorder.respond_to_pick(ui::portal::PortalOutcome::Opened(path));
         let payload = serde_json::to_vec(&crate::actions::MusicOperation::ChooseAudioFile).unwrap();
         assert_eq!(
             app.start_resource_operation(

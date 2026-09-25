@@ -233,15 +233,20 @@ impl LocalPresence {
         facets: [(PresenceKey, PresencePayload); FACETS],
     ) -> Option<(PresenceKey, PresencePayload)> {
         let mut published = self.published.borrow_mut();
+        let mut facets = facets.map(Some);
         for step in 0..FACETS {
+            // `% FACETS` keeps `i` inside both arrays.
             let i = (self.last.get() + 1 + step) % FACETS;
-            if published[i].as_ref() != Some(&facets[i]) {
-                published[i] = Some(facets[i].clone());
+            let (Some(slot), Some(facet)) = (published.get_mut(i), facets.get_mut(i)) else {
+                continue;
+            };
+            if slot.as_ref() != facet.as_ref() {
+                *slot = facet.take();
                 self.last.set(i);
-                return published[i].clone();
+                return slot.clone();
             }
         }
-        published[self.last.get()].clone()
+        published.get(self.last.get()).cloned().flatten()
     }
 
     /// Forget what has been published, so the next poll re-sends every facet.
@@ -369,11 +374,7 @@ pub fn peer_field_carets(
     subject: Uuid,
 ) -> Vec<(UserId, usize)> {
     let key = field_key(field, subject);
-    let mut out: Vec<(UserId, usize)> = presence
-        .carets
-        .get(&key)
-        .map(|l| l.to_vec())
-        .unwrap_or_default();
+    let mut out: Vec<(UserId, usize)> = presence.carets.get(&key).cloned().unwrap_or_default();
     out.sort_by(|a, b| a.0.0.cmp(&b.0.0));
     out
 }
@@ -723,7 +724,7 @@ mod tests {
         let second = local.next(facets()).expect("a second frame");
         assert_ne!(first, second, "the second poll offers the other facet");
 
-        let published = [first.clone(), second.clone()];
+        let published = [first, second.clone()];
         assert!(
             published.iter().any(|(k, _)| *k == timeline_key()),
             "the playhead was never published: {published:?}",
@@ -750,7 +751,7 @@ mod tests {
         let mut saw_selection = false;
         for frame in 0..8 {
             // A playhead moving every frame, and a selection that never does.
-            let t = 1.0 + frame as f64 * 0.25;
+            let t = 1.0 + f64::from(frame) * 0.25;
             let out = local.next([point_frame(None, t), range_frame(Some((clip, 2.0, 6.0)))]);
             if out.map(|(k, _)| k) == Some(clip_key(clip)) {
                 saw_selection = true;
