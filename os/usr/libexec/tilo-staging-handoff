@@ -43,7 +43,9 @@ HANDOFF_RELATIVE = ('EFI', 'tilo-staging', 'handoff.json')
 EFI_GLOBAL = '8be4df61-93ca-11d2-aa0d-00e098032b8c'
 LOADER_VENDOR = '4a67b082-0a4c-41cf-b6c7-440b29bb8c4f'
 ESP_TYPE = 'c12a7328-f81f-11d2-ba4b-00a0c93ec93b'
-STAGING_ROOT_TYPE = '0fc63daf-8483-4772-8e79-3d69d8477de4'
+# The Tilo staging root type; only the live installer UKI resolves it
+# (os/usr/libexec/tilo-root-discover).
+STAGING_ROOT_TYPE = 'd4c4daf6-f72c-43ee-b8e3-5ba32550311d'
 GUIDED_EFI_BYTES = 2 * 1024 * 1024 * 1024
 MIN_GUIDED_ROOT_BYTES = 32 * 1024 * 1024 * 1024
 MIB = 1024 * 1024

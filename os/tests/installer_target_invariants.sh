@@ -548,6 +548,16 @@ else
   bad "guided alongside can mutate storage outside its reviewed free extent"
 fi
 
+# root=tilo-auto boots exactly one Tilo root per disk: both alongside paths
+# refuse to leave a second one, and a staged installer's root is a distinct type.
+if grep -Fq 'already holds a Tilo root partition' "$guided_partitioner" \
+   && grep -Fq 'already holds another Tilo root' "$backend" \
+   && ! grep -Fq 'd4c4daf6-f72c-43ee-b8e3-5ba32550311d' "$guided_partitioner" "$backend"; then
+  ok "alongside installs never leave two Tilo roots on one disk"
+else
+  bad "an alongside install can leave a second Tilo root that makes both unbootable"
+fi
+
 if bash "$repo_root/os/tests/live_installer_service_invariants.sh"; then
   ok "durable-identity services stay quiet only on disposable installer media"
 else
