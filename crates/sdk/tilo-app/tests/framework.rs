@@ -266,3 +266,45 @@ fn a_destructive_typed_value_is_confirmed_like_its_named_action() {
         .unwrap();
     assert!(app.state().items.is_empty());
 }
+
+#[test]
+fn history_restores_a_past_version_through_the_host() {
+    let mut app = TestApp::<ChecklistApp>::new().unwrap();
+    app.invoke(Checklist::RENAME.with("Groceries".into()))
+        .unwrap();
+    app.invoke(Checklist::ADD.with("milk".into())).unwrap();
+    let past = app.state();
+    let version = app.versions().pop().unwrap().hash;
+    app.invoke(Checklist::RENAME.with("Hardware".into()))
+        .unwrap();
+    app.invoke(Checklist::ADD.with("nails".into())).unwrap();
+    assert_ne!(app.state(), past);
+
+    let harness = app.harness();
+    assert!(
+        harness.targets().contains_key("history-open"),
+        "a framework app has History"
+    );
+    harness.click_named("history-open").unwrap();
+    let entry = tilo_app::history_source::entry_id_from_hash(&version.to_string());
+    let target = format!(
+        "timeline-entry:{}",
+        tilo_app::widget::history_group::hex16(&entry)
+    );
+    harness
+        .perform_semantic_named(
+            "activity_timeline",
+            Some(&target),
+            &tilo_app::a11y::Action::Activate,
+        )
+        .unwrap();
+    harness.click_named("history-restore").unwrap();
+    harness.key("Enter");
+    harness.relayout();
+    assert_eq!(app.state(), past);
+
+    // Back in the live app, the restore is one undoable step.
+    app.harness().click_named("history-back-live").unwrap();
+    assert!(app.undo());
+    assert_eq!(app.state().title, "Hardware");
+}
