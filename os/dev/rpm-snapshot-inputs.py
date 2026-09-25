@@ -18,8 +18,6 @@ spec.loader.exec_module(parser)
 # Everything that can change what snapshot-rpms.yml publishes. Its push paths
 # mirror this list. The pin is included so an in-flight publication becomes
 # stale when another pin lands, and so landing a pin rechecks for drift.
-# build-kernel.yml reads the same list, so both workflows agree on when a
-# snapshot is refreshed.
 PIN = "os/rpms-snapshot.env"
 INPUTS = (
     "os/Containerfile",
@@ -40,7 +38,6 @@ INPUTS = (
     "os/Containerfile.host",
     "os/dev/composefs/Containerfile",
     "os/containers/tilo-relay/Containerfile",
-    "os/kernel/Containerfile",
     ".forgejo/workflows/snapshot-rpms.yml",
     PIN,
 )

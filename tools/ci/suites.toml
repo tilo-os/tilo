@@ -52,6 +52,7 @@ suites = [
   "os/tests/installer_target_artifacts.py",
   "os/tests/installer_target_modes.py",
   "os/tests/internal_bundle_test.py",
+  "os/tests/installer_offline_target_test.py",
   "os/tests/local_boot_esp.sh",
   "os/tests/portal_config_validity.sh",
   "os/tests/test-installer-cycle-runtime.py",
@@ -149,6 +150,7 @@ suites = [
   "os/tests/rpm_snapshot_invariants.sh",
   "os/tests/test_finalization_checkpoint_fetch.py",
   "os/tests/test_finalization_worker.py",
+  "os/tests/test_kernel_build_environment.py",
   "os/tests/test_open_snapshot_pr.py",
   "os/tests/test_raw_layer_epoch.py",
 ]
@@ -877,6 +879,14 @@ workflow = "fs-fuse.yml"
 [[unrequired]]
 suite = "os/tests/trust_input_copy_equivalence.py"
 reason = "needs a built tools image (--tools-image) and Podman"
+
+[[unrequired]]
+suite = "os/tests/ush-systemd-terminal-probe.py"
+reason = "drives the socket-activated tilo-ush unit inside an installed Fedora VM session"
+
+[[unrequired]]
+suite = "os/tests/ush-systemd-terminal-vm.sh"
+reason = "runs as the graphical user inside an installed Fedora VM with the shipped tilo-ush units"
 
 [[unrequired]]
 suite = "os/tests/windows_vm_schema.sh"

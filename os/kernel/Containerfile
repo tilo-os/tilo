@@ -24,34 +24,34 @@
 # ============================================================================
 
 
-# ---- Frozen RPM repo (build deps, cross-time reproducible) -----------------
-# Every dnf install below reads exclusively from this digest-pinned snapshot,
-# same as os/Containerfile.  Adding a build dep here => the awk scan in
-# .forgejo/workflows/snapshot-rpms.yml picks it up on the next re-snapshot
-# and the frozen repo grows accordingly.  See os/rpms-snapshot.env for the
-# current pin; the workflow passes it as --build-arg RPMS_REF.
-#
-# BASE_REF is the mirrored Fedora bootc base (os/base-snapshot.env), declared
-# here with RPMS_REF because an ARG between two FROMs is scoped to the previous
-# stage rather than global.
-ARG BASE_REF
-ARG RPMS_REF
-
-FROM ${RPMS_REF} AS rpms
+# ---- Kernel buildroot (build deps and the Fedora SRPM) ----------------------
+# Every build dependency and the signature-checked Fedora kernel SRPM come from
+# a digest-pinned, KMS-signed buildroot (os/Containerfile.kernel-buildroot,
+# published by .forgejo/workflows/snapshot-kernel-buildroot.yml and pinned per
+# architecture in os/kernel-buildroot-snapshot.env). The buildroot carries no
+# package repository, so nothing below can resolve a package from the network.
+# The OS frozen RPM snapshot is not an input: OS package changes never
+# invalidate this kernel. The workflow passes the native pin as
+# --build-arg KERNEL_BUILDROOT_REF.
+ARG KERNEL_BUILDROOT_REF
 
 FROM scratch AS external-assets
 COPY --from=github-assets / /
 
 
 # ---- Stage 1: kernel builder ----------------------------------------------
-# SAME base as os/Containerfile — one BASE_REF for both — so the produced
-# modules link against the exact glibc + userspace the OS image ships.  A drift
-# here would show up as "invalid module format" at boot.
-#
 # This stage ends with the Fedora source tree after %prep. os/kernel/dev-build.sh
 # builds it (`--target build-toolchain`) as the dev builder image, and both it
 # and the `build` stage below run os/kernel/build-support.sh on that tree.
-FROM ${BASE_REF} AS build-toolchain
+FROM ${KERNEL_BUILDROOT_REF} AS build-toolchain
+
+# Refuse a buildroot that could still fall back to a package repository, or
+# that lacks the signature-checked SRPM it recorded.
+RUN ! find /etc/yum.repos.d -type f -print -quit 2>/dev/null | grep -q . \
+    && test -s /usr/lib/tilo/kernel-buildroot-packages.txt \
+    && test "$(cat /usr/lib/tilo/kernel-buildroot-arch)" = "$(uname -m)" \
+    && cd /usr/src/tilo-kernel \
+    && sed -n 2p /usr/lib/tilo/kernel-buildroot-srpm.txt | sha256sum --check --strict
 
 COPY --from=external-assets /v4l2loopback-0.15.3-a7e4a4d.tar.gz /work/v4l2loopback-0.15.3-a7e4a4d.tar.gz
 RUN echo '1efa0d3535523df1d45da00ec09bba0b5fdbf44c3efd775dd480fa7c803c3034  /work/v4l2loopback-0.15.3-a7e4a4d.tar.gz' \
@@ -60,26 +60,8 @@ RUN echo '1efa0d3535523df1d45da00ec09bba0b5fdbf44c3efd775dd480fa7c803c3034  /wor
     && mv /work/v4l2loopback-a7e4a4dea36187ad3550c797d647bcc50faced42 /work/v4l2loopback-0.15.3 \
     && test -f /work/v4l2loopback-0.15.3/COPYING
 
-# Toolchain for a kernel RPM build.  All from the frozen repo.
-#   kernel-devel / kernel-headers  — matched headers so external module
-#     ABIs (dwarves BTF) resolve.
-#   rpm-build                       — rpmbuild(1) for -bp + -bb targets.
-#   make gcc bc flex bison          — the kernel build itself.
-#   tilo-crypto is copied from the digest-pinned build stage above.
-#   elfutils-libelf-devel dwarves  — pahole/BTF, needed by CONFIG_DEBUG_INFO_BTF
-#                                     (Fedora sets this; we override it off).
-#   perl-generators python3 gzip xz cpio git  — misc SRPM build hooks.
-RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setopt=reposdir=/repo \
-        kernel-devel kernel-headers \
-        rpm-build make gcc clang lld bc flex bison rust cargo \
-        elfutils-libelf-devel elfutils-devel dwarves \
-        perl perl-generators rsync \
-        python3 python3-devel python3-rpm-macros \
-        gzip xz zstd cpio git which findutils \
-    && dnf clean all
-
 # Compile the Rust-native signer on the selected native architecture. The
-# compiler and crate dependencies are frozen by RPMS_REF and Cargo.lock; this
+# compiler and crate dependencies are frozen by the buildroot and Cargo.lock; this
 # avoids smuggling an x86-only CI builder into an ARM64 kernel build.
 COPY Cargo.toml Cargo.lock /work/workspace/
 COPY crates/system/tilo-crypto/Cargo.toml /work/crypto-member.toml
@@ -116,28 +98,9 @@ RUN case "$(uname -m)" in \
     ld.lld -flavor link /subsystem:efi_application /entry:efi_main \
       /out:/work/secureboot_vm_app.efi /work/secureboot_vm_app.obj
 
-# `createrepo_c` is only needed at build time to write the repo metadata
-# into our output image — it never ships to end users, so pulling it from
-# the live Fedora mirrors here is fine. The frozen-repo snapshot's
-# buildkit cache has been holding on to a version of the repo that
-# lacks createrepo_c despite the awk-derived PACKAGES list requesting
-# it; sidestepping that entirely.
-RUN dnf install -y createrepo_c && dnf clean all
-
-# Fetch the Fedora kernel SRPM. Preferring the frozen-repo copy keeps the
-# build hermetic when the snapshot has it, but the frozen-repo builder
-# has historically not always captured src.rpms cleanly — so fall back to
-# a live `dnf5 download --srpm` against Fedora's public mirrors. The
-# SRPM's Version + Release still land in the produced rpm's NVR, so a
-# live-fetched SRPM does not weaken the reproducibility guarantee any
-# more than the Fedora repo drift itself does.
+# The Fedora kernel SRPM, signature-checked when the buildroot was published.
 WORKDIR /work
-RUN --mount=type=bind,from=rpms,source=/repo,target=/repo \
-    ( ls /repo/kernel-*.src.rpm 2>/dev/null | head -1 | xargs -r -I{} cp {} /work/kernel.src.rpm ) \
-    || ( dnf5 download --srpm --destdir=/work kernel 2>/dev/null \
-         && mv /work/kernel-*.src.rpm /work/kernel.src.rpm ) \
-    || ( dnf --enablerepo='*-source' download --source --destdir=/work kernel \
-         && mv /work/kernel-*.src.rpm /work/kernel.src.rpm ) \
+RUN cp /usr/src/tilo-kernel/kernel-*.src.rpm /work/kernel.src.rpm \
     && test -s /work/kernel.src.rpm
 
 # ---- Extract + patch the Fedora source tree --------------------------------
@@ -146,7 +109,7 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo \
 # arch/flavor.  --nodeps because we install the toolchain manually above
 # instead of via the SRPM's BuildRequires (some of those are pandoc / bindgen
 # heavyweights the Tilo build doesn't need — DEBUG_INFO=n skips them).
-RUN --mount=type=bind,from=rpms,source=/repo,target=/repo set -eu; \
+RUN set -eu; \
     export HOME=/work; \
     mkdir -p /work/rpmbuild/BUILD /work/rpmbuild/BUILDROOT /work/rpmbuild/RPMS \
              /work/rpmbuild/SOURCES /work/rpmbuild/SPECS /work/rpmbuild/SRPMS; \
@@ -319,10 +282,7 @@ RUN set -eux; \
 # needed for the `dnf swap kernel-core tilo-kernel-core` step in
 # os/Containerfile to resolve.
 
-# Build the repo metadata. `createrepo_c` was installed in the
-# toolchain step above, so no `dnf install` runs here — that had been
-# probing `/repo` (which we're about to CREATE) and stalling on the
-# missing repomd.xml.
+# Build the repo metadata with the buildroot's createrepo_c.
 RUN mkdir -p /repo \
     && cp /out/*.rpm /repo/ \
     && createrepo_c --quiet /repo \
