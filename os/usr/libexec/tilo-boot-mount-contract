@@ -1,0 +1,63 @@
+#!/bin/bash
+# Validate the separate /boot created for an encrypted install and print the
+# filesystem UUID required by bootc's composefs backend. The signed target
+# UKI mounts by label, so that label must also be unique on attached disks.
+set -euo pipefail
+
+BOOT_LABEL=TILO_BOOT
+
+die() {
+  printf 'error: boot mount contract: %s\n' "$*" >&2
+  exit 1
+}
+
+disk=""
+boot_part=""
+target_root=""
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --disk) disk="${2:-}"; shift 2 ;;
+    --boot-part) boot_part="${2:-}"; shift 2 ;;
+    --target-root) target_root="${2:-}"; shift 2 ;;
+    *) die "unknown option $1" ;;
+  esac
+done
+
+[ -n "$disk" ] || die "missing --disk"
+[ -n "$boot_part" ] || die "missing --boot-part from tilo-disk-encrypt"
+[ -n "$target_root" ] || die "missing --target-root"
+
+disk="$(readlink -f -- "$disk")"
+boot_part="$(readlink -f -- "$boot_part")"
+[ -b "$disk" ] || die "$disk is not a block device"
+[ -b "$boot_part" ] || die "$boot_part is not a block device"
+[ "$(lsblk -dnro TYPE "$disk" 2>/dev/null)" = disk ] \
+  || die "$disk is not a whole disk"
+[ "$(lsblk -dnro TYPE "$boot_part" 2>/dev/null)" = part ] \
+  || die "$boot_part is not a partition"
+
+parent="$(lsblk -dnro PKNAME "$boot_part" 2>/dev/null)"
+[ -n "$parent" ] || die "could not determine parent disk for $boot_part"
+[ "$(readlink -f -- "/dev/$parent")" = "$disk" ] \
+  || die "$boot_part is not on the selected disk"
+
+[ "$(blkid -s TYPE -o value "$boot_part" 2>/dev/null)" = ext4 ] \
+  || die "$boot_part is not an ext4 /boot filesystem"
+[ "$(blkid -s LABEL -o value "$boot_part" 2>/dev/null)" = "$BOOT_LABEL" ] \
+  || die "$boot_part does not carry the required $BOOT_LABEL label"
+
+mounted_source="$(findmnt -nro SOURCE --target "$target_root/boot" 2>/dev/null || true)"
+[ "$(readlink -f -- "$mounted_source" 2>/dev/null || true)" = "$boot_part" ] \
+  || die "$boot_part is not mounted at $target_root/boot"
+
+# Reject a duplicate label before bootc writes its ESP.  A deterministic UKI
+# cannot carry a per-machine UUID, so label uniqueness is the binding between
+# its signed systemd.mount-extra= argument and this fresh target disk.
+mapfile -t labelled_parts < <(lsblk -nrpo NAME,LABEL | awk -v label="$BOOT_LABEL" '$2 == label { print $1 }')
+[ "${#labelled_parts[@]}" -eq 1 ] && [ "$(readlink -f -- "${labelled_parts[0]}")" = "$boot_part" ] \
+  || die "$BOOT_LABEL is missing or ambiguous on attached block devices"
+
+boot_uuid="$(blkid -s UUID -o value "$boot_part" 2>/dev/null || true)"
+[[ "$boot_uuid" =~ ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$ ]] \
+  || die "$boot_part has no valid ext4 filesystem UUID"
+printf 'UUID=%s\n' "${boot_uuid,,}"

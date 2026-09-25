@@ -1053,6 +1053,7 @@ pub struct InstallerApp {
     /// Generated once per installer run; changing disks clears confirmation but
     /// retaining these stable IDs keeps Review and the backend handoff identical.
     guided_efi_partuuid: String,
+    guided_boot_partuuid: String,
     guided_root_partuuid: String,
     /// Index into [`FILESYSTEMS`].
     selected_fs: usize,
@@ -1266,6 +1267,7 @@ impl InstallerApp {
             selected_guided_extent: None,
             install_method: InstallMethod::Erase,
             guided_efi_partuuid: uuid::Uuid::new_v4().to_string(),
+            guided_boot_partuuid: uuid::Uuid::new_v4().to_string(),
             guided_root_partuuid: uuid::Uuid::new_v4().to_string(),
             selected_fs: 0,
             fido2: false,
@@ -1640,14 +1642,18 @@ impl InstallerApp {
     fn install_options(&self) -> InstallOptions {
         let layout = self.layout();
         let disk = self.selected_disk_ref();
-        let (root, efi) = if self.install_method == InstallMethod::Alongside {
-            disk.map_or((None, None), |disk| {
-                (disk.alongside_root(), disk.efi_partition())
+        let (root, boot, efi) = if self.install_method == InstallMethod::Alongside {
+            disk.map_or((None, None, None), |disk| {
+                (
+                    disk.alongside_root(),
+                    disk.alongside_boot(),
+                    disk.efi_partition(),
+                )
             })
         } else {
-            (None, None)
+            (None, None, None)
         };
-        let guided = if root.is_none() && efi.is_none() {
+        let guided = if root.is_none() && boot.is_none() && efi.is_none() {
             self.guided_alongside_plan()
         } else {
             None
@@ -1661,6 +1667,10 @@ impl InstallerApp {
             alongside_root_partuuid: root
                 .map_or_else(String::new, |partition| partition.part_uuid.clone()),
             alongside_root_size_bytes: root.map_or(0, |partition| partition.size_bytes),
+            alongside_boot: boot.map_or_else(String::new, |partition| partition.name.clone()),
+            alongside_boot_partuuid: boot
+                .map_or_else(String::new, |partition| partition.part_uuid.clone()),
+            alongside_boot_size_bytes: boot.map_or(0, |partition| partition.size_bytes),
             alongside_efi: efi.map_or_else(String::new, |partition| partition.name.clone()),
             alongside_efi_partuuid: efi
                 .map_or_else(String::new, |partition| partition.part_uuid.clone()),
@@ -1669,12 +1679,15 @@ impl InstallerApp {
             guided_free_size_bytes: guided.as_ref().map_or(0, |plan| plan.free_size_bytes),
             guided_efi_start_bytes: guided.as_ref().map_or(0, |plan| plan.efi_start_bytes),
             guided_efi_size_bytes: guided.as_ref().map_or(0, |plan| plan.efi_size_bytes),
+            guided_boot_start_bytes: guided.as_ref().map_or(0, |plan| plan.boot_start_bytes),
+            guided_boot_size_bytes: guided.as_ref().map_or(0, |plan| plan.boot_size_bytes),
             guided_root_start_bytes: guided.as_ref().map_or(0, |plan| plan.root_start_bytes),
             guided_root_size_bytes: guided.as_ref().map_or(0, |plan| plan.root_size_bytes),
             disk_partition_table_uuid: disk
                 .map_or_else(String::new, |disk| disk.partition_table_uuid.clone()),
             disk_logical_sector_size: disk.map_or(0, |disk| disk.logical_sector_size),
             guided_efi_partuuid: self.guided_efi_partuuid.clone(),
+            guided_boot_partuuid: self.guided_boot_partuuid.clone(),
             guided_root_partuuid: self.guided_root_partuuid.clone(),
             expected_partitions: if guided.is_some() {
                 disk.and_then(Disk::occupied_extents).unwrap_or_default()
@@ -1871,7 +1884,7 @@ impl InstallerApp {
             && self.install_method == InstallMethod::Alongside
             && !self.selected_disk_can_install_alongside()
         {
-            self.set_status("Alongside needs either one unallocated GPT extent of at least 34 GiB, or a prepared empty Linux root (32 GiB+) and EFI partition (2 GiB+)");
+            self.set_status("Alongside needs either one unallocated GPT extent of at least 35 GiB, or a prepared empty Linux root (32 GiB+) and a 1 GiB boot plus 2 GiB EFI partition");
             return;
         }
         if self.step == Step::Disk
@@ -1987,6 +2000,7 @@ impl InstallerApp {
                 self.selected_guided_extent = None;
                 self.erase_confirmation.clear();
                 self.guided_efi_partuuid = uuid::Uuid::new_v4().to_string();
+                self.guided_boot_partuuid = uuid::Uuid::new_v4().to_string();
                 self.guided_root_partuuid = uuid::Uuid::new_v4().to_string();
                 self.reset_viewport();
                 self.install_state = InstallState::Idle;
@@ -2470,7 +2484,7 @@ impl InstallerApp {
         let guidance = if self.install_method == InstallMethod::Erase {
             "Erase disk deletes every partition and operating system on the selected disk."
         } else {
-            "Alongside preserves existing partitions. Tilo can use one unallocated GPT extent (34 GiB+) or prepared Tilo partitions. It never shrinks, moves, or deletes an existing partition."
+            "Alongside preserves existing partitions. Tilo can use one unallocated GPT extent (35 GiB+) or prepared Tilo partitions. It never shrinks, moves, or deletes an existing partition."
         };
         children.push(Box::new(Text::new(guidance).with_size(sm).with_color(
             if self.install_method == InstallMethod::Erase {
@@ -2508,7 +2522,7 @@ impl InstallerApp {
                 "{issue} The privileged install check will also verify FAT health and at least 1 GiB of free space before formatting anything."
             );
         }
-        "No safe alongside space was found. Shrink the existing OS from its own disk manager and leave at least 34 GiB unallocated, or prepare an empty Linux root and 2 GiB EFI partition, then refresh disks.".to_string()
+        "No safe alongside space was found. Shrink the existing OS from its own disk manager and leave at least 35 GiB unallocated, or prepare an empty Linux root and 1 GiB boot plus 2 GiB EFI partition, then refresh disks.".to_string()
     }
 
     fn compose_guided_extent_choices(
@@ -3266,6 +3280,16 @@ fn sample_disks() -> Vec<Disk> {
                     mountpoint: String::new(),
                     part_type: EFI_SYSTEM_GUID.to_string(),
                 },
+                DiskPartition {
+                    name: "/dev/sda5".to_string(),
+                    start_bytes: 226_685_403_136,
+                    size_bytes: 1_073_741_824,
+                    part_uuid: "00000000-0000-0000-0000-000000000005".to_string(),
+                    filesystem: String::new(),
+                    label: String::new(),
+                    mountpoint: String::new(),
+                    part_type: LINUX_FILESYSTEM_GUID.to_string(),
+                },
             ],
         },
         Disk {
@@ -3437,6 +3461,7 @@ impl InstallerApp {
         self.selected_disk = None;
         self.selected_guided_extent = None;
         self.guided_efi_partuuid = uuid::Uuid::new_v4().to_string();
+        self.guided_boot_partuuid = uuid::Uuid::new_v4().to_string();
         self.guided_root_partuuid = uuid::Uuid::new_v4().to_string();
         self.erase_confirmation.clear();
         self.storage_preflight_request = None;
@@ -4761,6 +4786,12 @@ mod tests {
             "00000000-0000-0000-0000-000000000003"
         );
         assert_eq!(opts.alongside_root_size_bytes, 64_000_000_000);
+        assert_eq!(opts.alongside_boot, "/dev/sda5");
+        assert_eq!(
+            opts.alongside_boot_partuuid,
+            "00000000-0000-0000-0000-000000000005"
+        );
+        assert_eq!(opts.alongside_boot_size_bytes, 1024 * 1024 * 1024);
         assert_eq!(opts.alongside_efi, "/dev/sda4");
         assert_eq!(
             opts.alongside_efi_partuuid,
@@ -4783,6 +4814,8 @@ mod tests {
         assert_eq!(opts.guided_free_start_bytes, plan.free_start_bytes);
         assert_eq!(opts.guided_free_size_bytes, plan.free_size_bytes);
         assert_eq!(opts.guided_efi_size_bytes, 2 * 1024 * 1024 * 1024);
+        assert_eq!(opts.guided_boot_size_bytes, 1024 * 1024 * 1024);
+        assert_eq!(opts.guided_boot_start_bytes, plan.boot_start_bytes);
         assert!(opts.guided_root_size_bytes >= 32 * 1024 * 1024 * 1024);
         assert_eq!(
             opts.disk_partition_table_uuid,

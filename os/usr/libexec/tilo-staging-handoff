@@ -45,6 +45,7 @@ LOADER_VENDOR = '4a67b082-0a4c-41cf-b6c7-440b29bb8c4f'
 ESP_TYPE = 'c12a7328-f81f-11d2-ba4b-00a0c93ec93b'
 STAGING_ROOT_TYPE = '0fc63daf-8483-4772-8e79-3d69d8477de4'
 GUIDED_EFI_BYTES = 2 * 1024 * 1024 * 1024
+GUIDED_BOOT_BYTES = 1024 * 1024 * 1024
 MIN_GUIDED_ROOT_BYTES = 32 * 1024 * 1024 * 1024
 MIB = 1024 * 1024
 MAX_LBA = 1 << 62
@@ -523,8 +524,10 @@ def check_install(args):
             raise Refusal('the staged target extent is no longer unallocated (%s)' % part['name'])
     if args.efi_start_bytes != free_start or args.efi_size_bytes != GUIDED_EFI_BYTES:
         raise Refusal('the Tilo ESP must be 2 GiB at the start of the target extent')
-    if args.root_start_bytes != free_start + GUIDED_EFI_BYTES:
-        raise Refusal('the Tilo root must immediately follow the Tilo ESP')
+    if args.boot_start_bytes != free_start + GUIDED_EFI_BYTES or args.boot_size_bytes != GUIDED_BOOT_BYTES:
+        raise Refusal('the Tilo boot must be 1 GiB immediately after the Tilo ESP')
+    if args.root_start_bytes != args.boot_start_bytes + GUIDED_BOOT_BYTES:
+        raise Refusal('the Tilo root must immediately follow the Tilo boot')
     if args.root_start_bytes + args.root_size_bytes != free_start + free_size:
         raise Refusal('the Tilo root must end exactly where the staged installer begins')
     if args.root_size_bytes < MIN_GUIDED_ROOT_BYTES:
@@ -713,7 +716,7 @@ def main(argv):
     check.add_argument('--disk', required=True)
     check.add_argument('--mode', required=True, choices=('guided', 'erase', 'prepared'))
     for name in ('free-start-bytes', 'free-size-bytes', 'efi-start-bytes', 'efi-size-bytes',
-                 'root-start-bytes', 'root-size-bytes', 'sector-size'):
+                 'boot-start-bytes', 'boot-size-bytes', 'root-start-bytes', 'root-size-bytes', 'sector-size'):
         check.add_argument('--' + name, type=int, default=0)
     mounts_parser = sub.add_parser('check-mounts')
     mounts_parser.add_argument('--handoff', required=True)
