@@ -437,24 +437,16 @@ mod launch_tests {
         FACTORIES.set(FACTORIES.get() + 1);
         Err(LaunchError::Operation("factory must not run".into()))
     }
-    fn memory(_: &'static str) -> (ui::State, ui::persist::Autosave) {
+    fn memory(_: &'static str) -> (ui::State, ui::persist::DocWriter) {
         (
             ui::State::new(),
-            ui::persist::Autosave::disabled("controlled args"),
+            ui::persist::DocWriter::disabled("controlled args"),
         )
     }
-    fn opener(app: &'static str) -> (ui::State, ui::persist::Autosave) {
+    fn opener(app: &'static str) -> (ui::State, ui::persist::DocWriter) {
         assert_eq!(app, "so.tilo.osk");
         OPENS.set(OPENS.get() + 1);
-        let mut store = ui::persist::DocStore::open_canonical_at(
-            app,
-            &DIRECTORY.with_borrow(|p| p.clone().unwrap()),
-        )
-        .unwrap();
-        let mut doc = store.load_or_new();
-        let mut saver = ui::persist::Autosave::spawn(store, std::time::Duration::from_millis(1));
-        saver.seed(&mut doc);
-        (ui::State::from_doc(doc), saver)
+        ui::persist::open_canonical_at(app, &DIRECTORY.with_borrow(|p| p.clone().unwrap()))
     }
     #[test]
     fn framework_history_actual_both_prepared_modes_share_durable_owner_and_exact_root_definition()
@@ -469,10 +461,12 @@ mod launch_tests {
         for auto in [false, true] {
             for (q, a) in [(true, true), (true, false), (false, true), (false, false)] {
                 let directory = tempfile::tempdir().unwrap();
-                DIRECTORY.with_borrow_mut(|p| *p = Some(directory.path().to_owned()));
+                // The canonical store names its package after the directory.
+                let store_dir = directory.path().join("so.tilo.osk");
+                DIRECTORY.with_borrow_mut(|p| *p = Some(store_dir.clone()));
                 {
                     let mut store =
-                        ui::persist::DocStore::open_canonical_at("dev.tilo.osk", directory.path())
+                        ui::persist::DocStore::open_canonical_at("so.tilo.osk", &store_dir)
                             .unwrap();
                     let mut doc = store.load_or_new();
                     doc.put(automerge::ROOT, "osk.preferred_layout", "azerty")
@@ -553,8 +547,7 @@ mod launch_tests {
                 assert_eq!(Rc::strong_count(&calls), 1);
                 assert_eq!(calls.get(), 0);
                 let mut store =
-                    ui::persist::DocStore::open_canonical_at("dev.tilo.osk", directory.path())
-                        .unwrap();
+                    ui::persist::DocStore::open_canonical_at("so.tilo.osk", &store_dir).unwrap();
                 let doc = store.load_or_new();
                 assert_eq!(
                     doc.get(automerge::ROOT, "osk.preferred_layout")
@@ -699,7 +692,7 @@ mod launch_tests {
         }
     }
     thread_local! { static NATIVE_INITIAL: Cell<bool> = const { Cell::new(true) }; }
-    fn native_state(_: &'static str) -> (ui::State, ui::persist::Autosave) {
+    fn native_state(_: &'static str) -> (ui::State, ui::persist::DocWriter) {
         let mut state = ui::State::new();
         state
             .doc
@@ -712,7 +705,7 @@ mod launch_tests {
         state.commit_action(None, None);
         (
             state,
-            ui::persist::Autosave::disabled("controlled native progression"),
+            ui::persist::DocWriter::disabled("controlled native progression"),
         )
     }
     #[test]

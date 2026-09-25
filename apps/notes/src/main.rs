@@ -267,7 +267,8 @@ fn prepare_compatibility_launch(
         .doc
         .set_actor(automerge::ActorId::from(compatibility_peer_id().as_bytes()));
     let root = compatibility_live_root(args)?;
-    let autosave = ui::persist::Autosave::disabled("Notes owns its canonical notebook persistence");
+    let autosave =
+        ui::persist::DocWriter::disabled("Notes owns its canonical notebook persistence");
     let mut registry = tilo_actions::ActionRegistry::new();
     notes::actions::register(&mut registry);
     Ok(ui::launch::LegacyLaunchInputs::new(state, root, autosave)

@@ -9341,27 +9341,6 @@ impl WordProcessorWidget {
             self.handle_ctrl_shortcut(state, s, shift, handled);
             return;
         }
-        // Only these operations are known to preserve the body structure and
-        // all other blocks. A pending external mutation invalidates the hint.
-        let plain_text_edit = match logical_key {
-            Key::Character(_) => text
-                .is_some_and(|value| !value.is_empty() && value.chars().all(char::is_alphanumeric)),
-            Key::Named(NamedKey::Backspace) => {
-                self.inner.caret.offset > 0 && self.last_autocorrection.is_none()
-            }
-            _ => false,
-        };
-        let text_block = (!ctrl
-            && plain_text_edit
-            && self.inner.region() == Region::Body
-            && !self.inner.has_selection()
-            && self
-                .blocks
-                .iter()
-                .any(|block| block.id == self.inner.caret.block)
-            && self.materialized_heads == state.base_heads()
-            && self.materialized_pending_ops == state.pending_ops())
-        .then(|| self.inner.caret.block.clone());
         if !matches!(logical_key, Key::Named(NamedKey::Backspace)) {
             self.last_autocorrection = None;
         }
@@ -10710,28 +10689,6 @@ impl Widget for WordProcessorWidget {
                 // browser's Ctrl+wheel form above. Pointer geometry still
                 // determines where a focused Writer zooms.
                 if self.lifecycle.focused && self.zoom_viewport.contains(self.pointer) {
-                    *handled = true;
-                    if delta.is_finite()
-                        && *delta != 0.0
-                        && *phase != winit::event::TouchPhase::Cancelled
-                        && !self.color_picker.is_open()
-                        && !self.compact_swatch_palette.is_open()
-                        && !(self.styles_panel_overlay() && self.panel_rect.contains(self.pointer))
-                    {
-                        let before = self.zoom.factor();
-                        let after = (before * (1.0 + delta).max(0.01)).clamp(ZOOM_MIN, ZOOM_MAX);
-                        if self.set_zoom(after) {
-                            // Keep the document row beneath the gesture steady.
-                            // Horizontal alignment remains the centered-page convention.
-                            let pointer_y = self.pointer.y - self.zoom.anchor().y;
-                            self.scroll_y =
-                                (self.scroll_y + pointer_y / before - pointer_y / after).max(0.0);
-                        }
-                    }
-                }
-            }
-            WindowEvent::PinchGesture { delta, phase, .. } => {
-                if self.zoom_viewport.contains(self.pointer) {
                     *handled = true;
                     if delta.is_finite()
                         && *delta != 0.0

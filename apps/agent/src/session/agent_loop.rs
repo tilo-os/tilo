@@ -2447,6 +2447,8 @@ mod tests {
             asked_at: Instant::now(),
             last_route: None,
             broker_surfaces: surfaces,
+            broker_catalogue: tilo_actions::remote::CataloguePage::default(),
+            catalogue_fetched: None,
             next_broker_request: 1,
             active_run: None,
             chat_run: None,

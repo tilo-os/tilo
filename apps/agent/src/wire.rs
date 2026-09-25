@@ -194,7 +194,7 @@ impl Link {
     ///
     /// Returns an error if the request or its document completion marker cannot enqueue.
     pub fn send_to_route(&mut self, route: RouteSpec, req: &CollabRequest) -> Result<()> {
-        let queued = self.manager.try_send_to_route(route, req.clone());
+        let queued = self.manager.try_send_to_route(route, req.clone()).is_ok();
         self.record_enqueue(req, queued)
     }
 

@@ -404,11 +404,11 @@ mod launch_tests {
         Ok(Box::new(ui::widget::Text::new("argument capture")))
     }
 
-    fn controlled_open(_: &'static str) -> (ui::State, ui::persist::Autosave) {
+    fn controlled_open(_: &'static str) -> (ui::State, ui::persist::DocWriter) {
         OPEN_COUNT.fetch_add(1, Ordering::SeqCst);
         (
             ui::State::new(),
-            ui::persist::Autosave::disabled("Terminal controlled launch"),
+            ui::persist::DocWriter::disabled("Terminal controlled launch"),
         )
     }
 

@@ -60,10 +60,10 @@ mod launch_tests {
         Box::new(containers::history_test_root())
     }
 
-    fn memory_state(_: &'static str) -> (ui::State, ui::persist::Autosave) {
+    fn memory_state(_: &'static str) -> (ui::State, ui::persist::DocWriter) {
         (
             ui::State::new(),
-            ui::persist::Autosave::disabled("controlled Containers launch"),
+            ui::persist::DocWriter::disabled("controlled Containers launch"),
         )
     }
 

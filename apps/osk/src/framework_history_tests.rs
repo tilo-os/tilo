@@ -1200,10 +1200,10 @@ thread_local! {
 fn round1_native_root() -> Box<dyn Widget> {
     ROUND1_ROOT.with_borrow_mut(|root| root.take().unwrap())
 }
-fn round1_native_state(_: &'static str) -> (ui::State, ui::persist::Autosave) {
+fn round1_native_state(_: &'static str) -> (ui::State, ui::persist::DocWriter) {
     (
         ui::State::new(),
-        ui::persist::Autosave::disabled("reentrant controlled fixture"),
+        ui::persist::DocWriter::disabled("reentrant controlled fixture"),
     )
 }
 fn round1_native_app(root: Box<dyn Widget>) -> ui::App {

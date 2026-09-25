@@ -8,7 +8,6 @@ use super::migration_worker::MigrationJob;
 use super::model::FolderMode;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-#[cfg(target_os = "linux")]
 use std::path::{Component, Path, PathBuf};
 
 const MAX_BYTES: usize = 256 * 1024;

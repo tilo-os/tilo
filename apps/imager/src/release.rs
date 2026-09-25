@@ -18,7 +18,10 @@ use sha2::{Digest, Sha256};
 
 use crate::model::{Source, TiloRelease};
 
-const BUNDLED_CATALOG: &str = include_str!("../release-catalog.json");
+// The release workflow writes the signed catalog into the install-artifacts
+// service crate; Imager embeds that same file.
+const BUNDLED_CATALOG: &str =
+    include_str!("../../../crates/packaging/install-artifacts/release-catalog.json");
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]

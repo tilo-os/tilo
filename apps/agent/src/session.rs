@@ -1779,8 +1779,10 @@ impl Session {
         if is_chat_app_id(&self.cfg.app_id) {
             // Canonical Chat acts only through package-primary routes in its
             // own room, as the broker's pushed directory names them.
-            let mut offers =
-                Self::document_broker_offers(self.broker_surfaces.as_slice(), &self.cfg.permissions);
+            let mut offers = Self::document_broker_offers(
+                self.broker_surfaces.as_slice(),
+                &self.cfg.permissions,
+            );
             offers.retain(|offer| {
                 self.broker_surfaces.iter().any(|surface| {
                     Some(surface.peer_id) == offer.broker_peer_id

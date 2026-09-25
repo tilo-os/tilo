@@ -2118,19 +2118,19 @@ mod tests {
             assert!(status.success());
             return;
         }
-        let _cfg = crate::prefs::test_env::ConfigGuard::new("vault_save_failure_metadata");
-        let root = accounts::config_root().unwrap();
+        let (_dir, account_root) = scratch_root();
+        let root = account_root.path().unwrap();
         let old_id = accounts::AccountId::from("existing@example.test");
         let mut store = accounts::AccountStore::new();
         store.upsert(accounts::Account::new(old_id.clone(), "email"));
-        store.save().unwrap();
+        account_root.save_store(&store).unwrap();
         let store_path = accounts::store_path_in(&root);
         let metadata_before = std::fs::read(&store_path).unwrap();
         let mut vault = accounts::SecretVault::open_in(&root);
         vault.put(&old_id, &accounts::Secret::password("old-password"));
         vault.try_save().unwrap();
         assert_eq!(
-            accounts::SecretVault::open().custody(),
+            accounts::SecretVault::open_in(&root).custody(),
             accounts::SecretCustody::LocalFile
         );
         let dir = accounts::vault_dir_in(&root);
@@ -2139,6 +2139,7 @@ mod tests {
         std::fs::write(dir.join("vault.key"), malformed_key).unwrap();
 
         let error = AccountsPane::save_account(
+            &account_root,
             AccountKind::Mail,
             None,
             "New account",
@@ -2158,7 +2159,7 @@ mod tests {
             ciphertext_before
         );
         assert_eq!(std::fs::read(&store_path).unwrap(), metadata_before);
-        let saved = accounts::AccountStore::load();
+        let saved = account_root.store();
         assert_eq!(saved.all().len(), 1);
         assert!(saved.get(&old_id).is_some());
         assert!(

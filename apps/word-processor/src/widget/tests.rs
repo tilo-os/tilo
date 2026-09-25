@@ -3758,8 +3758,9 @@ fn shared_clipboard_preserves_rich_paste_and_plain_paste_semantics() {
             "writer-clipboard-test"
         }
     }
-    assert!(ui::clipboard::clipboard_backend().is_none());
-    ui::clipboard::install_clipboard_backend(std::sync::Arc::new(TestClipboard::default()));
+    let services = ui::host::HostServices::null()
+        .with_clipboard(std::sync::Arc::new(TestClipboard::default()));
+    let _host = ui::host::enter(&services);
     let mut state = ui::State::new();
     let mut wp = WordProcessorWidget::new();
     wp.sync(&mut state.doc, &state.root);
