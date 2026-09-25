@@ -13,8 +13,8 @@ fi
 cd "$repo_root"
 cargo build "${cargo_args[@]}" -p launcher -p tilo-unlock-helper
 cargo build "${cargo_args[@]}" -p imager --bin imager
-# The host package deliberately excludes the test-control socket and ffmpeg.
-# This avoids a distro-specific libavcodec ABI in a login-session binary.
+# The host package deliberately excludes the test-control socket. Video
+# codecs come from the distribution's GStreamer at runtime.
 # Package only the production compositor. Building the package without an
 # explicit binary also compiles tools such as `shots`; under fat LTO each can
 # retain 7-8 GiB and Cargo runs them concurrently even though they are never
