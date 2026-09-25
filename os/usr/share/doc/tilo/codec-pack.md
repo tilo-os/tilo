@@ -5,10 +5,20 @@ H.264/HEVC disabled: VA-API offers AV1/VP9 decode (and AV1 encode on AMD), but
 no H.264 or HEVC. GStreamer is Tilo's only media stack, and without the pack it
 has no H.264/HEVC encoder or decoder beyond what the stock libav build allows.
 
-The additional codecs pack is opt-in. The owner installs it with an explicit
-click in Settings (Updates, "Additional codecs"). The packages are then
-downloaded on the device, directly from the third parties that publish them,
-under their licences. Tilo does not host, mirror or redistribute them.
+The additional codecs pack is opt-in. The owner chooses it explicitly, in one
+of three places, none of which is selected by default:
+
+* first-login setup, which offers "Install media codecs" with a short
+  explanation of what it enables and where the packages come from; setup
+  continues while the download runs in the background;
+* the installer's Options step, which records the choice for the installed
+  system (`tilo-install --codecs`, see "Installer handoff");
+* Settings (Updates, "Additional codecs"), which also shows the status and
+  offers Remove, Try again and a re-check for the Mesa part.
+
+The packages are then downloaded on the device, directly from the third
+parties that publish them, under their licences. Tilo does not host, mirror or
+redistribute them.
 
 | Source | Packages | Signed by |
 | --- | --- | --- |
@@ -91,10 +101,11 @@ update check, after every boot and daily.
 
 | Unit | When | What |
 | --- | --- | --- |
-| `tilo-codec-pack@install.service` | Settings, Install | Records the opt-in (`/var/lib/tilo/codec-pack/enabled`), then resolves, downloads, verifies, builds and merges |
-| `tilo-codec-pack@remove.service` | Settings, Remove | Removes the opt-in, both extensions, parked copies and the download cache, and unmerges |
-| `tilo-codec-pack@refresh.service` | `tilo-codec-pack-refresh.timer` (5 min after boot, daily) and every update check | Re-resolves for the booted base; a no-op without the opt-in |
+| `tilo-codec-pack@install.service` | First-login setup or Settings, Install / Try again | Records the opt-in (`/var/lib/tilo/codec-pack/enabled`), then resolves, downloads, verifies, builds and merges |
+| `tilo-codec-pack@remove.service` | Settings, Remove / Cancel installation | Removes the opt-in, both extensions, parked copies and the download cache, and unmerges |
+| `tilo-codec-pack@refresh.service` | `tilo-codec-pack-refresh.timer` (5 min after boot, daily), every update check, NetworkManager reaching the internet, and Settings' re-check | Adopts an installer seed, then re-resolves for the booted base; a no-op without the opt-in |
 | `tilo-codec-pack-guard.service` | Every boot, offline, before `systemd-sysext.service` | Sets aside a `tilo-codecs-mesa` whose recorded Mesa version differs from the booted base, or restores a set-aside one that matches (after a rollback) |
+| `/usr/lib/NetworkManager/dispatcher.d/90-tilo-codec-pack` | A connection comes up, or connectivity becomes `FULL` | Starts the refresh unit (`--no-block`) when the owner opted in and the pack is not installed yet |
 
 The helper validates its single argument (`install`, `remove`, `refresh`,
 `guard`, `status`); polkit (`49-tilo-codec-pack.rules`) lets a local, active
@@ -104,23 +115,78 @@ instances. The unit is sandboxed and may write only its state, cache and
 enable and reload `systemd-sysext.service`, so the merge happens in the host's
 mount namespace.
 
-Status is `/var/lib/tilo/codec-pack/status.json` (root-owned, world-readable):
-`state` (`not-installed`, `installing`, `installed`, `removing`, `failed`),
-`mesa` (`off`, `enabled`, `waiting`, `unsupported`), `message`, `last_error`,
-the base it was built for, the package list and a `generation` that increases
-after every merge or unmerge. A failed background refresh leaves a working pack
-`installed` and reports `last_error`.
+Status is `/var/lib/tilo/codec-pack/status.json` (root-owned, world-readable,
+replaced atomically):
+
+* `state`: `not-installed`, `waiting-for-network`, `installing`, `installed`,
+  `removing`, `failed`;
+* `desired`: whether the opt-in is recorded;
+* `progress`, only while `installing`: `{"step": n, "steps": 7, "label": ...}`,
+  the labels being "Checking this device", "Finding packages", "Downloading
+  codecs", "Verifying signatures", "Downloading the hardware video driver",
+  "Building the extensions" and "Activating";
+* `mesa` (`off`, `enabled`, `waiting`, `unsupported`), `message`, `last_error`,
+  the base it was built for, the package list, the components still `waiting`
+  for a build, and a `generation` that increases after every merge or unmerge.
+
+A failed background refresh leaves a working pack `installed` and reports
+`last_error`. The state directory exists on every boot (tmpfiles.d), so Settings
+and first-login setup follow the file with inotify rather than polling.
+
+## Offline
+
+Opting in never needs a connection at that moment. When the owner opted in and
+NetworkManager reports no internet (`nmcli -t -f CONNECTIVITY general` is
+`none`, `limited` or `portal`; no answer counts as online), the helper records
+`waiting-for-network` with a plain message and exits successfully: it is not an
+error. The choice persists across reboots. A download that fails because the
+connection dropped is treated the same way. A pack that is already installed
+simply stays `installed`.
+
+The retry is event-driven: NetworkManager runs `90-tilo-codec-pack` on network
+events, and when a connection comes up or connectivity reaches `FULL` it starts
+the refresh unit, which installs the pack. The boot and daily timer retry as
+well. The desktop notices the status change and tells the owner once the codecs
+are installed (and, for the Mesa part, that screen sharing and recording pick
+it up after signing out and back in).
+
+## Installer handoff
+
+The installer runs from the live medium and installs the image it carries; it
+downloads nothing. With the owner's opt-in on its Options step it passes
+`--codecs` to `tilo-install`, which writes the root-owned seed
+`/etc/tilo/codec-pack-opt-in` into the installed deployment's writable `/etc`.
+On the installed system the helper adopts the seed once (on its first refresh
+or install): it records the opt-in in `/var/lib/tilo/codec-pack/enabled` and
+marks the seed adopted (`installer-seed-adopted`), so removing the pack later
+is never undone by the seed. The first refresh after first boot, or
+NetworkManager reaching the internet, then installs the pack.
 
 ## When the codecs appear
 
-Tilo's media stack rescans the GStreamer registry when the set of files in
-`/usr/lib/extension-release.d/` changes, so new plugins (OpenH264, the freeworld
-plugins, the fuller libav) are available to encoders and decoders created after
-the merge, in running applications too. Hardware VA-API entry points added by
-the freeworld Mesa drivers are different: libva and the `va` GStreamer plugin
-probe the driver once per process, and GStreamer cannot reload a plugin that is
-already loaded. Only processes started after the merge see hardware H.264/HEVC,
-so Settings asks the owner to sign out and back in (or restart).
+Every media entry point (playback engines, the next `open()` of an existing
+engine, real-time encoders and decoders for calls and screen sharing, encoder
+selection) reads a stamp of `/usr/lib/extension-release.d/` (names and
+modification times; `crates/media/core/src/extensions.rs`). When it differs
+from what the process last saw, or on a process's first look from the stamp
+saved per user in `$XDG_CACHE_HOME/tilo/media-extensions.stamp`, the process
+drops every GStreamer plugin it has not loaded from the registry and rescans.
+A plain registry update is not enough: GStreamer keys its cache by plugin file
+mtime and size, so `libavcodec-freeworld` replacing a library under an
+unchanged `libgstlibav.so` would otherwise keep the old feature list, in
+running processes and in processes started later.
+
+So new plugins (OpenH264, the freeworld and ugly sets) and plugins not yet
+loaded are usable at once, in running apps too, the next time they start a
+call, a share or a video. What cannot change inside a running process is a
+plugin it has already loaded: a replaced libavcodec under a loaded libav
+plugin, and the H.264/HEVC VA-API entry points of the freeworld Mesa driver
+under a loaded `va` plugin (libva probes the driver once per process). Those
+apply to processes started after the merge. The compositor itself encodes
+screen sharing and recordings, so for the Mesa part the desktop tells the
+owner exactly that: apps opened from now on have hardware H.264/HEVC; sign out
+and back in for screen sharing and recording, and reopen apps that were open.
+Without the Mesa part no restart is needed.
 
 ## The sealed image
 

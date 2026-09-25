@@ -1,13 +1,18 @@
-"""Pure logic of os/usr/libexec/tilo-codec-pack: no network, dnf or root."""
+"""os/usr/libexec/tilo-codec-pack without network, dnf or root.
+
+The end-to-end run against a real signed repository is test_codec_pack_e2e.py.
+"""
 
 import importlib.machinery
 import importlib.util
 import json
 import re
+import subprocess
 import sys
 import tempfile
 import unittest
 from pathlib import Path, PurePosixPath
+from unittest import mock
 
 REPO = Path(__file__).resolve().parents[2]
 HELPER = REPO / "os/usr/libexec/tilo-codec-pack"
@@ -296,6 +301,277 @@ class Units(unittest.TestCase):
     def test_template_passes_only_the_instance(self):
         unit = (REPO / "os/usr/lib/systemd/system/tilo-codec-pack@.service").read_text()
         self.assertIn("ExecStart=/usr/libexec/tilo-codec-pack %i\n", unit)
+
+
+class Connectivity(unittest.TestCase):
+    def test_only_a_confirmed_lack_of_internet_waits(self):
+        for state in ("full", "FULL", "unknown", "", " full\n"):
+            self.assertTrue(pack.is_online(state), state)
+        for state in ("none", "limited", "portal"):
+            self.assertFalse(pack.is_online(state), state)
+
+
+class FakeDnf:
+    """The pieces of Dnf that refresh() uses, with one available build each."""
+
+    offered = {
+        "gstreamer1-plugin-openh264": "1.26.5",
+        "openh264": "2.5.0",
+        "mesa-va-drivers-freeworld": "25.1.4",
+    }
+
+    def __init__(self, layout, base):
+        self.base = base
+
+    def candidates(self, names):
+        return {name: [nevra(name, self.offered[name])] if name in self.offered else [] for name in names}
+
+
+class Refresh(unittest.TestCase):
+    """refresh() with the network, dnf and rpm replaced; the state machine is real."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.layout = pack.Layout(Path(self.tmp.name))
+        self.layout.state.mkdir(parents=True)
+        self.layout.desired.write_text("owner opted in\n")
+        self.online = "full"
+        self.fail_download = None
+        self.statuses = []
+        base = pack.Base("fedora", "44", "x86_64", {
+            "gstreamer1": nevra("gstreamer1", "1.26.5", repo="base"),
+            "mesa-dri-drivers": nevra("mesa-dri-drivers", "25.1.4", repo="base"),
+        })
+        real_write = pack.write_status
+
+        def recording_write(layout, **changes):
+            status = real_write(layout, **changes)
+            self.statuses.append(json.loads(json.dumps(status)))
+            return status
+
+        def fake_fetch(layout, base, dnf, keyring, specs, workdir, verifying=None):
+            if self.fail_download:
+                raise pack.PackError(self.fail_download)
+            if verifying is not None:
+                pack.report_progress(layout, verifying)
+            return [{"nvra": spec, "path": "", "repo": "rpmfusion-free", "license": "x",
+                     "vendor": "x", "fingerprint": "f"} for spec in specs]
+
+        def fake_build(layout, base, name, rpms, extra):
+            (layout.extensions / name).mkdir(parents=True, exist_ok=True)
+
+        self.patches = [
+            mock.patch.object(pack, "connectivity", lambda: self.online),
+            mock.patch.object(pack, "write_status", recording_write),
+            mock.patch.object(pack, "probe_base", lambda layout: base),
+            mock.patch.object(pack, "Dnf", FakeDnf),
+            mock.patch.object(pack, "Keyring", lambda layout, base, workdir: object()),
+            mock.patch.object(pack, "fetch", fake_fetch),
+            mock.patch.object(pack, "build_extension", fake_build),
+        ]
+        for patch in self.patches:
+            patch.start()
+
+    def tearDown(self):
+        for patch in reversed(self.patches):
+            patch.stop()
+        self.tmp.cleanup()
+
+    def status(self):
+        return json.loads(self.layout.status.read_text())
+
+    def test_install_reports_every_step_in_order_then_clears_progress(self):
+        pack.refresh(self.layout, explicit=True)
+        labels = []
+        for status in self.statuses:
+            progress = status.get("progress")
+            if progress:
+                self.assertEqual(status["state"], "installing")
+                self.assertEqual(progress["steps"], len(pack.PROGRESS_STEPS))
+                self.assertEqual(pack.PROGRESS_STEPS[progress["step"] - 1], progress["label"])
+                if not labels or labels[-1] != progress["label"]:
+                    labels.append(progress["label"])
+        self.assertEqual(labels, list(pack.PROGRESS_STEPS))
+        final = self.status()
+        self.assertEqual((final["state"], final["mesa"], final["desired"]), ("installed", "enabled", True))
+        self.assertNotIn("progress", final)
+        self.assertEqual(final["last_error"], "")
+
+    def test_offline_opt_in_waits_instead_of_failing(self):
+        self.online = "none"
+        result = pack.refresh(self.layout, explicit=True)
+        self.assertEqual(result["state"], "waiting-for-network")
+        final = self.status()
+        self.assertEqual((final["state"], final["desired"], final["last_error"]),
+                         ("waiting-for-network", True, ""))
+        self.assertEqual(final["message"], pack.OFFLINE_MESSAGE)
+        self.assertFalse((self.layout.extensions / pack.CODECS).exists())
+
+    def test_the_deferred_install_completes_once_online(self):
+        self.online = "limited"
+        pack.refresh(self.layout, explicit=True)
+        self.assertEqual(self.status()["state"], "waiting-for-network")
+        self.online = "full"
+        pack.refresh(self.layout, explicit=False)
+        final = self.status()
+        self.assertEqual((final["state"], final["message"]), ("installed", ""))
+
+    def test_a_working_pack_stays_installed_offline_without_an_error(self):
+        (self.layout.extensions / pack.CODECS).mkdir(parents=True)
+        pack.write_status(self.layout, state="installed", mesa="enabled", last_error="")
+        self.online = "none"
+        pack.refresh(self.layout, explicit=False)
+        final = self.status()
+        self.assertEqual((final["state"], final["last_error"]), ("installed", ""))
+
+    def test_losing_the_connection_mid_download_waits(self):
+        self.fail_download = "dnf5 failed: Curl error (6): Couldn't resolve host name"
+        calls = iter(["full", "none"])
+        with mock.patch.object(pack, "connectivity", lambda: next(calls)):
+            result = pack.refresh(self.layout, explicit=True)
+        self.assertEqual(result["state"], "waiting-for-network")
+        self.assertEqual(self.status()["last_error"], "")
+
+    def test_a_real_failure_while_online_is_reported(self):
+        self.fail_download = "x.rpm: signature check failed"
+        with self.assertRaises(pack.PackError):
+            pack.refresh(self.layout, explicit=True)
+        final = self.status()
+        self.assertEqual((final["state"], final["last_error"], final["desired"]),
+                         ("failed", "x.rpm: signature check failed", True))
+        self.assertNotIn("progress", final)
+
+    def test_without_the_opt_in_nothing_happens(self):
+        self.layout.desired.unlink()
+        self.online = "none"
+        self.assertEqual(pack.refresh(self.layout, explicit=False)["state"], "not-installed")
+
+    def test_remove_clears_the_opt_in_and_the_progress(self):
+        pack.refresh(self.layout, explicit=True)
+        pack.write_status(self.layout, state="installing",
+                          progress={"step": 1, "steps": 7, "label": "Checking this device"})
+        pack.remove(self.layout)
+        final = self.status()
+        self.assertEqual((final["state"], final["desired"], final["mesa"]), ("not-installed", False, "off"))
+        self.assertNotIn("progress", final)
+        for name in pack.EXTENSIONS:
+            self.assertFalse((self.layout.extensions / name).exists())
+
+
+class InstallerSeed(unittest.TestCase):
+    def test_adopted_once_and_never_after_a_remove(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            layout = pack.Layout(Path(tmp))
+            self.assertFalse(pack.adopt_installer_seed(layout), "no seed, nothing to adopt")
+            layout.seed.parent.mkdir(parents=True)
+            layout.seed.write_text("owner opted in during installation\n")
+            self.assertTrue(pack.adopt_installer_seed(layout))
+            self.assertTrue(layout.desired.exists())
+            self.assertEqual(layout.desired.stat().st_mode & 0o777, 0o644)
+            self.assertFalse(pack.adopt_installer_seed(layout), "adopted only once")
+            pack.remove(layout)
+            self.assertFalse(layout.desired.exists())
+            self.assertTrue(layout.seed.exists(), "the helper never writes /etc")
+            self.assertFalse(pack.adopt_installer_seed(layout), "a remove sticks")
+            self.assertFalse(layout.desired.exists())
+
+    def test_installer_flag_writes_the_seed_the_helper_reads(self):
+        script = (REPO / "os/usr/libexec/tilo-install").read_text()
+        self.assertIn("--codecs) WANT_CODECS=1; shift ;;", script)
+        self.assertIn('CODECS_SEED="$DEPLOY_ETC/tilo/codec-pack-opt-in"', script)
+        self.assertEqual(pack.INSTALLER_SEED, "/etc/tilo/codec-pack-opt-in")
+
+
+class StatusFile(unittest.TestCase):
+    def test_progress_exists_only_while_installing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            layout = pack.Layout(Path(tmp))
+            pack.write_status(layout, state="installing")
+            pack.report_progress(layout, "Downloading codecs")
+            status = json.loads(layout.status.read_text())
+            self.assertEqual(status["progress"], {"step": 3, "steps": 7, "label": "Downloading codecs"})
+            pack.write_status(layout, state="installed")
+            self.assertNotIn("progress", json.loads(layout.status.read_text()))
+
+    def test_every_state_the_desktop_parses(self):
+        rust = (REPO / "crates/system/os-actions/src/codec_pack.rs").read_text()
+        for state in pack.STATES:
+            self.assertIn(f'"{state}"', rust, state)
+
+
+DISPATCHER = REPO / "os/usr/lib/NetworkManager/dispatcher.d/90-tilo-codec-pack"
+
+
+class Dispatcher(unittest.TestCase):
+    """The NetworkManager hook, with its two paths pointed into a temp tree."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        root = Path(self.tmp.name)
+        self.state = root / "state"
+        self.state.mkdir()
+        self.seed = root / "seed"
+        self.calls = root / "calls"
+        bin_dir = root / "bin"
+        bin_dir.mkdir()
+        stub = bin_dir / "systemctl"
+        stub.write_text(f'#!/bin/sh\nprintf "%s\\n" "$*" >> "{self.calls}"\n')
+        stub.chmod(0o755)
+        script = DISPATCHER.read_text()
+        self.assertIn("STATE_DIR=/var/lib/tilo/codec-pack\n", script)
+        self.assertIn("INSTALLER_SEED=/etc/tilo/codec-pack-opt-in\n", script)
+        script = script.replace("STATE_DIR=/var/lib/tilo/codec-pack\n", f"STATE_DIR={self.state}\n")
+        script = script.replace("INSTALLER_SEED=/etc/tilo/codec-pack-opt-in\n", f"INSTALLER_SEED={self.seed}\n")
+        self.script = root / "dispatcher"
+        self.script.write_text(script)
+        self.script.chmod(0o755)
+        self.env = {"PATH": f"{bin_dir}:/usr/bin:/bin"}
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def dispatch(self, action, connectivity=None):
+        env = dict(self.env)
+        if connectivity is not None:
+            env["CONNECTIVITY_STATE"] = connectivity
+        subprocess.run([str(self.script), "wlan0", action], env=env, check=True)
+        calls = self.calls.read_text().splitlines() if self.calls.exists() else []
+        self.calls.unlink(missing_ok=True)
+        return calls
+
+    def test_ships_executable(self):
+        self.assertTrue(DISPATCHER.stat().st_mode & 0o111)
+
+    def test_starts_the_deferred_install_when_the_internet_appears(self):
+        (self.state / "enabled").write_text("x")
+        (self.state / "status.json").write_text(json.dumps({"state": "waiting-for-network"}, indent=2))
+        expected = ["start --no-block tilo-codec-pack@refresh.service"]
+        self.assertEqual(self.dispatch("connectivity-change", "FULL"), expected)
+        self.assertEqual(self.dispatch("up"), expected)
+
+    def test_ignores_other_events_and_partial_connectivity(self):
+        (self.state / "enabled").write_text("x")
+        for action, connectivity in (("connectivity-change", "LIMITED"), ("connectivity-change", "NONE"),
+                                     ("down", None), ("dhcp4-change", None), ("pre-up", None)):
+            self.assertEqual(self.dispatch(action, connectivity), [], action)
+
+    def test_does_nothing_without_the_opt_in_or_once_installed(self):
+        self.assertEqual(self.dispatch("connectivity-change", "FULL"), [])
+        (self.state / "enabled").write_text("x")
+        (self.state / "status.json").write_text(json.dumps({"state": "installed"}, indent=2))
+        self.assertEqual(self.dispatch("connectivity-change", "FULL"), [])
+
+    def test_an_unadopted_installer_seed_counts_as_the_opt_in(self):
+        self.seed.write_text("owner opted in during installation\n")
+        self.assertEqual(len(self.dispatch("connectivity-change", "FULL")), 1)
+        (self.state / "installer-seed-adopted").write_text("x")
+        self.assertEqual(self.dispatch("connectivity-change", "FULL"), [], "a remove after adoption sticks")
+
+    def test_the_helper_writes_the_state_line_the_hook_matches(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            layout = pack.Layout(Path(tmp))
+            pack.write_status(layout, state="installed")
+            self.assertIn('"state": "installed"', layout.status.read_text())
 
 
 if __name__ == "__main__":

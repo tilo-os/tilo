@@ -24,7 +24,8 @@ containerfile="$repo/os/Containerfile"
 # the packaged-app external AT-SPI client and installed-app accessibility gate,
 # the build-only residual OpenSSL ABI package gate (removed after it runs),
 # the xdg-desktop-portal preference that selects the Tilo backend,
-# and the opt-in codec-pack helper overlay (helper, units, keys, polkit rule).
+# and the opt-in codec-pack helper overlay (helper, units, keys, polkit rule,
+# and the NetworkManager dispatcher hook that starts a deferred install).
 # The redundant model-storage oneshot is now absent; systemd provisions the
 # model and gateway directories directly without a helper on socket activation.
 # Rustls now compiles the fixed CA-bundle path
@@ -46,7 +47,7 @@ containerfile="$repo/os/Containerfile"
 # each COPY's installed bytes and path. Modes remain source modes except at the
 # explicitly equivalent COPY --chmod=0755 sites checked below. COPY preserves
 # ownership, mtimes and symlinks through scratch stages; no RUN mutates them.
-expected_contract=6ec7b69e7e54d564678d7cea4552e96af13efd7731cdd56d9e55552515265129
+expected_contract=512204ff985e3431f51110ceb720334a9ffe6df4339136060a2d68b5e2a7a061
 actual_contract="$(containerfile_expanded_rootfs_copy_contract "$containerfile" |
   LC_ALL=C sort | sha256sum | awk '{print $1}')"
 [ "$actual_contract" = "$expected_contract" ] || {
@@ -119,7 +120,8 @@ for path in \
   os/usr/libexec/tilo-store-volume \
   os/usr/libexec/tilo-verified-boot-install-preflight \
   os/usr/libexec/tilo-security-audit \
-  os/usr/libexec/tilo-codec-pack; do
+  os/usr/libexec/tilo-codec-pack \
+  os/usr/lib/NetworkManager/dispatcher.d/90-tilo-codec-pack; do
   containerfile_instructions "$containerfile" |
     awk -v path="$path" '
       $1 == "COPY" {
