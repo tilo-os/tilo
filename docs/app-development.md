@@ -1207,6 +1207,18 @@ facts that let a caller plan safely:
 - `risk`, `confirmation`, and `reversible`: destructive and privileged actions
   require a confirmation policy. Confirmation grants are short-lived,
   one-use, and bound to the actor, address, and arguments.
+  An action whose consequence depends on its value (a generic typed edit
+  that may delete) classifies each invocation instead
+  (`ActionSpec::with_risk`, `tilo_actions::Action::risk`): a destructive
+  value gets exactly the confirmation a declared destructive action gets, an
+  ordinary one runs directly. Its contract carries the
+  `confirmation:by-argument` tag; a caller that cannot classify arguments,
+  such as the session broker, treats it as requiring confirmation
+  (`ActionContract::advertised_confirmation`).
+- `tags`: `surface:programmatic` (`ActionSpec::programmatic`) marks an action
+  offered only to agents, scripts and the controls or surfaces that submit it
+  — never a palette row or a menu entry. It is still published, resolvable
+  and invocable by address under the same rules.
 - `retry`: use `idempotent` only when repetition is observably harmless;
   otherwise use the default `at_most_once`. The reserved
   `retry_with_invocation_id` mode must not be advertised until the calling
