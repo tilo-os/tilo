@@ -178,6 +178,14 @@ fn alongside_install_impact(guided: bool, dev: &str) -> String {
     )
 }
 
+fn alongside_confirmation_operation(guided: bool) -> &'static str {
+    if guided {
+        "guided free-space partition plan"
+    } else {
+        "Tilo boot and root format"
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum InstallMethod {
     Erase,
@@ -2797,11 +2805,7 @@ impl InstallerApp {
                         .and_then(|selected| selected.alongside_root())
                         .map_or("<missing root>", |partition| partition.name.as_str())
                 },
-                if self.uses_guided_alongside() {
-                    "guided free-space partition plan"
-                } else {
-                    "Tilo root format"
-                },
+                alongside_confirmation_operation(self.uses_guided_alongside()),
             ),
         };
         children.push(Box::new(
@@ -4759,6 +4763,14 @@ mod tests {
         assert!(prepared.contains("will be formatted"));
         assert!(prepared.contains("existing EFI partition and other OS partitions are preserved"));
         assert!(prepared.contains("BitLocker recovery prompt"));
+        assert_eq!(
+            alongside_confirmation_operation(false),
+            "Tilo boot and root format"
+        );
+        assert_eq!(
+            alongside_confirmation_operation(true),
+            "guided free-space partition plan"
+        );
     }
 
     #[test]
