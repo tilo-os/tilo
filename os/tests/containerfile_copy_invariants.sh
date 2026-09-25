@@ -31,7 +31,9 @@ containerfile="$repo/os/Containerfile"
 # Tilo build outputs are installed through os/components.toml, so their rows
 # name the manifest component and build output instead of a builder /out path;
 # every destination is unchanged, and /out/optional/ -> /usr/bin/ is now the
-# explicit optional /usr/bin/browser entry it always carried. Sorting
+# explicit optional /usr/bin/browser entry it always carried. The VM console
+# port udev rule and the generated bash/fish/zsh completions for app and tilo
+# (with their store/system aliases) are deliberate additions. Sorting
 # intentionally ignores instruction order:
 # destinations are unique, and the source-stage/source/destination triple defines
 # each COPY's installed bytes and path. Modes remain source modes except at the

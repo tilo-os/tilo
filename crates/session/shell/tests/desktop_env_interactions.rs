@@ -196,10 +196,14 @@ fn laid_out_topbar_height(chrome: Chrome) -> f64 {
     bar.get_rect().height()
 }
 
-fn dispatch(host: &mut ShellOverlayHost, layout: &Layout, event: &WindowEvent) {
+fn dispatch_with_modifiers(
+    host: &mut ShellOverlayHost,
+    layout: &Layout,
+    event: &WindowEvent,
+    modifiers: Modifiers,
+) {
     let mut doc = automerge::AutoCommit::new();
     let doc_root = automerge::ROOT.clone();
-    let modifiers = Modifiers::default();
     let mut handled = false;
     let mut focus: Option<NodeId> = None;
     host.handle_event(
@@ -213,6 +217,10 @@ fn dispatch(host: &mut ShellOverlayHost, layout: &Layout, event: &WindowEvent) {
         layout.child_node,
         &layout.taffy,
     );
+}
+
+fn dispatch(host: &mut ShellOverlayHost, layout: &Layout, event: &WindowEvent) {
+    dispatch_with_modifiers(host, layout, event, Modifiers::default());
 }
 
 /// Hover a group's first tab and hold its chip-reveal curve past the end, so
@@ -288,6 +296,19 @@ fn release(host: &mut ShellOverlayHost, layout: &Layout) {
     );
 }
 
+fn press_with_modifiers(host: &mut ShellOverlayHost, layout: &Layout, modifiers: Modifiers) {
+    dispatch_with_modifiers(
+        host,
+        layout,
+        &WindowEvent::MouseInput {
+            device_id: unsafe { std::mem::zeroed() },
+            state: ElementState::Pressed,
+            button: MouseButton::Left,
+        },
+        modifiers,
+    );
+}
+
 // 1. Horizontal window-group resize
 
 #[test]
@@ -320,7 +341,8 @@ fn resize_handle_drag_persists_new_group_widths_into_tree() {
     let cx = f64::midpoint(handle_rect.x0, handle_rect.x1);
     let cy = f64::midpoint(handle_rect.y0, handle_rect.y1);
 
-    // Drag the handle +40 px right: left neighbour grows, right shrinks.
+    // Drag the handle +40 px right: the left group grows into the infinite
+    // strip; the neighbour keeps its own width.
     cursor(&mut host, &layout, Point::new(cx, cy));
     press(&mut host, &layout);
     cursor(&mut host, &layout, Point::new(cx + 40.0, cy));
@@ -341,8 +363,8 @@ fn resize_handle_drag_persists_new_group_widths_into_tree() {
     );
     assert_approx_eq!(
         right.width.resolve(usable),
-        start_px - 40.0,
-        "right group must have shrunk by the same 40 px (no overlap, widths reflow)",
+        start_px,
+        "ordinary resize must not squeeze the adjacent group",
     );
     // What is *stored* is the share, not the pixels — the same tree on a
     // wider display gives the same proportions, not the same widths.
@@ -353,20 +375,62 @@ fn resize_handle_drag_persists_new_group_widths_into_tree() {
     );
 }
 
-/// A drag far past a neighbour's minimum must clamp: the shrinking group
-/// pins at the display's minimum and the growing one absorbs only the
-/// slack, preserving the pair sum, and the clamped widths persist.
+#[test]
+fn shift_resize_handle_redistributes_width_between_neighbours() {
+    use winit::keyboard::ModifiersState;
+
+    let (tree, strip_id, ids) = single_strip_tree(&[100, 200]);
+    let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&tree);
+    let layout = lay_out_host(&mut host);
+    let usable = usable_strip_px(&mut host, strip_id);
+    let start_px = WindowWidth::Normal.resolve(usable);
+    let handle_rect = host
+        .group_row_mut_for_tests(strip_id)
+        .expect("strip GroupRow")
+        .handle_at(0)
+        .expect("inter-group handle")
+        .get_rect();
+    let centre = handle_rect.center();
+
+    cursor(&mut host, &layout, centre);
+    press_with_modifiers(&mut host, &layout, Modifiers::from(ModifiersState::SHIFT));
+    cursor(&mut host, &layout, Point::new(centre.x + 40.0, centre.y));
+    release(&mut host, &layout);
+    host.tick_pending_width_harvest_for_tests();
+
+    let (left_px, right_px) = {
+        let st = chrome.borrow();
+        let groups = &st.tree().desktop.workspaces[0].strips[0].window_groups;
+        let width_of = |id| {
+            groups
+                .iter()
+                .find(|g| g.id == id)
+                .unwrap()
+                .width
+                .resolve(usable)
+        };
+        (width_of(ids[0]), width_of(ids[1]))
+    };
+    assert_approx_eq!(left_px, start_px + 40.0);
+    assert_approx_eq!(right_px, start_px - 40.0);
+    assert_approx_eq!(
+        left_px + right_px,
+        start_px * 2.0,
+        "Shift-resize deliberately preserves the adjacent pair's total width",
+    );
+}
+
+/// A normal drag far past the resized group's maximum clamps that group
+/// without changing its neighbour, and the clamped width persists.
 #[test]
 #[allow(
     clippy::significant_drop_tightening,
     reason = "st's only use is producing tree via tree(); the read-guard's lifetime \
               is tied to st's borrow, so it can't be dropped before tree's last use"
 )]
-fn resize_handle_drag_clamps_at_min_width_and_persists() {
+fn resize_handle_drag_clamps_at_max_width_without_squeezing_neighbour() {
     let (mut tree, strip_id, ids) = single_strip_tree(&[100, 200]);
-    // Start both at Narrow. From two Normals the right group can't reach its
-    // minimum at all (the left would grow past the display), so the pair sum
-    // has to leave slack for the clamp to be reachable.
+    // Start both at Narrow so the resized group has visible room to grow.
     for g in &mut tree.desktop.workspaces[0].strips[0].window_groups {
         g.width = WindowWidth::Narrow;
     }
@@ -374,8 +438,8 @@ fn resize_handle_drag_clamps_at_min_width_and_persists() {
     let layout = lay_out_host(&mut host);
 
     let usable = usable_strip_px(&mut host, strip_id);
-    let pair_sum = 2.0 * WindowWidth::Narrow.resolve(usable);
-    let min = ui::widget::min_group_px(usable);
+    let start = WindowWidth::Narrow.resolve(usable);
+    let max = ui::widget::max_group_px(usable);
     let handle_rect = host
         .group_row_mut_for_tests(strip_id)
         .expect("strip GroupRow")
@@ -385,8 +449,8 @@ fn resize_handle_drag_clamps_at_min_width_and_persists() {
     let cx = f64::midpoint(handle_rect.x0, handle_rect.x1);
     let cy = f64::midpoint(handle_rect.y0, handle_rect.y1);
 
-    // Far past the right neighbour's min: it can only shrink to the
-    // display's minimum, so the left group grows by that slack, not by 5000.
+    // Far past the resized group's maximum: it clamps there while the right
+    // neighbour keeps its own width in the unbounded strip.
     cursor(&mut host, &layout, Point::new(cx, cy));
     press(&mut host, &layout);
     cursor(&mut host, &layout, Point::new(cx + 5000.0, cy));
@@ -401,18 +465,18 @@ fn resize_handle_drag_clamps_at_min_width_and_persists() {
     let right = groups.iter().find(|g| g.id == ids[1]).unwrap();
     assert_approx_eq!(
         right.width.resolve(usable),
-        min,
-        "the shrinking (right) group clamps at the display's minimum width, not below",
+        start,
+        "ordinary resizing must not squeeze the right neighbour",
     );
     assert_approx_eq!(
         left.width.resolve(usable),
-        pair_sum - min,
-        "the growing (left) group absorbs only the neighbour's actual slack",
+        max,
+        "the growing group clamps at the display-relative maximum",
     );
     assert_approx_eq!(
         left.width.resolve(usable) + right.width.resolve(usable),
-        pair_sum,
-        "pair sum is preserved under clamp — no overlap, no runaway width",
+        max + start,
+        "the infinite strip grows only to the resized group's clamp",
     );
 }
 
@@ -704,6 +768,54 @@ fn expand_maximizes_beneath_the_top_bar() {
         "maximize must preserve the OS-owned top bar; got height {topbar_height}",
     );
     let _ = &layout2;
+}
+
+/// Restoring an expanded group must rebuild the sidebar from the cleared
+/// fullscreen-presentation state, rather than leaving its taffy node at
+/// `display:none` from the maximized frame.
+#[test]
+fn restore_brings_back_the_workspace_switcher() {
+    let (tree, strip_id, _ids) = single_strip_tree(&[100]);
+    let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&tree);
+    let restored_layout = lay_out_host(&mut host);
+
+    // Expand through the same one-shot toggle the Expand chip publishes,
+    // dispatching once so `WindowGroup` drains it into the harvest path.
+    host.group_at_for_tests(strip_id, 0)
+        .expect("group after layout")
+        .publish_maximize_intent_for_tests();
+    cursor(
+        &mut host,
+        &restored_layout,
+        Point::new(f64::from(W) - 1.0, f64::from(H) - 1.0),
+    );
+    host.tick_pending_maximize_harvest_for_tests();
+    let maximized_layout = lay_out_host(&mut host);
+    assert!(chrome.borrow().is_fullscreen());
+    assert_approx_eq!(
+        host.sidebar_rect_for_tests().unwrap().area(),
+        0.0,
+        "the switcher starts suppressed while the group is expanded",
+    );
+
+    // Queue the same one-shot toggle the Restore button publishes, then
+    // dispatch once so `WindowGroup` drains it into the shell harvest path.
+    host.group_at_for_tests(strip_id, 0)
+        .expect("maximized group")
+        .publish_maximize_intent_for_tests();
+    cursor(
+        &mut host,
+        &maximized_layout,
+        Point::new(f64::from(W) - 1.0, f64::from(H) - 1.0),
+    );
+    host.tick_pending_maximize_harvest_for_tests();
+
+    assert!(!chrome.borrow().is_fullscreen());
+    let _restored_layout = lay_out_host(&mut host);
+    assert!(
+        host.sidebar_rect_for_tests().unwrap().area() > 0.0,
+        "the radial workspace switcher must return on the first restored layout",
+    );
 }
 
 /// A lone window group has no *inter*-group handle, so its only resize

@@ -22,7 +22,10 @@ use crate::action::{EncodedAction, ExecutionLocus, OperationKind};
 use crate::context::ActionContext;
 use crate::executor::{ActionTransport, Dispatched, dispatch_by_with_context};
 use crate::registry::ActionRegistry;
-use crate::resource::{ActionInput, ActionSpec, Collects, KEY_SEP, Resource};
+use crate::resource::{
+    ActionInput, ActionSpec, Collects, KEY_SEP, Resource, ResourceViewMountSpec,
+};
+use serde::{Deserialize, Serialize};
 
 /// The stable address of one exported operation: which resource, which
 /// action. Both halves are the app's own ids — no screen position, no
@@ -135,6 +138,45 @@ pub struct ActionDescriptor {
     /// Canonical typed invocation surface. `input` remains the palette-facing
     /// projection for compatibility; headless callers use these parameters.
     pub params: Vec<ActionParam>,
+    /// The explicit resource view opened by this action. Mount actions and
+    /// unrelated local view operations carry `None`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub view: Option<ResourceViewDescriptor>,
+}
+
+/// Serializable data describing one explicitly declared resource view.
+///
+/// This is projected only onto the descriptor for `open_action`, keeping the
+/// view identity independent from the operation used to present it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ResourceViewDescriptor {
+    pub id: String,
+    pub label: String,
+    pub description: Option<String>,
+    pub open_action: String,
+    pub primary: bool,
+    pub mount: Option<ResourceViewMountSpec>,
+}
+
+impl ResourceViewDescriptor {
+    /// The view `resource` declares for `action_id`, when that action is a
+    /// view's open action.
+    #[must_use]
+    pub fn declared_for(resource: &Resource, action_id: &str) -> Option<Self> {
+        resource
+            .views
+            .iter()
+            .find(|view| view.open_action == action_id)
+            .map(|view| Self {
+                id: view.id.clone(),
+                label: view.label.clone(),
+                description: view.description.clone(),
+                open_action: view.open_action.clone(),
+                primary: view.primary,
+                mount: view.mount.clone(),
+            })
+    }
 }
 
 /// Why an address could not be performed. `Unknown` deliberately covers
@@ -222,6 +264,7 @@ pub fn survey(resources: &[Resource]) -> Vec<ActionDescriptor> {
 
 fn survey_into(resource: &Resource, out: &mut Vec<ActionDescriptor>) {
     for action in &resource.actions {
+        let view = ResourceViewDescriptor::declared_for(resource, &action.id);
         out.push(ActionDescriptor {
             address: ActionAddress::new(resource.id.as_str(), &action.id),
             resource_kind: resource.kind.clone(),
@@ -233,6 +276,7 @@ fn survey_into(resource: &Resource, out: &mut Vec<ActionDescriptor>) {
             contract: action.contract.clone(),
             input: InputSpec::of(&action.input),
             params: action.params().to_vec(),
+            view,
         });
     }
     for child in &resource.children {
@@ -740,6 +784,48 @@ mod tests {
         let described = survey(&honest);
         drop(honest);
         assert_eq!(described.len(), 2);
+    }
+
+    #[test]
+    fn survey_annotates_only_the_declared_view_open_action() {
+        let open =
+            ActionSpec::operation("open", "Open", OperationKind::View, "notes.open", &()).unwrap();
+        let select =
+            ActionSpec::operation("select", "Select", OperationKind::View, "notes.select", &())
+                .unwrap();
+        let resource = Resource::new("note:1", "notes.note", "Harbour")
+            .with_action(open)
+            .with_action(select)
+            .with_view(
+                crate::ResourceViewSpec::new("editor", "Editor", "open")
+                    .with_description("Edit the note")
+                    .with_primary(true),
+            );
+
+        let descriptors = survey(&[resource]);
+        let open = descriptors
+            .iter()
+            .find(|descriptor| descriptor.address.action == "open")
+            .unwrap();
+        assert_eq!(
+            open.view,
+            Some(ResourceViewDescriptor {
+                id: "editor".into(),
+                label: "Editor".into(),
+                description: Some("Edit the note".into()),
+                open_action: "open".into(),
+                primary: true,
+                mount: None,
+            })
+        );
+        assert!(
+            descriptors
+                .iter()
+                .find(|descriptor| descriptor.address.action == "select")
+                .unwrap()
+                .view
+                .is_none()
+        );
     }
 
     /// A tree is per-frame presentation, so an address is re-resolved against a

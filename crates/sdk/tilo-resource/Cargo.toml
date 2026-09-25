@@ -1,0 +1,24 @@
+[package]
+name = "tilo-resource"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+
+# The resource layer: typed resource state stored in a CRDT, typed replayable
+# actions over it, deterministic ids and order, history and replay. It knows
+# nothing about rendering, widgets or windows; the UI toolkit knows nothing
+# about it. `tilo-app` binds the two.
+
+[dependencies]
+automerge.workspace = true
+blake3.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+uuid.workspace = true
+tilo-actions = { path = "../../collab/actions" }
+tilo-resource-macros = { path = "../tilo-resource-macros" }
+
+[lints]
+workspace = true

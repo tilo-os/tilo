@@ -3,9 +3,11 @@
 //!
 //! Paints a 2-px accent rule centred on the gap (3 px hovered/dragged),
 //! backed by a ~16-px invisible hit area straddling it. On drag it drives
-//! `set_width` on BOTH neighbours so the gap stays at the row's declared
-//! 8 px while the pair's widths slide — unlike the per-group right-edge
-//! handle, which only moves the one group's own edge.
+//! width updates for the groups adjoining the gap. A normal drag changes
+//! only the group on the handle's left,
+//! extending or contracting the horizontally unbounded strip. Holding Shift
+//! opts into pairwise redistribution, changing both neighbours while their
+//! sum stays constant.
 //!
 //! The widget is a zero-width flex item so the row's Taffy gap absorbs its
 //! footprint; its geometry is computed in `apply_layout` from the two
@@ -46,6 +48,9 @@ struct DragOrigin {
     cursor_x: f64,
     left_w: f64,
     right_w: f64,
+    /// Latched at press time so a modifier change cannot jump the geometry
+    /// between independent and pairwise resize halfway through a drag.
+    redistribute: bool,
 }
 
 /// The `GroupRow` constructs one per inter-group gap (N-1 handles for N
@@ -62,8 +67,8 @@ pub struct ResizeHandle {
     hover: bool,
     /// `Some` once the user pressed inside the hit area. Carries the
     /// press-time cursor x and both neighbours' press-time widths so the
-    /// per-frame update is symmetric: `new_left = origin_left + dx`,
-    /// `new_right = origin_right - dx`.
+    /// per-frame update changes only the left width by default; Shift at
+    /// press time makes it symmetric (`left + dx`, `right - dx`).
     drag: Option<DragOrigin>,
     /// The hit area: the gap between neighbours, extended by
     /// `HANDLE_HIT_HALF_PX` on each side.
@@ -170,6 +175,19 @@ impl ResizeHandle {
         let final_left = final_left.clamp(min, max);
         (final_left, right_clamped)
     }
+
+    /// Default infinite-strip resizing: only the group whose trailing edge
+    /// owns this handle changes. The neighbour stays put in strip space and
+    /// is translated by layout rather than squeezed to preserve a viewport.
+    pub fn compute_independent_widths(
+        left_origin: f64,
+        right_origin: f64,
+        dx: f64,
+        min: f64,
+        max: f64,
+    ) -> (f64, f64) {
+        ((left_origin + dx).clamp(min, max), right_origin)
+    }
 }
 
 impl Default for ResizeHandle {
@@ -262,7 +280,7 @@ impl Widget for ResizeHandle {
         &mut self,
         event: &WindowEvent,
         scale_factor: f64,
-        _modifiers: &winit::event::Modifiers,
+        modifiers: &winit::event::Modifiers,
         _state: &mut AutoCommit,
         _path: &ObjId,
         handled: &mut bool,
@@ -277,8 +295,17 @@ impl Widget for ResizeHandle {
                 if let Some(origin) = self.drag {
                     let dx = pt.x - origin.cursor_x;
                     let (min, max) = self.bounds;
-                    let (new_left, new_right) =
-                        Self::compute_widths(origin.left_w, origin.right_w, dx, min, max);
+                    let (new_left, new_right) = if origin.redistribute {
+                        Self::compute_widths(origin.left_w, origin.right_w, dx, min, max)
+                    } else {
+                        Self::compute_independent_widths(
+                            origin.left_w,
+                            origin.right_w,
+                            dx,
+                            min,
+                            max,
+                        )
+                    };
                     self.pending = Some((new_left, new_right));
                     *handled = true;
                 }
@@ -302,6 +329,7 @@ impl Widget for ResizeHandle {
                     cursor_x,
                     left_w,
                     right_w,
+                    redistribute: modifiers.state().shift_key(),
                 });
                 self.hover = false;
                 *handled = true;
@@ -432,6 +460,28 @@ mod tests {
     }
 
     #[test]
+    fn independent_resize_grows_strip_without_squeezing_neighbour() {
+        let (min, max) = bounds();
+        let (left, right) = ResizeHandle::compute_independent_widths(600.0, 750.0, 100.0, min, max);
+        assert_eq!(left, 700.0);
+        assert_eq!(right, 750.0, "ordinary resize must not touch the neighbour");
+        assert_eq!(
+            left + right,
+            1450.0,
+            "the infinite strip grows by the drag delta"
+        );
+    }
+
+    #[test]
+    fn independent_resize_clamps_only_the_resized_group() {
+        let (min, max) = bounds();
+        let (left, right) =
+            ResizeHandle::compute_independent_widths(400.0, 750.0, -10_000.0, min, max);
+        assert_eq!(left, min);
+        assert_eq!(right, 750.0);
+    }
+
+    #[test]
     fn compute_widths_handles_extreme_negative_drag() {
         let (min, max) = bounds();
         let (l, r) = ResizeHandle::compute_widths(500.0, 500.0, -10_000.0, min, max);
@@ -511,7 +561,10 @@ mod tests {
             .take_pending()
             .expect("mid-drag must publish a width pulse");
         assert_eq!(pulse.0, 650.0, "left grew by exactly dx");
-        assert_eq!(pulse.1, 550.0, "right shrank by exactly dx");
+        assert_eq!(
+            pulse.1, 600.0,
+            "ordinary drag leaves the neighbour unchanged"
+        );
         assert!(
             h.take_pending().is_none(),
             "take-pattern: second poll is None"

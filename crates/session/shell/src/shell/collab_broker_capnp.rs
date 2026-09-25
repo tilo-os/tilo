@@ -774,7 +774,119 @@ pub struct PublishedAction {
     pub operation_kind: tilo_actions::OperationKind,
     pub params: Vec<tilo_actions::ActionParam>,
     pub contract: tilo_actions::ActionContract,
+    pub view: Option<tilo_actions::ResourceViewDescriptor>,
     pub input: PublishedInput,
+}
+
+fn validate_view_action_binding(action: &PublishedAction, role: &str) -> Result<(), capnp::Error> {
+    if action.operation_kind != tilo_actions::OperationKind::View {
+        return Err(capnp::Error::failed(format!(
+            "resource view {role} action must be a view operation"
+        )));
+    }
+    if action.contract.confirmation != tilo_actions::ConfirmationPolicy::None {
+        return Err(capnp::Error::failed(format!(
+            "resource view {role} action must not require confirmation"
+        )));
+    }
+    if action.params.iter().any(|parameter| parameter.required) {
+        return Err(capnp::Error::failed(format!(
+            "resource view {role} action must not require caller parameters"
+        )));
+    }
+    Ok(())
+}
+
+/// Recheck the resource-view invariants after decoding an untrusted action
+/// surface. A view with a mount must carry that action in the same atomic
+/// publication/page so the broker can prove the binding before exposing it.
+fn validate_resource_view_descriptors(actions: &[PublishedAction]) -> Result<(), capnp::Error> {
+    #[derive(Default)]
+    struct ResourceViews<'a> {
+        ids: std::collections::HashSet<&'a str>,
+        open_actions: std::collections::HashSet<&'a str>,
+        primary_count: usize,
+    }
+
+    let mut resources = std::collections::HashMap::<&str, ResourceViews<'_>>::new();
+    for action in actions {
+        let Some(view) = &action.view else {
+            continue;
+        };
+        if view.id.is_empty() || view.id.contains(tilo_actions::KEY_SEP) {
+            return Err(capnp::Error::failed(
+                "resource view id must be non-empty and contain no separator".into(),
+            ));
+        }
+        if view.label.trim().is_empty() {
+            return Err(capnp::Error::failed(
+                "resource view label must be non-empty".into(),
+            ));
+        }
+        if view.open_action != action.action {
+            return Err(capnp::Error::failed(
+                "resource view must be attached to its open action".into(),
+            ));
+        }
+        validate_view_action_binding(action, "open")?;
+
+        let seen = resources.entry(&action.resource).or_default();
+        if !seen.ids.insert(&view.id) {
+            return Err(capnp::Error::failed(
+                "resource view ids must be unique per resource".into(),
+            ));
+        }
+        if !seen.open_actions.insert(&view.open_action) {
+            return Err(capnp::Error::failed(
+                "at most one resource view may reference an open action".into(),
+            ));
+        }
+        if view.primary {
+            seen.primary_count = seen.primary_count.saturating_add(1);
+            if seen.primary_count > 1 {
+                return Err(capnp::Error::failed(
+                    "at most one resource view may be primary".into(),
+                ));
+            }
+        }
+
+        let Some(mount) = &view.mount else {
+            continue;
+        };
+        if mount.action.trim().is_empty()
+            || mount.capability_param.trim().is_empty()
+            || mount.view_param.trim().is_empty()
+            || mount.capability_param == mount.view_param
+        {
+            return Err(capnp::Error::failed(
+                "resource view mount requires an action and distinct parameter names".into(),
+            ));
+        }
+        let mount_action = actions.iter().find(|candidate| {
+            candidate.resource == action.resource && candidate.action == mount.action
+        });
+        let Some(mount_action) = mount_action else {
+            return Err(capnp::Error::failed(
+                "resource view mount action is not exported by its resource".into(),
+            ));
+        };
+        validate_view_action_binding(mount_action, "mount")?;
+        for (role, name) in [
+            ("capability", mount.capability_param.as_str()),
+            ("view", mount.view_param.as_str()),
+        ] {
+            if !mount_action.params.iter().any(|parameter| {
+                parameter.name.as_ref() == name
+                    && parameter.ty == tilo_actions::ParamType::Text
+                    && !parameter.required
+            }) {
+                return Err(capnp::Error::failed(format!(
+                    "resource view mount {role} parameter `{name}` must name an optional text parameter"
+                )));
+            }
+        }
+    }
+    Ok(())
 }
 
 /// A live application's complete, level-triggered action surface.
@@ -5901,6 +6013,36 @@ impl channel_handle::Server for CapnpChannelHandle {
                         wants_content: text.get_wants_content(),
                     },
                 };
+                let view = row
+                    .has_view()
+                    .then(|| row.get_view())
+                    .transpose()?
+                    .map(|view| {
+                        let description = view.get_description()?.to_str()?.to_owned();
+                        Ok::<_, capnp::Error>(tilo_actions::ResourceViewDescriptor {
+                            id: view.get_id()?.to_str()?.to_owned(),
+                            label: view.get_label()?.to_str()?.to_owned(),
+                            description: (!description.is_empty()).then_some(description),
+                            open_action: view.get_open_action()?.to_str()?.to_owned(),
+                            primary: view.get_primary(),
+                            mount: view
+                                .has_mount()
+                                .then(|| view.get_mount())
+                                .transpose()?
+                                .map(|mount| {
+                                    Ok::<_, capnp::Error>(tilo_actions::ResourceViewMountSpec {
+                                        action: mount.get_action()?.to_str()?.to_owned(),
+                                        capability_param: mount
+                                            .get_capability_param()?
+                                            .to_str()?
+                                            .to_owned(),
+                                        view_param: mount.get_view_param()?.to_str()?.to_owned(),
+                                    })
+                                })
+                                .transpose()?,
+                        })
+                    })
+                    .transpose()?;
                 actions.push(PublishedAction {
                     resource,
                     action,
@@ -5945,6 +6087,7 @@ impl channel_handle::Server for CapnpChannelHandle {
                             })?
                         }
                     },
+                    view,
                     input,
                 });
                 let published = actions.last().ok_or_else(|| {
@@ -5978,6 +6121,7 @@ impl channel_handle::Server for CapnpChannelHandle {
                     }
                 }
             }
+            validate_resource_view_descriptors(&actions)?;
             let surface = PublishedSurface {
                 peer_id,
                 app_id,
@@ -7012,6 +7156,8 @@ fn permits_directory_row(
                     )?;
                 }
             }
+            let published = published_directory_action(row)?;
+            validate_resource_view_descriptors(std::slice::from_ref(&published))?;
             state.permits_directory_action(
                 cluster_id,
                 actor,
@@ -7060,6 +7206,13 @@ fn filter_directory_page(
             "application exceeded directory result budget".into(),
         ));
     }
+    let page_actions = page
+        .rows
+        .iter()
+        .filter(|row| row.action.is_some())
+        .map(published_directory_action)
+        .collect::<Result<Vec<_>, _>>()?;
+    validate_resource_view_descriptors(&page_actions)?;
     let mut visible = Vec::with_capacity(page.rows.len());
     for row in page.rows {
         if permits_directory_row(state, cluster_id, actor, app_id, &row)? {
@@ -7115,6 +7268,24 @@ fn published_directory_action(
             wants_content: *wants_content,
         },
     };
+    let view = descriptor
+        .view
+        .as_ref()
+        .map(|view| tilo_actions::ResourceViewDescriptor {
+            id: view.id.clone(),
+            label: view.label.clone(),
+            description: view.description.clone(),
+            open_action: view.open_action.clone(),
+            primary: view.primary,
+            mount: view
+                .mount
+                .as_ref()
+                .map(|mount| tilo_actions::ResourceViewMountSpec {
+                    action: mount.action.clone(),
+                    capability_param: mount.capability_param.clone(),
+                    view_param: mount.view_param.clone(),
+                }),
+        });
     Ok(PublishedAction {
         resource: descriptor.resource.clone(),
         action: descriptor.action.clone(),
@@ -7125,6 +7296,7 @@ fn published_directory_action(
         operation_kind,
         params,
         contract,
+        view,
         input,
     })
 }
@@ -9204,6 +9376,7 @@ pub(crate) mod tests {
                 operation_kind: "view".into(),
                 params_json: "[]".into(),
                 contract_json: contract_json.clone(),
+                view: None,
                 input: runtime_collab::ExportedInput::None,
             };
             runtime_collab::ActionDirectoryRow {
@@ -9234,6 +9407,20 @@ pub(crate) mod tests {
         out.set_operation_kind(&descriptor.operation_kind);
         out.set_params_json(&descriptor.params_json);
         out.set_contract_json(&descriptor.contract_json);
+        if let Some(view) = &descriptor.view {
+            let mut out = out.reborrow().init_view();
+            out.set_id(&view.id);
+            out.set_label(&view.label);
+            out.set_description(view.description.as_deref().unwrap_or(""));
+            out.set_open_action(&view.open_action);
+            out.set_primary(view.primary);
+            if let Some(mount) = &view.mount {
+                let mut out = out.init_mount();
+                out.set_action(&mount.action);
+                out.set_capability_param(&mount.capability_param);
+                out.set_view_param(&mount.view_param);
+            }
+        }
         let mut input = out.init_input();
         match &descriptor.input {
             runtime_collab::ExportedInput::None => input.set_none(()),
@@ -10595,6 +10782,7 @@ pub(crate) mod tests {
                         operation_kind: tilo_actions::OperationKind::View,
                         params: Vec::new(),
                         contract: tilo_actions::ActionContract::view(),
+                        view: None,
                         input: PublishedInput::None,
                     },
                     PublishedAction {
@@ -10611,6 +10799,7 @@ pub(crate) mod tests {
                             confirmation: tilo_actions::ConfirmationPolicy::Confirm,
                             ..tilo_actions::ActionContract::default()
                         },
+                        view: None,
                         input: PublishedInput::None,
                     },
                     PublishedAction {
@@ -10629,6 +10818,7 @@ pub(crate) mod tests {
                             result: tilo_actions::ResultSpec::Job,
                             ..tilo_actions::ActionContract::default()
                         },
+                        view: None,
                         input: PublishedInput::None,
                     },
                 ],
@@ -10825,6 +11015,7 @@ pub(crate) mod tests {
                     discovery: tilo_actions::DiscoveryScope::Launchable,
                     ..tilo_actions::ActionContract::view()
                 },
+                view: None,
                 input: PublishedInput::None,
             }],
             live: false,
@@ -11415,5 +11606,71 @@ pub(crate) mod tests {
                 )
                 .is_some()
         );
+    }
+
+    fn test_published_view(action: &str, view_id: &str, primary: bool) -> PublishedAction {
+        PublishedAction {
+            resource: "note:one".into(),
+            action: action.into(),
+            resource_kind: "note".into(),
+            resource_label: "One".into(),
+            action_label: "Open".into(),
+            description: None,
+            operation_kind: tilo_actions::OperationKind::View,
+            params: vec![
+                tilo_actions::ActionParam::optional(
+                    "slot_capability",
+                    tilo_actions::ParamType::Text,
+                    "Mount capability",
+                ),
+                tilo_actions::ActionParam::optional(
+                    "slot_view",
+                    tilo_actions::ParamType::Text,
+                    "View slot",
+                ),
+            ],
+            contract: tilo_actions::ActionContract::view(),
+            view: Some(tilo_actions::ResourceViewDescriptor {
+                id: view_id.into(),
+                label: "Editor".into(),
+                description: None,
+                open_action: action.into(),
+                primary,
+                mount: Some(tilo_actions::ResourceViewMountSpec::new(
+                    action,
+                    "slot_capability",
+                    "slot_view",
+                )),
+            }),
+            input: PublishedInput::None,
+        }
+    }
+
+    #[test]
+    fn published_resource_views_validate_bindings_and_resource_cardinality() {
+        let editor = test_published_view("open", "editor", true);
+        assert!(validate_resource_view_descriptors(std::slice::from_ref(&editor)).is_ok());
+
+        let mut wrong_owner = editor.clone();
+        wrong_owner.view.as_mut().unwrap().open_action = "preview".into();
+        assert!(validate_resource_view_descriptors(std::slice::from_ref(&wrong_owner)).is_err());
+
+        let mut unsafe_open = editor.clone();
+        unsafe_open.contract.confirmation = tilo_actions::ConfirmationPolicy::Confirm;
+        assert!(validate_resource_view_descriptors(std::slice::from_ref(&unsafe_open)).is_err());
+
+        let mut invalid_mount = editor.clone();
+        invalid_mount
+            .view
+            .as_mut()
+            .unwrap()
+            .mount
+            .as_mut()
+            .unwrap()
+            .view_param = "slot_capability".into();
+        assert!(validate_resource_view_descriptors(std::slice::from_ref(&invalid_mount)).is_err());
+
+        let reader = test_published_view("read", "reader", true);
+        assert!(validate_resource_view_descriptors(&[editor, reader]).is_err());
     }
 }

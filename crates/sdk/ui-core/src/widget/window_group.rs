@@ -666,6 +666,21 @@ impl WindowGroup {
         !self.tab_rects().iter().any(|r| r.contains(p))
     }
 
+    /// True when `p` is in the group's trailing-edge resize target.
+    /// `GroupRow` uses this before arming a whole-group drag so the two
+    /// gestures cannot race; this matters especially for a one-group strip,
+    /// where this grip is the only resize affordance.
+    pub fn resize_grab_hit(&self, p: Point) -> bool {
+        !self.maximized
+            && Rect::new(
+                self.rect.x1 - RESIZE_HANDLE_PX,
+                self.rect.y0,
+                self.rect.x1,
+                self.rect.y1,
+            )
+            .contains(p)
+    }
+
     pub fn drop_index_for(&self, release_point: Point) -> usize {
         self.bar.drop_index_for(release_point)
     }

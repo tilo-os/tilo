@@ -821,6 +821,10 @@ fn registered_home_peer_addrs(
 /// upper bound on how stale a guest's view of a room can be.
 const SYNC_KICK_INTERVAL: std::time::Duration = std::time::Duration::from_secs(2);
 const HOME_PEER_REFRESH_INTERVAL: std::time::Duration = std::time::Duration::from_secs(2);
+/// Keep transport bursts from monopolizing the compositor thread. The actor's
+/// channel is bounded, so leaving events queued simply applies backpressure
+/// until the next frame instead of losing ordering or data.
+const MAX_NET_EVENTS_PER_TICK: usize = 8;
 
 #[derive(Clone, Debug, serde::Deserialize, serde::Serialize, PartialEq, Eq)]
 pub struct PendingInvitation {
@@ -4116,7 +4120,7 @@ impl ShellNetwork {
         self.publish_sync_requests();
     }
 
-    /// Drain pending [`NetEvent`]s from the actor, forward `Msg`
+    /// Drain a bounded batch of pending [`NetEvent`]s from the actor, forward `Msg`
     /// variants into the replica's `handle`, and publish each resulting
     /// outbound message via `cmd_tx`. Non-blocking — never stalls the
     /// render loop even on a starved channel.
@@ -4133,7 +4137,10 @@ impl ShellNetwork {
         let Ok(mut event_rx) = self.event_rx.lock() else {
             return;
         };
-        while let Ok(event) = event_rx.try_recv() {
+        for _ in 0..MAX_NET_EVENTS_PER_TICK {
+            let Ok(event) = event_rx.try_recv() else {
+                break;
+            };
             self.dispatch_net_event(event);
         }
     }
@@ -8081,6 +8088,31 @@ mod tests {
     }
 
     #[test]
+    fn tick_bounds_actor_event_work_per_frame() {
+        let tree = WorkspaceTree::bootstrap_demo().shared();
+        let (net, _commands) = shell_network_for_test(tree, 99);
+        let peer = iroh::SecretKey::from_bytes(&[42; 32]).public();
+        let queued = MAX_NET_EVENTS_PER_TICK + 1;
+        for generation in 0..queued {
+            net.event_tx
+                .try_send(NetEvent::PeerLeft {
+                    ws: DEFAULT_WS_TOPIC,
+                    peer,
+                    cause: PeerDepartureCause::LivenessTimedOut,
+                    membership_epoch: Some(crate::network::actor::MembershipEpoch::for_test(
+                        u64::try_from(generation + 1).expect("small test generation"),
+                    )),
+                })
+                .expect("bounded fixture fits the actor event channel");
+        }
+
+        net.tick();
+        assert_eq!(net.peer_departures().len(), MAX_NET_EVENTS_PER_TICK);
+        net.tick();
+        assert_eq!(net.peer_departures().len(), queued);
+    }
+
+    #[test]
     fn pending_invites_survive_restart_and_cancel_exactly_one_credential() {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("pending-invitations.json");
@@ -10113,6 +10145,7 @@ mod tests {
                 params: Vec::new(),
                 contract: tilo_actions::ActionContract::default(),
                 input: PublishedInput::None,
+                view: None,
             }],
             live: true,
         }]);

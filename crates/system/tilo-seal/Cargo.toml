@@ -1,0 +1,39 @@
+[package]
+name = "tilo-seal"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+description = "The one reviewed home for Tilo's public-key sealing (HPKE) and at-rest envelopes"
+
+[lib]
+name = "tilo_seal"
+path = "src/lib.rs"
+
+# This is the only crate allowed to depend on raw AEAD/KEM crates
+# (`tools/policy/check_crypto_dependencies.py`). Every other crate seals
+# through the typed API here.
+[dependencies]
+# RFC 9180 HPKE. The same implementation (and Rust-Crypto backend) OpenMLS
+# already uses, so sealing adds no new cryptographic code to the build.
+hpke-rs = { version = "0.7", default-features = false, features = ["rustcrypto", "std"] }
+hpke-rs-crypto = { version = "0.7", default-features = false, features = ["std"] }
+hpke-rs-rust-crypto = { version = "0.7", default-features = false, features = ["std"] }
+# At-rest AEAD with 192-bit random nonces.
+chacha20poly1305.workspace = true
+# Password-derived keys.
+argon2.workspace = true
+# Key identifiers and the HKDF steps of formats this crate still reads.
+hkdf = "0.13"
+sha2.workspace = true
+blake3.workspace = true
+getrandom.workspace = true
+subtle = "2.6"
+zeroize.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+hex.workspace = true
+
+[lints]
+workspace = true
