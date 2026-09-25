@@ -505,19 +505,19 @@ impl PeopleScanProgress {
         self.next_offset = start.saturating_add(scanned) % total;
         self.last_library_size = total;
         self.completed_batches = self.completed_batches.saturating_add(1);
-        self.status = if self.next_offset == 0 {
+        if self.next_offset == 0 {
             "complete"
         } else {
             "paused"
         }
-        .to_owned();
+        .clone_into(&mut self.status);
         self.last_error = None;
     }
 
     fn record_failure(&mut self, error: String) {
         // In particular, do not alter next_offset here: retry must send the
         // same slice, not skip photographs whose private analysis failed.
-        self.status = "error".to_owned();
+        "error".clone_into(&mut self.status);
         self.last_error = Some(error);
     }
     fn load() -> Self {
@@ -562,6 +562,10 @@ enum ImageAnalysisComponent {
     Vision,
 }
 
+#[expect(
+    clippy::large_enum_variant,
+    reason = "outcomes travel through a small bounded analysis channel and are consumed on the next frame; boxing would add an allocation per job for no meaningful saving"
+)]
 enum AnalysisOutcome {
     Image {
         component: ImageAnalysisComponent,
@@ -1733,6 +1737,10 @@ impl PhotosApp {
         }
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "each analysis outcome variant is reconciled against the current document and library-analysis progress in one exhaustive match"
+    )]
     fn drain_library_analysis_result(&mut self, completed: AnalysisResult, doc: &mut AutoCommit) {
         let photo_name = self
             .library_analysis
@@ -1837,14 +1845,18 @@ impl PhotosApp {
                 });
             }
         }
-        if self.library_analysis.phase == crate::library_analysis::LibraryAnalysisPhase::Running {
-            if let Err(error) = self.schedule_next_library_analysis(doc) {
-                self.library_analysis.pause();
-                self.notice = Some(format!("Photo analysis paused: {error}"));
-            }
+        if self.library_analysis.phase == crate::library_analysis::LibraryAnalysisPhase::Running
+            && let Err(error) = self.schedule_next_library_analysis(doc)
+        {
+            self.library_analysis.pause();
+            self.notice = Some(format!("Photo analysis paused: {error}"));
         }
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one drain loop applies every completed analysis job kind with the same stale/cancelled checks"
+    )]
     fn drain_analysis_results(&mut self, doc: &mut AutoCommit) {
         while let Ok(completed) = self.analysis_rx.try_recv() {
             if self.library_analysis.invocation == Some(completed.invocation) {
@@ -2389,14 +2401,14 @@ impl PhotosApp {
     pub fn library_card_action_rects(&self) -> Vec<(Rect, Rect, Rect, Rect)> {
         self.library_cards
             .iter()
-            .filter_map(|(id, card, _)| {
+            .filter(|(id, _, _)| {
                 self.library_details_cards
                     .iter()
                     .any(|(candidate, _)| candidate == id)
-                    .then(|| {
-                        let actions = card_action_controls(*card);
-                        (*card, actions.details, actions.remove, actions.favorite)
-                    })
+            })
+            .map(|(_, card, _)| {
+                let actions = card_action_controls(*card);
+                (*card, actions.details, actions.remove, actions.favorite)
             })
             .collect()
     }
@@ -2451,6 +2463,10 @@ impl PhotosApp {
         true
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "rebuilds every retained People control from one cluster snapshot so labels and routes cannot drift"
+    )]
     fn refresh_people_controls(&mut self) {
         let clusters: Vec<_> = self
             .people_controller
@@ -2784,6 +2800,10 @@ impl PhotosApp {
         self.people_control_signature.clear();
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one exhaustive match routes every People intent to its local or shared effect"
+    )]
     fn handle_people_intent(&mut self, intent: PeopleIntent, doc: &mut AutoCommit) {
         match intent {
             PeopleIntent::Back => {
@@ -2833,7 +2853,7 @@ impl PhotosApp {
                     self.cancelled_analysis.insert(invocation);
                     self.pending_people_scans.remove(&invocation);
                 }
-                self.people_scan_progress.status = "cancelled".to_owned();
+                "cancelled".clone_into(&mut self.people_scan_progress.status);
                 self.people_scan_progress.save();
                 self.notice = Some("People scan paused".to_owned());
             }
@@ -2860,7 +2880,7 @@ impl PhotosApp {
                         self.commit_library_action(
                             doc,
                             &crate::actions::PhotosAction::RenamePerson {
-                                from: from.clone(),
+                                from,
                                 to: to.clone(),
                             },
                         );
@@ -2990,8 +3010,7 @@ impl PhotosApp {
                 let displayed_day = photo
                     .captured_at
                     .as_deref()
-                    .map(capture_day)
-                    .unwrap_or_else(|| "Undated".to_owned());
+                    .map_or_else(|| "Undated".to_owned(), capture_day);
                 let canonical_day = photo
                     .captured_at
                     .as_deref()
@@ -3007,22 +3026,20 @@ impl PhotosApp {
                 .then_with(|| right_day.cmp(left_day))
                 .then_with(|| left_id.cmp(right_id))
         });
-        let index = photos
-            .iter()
-            .position(|(_, canonical_day, _)| match anchor {
-                crate::actions::TimelineAnchor::Month { month } => canonical_day
-                    .as_deref()
-                    .is_some_and(|day| day.starts_with(month)),
-                crate::actions::TimelineAnchor::Day { day: wanted } => {
-                    canonical_day.as_deref() == Some(wanted)
-                }
-            });
-        let Some(index) = index else {
+        let target = photos.iter().find(|(_, canonical_day, _)| match anchor {
+            crate::actions::TimelineAnchor::Month { month } => canonical_day
+                .as_deref()
+                .is_some_and(|day| day.starts_with(month)),
+            crate::actions::TimelineAnchor::Day { day: wanted } => {
+                canonical_day.as_deref() == Some(wanted)
+            }
+        });
+        let Some((target_day, _, _)) = target else {
             return Err("that timeline boundary is no longer in the shared library".to_owned());
         };
         if let Some(offset) = self
             .timeline_projection
-            .day_offset(&photos[index].0, self.timeline_viewport_height)
+            .day_offset(target_day, self.timeline_viewport_height)
         {
             self.timeline_scroll_y = offset;
             return Ok(());
@@ -3058,7 +3075,7 @@ impl PhotosApp {
         });
         self.timeline_scroll_y = self
             .timeline_projection
-            .day_offset(&photos[index].0, self.timeline_viewport_height)
+            .day_offset(target_day, self.timeline_viewport_height)
             .unwrap_or(0.0);
         Ok(())
     }
@@ -3697,6 +3714,10 @@ impl PhotosApp {
         self.begin_metadata_editor_for_ids(doc, ids);
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "seeds every metadata field, mixed-value flag and draft input from one library snapshot"
+    )]
     fn begin_metadata_editor_for_ids(&mut self, doc: &AutoCommit, photo_ids: Vec<String>) {
         let library = PhotosDoc::library(doc);
         if photo_ids.is_empty()
@@ -3843,6 +3864,10 @@ impl PhotosApp {
         self.notice = Some("Photo details discarded".to_owned());
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "builds the single atomic batch metadata action from all sheet fields in one place"
+    )]
     fn save_metadata_editor(&mut self, doc: &mut AutoCommit) {
         if self.metadata_editor_ids.is_empty() {
             return;
@@ -3997,8 +4022,11 @@ impl PhotosApp {
     }
 
     fn clear_metadata_dimension(&mut self, dimension: usize) {
-        self.metadata_force_clear[dimension] = !self.metadata_force_clear[dimension];
-        if !self.metadata_force_clear[dimension] {
+        let Some(force_clear) = self.metadata_force_clear.get_mut(dimension) else {
+            return;
+        };
+        *force_clear = !*force_clear;
+        if !*force_clear {
             return;
         }
         match dimension {
@@ -4053,10 +4081,10 @@ impl PhotosApp {
             MetadataEditorHit::Save => self.save_metadata_editor(doc),
             MetadataEditorHit::Cancel => self.cancel_metadata_editor(),
             MetadataEditorHit::Organize => {
-                self.set_metadata_editor_section(MetadataEditorSection::Organize)
+                self.set_metadata_editor_section(MetadataEditorSection::Organize);
             }
             MetadataEditorHit::TimeAndPlace => {
-                self.set_metadata_editor_section(MetadataEditorSection::TimeAndPlace)
+                self.set_metadata_editor_section(MetadataEditorSection::TimeAndPlace);
             }
             MetadataEditorHit::ClearFolder => self.clear_metadata_dimension(0),
             MetadataEditorHit::ClearPeople => self.clear_metadata_dimension(1),
@@ -4298,22 +4326,18 @@ impl PhotosApp {
     /// and density helpers used by the ordinary timeline.  The index never
     /// owns a second offset, which is what keeps a pinch anchor and a dragged
     /// date thumb in agreement.
-    fn apply_timeline_index_intent(&mut self, intent: DateIndexIntent) -> bool {
-        match intent {
+    fn apply_timeline_index_intent(&mut self, intent: &DateIndexIntent) -> bool {
+        match *intent {
             DateIndexIntent::ScrollTo { position } => {
                 self.timeline_scroll_y =
                     DateIndexedScrollbar::offset_for(self.timeline_index_metrics, position);
                 true
             }
-            DateIndexIntent::AdjustDensity { delta } => {
-                if delta > 0 {
-                    self.adjust_timeline_density(true)
-                } else if delta < 0 {
-                    self.adjust_timeline_density(false)
-                } else {
-                    false
-                }
-            }
+            DateIndexIntent::AdjustDensity { delta } => match delta.cmp(&0) {
+                std::cmp::Ordering::Greater => self.adjust_timeline_density(true),
+                std::cmp::Ordering::Less => self.adjust_timeline_density(false),
+                std::cmp::Ordering::Equal => false,
+            },
             // A preview is presentation only. The widget has retained it for
             // paint and AT's current value; it must not make collaboration
             // history noisy by changing a collection just because it was
@@ -4542,6 +4566,10 @@ impl PhotosApp {
         clippy::too_many_arguments,
         reason = "the metadata sheet embeds four shared TextInputs under the Widget event contract"
     )]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "keyboard, pointer and embedded TextInput routing for the metadata sheet stay together under the Widget event contract"
+    )]
     fn handle_metadata_editor_event(
         &mut self,
         event: &winit::event::WindowEvent,
@@ -4707,6 +4735,10 @@ impl PhotosApp {
 
     /// Perform a device-local operation and surface failures to canonical
     /// operation dispatch. A local notice alone is not an invocation result.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one exhaustive match over device-local Photos operations keeps their effects auditable"
+    )]
     fn perform_effect(
         &mut self,
         operation: crate::actions::PhotosOperation,
@@ -6268,7 +6300,7 @@ impl PhotosApp {
                                 "This item needs a change before retrying"
                             }
                         ))
-                        .with_hashed_key(&format!("photos:directory-failure:{page}:{index}"))
+                        .with_hashed_key(format!("photos:directory-failure:{page}:{index}"))
                 })
                 .collect::<Vec<_>>();
             detail_children.push(
@@ -6294,7 +6326,7 @@ impl PhotosApp {
                             ..Default::default()
                         })
                         .with_action_target(format!("photos:directory-import:{key}"))
-                        .with_hashed_key(&format!("photos:directory-import:{key}")),
+                        .with_hashed_key(format!("photos:directory-import:{key}")),
                 );
             }
             children.push(
@@ -6594,7 +6626,7 @@ impl PhotosApp {
                 self.timeline_index_metrics,
                 &self.timeline_index_markers,
             ) {
-                return self.apply_timeline_index_intent(intent);
+                return self.apply_timeline_index_intent(&intent);
             }
             return false;
         }
@@ -6716,13 +6748,11 @@ impl PhotosApp {
         }
         if let Some(command) = target.strip_prefix("photos:metadata:") {
             if let Some(field) = command.strip_prefix("field:") {
+                // Organize and Time & Place fields share the same focus slots.
                 let focus = match field {
-                    "folder" => 0,
-                    "people" => 1,
-                    "tags" => 2,
-                    "captured" => 0,
-                    "place" => 1,
-                    "latitude" => 2,
+                    "folder" | "captured" => 0,
+                    "people" | "place" => 1,
+                    "tags" | "latitude" => 2,
                     "longitude" => 3,
                     _ => return false,
                 };
@@ -6761,7 +6791,7 @@ impl PhotosApp {
                 "cancel" => self.cancel_metadata_editor(),
                 "organize" => self.set_metadata_editor_section(MetadataEditorSection::Organize),
                 "time-and-place" => {
-                    self.set_metadata_editor_section(MetadataEditorSection::TimeAndPlace)
+                    self.set_metadata_editor_section(MetadataEditorSection::TimeAndPlace);
                 }
                 "clear-folder" => self.clear_metadata_dimension(0),
                 "clear-people" => self.clear_metadata_dimension(1),
@@ -7057,6 +7087,10 @@ impl PhotosApp {
         true
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "applies every directory import event kind and the final summary from one worker drain"
+    )]
     fn drain_directory_import(&mut self, doc: &mut AutoCommit) {
         if self.directory_import.is_none() {
             return;
@@ -7221,12 +7255,10 @@ impl PhotosApp {
             }
         }
 
-        let finished = self
+        if let Some(mut job) = self
             .directory_import
-            .as_ref()
-            .is_some_and(|job| job.worker_done && job.pending.is_empty());
-        if finished {
-            let mut job = self.directory_import.take().expect("checked above");
+            .take_if(|job| job.worker_done && job.pending.is_empty())
+        {
             let noun = if job.mode == DirectoryImportMode::Import {
                 "import"
             } else {
@@ -7314,6 +7346,10 @@ impl PhotosApp {
     }
 
     /// Collect a chosen file from the portal, if one has arrived.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "drains every portal picker channel with its outcome handling side by side"
+    )]
     fn drain_picker(&mut self, doc: &mut AutoCommit) {
         if let Some(rx) = self.directory_picker.as_ref() {
             match rx.try_recv() {
@@ -7518,6 +7554,10 @@ impl PhotosApp {
     /// portable, explicitly shared library record, so a collaborator sees
     /// the same description, people, and place without this surface ever
     /// reading device-local EXIF or paths.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the viewer details card keeps its responsive geometry and painted rows together"
+    )]
     fn draw_viewer_details(
         &self,
         scene: &mut Scene,
@@ -7927,6 +7967,10 @@ impl PhotosApp {
             .unwrap()
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "People control geometry for every responsive band is computed in one place so hit targets stay consistent"
+    )]
     fn layout_people_controls(&mut self) {
         let bounds = self.canvas_rect;
         let pad = if bounds.width() < 520.0 { 16.0 } else { 28.0 };
@@ -8151,6 +8195,10 @@ impl PhotosApp {
         clippy::unwrap_used,
         reason = "these taffy nodes are freshly built with fixed, valid styles"
     )]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the canvas layout dispatch keeps each surface's retained widget nodes together"
+    )]
     fn build_canvas_node(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -8332,15 +8380,10 @@ impl PhotosApp {
             .unwrap()
     }
 
-    #[allow(
-        clippy::too_many_lines,
-        reason = "the grid paint keeps its pixel geometry and bounded materialisation together"
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "paint helper takes the shared scene/text/theme context plus the pager's own page state and hit routes"
     )]
-    /// Render the visible part of the library; the remainder stays reachable
-    /// through cursor-paged search and canonical resources.
-    /// A deliberately calm People home: approved shared identities are a
-    /// collection, while local face work is a private review queue. It never
-    /// paints a made-up suggestion when no signed face model is installed.
     fn draw_collection_pager(
         &mut self,
         scene: &mut Scene,
@@ -8399,6 +8442,10 @@ impl PhotosApp {
         );
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the import status banner keeps its progress, actions and exact hit geometry together"
+    )]
     fn draw_directory_import_status(
         &mut self,
         scene: &mut Scene,
@@ -8565,6 +8612,10 @@ impl PhotosApp {
         }
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the import-issues modal keeps layout, paging, paint and hit geometry together so they cannot drift"
+    )]
     fn draw_directory_import_details(
         &mut self,
         scene: &mut Scene,
@@ -8607,14 +8658,20 @@ impl PhotosApp {
             .max_width(620.0)
             .dismiss_on_scrim(true);
         let layout = ModalFrame::layout(self.rect, &base_spec, text_renderer, theme);
+        let hovered = |index: usize| {
+            layout
+                .actions
+                .get(index)
+                .is_some_and(|rect| rect.contains(self.pointer))
+        };
         let actions = [
             ModalAction::secondary("Previous")
                 .enabled(page > 0)
-                .hovered(layout.actions[0].contains(self.pointer)),
+                .hovered(hovered(0)),
             ModalAction::secondary("Next")
                 .enabled(page + 1 < pages)
-                .hovered(layout.actions[1].contains(self.pointer)),
-            ModalAction::primary("Close").hovered(layout.actions[2].contains(self.pointer)),
+                .hovered(hovered(1)),
+            ModalAction::primary("Close").hovered(hovered(2)),
         ];
         let spec = ModalSpec::new("Folder import issues")
             .actions(&actions)
@@ -8779,6 +8836,10 @@ impl PhotosApp {
     /// First-class album overview. Album cards are a bounded projection over
     /// canonical album resources; their covers reuse the asynchronous
     /// thumbnail cache and never decode originals during paint.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the album overview keeps responsive grid geometry, bounded cover paint and hit targets together"
+    )]
     fn draw_albums(
         &mut self,
         scene: &mut Scene,
@@ -9233,6 +9294,10 @@ impl PhotosApp {
         scene.pop_layer();
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "paint helper takes the shared scene/text/theme context plus the card's own content and presentation flags"
+    )]
     fn draw_people_card(
         &self,
         scene: &mut Scene,
@@ -9335,6 +9400,13 @@ impl PhotosApp {
         }
     }
 
+    /// A deliberately calm People home: approved shared identities are a
+    /// collection, while local face work is a private review queue. It never
+    /// paints a made-up suggestion when no signed face model is installed.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the People home keeps overview, review queue and detail geometry together with their hit targets"
+    )]
     fn draw_people(
         &mut self,
         scene: &mut Scene,
@@ -9449,7 +9521,7 @@ impl PhotosApp {
             scene.push_layer(
                 Fill::NonZero,
                 vello::peniko::BlendMode::default(),
-                reveal as f32,
+                reveal,
                 transform,
                 &RoundedRect::from_rect(panel, 14.0),
             );
@@ -9831,6 +9903,10 @@ impl PhotosApp {
         }
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the library-analysis surface keeps progress, controls, failure paging and hit geometry together"
+    )]
     fn draw_library_analysis(
         &mut self,
         scene: &mut Scene,
@@ -10242,6 +10318,12 @@ impl PhotosApp {
         }
     }
 
+    /// Render the visible part of the library; the remainder stays reachable
+    /// through cursor-paged search and canonical resources.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the library paint keeps masthead, grid/timeline geometry and bounded materialisation together"
+    )]
     fn draw_library(
         &mut self,
         scene: &mut Scene,
@@ -10370,18 +10452,10 @@ impl PhotosApp {
             format!("{} matches so far · searching locally", self.library_total)
         } else if desktop_library {
             format!("{} photographs · shared library", self.library_total)
-        } else if large_text {
-            format!("{} photos", self.library_total)
         } else {
             format!("{} photos", self.library_total)
         };
-        let count_width = if desktop_library {
-            260.0
-        } else if large_text {
-            180.0
-        } else {
-            180.0
-        };
+        let count_width = if desktop_library { 260.0 } else { 180.0 };
         text_renderer.draw_text_weighted(
             scene,
             &count,
@@ -11326,6 +11400,10 @@ impl PhotosApp {
     /// Render the location library as an offline-first map or an equivalent
     /// list. The map is a reference-grid substrate, not a disguised online
     /// tile service: opening Places never sends coordinates off-device.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the Places map and its equivalent list share one geometry pass so hit targets and paint agree"
+    )]
     fn draw_places(
         &mut self,
         scene: &mut Scene,
@@ -11416,20 +11494,7 @@ impl PhotosApp {
             }),
             TextWeight::Regular,
         );
-        if !compact {
-            self.draw_library_navigation(
-                scene,
-                transform,
-                text_renderer,
-                theme,
-                Rect::new(
-                    (heading.x1 - 450.0).max(heading.x0 + 360.0),
-                    heading.y0 + 14.0,
-                    heading.x1 - 10.0,
-                    heading.y0 + 54.0,
-                ),
-            );
-        } else {
+        if compact {
             self.draw_library_navigation(
                 scene,
                 transform,
@@ -11440,6 +11505,19 @@ impl PhotosApp {
                     heading.y0 + 56.0,
                     heading.x1 - 12.0,
                     heading.y1 - 10.0,
+                ),
+            );
+        } else {
+            self.draw_library_navigation(
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                Rect::new(
+                    (heading.x1 - 450.0).max(heading.x0 + 360.0),
+                    heading.y0 + 14.0,
+                    heading.x1 - 10.0,
+                    heading.y0 + 54.0,
                 ),
             );
         }
@@ -12283,17 +12361,23 @@ impl PhotosApp {
             .max_width(620.0)
             .dismiss_on_scrim(false);
         let layout = ModalFrame::layout(bounds, &base_spec, text_renderer, theme);
+        let hovered = |index: usize| {
+            layout
+                .actions
+                .get(index)
+                .is_some_and(|rect| rect.contains(self.pointer))
+        };
         let actions = [
             ModalAction::secondary("Previous")
                 .enabled(previous_enabled)
-                .hovered(layout.actions[0].contains(self.pointer)),
+                .hovered(hovered(0)),
             ModalAction::secondary("Next")
                 .enabled(next_enabled)
-                .hovered(layout.actions[1].contains(self.pointer)),
-            ModalAction::secondary("Cancel").hovered(layout.actions[2].contains(self.pointer)),
+                .hovered(hovered(1)),
+            ModalAction::secondary("Cancel").hovered(hovered(2)),
             ModalAction::primary("Use album")
                 .enabled(apply_enabled)
-                .hovered(layout.actions[3].contains(self.pointer)),
+                .hovered(hovered(3)),
         ];
         let spec = ModalSpec::new("Choose destination album")
             .actions(&actions)
@@ -12372,23 +12456,27 @@ impl PhotosApp {
             self.selection_destination_hits.push((id.clone(), row));
         }
         ModalFrame::paint_actions(scene, transform, text_renderer, theme, &layout, &spec);
+        // One layout rect per declared action, in declaration order.
+        let &[previous_rect, next_rect, cancel_rect, apply_rect] = layout.actions.as_slice() else {
+            return;
+        };
         if previous_enabled {
             self.selection_hits
-                .push((SelectionHit::PreviousDestinationPage, layout.actions[0]));
+                .push((SelectionHit::PreviousDestinationPage, previous_rect));
         }
         if next_enabled {
             self.selection_hits
-                .push((SelectionHit::NextDestinationPage, layout.actions[1]));
+                .push((SelectionHit::NextDestinationPage, next_rect));
         }
         self.selection_hits
-            .push((SelectionHit::CancelDestinationChooser, layout.actions[2]));
+            .push((SelectionHit::CancelDestinationChooser, cancel_rect));
         if let Some(close) = layout.close {
             self.selection_hits
                 .push((SelectionHit::CloseDestinationChooser, close));
         }
         if apply_enabled {
             self.selection_hits
-                .push((SelectionHit::ApplyDestination, layout.actions[3]));
+                .push((SelectionHit::ApplyDestination, apply_rect));
         }
     }
 
@@ -13131,13 +13219,12 @@ impl PhotosApp {
                 0.0
             };
         if std::mem::take(&mut self.metadata_editor_reveal_focus) {
-            let field_top = match (time_and_place, self.metadata_editor_focus) {
-                (false, focus @ 0..=2) => Some(focus as f64 * row_h),
-                (true, focus @ 0..=1) => Some(focus as f64 * row_h),
+            let focused_row_top = match (time_and_place, self.metadata_editor_focus) {
+                (false, focus @ 0..=2) | (true, focus @ 0..=1) => Some(focus as f64 * row_h),
                 (true, 2 | 3) => Some(2.0 * row_h + map_h + field_gap),
                 _ => None,
             };
-            if let Some(top) = field_top {
+            if let Some(top) = focused_row_top {
                 let bottom = top + row_h - field_gap;
                 if top < self.metadata_editor_scroll {
                     self.metadata_editor_scroll = top;
@@ -13210,7 +13297,7 @@ impl PhotosApp {
 
         match self.metadata_editor_section {
             MetadataEditorSection::Organize => {
-                for (index, (label, input, hit)) in [
+                for (index, (field, (mixed, force_clear))) in [
                     (
                         "Folder",
                         &mut self.metadata_folder_input,
@@ -13228,17 +13315,23 @@ impl PhotosApp {
                     ),
                 ]
                 .into_iter()
+                .zip(
+                    self.metadata_mixed
+                        .into_iter()
+                        .zip(self.metadata_force_clear),
+                )
                 .enumerate()
                 {
+                    let (label, input, hit) = field;
                     let y = fields_y + index as f64 * row_h;
                     label_and_input(
                         scene,
                         text_renderer,
                         input,
                         label,
-                        self.metadata_mixed[index],
+                        mixed,
                         hit,
-                        self.metadata_force_clear[index],
+                        force_clear,
                         Rect::new(panel.x0 + 20.0, y, panel.x1 - 20.0, y + row_h - field_gap),
                         &mut self.metadata_editor_buttons,
                     );
@@ -14244,12 +14337,11 @@ impl Widget for PhotosApp {
     }
 
     fn needs_animation_frame(&self) -> bool {
-        (!self.places_motion_reduced
-            && self
+        !self.places_motion_reduced
+            && (self
                 .places_camera_feedback
-                .is_some_and(|feedback| !feedback.done(Instant::now())))
-            || (!self.places_motion_reduced
-                && self.people_detail_transition.is_animating(Instant::now()))
+                .is_some_and(|feedback| !feedback.done(Instant::now()))
+                || self.people_detail_transition.is_animating(Instant::now()))
     }
 
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
@@ -14430,6 +14522,10 @@ impl Widget for PhotosApp {
         }
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one dispatcher routes every retained-control and Photos operation type with shared validation"
+    )]
     fn start_resource_operation_with_document(
         &mut self,
         invocation: tilo_actions::InvocationId,
@@ -14599,7 +14695,7 @@ impl Widget for PhotosApp {
             self.cancelled_analysis.insert(invocation);
             if self.active_people_scans.remove(&invocation) {
                 self.pending_people_scans.remove(&invocation);
-                self.people_scan_progress.status = "cancelled".to_owned();
+                "cancelled".clone_into(&mut self.people_scan_progress.status);
                 self.people_scan_progress.save();
             }
             return Some(tilo_actions::InvocationUpdate::Cancelled {
@@ -14703,7 +14799,7 @@ impl Widget for PhotosApp {
                 Err(error) => Some(format!("Photo search kept its previous index: {error}")),
             };
             self.thumbnail_unavailable.clear();
-            self.search_heads = heads.clone();
+            self.search_heads.clone_from(&heads);
         }
         self.advance_library_query();
         self.status = self.status_text(doc);
@@ -14847,7 +14943,7 @@ impl Widget for PhotosApp {
                         },
                     }),
             );
-            self.timeline_projection_heads = heads.clone();
+            self.timeline_projection_heads = heads;
             self.timeline_projection_filter = projection_filter;
             self.library_total = self.timeline_projection.len();
         }
@@ -15161,6 +15257,10 @@ impl Widget for PhotosApp {
         }
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the top-level paint entry point keeps surface precedence and overlay order explicit"
+    )]
     fn draw(
         &mut self,
         scene: &mut Scene,
@@ -15351,7 +15451,7 @@ impl Widget for PhotosApp {
                 && key.state == winit::event::ElementState::Pressed
             {
                 match &key.logical_key {
-                    Key::Named(NamedKey::Escape) | Key::Named(NamedKey::Enter) => {
+                    Key::Named(NamedKey::Escape | NamedKey::Enter) => {
                         self.close_directory_details();
                     }
                     Key::Named(NamedKey::ArrowLeft) => {
@@ -15375,7 +15475,7 @@ impl Widget for PhotosApp {
             ) {
                 if let Some(layout) = self.directory_import_details_layout.clone() {
                     match layout.hit(self.pointer) {
-                        Some(ModalHit::Close | ModalHit::Scrim) => {
+                        Some(ModalHit::Close | ModalHit::Scrim | ModalHit::Action(2)) => {
                             self.close_directory_details();
                         }
                         Some(ModalHit::Action(0)) => {
@@ -15383,9 +15483,6 @@ impl Widget for PhotosApp {
                         }
                         Some(ModalHit::Action(1)) => {
                             self.page_directory_details(true);
-                        }
-                        Some(ModalHit::Action(2)) => {
-                            self.close_directory_details();
                         }
                         Some(ModalHit::Card | ModalHit::Action(_)) | None => {}
                     }
@@ -15665,7 +15762,7 @@ impl Widget for PhotosApp {
                         0.0,
                         self.places_map_bounds.width(),
                         self.places_map_bounds.height(),
-                    ))
+                    ));
                 }
                 Key::Named(NamedKey::ArrowRight) => {
                     self.set_places_viewport(self.places_viewport.panned(
@@ -15673,7 +15770,7 @@ impl Widget for PhotosApp {
                         0.0,
                         self.places_map_bounds.width(),
                         self.places_map_bounds.height(),
-                    ))
+                    ));
                 }
                 Key::Named(NamedKey::ArrowUp) => {
                     self.set_places_viewport(self.places_viewport.panned(
@@ -15681,7 +15778,7 @@ impl Widget for PhotosApp {
                         44.0,
                         self.places_map_bounds.width(),
                         self.places_map_bounds.height(),
-                    ))
+                    ));
                 }
                 Key::Named(NamedKey::ArrowDown) => {
                     self.set_places_viewport(self.places_viewport.panned(
@@ -15689,12 +15786,12 @@ impl Widget for PhotosApp {
                         -44.0,
                         self.places_map_bounds.width(),
                         self.places_map_bounds.height(),
-                    ))
+                    ));
                 }
                 Key::Character(key) if key == "+" || key == "=" => self.zoom_places_by(1.0),
                 Key::Character(key) if key == "-" => self.zoom_places_by(-1.0),
                 Key::Character(key) if key.eq_ignore_ascii_case("l") => {
-                    self.places_list_mode = !self.places_list_mode
+                    self.places_list_mode = !self.places_list_mode;
                 }
                 _ => return,
             }
@@ -15815,7 +15912,7 @@ impl Widget for PhotosApp {
                     self.timeline_index_metrics,
                     &self.timeline_index_markers,
                 ) {
-                    let _ = self.apply_timeline_index_intent(intent);
+                    let _ = self.apply_timeline_index_intent(&intent);
                     *handled = true;
                     return;
                 }
@@ -16505,7 +16602,7 @@ impl PhotosApp {
             .map_err(|_| {
                 "local image analysis is busy; wait for the current photos to finish".to_owned()
             })?;
-        self.people_scan_progress.status = "running".to_owned();
+        "running".clone_into(&mut self.people_scan_progress.status);
         self.people_scan_progress.last_error = None;
         self.people_scan_progress.last_library_size = locally_available.len();
         self.people_scan_progress.save();
