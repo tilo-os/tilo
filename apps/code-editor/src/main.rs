@@ -119,7 +119,7 @@ fn render_shot(args: &LaunchArgs) -> Result<(), LaunchError> {
     render_scenario_to_png(
         app,
         viewport,
-        ui::launch::shot_theme(args),
+        &ui::launch::shot_theme(args),
         out,
         args.scenario.as_deref(),
     )
@@ -137,7 +137,7 @@ fn render_shot(args: &LaunchArgs) -> Result<(), LaunchError> {
 fn render_scenario_to_png(
     mut app: code_editor::CodeApp,
     viewport: (u32, u32),
-    theme: Theme,
+    theme: &Theme,
     out: &std::path::Path,
     scenario: Option<&str>,
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -168,14 +168,14 @@ fn render_scenario_to_png(
     }
 
     app.sync(&mut state.doc, &state.root);
-    build_and_apply_layout(&mut app, &theme, &mut text_renderer, w, h)?;
+    build_and_apply_layout(&mut app, theme, &mut text_renderer, w, h)?;
 
     stage_scenario(
         &mut app,
         scenario,
         &mut state,
         &mut text_renderer,
-        &theme,
+        theme,
         &presence,
         &permission,
     );
@@ -184,10 +184,10 @@ fn render_scenario_to_png(
     // panel is taller), so the tree has to be rebuilt before the final draw or
     // the new surfaces get last frame's geometry.
     if matches!(scenario, Some("find" | "search")) {
-        build_and_apply_layout(&mut app, &theme, &mut text_renderer, w, h)?;
+        build_and_apply_layout(&mut app, theme, &mut text_renderer, w, h)?;
     }
 
-    let scene = draw_frame(&mut app, &mut text_renderer, &theme, &presence, &permission);
+    let scene = draw_frame(&mut app, &mut text_renderer, theme, &presence, &permission);
 
     if let Some(parent) = out.parent() {
         std::fs::create_dir_all(parent).ok();

@@ -62,18 +62,20 @@ impl SmartSubtransport for SshTransport {
         let endpoint = Endpoint::parse(url, self.username.as_deref()).map_err(git_error)?;
         let command = endpoint.command(service);
         let session = Arc::new(Mutex::new(
-            SshSession::connect(endpoint, command).map_err(git_error)?,
+            SshSession::connect(&endpoint, command).map_err(git_error)?,
         ));
         let mut current = self.session.lock().map_err(git_error)?;
         if current.is_some() {
             return Err(git2::Error::from_str("SSH session is already open"));
         }
         *current = Some(Arc::clone(&session));
+        drop(current);
         Ok(Box::new(SshStream(session)))
     }
 
     fn close(&self) -> Result<(), git2::Error> {
-        if let Some(session) = self.session.lock().map_err(git_error)?.take() {
+        let session = self.session.lock().map_err(git_error)?.take();
+        if let Some(session) = session {
             session.lock().map_err(git_error)?.close();
         }
         Ok(())
@@ -110,9 +112,10 @@ impl Endpoint {
                     .to_string(),
                 url.port().unwrap_or(22),
                 decode_url_component(url.username())?,
-                decode_url_component(url.path().strip_prefix("/~").map_or(url.path(), |_| {
-                    url.path().strip_prefix('/').unwrap_or(url.path())
-                }))?,
+                decode_url_component(url.path().strip_prefix("/~").map_or_else(
+                    || url.path(),
+                    |_| url.path().strip_prefix('/').unwrap_or_else(|| url.path()),
+                ))?,
             )
         } else {
             // SCP form: [user@]host:path, including bracketed IPv6 hosts.
@@ -240,7 +243,7 @@ struct SshSession {
 }
 
 impl SshSession {
-    fn connect(endpoint: Endpoint, command: String) -> anyhow::Result<Self> {
+    fn connect(endpoint: &Endpoint, command: String) -> anyhow::Result<Self> {
         let (handle, channel) = ui::rt::app().block_on(async {
             tokio::time::timeout(CONNECT_TIMEOUT, async {
                 let home = std::env::home_dir().context("no home directory for SSH host trust")?;
@@ -349,39 +352,39 @@ impl Read for SshStream {
         let SshSession {
             channel, pending, ..
         } = &mut *session;
-        ui::rt::app()
-            .block_on(async {
-                tokio::time::timeout(IO_TIMEOUT, async {
-                    loop {
-                        match channel.wait().await {
-                            Some(ChannelMsg::Data { data }) => {
-                                *pending = io::Cursor::new(data.to_vec());
-                                let count = pending.read(output)?;
-                                if count != 0 {
-                                    return Ok(count);
-                                }
+        let result = ui::rt::app().block_on(async {
+            tokio::time::timeout(IO_TIMEOUT, async {
+                loop {
+                    match channel.wait().await {
+                        Some(ChannelMsg::Data { data }) => {
+                            *pending = io::Cursor::new(data.to_vec());
+                            let count = pending.read(output)?;
+                            if count != 0 {
+                                return Ok(count);
                             }
-                            Some(ChannelMsg::ExitStatus { exit_status }) if exit_status != 0 => {
-                                return Err(io::Error::other(format!(
-                                    "remote Git command exited with status {exit_status}"
-                                )));
-                            }
-                            Some(ChannelMsg::Failure | ChannelMsg::ExitSignal { .. }) => {
-                                return Err(io::Error::other(
-                                    "remote rejected or terminated the Git command",
-                                ));
-                            }
-                            Some(ChannelMsg::Close) | None => return Ok(0),
-                            // stderr is not Git protocol data. Do not buffer an
-                            // unbounded diagnostic stream or expose it as pack data.
-                            _ => {}
                         }
+                        Some(ChannelMsg::ExitStatus { exit_status }) if exit_status != 0 => {
+                            return Err(io::Error::other(format!(
+                                "remote Git command exited with status {exit_status}"
+                            )));
+                        }
+                        Some(ChannelMsg::Failure | ChannelMsg::ExitSignal { .. }) => {
+                            return Err(io::Error::other(
+                                "remote rejected or terminated the Git command",
+                            ));
+                        }
+                        Some(ChannelMsg::Close) | None => return Ok(0),
+                        // stderr is not Git protocol data. Do not buffer an
+                        // unbounded diagnostic stream or expose it as pack data.
+                        _ => {}
                     }
-                })
-                .await
-                .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "SSH read timed out"))?
+                }
             })
-            .map_err(io::Error::other)?
+            .await
+            .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "SSH read timed out"))?
+        });
+        drop(session);
+        result.map_err(io::Error::other)?
     }
 }
 
@@ -400,14 +403,14 @@ impl Write for SshStream {
                 "SSH session is closed",
             ));
         }
-        ui::rt::app()
-            .block_on(async {
-                tokio::time::timeout(IO_TIMEOUT, session.channel.data(input))
-                    .await
-                    .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "SSH write timed out"))?
-                    .map_err(io::Error::other)
-            })
-            .map_err(io::Error::other)??;
+        let result = ui::rt::app().block_on(async {
+            tokio::time::timeout(IO_TIMEOUT, session.channel.data(input))
+                .await
+                .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "SSH write timed out"))?
+                .map_err(io::Error::other)
+        });
+        drop(session);
+        result.map_err(io::Error::other)??;
         Ok(input.len())
     }
 
