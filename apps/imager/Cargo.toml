@@ -74,6 +74,10 @@ windows-sys = { version = "0.61.2", features = ["Wdk_Foundation", "Wdk_Storage_F
 [target.'cfg(all(windows, target_arch = "aarch64"))'.dependencies]
 blake3 = { workspace = true, features = ["no_neon"] }
 
+[package.metadata.cargo-machete]
+# This target dependency only enables a feature on the transitive blake3 crate.
+ignored = ["blake3"]
+
 [dev-dependencies]
 tilo-test-env = { path = "../../crates/dev/test-env" }
 
