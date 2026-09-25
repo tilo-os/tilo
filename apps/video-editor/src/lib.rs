@@ -64,6 +64,7 @@ pub mod presence;
 pub mod preview;
 pub mod probe;
 pub mod project_file;
+pub mod resource;
 pub mod search_provider;
 pub mod shot;
 pub mod thumbnail;
@@ -71,6 +72,7 @@ pub mod timecode;
 pub mod waveform;
 
 pub use app::VideoEditorApp;
+pub use resource::{VideoEditor, VideoProject};
 
 use ui::widget::Widget;
 

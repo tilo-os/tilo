@@ -407,6 +407,9 @@ pub struct TileHost {
     /// by this machine's own not-yet-drawn app instance, and without the
     /// latch the window would blink out and back.
     was_presented: std::cell::Cell<bool>,
+    /// Readiness of this occupant, separate from the tile's visibility.
+    /// Reset on replacement so a visible notice cannot mark an app ready.
+    content_was_presented: std::cell::Cell<bool>,
     rect: Rect,
     pub focused: bool,
     /// `None` by default, matching the "animations only fire for runtime
@@ -547,6 +550,7 @@ impl TileHost {
             announced: None,
             structure_dirty: false,
             was_presented: std::cell::Cell::new(false),
+            content_was_presented: std::cell::Cell::new(false),
             rect: Rect::ZERO,
             focused: false,
             spawned_at: None,
@@ -827,6 +831,9 @@ impl TileHost {
             Ok(None) => {}
         }
         self.install_declared_history();
+        self.content_was_presented.set(false);
+        self.opening_shown = false;
+        self.handed_over_at = None;
         self.announced = None;
         self.structure_dirty = true;
     }
@@ -1898,25 +1905,28 @@ impl Widget for TileHost {
     /// Only an app can answer anything but `true` — a stub/notice is
     /// painted by this process and is on screen the moment the tile is.
     fn presented(&self) -> bool {
-        if self.was_presented.get() {
-            return true;
+        if !self.content_was_presented.get() {
+            let now = match &self.content {
+                TileContent::App(w) => w.presented(),
+                TileContent::Stub { .. } | TileContent::Notice { .. } => true,
+            };
+            self.content_was_presented.set(now);
+            self.was_presented.set(self.was_presented.get() || now);
         }
-        let now = match &self.content {
-            TileContent::App(w) => w.presented(),
-            TileContent::Stub { .. } | TileContent::Notice { .. } => true,
-        };
-        self.was_presented.set(now);
-        now
+        self.was_presented.get()
     }
-    /// A tile that has ever presented is never opening again: the latch
-    /// stops a window whose buffer briefly stops fitting its tab from
-    /// falling back to a placeholder the person already watched go away.
+    /// Current content keeps its readiness through resize, but a replacement
+    /// gets its own opening presentation. A visible tile shows that card
+    /// immediately rather than disappearing while the new app starts.
     fn opening(&self) -> bool {
-        if self.was_presented.get() {
+        // Poll even outside WindowGroup's presentation pass, so a newly
+        // ready occupant can retire its card when only redraw is queried.
+        let _ = self.presented();
+        if self.content_was_presented.get() {
             return false;
         }
         match &self.content {
-            TileContent::App(w) => w.opening(),
+            TileContent::App(w) => self.was_presented.get() || w.opening(),
             TileContent::Stub { .. } | TileContent::Notice { .. } => false,
         }
     }
@@ -3936,6 +3946,10 @@ mod tests {
     }
 
     impl Widget for Starting {
+        fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+            Some(self)
+        }
+
         fn sync(&mut self, _s: &mut AutoCommit, _p: &ObjId) {}
         fn build_layout(
             &mut self,
@@ -4036,6 +4050,69 @@ mod tests {
             &PresenceCtx::empty(),
         );
         scene
+    }
+
+    #[test]
+    fn visible_notice_replacement_tracks_new_content_readiness_without_hiding_the_tile() {
+        let theme = Theme::default();
+        let rect = Rect::new(50.0, 50.0, 150.0, 150.0);
+        let mut host = TileHost::new(TileContent::Notice {
+            title: "Calculator".into(),
+            detail: "Restoring this window…".into(),
+        });
+        host.rect = rect;
+        assert!(Widget::presented(&host));
+        let _ = paint(&mut host, &theme);
+        let drawn = std::rc::Rc::new(std::cell::Cell::new(false));
+        host.replace_content(TileContent::App(Box::new(Starting {
+            rect,
+            drawn: std::rc::Rc::clone(&drawn),
+            presented: false,
+            opening: false,
+        })));
+
+        assert!(
+            Widget::presented(&host),
+            "an already visible tab must not disappear"
+        );
+        assert!(
+            Widget::opening(&host),
+            "pending replacement content must use the opening card immediately"
+        );
+        let _ = paint(&mut host, &theme);
+        assert!(
+            !drawn.get(),
+            "unready replacement must not draw behind the opening card"
+        );
+        let TileContent::App(app) = &mut host.content else {
+            panic!("replacement app");
+        };
+        app.as_any_mut()
+            .and_then(|app| app.downcast_mut::<Starting>())
+            .expect("controlled replacement")
+            .presented = true;
+        assert!(
+            !Widget::opening(&host),
+            "opening must observe new content readiness without a parent presentation poll"
+        );
+        assert!(Widget::presented(&host));
+        let _ = paint(&mut host, &theme);
+        assert!(drawn.get(), "ready replacement must become visible");
+
+        let TileContent::App(app) = &mut host.content else {
+            panic!("replacement app");
+        };
+        let app = app
+            .as_any_mut()
+            .and_then(|app| app.downcast_mut::<Starting>())
+            .expect("controlled replacement");
+        app.presented = false;
+        app.opening = true;
+        assert!(Widget::presented(&host));
+        assert!(
+            !Widget::opening(&host),
+            "the same content resizing must not reopen its card"
+        );
     }
 
     /// An unpresented app has only its own early buffer size, so painting

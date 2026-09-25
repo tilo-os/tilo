@@ -1,6 +1,7 @@
 from pathlib import Path
 import json
 import os
+import re
 import subprocess
 import tempfile
 import textwrap
@@ -77,8 +78,8 @@ class OsReleaseMatrixTests(unittest.TestCase):
         self.assertEqual(
             lanes,
             [
-                {"arch": "x86_64", "runner": "runner-disk-100g"},
-                {"arch": "aarch64", "runner": "runner-disk-100g-arm64"},
+                {"arch": "x86_64", "runner": "runner-large"},
+                {"arch": "aarch64", "runner": "runner-large-arm64"},
             ],
         )
 
@@ -97,8 +98,8 @@ class OsReleaseMatrixTests(unittest.TestCase):
         self.assertEqual(
             lanes,
             [
-                {"arch": "x86_64", "runner": "runner-disk-100g"},
-                {"arch": "aarch64", "runner": "runner-disk-100g-arm64"},
+                {"arch": "x86_64", "runner": "runner-large"},
+                {"arch": "aarch64", "runner": "runner-large-arm64"},
             ],
         )
 
@@ -175,7 +176,8 @@ class OsReleaseMatrixTests(unittest.TestCase):
 def generation_script() -> str:
     workflow = WORKFLOW.read_text()
     marker = "      - name: Resolve the image generation from the published series\n"
-    block = workflow.split(marker, 1)[1].split("\n\n      # Set up buildx", 1)[0]
+    # The step ends at the first blank line before the next step or its comment.
+    block = re.split(r"\n\n      (?:#|- name:)", workflow.split(marker, 1)[1], maxsplit=1)[0]
     return textwrap.dedent(block.split("        run: |\n", 1)[1])
 
 

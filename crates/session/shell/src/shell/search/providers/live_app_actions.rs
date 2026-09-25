@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 
 use crate::shell::collab_broker::AppActionBroker;
 use crate::shell::search::ActionReceipt;
-use crate::shell::search::action_api::{ActionError, ActionParam, ParamType};
+use crate::shell::search::action_api::{ActionError, ActionHierarchy, ActionParam, ParamType};
 use crate::shell::search::{
     InvocationDisposition, PendingInvocation, ResourceKind, SearchBudget, SearchContext,
     SearchCursor, SearchPage, SearchProvider, SearchProximity, SearchResult,
@@ -174,6 +174,29 @@ fn directory_start_ticket(
             PendingPoll::Waiting => Ok(None),
         }
     })
+}
+
+pub(crate) const JOB_UNAVAILABLE_MESSAGE: &str = "invocation is unavailable or not visible; this does not establish the original action's outcome";
+
+pub(crate) fn job_control_target(id: &str) -> Option<(u64, bool)> {
+    let (kind, number) = id.split_once(ID_SEPARATOR)?;
+    let cancel = match kind {
+        "job" => false,
+        "job-cancel" => true,
+        _ => return None,
+    };
+    Some((number.parse().ok()?, cancel))
+}
+
+fn job_state(update: &tilo_actions::InvocationUpdate) -> &'static str {
+    match update {
+        tilo_actions::InvocationUpdate::Accepted { .. } => "accepted",
+        tilo_actions::InvocationUpdate::Progress { .. } => "running",
+        tilo_actions::InvocationUpdate::Item { .. } => "streaming",
+        tilo_actions::InvocationUpdate::Succeeded { .. } => "succeeded",
+        tilo_actions::InvocationUpdate::Failed { .. } => "failed",
+        tilo_actions::InvocationUpdate::Cancelled { .. } => "cancelled",
+    }
 }
 
 pub fn job_status_id(id: u64) -> String {
@@ -802,14 +825,7 @@ impl LiveAppActionsProvider {
                 if entries.len() >= root_limit {
                     break;
                 }
-                let state = match update {
-                    tilo_actions::InvocationUpdate::Accepted { .. } => "accepted",
-                    tilo_actions::InvocationUpdate::Progress { .. } => "running",
-                    tilo_actions::InvocationUpdate::Item { .. } => "streaming",
-                    tilo_actions::InvocationUpdate::Succeeded { .. } => "succeeded",
-                    tilo_actions::InvocationUpdate::Failed { .. } => "failed",
-                    tilo_actions::InvocationUpdate::Cancelled { .. } => "cancelled",
-                };
+                let state = job_state(&update);
                 entries.push(AuxiliaryEntry::Job {
                     id,
                     state,
@@ -998,16 +1014,22 @@ impl LiveAppActionsProvider {
                 score: 5,
                 params: Vec::new(),
                 contract: None,
-                on_open: std::rc::Rc::new(move |_, _, _, _| {
+                on_open: std::rc::Rc::new(move |_, _, chrome, _| {
+                    if chrome.borrow().active_local_user() != actor {
+                        return Err(ActionError::Refused(JOB_UNAVAILABLE_MESSAGE.into()));
+                    }
                     broker.cancel(id, &actor).map_err(ActionError::Refused)
                 }),
-                on_invoke: Some(std::rc::Rc::new(move |_, _, _, _| {
+                on_invoke: Some(std::rc::Rc::new(move |_, _, chrome, _| {
+                    if chrome.borrow().active_local_user() != invoke_actor {
+                        return Err(ActionError::Refused(JOB_UNAVAILABLE_MESSAGE.into()));
+                    }
                     invoke_broker
                         .cancel(id, &invoke_actor)
                         .map_err(ActionError::Refused)?;
                     let update = invoke_broker
-                        .status(id)
-                        .ok_or_else(|| ActionError::Refused("unknown invocation id".into()))?;
+                        .status_for_actor(id, &invoke_actor)
+                        .ok_or_else(|| ActionError::Refused(JOB_UNAVAILABLE_MESSAGE.into()))?;
                     Ok(ActionReceipt {
                         broker_invocation_id: Some(id),
                         update,
@@ -1017,6 +1039,7 @@ impl LiveAppActionsProvider {
             };
         }
         let status_broker = self.broker.clone();
+        let actor = actor.to_string();
         SearchResult {
             kind: ResourceKind::Custom("action-job".into()),
             operation_kind: tilo_actions::OperationKind::View,
@@ -1029,10 +1052,13 @@ impl LiveAppActionsProvider {
             params: Vec::new(),
             contract: None,
             on_open: std::rc::Rc::new(|_, _, _, _| Ok(())),
-            on_invoke: Some(std::rc::Rc::new(move |_, _, _, _| {
+            on_invoke: Some(std::rc::Rc::new(move |_, _, chrome, _| {
+                if chrome.borrow().active_local_user() != actor {
+                    return Err(ActionError::Refused(JOB_UNAVAILABLE_MESSAGE.into()));
+                }
                 let update = status_broker
-                    .status(id)
-                    .ok_or_else(|| ActionError::Refused("unknown invocation id".into()))?;
+                    .status_for_actor(id, &actor)
+                    .ok_or_else(|| ActionError::Refused(JOB_UNAVAILABLE_MESSAGE.into()))?;
                 Ok(ActionReceipt {
                     broker_invocation_id: Some(id),
                     update,
@@ -1040,6 +1066,44 @@ impl LiveAppActionsProvider {
             })),
             on_begin_invoke: None,
         }
+    }
+
+    /// Exact receipt reads use the actor-owned broker key, not the four-row
+    /// palette preview or the currently browsed application resource parent.
+    fn job_control_page(
+        &self,
+        ctx: &SearchContext<'_>,
+        target: (u64, bool),
+        cursor: Option<&SearchCursor>,
+        budget: SearchBudget,
+    ) -> SearchPage {
+        let revision = self.search_revision(ctx);
+        if cursor.is_some() {
+            return SearchPage::stale(revision);
+        }
+        let (id, cancel) = target;
+        let actor = ctx.chrome.active_local_user();
+        let mut page = SearchPage::exhausted(revision, Vec::new());
+        if !ctx.wanted.is_empty() && !ctx.wanted.contains(&ResourceKind::Action) {
+            return page;
+        }
+        let Some(update) = self.broker.status_for_actor(id, &actor) else {
+            return page;
+        };
+        if cancel && !self.broker.can_cancel(id, &actor) {
+            return page;
+        }
+        let row = self.job_result(id, job_state(&update), cancel, &actor);
+        let bytes = row
+            .title
+            .len()
+            .saturating_add(row.subtitle.as_ref().map_or(0, String::len));
+        if bytes > budget.max_bytes {
+            page.budget_exhausted = true;
+        } else {
+            page.results.push(row);
+        }
+        page
     }
 
     fn live_page(
@@ -1578,6 +1642,48 @@ impl SearchProvider for LiveAppActionsProvider {
         &self.resource_kinds
     }
 
+    fn action_hierarchy(&self, id: &str) -> Option<ActionHierarchy> {
+        let mut parts = id.split(ID_SEPARATOR);
+        if parts.next()? == "directory" {
+            let peer = parts.next()?.parse::<u64>().ok()?;
+            let revision = parts.next()?;
+            let resource = parts.next()?;
+            let operation = parts.next()?;
+            if parts.next().is_some()
+                || revision.is_empty()
+                || resource.is_empty()
+                || operation.is_empty()
+            {
+                return None;
+            }
+            // Exact lookup in the broker's retained sorted roots: bounded even
+            // when the peer is beyond the first root page. Peer zero is valid.
+            // A disconnected peer must not inherit its next neighbor's route.
+            let root = self
+                .broker
+                .state()
+                .action_directory_root_page(peer.checked_sub(1), 1)
+                .roots
+                .into_iter()
+                .find(|root| root.peer_id == peer)?;
+            return Some(ActionHierarchy {
+                application: root.app_id,
+                room: root.cluster_id,
+                record: root.record_id,
+                resource: resource.into(),
+                operation: operation.into(),
+            });
+        }
+        let (application, room, record, resource, operation) = Self::hierarchy(id)?;
+        Some(ActionHierarchy {
+            application: application.into(),
+            room: room.into(),
+            record: record.into(),
+            resource: resource.into(),
+            operation: operation.into(),
+        })
+    }
+
     fn available_in_active_app_scope(&self) -> bool {
         // The provider builds a separate active-app projection filtered by
         // room and app id. It complements the primary content provider that
@@ -1723,14 +1829,7 @@ impl SearchProvider for LiveAppActionsProvider {
             && (needle.is_empty() || "jobs status progress".contains(&needle))
         {
             for (id, update) in self.broker.statuses(&actor) {
-                let state = match &update {
-                    tilo_actions::InvocationUpdate::Accepted { .. } => "accepted",
-                    tilo_actions::InvocationUpdate::Progress { .. } => "running",
-                    tilo_actions::InvocationUpdate::Item { .. } => "streaming",
-                    tilo_actions::InvocationUpdate::Succeeded { .. } => "succeeded",
-                    tilo_actions::InvocationUpdate::Failed { .. } => "failed",
-                    tilo_actions::InvocationUpdate::Cancelled { .. } => "cancelled",
-                };
+                let state = job_state(&update);
                 let status_broker = self.broker.clone();
                 results.push(SearchResult {
                     kind: ResourceKind::Custom("action-job".into()),
@@ -2087,6 +2186,15 @@ impl SearchProvider for LiveAppActionsProvider {
     }
 
     fn resolve(&self, id: &str, ctx: SearchContext<'_>) -> Option<SearchResult> {
+        // A receipt read or cancellation names one actor-owned job. It must
+        // not depend on that job still being inside the bounded browse preview.
+        if let Some(target) = job_control_target(id) {
+            return self
+                .job_control_page(&ctx, target, None, SearchBudget::PALETTE)
+                .results
+                .into_iter()
+                .find(|result| result.id == id);
+        }
         let mut fields = id.split(ID_SEPARATOR);
         if fields.next() != Some("directory") {
             return self
@@ -2163,11 +2271,13 @@ impl SearchProvider for LiveAppActionsProvider {
                 snapshot.source_generation == source_generation && snapshot.scope == scope
             });
         format!(
-            "{}:{source_generation}:{}:{}",
+            "{}:{source_generation}:{}:{}:{}:{}",
             if ready { "ready" } else { "indexing" },
             self.directory_epoch.load(Ordering::Relaxed),
             // Listing publishers is a memory read; it never asks an app.
             self.directory_roots(ctx).1,
+            self.broker.statuses_generation(),
+            ctx.chrome.active_local_user(),
         )
     }
 
@@ -2188,6 +2298,9 @@ impl SearchProvider for LiveAppActionsProvider {
                 && !Self::wants_resource_rows(ctx.wanted))
         {
             return SearchPage::exhausted(self.search_revision(&ctx), Vec::new());
+        }
+        if let Some(target) = job_control_target(ctx.needle) {
+            return self.job_control_page(&ctx, target, cursor, budget);
         }
         let needle = ctx.needle.trim().to_lowercase();
         self.set_directory_context(&ctx, &needle);
@@ -2452,6 +2565,21 @@ impl SearchProvider for LiveAppActionsProvider {
 }
 
 #[cfg(test)]
+pub(crate) fn fixture_with_directory_page(
+    broker: AppActionBroker,
+    peer: u64,
+    actor: String,
+    page: CataloguePage,
+) -> Rc<dyn SearchProvider> {
+    let provider = LiveAppActionsProvider::new(broker);
+    provider
+        .directory_pages
+        .borrow_mut()
+        .insert((peer, actor, String::new(), Vec::new()), page);
+    Rc::new(provider)
+}
+
+#[cfg(test)]
 mod tests {
     use std::cell::RefCell;
     use std::rc::Rc;
@@ -2501,6 +2629,77 @@ mod tests {
         workspace_tree.desktop.active = WorkspaceId(1);
         let tree: WorkspaceTreeHandle = Arc::new(RwLock::new(workspace_tree));
         ChromeState::new_with_handle(tree)
+    }
+
+    fn succeeded(id: u64) -> tilo_actions::InvocationUpdate {
+        tilo_actions::InvocationUpdate::Succeeded {
+            invocation: tilo_actions::InvocationId(uuid::Uuid::from_u128(u128::from(id))),
+            output: tilo_actions::ActionOutput::default(),
+        }
+    }
+
+    #[test]
+    fn job_receipts_resolve_beyond_the_preview_and_only_for_their_actor() {
+        fn ctx<'a>(
+            chrome: &'a crate::shell::chrome_state::ChromeState,
+            wanted: &'a [ResourceKind],
+            doc: &'a AutoCommit,
+        ) -> SearchContext<'a> {
+            SearchContext {
+                needle: "",
+                wanted,
+                chrome,
+                doc,
+                doc_root: &automerge::ROOT,
+            }
+        }
+
+        let chrome = chrome();
+        let broker =
+            crate::shell::collab_broker_capnp::CapnpBrokerState::test_broker_with_idle_directory_queue();
+        let provider = LiveAppActionsProvider::new(broker.clone());
+        let doc = AutoCommit::new();
+        let actor = chrome.borrow().active_local_user();
+        let wanted = provider.resource_kinds().to_vec();
+        let before = provider.search_revision(&ctx(&chrome.borrow(), &wanted, &doc));
+        let preview_rows = u64::try_from(super::MAX_JOB_ROWS_PER_QUERY).unwrap();
+        for id in 1..=preview_rows + 3 {
+            broker.record_completion_for_test(id, &actor, succeeded(id));
+        }
+        broker.record_completion_for_test(99, "someone-else", succeeded(99));
+        assert_ne!(
+            provider.search_revision(&ctx(&chrome.borrow(), &wanted, &doc)),
+            before,
+            "a new receipt must invalidate the retained job projection"
+        );
+        for id in 1..=preview_rows + 3 {
+            let row = provider
+                .resolve(
+                    &super::job_status_id(id),
+                    ctx(&chrome.borrow(), &wanted, &doc),
+                )
+                .unwrap_or_else(|| panic!("the actor's job {id} must stay readable"));
+            assert_eq!(row.id, super::job_status_id(id));
+            assert_eq!(row.subtitle.as_deref(), Some("succeeded"));
+        }
+        assert!(
+            provider
+                .resolve(
+                    &super::job_status_id(99),
+                    ctx(&chrome.borrow(), &wanted, &doc)
+                )
+                .is_none(),
+            "another actor's receipt is indistinguishable from an unknown one"
+        );
+        assert!(
+            provider
+                .resolve(
+                    &super::job_cancel_id(1),
+                    ctx(&chrome.borrow(), &wanted, &doc)
+                )
+                .is_none(),
+            "a completed job offers no cancellation"
+        );
     }
 
     fn exported(label: &str, action: &str) -> tilo_actions::ActionDescriptor {
@@ -3042,6 +3241,92 @@ mod tests {
             ))
         );
         assert!(LiveAppActionsProvider::hierarchy("display.id#rename").is_none());
+    }
+
+    #[test]
+    fn action_hierarchy_resolves_exact_live_peers_including_zero_and_deep_roots() {
+        let broker = crate::shell::collab_broker_capnp::CapnpBrokerState::test_broker_with_idle_directory_queue();
+        let provider = LiveAppActionsProvider::new(broker.clone());
+        let mut roots = (0..=512)
+            .map(|peer_id| ActionDirectoryRoot {
+                peer_id,
+                app_id: "dev.tilo.first".into(),
+                cluster_id: "first-room".into(),
+                record_id: "first-record".into(),
+            })
+            .collect::<Vec<_>>();
+        roots.push(ActionDirectoryRoot {
+            peer_id: 4096,
+            app_id: "dev.tilo.calculator".into(),
+            cluster_id: "calculator-room".into(),
+            record_id: "calculator-record".into(),
+        });
+        broker.replace_action_directory_roots_for_test(roots);
+        assert!(
+            broker
+                .state()
+                .action_directory_roots()
+                .iter()
+                .all(|root| root.peer_id != 4096),
+            "fixture must put the target beyond the first bounded root page"
+        );
+        let first = provider
+            .action_hierarchy("directory\u{1f}0\u{1f}r1\u{1f}resource:first\u{1f}open")
+            .unwrap();
+        assert_eq!(first.application, "dev.tilo.first");
+        assert_eq!(first.room, "first-room");
+        assert_eq!(first.record, "first-record");
+        let deep_id = "directory\u{1f}4096\u{1f}r1\u{1f}calculator.graph:curve2d:17\u{1f}edit";
+        let deep = provider.action_hierarchy(deep_id).unwrap();
+        assert_eq!(deep.application, "dev.tilo.calculator");
+        assert_eq!(deep.room, "calculator-room");
+        assert_eq!(deep.record, "calculator-record");
+        assert_eq!(deep.resource, "calculator.graph:curve2d:17");
+        assert_eq!(deep.operation, "edit");
+        assert!(
+            provider
+                .action_hierarchy("directory\u{1f}4095\u{1f}r1\u{1f}resource:missing\u{1f}open")
+                .is_none(),
+            "an absent peer cannot borrow its next neighbor's identity"
+        );
+        broker.replace_action_directory_roots_for_test(Vec::new());
+        assert!(
+            provider.action_hierarchy(deep_id).is_none(),
+            "a stale result cannot invent a disconnected peer's identity"
+        );
+    }
+
+    #[test]
+    fn action_hierarchy_keeps_local_actions_but_rejects_non_actions_and_malformed_directory_ids() {
+        let broker = crate::shell::collab_broker_capnp::CapnpBrokerState::test_broker_with_idle_directory_queue();
+        broker.replace_action_directory_roots_for_test(vec![ActionDirectoryRoot {
+            peer_id: 0,
+            app_id: "dev.tilo.calculator".into(),
+            cluster_id: "room".into(),
+            record_id: "record".into(),
+        }]);
+        let provider = LiveAppActionsProvider::new(broker);
+        let local = provider.action_hierarchy("dev.tilo.files\u{1f}write\u{1f}room-7\u{1f}file:/Brief.md\u{1f}files.entry:/Brief.md\u{1f}rename").unwrap();
+        assert_eq!(local.application, "dev.tilo.files");
+        assert_eq!(local.room, "room-7");
+        assert_eq!(local.record, "file:/Brief.md");
+        assert_eq!(local.resource, "files.entry:/Brief.md");
+        assert_eq!(local.operation, "rename");
+        for id in [
+            "directory\u{1f}0\u{1f}r1\u{1f}resource:first\u{1f}open\u{1f}extra".to_string(),
+            "directory\u{1f}not-a-peer\u{1f}r1\u{1f}resource:first\u{1f}open".into(),
+            "directory\u{1f}0\u{1f}\u{1f}resource:first\u{1f}open".into(),
+            "directory\u{1f}0\u{1f}r1\u{1f}\u{1f}open".into(),
+            "directory\u{1f}0\u{1f}r1\u{1f}resource:first\u{1f}".into(),
+            "directory-resource\u{1f}0\u{1f}resource:first".into(),
+            super::job_status_id(7),
+            super::job_cancel_id(7),
+        ] {
+            assert!(
+                provider.action_hierarchy(&id).is_none(),
+                "not an application action: {id:?}"
+            );
+        }
     }
 
     #[test]
