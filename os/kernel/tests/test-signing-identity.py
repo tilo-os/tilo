@@ -33,6 +33,40 @@ class SigningIdentityTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "differs"):
                 module.check(image, built, signer)
 
+    def test_staged_boot_image_must_contain_exact_signer(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            image, boot, built, signer = (
+                root / name for name in ("vmlinux", "vmlinuz", "built.der", "signer.der")
+            )
+            image.write_bytes(b"prefix-certificate-one-suffix")
+            boot.write_bytes(b"prefix-certificate-two-suffix")
+            built.write_bytes(b"certificate-one")
+            signer.write_bytes(b"certificate-one")
+            with self.assertRaisesRegex(ValueError, "staged boot image"):
+                module.check(image, built, signer, boot)
+            boot.write_bytes(image.read_bytes())
+            module.check(image, built, signer, boot)
+
+    def test_extracted_bzimage_must_contain_exact_signer(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            image, boot, built, signer, extractor = (
+                root / name for name in
+                ("vmlinux", "bzImage", "built.der", "signer.der", "extract-vmlinux")
+            )
+            image.write_bytes(b"prefix-certificate-one-suffix")
+            boot.write_bytes(b"prefix-certificate-two-suffix")
+            built.write_bytes(b"certificate-one")
+            signer.write_bytes(b"certificate-one")
+            extractor.write_text('#!/bin/sh\ncat "$1"\n')
+            with self.assertRaisesRegex(ValueError, "staged bzImage"):
+                module.check(image, built, signer, boot, extractor)
+            boot.write_bytes(image.read_bytes())
+            module.check(image, built, signer, boot, extractor)
+            extractor.write_text("#!/bin/sh\nexit 1\n")
+            with self.assertRaisesRegex(ValueError, "could not extract"):
+                module.check(image, built, signer, boot, extractor)
 
 if __name__ == "__main__":
     unittest.main()
