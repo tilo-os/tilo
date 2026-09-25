@@ -3267,7 +3267,16 @@ impl RecordStore {
         id: &RecordId,
         f: impl FnOnce(&mut AutoCommit) -> R,
     ) -> Result<R, RecordOpenError> {
-        self.with_action_state(id, |document, _, _| f(document))
+        // A checked mutable loan is external to any action frame, exactly as
+        // `document_mut`: close the open frame and advance its generation so
+        // an operation resolved before this loan is invalidated.
+        self.with_action_state(id, |document, history, actions| {
+            actions.finish_external(document, history);
+            actions.generation = actions
+                .generation
+                .and_then(|generation| generation.checked_add(1));
+            f(document)
+        })
     }
 
     pub(crate) fn read_checked<R>(

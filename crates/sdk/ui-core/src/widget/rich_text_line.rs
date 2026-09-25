@@ -737,6 +737,12 @@ impl Widget for RichTextLine {
         (self.wrap && self.dirty.styled_layout) || self.inner.layout_needs_measure()
     }
 
+    /// A line's height follows its text and its inline marks, both of which
+    /// `measure` re-applies; the childless default would dirty every line.
+    fn is_layout_dirty(&self) -> bool {
+        self.dirty.styled_layout || self.inner.is_layout_dirty()
+    }
+
     fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
         // Realigning the mark-diff snapshot here keeps a remotely-synced edit
         // from being misread as a local splice on the next keystroke.

@@ -3100,6 +3100,58 @@ impl VpnApp {
         }
     }
 
+    /// Semantic mirror of the import sheet: the protocol segments, Cancel and
+    /// the Import button, on the same rects the painter and hit test use.
+    fn add_modal_access(&self, card: Rect) -> ui::a11y::AccessNode {
+        use ui::a11y::{AccessNode, AccessState, Role};
+        let mut children: Vec<AccessNode> = add_modal_kind_rects(card)
+            .into_iter()
+            .zip(ADD_MODAL_KINDS)
+            .map(|(bounds, kind)| {
+                let target = match kind {
+                    ConnKind::WireGuard => "vpn:add-kind:wireguard",
+                    ConnKind::OpenVpn => "vpn:add-kind:openvpn",
+                };
+                AccessNode::new(Role::RadioButton)
+                    .with_name(kind.long_name())
+                    .with_action_target(target)
+                    .with_bounds(bounds)
+                    .with_state(
+                        AccessState::new()
+                            .focusable(true)
+                            .checked(self.add_kind == kind),
+                    )
+            })
+            .collect();
+        let (cancel, import) = add_modal_button_rects(card);
+        children.push(
+            AccessNode::new(Role::Button)
+                .with_name("Cancel")
+                .with_action_target("vpn:cancel-import")
+                .with_bounds(cancel)
+                .with_state(AccessState::new().focusable(true)),
+        );
+        let (import_target, import_name) = match self.add_kind {
+            ConnKind::WireGuard => ("vpn:import-wireguard", "Import WireGuard profile"),
+            ConnKind::OpenVpn => ("vpn:import-openvpn", "Import OpenVPN profile"),
+        };
+        children.push(
+            AccessNode::new(Role::Button)
+                .with_name(import_name)
+                .with_action_target(import_target)
+                .with_bounds(import)
+                .with_state(AccessState::new().focusable(true)),
+        );
+        AccessNode::new(Role::Dialog)
+            .with_name(if self.provision_target.is_some() {
+                "Set up on this device"
+            } else {
+                "Import VPN profile"
+            })
+            .with_bounds(card)
+            .with_children(children)
+    }
+
     /// Route modal-level Escape/Enter and pointer input while the import
     /// chooser is open. Every event is consumed so nothing reaches the
     /// connection list behind the scrim.
@@ -3902,6 +3954,11 @@ impl Widget for VpnApp {
                     .with_live(Politeness::Polite),
             );
         }
+        // The import sheet is modal: while it is up it is the only surface a
+        // pointer or keyboard can reach, so it is the only one published.
+        if self.modal == Modal::Add {
+            children = vec![self.add_modal_access(lay.modal_card)];
+        }
         let children = children
             .into_iter()
             .enumerate()
@@ -3929,9 +3986,28 @@ impl Widget for VpnApp {
             return false;
         }
         match target {
-            "vpn:import-wireguard" => self.queue_import(ConnKind::WireGuard),
-            "vpn:import-openvpn" => self.queue_import(ConnKind::OpenVpn),
+            "vpn:import-wireguard" | "vpn:import-openvpn" => {
+                let kind = if target == "vpn:import-wireguard" {
+                    ConnKind::WireGuard
+                } else {
+                    ConnKind::OpenVpn
+                };
+                if self.modal == Modal::Add {
+                    // The sheet's Import button: same path as a click or Enter.
+                    self.add_kind = kind;
+                    self.commit_add();
+                } else {
+                    self.queue_import(kind);
+                }
+            }
             "vpn:import-dialog" => self.open_add(ConnKind::WireGuard),
+            "vpn:add-kind:wireguard" if self.modal == Modal::Add => {
+                self.add_kind = ConnKind::WireGuard;
+            }
+            "vpn:add-kind:openvpn" if self.modal == Modal::Add => {
+                self.add_kind = ConnKind::OpenVpn;
+            }
+            "vpn:cancel-import" if self.modal == Modal::Add => self.modal = Modal::None,
             "vpn:tor-global" => self.request_tor_global(),
             "vpn:back" => self.compact_detail_open = false,
             "vpn:retry-import" => self.retry_import(),
@@ -4538,6 +4614,14 @@ mod tests {
             "OpenVPN H is absent"
         );
 
+        // F: the published import sheet, opened and committed semantically.
+        driver
+            .perform_semantic_named(
+                "vpn_app",
+                Some("vpn:import-dialog"),
+                &ui::a11y::Action::Activate,
+            )
+            .unwrap();
         driver
             .perform_semantic_named(
                 "vpn_app",

@@ -113,6 +113,14 @@ fn existing_certificate_signatures_and_verification_keep_their_preimage() {
     let expected = root.sign(&allocated_digest(crate::cert::DEVCERT_PREIMAGE_TAG, &view));
     sign_device_cert(&mut certificate, &root).unwrap();
     assert_eq!(certificate.signature, expected.to_bytes());
+    // Verification remembers verified signatures in a process-wide set whose
+    // first insert allocates its table. Warm it with a different certificate
+    // so the measured call still takes the full (uncached) verification path
+    // and only its preimage handling is counted.
+    let mut warm = certificate.clone();
+    warm.device_label = "warm-up device".to_owned();
+    sign_device_cert(&mut warm, &root).unwrap();
+    verify_device_cert(&warm).unwrap();
     let (verified, allocations) = measured(|| verify_device_cert(&certificate));
     verified.unwrap();
     assert_eq!(

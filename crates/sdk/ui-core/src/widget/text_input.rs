@@ -3219,7 +3219,9 @@ impl TextInput {
     fn do_cut(&mut self, state: &mut AutoCommit, obj_id: Option<&ObjId>) {
         if let Some(s) = self.selected_str() {
             let owned = s.to_string();
-            if crate::text_selection::try_clipboard_copy(&owned) {
+            // Delete only once the text is on a clipboard; a failed copy
+            // must not lose the selection.
+            if crate::text_selection::clipboard_copy_accepted(&owned) {
                 self.delete_selection(state, obj_id);
             }
         }

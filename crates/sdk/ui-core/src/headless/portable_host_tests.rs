@@ -50,7 +50,8 @@ fn portable_frame_composites_real_dropdown_overlay_above_later_siblings() {
         .into_iter()
         .next()
         .expect("the later sibling paints its fixture color");
-    let overlay_position = encoded_color_positions(scene, theme.tokens.colors.surfaces.raised)
+    // The open list paints the panel ground (HIG §9.5), not the raised field.
+    let overlay_position = encoded_color_positions(scene, crate::chrome::panel_ground(&theme))
         .into_iter()
         .rfind(|position| *position > blocker_position)
         .expect("the real open dropdown paints its raised menu after the later sibling");

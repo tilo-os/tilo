@@ -53,7 +53,7 @@ fn fixture() -> tempfile::TempDir {
         );
         return temp;
     }
-    private_fixture(tempfile::tempdir().unwrap())
+    private_fixture(super::super::tests::admitted_temp_dir())
 }
 fn scope() -> SenderScope {
     SenderScope::native(uuid::Uuid::from_bytes([1; 16]), [2; 32], [3; 32]).unwrap()

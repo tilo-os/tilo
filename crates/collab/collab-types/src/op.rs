@@ -1061,7 +1061,13 @@ mod tests {
             "artifact and MLS channel domains must not alias"
         );
         assert_eq!(first.0.get_version_num(), 8);
-        assert_eq!(first.0.to_string(), "fd9e9e68-54c3-8ae2-bfc6-cb06b0816e07");
+        assert_eq!(first.0.to_string(), "0231a3fb-e6d4-89fc-9fc4-160d44d242bf");
+        assert_eq!(
+            document_artifact_id("dev.tilo.notes", "room-a", "record-b")
+                .0
+                .to_string(),
+            "fd9e9e68-54c3-8ae2-bfc6-cb06b0816e07"
+        );
         assert_eq!(
             document_attestation_id("dev.tilo.notes", "room-a", "record-b")
                 .0

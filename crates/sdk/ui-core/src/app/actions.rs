@@ -3177,8 +3177,20 @@ impl App {
                 serde_json::Value::Object(intent.arguments.clone())
             );
             let actor = self.collaboration.local_author.0.clone();
-            let result = self.invoke_resource_action(
-                ResourceInvocation::new(&intent.address, &actor).argument(Some(&json)),
+            // An outer control was produced outside every component and
+            // legacy owner: it acts on the outer document it was captured
+            // with, even when an owner declares the same address.
+            let result = self.invoke_unbound_resource_action_scoped(
+                &intent.address,
+                Some(&json),
+                &actor,
+                false,
+                false,
+                None,
+                None,
+                None,
+                None,
+                None,
             );
             self.root_widget
                 .on_control_invocation_result(&intent.address, &result);

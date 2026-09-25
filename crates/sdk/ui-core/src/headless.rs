@@ -2316,37 +2316,8 @@ impl FrameHarness {
             p.record_since(crate::profiling::Pass::Draw, t_draw);
         }
 
-        // The taffy tree was rebuilt, so the previous `focused` NodeId is
-        // stale; recover it by scanning the fresh node map for whichever
-        // widget still reports `is_focused()`.
-        let restoring_live = self
-            .history
-            .as_ref()
-            .is_some_and(|history| history.returning_live());
-        if restoring_live {
-            self.focused = self.history.as_mut().and_then(|history| unsafe {
-                history.restore_focus(&self.node_map, &self.bindings)
-            });
-        } else {
-            let allowed: Vec<_> = self
-                .node_map
-                .keys()
-                .copied()
-                .filter(|&node| {
-                    crate::history_mode::embedded::allows_focus(
-                        self.root.as_ref(),
-                        node,
-                        &self.taffy,
-                    ) && self.history.as_ref().is_none_or(|history| {
-                        !history.has_saved_focus() || history.owns_node(node, &self.taffy)
-                    })
-                })
-                .collect();
-            // SAFETY: these maps describe this exclusive runner's current tree.
-            self.focused = unsafe {
-                CompositionFocus::current(&self.node_map, &self.bindings, Some(&allowed))
-            };
-        }
+        // Focus was already recovered for this tree before draw, with the
+        // active-instance filter a second unfiltered pass would undo.
         self.draw_caller_palette();
         self.refresh_system_search();
         self.draw_system_search();

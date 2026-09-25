@@ -9,6 +9,47 @@ fn cache() -> (PortableStorage, StorageKey) {
     cache.put(key.clone(), b"original".to_vec(), None).unwrap();
     (cache, key)
 }
+/// A fresh temporary directory on a filesystem the private owner profile
+/// admits (ext4, btrfs, XFS or tmpfs on Linux).
+///
+/// CI's general test job runs in a container whose root, and so its default
+/// temporary directory, is overlayfs, which the bounded owner profile refuses
+/// by design. There the fixture falls back to `/dev/shm`, a tmpfs every such
+/// container provides. Like the default temporary directory, it makes no
+/// persistence claim; the XFS qualification root is supplied separately via
+/// `QOS_PRIVATE_ACTIONS_TEST_ROOT`.
+pub(in crate::host_worker::private_actions) fn admitted_temp_dir() -> tempfile::TempDir {
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::unix::ffi::OsStrExt;
+        let admitted = |path: &std::path::Path| {
+            let Ok(path) = std::ffi::CString::new(path.as_os_str().as_bytes()) else {
+                return false;
+            };
+            let mut stat = std::mem::MaybeUninit::<libc::statfs>::uninit();
+            // SAFETY: `path` is a NUL-terminated string and `stat` is a
+            // writable statfs buffer that the call fills on success.
+            if unsafe { libc::statfs(path.as_ptr(), stat.as_mut_ptr()) } != 0 {
+                return false;
+            }
+            // SAFETY: statfs returned 0, so it initialised the buffer.
+            let stat = unsafe { stat.assume_init() };
+            u64::try_from(stat.f_type).is_ok_and(|magic| {
+                matches!(magic, 0xef53 | 0x9123_683e | 0x5846_5342 | 0x0102_1994)
+            })
+        };
+        let base = [std::env::temp_dir(), std::path::PathBuf::from("/dev/shm")]
+            .into_iter()
+            .find(|base| admitted(base))
+            .expect(
+                "private-actions fixtures need an ext4, btrfs, XFS or tmpfs temporary directory \
+                 (or QOS_PRIVATE_ACTIONS_TEST_ROOT)",
+            );
+        tempfile::tempdir_in(base).unwrap()
+    }
+    #[cfg(not(target_os = "linux"))]
+    tempfile::tempdir().unwrap()
+}
 fn allowance() -> NativeAllowance {
     NativeAllowance::new(32 * 1024 * 1024).unwrap()
 }
@@ -189,7 +230,7 @@ pub(in crate::host_worker::private_actions) mod consuming {
             );
             return root;
         }
-        tempfile::tempdir().unwrap()
+        admitted_temp_dir()
     }
     fn fixture_payload(payload: &[u8]) -> tempfile::TempDir {
         let root = fixture_container();

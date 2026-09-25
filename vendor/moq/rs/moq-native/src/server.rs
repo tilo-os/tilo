@@ -1467,10 +1467,17 @@ mod tests {
 
 	/// A QUIC-only server reports nothing. It multiplexes over one UDP socket and
 	/// never calls `accept`, so a zero counter would be a watch that cannot fire.
+	/// The QUIC listener needs a certificate source, and building the endpoint
+	/// needs a runtime.
 	#[cfg(all(feature = "quinn", not(feature = "tcp")))]
-	#[test]
-	fn accept_health_is_empty_without_a_stream_listener() {
-		let server = ServerConfig::default().init().expect("quic server");
+	#[tokio::test]
+	async fn accept_health_is_empty_without_a_stream_listener() {
+		let mut config = ServerConfig {
+			bind: Some("127.0.0.1:0".to_string()),
+			..Default::default()
+		};
+		config.tls.generate = vec!["localhost".into()];
+		let server = config.init().expect("quic server");
 		assert!(server.accept_health().is_empty());
 	}
 
