@@ -413,11 +413,14 @@ and it fails the build if the generation did not make it into the seal.
 
 Two details matter at the release boundary:
 
-- **An ordinary development build does not sign the UKI.** Tagged release media
-  instead requires the protected `TILO_PCR_PREDICTION_SIGNER`: it appends an
-  industry/OEM-trusted EFI signature to both the live and deterministic target
-  UKIs and signs the target's PCR 11 prediction without exporting either private
-  key. The release fails closed if the signer, certificate pin, or returned
+- **An ordinary development build does not sign the UKI.** Published release
+  images and tagged release media instead require the protected
+  `TILO_PCR_PREDICTION_SIGNER`: it appends an Authenticode signature from the
+  Tilo release EFI certificate (`keys/efi-signing.crt`, key held in AWS KMS) to
+  both the live and deterministic target UKIs and signs the target's PCR 11
+  prediction without exporting either private key. Firmware trusts that
+  certificate once its owner enrolls it in `db`; see
+  [the release certificate](#the-user-enrolled-tilo-release-certificate). The release fails closed if the signer, certificate pin, or returned
   signature is missing or wrong. Development/custom media keeps the strong
   passphrase fallback. Measurement itself does not depend on PE signing:
   `systemd-stub` extends PCR 11 with the command line in either case.
@@ -646,9 +649,14 @@ for clearing the owner's keys, importing a new certificate, or enabling Secure
 Boot. Those controls, confirmation screens, and even support for appending a
 certificate from the ESP vary by firmware.
 
-That leaves two secure product choices:
+That leaves three secure product choices. The first is the supported
+production path today:
 
-1. **Keep owner-first trust.** Installation uses a strong LUKS passphrase. A
+1. **Enroll the Tilo release certificate.** Every published image signs its
+   UKIs with Tilo's own release EFI certificate, and the owner adds that
+   certificate to firmware `db` once. See
+   [the release certificate](#the-user-enrolled-tilo-release-certificate).
+2. **Keep owner-first trust.** Installation uses a strong LUKS passphrase. A
    later guided ceremony may generate the owner keys in the encrypted target,
    sign and verify every target UKI, ask the owner to import the public key in
    firmware, and only after a verified reboot offer to replace the passphrase
@@ -658,10 +666,11 @@ That leaves two secure product choices:
    lockdown, and recovery-key access rather than trusting a progress marker.
    This is necessarily interactive and firmware-specific, so it cannot be the
    default nearly-headless path on arbitrary PCs.
-2. **Add a factory-trusted Tilo release chain.** This is the prerequisite for a
-   normal fresh PC to boot both installer and target under verified boot and use
-   one TPM-throttled PIN from its first installed boot. It changes the current
-   owner-only trust policy. The release bootloader and every bootable UKI need PE
+3. **Add a factory-trusted Tilo release chain.** This is the prerequisite for a
+   fresh PC to boot both installer and target under verified boot and use one
+   TPM-throttled PIN from its first installed boot *without* an enrollment step.
+   It can later replace the user-enrolled certificate without changing the PCR
+   prediction authority. The release bootloader and every bootable UKI need PE
    signatures rooted in a certificate accepted by target firmware (through an
    OEM agreement or an industry Secure Boot signing programme); installation
    must stop generating target-specific unsigned UKI bytes, or obtain their
@@ -671,14 +680,51 @@ That leaves two secure product choices:
    update, firmware-revocation, BitLocker-coexistence and TPM dictionary-attack
    paths then need a physical hardware matrix before this becomes the default.
 
-Tagged release media implements the second choice only when its protected
-`TILO_PCR_PREDICTION_SIGNER` obtains both an industry/OEM-trusted EFI signature
-and PCR-authority signatures without exporting either private key. CI measures
-the exact resealed target with that image's `systemd-measure`, verifies every
-returned signature, and fails the release when the signer is absent. Development
-or custom media without that chain keeps the secure fallback: a strong startup
-passphrase. `target_verified_boot_ready` is never enabled by TPM presence, an
-EFI flag, signed files alone, or a resumable-install marker.
+Published images and tagged release media carry the release chain only when
+their protected `TILO_PCR_PREDICTION_SIGNER` obtains both an Authenticode
+signature from the pinned Tilo release EFI certificate and PCR-authority
+signatures without exporting either private key. CI measures the exact resealed
+target with that image's `systemd-measure`, verifies every returned signature,
+and fails the release when the signer is absent. Development or custom media
+without that chain keeps the secure fallback: a strong startup passphrase.
+`target_verified_boot_ready` is never enabled by TPM presence, an EFI flag,
+signed files alone, or a resumable-install marker; on a machine that has not
+enrolled the release certificate, Secure Boot refuses the signed UKI rather than
+reporting verified boot.
+
+### The user-enrolled Tilo release certificate
+
+`keys/efi-signing.crt` is Tilo's release EFI certificate: an RSA-2048,
+code-signing X.509 certificate, self-signed through its AWS KMS key
+(`alias/tilo-efi-signing`), whose private key has never existed outside KMS.
+Its DER SHA-256 is pinned independently as the protected
+`TILO_EFI_SIGNING_CERT_SHA256` variable, and every release UKI signature is
+checked against that pin and the unchanged Authenticode payload. It is the
+supported production Secure Boot trust anchor for Tilo OS:
+
+- **The owner enrolls it.** Add the certificate to the firmware signature
+  database (`db`), either through the firmware setup's key-management screen
+  (most accept a DER `.cer`/`.crt` from a FAT volume; convert with
+  `tilo-crypto certificate-der keys/efi-signing.crt tilo-release-efi.cer`) or,
+  in Setup Mode, as part of the owner's own `db` next to any vendor
+  certificates they keep. Verify the fingerprint with
+  `tilo-crypto certificate-sha256` before enrolling. Tilo never writes firmware
+  variables on the owner's behalf.
+- **No shim, no MOK.** Tilo removed shim and GRUB; systemd-boot and the signed
+  UKIs are verified by the firmware directly against `db`.
+- **What it buys.** After enrollment, published images, their updates and tagged
+  media boot with Secure Boot enforcing and kernel lockdown, and PCR 7 reflects
+  a `db` that authenticates the Tilo release chain, which is what the
+  generation-bound TPM policy binds.
+- **What it does not.** A machine that has not enrolled the certificate does
+  not trust Tilo's UKIs; it must either enroll it or boot with Secure Boot off
+  and use the strong-passphrase path. Revoking the certificate means adding it
+  to `dbx` or removing it from `db`.
+
+A factory-trusted chain (choice 3) can replace this later. The PCR prediction
+authority (`keys/tpm2-pcr-signing.public.pem`, `alias/tilo-pcr-prediction`) is
+independent of the EFI certificate and does not change when the EFI trust
+anchor does.
 
 The removed TPM slot bound to **PCR 7 only**, set explicitly rather than inherited.
 PCR 7 is the Secure Boot policy, so the seal would break if the boot policy changed.
