@@ -40,7 +40,7 @@ pub fn no_disk_help(local_build: Option<&str>) -> String {
         ),
     };
     format!(
-        "ask a human to dispatch the \"Release / Dev VM disk\" workflow (.forgejo/workflows/dev-disk.yml)   |   or, if you may dispatch CI yourself: fgj workflow run dev-disk.yml -R qos/qos, then fgj run watch   |   or ask a human for a shared VM and use it: tilo-vm vm use <name>   |   {local}"
+        "each architecture's lane of a main \"Release / OS\" run (.forgejo/workflows/build-image.yml) publishes its disk as soon as it passes: wait for the running one, or ask a human to dispatch it   |   for an image that already exists, ask a human to dispatch the \"Release / Dev VM disk\" workflow (.forgejo/workflows/dev-disk.yml)   |   or, if you may dispatch CI yourself: fgj workflow run dev-disk.yml -R qos/qos, then fgj run watch   |   or ask a human for a shared VM and use it: tilo-vm vm use <name>   |   {local}"
     )
 }
 
@@ -368,8 +368,10 @@ impl CliError {
                 no_disk_help(local_build.as_deref())
             ),
             Self::NoDiskPublished { local_build, .. } => no_disk_help(local_build.as_deref()),
-            Self::NoDiskForHost { local_build, .. } => format!(
-                "pick a tag that has one: tilo-vm vm create <name> --tag <tag>   |   {}",
+            Self::NoDiskForHost {
+                arch, local_build, ..
+            } => format!(
+                "each architecture publishes on its own, so {arch}'s lane may still be running or may have failed: fgj run list -R qos/qos   |   pick a tag that has one: tilo-vm vm create <name> --tag <tag>   |   {}",
                 no_disk_help(local_build.as_deref())
             ),
             Self::NoHypervisor(missing) => missing.fix.clone(),
@@ -909,6 +911,10 @@ mod tests {
         }
         .hint();
         assert!(without.contains("Release / Dev VM disk"), "{without}");
+        assert!(
+            without.contains(".forgejo/workflows/build-image.yml"),
+            "{without}"
+        );
         assert!(
             without.contains(".forgejo/workflows/dev-disk.yml"),
             "{without}"
