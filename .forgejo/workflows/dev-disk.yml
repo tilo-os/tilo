@@ -33,6 +33,10 @@ on:
         description: "Signed production image (code.sandbox.example/qos/tilo:<tag> or @sha256:...), or a dev-trust integration image (code.sandbox.example/qos/tilo-ci:main-<sha7>-<arch> or @sha256:...); empty uses tilo:main-<sha7>."
         required: false
         default: ""
+      dev_image:
+        description: "Optional immutable preinstall tilo-vm child digest from an earlier disk run, to resume installation without rebuilding the dev image."
+        required: false
+        default: ""
       tag:
         description: "tilo-vm tag and disk package version; empty derives main-<sha7>, the release version, or <branch>-<sha7>."
         required: false
@@ -64,6 +68,7 @@ jobs:
       source: ${{ steps.plan.outputs.source }}
       tag: ${{ steps.plan.outputs.tag }}
       base: ${{ steps.plan.outputs.base }}
+      checkpoint: ${{ steps.plan.outputs.checkpoint }}
       trust: ${{ steps.plan.outputs.trust }}
       channel: ${{ steps.plan.outputs.channel }}
     steps:
@@ -72,6 +77,7 @@ jobs:
         env:
           INPUT_SOURCE: ${{ github.event.inputs.source_revision }}
           INPUT_BASE: ${{ github.event.inputs.base_image }}
+          INPUT_CHECKPOINT: ${{ github.event.inputs.dev_image }}
           INPUT_TAG: ${{ github.event.inputs.tag }}
           INPUT_ARCHITECTURES: ${{ github.event.inputs.architectures }}
           INPUT_FORMATS: ${{ github.event.inputs.formats }}
@@ -98,6 +104,12 @@ jobs:
             echo "::error::base_image must name code.sandbox.example/qos/tilo or code.sandbox.example/qos/tilo-ci by tag or digest: $base"
             exit 1
           fi
+
+          checkpoint=${INPUT_CHECKPOINT:-}
+          [[ -z $checkpoint || $checkpoint =~ ^code\.podesta\.ai/qos/tilo-vm@sha256:[0-9a-f]{64}$ ]] || {
+            echo '::error::dev_image must be an immutable code.sandbox.example/qos/tilo-vm child digest'
+            exit 1
+          }
 
           channel=false
           if [[ -n ${INPUT_TAG:-} ]]; then
@@ -139,6 +151,10 @@ jobs:
             include=$(jq -c --arg arch "$arch" --arg runner "${runners[$arch]}" \
               '. + [{arch:$arch,runner:$runner}]' <<< "$include")
           done
+          if [[ -n $checkpoint && ${#architectures[@]} -ne 1 ]]; then
+            echo '::error::dev_image is one native child digest; resume one architecture at a time'
+            exit 1
+          fi
 
           read -r -a requested_formats <<< "${INPUT_FORMATS:-qcow2}"
           formats=()
@@ -156,6 +172,7 @@ jobs:
             echo "source=$source"
             echo "tag=$tag"
             echo "base=$base"
+            echo "checkpoint=$checkpoint"
             echo "trust=$trust"
             echo "channel=$channel"
             echo "architectures=${architectures[*]}"
@@ -175,8 +192,10 @@ jobs:
     timeout-minutes: 300
     env:
       SOURCE_REVISION: ${{ needs.plan.outputs.source }}
+      DISK_TOOLING_REVISION: ${{ github.sha }}
       DEV_TAG: ${{ needs.plan.outputs.tag }}
       BASE_REF_INPUT: ${{ needs.plan.outputs.base }}
+      DEV_CHECKPOINT_REF: ${{ needs.plan.outputs.checkpoint }}
       BASE_TRUST: ${{ needs.plan.outputs.trust }}
       DISK_FORMATS: ${{ needs.plan.outputs.formats }}
       ARCH: ${{ matrix.arch }}
@@ -367,8 +386,10 @@ jobs:
       # builds os/Containerfile.dev FROM a base already in local storage and
       # records its digest and creation time in the image.
       - name: Build the dev image FROM the verified base
+        if: needs.plan.outputs.checkpoint == ''
         env:
           BASE_CHILD: ${{ steps.base.outputs.child }}
+          BASE_CHILD_DIGEST: ${{ steps.base.outputs.child-digest }}
           BASE_INDEX_DIGEST: ${{ steps.base.outputs.index-digest }}
           BASE_REPOSITORY: ${{ steps.base.outputs.repository }}
         run: |
@@ -377,8 +398,98 @@ jobs:
           TILO_DEV_BASE="$BASE_CHILD" TILO_DEV_IMAGE="$DEV_IMAGE" TILO_DEV_DISK=0 \
             TILO_CARGO_FRESHNESS=clean TILO_DISTROBOX="" \
             TILO_OUTPUT="/var/tmp/tilo-vm-disk-$ARCH" \
-            TILO_BUILD_ARGS="--label org.opencontainers.image.version=$DEV_TAG --label org.opencontainers.image.revision=$SOURCE_REVISION --label org.opencontainers.image.base.name=$BASE_REPOSITORY@$BASE_INDEX_DIGEST --label org.opencontainers.image.base.digest=$BASE_INDEX_DIGEST --label sh.tilo.dev.base-trust=$BASE_TRUST" \
+            TILO_BUILD_ARGS="--label org.opencontainers.image.version=$DEV_TAG --label org.opencontainers.image.revision=$SOURCE_REVISION --label org.opencontainers.image.base.name=$BASE_REPOSITORY@$BASE_INDEX_DIGEST --label org.opencontainers.image.base.digest=$BASE_INDEX_DIGEST --label org.opencontainers.image.base.child.digest=$BASE_CHILD_DIGEST --label sh.tilo.dev.base-trust=$BASE_TRUST" \
             ./os/dev/build-dev-image.sh
+
+      # Keep the expensive verified build if disk installation or boot fails.
+      # A resumed request accepts only the immutable digest of this native
+      # preinstall image, with the same source, base, trust and architecture.
+      - name: Push preinstall dev-image checkpoint
+        if: needs.plan.outputs.checkpoint == ''
+        run: |
+          set -euo pipefail
+          candidate="code.sandbox.example/qos/tilo-vm:build-candidate-${SOURCE_REVISION:0:12}-$BASE_TRUST-$GITHUB_RUN_ID-$ARCH"
+          digest_file=$(mktemp /var/tmp/tilo-vm-build-digest.XXXXXX)
+          podman push --digestfile "$digest_file" "$DEV_IMAGE" "docker://$candidate"
+          digest=$(tr -d '[:space:]' < "$digest_file")
+          [[ $digest =~ ^sha256:[0-9a-f]{64}$ ]]
+          echo "::notice::preinstall dev image $candidate ($digest); resume with dev_image=code.sandbox.example/qos/tilo-vm@$digest"
+
+      - name: Load and verify preinstall dev-image checkpoint
+        if: needs.plan.outputs.checkpoint != ''
+        env:
+          BASE_INDEX_DIGEST: ${{ steps.base.outputs.index-digest }}
+          BASE_CHILD_DIGEST: ${{ steps.base.outputs.child-digest }}
+          BASE_REPOSITORY: ${{ steps.base.outputs.repository }}
+        run: |
+          set -euo pipefail
+          raw=$(skopeo inspect --raw "docker://$DEV_CHECKPOINT_REF")
+          actual="sha256:$(printf '%s' "$raw" | sha256sum | awk '{print $1}')"
+          [[ $DEV_CHECKPOINT_REF == "code.sandbox.example/qos/tilo-vm@$actual" ]] || {
+            echo '::error::dev-image checkpoint manifest does not match its requested digest'
+            exit 1
+          }
+          jq -e '.manifests? == null and .config.digest? != null' <<< "$raw" >/dev/null || {
+            echo '::error::dev-image checkpoint must be one native child manifest'
+            exit 1
+          }
+          config=$(skopeo inspect "docker://$DEV_CHECKPOINT_REF")
+          case "$ARCH" in x86_64) platform=amd64 ;; aarch64) platform=arm64 ;; esac
+          jq -e --arg arch "$platform" --arg source "$SOURCE_REVISION" \
+            --arg base "$BASE_REPOSITORY@$BASE_INDEX_DIGEST" \
+            --arg index "$BASE_INDEX_DIGEST" --arg child "$BASE_CHILD_DIGEST" \
+            --arg trust "$BASE_TRUST" '
+            .Architecture == $arch
+            and .Labels["sh.tilo.image.flavour"] == "dev"
+            and .Labels["org.opencontainers.image.revision"] == $source
+            and .Labels["org.opencontainers.image.base.name"] == $base
+            and .Labels["org.opencontainers.image.base.digest"] == $index
+            and .Labels["org.opencontainers.image.base.child.digest"] == $child
+            and .Labels["sh.tilo.dev.base-trust"] == $trust
+          ' <<< "$config" >/dev/null || {
+            echo '::error::dev-image checkpoint is not the exact verified source/base/trust/architecture'
+            exit 1
+          }
+          podman pull "$DEV_CHECKPOINT_REF"
+          podman tag "$DEV_CHECKPOINT_REF" "$DEV_IMAGE"
+          echo "::notice::resumed verified dev image $DEV_CHECKPOINT_REF"
+
+      # Keep the OS and dev-image recipe at SOURCE_REVISION. A separately
+      # reviewed workflow commit supplies disk installation, VM verification,
+      # and publication scripts even when an older signed source lacks them.
+      # The package records both revisions.
+      - name: Checkout exact disk tooling revision
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.sha }}
+          path: .ci-disk-tooling
+          persist-credentials: false
+          sparse-checkout: |
+            os/dev/disk-image.sh
+            os/dev/hold-loop-partition-nodes.py
+            os/dev/private_disk_image.py
+            os/dev/check-dev-vm.sh
+            os/dev/publish-dev-disk.sh
+            os/dev/_common.sh
+          sparse-checkout-cone-mode: false
+
+      - name: Apply reviewed disk tooling only
+        run: |
+          set -euo pipefail
+          [[ $DISK_TOOLING_REVISION =~ ^[0-9a-f]{40}$ ]]
+          [[ $(git -C .ci-disk-tooling rev-parse HEAD) == "$DISK_TOOLING_REVISION" ]] || {
+            echo '::error::disk tooling checkout differs from workflow revision'
+            exit 1
+          }
+          # build-image.sh and disk-image.sh both source _common.sh. Install
+          # the reviewed helper with the reviewed disk script, after the dev
+          # image was built from the unmodified OS source.
+          for file in disk-image.sh hold-loop-partition-nodes.py private_disk_image.py \
+                      check-dev-vm.sh publish-dev-disk.sh _common.sh; do
+            test -s ".ci-disk-tooling/os/dev/$file"
+            install -m 0755 ".ci-disk-tooling/os/dev/$file" "os/dev/$file"
+          done
+          echo "::notice::dev image source $SOURCE_REVISION; disk tooling $DISK_TOOLING_REVISION"
 
       # build-image.sh with TILO_SKIP_BUILD=1 installs the unsealed dev image
       # in one pass, exactly as build-dev-image.sh's disk step does.

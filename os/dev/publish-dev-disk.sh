@@ -32,6 +32,7 @@
 #   DEV_TAG            tilo-vm tag and disk package version
 #   ARCH               x86_64 or aarch64 (this lane's native architecture)
 #   SOURCE_REVISION    full commit SHA the dev image was built from
+#   DISK_TOOLING_REVISION full commit SHA supplying disk installer tooling
 #   SOURCE_DISK        the installed qcow2, never booted
 #   SOURCE_BOOT        aarch64: the direct-boot bundle directory
 #   DISK_FORMATS       space-separated: qcow2 vhdx (default qcow2)
@@ -51,7 +52,7 @@ REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 die() { printf '::error::%s\n' "$*" >&2; exit 1; }
 note() { printf '::notice::%s\n' "$*"; }
 
-for name in DEV_IMAGE DEV_TAG ARCH SOURCE_REVISION SOURCE_DISK BASE_REPOSITORY BASE_TRUST \
+for name in DEV_IMAGE DEV_TAG ARCH SOURCE_REVISION DISK_TOOLING_REVISION SOURCE_DISK BASE_REPOSITORY BASE_TRUST \
             BASE_INDEX_DIGEST BASE_CHILD_DIGEST TILO_PACKAGE_TOKEN TILO_PACKAGE_PUBLIC_BASE_URL; do
   [[ -n ${!name:-} ]] || die "$name is required"
 done
@@ -60,6 +61,7 @@ CHANNEL=${CHANNEL:-false}
 out=${TILO_VM_PUBLISH_DIR:-/var/tmp/tilo-vm-publish}
 
 [[ $SOURCE_REVISION =~ ^[0-9a-f]{40}$ ]] || die "SOURCE_REVISION must be a full commit SHA"
+[[ $DISK_TOOLING_REVISION =~ ^[0-9a-f]{40}$ ]] || die "DISK_TOOLING_REVISION must be a full commit SHA"
 [[ $DEV_TAG =~ ^[A-Za-z0-9_][A-Za-z0-9_.-]{0,119}$ && $DEV_TAG != latest && $DEV_TAG != *-candidate-* ]] \
   || die "invalid tilo-vm tag: $DEV_TAG"
 case "$ARCH" in
@@ -221,6 +223,7 @@ TILO_PACKAGE_UPLOAD_WORKERS=2 "$REPO/tools/upload_immutable_packages.sh" "$uploa
 
 # ---- 4. the commit point for this architecture ---------------------------------
 jq -n --arg tag "$DEV_TAG" --arg arch "$ARCH" --arg source "$SOURCE_REVISION" \
+  --arg tooling "$DISK_TOOLING_REVISION" \
   --arg image "$index_tag" --arg child "$child_tag" --arg imageDigest "$image_digest" \
   --arg baseImage "$BASE_REPOSITORY" --arg baseTrust "$BASE_TRUST" --arg baseDigest "$BASE_INDEX_DIGEST" \
   --argjson disks "$disks" --argjson directBoot "$direct_boot" '
@@ -229,6 +232,7 @@ jq -n --arg tag "$DEV_TAG" --arg arch "$ARCH" --arg source "$SOURCE_REVISION" \
     tag: $tag,
     arch: $arch,
     sourceRevision: $source,
+    diskToolingRevision: $tooling,
     image: $image,
     childImage: $child,
     imageDigest: $imageDigest,
