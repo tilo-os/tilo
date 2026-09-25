@@ -174,7 +174,8 @@ fn existing_identity_failure_action(
 fn verify_existing_identity_with_retry(
     mut verify: impl FnMut() -> Result<firstboot::ProvisionOutcome, std::io::Error>,
 ) -> Result<firstboot::ProvisionOutcome, std::io::Error> {
-    for attempt in 1..=SECRET_SERVICE_STARTUP_ATTEMPTS {
+    let mut attempt = 1;
+    loop {
         match verify() {
             Err(error)
                 if identity_provisioning::is_secret_service_unavailable(&error)
@@ -186,11 +187,34 @@ fn verify_existing_identity_with_retry(
                     "Secret Service is not ready; retrying existing identity verification"
                 );
                 std::thread::sleep(SECRET_SERVICE_STARTUP_RETRY_DELAY);
+                attempt = attempt.saturating_add(1);
             }
             result => return result,
         }
     }
-    unreachable!("the final startup verification attempt always returns")
+}
+
+/// Once the identity chain verifies, an interrupted pre-acquisition journal
+/// is residue, not a reason to send an established user through recovery.
+fn reconcile_verified_onboarding_progress(
+    identity_dir: &std::path::Path,
+) -> Option<std::process::ExitCode> {
+    match shell::onboarding_view::clear_verified_pre_acquisition_progress(identity_dir) {
+        Ok(true) => {
+            tracing::info!(
+                "cleared interrupted pre-acquisition onboarding journal after identity verification"
+            );
+            None
+        }
+        Ok(false) => None,
+        Err(error) => {
+            tracing::error!(
+                %error,
+                "could not reconcile verified identity onboarding progress"
+            );
+            Some(std::process::ExitCode::FAILURE)
+        }
+    }
 }
 
 fn prepare_identity(provision_requested: bool) -> Option<std::process::ExitCode> {
@@ -287,21 +311,10 @@ fn prepare_identity(provision_requested: bool) -> Option<std::process::ExitCode>
                     }
                 }
             }
-            if !provision_requested {
-                match shell::onboarding_view::clear_verified_pre_acquisition_progress(identity_dir)
-                {
-                    Ok(true) => tracing::info!(
-                        "cleared interrupted pre-acquisition onboarding journal after identity verification"
-                    ),
-                    Ok(false) => {}
-                    Err(error) => {
-                        tracing::error!(
-                            %error,
-                            "could not reconcile verified identity onboarding progress"
-                        );
-                        return Some(std::process::ExitCode::FAILURE);
-                    }
-                }
+            if !provision_requested
+                && let Some(exit) = reconcile_verified_onboarding_progress(identity_dir)
+            {
+                return Some(exit);
             }
             if provision_requested {
                 tracing::info!("Tilo collaboration identity is provisioned");

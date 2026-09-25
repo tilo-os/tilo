@@ -685,9 +685,11 @@ impl SidebarWheelDisc {
     }
 
     /// The width available to a sector's label chip, in pixels — what
-    /// `draw` uses, exposed for callers needing the same answer.
-    pub fn label_chip_width(&self) -> f64 {
-        LABEL_MAX_W
+    /// `draw` uses, exposed for callers needing the same answer. Labels sit
+    /// outside the rim, so a larger text scale widens them instead of
+    /// eliding the name the person enlarged.
+    pub fn label_chip_width(theme: &Theme) -> f64 {
+        LABEL_MAX_W * f64::from(theme.text_scale.max(1.0))
     }
 
     /// Lucide icon for the spoke at `idx`, by lower-cased label;
@@ -1559,10 +1561,11 @@ impl SidebarWheelDisc {
     /// click target; only the oversized pie-slice presentation is gone. See
     /// [`Self::draw_one_sector_label`].
     fn draw_labels(&mut self, ctx: &mut DrawCtx<'_>, geom: &DiscGeometry) {
-        let inactive_h = self.inactive_chip_height(LABEL_MAX_W, ctx.theme, ctx.text_renderer);
+        let max_w = Self::label_chip_width(ctx.theme);
+        let inactive_h = self.inactive_chip_height(max_w, ctx.theme, ctx.text_renderer);
         let layout = LabelLayout {
             radial_start: geom.c.x + geom.r_out + LABEL_RIM_GAP,
-            max_w: LABEL_MAX_W,
+            max_w,
             inactive_h,
         };
 
@@ -1646,7 +1649,7 @@ impl SidebarWheelDisc {
             return;
         }
 
-        self.draw_rim_marker(ctx, geom, slot, fade_a);
+        Self::draw_rim_marker(ctx, geom, slot, fade_a);
 
         let style = if slot.is_active {
             ChipStyle::bare(None)
@@ -1684,13 +1687,7 @@ impl SidebarWheelDisc {
     /// Restrained selection treatment: a small seat on the rim and, for the
     /// active workspace, a short coloured glint. Nothing reaches toward the
     /// disc centre, so it can never read as a pizza sector.
-    fn draw_rim_marker(
-        &self,
-        ctx: &mut DrawCtx<'_>,
-        geom: &DiscGeometry,
-        slot: &SectorSlot,
-        alpha: f32,
-    ) {
+    fn draw_rim_marker(ctx: &mut DrawCtx<'_>, geom: &DiscGeometry, slot: &SectorSlot, alpha: f32) {
         let colors = &ctx.theme.tokens.colors;
         let base = Self::spoke_color(slot.idx, colors);
         let anchor = polar(geom.c, geom.r_out, slot.mid);
@@ -2576,7 +2573,7 @@ mod tests {
                      (chip width {:.1}, names need {LABEL_MIN_W})",
                     placed.len(),
                     d.spokes.len(),
-                    d.label_chip_width()
+                    SidebarWheelDisc::label_chip_width(&Theme::default())
                 );
             }
         }
@@ -2854,10 +2851,17 @@ mod tests {
             d.rect.x1,
             pointer.x
         );
+        // The docked rim spans its whole slot, so the vertical centre is the
+        // pointer clamped to where the footprint still fits inside the slot.
         let centre_y = f64::midpoint(d.rect.y0, d.rect.y1);
+        let half = docked.height() / 2.0;
+        let expected_y = pointer
+            .y
+            .clamp(slot.y0 + half, (slot.y1 - half).max(slot.y0 + half));
         assert!(
-            (centre_y - pointer.y).abs() < 1.0,
-            "the disc centres on the pointer vertically, got {centre_y} for pointer y={}",
+            (centre_y - expected_y).abs() < 1.0,
+            "the disc centres on the pointer as far as the slot allows, got {centre_y} \
+             for pointer y={} (expected {expected_y})",
             pointer.y
         );
 
@@ -3824,7 +3828,7 @@ mod tests {
         layout_into_slot(&mut d, live_slot());
         let mut tr = TextRenderer::new();
         let theme = Theme::dark();
-        let chip_w = d.label_chip_width();
+        let chip_w = SidebarWheelDisc::label_chip_width(&theme);
         assert!(chip_w > LABEL_MIN_W, "band too shallow to test: {chip_w}");
 
         for (idx, name) in ["Home", "Research", "Design"].iter().enumerate() {
@@ -3973,7 +3977,7 @@ mod tests {
         layout_into_slot(&mut d, live_slot());
         let mut tr = TextRenderer::new();
         let theme = Theme::dark().with_text_scale(2.0);
-        let chip_w = d.label_chip_width();
+        let chip_w = SidebarWheelDisc::label_chip_width(&theme);
         assert!(chip_w > LABEL_MIN_W, "band too shallow to test: {chip_w}");
 
         let inactive_h = d.inactive_chip_height(chip_w, &theme, &mut tr);
@@ -4018,7 +4022,7 @@ mod tests {
         layout_into_slot(&mut d, live_slot());
         let mut tr = TextRenderer::new();
         let theme = Theme::dark();
-        let chip_w = d.label_chip_width();
+        let chip_w = SidebarWheelDisc::label_chip_width(&theme);
         assert_eq!(
             d.chip_height_for(1, chip_w, SECTOR_CHIP_H, &theme, &mut tr),
             None,
@@ -4049,7 +4053,7 @@ mod tests {
         layout_into_slot(&mut d, Rect::new(0.0, 168.0, 220.0, 511.0));
         let mut tr = TextRenderer::new();
         let theme = Theme::dark().with_text_scale(2.0);
-        let chip_w = d.label_chip_width();
+        let chip_w = SidebarWheelDisc::label_chip_width(&theme);
         let fits_anywhere = (0..3).any(|idx| {
             d.chip_height_for(idx, chip_w, SECTOR_CHIP_H_ACTIVE, &theme, &mut tr)
                 .is_some()

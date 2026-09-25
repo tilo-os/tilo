@@ -155,9 +155,10 @@ impl PresentPipe {
                                     queue_wait.as_micros(),
                                     render.as_micros(),
                                     total.as_micros(),
-                                    input_age_at_enqueue
-                                        .map(|age| age.as_micros().to_string())
-                                        .unwrap_or_else(|| "none".to_owned()),
+                                    input_age_at_enqueue.map_or_else(
+                                        || "none".to_owned(),
+                                        |age| age.as_micros().to_string()
+                                    ),
                                 );
                             }
                             *thread_last_retirement
@@ -295,7 +296,10 @@ impl PresentPipe {
             .submitted
             .fetch_add(1, Ordering::AcqRel)
             .saturating_add(1);
-        let inflight_at_enqueue = self.inflight.fetch_add(1, Ordering::AcqRel) + 1;
+        let inflight_at_enqueue = self
+            .inflight
+            .fetch_add(1, Ordering::AcqRel)
+            .saturating_add(1);
         let enqueued_at = Instant::now();
         if self
             .tx

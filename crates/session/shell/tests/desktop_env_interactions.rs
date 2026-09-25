@@ -398,15 +398,23 @@ fn shift_resize_handle_redistributes_width_between_neighbours() {
     release(&mut host, &layout);
     host.tick_pending_width_harvest_for_tests();
 
-    let st = chrome.borrow();
-    let tree = st.tree();
-    let groups = &tree.desktop.workspaces[0].strips[0].window_groups;
-    let left = groups.iter().find(|g| g.id == ids[0]).unwrap();
-    let right = groups.iter().find(|g| g.id == ids[1]).unwrap();
-    assert_approx_eq!(left.width.resolve(usable), start_px + 40.0);
-    assert_approx_eq!(right.width.resolve(usable), start_px - 40.0);
+    let (left_px, right_px) = {
+        let st = chrome.borrow();
+        let groups = &st.tree().desktop.workspaces[0].strips[0].window_groups;
+        let width_of = |id| {
+            groups
+                .iter()
+                .find(|g| g.id == id)
+                .unwrap()
+                .width
+                .resolve(usable)
+        };
+        (width_of(ids[0]), width_of(ids[1]))
+    };
+    assert_approx_eq!(left_px, start_px + 40.0);
+    assert_approx_eq!(right_px, start_px - 40.0);
     assert_approx_eq!(
-        left.width.resolve(usable) + right.width.resolve(usable),
+        left_px + right_px,
         start_px * 2.0,
         "Shift-resize deliberately preserves the adjacent pair's total width",
     );
@@ -767,10 +775,21 @@ fn expand_maximizes_beneath_the_top_bar() {
 /// `display:none` from the maximized frame.
 #[test]
 fn restore_brings_back_the_workspace_switcher() {
-    let (mut tree, strip_id, _ids) = single_strip_tree(&[100]);
-    tree.desktop.workspaces[0].strips[0].window_groups[0].maximized = true;
+    let (tree, strip_id, _ids) = single_strip_tree(&[100]);
     let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&tree);
+    let restored_layout = lay_out_host(&mut host);
 
+    // Expand through the same one-shot toggle the Expand chip publishes,
+    // dispatching once so `WindowGroup` drains it into the harvest path.
+    host.group_at_for_tests(strip_id, 0)
+        .expect("group after layout")
+        .publish_maximize_intent_for_tests();
+    cursor(
+        &mut host,
+        &restored_layout,
+        Point::new(f64::from(W) - 1.0, f64::from(H) - 1.0),
+    );
+    host.tick_pending_maximize_harvest_for_tests();
     let maximized_layout = lay_out_host(&mut host);
     assert!(chrome.borrow().is_fullscreen());
     assert_approx_eq!(

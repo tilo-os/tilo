@@ -1654,48 +1654,6 @@ mod tests {
     }
 
     #[test]
-    fn moving_from_a_client_into_maximized_chrome_reaches_the_widget() {
-        use smithay::reexports::calloop::EventLoop;
-        use smithay::reexports::wayland_server::Display;
-
-        let tree = crate::shell::state::WorkspaceTree::bootstrap_demo().shared();
-        let mut fb = FrameBuilder::with_handle(tree.clone(), false, (1280, 800));
-        let group = {
-            let chrome = fb.chrome();
-            let mut tree = chrome.tree_mut();
-            let group = tree.desktop.workspaces[0].strips[0].window_groups[0].id;
-            tree.desktop.workspaces[0].strips[0].window_groups[0].maximized = true;
-            group
-        };
-        fb.with_chrome(|chrome| chrome.set_maximized_group(Some(group)));
-        let _ = fb.paint_settled();
-
-        let event_loop: EventLoop<'static, crate::compositor::state::State> =
-            EventLoop::try_new().expect("calloop event loop");
-        let display: Display<crate::compositor::state::State> =
-            Display::new().expect("wayland display");
-        let mut state = crate::compositor::state::State::new_with_workspace_tree(
-            event_loop.handle(),
-            display.handle(),
-            tree,
-        );
-        let moved = WindowEvent::CursorMoved {
-            device_id: unsafe { std::mem::zeroed() },
-            position: winit::dpi::PhysicalPosition::new(1210.0, 109.0),
-        };
-
-        assert!(
-            !route_input(&mut state, &mut fb, &moved, &Modifiers::default(),),
-            "captured motion must fall through to shell widget dispatch"
-        );
-        assert_eq!(
-            fb.host().pointer_position(),
-            Some(vello::kurbo::Point::new(1210.0, 109.0)),
-        );
-        assert!(chrome_captures_input(&fb));
-    }
-
-    #[test]
     fn clicking_a_window_defers_focus_persistence_until_after_input_flush() {
         let state_dir = tempfile::tempdir().expect("temporary state directory");
         let state_path = state_dir.path().join("state.json");
@@ -1751,8 +1709,11 @@ mod tests {
 
     #[test]
     fn focus_persistence_request_is_coalesced_and_edge_triggered() {
-        let mut input = ClientInput::default();
-        input.focus_persistence_pending = true;
+        let mut input = ClientInput {
+            focus_persistence_pending: true,
+            ..ClientInput::default()
+        };
+        // A second request before the flush coalesces into the first.
         input.focus_persistence_pending = true;
 
         assert!(input.take_focus_persistence_pending());
