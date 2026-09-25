@@ -726,6 +726,10 @@ impl MergeView {
         clippy::too_many_arguments,
         reason = "each argument is an independently-meaningful draw input; a params struct would just be destructured back apart immediately"
     )]
+    #[expect(
+        clippy::many_single_char_names,
+        reason = "c/m/y/r/h follow this file's graphics convention (colour tokens, metrics, position, rect, hunk)"
+    )]
     fn draw_hunk_action_chips(
         scene: &mut Scene,
         transform: Affine,
@@ -764,15 +768,7 @@ impl MergeView {
         // hunk still needs a resolution, while every chip says what it will do.
         let status = resolution_label(h.resolution);
         let status_label = if compact {
-            match h.resolution {
-                Resolution::Conflict => "Conflict",
-                Resolution::Ours
-                | Resolution::Theirs
-                | Resolution::TookOurs
-                | Resolution::TookTheirs
-                | Resolution::TookBoth => "Resolved",
-                Resolution::Unchanged => "",
-            }
+            compact_status_label(h.resolution)
         } else {
             status.0
         };
@@ -1412,6 +1408,20 @@ fn chip_is_selected(current: Resolution, chip: HunkChoice) -> bool {
             )
             | (Resolution::TookBoth, HunkChoice::Both)
     )
+}
+
+/// The phone-width status label: only whether the hunk still needs a
+/// resolution, so it stays distinct from the chips that say what they do.
+const fn compact_status_label(res: Resolution) -> &'static str {
+    match res {
+        Resolution::Conflict => "Conflict",
+        Resolution::Ours
+        | Resolution::Theirs
+        | Resolution::TookOurs
+        | Resolution::TookTheirs
+        | Resolution::TookBoth => "Resolved",
+        Resolution::Unchanged => "",
+    }
 }
 
 /// Status label + colour-class for a hunk's resolution.

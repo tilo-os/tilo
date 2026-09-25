@@ -512,6 +512,10 @@ impl ChangesColumn {
         clippy::too_many_arguments,
         reason = "internal draw-step split of an over-length function"
     )]
+    #[expect(
+        clippy::many_single_char_names,
+        reason = "t/y/c/m/h follow this file's graphics convention (transform, position, colour tokens, metrics, header layout)"
+    )]
     fn section_header(
         scene: &mut Scene,
         tr: &mut TextRenderer,
@@ -590,6 +594,19 @@ impl ChangesColumn {
         y + section_h
     }
 
+    /// The selected row's tint: a quiet surface wash keeps selection
+    /// discoverable without turning a whole row into a saturated accent
+    /// block. The accent rail remains the strong, stable selection cue.
+    fn paint_row_selection(scene: &mut Scene, t: Affine, theme: &Theme, row: Rect) {
+        draw::fill_rect(scene, t, row, theme.tokens.colors.lift(0.72));
+        draw::fill_rect(
+            scene,
+            t,
+            Rect::new(row.x0, row.y0, row.x0 + 3.0, row.y1),
+            theme.accent_primary,
+        );
+    }
+
     /// One file row: selection tint, status badge, name/dir, +/- counts,
     /// and the stage/unstage chevron button (part of [`Self::section`]).
     #[allow(
@@ -617,19 +634,8 @@ impl ChangesColumn {
     ) {
         let c = &theme.tokens.colors;
         let row_h = m.row_h;
-        let rrect = Rect::new(area.x0, y, area.x1, y + row_h);
-        let is_sel = selected == Some((change_area, i));
-        if is_sel {
-            // A quiet surface wash keeps selection discoverable without
-            // turning a whole row into a saturated accent block. The accent
-            // rail below remains the strong, stable selection cue.
-            draw::fill_rect(scene, t, rrect, c.lift(0.72));
-            draw::fill_rect(
-                scene,
-                t,
-                Rect::new(area.x0, y, area.x0 + 3.0, y + row_h),
-                theme.accent_primary,
-            );
+        if selected == Some((change_area, i)) {
+            Self::paint_row_selection(scene, t, theme, Rect::new(area.x0, y, area.x1, y + row_h));
         }
 
         // Everything in a row sits on one centre line. The +/- counts used to
@@ -1075,6 +1081,10 @@ mod tests {
     /// touching at 1× and at 2×: the title elides before the badge and the
     /// badge ends before the action starts.
     #[test]
+    #[expect(
+        clippy::float_cmp,
+        reason = "layout reproduces authored whole-pixel sizes and their sums exactly in binary floating point; exact equality is what the test checks"
+    )]
     fn section_header_title_badge_and_action_never_collide() {
         let theme = Theme::dark();
         let gap = f64::from(theme.tokens.spacing.s2);
@@ -1103,7 +1113,7 @@ mod tests {
                     .0,
             );
             assert!((h.badge_x - (h.title_x + title_w + gap)).abs() < 0.01);
-            if scale == 1.0 {
+            if (scale - 1.0).abs() < f32::EPSILON {
                 assert_eq!(h.title, "Unstaged Changes", "1× keeps the full title");
                 assert_eq!(h.badge_h, 16.0, "1× badge is the historical 16 px pill");
             } else {

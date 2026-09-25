@@ -195,9 +195,11 @@ fn diagnostics_leave_zero_operation_transactions_and_patch_history_untouched() {
 #[ignore = "manual cost comparison, not a timing correctness assertion"]
 fn diagnostics_clone_witness_cost() {
     let (mut app, mut doc, key) = fixture();
-    let source = (0..2000)
-        .map(|i| format!("fn function_{i}() {{ let value = {i}; }}\n"))
-        .collect::<String>();
+    let source = (0..2000).fold(String::new(), |mut source, i| {
+        use std::fmt::Write as _;
+        writeln!(source, "fn function_{i}() {{ let value = {i}; }}").unwrap();
+        source
+    });
     replace(&mut doc, &key, &source);
     doc.commit();
     let object = EditorDoc::buffer_text_key(&doc, &key).unwrap();
