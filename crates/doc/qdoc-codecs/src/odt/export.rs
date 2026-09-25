@@ -640,44 +640,74 @@ fn odf_num_format(fmt: &str) -> &'static str {
 
 /// A `text:list-style` definition reconstructing a level-0 numbering (format + start) so an
 /// ordered list re-imports with its numbering intact; `name` is the generated automatic-style name.
-fn list_style_def_xml(name: &str, fmt: &str, start: i64) -> String {
-    let nf = odf_num_format(fmt);
-    let sv = if start == 1 {
-        String::new()
-    } else {
-        format!(r#" text:start-value="{start}""#)
-    };
-    format!(
-        r#"<text:list-style style:name="{name}"><text:list-level-style-number text:level="1" style:num-format="{nf}"{sv}/></text:list-style>"#
-    )
+/// A `text:list-style` definition for a list of `key`'s kind: numbered in the model's format
+/// from its start, or bulleted. Every level is defined, since a nested list without a style of
+/// its own continues its parent's at the deeper level.
+fn list_style_def_xml(name: &str, key: &ListKey) -> String {
+    let mut levels = String::new();
+    for level in 1..=10 {
+        if key.ordered {
+            let nf = odf_num_format(&key.format);
+            let sv = if key.start == 1 || level > 1 {
+                String::new()
+            } else {
+                format!(r#" text:start-value="{}""#, key.start)
+            };
+            let _ = write!(
+                levels,
+                r#"<text:list-level-style-number text:level="{level}" style:num-suffix="." style:num-format="{nf}"{sv}/>"#
+            );
+        } else {
+            let _ = write!(
+                levels,
+                r#"<text:list-level-style-bullet text:level="{level}" text:bullet-char="•"/>"#
+            );
+        }
+    }
+    format!(r#"<text:list-style style:name="{name}">{levels}</text:list-style>"#)
 }
 
-/// A registered reconstructed list-style: its generated name + the `(format, start)` key it encodes + its full XML.
+/// What a list's style encodes: numbered (in a format, from a start) or bulleted.
+#[derive(Clone, PartialEq, Eq)]
+struct ListKey {
+    ordered: bool,
+    format: String,
+    start: i64,
+}
+
+impl ListKey {
+    fn of(li: &BlockView) -> Self {
+        let ordered = snap_list_ordered(li);
+        Self {
+            ordered,
+            format: if ordered {
+                snap_num_format(li).to_string()
+            } else {
+                String::new()
+            },
+            start: if ordered { snap_num_start(li) } else { 1 },
+        }
+    }
+}
+
+/// A registered reconstructed list-style: its generated name + the key it encodes + its full XML.
 struct ListStyle {
     name: String,
-    key: (String, i64),
+    key: ListKey,
     xml: String,
 }
 
-/// The opening `<text:list …>` tag for the list `li` lives in. An ordered item with a
-/// non-default format and/or start gets a reconstructed `text:list-style` (deduped on
-/// `(format, start)`), plus `text:start-value` (a restart) or `text:continue-numbering`.
+/// The opening `<text:list …>` tag for the list `li` lives in, referencing a reconstructed
+/// `text:list-style` (deduped on its key), plus `text:start-value` (a restart) or
+/// `text:continue-numbering`. Without a style a list re-imports, and renders, unnumbered.
 fn open_list_tag(li: &BlockView, list_styles: &mut Vec<ListStyle>) -> String {
-    if !snap_list_ordered(li) {
-        return "<text:list>".to_string();
-    }
-    let fmt = snap_num_format(li);
-    let start = snap_num_start(li);
-    // Plain decimal-from-1 ordered lists need no explicit style (LibreOffice's default), keeping the output minimal.
-    if fmt == "decimal" && start == 1 {
-        return "<text:list>".to_string();
-    }
-    let key = (fmt.to_string(), start);
+    let key = ListKey::of(li);
+    let start = key.start;
     let name = if let Some(s) = list_styles.iter().find(|s| s.key == key) {
         s.name.clone()
     } else {
         let name = format!("Lqdoc{}", list_styles.len().saturating_add(1));
-        let xml = list_style_def_xml(&name, fmt, start);
+        let xml = list_style_def_xml(&name, &key);
         list_styles.push(ListStyle {
             name: name.clone(),
             key,
@@ -1172,14 +1202,24 @@ fn render_list_run(
 ) {
     let mut depth: i64 = 0; // number of <text:list> currently open
     let mut item_open = false; // a <text:list-item> awaiting its close
+    let mut top: Option<ListKey> = None; // what the outermost open list encodes
     while let Some(li) = snap.blocks.get(*i).filter(|b| b.kind == "list_item") {
         let target = snap_list_level(li).saturating_add(1); // lists that should be open
+        let key = ListKey::of(li);
+        // A top-level item of another kind (numbered after bulleted, another format) starts a new list.
+        if target == 1 && depth > 0 && top.as_ref() != Some(&key) {
+            close_lists(body, &mut depth, &mut item_open);
+        }
+        if depth == 0 {
+            top = Some(key.clone());
+        }
         if target > depth {
-            // Deeper: open new lists nested inside the current open item. The innermost (last) list
-            // opened is the one `li` lives in, so it gets `li`'s numbering reference.
+            // Deeper: open new lists nested inside the current open item. The outermost list,
+            // and the innermost one when it differs from it, reference `li`'s list style; the
+            // others continue the outer list's style at their level.
             while depth < target {
                 depth = depth.saturating_add(1);
-                let open = if depth == target {
+                let open = if depth == 1 || (depth == target && top.as_ref() != Some(&key)) {
                     open_list_tag(li, list_styles)
                 } else {
                     "<text:list>".to_string()
@@ -1206,13 +1246,18 @@ fn render_list_run(
         item_open = true;
         *i = i.saturating_add(1);
     }
-    if item_open {
+    close_lists(body, &mut depth, &mut item_open);
+}
+
+/// Close the open list item and every open list.
+fn close_lists(body: &mut String, depth: &mut i64, item_open: &mut bool) {
+    if std::mem::take(item_open) {
         body.push_str("</text:list-item>");
     }
-    while depth > 0 {
+    while *depth > 0 {
         body.push_str("</text:list>");
-        depth = depth.saturating_sub(1);
-        if depth > 0 {
+        *depth = depth.saturating_sub(1);
+        if *depth > 0 {
             body.push_str("</text:list-item>");
         }
     }
@@ -1906,6 +1951,34 @@ mod tests {
             Some(&AttrVal::Int(80)),
             "{:?}",
             im.attrs
+        );
+    }
+
+    #[test]
+    fn numbered_then_bulleted_lists_stay_apart_and_numbered() {
+        let mut d = Document::new();
+        let one = d.insert_block(None, "list_item");
+        d.splice_text(&one, 0, 0, "one");
+        d.as_mut().set_attr(&one, "ordered", true);
+        let bullet = d.insert_block(Some(&one), "list_item");
+        d.splice_text(&bullet, 0, 0, "dot");
+        d.as_mut().set_attr(&bullet, "ordered", false);
+
+        let exported = OdtCodec.export(d.as_ref()).unwrap();
+        let cont = OdtContainer::read(&exported).unwrap();
+        let content = std::str::from_utf8(cont.get("content.xml").unwrap()).unwrap();
+        assert_eq!(content.matches("<text:list ").count(), 2, "{content}");
+
+        let mut d2 = Document::new();
+        OdtCodec.import(&exported, &mut d2.as_mut()).unwrap();
+        let snap = d2.materialize();
+        assert_eq!(
+            snap.blocks[0].attrs.get("ordered"),
+            Some(&AttrVal::Bool(true))
+        );
+        assert_eq!(
+            snap.blocks[1].attrs.get("ordered"),
+            Some(&AttrVal::Bool(false))
         );
     }
 
