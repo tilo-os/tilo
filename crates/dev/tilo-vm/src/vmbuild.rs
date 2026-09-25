@@ -71,7 +71,7 @@ pub fn rsync_command(
         source.push('/');
     }
     CommandLine::new(
-        "rsync",
+        &crate::host::rsync_program().unwrap_or_else(|| "rsync".into()),
         &[
             "--archive",
             "--delete",
@@ -92,7 +92,7 @@ pub fn rsync_command(
 
 /// MSYS2 rsync parses `C:\...` as a remote `host:path` operand. Use its
 /// `/c/...` mount syntax for a Windows worktree passed as a local source.
-fn rsync_source(root: &Path) -> String {
+pub(crate) fn rsync_source(root: &Path) -> String {
     let path = root.display().to_string();
     #[cfg(windows)]
     {
@@ -261,6 +261,9 @@ mod tests {
             line.args[line.args.len() - 2],
             "/c/Users/xaver/qos-tilo-main/"
         );
+        if let Some(found) = crate::host::which_all("rsync").first() {
+            assert_eq!(line.program, found.display().to_string());
+        }
     }
 
     #[test]
