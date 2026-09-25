@@ -2656,20 +2656,6 @@ fn tile_signature(tile: &crate::shell::state::TileContent) -> String {
     serde_json::to_string(tile).unwrap_or_default()
 }
 
-/// Whether `tile`, about to replace a tab's contents, is a client window
-/// that hasn't drawn anything yet — only a foreign surface can answer
-/// yes, since everything else is on screen the moment it's built. Looser
-/// than the window group's own paint-time check, because the tab's rect
-/// only reaches the client once this swap has happened.
-fn window_is_still_starting(tile: &crate::shell::state::TileContent) -> bool {
-    match tile {
-        crate::shell::state::TileContent::Foreign { surface_id, .. } => {
-            crate::compositor::foreign::store().frame_seq(*surface_id) == 0
-        }
-        _ => false,
-    }
-}
-
 /// `(strip_id, groups)` where each group is `(group_id, tab_ids)` — the
 /// per-strip snapshot [`ShellOverlayHost::groups_per_strip`] returns for
 /// tests.
@@ -4957,17 +4943,15 @@ impl ShellOverlayHost {
                     for (idx, tab) in g.tabs.iter().enumerate() {
                         let signature = tile_signature(&tab.tile);
                         if live_tab_ids.contains(&tab.id) {
-                            // A placeholder becoming a window: held
-                            // off by `window_is_still_starting` until the
-                            // surface has drawn, so a swap doesn't replace
-                            // an "opening" card with a blank frame — the
-                            // signature is left unrecorded so it retries.
+                            // Install the foreign widget before its first
+                            // buffer: layout must publish its configure size.
+                            // TileHost retains visibility and owns the opening
+                            // card until the new content is ready to present.
                             let resource_replaced = !creation_failures.contains_key(&tab.id)
                                 && live
                                     .host_for_tab_mut(tab.id)
                                     .is_some_and(|host| host.record_creation_refused());
                             if (tab_tiles.get(&tab.id) != Some(&signature) || resource_replaced)
-                                && !window_is_still_starting(&tab.tile)
                                 && let Some(host) = live.host_for_tab_mut(tab.id)
                             {
                                 host.replace_content(crate::shell::to_ui_tile_for_tab_with_inputs(
@@ -34860,4 +34844,12 @@ mod roster_rows {
             "the hint cannot paint above a session-action sheet"
         );
     }
+}
+
+#[cfg(test)]
+pub(crate) fn install_fixture_search_provider(
+    host: &mut ShellOverlayHost,
+    provider: std::rc::Rc<dyn crate::shell::search::SearchProvider>,
+) {
+    host.search_registry.register_or_replace(provider);
 }

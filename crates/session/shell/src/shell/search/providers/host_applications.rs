@@ -552,6 +552,47 @@ mod tests {
     }
 
     #[test]
+    fn action_catalog_discovers_cold_host_apps_without_opening_palette() {
+        use crate::shell::chrome_state::SearchScope;
+        use crate::shell::search::SearchRegistry;
+        use crate::shell::search::action_api::{ActionCatalog, AllVisible, ResourceRef};
+        use std::rc::Rc;
+        use std::time::{Duration, Instant};
+
+        let source = HostAppsTestSource::new(
+            vec![app("org.fixture.Calculator", "Calculator")],
+            Vec::new(),
+        );
+        let mut registry = SearchRegistry::new();
+        registry.register(Rc::new(HostApplicationsProvider::with_test_source(source)));
+        let chrome = chrome_rc();
+        let doc = AutoCommit::new();
+        let target = ResourceRef::new("host-applications", "org.fixture.Calculator");
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            let catalog = ActionCatalog::build(
+                &registry,
+                "Calculator",
+                SearchScope::All,
+                None,
+                &chrome.borrow(),
+                &doc,
+                &automerge::ROOT,
+                &AllVisible,
+            );
+            if let Some(action) = catalog.select(&target) {
+                assert_eq!(action.title(), "Open Calculator");
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "remote action discovery must populate a cold host-app index without palette input"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    #[test]
     fn cold_and_warm_public_pages_never_rescan_a_hundred_thousand_host_apps() {
         let chrome = chrome_rc();
         let chrome = chrome.borrow();
