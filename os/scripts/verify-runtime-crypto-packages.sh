@@ -139,6 +139,8 @@ openvpn
 openssh-server
 openssl
 openssl-devel
+perl-IO-Socket-SSL
+perl-Net-SSLeay
 pesign
 python3-dbus-next
 python3-gobject
