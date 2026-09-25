@@ -22,6 +22,7 @@ $vars = Join-Path $cycleDir 'vars.fd'
 $pidFile = Join-Path $run 'qemu.pid'
 $serial = Join-Path $run 'serial.log'
 $uart = Join-Path $run 'uart.log'
+$proof = Join-Path $run 'install-proof.log'
 
 function Resolve-Tool([string]$name) {
     $override = if ($name -eq 'qemu-img') { $env:TILO_QEMU_IMG } else { $env:TILO_QEMU_SYSTEM }
@@ -95,6 +96,7 @@ function Boot([bool]$installer, [string[]]$flags) {
     $qemu = Resolve-Tool 'qemu-system-aarch64'
     $img = Resolve-Tool 'qemu-img'
     if ($installer) {
+        if (Test-Path -LiteralPath $proof) { throw "stale installer proof file already exists: $proof" }
         if (!(Test-Path -LiteralPath $work)) { & $img create -f qcow2 -F qcow2 -b $medium $work | Out-Null; if ($LASTEXITCODE) { throw 'creating installer overlay failed' } }
         if (!(Test-Path -LiteralPath $target)) { & $img create -f qcow2 $target 40G | Out-Null; if ($LASTEXITCODE) { throw 'creating sparse target failed' } }
         $disks = @('-drive', "if=none,id=medium,format=qcow2,file=$work,cache=writeback,aio=threads", '-device', 'virtio-blk-pci,drive=medium,serial=tilo-installer-medium,bootindex=1', '-drive', "if=none,id=target,format=$targetFormat,file=$target,cache=writeback,aio=threads", '-device', 'virtio-blk-pci,drive=target,serial=tilo-install-target')
@@ -108,7 +110,8 @@ function Boot([bool]$installer, [string[]]$flags) {
     }
     $code = Resolve-Firmware 'edk2-aarch64-code.fd' $env:TILO_EFI_CODE
     # ProcessStartInfo.ArgumentList keeps paths and comma-bearing QEMU options intact.
-    $argv = @('-name', $cycle, '-machine', 'virt,gic-version=3,highmem=on', '-accel', 'whpx', '-cpu', 'host', '-smp', 'cpus=4', '-m', '8192', '-no-reboot', '-drive', "if=pflash,format=raw,readonly=on,file=$code", '-drive', "if=pflash,format=raw,file=$vars") + $disks + @('-device', 'virtio-gpu-pci,edid=on,xres=1280,yres=1024', '-device', 'qemu-xhci', '-device', 'usb-kbd', '-device', 'usb-tablet', '-netdev', 'user,id=net0', '-device', 'virtio-net-pci,netdev=net0', '-display', 'none', '-serial', "file:$uart", '-chardev', "file,id=tilo-ttyS0,path=$serial", '-device', 'pci-serial,chardev=tilo-ttyS0', '-device', 'virtio-serial-pci', '-chardev', "socket,id=tiloconsole,host=127.0.0.1,port=$env:TILO_CONSOLE_PORT,server=on,wait=off", '-device', 'virtserialport,chardev=tiloconsole,name=org.tilo.console.0', '-qmp', "tcp:127.0.0.1:$env:TILO_QMP_PORT,server=on,wait=off", '-monitor', 'none')
+    $proofPort = if ($installer) { @('-chardev', "file,id=tiloproof,path=$proof", '-device', 'virtserialport,chardev=tiloproof,name=org.tilo.vm-install-proof') } else { @() }
+    $argv = @('-name', $cycle, '-machine', 'virt,gic-version=3,highmem=on', '-accel', 'whpx', '-cpu', 'host', '-smp', 'cpus=4', '-m', '8192', '-no-reboot', '-drive', "if=pflash,format=raw,readonly=on,file=$code", '-drive', "if=pflash,format=raw,file=$vars") + $disks + @('-device', 'virtio-gpu-pci,edid=on,xres=1280,yres=1024', '-device', 'qemu-xhci', '-device', 'usb-kbd', '-device', 'usb-tablet', '-netdev', 'user,id=net0', '-device', 'virtio-net-pci,netdev=net0', '-display', 'none', '-serial', "file:$uart", '-chardev', "file,id=tilo-ttyS0,path=$serial", '-device', 'pci-serial,chardev=tilo-ttyS0', '-device', 'virtio-serial-pci', '-chardev', "socket,id=tiloconsole,host=127.0.0.1,port=$env:TILO_CONSOLE_PORT,server=on,wait=off", '-device', 'virtserialport,chardev=tiloconsole,name=org.tilo.console.0') + $proofPort + @('-qmp', "tcp:127.0.0.1:$env:TILO_QMP_PORT,server=on,wait=off", '-monitor', 'none')
     $start = [Diagnostics.ProcessStartInfo]::new($qemu)
     foreach ($arg in $argv) { $start.ArgumentList.Add([string]$arg) }
     $start.UseShellExecute = $false
