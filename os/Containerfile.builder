@@ -81,7 +81,7 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
 COPY tools/ci/check-build-env.sh /usr/local/bin/tilo-check-build-env
 RUN chmod +x /usr/local/bin/tilo-check-build-env && tilo-check-build-env
 
-# Keep the optional CI linker in the final layer so it does not invalidate the
+# Keep the CI linker in the final layer so it does not invalidate the
 # expensive native dependencies or Rust tools above. Fedora's aarch64 mold
 # package pulls in a mimalloc build that uses ARM LSE atomics, while the native
 # CI pool includes ARMv8.0 Graviton 1 hosts. Use mold's checksum-pinned baseline
@@ -107,7 +107,18 @@ RUN --mount=type=bind,from=external-assets,source=/,target=/tilo-assets,ro \
         > /usr/local/share/tilo-builder/mold-source.txt \
     && rm -rf "/tmp/${source}" \
     && mold --version
+#
+# mold is every job's default linker for the native GNU target. CI jobs point
+# CARGO_HOME at their restored download cache, so the image's own CARGO_HOME
+# config would not be read. The root /.cargo/config.toml is: Cargo searches it
+# from every working directory. It sets only the linker and the wrapper's
+# explicit target, so the workspace's hardening rustflags still apply, and a
+# cross target keeps its ordinary linker.
 COPY tools/ci/native-mold-linker.sh /usr/local/bin/tilo-ci-mold
 RUN --mount=type=bind,source=tools/ci/verify-native-mold.sh,target=/tmp/verify-native-mold.sh,ro \
     chmod 0755 /usr/local/bin/tilo-ci-mold \
+    && target="$(uname -m)-unknown-linux-gnu" \
+    && mkdir -p /.cargo \
+    && printf '[target.%s]\nlinker = "/usr/local/bin/tilo-ci-mold"\n\n[env]\nTILO_CI_MOLD_TARGET = "%s"\n' \
+        "$target" "$target" > /.cargo/config.toml \
     && bash /tmp/verify-native-mold.sh
