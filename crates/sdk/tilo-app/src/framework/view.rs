@@ -15,6 +15,7 @@ use super::controls::{ActionControl, Actions};
 use super::dispatch::Dispatcher;
 use super::each::Each;
 use super::live::Live;
+use super::stage::Stages;
 use super::surface::{ResourceSurface, SurfaceCx, SurfaceHost};
 use super::switch::Switch;
 
@@ -81,6 +82,7 @@ pub struct ViewCx<R: Resource, T: 'static = <R as Resource>::State> {
     pub(crate) item: Option<Id>,
     pub(crate) controls: Rc<RefCell<HashMap<String, u32>>>,
     pub(crate) saved: LocalState<RecordSaveStatus>,
+    pub(crate) stages: Stages,
 }
 
 impl<R: Resource> ViewCx<R> {
@@ -91,6 +93,7 @@ impl<R: Resource> ViewCx<R> {
         dispatch: Dispatcher<R>,
         published: tilo_actions::Resource,
         saved: LocalState<RecordSaveStatus>,
+        stages: Stages,
     ) -> Self {
         Self {
             live,
@@ -102,6 +105,7 @@ impl<R: Resource> ViewCx<R> {
             item: None,
             controls: Rc::default(),
             saved,
+            stages,
         }
     }
 }
@@ -152,6 +156,15 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
     /// Typed process-local view state: never persisted, shared or undone.
     pub fn local<V: Send + Sync + 'static>(&self, initial: V) -> LocalState<V> {
         LocalState::new(initial)
+    }
+
+    /// Stage view state for a screenshot scenario: `stage` runs with the
+    /// scenario's name (`None` for a plain `--shots`) after the scenario's
+    /// actions applied and before the frame is captured. Set the
+    /// [`LocalState`]s a scenario shows — a selection, an open dialog — the
+    /// way the user's input would. It never runs in a live window.
+    pub fn on_stage(&self, stage: impl FnMut(Option<&str>) + 'static) {
+        self.stages.push(self.alive.clone(), Box::new(stage));
     }
 
     fn reader<V: Default + 'static>(
@@ -294,6 +307,7 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
         let published = Rc::clone(&self.published);
         let controls = Rc::clone(&self.controls);
         let saved = self.saved.clone();
+        let stages = self.stages.clone();
         Each::new(
             self.live.clone(),
             self.dispatch.clone(),
@@ -313,6 +327,7 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
                     item: Some(id.clone()),
                     controls: Rc::clone(&controls),
                     saved: saved.clone(),
+                    stages: stages.clone(),
                 };
                 row(&mut cx)
             }),
@@ -374,6 +389,7 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
         let published = Rc::clone(&self.published);
         let item = self.item.clone();
         let saved = self.saved.clone();
+        let stages = self.stages.clone();
         Box::new(Switch::new(
             key.clone(),
             Box::new(move |value: &K, alive: &Rc<()>| {
@@ -388,6 +404,7 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
                     // Each build of the part names its controls afresh.
                     controls: Rc::default(),
                     saved: saved.clone(),
+                    stages: stages.clone(),
                 };
                 part(&mut cx, value)
             }),
@@ -402,10 +419,14 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
             live: self.live.clone(),
         });
         surface.present(&self.live.get());
-        Box::new(SurfaceHost::new(
-            self.live.clone(),
-            self.dispatch.clone(),
-            surface,
-        ))
+        let host = SurfaceHost::new(self.live.clone(), self.dispatch.clone(), surface);
+        let pending = host.staging();
+        self.stages.push(
+            self.alive.clone(),
+            Box::new(move |scenario| {
+                *pending.borrow_mut() = Some(scenario.map(str::to_owned));
+            }),
+        );
+        Box::new(host)
     }
 }
