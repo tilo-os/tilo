@@ -218,8 +218,8 @@ fn workspace_view_descriptors(
     tree: &crate::shell::state::DesktopTree,
     activity_available: bool,
 ) -> Vec<qos_desktop::activity::view_actions::WorkspaceViewDescriptor> {
-    use qos_desktop::activity::view_actions::{WorkspaceViewDescriptor, WorkspaceViewRequest};
     use qos_desktop::activity::ActivityView;
+    use qos_desktop::activity::view_actions::{WorkspaceViewDescriptor, WorkspaceViewRequest};
     let mut result = tree
         .workspaces
         .iter()

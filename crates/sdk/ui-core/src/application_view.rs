@@ -228,9 +228,7 @@ impl InstanceViewStore {
         self
     }
     pub(crate) fn matches_namespace(&self, namespace: &str, device: &str, workspace: &str) -> bool {
-        self.namespace() == namespace
-            && self.device_id == device
-            && self.workspace_id == workspace
+        self.namespace() == namespace && self.device_id == device && self.workspace_id == workspace
     }
     pub(crate) fn workspace_id(&self) -> &str {
         &self.workspace_id

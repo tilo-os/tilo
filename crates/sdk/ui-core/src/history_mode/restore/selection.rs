@@ -111,7 +111,9 @@ fn selected(
                             )));
                         }
                         if values.first().is_some_and(|value| {
-                            !builder.value_type(*value).is_ok_and(|found| expected_type.accepts(found))
+                            !builder
+                                .value_type(*value)
+                                .is_ok_and(|found| expected_type.accepts(found))
                         }) {
                             return Err(RestoreError::SchemaInvalid(format!(
                                 "wrong type for {path}"

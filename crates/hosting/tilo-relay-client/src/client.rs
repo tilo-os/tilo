@@ -146,7 +146,14 @@ impl RelayClient {
         .await?;
         let ack: HelloAck = postcard::from_bytes(&read_frame(&mut recv, MAX_FRAME_BYTES).await?)
             .map_err(|error| ClientError::Codec(error.to_string()))?;
-        auth::verify_hello_ack(AuthDomain::Tilo, &ack, &expected_server_user, &revocations, now_ns(), &nonce)?;
+        auth::verify_hello_ack(
+            AuthDomain::Tilo,
+            &ack,
+            &expected_server_user,
+            &revocations,
+            now_ns(),
+            &nonce,
+        )?;
         if ack.cert.device_public_key != expected_server_device {
             return Err(ClientError::Auth(AuthError::PolicyReject));
         }
@@ -304,8 +311,21 @@ impl RelayClient {
         let ack: HelloAck = postcard::from_bytes(&read_frame(&mut recv, MAX_FRAME_BYTES).await?)
             .map_err(|error| ClientError::Codec(error.to_string()))?;
         match expected_server.as_ref() {
-            Some((user, _)) => auth::verify_hello_ack(AuthDomain::Tilo, &ack, user, &revocations, now_ns(), &nonce)?,
-            None => auth::verify_pinned_host_ack(AuthDomain::Tilo, &ack, &revocations, now_ns(), &nonce)?,
+            Some((user, _)) => auth::verify_hello_ack(
+                AuthDomain::Tilo,
+                &ack,
+                user,
+                &revocations,
+                now_ns(),
+                &nonce,
+            )?,
+            None => auth::verify_pinned_host_ack(
+                AuthDomain::Tilo,
+                &ack,
+                &revocations,
+                now_ns(),
+                &nonce,
+            )?,
         };
         if let Some((_, expected_device)) = expected_server
             && ack.cert.device_public_key != expected_device
@@ -485,8 +505,14 @@ impl RelayClient {
         let now = now_ns();
         let relay_peer = match expected_server_user.as_ref() {
             Some(expected_user) => {
-                let relay_peer =
-                    auth::verify_hello_ack(AuthDomain::Tilo, &ack, expected_user, &revocations, now, &client_nonce)?;
+                let relay_peer = auth::verify_hello_ack(
+                    AuthDomain::Tilo,
+                    &ack,
+                    expected_user,
+                    &revocations,
+                    now,
+                    &client_nonce,
+                )?;
                 if expected_server_device.is_some_and(|expected_device| {
                     relay_peer.cert.device_public_key != expected_device
                 }) {
@@ -494,7 +520,13 @@ impl RelayClient {
                 }
                 relay_peer
             }
-            None => auth::verify_pinned_host_ack(AuthDomain::Tilo, &ack, &revocations, now, &client_nonce)?,
+            None => auth::verify_pinned_host_ack(
+                AuthDomain::Tilo,
+                &ack,
+                &revocations,
+                now,
+                &client_nonce,
+            )?,
         };
 
         let ack2 = auth::build_hello_ack2(AuthDomain::Tilo, &own_sk, &ack.server_nonce);

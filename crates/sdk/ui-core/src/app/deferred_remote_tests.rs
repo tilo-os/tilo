@@ -56,7 +56,17 @@ fn deferred_server_preferred_client_routes_address_without_minting() {
         CollaborationManager::with_peer_transport(HostedModelTransport(sent.clone()));
     let actor = app.collaboration.local_author.0.clone();
     let result = app
-        .invoke_resource_action_scoped(&tilo_actions::ActionAddress::new("test.counter", "create"), None, &actor, true, false, None, None, None, None)
+        .invoke_resource_action_scoped(
+            &tilo_actions::ActionAddress::new("test.counter", "create"),
+            None,
+            &actor,
+            true,
+            false,
+            None,
+            None,
+            None,
+            None,
+        )
         .unwrap();
     assert!(matches!(
         result,

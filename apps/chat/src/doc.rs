@@ -1404,7 +1404,9 @@ impl ChatDoc {
     fn channel_has_timeline(doc: &AutoCommit, channel: &str) -> bool {
         map_at(doc, &ROOT, "channels")
             .and_then(|channels| map_at(doc, &channels, channel))
-            .is_some_and(|row| read_str(doc, &row, "kind").unwrap_or_default() != ChannelKind::Voice.as_str())
+            .is_some_and(|row| {
+                read_str(doc, &row, "kind").unwrap_or_default() != ChannelKind::Voice.as_str()
+            })
     }
 
     fn channel_exists(doc: &AutoCommit, channel: &str) -> bool {

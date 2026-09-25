@@ -19,8 +19,8 @@
 //! - A simulated remote cursor floats over the active tile.
 
 pub mod actions;
-pub(crate) mod broker_services;
 pub(crate) mod animation_diagnostics;
+pub(crate) mod broker_services;
 pub(crate) mod capture_surface;
 pub mod catalogue;
 pub mod chrome_state;

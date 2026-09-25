@@ -245,7 +245,18 @@ fn check_deferred_bound_view_actor(foreign: bool, typed_empty: bool) {
         "mounted discovery is inert"
     );
     let json_empty = format!("{}{{}}", tilo_actions::ARGUMENTS_JSON_PREFIX);
-    let result = app.invoke_bound_target_with_broker_scoped(&target, typed_empty.then_some(json_empty.as_str()), actor, false, false, None, None, None, None, None);
+    let result = app.invoke_bound_target_with_broker_scoped(
+        &target,
+        typed_empty.then_some(json_empty.as_str()),
+        actor,
+        false,
+        false,
+        None,
+        None,
+        None,
+        None,
+        None,
+    );
     if foreign {
         assert!(
             matches!(result, Err(tilo_actions::DoorError::Unavailable { ref code, .. }) if code == "private_view")

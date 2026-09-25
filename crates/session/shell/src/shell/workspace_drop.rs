@@ -14,10 +14,10 @@
 
 use std::path::Path;
 
+use crate::shell::state::DesktopTree as RuntimeTree;
 use crate::shell::state::{
     AppKind, GroupId, StripId, Tab, TileContent, WindowGroup, WindowWidth, WorkspaceTree, next_id,
 };
-use crate::shell::state::DesktopTree as RuntimeTree;
 use crate::shell::tab_binding::Placement;
 
 /// `is_folder` collapses the concept's `'folder' | 'file'` drag data
@@ -350,7 +350,8 @@ mod tests {
     }
 
     fn runtime_tree_with_empty_workspace() -> RuntimeTree {
-        let mut workspace = crate::shell::state::Workspace::new(crate::shell::state::WorkspaceId::new(), "Home");
+        let mut workspace =
+            crate::shell::state::Workspace::new(crate::shell::state::WorkspaceId::new(), "Home");
         let mut strip = crate::shell::state::Strip::new(StripId::new(), "Main");
         strip.window_groups.push(WindowGroup {
             id: 1,
