@@ -638,6 +638,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::float_cmp,
+        reason = "the points are stored as given and read straight back"
+    )]
     fn endpoints_hold_their_x_however_they_are_dragged() {
         let mut s = Spline::identity();
         s.move_point(0, 0.4, 0.3);
@@ -674,6 +678,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::float_cmp,
+        reason = "the points are stored as given and read straight back"
+    )]
     fn a_point_too_close_to_a_neighbour_is_refused_rather_than_stacked() {
         let mut s = Spline::identity();
         s.set_point(0.5, 0.7);
@@ -748,6 +756,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::float_cmp,
+        reason = "the points are stored as given and read straight back"
+    )]
     fn a_document_that_predates_the_mix_field_reads_as_full_strength() {
         // `mix` defaulting to 0.0 would silently bypass every curve written
         // before the field existed.

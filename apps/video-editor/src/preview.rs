@@ -1570,6 +1570,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::float_cmp,
+        reason = "the plan copies the clip's grade through unchanged"
+    )]
     fn the_plan_carries_the_grade_effects_and_envelope() {
         let (mut p, v1, _) = stacked_project();
         let cid = p.clips_on(v1)[0].id;
