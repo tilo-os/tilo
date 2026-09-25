@@ -858,6 +858,41 @@ impl BatchApply {
         }
     }
 
+    /// qOS: conditions under which `insert_new_actors`, `import_ops` and
+    /// `ChangeGraph::add_changes` would panic: every change actor known or
+    /// introduced by a ready seq-1 change, sequence numbers contiguous per
+    /// actor in apply order, authors only on seq 1.
+    fn admissible(&self, doc: &Automerge) -> bool {
+        let introduced: HashSet<&ActorId> = self
+            .changes
+            .iter()
+            .filter(|c| c.seq() == 1)
+            .map(|c| c.actor_id())
+            .collect();
+        let mut next: HashMap<&ActorId, u64> = HashMap::new();
+        for c in &self.changes {
+            if c.actors()
+                .any(|a| doc.ops.lookup_actor(a).is_none() && !introduced.contains(a))
+            {
+                return false;
+            }
+            if c.author().is_some() && c.seq() != 1 {
+                return false;
+            }
+            let expected = next.entry(c.actor_id()).or_insert_with(|| {
+                doc.ops
+                    .lookup_actor(c.actor_id())
+                    .map_or(0, |i| doc.change_graph.seq_for_actor(i))
+                    .saturating_add(1)
+            });
+            if c.seq() != *expected {
+                return false;
+            }
+            *expected = expected.saturating_add(1);
+        }
+        true
+    }
+
     fn insert_new_actors(&mut self, doc: &mut Automerge) {
         for c in self.changes.iter().filter(|c| c.seq() == 1) {
             doc.put_actor_ref(c.actor_id());
@@ -1115,9 +1150,25 @@ impl Automerge {
             incoming.push(change)?;
         }
 
+        let queued: HashSet<ChangeHash> = self.queue.iter().map(Change::hash).collect();
         self.queue.extend(incoming);
         let changes = self.queue.pop_topo_sorted_ready(&self.change_graph);
-        Ok(BatchApply::new(changes).apply(self, log)?)
+        let mut batch = BatchApply::new(changes);
+        if !batch.admissible(self) {
+            // qOS: refuse before the document is touched, restoring the
+            // queue to its previous contents (the new changes are dropped).
+            // Checked admission refuses these inputs earlier; this protects
+            // the unchecked apply and load paths.
+            let mut restore = ChangeBatch::new();
+            for change in std::mem::take(&mut batch.changes) {
+                if queued.contains(&change.hash()) {
+                    restore.push(change)?;
+                }
+            }
+            self.queue.extend(restore);
+            return Err(AutomergeError::Fail);
+        }
+        batch.apply(self, log)
     }
 
     fn import_ops_to(
@@ -1133,8 +1184,8 @@ impl Automerge {
     fn import_ops(&mut self, change: &Change) -> Result<Vec<ChangeOp>, AutomergeError> {
         let actors: Vec<_> = change
             .actors()
-            .map(|a| self.ops.lookup_actor(a).unwrap())
-            .collect();
+            .map(|a| self.ops.lookup_actor(a).ok_or(AutomergeError::Fail))
+            .collect::<Result<_, _>>()?;
 
         change
             .iter_ops()
