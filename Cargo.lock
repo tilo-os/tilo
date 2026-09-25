@@ -14529,6 +14529,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-resource"
+version = "0.1.0"
+dependencies = [
+ "automerge",
+ "blake3",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tilo-actions",
+ "tilo-resource-macros",
+ "uuid",
+]
+
+[[package]]
+name = "tilo-resource-macros"
+version = "0.1.0"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.117",
+]
+
+[[package]]
 name = "tilo-rollback"
 version = "0.1.0"
 dependencies = [
