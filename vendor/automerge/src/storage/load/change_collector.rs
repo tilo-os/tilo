@@ -12,4 +12,9 @@ pub(crate) enum Error {
     MissingOps,
     #[error("missing ops")]
     MissingDep(#[from] crate::change_graph::MissingDep),
+    /// qOS load-path hardening: an op or change the collector cannot encode
+    /// (actor index out of range, non-numeric increment, inconsistent
+    /// start/max op) in hostile storage.
+    #[error("invalid op or change metadata")]
+    InvalidOp,
 }

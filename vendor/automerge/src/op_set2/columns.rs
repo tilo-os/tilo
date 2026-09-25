@@ -252,7 +252,7 @@ impl Columns {
     pub(crate) fn load(
         cols: BTreeMap<ColumnSpec, Range<usize>>,
         data: &[u8],
-        _actors: &[ActorId],
+        actors: &[ActorId],
     ) -> Result<Self, PackError> {
         let data_for = |spec| &data[cols.get(&spec).cloned().unwrap_or_default()];
 
@@ -305,6 +305,23 @@ impl Columns {
         let value_meta =
             hexane::PrefixColumn::<ValueMeta>::load_with(data_for(VALUE_META_COL_SPEC), opts)?;
         let value = hexane::RawColumn::load(data_for(VALUE_COL_SPEC))?;
+
+        // qOS load-path hardening: hostile documents can declare value
+        // lengths that do not add up to the value column (op reads then run
+        // `RawColumnIter::take` past the end, which panics) and actor indexes
+        // past the actor table (every ActorIdx -> ActorId lookup indexes
+        // with them). Refuse both here; O(runs), no allocation.
+        if value_meta.get_prefix(value_meta.len()) != value.len() as u64 {
+            return Err(PackError::BadFormat);
+        }
+        let in_range = |a: ActorIdx| usize::from(a) < actors.len();
+        let all_in_range = id_actor.iter().runs().all(|r| in_range(r.value))
+            && succ_actor.iter().runs().all(|r| in_range(r.value))
+            && obj_actor.iter().runs().all(|r| r.value.is_none_or(in_range))
+            && key_actor.iter().runs().all(|r| r.value.is_none_or(in_range));
+        if !all_in_range {
+            return Err(PackError::BadFormat);
+        }
 
         let index = Indexes::default();
 

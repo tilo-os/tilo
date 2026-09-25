@@ -22,7 +22,7 @@ use crate::storage::load::change_collector::Error;
 use crate::storage::{ChunkType, Header};
 use crate::{
     change::Change,
-    op_set2::{ChangeMetadata, KeyRef, Op, OpBuilder, OpSet, ReadOpError},
+    op_set2::{ChangeMetadata, KeyRef, Op, OpBuilder, OpSet, ReadOpError, ScalarValue},
     types::{ActorId, ChangeHash, ObjId, OpId},
 };
 
@@ -93,6 +93,10 @@ pub(crate) struct ChangeCollector<'a> {
     pub(crate) builders: Vec<ChangeBuilder<'a>>,
     last: Option<(ObjId, KeyRef<'a>)>,
     preds: HashMap<OpId, Vec<OpId>>,
+    /// qOS load-path hardening: set when hostile storage fed an op or change
+    /// the encoders cannot represent; `finish`/`unbundle`/`collect` then fail
+    /// instead of indexing past the actor table or unwrapping later.
+    invalid: bool,
 }
 
 #[derive(Clone, PartialEq, Debug)]
@@ -110,7 +114,21 @@ pub(crate) struct BuildChangeMetadata<'a> {
 
 impl BuildChangeMetadata<'_> {
     pub(crate) fn num_ops(&self) -> usize {
-        (1 + self.max_op - self.start_op) as usize
+        // qOS load-path hardening: bundle metadata is untrusted, and
+        // `max_op + 1 < start_op` (or `max_op == u64::MAX`) must not
+        // overflow; `ChangeCollector::invalid` refuses such a change.
+        (self.max_op.saturating_add(1)).saturating_sub(self.start_op) as usize
+    }
+
+    /// qOS load-path hardening: what the collector's encoders and
+    /// `ChangeBuilder::finish` rely on (`NonZero` start op, `max_op + 1`
+    /// and every op counter fitting `OpId`'s `u32`, the change actor
+    /// existing).
+    fn is_encodable(&self, num_actors: usize) -> bool {
+        self.actor < num_actors
+            && self.start_op >= 1
+            && self.max_op <= u64::from(u32::MAX)
+            && self.max_op.saturating_add(1) >= self.start_op
     }
 
     pub(crate) fn message_str(&self) -> &str {
@@ -573,7 +591,8 @@ impl<'a> ChangeBuilder<'a> {
     }
 
     pub(crate) fn max_op(&self) -> u64 {
-        self.start_op + self.encoder.num_ops() - 1
+        // qOS load-path hardening: saturating for invalid (flagged) metadata.
+        (self.start_op.saturating_add(self.encoder.num_ops())).saturating_sub(1)
     }
 
     pub(crate) fn add(&mut self, op: OpBuilder<'a>) {
@@ -655,6 +674,7 @@ impl<'a> ChangeCollector<'a> {
         builders.sort_unstable_by(|a, b| a.actor.cmp(&b.actor).then(a.seq.cmp(&b.seq)));
 
         let mapper = ActorMapper::new(actors);
+        let invalid = !changes.iter().all(|c| c.is_encodable(actors.len()));
 
         builders
             .iter()
@@ -667,6 +687,7 @@ impl<'a> ChangeCollector<'a> {
             builders,
             last: None,
             preds: HashMap::default(),
+            invalid,
         })
     }
 
@@ -840,9 +861,27 @@ impl<'a> ChangeCollector<'a> {
     }
 
     pub(crate) fn add(&mut self, op: OpBuilder<'a>) {
+        // qOS load-path hardening: documents and bundles do not bound actor
+        // indexes by the actor table (the encoders index `ActorMapper` with
+        // them), nor restrict increments to numeric values (a `Verified`
+        // change's `iter_ops` unwraps that check later).
+        if !Self::is_encodable(&op, self.mapper.actors.len()) {
+            self.invalid = true;
+            return;
+        }
         if let Some(index) = self.builders_index(op.id) {
             self.builders[index].add(op);
         }
+    }
+
+    fn is_encodable(op: &OpBuilder<'_>, num_actors: usize) -> bool {
+        let actors_ok = op.id.actor() < num_actors
+            && op.obj.actor().is_none_or(|a| usize::from(a) < num_actors)
+            && op.key.actor().is_none_or(|a| usize::from(a) < num_actors)
+            && op.pred.iter().all(|p| p.actor() < num_actors);
+        let value_ok = op.action != Action::Increment
+            || matches!(op.value, ScalarValue::Int(_) | ScalarValue::Uint(_));
+        actors_ok && value_ok
     }
 
     pub(crate) fn builders_index(&self, id: OpId) -> Option<usize> {
@@ -865,6 +904,11 @@ impl<'a> ChangeCollector<'a> {
             for (id, pred) in &self.preds {
                 let op = Op::del(*id, obj, key.clone());
                 let op = op.build(pred.to_vec());
+                // qOS load-path hardening: same checks as `add`.
+                if !Self::is_encodable(&op, self.mapper.actors.len()) {
+                    self.invalid = true;
+                    continue;
+                }
                 if let Some(index) = self.builders_index(op.id) {
                     self.builders[index].add(op);
                 }
@@ -886,6 +930,9 @@ impl<'a> ChangeCollector<'a> {
 
         if let Some(i) = index {
             i.flush()
+        }
+        if self.invalid {
+            return Err(Error::InvalidOp);
         }
 
         let mut changes = Vec::with_capacity(self.changes.len());
@@ -912,6 +959,9 @@ impl<'a> ChangeCollector<'a> {
     ) -> Result<Vec<Change>, Error> {
         let num_actors = actors.len();
         let num_changes = self.changes.len();
+        if self.invalid {
+            return Err(Error::InvalidOp);
+        }
         let mut changes = Vec::with_capacity(num_changes);
 
         for change in self.changes.into_iter() {
@@ -931,6 +981,9 @@ impl<'a> ChangeCollector<'a> {
 
     pub(crate) fn collect(mut self, op_set: &OpSet) -> Result<CollectedChanges, Error> {
         self.flush_deletes();
+        if self.invalid {
+            return Err(Error::InvalidOp);
+        }
 
         let num_actors = op_set.actors.len();
         let mut max_ops = vec![0; num_actors];

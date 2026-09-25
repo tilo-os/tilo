@@ -179,6 +179,17 @@ impl<'a, T: RleValue, C: Codec> RleDecoder<'a, T, C> {
         matches!(self.state, RunState::Literal)
     }
 
+    /// qOS: stop at malformed input. The streaming decoder also reads raw,
+    /// unvalidated bytes (automerge's change-graph and bundle columns), where
+    /// a truncated varint, an invalid value or a null run in a non-nullable
+    /// column used to panic; it now ends the column there instead, and the
+    /// caller's length checks see a short column.
+    fn exhaust(&mut self) {
+        self.byte_pos = self.data.len();
+        self.remaining = 0;
+        self.state = RunState::Idle;
+    }
+
     fn advance_run(&mut self) {
         if self.byte_pos >= self.data.len() {
             self.state = RunState::Idle;
@@ -198,22 +209,33 @@ impl<'a, T: RleValue, C: Codec> RleDecoder<'a, T, C> {
             n if n > 0 => {
                 let count = n as usize;
                 let value_start = self.byte_pos + count_bytes;
-                let (vlen, value) = T::unpack::<C>(&self.data[value_start..]);
+                let Some((vlen, value)) = T::unpack_or_none::<C>(&self.data[value_start..]) else {
+                    return self.exhaust();
+                };
                 self.byte_pos = value_start + vlen;
                 self.remaining = count;
                 self.run_at = value_start;
                 self.state = RunState::Repeat(value);
             }
             n if n < 0 => {
-                let total = (-n) as usize;
+                // qOS: `unsigned_abs`, as `-i64::MIN` overflows.
+                let total = n.unsigned_abs() as usize;
                 self.byte_pos += count_bytes;
                 self.remaining = total;
                 self.state = RunState::Literal;
             }
             _ => {
                 // Null run (count_raw == 0)
-                let (ncb, null_count) =
-                    C::read_unsigned(&self.data[self.byte_pos + count_bytes..]).unwrap();
+                // qOS: a truncated count, or a null run where `get_null`
+                // would panic, ends the column.
+                let Some((ncb, null_count)) =
+                    C::read_unsigned(&self.data[self.byte_pos + count_bytes..])
+                else {
+                    return self.exhaust();
+                };
+                if !T::NULLABLE {
+                    return self.exhaust();
+                }
                 self.byte_pos += count_bytes + ncb;
                 self.remaining = null_count as usize;
                 self.state = RunState::Null;
@@ -300,9 +322,17 @@ impl<'a, T: RleValue, C: Codec> Iterator for RleDecoder<'a, T, C> {
                 return match &self.state {
                     RunState::Repeat(v) => Some(*v),
                     RunState::Literal => {
-                        let (vlen, value) = T::unpack::<C>(&self.data[self.byte_pos..]);
-                        self.byte_pos += vlen;
-                        Some(value)
+                        // qOS: malformed raw bytes end the column, not panic.
+                        match T::unpack_or_none::<C>(&self.data[self.byte_pos..]) {
+                            Some((vlen, value)) => {
+                                self.byte_pos += vlen;
+                                Some(value)
+                            }
+                            None => {
+                                self.exhaust();
+                                None
+                            }
+                        }
                     }
                     RunState::Null => Some(T::get_null()),
                     RunState::Idle => None,
