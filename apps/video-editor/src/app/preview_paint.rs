@@ -1,6 +1,14 @@
+#[allow(
+    clippy::wildcard_imports,
+    reason = "this file is one part of the `VideoEditorApp` impl split out of `app.rs`; it shares the parent's whole scope"
+)]
 use super::*;
 
 impl VideoEditorApp {
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the canvas paint pass, drawn back to front: letterbox, picture, overlays, readouts"
+    )]
     pub(super) fn draw_preview(
         &self,
         scene: &mut Scene,

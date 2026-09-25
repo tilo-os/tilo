@@ -1,3 +1,7 @@
+#[allow(
+    clippy::wildcard_imports,
+    reason = "this file is one part of the `VideoEditorApp` impl split out of `app.rs`; it shares the parent's whole scope"
+)]
 use super::*;
 
 #[derive(Default)]
@@ -687,8 +691,8 @@ impl VideoEditorApp {
         self.layout_project(&mut l, x0, x1, &mut y);
         // Actions.
         y += 6.0;
-        l.split = Rect::new(x0, y, (x0 + x1) / 2.0 - 4.0, y + 28.0);
-        l.delete = Rect::new((x0 + x1) / 2.0 + 4.0, y, x1, y + 28.0);
+        l.split = Rect::new(x0, y, x0.midpoint(x1) - 4.0, y + 28.0);
+        l.delete = Rect::new(x0.midpoint(x1) + 4.0, y, x1, y + 28.0);
         y += 34.0;
         l.content_height = (y - top) * scale;
         l.valid = true;

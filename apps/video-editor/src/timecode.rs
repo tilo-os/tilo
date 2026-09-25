@@ -85,11 +85,11 @@ mod tests {
 /// refusing, because the user would not know where they had gone.
 pub fn parse(input: &str, fps: f64) -> Option<f64> {
     let fps = if fps <= 0.0 { 30.0 } else { fps };
-    let t = input.trim();
-    if t.is_empty() {
+    let trimmed = input.trim();
+    if trimmed.is_empty() {
         return None;
     }
-    let parts: Vec<&str> = t.split(':').collect();
+    let parts: Vec<&str> = trimmed.split(':').collect();
     if parts.len() > 4 {
         return None;
     }
@@ -97,8 +97,8 @@ pub fn parse(input: &str, fps: f64) -> Option<f64> {
         .iter()
         .map(|p| p.trim().parse::<f64>().ok().filter(|v| *v >= 0.0))
         .collect();
-    let n = nums?;
-    Some(match n.as_slice() {
+    let fields = nums?;
+    Some(match fields.as_slice() {
         [s] => *s,
         [m, s] => m * 60.0 + s,
         [m, s, f] => m * 60.0 + s + f / fps,
