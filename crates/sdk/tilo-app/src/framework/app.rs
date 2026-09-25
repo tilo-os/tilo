@@ -186,7 +186,7 @@ fn create<A: ResourceApp>(
         .map_err(|error| LaunchError::Operation(error.to_string()))?;
     let root = build_root::<A>(state, read_only);
     let mut registry = tilo_actions::ActionRegistry::new();
-    <A::Resource as Resource>::register(&mut registry);
+    tilo_resource::group::register::<A::Resource>(&mut registry);
     let mut component = AppComponent::new(context, Box::new(root), registry);
     component
         .register_document_history(super::preview::history_definition::<A>())

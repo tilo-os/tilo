@@ -151,6 +151,15 @@ impl ActionSink {
         }
     }
 
+    /// Make every edit until the returned guard drops one host action — one
+    /// undo step, one version — as one event already is on the standalone
+    /// path. Hosted surfaces hold it for each input event, so a gesture that
+    /// dispatches several edits (a linked split, a multi-clip delete, a
+    /// paste) undoes in one step.
+    pub(crate) fn gesture(&self) -> Option<ui::framework::DispatchGroup<VideoProject>> {
+        self.framework.as_ref().map(Dispatcher::begin_group)
+    }
+
     pub(crate) fn take_stale(&mut self) -> bool {
         std::mem::take(&mut self.stale)
     }

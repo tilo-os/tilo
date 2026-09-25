@@ -161,3 +161,43 @@ fn a_delete_key_on_the_surface_waits_for_confirmation() {
         "the surface's delete is held for the host's confirmation"
     );
 }
+
+#[test]
+fn a_gesture_of_several_edits_is_one_undo_step() {
+    let mut app = with_sample();
+    let clips = app.state().clips.len();
+    assert!(clips > 1, "the sample has several clips to paste");
+    let versions = app.versions().len();
+    app.harness().click_named("video_editor_root").unwrap();
+    // Select everything, copy it and paste it at the playhead: one new clip
+    // per copied clip, one gesture.
+    app.harness().set_modifiers(&["ctrl".into()]);
+    for key in ["a", "c", "v"] {
+        app.harness().key(key);
+    }
+    app.harness().set_modifiers(&[]);
+    assert_eq!(app.state().clips.len(), clips * 2);
+    assert_eq!(
+        app.versions().len(),
+        versions + 1,
+        "the whole paste is one action"
+    );
+    assert!(app.undo());
+    assert_eq!(app.state().clips.len(), clips, "one undo takes it all back");
+    assert!(app.redo());
+    assert_eq!(app.state().clips.len(), clips * 2);
+}
+
+#[test]
+fn a_destructive_gesture_asks_once_and_changes_nothing_until_confirmed() {
+    let mut app = with_sample();
+    let clips = app.state().clips.len();
+    app.harness().click_named("video_editor_root").unwrap();
+    app.harness().set_modifiers(&["ctrl".into()]);
+    app.harness().key("a");
+    app.harness().set_modifiers(&[]);
+    // One deletion per clip, submitted as one destructive group: nothing is
+    // deleted before the host's confirmation, not even the first clip.
+    app.harness().key("Delete");
+    assert_eq!(app.state().clips.len(), clips);
+}

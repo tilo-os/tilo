@@ -33,19 +33,14 @@ pub struct ActionCx {
 impl ActionCx {
     /// A context seeded from the document's heads and actor (both pinned by
     /// the executor) and the action's own payload.
+    ///
+    /// Inside an [`ActionGroup`](crate::ActionGroup) the group's seed and the
+    /// member's position stand in for the heads, which a member cannot read
+    /// without committing the members before it as separate changes.
     #[must_use]
     pub fn for_apply(doc: &mut Doc, payload: &[u8], now_ms: i64) -> Self {
-        let mut hasher = blake3::Hasher::new();
-        hasher.update(b"tilo-resource/action-seed/v1");
-        hasher.update(doc.get_actor().to_bytes());
-        let mut heads = doc.get_heads();
-        heads.sort();
-        for head in heads {
-            hasher.update(&head.0);
-        }
-        hasher.update(payload);
         Self {
-            seed: *hasher.finalize().as_bytes(),
+            seed: seed(doc, b"tilo-resource/action-seed/v1", payload),
             minted: 0,
             now_ms,
         }
@@ -67,6 +62,28 @@ impl ActionCx {
     pub fn now_ms(&self) -> i64 {
         self.now_ms
     }
+}
+
+/// A deterministic seed for applying `payload` to `doc`: the document's
+/// actor and heads (both pinned by the executor), or, inside a group member,
+/// the group's seed and the member's position.
+pub(crate) fn seed(doc: &mut Doc, domain: &[u8], payload: &[u8]) -> [u8; 32] {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(domain);
+    if let Some((group, position)) = crate::group::current_member() {
+        hasher.update(b"member");
+        hasher.update(&group);
+        hasher.update(&position.to_le_bytes());
+    } else {
+        hasher.update(doc.get_actor().to_bytes());
+        let mut heads = doc.get_heads();
+        heads.sort();
+        for head in heads {
+            hasher.update(&head.0);
+        }
+    }
+    hasher.update(payload);
+    *hasher.finalize().as_bytes()
 }
 
 /// Why an action declined to run, in the user's words.
@@ -331,7 +348,41 @@ impl<R: Resource> Invoke<R> {
         })
     }
 
-    /// Build the replayable action on this (origin) machine.
+    /// Several invocations applied as one action: one change, one version,
+    /// one undo step. Members that are groups themselves are flattened.
+    pub fn group(members: impl IntoIterator<Item = Self>) -> Self {
+        let mut actions = Vec::new();
+        for member in members {
+            if member.id == crate::GROUP {
+                if let Some(serde_json::Value::Array(inner)) =
+                    member.arguments.get(crate::GROUP_PARAM)
+                {
+                    actions.extend(inner.iter().cloned());
+                }
+            } else {
+                actions.push(serde_json::json!({
+                    "action": member.id,
+                    "args": member.arguments,
+                }));
+            }
+        }
+        Self {
+            id: crate::GROUP,
+            arguments: serde_json::Map::from_iter([(
+                crate::GROUP_PARAM.to_owned(),
+                serde_json::Value::Array(actions),
+            )]),
+            marker: PhantomData,
+        }
+    }
+
+    /// Whether this is a [`group`](Self::group) of invocations.
+    pub fn is_group(&self) -> bool {
+        self.id == crate::GROUP
+    }
+
+    /// Build the replayable action on this (origin) machine. A group builds
+    /// with [`build_group`](crate::group::build_group).
     ///
     /// # Errors
     /// Returns why the arguments do not bind.
