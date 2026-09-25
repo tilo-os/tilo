@@ -278,6 +278,13 @@ impl RecordEnvelopeV1 {
     /// Returns an error for unsupported schema, invalid sequence, inconsistent
     /// embedded scope or actor, invalid payload, or invalid signature.
     pub fn verify(&self) -> Result<(), RecordReplicationError> {
+        self.validate()?;
+        verify_event(&self.signing_view(), &self.signature, &self.actor.device)?;
+        Ok(())
+    }
+
+    /// Everything [`Self::verify`] checks except the signature.
+    fn validate(&self) -> Result<(), RecordReplicationError> {
         if !matches!(
             self.protocol_version,
             LEGACY_RECORD_ENVELOPE_VERSION
@@ -315,7 +322,6 @@ impl RecordEnvelopeV1 {
             return Err(RecordReplicationError::OperationRequiresV4);
         }
         self.operation.validate_for(self.record_id, self.actor)?;
-        verify_event(&self.signing_view(), &self.signature, &self.actor.device)?;
         Ok(())
     }
 }
@@ -500,6 +506,53 @@ impl RecordReplica {
         envelope: &RecordEnvelopeV1,
     ) -> Result<(), RecordReplicationError> {
         envelope.verify()?;
+        if envelope.record_id != self.record_id {
+            return Err(RecordReplicationError::WrongRecord);
+        }
+        self.apply_verified(envelope)
+    }
+
+    /// [`Self::merge`] for an envelope this process just signed with the
+    /// actor's own device key: the signature is not checked again (it is
+    /// in debug builds); certification, grant and state checks all run.
+    pub(crate) fn merge_own<A: RecordAuthorizer + ?Sized>(
+        &mut self,
+        envelope: &RecordEnvelopeV1,
+        authorizer: &A,
+    ) -> Result<(), RecordReplicationError> {
+        debug_assert!(envelope.verify().is_ok(), "an own envelope verifies");
+        self.merge_authenticated(envelope, authorizer)
+    }
+
+    /// [`Self::merge`] for an envelope whose exact bytes the actor's device
+    /// already vouched for another way (a verified signed changeset names
+    /// their digest): its own signature is not checked again; everything
+    /// else is.
+    pub(crate) fn merge_authenticated<A: RecordAuthorizer + ?Sized>(
+        &mut self,
+        envelope: &RecordEnvelopeV1,
+        authorizer: &A,
+    ) -> Result<(), RecordReplicationError> {
+        envelope.validate()?;
+        if envelope.record_id != self.record_id {
+            return Err(RecordReplicationError::WrongRecord);
+        }
+        if !authorizer.actor_is_certified(&envelope.actor) {
+            return Err(RecordReplicationError::UncertifiedActor);
+        }
+        if !authorizer.allows(&envelope.actor, self.record_id, RecordAction::Write) {
+            return Err(RecordReplicationError::WriteDenied);
+        }
+        self.apply_verified(envelope)
+    }
+
+    /// Restore one envelope from the repository's operation log, which
+    /// holds only envelopes verified when they were admitted: the signature
+    /// is not checked again, every state-machine check still runs.
+    pub(crate) fn restore_trusted(
+        &mut self,
+        envelope: &RecordEnvelopeV1,
+    ) -> Result<(), RecordReplicationError> {
         if envelope.record_id != self.record_id {
             return Err(RecordReplicationError::WrongRecord);
         }

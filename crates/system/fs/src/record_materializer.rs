@@ -351,6 +351,7 @@ impl RecordMaterializer {
                     | RecordTransactionCoordinatorError::NamespacePoisoned
                     | RecordTransactionCoordinatorError::Repository(
                         RecordRepositoryError::Io(_)
+                        | RecordRepositoryError::Log(_)
                         | RecordRepositoryError::StatePoisoned
                         | RecordRepositoryError::TransactionJournal(
                             RecordTransactionJournalError::Io(_),
