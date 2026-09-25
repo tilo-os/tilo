@@ -171,7 +171,8 @@ mod tests {
     fn rgba_frame_streams_through_shared_stack_over_the_wire() {
         const W: u32 = 128;
         const H: u32 = 96;
-        let mut sender = VideoStreamSender::new(W, H, 30).expect("shared-stack sender");
+        let mut sender = VideoStreamSender::new(tilo_callstream::StreamCodec::Vp9, W, H, 30)
+            .expect("shared-stack sender");
         let wire = sender
             .offer_frame(&gradient(W, H), Instant::now())
             .expect("shared sender accepts the frame")

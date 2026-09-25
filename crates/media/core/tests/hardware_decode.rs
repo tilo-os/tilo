@@ -1,19 +1,18 @@
 //! Proof that hardware decode actually engages — by name, not by assertion.
 //!
-//! Run against the tracked H.264/AAC fixture. The test interrogates the
+//! Run against the generated VP9 fixture. The test interrogates the
 //! `GStreamer` registry first, so its verdict is specific to the machine:
 //!
-//! * a hardware H.264 decoder exists → it **must** be the element that got
+//! * a hardware VP9 decoder exists → it **must** be the element that got
 //!   plugged, or the test fails;
-//! * no hardware H.264 decoder exists → the test proves that from the registry
+//! * no hardware VP9 decoder exists → the test proves that from the registry
 //!   (and prints it), then still requires that decode *worked* through a
 //!   software decoder.
 //!
-//! Neither branch is a skip. The second one is a real configuration — the Tilo
-//! build container has no H.264 hardware decoder, because `libcuda.so.1` is
-//! not mounted into it (so `nvcodec` exposes zero features) and Fedora's Mesa
-//! VA driver ships without H.264. On the host, where both `nvh264dec` and
-//! `vah264dec` are present, the first branch applies.
+//! Neither branch is a skip. The second one is a real configuration — a build
+//! container without a GPU passed through, or `libcuda.so.1` not mounted (so
+//! `nvcodec` exposes zero features). On a host with `vavp9dec` or `nvvp9dec`
+//! the first branch applies.
 
 mod common;
 
@@ -23,9 +22,10 @@ mod real {
     use media::{DecoderKind, EngineConfig, FramePayload, MediaEngine};
 
     /// The decoder `GStreamer` chose for the fixture must be a hardware one
-    /// whenever this machine has a hardware decoder that can take H.264.
+    /// whenever this machine has a hardware decoder that can take the fixture.
     #[test]
     fn the_decoder_that_ran_is_the_hardware_one_when_the_machine_has_one() {
+        let _registry = registry_policy_lock();
         let summary = registry_summary();
         println!("registry: {summary}");
 
@@ -46,7 +46,7 @@ mod real {
         let report = engine.hw_report();
         let element = report.decoder_element.clone().unwrap_or_else(|| {
             panic!(
-                "an H.264 picture was decoded but no decoder element was \
+                "a {FIXTURE_CODEC} picture was decoded but no decoder element was \
                  recorded — the observation path is broken, so any claim about \
                  hardware decode would be unfounded. {summary}"
             )
@@ -54,10 +54,10 @@ mod real {
         println!("decoder: {}", report.describe());
         println!("payload: {:?}", frame.payload);
 
-        if has_hardware_h264() {
+        if has_hardware_fixture_decoder() {
             assert!(
                 report.is_hardware(),
-                "this machine has a hardware H.264 decoder but the pipeline \
+                "this machine has a hardware {FIXTURE_CODEC} decoder but the pipeline \
                  plugged {element:?} ({:?}), a software decoder. Hardware decode \
                  is not engaging. {summary}",
                 report.decoder_kind
@@ -68,11 +68,11 @@ mod real {
             // hardware decoder for this codec here.
             assert!(
                 !report.is_hardware(),
-                "no hardware H.264 decoder is registered, yet {element:?} was \
+                "no hardware {FIXTURE_CODEC} decoder is registered, yet {element:?} was \
                  classified as hardware — the classifier is wrong. {summary}"
             );
             println!(
-                "no hardware H.264 decoder on this machine; \
+                "no hardware {FIXTURE_CODEC} decoder on this machine; \
                  software decode via {element} verified instead"
             );
         }
@@ -83,6 +83,7 @@ mod real {
     /// the GPU-native acceptance mode.
     #[test]
     fn a_gpu_native_consumer_is_not_handed_forced_rgba() {
+        let _registry = registry_policy_lock();
         let mut engine = MediaEngine::with_config(EngineConfig::gpu().silent());
         engine.open(fixture_source());
         let frame = decode_frame_at(&mut engine, 2_000, "native negotiation");
@@ -157,16 +158,17 @@ mod real {
     #[test]
     fn a_dmabuf_frame_is_described_completely_enough_to_import() {
         use media::{DmabufImage, HwPolicy};
+        let _registry = registry_policy_lock();
 
-        let va_h264 = media::gst_backend::decoders_for("video/x-h264")
+        let va_capable = media::gst_backend::decoders_for(FIXTURE_CAPS)
             .into_iter()
             .any(|d| d.kind == DecoderKind::Va);
-        if !va_h264 {
+        if !va_capable {
             // Proven from the registry, not assumed. Nothing on this machine
-            // can produce a dmabuf for H.264, so there is no description to
+            // can produce a dmabuf for the fixture, so there is no description to
             // check — but say so loudly rather than passing in silence.
             println!(
-                "no VA-API H.264 decoder registered, so no dmabuf export path exists                  for this codec here: {}",
+                "no VA-API {FIXTURE_CODEC} decoder registered, so no dmabuf export path exists                  for this codec here: {}",
                 registry_summary()
             );
             let all = media::gst_backend::available_video_decoders();
@@ -215,7 +217,7 @@ mod real {
         assert_eq!(
             img.fourcc,
             media::dmabuf::DRM_FORMAT_NV12,
-            "H.264 4:2:0 decodes to NV12, got {}",
+            "{FIXTURE_CODEC} 4:2:0 decodes to NV12, got {}",
             media::dmabuf::fourcc_str(img.fourcc)
         );
         assert_eq!(
@@ -246,6 +248,7 @@ mod real {
     #[test]
     fn one_pipeline_serves_repeated_requests_for_the_same_source() {
         use media::SessionPool;
+        let _registry = registry_policy_lock();
 
         let mut pool = SessionPool::for_editor();
         let src = fixture_source();

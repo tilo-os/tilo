@@ -5,8 +5,8 @@
 //! [`SharedFlatpakSession::set_color_override`] whenever the client commits
 //! a `wp_color_management_surface_v1.set_image_description`; a subsequent
 //! `stream_start_msg` must report the client's declared BT.2020 PQ
-//! colorimetry + HEVC Main10 codec even though the session was constructed
-//! with `hdr: None`.
+//! colorimetry even though the session was constructed with `hdr: None`.
+//! The codec label and bit depth always describe the encoded bytes.
 
 #![allow(
     clippy::unwrap_used,
@@ -30,7 +30,7 @@ fn sdr_config() -> FlatpakShareConfig {
     FlatpakShareConfig {
         max_bitrate_kbps: 8000,
         target_fps: 30,
-        encoder: EncoderChoice::Openh264,
+        encoder: EncoderChoice::Software,
         hdr: None,
     }
 }
@@ -56,7 +56,7 @@ fn default_stream_start_reports_sdr_bt709() {
             bit_depth,
             ..
         } => {
-            assert_eq!(codec, "h264");
+            assert_eq!(codec, session.chosen_codec().wire_label());
             assert_eq!(colorimetry, Some(Colorimetry::sdr_bt709()));
             assert!(hdr_static_metadata.is_none());
             assert_eq!(bit_depth, 8);
@@ -81,10 +81,10 @@ fn client_attached_image_description_wins_over_config() {
             bit_depth,
             ..
         } => {
-            // HDR transfer flips the codec label to Main10 and bumps bit depth to 10,
-            // even though the session config said SDR.
-            assert_eq!(codec, "hevc-main10");
-            assert_eq!(bit_depth, 10);
+            // The bytes are still the SDR encoder's: the label and depth say so,
+            // while the colour signalling carries the client's intent.
+            assert_eq!(codec, session.chosen_codec().wire_label());
+            assert_eq!(bit_depth, 8);
             assert_eq!(colorimetry, Some(hdr10_pq()));
             assert_eq!(hdr_static_metadata, Some(Hdr10Metadata::reference_bt2020()));
         }
@@ -107,7 +107,7 @@ fn unset_image_description_falls_back_to_config_default() {
             bit_depth,
             ..
         } => {
-            assert_eq!(codec, "h264");
+            assert_eq!(codec, session.chosen_codec().wire_label());
             assert_eq!(colorimetry, Some(Colorimetry::sdr_bt709()));
             assert_eq!(bit_depth, 8);
         }
@@ -131,7 +131,7 @@ fn client_sdr_override_downgrades_hdr_config() {
             bit_depth,
             ..
         } => {
-            assert_eq!(codec, "h264");
+            assert_eq!(codec, session.chosen_codec().wire_label());
             assert_eq!(colorimetry, Some(Colorimetry::sdr_bt709()));
             assert_eq!(bit_depth, 8);
         }
