@@ -29,6 +29,10 @@ use shell::compositor::{self, Mode};
 use shell::shell::identity_provisioning;
 use shell::{firstboot, portal};
 
+const SECRET_SERVICE_STARTUP_ATTEMPTS: usize = 8;
+const SECRET_SERVICE_STARTUP_RETRY_DELAY: std::time::Duration =
+    std::time::Duration::from_millis(250);
+
 /// Install a panic hook that writes a crash report to
 /// `~/.cache/tilo/crashes/<timestamp>-<pid>.log` and echoes the panic message +
 /// log path to stderr — without this, a session launched outside a
@@ -160,13 +164,101 @@ fn existing_identity_failure_action(
         return ExistingIdentityFailureAction::FailClosed;
     }
 
-    if identity_provisioning::is_secret_service_unavailable(error)
-        || error.kind() == std::io::ErrorKind::InvalidData
-    {
+    if error.kind() == std::io::ErrorKind::InvalidData {
         ExistingIdentityFailureAction::EnterTrustedRecovery
     } else {
         ExistingIdentityFailureAction::FailClosed
     }
+}
+
+fn verify_existing_identity_with_retry(
+    mut verify: impl FnMut() -> Result<firstboot::ProvisionOutcome, std::io::Error>,
+) -> Result<firstboot::ProvisionOutcome, std::io::Error> {
+    let mut attempt = 1;
+    loop {
+        match verify() {
+            Err(error)
+                if identity_provisioning::is_secret_service_unavailable(&error)
+                    && attempt < SECRET_SERVICE_STARTUP_ATTEMPTS =>
+            {
+                tracing::info!(
+                    attempt,
+                    max_attempts = SECRET_SERVICE_STARTUP_ATTEMPTS,
+                    "Secret Service is not ready; retrying existing identity verification"
+                );
+                std::thread::sleep(SECRET_SERVICE_STARTUP_RETRY_DELAY);
+                attempt = attempt.saturating_add(1);
+            }
+            result => return result,
+        }
+    }
+}
+
+/// Once the identity chain verifies, an interrupted pre-acquisition journal
+/// is residue, not a reason to send an established user through recovery.
+fn reconcile_verified_onboarding_progress(
+    identity_dir: &std::path::Path,
+) -> Option<std::process::ExitCode> {
+    match shell::onboarding_view::clear_verified_pre_acquisition_progress(identity_dir) {
+        Ok(true) => {
+            tracing::info!(
+                "cleared interrupted pre-acquisition onboarding journal after identity verification"
+            );
+            None
+        }
+        Ok(false) => None,
+        Err(error) => {
+            tracing::error!(
+                %error,
+                "could not reconcile verified identity onboarding progress"
+            );
+            Some(std::process::ExitCode::FAILURE)
+        }
+    }
+}
+
+/// Verify an existing identity record, entering trusted recovery or failing
+/// closed as its failure calls for. `Some` is the exit code to stop with.
+fn verify_existing_identity(
+    identity_dir: &std::path::Path,
+    provision_requested: bool,
+) -> Option<std::process::ExitCode> {
+    let paths = firstboot::collaboration_identity_paths();
+    if let Err(error) = verify_existing_identity_with_retry(|| {
+        firstboot::ensure_collaboration_identity(identity_dir, &paths)
+    }) {
+        match existing_identity_failure_action(
+            provision_requested,
+            compositor::parse_mode_from_args(),
+            &error,
+        ) {
+            ExistingIdentityFailureAction::EnterTrustedRecovery => {
+                // An existing schema-2 record remains the person's
+                // identity even when its key is unavailable or its
+                // collaboration chain cannot verify. Never replace it
+                // or mint a second identity; native trusted chrome
+                // offers keyring recovery or encrypted restore.
+                tracing::warn!(
+                    %error,
+                    "existing Tilo identity needs recovery; opening trusted recovery"
+                );
+                mark_identity_recovery();
+            }
+            ExistingIdentityFailureAction::FailClosed => {
+                if provision_requested {
+                    tracing::error!("could not provision collaboration identity: {error}");
+                } else if compositor::parse_mode_from_args() == Mode::Hosted {
+                    tracing::error!(
+                        "hosted mode cannot recover an existing identity; start a native Tilo session to unlock or restore it: {error}"
+                    );
+                } else {
+                    tracing::error!("Tilo identity chain is incomplete or invalid: {error}");
+                }
+                return Some(std::process::ExitCode::FAILURE);
+            }
+        }
+    }
+    None
 }
 
 fn prepare_identity(provision_requested: bool) -> Option<std::process::ExitCode> {
@@ -226,40 +318,13 @@ fn prepare_identity(provision_requested: bool) -> Option<std::process::ExitCode>
                 tracing::error!("identity record has no parent directory");
                 return Some(std::process::ExitCode::FAILURE);
             };
-            let paths = firstboot::collaboration_identity_paths();
-            if let Err(error) = firstboot::ensure_collaboration_identity(identity_dir, &paths) {
-                match existing_identity_failure_action(
-                    provision_requested,
-                    compositor::parse_mode_from_args(),
-                    &error,
-                ) {
-                    ExistingIdentityFailureAction::EnterTrustedRecovery => {
-                        // An existing schema-2 record remains the person's
-                        // identity even when its key is unavailable or its
-                        // collaboration chain cannot verify. Never replace it
-                        // or mint a second identity; native trusted chrome
-                        // offers keyring recovery or encrypted restore.
-                        tracing::warn!(
-                            %error,
-                            "existing Tilo identity needs recovery; opening trusted recovery"
-                        );
-                        mark_identity_recovery();
-                    }
-                    ExistingIdentityFailureAction::FailClosed => {
-                        if provision_requested {
-                            tracing::error!("could not provision collaboration identity: {error}");
-                        } else if compositor::parse_mode_from_args() == Mode::Hosted {
-                            tracing::error!(
-                                "hosted mode cannot recover an existing identity; start a native Tilo session to unlock or restore it: {error}"
-                            );
-                        } else {
-                            tracing::error!(
-                                "Tilo identity chain is incomplete or invalid: {error}"
-                            );
-                        }
-                        return Some(std::process::ExitCode::FAILURE);
-                    }
-                }
+            if let Some(exit) = verify_existing_identity(identity_dir, provision_requested) {
+                return Some(exit);
+            }
+            if !provision_requested
+                && let Some(exit) = reconcile_verified_onboarding_progress(identity_dir)
+            {
+                return Some(exit);
             }
             if provision_requested {
                 tracing::info!("Tilo collaboration identity is provisioned");
@@ -307,8 +372,8 @@ mod tests {
         );
         assert_eq!(
             existing_identity_failure_action(false, Mode::Native, &unavailable_keyring),
-            ExistingIdentityFailureAction::EnterTrustedRecovery,
-            "keyring unavailability keeps its existing native recovery behavior",
+            ExistingIdentityFailureAction::FailClosed,
+            "transient keyring unavailability must not be presented as identity corruption",
         );
         assert_eq!(
             existing_identity_failure_action(false, Mode::Hosted, &invalid_cert),
