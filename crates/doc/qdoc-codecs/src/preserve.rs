@@ -10,12 +10,15 @@
 //! - a body-level element becomes a `fidelity` block whose `xml` attr holds the element verbatim
 //!   and whose [`ATTR_FORMAT`] attr names the format it came from;
 //! - an element inside a paragraph (a field, content control, formula, drawing that is not a
-//!   plain image, …) becomes one [`FIELD_PLACEHOLDER`] character in the paragraph text,
-//!   covered by a mark ([`MARK_DOCX_XML`] / [`MARK_ODT_XML`]) whose value is the element verbatim.
+//!   plain image, …) becomes its visible text in the paragraph — a field's result, a content
+//!   control's content — or one [`FIELD_PLACEHOLDER`] when it shows no text, covered by a mark
+//!   ([`MARK_DOCX_XML`] / [`MARK_ODT_XML`]) whose value is the element verbatim.
 //!
 //! Both are re-emitted verbatim at the same position by the codec that captured them, and
-//! skipped by the other one (the XML of one format means nothing in the other). Their content is
-//! not editable through the model; deleting the block or the placeholder deletes the element.
+//! skipped by the other one (the XML of one format means nothing in the other). An inline
+//! element's text edits like any other; once it no longer matches the element (see
+//! [`run_content`]), the edited text is written instead of the element. Deleting the block,
+//! or all of an element's text, deletes the element.
 
 use qdoc::model::DocMut;
 use qdoc::schema::FIELD_PLACEHOLDER;
@@ -23,11 +26,8 @@ use qdoc::snapshot::BlockView;
 use std::fmt::Write as _;
 use tilo_content::ContentInputs;
 
-/// Mark over a placeholder character holding a verbatim `WordprocessingML` paragraph-content
-/// fragment (a `w:r`, `w:sdt`, `w:fldSimple`, `m:oMath`, …).
-pub const MARK_DOCX_XML: &str = "docx-xml";
-/// Mark over a placeholder character holding a verbatim ODF paragraph-content element.
-pub const MARK_ODT_XML: &str = "odt-xml";
+pub use qdoc::schema::{MARK_DOCX_XML, MARK_ODT_XML};
+
 /// Attr of a `fidelity` block naming the format its `xml` came from (`docx` / `odt`).
 pub const ATTR_FORMAT: &str = "format";
 
@@ -70,48 +70,193 @@ pub fn fidelity_xml<'a>(b: &'a BlockView, format: &str) -> Option<&'a str> {
     }
 }
 
-/// The inline element a run's placeholders stand for, for the exporter of `own_mark`'s format:
-/// `Some(Some(xml))` for its own kept element, `Some(None)` for one kept by the other office
-/// codec (its placeholders are left out: that XML means nothing here), `None` when the run
-/// holds no kept element.
-pub fn inline_atom<'a>(
+/// What an exporter writes for one run of text: the verbatim element to write first (its own
+/// format's kept element, while the run still starts with the element's visible text), then
+/// `text` as ordinary runs. Text of an element the user edited, or of an element kept by the
+/// other office codec, is written as ordinary text — the edit wins over the kept XML, which is
+/// dropped — and placeholders of elements without visible text are left out.
+pub struct RunContent<'a> {
+    pub kept: Option<&'a str>,
+    pub text: std::borrow::Cow<'a, str>,
+}
+
+/// See [`RunContent`]; `own_mark` is the exporter's own format's mark.
+#[must_use]
+pub fn run_content<'a>(
+    text: &'a str,
     marks: &[&'a qdoc::document::MarkSpan],
     own_mark: &str,
-) -> Option<Option<&'a str>> {
-    let mut foreign = false;
-    for m in marks {
-        if m.name == own_mark {
-            return Some(m.value.as_str());
+) -> RunContent<'a> {
+    use std::borrow::Cow;
+    let strip = |t: &'a str| -> Cow<'a, str> {
+        if t.contains(FIELD_PLACEHOLDER) {
+            Cow::Owned(t.chars().filter(|c| *c != FIELD_PLACEHOLDER).collect())
+        } else {
+            Cow::Borrowed(t)
         }
-        foreign |= m.name == MARK_DOCX_XML || m.name == MARK_ODT_XML;
+    };
+    if let Some(xml) = marks
+        .iter()
+        .find(|m| m.name == own_mark)
+        .and_then(|m| m.value.as_str())
+    {
+        let covered = covered_text(xml, own_mark);
+        // Text typed right after the element joins its mark: it follows the element.
+        if let Some(rest) = text.strip_prefix(covered.as_str()) {
+            return RunContent {
+                kept: Some(xml),
+                text: strip(rest),
+            };
+        }
     }
-    foreign.then_some(None)
+    let kept_elsewhere = marks
+        .iter()
+        .any(|m| qdoc::schema::KEPT_INLINE_MARKS.contains(&m.name.as_str()));
+    RunContent {
+        kept: None,
+        text: if kept_elsewhere {
+            strip(text)
+        } else {
+            Cow::Borrowed(text)
+        },
+    }
 }
 
-/// One piece of a run covered by an inline-XML mark: the element itself (for each placeholder
-/// character) or text typed next to it that inherited the mark.
-pub enum InlinePiece<'a> {
-    Atom,
-    Text(&'a str),
+/// The text an inline element kept verbatim covers in the model: its visible text (a field's
+/// result, a content control's content), or one placeholder when it shows no text (a drawing,
+/// a formula). Import and export both derive it from the XML, so export can tell whether the
+/// user changed it.
+#[must_use]
+pub fn covered_text(xml: &str, mark: &str) -> String {
+    let visible = if mark == MARK_ODT_XML {
+        odt_visible_text(xml)
+    } else {
+        docx_visible_text(xml)
+    };
+    if visible.is_empty() {
+        FIELD_PLACEHOLDER.to_string()
+    } else {
+        visible
+    }
 }
 
-/// Split a run's text at placeholder characters.
-pub fn inline_pieces(text: &str) -> Vec<InlinePiece<'_>> {
-    let mut out = Vec::new();
-    let mut rest = text;
-    while let Some(at) = rest.find(FIELD_PLACEHOLDER) {
-        if at > 0 {
-            out.push(InlinePiece::Text(rest.get(..at).unwrap_or_default()));
+/// The visible text of a `WordprocessingML` fragment: its `w:t` text, tabs and line breaks,
+/// leaving out field instructions, deleted text, and drawings, pictures, embedded objects and
+/// formulas (which are not text).
+fn docx_visible_text(xml: &str) -> String {
+    const HIDDEN: &[&[u8]] = &[
+        b"w:instrText",
+        b"w:delInstrText",
+        b"w:delText",
+        b"w:drawing",
+        b"w:pict",
+        b"w:object",
+        b"mc:AlternateContent",
+        b"m:oMath",
+        b"m:oMathPara",
+        b"w:sdtPr",
+        b"w:rPr",
+    ];
+    visible_text(
+        xml,
+        |name| HIDDEN.contains(&name),
+        |e, out| match e.name().as_ref() {
+            b"w:tab" => out.push('\t'),
+            b"w:cr" => out.push('\n'),
+            b"w:br" => {
+                let wrapping = e
+                    .attributes()
+                    .flatten()
+                    .all(|a| a.key.as_ref() != b"w:type" || a.value.as_ref() == b"textWrapping");
+                if wrapping {
+                    out.push('\n');
+                }
+            }
+            _ => {}
+        },
+        |name| name == b"w:t",
+    )
+}
+
+/// The visible text of an ODF paragraph-content element: its text, `text:tab`, `text:s` and
+/// `text:line-break`, leaving out drawings and frames, notes and annotations.
+fn odt_visible_text(xml: &str) -> String {
+    let hidden = |name: &[u8]| {
+        name.starts_with(b"draw:")
+            || name.starts_with(b"svg:")
+            || matches!(
+                name,
+                b"office:annotation" | b"text:note" | b"text:tracked-changes"
+            )
+    };
+    visible_text(
+        xml,
+        hidden,
+        |e, out| match e.name().as_ref() {
+            b"text:tab" => out.push('\t'),
+            b"text:line-break" => out.push('\n'),
+            b"text:s" => {
+                let n = e
+                    .attributes()
+                    .flatten()
+                    .find(|a| a.key.as_ref() == b"text:c")
+                    .and_then(|a| std::str::from_utf8(&a.value).ok()?.parse::<usize>().ok())
+                    .unwrap_or(1)
+                    .min(256);
+                out.push_str(&" ".repeat(n));
+            }
+            _ => {}
+        },
+        |_| true,
+    )
+}
+
+/// The text of `xml` outside `hidden` elements: character data inside elements `text_in`
+/// accepts, plus what `empty` adds for empty elements. Layout whitespace between elements
+/// is not text.
+fn visible_text(
+    xml: &str,
+    hidden: impl Fn(&[u8]) -> bool,
+    empty: impl Fn(&quick_xml::events::BytesStart, &mut String),
+    text_in: impl Fn(&[u8]) -> bool,
+) -> String {
+    use quick_xml::Reader;
+    use quick_xml::events::Event;
+    let mut reader = Reader::from_str(xml);
+    let mut out = String::new();
+    let mut skip = 0usize;
+    let mut open: Vec<Vec<u8>> = Vec::new();
+    loop {
+        let Ok(ev) = reader.read_event() else {
+            return out;
+        };
+        match ev {
+            Event::Start(e) => {
+                if skip > 0 || hidden(e.name().as_ref()) {
+                    skip = skip.saturating_add(1);
+                }
+                open.push(e.name().as_ref().to_vec());
+            }
+            Event::End(_) => {
+                open.pop();
+                skip = skip.saturating_sub(1);
+            }
+            Event::Empty(e) if skip == 0 && !hidden(e.name().as_ref()) => empty(&e, &mut out),
+            Event::Text(t) if skip == 0 && open.last().is_some_and(|n| text_in(n)) => {
+                if let Ok(txt) = t.xml10_content()
+                    // Pretty-printer indentation between elements, not text.
+                    && !(txt.chars().all(char::is_whitespace) && txt.contains(['\n', '\r']))
+                {
+                    out.push_str(&txt);
+                }
+            }
+            Event::GeneralRef(r) if skip == 0 && open.last().is_some_and(|n| text_in(n)) => {
+                out.extend(crate::resolve_general_ref(&r));
+            }
+            Event::Eof => return out,
+            _ => {}
         }
-        out.push(InlinePiece::Atom);
-        rest = rest
-            .get(at.saturating_add(FIELD_PLACEHOLDER.len_utf8())..)
-            .unwrap_or_default();
     }
-    if !rest.is_empty() {
-        out.push(InlinePiece::Text(rest));
-    }
-    out
 }
 
 /// The start tag of an XML document's root element (`<w:document …>`), for re-emitting a

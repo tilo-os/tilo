@@ -4,7 +4,7 @@
 
 use super::container::OdtContainer;
 use crate::format::CodecError;
-use crate::preserve::{InlinePiece, MARK_ODT_XML, inline_pieces};
+use crate::preserve::MARK_ODT_XML;
 use crate::resolved::Resolved;
 use qdoc::document::MarkSpan;
 use qdoc::export::InlinePlan;
@@ -461,22 +461,15 @@ fn span_styles(
     want
 }
 
-/// Append a run's content: its text, or — for an unmodeled inline element kept verbatim —
-/// the element in place of its placeholder.
+/// Append a run's content: the unmodeled inline element kept verbatim that it shows, while it
+/// still shows it unedited (see `preserve::run_content`), then its text.
 fn push_run_text(out: &mut String, run: &qdoc::export::InlineRun<'_>, after_space: &mut bool) {
-    let Some(atom) = crate::preserve::inline_atom(&run.marks, MARK_ODT_XML) else {
-        push_odf_text(out, run.text, after_space);
-        return;
-    };
-    for piece in inline_pieces(run.text) {
-        match piece {
-            InlinePiece::Atom => {
-                out.push_str(atom.unwrap_or_default());
-                *after_space = false;
-            }
-            InlinePiece::Text(t) => push_odf_text(out, t, after_space),
-        }
+    let content = crate::preserve::run_content(run.text, &run.marks, MARK_ODT_XML);
+    if let Some(xml) = content.kept {
+        out.push_str(xml);
+        *after_space = false;
     }
+    push_odf_text(out, &content.text, after_space);
 }
 
 /// Append paragraph text, writing what ODF whitespace handling would otherwise collapse as
