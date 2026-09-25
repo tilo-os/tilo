@@ -29,6 +29,11 @@ on:
         type: string
         required: false
         default: ""
+      generic_target:
+        description: "Preload the signed generic ARM64 child from published_os_image for a complete VM install and first boot."
+        type: boolean
+        required: false
+        default: false
 
 concurrency:
   # Tagged package promotion and the website manifest are mutable "latest"
@@ -58,13 +63,18 @@ jobs:
         env:
           FULL_NATIVE: ${{ github.event.inputs.full_native }}
           LENOVO_TARGET_IMAGE: ${{ github.event.inputs.lenovo_target_image }}
+          GENERIC_TARGET: ${{ github.event.inputs.generic_target }}
           INSTALLER_ONLY: ${{ github.event.inputs.installer_only }}
         run: |
-          if [[ -n ${LENOVO_TARGET_IMAGE:-} ]]; then
+          [[ -z ${LENOVO_TARGET_IMAGE:-} || ${GENERIC_TARGET:-false} != true ]] || {
+            echo '::error::select exactly one offline target variant'; exit 1;
+          }
+          if [[ -n ${LENOVO_TARGET_IMAGE:-} || ${GENERIC_TARGET:-false} == true ]]; then
             [[ $GITHUB_EVENT_NAME == workflow_dispatch && $GITHUB_REF == refs/heads/main \
                && ${INSTALLER_ONLY:-false} == true \
-               && $LENOVO_TARGET_IMAGE =~ ^code\.podesta\.ai/qos/tilo@sha256:[0-9a-f]{64}$ ]] || {
-              echo '::error::Lenovo medium requires main, installer_only, and immutable signed child'; exit 1;
+               && ( ${GENERIC_TARGET:-false} == true \
+                    || $LENOVO_TARGET_IMAGE =~ ^code\.podesta\.ai/qos/tilo@sha256:[0-9a-f]{64}$ ) ]] || {
+              echo '::error::offline medium requires main, installer_only, and an immutable signed target'; exit 1;
             }
             echo 'linux-matrix={"include":[]}' >> "$GITHUB_OUTPUT"
             echo 'medium-matrix={"include":[{"arch":"aarch64","runner":"imager-linux-aarch64"}]}' >> "$GITHUB_OUTPUT"
@@ -99,6 +109,7 @@ jobs:
       TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY: ${{ vars.TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY }}
       TILO_PUBLISHED_OS_IMAGE: ${{ github.event.inputs.published_os_image || vars.TILO_INSTALLER_OS_IMAGE }}
       TILO_LENOVO_TARGET_IMAGE: ${{ github.event.inputs.lenovo_target_image }}
+      TILO_GENERIC_TARGET: ${{ github.event.inputs.generic_target }}
       # The live medium must boot QEMU virt; the separately signed Lenovo
       # target carries its physical DTB and is staged as an offline payload.
       TILO_HARDWARE_PROFILE: generic
@@ -119,8 +130,8 @@ jobs:
         run: ./os/dev/assert-native-arch.sh "${{ matrix.arch }}"
       - name: Verify documented installation targets
         run: python3 scripts/check-install-contract.py
-      - name: Verify offline Lenovo target transport invariants
-        if: github.event.inputs.lenovo_target_image != ''
+      - name: Verify offline target transport invariants
+        if: github.event.inputs.lenovo_target_image != '' || github.event.inputs.generic_target == 'true'
         run: python3 -m unittest discover -s os/tests -p installer_offline_target_test.py
       - name: Restore checksum-verified GitHub build inputs
         id: github-assets-cache
@@ -186,7 +197,7 @@ jobs:
             command -v swtpm virt-fw-vars >/dev/null
           fi
           "$qemu_binary" -device help | grep -Fq "$software_display_device"
-          if [[ "$GITHUB_REF" == refs/tags/imager-v* || -n ${TILO_LENOVO_TARGET_IMAGE:-} ]]; then
+          if [[ "$GITHUB_REF" == refs/tags/imager-v* || -n ${TILO_LENOVO_TARGET_IMAGE:-} || ${TILO_GENERIC_TARGET:-false} == true ]]; then
             "$qemu_binary" -display help | grep -Fq egl-headless
             "$qemu_binary" -device help | grep -Fq "$display_device"
             test -c /dev/kvm && test -r /dev/kvm && test -w /dev/kvm
@@ -207,15 +218,26 @@ jobs:
       - name: Build the tested Tilo live installer from a published OS
         run: |
           set -euo pipefail
-          if [[ -n ${TILO_LENOVO_TARGET_IMAGE:-} ]]; then
+          if [[ -n ${TILO_LENOVO_TARGET_IMAGE:-} || ${TILO_GENERIC_TARGET:-false} == true ]]; then
             test -n "$TILO_PUBLISHED_OS_IMAGE" || {
-              echo '::error::Lenovo VM medium needs a signed generic multiarch live base in published_os_image or TILO_INSTALLER_OS_IMAGE'; exit 1;
+              echo '::error::offline VM medium needs a signed generic multiarch live base in published_os_image or TILO_INSTALLER_OS_IMAGE'; exit 1;
             }
             generation="$(./os/dev/use-published-image.sh "$TILO_PUBLISHED_OS_IMAGE")"
-            target_dir="${RUNNER_TEMP:?}/tilo-lenovo-offline-target-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
-            ./os/dev/prepare-lenovo-installer-target.sh "$TILO_LENOVO_TARGET_IMAGE" "$target_dir"
+            target_dir="${RUNNER_TEMP:?}/tilo-ci-offline-target-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+            if [[ ${TILO_GENERIC_TARGET:-false} == true ]]; then
+              index_raw="$(skopeo inspect --raw --authfile "$REGISTRY_AUTH_FILE" "docker://$TILO_PUBLISHED_OS_IMAGE")"
+              child_digest="$(jq -er '[.manifests[] | select(.platform.os == "linux" and .platform.architecture == "arm64") | .digest] | if length == 1 then .[0] else error("index must have one ARM64 child") end' <<<"$index_raw")"
+              target_image="code.podesta.ai/qos/tilo@$child_digest"
+              target_profile=generic
+              ./os/dev/prepare-ci-installer-target.sh "$target_profile" "$target_image" "$target_dir" "$TILO_PUBLISHED_OS_IMAGE"
+            else
+              target_image="$TILO_LENOVO_TARGET_IMAGE"
+              target_profile=lenovo-83ed
+              ./os/dev/prepare-ci-installer-target.sh "$target_profile" "$target_image" "$target_dir"
+            fi
             export TILO_INSTALLER_OFFLINE_TARGET_DIR="$target_dir"
-            echo "::notice::signed generic live base generation $generation; distinct CI Lenovo offline target: $TILO_LENOVO_TARGET_IMAGE"
+            printf 'TILO_OFFLINE_TARGET_IMAGE=%s\nTILO_OFFLINE_TARGET_PROFILE=%s\n' "$target_image" "$target_profile" >> "${GITHUB_ENV:?}"
+            echo "::notice::signed generic live base generation $generation; distinct signed CI $target_profile offline target: $target_image"
           else
             test -n "$TILO_PUBLISHED_OS_IMAGE" || {
               echo '::error::set TILO_INSTALLER_OS_IMAGE to a signed, digest-pinned multi-architecture Tilo release'
@@ -283,22 +305,35 @@ jobs:
         run: |
           set -euo pipefail
           cycle_graphics=()
-          if [[ "$GITHUB_REF" == refs/tags/imager-v* || -n ${TILO_LENOVO_TARGET_IMAGE:-} ]]; then
+          if [[ "$GITHUB_REF" == refs/tags/imager-v* || -n ${TILO_LENOVO_TARGET_IMAGE:-} || ${TILO_GENERIC_TARGET:-false} == true ]]; then
             export TILO_ACCEL=kvm
           else
             export TILO_ACCEL=tcg
             cycle_graphics=(--graphics software)
           fi
+          if [[ -n ${TILO_OFFLINE_TARGET_IMAGE:-} ]]; then
+            export TILO_EXPECTED_INSTALLED_REF="$TILO_OFFLINE_TARGET_IMAGE"
+          fi
           if [[ -n ${TILO_LENOVO_TARGET_IMAGE:-} ]]; then
             # QEMU virt can boot the generic installer, then validate that it
             # wrote the exact Lenovo target. The board target's Lenovo DTB
             # cannot boot on QEMU virt; physical boot is a separate gate.
-            export TILO_EXPECTED_INSTALLED_REF="$TILO_LENOVO_TARGET_IMAGE"
             ./os/dev/test-installer-cycle.sh \
               os/output/installer/qcow2/disk.qcow2 \
               --guided-alongside --install-only \
               --out dist/installer-guided-alongside-cycle
             test "$(cat dist/installer-guided-alongside-cycle/verdict.txt)" = PASS_INSTALL_ONLY
+            test -s dist/installer-guided-alongside-cycle/guest-install-proof.json
+            test -s dist/installer-guided-alongside-cycle/installed-target-esp-readback.txt
+            test -s dist/installer-guided-alongside-cycle/alongside-preservation.txt
+            exit 0
+          fi
+          if [[ ${TILO_GENERIC_TARGET:-false} == true ]]; then
+            ./os/dev/test-installer-cycle.sh \
+              os/output/installer/qcow2/disk.qcow2 \
+              --guided-alongside \
+              --out dist/installer-guided-alongside-cycle
+            test "$(cat dist/installer-guided-alongside-cycle/verdict.txt)" = PASS
             test -s dist/installer-guided-alongside-cycle/guest-install-proof.json
             test -s dist/installer-guided-alongside-cycle/installed-target-esp-readback.txt
             test -s dist/installer-guided-alongside-cycle/alongside-preservation.txt
@@ -341,36 +376,67 @@ jobs:
       # WHPX on Windows consumes qcow2 directly. Compress the exact disk that
       # passed the native ARM64 cycle so the laptop downloads it once and never
       # reconstructs an OS image or repeats a raw-to-qcow2 conversion.
-      - name: Package tested Lenovo WHPX qcow2
-        if: github.event.inputs.lenovo_target_image != ''
+      - name: Package tested signed-target WHPX qcow2
+        if: github.event.inputs.lenovo_target_image != '' || github.event.inputs.generic_target == 'true'
         run: |
           set -euo pipefail
-          output=dist/tilo-installer/tilo-installer-lenovo-83ed-aarch64.qcow2.zst
+          stem="tilo-installer-${TILO_OFFLINE_TARGET_PROFILE:?}-aarch64"
+          output="dist/tilo-installer/$stem.qcow2.zst"
           zstd --threads=0 -1 --sparse -f os/output/installer/qcow2/disk.qcow2 -o "$output"
           (cd dist/tilo-installer && sha256sum "$(basename "$output")") > "$output.sha256"
           zstd --decompress --stdout -- "$output" | sha256sum | awk '{print $1}' \
-            > dist/tilo-installer/tilo-installer-lenovo-83ed-aarch64.qcow2.sha256
-          test "$(cat dist/tilo-installer/tilo-installer-lenovo-83ed-aarch64.qcow2.sha256)" = \
+            > "dist/tilo-installer/$stem.qcow2.sha256"
+          test "$(cat "dist/tilo-installer/$stem.qcow2.sha256")" = \
             "$(sha256sum os/output/installer/qcow2/disk.qcow2 | awk '{print $1}')"
-          jq -n --arg schema tilo.whpx-lenovo-installer-medium.v1 \
-            --arg target "$TILO_LENOVO_TARGET_IMAGE" \
+          jq -n --arg schema tilo.whpx-ci-installer-medium.v1 \
+            --arg profile "$TILO_OFFLINE_TARGET_PROFILE" \
+            --arg target "$TILO_OFFLINE_TARGET_IMAGE" \
             --arg live_base "$TILO_PUBLISHED_OS_IMAGE" \
             --arg build_revision "$GITHUB_SHA" \
-            --arg qcow2_sha256 "$(cat dist/tilo-installer/tilo-installer-lenovo-83ed-aarch64.qcow2.sha256)" \
+            --arg run_id "$GITHUB_RUN_ID" \
+            --arg run_attempt "$GITHUB_RUN_ATTEMPT" \
+            --arg qcow2_sha256 "$(cat "dist/tilo-installer/$stem.qcow2.sha256")" \
             --arg archive_sha256 "$(awk '{print $1}' "$output.sha256")" \
-            '{schema:$schema,target_image:$target,live_base_image:$live_base,
-              build_revision:$build_revision,qcow2_sha256:$qcow2_sha256,
-              archive_sha256:$archive_sha256}' \
-            > dist/tilo-installer/tilo-installer-lenovo-83ed-aarch64.whpx-source.json
+            --arg guest_proof_sha256 "$(sha256sum dist/installer-guided-alongside-cycle/guest-install-proof.json | awk '{print $1}')" \
+            '{schema:$schema,target_profile:$profile,target_image:$target,live_base_image:$live_base,
+              build_revision:$build_revision,run_id:$run_id,run_attempt:$run_attempt,
+              qcow2_sha256:$qcow2_sha256,archive_sha256:$archive_sha256,
+              guest_proof_sha256:$guest_proof_sha256}' \
+            > "dist/tilo-installer/$stem.whpx-source.json"
+      - name: Sign and verify WHPX medium identity
+        if: github.event.inputs.lenovo_target_image != '' || github.event.inputs.generic_target == 'true'
+        env:
+          COSIGN_KEY_REF: ${{ secrets.COSIGN_KEY_REF }}
+          AWS_SIGNING_ROLE_ARN: ${{ secrets.AWS_SIGNING_ROLE_ARN }}
+        run: |
+          set -euo pipefail
+          case "$COSIGN_KEY_REF" in
+            gcpkms://*|awskms://*|azurekms://*|hashivault://*) ;;
+            *) echo '::error::medium signing requires non-exportable release KMS key'; exit 1 ;;
+          esac
+          . os/dev/configure-cosign-kms.sh
+          identity="dist/tilo-installer/tilo-installer-${TILO_OFFLINE_TARGET_PROFILE:?}-aarch64.whpx-source.json"
+          cosign sign-blob --yes --key "$COSIGN_KEY_REF" \
+            --bundle "$identity.bundle" --output-signature "$identity.sig" "$identity"
+          cosign verify-blob --offline --key keys/cosign.pub \
+            --bundle "$identity.bundle" --signature "$identity.sig" "$identity"
       - uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
-        if: github.event.inputs.lenovo_target_image != ''
+        if: github.event.inputs.lenovo_target_image != '' || github.event.inputs.generic_target == 'true'
         with:
-          name: tilo-lenovo-83ed-whpx-installer-${{ github.sha }}
+          name: tilo-${{ github.event.inputs.generic_target == 'true' && 'generic' || 'lenovo-83ed' }}-whpx-installer-${{ github.sha }}
           path: |
+            dist/tilo-installer/tilo-installer-generic-aarch64.qcow2.zst
+            dist/tilo-installer/tilo-installer-generic-aarch64.qcow2.zst.sha256
+            dist/tilo-installer/tilo-installer-generic-aarch64.qcow2.sha256
+            dist/tilo-installer/tilo-installer-generic-aarch64.whpx-source.json
+            dist/tilo-installer/tilo-installer-generic-aarch64.whpx-source.json.bundle
+            dist/tilo-installer/tilo-installer-generic-aarch64.whpx-source.json.sig
             dist/tilo-installer/tilo-installer-lenovo-83ed-aarch64.qcow2.zst
             dist/tilo-installer/tilo-installer-lenovo-83ed-aarch64.qcow2.zst.sha256
             dist/tilo-installer/tilo-installer-lenovo-83ed-aarch64.qcow2.sha256
             dist/tilo-installer/tilo-installer-lenovo-83ed-aarch64.whpx-source.json
+            dist/tilo-installer/tilo-installer-lenovo-83ed-aarch64.whpx-source.json.bundle
+            dist/tilo-installer/tilo-installer-lenovo-83ed-aarch64.whpx-source.json.sig
             os/output/installer/qcow2/disk.qcow2.hardware.json
           if-no-files-found: error
       - name: Verify the installer-medium release payload

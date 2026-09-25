@@ -54,6 +54,14 @@ class OfflineTargetTest(unittest.TestCase):
         offline.install(self.root, destination)
         self.assertEqual(offline.verify(destination)["target_ref"], self.ref)
 
+    def test_generic_signed_child_transport(self):
+        metadata_path = self.root / "target.json"
+        metadata = json.loads(metadata_path.read_text())
+        metadata["hardware_profile"] = "generic"
+        metadata["update_origin"] = "code.podesta.ai/qos/tilo:gen7"
+        metadata_path.write_text(json.dumps(metadata))
+        self.assertEqual(offline.verify(self.root)["hardware_profile"], "generic")
+
     def test_tampered_blob_rejected(self):
         (self.blobs / self.layer["digest"].removeprefix("sha256:")).write_bytes(b"tampered-os-payload")
         with self.assertRaisesRegex(ValueError, "blob"):
