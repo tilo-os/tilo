@@ -38,6 +38,12 @@ use super::live::Live;
 ///   locally (a drag, a scrub) and dispatch one action when it ends.
 /// * **Permissions** — [`SurfaceCx::read_only`] says the participant may
 ///   only view; present accordingly. Refused actions change nothing.
+/// * **Confirmation** — a typed value whose
+///   [`risk`](tilo_actions::Action::risk) is destructive (deleting a clip)
+///   waits for the user's confirmation, like a declared destructive action.
+///   When an edit is refused or held for confirmation, the surface is
+///   presented the stored state again, undoing any optimistic preview; a
+///   confirmed edit then arrives as an ordinary change.
 /// * **Presence** — report where the user is as a [`ResourceSelection`] from
 ///   the toolkit's `Widget::presence_payload` (one line:
 ///   `selection.presence::<R>(app_id)`), and draw collaborators from the
