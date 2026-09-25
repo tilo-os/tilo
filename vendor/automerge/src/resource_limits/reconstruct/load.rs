@@ -57,7 +57,7 @@ impl Fragments<'_> {
     }
 }
 
-pub(super) fn load_strict(
+pub(crate) fn load_strict(
     data: &[u8],
     allowance: &NativeAllowance,
     peak: &mut NativeReservation,

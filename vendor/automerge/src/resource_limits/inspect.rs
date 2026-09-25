@@ -7,6 +7,8 @@ use miniz_oxide::{DataFormat, MZError, MZFlush, MZStatus};
 use sha2::{Digest, Sha256};
 
 pub(super) const MAX_COLUMNS: usize = 128;
+/// Operation action column (id 4, unsigned integer).
+const ACTION_SPEC: u32 = 0x42;
 // Exact miniz_oxide 0.8.9 has one boxed InflateState: a fixed 32 KiB
 // dictionary and fixed Huffman arrays, with no growable owned fields. Charge
 // that concrete layout and the scanner's fixed output scratch before creation.
@@ -424,6 +426,9 @@ impl Scan<'_> {
                 self.limits.max_changes
             };
             let values = self.column(bytes, kind, row_limit, operations)?;
+            if operations && column.spec & !8 == ACTION_SPEC {
+                self.actions(bytes)?;
+            }
             if !grouped && kind != 7 {
                 rows = rows.max(values);
             }
@@ -446,6 +451,37 @@ impl Scan<'_> {
                 Error::Collection,
             )
         }
+    }
+    /// Tallies make and mark operations from an (already validated) action
+    /// column: they drive load's object-index and mark-cache tables.
+    fn actions(&mut self, bytes: &[u8]) -> Result<(), Error> {
+        let mut reader = Reader(bytes);
+        let tally = |action: u64, count: usize, shape: &mut NativeShape| -> Result<(), Error> {
+            let slot = match action {
+                0 | 2 | 4 | 6 => &mut shape.make_operations,
+                7 => &mut shape.mark_operations,
+                _ => return Ok(()),
+            };
+            *slot = slot.checked_add(count).ok_or(Error::Operations)?;
+            Ok(())
+        };
+        while !reader.0.is_empty() {
+            let run = reader.sint()?;
+            if run == 0 {
+                reader.size()?;
+            } else if run > 0 {
+                let count = usize::try_from(run).map_err(|_| Error::Operations)?;
+                let action = reader.uint()?;
+                tally(action, count, &mut self.shape)?;
+            } else {
+                let count = run.checked_neg().ok_or(Error::Operations)?;
+                for _ in 0..count {
+                    let action = reader.uint()?;
+                    tally(action, 1, &mut self.shape)?;
+                }
+            }
+        }
+        Ok(())
     }
     fn column(
         &mut self,
