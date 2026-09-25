@@ -29,6 +29,7 @@ name = "os"
 inputs = ["os/"]
 suites = [
   "os/tests/containerfile_copy_invariants.sh",
+  "os/tests/dracut_tilo_root_contract.sh",
   "os/tests/installer_target_artifacts.py",
   "os/tests/installer_target_modes.py",
   "os/tests/internal_bundle_test.py",
