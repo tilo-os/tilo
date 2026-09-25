@@ -596,7 +596,7 @@ pub enum LaunchError {
     /// store (and any close reports) so the caller can reopen or flush it.
     ComponentSetup {
         source: Box<LaunchError>,
-        record: crate::record::RecordCheckout,
+        record: Box<crate::record::RecordCheckout>,
         recovery: LaunchRecovery,
     },
     /// A capture failed or closed dirty: `recovery` holds the close reports.
@@ -1829,7 +1829,7 @@ mod tests {
         );
         let error = LaunchError::ComponentSetup {
             source: Box::new(LaunchError::Operation("factory failed".into())),
-            record: checkout.clone(),
+            record: Box::new(checkout.clone()),
             recovery: LaunchRecovery::new(Some(records), Vec::new()),
         };
         // Off its thread the error is ordinary data: it displays, chains its
@@ -1860,7 +1860,7 @@ mod tests {
         else {
             unreachable!()
         };
-        assert_eq!(record, checkout);
+        assert_eq!(*record, checkout);
         assert!(recovery.is_reachable());
         let store = recovery.into_record_store().unwrap();
         assert!(store.is_some(), "the record store survives the round trip");

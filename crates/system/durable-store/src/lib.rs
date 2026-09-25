@@ -291,7 +291,9 @@ pub trait DurableStore {
 
     /// Grant custody of `key` to exactly one `claimant`, durably: the first
     /// claim wins, and the same claimant may claim again (to resume after a
-    /// crash). Used to import a retained source into exactly one workspace.
+    /// crash). Used to import a retained source into exactly one workspace,
+    /// and to let exactly one successor adopt a room record under a new
+    /// identity.
     /// `true` when `claimant` holds custody.
     ///
     /// # Errors

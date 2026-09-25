@@ -31,14 +31,14 @@ use serde::{Deserialize, Serialize};
 
 use tilo_actions::{
     Action, ActionArgs, ActionContract, ActionError, ActionParam, ActionRegistry, ActionSpec, Doc,
-    EncodedAction, ExecutionLocus, ExecutionMode, OperationKind, ParamType, Resource,
-    ResourceProvider, ResultSpec, RetryPolicy,
+    EncodedAction, ExecutionLocus, ExecutionMode, OperationKind, ParamType, PermissionRequirement,
+    Resource, ResourceProvider, ResultSpec, RetryPolicy,
 };
 
 use crate::doc::{ImportedPage, PagePlanEntry, PdfDoc};
 use crate::model::{
-    AnnoKind, Annotation, Comment, MARGIN, PAGE_H, PAGE_W, PtRect, Reply, Signature, SignatureInk,
-    Swatch,
+    AnnoKind, Annotation, Comment, FormEntry, GeomSpace, MARGIN, MarkupStyle, PAGE_H, PAGE_W,
+    PtRect, Reply, Signature, SignatureInk, Swatch,
 };
 
 /// Registry `type_id` for every PDF-reader action.
@@ -139,6 +139,11 @@ pub enum PdfOperation {
     SaveAs {
         path: Option<String>,
     },
+    /// Choose how the highlight tool marks text: `highlight`, `underline`
+    /// or `strikeout`.
+    MarkupStyle {
+        style: String,
+    },
 }
 
 #[cfg(test)]
@@ -203,7 +208,8 @@ fn operation(id: &str, label: &str, kind: OperationKind, value: PdfOperation) ->
         | PdfOperation::ToggleRail
         | PdfOperation::OpenSearch
         | PdfOperation::GoToPage { .. }
-        | PdfOperation::GoToSearchResult { .. } => spec.with_contract(ActionContract::view()),
+        | PdfOperation::GoToSearchResult { .. }
+        | PdfOperation::MarkupStyle { .. } => spec.with_contract(ActionContract::view()),
         PdfOperation::Open { .. } | PdfOperation::SaveAs { .. } => spec.destructive(),
     }
 }
@@ -252,37 +258,199 @@ fn file_operation(id: &str, label: &str, save: bool) -> ActionSpec {
 /// [`model::AnnoKind`]: crate::model::AnnoKind
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum AnnoGeom {
-    Highlight { x: f64, y: f64, w: f64, h: f64 },
-    Ink { points: Vec<(f64, f64)> },
-    Note { x: f64, y: f64 },
+    /// One highlight band (the form envelopes had before multi-band markup).
+    Highlight {
+        x: f64,
+        y: f64,
+        w: f64,
+        h: f64,
+    },
+    /// Text markup over one band per line, with the engine character range
+    /// it covers when it was made from text.
+    Markup {
+        style: String,
+        quads: Vec<(f64, f64, f64, f64)>,
+        chars: Option<(u32, u32)>,
+    },
+    Ink {
+        points: Vec<(f64, f64)>,
+    },
+    Note {
+        x: f64,
+        y: f64,
+    },
+    /// Freehand ink of more than one stroke.
+    InkStrokes {
+        strokes: Vec<Vec<(f64, f64)>>,
+    },
+    /// A free text box.
+    FreeText {
+        x: f64,
+        y: f64,
+        w: f64,
+        h: f64,
+        text: String,
+        size: f64,
+    },
 }
 
 impl AnnoGeom {
-    fn from_kind(kind: &AnnoKind) -> Self {
+    fn from_kind(kind: &AnnoKind, chars: Option<(u32, u32)>) -> Self {
         match kind {
-            AnnoKind::Highlight { rect } => AnnoGeom::Highlight {
+            AnnoKind::Markup { style, quads } => AnnoGeom::Markup {
+                style: style.key().to_string(),
+                quads: quads.iter().map(|q| (q.x, q.y, q.w, q.h)).collect(),
+                chars,
+            },
+            AnnoKind::Ink { strokes } => match strokes.as_slice() {
+                [points] => AnnoGeom::Ink {
+                    points: points.clone(),
+                },
+                _ => AnnoGeom::InkStrokes {
+                    strokes: strokes.clone(),
+                },
+            },
+            AnnoKind::Note { x, y } => AnnoGeom::Note { x: *x, y: *y },
+            AnnoKind::FreeText { rect, text, size } => AnnoGeom::FreeText {
                 x: rect.x,
                 y: rect.y,
                 w: rect.w,
                 h: rect.h,
+                text: text.clone(),
+                size: *size,
             },
-            AnnoKind::Ink { points } => AnnoGeom::Ink {
-                points: points.clone(),
-            },
-            AnnoKind::Note { x, y } => AnnoGeom::Note { x: *x, y: *y },
         }
     }
 
-    fn to_kind(&self) -> AnnoKind {
+    fn to_kind(&self) -> (AnnoKind, Option<(u32, u32)>) {
         match self {
-            AnnoGeom::Highlight { x, y, w, h } => AnnoKind::Highlight {
-                rect: PtRect::new(*x, *y, *w, *h),
-            },
-            AnnoGeom::Ink { points } => AnnoKind::Ink {
-                points: points.clone(),
-            },
-            AnnoGeom::Note { x, y } => AnnoKind::Note { x: *x, y: *y },
+            AnnoGeom::Highlight { x, y, w, h } => {
+                (AnnoKind::highlight(PtRect::new(*x, *y, *w, *h)), None)
+            }
+            AnnoGeom::Markup {
+                style,
+                quads,
+                chars,
+            } => (
+                AnnoKind::Markup {
+                    style: MarkupStyle::parse(style).unwrap_or(MarkupStyle::Highlight),
+                    quads: quads
+                        .iter()
+                        .filter(|(x, y, w, h)| [x, y, w, h].iter().all(|n| n.is_finite()))
+                        .map(|(x, y, w, h)| PtRect::new(*x, *y, *w, *h))
+                        .collect(),
+                },
+                *chars,
+            ),
+            AnnoGeom::Ink { points } => (AnnoKind::ink(points.clone()), None),
+            AnnoGeom::InkStrokes { strokes } => (
+                AnnoKind::Ink {
+                    strokes: strokes.clone(),
+                },
+                None,
+            ),
+            AnnoGeom::Note { x, y } => (AnnoKind::Note { x: *x, y: *y }, None),
+            AnnoGeom::FreeText {
+                x,
+                y,
+                w,
+                h,
+                text,
+                size,
+            } => (
+                AnnoKind::FreeText {
+                    rect: PtRect::new(*x, *y, *w, *h),
+                    text: text.clone(),
+                    size: if size.is_finite() && *size > 0.0 {
+                        *size
+                    } else {
+                        crate::model::FREE_TEXT_SIZE
+                    },
+                },
+                None,
+            ),
         }
+    }
+}
+
+/// A comment thread as an import carries it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CommentWire {
+    pub id: String,
+    pub anno_id: Option<String>,
+    pub page: usize,
+    pub author: String,
+    pub body: String,
+    pub created: i64,
+    /// `(id, author, body)` per reply.
+    pub replies: Vec<(String, String, String)>,
+}
+
+/// An imported annotation, in its page's user space.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ImportedAnnotationWire {
+    pub id: String,
+    pub page: usize,
+    pub page_id: String,
+    pub geom: AnnoGeom,
+    pub color: String,
+    pub author: String,
+    pub created_ms: i64,
+}
+
+impl ImportedAnnotationWire {
+    fn to_annotation(&self) -> Annotation {
+        let (kind, chars) = self.geom.to_kind();
+        Annotation {
+            id: self.id.clone(),
+            page: self.page,
+            kind,
+            color: Swatch::parse(&self.color),
+            author: self.author.clone(),
+            chars,
+            created_ms: self.created_ms,
+            space: GeomSpace::User,
+        }
+    }
+}
+
+/// A form value as carried by an action.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum FormValueWire {
+    Text(String),
+    Checked { on: bool, export: Option<String> },
+    Choice(String),
+}
+
+impl FormValueWire {
+    pub fn from_entry(entry: &FormEntry) -> Self {
+        match entry {
+            FormEntry::Text(t) => FormValueWire::Text(t.clone()),
+            FormEntry::Checked { on, export } => FormValueWire::Checked {
+                on: *on,
+                export: export.clone(),
+            },
+            FormEntry::Choice(c) => FormValueWire::Choice(c.clone()),
+        }
+    }
+
+    fn to_entry(&self) -> FormEntry {
+        match self {
+            FormValueWire::Text(t) => FormEntry::Text(t.clone()),
+            FormValueWire::Checked { on, export } => FormEntry::Checked {
+                on: *on,
+                export: export.clone(),
+            },
+            FormValueWire::Choice(c) => FormEntry::Choice(c.clone()),
+        }
+    }
+}
+
+fn space(user: bool) -> GeomSpace {
+    if user {
+        GeomSpace::User
+    } else {
+        GeomSpace::Page
     }
 }
 
@@ -318,14 +486,22 @@ pub enum PdfViewerAction {
         id: String,
         after_id: Option<String>,
     },
-    /// Add one annotation (highlight band, ink stroke, or sticky-note marker).
-    /// `id` is minted at authoring time and carried here.
+    /// Add one annotation (text markup, ink stroke, or sticky-note marker).
+    /// `id` is minted at authoring time and carried here. `page_id` names the
+    /// page occurrence (envelopes without it use the page number); with
+    /// `user_space` the geometry is in the page's PDF user space.
     AddAnnotation {
         id: String,
         page: usize,
         geom: AnnoGeom,
         color: String,
         author: String,
+        #[serde(default)]
+        page_id: Option<String>,
+        #[serde(default)]
+        user_space: bool,
+        #[serde(default)]
+        created_ms: i64,
     },
     /// Recolour an existing annotation.
     SetAnnotationColor {
@@ -338,6 +514,8 @@ pub enum PdfViewerAction {
         id: String,
         x: f64,
         y: f64,
+        #[serde(default)]
+        user_space: bool,
     },
     /// Delete an annotation. Its anchored comments are removed with it, so a
     /// deleted note never leaves a dangling thread behind.
@@ -357,6 +535,10 @@ pub enum PdfViewerAction {
         /// Monotonic ordinal for the comment's stable sort, minted at authoring.
         created: i64,
         body: String,
+        #[serde(default)]
+        page_id: Option<String>,
+        #[serde(default)]
+        user_space: bool,
     },
     /// Replace a comment's body text (the inline editor / palette edit).
     SetCommentBody {
@@ -395,10 +577,76 @@ pub enum PdfViewerAction {
         signer: String,
         date: String,
         strokes: Option<Vec<Vec<(f64, f64)>>>,
+        #[serde(default)]
+        page_id: Option<String>,
+        #[serde(default)]
+        user_space: bool,
     },
     DeleteSignature {
         id: String,
     },
+    /// Set a page occurrence's rotation (degrees clockwise, a multiple of 90).
+    RotatePage {
+        id: String,
+        degrees: i32,
+    },
+    /// Record a value for a form field of the document.
+    SetFormValue {
+        name: String,
+        value: FormValueWire,
+    },
+    /// Drop a recorded form value, showing the document's own again.
+    ClearFormValue {
+        name: String,
+    },
+    /// Pin the content hash of the PDF bytes the markup is made against. The
+    /// first pin of a record wins.
+    PinSource {
+        hash: String,
+        len: u64,
+        mime: String,
+    },
+    /// Take over the markup and form values already in the source bytes
+    /// `source_hash` as records (see [`crate::adopt`]). A record imports a
+    /// given source once; ids derive from the source, so concurrent imports
+    /// merge.
+    ImportExisting {
+        source_hash: String,
+        annotations: Vec<ImportedAnnotationWire>,
+        comments: Vec<CommentWire>,
+        form_values: Vec<(String, FormValueWire)>,
+        adopted: Vec<crate::adopt::AdoptedEntry>,
+    },
+    /// Replace a free text box's text.
+    SetFreeText {
+        id: String,
+        text: String,
+    },
+    /// Move or resize a free text box and set its text size.
+    SetFreeTextBox {
+        id: String,
+        x: f64,
+        y: f64,
+        w: f64,
+        h: f64,
+        size: f64,
+        #[serde(default)]
+        user_space: bool,
+    },
+}
+
+impl PdfViewerAction {
+    /// The permission an action needs: replying and commenting need
+    /// `Comment`, every other change to the document needs `Write`.
+    pub fn required_verb(&self) -> ui::permissions::Verb {
+        use ui::permissions::Verb;
+        match self {
+            PdfViewerAction::AddReply { .. }
+            | PdfViewerAction::SetCommentBody { .. }
+            | PdfViewerAction::SetCommentResolved { .. } => Verb::Comment,
+            _ => Verb::Write,
+        }
+    }
 }
 
 impl Action for PdfViewerAction {
@@ -421,6 +669,7 @@ impl Action for PdfViewerAction {
                     id: id.clone(),
                     source_page: *source_page,
                     imported: imported.clone(),
+                    rotation: 0,
                 },
             ),
             PdfViewerAction::ImportPages { after_id, pages } => {
@@ -439,21 +688,33 @@ impl Action for PdfViewerAction {
                 geom,
                 color,
                 author,
+                page_id,
+                user_space,
+                created_ms,
             } => {
+                let (kind, chars) = geom.to_kind();
                 let a = Annotation {
                     id: id.clone(),
                     page: *page,
-                    kind: geom.to_kind(),
+                    kind,
                     color: Swatch::parse(color),
                     author: author.clone(),
+                    chars,
+                    created_ms: *created_ms,
+                    space: space(*user_space),
                 };
-                PdfDoc::add_annotation(doc, &a);
+                PdfDoc::add_annotation(doc, &a, page_id.as_deref());
             }
             PdfViewerAction::SetAnnotationColor { id, color } => {
                 PdfDoc::set_annotation_color(doc, id, Swatch::parse(color));
             }
-            PdfViewerAction::SetAnnotationPosition { id, x, y } => {
-                PdfDoc::set_annotation_position(doc, id, *x, *y);
+            PdfViewerAction::SetAnnotationPosition {
+                id,
+                x,
+                y,
+                user_space,
+            } => {
+                PdfDoc::set_annotation_position(doc, id, *x, *y, space(*user_space));
             }
             PdfViewerAction::DeleteAnnotation { id } => {
                 PdfDoc::delete_annotation(doc, id);
@@ -468,6 +729,8 @@ impl Action for PdfViewerAction {
                 author,
                 created,
                 body,
+                page_id,
+                user_space,
             } => {
                 let a = Annotation {
                     id: anno_id.clone(),
@@ -475,8 +738,11 @@ impl Action for PdfViewerAction {
                     kind: AnnoKind::Note { x: *x, y: *y },
                     color: Swatch::parse(color),
                     author: author.clone(),
+                    chars: None,
+                    created_ms: 0,
+                    space: space(*user_space),
                 };
-                PdfDoc::add_annotation(doc, &a);
+                PdfDoc::add_annotation(doc, &a, page_id.as_deref());
                 let c = Comment {
                     id: comment_id.clone(),
                     anno_id: Some(anno_id.clone()),
@@ -536,6 +802,8 @@ impl Action for PdfViewerAction {
                 signer,
                 date,
                 strokes,
+                page_id,
+                user_space,
             } => PdfDoc::add_signature(
                 doc,
                 &Signature {
@@ -549,9 +817,83 @@ impl Action for PdfViewerAction {
                             strokes: strokes.clone(),
                         }
                     }),
+                    space: space(*user_space),
                 },
+                page_id.as_deref(),
             ),
             PdfViewerAction::DeleteSignature { id } => PdfDoc::delete_signature(doc, id),
+            PdfViewerAction::RotatePage { id, degrees } => {
+                PdfDoc::set_page_rotation(doc, id, *degrees);
+            }
+            PdfViewerAction::SetFormValue { name, value } => {
+                PdfDoc::set_form_value(doc, name, &value.to_entry());
+            }
+            PdfViewerAction::ClearFormValue { name } => PdfDoc::clear_form_value(doc, name),
+            PdfViewerAction::PinSource { hash, len, mime } => {
+                PdfDoc::pin_source(doc, hash, *len, mime);
+            }
+            PdfViewerAction::ImportExisting {
+                source_hash,
+                annotations,
+                comments,
+                form_values,
+                adopted,
+            } => {
+                if annotations.len() > crate::adopt::MAX_IMPORTED_ANNOTATIONS
+                    || adopted.len() > 4 * crate::adopt::MAX_IMPORTED_ANNOTATIONS
+                {
+                    return Ok(());
+                }
+                let plan = crate::adopt::ImportPlan {
+                    annotations: annotations
+                        .iter()
+                        .map(|a| (a.to_annotation(), a.page_id.clone()))
+                        .collect(),
+                    comments: comments
+                        .iter()
+                        .map(|c| Comment {
+                            id: c.id.clone(),
+                            anno_id: c.anno_id.clone(),
+                            page: c.page,
+                            author: c.author.clone(),
+                            body: c.body.clone(),
+                            created: c.created,
+                            resolved: false,
+                            replies: c
+                                .replies
+                                .iter()
+                                .map(|(id, author, body)| Reply {
+                                    id: id.clone(),
+                                    author: author.clone(),
+                                    body: body.clone(),
+                                })
+                                .collect(),
+                        })
+                        .collect(),
+                    form_values: form_values
+                        .iter()
+                        .map(|(name, value)| (name.clone(), value.to_entry()))
+                        .collect(),
+                    adopted: adopted.clone(),
+                };
+                PdfDoc::import_existing(doc, source_hash, &plan);
+            }
+            PdfViewerAction::SetFreeText { id, text } => PdfDoc::set_free_text(doc, id, text),
+            PdfViewerAction::SetFreeTextBox {
+                id,
+                x,
+                y,
+                w,
+                h,
+                size,
+                user_space,
+            } => PdfDoc::set_free_text_box(
+                doc,
+                id,
+                &PtRect::new(*x, *y, *w, *h),
+                *size,
+                space(*user_space),
+            ),
         }
         Ok(())
     }
@@ -591,19 +933,28 @@ pub fn encode(action: &PdfViewerAction) -> EncodedAction {
 /// Build an "add annotation" action straight from the model annotation the
 /// on-page tools construct, so the tool path and the action path never diverge.
 pub fn add_annotation_action(a: &Annotation) -> PdfViewerAction {
+    add_annotation_on(a, None)
+}
+
+/// An "add annotation" action anchored to page occurrence `page_id`, with
+/// the annotation's geometry in whatever space it carries.
+pub fn add_annotation_on(a: &Annotation, page_id: Option<&str>) -> PdfViewerAction {
     PdfViewerAction::AddAnnotation {
         id: a.id.clone(),
         page: a.page,
-        geom: AnnoGeom::from_kind(&a.kind),
-        color: a.color.key().to_string(),
+        geom: AnnoGeom::from_kind(&a.kind, a.chars),
+        color: a.color.key(),
         author: a.author.clone(),
+        page_id: page_id.map(str::to_string),
+        user_space: a.space == GeomSpace::User,
+        created_ms: a.created_ms,
     }
 }
 
 pub fn set_annotation_color_action(id: &str, color: Swatch) -> PdfViewerAction {
     PdfViewerAction::SetAnnotationColor {
         id: id.to_string(),
-        color: color.key().to_string(),
+        color: color.key(),
     }
 }
 
@@ -612,6 +963,105 @@ pub fn set_annotation_position_action(id: &str, x: f64, y: f64) -> PdfViewerActi
         id: id.to_string(),
         x,
         y,
+        user_space: false,
+    }
+}
+
+/// Move a note to a point in its page's PDF user space.
+pub fn set_annotation_position_user_action(id: &str, x: f64, y: f64) -> PdfViewerAction {
+    PdfViewerAction::SetAnnotationPosition {
+        id: id.to_string(),
+        x,
+        y,
+        user_space: true,
+    }
+}
+
+pub fn rotate_page_action(id: &str, degrees: i32) -> PdfViewerAction {
+    PdfViewerAction::RotatePage {
+        id: id.to_string(),
+        degrees: degrees.rem_euclid(360),
+    }
+}
+
+pub fn set_form_value_action(name: &str, value: &FormEntry) -> PdfViewerAction {
+    PdfViewerAction::SetFormValue {
+        name: name.to_string(),
+        value: FormValueWire::from_entry(value),
+    }
+}
+
+/// Take over the existing markup an import plan found in `source_hash`.
+pub fn import_existing_action(
+    source_hash: &str,
+    plan: &crate::adopt::ImportPlan,
+) -> PdfViewerAction {
+    PdfViewerAction::ImportExisting {
+        source_hash: source_hash.to_string(),
+        annotations: plan
+            .annotations
+            .iter()
+            .map(|(a, page_id)| ImportedAnnotationWire {
+                id: a.id.clone(),
+                page: a.page,
+                page_id: page_id.clone(),
+                geom: AnnoGeom::from_kind(&a.kind, a.chars),
+                color: a.color.key(),
+                author: a.author.clone(),
+                created_ms: a.created_ms,
+            })
+            .collect(),
+        comments: plan
+            .comments
+            .iter()
+            .map(|c| CommentWire {
+                id: c.id.clone(),
+                anno_id: c.anno_id.clone(),
+                page: c.page,
+                author: c.author.clone(),
+                body: c.body.clone(),
+                created: c.created,
+                replies: c
+                    .replies
+                    .iter()
+                    .map(|r| (r.id.clone(), r.author.clone(), r.body.clone()))
+                    .collect(),
+            })
+            .collect(),
+        form_values: plan
+            .form_values
+            .iter()
+            .map(|(name, value)| (name.clone(), FormValueWire::from_entry(value)))
+            .collect(),
+        adopted: plan.adopted.clone(),
+    }
+}
+
+pub fn set_free_text_action(id: &str, text: &str) -> PdfViewerAction {
+    PdfViewerAction::SetFreeText {
+        id: id.to_string(),
+        text: text.to_string(),
+    }
+}
+
+/// Move/resize a free text box; `rect` and `size` in its page's user space.
+pub fn set_free_text_box_user_action(id: &str, rect: &PtRect, size: f64) -> PdfViewerAction {
+    PdfViewerAction::SetFreeTextBox {
+        id: id.to_string(),
+        x: rect.x,
+        y: rect.y,
+        w: rect.w,
+        h: rect.h,
+        size,
+        user_space: true,
+    }
+}
+
+pub fn pin_source_action(hash: &str, len: u64) -> PdfViewerAction {
+    PdfViewerAction::PinSource {
+        hash: hash.to_string(),
+        len,
+        mime: "application/pdf".to_string(),
     }
 }
 
@@ -619,7 +1069,10 @@ pub fn delete_annotation_action(id: &str) -> PdfViewerAction {
     PdfViewerAction::DeleteAnnotation { id: id.to_string() }
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the action payload carries every authored field explicitly"
+)]
 pub fn create_note_action(
     anno_id: &str,
     comment_id: &str,
@@ -637,10 +1090,44 @@ pub fn create_note_action(
         page,
         x,
         y,
-        color: color.key().to_string(),
+        color: color.key(),
         author: author.to_string(),
         created,
         body: body.to_string(),
+        page_id: None,
+        user_space: false,
+    }
+}
+
+/// A note anchored to page occurrence `page_id` at a point of its PDF user
+/// space.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the action payload carries every authored field explicitly"
+)]
+pub fn create_note_on_action(
+    anno_id: &str,
+    comment_id: &str,
+    page: usize,
+    page_id: &str,
+    at_user: (f64, f64),
+    color: Swatch,
+    author: &str,
+    created: i64,
+    body: &str,
+) -> PdfViewerAction {
+    PdfViewerAction::CreateNote {
+        anno_id: anno_id.to_string(),
+        comment_id: comment_id.to_string(),
+        page,
+        x: at_user.0,
+        y: at_user.1,
+        color: color.key(),
+        author: author.to_string(),
+        created,
+        body: body.to_string(),
+        page_id: Some(page_id.to_string()),
+        user_space: true,
     }
 }
 
@@ -684,6 +1171,12 @@ pub fn delete_comment_action(id: &str) -> PdfViewerAction {
 }
 
 pub fn add_signature_action(signature: &Signature) -> PdfViewerAction {
+    add_signature_on(signature, None)
+}
+
+/// Place a signature on page occurrence `page_id`, its box in whatever space
+/// the signature carries.
+pub fn add_signature_on(signature: &Signature, page_id: Option<&str>) -> PdfViewerAction {
     PdfViewerAction::AddSignature {
         id: signature.id.clone(),
         page: signature.page,
@@ -697,6 +1190,8 @@ pub fn add_signature_action(signature: &Signature) -> PdfViewerAction {
             SignatureInk::Typed => None,
             SignatureInk::Drawn { strokes } => Some(strokes.clone()),
         },
+        page_id: page_id.map(str::to_string),
+        user_space: signature.space == GeomSpace::User,
     }
 }
 
@@ -755,6 +1250,8 @@ pub struct PdfResourceCtx {
     /// Imported content descriptors parallel to `page_ids`; absent for pages
     /// from the originally opened PDF.
     pub page_imports: Vec<Option<ImportedPage>>,
+    /// Recorded rotation (degrees) parallel to `page_ids`.
+    pub page_rotations: Vec<i32>,
     pub author: String,
     /// Date captured when the resource snapshot is published. Action payloads
     /// carry this value so a palette invocation replays identically on peers.
@@ -778,14 +1275,25 @@ pub struct PdfResourceCtx {
 /// the geometry) — such an action is silently omitted from the palette
 /// rather than panicking the whole resource tree.
 fn encode_spec(id: &str, label: &str, action: &PdfViewerAction) -> Option<ActionSpec> {
-    ActionSpec::immediate(id, label, PDF_VIEWER_ACTION_TYPE, action).ok()
+    let spec = ActionSpec::immediate(id, label, PDF_VIEWER_ACTION_TYPE, action).ok()?;
+    Some(with_permission(spec, action))
+}
+
+/// Declare the permission an action needs, so the palette offers it only to
+/// users who hold it (commenters may comment; editing needs write access).
+fn with_permission(spec: ActionSpec, action: &PdfViewerAction) -> ActionSpec {
+    match action.required_verb() {
+        ui::permissions::Verb::Comment => spec.requiring(PermissionRequirement::Comment),
+        _ => spec,
+    }
 }
 
 fn anno_label(a: &Annotation) -> String {
     let kind = match a.kind {
-        AnnoKind::Highlight { .. } => "Highlight",
+        AnnoKind::Markup { .. } => "Highlight",
         AnnoKind::Ink { .. } => "Ink",
         AnnoKind::Note { .. } => "Note",
+        AnnoKind::FreeText { .. } => "Text",
     };
     format!("{kind} · p.{}", a.page)
 }
@@ -845,25 +1353,31 @@ fn comment_resource(c: &Comment, author: &str) -> Resource {
     ));
 
     let edit_id = c.id.clone();
-    res = res.with_action(ActionSpec::prompted(
-        "edit",
-        "Edit comment",
-        "Comment",
-        "edit the comment…",
-        ExecutionLocus::ClientLocal,
-        move |text: &str| encode(&set_comment_body_action(&edit_id, text)),
-    ));
+    res = res.with_action(
+        ActionSpec::prompted(
+            "edit",
+            "Edit comment",
+            "Comment",
+            "edit the comment…",
+            ExecutionLocus::ClientLocal,
+            move |text: &str| encode(&set_comment_body_action(&edit_id, text)),
+        )
+        .requiring(PermissionRequirement::Comment),
+    );
 
     let reply_id = c.id.clone();
     let reply_author = author.to_string();
-    res = res.with_action(ActionSpec::prompted(
-        "reply",
-        "Reply",
-        "Reply",
-        "your reply…",
-        ExecutionLocus::ClientLocal,
-        move |text: &str| encode(&add_reply_action(&reply_id, &reply_author, text)),
-    ));
+    res = res.with_action(
+        ActionSpec::prompted(
+            "reply",
+            "Reply",
+            "Reply",
+            "your reply…",
+            ExecutionLocus::ClientLocal,
+            move |text: &str| encode(&add_reply_action(&reply_id, &reply_author, text)),
+        )
+        .requiring(PermissionRequirement::Comment),
+    );
 
     // Resolve toggles against the comment's current state; the target value is
     // baked into the pre-encoded action, so the row reads "Resolve" or "Reopen".
@@ -895,6 +1409,7 @@ fn page_resource(ctx: &PdfResourceCtx, page: usize, page_id: &str) -> Resource {
         id: page_id.to_string(),
         source_page,
         imported: ctx.page_imports.get(page - 1).cloned().flatten(),
+        rotation: 0,
     };
     let mut page_resource = Resource::new(
         page_resource_id(&ctx.doc_id, page_id),
@@ -940,6 +1455,15 @@ fn page_resource(ctx: &PdfResourceCtx, page: usize, page_id: &str) -> Resource {
             "Move page down",
             &move_page_plan_action(page_id, after),
         ) {
+            page_resource = page_resource.with_action(spec.reversible());
+        }
+    }
+    let rotation = ctx.page_rotations.get(page - 1).copied().unwrap_or(0);
+    for (id, label, turn) in [
+        ("rotate-cw", "Rotate page clockwise", 90),
+        ("rotate-ccw", "Rotate page counter-clockwise", 270),
+    ] {
+        if let Some(spec) = encode_spec(id, label, &rotate_page_action(page_id, rotation + turn)) {
             page_resource = page_resource.with_action(spec.reversible());
         }
     }
@@ -1067,6 +1591,30 @@ pub fn document_root(ctx: &PdfResourceCtx) -> Resource {
             OperationKind::View,
             PdfOperation::OpenSearch,
         ),
+        (
+            "mark-highlight",
+            "Mark text as highlight",
+            OperationKind::View,
+            PdfOperation::MarkupStyle {
+                style: "highlight".into(),
+            },
+        ),
+        (
+            "mark-underline",
+            "Mark text as underline",
+            OperationKind::View,
+            PdfOperation::MarkupStyle {
+                style: "underline".into(),
+            },
+        ),
+        (
+            "mark-strikeout",
+            "Mark text as strike-through",
+            OperationKind::View,
+            PdfOperation::MarkupStyle {
+                style: "strikeout".into(),
+            },
+        ),
     ] {
         let mut spec = operation(id, label, kind, value.clone());
         if value == PdfOperation::PreviousPage && ctx.page <= 1 {
@@ -1172,6 +1720,7 @@ pub fn provide_resources(ctx: &PdfResourceCtx, doc: &AutoCommit) -> Vec<Resource
                 signer,
                 date: signature_date.clone(),
                 ink: SignatureInk::Typed,
+                space: crate::model::GeomSpace::Page,
             }))
         },
     ));
@@ -1605,6 +2154,7 @@ mod tests {
             ink: SignatureInk::Drawn {
                 strokes: vec![vec![(0.0, 0.5), (1.0, 0.5)]],
             },
+            space: crate::model::GeomSpace::Page,
         };
         let encoded = encode(&add_signature_action(&signature));
         let decoded = registry().decode(&encoded).unwrap();
@@ -1701,11 +2251,12 @@ mod tests {
         let a = Annotation {
             id: Annotation::new_id(),
             page: 1,
-            kind: AnnoKind::Highlight {
-                rect: PtRect::new(70.0, 300.0, 120.0, 12.0),
-            },
+            kind: AnnoKind::highlight(PtRect::new(70.0, 300.0, 120.0, 12.0)),
             color: Swatch::Green,
             author: "You".into(),
+            chars: None,
+            created_ms: 0,
+            space: crate::model::GeomSpace::Page,
         };
         app.perform_action(&mut state.doc, &add_annotation_action(&a));
 
@@ -1773,11 +2324,12 @@ mod tests {
         let anno = Annotation {
             id: Annotation::new_id(),
             page: 2,
-            kind: AnnoKind::Ink {
-                points: vec![(1.0, 2.0), (3.5, 4.25), (10.0, 0.0)],
-            },
+            kind: AnnoKind::ink(vec![(1.0, 2.0), (3.5, 4.25), (10.0, 0.0)]),
             color: Swatch::Blue,
             author: "You".into(),
+            chars: None,
+            created_ms: 0,
+            space: crate::model::GeomSpace::Page,
         };
         let action = add_annotation_action(&anno);
         let encoded = encode(&action);
@@ -1813,6 +2365,7 @@ mod tests {
                 width_milli: 612_000,
                 height_milli: 408_000,
             }),
+            rotation: 0,
         };
         let action = import_pages_action(Some("source-1"), vec![page]);
         let encoded = encode(&action);
@@ -1901,6 +2454,7 @@ mod tests {
                 .collect(),
             page_sources: (1..=page_count).collect(),
             page_imports: vec![None; page_count],
+            page_rotations: Vec::new(),
             author: "Ada".into(),
             signature_date: "2026-09-06".into(),
             created_seed: 0,
@@ -1964,6 +2518,7 @@ mod tests {
             page_ids: vec!["p-1".into(), "p-2".into(), "p-3".into()],
             page_sources: vec![1, 2, 3],
             page_imports: vec![None; 3],
+            page_rotations: Vec::new(),
             author: "Ada".into(),
             signature_date: "2026-09-06".into(),
             created_seed: 0,

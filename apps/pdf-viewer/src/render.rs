@@ -26,7 +26,7 @@ use ui::text_render::{FontChoice, TextRenderer, TextWeight};
 use ui::theme::Theme;
 
 use crate::model::{
-    AnnoKind, Annotation, Block, MARGIN, PAGE_W, Page, Signature, SignatureInk, Swatch,
+    AnnoKind, Annotation, Block, MARGIN, MarkupStyle, PAGE_W, Page, Signature, SignatureInk, Swatch,
 };
 
 pub fn ink() -> Color {
@@ -62,6 +62,10 @@ pub fn swatch_color(theme: &Theme, s: Swatch) -> Color {
         Swatch::Pink => c.semantic.danger,
         Swatch::Blue => c.semantic.info,
         Swatch::Purple => c.accent[ACCENT_PURPLE],
+        Swatch::Custom(_) => {
+            let (red, green, blue) = s.rgb();
+            Color::from_rgb8(red, green, blue)
+        }
     }
 }
 const ACCENT_PURPLE: usize = 6; // indigo-400, reads as a violet ink
@@ -240,13 +244,40 @@ fn draw_page_backdrop(scene: &mut Scene, theme: &Theme, base: Affine, card: Rect
     card_rr
 }
 
-/// Paint the raster backend's page bitmap (pdfium output) scaled to fill the
-/// card width.
+/// Paint the raster backend's page bitmap (engine output) fitted into the
+/// card and centred — a page whose rotation or size differs from the card's
+/// keeps its aspect, matching the reader's page maps
+/// ([`crate::model::PageMap`]) so overlays line up.
+/// The tiles available for a zoomed page this frame, and where the page's
+/// pixels at their zoom level land on screen.
+#[derive(Clone, Debug)]
+pub struct PageTiles {
+    pub placement: crate::tiles::PagePlacement,
+    pub tiles: Vec<(tilo_pdf::PixelRect, PenikoImage)>,
+}
+
+/// Paint a zoomed page's tiles, each at its own pixel region, over whatever
+/// placeholder is already drawn.
+fn draw_page_tiles(scene: &mut Scene, base: Affine, tiles: &PageTiles) {
+    let k = tiles.placement.screen_per_px;
+    for (region, image) in &tiles.tiles {
+        let (x0, y0, _, _) = tiles.placement.screen_rect(*region);
+        scene.draw_image(
+            image,
+            base * Affine::translate((x0, y0)) * Affine::scale_non_uniform(k, k),
+        );
+    }
+}
+
 fn draw_page_raster_image(scene: &mut Scene, base: Affine, card: Rect, img: &PenikoImage) {
     if img.width > 0 && img.height > 0 {
-        let sx = card.width() / f64::from(img.width);
-        let img_tf =
-            base * Affine::translate((card.x0, card.y0)) * Affine::scale_non_uniform(sx, sx);
+        let (iw, ih) = (f64::from(img.width), f64::from(img.height));
+        let s = crate::model::fit_scale(card.width(), card.height(), iw, ih);
+        let dx = ((card.width() - iw * s) / 2.0).max(0.0);
+        let dy = ((card.height() - ih * s) / 2.0).max(0.0);
+        let img_tf = base
+            * Affine::translate((card.x0 + dx, card.y0 + dy))
+            * Affine::scale_non_uniform(s, s);
         scene.draw_image(img, img_tf);
     }
 }
@@ -487,7 +518,10 @@ fn draw_page_blocks<S: std::hash::BuildHasher>(
 
 /// Draw one page: paper card, drop shadow, content, search bands, then
 /// the annotations + signatures that live on it.
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "threads the shared page-draw context explicitly"
+)]
 pub fn draw_page<S: std::hash::BuildHasher>(
     scene: &mut Scene,
     tr: &mut TextRenderer,
@@ -499,6 +533,7 @@ pub fn draw_page<S: std::hash::BuildHasher>(
     page_w: f64,
     page_h: f64,
     raster: Option<&PenikoImage>,
+    tiles: Option<&PageTiles>,
     matched_blocks: &HashSet<usize, S>,
     active_block: Option<usize>,
     annotations: &[Annotation],
@@ -511,10 +546,16 @@ pub fn draw_page<S: std::hash::BuildHasher>(
     // Clip content to the paper.
     scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, base, &card_rr);
 
-    // Raster backend: paint the page bitmap (pdfium output) scaled to fill the
-    // card width, then let the shared markup overlay draw on top.
-    if let Some(img) = raster {
-        draw_page_raster_image(scene, base, card, img);
+    // Raster backend: paint the page bitmap (engine output) scaled to fill the
+    // card width — for a zoomed page, a lower-resolution placeholder under
+    // its sharp tiles — then let the shared markup overlay draw on top.
+    if raster.is_some() || tiles.is_some() {
+        if let Some(img) = raster {
+            draw_page_raster_image(scene, base, card, img);
+        }
+        if let Some(tiles) = tiles {
+            draw_page_tiles(scene, base, tiles);
+        }
         draw_page_markup(
             scene,
             tr,
@@ -592,10 +633,13 @@ fn pt(origin: Point, scale: f64, x: f64, y: f64) -> Point {
     Point::new(origin.x + x * scale, origin.y + y * scale)
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "threads the shared page-draw context explicitly"
+)]
 fn draw_annotation(
     scene: &mut Scene,
-    tr: &TextRenderer,
+    tr: &mut TextRenderer,
     theme: &Theme,
     base: Affine,
     a: &Annotation,
@@ -605,45 +649,118 @@ fn draw_annotation(
 ) {
     let col = swatch_color(theme, a.color);
     match &a.kind {
-        AnnoKind::Highlight { rect } => {
+        AnnoKind::Markup { style, quads } => {
+            let mut bounds: Option<Rect> = None;
+            for rect in quads {
+                let p0 = pt(origin, scale, rect.x, rect.y);
+                let r = Rect::new(p0.x, p0.y, p0.x + rect.w * scale, p0.y + rect.h * scale);
+                match style {
+                    MarkupStyle::Highlight => {
+                        scene.fill(Fill::NonZero, base, alpha(col, 92), None, &r);
+                    }
+                    MarkupStyle::Underline | MarkupStyle::StrikeOut => {
+                        // A line at the baseline (underline) or through the
+                        // middle (strike-out) of each band.
+                        let y = if *style == MarkupStyle::Underline {
+                            r.y0 + r.height() * 0.9
+                        } else {
+                            r.y0 + r.height() * 0.55
+                        };
+                        let line = vello::kurbo::Line::new((r.x0, y), (r.x1, y));
+                        scene.stroke(&Stroke::new((1.4 * scale).max(1.0)), base, col, None, &line);
+                    }
+                    MarkupStyle::Squiggly => {
+                        // A wave along the baseline.
+                        let y = r.y0 + r.height() * 0.9;
+                        let step = (2.0 * scale).max(1.5);
+                        let mut wave = BezPath::new();
+                        wave.move_to((r.x0, y));
+                        let steps = (r.width() / step).ceil().clamp(1.0, 4096.0) as usize;
+                        for i in 1..=steps {
+                            let x = (r.x0 + step * i as f64).min(r.x1);
+                            let crest = if i % 2 == 1 { y - step * 0.6 } else { y };
+                            wave.line_to((x, crest));
+                        }
+                        scene.stroke(&Stroke::new((1.0 * scale).max(0.8)), base, col, None, &wave);
+                    }
+                }
+                bounds = Some(bounds.map_or(r, |b| b.union(r)));
+            }
+            if selected && let Some(r) = bounds {
+                scene.stroke(&Stroke::new(1.5), base, col, None, &r);
+                draw_handles(scene, theme, base, r);
+            }
+        }
+        AnnoKind::Ink { strokes } => {
+            for points in strokes {
+                let (Some(&(fx, fy)), Some(&(lx, ly))) = (points.first(), points.last()) else {
+                    continue;
+                };
+                if points.len() < 2 {
+                    continue;
+                }
+                let mut path = BezPath::new();
+                path.move_to(pt(origin, scale, fx, fy));
+                for w in points.windows(2) {
+                    let [(x0, y0), (x1, y1)] = w else { continue };
+                    let a0 = pt(origin, scale, *x0, *y0);
+                    let b0 = pt(origin, scale, *x1, *y1);
+                    let mid = Point::new(f64::midpoint(a0.x, b0.x), f64::midpoint(a0.y, b0.y));
+                    path.quad_to(a0, mid);
+                }
+                path.line_to(pt(origin, scale, lx, ly));
+                scene.stroke(&Stroke::new((2.4 * scale).max(1.5)), base, col, None, &path);
+            }
+        }
+        AnnoKind::Note { x, y } => {
+            let p = pt(origin, scale, *x, *y);
+            draw_note_marker(scene, base, p, col, scale, selected);
+        }
+        AnnoKind::FreeText { rect, text, size } => {
             let p0 = pt(origin, scale, rect.x, rect.y);
             let r = Rect::new(p0.x, p0.y, p0.x + rect.w * scale, p0.y + rect.h * scale);
-            scene.fill(Fill::NonZero, base, alpha(col, 92), None, &r);
+            draw_free_text(scene, tr, base, r, text, (*size * scale) as f32, col);
             if selected {
                 scene.stroke(&Stroke::new(1.5), base, col, None, &r);
                 draw_handles(scene, theme, base, r);
             }
         }
-        AnnoKind::Ink { points } => {
-            let Some(&(fx, fy)) = points.first() else {
-                return;
-            };
-            if points.len() < 2 {
-                return;
-            }
-            let mut path = BezPath::new();
-            let first = pt(origin, scale, fx, fy);
-            path.move_to(first);
-            for w in points.windows(2) {
-                let [(x0, y0), (x1, y1)] = w else { continue };
-                let a0 = pt(origin, scale, *x0, *y0);
-                let b0 = pt(origin, scale, *x1, *y1);
-                let mid = Point::new(f64::midpoint(a0.x, b0.x), f64::midpoint(a0.y, b0.y));
-                path.quad_to(a0, mid);
-            }
-            let Some(&(lx, ly)) = points.last() else {
-                return;
-            };
-            let last = pt(origin, scale, lx, ly);
-            path.line_to(last);
-            scene.stroke(&Stroke::new((2.4 * scale).max(1.5)), base, col, None, &path);
-        }
-        AnnoKind::Note { x, y } => {
-            let p = pt(origin, scale, *x, *y);
-            draw_note_marker(scene, base, p, col, scale, selected);
-            let _ = tr;
-        }
     }
+}
+
+/// Free text drawn in its box: wrapped to the box width from its top-left,
+/// clipped to the box, with the same inner padding the exported appearance
+/// uses.
+pub fn draw_free_text(
+    scene: &mut Scene,
+    tr: &mut TextRenderer,
+    base: Affine,
+    r: Rect,
+    text: &str,
+    size: f32,
+    color: Color,
+) {
+    /// In points at 100 %, as in the exported appearance.
+    const PADDING: f64 = 2.0; // PDF points inside the annotation, not UI spacing
+    if text.is_empty() || !(size.is_finite() && size > 0.5) {
+        return;
+    }
+    let zoom = f64::from(size) / crate::model::FREE_TEXT_SIZE;
+    let pad = PADDING * zoom.max(0.25);
+    let inner = Rect::new(r.x0 + pad, r.y0 + pad, r.x1 - pad, r.y1 - pad);
+    if inner.width() <= 0.0 || inner.height() <= 0.0 {
+        return;
+    }
+    scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, base, &r);
+    tr.draw_text(
+        scene,
+        text,
+        size,
+        color,
+        base * Affine::translate((inner.x0, inner.y0)),
+        Some(inner.width() as f32),
+    );
+    scene.pop_layer();
 }
 
 fn draw_note_marker(
@@ -896,8 +1013,15 @@ fn draw_thumbnail_raster(
     let rr = RoundedRect::from_rect(rect, 2.0);
     if img.width > 0 && img.height > 0 {
         scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, base, &rr);
-        let sx = rect.width() / f64::from(img.width);
-        let tf = base * Affine::translate((rect.x0, rect.y0)) * Affine::scale_non_uniform(sx, sx);
+        // Same fit as the page itself, so a rotated page's miniature keeps
+        // its aspect.
+        let (iw, ih) = (f64::from(img.width), f64::from(img.height));
+        let s = crate::model::fit_scale(rect.width(), rect.height(), iw, ih);
+        let dx = ((rect.width() - iw * s) / 2.0).max(0.0);
+        let dy = ((rect.height() - ih * s) / 2.0).max(0.0);
+        let tf = base
+            * Affine::translate((rect.x0 + dx, rect.y0 + dy))
+            * Affine::scale_non_uniform(s, s);
         scene.draw_image(img, tf);
         scene.pop_layer();
     }
@@ -984,7 +1108,10 @@ fn draw_thumbnail_vector_blocks(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "threads the shared page-draw context explicitly"
+)]
 pub fn draw_thumbnail(
     scene: &mut Scene,
     theme: &Theme,
