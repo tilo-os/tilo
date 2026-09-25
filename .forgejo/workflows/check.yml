@@ -162,7 +162,7 @@ jobs:
           elif [ -z "$base" ] || [ "$base" = "null" ]; then
             base=$PUSH_BEFORE
           fi
-          if [ '${{ github.event_name }}' = push ]; then
+          if [ "$EVENT_NAME" = push ]; then
             # Pull requests run the hermetic suites their paths reach. Every
             # push runs all of them, so an input a suite forgot to declare
             # still fails at the merge that broke it.
