@@ -34,6 +34,8 @@ use std::os::fd::{AsRawFd, BorrowedFd, OwnedFd, RawFd};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 
+use wire_frame::Framing;
+
 use crate::manifest::{ServiceReq, ServiceReqParseError};
 
 /// Exit code for "required service missing" — mirrors `EX_SOFTWARE`
@@ -63,7 +65,15 @@ pub const MODEL_GATEWAY_SERVICE: &str = "model-gateway";
 pub const APP_HOST_SERVICE: &str = "app-host";
 const STORE_APP_ID: &str = "so.tilo.store";
 pub const APP_HOST_LAUNCH_MAGIC: [u8; 4] = *b"QAH1";
+/// After [`APP_HOST_LAUNCH_MAGIC`]: a big-endian `u32` length, then the JSON
+/// handoff.
+const APP_HOST_HANDOFF_FRAMING: Framing = Framing::big_endian(1024).reject_empty();
 const COMPAT_PROTOCOL_VERSION: u16 = 1;
+/// The compatibility service's handoff: a little-endian `u32` length, then
+/// JSON.
+pub const COMPAT_HANDOFF_FRAMING: Framing = Framing::little_endian(4 * 1024).reject_empty();
+/// The model gateway's handoff: a little-endian `u32` length, then JSON.
+const MODEL_GATEWAY_HANDOFF_FRAMING: Framing = Framing::little_endian(4 * 1024);
 /// Length-prefixed launcher handoff consumed before Cap'n Proto starts on a
 /// collaboration descriptor. The broker binds it to `SO_PEERCRED` and a
 /// compositor-created one-shot launch record.
@@ -73,6 +83,11 @@ pub const COLLAB_LAUNCH_PROTOCOL_VERSION: u16 = 1;
 /// broker still verifies the peer process against the compositor's one-shot
 /// record before it accepts the following frame.
 pub const COLLAB_LAUNCH_MAGIC: [u8; 4] = *b"QCL1";
+/// After [`COLLAB_LAUNCH_MAGIC`]: a little-endian `u32` length, then the JSON
+/// handoff. It is deliberately tiny: it only binds a socket to the shell's
+/// already-created process record, while the certificate the app presents
+/// still decides workspace membership and delegated-agent authority.
+pub const COLLAB_LAUNCH_FRAMING: Framing = Framing::little_endian(1024).reject_empty();
 
 /// One resolved service handoff: the launcher's own end of the
 /// connection, plus the in-sandbox fd number the app should find it at.
@@ -255,13 +270,9 @@ pub fn resolve_identity_bind(
         path: path.clone(),
         source: std::io::Error::new(std::io::ErrorKind::InvalidData, error),
     })?;
-    let len = u32::try_from(bytes.len()).map_err(|_| ServiceError::OpenFailed {
-        path: path.clone(),
-        source: std::io::Error::new(std::io::ErrorKind::InvalidInput, "handshake too large"),
-    })?;
-    stream
-        .write_all(&len.to_le_bytes())
-        .and_then(|()| stream.write_all(&bytes))
+    runtime_identity::wire::HANDSHAKE_FRAMING
+        .write(&mut stream, &bytes)
+        .map_err(std::io::Error::from)
         .and_then(|()| stream.flush())
         .map_err(|source| ServiceError::OpenFailed { path, source })?;
     Ok(Some(ResolvedService {
@@ -427,15 +438,9 @@ fn write_app_host_handoff(stream: &mut UnixStream, app_id: &str) -> std::io::Res
         "app_id": app_id,
     }))
     .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
-    let len = u32::try_from(bytes.len()).map_err(|_| {
-        std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            "app-host handoff too large",
-        )
-    })?;
+    let frame = APP_HOST_HANDOFF_FRAMING.encode(&bytes)?;
     stream.write_all(&APP_HOST_LAUNCH_MAGIC)?;
-    stream.write_all(&len.to_be_bytes())?;
-    stream.write_all(&bytes)?;
+    stream.write_all(&frame)?;
     stream.flush()
 }
 
@@ -543,11 +548,9 @@ fn write_collab_handoff(
     });
     let bytes = serde_json::to_vec(&value)
         .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
-    let length = u32::try_from(bytes.len())
-        .map_err(|_| std::io::Error::other("collaboration handoff is too large"))?;
+    let frame = COLLAB_LAUNCH_FRAMING.encode(&bytes)?;
     stream.write_all(&COLLAB_LAUNCH_MAGIC)?;
-    stream.write_all(&length.to_le_bytes())?;
-    stream.write_all(&bytes)?;
+    stream.write_all(&frame)?;
     stream.flush()
 }
 
@@ -563,10 +566,7 @@ fn write_compat_handoff(
     });
     let bytes = serde_json::to_vec(&value)
         .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
-    let length = u32::try_from(bytes.len())
-        .map_err(|_| std::io::Error::other("compatibility handoff is too large"))?;
-    stream.write_all(&length.to_le_bytes())?;
-    stream.write_all(&bytes)?;
+    COMPAT_HANDOFF_FRAMING.write(stream, &bytes)?;
     stream.flush()
 }
 
@@ -576,10 +576,7 @@ fn write_model_gateway_handoff(stream: &mut UnixStream, app_id: &str) -> std::io
         "app_id": app_id,
     }))
     .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
-    let length = u32::try_from(bytes.len())
-        .map_err(|_| std::io::Error::other("model gateway handoff is too large"))?;
-    stream.write_all(&length.to_le_bytes())?;
-    stream.write_all(&bytes)?;
+    MODEL_GATEWAY_HANDOFF_FRAMING.write(stream, &bytes)?;
     stream.flush()
 }
 
@@ -665,7 +662,7 @@ mod tests {
 
     /// Each service's handoff bytes. The services on the other end parse
     /// them independently, so the magic, prefix byte order and length must not
-    /// drift. JSON key order is not pinned (serde_json's `preserve_order` is
+    /// drift. JSON key order is not pinned (`serde_json`'s `preserve_order` is
     /// feature-unified), only the value.
     #[test]
     fn handoff_wire_bytes_are_pinned() {
@@ -717,10 +714,10 @@ mod tests {
             let (mut stream, _) = listener.accept().expect("accept");
             let mut magic = [0_u8; COLLAB_LAUNCH_MAGIC.len()];
             stream.read_exact(&mut magic).expect("magic");
-            let mut len = [0_u8; 4];
-            stream.read_exact(&mut len).expect("length");
-            let mut bytes = vec![0_u8; u32::from_le_bytes(len) as usize];
-            stream.read_exact(&mut bytes).expect("payload");
+            let bytes = COLLAB_LAUNCH_FRAMING
+                .read(&mut stream)
+                .expect("handoff")
+                .expect("frame");
             (
                 magic,
                 serde_json::from_slice::<serde_json::Value>(&bytes).expect("json"),

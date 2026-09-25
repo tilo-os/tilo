@@ -41,6 +41,7 @@ capnp-rpc.workspace = true
 # Async runtime + transport.
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "io-util", "fs", "signal", "time", "sync", "process"] }
 tokio-util.workspace = true
+wire-frame = { path = "../../system/wire-frame", features = ["tokio"] }
 futures = { workspace = true, default-features = true }
 
 # Daemon plumbing.

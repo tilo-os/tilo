@@ -12,6 +12,10 @@ use crate::{Ed25519PublicKey, FilePermission, FileRecordId};
 pub const SHARE_CONTROL_VERSION: u16 = 2;
 pub const MAX_NAMED_SHARE_RECIPIENT_DEVICES: usize = 32;
 pub const MAX_SHARE_CONTROL_FRAME_BYTES: usize = 128 * 1024;
+/// Each request and response on the socket: a big-endian `u32` length, then
+/// the canonical encoding. Empty frames are invalid.
+pub const SHARE_CONTROL_FRAMING: wire_frame::Framing =
+    wire_frame::Framing::big_endian(MAX_SHARE_CONTROL_FRAME_BYTES).reject_empty();
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -128,6 +132,25 @@ pub enum ShareControlErrorCode {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The share-control socket frames: a big-endian `u32` length, at most
+    /// 128 KiB, never empty. Files, the launcher and the filesystem daemon
+    /// are built separately and must agree.
+    #[test]
+    fn share_control_framing_is_pinned() {
+        assert_eq!(
+            SHARE_CONTROL_FRAMING.encode(b"ab").unwrap(),
+            [0, 0, 0, 2, b'a', b'b']
+        );
+        assert!(SHARE_CONTROL_FRAMING.encode(&[]).is_err());
+        assert!(SHARE_CONTROL_FRAMING.encode(&vec![0; 128 * 1024]).is_ok());
+        assert!(SHARE_CONTROL_FRAMING.encode(&vec![0; 128 * 1024 + 1]).is_err());
+        assert!(
+            SHARE_CONTROL_FRAMING
+                .read(&mut &[0_u8, 0, 0, 0][..])
+                .is_err()
+        );
+    }
 
     #[test]
     fn revoke_fixture_has_stable_canonical_bytes_and_round_trips() {

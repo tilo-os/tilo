@@ -211,6 +211,8 @@ threshold-identity = { path = "../../collab/threshold-identity" }
 # Host-side identity lifecycle: new records are moved into Secret Service (or
 # the explicitly reported private-file fallback) before the ceremony returns.
 runtime-identity = { path = "../../runtime/runtime-identity" }
+# Length-prefixed framing for the identity, pairing and collaboration sockets.
+wire-frame = { path = "../../system/wire-frame", features = ["postcard", "tokio"] }
 # Identity key generation draws from getrandom's `SysRng`; `rand_core`
 # names the RNG traits ed25519-dalek and threshold-identity take.
 getrandom.workspace = true
