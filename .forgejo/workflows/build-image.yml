@@ -572,6 +572,7 @@ jobs:
           FIRMWARE_MANIFEST_SHA256: ${{ github.event.inputs.firmware_manifest_sha256 }}
         run: |
           set -euo pipefail
+          python3 os/dev/require-private-oci-owner.py
           if ! command -v podman >/dev/null; then
             if command -v apt-get >/dev/null; then
               sudo -n apt-get -o Acquire::Retries=3 update
@@ -1698,6 +1699,10 @@ jobs:
           fi
 
           if [[ '${{ steps.release-mode.outputs.publish }}' == true ]]; then
+            if [[ '${{ needs.plan.outputs.hardware-profile }}' == lenovo-83ed ]]; then
+              REGISTRY_TOKEN="$TILO_REGISTRY_TOKEN" \
+                python3 os/dev/require-private-oci-owner.py
+            fi
             # Upload through a non-channel candidate tag. latest, semver and
             # genN are promoted only after signature, SBOM and provenance
             # verification, so update clients cannot observe a half-published
@@ -2189,12 +2194,14 @@ jobs:
           password: ${{ secrets.REGISTRY_TOKEN }}
       - name: Verify and publish immutable Lenovo ARM64 image
         env:
+          REGISTRY_TOKEN: ${{ secrets.REGISTRY_TOKEN }}
           FIRMWARE_CANDIDATE: ${{ github.event.inputs.firmware_candidate }}
           FIRMWARE_MANIFEST_SHA256: ${{ github.event.inputs.firmware_manifest_sha256 }}
           FEX_PAYLOAD_CANDIDATE: ${{ github.event.inputs.fex_payload_candidate }}
           WINDOWS_GUEST_CANDIDATE: ${{ github.event.inputs.windows_guest_candidate }}
         run: |
           set -euo pipefail
+          python3 os/dev/require-private-oci-owner.py
           child=release-child/aarch64.json
           digest="$(jq -er --arg source "$GITHUB_SHA" '
             select(.architecture == "aarch64" and .sourceRevision == $source and .generation == 1)
