@@ -791,10 +791,11 @@ if [ "$ALONGSIDE" -eq 1 ]; then
   [ -z "$BOOT_PARTITION" ] || BOOT_PARTITION="$(readlink -f "$BOOT_PARTITION")"
   EFI_PARTITION="$(readlink -f "$EFI_PARTITION")"
   validate_alongside
-  log "  alongside   : preserve partition table; format only $ROOT_PARTITION"
   if [ "$GUIDED_ALONGSIDE" -eq 1 ]; then
-    log "  Tilo ESP     : $EFI_PARTITION (new; existing operating-system ESPs stay untouched)"
+    log "  alongside   : preserve existing partitions; format new EFI $EFI_PARTITION, boot $BOOT_PARTITION, and encrypted root $ROOT_PARTITION"
+    log "  Tilo ESP    : $EFI_PARTITION (new; existing operating-system ESPs stay untouched)"
   else
+    log "  alongside   : format prepared boot $BOOT_PARTITION and encrypted root $ROOT_PARTITION; preserve all other partitions"
     log "  shared ESP  : $EFI_PARTITION (preserved, not formatted)"
   fi
   FIRMWARE_STATE="$(mktemp)"

@@ -278,7 +278,7 @@ disk = sys.argv[1]
 table = json.loads(subprocess.check_output(["sfdisk", "--json", disk]))["partitiontable"]
 sector = int(table["sectorsize"])
 parts = table["partitions"]
-assert len(parts) == 5, f"expected five GPT partitions, found {len(parts)}"
+assert len(parts) == 6, f"expected six GPT partitions, found {len(parts)}"
 expected = [
     ("10000000-0000-4000-8000-000000000001", 1 << 20, 512 << 20),
     ("20000000-0000-4000-8000-000000000002", 513 << 20, 512 << 20),
@@ -286,13 +286,15 @@ expected = [
 ]
 for part, (uuid, start, size) in zip(parts[:3], expected):
     assert part["uuid"].lower() == uuid and part["start"] * sector == start and part["size"] * sector == size
-efi, root = parts[3:]
+efi, boot, root = parts[3:]
 assert efi["start"] * sector == 1537 << 20 and efi["size"] * sector == 2 << 30
 assert efi["type"].lower() == "c12a7328-f81f-11d2-ba4b-00a0c93ec93b"
-assert root["start"] * sector == 3585 << 20 and root["size"] * sector == 37374 << 20
-assert root["type"].lower() == "0fc63daf-8483-4772-8e79-3d69d8477de4"
-assert efi["uuid"].lower() not in {p[0] for p in expected} and root["uuid"].lower() not in {p[0] for p in expected}
-assert efi["uuid"].lower() != root["uuid"].lower()
+assert boot["start"] * sector == 3585 << 20 and boot["size"] * sector == 1 << 30
+assert boot["type"].lower() == "0fc63daf-8483-4772-8e79-3d69d8477de4"
+assert root["start"] * sector == 4609 << 20 and root["size"] * sector == 36350 << 20
+assert root["type"].lower() == "7a2e8d75-3f01-4e5a-b2c9-51f6ed90b8ab"
+assert len({efi["uuid"].lower(), boot["uuid"].lower(), root["uuid"].lower()}) == 3
+assert all(p["uuid"].lower() not in {old[0] for old in expected} for p in (efi, boot, root))
 PY
     MTOOLS_SKIP_CHECK=1 mattrib -i "$raw@@$((1537 * 1024 * 1024))" ::/loader/loader.conf >/dev/null \
       || die "guided Tilo EFI partition has no systemd-boot loader configuration"
@@ -302,7 +304,7 @@ PY
       || MTOOLS_SKIP_CHECK=1 mdir -i "$raw@@$((1537 * 1024 * 1024))" ::/loader/entries/tilo-linux-fedora.conf >/dev/null 2>&1; then
       die "guided Tilo EFI partition contains an invalid cross-ESP chainloader shortcut"
     fi
-    printf 'boot_entries=foreign-esp-preserved;runtime_firmware_selection=not-fixtured;dedicated_tilo_esp_start_mib=1537;dedicated_tilo_root_start_mib=3585\n' \
+    printf 'boot_entries=foreign-esp-preserved;runtime_firmware_selection=not-fixtured;dedicated_tilo_esp_start_mib=1537;dedicated_tilo_boot_start_mib=3585;dedicated_tilo_root_start_mib=4609\n' \
       > "$out/alongside-boot-behavior.txt"
   fi
   printf 'mode=%s\nwindows_partition_sha256=%s\nlinux_partition_sha256=%s\nwindows_loader_sha256=%s\nlinux_loader_sha256=%s\n' \
