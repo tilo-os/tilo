@@ -1859,15 +1859,14 @@ impl App {
         let adapter = Self::adapter(&vm)?;
         let endpoint = adapter.ssh_endpoint(&vm.vm(), &mut self.runner)?;
         let Some(from) = args.from.as_deref() else {
-            return self.vm_upgrade_registry(&vm, &endpoint, args);
+            return self.vm_upgrade_registry(&vm, &endpoint, args, args.image.as_deref());
         };
-        let (image, build) = imageup::parse_from(from)?;
-        if !build && (args.base.is_some() || args.rebuild_base) {
-            return Err(CliError::Unsupported {
-                what: "--base or --rebuild-base with --from local:<image>".into(),
-                alternative: "those choose how --from local builds; an image you name is used as it is: tilo-vm vm upgrade --from local --rebuild-base".into(),
-            });
-        }
+        let (image, build, base) = match self.upgrade_source(&vm, &endpoint, args, from)? {
+            UpgradeSource::Local { image, build, base } => (image, build, base),
+            UpgradeSource::Published(image) => {
+                return self.vm_upgrade_registry(&vm, &endpoint, args, Some(&image));
+            }
+        };
         self.receipt.set("image", &image);
         if !imageup::is_dev_name(&image) {
             // Refused by name alone, before anything is built or inspected.
@@ -1876,7 +1875,7 @@ impl App {
         // Fail on an unreachable or non-bootc VM before a long build.
         self.vm_facts(&vm, &endpoint, "vm upgrade")?;
         if build {
-            self.build_dev_image(&image, args.base.as_deref(), args.rebuild_base)?;
+            self.build_dev_image(&image, base.as_deref(), args.rebuild_base)?;
         }
         let runner = &mut self.runner;
         let image_facts = self
@@ -1948,21 +1947,122 @@ impl App {
         self.stage_and_boot(&vm, &endpoint, &facts, &stage)
     }
 
-    /// `vm upgrade` and `vm upgrade --image`: bootc pulls from a registry.
+    /// What `--from` resolves to.
+    fn upgrade_source(
+        &mut self,
+        vm: &Resolved,
+        endpoint: &SshEndpoint,
+        args: &UpgradeArgs,
+        from: &str,
+    ) -> Result<UpgradeSource, CliError> {
+        match imageup::parse_from(from, self.worktree.as_ref())? {
+            imageup::UpgradeFrom::Local { image, build } => {
+                if !build && (args.base.is_some() || args.rebuild_base) {
+                    return Err(CliError::Unsupported {
+                        what: "--base or --rebuild-base with --from local:<image>".into(),
+                        alternative: "those choose how --from local builds; an image you name is used as it is: tilo-vm vm upgrade --from local --rebuild-base".into(),
+                    });
+                }
+                Ok(UpgradeSource::Local {
+                    image,
+                    build,
+                    base: args.base.clone(),
+                })
+            }
+            imageup::UpgradeFrom::Ci { tag } => {
+                if args.base.is_some() || args.rebuild_base {
+                    return Err(CliError::Unsupported {
+                        what: "--base or --rebuild-base with --from ci:<tag>".into(),
+                        alternative: "the CI build is the base: tilo-vm vm upgrade --from ci:<tag>   |   or build one here: tilo-vm vm upgrade --from local --rebuild-base".into(),
+                    });
+                }
+                // Fail on an unreachable or non-bootc VM before looking for images.
+                self.vm_facts(vm, endpoint, "vm upgrade")?;
+                Ok(match self.resolve_ci_upgrade(&tag)? {
+                    CiUpgrade::Published(image) => UpgradeSource::Published(image),
+                    CiUpgrade::Base(base) => UpgradeSource::Local {
+                        image: imageup::ci_dev_image(&base),
+                        build: true,
+                        base: Some(base),
+                    },
+                })
+            }
+        }
+    }
+
+    /// `--from ci:<tag>`: the dev image dev-disk.yml published for that build,
+    /// which the VM pulls itself; else the production image it was built FROM,
+    /// pulled here so a dev image can be built on top of it.
+    fn resolve_ci_upgrade(&mut self, tag: &str) -> Result<CiUpgrade, CliError> {
+        let candidates = imageup::ci_candidates(tag, std::env::consts::ARCH);
+        registry_login(&mut self.runner)?;
+        let runner = &mut self.runner;
+        let found = self.receipt.phase("resolve", || -> Result<_, CliError> {
+            for image in &candidates.dev_images {
+                if runner.output(&imageup::exists_command(image))?.success {
+                    return Ok(Some(CiUpgrade::Published(image.clone())));
+                }
+            }
+            for base in &candidates.bases {
+                if runner.output(&imageup::exists_command(base))?.success {
+                    return Ok(Some(CiUpgrade::Base(base.clone())));
+                }
+            }
+            Ok(None)
+        })?;
+        let Some(found) = found else {
+            let tried = candidates
+                .dev_images
+                .iter()
+                .chain(&candidates.bases)
+                .map(String::as_str)
+                .collect::<Vec<_>>()
+                .join(", ");
+            return Err(CliError::ImageRefused {
+                image: format!("ci:{tag}"),
+                problem: format!("names no CI build this host can pull (tried {tried})"),
+                fix: "list the builds CI pushed: skopeo list-tags docker://code.sandbox.example/qos/tilo-ci   |   a main build is tagged main-<sha7>: tilo-vm vm upgrade --from sha:<commit>   |   or build this worktree: tilo-vm vm upgrade --from local".into(),
+            });
+        };
+        if let CiUpgrade::Base(base) = &found {
+            eprintln!(
+                "tilo-vm: no dev image is published for ci:{tag}; pulling its base {base} to build one here"
+            );
+            let pull = CommandLine::new(
+                "podman",
+                &["pull", "--arch", ci::podman_arch(std::env::consts::ARCH)],
+            )
+            .arg(base.clone());
+            let runner = &mut self.runner;
+            let pulled = self.receipt.phase("pull", || runner.interactive(&pull))?;
+            if !pulled {
+                return Err(CliError::CommandFailed {
+                    command: pull.display(),
+                    status: "pull failed".into(),
+                    stderr: "the podman output above names the cause".into(),
+                });
+            }
+        }
+        Ok(found)
+    }
+
+    /// `vm upgrade`, `vm upgrade --image` and a published `--from ci:`: bootc
+    /// pulls from a registry.
     fn vm_upgrade_registry(
         &mut self,
         vm: &Resolved,
         endpoint: &SshEndpoint,
         args: &UpgradeArgs,
+        image: Option<&str>,
     ) -> Result<Outcome, CliError> {
-        if let Some(image) = &args.image
+        if let Some(image) = image
             && !imageup::is_dev_name(image)
         {
             imageup::check_image(image, &imageup::ImageFacts::default())?;
         }
         let facts = self.vm_facts(vm, endpoint, "vm upgrade")?;
-        let (transport, imgref) = match &args.image {
-            Some(image) => ("registry", image.clone()),
+        let (transport, imgref) = match image {
+            Some(image) => ("registry", image.to_owned()),
             None => match facts.bootc.spec.clone() {
                 Some((image, transport)) if transport == "oci" => ("oci", image),
                 Some((image, _)) => ("registry", image),
@@ -3224,6 +3324,27 @@ struct Stage {
     imgref: String,
     expected: Option<String>,
     no_reboot: bool,
+}
+
+/// What `vm upgrade --from` moves the VM onto.
+enum UpgradeSource {
+    /// An image in local storage, built first when `build` (FROM `base`, or
+    /// the default base).
+    Local {
+        image: String,
+        build: bool,
+        base: Option<String>,
+    },
+    /// A dev image in the registry, which the VM pulls itself.
+    Published(String),
+}
+
+/// Where `vm upgrade --from ci:<tag>` found its image.
+enum CiUpgrade {
+    /// A dev image in the registry: the VM switches to it directly.
+    Published(String),
+    /// A production image, now in local storage: build the dev image FROM it.
+    Base(String),
 }
 
 /// `podman image inspect` plus a look inside: the facts `check_image` judges.
