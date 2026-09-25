@@ -61,7 +61,7 @@ pub struct HelloAck {
     /// Ed25519 signature by the server's *device* signing key over
     /// `blake3(AUTH_NONCE_TAG || client_nonce)`. Proves the server
     /// holds the private key matching the cert.
-    #[serde(with = "sig64")]
+    #[serde(with = "crate::sig64")]
     pub sig_over_client_nonce: [u8; 64],
 }
 
@@ -70,7 +70,7 @@ pub struct HelloAck {
 pub struct HelloAck2 {
     /// Ed25519 signature by the client's device signing key over
     /// `blake3(AUTH_NONCE_TAG || server_nonce)`.
-    #[serde(with = "sig64")]
+    #[serde(with = "crate::sig64")]
     pub sig_over_server_nonce: [u8; 64],
 }
 
@@ -82,7 +82,7 @@ pub struct HelloAck2 {
 /// The important consequence: a peer relay's messages must NOT be
 /// re-forwarded to other peer relays (both live and store-and-
 /// forward), because the shared automerge doc would echo forever
-/// otherwise. See [`crate::workspace::WorkspaceRuntime::fanout_delta`].
+/// otherwise. See the daemon's `WorkspaceRuntime::fanout_delta`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PeerRole {
     /// A user device (laptop / phone / desktop) — subscribes to
@@ -149,6 +149,18 @@ pub fn challenge_digest(nonce: &[u8; 32]) -> [u8; 32] {
     hasher.update(AUTH_NONCE_TAG);
     hasher.update(nonce);
     *hasher.finalize().as_bytes()
+}
+
+/// Wall-clock nanoseconds since the Unix epoch — the instant both sides of
+/// the handshake check certificate validity and revocation at.
+pub fn now_ns() -> u64 {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        // `u64` nanoseconds since the epoch doesn't overflow until the
+        // year 2554; clamp rather than panic on the (unreachable in
+        // practice) far side of that.
+        .map_or(0, |d| u64::try_from(d.as_nanos()).unwrap_or(u64::MAX))
 }
 
 /// Server-side: verify the client's `Hello` against `own_user_pk` +
@@ -316,28 +328,6 @@ pub fn build_hello_ack2(
     let sig = own_signing_key.sign(&digest).to_bytes();
     HelloAck2 {
         sig_over_server_nonce: sig,
-    }
-}
-
-mod sig64 {
-    use serde::de::Error as _;
-    use serde::{Deserialize, Deserializer, Serialize, Serializer};
-
-    pub fn serialize<S: Serializer>(bytes: &[u8; 64], s: S) -> Result<S::Ok, S::Error> {
-        serde_bytes::Bytes::new(bytes).serialize(s)
-    }
-    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<[u8; 64], D::Error> {
-        let v: serde_bytes::ByteBuf = serde_bytes::ByteBuf::deserialize(d)?;
-        let bytes = v.into_vec();
-        if bytes.len() != 64 {
-            return Err(D::Error::custom(format!(
-                "expected 64-byte signature, got {}",
-                bytes.len()
-            )));
-        }
-        let mut out = [0u8; 64];
-        out.copy_from_slice(&bytes);
-        Ok(out)
     }
 }
 

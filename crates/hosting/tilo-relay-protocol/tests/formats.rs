@@ -119,6 +119,74 @@ fn replication_intent_json_encoding() {
 }
 
 #[test]
+fn replication_intent_wire_encoding() {
+    // Mesh profiles may travel in postcard frames as well as JSON. Postcard is
+    // not self-describing, so the adjacently tagged JSON shape of
+    // `ReplicationResource` could be encoded but never decoded there.
+    let intents = vec![
+        ReplicationIntent::WorkspaceOnly,
+        ReplicationIntent::OnDemand,
+        ReplicationIntent::FullWorkspace,
+        selected_resources(),
+    ];
+    let encoded = "04000102030205060d736f2e74696c6f2e6e6f746573";
+    assert_eq!(postcard_hex(&intents), encoded);
+    assert_eq!(
+        from_postcard_hex::<Vec<ReplicationIntent>>(encoded),
+        intents
+    );
+
+    let profile = DeviceMeshProfile {
+        device: [1; 32],
+        role: DeviceRole::Hybrid,
+        services: ServiceCapabilities::home_peer(),
+        replication: BTreeMap::from([(9, selected_resources())]),
+        filesystem_endpoints: Vec::new(),
+    };
+    let bytes = postcard::to_stdvec(&profile).unwrap();
+    assert_eq!(
+        postcard::from_bytes::<DeviceMeshProfile>(&bytes).unwrap(),
+        profile
+    );
+}
+
+#[test]
+fn replication_resource_wire_bytes_match_the_tagged_encoder() {
+    // Before binary formats got their own representation, the adjacently
+    // tagged derive was used for every format. Anything it encoded into
+    // postcard must still decode.
+    // Same variants, in the same order, as `ReplicationResource`.
+    #[derive(serde::Serialize)]
+    #[serde(rename_all = "snake_case", tag = "kind", content = "id")]
+    #[allow(dead_code, reason = "only some variants are built")]
+    enum TaggedAll {
+        Workspace,
+        FileTree,
+        FileThumbnails,
+        FileBlobs,
+        EbookLibrary,
+        MediaLibrary,
+        AppRecords(String),
+    }
+    for (tagged, resource) in [
+        (TaggedAll::Workspace, ReplicationResource::Workspace),
+        (TaggedAll::FileBlobs, ReplicationResource::FileBlobs),
+        (TaggedAll::MediaLibrary, ReplicationResource::MediaLibrary),
+        (
+            TaggedAll::AppRecords("so.tilo.notes".to_string()),
+            ReplicationResource::AppRecords("so.tilo.notes".to_string()),
+        ),
+    ] {
+        let legacy = postcard::to_stdvec(&tagged).unwrap();
+        assert_eq!(postcard::to_stdvec(&resource).unwrap(), legacy);
+        assert_eq!(
+            postcard::from_bytes::<ReplicationResource>(&legacy).unwrap(),
+            resource
+        );
+    }
+}
+
+#[test]
 fn relay_config_toml_encoding() {
     let config = RelayConfig {
         identity_root: PathBuf::from("/var/lib/tilo"),
