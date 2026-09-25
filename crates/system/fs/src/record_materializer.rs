@@ -42,6 +42,23 @@ pub struct RecordMaterializer {
     history: Option<Arc<FileHistoryStore>>,
     sync: Arc<std::sync::RwLock<Option<Arc<crate::sync::SyncHandle>>>>,
     transaction_runtime: Option<RemoteTransactionRuntime>,
+    /// Records whose last projection found no live placement (not placed
+    /// yet, or deleted): what a namespace change may newly place.
+    unplaced: Arc<Mutex<std::collections::BTreeSet<crate::record_repository::RecordRepositoryKey>>>,
+}
+
+/// What [`RecordMaterializer::reconcile_batch`] projects besides the
+/// records it is given.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ReconcileScope {
+    /// Only those records.
+    Touched,
+    /// Also every record that had no placement so far (after the namespace
+    /// changed).
+    Unplaced,
+    /// Every record (after a restart, which may have stopped between a
+    /// durable record and its projection).
+    Everything,
 }
 
 impl std::fmt::Debug for RecordMaterializer {
@@ -66,6 +83,7 @@ impl RecordMaterializer {
             history,
             sync: Arc::new(std::sync::RwLock::new(None)),
             transaction_runtime: None,
+            unplaced: Arc::new(Mutex::new(std::collections::BTreeSet::new())),
         }
     }
 
@@ -140,7 +158,108 @@ impl RecordMaterializer {
         Ok(report)
     }
 
+    /// Projects the records `keys` just changed, plus what `scope` adds,
+    /// with one durable history write and one namespace delta for all of
+    /// them, then signals the change. The caller holds the repository's
+    /// publication gate for writing, so no reader sees the records of a
+    /// changeset half projected.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::reconcile_repository`].
+    pub fn reconcile_batch(
+        &self,
+        repository: &RecordRepository,
+        keys: &[crate::record_repository::RecordRepositoryKey],
+        scope: ReconcileScope,
+    ) -> Result<RecordReconciliationReport, RecordMaterializerError> {
+        let deferral = self
+            .history
+            .as_ref()
+            .map(|history| history.defer_durability());
+        self.namespace
+            .lock()
+            .map_err(|_| RecordMaterializerError::NamespaceUnavailable)?
+            .begin_incremental_batch();
+        let mut report = RecordReconciliationReport::default();
+        let mut projected = keys
+            .iter()
+            .try_for_each(|key| self.reconcile_key(repository, *key, &mut report));
+        if projected.is_ok() {
+            let more = match scope {
+                ReconcileScope::Touched => Vec::new(),
+                ReconcileScope::Unplaced => self
+                    .unplaced
+                    .lock()
+                    .map_err(|_| RecordMaterializerError::NamespaceUnavailable)?
+                    .iter()
+                    .copied()
+                    .collect(),
+                ReconcileScope::Everything => repository.reconciliation_keys(self.workspace_id),
+            };
+            projected = more
+                .into_iter()
+                .try_for_each(|key| self.reconcile_key(repository, key, &mut report));
+        }
+        let everything = scope != ReconcileScope::Touched || !keys.is_empty();
+        // One namespace delta for the whole batch.
+        let delta = self
+            .namespace
+            .lock()
+            .map_err(|_| RecordMaterializerError::NamespaceUnavailable)?
+            .end_incremental_batch();
+        if !delta.is_empty()
+            && let Ok(sync) = self.sync.read()
+            && let Some(sync) = sync.as_ref()
+        {
+            sync.broadcast_delta(delta);
+        }
+        projected?;
+        // A pull may complete a multi-record transaction.
+        if everything {
+            self.reconcile_transactions(repository, &mut report)?;
+        }
+        if let Some(deferral) = deferral {
+            deferral
+                .finish()
+                .map_err(|_| RecordMaterializerError::HistoryUnavailable)?;
+        }
+        // A full pass only heals what an earlier change already signalled.
+        if !keys.is_empty() {
+            self.notify_projection();
+        }
+        Ok(report)
+    }
+
+    /// Tells what projects records onward (the native data plane) that the
+    /// namespace's verified records changed.
+    pub fn notify_projection(&self) {
+        if let Ok(sync) = self.sync.read()
+            && let Some(sync) = sync.as_ref()
+        {
+            sync.notify_record_index_changed();
+        }
+    }
+
     fn reconcile_key(
+        &self,
+        repository: &RecordRepository,
+        key: crate::record_repository::RecordRepositoryKey,
+        report: &mut RecordReconciliationReport,
+    ) -> Result<(), RecordMaterializerError> {
+        let unknown = report.unknown_or_tombstoned_records;
+        self.reconcile_key_once(repository, key, report)?;
+        if let Ok(mut unplaced) = self.unplaced.lock() {
+            if report.unknown_or_tombstoned_records > unknown {
+                unplaced.insert(key);
+            } else {
+                unplaced.remove(&key);
+            }
+        }
+        Ok(())
+    }
+
+    fn reconcile_key_once(
         &self,
         repository: &RecordRepository,
         key: crate::record_repository::RecordRepositoryKey,
@@ -239,14 +358,6 @@ impl RecordMaterializer {
     ///
     /// Returns an error if repository state is inconsistent, required durable
     /// state is unavailable, or a mutation cannot be projected safely.
-    // Reconciliation intentionally keeps the journal guard across the atomic
-    // durable coordinator call; splitting the bounded replay phases would
-    // obscure their required ordering.
-    #[allow(
-        clippy::too_many_lines,
-        clippy::significant_drop_tightening,
-        reason = "Replay phases stay ordered, and the journal guard remains held through durable transaction coordination before reconciliation advances."
-    )]
     pub fn reconcile_repository(
         &self,
         repository: &RecordRepository,
@@ -255,6 +366,22 @@ impl RecordMaterializer {
         for key in repository.reconciliation_keys(self.workspace_id) {
             self.reconcile_key(repository, key, &mut report)?;
         }
+        self.reconcile_transactions(repository, &mut report)?;
+        Ok(report)
+    }
+
+    /// The transaction phase of [`Self::reconcile_repository`]: complete
+    /// multi-record transactions go through the shared crash journal.
+    #[allow(
+        clippy::too_many_lines,
+        clippy::significant_drop_tightening,
+        reason = "Replay phases stay ordered, and the journal guard remains held through durable transaction coordination before reconciliation advances."
+    )]
+    fn reconcile_transactions(
+        &self,
+        repository: &RecordRepository,
+        report: &mut RecordReconciliationReport,
+    ) -> Result<(), RecordMaterializerError> {
         for transaction in repository
             .complete_transactions(self.workspace_id)
             .map_err(|_| RecordMaterializerError::TransactionRejected)?
@@ -444,7 +571,7 @@ impl RecordMaterializer {
             }
             report.transactions_reconciled = report.transactions_reconciled.saturating_add(1);
         }
-        Ok(report)
+        Ok(())
     }
 
     // Keep the exhaustive operation projection in one match so every accepted
@@ -463,9 +590,13 @@ impl RecordMaterializer {
         if envelope.record_id != record_id || snapshot.record_id != record_id {
             return Err(RecordMaterializerError::BindingMismatch);
         }
-        envelope
-            .verify()
-            .map_err(|_| RecordMaterializerError::InvalidEnvelope)?;
+        // The repository verified every envelope it holds when it admitted
+        // it; only an envelope from elsewhere is checked here.
+        if repository.is_none() {
+            envelope
+                .verify()
+                .map_err(|_| RecordMaterializerError::InvalidEnvelope)?;
+        }
 
         // Resolve and validate liveness before either operation. History for a
         // deleted or unknown namespace record must not be guessed into place.
@@ -527,9 +658,9 @@ impl RecordMaterializer {
         let ino = namespace.ensure_ino_for_record_id(record_id).ok_or(
             RecordMaterializerError::UnknownOrTombstonedRecord(record_id),
         )?;
-        let entry =
+        let kind =
             namespace
-                .getattr(ino)
+                .live_kind(ino)
                 .ok_or(RecordMaterializerError::UnknownOrTombstonedRecord(
                     record_id,
                 ))?;
@@ -538,7 +669,7 @@ impl RecordMaterializer {
                 return Err(RecordMaterializerError::BindingMismatch);
             }
             RecordOperationV1::SetMetadata(_) => {
-                if entry.kind != NodeKind::File.to_file_type() {
+                if kind != NodeKind::File.to_file_type() {
                     return Err(RecordMaterializerError::NotAFile);
                 }
                 // The accepted envelope may lose the record's deterministic
@@ -608,7 +739,7 @@ impl RecordMaterializer {
                     })?;
             }
             RecordOperationV1::SetContentRevision(_) => {
-                if entry.kind != NodeKind::File.to_file_type() {
+                if kind != NodeKind::File.to_file_type() {
                     return Err(RecordMaterializerError::NotAFile);
                 }
                 let revision = snapshot

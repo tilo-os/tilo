@@ -44,11 +44,14 @@ use super::{
 use crate::hydration::Hydrator;
 use crate::namespace::Namespace;
 use crate::peer_auth::AuthenticatedFsPeer;
+use crate::record_changeset::{ChangesetLeafV1, ChangesetV1, SignedChangesetV1};
+use crate::record_materializer::ReconcileScope;
 use crate::record_mesh::{RecordMeshErrorCodeV1, RecordMeshStreamV1};
 use crate::record_reconcile::{self, ReconcileAnswerV1, ReconcileRangeV1};
 use crate::record_replication::{RecordEnvelopeV1, RecordOperationV1};
 use crate::record_repository::{
-    MAX_RECORD_BATCH_OPERATIONS, RecordRepositoryKey, RecordStreamCursor,
+    ChangesetApplied, MAX_RECORD_BATCH_OPERATIONS, PullUnit, RecordRepositoryKey,
+    RecordStreamCursor,
 };
 use crate::replica_ack::{ReplicaAckRequestV1, ReplicaAckResponseV1};
 use crate::share_session::LiveActorCertification;
@@ -75,6 +78,10 @@ pub const MAX_PULL_STREAMS: usize = 1024;
 pub const MAX_REPLICA_ACKS: usize = 256;
 /// A file up to this size travels inside the pull that carries its record.
 pub const INLINE_CONTENT_BYTES: u32 = 4 * 1024;
+/// Changeset leaves per frame (a leaf is about 70 bytes on the wire).
+const CHANGESET_LEAVES_PER_FRAME: usize = 8 * 1024;
+/// Leaves one changeset may have: the repository's record bound.
+const MAX_CHANGESET_LEAVES: u64 = crate::record_repository::MAX_REPOSITORY_RECORDS as u64;
 /// Requests one connection may have in progress.
 const MAX_STREAMS_PER_CONNECTION: usize = 16;
 /// Automerge sync rounds on one stream, as in the per-request protocol.
@@ -124,6 +131,15 @@ pub enum SessionOperationV1 {
     Announce,
     /// Answered with `Done`: the connection still reaches the peer.
     Ping,
+    /// As `Pull`, except that envelopes belonging to a signed changeset
+    /// come as that whole changeset (`ChangesetBegin`, its leaves and
+    /// envelopes, `ChangesetEnd`), which the requester applies atomically.
+    /// Units come in the order they entered the server's log. Peers that do
+    /// not know this request fail it, and are pulled from with `Pull`.
+    PullChangesets {
+        streams: Vec<SessionPullV1>,
+        inline_content_bytes: u32,
+    },
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -181,6 +197,13 @@ pub enum SessionFrameV1 {
     Done,
     Denied,
     Error(RecordMeshErrorCodeV1),
+    /// A changeset follows: its signed header, then `ChangesetLeaves` and
+    /// `Envelopes` frames up to `ChangesetEnd`.
+    ChangesetBegin(ChangesetV1),
+    ChangesetLeaves {
+        leaves: Vec<ChangesetLeafV1>,
+    },
+    ChangesetEnd,
 }
 
 async fn write_frame<T: Serialize + Sync>(send: &mut SendStream, value: &T) -> Result<()> {
@@ -357,9 +380,25 @@ impl SessionProtocol {
             SessionOperationV1::Ping => {
                 write_frame(&mut send, &SessionFrameV1::Done).await?;
             }
+            SessionOperationV1::PullChangesets {
+                streams,
+                inline_content_bytes,
+            } => {
+                self.serve_pull_changesets(peer, &streams, inline_content_bytes, &mut send)
+                    .await?;
+            }
         }
         send.finish()?;
         Ok(())
+    }
+
+    /// Waits out a changeset being published here: namespace state read
+    /// under this guard holds each changeset entirely or not at all.
+    async fn publication_gate(&self) -> Option<tokio::sync::RwLockReadGuard<'_, ()>> {
+        match &self.records {
+            Some(records) => Some(records.repository.publication_gate().read().await),
+            None => None,
+        }
     }
 
     /// The record plane, if the peer may read the whole workspace (the
@@ -548,6 +587,17 @@ impl SessionProtocol {
         }
         // Inline content: the requester may read every record it was just
         // sent (whole-workspace read), so it may read their current bytes.
+        self.send_inline(current, inline_limit, send).await?;
+        write_frame(send, &SessionFrameV1::Done).await
+    }
+
+    /// The bytes of the small files `current` names, in frames.
+    async fn send_inline(
+        &self,
+        current: BTreeMap<collab_types::FileRecordId, [u8; 32]>,
+        inline_limit: u64,
+        send: &mut SendStream,
+    ) -> Result<()> {
         let mut blobs = Vec::new();
         let mut size = 0_usize;
         let mut inlined = HashSet::new();
@@ -576,6 +626,206 @@ impl SessionProtocol {
         if !blobs.is_empty() {
             write_frame(send, &SessionFrameV1::Blobs { blobs }).await?;
         }
+        Ok(())
+    }
+
+    /// `PullChangesets`: what the requester misses on each stream, as whole
+    /// changesets where the envelopes belong to one, in log order.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one response validates the cursors, then frames each unit in log order"
+    )]
+    async fn serve_pull_changesets(
+        &self,
+        peer: &AuthenticatedFsPeer,
+        streams: &[SessionPullV1],
+        inline_content_bytes: u32,
+        send: &mut SendStream,
+    ) -> Result<()> {
+        let Some(records) = self.readable_records(peer) else {
+            return write_frame(send, &SessionFrameV1::Denied).await;
+        };
+        if streams.is_empty() || streams.len() > MAX_PULL_STREAMS {
+            return write_frame(
+                send,
+                &SessionFrameV1::Error(RecordMeshErrorCodeV1::RequestTooLarge),
+            )
+            .await;
+        }
+        let inline_limit = u64::from(inline_content_bytes.min(INLINE_CONTENT_BYTES));
+        let mut wanted = Vec::with_capacity(streams.len());
+        for pull in streams {
+            let stream = pull.stream;
+            let key = RecordRepositoryKey {
+                workspace_id: records.workspace_id,
+                record_id: stream.record_id,
+            };
+            let failed = |code| SessionFrameV1::StreamFailed { stream, code };
+            if let Some(cursor) = &pull.after {
+                if cursor.record_id != stream.record_id || cursor.actor != stream.actor {
+                    write_frame(send, &failed(RecordMeshErrorCodeV1::InvalidRequest)).await?;
+                    continue;
+                }
+                match records.repository.stream_cursor(
+                    key,
+                    &stream.actor,
+                    cursor.contiguous_sequence,
+                ) {
+                    Ok(local) if local == *cursor => {}
+                    Ok(_) => {
+                        write_frame(send, &failed(RecordMeshErrorCodeV1::PrefixMismatch)).await?;
+                        continue;
+                    }
+                    Err(_) => {
+                        write_frame(send, &failed(RecordMeshErrorCodeV1::InvalidRequest)).await?;
+                        continue;
+                    }
+                }
+            }
+            wanted.push((
+                stream.record_id,
+                stream.actor,
+                pull.after.as_ref().map_or(0, |c| c.contiguous_sequence),
+            ));
+        }
+        let Ok(units) = records.repository.pull_units(records.workspace_id, &wanted) else {
+            return write_frame(
+                send,
+                &SessionFrameV1::Error(RecordMeshErrorCodeV1::Internal),
+            )
+            .await;
+        };
+        // The content each sent record ends at, per record.
+        let mut current: BTreeMap<collab_types::FileRecordId, [u8; 32]> = BTreeMap::new();
+        let mut note = |envelope: &RecordEnvelopeV1| {
+            if let RecordOperationV1::SetContentRevision(revision) = &envelope.operation {
+                match revision.content_hash {
+                    Some(hash) if revision.byte_len <= inline_limit => {
+                        current.insert(revision.record_id, hash.0);
+                    }
+                    _ => {
+                        current.remove(&revision.record_id);
+                    }
+                }
+            }
+            envelope
+                .canonical_bytes()
+                .map_or(TARGET_FRAME_BYTES, |bytes| bytes.len())
+        };
+        let mut batches = Vec::new();
+        let mut size = 0_usize;
+        for unit in units {
+            match unit {
+                PullUnit::Stream {
+                    key,
+                    actor,
+                    after_sequence,
+                    envelopes,
+                } => {
+                    for envelope in &envelopes {
+                        size = size.saturating_add(note(envelope));
+                    }
+                    batches.push(SessionEnvelopesV1 {
+                        stream: RecordMeshStreamV1 {
+                            record_id: key.record_id,
+                            actor,
+                        },
+                        after_sequence,
+                        envelopes,
+                    });
+                    if size >= TARGET_FRAME_BYTES {
+                        write_frame(
+                            send,
+                            &SessionFrameV1::Envelopes {
+                                batches: std::mem::take(&mut batches),
+                            },
+                        )
+                        .await?;
+                        size = 0;
+                    }
+                }
+                PullUnit::Changeset(changeset) => {
+                    if !batches.is_empty() {
+                        write_frame(
+                            send,
+                            &SessionFrameV1::Envelopes {
+                                batches: std::mem::take(&mut batches),
+                            },
+                        )
+                        .await?;
+                        size = 0;
+                    }
+                    write_frame(
+                        send,
+                        &SessionFrameV1::ChangesetBegin(changeset.header.clone()),
+                    )
+                    .await?;
+                    for leaves in changeset.leaves.chunks(CHANGESET_LEAVES_PER_FRAME) {
+                        write_frame(
+                            send,
+                            &SessionFrameV1::ChangesetLeaves {
+                                leaves: leaves.to_vec(),
+                            },
+                        )
+                        .await?;
+                    }
+                    for leaf in &changeset.leaves {
+                        let Ok(envelopes) = records
+                            .repository
+                            .changeset_leaf_envelopes(&changeset, leaf)
+                        else {
+                            return write_frame(
+                                send,
+                                &SessionFrameV1::Error(RecordMeshErrorCodeV1::Internal),
+                            )
+                            .await;
+                        };
+                        for chunk in envelopes.chunks(MAX_RECORD_BATCH_OPERATIONS) {
+                            for envelope in chunk {
+                                size = size.saturating_add(note(envelope));
+                            }
+                            batches.push(SessionEnvelopesV1 {
+                                stream: RecordMeshStreamV1 {
+                                    record_id: leaf.record_id,
+                                    actor: changeset.header.actor,
+                                },
+                                after_sequence: chunk
+                                    .first()
+                                    .map_or(0, |e| e.sequence.saturating_sub(1)),
+                                envelopes: chunk.to_vec(),
+                            });
+                        }
+                        if size >= TARGET_FRAME_BYTES {
+                            write_frame(
+                                send,
+                                &SessionFrameV1::Envelopes {
+                                    batches: std::mem::take(&mut batches),
+                                },
+                            )
+                            .await?;
+                            size = 0;
+                        }
+                    }
+                    if !batches.is_empty() {
+                        write_frame(
+                            send,
+                            &SessionFrameV1::Envelopes {
+                                batches: std::mem::take(&mut batches),
+                            },
+                        )
+                        .await?;
+                        size = 0;
+                    }
+                    write_frame(send, &SessionFrameV1::ChangesetEnd).await?;
+                }
+            }
+        }
+        if !batches.is_empty() {
+            write_frame(send, &SessionFrameV1::Envelopes { batches }).await?;
+        }
+        // Inline content: the requester may read every record it was just
+        // sent (whole-workspace read), so it may read their current bytes.
+        self.send_inline(current, inline_limit, send).await?;
         write_frame(send, &SessionFrameV1::Done).await
     }
 
@@ -635,9 +885,14 @@ impl SessionProtocol {
         if changed
             && let Some(records) = &self.records
             && let Some(materializer) = &records.materializer
-            && let Err(error) = materializer.reconcile_repository(&records.repository)
         {
-            eprintln!("projecting records after a namespace exchange failed: {error}");
+            let gate = records.repository.publication_gate().write().await;
+            if let Err(error) =
+                materializer.reconcile_batch(&records.repository, &[], ReconcileScope::Unplaced)
+            {
+                eprintln!("projecting records after a namespace exchange failed: {error}");
+            }
+            drop(gate);
         }
         exchanged
     }
@@ -668,11 +923,13 @@ impl SessionProtocol {
                     .unwrap_or_else(std::sync::PoisonError::into_inner)
                     .sync_receive(state, &message);
             }
+            let gate = self.publication_gate().await;
             let reply = self
                 .namespace
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .sync_generate(state);
+            drop(gate);
             let done = message.is_empty() && reply.is_none();
             write_frame(send, &SessionFrameV1::Sync(reply.unwrap_or_default())).await?;
             if done {
@@ -693,11 +950,13 @@ impl SessionProtocol {
         }
         let heads: Vec<automerge::ChangeHash> =
             heads.iter().map(|h| automerge::ChangeHash(*h)).collect();
+        let gate = self.publication_gate().await;
         let delta = self
             .namespace
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .changes_since(&heads);
+        drop(gate);
         for chunk in delta.chunks(TARGET_FRAME_BYTES) {
             write_frame(send, &SessionFrameV1::NamespaceChunk(chunk.to_vec())).await?;
         }
@@ -776,6 +1035,8 @@ pub(super) struct Session {
     pub addr: EndpointAddr,
     /// When a response last arrived on this session.
     last_heard: Mutex<Instant>,
+    /// Whether the peer answers `PullChangesets` (until it fails one).
+    changesets: std::sync::atomic::AtomicBool,
 }
 
 /// Sessions to every peer this device reconciles with, opened on first use.
@@ -822,7 +1083,15 @@ impl SessionPool {
         }
         let pool = Arc::clone(self);
         tokio::spawn(async move {
-            for session in pool.open_sessions().await {
+            let open: Vec<Arc<Session>> = pool
+                .sessions
+                .lock()
+                .await
+                .values()
+                .filter(|session| !session.is_closed())
+                .cloned()
+                .collect();
+            for session in open {
                 let protocol = protocol.clone();
                 tokio::spawn(async move {
                     protocol
@@ -849,6 +1118,7 @@ impl SessionPool {
                 peer: peer.clone(),
                 addr: EndpointAddr::new(id),
                 last_heard: Mutex::new(Instant::now()),
+                changesets: std::sync::atomic::AtomicBool::new(true),
             }),
         );
     }
@@ -903,6 +1173,7 @@ impl SessionPool {
                     peer,
                     addr: addr.clone(),
                     last_heard: Mutex::new(Instant::now()),
+                    changesets: std::sync::atomic::AtomicBool::new(true),
                 });
                 // Another caller may have opened one meanwhile; keep one.
                 let mut sessions = self.sessions.lock().await;
@@ -966,17 +1237,6 @@ impl SessionPool {
         {
             sessions.remove(&session.addr.id);
         }
-    }
-
-    /// Every open session.
-    pub(super) async fn open_sessions(&self) -> Vec<Arc<Session>> {
-        self.sessions
-            .lock()
-            .await
-            .values()
-            .filter(|s| s.connection.close_reason().is_none())
-            .cloned()
-            .collect()
     }
 
     /// Whether the peer answers on `session` promptly.
@@ -1049,6 +1309,7 @@ pub(super) async fn sync_namespace(
     pool: &SessionPool,
     session: &Session,
     namespace: &Arc<Mutex<Namespace>>,
+    repository: Option<&crate::record_repository::RecordRepository>,
 ) -> Result<bool> {
     let (mut send, mut recv) = session
         .open(&pool.request(SessionOperationV1::NamespaceSync))
@@ -1059,10 +1320,16 @@ pub(super) async fn sync_namespace(
     let mut state = automerge::sync::State::new();
     let mut received = false;
     for _ in 0..MAX_SYNC_ROUNDS {
+        // Only namespace state between changesets leaves this device.
+        let gate = match repository {
+            Some(repository) => Some(repository.publication_gate().read().await),
+            None => None,
+        };
         let message = namespace
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .sync_generate(&mut state);
+        drop(gate);
         let sent_nothing = message.is_none();
         write_frame(
             &mut send,
@@ -1247,25 +1514,74 @@ async fn reconcile_streams(
     Ok(learned)
 }
 
-/// Pulls every record stream the peer is ahead on: reconciliation, then
-/// batched pulls of many streams each, with small files' content inline.
-/// Returns whether anything was applied. With `heal`, every record is
-/// re-projected even when nothing new arrived.
-#[allow(
-    clippy::too_many_lines,
-    reason = "the pull validates, applies and materialises one ordered response stream"
-)]
-pub(super) async fn pull_records(
-    pool: &SessionPool,
-    session: &Session,
-    identity: &FsTransportIdentity,
-    policy: &PeerPolicy,
-    records: &RecordPlane,
-    hydrator: &Hydrator,
-    heal: bool,
-) -> Result<bool> {
-    let remote = reconcile_streams(pool, session, records).await?;
+/// One requested stream: what to ask for, and how far the peer is.
+struct WantedStream {
+    stream: RecordMeshStreamV1,
+    remote_sequence: u64,
+}
+
+/// What one pull request brought.
+#[derive(Default)]
+struct Pulled {
+    changed: bool,
+    touched: Vec<RecordRepositoryKey>,
+    inline: Vec<(iroh_blobs::Hash, Bytes)>,
+    /// Time spent verifying and writing what arrived.
+    applying: Duration,
+}
+
+/// The peer does not answer `PullChangesets`.
+#[derive(Debug)]
+struct ChangesetsUnsupported;
+
+impl std::fmt::Display for ChangesetsUnsupported {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("peer does not serve changesets")
+    }
+}
+
+impl std::error::Error for ChangesetsUnsupported {}
+
+/// The requests for `wanted` streams this device is still behind on, from
+/// where each stream ends here now.
+fn behind(records: &RecordPlane, wanted: &[WantedStream]) -> Result<Vec<SessionPullV1>> {
     let mut pulls = Vec::new();
+    for want in wanted {
+        let key = RecordRepositoryKey {
+            workspace_id: records.workspace_id,
+            record_id: want.stream.record_id,
+        };
+        let local = records
+            .repository
+            .highest_sequence(key, &want.stream.actor)
+            .unwrap_or(0);
+        if local >= want.remote_sequence {
+            continue;
+        }
+        let after = if local == 0 {
+            None
+        } else {
+            Some(
+                records
+                    .repository
+                    .stream_cursor(key, &want.stream.actor, local)?,
+            )
+        };
+        pulls.push(SessionPullV1 {
+            stream: want.stream,
+            after,
+        });
+    }
+    Ok(pulls)
+}
+
+/// The peer's streams (of its own person) that are ahead of this device.
+fn streams_ahead(
+    session: &Session,
+    records: &RecordPlane,
+    remote: Vec<RecordStreamCursor>,
+) -> Vec<WantedStream> {
+    let mut wanted = Vec::new();
     for cursor in remote {
         if cursor.actor.person.as_bytes() != &session.peer.user_public_key {
             continue;
@@ -1278,140 +1594,359 @@ pub(super) async fn pull_records(
             .repository
             .highest_sequence(key, &cursor.actor)
             .unwrap_or(0);
-        if local > cursor.contiguous_sequence {
+        if local == cursor.contiguous_sequence
+            && local > 0
+            && records
+                .repository
+                .stream_cursor(key, &cursor.actor, local)
+                .is_ok_and(|after| after != cursor)
+        {
+            eprintln!(
+                "record stream {:?} diverged from {}",
+                cursor.record_id, session.addr.id
+            );
+        }
+        if local >= cursor.contiguous_sequence {
             continue;
         }
-        let after = if local == 0 {
-            None
-        } else {
-            Some(
-                records
-                    .repository
-                    .stream_cursor(key, &cursor.actor, local)?,
-            )
-        };
-        if local == cursor.contiguous_sequence {
-            if after.is_some_and(|after| after != cursor) {
-                eprintln!(
-                    "record stream {:?} diverged from {}",
-                    cursor.record_id, session.addr.id
-                );
-            }
-            continue;
-        }
-        pulls.push(SessionPullV1 {
+        wanted.push(WantedStream {
             stream: RecordMeshStreamV1::from(&cursor),
-            after,
+            remote_sequence: cursor.contiguous_sequence,
         });
     }
-    let mut changed = false;
+    wanted
+}
+
+/// Pulls every record stream the peer is ahead on: reconciliation, then
+/// batched pulls of many streams each, with small files' content inline.
+/// Envelopes of a signed changeset arrive and are applied as that whole
+/// changeset, and every record the pulls changed is projected in one step
+/// under the publication gate, so the namespace never holds half of a
+/// changeset. Returns whether anything was applied. `scope` says which
+/// records besides the pulled ones are projected again.
+pub(super) async fn pull_records(
+    pool: &SessionPool,
+    session: &Session,
+    identity: &FsTransportIdentity,
+    policy: &PeerPolicy,
+    records: &RecordPlane,
+    hydrator: &Hydrator,
+    scope: ReconcileScope,
+) -> Result<bool> {
+    let remote = reconcile_streams(pool, session, records).await?;
+    let wanted = streams_ahead(session, records, remote);
     let authorizer = DirectMeshAuthorizer {
         peer: &session.peer,
         identity,
         policy,
     };
-    for chunk in pulls.chunks(MAX_PULL_STREAMS) {
-        // Where each requested stream ends here; every batch must continue
-        // exactly there.
-        let mut next_after: BTreeMap<crate::record_repository::RecordStreamKey, u64> = chunk
-            .iter()
-            .map(|p| {
-                (
-                    record_reconcile::stream_key(&p.stream),
-                    p.after.as_ref().map_or(0, |c| c.contiguous_sequence),
-                )
-            })
-            .collect();
-        let (mut send, mut recv) = session
-            .open(&pool.request(SessionOperationV1::Pull {
-                streams: chunk.to_vec(),
-                inline_content_bytes: INLINE_CONTENT_BYTES,
-            }))
-            .await?;
-        let _ = send.finish();
-        let mut touched = Vec::new();
-        let mut inline = Vec::new();
-        while let Some(frame) = session.frames(&mut recv, MAX_FRAME_BYTES).await? {
-            match frame {
-                SessionFrameV1::Envelopes { batches } => {
-                    for batch in batches {
-                        // Each batch must continue exactly where this device's
-                        // copy of the stream ends.
-                        let Some(after) =
-                            next_after.get_mut(&record_reconcile::stream_key(&batch.stream))
-                        else {
-                            anyhow::bail!("pull returned a stream that was not requested");
-                        };
-                        anyhow::ensure!(
-                            batch.after_sequence == *after
-                                && !batch.envelopes.is_empty()
-                                && batch.envelopes.len() <= MAX_RECORD_BATCH_OPERATIONS,
-                            "pull returned a non-contiguous batch"
-                        );
-                        let key = RecordRepositoryKey {
-                            workspace_id: records.workspace_id,
-                            record_id: batch.stream.record_id,
-                        };
-                        let mut expected = batch.after_sequence;
-                        for envelope in &batch.envelopes {
-                            expected = expected.saturating_add(1);
-                            anyhow::ensure!(
-                                envelope.record_id == batch.stream.record_id
-                                    && envelope.actor == batch.stream.actor
-                                    && envelope.sequence == expected,
-                                "pull returned an envelope outside its stream"
-                            );
-                        }
-                        records
-                            .repository
-                            .apply_batch(key, &batch.envelopes, &authorizer)?;
-                        *after = expected;
-                        changed = true;
-                        touched.push(key);
-                    }
-                }
-                SessionFrameV1::StreamFailed { stream, code } => {
-                    eprintln!(
-                        "record stream {:?} from {} failed: {code:?}",
-                        stream.record_id, session.addr.id
-                    );
-                }
-                SessionFrameV1::Blobs { blobs } => {
-                    inline.extend(
-                        blobs
-                            .into_iter()
-                            .map(|b| (iroh_blobs::Hash::from(b.hash), Bytes::from(b.bytes))),
-                    );
-                }
-                _ => anyhow::bail!("unexpected pull frame"),
-            }
+    let mut pulled = Pulled::default();
+    let exchange = Instant::now();
+    for chunk in wanted.chunks(MAX_PULL_STREAMS) {
+        // A changeset an earlier request brought may already cover these.
+        let pulls = behind(records, chunk)?;
+        if pulls.is_empty() {
+            continue;
         }
-        // Content first, so a record that becomes visible can be read.
-        if !inline.is_empty()
-            && let Err(error) = hydrator.accept_inline(&session.addr, inline).await
+        let part = if session
+            .changesets
+            .load(std::sync::atomic::Ordering::Relaxed)
         {
-            eprintln!(
-                "inline content from {} rejected: {error:#}",
-                session.addr.id
-            );
-        }
-        if let Some(materializer) = &records.materializer {
-            touched.sort();
-            touched.dedup();
-            for key in touched {
-                materializer.reconcile_record(&records.repository, key)?;
+            match pull_changesets(pool, session, records, &authorizer, pulls.clone()).await {
+                Err(error) if error.is::<ChangesetsUnsupported>() => {
+                    session
+                        .changesets
+                        .store(false, std::sync::atomic::Ordering::Relaxed);
+                    pull_streams(pool, session, records, &authorizer, pulls).await?
+                }
+                other => other?,
             }
-        }
+        } else {
+            pull_streams(pool, session, records, &authorizer, pulls).await?
+        };
+        pulled.changed |= part.changed;
+        pulled.touched.extend(part.touched);
+        pulled.inline.extend(part.inline);
+        pulled.applying = pulled.applying.saturating_add(part.applying);
+    }
+    let exchanged = exchange.elapsed();
+    let inline = pulled.inline.len();
+    // Content first, so a record that becomes visible can be read.
+    if !pulled.inline.is_empty()
+        && let Err(error) = hydrator
+            .accept_inline(&session.addr, std::mem::take(&mut pulled.inline))
+            .await
+    {
+        eprintln!(
+            "inline content from {} rejected: {error:#}",
+            session.addr.id
+        );
+    }
+    if !pulled.touched.is_empty() && std::env::var_os("TILO_FS_NATIVE_TRACE").is_some() {
+        eprintln!(
+            "  pulled {} record(s) in {} ms ({} ms applying them), {} inline blob(s) stored in {} ms",
+            pulled.touched.len(),
+            exchanged.as_millis(),
+            pulled.applying.as_millis(),
+            inline,
+            exchange.elapsed().saturating_sub(exchanged).as_millis()
+        );
     }
     // Records that arrived before their namespace placement are projected
-    // once the placement exists: after namespace changes, and whenever the
-    // caller asks (the first pass after startup).
-    if (changed || heal)
-        && let Some(materializer) = &records.materializer
+    // once the placement exists: `scope` says what else to project.
+    if let Some(materializer) = &records.materializer
+        && (scope != ReconcileScope::Touched || !pulled.touched.is_empty())
     {
-        materializer.reconcile_repository(&records.repository)?;
+        pulled.touched.sort();
+        pulled.touched.dedup();
+        let gate = records.repository.publication_gate().write().await;
+        let started = Instant::now();
+        let projected = materializer.reconcile_batch(&records.repository, &pulled.touched, scope);
+        drop(gate);
+        if !pulled.touched.is_empty() && std::env::var_os("TILO_FS_NATIVE_TRACE").is_some() {
+            eprintln!(
+                "  {} pulled record(s) projected into the namespace in {} ms",
+                pulled.touched.len(),
+                started.elapsed().as_millis()
+            );
+        }
+        projected?;
     }
-    Ok(changed)
+    Ok(pulled.changed)
+}
+
+/// One `PullChangesets` request: changesets are applied whole as each
+/// completes, other envelopes per frame.
+#[allow(
+    clippy::too_many_lines,
+    reason = "one ordered response stream of changesets and stream batches"
+)]
+async fn pull_changesets(
+    pool: &SessionPool,
+    session: &Session,
+    records: &RecordPlane,
+    authorizer: &DirectMeshAuthorizer<'_>,
+    pulls: Vec<SessionPullV1>,
+) -> Result<Pulled> {
+    let (mut send, mut recv) = session
+        .open(&pool.request(SessionOperationV1::PullChangesets {
+            streams: pulls,
+            inline_content_bytes: INLINE_CONTENT_BYTES,
+        }))
+        .await?;
+    let _ = send.finish();
+    let mut pulled = Pulled::default();
+    let mut first = true;
+    // The changeset being received: header, leaves, envelopes, and how
+    // many envelopes its leaves name.
+    let mut open: Option<(
+        ChangesetV1,
+        Vec<ChangesetLeafV1>,
+        Vec<RecordEnvelopeV1>,
+        u64,
+    )> = None;
+    loop {
+        let frame = match session.frames(&mut recv, MAX_FRAME_BYTES).await {
+            Ok(frame) => frame,
+            // A peer that does not know the request drops it unanswered.
+            Err(error) if first && !format!("{error:#}").contains("denied") => {
+                let _ = error;
+                return Err(ChangesetsUnsupported.into());
+            }
+            Err(error) => return Err(error),
+        };
+        first = false;
+        let Some(frame) = frame else {
+            break;
+        };
+        match frame {
+            SessionFrameV1::ChangesetBegin(header) => {
+                anyhow::ensure!(open.is_none(), "changeset began inside another");
+                anyhow::ensure!(
+                    header.workspace_id == records.workspace_id
+                        && header.leaf_count <= MAX_CHANGESET_LEAVES,
+                    "changeset for another workspace or too large"
+                );
+                open = Some((header, Vec::new(), Vec::new(), 0));
+            }
+            SessionFrameV1::ChangesetLeaves { leaves } => {
+                let Some((header, all, _, named)) = open.as_mut() else {
+                    anyhow::bail!("changeset leaves outside a changeset");
+                };
+                anyhow::ensure!(
+                    (all.len() as u64).saturating_add(leaves.len() as u64) <= header.leaf_count,
+                    "more changeset leaves than signed"
+                );
+                for leaf in &leaves {
+                    *named = named.saturating_add(
+                        leaf.last_sequence
+                            .saturating_sub(leaf.first_sequence)
+                            .saturating_add(1),
+                    );
+                }
+                all.extend(leaves);
+            }
+            SessionFrameV1::Envelopes { batches } => {
+                if let Some((_, _, envelopes, named)) = open.as_mut() {
+                    for batch in batches {
+                        anyhow::ensure!(
+                            (envelopes.len() as u64).saturating_add(batch.envelopes.len() as u64)
+                                <= *named,
+                            "more changeset envelopes than its leaves name"
+                        );
+                        envelopes.extend(batch.envelopes);
+                    }
+                } else {
+                    let part = apply_stream_batches(records, authorizer, batches)?;
+                    pulled.changed |= !part.is_empty();
+                    pulled.touched.extend(part);
+                }
+            }
+            SessionFrameV1::ChangesetEnd => {
+                let Some((header, leaves, envelopes, _)) = open.take() else {
+                    anyhow::bail!("changeset ended without beginning");
+                };
+                let changeset = SignedChangesetV1 { header, leaves };
+                let applying = Instant::now();
+                let applied = records.repository.apply_changeset(
+                    records.workspace_id,
+                    &changeset,
+                    &envelopes,
+                    authorizer,
+                )?;
+                pulled.applying = pulled.applying.saturating_add(applying.elapsed());
+                match applied {
+                    ChangesetApplied::Applied(keys) => {
+                        if std::env::var_os("TILO_FS_NATIVE_TRACE").is_some() {
+                            eprintln!(
+                                "  changeset {} of {} record(s) applied from {}",
+                                changeset.header.sequence,
+                                changeset.header.leaf_count,
+                                session.addr.id.fmt_short()
+                            );
+                        }
+                        pulled.changed = true;
+                        pulled.touched.extend(keys);
+                    }
+                    ChangesetApplied::AlreadyPresent => {}
+                }
+            }
+            SessionFrameV1::StreamFailed { stream, code } => {
+                eprintln!(
+                    "record stream {:?} from {} failed: {code:?}",
+                    stream.record_id, session.addr.id
+                );
+            }
+            SessionFrameV1::Blobs { blobs } => {
+                pulled.inline.extend(
+                    blobs
+                        .into_iter()
+                        .map(|b| (iroh_blobs::Hash::from(b.hash), Bytes::from(b.bytes))),
+                );
+            }
+            _ => anyhow::bail!("unexpected pull frame"),
+        }
+    }
+    anyhow::ensure!(open.is_none(), "a changeset was cut off");
+    Ok(pulled)
+}
+
+/// Applies stream batches outside any changeset in one durable write. A
+/// batch may repeat envelopes this device already holds; those are dropped,
+/// and what remains must continue exactly where the stream ends here.
+fn apply_stream_batches(
+    records: &RecordPlane,
+    authorizer: &DirectMeshAuthorizer<'_>,
+    batches: Vec<SessionEnvelopesV1>,
+) -> Result<Vec<RecordRepositoryKey>> {
+    let mut staged: Vec<(RecordRepositoryKey, Vec<RecordEnvelopeV1>)> = Vec::new();
+    let mut ends: BTreeMap<crate::record_repository::RecordStreamKey, u64> = BTreeMap::new();
+    for batch in batches {
+        anyhow::ensure!(
+            !batch.envelopes.is_empty() && batch.envelopes.len() <= MAX_RECORD_BATCH_OPERATIONS,
+            "pull returned an empty or oversized batch"
+        );
+        let key = RecordRepositoryKey {
+            workspace_id: records.workspace_id,
+            record_id: batch.stream.record_id,
+        };
+        let stream_key = record_reconcile::stream_key(&batch.stream);
+        let end = match ends.get(&stream_key) {
+            Some(end) => *end,
+            None => records
+                .repository
+                .highest_sequence(key, &batch.stream.actor)
+                .unwrap_or(0),
+        };
+        let mut expected = batch.after_sequence;
+        for envelope in &batch.envelopes {
+            expected = expected.saturating_add(1);
+            anyhow::ensure!(
+                envelope.record_id == batch.stream.record_id
+                    && envelope.actor == batch.stream.actor
+                    && envelope.sequence == expected,
+                "pull returned an envelope outside its stream"
+            );
+        }
+        let fresh: Vec<RecordEnvelopeV1> = batch
+            .envelopes
+            .into_iter()
+            .filter(|envelope| envelope.sequence > end)
+            .collect();
+        let Some(last) = fresh.last().map(|e| e.sequence) else {
+            continue;
+        };
+        anyhow::ensure!(
+            fresh.first().map(|e| e.sequence) == Some(end.saturating_add(1)),
+            "pull returned a non-contiguous batch"
+        );
+        ends.insert(stream_key, last);
+        staged.push((key, fresh));
+    }
+    records.repository.apply_batches(&staged, authorizer)?;
+    Ok(staged.into_iter().map(|(key, _)| key).collect())
+}
+
+/// One `Pull` request, for peers without changesets.
+async fn pull_streams(
+    pool: &SessionPool,
+    session: &Session,
+    records: &RecordPlane,
+    authorizer: &DirectMeshAuthorizer<'_>,
+    pulls: Vec<SessionPullV1>,
+) -> Result<Pulled> {
+    let (mut send, mut recv) = session
+        .open(&pool.request(SessionOperationV1::Pull {
+            streams: pulls,
+            inline_content_bytes: INLINE_CONTENT_BYTES,
+        }))
+        .await?;
+    let _ = send.finish();
+    let mut pulled = Pulled::default();
+    while let Some(frame) = session.frames(&mut recv, MAX_FRAME_BYTES).await? {
+        match frame {
+            SessionFrameV1::Envelopes { batches } => {
+                let part = apply_stream_batches(records, authorizer, batches)?;
+                pulled.changed |= !part.is_empty();
+                pulled.touched.extend(part);
+            }
+            SessionFrameV1::StreamFailed { stream, code } => {
+                eprintln!(
+                    "record stream {:?} from {} failed: {code:?}",
+                    stream.record_id, session.addr.id
+                );
+            }
+            SessionFrameV1::Blobs { blobs } => {
+                pulled.inline.extend(
+                    blobs
+                        .into_iter()
+                        .map(|b| (iroh_blobs::Hash::from(b.hash), Bytes::from(b.bytes))),
+                );
+            }
+            _ => anyhow::bail!("unexpected pull frame"),
+        }
+    }
+    Ok(pulled)
 }
 
 /// Fresh receipts from the peer for every current revision it has not

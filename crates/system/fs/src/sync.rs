@@ -12,7 +12,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, RwLock};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use bytes::Bytes;
@@ -370,6 +370,29 @@ pub async fn sync_with_peer(
     namespace: &Arc<Mutex<Namespace>>,
     identity: &FsTransportIdentity,
 ) -> Result<bool> {
+    sync_with_peer_at_boundaries(endpoint, peer, namespace, identity, None).await
+}
+
+/// Waits until no changeset is being published into this device's namespace
+/// (see [`RecordRepository::publication_gate`]): namespace state sent while
+/// the guard is held never holds half of one.
+async fn changeset_boundary(
+    repository: Option<&RecordRepository>,
+) -> Option<tokio::sync::RwLockReadGuard<'_, ()>> {
+    match repository {
+        Some(repository) => Some(repository.publication_gate().read().await),
+        None => None,
+    }
+}
+
+/// [`sync_with_peer`], sending only namespace state between changesets.
+async fn sync_with_peer_at_boundaries(
+    endpoint: &Endpoint,
+    peer: EndpointAddr,
+    namespace: &Arc<Mutex<Namespace>>,
+    identity: &FsTransportIdentity,
+    repository: Option<&RecordRepository>,
+) -> Result<bool> {
     if identity.partitioned() {
         anyhow::bail!("transport partition gate is closed");
     }
@@ -384,6 +407,7 @@ pub async fn sync_with_peer(
         let mut received_change = false;
         for _ in 0..200 {
             let msg = {
+                let _gate = changeset_boundary(repository).await;
                 namespace
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -565,6 +589,18 @@ struct SyncProtocol {
     namespace: Arc<Mutex<Namespace>>,
     policy: PeerPolicy,
     inflight: Arc<tokio::sync::Semaphore>,
+    /// Whose publication gate namespace reads wait on, so a changeset
+    /// being published is never served half.
+    records: Option<Arc<RecordRepository>>,
+}
+
+impl SyncProtocol {
+    async fn gate(&self) -> Option<tokio::sync::RwLockReadGuard<'_, ()>> {
+        match &self.records {
+            Some(repository) => Some(repository.publication_gate().read().await),
+            None => None,
+        }
+    }
 }
 
 impl std::fmt::Debug for SyncProtocol {
@@ -611,11 +647,13 @@ impl ProtocolHandler for SyncProtocol {
                         return Ok(());
                     }
                     let _ = recv.read_to_end(64).await;
+                    let gate = self.gate().await;
                     let doc = self
                         .namespace
                         .lock()
                         .unwrap_or_else(std::sync::PoisonError::into_inner)
                         .save();
+                    drop(gate);
                     send.write_all(&doc).await.map_err(AcceptError::from_err)?;
                     let _ = send.finish();
                 }
@@ -644,6 +682,7 @@ impl ProtocolHandler for SyncProtocol {
                                 .sync_receive(&mut state, &peer_msg);
                         }
                         let msg = {
+                            let _gate = self.gate().await;
                             self.namespace
                                 .lock()
                                 .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -1755,6 +1794,9 @@ impl Workspace {
             namespace: namespace.clone(),
             policy: policy.clone(),
             inflight: Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_SYNC_CONNECTIONS)),
+            records: record_plane
+                .as_ref()
+                .map(|records| Arc::clone(&records.repository)),
         };
         let replica_ack_protocol = record_plane.as_ref().map(|records| ReplicaAckProtocol {
             endpoint: endpoint.clone(),
@@ -1852,6 +1894,9 @@ impl Workspace {
                 namespace.clone(),
                 hydrator.clone(),
                 Arc::clone(&sync),
+                record_plane
+                    .as_ref()
+                    .map(|records| Arc::clone(&records.repository)),
             ))));
             (Some(sender), None)
         } else {
@@ -1918,12 +1963,18 @@ async fn pump_loop(
     namespace: Arc<Mutex<Namespace>>,
     hydrator: Arc<Hydrator>,
     sync: Arc<SyncHandle>,
+    records: Option<Arc<RecordRepository>>,
 ) {
     loop {
         tokio::select! {
             maybe = local_rx.recv() => {
                 match maybe {
-                    Some(delta) => { let _ = sender.broadcast(delta).await; }
+                    Some(delta) => {
+                        // A delta carries every change since the previous
+                        // one: never send it in the middle of a changeset.
+                        let _gate = changeset_boundary(records.as_deref()).await;
+                        let _ = sender.broadcast(delta).await;
+                    }
                     None => break, // all SyncHandles dropped
                 }
             }
@@ -1942,6 +1993,7 @@ async fn pump_loop(
                         };
                         sync.notify_record_index_changed();
                         if !resolve_delta.is_empty() {
+                            let _gate = changeset_boundary(records.as_deref()).await;
                             let _ = sender.broadcast(Bytes::from(resolve_delta)).await;
                         }
                     }
@@ -2403,8 +2455,9 @@ struct PeerPass<'a> {
     exchange_namespace: bool,
     /// This device may not write: only take the peer's namespace changes.
     read_only: bool,
-    /// Re-project every record even if nothing new arrives (first pass).
-    heal: bool,
+    /// Which records to project again even if nothing new arrives: all of
+    /// them on the first pass, the ones still unplaced on timer passes.
+    reconcile: crate::record_materializer::ReconcileScope,
 }
 
 impl PeerPass<'_> {
@@ -2412,6 +2465,9 @@ impl PeerPass<'_> {
         if !delta.is_empty()
             && let Some(sender) = self.sender
         {
+            // A delta carries every change since the last one, including a
+            // changeset being published meanwhile.
+            let _gate = changeset_boundary(self.records.map(|r| &*r.repository)).await;
             let _ = sender.broadcast(Bytes::from(delta)).await;
         }
     }
@@ -2430,7 +2486,14 @@ impl PeerPass<'_> {
         if self.exchange_namespace {
             // Automerge sync is symmetric; only between two writers, which
             // the serving side checks independently.
-            match session::sync_namespace(sessions, peer, self.namespace).await {
+            match session::sync_namespace(
+                sessions,
+                peer,
+                self.namespace,
+                self.records.map(|records| &*records.repository),
+            )
+            .await
+            {
                 Ok(received) => {
                     changed |= received;
                     let resolution = self
@@ -2451,6 +2514,7 @@ impl PeerPass<'_> {
                 Err(error) => report("namespace pull", &error),
             }
         }
+        let namespace_done = Instant::now();
         if let Some(records) = self.records {
             if let Some(authority) = &records.workspace_authority
                 && let Err(error) = session::exchange_authority(
@@ -2465,7 +2529,13 @@ impl PeerPass<'_> {
                 report("workspace authority reconciliation", &error);
             }
             // A namespace change may place records that arrived earlier.
-            let heal = self.heal || changed;
+            let scope = match self.reconcile {
+                crate::record_materializer::ReconcileScope::Touched if changed => {
+                    crate::record_materializer::ReconcileScope::Unplaced
+                }
+                scope => scope,
+            };
+            let pull_started = Instant::now();
             match session::pull_records(
                 sessions,
                 peer,
@@ -2473,17 +2543,27 @@ impl PeerPass<'_> {
                 self.policy,
                 records,
                 self.hydrator,
-                heal,
+                scope,
             )
             .await
             {
                 Ok(pulled) => changed |= pulled,
                 Err(error) => report("record reconciliation", &error),
             }
+            let pull_done = Instant::now();
             if let Err(error) =
                 session::collect_replica_acks(sessions, peer, self.identity, records).await
             {
                 report("replica receipts", &error);
+            }
+            if std::env::var_os("TILO_FS_NATIVE_TRACE").is_some() {
+                eprintln!(
+                    "  session with {}: authority {} ms, records {} ms, receipts {} ms",
+                    peer.addr.id.fmt_short(),
+                    pull_started.duration_since(namespace_done).as_millis(),
+                    pull_done.duration_since(pull_started).as_millis(),
+                    pull_done.elapsed().as_millis()
+                );
             }
         }
         changed
@@ -2494,8 +2574,14 @@ impl PeerPass<'_> {
     async fn per_request(&self, peer: EndpointAddr) -> bool {
         let mut changed = false;
         if self.exchange_namespace {
-            if let Ok(received_change) =
-                sync_with_peer(self.endpoint, peer.clone(), self.namespace, self.identity).await
+            if let Ok(received_change) = sync_with_peer_at_boundaries(
+                self.endpoint,
+                peer.clone(),
+                self.namespace,
+                self.identity,
+                self.records.map(|records| &*records.repository),
+            )
+            .await
             {
                 changed |= received_change;
                 let resolution = self
@@ -2580,7 +2666,13 @@ async fn pull_records_from_peer(
     match sessions.get(&remote).await? {
         Some(session) => {
             let pulled = session::pull_records(
-                sessions, &session, identity, policy, records, hydrator, true,
+                sessions,
+                &session,
+                identity,
+                policy,
+                records,
+                hydrator,
+                crate::record_materializer::ReconcileScope::Everything,
             )
             .await;
             if pulled.is_err() {
@@ -2632,6 +2724,7 @@ async fn reconcile_loop(reconcile: ReconcileLoop) {
     // previews once even if the first anti-entropy exchange is clean.
     let mut refresh_thumbnails = true;
     let mut first_pass = true;
+    let trace = std::env::var_os("TILO_FS_NATIVE_TRACE").is_some();
     loop {
         // A local change or a peer's announcement starts a pass at once;
         // otherwise the timer does.
@@ -2656,11 +2749,27 @@ async fn reconcile_loop(reconcile: ReconcileLoop) {
                 std::iter::from_fn(|| receiver.try_recv().ok()).count() > 0
             });
         while announcements.try_recv().is_ok() {}
-
+        let pass_started = Instant::now();
+        if trace {
+            eprintln!("  sync pass begins (local change {local_change}, timer {timer})");
+        }
         for peer in identity.authenticated_peer_addrs() {
             hydrator.add_peer(peer);
         }
         let known_peers = hydrator.known_peers();
+        // Peers pull what this device just published without waiting for
+        // their own timer, or for this pass: announce first, opening the
+        // session this pass then uses.
+        if local_change {
+            for peer in &known_peers {
+                let Ok(Some(session)) = sessions.get(peer).await else {
+                    continue;
+                };
+                if let Err(error) = session::announce(&sessions, &session).await {
+                    eprintln!("announcing to {} failed: {error:#}", session.addr.id);
+                }
+            }
+        }
         let mut namespace_changed = false;
         for peer in known_peers {
             let remote_may_write = policy.is_none()
@@ -2682,7 +2791,13 @@ async fn reconcile_loop(reconcile: ReconcileLoop) {
                 // Namespace changes can also arrive through a peer's own
                 // exchange with this device; timer passes heal whatever
                 // they placed.
-                heal: first_pass || timer,
+                reconcile: if first_pass {
+                    crate::record_materializer::ReconcileScope::Everything
+                } else if timer {
+                    crate::record_materializer::ReconcileScope::Unplaced
+                } else {
+                    crate::record_materializer::ReconcileScope::Touched
+                },
             };
             match sessions.get(&peer).await {
                 Ok(Some(session)) => {
@@ -2701,14 +2816,11 @@ async fn reconcile_loop(reconcile: ReconcileLoop) {
             }
         }
         first_pass = false;
-        // Peers pull what this device just published without waiting for
-        // their own timer.
-        if local_change {
-            for session in sessions.open_sessions().await {
-                if let Err(error) = session::announce(&sessions, &session).await {
-                    eprintln!("announcing to {} failed: {error:#}", session.addr.id);
-                }
-            }
+        if trace {
+            eprintln!(
+                "  sync pass exchanged with every peer in {} ms (changed {namespace_changed})",
+                pass_started.elapsed().as_millis()
+            );
         }
 
         if namespace_changed {
@@ -2783,6 +2895,7 @@ async fn reconcile_loop(reconcile: ReconcileLoop) {
                 if !delta.is_empty()
                     && let Some(sender) = &sender
                 {
+                    let _gate = changeset_boundary(records.as_ref().map(|r| &*r.repository)).await;
                     let _ = sender.broadcast(Bytes::from(delta)).await;
                 }
             }
