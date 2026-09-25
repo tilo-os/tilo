@@ -903,6 +903,7 @@ promote_target_uki() {
     tr ' ' '\n' | sed -n 's/^composefs=//p')
   [ "${#installed_digests[@]}" -eq 1 ] && [ "${installed_digests[0]}" = "${target_digests[0]}" ] \
     || die "installed entry differs from signed target composefs identity"
+  TARGET_COMPOSEFS_DIGEST="${target_digests[0]}"
   /usr/libexec/tilo-uki-cmdline show "$TARGET_VARIANT" | grep -qw root=tilo-auto \
     || die "target UKI lacks Tilo root discovery"
   /usr/libexec/tilo-uki-cmdline show "$TARGET_VARIANT" \
@@ -1491,6 +1492,25 @@ if [ "$INTERNAL_MODE" -eq 1 ]; then
   chcon --reference=/var/lib "${TARGET_VARS[0]}/lib/tilo" "${TARGET_VARS[0]}/lib/tilo/staging-reclaim.json" 2>/dev/null || true
 fi
 
+VM_INSTALL_PROOF=""
+if [ "$ALONGSIDE" -eq 1 ] && [ "$ENCRYPT" -eq 1 ] \
+    && [ -e /run/tilo-installer/vm-install-proof.enabled ]; then
+  [ -f /run/tilo-installer/vm-install-proof.enabled ] \
+    && [ ! -L /run/tilo-installer/vm-install-proof.enabled ] \
+    && [ "$(stat -c '%u:%a' /run/tilo-installer/vm-install-proof.enabled)" = "0:600" ] \
+    && systemd-detect-virt --vm --quiet \
+    || die "VM install proof marker requires a root-owned private file inside a VM"
+  VM_INSTALL_PROOF=/run/tilo-installer/vm-install-proof.json
+  python3 /usr/libexec/tilo-vm-install-proof.py \
+    --target-root "$MNT" --deploy-etc "$DEPLOY_ETC" \
+    --efi-root "$BOOT_ESP_ROOT" \
+    --target-uki "$BOOT_ESP_ROOT/EFI/Linux/bootc/bootc_composefs-${TARGET_COMPOSEFS_DIGEST}.efi" \
+    --disk "$DISK" --efi-partition "$EFI_PARTITION" \
+    --boot-partition "$BOOT_PARTITION" --root-partition "$ROOT_PARTITION" \
+    --output "$VM_INSTALL_PROOF" \
+    || die "VM installed image identity proof failed"
+fi
+
 sync
 if [ "$ENCRYPT" -eq 1 ]; then
   # Drops the throwaway install key slot (only once another factor exists),
@@ -1510,6 +1530,15 @@ fi
 # default; the owned staging entry is removed only while its bytes still name
 # the staging ESP. A failure here leaves a complete installation, so report it
 # instead of failing the install.
+if [ -n "$VM_INSTALL_PROOF" ]; then
+  # This line is emitted only after `finish` succeeded and the encrypted
+  # target was closed. The VM harness captures it from the backend log; the
+  # guest's checked image identity must still match the host's signed CI pin.
+  proof_line="TILO_VM_INSTALL_PROOF_V1=$(cat "$VM_INSTALL_PROOF")"
+  log "$proof_line"
+  printf '%s\n' "$proof_line" > /dev/console \
+    || die "VM install proof could not reach the guest console"
+fi
 if [ "$INTERNAL_MODE" -eq 1 ]; then
   step "Pointing the next restart at the installed Tilo"
   TARGET_ESP_PARTNUM="$(lsblk -dno PARTN "$EFI_PARTITION" 2>/dev/null | tr -d '[:space:]')"
