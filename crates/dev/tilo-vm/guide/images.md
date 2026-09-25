@@ -7,11 +7,53 @@ image and move the running VM onto it:
 
 ```sh
 tilo-vm vm upgrade --from local        # build, send the new layers, bootc switch, reboot
+tilo-vm vm upgrade --from sha:1a2b3c4  # or: a CI build of main, no OS build here
 tilo-vm vm rollback-image              # back to the image before, if the new one is bad
 ```
 
 No new disk and no new VM: slots, layers and in-VM build dirs live in `/var`,
 which bootc keeps across images. Sessions restart with the reboot.
+
+## Pick the fastest loop
+
+| What changed | Loop |
+|---|---|
+| a component `os/components.toml` lists (shell, fs, an app, ...) | `tilo-vm swap <component>`: seconds, no reboot (`tilo-vm guide swapping`) |
+| anything else, and CI has built the commit | `tilo-vm vm upgrade --from sha:<commit>` |
+| anything else, not pushed yet | `tilo-vm vm upgrade --from local` |
+
+Swap whatever it can swap. An image upgrade reboots the VM and restarts every
+slot's session, including other agents'.
+
+## From a CI build: `--from ci:<tag>` / `--from sha:<commit>`
+
+Every main build pushes its OS image, unsigned, to
+`code.sandbox.example/qos/tilo-ci:main-<sha7>-<arch>` (`sha:<commit>` is short for
+`ci:main-<sha7>`). `vm upgrade` then takes, in order, the first of these that
+exists:
+
+1. the dev image CI published for that build,
+   `code.sandbox.example/qos/tilo-vm:main-<sha7>-ci` (or `:main-<sha7>` from a signed
+   release). The VM pulls it with its own registry login: nothing is built or
+   sent from this host;
+2. the integration image itself (then the signed `tilo:main-<sha7>`). It is
+   pulled here and used as the base of `--from local`'s dev image build, which
+   compiles only the dev layers, with this worktree's `os/Containerfile.dev`.
+   The result is `localhost/tilo-vm:ci-<tag>`, sent and switched to like any
+   local image.
+
+Nothing on this host rebuilds the production image. To see which builds
+exist: `skopeo list-tags docker://code.sandbox.example/qos/tilo-ci`.
+
+## Building the base here
+
+`--from local` builds the production base `localhost/tilo:latest` itself when
+its inputs changed, with the same `os/Containerfile` and scripts CI uses. Local
+builds link without LTO (`TILO_RUST_LTO=off`, recorded in the image's
+`org.tilo.rust-lto` label) and keep the Rust target cache between builds, so
+after a one-crate change only the binaries that depend on it are relinked, and
+a change under `os/` that no binary reads does not recompile at all. Published
+images use thin LTO.
 
 ## What `--from local` does
 
