@@ -144,6 +144,7 @@ perl-Net-SSLeay
 pesign
 python3-dbus-next
 python3-gobject
+qatlib
 yt-dlp
 sbsigntools
 systemd-resolved'
