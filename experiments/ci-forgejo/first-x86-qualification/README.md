@@ -1,16 +1,18 @@
 # First native x86-64 collection qualification: historical record
 
 This directory preserves the reviewed first-qualification inputs and procedure.
-Its generator, tests, 29-file workflow policy and 12-file controller inventory
-belong to Tilo commit `774a6886b01fbc219ff55cc1a80713e88c492d09`; reproduce them
-from a separate checkout of that exact commit, not from current main. Do not use
+Its generator (`prepare.py`), tests (`test_policy.py`), 29-file workflow policy and
+12-file controller inventory belong to Tilo commit
+`774a6886b01fbc219ff55cc1a80713e88c492d09`; reproduce them from a separate
+checkout of that exact commit, not from current main. The generator and tests
+only pass against that commit, so they are no longer kept here. Do not use
 the installation sequence below to overwrite a live policy or rerun a dispatch.
 It records the original empty-state procedure, not the current platform state.
 
 The shared-contract extraction requires a separately reviewed 13-file controller
 projection and new workflow trust closure. [PACKAGING-SERVICE.md](../PACKAGING-SERVICE.md)
-describes that boundary. These original policy JSON files and the original
-generator are retained unchanged; they are not a generator for the new contract.
+describes that boundary. These original policy JSON files are retained
+unchanged; they are not a policy for the new contract.
 
 These are local, reviewable configuration files. Nothing here installs policy,
 changes Forgejo variables, unsuspends the controller, dispatches a build, or
@@ -74,7 +76,7 @@ as a baseline. Full-collection success and independent replay remain the next ga
 ## Reproduce the historical snapshot locally
 
 Run the following only in the separate checkout of
-`774a6886b01fbc219ff55cc1a80713e88c492d09`, using native Git/Python for that
+`774a6886b01fbc219ff55cc1a80713e88c492d09`, which still contains both scripts, using native Git/Python for that
 checkout (Windows worktree paths may not resolve in WSL Git):
 
 ```sh
