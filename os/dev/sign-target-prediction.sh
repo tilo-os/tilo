@@ -72,11 +72,9 @@ podman run --rm -v "$work:/out:Z" --entrypoint /bin/bash "$image" -ceu '
     source=/boot/tilo-target/tilo-target.efi
     echo separate > /out/target-source
   else
-    set -- /boot/EFI/Linux/*.efi
-    [ "$#" -eq 1 ] && [ -f "$1" ] \
-      || { echo "ambiguous live UKI set; cannot bind a PCR prediction" >&2; exit 1; }
-    source="$1"
-    awk -F "\t" -v source="${source#/boot/}" '$1 == source {print $2}' \
+    [ "$n" -eq 1 ] || { echo "explicit target UKI required when multiple live UKIs exist" >&2; exit 1; }
+    source="$(find /boot/EFI/Linux -type f -name "*.efi" -print -quit)"
+    awk -F "\t" -v source="${source#/boot/}" "\$1 == source {print \$2}" \
       /out/live.manifest > /out/target-source
   fi
   [ -n "$source" ]
