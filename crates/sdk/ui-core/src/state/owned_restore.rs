@@ -297,7 +297,7 @@ impl UndoLog {
         attribution: OwnedActionAttribution,
     ) -> OwnedActionReceipt {
         let committed =
-            tilo_resource::history::commit_stamped_with_message(doc, attribution.message).is_some();
+            qdoc::history::commit_stamped_with_message(doc, attribution.message).is_some();
         let after = doc.get_heads();
         if committed {
             self.record_committed_span_owned(

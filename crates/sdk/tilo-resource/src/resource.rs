@@ -70,16 +70,6 @@ pub trait Resource: Sized + 'static {
         Ok(())
     }
 
-    /// Where `obj` sits in the document, when the state already knows: the
-    /// path from the root to it. A change to an object the state has read
-    /// (the paragraph being typed in) is then placed without asking the
-    /// document, which for a large document is the costly part of reading a
-    /// change. The default knows nothing, and the document is asked.
-    fn locate(state: &Self::State, obj: &automerge::ObjId) -> Option<crate::delta::Path> {
-        let _ = (state, obj);
-        None
-    }
-
     /// Make sure the parts of the state views asked for are read, and drop
     /// parts nobody asks for any more. For a resource too large to read
     /// whole, [`read`](Self::read) reads a spine (the order of a document's
@@ -101,14 +91,6 @@ pub trait Resource: Sized + 'static {
     /// Returns the document's write error.
     fn initialize(_doc: &mut Doc) -> Result<(), ModelError> {
         Ok(())
-    }
-
-    /// Whether `next`, applied right after `previous` by the same person,
-    /// continues it as one undo step — the characters of a word typed one
-    /// keystroke at a time. The default keeps every action its own step.
-    fn coalesces(previous: &Self::Action, next: &Self::Action) -> bool {
-        let _ = (previous, next);
-        false
     }
 
     /// Mutations offered by name. The generic [`APPLY`] action is always

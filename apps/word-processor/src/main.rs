@@ -114,29 +114,6 @@ fn named_actor(prefix: &str) -> Option<String> {
 }
 
 fn main() {
-    // The live editor runs on the app framework: the document is a hosted
-    // record with history, per-author undo and permissions. Opening a file
-    // by path and the scenario captures (which stage view state directly on
-    // a standalone editor) keep the standalone path.
-    let mut args = std::env::args().skip(1);
-    let mut standalone = false;
-    while let Some(arg) = args.next() {
-        match arg.as_str() {
-            // The framework's own option and its value.
-            "--data-dir" => {
-                args.next();
-            }
-            "--shots" | "--responsive-matrix" | "--native-audit" | "--headless" => {
-                standalone = true;
-            }
-            file if !file.starts_with('-') => standalone = true,
-            _ => {}
-        }
-    }
-    if !standalone {
-        ui::framework::run::<word_processor::framework::WordProcessorApp>();
-        return;
-    }
     ui::launch::run_or_exit(
         &LaunchSpec::new_with_args("so.tilo.word-processor", live_root)
             .max_positionals(1)
@@ -456,7 +433,7 @@ fn seed_revisions(state: &mut State, wp: &mut WordProcessorWidget) -> Result<(),
     for i in 0..5 {
         wp.model_mut()
             .insert_str(&mut state.doc, " Margins improved slightly.");
-        ui::tilo_resource::history::commit_stamped_at(&mut state.doc, base + i * 30);
+        qdoc::history::commit_stamped_at(&mut state.doc, base + i * 30);
     }
 
     // Session two, an hour later, by a collaborator.
@@ -477,7 +454,7 @@ fn seed_revisions(state: &mut State, wp: &mut WordProcessorWidget) -> Result<(),
             ids: &mut ids,
         };
         dm.splice_text(&last.id, at, 0, " Costs fell by four percent.");
-        let hash = ui::tilo_resource::history::commit_stamped_at(&mut peer, base + 3600 + i * 30);
+        let hash = qdoc::history::commit_stamped_at(&mut peer, base + 3600 + i * 30);
         if i == 0 {
             peer_first = hash;
         }
@@ -488,7 +465,7 @@ fn seed_revisions(state: &mut State, wp: &mut WordProcessorWidget) -> Result<(),
         let start = ui::history_source::entry_id_from_hash(&first.to_string());
         let end = ui::history_source::entry_id_from_hash(&last.to_string());
         ui::history_groups::name_range(&mut peer, &start, Some(&end), "Costs section");
-        ui::tilo_resource::history::commit_stamped_at(&mut peer, base + 3600 + 150);
+        qdoc::history::commit_stamped_at(&mut peer, base + 3600 + 150);
     }
     state.doc.merge_incoming(&mut peer)?;
 
@@ -498,8 +475,7 @@ fn seed_revisions(state: &mut State, wp: &mut WordProcessorWidget) -> Result<(),
     for i in 0..6 {
         wp.model_mut()
             .insert_str(&mut state.doc, " Headcount is unchanged.");
-        let hash =
-            ui::tilo_resource::history::commit_stamped_at(&mut state.doc, base + 4 * 3600 + i * 25);
+        let hash = qdoc::history::commit_stamped_at(&mut state.doc, base + 4 * 3600 + i * 25);
         if i == 0 {
             session_three_start = hash;
         }
@@ -510,7 +486,7 @@ fn seed_revisions(state: &mut State, wp: &mut WordProcessorWidget) -> Result<(),
         let start = ui::history_source::entry_id_from_hash(&first.to_string());
         let end = ui::history_source::entry_id_from_hash(&last.to_string());
         ui::history_groups::name_range(&mut state.doc, &start, Some(&end), "Headcount pass");
-        ui::tilo_resource::history::commit_stamped_at(&mut state.doc, now - 120);
+        qdoc::history::commit_stamped_at(&mut state.doc, now - 120);
     }
 
     wp.toggle_history(&mut state.doc);

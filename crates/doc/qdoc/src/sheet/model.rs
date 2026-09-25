@@ -14,6 +14,7 @@ use crate::sheet::snapshot::{CellType, CellView, SheetView, WorkbookSnapshot};
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, ScalarValue, Value};
 use std::collections::BTreeMap;
+use tilo_automerge::ApplyIncoming;
 
 /// The data written into a cell: its value + type, an optional preserved formula
 /// (source without the leading `=`), and an optional opaque style ref.
@@ -139,7 +140,7 @@ pub fn sheet_ids_in_order(doc: &AutoCommit, c: &SheetContainers) -> Vec<String> 
         .keys(&c.sheets)
         .filter_map(|id| sheet_order(doc, c, &id).map(|ord| (ord, id)))
         .collect();
-    v.sort_by(|a, b| tilo_resource::order::bytes::cmp(&a.0, &b.0).then(a.1.cmp(&b.1)));
+    v.sort_by(|a, b| crate::order::cmp_keys(&a.0, &b.0).then(a.1.cmp(&b.1)));
     v.into_iter().map(|(_, id)| id).collect()
 }
 
@@ -306,7 +307,7 @@ fn sheet_order_after(doc: &AutoCommit, c: &SheetContainers, after: Option<&str>)
         Some(id) => sheet_order(doc, c, id),
         None => None,
     };
-    tilo_resource::order::bytes::between(lo.as_deref(), hi.as_deref())
+    crate::order::key_between(lo.as_deref(), hi.as_deref())
 }
 
 /// The owned spreadsheet handle: wraps an automerge document that syncs, versions, and merges like any CRDT.
@@ -511,8 +512,8 @@ impl Workbook {
     }
 
     /// Timeline of authored changes (oldest first).
-    pub fn versions(&mut self) -> Vec<tilo_resource::history::Version> {
-        tilo_resource::history::versions(&mut self.doc)
+    pub fn versions(&mut self) -> Vec<crate::history::VersionMeta> {
+        crate::history::versions(&mut self.doc)
     }
 
     /// Reconstruct the workbook as of `version` (time-travel).
@@ -521,7 +522,11 @@ impl Workbook {
     /// Returns [`DocError`] if replaying the changes up to `version` doesn't reproduce a
     /// document carrying the workbook schema's container keys.
     pub fn materialize_at(&mut self, version: usize) -> Result<WorkbookSnapshot, DocError> {
-        let rebuilt = tilo_resource::history::replay_prefix(&mut self.doc, version)
+        let changes = self.doc.get_changes(&[]);
+        let take = version.saturating_add(1).min(changes.len());
+        let mut rebuilt = AutoCommit::new();
+        rebuilt
+            .apply_incoming(changes.into_iter().take(take))
             .map_err(|e| DocError::Invalid(format!("apply_changes: {e}")))?;
         let c = open(&rebuilt, &ROOT)?;
         Ok(materialize(&rebuilt, &c))

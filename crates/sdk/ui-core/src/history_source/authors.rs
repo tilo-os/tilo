@@ -1,6 +1,6 @@
 //! Resolving an automerge actor id to the person behind it.
 //!
-//! `tilo_resource::history::Version` hands back an `actor_hex` — a raw hex string,
+//! `qdoc::history::VersionMeta` hands back an `actor_hex` — a raw hex string,
 //! unreadable on its own. This module is the join.
 //!
 //! Three shapes occur in documents: a raw 32-byte public key (the

@@ -42,7 +42,6 @@ agent-provider-config = { path = "../../crates/agent/provider-config" }
 # no vault access and never exposes a bearer token to the agent process.
 tilo-model-gateway = { path = "../../crates/agent/model-gateway" }
 qdoc = { path = "../../crates/doc/qdoc" }
-tilo-resource = { path = "../../crates/sdk/tilo-resource" }
 automerge.workspace = true
 tilo-automerge.workspace = true
 serde_json.workspace = true

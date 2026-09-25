@@ -1724,7 +1724,7 @@ impl ShellDriver {
                     [(11_i64, "Q3 budget"), (5, "Onboarding notes"), (1, "Retro")]
                 {
                     if peer_append_tab(&mut peer, title) {
-                        tilo_resource::history::commit_stamped_at(
+                        qdoc::history::commit_stamped_at(
                             &mut peer,
                             now.saturating_sub(days_ago.saturating_mul(DAY)),
                         );
@@ -2021,7 +2021,7 @@ impl ShellDriver {
                     Some(&end_entry.id),
                     "Reading week",
                 );
-                tilo_resource::history::commit_stamped(&mut peer);
+                qdoc::history::commit_stamped(&mut peer);
                 let _ = tree.doc.merge_incoming(&mut peer);
             }
 

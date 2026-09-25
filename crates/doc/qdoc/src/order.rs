@@ -1,7 +1,6 @@
-//! Fractional order keys as bytes: base-256 fractions where a midpoint
-//! always exists between two distinct keys, compared as fractions (trailing
-//! zeros are insignificant). The compact form rich-text documents store per
-//! paragraph; see the parent module for the string form collections use.
+//! Fractional order keys: base-256 fractions where a midpoint always exists
+//! between two distinct keys. Compared as fractions (trailing zeros are
+//! insignificant), so block order survives concurrent structural edits.
 
 use std::cmp::Ordering;
 
@@ -12,7 +11,7 @@ fn digits(key: &[u8], width: usize) -> impl Iterator<Item = u8> + '_ {
 }
 
 /// Compare two keys as base-256 fractions (missing/trailing digits are 0).
-pub fn cmp(a: &[u8], b: &[u8]) -> Ordering {
+pub fn cmp_keys(a: &[u8], b: &[u8]) -> Ordering {
     let width = a.len().max(b.len());
     digits(a, width).cmp(digits(b, width))
 }
@@ -64,10 +63,10 @@ fn midpoint(lo: &[u8], hi: &[u8]) -> Vec<u8> {
 
 /// Produce a key ordered strictly between `lo` and `hi` (either may be `None`
 /// for "before everything" / "after everything").
-pub fn between(lo: Option<&[u8]>, hi: Option<&[u8]>) -> Vec<u8> {
+pub fn key_between(lo: Option<&[u8]>, hi: Option<&[u8]>) -> Vec<u8> {
     match (lo, hi) {
         (None, None) => vec![128],
-        (Some(l), None) => after(l),
+        (Some(l), None) => key_after(l),
         (None, Some(h)) => midpoint(&[], h),
         (Some(l), Some(h)) => midpoint(l, h),
     }
@@ -85,9 +84,9 @@ const APPEND_DIGITS: usize = 3;
 /// insignificant). Only when every digit is 255 does the key grow, by another
 /// [`APPEND_DIGITS`] digits. A run of `n` appends therefore keeps keys O(log n) bytes long —
 /// incrementing only the existing digits would exhaust a one-byte key after 127 appends and
-/// grow a byte every ~128 more, making keys, every [`cmp`] and the order index O(n).
+/// grow a byte every ~128 more, making keys, every [`cmp_keys`] and the order index O(n).
 /// Concurrent appends after the same `l` still converge (ties broken by block id downstream).
-fn after(l: &[u8]) -> Vec<u8> {
+fn key_after(l: &[u8]) -> Vec<u8> {
     let mut v = l.to_vec();
     while v.len() > 1 && v.last() == Some(&0) {
         v.pop();
@@ -118,44 +117,44 @@ mod tests {
 
     #[test]
     fn between_empty_bounds_is_mid() {
-        let k = between(None, None);
-        assert_eq!(cmp(&[], &k), Ordering::Less);
+        let k = key_between(None, None);
+        assert_eq!(cmp_keys(&[], &k), Ordering::Less);
     }
 
     #[test]
     fn append_after_is_greater() {
-        let a = between(None, None);
-        let b = between(Some(&a), None);
-        assert_eq!(cmp(&a, &b), Ordering::Less);
+        let a = key_between(None, None);
+        let b = key_between(Some(&a), None);
+        assert_eq!(cmp_keys(&a, &b), Ordering::Less);
     }
 
     #[test]
     fn prepend_before_is_smaller() {
-        let a = between(None, None);
-        let b = between(None, Some(&a));
-        assert_eq!(cmp(&b, &a), Ordering::Less);
+        let a = key_between(None, None);
+        let b = key_between(None, Some(&a));
+        assert_eq!(cmp_keys(&b, &a), Ordering::Less);
     }
 
     #[test]
     fn midpoint_is_strictly_between() {
         let a = vec![10u8];
         let b = vec![20u8];
-        let m = between(Some(&a), Some(&b));
-        assert_eq!(cmp(&a, &m), Ordering::Less);
-        assert_eq!(cmp(&m, &b), Ordering::Less);
+        let m = key_between(Some(&a), Some(&b));
+        assert_eq!(cmp_keys(&a, &m), Ordering::Less);
+        assert_eq!(cmp_keys(&m, &b), Ordering::Less);
     }
 
     #[test]
     fn repeated_subdivision_stays_ordered() {
         // Insert 200 keys always between the first two; each must stay ordered.
-        let mut lo = between(None, None);
-        let hi = between(Some(&lo), None);
+        let mut lo = key_between(None, None);
+        let hi = key_between(Some(&lo), None);
         let mut prev = lo.clone();
         for _ in 0..200 {
-            let m = between(Some(&lo), Some(&hi));
-            assert_eq!(cmp(&lo, &m), Ordering::Less, "m must exceed lo");
-            assert_eq!(cmp(&m, &hi), Ordering::Less, "m must precede hi");
-            assert_eq!(cmp(&prev, &m), Ordering::Less, "strictly increasing");
+            let m = key_between(Some(&lo), Some(&hi));
+            assert_eq!(cmp_keys(&lo, &m), Ordering::Less, "m must exceed lo");
+            assert_eq!(cmp_keys(&m, &hi), Ordering::Less, "m must precede hi");
+            assert_eq!(cmp_keys(&prev, &m), Ordering::Less, "strictly increasing");
             prev = m.clone();
             lo = m;
         }
@@ -163,19 +162,19 @@ mod tests {
 
     #[test]
     fn trailing_zeros_compare_equal() {
-        assert_eq!(cmp(&[5], &[5, 0, 0]), Ordering::Equal);
+        assert_eq!(cmp_keys(&[5], &[5, 0, 0]), Ordering::Equal);
     }
 
     #[test]
     fn sequential_appends_stay_short_and_ordered() {
         // A long run of appends (the book-length-document case) must NOT grow keys
-        // one byte per insert — that is the O(n²) trap (every cmp is O(len)).
-        let mut key = between(None, None);
+        // one byte per insert — that is the O(n²) trap (every cmp_keys is O(len)).
+        let mut key = key_between(None, None);
         let mut max_len = key.len();
         for _ in 0..1_000_000 {
-            let next = between(Some(&key), None);
+            let next = key_between(Some(&key), None);
             assert_eq!(
-                cmp(&key, &next),
+                cmp_keys(&key, &next),
                 Ordering::Less,
                 "each append is strictly greater"
             );
@@ -189,33 +188,28 @@ mod tests {
         );
     }
 
-    #[test]
-    fn random_inserts_stay_strictly_ordered() {
-        let mut seed = 0x9e37_79b9_7f4a_7c15_u64;
-        for _ in 0..64 {
-            let mut keys: Vec<Vec<u8>> = vec![between(None, None)];
-            for _ in 0..120 {
-                seed = seed
-                    .wrapping_mul(6_364_136_223_846_793_005)
-                    .wrapping_add(1_442_695_040_888_963_407);
-                let slot = usize::try_from(seed >> 40).unwrap_or(0);
-                let idx = slot.checked_rem(keys.len().saturating_add(1)).unwrap_or(0);
-                let lo = idx
-                    .checked_sub(1)
-                    .and_then(|i| keys.get(i))
-                    .map(Vec::as_slice);
+    use proptest::prelude::*;
+
+    proptest! {
+        // Insert at random gaps among a growing sorted key list; it must stay strictly ordered and every gap must remain subdividable.
+        #[test]
+        fn random_inserts_stay_strictly_ordered(ops in proptest::collection::vec(any::<u8>(), 0..120)) {
+            let mut keys: Vec<Vec<u8>> = vec![key_between(None, None)];
+            for byte in ops {
+                // One slot per gap plus one past the end; never zero, so the
+                // fallback is unreachable (and 0 would be a valid slot anyway).
+                let idx = usize::from(byte)
+                    .checked_rem(keys.len().saturating_add(1))
+                    .unwrap_or(0);
+                let lo = idx.checked_sub(1).and_then(|i| keys.get(i)).map(Vec::as_slice);
                 let hi = keys.get(idx).map(Vec::as_slice);
-                let k = between(lo, hi);
-                if let Some(l) = lo {
-                    assert_eq!(cmp(l, &k), Ordering::Less);
-                }
-                if let Some(h) = hi {
-                    assert_eq!(cmp(&k, h), Ordering::Less);
-                }
+                let k = key_between(lo, hi);
+                if let Some(l) = lo { prop_assert_eq!(cmp_keys(l, &k), Ordering::Less); }
+                if let Some(h) = hi { prop_assert_eq!(cmp_keys(&k, h), Ordering::Less); }
                 keys.insert(idx, k);
             }
             for w in keys.windows(2) {
-                assert_eq!(cmp(&w[0], &w[1]), Ordering::Less);
+                prop_assert_eq!(cmp_keys(&w[0], &w[1]), Ordering::Less);
             }
         }
     }

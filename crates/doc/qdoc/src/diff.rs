@@ -3,15 +3,13 @@
 //! A CRDT-native document has stable block identity — a paragraph keeps its id across every edit
 //! and save/load — so two versions align by id instead of fuzzy text matching.
 //! The diff includes added, removed, and changed blocks, plus run-level changes
-//! within changed blocks. Blocks align by id ([`tilo_resource::diff::align`])
-//! when the versions share any; otherwise they pair by position.
+//! within changed blocks. Blocks align by an LCS over shared ids when possible;
+//! otherwise the implementation falls back to positional pairing.
 
 use crate::document::MarkSpan;
 use crate::snapshot::{AttrVal, BlockView, DocSnapshot};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
-pub use tilo_resource::diff::{RunOp, TextRun, text_runs};
-use tilo_resource::diff::{Step, align};
 
 /// The full structural diff of a document between two versions (`old` → `new`).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -102,6 +100,25 @@ pub struct AttrChange {
     pub new: Option<AttrVal>,
 }
 
+/// A run of characters in the text-level diff.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TextRun {
+    pub op: RunOp,
+    pub text: String,
+}
+
+/// The kind of a [`TextRun`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum RunOp {
+    Equal,
+    Insert,
+    Delete,
+}
+
+/// Above this many characters a paragraph's run diff falls back to a coarse whole-text replace, so
+/// the O(n·m) alignment can't be driven quadratic by a pathologically long "paragraph".
+const RUN_DIFF_CHAR_CAP: usize = 8_192;
+
 /// Diff two whole-document snapshots (`old` → `new`). See the module docs for the alignment strategy.
 pub fn diff_snapshots(old: &DocSnapshot, new: &DocSnapshot) -> DocDiff {
     let blocks = diff_block_lists(&old.blocks, &new.blocks);
@@ -140,20 +157,20 @@ pub fn diff_block_lists(old: &[BlockView], new: &[BlockView]) -> Vec<BlockDiff> 
     let new_by_id: BTreeMap<&str, &BlockView> = new.iter().map(|b| (b.id.as_str(), b)).collect();
 
     let mut out = Vec::new();
-    for step in align(&old_ids, &new_ids) {
+    for step in lcs_align(&old_ids, &new_ids) {
         match step {
-            Step::Both(id) => {
-                if let (Some(&ob), Some(&nb)) = (old_by_id.get(*id), new_by_id.get(*id)) {
+            AlignStep::Both(oid, nid) => {
+                if let (Some(&ob), Some(&nb)) = (old_by_id.get(oid), new_by_id.get(nid)) {
                     out.push(compare_blocks(ob, nb));
                 }
             }
-            Step::OldOnly(id) => {
-                if let Some(&ob) = old_by_id.get(*id) {
+            AlignStep::OldOnly(oid) => {
+                if let Some(&ob) = old_by_id.get(oid) {
                     out.push(removed_block(ob));
                 }
             }
-            Step::NewOnly(id) => {
-                if let Some(&nb) = new_by_id.get(*id) {
+            AlignStep::NewOnly(nid) => {
+                if let Some(&nb) = new_by_id.get(nid) {
                     out.push(added_block(nb));
                 }
             }
@@ -285,6 +302,168 @@ fn diff_attrs(old: &BTreeMap<String, AttrVal>, new: &BTreeMap<String, AttrVal>) 
         }
     }
     out
+}
+
+/// Character-level diff of two paragraph texts into `Equal`/`Insert`/`Delete` runs, LCS-based
+/// (minimal shared subsequence as `Equal`, surrounding edits as insert/delete). Capped by [`RUN_DIFF_CHAR_CAP`].
+pub fn text_runs(old: &str, new: &str) -> Vec<TextRun> {
+    if old == new {
+        return if old.is_empty() {
+            Vec::new()
+        } else {
+            vec![TextRun {
+                op: RunOp::Equal,
+                text: old.to_string(),
+            }]
+        };
+    }
+    let a: Vec<char> = old.chars().collect();
+    let b: Vec<char> = new.chars().collect();
+    if a.len() > RUN_DIFF_CHAR_CAP || b.len() > RUN_DIFF_CHAR_CAP {
+        // Coarse fallback: whole-text replace. Still valid, just not minimal.
+        let mut runs = Vec::new();
+        if !a.is_empty() {
+            runs.push(TextRun {
+                op: RunOp::Delete,
+                text: old.to_string(),
+            });
+        }
+        if !b.is_empty() {
+            runs.push(TextRun {
+                op: RunOp::Insert,
+                text: new.to_string(),
+            });
+        }
+        return runs;
+    }
+    let ops = lcs_char_ops(&a, &b);
+    coalesce(ops)
+}
+
+enum AlignStep<'a> {
+    Both(&'a str, &'a str),
+    OldOnly(&'a str),
+    NewOnly(&'a str),
+}
+
+/// `dp[i][j]`, or `0` past either edge — matches the DP table's own boundary condition.
+fn dp_at(dp: &[Vec<u32>], i: usize, j: usize) -> u32 {
+    dp.get(i).and_then(|row| row.get(j)).copied().unwrap_or(0)
+}
+
+/// LCS alignment over two id sequences → an ordered list of steps: shared ids in the longest
+/// common subsequence become `Both`; the rest are `OldOnly`/`NewOnly` interleaved in reading order.
+fn lcs_align<'a>(old: &[&'a str], new: &[&'a str]) -> Vec<AlignStep<'a>> {
+    let n = old.len();
+    let m = new.len();
+    // dp[i][j] = LCS length of old[i..] and new[j..].
+    let mut dp = vec![vec![0u32; m.saturating_add(1)]; n.saturating_add(1)];
+    for i in (0..n).rev() {
+        for j in (0..m).rev() {
+            let value = match (old.get(i).copied(), new.get(j).copied()) {
+                (Some(oi), Some(nj)) if oi == nj => {
+                    dp_at(&dp, i.saturating_add(1), j.saturating_add(1)).saturating_add(1)
+                }
+                _ => dp_at(&dp, i.saturating_add(1), j).max(dp_at(&dp, i, j.saturating_add(1))),
+            };
+            if let Some(cell) = dp.get_mut(i).and_then(|row| row.get_mut(j)) {
+                *cell = value;
+            }
+        }
+    }
+    let mut steps = Vec::new();
+    let (mut i, mut j) = (0, 0);
+    while i < n && j < m {
+        let (Some(oi), Some(nj)) = (old.get(i).copied(), new.get(j).copied()) else {
+            break;
+        };
+        if oi == nj {
+            steps.push(AlignStep::Both(oi, nj));
+            i = i.saturating_add(1);
+            j = j.saturating_add(1);
+        } else if dp_at(&dp, i.saturating_add(1), j) >= dp_at(&dp, i, j.saturating_add(1)) {
+            steps.push(AlignStep::OldOnly(oi));
+            i = i.saturating_add(1);
+        } else {
+            steps.push(AlignStep::NewOnly(nj));
+            j = j.saturating_add(1);
+        }
+    }
+    while i < n {
+        let Some(oi) = old.get(i).copied() else { break };
+        steps.push(AlignStep::OldOnly(oi));
+        i = i.saturating_add(1);
+    }
+    while j < m {
+        let Some(nj) = new.get(j).copied() else { break };
+        steps.push(AlignStep::NewOnly(nj));
+        j = j.saturating_add(1);
+    }
+    steps
+}
+
+/// Per-character LCS edit script over two char vectors.
+fn lcs_char_ops(old: &[char], new: &[char]) -> Vec<(RunOp, char)> {
+    let n = old.len();
+    let m = new.len();
+    let mut dp = vec![vec![0u32; m.saturating_add(1)]; n.saturating_add(1)];
+    for i in (0..n).rev() {
+        for j in (0..m).rev() {
+            let value = match (old.get(i).copied(), new.get(j).copied()) {
+                (Some(oi), Some(nj)) if oi == nj => {
+                    dp_at(&dp, i.saturating_add(1), j.saturating_add(1)).saturating_add(1)
+                }
+                _ => dp_at(&dp, i.saturating_add(1), j).max(dp_at(&dp, i, j.saturating_add(1))),
+            };
+            if let Some(cell) = dp.get_mut(i).and_then(|row| row.get_mut(j)) {
+                *cell = value;
+            }
+        }
+    }
+    let mut ops = Vec::new();
+    let (mut i, mut j) = (0, 0);
+    while i < n && j < m {
+        let (Some(oi), Some(nj)) = (old.get(i).copied(), new.get(j).copied()) else {
+            break;
+        };
+        if oi == nj {
+            ops.push((RunOp::Equal, oi));
+            i = i.saturating_add(1);
+            j = j.saturating_add(1);
+        } else if dp_at(&dp, i.saturating_add(1), j) >= dp_at(&dp, i, j.saturating_add(1)) {
+            ops.push((RunOp::Delete, oi));
+            i = i.saturating_add(1);
+        } else {
+            ops.push((RunOp::Insert, nj));
+            j = j.saturating_add(1);
+        }
+    }
+    while i < n {
+        let Some(oi) = old.get(i).copied() else { break };
+        ops.push((RunOp::Delete, oi));
+        i = i.saturating_add(1);
+    }
+    while j < m {
+        let Some(nj) = new.get(j).copied() else { break };
+        ops.push((RunOp::Insert, nj));
+        j = j.saturating_add(1);
+    }
+    ops
+}
+
+/// Merge a per-character op stream into contiguous runs.
+fn coalesce(ops: Vec<(RunOp, char)>) -> Vec<TextRun> {
+    let mut runs: Vec<TextRun> = Vec::new();
+    for (op, ch) in ops {
+        match runs.last_mut() {
+            Some(r) if r.op == op => r.text.push(ch),
+            _ => runs.push(TextRun {
+                op,
+                text: ch.to_string(),
+            }),
+        }
+    }
+    runs
 }
 
 fn diff_props(old: &BTreeMap<String, String>, new: &BTreeMap<String, String>) -> Vec<PropChange> {
