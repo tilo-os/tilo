@@ -47,13 +47,14 @@ jobs:
           export XWIN_CROSS_COMPILER=clang
           # cargo-xwin owns the target CFLAGS for its MSVC sysroot. Clang 18
           # treats the SDK's __prefetch declaration as a conflicting builtin
-          # in zstd-sys, so rename that unused declaration for zstd sources.
+          # in zstd-sys and OpenH264, so rename that unused declaration only
+          # while compiling those vendored C/C++ sources.
           export TILO_REAL_CLANG="$(command -v clang-18 || command -v clang)"
           mkdir -p "$RUNNER_TEMP/tilo-clang"
           cat > "$RUNNER_TEMP/tilo-clang/clang" <<'SH'
           #!/bin/sh
           case " $* " in
-            *zstd/lib/*) exec "$TILO_REAL_CLANG" -D__prefetch=__tilo_zstd_prefetch "$@" ;;
+            *zstd/lib/*|*upstream/codec/*) exec "$TILO_REAL_CLANG" -D__prefetch=__tilo_sdk_prefetch "$@" ;;
             *) exec "$TILO_REAL_CLANG" "$@" ;;
           esac
           SH
