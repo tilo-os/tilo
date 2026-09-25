@@ -107,6 +107,13 @@ raise SystemExit(1)
 PY
 }
 
+# The base checkout and its Clippy build are as large as the repository, so
+# keep them beside the working tree's own build output rather than in a
+# (often size-limited) temporary directory.
+make_scratch() {
+    mkdir -p "$root/target" && mktemp -d "$root/target/clippy-diff.XXXXXX"
+}
+
 if [ "${1:-}" = "--export-base" ]; then
     if [ "$#" -ne 3 ]; then
         echo "usage: $0 --export-base <output> <cache-key>" >&2
@@ -119,7 +126,7 @@ if [ "${1:-}" = "--export-base" ]; then
         exit 2
     fi
     commit=$(git -C "$root" rev-parse HEAD) || exit 2
-    scratch=$(mktemp -d) || exit 2
+    scratch=$(make_scratch) || exit 2
     trap 'rm -rf "$scratch"' EXIT
     host=$(rustc -vV | sed -n 's/^host: //p')
     [ -n "$host" ] || exit 2
@@ -151,7 +158,7 @@ if ! git -C "$root" cat-file -e "$base^{commit}" 2>/dev/null; then
 fi
 base=$(git -C "$root" rev-parse "$base^{commit}")
 
-scratch=$(mktemp -d) || exit 2
+scratch=$(make_scratch) || exit 2
 base_tree="$scratch/base"
 base_json="$scratch/base.json"
 head_json="$scratch/head.json"

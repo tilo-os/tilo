@@ -730,6 +730,7 @@ impl MigrationStore {
         }
         Ok(IssuePage {
             issues,
+            offset,
             next: (next < expected.len()).then_some(next),
         })
     }
@@ -802,6 +803,7 @@ impl MigrationStore {
 
 pub(super) struct IssuePage {
     pub(super) issues: Vec<(PathBuf, String)>,
+    pub(super) offset: u64,
     pub(super) next: Option<u64>,
 }
 

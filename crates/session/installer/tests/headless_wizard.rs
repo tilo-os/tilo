@@ -48,6 +48,8 @@ fn disk(name: &str, serial: &str, major_minor: &str, system: bool) -> Disk {
         read_only: false,
         is_system: system,
         partitions: Vec::new(),
+        live_system_nodes: Vec::new(),
+        internal_plan: None,
     }
 }
 
