@@ -36,12 +36,22 @@ pub enum Reply {
     Cancelled,
 }
 impl Request {
+    /// Encode a valid request for the wire.
+    ///
+    /// # Errors
+    ///
+    /// Refuses an invalid request or a postcard encoding failure.
     pub fn encode(&self) -> Result<Vec<u8>, &'static str> {
         if !self.valid() {
             return Err("invalid committed read request");
         }
         postcard::to_stdvec(self).map_err(|_| "committed read encoding")
     }
+    /// Decode exactly one bounded, valid request.
+    ///
+    /// # Errors
+    ///
+    /// Refuses oversized, trailing, malformed or invalid input.
     pub fn decode(bytes: &[u8]) -> Result<Self, &'static str> {
         if bytes.len() > 64 {
             return Err("committed read request too large");
@@ -66,12 +76,22 @@ impl Request {
     }
 }
 impl Reply {
+    /// Encode a valid reply for the wire.
+    ///
+    /// # Errors
+    ///
+    /// Refuses an invalid reply or a postcard encoding failure.
     pub fn encode(&self) -> Result<Vec<u8>, &'static str> {
         if !self.valid() {
             return Err("invalid committed read reply");
         }
         postcard::to_stdvec(self).map_err(|_| "committed read encoding")
     }
+    /// Decode exactly one bounded, valid reply.
+    ///
+    /// # Errors
+    ///
+    /// Refuses oversized, trailing, malformed or invalid input.
     pub fn decode(bytes: &[u8]) -> Result<Self, &'static str> {
         if bytes.len() > MAX_WIRE_BYTES {
             return Err("committed read reply too large");
@@ -122,7 +142,7 @@ mod tests {
         let reply = Reply::Chunk {
             capture: 1,
             revision: [7; 32],
-            total: CHUNK_BYTES as u32,
+            total: u32::try_from(CHUNK_BYTES).unwrap(),
             offset: 0,
             bytes: vec![9; CHUNK_BYTES],
             token: [3; 16],
@@ -134,9 +154,14 @@ mod tests {
         for (total, offset, len, capture) in [
             (0, 0, 0, 1),
             (1, 0, 2, 1),
-            (MAX_DOCUMENT_BYTES as u32 + 1, 0, 1, 1),
+            (u32::try_from(MAX_DOCUMENT_BYTES).unwrap() + 1, 0, 1, 1),
             (1, 0, 1, 0),
-            (CHUNK_BYTES as u32 + 1, 0, CHUNK_BYTES + 1, 1),
+            (
+                u32::try_from(CHUNK_BYTES).unwrap() + 1,
+                0,
+                CHUNK_BYTES + 1,
+                1,
+            ),
         ] {
             assert!(
                 Reply::Chunk {

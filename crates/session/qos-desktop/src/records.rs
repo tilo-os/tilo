@@ -45,10 +45,10 @@ pub fn apply_creation_failures(
 pub fn bind_group_records(group: &mut UiGroup, store: &RecordStore) {
     let tabs: Vec<_> = group.tabs().iter().map(|tab| tab.id).collect();
     for tab in tabs {
-        if let Some(host) = group.host_for_tab_mut(tab) {
-            if host.callback_binding().is_none() {
-                host.bind_record(store.clone(), scratch_tab_record(tab));
-            }
+        if let Some(host) = group.host_for_tab_mut(tab)
+            && host.callback_binding().is_none()
+        {
+            host.bind_record(store.clone(), scratch_tab_record(tab));
         }
     }
 }

@@ -53,10 +53,10 @@ impl HistoryOrigin {
         match self {
             Self::WorkspaceTree => "workspace-tree".to_string(),
             Self::Record { id, .. } => format!("record:{id}"),
+            // A tuple of strings always encodes; the empty fallback is unreachable.
             Self::AppRecord { app, id, kind } => format!(
                 "app-record:{}",
-                serde_json::to_string(&(app, id.as_str(), kind.as_str()))
-                    .expect("string tuple encodes")
+                serde_json::to_string(&(app, id.as_str(), kind.as_str())).unwrap_or_default()
             ),
         }
     }
@@ -402,7 +402,7 @@ impl WorkspaceHistoryIndex {
     fn unseen_inner<'a>(
         &'a self,
         frontier: &WorkspaceSeenFrontier,
-        tree: &mut impl ActivityTree,
+        tree: &impl ActivityTree,
         records: &RecordStore,
         local: Option<&dyn PersistedRecordHistory>,
     ) -> Vec<&'a WorkspaceHistoryEntry> {
@@ -528,7 +528,7 @@ impl WorkspaceHistoryIndex {
     }
 
     /// Replaces the entire admitted multi-owner input atomically. Never borrows
-    /// a live RecordStore mutably or closes a producer transaction.
+    /// a live `RecordStore` mutably or closes a producer transaction.
     pub fn refresh_detached(
         &mut self,
         tree: &mut impl ActivityTree,
@@ -556,7 +556,7 @@ impl WorkspaceHistoryIndex {
         ordered.sort_by_key(|record| record.origin());
         for (i, record) in ordered.into_iter().enumerate() {
             if i >= MAX_INDEXED_RECORDS {
-                coverage.capped_records += 1;
+                coverage.capped_records = coverage.capped_records.saturating_add(1);
                 continue;
             }
             let Some(mut doc) = record
@@ -586,7 +586,7 @@ impl WorkspaceHistoryIndex {
                 .with_max_entries(limit)
                 .entries(&mut doc);
             insert_rows(&mut by_id, &origin, rows);
-            coverage.indexed_records += 1;
+            coverage.indexed_records = coverage.indexed_records.saturating_add(1);
         }
         let mut entries = by_id.into_values().collect::<Vec<_>>();
         entries.sort_by(|a, b| {
@@ -596,7 +596,7 @@ impl WorkspaceHistoryIndex {
                 .then_with(|| a.id.cmp(&b.id))
         });
         if entries.len() > limit {
-            entries.drain(..entries.len() - limit);
+            entries.drain(..entries.len().saturating_sub(limit));
         }
         let changed = self.entries != entries
             || self.coverage != coverage
@@ -670,7 +670,7 @@ impl WorkspaceHistoryIndex {
 
     fn refresh_inner(
         &mut self,
-        tree: &mut impl ActivityTree,
+        tree: &impl ActivityTree,
         records: &RecordStore,
         query: WorkspaceHistoryQuery,
         supplied: Option<&[HistoryEntry]>,
@@ -816,7 +816,7 @@ impl WorkspaceHistoryIndex {
 
     fn collect_entries(
         &self,
-        tree: &mut impl ActivityTree,
+        tree: &impl ActivityTree,
         records: &RecordStore,
         supplied: Option<&[HistoryEntry]>,
         included: &[RecordCheckout],

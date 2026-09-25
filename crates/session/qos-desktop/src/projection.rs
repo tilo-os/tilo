@@ -1,7 +1,10 @@
 //! Canonical native room topology projection. Input must already be admitted.
 //! This module grants no authority and never merges transport changes.
 use crate::identity::{counter_of, peer_salt_of};
-use crate::*;
+use crate::{
+    AppKind, GroupId, RoomId, Strip, StripId, Tab, TabId, TileContent, WindowGroup, WindowWidth,
+    Workspace, WorkspaceId, WorkspaceTree,
+};
 use automerge::AutoCommit;
 /// One tab as a room's replication document carries it. Deliberately not
 /// a [`Tab`]: no field here for anything a person's own session decided.
@@ -322,8 +325,8 @@ impl RoomProjection {
                 continue;
             }
             let gkey = Self::contents_key(group.id);
-            let group_all = child_candidates(doc, &groups_all, gkey.as_str());
-            let Some(group_entry) = winner_or_create(doc, &group_all, &groups_id, gkey.as_str())
+            let group_copies = child_candidates(doc, &groups_all, gkey.as_str());
+            let Some(group_entry) = winner_or_create(doc, &group_copies, &groups_id, gkey.as_str())
             else {
                 continue;
             };
@@ -336,12 +339,12 @@ impl RoomProjection {
                 // or reads them.
             }
 
-            let group_all = if group_all.is_empty() {
+            let group_copies = if group_copies.is_empty() {
                 vec![group_entry]
             } else {
-                group_all
+                group_copies
             };
-            Self::project_owned_tabs_in(doc, &group_all, group, mine);
+            Self::project_owned_tabs_in(doc, &group_copies, group, mine);
         }
         sweep_stale(doc, &groups_all, &live_groups, mine);
     }
@@ -389,8 +392,9 @@ impl RoomProjection {
             }
             let tkey = Self::contents_key(tab.id);
             live_tabs.insert(tkey.clone());
-            let tab_all = child_candidates(doc, &tabs_all, tkey.as_str());
-            let Some(tab_entry) = winner_or_create(doc, &tab_all, &tabs_id, tkey.as_str()) else {
+            let tab_copies = child_candidates(doc, &tabs_all, tkey.as_str());
+            let Some(tab_entry) = winner_or_create(doc, &tab_copies, &tabs_id, tkey.as_str())
+            else {
                 continue;
             };
             put_uint_if_changed(doc, &tab_entry, "order", ti as u64);
@@ -460,13 +464,19 @@ impl RoomProjection {
         let contents_all = map_candidates(doc, &ROOT, Self::ROOM_CONTENTS_KEY);
         let mut strips: Vec<ReplicatedStrip> = Vec::new();
         for (sid, strip_copies) in entries(&contents_all) {
-            let strip_entry = &strip_copies[0];
+            let Some(strip_entry) = strip_copies.first() else {
+                continue;
+            };
             let mut groups: Vec<ReplicatedGroup> = Vec::new();
             for (gid, group_copies) in entries(&child_candidates(doc, &strip_copies, "groups")) {
-                let group_entry = &group_copies[0];
+                let Some(group_entry) = group_copies.first() else {
+                    continue;
+                };
                 let mut tabs: Vec<ReplicatedTab> = Vec::new();
                 for (tid, tab_copies) in entries(&child_candidates(doc, &group_copies, "tabs")) {
-                    let tab_entry = &tab_copies[0];
+                    let Some(tab_entry) = tab_copies.first() else {
+                        continue;
+                    };
                     let tile = match doc.get(tab_entry, "tile_json").ok().flatten() {
                         Some((Value::Scalar(v), _)) => match v.as_ref() {
                             ScalarValue::Bytes(b) => serde_json::from_slice(b).ok(),
@@ -861,27 +871,32 @@ impl RoomProjection {
             return routes;
         };
         for strip in doc.map_range(&contents, ..) {
-            let Some((_, groups)) = doc.get(&strip.id(), "groups").ok().flatten() else {
+            let Some((_, groups)) = doc.get(strip.id(), "groups").ok().flatten() else {
                 continue;
             };
             for group in doc.map_range(&groups, ..) {
-                let Some((_, tabs)) = doc.get(&group.id(), "tabs").ok().flatten() else {
+                let Some((_, tabs)) = doc.get(group.id(), "tabs").ok().flatten() else {
                     continue;
                 };
                 for tab in doc.map_range(&tabs, ..) {
                     if let (Some(id), Some((value, _))) = (
                         Self::contents_key_id(&tab.key),
-                        doc.get(&tab.id(), "record_id").ok().flatten(),
-                    ) {
-                        if let Some(record) = value.as_str() {
-                            routes.insert(id, record.to_owned());
-                        }
+                        doc.get(tab.id(), "record_id").ok().flatten(),
+                    ) && let Some(record) = value.as_str()
+                    {
+                        routes.insert(id, record.to_owned());
                     }
                 }
             }
         }
         routes
     }
+    /// Bind one tab's canonical record route once.
+    ///
+    /// # Errors
+    ///
+    /// Returns a description when the tab is absent, the document cannot be
+    /// read or written, or the tab is already bound to another record.
     pub fn bind_record(
         doc: &mut AutoCommit,
         strip: u64,
@@ -916,6 +931,11 @@ impl RoomProjection {
     }
     /// Apply one already-admitted room to the canonical tree. Existing local
     /// workspace identity and local selection remain untouched.
+    ///
+    /// # Errors
+    ///
+    /// Returns a description when the admitted room document is malformed or
+    /// declares another room.
     pub fn apply_admitted_room(
         tree: &mut WorkspaceTree,
         room: RoomId,

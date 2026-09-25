@@ -41,6 +41,10 @@ pub fn counter_of(id: u64) -> u64 {
 
 /// Mint in an explicitly owned namespace without process-global state. The
 /// resulting canonical IDs must be persisted before publication.
+///
+/// # Errors
+///
+/// Returns a description for an invalid salt or an exhausted counter.
 pub fn mint_in_namespace(salt: u16, counter: &mut u64) -> Result<u64, String> {
     if salt == 0 || *counter == 0 || *counter > PEER_ID_COUNTER_MASK {
         return Err("invalid or exhausted desktop identity namespace".into());

@@ -1,3 +1,13 @@
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::string_slice,
+    clippy::panic,
+    clippy::unreachable,
+    clippy::arithmetic_side_effects,
+    reason = "in a test these are the assertion, not a hazard"
+)]
 use automerge::{AutoCommit, ROOT, ReadDoc, transaction::Transactable};
 use qos_desktop::{projection::RoomProjection, *};
 
@@ -36,7 +46,7 @@ fn admitted_projection_keeps_local_view_and_unpublished_content_but_removes_fore
     let mut remote = strip(2, 10, "Changed");
     let tile = remote.window_groups[0].tabs[0].tile.clone();
     remote.window_groups[0].tabs.push(Tab {
-        id: (2 << 48) | 13,
+        id: (2 << 48) | 0xd,
         title: "Second".into(),
         tile,
     });
@@ -48,7 +58,7 @@ fn admitted_projection_keeps_local_view_and_unpublished_content_but_removes_fore
     assert_eq!(tree.workspaces[0].strips.len(), 2);
     let group = &tree.workspaces[0].strips[0].window_groups[0];
     assert_eq!(group.tabs.len(), 2);
-    assert_eq!(group.active_tab, (2 << 48) | 12);
+    assert_eq!(group.active_tab, (2 << 48) | 0xc);
     assert_eq!(group.width, WindowWidth::Fraction(70));
     assert!(group.maximized);
     RoomProjection::project_owned_contents(&mut doc, &[], 2, None);
@@ -96,7 +106,7 @@ fn explicitly_admitted_empty_strip_survives_normal_projection_but_default_empty_
 {
     let mut doc = AutoCommit::new();
     let strip = Strip {
-        id: StripId((2 << 48) | 100),
+        id: StripId((2 << 48) | 0x64),
         name: "Explicit destination".into(),
         window_groups: vec![],
     };
@@ -133,6 +143,10 @@ fn concurrent_first_projections_on_two_peers_both_survive() {
         let mut b = base.fork();
         RoomProjection::project_owned_contents(&mut a, &[strip(1, 10, "A")], 1, None);
         RoomProjection::project_owned_contents(&mut b, &[strip(2, 10, "B")], 2, None);
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "a test fork merge; its patch log is dropped with the document"
+        )]
         a.merge(&mut b).unwrap();
         let mut names: Vec<_> = RoomProjection::contents_of(&a)
             .into_iter()

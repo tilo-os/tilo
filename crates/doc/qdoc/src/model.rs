@@ -1770,7 +1770,7 @@ fn marks_on(doc: &AutoCommit, block_obj: &ObjId) -> Vec<MarkSpan> {
     // A legacy block (see "paragraph text storage"): the marks of every value
     // stored under `text`, shifted into the projected text.
     #[cfg(test)]
-    MARK_READS.with(|count| count.set(count.get() + 1));
+    MARK_READS.with(|count| count.set(count.get().saturating_add(1)));
     let mut spans: Vec<MarkSpan> = raw_marks_on(doc, block_obj)
         .into_iter()
         .map(|m| MarkSpan {
@@ -1794,7 +1794,7 @@ fn marks_on(doc: &AutoCommit, block_obj: &ObjId) -> Vec<MarkSpan> {
 /// is order-independent); value is part of the key so concurrent valued marks sort deterministically.
 fn text_and_marks(doc: &AutoCommit, tid: &ObjId) -> (String, Vec<MarkSpan>) {
     #[cfg(test)]
-    MARK_READS.with(|count| count.set(count.get() + 1));
+    MARK_READS.with(|count| count.set(count.get().saturating_add(1)));
     let Ok(spans) = doc.spans(tid) else {
         return (String::new(), Vec::new());
     };
@@ -3453,14 +3453,14 @@ mod snapshot_anchor_tests {
             ids: &mut ids,
         };
         let first = dm.insert_block(None, "paragraph");
-        dm.splice_text(&first, 0, 0, "Aé🦀é");
+        dm.splice_text(&first, 0, 0, "Aé🦀e\u{301}");
         let second = dm.insert_block(Some(&first), "heading");
         dm.splice_text(&second, 0, 0, "Second block");
         MARK_READS.with(|count| count.set(0));
         let snap = materialize(&doc, &c);
         assert_eq!(snap.blocks.len(), 2);
         assert_eq!(
-            MARK_READS.with(|count| count.get()),
+            MARK_READS.with(std::cell::Cell::get),
             2,
             "the bookmark projection must reuse marks already read for the body"
         );
@@ -3479,7 +3479,7 @@ mod snapshot_anchor_tests {
                 ids: &mut ids,
             };
             first = dm.insert_block(None, "paragraph");
-            dm.splice_text(&first, 0, 0, "Aé🦀é first text");
+            dm.splice_text(&first, 0, 0, "Aé🦀e\u{301} first text");
             let second = dm.insert_block(Some(&first), "heading");
             dm.splice_text(&second, 0, 0, "Second block");
             let comment = dm.add_comment(&second, 1, 4, "Ada", "Comment body");
@@ -3505,7 +3505,7 @@ mod snapshot_anchor_tests {
         }
         .add_bookmark(&first, 8, 10, "remote");
         remote.commit();
-        doc.merge(&mut remote).unwrap();
+        doc.merge_incoming(&mut remote).unwrap();
         DocMut {
             doc: &mut doc,
             c: &c,
@@ -3517,7 +3517,7 @@ mod snapshot_anchor_tests {
         MARK_READS.with(|count| count.set(0));
         let snap = materialize(&doc, &c);
         assert_eq!(
-            MARK_READS.with(|count| count.get()),
+            MARK_READS.with(std::cell::Cell::get),
             3,
             "two body blocks and one comment body are each read once"
         );

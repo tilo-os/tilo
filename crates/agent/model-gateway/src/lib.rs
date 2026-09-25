@@ -372,10 +372,10 @@ fn stream_plan(
         match response.event {
             Some(event) => {
                 let count = if deltas && event == EVENT_TOOL_CALL_DELTA {
-                    delta_frames += 1;
+                    delta_frames = delta_frames.saturating_add(1);
                     delta_frames > MAX_DELTA_EVENTS
                 } else {
-                    calls += 1;
+                    calls = calls.saturating_add(1);
                     calls > MAX_STREAM_EVENTS
                 };
                 if count {

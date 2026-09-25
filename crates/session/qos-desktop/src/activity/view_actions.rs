@@ -30,6 +30,11 @@ impl WorkspaceViewRequest {
             | Self::CloseActivity { workspace } => workspace,
         }
     }
+    /// Check that the requested workspace is present in `tree`.
+    ///
+    /// # Errors
+    ///
+    /// Returns a description when the workspace is unavailable.
     pub fn validate(&self, tree: &WorkspaceTree) -> Result<(), String> {
         tree.workspaces
             .iter()
@@ -45,6 +50,15 @@ pub struct WorkspaceViewDescriptor {
     pub request: WorkspaceViewRequest,
 }
 impl WorkspaceViewDescriptor {
+    /// The view operation this descriptor publishes.
+    ///
+    /// # Panics
+    ///
+    /// Never in practice: the request is plain ids and enums, which always encode.
+    #[expect(
+        clippy::expect_used,
+        reason = "the request is plain ids and enums, which always encode; hosts take the spec directly"
+    )]
     pub fn action(&self) -> tilo_actions::ActionSpec {
         tilo_actions::ActionSpec::operation(
             &self.id,
@@ -104,6 +118,10 @@ pub fn workspace_view_descriptors(
 mod workspace_string {
     use crate::WorkspaceId;
     use serde::{Deserialize, Deserializer, Serializer};
+    #[expect(
+        clippy::trivially_copy_pass_by_ref,
+        reason = "serde `with` modules receive the field by reference"
+    )]
     pub fn serialize<S: Serializer>(id: &WorkspaceId, serializer: S) -> Result<S::Ok, S::Error> {
         serializer.serialize_str(&id.0.to_string())
     }

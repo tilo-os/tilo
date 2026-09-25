@@ -853,7 +853,7 @@ impl TopBarChrome {
     /// only runs if some ancestor forwards — none of the bar's do.
     fn live_status(&self) -> crate::chrome::SystemStatus {
         match self.chrome.as_ref() {
-            Some(c) => c.snapshot().status.clone(),
+            Some(c) => c.snapshot().status,
             None => self.status.clone(),
         }
     }
@@ -864,7 +864,7 @@ impl TopBarChrome {
         // Declares this widget synced at the current revision, so
         // `update`'s sync branch won't re-run until it moves — status
         // must be seeded now.
-        self.status = chrome.snapshot().status.clone();
+        self.status = chrome.snapshot().status;
         self.chrome = Some(chrome);
         self.synced_revision = rev;
         self
@@ -2221,13 +2221,13 @@ impl TopBarChrome {
         let pct_size = tokens.typography.scale.xs;
         // The unread count rides beside the bell; its width is measured
         // here so the pill is sized for it before anything is painted.
-        let badge_w = (self.notification_badge > 0)
-            .then(|| {
-                let label = Self::notification_badge_label(self.notification_badge);
-                let (w, h) = text_renderer.measure(&label, pct_size, None);
-                Self::notification_badge_size(w, h, theme).0
-            })
-            .unwrap_or(0.0);
+        let badge_w = if self.notification_badge > 0 {
+            let label = Self::notification_badge_label(self.notification_badge);
+            let (w, h) = text_renderer.measure(&label, pct_size, None);
+            Self::notification_badge_size(w, h, theme).0
+        } else {
+            0.0
+        };
 
         let has_volume = self.status.volume.is_some();
         let has_link = self.status.link.is_some();
@@ -2809,9 +2809,11 @@ impl TopBarChrome {
         } else {
             colors.accent[5]
         };
-        let label = self
-            .sharing_label()
-            .expect("a non-empty sharing summary has glance text");
+        // Present whenever a viewer is: the empty summary returned above.
+        let Some(label) = self.sharing_label() else {
+            self.sharing_indicator_rect = Rect::ZERO;
+            return right_x;
+        };
         let size = tokens.typography.scale.xs;
         let available = (right_x - self.center_rect.x1 - 48.0).clamp(28.0, 180.0);
         let label = text_renderer.elide_to_width_weighted(
@@ -2964,7 +2966,7 @@ impl TopBarChrome {
             .as_ref()
             .map_or(0, |chrome| chrome.snapshot().notification_badge);
         if let Some(chrome) = self.chrome.as_ref() {
-            let glance = chrome.snapshot().activity_glance.clone();
+            let glance = chrome.snapshot().activity_glance;
             if glance.pulse != self.activity_pulse {
                 self.activity_pulse = glance.pulse;
                 self.activity_started =
@@ -3664,7 +3666,7 @@ impl Widget for TopBarChrome {
                 let tree_snap = chrome.tree();
                 self.sync_from_tree(&tree_snap);
                 // The status poller bumps the same revision.
-                self.status = chrome.snapshot().status.clone();
+                self.status = chrome.snapshot().status;
                 self.synced_revision = rev;
                 return true;
             }
@@ -5579,6 +5581,10 @@ mod fixture {
         rc::Rc,
     };
     #[derive(Default)]
+    #[expect(
+        clippy::struct_excessive_bools,
+        reason = "test fixture mirrors independent overlay toggles"
+    )]
     pub struct Overlays {
         pub overview: bool,
         pub collaborators: bool,
@@ -5656,7 +5662,7 @@ mod fixture {
             match intent {
                 ChromeIntent::ToggleOverview => state.overlays.overview = !state.overlays.overview,
                 ChromeIntent::ToggleCollaborators => {
-                    state.overlays.collaborators = !state.overlays.collaborators
+                    state.overlays.collaborators = !state.overlays.collaborators;
                 }
                 ChromeIntent::ShowActivity => {
                     state.overlays.room_activity = true;
@@ -5672,9 +5678,10 @@ mod fixture {
                     else {
                         return false;
                     };
-                    let next = index as i64 + i64::from(delta);
-                    let Some(id) = usize::try_from(next)
+                    let Some(id) = i64::try_from(index)
                         .ok()
+                        .and_then(|index| index.checked_add(i64::from(delta)))
+                        .and_then(|next| usize::try_from(next).ok())
                         .and_then(|i| state.tree.workspaces.get(i))
                         .map(|w| w.id)
                     else {

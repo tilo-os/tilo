@@ -1,3 +1,13 @@
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::string_slice,
+    clippy::panic,
+    clippy::unreachable,
+    clippy::arithmetic_side_effects,
+    reason = "in a test these are the assertion, not a hazard"
+)]
 use qos_desktop::composition::{DesktopSurface, SurfaceChrome};
 use qos_desktop::resolver::{ApplicationCatalogTileResolver, ComponentContextSource, TileRequest};
 use qos_desktop::{
@@ -65,7 +75,7 @@ fn fixture() -> (
     let mut retained_records = vec![];
     for (i, definition) in definitions.into_iter().enumerate() {
         catalog.register(definition).unwrap();
-        let id = i as u64 + 10;
+        let id = u64::try_from(i).unwrap() + 10;
         let store = owners.open(definition.app_id, "room").unwrap();
         let checkout = qos_desktop::records::component_record(
             definition.app_id,
@@ -200,7 +210,7 @@ fn moving_checked_tabs_between_groups_preserves_record_owner() {
         .unwrap()
         .content()
     {
-        ui::widget::TileContent::App(app) => std::ptr::from_ref(app.as_ref()) as *const (),
+        ui::widget::TileContent::App(app) => std::ptr::from_ref(app.as_ref()).cast::<()>(),
         _ => panic!("checked Writer expected"),
     };
     let first = &mut tree.workspaces[0].strips[0].window_groups[0];
@@ -221,7 +231,7 @@ fn moving_checked_tabs_between_groups_preserves_record_owner() {
     assert_eq!(row.group_ids(), vec![4, 3]);
     assert!(row.groups[0].maximized);
     let retained = match row.groups[0].host_for_tab_mut(10).unwrap().content() {
-        ui::widget::TileContent::App(app) => std::ptr::from_ref(app.as_ref()) as *const (),
+        ui::widget::TileContent::App(app) => std::ptr::from_ref(app.as_ref()).cast::<()>(),
         _ => panic!("checked Writer expected"),
     };
     assert_eq!(
@@ -342,7 +352,7 @@ fn hierarchy_rebuild_retains_checked_component_custody_for_unchanged_tabs() {
         .unwrap()
         .content()
     {
-        ui::widget::TileContent::App(app) => std::ptr::from_ref(app.as_ref()) as *const (),
+        ui::widget::TileContent::App(app) => std::ptr::from_ref(app.as_ref()).cast::<()>(),
         _ => panic!("checked component expected"),
     };
     tree.workspaces[0].strips.push(Strip {
@@ -356,7 +366,7 @@ fn hierarchy_rebuild_retains_checked_component_custody_for_unchanged_tabs() {
         .unwrap()
         .content()
     {
-        ui::widget::TileContent::App(app) => std::ptr::from_ref(app.as_ref()) as *const (),
+        ui::widget::TileContent::App(app) => std::ptr::from_ref(app.as_ref()).cast::<()>(),
         _ => panic!("checked component expected"),
     };
     assert_eq!(

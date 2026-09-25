@@ -1637,6 +1637,10 @@ fn splice_sandbox_shim(
     clippy::too_many_arguments,
     reason = "Sandbox launch combines argv/options, scheduling policy, seccomp and service descriptors, egress policy, net gate, and broker lifetime."
 )]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one ordered spawn sequence: descriptor custody must stay visible from preparation to reaping"
+)]
 fn spawn_and_wait(
     mut argv: Vec<String>,
     cli_passthrough: Vec<String>,
@@ -1783,17 +1787,17 @@ fn spawn_and_wait(
     let mut child = cmd.spawn().map_err(RunError::Spawn)?;
     if let Some((_, file)) = debug_output {
         let sink = Arc::new(std::sync::Mutex::new(file));
-        let budget = Arc::new(AtomicUsize::new(DEBUG_OUTPUT_LIMIT as usize));
+        let budget = Arc::new(AtomicUsize::new(DEBUG_OUTPUT_LIMIT));
         if let Some(out) = child.stdout.take() {
             let (sink, budget) = (sink.clone(), budget.clone());
             let _ = std::thread::Builder::new()
                 .name("tilo-debug-stdout".into())
-                .spawn(move || copy_bounded_output(out, sink, budget));
+                .spawn(move || copy_bounded_output(out, &sink, &budget));
         }
         if let Some(err) = child.stderr.take() {
             let _ = std::thread::Builder::new()
                 .name("tilo-debug-stderr".into())
-                .spawn(move || copy_bounded_output(err, sink, budget));
+                .spawn(move || copy_bounded_output(err, &sink, &budget));
         }
     }
     // Important: keep `seccomp_fd` alive until after `spawn` returns,
@@ -1999,6 +2003,10 @@ pub(crate) fn run_enrolled(
     run_with_context(manifest, payload_root, opts, Some((services, observer)))
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "one ordered launch pipeline; splitting it would scatter the policy checks that must precede spawn"
+)]
 fn run_with_context(
     manifest: &MinimalManifest,
     payload_root: &Path,
@@ -2188,7 +2196,7 @@ fn run_with_context(
 /// diagnostic output a supervised app would otherwise lose.
 pub const DEBUG_STDERR_ENV: &str = "TILO_LAUNCHER_DEBUG_STDERR";
 /// Upper bound of one launch's captured output.
-const DEBUG_OUTPUT_LIMIT: u64 = 1024 * 1024;
+const DEBUG_OUTPUT_LIMIT: usize = 1024 * 1024;
 
 fn debug_output_log(data_home: &Path) -> Option<PathBuf> {
     (std::env::var_os(DEBUG_STDERR_ENV).as_deref() == Some(std::ffi::OsStr::new("1")))
@@ -2200,8 +2208,8 @@ fn debug_output_log(data_home: &Path) -> Option<PathBuf> {
 /// the child never blocks on a full pipe.
 fn copy_bounded_output(
     mut source: impl std::io::Read,
-    sink: Arc<std::sync::Mutex<std::fs::File>>,
-    budget: Arc<AtomicUsize>,
+    sink: &std::sync::Mutex<std::fs::File>,
+    budget: &AtomicUsize,
 ) {
     use std::io::Write as _;
     let mut buf = [0u8; 8192];
@@ -2216,10 +2224,10 @@ fn copy_bounded_output(
             })
             .unwrap_or(0)
             .min(n);
-        if granted > 0 {
-            if let Ok(mut file) = sink.lock() {
-                let _ = file.write_all(buf.get(..granted).unwrap_or_default());
-            }
+        if granted > 0
+            && let Ok(mut file) = sink.lock()
+        {
+            let _ = file.write_all(buf.get(..granted).unwrap_or_default());
         }
     }
 }
@@ -3312,8 +3320,8 @@ mod debug_output_tests {
             .unwrap();
         let sink = Arc::new(std::sync::Mutex::new(file));
         let budget = Arc::new(AtomicUsize::new(10));
-        copy_bounded_output(&b"0123456"[..], sink.clone(), budget.clone());
-        copy_bounded_output(&b"789abcdef"[..], sink, budget.clone());
+        copy_bounded_output(&b"0123456"[..], &sink, &budget);
+        copy_bounded_output(&b"789abcdef"[..], &sink, &budget);
         assert_eq!(std::fs::read(path.path()).unwrap(), b"0123456789");
         assert_eq!(budget.load(AtomicOrdering::SeqCst), 0);
     }

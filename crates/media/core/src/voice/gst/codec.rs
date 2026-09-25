@@ -1,6 +1,10 @@
 //! Device-free compatibility utilities for existing codec diagnostics.
 //! Native calls use the persistent per-publisher `VoiceAudio` pipelines.
-use super::*;
+use super::{
+    AudioError, Decoder, Duration, FRAME_SAMPLES, Instant, MAX_PACKET_BYTES, PlayoutFrame,
+    PublicationId, RunningPipeline, encoder, gst, gst_app, raw_caps, validate_frame,
+};
+use gst::prelude::*;
 
 #[cfg(test)]
 const RATE: i32 = 48_000;
@@ -11,11 +15,18 @@ pub fn test_tone(rate: i32, channels: i32, ms: u64) -> Vec<i16> {
     if rate <= 0 || channels != 1 || ms > 1000 {
         return Vec::new();
     }
-    let count = usize::try_from(u64::try_from(rate).unwrap_or(0) * ms / 1000).unwrap_or(0);
+    let count =
+        usize::try_from(u64::try_from(rate).unwrap_or(0).saturating_mul(ms) / 1000).unwrap_or(0);
     (0..count)
         .map(|index| {
-            ((index as f64 / f64::from(rate) * 440.0 * std::f64::consts::TAU).sin() * 12_000.0)
-                as i16
+            let index = f64::from(u32::try_from(index).unwrap_or(u32::MAX));
+            #[expect(
+                clippy::cast_possible_truncation,
+                reason = "a sine scaled by 12000 always fits i16"
+            )]
+            let sample =
+                ((index / f64::from(rate) * 440.0 * std::f64::consts::TAU).sin() * 12_000.0) as i16;
+            sample
         })
         .collect()
 }
@@ -28,9 +39,9 @@ impl OpusEncoder {
         Some(Self)
     }
     pub fn encode(&mut self, pcm: &[i16]) -> Vec<Vec<u8>> {
-        self.try_encode(pcm).unwrap_or_default()
+        Self::try_encode(pcm).unwrap_or_default()
     }
-    fn try_encode(&mut self, pcm: &[i16]) -> Result<Vec<Vec<u8>>, AudioError> {
+    fn try_encode(pcm: &[i16]) -> Result<Vec<Vec<u8>>, AudioError> {
         if pcm.is_empty() || pcm.len() > 48_000 {
             return Err(AudioError::Capacity);
         }
@@ -64,7 +75,10 @@ impl OpusEncoder {
             );
             let writable = buffer.get_mut().ok_or(AudioError::Codec)?;
             writable.set_pts(gst::ClockTime::from_mseconds(
-                u64::try_from(index).map_err(|_| AudioError::Capacity)? * 20,
+                u64::try_from(index)
+                    .ok()
+                    .and_then(|index| index.checked_mul(20))
+                    .ok_or(AudioError::Capacity)?,
             ));
             writable.set_duration(gst::ClockTime::from_mseconds(20));
             source.push_buffer(buffer).map_err(|_| AudioError::Codec)?;
@@ -107,6 +121,9 @@ impl OpusDecoder {
     fn try_decode(&mut self, packet: &[u8]) -> Result<Vec<i16>, AudioError> {
         validate_frame(960, packet)?;
         let now = Instant::now();
+        let deadline = now
+            .checked_add(Duration::from_millis(300))
+            .ok_or(AudioError::Codec)?;
         self.decoder.push(
             PlayoutFrame {
                 publisher: PublicationId {
@@ -115,12 +132,11 @@ impl OpusDecoder {
                 },
                 sequence: 0,
                 timestamp_48k: 0,
-                expires_at: now + Duration::from_millis(300),
+                expires_at: deadline,
                 payload: Some(packet.to_vec()),
             },
             now,
         )?;
-        let deadline = now + Duration::from_millis(300);
         loop {
             self.decoder.pull(Instant::now())?;
             if let Some(frame) = self.decoder.ready.pop_front() {

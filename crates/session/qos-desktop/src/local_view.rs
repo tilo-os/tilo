@@ -1,5 +1,5 @@
-use crate::identity::*;
-use crate::*;
+use crate::identity::{NEXT_ID, NEXT_ID_PEER_SALT, counter_of, peer_salt_of};
+use crate::{GroupId, RoomId, StripId, Workspace, WorkspaceId, WorkspaceTree};
 use std::sync::atomic::Ordering as AtomicOrdering;
 
 impl WorkspaceTree {
@@ -302,7 +302,7 @@ impl WorkspaceTree {
             return false;
         }
         let moved = groups.remove(cur_idx);
-        groups.insert(dest, moved.clone());
+        groups.insert(dest, moved);
         true
     }
 

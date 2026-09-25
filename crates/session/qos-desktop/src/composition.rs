@@ -91,7 +91,7 @@ pub fn build_group(
     records: &RecordStore,
     resolver: &mut dyn TileResolver,
     failures: &mut Vec<ui::launch::LaunchError>,
-    wake: std::sync::Arc<dyn Fn() + Send + Sync>,
+    wake: &std::sync::Arc<dyn Fn() + Send + Sync>,
 ) -> UiGroup {
     let tabs = group
         .tabs
@@ -152,6 +152,10 @@ impl DesktopSurface {
             })
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one construction pass: the widget tree and its index maps must be built together"
+    )]
     pub fn build(
         tree: &WorkspaceTree,
         records: &RecordStore,
@@ -206,12 +210,10 @@ impl DesktopSurface {
             .active_workspace()
             .is_some_and(|w| w.strips.iter().all(|s| s.window_groups.is_empty()));
         let empty_workspace_visible = chrome.empty_workspace.as_ref().map(|_| empty_workspace);
-        let mut row_offset = if external_navigation { 0 } else { 2 };
-        if empty_workspace {
-            if let Some(empty) = chrome.empty_workspace {
-                column = column.push(empty);
-                row_offset += 1;
-            }
+        let mut row_offset: usize = if external_navigation { 0 } else { 2 };
+        if empty_workspace && let Some(empty) = chrome.empty_workspace {
+            column = column.push(empty);
+            row_offset = row_offset.saturating_add(1);
         }
         let mut rows = HashMap::new();
         let mut order = Vec::new();
@@ -228,7 +230,7 @@ impl DesktopSurface {
                             records,
                             resolver,
                             &mut failures,
-                            wake_sink.clone(),
+                            &wake_sink,
                         )
                     })
                     .collect();
@@ -236,7 +238,7 @@ impl DesktopSurface {
                 row.set_external_navigation(external_navigation);
                 rows.insert(strip.id, row_offset);
                 order.push(strip.id);
-                row_offset += 1;
+                row_offset = row_offset.saturating_add(1);
                 column = column.push(Box::new(row));
             }
         }
@@ -257,7 +259,7 @@ impl DesktopSurface {
         let mut surface = Self {
             external_navigation,
             column_index: usize::from(!external_navigation),
-            navigation: Default::default(),
+            navigation: crate::navigation::Navigation::default(),
             root,
             context: tree.active_workspace().map(|w| (w.id, w.room)),
             empty_workspace_visible,
@@ -394,12 +396,11 @@ impl DesktopSurface {
             .flatten()
             .and_then(Widget::as_any)
             .and_then(|v| v.downcast_ref::<WorkspaceView>())
+            && view.active_index() != self.selected_workspace
         {
-            if view.active_index() != self.selected_workspace {
-                self.selected_workspace = view.active_index();
-                if let Some(id) = self.workspace_ids.get(self.selected_workspace) {
-                    out.push(DesktopIntent::Local(LocalViewIntent::Workspace(*id)));
-                }
+            self.selected_workspace = view.active_index();
+            if let Some(id) = self.workspace_ids.get(self.selected_workspace) {
+                out.push(DesktopIntent::Local(LocalViewIntent::Workspace(*id)));
             }
         }
         if let Some(view) = (!self.external_navigation)
@@ -407,17 +408,20 @@ impl DesktopSurface {
             .flatten()
             .and_then(Widget::as_any)
             .and_then(|v| v.downcast_ref::<StripView>())
+            && view.active_index() != self.selected_strip
         {
-            if view.active_index() != self.selected_strip {
-                self.selected_strip = view.active_index();
-                if let Some(id) = self.order.get(self.selected_strip) {
-                    out.push(DesktopIntent::Local(LocalViewIntent::Strip(*id)));
-                }
+            self.selected_strip = view.active_index();
+            if let Some(id) = self.order.get(self.selected_strip) {
+                out.push(DesktopIntent::Local(LocalViewIntent::Strip(*id)));
             }
         }
         out
     }
     /// Reconcile retained groups and hosts. A changed strip set requires rebuilding with host chrome.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one retained-tree reconciliation: moves, removals and inserts must see each other's state"
+    )]
     pub fn reconcile(
         &mut self,
         tree: &WorkspaceTree,
@@ -599,10 +603,12 @@ impl DesktopSurface {
                     }
                     let mut retained = moved.remove(&tab.id);
                     let changed_identity = tiles.get(&tab.id) != Some(&tab.tile);
-                    if retained.is_some() && changed_identity && resolver.ready_to_replace(tab) {
-                        if let Some((_, mut old)) = retained.take() {
-                            reports.extend(old.close_components());
-                        }
+                    if retained.is_some()
+                        && changed_identity
+                        && resolver.ready_to_replace(tab)
+                        && let Some((_, mut old)) = retained.take()
+                    {
+                        reports.extend(old.close_components());
                     }
                     // A native surface may still be waiting for its first frame. Keep the
                     // old identity snapshot so a later reconciliation retries replacement.
@@ -741,6 +747,10 @@ impl DesktopSurface {
         self.retained_wakes = inherited;
     }
     /// Separate recordings preserve native retained scene and capture layering.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "one scene per native layer plus the shared draw context"
+    )]
     pub fn draw_sections(
         &mut self,
         backdrop: &mut Scene,
@@ -841,7 +851,7 @@ impl Widget for DesktopSurface {
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
         self.root.children_mut()
     }
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "DesktopSurface"
     }
     fn get_rect(&self) -> Rect {

@@ -42,10 +42,10 @@ impl DesktopSurface {
         self.navigation.pending_focus = previous.navigation.pending_focus;
         self.navigation.manual_pan = previous.navigation.manual_pan;
         self.navigation.framed = std::mem::take(&mut previous.navigation.framed);
-        if self.navigation.active_strip != previous.navigation.active_strip {
-            if let Some(strip) = self.navigation.active_strip {
-                self.navigation.framed.remove(&strip);
-            }
+        if self.navigation.active_strip != previous.navigation.active_strip
+            && let Some(strip) = self.navigation.active_strip
+        {
+            self.navigation.framed.remove(&strip);
         }
         let strips = self.strip_ids();
         self.navigation
@@ -63,10 +63,10 @@ impl DesktopSurface {
                 .filter(|id| workspace.strips.iter().any(|strip| strip.id == *id))
                 .or_else(|| workspace.strips.first().map(|strip| strip.id))
         });
-        if self.navigation.active_strip != active_strip {
-            if let Some(strip) = active_strip {
-                self.navigation.framed.remove(&strip);
-            }
+        if self.navigation.active_strip != active_strip
+            && let Some(strip) = active_strip
+        {
+            self.navigation.framed.remove(&strip);
         }
         self.navigation.active_strip = active_strip;
         if self.external_navigation {
@@ -86,7 +86,7 @@ impl DesktopSurface {
                     row.groups
                         .iter()
                         .find(|group| group.id == id)
-                        .is_none_or(|group| group.is_closing())
+                        .is_none_or(ui::widget::WindowGroup::is_closing)
                 })
                 .map(|group| (strip, group))
             })
@@ -269,10 +269,10 @@ impl DesktopSurface {
                 button: MouseButton::Left,
                 ..
             } => {
-                if let Some((strip, group)) = self.navigation.pressed_group.take() {
-                    if self.row(strip).is_some_and(|row| !row.group_drag_active()) {
-                        self.navigation.pending_focus = Some((strip, group));
-                    }
+                if let Some((strip, group)) = self.navigation.pressed_group.take()
+                    && self.row(strip).is_some_and(|row| !row.group_drag_active())
+                {
+                    self.navigation.pending_focus = Some((strip, group));
                 }
             }
             _ => {}

@@ -812,6 +812,11 @@ impl NearbyTransferReply {
 impl ChannelHandle {
     /// Read this channel's current committed history. Unsupported peers remain
     /// unavailable; only an explicit Legacy response selects legacy storage.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NotAvailable`] if the broker connection is unavailable, drops during the call, or
+    /// answers with an invalid reply.
     pub async fn committed_document(
         &self,
         command: &committed_document::Request,
@@ -827,6 +832,11 @@ impl ChannelHandle {
     }
     /// Control this launched application's local governed call. The broker
     /// derives the exact caller and record from the authenticated connection.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NotAvailable`] if the broker connection is unavailable, drops during the call, or
+    /// answers with an invalid status.
     pub async fn native_media_command(
         &self,
         command: &native_media::Request,
@@ -3542,7 +3552,7 @@ mod enrolled_tests {
                             .map_err(|error| capnp::Error::failed(error.to_string()))?;
                     match update {
                         TaskRunUpdate::Succeeded { message } => {
-                            assert_eq!(message.chars().count(), 8000)
+                            assert_eq!(message.chars().count(), 8000);
                         }
                         _ => panic!("unexpected update"),
                     }
@@ -3631,6 +3641,11 @@ pub struct EnrolledTaskAcceptance {
 }
 impl EnrolledTaskEnvelope {
     pub const MAX_JSON_BYTES: usize = 128 * 1024;
+    /// Check the envelope's version, labels and bounds.
+    ///
+    /// # Errors
+    ///
+    /// Returns a description of the first violated constraint.
     pub fn validate(&self) -> Result<(), String> {
         if self.version != 1
             || self.task.version != 1
@@ -3703,6 +3718,11 @@ pub struct EnrolledAcceptanceDecision {
 }
 impl EnrolledRecipientCustody {
     pub const CAPACITY: usize = 1024;
+    /// Custody for one exact enrolled recipient.
+    ///
+    /// # Errors
+    ///
+    /// Refuses a recipient with an invalid label.
     pub fn new(agent: &str, launch: &str, epoch: &str, channel: &str) -> Result<Self, String> {
         let recipient = [agent, launch, epoch, channel].map(str::to_owned);
         if recipient.iter().any(|s| !enrolled_label(s)) {
@@ -3711,9 +3731,14 @@ impl EnrolledRecipientCustody {
         Ok(Self {
             recipient,
             retained_bytes: 0,
-            retained: Default::default(),
+            retained: std::collections::HashMap::default(),
         })
     }
+    /// Accept an envelope once, replaying the retained acceptance for an exact retry.
+    ///
+    /// # Errors
+    ///
+    /// Refuses invalid, misaddressed, changed or reused envelopes and full retention.
     pub fn accept(
         &mut self,
         envelope: &EnrolledTaskEnvelope,
@@ -3779,6 +3804,11 @@ pub struct EnrolledTaskStream {
 }
 #[cfg(feature = "client")]
 impl EnrolledTaskStream {
+    /// Read the next enrolled task.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NotAvailable`] if the stream fails or delivers an oversized or invalid envelope.
     pub async fn read(&self) -> Result<EnrolledTaskEnvelope, NotAvailable> {
         let reply = self.inner.read_request().send().promise.await?;
         let json = reply
@@ -3797,6 +3827,11 @@ impl EnrolledTaskStream {
 }
 #[cfg(feature = "client")]
 impl ChannelHandle {
+    /// Subscribe to this channel's enrolled tasks.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NotAvailable`] if the broker connection is unavailable or drops during the call.
     pub async fn subscribe_enrolled_tasks(&self) -> Result<EnrolledTaskStream, NotAvailable> {
         let reply = self
             .inner
@@ -3808,6 +3843,11 @@ impl ChannelHandle {
             inner: Rc::new(reply.get()?.get_stream()?),
         })
     }
+    /// Report an enrolled task's acceptance to the host.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NotAvailable`] for an oversized acceptance or a failed broker call.
     pub async fn accept_enrolled_task(
         &self,
         acceptance: &EnrolledTaskAcceptance,
@@ -3822,6 +3862,11 @@ impl ChannelHandle {
         request.send().promise.await?;
         Ok(())
     }
+    /// Report an accepted enrolled task's run update.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NotAvailable`] for an invalid or oversized update or a failed broker call.
     pub async fn report_enrolled_task(
         &self,
         acceptance: &EnrolledTaskAcceptance,
@@ -3905,7 +3950,7 @@ mod resolved_invocation_tests {
                 assert_eq!(p.get_resource()?.to_str()?, "r");
                 assert_eq!(p.get_action()?.to_str()?, "a");
                 assert!(!p.get_has_argument());
-                self.0.set(self.0.get() + 1);
+                self.0.set(self.0.get().saturating_add(1));
                 results.get().set_id(21);
                 Ok(())
             })())
@@ -4223,22 +4268,18 @@ fn reliable_uuid_matches(text: &str, expected: &[u8; 16]) -> bool {
     if bytes.len() != 36 {
         return false;
     }
-    let mut at = 0;
+    let mut bytes = bytes.iter().copied();
     for (i, want) in expected.iter().enumerate() {
-        if matches!(i, 4 | 6 | 8 | 10) {
-            if bytes[at] != b'-' {
-                return false;
-            }
-            at += 1;
-        }
-        let hex = b"0123456789abcdef";
-        if bytes[at] != hex[usize::from(want >> 4)] || bytes[at + 1] != hex[usize::from(want & 15)]
-        {
+        if matches!(i, 4 | 6 | 8 | 10) && bytes.next() != Some(b'-') {
             return false;
         }
-        at += 2;
+        for nibble in [want >> 4, want & 15] {
+            if bytes.next().map(char::from) != char::from_digit(u32::from(nibble), 16) {
+                return false;
+            }
+        }
     }
-    true
+    bytes.next().is_none()
 }
 #[cfg(feature = "client")]
 fn reliable_decode_observation(
@@ -4246,6 +4287,13 @@ fn reliable_decode_observation(
     host: &[u8; 16],
     invocation: &[u8; 16],
 ) -> Result<PublishedInvocationObservation, capnp::Error> {
+    // Parse only the correlation field without copying the lifecycle tree.
+    // The SDK still decodes and validates its own InvocationUpdate grammar.
+    #[derive(serde::Deserialize)]
+    struct Identity<'a> {
+        #[serde(borrow)]
+        invocation: &'a str,
+    }
     reliable_size(o.total_size()?)?;
     if reliable_array::<16>(o.get_host()?)? != *host
         || reliable_array::<16>(o.get_invocation()?)? != *invocation
@@ -4259,13 +4307,6 @@ fn reliable_decode_observation(
     let result = if o.get_found() {
         if o.get_id() == 0 {
             return Err(reliable_error());
-        }
-        // Parse only the correlation field without copying the lifecycle tree.
-        // The SDK still decodes and validates its own InvocationUpdate grammar.
-        #[derive(serde::Deserialize)]
-        struct Identity<'a> {
-            #[serde(borrow)]
-            invocation: &'a str,
         }
         let identity: Identity<'_> = serde_json::from_str(json).map_err(|_| reliable_error())?;
         if !reliable_uuid_matches(identity.invocation, invocation) {
@@ -4524,7 +4565,7 @@ mod reliable_invocation_tests {
             8 => o.set_found(false),
             9 => {o.set_found(false);o.set_id(0);o.set_update_json("");o.set_uncertain(true);},
             10 => {o.set_found(false);o.set_id(0);o.set_update_json("");o.set_cancellation_requested(true);},
-            11 => o.set_update_json(&"x".repeat(256*1024+1)),
+            11 => o.set_update_json("x".repeat(256*1024+1)),
             12 => o.set_update_json(""),
             13 => o.set_update_json(r#"{"invocation":"01010101-0101-0101-0101-010101010101","invocation":"01010101-0101-0101-0101-010101010101"}"#),
             14 => {o.set_found(false);o.set_id(0);o.set_update_json("");},
@@ -4533,7 +4574,7 @@ mod reliable_invocation_tests {
             17 => o.set_invocation(&[0;16]),
             18 => o.init_update_json(1).as_bytes_mut()[0]=0xff,
             19 => o.set_update_json(r#"{"invocation":"01010101010101010101010101010101"}"#),
-            20 => o.set_update_json(&format!(r#"{{"state":"accepted","invocation":"01010101-0101-0101-0101-010101010101","padding":"{}"}}"#,"x".repeat(240*1024))),
+            20 => o.set_update_json(format!(r#"{{"state":"accepted","invocation":"01010101-0101-0101-0101-010101010101","padding":"{}"}}"#,"x".repeat(240*1024))),
             21 => o.set_id(0),
             _ => {}
         }
@@ -4551,7 +4592,7 @@ mod reliable_invocation_tests {
             mut results: collab_capnp::channel_handle::ResolvePublishedActionResults,
         ) -> impl std::future::Future<Output = Result<(), capnp::Error>> + 'static {
             Promise::from((|| {
-                self.calls.set(self.calls.get() + 1);
+                self.calls.set(self.calls.get().saturating_add(1));
                 let p = params.get()?;
                 assert_eq!(p.get_peer_id(), 9);
                 row(results.get().init_resolution().init_found());
@@ -4564,7 +4605,7 @@ mod reliable_invocation_tests {
                     4 => results
                         .get()
                         .get_invocation_binding()?
-                        .set_app_id(&"x".repeat(513)),
+                        .set_app_id("x".repeat(513)),
                     5 => results.get().get_invocation_binding()?.set_root(&[0; 32]),
                     6 => results.get().init_resolution().set_not_found(()),
                     7 => results
@@ -4580,7 +4621,7 @@ mod reliable_invocation_tests {
                         .get()
                         .init_resolution()
                         .init_found()
-                        .set_resource_label(&"x".repeat(256 * 1024)),
+                        .set_resource_label("x".repeat(256 * 1024)),
                     10 => results.get().get_invocation_binding()?.set_root(&[3; 31]),
                     11 => results.get().get_invocation_binding()?.set_device(&[4; 33]),
                     12 => results
@@ -4594,7 +4635,7 @@ mod reliable_invocation_tests {
                     14 => results
                         .get()
                         .get_invocation_binding()?
-                        .set_record_id(&"r".repeat(513)),
+                        .set_record_id("r".repeat(513)),
                     15 => results.get().get_invocation_binding()?.set_host(&[0; 16]),
                     _ => {}
                 }
@@ -4607,7 +4648,7 @@ mod reliable_invocation_tests {
             mut results: collab_capnp::channel_handle::InvokeResolvedPublishedActionDurableResults,
         ) -> impl std::future::Future<Output = Result<(), capnp::Error>> + 'static {
             Promise::from((|| {
-                self.calls.set(self.calls.get() + 1);
+                self.calls.set(self.calls.get().saturating_add(1));
                 let p = params.get()?;
                 assert_eq!(p.get_invocation()?, ID);
                 let b = p.get_binding()?;
@@ -4639,7 +4680,7 @@ mod reliable_invocation_tests {
             mut results: collab_capnp::channel_handle::PublishedInvocationObservationResults,
         ) -> impl std::future::Future<Output = Result<(), capnp::Error>> + 'static {
             Promise::from((|| {
-                self.calls.set(self.calls.get() + 1);
+                self.calls.set(self.calls.get().saturating_add(1));
                 let p = params.get()?;
                 assert_eq!(p.get_host()?, HOST);
                 assert_eq!(p.get_invocation()?, ID);
@@ -4653,7 +4694,7 @@ mod reliable_invocation_tests {
             mut results: collab_capnp::channel_handle::CancelDurablePublishedInvocationResults,
         ) -> impl std::future::Future<Output = Result<(), capnp::Error>> + 'static {
             Promise::from((|| {
-                self.calls.set(self.calls.get() + 1);
+                self.calls.set(self.calls.get().saturating_add(1));
                 let p = params.get()?;
                 assert_eq!(p.get_host()?, HOST);
                 assert_eq!(p.get_invocation()?, ID);
@@ -4832,7 +4873,7 @@ mod reliable_invocation_tests {
                     .await
                     .unwrap();
                 if mode == 14 {
-                    assert!(o.result.is_none())
+                    assert!(o.result.is_none());
                 } else {
                     let r = o.result.unwrap();
                     assert!(r.uncertain);
@@ -4896,7 +4937,7 @@ mod reliable_invocation_tests {
                     6 => b.root = [0; 32],
                     7 => b.device = [0; 32],
                     _ => b.target_binding = [0; 32],
-                };
+                }
                 assert!(
                     c.invoke_resolved_published_action_durable(&ID, &b, "v", "r", "a", None, "{}")
                         .await
@@ -5022,7 +5063,7 @@ mod reliable_invocation_tests {
             _: collab_capnp::channel_handle::InvokeResolvedPublishedActionParams,
             mut results: collab_capnp::channel_handle::InvokeResolvedPublishedActionResults,
         ) -> impl std::future::Future<Output = Result<(), capnp::Error>> + 'static {
-            self.0.set(self.0.get() + 1);
+            self.0.set(self.0.get().saturating_add(1));
             results.get().set_id(47);
             Promise::ok(())
         }
@@ -5063,12 +5104,12 @@ mod reliable_invocation_tests {
             (
                 false,
                 &[
-                    0x0000000800000000,
-                    0x0003000100000000,
+                    0x0000_0008_0000_0000,
+                    0x0003_0001_0000_0000,
                     9,
-                    0x0000001200000009,
-                    0x0000001200000009,
-                    0x0000001200000009,
+                    0x0000_0012_0000_0009,
+                    0x0000_0012_0000_0009,
+                    0x0000_0012_0000_0009,
                     0x76,
                     0x72,
                     0x61,
@@ -5077,15 +5118,15 @@ mod reliable_invocation_tests {
             (
                 true,
                 &[
-                    0x0000000d00000000,
-                    0x0005000200000000,
+                    0x0000_000d_0000_0000,
+                    0x0005_0002_0000_0000,
                     9,
                     1,
-                    0x0000001200000011,
-                    0x0000001200000011,
-                    0x0000001200000011,
-                    0x0000000a00000011,
-                    0x0000001a00000011,
+                    0x0000_0012_0000_0011,
+                    0x0000_0012_0000_0011,
+                    0x0000_0012_0000_0011,
+                    0x0000_000a_0000_0011,
+                    0x0000_001a_0000_0011,
                     0x76,
                     0x72,
                     0x61,

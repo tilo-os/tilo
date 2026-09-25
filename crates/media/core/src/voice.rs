@@ -26,26 +26,30 @@ impl CaptureTimeline {
     pub fn reset_source(&mut self) {
         self.source = None;
     }
+    /// Map a capture source's raw sample clock onto the monotonic 48 kHz media timeline.
+    ///
+    /// # Errors
+    ///
+    /// [`AudioError::InvalidFrame`] for a non-frame-aligned, regressing or overflowing timestamp.
     pub fn timestamp(&mut self, raw: u64, captured_at: Instant) -> Result<u64, AudioError> {
         let epoch = *self.epoch.get_or_insert(captured_at);
-        let (raw_base, media_base) = match self.source {
-            Some(source) => source,
-            None => {
-                let elapsed_frames =
-                    u64::try_from(captured_at.saturating_duration_since(epoch).as_millis() / 20)
-                        .map_err(|_| AudioError::InvalidFrame)?;
-                let elapsed = elapsed_frames
-                    .checked_mul(960)
-                    .ok_or(AudioError::InvalidFrame)?;
-                let next = self
-                    .last
-                    .map(|last| last.checked_add(960).ok_or(AudioError::InvalidFrame))
-                    .transpose()?
-                    .unwrap_or(0);
-                let source = (raw, elapsed.max(next));
-                self.source = Some(source);
-                source
-            }
+        let (raw_base, media_base) = if let Some(source) = self.source {
+            source
+        } else {
+            let elapsed_frames =
+                u64::try_from(captured_at.saturating_duration_since(epoch).as_millis() / 20)
+                    .map_err(|_| AudioError::InvalidFrame)?;
+            let elapsed = elapsed_frames
+                .checked_mul(960)
+                .ok_or(AudioError::InvalidFrame)?;
+            let next = self
+                .last
+                .map(|last| last.checked_add(960).ok_or(AudioError::InvalidFrame))
+                .transpose()?
+                .unwrap_or(0);
+            let source = (raw, elapsed.max(next));
+            self.source = Some(source);
+            source
         };
         let delta = raw.checked_sub(raw_base).ok_or(AudioError::InvalidFrame)?;
         if delta % 960 != 0 {
@@ -128,6 +132,12 @@ impl CaptureQueue {
         self.active = false;
         self.frames.clear();
     }
+    /// Queue one captured frame, dropping frames past their send lifetime.
+    ///
+    /// # Errors
+    ///
+    /// [`AudioError::Revoked`] while stopped and [`AudioError::InvalidFrame`] for a malformed or
+    /// future-dated frame.
     pub fn push(&mut self, frame: CapturedOpus, now: Instant) -> Result<(), AudioError> {
         if !self.active {
             return Err(AudioError::Revoked);
@@ -192,7 +202,43 @@ struct Publisher {
     applied_target_ms: u64,
 }
 
+impl Publisher {
+    /// Update the arrival-jitter estimate and playout target from one frame
+    /// that is newer in both media time and arrival time.
+    fn observe_arrival(&mut self, timestamp_48k: u64, received_at: Instant) {
+        if timestamp_48k <= self.last_timestamp || received_at < self.last_receive {
+            return;
+        }
+        // A gap beyond u32 samples (~25 hours) saturates the clamped target anyway.
+        let media_samples =
+            u32::try_from(timestamp_48k.saturating_sub(self.last_timestamp)).unwrap_or(u32::MAX);
+        let media_ms = f64::from(media_samples) / 48.0;
+        let arrival_ms = received_at.duration_since(self.last_receive).as_secs_f64() * 1000.0;
+        self.jitter_ms += ((arrival_ms - media_ms).abs() - self.jitter_ms) / 16.0;
+        #[expect(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "the rounded target is clamped to 40..=120 ms before the cast"
+        )]
+        let target_ms = (40.0 + self.jitter_ms * 4.0).round().clamp(40.0, 120.0) as u64;
+        self.target_ms = target_ms;
+        self.last_timestamp = timestamp_48k;
+        self.last_receive = received_at;
+    }
+}
+
+/// A collection length as a saturating statistics count.
+fn count(len: usize) -> u64 {
+    u64::try_from(len).unwrap_or(u64::MAX)
+}
+
 impl JitterBuffer {
+    /// Admit one received frame into its publisher's playout queue.
+    ///
+    /// # Errors
+    ///
+    /// [`AudioError::InvalidFrame`] for a malformed or inconsistent frame, [`AudioError::Revoked`]
+    /// for a superseded carrier generation, and [`AudioError::Capacity`] when full.
     pub fn push(&mut self, mut frame: ReceivedOpus, now: Instant) -> Result<(), AudioError> {
         validate_frame(frame.duration_samples, &frame.payload)?;
         if frame.publisher.namespace.is_empty()
@@ -204,9 +250,11 @@ impl JitterBuffer {
         {
             return Err(AudioError::InvalidFrame);
         }
-        frame.expires_at = frame.expires_at.min(frame.received_at + RECEIVE_LIFETIME);
+        if let Some(lifetime) = frame.received_at.checked_add(RECEIVE_LIFETIME) {
+            frame.expires_at = frame.expires_at.min(lifetime);
+        }
         if frame.expires_at <= now {
-            self.stats.late += 1;
+            self.stats.late = self.stats.late.saturating_add(1);
             return Ok(());
         }
         let name = frame.publisher.namespace.clone();
@@ -230,7 +278,10 @@ impl JitterBuffer {
                     base_timestamp: frame.timestamp_48k,
                     next_sequence: frame.sequence,
                     next_timestamp: frame.timestamp_48k,
-                    next_play: frame.received_at + Duration::from_millis(60),
+                    next_play: frame
+                        .received_at
+                        .checked_add(Duration::from_millis(60))
+                        .unwrap_or(frame.received_at),
                     last_receive: frame.received_at,
                     last_timestamp: frame.timestamp_48k,
                     active_until: frame.expires_at,
@@ -244,9 +295,7 @@ impl JitterBuffer {
             .publishers
             .get_mut(&name)
             .ok_or(AudioError::InvalidFrame)?;
-        let timestamp_delta =
-            i128::from(frame.timestamp_48k) - i128::from(publisher.base_timestamp);
-        if timestamp_delta % 960 != 0 {
+        if frame.timestamp_48k.abs_diff(publisher.base_timestamp) % 960 != 0 {
             return Err(AudioError::InvalidFrame);
         }
         if frame.sequence < publisher.next_sequence
@@ -255,11 +304,11 @@ impl JitterBuffer {
                 .values()
                 .any(|f| f.sequence == frame.sequence)
         {
-            self.stats.duplicates += 1;
+            self.stats.duplicates = self.stats.duplicates.saturating_add(1);
             return Ok(());
         }
         if frame.timestamp_48k < publisher.next_timestamp {
-            self.stats.late += 1;
+            self.stats.late = self.stats.late.saturating_add(1);
             return Ok(());
         }
         if publisher
@@ -271,33 +320,24 @@ impl JitterBuffer {
         }
         let before = publisher.frames.len();
         publisher.frames.retain(|_, f| f.expires_at > now);
-        self.stats.late += (before - publisher.frames.len()) as u64;
+        self.stats.late = self
+            .stats
+            .late
+            .saturating_add(count(before.saturating_sub(publisher.frames.len())));
         if publisher.frames.len() == 10 {
-            self.stats.overruns += 1;
+            self.stats.overruns = self.stats.overruns.saturating_add(1);
             return Err(AudioError::Capacity);
         }
         // A delayed callback never creates a fresh 200ms playback window.
         if publisher.active_until <= now {
             publisher.next_sequence = frame.sequence;
             publisher.next_timestamp = frame.timestamp_48k;
-            publisher.next_play = frame.received_at + Duration::from_millis(publisher.target_ms);
-        }
-        if frame.timestamp_48k > publisher.last_timestamp
-            && frame.received_at >= publisher.last_receive
-        {
-            let media_ms = (frame.timestamp_48k - publisher.last_timestamp) as f64 / 48.0;
-            let arrival_ms = frame
+            publisher.next_play = frame
                 .received_at
-                .duration_since(publisher.last_receive)
-                .as_secs_f64()
-                * 1000.0;
-            publisher.jitter_ms += ((arrival_ms - media_ms).abs() - publisher.jitter_ms) / 16.0;
-            publisher.target_ms = (40.0 + publisher.jitter_ms * 4.0)
-                .round()
-                .clamp(40.0, 120.0) as u64;
-            publisher.last_timestamp = frame.timestamp_48k;
-            publisher.last_receive = frame.received_at;
+                .checked_add(Duration::from_millis(publisher.target_ms))
+                .unwrap_or(frame.received_at);
         }
+        publisher.observe_arrival(frame.timestamp_48k, frame.received_at);
         publisher.active_until = publisher.active_until.max(frame.expires_at);
         publisher.frames.insert(frame.timestamp_48k, frame);
         Ok(())
@@ -307,7 +347,10 @@ impl JitterBuffer {
         let mut out = Vec::with_capacity(self.publishers.len());
         for publisher in self.publishers.values_mut() {
             if now >= publisher.active_until {
-                self.stats.late += publisher.frames.len() as u64;
+                self.stats.late = self
+                    .stats
+                    .late
+                    .saturating_add(count(publisher.frames.len()));
                 publisher.frames.clear();
                 continue;
             }
@@ -333,7 +376,7 @@ impl JitterBuffer {
                 sequence = frame.sequence;
                 publisher.next_sequence = sequence.saturating_add(1);
                 if frame.expires_at <= now {
-                    self.stats.late += 1;
+                    self.stats.late = self.stats.late.saturating_add(1);
                     None
                 } else {
                     deadline = frame.expires_at;
@@ -341,7 +384,7 @@ impl JitterBuffer {
                 }
             });
             if payload.is_none() {
-                self.stats.lost += 1;
+                self.stats.lost = self.stats.lost.saturating_add(1);
             }
             out.push(PlayoutFrame {
                 publisher: publisher.id.clone(),
@@ -354,16 +397,20 @@ impl JitterBuffer {
             let adjustment = publisher.target_ms.cmp(&publisher.applied_target_ms);
             let interval_ms = match adjustment {
                 std::cmp::Ordering::Greater => {
-                    publisher.applied_target_ms += 1;
+                    publisher.applied_target_ms = publisher.applied_target_ms.saturating_add(1);
                     21
                 }
                 std::cmp::Ordering::Less => {
-                    publisher.applied_target_ms -= 1;
+                    publisher.applied_target_ms = publisher.applied_target_ms.saturating_sub(1);
                     19
                 }
                 std::cmp::Ordering::Equal => 20,
             };
-            publisher.next_play += Duration::from_millis(skipped.saturating_mul(20) + interval_ms);
+            let advance =
+                Duration::from_millis(skipped.saturating_mul(20).saturating_add(interval_ms));
+            if let Some(next_play) = publisher.next_play.checked_add(advance) {
+                publisher.next_play = next_play;
+            }
         }
         out
     }
@@ -400,6 +447,11 @@ impl JitterBuffer {
 }
 
 /// Mix one simultaneous 20ms frame per publisher, saturating only after summing.
+///
+/// # Errors
+///
+/// [`AudioError::Capacity`] for more than [`MAX_PUBLISHERS`] frames and
+/// [`AudioError::InvalidFrame`] for a frame that is not [`FRAME_SAMPLES`] long.
 pub fn mix_frames(frames: &[&[i16]]) -> Result<Vec<i16>, AudioError> {
     if frames.len() > MAX_PUBLISHERS {
         return Err(AudioError::Capacity);
@@ -410,12 +462,13 @@ pub fn mix_frames(frames: &[&[i16]]) -> Result<Vec<i16>, AudioError> {
     let mut sums = vec![0i32; FRAME_SAMPLES];
     for frame in frames {
         for (sum, sample) in sums.iter_mut().zip(*frame) {
-            *sum += i32::from(*sample);
+            // At most eight i16 samples: the i32 sum cannot saturate.
+            *sum = sum.saturating_add(i32::from(*sample));
         }
     }
     Ok(sums
         .into_iter()
-        .map(|s| s.clamp(i32::from(i16::MIN), i32::from(i16::MAX)) as i16)
+        .map(|s| i16::try_from(s).unwrap_or(if s < 0 { i16::MIN } else { i16::MAX }))
         .collect())
 }
 

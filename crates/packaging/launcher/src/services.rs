@@ -1119,9 +1119,19 @@ pub struct EnrolledServiceContext {
     connected: Option<BTreeMap<String, UnixStream>>,
 }
 impl EnrolledServiceContext {
+    /// Validate one launch's connected services and hand off the model gateway.
+    ///
+    /// # Errors
+    ///
+    /// Returns a description for an invalid binding, provider or context label, an unusable
+    /// data home or stream, or a failed model gateway handoff.
     #[allow(
         clippy::too_many_arguments,
         reason = "explicit owned service capabilities and immutable launch context are independently supplied"
+    )]
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "public constructor shared with the cloud host; the canonical root replaces the supplied one"
     )]
     pub fn new(
         binding: crate::managed::ManagedBinding,
@@ -1184,9 +1194,20 @@ impl EnrolledServiceContext {
     pub fn channel_id(&self) -> &str {
         &self.channel_id
     }
+    /// The agent's launch context as JSON.
+    ///
+    /// # Errors
+    ///
+    /// Returns a description when serialization fails.
     pub fn agent_context_json(&self) -> Result<String, String> {
         serde_json::to_string(&serde_json::json!({ "version": 1, "room": self.binding.room, "agent": self.binding.agent, "launch": self.binding.launch, "runtime_epoch": self.runtime_epoch, "channel_id": self.channel_id, "provider": self.provider })).map_err(|e| e.to_string())
     }
+    /// Take the connected services exactly once for the matching launch.
+    ///
+    /// # Errors
+    ///
+    /// Returns a description for another binding, services already taken, or a requirement the
+    /// connected services do not satisfy.
     pub fn take_for_launch(
         &mut self,
         binding: &crate::managed::ManagedBinding,

@@ -1,5 +1,8 @@
 //! Closed mechanical sources. Neither variant is a caller/record authority witness.
-use super::*;
+use super::{
+    AutoCommit, Basis, Limits, ObjId, ObjType, ReadDoc, ReadError, ScalarValueRef, TextPosition,
+    Transactable, ValueRef, Work, escaped_bytes, field, object_fingerprint, validate_limits,
+};
 use automerge::resource_limits::{
     NativeObject, NativeReadError, NativeReadSession, NativeScalar, NativeSelection, NativeValue,
 };
@@ -67,6 +70,10 @@ fn legacy_value<'v, 'doc>(value: &'v ValueRef<'_>, object: ObjId) -> Value<'v, '
         S::Null => NativeScalar::Null,
     })
 }
+/// Lowercase hexadecimal digit of a nibble (`0..16`).
+fn hex_digit(nibble: u8) -> char {
+    char::from_digit(u32::from(nibble), 16).unwrap_or('0')
+}
 fn read_error(error: NativeReadError<ReadError>) -> ReadError {
     match error {
         NativeReadError::Resource(e) => e.into(),
@@ -88,21 +95,37 @@ impl<'a, 'doc, 'turn> Source<'a, 'doc, 'turn> {
             Kind::Native(read) => Object(ObjectKind::Native(read.root())),
         }
     }
+    /// Wrap a legacy object id.
+    ///
+    /// # Errors
+    ///
+    /// [`ReadError::Malformed`] when this is a native source.
     pub fn legacy_object(&self, object: &ObjId) -> Result<Object<'doc>, ReadError> {
         match self.0 {
             Kind::Legacy { .. } => Ok(Object(ObjectKind::Legacy(object.clone()))),
-            _ => Err(ReadError::Malformed),
+            Kind::Native(_) => Err(ReadError::Malformed),
         }
     }
+    /// Wrap a native object after checking it resolves in this session.
+    ///
+    /// # Errors
+    ///
+    /// [`ReadError::Malformed`] when this is a legacy source, or the session's resource error.
     pub fn native_object(&self, object: NativeObject<'doc>) -> Result<Object<'doc>, ReadError> {
         match self.0 {
             Kind::Native(read) => {
                 read.visit_id_parts(object.id(), |_| ())?;
                 Ok(Object(ObjectKind::Native(object)))
             }
-            _ => Err(ReadError::Malformed),
+            Kind::Legacy { .. } => Err(ReadError::Malformed),
         }
     }
+    /// Bind a projection basis to the source's complete head set.
+    ///
+    /// # Errors
+    ///
+    /// [`ReadError::Pending`] for uncommitted operations, [`ReadError::Limit`] for invalid limits,
+    /// oversized documents or more than 64 heads, and [`ReadError::Malformed`] for duplicate heads.
     pub fn begin(&self, limits: Limits, max_items: usize) -> Result<(Basis, Work), ReadError> {
         validate_limits(limits, max_items)?;
         let mut heads = [automerge::ChangeHash([0; 32]); 64];
@@ -114,7 +137,10 @@ impl<'a, 'doc, 'turn> Source<'a, 'doc, 'turn> {
                 if doc.stats().num_ops > 1_000_000 || input.len() > 64 {
                     return Err(ReadError::Limit);
                 }
-                heads[..input.len()].copy_from_slice(input);
+                heads
+                    .get_mut(..input.len())
+                    .ok_or(ReadError::Limit)?
+                    .copy_from_slice(input);
                 input.len()
             }
             Kind::Native(read) => {
@@ -126,15 +152,22 @@ impl<'a, 'doc, 'turn> Source<'a, 'doc, 'turn> {
                 }
                 let mut index = 0;
                 read.visit_heads(64, |head| {
-                    heads[index] = head;
-                    index += 1;
+                    // More heads than slots leaves `index` past the end, which
+                    // the bounded slice below refuses.
+                    if let Some(slot) = heads.get_mut(index) {
+                        *slot = head;
+                    }
+                    index = index.saturating_add(1);
                 })?;
                 index
             }
         };
-        let heads = &mut heads[..count];
+        let heads = heads.get_mut(..count).ok_or(ReadError::Limit)?;
         heads.sort_unstable();
-        if heads.windows(2).any(|pair| pair[0] == pair[1]) {
+        if heads
+            .windows(2)
+            .any(|pair| matches!(pair, [left, right] if left == right))
+        {
             return Err(ReadError::Malformed);
         }
         let mut hasher = blake3::Hasher::new();
@@ -143,10 +176,9 @@ impl<'a, 'doc, 'turn> Source<'a, 'doc, 'turn> {
         for head in heads {
             hasher.update(&head.0);
             let mut text = String::with_capacity(64);
-            const HEX: &[u8] = b"0123456789abcdef";
             for byte in head.0 {
-                text.push(HEX[(byte >> 4) as usize] as char);
-                text.push(HEX[(byte & 15) as usize] as char);
+                text.push(hex_digit(byte >> 4));
+                text.push(hex_digit(byte & 15));
             }
             encoded.push(text);
         }
@@ -160,6 +192,12 @@ impl<'a, 'doc, 'turn> Source<'a, 'doc, 'turn> {
             },
         ))
     }
+    /// Canonical cursor scope of `object` (see [`object_fingerprint`]).
+    ///
+    /// # Errors
+    ///
+    /// [`ReadError::Malformed`] when `object` belongs to the other source kind, and
+    /// [`ReadError::Limit`] for an actor id over 256 bytes.
     pub fn fingerprint(&self, object: &Object<'doc>) -> Result<[u8; 32], ReadError> {
         match (&self.0, &object.0) {
             (Kind::Legacy { .. }, ObjectKind::Legacy(object)) => object_fingerprint(object),
@@ -186,6 +224,12 @@ impl<'a, 'doc, 'turn> Source<'a, 'doc, 'turn> {
             _ => Err(ReadError::Malformed),
         }
     }
+    /// Visit the winning value under `key`, if any.
+    ///
+    /// # Errors
+    ///
+    /// [`ReadError::Limit`] when `key` exceeds 256 bytes, [`ReadError::Malformed`] for an object of
+    /// the other source kind, or any error returned by `visitor`.
     pub fn field(
         &self,
         object: &Object<'doc>,
@@ -216,6 +260,11 @@ impl<'a, 'doc, 'turn> Source<'a, 'doc, 'turn> {
         }
         Ok(())
     }
+    /// The winning object of `kind` under `key`, if any.
+    ///
+    /// # Errors
+    ///
+    /// As [`Source::field`].
     pub fn object(
         &self,
         object: &Object<'doc>,
@@ -230,6 +279,11 @@ impl<'a, 'doc, 'turn> Source<'a, 'doc, 'turn> {
         })?;
         Ok(result)
     }
+    /// The winning string under `key`, or empty when it is absent or not a string.
+    ///
+    /// # Errors
+    ///
+    /// As [`Source::field`], and [`ReadError::Limit`] when the string exceeds `maximum` bytes.
     pub fn string(
         &self,
         object: &Object<'doc>,
@@ -249,6 +303,11 @@ impl<'a, 'doc, 'turn> Source<'a, 'doc, 'turn> {
         })?;
         Ok(result)
     }
+    /// Visit the winning byte payload under `key`, if any.
+    ///
+    /// # Errors
+    ///
+    /// As [`Source::field`].
     pub fn bytes(
         &self,
         object: &Object<'doc>,
@@ -263,6 +322,12 @@ impl<'a, 'doc, 'turn> Source<'a, 'doc, 'turn> {
             Ok(())
         })
     }
+    /// Visit every visible map entry until `visitor` breaks.
+    ///
+    /// # Errors
+    ///
+    /// [`ReadError::Malformed`] for an object of the other source kind, [`ReadError::Limit`] when
+    /// the scan budget is exhausted, or any error returned by `visitor`.
     pub fn map(
         &self,
         object: &Object<'doc>,
@@ -307,6 +372,11 @@ impl<'a, 'doc, 'turn> Source<'a, 'doc, 'turn> {
         }
         Ok(())
     }
+    /// Visit every visible list element until `visitor` breaks.
+    ///
+    /// # Errors
+    ///
+    /// As [`Source::map`].
     pub fn list(
         &self,
         object: &Object<'doc>,
@@ -342,6 +412,12 @@ impl<'a, 'doc, 'turn> Source<'a, 'doc, 'turn> {
         }
         Ok(())
     }
+    /// A bounded text fragment from `position` (see [`super::text_fragment`]).
+    ///
+    /// # Errors
+    ///
+    /// [`ReadError::InvalidCursor`] for a cursor outside the text and [`ReadError::Limit`] when the
+    /// scan or escaped budget cannot make progress.
     pub fn text_fragment(
         &self,
         text: Option<&Object<'doc>>,
@@ -382,22 +458,20 @@ impl<'a, 'doc, 'turn> Source<'a, 'doc, 'turn> {
             for (offset, c) in suffix.char_indices() {
                 work.visit()?;
                 let size = escaped_bytes(c);
-                if spent
-                    .checked_add(size)
-                    .is_none_or(|sum| sum > escaped_budget)
-                {
+                let Some(total) = spent.checked_add(size).filter(|sum| *sum <= escaped_budget)
+                else {
                     if output.is_empty() {
                         return Err(ReadError::Limit);
                     }
                     next = TextPosition {
                         element: item.index,
-                        byte: start + offset,
+                        byte: start.checked_add(offset).ok_or(ReadError::Limit)?,
                     };
                     complete = false;
                     return Ok(ControlFlow::Break(()));
-                }
+                };
                 output.push(c);
-                spent += size;
+                spent = total;
             }
             next = TextPosition {
                 element: item.index.checked_add(1).ok_or(ReadError::Limit)?,

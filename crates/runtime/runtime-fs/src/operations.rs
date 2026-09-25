@@ -114,7 +114,7 @@ impl FsJob {
     /// # Errors
     /// After queued updates drain, returns the first owned `Publication` error
     /// once, then sticky `StoreUnavailable` on later polls. The error may outlive
-    /// this job, but carries no writer lock: keep the OperationOwner alive before
+    /// this job, but carries no writer lock: keep the `OperationOwner` alive before
     /// manually retrying its commit. A retry does not resume or repair bookkeeping.
     pub fn poll(&mut self) -> Result<Vec<FsUpdate>, FsError> {
         let mut results = lock(&self.control.results)?;
@@ -477,9 +477,8 @@ impl Context<'_> {
         // The first publication failure owns its phase/commit obligation. A
         // subsequent poisoned-store save cannot replace it with a generic code.
         let error = match (error, saved) {
-            (original @ FsError::Publication(_), _) => original,
+            (original @ FsError::Publication(_), _) | (original, Ok(())) => original,
             (_, Err(followup)) => followup,
-            (original, Ok(())) => original,
         };
         ItemOutcome {
             item: self.item,

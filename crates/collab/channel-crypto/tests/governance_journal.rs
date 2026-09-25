@@ -17,10 +17,11 @@ fn legacy_qos_journal_bytes() -> Vec<u8> {
         .as_bytes()
         .chunks_exact(2)
         .map(|pair| {
-            let nibble = |byte| match byte {
-                b'0'..=b'9' => byte - b'0',
-                b'a'..=b'f' => byte - b'a' + 10,
-                _ => panic!("invalid fixture hex"),
+            let nibble = |byte: u8| {
+                char::from(byte)
+                    .to_digit(16)
+                    .and_then(|digit| u8::try_from(digit).ok())
+                    .expect("invalid fixture hex")
             };
             nibble(pair[0]) << 4 | nibble(pair[1])
         })

@@ -31,6 +31,16 @@ pub struct InstalledManagedPackage {
     id: PackageId,
 }
 impl InstalledManagedPackage {
+    /// Bind an installed agent package and verify it against `trust`.
+    ///
+    /// # Errors
+    ///
+    /// Returns a description when the package is not the workspace agent, a path cannot be
+    /// canonicalized, or verification fails.
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "public constructor shared with the cloud host; the owned root mirrors `installed`"
+    )]
     pub fn verify(
         installed: InstalledPackage,
         data_root: PathBuf,
@@ -68,6 +78,11 @@ impl InstalledManagedPackage {
     pub fn payload_root(&self) -> &Path {
         &self.installed.payload_root
     }
+    /// Re-verify the installed package and return its signed manifest.
+    ///
+    /// # Errors
+    ///
+    /// Returns a description of the first verification failure.
     pub fn revalidate(&self, trust: &PackageTrust) -> Result<MinimalManifest, String> {
         self.verified_manifest(trust).map(|(manifest, _)| manifest)
     }
@@ -91,7 +106,7 @@ impl InstalledManagedPackage {
         for bytes in [&signed, &manifest, &collection_bytes] {
             blobs.put(bytes).map_err(|e| e.to_string())?;
         }
-        for (relative, _) in &collection.entries {
+        for relative in collection.entries.keys() {
             let path = self.installed.payload_root.join(relative);
             if Path::new(relative)
                 .components()
@@ -126,26 +141,7 @@ impl InstalledManagedPackage {
         {
             return Err("managed package identity or manifest mismatch".into());
         }
-        // The existing integrity walker follows directories. Refuse links and
-        // unusual files before entering it so unknown links cannot escape or
-        // recurse forever, including links absent from the signed collection.
-        let mut directories = vec![self.installed.payload_root.clone()];
-        let mut entries = 0usize;
-        while let Some(directory) = directories.pop() {
-            for entry in std::fs::read_dir(directory).map_err(|e| e.to_string())? {
-                let entry = entry.map_err(|e| e.to_string())?;
-                entries += 1;
-                if entries > 65_536 {
-                    return Err("managed payload has too many filesystem entries".into());
-                }
-                let kind = entry.file_type().map_err(|e| e.to_string())?;
-                if kind.is_dir() {
-                    directories.push(entry.path());
-                } else if !kind.is_file() {
-                    return Err("managed payload contains a link or special file".into());
-                }
-            }
-        }
+        refuse_unusual_entries(&self.installed.payload_root)?;
         let report = install::integrity::verify(
             &self.data_root,
             WORKSPACE_AGENT_PACKAGE_ID,
@@ -161,29 +157,7 @@ impl InstalledManagedPackage {
         let manifest: MinimalManifest =
             toml::from_str(std::str::from_utf8(&manifest).map_err(|e| e.to_string())?)
                 .map_err(|e| e.to_string())?;
-        if manifest.kind != crate::manifest::KIND_SERVICE
-            || manifest.entrypoint.cli_bin().is_none()
-            || !manifest
-                .sandbox
-                .services
-                .get(crate::services::COLLAB_SERVICE)
-                .is_some_and(|value| {
-                    crate::manifest::ServiceReq::parse(value).is_ok_and(|req| req.is_required())
-                })
-        {
-            return Err("managed package requires a headless service and collaboration".into());
-        }
-        if manifest.sandbox.net.mode != "off"
-            || !manifest
-                .sandbox
-                .services
-                .get(crate::services::MODEL_GATEWAY_SERVICE)
-                .is_some_and(|value| {
-                    crate::manifest::ServiceReq::parse(value).is_ok_and(|req| req.is_required())
-                })
-        {
-            return Err("managed agent requires network off and model gateway".into());
-        }
+        require_managed_service(&manifest)?;
         let entry = manifest
             .entrypoint
             .cli_bin()
@@ -198,6 +172,49 @@ impl InstalledManagedPackage {
     }
 }
 
+/// The existing integrity walker follows directories. Refuse links and unusual
+/// files before entering it so unknown links cannot escape or recurse forever,
+/// including links absent from the signed collection.
+fn refuse_unusual_entries(root: &Path) -> Result<(), String> {
+    let mut directories = vec![root.to_path_buf()];
+    let mut entries = 0usize;
+    while let Some(directory) = directories.pop() {
+        for entry in std::fs::read_dir(directory).map_err(|e| e.to_string())? {
+            let entry = entry.map_err(|e| e.to_string())?;
+            entries = entries.saturating_add(1);
+            if entries > 65_536 {
+                return Err("managed payload has too many filesystem entries".into());
+            }
+            let kind = entry.file_type().map_err(|e| e.to_string())?;
+            if kind.is_dir() {
+                directories.push(entry.path());
+            } else if !kind.is_file() {
+                return Err("managed payload contains a link or special file".into());
+            }
+        }
+    }
+    Ok(())
+}
+/// A managed agent is a headless service with required collaboration and
+/// model gateway services and no network.
+fn require_managed_service(manifest: &MinimalManifest) -> Result<(), String> {
+    let requires = |service: &str| {
+        manifest.sandbox.services.get(service).is_some_and(|value| {
+            crate::manifest::ServiceReq::parse(value).is_ok_and(|req| req.is_required())
+        })
+    };
+    if manifest.kind != crate::manifest::KIND_SERVICE
+        || manifest.entrypoint.cli_bin().is_none()
+        || !requires(crate::services::COLLAB_SERVICE)
+    {
+        return Err("managed package requires a headless service and collaboration".into());
+    }
+    if manifest.sandbox.net.mode != "off" || !requires(crate::services::MODEL_GATEWAY_SERVICE) {
+        return Err("managed agent requires network off and model gateway".into());
+    }
+    Ok(())
+}
+
 /// Labels supplied by a committed host owner. These carry no launch authority.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ManagedBinding {
@@ -210,6 +227,11 @@ pub struct ManagedBinding {
     pub generation: u64,
 }
 impl ManagedBinding {
+    /// Check the binding's package, generation and label syntax.
+    ///
+    /// # Errors
+    ///
+    /// Returns a description when any label is invalid.
     pub fn validate(&self) -> Result<(), String> {
         if self.app != WORKSPACE_AGENT_PACKAGE_ID
             || self.generation == 0
@@ -236,15 +258,21 @@ pub struct ProcessIdentity {
     pub start: u64,
 }
 impl ProcessIdentity {
+    /// Read the kernel start time identifying a live process.
+    ///
+    /// # Errors
+    ///
+    /// Returns a description when the process is absent, exited, unreadable, or when kernel
+    /// custody is unsupported on this platform.
     pub fn read(pid: u32) -> Result<Self, String> {
         #[cfg(target_os = "linux")]
         {
             if pid == 0 {
                 return Err("invalid process".into());
             }
-            let stat =
+            let proc_stat =
                 std::fs::read_to_string(format!("/proc/{pid}/stat")).map_err(|e| e.to_string())?;
-            let fields: Vec<_> = stat
+            let fields: Vec<_> = proc_stat
                 .rsplit_once(") ")
                 .ok_or("invalid process stat")?
                 .1
@@ -321,10 +349,10 @@ impl TreeStamp {
             entries.push((
                 path.clone(),
                 [
-                    metadata.dev() as i64,
-                    metadata.ino() as i64,
-                    metadata.len() as i64,
-                    metadata.mode() as i64,
+                    metadata.dev().cast_signed(),
+                    metadata.ino().cast_signed(),
+                    metadata.len().cast_signed(),
+                    i64::from(metadata.mode()),
                     metadata.mtime(),
                     metadata.mtime_nsec(),
                     metadata.ctime(),
@@ -372,8 +400,7 @@ impl RuntimeOwner {
             .map_err(|_| "runtime verification cache poisoned")?
             .as_ref()
             .filter(|(at, _)| at.elapsed() < RUNTIME_RECHECK)
-            .map(|(_, stamp)| self.stamp().is_some_and(|now| &now == stamp))
-            .unwrap_or(false);
+            .is_some_and(|(_, stamp)| self.stamp().is_some_and(|now| &now == stamp));
         if reusable {
             return Ok(());
         }
@@ -383,14 +410,14 @@ impl RuntimeOwner {
         let began = std::time::Instant::now();
         self.revalidate_fully()?;
         let after = self.stamp();
-        let mut verified = self
-            .verified
-            .lock()
-            .map_err(|_| "runtime verification cache poisoned")?;
-        *verified = match (before, after) {
+        let retained = match (before, after) {
             (Some(before), Some(after)) if before == after => Some((began, after)),
             _ => None,
         };
+        *self
+            .verified
+            .lock()
+            .map_err(|_| "runtime verification cache poisoned")? = retained;
         Ok(())
     }
     fn revalidate_fully(&self) -> Result<(), String> {
@@ -408,6 +435,11 @@ impl RuntimeOwner {
 #[derive(Clone)]
 pub struct VerifiedManagedRuntime(Weak<RuntimeOwner>);
 impl VerifiedManagedRuntime {
+    /// Re-verify the owning runtime and return its recorded facts.
+    ///
+    /// # Errors
+    ///
+    /// Returns a description when the owner stopped or verification fails.
     pub fn revalidate(&self) -> Result<ManagedRuntimeFacts, String> {
         let owner = self.0.upgrade().ok_or("runtime owner lost")?;
         owner.revalidate()?;
@@ -438,8 +470,16 @@ fn verify_bundle(
 /// Implemented only by the installed durable host owner, never by a wire peer.
 pub trait ManagedLaunchAuthority: Send + Sync {
     /// Consume the exact durable host launch permit once. An error never authorizes retry.
+    ///
+    /// # Errors
+    ///
+    /// Returns a description when the host refuses or cannot record the claim.
     fn claim_launch(&self, binding: &ManagedBinding) -> Result<(), String>;
     /// Check retained binding and current policy without consuming/recreating a claim.
+    ///
+    /// # Errors
+    ///
+    /// Returns a description when the binding is no longer permitted.
     fn revalidate_launch(&self, binding: &ManagedBinding) -> Result<(), String>;
 }
 /// A single reservation in one owning runtime. Intentionally neither Clone nor Serde.
@@ -452,6 +492,10 @@ pub struct VerifiedLaunchAuthority {
 }
 impl VerifiedLaunchAuthority {
     /// Repeatable current-policy check, independent of the consumed host claim.
+    ///
+    /// # Errors
+    ///
+    /// Returns a description when the runtime, cancellation or host policy refuses the launch.
     pub fn revalidate(&self) -> Result<(), String> {
         let owner = self.owner.upgrade().ok_or("runtime owner lost")?;
         owner.revalidate()?;
@@ -492,9 +536,19 @@ impl VerifiedManagedSupervisor {
     pub fn process(&self) -> ProcessIdentity {
         self.process
     }
+    /// Re-verify the runtime and return its recorded facts.
+    ///
+    /// # Errors
+    ///
+    /// As [`VerifiedManagedRuntime::revalidate`].
     pub fn runtime_facts(&self) -> Result<ManagedRuntimeFacts, String> {
         self.record.runtime.revalidate()
     }
+    /// Check that `binding` and `process` are still this supervisor's live custody.
+    ///
+    /// # Errors
+    ///
+    /// Returns a description when the runtime, binding, process or custody is no longer current.
     pub fn revalidate(
         &self,
         binding: &ManagedBinding,
@@ -552,6 +606,7 @@ impl ProcessRegistry {
             agent: None,
         });
         records.insert(process, record.clone());
+        drop(records);
         Ok(VerifiedManagedSupervisor {
             registry: Arc::downgrade(&self.0),
             record,
@@ -578,6 +633,10 @@ pub enum ProcessEvent {
     WaitFailed { detail: String },
 }
 #[derive(Clone)]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "a few launch events are queued at a time; boxing would reshape the public variants hosts match"
+)]
 pub enum ManagedLaunchEvent {
     Started(VerifiedManagedSupervisor),
     Finished {
@@ -603,6 +662,11 @@ pub struct ManagedLauncher {
     threads: Vec<(ManagedBinding, std::thread::JoinHandle<()>)>,
 }
 impl ManagedLauncher {
+    /// Verify the package and runtime once and become their single owner.
+    ///
+    /// # Errors
+    ///
+    /// Returns a description when the package, runtime paths or runtime bundle fail verification.
     pub fn new(
         package: InstalledManagedPackage,
         trust: PackageTrust,
@@ -639,13 +703,19 @@ impl ManagedLauncher {
             authority,
             registry: ProcessRegistry::default(),
             attempts: HashMap::new(),
-            events: Default::default(),
+            events: Arc::default(),
             threads: vec![],
         })
     }
     pub fn runtime_lease(&self) -> VerifiedManagedRuntime {
         VerifiedManagedRuntime(Arc::downgrade(&self.owner))
     }
+    /// Reserve `binding.launch` and consume its host launch claim.
+    ///
+    /// # Errors
+    ///
+    /// Returns a description for an invalid or reused binding, exhausted capacity, or a refused
+    /// runtime check or host claim; the reservation is retained either way.
     pub fn authorize(
         &mut self,
         binding: ManagedBinding,
@@ -690,23 +760,32 @@ impl ManagedLauncher {
         permit.revalidate()?;
         Ok(permit)
     }
+    /// Reap finished workers and take the queued launch events.
+    ///
+    /// # Errors
+    ///
+    /// Returns a description when the event owner is poisoned; outcomes are then uncertain.
     pub fn drain_events(&mut self) -> Result<Vec<ManagedLaunchEvent>, String> {
         let mut index = 0;
         while index < self.threads.len() {
-            if self.threads[index].1.is_finished() {
+            if self
+                .threads
+                .get(index)
+                .is_some_and(|(_, thread)| thread.is_finished())
+            {
                 let (binding, thread) = self.threads.swap_remove(index);
-                if thread.join().is_err() {
-                    if let Ok(mut events) = self.events.lock() {
-                        events.push_back(ManagedLaunchEvent::Failed {
-                            binding,
-                            process: None,
-                            terminal: false,
-                            reason: "managed worker panicked; outcome uncertain".into(),
-                        });
-                    }
+                if thread.join().is_err()
+                    && let Ok(mut events) = self.events.lock()
+                {
+                    events.push_back(ManagedLaunchEvent::Failed {
+                        binding,
+                        process: None,
+                        terminal: false,
+                        reason: "managed worker panicked; outcome uncertain".into(),
+                    });
                 }
             } else {
-                index += 1;
+                index = index.saturating_add(1);
             }
         }
         self.events
@@ -714,6 +793,11 @@ impl ManagedLauncher {
             .map(|mut events| events.drain(..).collect())
             .map_err(|_| "managed event owner poisoned; outcome uncertain".into())
     }
+    /// Cancel an owned launch and kill its live processes.
+    ///
+    /// # Errors
+    ///
+    /// Returns a description for a launch this owner does not hold or a failed kill.
     pub fn stop(&self, binding: &ManagedBinding) -> Result<(), String> {
         let attempt = self
             .attempts
@@ -736,6 +820,11 @@ impl ManagedLauncher {
         }
         Ok(())
     }
+    /// Stop every launch and wait a bounded time for their workers.
+    ///
+    /// # Errors
+    ///
+    /// Returns the first cleanup failure; outcomes of affected launches are uncertain.
     pub fn shutdown(&mut self) -> Result<(), String> {
         self.owner
             .live
@@ -756,24 +845,33 @@ impl ManagedLauncher {
         } else {
             failed = Some("process owner poisoned".into());
         }
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        let began = std::time::Instant::now();
+        let deadline = began
+            .checked_add(std::time::Duration::from_secs(2))
+            .unwrap_or(began);
         while !self.threads.is_empty() {
             let mut index = 0;
             while index < self.threads.len() {
-                if self.threads[index].1.is_finished() {
+                if self
+                    .threads
+                    .get(index)
+                    .is_some_and(|(_, thread)| thread.is_finished())
+                {
                     let (_, thread) = self.threads.swap_remove(index);
                     if thread.join().is_err() {
-                        failed.get_or_insert("managed worker panicked; outcome uncertain".into());
+                        failed.get_or_insert_with(|| {
+                            "managed worker panicked; outcome uncertain".into()
+                        });
                     }
                 } else {
-                    index += 1;
+                    index = index.saturating_add(1);
                 }
             }
             if self.threads.is_empty() {
                 break;
             }
             if std::time::Instant::now() >= deadline {
-                failed.get_or_insert("managed cleanup deadline exceeded; exact child remains with original worker, outcome uncertain".into());
+                failed.get_or_insert_with(|| "managed cleanup deadline exceeded; exact child remains with original worker, outcome uncertain".into());
                 break;
             }
             std::thread::sleep(std::time::Duration::from_millis(10));
@@ -781,12 +879,21 @@ impl ManagedLauncher {
         match self.registry.0.lock() {
             Ok(mut records) => records.clear(),
             Err(_) => {
-                failed.get_or_insert("process registry poisoned".into());
+                failed.get_or_insert_with(|| "process registry poisoned".into());
             }
         }
         failed.map_or(Ok(()), Err)
     }
+    /// Managed execution is Linux-only.
+    ///
+    /// # Errors
+    ///
+    /// Always refuses on this platform.
     #[cfg(not(target_os = "linux"))]
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "mirrors the Linux signature, which consumes the permit and services"
+    )]
     pub fn launch(
         &mut self,
         permit: VerifiedLaunchAuthority,
@@ -811,7 +918,8 @@ impl KernelProcess {
         if fd < 0 {
             return Err(std::io::Error::last_os_error().to_string());
         }
-        let handle = Self(unsafe { std::fs::File::from_raw_fd(fd as i32) });
+        let fd = i32::try_from(fd).map_err(|_| "pidfd out of range")?;
+        let handle = Self(unsafe { std::fs::File::from_raw_fd(fd) });
         if !process.is_current() {
             return Err("process changed before kernel capture".into());
         }
@@ -899,7 +1007,162 @@ pub(crate) fn verify_runtime(
     Ok((root.clone(), bundle.version))
 }
 #[cfg(target_os = "linux")]
+struct LaunchObserver {
+    permit: VerifiedLaunchAuthority,
+    binding: ManagedBinding,
+    owner: Arc<RuntimeOwner>,
+    registry: ProcessRegistry,
+    events: Arc<Mutex<VecDeque<ManagedLaunchEvent>>>,
+    cancelled: Arc<std::sync::atomic::AtomicBool>,
+    terminal: Arc<std::sync::atomic::AtomicBool>,
+    spawned: std::sync::atomic::AtomicBool,
+    process: Mutex<Option<ProcessIdentity>>,
+}
+#[cfg(target_os = "linux")]
+impl EnrolledProcessObserver for LaunchObserver {
+    fn before_spawn(&self) -> std::io::Result<()> {
+        self.permit.revalidate().map_err(std::io::Error::other)
+    }
+    fn child_created(&self) {
+        self.spawned
+            .store(true, std::sync::atomic::Ordering::Release);
+    }
+    fn supervise(&self, child: std::process::Child) -> std::io::Result<std::process::ExitStatus> {
+        let mut child = OwnedChild(child);
+        let process = ProcessIdentity::read(child.id());
+        let proof = process.and_then(|process| {
+            *self
+                .process
+                .lock()
+                .map_err(|_| "process observer poisoned")? = Some(process);
+            self.registry.register(
+                process,
+                self.binding.clone(),
+                VerifiedManagedRuntime(Arc::downgrade(&self.owner)),
+                self.cancelled.clone(),
+            )
+        });
+        let bind_error = match proof {
+            Ok(proof) => {
+                if let Ok(mut events) = self.events.lock() {
+                    events.push_back(ManagedLaunchEvent::Started(proof));
+                    None
+                } else {
+                    let _ = child.kill();
+                    Some("managed event owner poisoned".to_string())
+                }
+            }
+            Err(error) => {
+                let _ = child.kill();
+                Some(error)
+            }
+        };
+        let status = loop {
+            match child.try_wait() {
+                Ok(Some(status)) => break Ok(status),
+                Ok(None) => {}
+                Err(error) => {
+                    let _ = child.kill();
+                    break Err(error);
+                }
+            }
+            if self.cancelled.load(std::sync::atomic::Ordering::Acquire)
+                || !self.owner.live.load(std::sync::atomic::Ordering::Acquire)
+            {
+                // Child owns the original unreaped process; no PID lookup is used.
+                if let Err(error) = child.kill()
+                    && error.kind() != std::io::ErrorKind::InvalidInput
+                {
+                    break Err(error);
+                }
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        };
+        let process = self.process.lock().ok().and_then(|p| *p);
+        // Operator visibility: a signal (for example a seccomp kill)
+        // is otherwise reported only as a failure without a code.
+        tracing::info!(agent = %self.binding.agent, ?status, "managed child exited");
+        if let Ok(status) = status {
+            self.terminal
+                .store(true, std::sync::atomic::Ordering::Release);
+            if let Some(process) = process {
+                self.registry.remove(process);
+                let exit = VerifiedManagedExit {
+                    binding: self.binding.clone(),
+                    runtime: self.owner.facts.clone(),
+                    supervisor: process,
+                    status,
+                };
+                if let Ok(mut events) = self.events.lock() {
+                    events.push_back(ManagedLaunchEvent::Finished {
+                        binding: self.binding.clone(),
+                        process: Some(process),
+                        event: if status.success() {
+                            ProcessEvent::Exited
+                        } else {
+                            ProcessEvent::Failed {
+                                code: status.code(),
+                            }
+                        },
+                        exit,
+                    });
+                }
+            }
+        }
+        if let Some(error) = bind_error {
+            return Err(std::io::Error::other(error));
+        }
+        status
+    }
+}
+#[cfg(target_os = "linux")]
+impl LaunchObserver {
+    /// Revalidate, spawn and supervise the agent on this worker; a failure
+    /// becomes a launch event.
+    fn run(
+        self,
+        opts: &crate::run::RunOptions,
+        services: &mut crate::services::EnrolledServiceContext,
+    ) {
+        let result = (|| {
+            self.permit.revalidate()?;
+            if self.cancelled.load(std::sync::atomic::Ordering::Acquire) {
+                return Err("launch stopped before spawn".into());
+            }
+            let manifest = self.owner.package.revalidate(&self.owner.trust)?;
+            crate::run::run_enrolled(
+                &manifest,
+                self.owner.package.payload_root(),
+                opts,
+                services,
+                &self,
+            )
+            .map_err(|e| e.to_string())
+        })();
+        if let Err(reason) = result {
+            if !self.spawned.load(std::sync::atomic::Ordering::Acquire) {
+                self.terminal
+                    .store(true, std::sync::atomic::Ordering::Release);
+            }
+            if let Ok(mut events) = self.events.lock() {
+                events.push_back(ManagedLaunchEvent::Failed {
+                    binding: self.binding.clone(),
+                    process: self.process.lock().ok().and_then(|p| *p),
+                    terminal: self.terminal.load(std::sync::atomic::Ordering::Acquire),
+                    reason,
+                });
+            }
+        }
+    }
+}
+#[cfg(target_os = "linux")]
 impl ManagedLauncher {
+    /// Start the permitted launch's sandboxed agent on a supervising worker.
+    ///
+    /// # Errors
+    ///
+    /// Returns a description for a permit or channel of another runtime, a stopped launch, or
+    /// an unavailable worker; spawn failures are reported as events instead.
     pub fn launch(
         &mut self,
         permit: VerifiedLaunchAuthority,
@@ -953,117 +1216,7 @@ impl ManagedLauncher {
         let thread = std::thread::Builder::new()
             .name("tilo-managed-agent".into())
             .spawn(move || {
-                struct Observer {
-                    permit: VerifiedLaunchAuthority,
-                    binding: ManagedBinding,
-                    owner: Arc<RuntimeOwner>,
-                    registry: ProcessRegistry,
-                    events: Arc<Mutex<VecDeque<ManagedLaunchEvent>>>,
-                    cancelled: Arc<std::sync::atomic::AtomicBool>,
-                    terminal: Arc<std::sync::atomic::AtomicBool>,
-                    spawned: std::sync::atomic::AtomicBool,
-                    process: Mutex<Option<ProcessIdentity>>,
-                }
-                impl EnrolledProcessObserver for Observer {
-                    fn before_spawn(&self) -> std::io::Result<()> {
-                        self.permit.revalidate().map_err(std::io::Error::other)
-                    }
-                    fn child_created(&self) {
-                        self.spawned
-                            .store(true, std::sync::atomic::Ordering::Release);
-                    }
-                    fn supervise(
-                        &self,
-                        child: std::process::Child,
-                    ) -> std::io::Result<std::process::ExitStatus> {
-                        let mut child = OwnedChild(child);
-                        let process = ProcessIdentity::read(child.id());
-                        let proof = process.and_then(|process| {
-                            *self
-                                .process
-                                .lock()
-                                .map_err(|_| "process observer poisoned")? = Some(process);
-                            self.registry.register(
-                                process,
-                                self.binding.clone(),
-                                VerifiedManagedRuntime(Arc::downgrade(&self.owner)),
-                                self.cancelled.clone(),
-                            )
-                        });
-                        let bind_error = match proof {
-                            Ok(proof) => {
-                                if let Ok(mut events) = self.events.lock() {
-                                    events.push_back(ManagedLaunchEvent::Started(proof));
-                                    None
-                                } else {
-                                    let _ = child.kill();
-                                    Some("managed event owner poisoned".to_string())
-                                }
-                            }
-                            Err(error) => {
-                                let _ = child.kill();
-                                Some(error)
-                            }
-                        };
-                        let status = loop {
-                            match child.try_wait() {
-                                Ok(Some(status)) => break Ok(status),
-                                Ok(None) => {}
-                                Err(error) => {
-                                    let _ = child.kill();
-                                    break Err(error);
-                                }
-                            }
-                            if self.cancelled.load(std::sync::atomic::Ordering::Acquire)
-                                || !self.owner.live.load(std::sync::atomic::Ordering::Acquire)
-                            {
-                                // Child owns the original unreaped process; no PID lookup is used.
-                                if let Err(error) = child.kill() {
-                                    if error.kind() != std::io::ErrorKind::InvalidInput {
-                                        break Err(error);
-                                    }
-                                }
-                            }
-                            std::thread::sleep(std::time::Duration::from_millis(10));
-                        };
-                        let process = self.process.lock().ok().and_then(|p| *p);
-                        // Operator visibility: a signal (for example a seccomp kill)
-                        // is otherwise reported only as a failure without a code.
-                        tracing::info!(agent = %self.binding.agent, ?status, "managed child exited");
-                        if let Ok(status) = status {
-                            self.terminal
-                                .store(true, std::sync::atomic::Ordering::Release);
-                            if let Some(process) = process {
-                                self.registry.remove(process);
-                                let exit = VerifiedManagedExit {
-                                    binding: self.binding.clone(),
-                                    runtime: self.owner.facts.clone(),
-                                    supervisor: process,
-                                    status,
-                                };
-                                if let Ok(mut events) = self.events.lock() {
-                                    events.push_back(ManagedLaunchEvent::Finished {
-                                        binding: self.binding.clone(),
-                                        process: Some(process),
-                                        event: if status.success() {
-                                            ProcessEvent::Exited
-                                        } else {
-                                            ProcessEvent::Failed {
-                                                code: status.code(),
-                                            }
-                                        },
-                                        exit,
-                                    });
-                                }
-                            }
-                        }
-                        if let Some(error) = bind_error {
-                            return Err(std::io::Error::other(error));
-                        }
-                        status
-                    }
-                }
-                let observer = Observer {
+                LaunchObserver {
                     permit,
                     binding,
                     owner,
@@ -1073,40 +1226,8 @@ impl ManagedLauncher {
                     terminal,
                     spawned: false.into(),
                     process: Mutex::new(None),
-                };
-                let result = (|| {
-                    observer.permit.revalidate()?;
-                    if observer
-                        .cancelled
-                        .load(std::sync::atomic::Ordering::Acquire)
-                    {
-                        return Err("launch stopped before spawn".into());
-                    }
-                    let manifest = observer.owner.package.revalidate(&observer.owner.trust)?;
-                    crate::run::run_enrolled(
-                        &manifest,
-                        observer.owner.package.payload_root(),
-                        &opts,
-                        &mut services,
-                        &observer,
-                    )
-                    .map_err(|e| e.to_string())
-                })();
-                if let Err(reason) = result {
-                    if !observer.spawned.load(std::sync::atomic::Ordering::Acquire) {
-                        observer
-                            .terminal
-                            .store(true, std::sync::atomic::Ordering::Release);
-                    }
-                    if let Ok(mut events) = observer.events.lock() {
-                        events.push_back(ManagedLaunchEvent::Failed {
-                            binding: observer.binding.clone(),
-                            process: observer.process.lock().ok().and_then(|p| *p),
-                            terminal: observer.terminal.load(std::sync::atomic::Ordering::Acquire),
-                            reason,
-                        });
-                    }
                 }
+                .run(&opts, &mut services);
             })
             .map_err(|e| {
                 thread_failure.store(true, std::sync::atomic::Ordering::Release);
@@ -1121,6 +1242,11 @@ impl ManagedLauncher {
 #[derive(Clone)]
 pub struct VerifiedManagedProcess(VerifiedManagedSupervisor);
 impl VerifiedManagedProcess {
+    /// Current descriptive facts for this live agent process.
+    ///
+    /// # Errors
+    ///
+    /// Returns a description when custody is no longer current or this is not an agent process.
     #[cfg(target_os = "linux")]
     pub fn facts(&self) -> Result<ChannelProcessFacts, String> {
         self.revalidate(self.binding(), self.process())?;
@@ -1133,6 +1259,11 @@ impl VerifiedManagedProcess {
             channel_id: evidence.channel_id.clone(),
         })
     }
+    /// Managed process custody is Linux-only.
+    ///
+    /// # Errors
+    ///
+    /// Always refuses on this platform.
     #[cfg(not(target_os = "linux"))]
     pub fn facts(&self) -> Result<ChannelProcessFacts, String> {
         Err("managed process custody requires Linux".into())
@@ -1143,6 +1274,11 @@ impl VerifiedManagedProcess {
     pub fn process(&self) -> ProcessIdentity {
         self.0.process()
     }
+    /// Check that `binding` and `process` are still this process's live custody.
+    ///
+    /// # Errors
+    ///
+    /// As [`VerifiedManagedSupervisor::revalidate`].
     pub fn revalidate(
         &self,
         binding: &ManagedBinding,
@@ -1152,7 +1288,7 @@ impl VerifiedManagedProcess {
     }
 }
 
-/// Descriptive durable evidence. Only VerifiedManagedProcess confers live custody.
+/// Descriptive durable evidence. Only `VerifiedManagedProcess` confers live custody.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ChannelProcessFacts {
     pub binding: ManagedBinding,
@@ -1180,6 +1316,11 @@ impl AdmittedManagedConnection {
 pub mod channel {
     pub use super::{AdmittedManagedConnection, ChannelProcessFacts, VerifiedManagedProcess};
     pub trait ManagedProcessAuthority {
+        /// Durably bind the exact admitted agent process.
+        ///
+        /// # Errors
+        ///
+        /// Returns a description when the binding cannot be made durable.
         fn bind_process(&self, process: &VerifiedManagedProcess) -> Result<(), String>;
     }
 }

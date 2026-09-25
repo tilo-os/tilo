@@ -89,6 +89,15 @@ fn canonical(evidence: &ContinuationEvidence) -> Vec<u8> {
 
 #[test]
 fn effective_primitive_canonical_stream_preserves_variant_and_tuple_boundaries() {
+    struct Refuse;
+    impl std::io::Write for Refuse {
+        fn write(&mut self, _: &[u8]) -> std::io::Result<usize> {
+            Err(std::io::Error::other("sink refused"))
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
     let target = ContinuationKey::new("domain", [b"ab".as_slice(), b"c".as_slice()]);
     let handler = ContinuationKey::new("handler", [b"v1".as_slice()]);
     let exact = ContinuationEvidence::Exact {
@@ -106,15 +115,6 @@ fn effective_primitive_canonical_stream_preserves_variant_and_tuple_boundaries()
     assert_eq!(canonical(&exact), canonical(&exact.clone()));
     assert_ne!(canonical(&exact), canonical(&draft));
     assert_ne!(canonical(&exact), canonical(&split));
-    struct Refuse;
-    impl std::io::Write for Refuse {
-        fn write(&mut self, _: &[u8]) -> std::io::Result<usize> {
-            Err(std::io::Error::other("sink refused"))
-        }
-        fn flush(&mut self) -> std::io::Result<()> {
-            Ok(())
-        }
-    }
     assert_eq!(
         exact
             .write_canonical_identity(&mut Refuse)

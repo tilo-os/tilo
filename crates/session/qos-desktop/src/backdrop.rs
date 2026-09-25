@@ -117,8 +117,11 @@ pub struct DesktopBackdrop {
     /// Private workspace identity used only to select a local image cache.
     /// It never enters workspace replication or app-visible widget state.
     workspace_id: Option<String>,
-    wallpaper: Option<Box<dyn Fn(&str) -> Option<ImageData>>>,
+    wallpaper: Option<WallpaperProvider>,
 }
+
+/// Host-supplied lookup from a workspace identity to its verified decoded wallpaper.
+type WallpaperProvider = Box<dyn Fn(&str) -> Option<ImageData>>;
 
 /// The ground is the system's largest, quietest surface — at desktop
 /// scale the surface family's tint stops reading as a hue and becomes
@@ -239,6 +242,7 @@ impl DesktopBackdrop {
     }
 
     /// The host supplies verified decoded images; no native paths cross this boundary.
+    #[must_use]
     pub fn with_wallpaper_provider(
         mut self,
         provider: impl Fn(&str) -> Option<ImageData> + 'static,

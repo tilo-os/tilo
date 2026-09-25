@@ -1,3 +1,13 @@
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::string_slice,
+    clippy::panic,
+    clippy::unreachable,
+    clippy::arithmetic_side_effects,
+    reason = "in a test these are the assertion, not a hazard"
+)]
 use qos_desktop::composition::{DesktopSurface, SurfaceChrome};
 use qos_desktop::resolver::{TileRequest, TileResolution, TileResolver};
 use qos_desktop::{
@@ -23,14 +33,14 @@ fn tree() -> WorkspaceTree {
         window_groups: vec![WindowGroup {
             id: 3,
             tabs: vec![Tab {
-                id: 9007199254741001,
+                id: 9_007_199_254_741_001,
                 title: "My document".into(),
                 tile: TileContent::AppPlaceholder {
                     kind: AppKind::Other("dev.qos.word-processor".into()),
                     label: "Renamed".into(),
                 },
             }],
-            active_tab: 9007199254741001,
+            active_tab: 9_007_199_254_741_001,
             width: WindowWidth::Normal,
             maximized: false,
         }],
@@ -294,7 +304,6 @@ fn navigation_focus_fallback_cross_strip_closing_and_lone_group_match_native() {
 
 #[test]
 fn navigation_keyboard_focus_on_same_selected_tab_is_an_edge_not_a_sticky_caret() {
-    let mut test = NavigationFrame::new(navigation_tree(), 740);
     fn tabbar(node: &ui::headless::InspectionNode) -> Option<String> {
         if node.semantics.as_ref().is_some_and(|s| {
             s.children
@@ -305,6 +314,7 @@ fn navigation_keyboard_focus_on_same_selected_tab_is_an_edge_not_a_sticky_caret(
         }
         node.children.iter().find_map(tabbar)
     }
+    let mut test = NavigationFrame::new(navigation_tree(), 740);
     let bar = tabbar(&test.frame.inspection().root).unwrap();
     test.frame
         .perform_semantic_named(&bar, None, &ui::a11y::Action::Focus)
@@ -476,7 +486,7 @@ fn navigation_newly_mounted_real_writer_focus_is_not_an_admitted_focus_intent() 
     let record = qos_desktop::records::scratch_tab_record(23);
     test.records.create_record(&record).unwrap();
     test.records.with(&record.id, |doc| {
-        word_processor::initialize_empty_document(doc).unwrap()
+        word_processor::initialize_empty_document(doc).unwrap();
     });
     unsafe {
         (&mut *test.surface).reconcile(&test.tree, &test.records, &mut Writer);

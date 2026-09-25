@@ -1,5 +1,5 @@
 use super::ActivityTree;
-use super::pane::*;
+use super::pane::{RoomActivityPane, RoomScope};
 use std::collections::HashMap;
 use ui::clock::SystemTime;
 use ui::widget::{HistoryEntry, HistoryEntryId};
@@ -57,7 +57,7 @@ impl RoomActivityPane {
         let mut frames = Vec::with_capacity(ordered.len().min(120));
         for entry in ordered.into_iter().skip(skip) {
             let Some(heads) = ui::heads_for_entry(baseline.document_mut(), &entry.id) else {
-                self.replay_unavailable += 1;
+                self.replay_unavailable = self.replay_unavailable.saturating_add(1);
                 continue;
             };
             // Automerge 0.8's `fork_at` collector can traverse a valid merged
@@ -66,11 +66,15 @@ impl RoomActivityPane {
             // the historical clock; the replay snapshot is discarded after
             // this frame is materialised.
             let mut doc = baseline.document_mut().fork();
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "the forked replay document is dropped after this frame, so its patch log cannot grow"
+            )]
             doc.isolate(&heads);
             let mut snapshot = baseline.clone();
             *snapshot.document_mut() = doc;
             if snapshot.resync_activity_cache().is_err() {
-                self.replay_unavailable += 1;
+                self.replay_unavailable = self.replay_unavailable.saturating_add(1);
                 continue;
             }
 

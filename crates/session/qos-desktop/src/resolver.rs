@@ -12,6 +12,10 @@ pub struct TileRequest<'a> {
     pub room: RoomId,
     pub tab: &'a Tab,
 }
+#[expect(
+    clippy::large_enum_variant,
+    reason = "a resolution is mounted immediately; boxing the component would reshape the public variant hosts construct"
+)]
 pub enum TileResolution {
     Component(AppComponent),
     /// A retained checked owner moved through a hierarchy rebuild.
@@ -49,6 +53,11 @@ pub fn canonical_app_id(tile: &TileContent) -> Option<String> {
 }
 /// A checked context is provided by the host; this interface grants no authority.
 pub trait ComponentContextSource {
+    /// The record checkout for a component tile.
+    ///
+    /// # Errors
+    ///
+    /// Returns the launch error when the host cannot provide the record.
     fn checkout(
         &self,
         definition: &'static ApplicationDefinition,
@@ -61,6 +70,11 @@ pub trait ComponentContextSource {
         ))
     }
 
+    /// Prepare the checked host context and restore input for a launch.
+    ///
+    /// # Errors
+    ///
+    /// Returns the launch error when the host cannot prepare the component.
     fn prepare(
         &mut self,
         definition: &'static ApplicationDefinition,
@@ -80,20 +94,17 @@ impl<H: ComponentContextSource> TileResolver for ApplicationCatalogTileResolver<
                 detail: "Application identity unavailable".into(),
             };
         };
-        let definition = match self.catalog.resolve(&id) {
-            Ok(definition) => definition,
-            Err(_) => {
-                return if id.starts_with("dev.qos.") || id.starts_with("org.nirios.") {
-                    TileResolution::Unavailable {
-                        title: request.tab.title.clone(),
-                        detail: format!(
-                            "{id}: application integration or required service unavailable"
-                        ),
-                    }
-                } else {
-                    TileResolution::OpaqueForeign { app_id: id, reason: "No semantic application adapter; process-local pixels cannot be reconstructed".into() }
-                };
-            }
+        let Ok(definition) = self.catalog.resolve(&id) else {
+            return if id.starts_with("dev.qos.") || id.starts_with("org.nirios.") {
+                TileResolution::Unavailable {
+                    title: request.tab.title.clone(),
+                    detail: format!(
+                        "{id}: application integration or required service unavailable"
+                    ),
+                }
+            } else {
+                TileResolution::OpaqueForeign { app_id: id, reason: "No semantic application adapter; process-local pixels cannot be reconstructed".into() }
+            };
         };
         let checkout = match self.host.checkout(definition, &request) {
             Ok(checkout) => checkout,

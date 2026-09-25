@@ -1,7 +1,10 @@
 //! One-use kernel-authenticated startup for the enrolled collaboration descriptor.
 //! Supervisor custody is separate from the executing agent and its durable binding.
-use super::*;
 pub use super::{AdmittedManagedConnection, ChannelProcessFacts, VerifiedManagedProcess};
+use super::{
+    Arc, KernelProcess, ManagedBinding, Mutex, Path, ProcessIdentity, ProcessRecord,
+    VerifiedLaunchAuthority, VerifiedManagedSupervisor,
+};
 use std::{
     fs::File,
     io::{Read, Write},
@@ -15,6 +18,12 @@ use std::{
 /// Installed canonical owner callback. Success means the exact actual PID/start
 /// binding is durable; any error after spawn is an uncertain launch, never a retry.
 pub trait ManagedProcessAuthority {
+    /// Durably bind the exact admitted agent process.
+    ///
+    /// # Errors
+    ///
+    /// Returns a description when the binding cannot be made durable; the launch is then
+    /// uncertain.
     fn bind_process(&self, process: &VerifiedManagedProcess) -> Result<(), String>;
 }
 struct Executable {
@@ -29,9 +38,9 @@ struct Executable {
 const EXECUTABLE_RECHECK: Duration = Duration::from_secs(2);
 fn image_stamp(metadata: &std::fs::Metadata) -> [i64; 7] {
     [
-        metadata.dev() as i64,
-        metadata.ino() as i64,
-        metadata.len() as i64,
+        metadata.dev().cast_signed(),
+        metadata.ino().cast_signed(),
+        metadata.len().cast_signed(),
         metadata.mtime(),
         metadata.mtime_nsec(),
         metadata.ctime(),
@@ -123,7 +132,7 @@ impl ProcessEvidence {
             revents: 0,
         };
         // A pidfd pins the original kernel task even after numeric PID reuse.
-        if unsafe { libc::poll(&mut poll, 1, 0) } != 0
+        if unsafe { libc::poll(&raw mut poll, 1, 0) } != 0
             || !process.is_current()
             || !self.supervisor.is_current()
         {
@@ -173,6 +182,12 @@ impl PendingManagedConnection {
     pub fn channel_id(&self) -> &str {
         &self.channel_id
     }
+    /// Allocate this attempt's one connected descriptor pair and challenge.
+    ///
+    /// # Errors
+    ///
+    /// Returns a description when a channel was already allocated, the permit or package no
+    /// longer verifies, or the socket cannot be configured.
     pub fn pair(permit: &mut VerifiedLaunchAuthority) -> Result<(Self, UnixStream), String> {
         if permit.channel_id.is_some() {
             return Err("managed channel already allocated for this attempt".into());
@@ -197,8 +212,9 @@ impl PendingManagedConnection {
                 socket.as_raw_fd(),
                 libc::SOL_SOCKET,
                 libc::SO_PASSCRED,
-                (&enabled as *const libc::c_int).cast(),
-                std::mem::size_of_val(&enabled) as libc::socklen_t,
+                (&raw const enabled).cast(),
+                libc::socklen_t::try_from(std::mem::size_of_val(&enabled))
+                    .map_err(|_| "socket option size")?,
             )
         } != 0
         {
@@ -224,6 +240,11 @@ impl PendingManagedConnection {
             client,
         ))
     }
+    /// Admit the agent and wrap its proof with the exact admitted socket.
+    ///
+    /// # Errors
+    ///
+    /// As [`PendingManagedConnection::admit`].
     pub fn admit_connection(
         self,
         supervisor: &VerifiedManagedSupervisor,
@@ -232,6 +253,13 @@ impl PendingManagedConnection {
         let (process, stream) = self.admit(supervisor, authority)?;
         Ok(AdmittedManagedConnection { process, stream })
     }
+    /// Authenticate the kernel sender, verify its executable and ancestry, and
+    /// durably bind it once.
+    ///
+    /// # Errors
+    ///
+    /// Returns a description when custody, the challenge, the sender's identity or executable,
+    /// or the durable binding fails; after spawn such a failure is an uncertain launch.
     pub fn admit(
         mut self,
         supervisor: &VerifiedManagedSupervisor,
@@ -253,11 +281,12 @@ impl PendingManagedConnection {
                 std::io::Error::last_os_error()
             ));
         }
+        let fd = i32::try_from(fd).map_err(|_| "agent pidfd out of range")?;
         let evidence = ProcessEvidence {
             supervisor: supervisor.process(),
             executable: self.executable,
             channel_id: self.channel_id,
-            pidfd: unsafe { File::from_raw_fd(fd as i32) },
+            pidfd: unsafe { File::from_raw_fd(fd) },
         };
         evidence.revalidate(process)?;
         {
@@ -343,17 +372,18 @@ fn receive_credential_chunk(
     socket: &UnixStream,
     answer: &mut [u8],
 ) -> Result<CredentialChunk, String> {
+    const WIDTH: usize = std::mem::size_of::<libc::c_int>();
     let mut iov = libc::iovec {
         iov_base: answer.as_mut_ptr().cast(),
         iov_len: answer.len(),
     };
     let mut control = [0usize; 16];
     let mut msg: libc::msghdr = unsafe { std::mem::zeroed() };
-    msg.msg_iov = &mut iov;
+    msg.msg_iov = &raw mut iov;
     msg.msg_iovlen = 1;
     msg.msg_control = control.as_mut_ptr().cast();
     msg.msg_controllen = std::mem::size_of_val(&control);
-    let count = unsafe { libc::recvmsg(socket.as_raw_fd(), &mut msg, libc::MSG_CMSG_CLOEXEC) };
+    let count = unsafe { libc::recvmsg(socket.as_raw_fd(), &raw mut msg, libc::MSG_CMSG_CLOEXEC) };
     if count < 0 {
         return Err(format!(
             "kernel credential read failed: {}",
@@ -361,7 +391,7 @@ fn receive_credential_chunk(
         ));
     }
     let mut received = CredentialChunk {
-        count: count as usize,
+        count: count.unsigned_abs(),
         credential: None,
         rights: Vec::new(),
         invalid: false,
@@ -371,7 +401,7 @@ fn receive_credential_chunk(
     // never stop after a rejected credential before owning later rights headers.
     let used = msg.msg_controllen.min(std::mem::size_of_val(&control));
     unsafe {
-        let mut header = libc::CMSG_FIRSTHDR(&msg);
+        let mut header = libc::CMSG_FIRSTHDR(&raw const msg);
         while !header.is_null() {
             let offset = (header as usize).saturating_sub(msg.msg_control as usize);
             let base = libc::CMSG_LEN(0) as usize;
@@ -384,21 +414,23 @@ fn receive_credential_chunk(
                 received.invalid = true;
                 break;
             }
-            let available = used - offset;
-            let payload = length.min(available) - base;
+            // `offset + base <= used` and `length >= base` were checked above.
+            let available = used.saturating_sub(offset);
+            let payload = length.min(available).saturating_sub(base);
             if length > available {
                 received.invalid = true;
             }
             if (*header).cmsg_level == libc::SOL_SOCKET && (*header).cmsg_type == libc::SCM_RIGHTS {
                 received.invalid = true;
-                let width = std::mem::size_of::<libc::c_int>();
-                if payload % width != 0 {
+                if !payload.is_multiple_of(WIDTH) {
                     received.invalid = true;
                 }
-                for index in 0..payload / width {
-                    let fd = std::ptr::read_unaligned(
-                        libc::CMSG_DATA(header).cast::<libc::c_int>().add(index),
-                    );
+                for index in 0..payload / WIDTH {
+                    let fd = libc::c_int::from_ne_bytes(std::ptr::read_unaligned(
+                        libc::CMSG_DATA(header)
+                            .add(index.saturating_mul(WIDTH))
+                            .cast::<[u8; WIDTH]>(),
+                    ));
                     if fd >= 0 {
                         received.rights.push(std::os::fd::OwnedFd::from_raw_fd(fd));
                     } else {
@@ -421,7 +453,7 @@ fn receive_credential_chunk(
             if length > available {
                 break;
             }
-            header = libc::CMSG_NXTHDR(&msg, header);
+            header = libc::CMSG_NXTHDR(&raw const msg, header);
         }
     }
     Ok(received)
@@ -431,7 +463,10 @@ fn receive_credentials(socket: &UnixStream) -> Result<([u8; 32], u32), String> {
     let mut offset = 0;
     let mut sender = None;
     while offset < answer.len() {
-        let received = receive_credential_chunk(socket, &mut answer[offset..])?;
+        let remaining = answer
+            .get_mut(offset..)
+            .ok_or("kernel credential handshake overran")?;
+        let received = receive_credential_chunk(socket, remaining)?;
         if received.count == 0
             || received.truncated
             || received.invalid
@@ -447,12 +482,12 @@ fn receive_credentials(socket: &UnixStream) -> Result<([u8; 32], u32), String> {
         if credential.pid <= 0 || credential.uid != unsafe { libc::geteuid() } {
             return Err("wrong kernel sender identity".into());
         }
-        let pid = credential.pid as u32;
+        let pid = credential.pid.unsigned_abs();
         if sender.is_some_and(|prior| prior != pid) {
             return Err("descriptor sender changed".into());
         }
         sender = Some(pid);
-        offset += received.count;
+        offset = offset.saturating_add(received.count);
     }
     Ok((answer, sender.ok_or("sender absent")?))
 }

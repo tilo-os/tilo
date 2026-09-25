@@ -64,7 +64,12 @@ pub struct Inventory {
 }
 impl Inventory {
     pub fn valid(&self) -> bool {
-        if self.publishers.len() > 7 || self.publishers.windows(2).any(|pair| pair[0] >= pair[1]) {
+        if self.publishers.len() > 7
+            || self
+                .publishers
+                .windows(2)
+                .any(|pair| matches!(pair, [left, right] if left >= right))
+        {
             return false;
         }
         if self.revision.is_none() && (self.publication.is_some() || !self.publishers.is_empty()) {
@@ -72,10 +77,12 @@ impl Inventory {
         }
         let mut call = None;
         for namespace in self.publication.iter().chain(self.publishers.iter()) {
-            if !namespace_valid(namespace) {
+            let Some(prefix) = namespace_valid(namespace)
+                .then(|| namespace.get(..64))
+                .flatten()
+            else {
                 return false;
-            }
-            let prefix = &namespace[..64];
+            };
             if call.is_some_and(|prior| prior != prefix) {
                 return false;
             }
@@ -88,7 +95,7 @@ impl Inventory {
 }
 fn namespace_valid(value: &str) -> bool {
     value.len() == 129
-        && value.as_bytes()[64] == b'/'
+        && value.as_bytes().get(64) == Some(&b'/')
         && value
             .bytes()
             .enumerate()
@@ -142,10 +149,20 @@ impl Request {
             }
     }
 
+    /// Encode a valid command for the wire.
+    ///
+    /// # Errors
+    ///
+    /// Refuses an invalid command or an encoding failure.
     pub fn encode(&self) -> Result<Vec<u8>, &'static str> {
         encode(self, self.valid())
     }
 
+    /// Decode one bounded, valid command.
+    ///
+    /// # Errors
+    ///
+    /// Refuses malformed or invalid input.
     pub fn decode(bytes: &[u8]) -> Result<Self, &'static str> {
         let value: Self = decode(bytes)?;
         value
@@ -195,10 +212,20 @@ impl Snapshot {
             })
     }
 
+    /// Encode a valid status for the wire.
+    ///
+    /// # Errors
+    ///
+    /// Refuses an invalid status or an encoding failure.
     pub fn encode(&self) -> Result<Vec<u8>, &'static str> {
         encode(self, self.valid())
     }
 
+    /// Decode one bounded, valid status.
+    ///
+    /// # Errors
+    ///
+    /// Refuses malformed or invalid input.
     pub fn decode(bytes: &[u8]) -> Result<Self, &'static str> {
         let value: Self = decode(bytes)?;
         value

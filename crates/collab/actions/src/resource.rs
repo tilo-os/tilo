@@ -750,21 +750,26 @@ impl ActionSpec {
     }
 
     fn validate_built(&self, encoded: EncodedAction) -> Result<EncodedAction, ArgError> {
-        if let Some(expected) = self.deferred_invocation_type() {
-            if encoded.type_id != expected {
-                return Err(ArgError::Constraint {
-                    name: "deferred".into(),
-                    reason: format!(
-                        "builder returned `{}` but declared `{expected}`",
-                        encoded.type_id
-                    ),
-                });
-            }
+        if let Some(expected) = self.deferred_invocation_type()
+            && encoded.type_id != expected
+        {
+            return Err(ArgError::Constraint {
+                name: "deferred".into(),
+                reason: format!(
+                    "builder returned `{}` but declared `{expected}`",
+                    encoded.type_id
+                ),
+            });
         }
         Ok(encoded)
     }
 
     /// Strict argument validation without invoking an encoder.
+    ///
+    /// # Errors
+    ///
+    /// Returns an [`ArgError`] when the deferred declaration is malformed or
+    /// `supplied` does not bind to the declared parameters.
     pub fn validate_json(
         &self,
         supplied: &serde_json::Map<String, serde_json::Value>,
@@ -1574,9 +1579,6 @@ pub trait ResourceProvider {
         doc: &automerge::AutoCommit,
         id: &str,
     ) -> Option<Resource> {
-        let Some(participant) = participant else {
-            return self.resource(doc, id);
-        };
         fn find(resources: Vec<Resource>, id: &str) -> Option<Resource> {
             for resource in resources {
                 if resource.id.as_str() == id {
@@ -1588,6 +1590,9 @@ pub trait ResourceProvider {
             }
             None
         }
+        let Some(participant) = participant else {
+            return self.resource(doc, id);
+        };
         find(self.resources_for(Some(participant), doc), id)
     }
 

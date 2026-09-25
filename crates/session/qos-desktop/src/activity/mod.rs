@@ -24,6 +24,11 @@ pub use pane::{ActivityView, Period, RoomActivityOutcome, RoomActivityPane, Room
 pub trait ActivityTree: Clone + Deref<Target = WorkspaceTree> + DerefMut {
     fn document(&self) -> &AutoCommit;
     fn document_mut(&mut self) -> &mut AutoCommit;
+    /// Rebuild the desktop projection from the causal document.
+    ///
+    /// # Errors
+    ///
+    /// Returns a description when the document no longer projects to a desktop.
     fn resync_activity_cache(&mut self) -> Result<(), String>;
     fn replay_presentation_note(&self) -> Option<&'static str> {
         None
@@ -53,7 +58,7 @@ pub trait ActivityTree: Clone + Deref<Target = WorkspaceTree> + DerefMut {
 
 /// Read-only admitted single-room history. Construct from the actual admitted
 /// owner document, never from a re-encoded desktop cache. The supplied document
-/// is owned so HistorySource's AutoCommit cursor cannot touch the live owner.
+/// is owned so `HistorySource`'s `AutoCommit` cursor cannot touch the live owner.
 #[derive(Clone)]
 pub struct ActivitySnapshot {
     pub desktop: WorkspaceTree,
@@ -61,6 +66,11 @@ pub struct ActivitySnapshot {
     room: crate::RoomId,
 }
 impl ActivitySnapshot {
+    /// Snapshot the active room of `desktop` from its admitted owner document.
+    ///
+    /// # Errors
+    ///
+    /// Returns a description when there is no active workspace or the room does not project.
     pub fn new(desktop: WorkspaceTree, doc: AutoCommit) -> Result<Self, String> {
         let room = desktop
             .active_workspace()
@@ -149,9 +159,19 @@ pub trait ActivityHost {
     fn agent_is_live(&self, _room: &str, _agent: &str) -> bool {
         false
     }
+    /// Dispatch a workspace task to its agent.
+    ///
+    /// # Errors
+    ///
+    /// Returns a description when dispatch is unavailable or refused.
     fn dispatch_task(&self, _room: &str, _task: &str) -> Result<(), String> {
         Err("agent task dispatch is unavailable".into())
     }
+    /// Launch an agent into `workspace`.
+    ///
+    /// # Errors
+    ///
+    /// Returns a description when launching is unavailable or refused.
     fn launch_agent(&self, _agent: &str, _workspace: &Workspace) -> Result<(), String> {
         Err("agent launching is unavailable".into())
     }

@@ -9,6 +9,7 @@ use automerge::transaction::Transactable;
 use automerge::{ActorId, AutoCommit, ROOT};
 use qdoc::DocMut;
 use qdoc::model::{self, Region};
+use tilo_automerge::ApplyIncoming;
 
 fn with_dm<R>(doc: &mut AutoCommit, f: impl FnOnce(&mut DocMut<'_>) -> R) -> R {
     let c = model::open(doc, &ROOT).unwrap();
@@ -59,7 +60,7 @@ fn concurrent_first_headers_on_a_legacy_document_both_survive() {
                 dm.splice_text_in(region, &id, 0, 0, "right");
                 id
             });
-            a.merge(&mut b).unwrap();
+            a.merge_incoming(&mut b).unwrap();
             let mut shown = texts(&a, region);
             shown.sort();
             assert_eq!(shown, ["left", "right"], "{region:?}");

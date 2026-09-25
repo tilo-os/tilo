@@ -225,10 +225,10 @@ impl TokenLimitParam {
 /// Where a provider takes its reasoning effort.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ReasoningParam {
-    /// OpenAI Chat Completions: top-level `"reasoning_effort": "<effort>"`.
+    /// `OpenAI` Chat Completions: top-level `"reasoning_effort": "<effort>"`.
     #[serde(rename = "reasoning_effort")]
     ReasoningEffort,
-    /// OpenRouter's unified object: `"reasoning": {"effort": "<effort>"}`.
+    /// `OpenRouter`'s unified object: `"reasoning": {"effort": "<effort>"}`.
     #[serde(rename = "reasoning.effort")]
     ReasoningObject,
     /// Send no reasoning field at all, and strip any the caller sent.

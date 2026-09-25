@@ -20,7 +20,7 @@ impl Permit {
     pub(super) fn acquire() -> Result<Self, AudioError> {
         OUTSTANDING
             .fetch_update(Ordering::AcqRel, Ordering::Acquire, |count| {
-                (count < MAX_DEVICE_WORKERS).then_some(count + 1)
+                (count < MAX_DEVICE_WORKERS).then(|| count.saturating_add(1))
             })
             .map(|_| Self)
             .map_err(|_| AudioError::Capacity)
@@ -46,7 +46,7 @@ struct State {
 }
 impl CaptureStop {
     /// Immediately revokes this generation and shuts down its exact daemon
-    /// socket, including GStreamer's duplicates. It never waits for a driver,
+    /// socket, including `GStreamer`'s duplicates. It never waits for a driver,
     /// takes an outer service mutex, joins a thread, or reconnects. The bounded
     /// worker performs Null cleanup and retains its permit until that completes.
     pub fn stop(&self) {
@@ -90,8 +90,9 @@ fn registry() -> Result<&'static Registry, AudioError> {
                 .spawn(move || {
                     loop {
                         {
-                            let mut slots =
-                                observed.lock().unwrap_or_else(|error| error.into_inner());
+                            let mut slots = observed
+                                .lock()
+                                .unwrap_or_else(std::sync::PoisonError::into_inner);
                             slots.retain(|slot| {
                                 let Some(state) = slot.upgrade() else {
                                     return false;
@@ -117,7 +118,7 @@ fn registry() -> Result<&'static Registry, AudioError> {
             Ok(registry)
         })
         .as_ref()
-        .map_err(|_| AudioError::Unavailable)
+        .map_err(|()| AudioError::Unavailable)
 }
 
 pub(super) struct DevicePipeline {
@@ -144,7 +145,9 @@ impl DevicePipeline {
             thread: OnceLock::new(),
         }));
         {
-            let mut slots = registry.lock().unwrap_or_else(|error| error.into_inner());
+            let mut slots = registry
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             slots.retain(|slot| {
                 slot.upgrade()
                     .is_some_and(|state| !state.finished.load(Ordering::Acquire))

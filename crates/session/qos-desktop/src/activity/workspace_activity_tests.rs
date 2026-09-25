@@ -38,7 +38,7 @@ mod workspace_activity {
                 std::slice::from_ref(strip),
                 7,
             );
-            doc.commit_with(CommitOptions::default().with_time(n as i64));
+            doc.commit_with(CommitOptions::default().with_time(n.cast_signed()));
         }
         ActivitySnapshot::new(desktop, doc).unwrap()
     }
@@ -158,6 +158,12 @@ mod workspace_activity {
     }
     #[test]
     fn unavailable_mutation_host_hides_naming_and_rejects_restore() {
+        struct Enabled;
+        impl ActivityHost for Enabled {
+            fn mutations_available(&self) -> bool {
+                true
+            }
+        }
         let mut tree = causal_room();
         let mut pane = RoomActivityPane::new();
         pane.refresh(&mut tree);
@@ -166,12 +172,6 @@ mod workspace_activity {
         let heads = tree.doc.get_heads();
         assert!(!pane.revert_to(&mut tree, &pane.entries()[0].id.clone()));
         assert_eq!(tree.doc.get_heads(), heads);
-        struct Enabled;
-        impl ActivityHost for Enabled {
-            fn mutations_available(&self) -> bool {
-                true
-            }
-        }
         pane.set_host(Rc::new(Enabled));
         assert!(pane.timeline.begin_naming_selection());
         pane.set_host(Rc::new(UnavailableActivityHost));

@@ -166,7 +166,7 @@ struct AcceptingDeferredTransport {
 impl crate::ActionTransport for AcceptingDeferredTransport {
     fn replicate(&mut self, _: &crate::ActionEnvelope) {}
     fn submit_to_host(&mut self, _: &crate::ActionEnvelope) -> crate::HostDecision {
-        self.submitted += 1;
+        self.submitted = self.submitted.saturating_add(1);
         crate::HostDecision::AcceptedByHost
     }
 }

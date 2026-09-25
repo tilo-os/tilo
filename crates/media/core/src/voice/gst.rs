@@ -1,7 +1,11 @@
-//! GStreamer voice backend, owned by the privileged local media service.
+//! `GStreamer` voice backend, owned by the privileged local media service.
 //! Device identifiers must come from observed broker resources; this module
 //! cannot grant consent or authenticate a call.
-use super::*;
+use super::{
+    AudioError, AudioStats, BTreeMap, CaptureQueue, CaptureTimeline, CapturedOpus, Duration,
+    FRAME_DURATION, FRAME_SAMPLES, Instant, JitterBuffer, MAX_PACKET_BYTES, MAX_PUBLISHERS,
+    PlayoutFrame, PublicationId, ReceivedOpus, SEND_LIFETIME, VecDeque, mix_frames, validate_frame,
+};
 mod codec;
 mod device;
 pub use codec::{OpusDecoder, OpusEncoder, test_tone};
@@ -27,7 +31,7 @@ pub enum CaptureSource<'a> {
 pub struct ObservedOutput<'a> {
     pub node: u32,
     pub serial: u32,
-    /// Same observer custody requirement as CaptureSource; an independent
+    /// Same observer custody requirement as `CaptureSource`; an independent
     /// connected socket, never a duplicate of an already active Gst core.
     pub remote_fd: BorrowedFd<'a>,
 }
@@ -58,6 +62,17 @@ pub struct VoiceAudio {
     timeline: CaptureTimeline,
 }
 impl VoiceAudio {
+    /// Start the persistent output pipeline on the observer's exact socket.
+    ///
+    /// # Errors
+    ///
+    /// [`AudioError::Unavailable`] without a usable `GStreamer`/`PipeWire` stack,
+    /// [`AudioError::DeviceLost`] when the socket cannot be retained, [`AudioError::Codec`] when
+    /// the pipeline cannot be built, or [`AudioError::Capacity`] without a device worker permit.
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "the observed output is a one-shot custody handoff; callers must not reuse it"
+    )]
     pub fn new(output: ObservedOutput<'_>) -> Result<Self, AudioError> {
         gst::init().map_err(|_| AudioError::Unavailable)?;
         let pipeline = gst::Pipeline::new();
@@ -112,6 +127,15 @@ impl VoiceAudio {
     }
     /// Enqueue bounded startup. The current-authority callback must be a
     /// nonblocking atomic/expiry check: it also runs on the deadline watchdog.
+    ///
+    /// # Errors
+    ///
+    /// [`AudioError::Closed`] after close, [`AudioError::Revoked`] when no longer current, and the
+    /// device, codec or capacity error that prevented startup.
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "the capture source is a one-shot custody handoff; callers must not reuse it"
+    )]
     pub fn start_capture(
         &mut self,
         source: CaptureSource<'_>,
@@ -134,19 +158,19 @@ impl VoiceAudio {
         let source = element("pipewiresrc")?;
         configure_pipewire(&source, serial, remote_fd.as_fd())?;
         source.set_property("do-timestamp", true);
-        self.start_capture_element_bound(source, still_current, Some(remote_fd))
+        self.start_capture_element_bound(&source, still_current, Some(remote_fd))
     }
     #[cfg(test)]
     fn start_capture_element(
         &mut self,
-        source: gst::Element,
+        source: &gst::Element,
         still_current: Arc<dyn Fn() -> bool + Send + Sync>,
     ) -> Result<(), AudioError> {
         self.start_capture_element_bound(source, still_current, None)
     }
     fn start_capture_element_bound(
         &mut self,
-        source: gst::Element,
+        source: &gst::Element,
         still_current: Arc<dyn Fn() -> bool + Send + Sync>,
         remote_fd: Option<OwnedFd>,
     ) -> Result<(), AudioError> {
@@ -173,7 +197,7 @@ impl VoiceAudio {
         sink.set_property("drop", true);
         pipeline
             .add_many([
-                &source,
+                source,
                 &convert,
                 &resample,
                 &caps,
@@ -182,7 +206,7 @@ impl VoiceAudio {
             ])
             .map_err(|_| AudioError::Codec)?;
         gst::Element::link_many([
-            &source,
+            source,
             &convert,
             &resample,
             &caps,
@@ -215,6 +239,12 @@ impl VoiceAudio {
         self.captured.stop();
         self.capture = None;
     }
+    /// Collect the fresh complete frames captured since the last poll.
+    ///
+    /// # Errors
+    ///
+    /// [`AudioError::Closed`] after close; otherwise a capture failure, revocation or malformed
+    /// sample, which also stops capture.
     pub fn poll_capture(&mut self, now: Instant) -> Result<Vec<CapturedOpus>, AudioError> {
         if self.closed {
             return Err(AudioError::Closed);
@@ -259,10 +289,10 @@ impl VoiceAudio {
                 continue;
             }
             let pts = buffer.pts().ok_or(AudioError::Codec)?;
-            if pts > running {
+            let Some(age) = running.checked_sub(pts) else {
                 continue;
-            }
-            let age = Duration::from_nanos((running - pts).nseconds());
+            };
+            let age = Duration::from_nanos(age.nseconds());
             if age >= SEND_LIFETIME {
                 continue;
             }
@@ -295,6 +325,12 @@ impl VoiceAudio {
         }
         Ok(self.captured.drain(now))
     }
+    /// Admit one received frame for its publisher's decode and playout.
+    ///
+    /// # Errors
+    ///
+    /// [`AudioError::Closed`] after close, [`AudioError::Capacity`] when the publisher's queue is
+    /// full, or the jitter buffer's refusal.
     pub fn receive(&mut self, frame: ReceivedOpus, now: Instant) -> Result<(), AudioError> {
         if self.closed {
             return Err(AudioError::Closed);
@@ -302,11 +338,11 @@ impl VoiceAudio {
         let id = frame.publisher.clone();
         let outstanding = if let Some(decoder) = self.decoders.get_mut(&id) {
             decoder.expire(now);
-            decoder.pending.len() + decoder.ready.len()
+            decoder.outstanding()
         } else {
             0
         };
-        if outstanding + self.jitter.queued_for(&id) >= 10 {
+        if outstanding.saturating_add(self.jitter.queued_for(&id)) >= 10 {
             return Err(AudioError::Capacity);
         }
         self.jitter.push(frame, now)?;
@@ -316,6 +352,12 @@ impl VoiceAudio {
         }
         Ok(())
     }
+    /// Decode due frames and push at most one mixed output frame.
+    ///
+    /// # Errors
+    ///
+    /// [`AudioError::Closed`] after close, an output device failure, or a decoder capacity or
+    /// codec failure.
     pub fn playout(&mut self, now: Instant) -> Result<(), AudioError> {
         if self.closed {
             return Err(AudioError::Closed);
@@ -340,9 +382,9 @@ impl VoiceAudio {
             }
             if let Some(decoder) = self.decoders.get_mut(&frame.publisher) {
                 decoder.expire(now);
-                if decoder.pending.len()
-                    + decoder.ready.len()
-                    + self.jitter.queued_for(&frame.publisher)
+                if decoder
+                    .outstanding()
+                    .saturating_add(self.jitter.queued_for(&frame.publisher))
                     >= 10
                 {
                     return Err(AudioError::Capacity);
@@ -501,6 +543,10 @@ impl Decoder {
             next_pts: 0,
         })
     }
+    /// Codec work in flight plus decoded frames awaiting output.
+    fn outstanding(&self) -> usize {
+        self.pending.len().saturating_add(self.ready.len())
+    }
     fn expire(&mut self, now: Instant) {
         // Pending entries count actual codec work, even after expiry. Retire
         // only when its output is observed; a stalled decoder cannot queue
@@ -508,9 +554,14 @@ impl Decoder {
         self.ready.retain(|frame| frame.expires_at > now);
     }
     fn render(&mut self, now: Instant) -> Option<Vec<i16>> {
+        const SPAN: usize = FRAME_SAMPLES - 1;
         // Every source sample must remain valid for the whole output frame.
-        self.ready
-            .retain(|frame| frame.expires_at >= now + FRAME_DURATION);
+        self.ready.retain(|frame| {
+            frame
+                .expires_at
+                .checked_duration_since(now)
+                .is_some_and(|left| left >= FRAME_DURATION)
+        });
         let available: usize = self.ready.iter().map(|frame| frame.samples.len()).sum();
         // Bound drift correction to one sample per 20ms (about 1042ppm).
         // Backlog is compressed; a one-sample shortfall is interpolated. This
@@ -527,7 +578,7 @@ impl Decoder {
         let mut input = Vec::with_capacity(consume);
         while input.len() < consume {
             let front = self.ready.front_mut()?;
-            let take = (consume - input.len()).min(front.samples.len());
+            let take = consume.saturating_sub(input.len()).min(front.samples.len());
             input.extend(front.samples.drain(..take));
             if front.samples.is_empty() {
                 self.ready.pop_front();
@@ -536,26 +587,30 @@ impl Decoder {
         if consume == FRAME_SAMPLES {
             return Some(input);
         }
-        let denominator = (FRAME_SAMPLES - 1) as i64;
-        Some(
-            (0..FRAME_SAMPLES)
-                .map(|index| {
-                    let position = index * (consume - 1);
-                    let left = position / (FRAME_SAMPLES - 1);
-                    let fraction = (position % (FRAME_SAMPLES - 1)) as i64;
-                    let a = i64::from(input[left]);
-                    let b = i64::from(input[(left + 1).min(consume - 1)]);
-                    ((a * (denominator - fraction) + b * fraction) / denominator) as i16
-                })
-                .collect(),
-        )
+        // `consume` is one sample off FRAME_SAMPLES here, so every index and
+        // weighted sum below is small; a failed step would only drop the frame.
+        let last = consume.checked_sub(1)?;
+        let denominator = i64::try_from(SPAN).ok()?;
+        (0..FRAME_SAMPLES)
+            .map(|index| {
+                let position = index.checked_mul(last)?;
+                let left = position / SPAN;
+                let fraction = i64::try_from(position % SPAN).ok()?;
+                let a = i64::from(*input.get(left)?);
+                let b = i64::from(*input.get(left.checked_add(1)?.min(last))?);
+                let weighted = a
+                    .checked_mul(denominator.checked_sub(fraction)?)?
+                    .checked_add(b.checked_mul(fraction)?)?;
+                i16::try_from(weighted.checked_div(denominator)?).ok()
+            })
+            .collect()
     }
     fn push(&mut self, frame: PlayoutFrame, now: Instant) -> Result<(), AudioError> {
         self.expire(now);
         if frame.expires_at <= now {
             return Ok(());
         }
-        if self.pending.len() + self.ready.len() >= 10 {
+        if self.outstanding() >= 10 {
             return Err(AudioError::Capacity);
         }
         let pts = self.next_pts;
@@ -604,8 +659,10 @@ impl Decoder {
             }
             let samples = mapped
                 .as_slice()
-                .chunks_exact(2)
-                .map(|pair| i16::from_le_bytes([pair[0], pair[1]]))
+                .as_chunks::<2>()
+                .0
+                .iter()
+                .map(|pair| i16::from_le_bytes(*pair))
                 .collect();
             if self.ready.len() >= 10 {
                 return Err(AudioError::Capacity);
@@ -712,17 +769,18 @@ fn configure_pipewire(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::voice::RECEIVE_LIFETIME;
     use std::sync::atomic::{AtomicBool, Ordering};
     static DEVICE_TESTS: std::sync::Mutex<()> = std::sync::Mutex::new(());
     fn device_test_lock() -> std::sync::MutexGuard<'static, ()> {
         let guard = DEVICE_TESTS
             .lock()
-            .unwrap_or_else(|error| error.into_inner());
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         wait_for_device_workers();
         guard
     }
     fn wait_for_null(element: &impl IsA<gst::Element>) {
-        let deadline = Instant::now() + Duration::from_secs(2);
+        let deadline = Instant::now().checked_add(Duration::from_secs(2)).unwrap();
         while element.current_state() != gst::State::Null {
             assert!(
                 Instant::now() < deadline,
@@ -771,17 +829,18 @@ mod tests {
                 &self,
                 transition: gst::StateChange,
             ) -> Result<gst::StateChangeSuccess, gst::StateChangeError> {
-                if transition == gst::StateChange::NullToReady {
-                    if let Some(gate) = self.gate.lock().unwrap().clone() {
-                        gate.entered.store(true, Ordering::Release);
-                        let released = gate.released.lock().unwrap();
-                        let _ = gate
-                            .wake
-                            .wait_timeout_while(released, Duration::from_secs(4), |released| {
-                                !*released
-                            })
-                            .unwrap();
-                    }
+                let gate = if transition == gst::StateChange::NullToReady {
+                    self.gate.lock().unwrap().clone()
+                } else {
+                    None
+                };
+                if let Some(gate) = gate {
+                    gate.entered.store(true, Ordering::Release);
+                    let released = gate.released.lock().unwrap();
+                    let _ = gate
+                        .wake
+                        .wait_timeout_while(released, Duration::from_secs(4), |released| !*released)
+                        .unwrap();
                 }
                 self.parent_change_state(transition)
             }
@@ -822,7 +881,7 @@ mod tests {
     }
 
     fn wait_for_worker_exit(stop: &CaptureStop) {
-        let deadline = Instant::now() + Duration::from_secs(2);
+        let deadline = Instant::now().checked_add(Duration::from_secs(2)).unwrap();
         while !stop.finished() {
             assert!(
                 Instant::now() < deadline,
@@ -832,7 +891,7 @@ mod tests {
         }
     }
     fn wait_for_device_workers() {
-        let deadline = Instant::now() + Duration::from_secs(2);
+        let deadline = Instant::now().checked_add(Duration::from_secs(2)).unwrap();
         while device::outstanding_workers() != 0 {
             assert!(
                 Instant::now() < deadline,
@@ -842,7 +901,7 @@ mod tests {
         }
     }
     fn wait_for_gate(gate: &delayed::Gate) {
-        let deadline = Instant::now() + Duration::from_secs(1);
+        let deadline = Instant::now().checked_add(Duration::from_secs(1)).unwrap();
         while !gate.entered.load(Ordering::Acquire) {
             assert!(
                 Instant::now() < deadline,
@@ -873,8 +932,8 @@ mod tests {
 
     #[test]
     fn delayed_device_start_does_not_block_control_or_publish_late_capture() {
-        let _device_test = device_test_lock();
         use std::io::Read;
+        let _device_test = device_test_lock();
         let mut audio = software_output();
         let (source, gate) = delayed_source();
         let observed = source.clone();
@@ -882,7 +941,7 @@ mod tests {
         let (done, completed) = std::sync::mpsc::channel();
         let caller = std::thread::spawn(move || {
             let result =
-                audio.start_capture_element_bound(source, Arc::new(|| true), Some(fd.into()));
+                audio.start_capture_element_bound(&source, Arc::new(|| true), Some(fd.into()));
             done.send((audio, result)).unwrap();
         });
         wait_for_gate(&gate);
@@ -934,7 +993,7 @@ mod tests {
         pipeline.add_many([source.upcast_ref(), &sink]).unwrap();
         source.link(&sink).unwrap();
         let audio = VoiceAudio::from_output(pipeline, source).unwrap();
-        let deadline = Instant::now() + Duration::from_secs(1);
+        let deadline = Instant::now().checked_add(Duration::from_secs(1)).unwrap();
         while audio.output.pipeline.current_state() == gst::State::Null {
             assert!(Instant::now() < deadline);
             std::thread::sleep(Duration::from_millis(1));
@@ -952,7 +1011,7 @@ mod tests {
         let mut frame = gst::Buffer::from_slice(vec![0u8; 1920]);
         frame.get_mut().unwrap().set_pts(gst::ClockTime::ZERO);
         audio.output_source.push_buffer(frame).unwrap();
-        let deadline = Instant::now() + Duration::from_secs(1);
+        let deadline = Instant::now().checked_add(Duration::from_secs(1)).unwrap();
         while !audio.output_ready() {
             assert!(Instant::now() < deadline);
             std::thread::sleep(Duration::from_millis(1));
@@ -962,8 +1021,8 @@ mod tests {
 
     #[test]
     fn device_worker_deadline_shuts_socket_without_service_polling() {
-        let _device_test = device_test_lock();
         use std::io::Read;
+        let _device_test = device_test_lock();
         wait_for_device_workers();
         let (mut audio, gate, mut peer) = pending_output();
         let stop = audio.output.stop_handle();
@@ -987,8 +1046,8 @@ mod tests {
 
     #[test]
     fn device_worker_capacity_survives_dropped_recreated_audio_owners() {
-        let _device_test = device_test_lock();
         use std::io::Read;
+        let _device_test = device_test_lock();
         wait_for_device_workers();
         let mut pending = Vec::new();
         for _ in 0..device::MAX_DEVICE_WORKERS {
@@ -1030,7 +1089,7 @@ mod tests {
             .build()
             .unwrap();
         audio
-            .start_capture_element(source, Arc::new(|| true))
+            .start_capture_element(&source, Arc::new(|| true))
             .unwrap();
         wait_for_capture(&mut audio);
         let original = audio.capture_stop_handle().unwrap();
@@ -1044,7 +1103,7 @@ mod tests {
             .build()
             .unwrap();
         assert_eq!(
-            audio.start_capture_element(source, Arc::new(|| true)),
+            audio.start_capture_element(&source, Arc::new(|| true)),
             Err(AudioError::Capacity)
         );
         assert!(original.current());
@@ -1069,7 +1128,7 @@ mod tests {
             .downcast::<gst_app::AppSrc>()
             .unwrap();
         let audio = VoiceAudio::from_output(pipeline, source).unwrap();
-        let deadline = Instant::now() + Duration::from_secs(1);
+        let deadline = Instant::now().checked_add(Duration::from_secs(1)).unwrap();
         while !audio.output_ready() {
             assert!(Instant::now() < deadline, "software output did not start");
             std::thread::sleep(Duration::from_millis(1));
@@ -1078,7 +1137,7 @@ mod tests {
     }
 
     fn wait_for_capture(audio: &mut VoiceAudio) {
-        let deadline = Instant::now() + Duration::from_secs(1);
+        let deadline = Instant::now().checked_add(Duration::from_secs(1)).unwrap();
         while audio.poll_capture(Instant::now()).unwrap().is_empty() {
             assert!(
                 Instant::now() < deadline,
@@ -1090,8 +1149,8 @@ mod tests {
 
     #[test]
     fn exact_audio_source_rejects_plugins_without_required_binding_properties() {
-        let _device_test = device_test_lock();
         use std::os::fd::AsFd;
+        let _device_test = device_test_lock();
         gst::init().unwrap();
         let (fd, _peer) = std::os::unix::net::UnixStream::pair().unwrap();
         for factory in ["fakesrc", "fakesink"] {
@@ -1115,7 +1174,7 @@ mod tests {
         source.set_caps(Some(&raw_caps()));
         let observed = source.clone();
         audio
-            .start_capture_element(source.upcast(), Arc::new(|| true))
+            .start_capture_element(&source.upcast(), Arc::new(|| true))
             .unwrap();
         assert!(
             !audio.capture_active(),
@@ -1142,7 +1201,7 @@ mod tests {
         source.set_caps(Some(&raw_caps()));
         let observed = source.clone();
         audio
-            .start_capture_element(source.upcast(), Arc::new(|| true))
+            .start_capture_element(&source.upcast(), Arc::new(|| true))
             .unwrap();
         let pipeline = &audio.capture.as_ref().unwrap().pipeline.pipeline;
         assert!(pipeline.set_clock(None::<&gst::Clock>).is_ok());
@@ -1168,10 +1227,10 @@ mod tests {
             .build()
             .unwrap();
         audio
-            .start_capture_element(source, Arc::new(|| true))
+            .start_capture_element(&source, Arc::new(|| true))
             .unwrap();
         assert!(!audio.capture_active());
-        let deadline = Instant::now() + Duration::from_secs(1);
+        let deadline = Instant::now().checked_add(Duration::from_secs(1)).unwrap();
         loop {
             if !audio.poll_capture(Instant::now()).unwrap().is_empty() {
                 break;
@@ -1189,6 +1248,14 @@ mod tests {
 
     #[test]
     fn stalled_decoder_and_plc_share_the_same_ten_frame_capacity() {
+        struct Unblock(gst::Pad, Option<gst::PadProbeId>);
+        impl Drop for Unblock {
+            fn drop(&mut self) {
+                if let Some(probe) = self.1.take() {
+                    self.0.remove_probe(probe);
+                }
+            }
+        }
         let _device_test = device_test_lock();
         let mut audio = software_output();
         let now = Instant::now();
@@ -1204,14 +1271,6 @@ mod tests {
                 |_, _| gst::PadProbeReturn::Ok,
             )
             .unwrap();
-        struct Unblock(gst::Pad, Option<gst::PadProbeId>);
-        impl Drop for Unblock {
-            fn drop(&mut self) {
-                if let Some(probe) = self.1.take() {
-                    self.0.remove_probe(probe);
-                }
-            }
-        }
         let _unblock = Unblock(pad, Some(probe));
         audio.decoders.insert(id.clone(), decoder);
         for sequence in 0..9 {
@@ -1259,7 +1318,7 @@ mod tests {
                 .build()
                 .unwrap();
             audio
-                .start_capture_element(source, Arc::new(|| true))
+                .start_capture_element(&source, Arc::new(|| true))
                 .unwrap();
             let deadline = Instant::now() + Duration::from_millis(500);
             let frames = loop {
@@ -1297,7 +1356,7 @@ mod tests {
         audio
             .receive(
                 ReceivedOpus {
-                    publisher: id.clone(),
+                    publisher: id,
                     sequence: 0,
                     timestamp_48k: 0,
                     duration_samples: 960,
@@ -1407,7 +1466,7 @@ mod tests {
             .unwrap();
         let observed_source = source.clone();
         audio
-            .start_capture_element(source, Arc::new(move || fence.load(Ordering::Acquire)))
+            .start_capture_element(&source, Arc::new(move || fence.load(Ordering::Acquire)))
             .unwrap();
         wait_for_capture(&mut audio);
         assert!(audio.capture_active());
@@ -1433,7 +1492,7 @@ mod tests {
             .unwrap();
         let observed_source = source.clone();
         audio
-            .start_capture_element(source, Arc::new(|| true))
+            .start_capture_element(&source, Arc::new(|| true))
             .unwrap();
         audio.close();
         wait_for_null(&observed_source);
@@ -1462,7 +1521,7 @@ mod tests {
             .unwrap();
         let observed = first.clone();
         audio
-            .start_capture_element(first, Arc::new(|| true))
+            .start_capture_element(&first, Arc::new(|| true))
             .unwrap();
         let stop = audio.capture_stop_handle().unwrap();
         let audio = std::sync::Mutex::new(audio);
@@ -1492,7 +1551,7 @@ mod tests {
             .property("is-live", true)
             .build()
             .unwrap();
-        held.start_capture_element(second, Arc::new(|| true))
+        held.start_capture_element(&second, Arc::new(|| true))
             .unwrap();
         stop.stop();
         wait_for_capture(&mut held);

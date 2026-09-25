@@ -9,7 +9,11 @@ fn installed_bytes(binary: &[u8]) -> (tempfile::TempDir, InstalledManagedPackage
     let root = tempfile::tempdir().unwrap();
     let key = ed25519_dalek::SigningKey::from_bytes(&[31; 32]);
     let public = key.verifying_key().to_bytes();
-    let hex: String = public.iter().map(|b| format!("{b:02x}")).collect();
+    let hex: String = public.iter().fold(String::new(), |mut out, b| {
+        use std::fmt::Write as _;
+        let _ = write!(out, "{b:02x}");
+        out
+    });
     let manifest = tilo_app_package::Manifest::from_toml_str(&format!(
         r#"
 [package]
@@ -71,7 +75,7 @@ type = "cli"
     let trust = PackageTrust {
         publishers: vec![public],
         attestors: vec![],
-        revoked: Default::default(),
+        revoked: tilo_app_package::trust::RevocationList::default(),
     };
     let package = InstalledManagedPackage::verify(
         crate::registry::InstalledPackage {
@@ -95,7 +99,7 @@ fn managed_package_binds_installed_bytes_and_independent_trust() {
     let untrusted = PackageTrust {
         publishers: vec![],
         attestors: vec![],
-        revoked: Default::default(),
+        revoked: tilo_app_package::trust::RevocationList::default(),
     };
     assert!(
         package.revalidate(&untrusted).is_err(),
@@ -115,10 +119,10 @@ fn managed_package_binds_installed_bytes_and_independent_trust() {
 #[test]
 fn managed_package_rejects_replaced_manifest_and_escaping_executable() {
     let (_root, package, trust) = installed();
-    let manifest = std::fs::read(&package.manifest_path()).unwrap();
-    std::fs::write(&package.manifest_path(), b"replaced").unwrap();
+    let manifest = std::fs::read(package.manifest_path()).unwrap();
+    std::fs::write(package.manifest_path(), b"replaced").unwrap();
     assert!(package.revalidate(&trust).is_err());
-    std::fs::write(&package.manifest_path(), manifest).unwrap();
+    std::fs::write(package.manifest_path(), manifest).unwrap();
     let binary = package.payload_root().join("bin/agent");
     let bytes = std::fs::read(&binary).unwrap();
     let outside = package.payload_root().parent().unwrap().join("outside");

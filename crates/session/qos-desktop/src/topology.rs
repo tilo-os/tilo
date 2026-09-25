@@ -1,7 +1,10 @@
 //! Pure desktop mutations. Hosts mirror successful changes through their
 //! admitted session path and own persistence or rollback on failed commits.
 use crate::identity::next_id;
-use crate::*;
+use crate::{
+    GroupId, RoomId, SharedSurfaces, Strip, StripId, Tab, TabId, WindowGroup, WindowWidth,
+    Workspace, WorkspaceId, WorkspaceTree,
+};
 use std::collections::HashMap;
 
 /// The exact changed group and source information needed by a host's existing
@@ -42,15 +45,14 @@ impl WorkspaceTree {
 
         let mut active_strip = HashMap::new();
         active_strip.insert(ws_id, strip_id);
-        let tree = Self {
+        Self {
             workspaces: vec![home],
             active: ws_id,
             active_strip,
             active_group: HashMap::new(),
             collaborators: vec![],
             ..Default::default()
-        };
-        tree
+        }
     }
 
     pub fn append_empty_workspace(&mut self, name: &str) -> WorkspaceId {

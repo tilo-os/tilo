@@ -1,3 +1,13 @@
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::string_slice,
+    clippy::panic,
+    clippy::unreachable,
+    clippy::arithmetic_side_effects,
+    reason = "in a test these are the assertion, not a hazard"
+)]
 use qos_desktop::composition::{DesktopSurface, SurfaceChrome};
 use qos_desktop::resolver::{TileRequest, TileResolution, TileResolver};
 use qos_desktop::{
@@ -23,14 +33,14 @@ fn tree() -> WorkspaceTree {
         window_groups: vec![WindowGroup {
             id: 3,
             tabs: vec![Tab {
-                id: 9007199254741001,
+                id: 9_007_199_254_741_001,
                 title: "My document".into(),
                 tile: TileContent::AppPlaceholder {
                     kind: AppKind::Other("dev.qos.word-processor".into()),
                     label: "Renamed".into(),
                 },
             }],
-            active_tab: 9007199254741001,
+            active_tab: 9_007_199_254_741_001,
             width: WindowWidth::Normal,
             maximized: false,
         }],
@@ -57,15 +67,19 @@ fn canonical_topology_reconciles_without_replacing_unchanged_hosts() {
     assert_eq!(surface.strip_ids(), vec![StripId(2)]);
     let row = surface.row_mut(StripId(2)).unwrap();
     assert_eq!(row.group_ids(), vec![3]);
-    assert_eq!(row.groups[0].tabs()[0].id, 9007199254741001);
+    assert_eq!(row.groups[0].tabs()[0].id, 9_007_199_254_741_001);
     assert_eq!(row.groups[0].tabs()[0].title, "My document");
-    let before = row.groups[0].host_for_tab_mut(9007199254741001).unwrap() as *const _;
+    let before = std::ptr::from_ref(
+        row.groups[0]
+            .host_for_tab_mut(9_007_199_254_741_001)
+            .unwrap(),
+    );
     tree.workspaces[0].strips[0].window_groups[0].width = WindowWidth::Wide;
     surface.reconcile(&tree, &RecordStore::in_memory(), &mut Unavailable);
     let group = &mut surface.row_mut(StripId(2)).unwrap().groups[0];
     assert_eq!(group.width(), WindowWidth::Wide.to_ui());
     assert_eq!(
-        group.host_for_tab_mut(9007199254741001).unwrap() as *const _,
+        std::ptr::from_ref(group.host_for_tab_mut(9_007_199_254_741_001).unwrap()),
         before
     );
     tree.workspaces[0].strips[0].window_groups.clear();
@@ -147,7 +161,7 @@ fn local_selection_emits_intent_without_mutating_canonical_tree() {
     assert!(surface.take_intents().is_empty());
     assert_eq!(
         tree.workspaces[0].strips[0].window_groups[0].active_tab,
-        9007199254741001
+        9_007_199_254_741_001
     );
 }
 
@@ -174,7 +188,7 @@ impl ui::widget::Widget for OverlayApp {
     ) {
         self.leaf.apply_layout(tree, node, origin);
     }
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "OverlayApp"
     }
     fn get_rect(&self) -> vello::kurbo::Rect {
@@ -227,7 +241,7 @@ impl ui::widget::AppWidget for OverlayApp {
     fn app_kind(&self) -> ui::widget::AppKind {
         ui::widget::AppKind::Editor
     }
-    fn app_title(&self) -> &str {
+    fn app_title(&self) -> &'static str {
         "Overlay app"
     }
     fn app_icon(&self) -> ui::widget::IconDescriptor {

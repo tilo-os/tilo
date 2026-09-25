@@ -10,16 +10,16 @@ fn received(name: &str, sequence: u64, at: Instant) -> ReceivedOpus {
     ReceivedOpus {
         publisher: publisher(name, 1),
         sequence,
-        timestamp_48k: sequence * 960,
+        timestamp_48k: sequence.checked_mul(960).unwrap(),
         duration_samples: 960,
         payload: vec![0xf8, 0xff, 0xfe],
         received_at: at,
-        expires_at: at + Duration::from_millis(200),
+        expires_at: at.checked_add(Duration::from_millis(200)).unwrap(),
     }
 }
 fn captured(sequence: u64, at: Instant) -> CapturedOpus {
     CapturedOpus {
-        timestamp_48k: sequence * 960,
+        timestamp_48k: sequence.checked_mul(960).unwrap(),
         duration_samples: 960,
         payload: vec![0xf8, 0xff, 0xfe],
         captured_at: at,

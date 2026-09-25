@@ -169,7 +169,7 @@ fn connect_readiness(path: &Path) -> std::io::Result<std::os::unix::net::UnixStr
     address.sun_family = libc::sa_family_t::try_from(libc::AF_UNIX)
         .map_err(|_| std::io::Error::other("AF_UNIX does not fit sa_family_t"))?;
     for (slot, byte) in address.sun_path.iter_mut().zip(bytes) {
-        *slot = *byte as libc::c_char;
+        *slot = libc::c_char::from_ne_bytes([*byte]);
     }
     // A filled or malicious listener backlog must not hang the check thread.
     // Local AF_UNIX connects finish immediately or fail pending; a later
@@ -220,7 +220,7 @@ fn bounded_listener(path: &Path, backlog: libc::c_int) -> std::io::Result<std::o
     address.sun_family = libc::sa_family_t::try_from(libc::AF_UNIX)
         .map_err(|_| std::io::Error::other("AF_UNIX does not fit sa_family_t"))?;
     for (slot, byte) in address.sun_path.iter_mut().zip(bytes) {
-        *slot = *byte as libc::c_char;
+        *slot = libc::c_char::from_ne_bytes([*byte]);
     }
     // SAFETY: valid AF_UNIX socket constants; no pointers are passed.
     let raw = unsafe { libc::socket(libc::AF_UNIX, libc::SOCK_STREAM | libc::SOCK_CLOEXEC, 0) };

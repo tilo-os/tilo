@@ -56,11 +56,20 @@ pub struct Work {
     steps: automerge::resource_limits::NativeReadSteps,
 }
 impl Work {
+    /// Charge one visited row or character.
+    ///
+    /// # Errors
+    ///
+    /// [`ReadError::Limit`] once the scan budget is exhausted.
     pub fn visit(&self) -> Result<(), ReadError> {
         self.steps.charge(1).map_err(|_| ReadError::Limit)
     }
 }
 /// Validates all scalar page ceilings before any output allocation.
+///
+/// # Errors
+///
+/// [`ReadError::Limit`] when any ceiling is zero or out of range.
 pub fn validate_limits(limits: Limits, max_items: usize) -> Result<(), ReadError> {
     if limits.items == 0
         || limits.items > max_items
@@ -78,6 +87,11 @@ pub fn validate_limits(limits: Limits, max_items: usize) -> Result<(), ReadError
 /// SDK reader must bind that exact slice/document and stamp the current route before disclosure.
 /// No legacy head getter is called: even immutable `base_heads` can clone an unbounded isolation
 /// vector. Pending operations are refused without committing them.
+///
+/// # Errors
+///
+/// [`ReadError::Pending`] for uncommitted operations, [`ReadError::Limit`] for invalid limits or
+/// oversized documents/head slices, and [`ReadError::Malformed`] for duplicate heads.
 pub fn begin(
     doc: &AutoCommit,
     owner_heads: &[automerge::ChangeHash],
@@ -89,6 +103,10 @@ pub fn begin(
 
 /// Inert cursor scope for the actual bound qdoc object, using canonical counter/actor identity.
 /// The cached actor-table index is deliberately excluded. This is not a record/caller witness.
+///
+/// # Errors
+///
+/// [`ReadError::Limit`] when the actor id exceeds 256 bytes.
 pub fn object_fingerprint(object: &ObjId) -> Result<[u8; 32], ReadError> {
     let mut hash = blake3::Hasher::new();
     hash.update(b"qdoc-semantic-object-v1\0");
@@ -110,6 +128,10 @@ pub fn object_fingerprint(object: &ObjId) -> Result<[u8; 32], ReadError> {
 
 /// Exact winning map entry, preserving the existing app's winner semantics without converting
 /// borrowed scalar payloads to the legacy owned Value representation.
+///
+/// # Errors
+///
+/// [`ReadError::Limit`] when `key` exceeds 256 bytes.
 pub fn field<'a>(
     doc: &'a AutoCommit,
     obj: &ObjId,
@@ -120,6 +142,12 @@ pub fn field<'a>(
     }
     Ok(doc.map_range(obj, key.to_owned()..=key.to_owned()).next())
 }
+
+/// The winning object of `kind` under `key`, if any.
+///
+/// # Errors
+///
+/// As [`field`].
 pub fn object(
     doc: &AutoCommit,
     obj: &ObjId,
@@ -130,6 +158,12 @@ pub fn object(
         .filter(|v| v.value == ValueRef::Object(kind))
         .map(|v| v.id()))
 }
+
+/// The winning string under `key`, or empty when it is absent or not a string.
+///
+/// # Errors
+///
+/// As [`field`], and [`ReadError::Limit`] when the string exceeds `maximum` bytes.
 pub fn string(
     doc: &AutoCommit,
     obj: &ObjId,
@@ -146,6 +180,12 @@ pub fn string(
         _ => Ok(String::new()),
     }
 }
+
+/// The winning byte payload under `key`, if any.
+///
+/// # Errors
+///
+/// As [`field`].
 pub fn bytes<'a>(
     doc: &'a AutoCommit,
     obj: &ObjId,
@@ -159,6 +199,10 @@ pub fn bytes<'a>(
 
 /// Count the actual serde JSON representation without allocating it. The caller may reserve
 /// that exact output amount in its owner before serializing; this helper grants no credit.
+///
+/// # Errors
+///
+/// [`ReadError::Limit`] when the representation exceeds `maximum` bytes or fails to serialize.
 pub fn json_len(value: &impl Serialize, maximum: usize) -> Result<usize, ReadError> {
     struct Count {
         used: usize,
@@ -194,6 +238,11 @@ fn escaped_bytes(c: char) -> usize {
 /// element. This handles multi-character Automerge string elements without assuming native
 /// text indices equal bytes or Unicode scalar indices. Non-string text atoms render U+FFFC,
 /// matching Automerge's plain text projection; native mark boundaries are explicitly skipped.
+///
+/// # Errors
+///
+/// [`ReadError::InvalidCursor`] for a cursor outside the text and [`ReadError::Limit`] when the
+/// scan or escaped budget cannot make progress.
 pub fn text_fragment(
     doc: &AutoCommit,
     text: Option<&ObjId>,

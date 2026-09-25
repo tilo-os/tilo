@@ -12,9 +12,6 @@ struct NumericKey(u64);
 
 impl<'de> Deserialize<'de> for NumericKey {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        if !deserializer.is_human_readable() {
-            return u64::deserialize(deserializer).map(Self);
-        }
         struct Visitor;
         impl de::Visitor<'_> for Visitor {
             type Value = NumericKey;
@@ -30,6 +27,9 @@ impl<'de> Deserialize<'de> for NumericKey {
             fn visit_str<E: de::Error>(self, value: &str) -> Result<Self::Value, E> {
                 value.parse::<u64>().map(NumericKey).map_err(E::custom)
             }
+        }
+        if !deserializer.is_human_readable() {
+            return u64::deserialize(deserializer).map(Self);
         }
         deserializer.deserialize_any(Visitor)
     }

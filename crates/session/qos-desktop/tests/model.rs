@@ -15,10 +15,10 @@ fn legacy_tree() -> WorkspaceTree {
         "workspaces": [{
             "id": 10, "name": "Research", "strips": [{
                 "id": 11, "name": "Main", "window_groups": [{
-                    "id": 12, "active_tab": 9007199254741001u64,
+                    "id": 12, "active_tab": 9_007_199_254_741_001_u64,
                     "width": {"Custom": 600}, "tabs": [
                         {"id": 13, "title": "Notes", "tile": {"AppPlaceholder": {"kind": {"Other": "Notes"}, "label": "Notes"}}},
-                        {"id": 9007199254741001u64, "title": "Draft", "tile": {"AppPlaceholder": {"kind": {"Other": "Word"}, "label": "Writer"}}}
+                        {"id": 9_007_199_254_741_001_u64, "title": "Draft", "tile": {"AppPlaceholder": {"kind": {"Other": "Word"}, "label": "Writer"}}}
                     ]
                 }]
             }], "collaborators": [{"id":"stale", "name":"Stale"}]
@@ -38,7 +38,7 @@ fn legacy_state_preserves_ids_defaults_and_record_binding() {
     let group = &tree.workspaces[0].strips[0].window_groups[0];
     assert_eq!(group.width, WindowWidth::Fraction(500));
     assert!(!group.maximized);
-    assert_eq!(group.active_tab, 9007199254741001);
+    assert_eq!(group.active_tab, 9_007_199_254_741_001);
     assert_eq!(
         ui::record::RecordId::for_tab(group.tabs[1].id).as_str(),
         "tab:0020000000000009"
@@ -46,7 +46,7 @@ fn legacy_state_preserves_ids_defaults_and_record_binding() {
     let serialized = serde_json::to_value(&tree).unwrap();
     assert_eq!(
         serialized["workspaces"][0]["strips"][0]["window_groups"][0]["tabs"][1]["id"],
-        json!(9007199254741001u64)
+        json!(9_007_199_254_741_001_u64)
     );
     assert!(serialized.get("doc").is_none());
     assert!(serialized.get("native_document_tabs").is_none());
@@ -81,9 +81,9 @@ fn reordering_keeps_tab_identity_selection_and_geometry() {
     let group = &tree.workspaces[0].strips[0].window_groups[0];
     assert_eq!(
         group.tabs.iter().map(|tab| tab.id).collect::<Vec<_>>(),
-        vec![9007199254741001, 13]
+        vec![9_007_199_254_741_001, 13]
     );
-    assert_eq!(group.active_tab, 9007199254741001);
+    assert_eq!(group.active_tab, 9_007_199_254_741_001);
     assert_eq!(group.width, WindowWidth::Fraction(500));
     assert!(!tree.reorder_tab_within_group(12, 99, 0));
     assert_eq!(

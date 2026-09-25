@@ -648,10 +648,10 @@ fn ensure_deferred_local_owner(
                     .into(),
             });
         }
-        if let Some(type_id) = spec.deferred_invocation_type() {
-            if !registry.contains(type_id) {
-                return Err(DoorError::UnregisteredType(type_id.into()));
-            }
+        if let Some(type_id) = spec.deferred_invocation_type()
+            && !registry.contains(type_id)
+        {
+            return Err(DoorError::UnregisteredType(type_id.into()));
         }
     }
     Ok(())

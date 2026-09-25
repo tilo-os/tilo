@@ -1,3 +1,12 @@
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::string_slice,
+    clippy::panic,
+    clippy::unreachable,
+    reason = "in a test these are the assertion, not a hazard"
+)]
 use qos_desktop::{intents::SessionIntent, session_commands::*, *};
 
 fn source() -> (WorkspaceTree, CommandSource) {
@@ -59,7 +68,7 @@ fn drag_binds_source_identity_and_post_removal_destination_before_async_dispatch
     );
     let last = bind_intent(
         &tree,
-        bound.source.clone(),
+        bound.source,
         SessionIntent::ReorderTab {
             group: 20,
             from: 0,

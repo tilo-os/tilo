@@ -13,7 +13,7 @@
 // ([`OpClass::Govern`]) are non-revertible — an owner counters a
 // governance act with another one rather than rewinding it.
 
-use super::replay::*;
+use super::replay::{ReplayPointer, WorkspaceReplayFrame};
 use super::{
     ActivityDeepLink, ActivityHost, ActivityTree, AgentLaunchEvent, AgentLaunchEventKind,
     UnavailableActivityHost,
@@ -272,6 +272,10 @@ fn type_size(tr: &TextRenderer, resolved: f32) -> f32 {
     resolved / tr.text_scale()
 }
 
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "layout widths are far inside f32 range, the text renderer's unit"
+)]
 fn text_width(width: f64) -> f32 {
     width.max(0.0) as f32
 }
@@ -1115,14 +1119,13 @@ impl RoomActivityPane {
         ) else {
             return false;
         };
-        let (new_left_end, new_right_start) = match boundary.direction {
-            BoundaryDirection::IntoNewer if older.entry_ids.len() > 1 => (
-                older.entry_ids[older.entry_ids.len() - 2],
-                older.entry_ids[older.entry_ids.len() - 1],
-            ),
-            BoundaryDirection::IntoOlder if newer.entry_ids.len() > 1 => {
-                (newer.entry_ids[0], newer.entry_ids[1])
-            }
+        let (new_left_end, new_right_start) = match (
+            &boundary.direction,
+            older.entry_ids.as_slice(),
+            newer.entry_ids.as_slice(),
+        ) {
+            (BoundaryDirection::IntoNewer, [.., left, right], _)
+            | (BoundaryDirection::IntoOlder, _, [left, right, ..]) => (*left, *right),
             _ => return false,
         };
         if ui::history_groups::materialize_and_move_boundary(
@@ -4297,7 +4300,7 @@ impl RoomActivityPane {
                 return handled_outcome();
             }
             let state = match self.host.launch_agent(agent, &workspace) {
-                Ok(_) => AgentStartup::Starting {
+                Ok(()) => AgentStartup::Starting {
                     since: Instant::now(),
                 },
                 Err(error) => AgentStartup::Failed { detail: error },

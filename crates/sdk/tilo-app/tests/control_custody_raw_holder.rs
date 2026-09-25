@@ -82,7 +82,7 @@ impl Widget for ExternalRawWidget {
         );
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "ExternalRawWidget"
     }
 
@@ -103,12 +103,13 @@ impl Widget for ExternalRawWidget {
 fn invocation(resource: &str) -> ControlInvocation {
     ControlInvocation {
         address: ActionAddress::new(resource, "apply"),
-        arguments: Default::default(),
+        arguments: serde_json::Map::default(),
     }
 }
 
 #[test]
 fn public_facade_exposes_raw_holder_and_widget_custody_override() {
+    fn assert_widget<T: Widget>() {}
     let mut widget = ExternalRawWidget::new();
     let expected = invocation("resource-b");
     assert_eq!(
@@ -122,6 +123,5 @@ fn public_facade_exposes_raw_holder_and_widget_custody_override() {
     assert_eq!(widget.slot.take_legacy_compatibility(), Some(expected));
     assert_eq!(widget.slot.take_legacy_compatibility(), None);
 
-    fn assert_widget<T: Widget>() {}
     assert_widget::<ExternalRawWidget>();
 }

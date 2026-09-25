@@ -7,6 +7,7 @@ use automerge::transaction::Transactable;
 use automerge::{ActorId, AutoCommit, ObjType, ROOT, ReadDoc};
 use qdoc::model::{self, NoteKind, Region};
 use qdoc::{Containers, DocMut};
+use tilo_automerge::ApplyIncoming;
 
 fn with_dm<R>(doc: &mut AutoCommit, f: impl FnOnce(&mut DocMut<'_>) -> R) -> R {
     let c = model::open(doc, &ROOT).unwrap();
@@ -29,7 +30,7 @@ fn replicas(base: &mut AutoCommit) -> (AutoCommit, AutoCommit) {
 }
 
 fn merged(mut a: AutoCommit, mut b: AutoCommit) -> (AutoCommit, Containers) {
-    a.merge(&mut b).unwrap();
+    a.merge_incoming(&mut b).unwrap();
     let c = model::open(&a, &ROOT).unwrap();
     (a, c)
 }
@@ -137,7 +138,7 @@ fn legacy_blocks_without_text_still_upgrade_lazily_and_conflicts_stay_visible() 
     };
     let shown = model::block_text(&doc, &c, &body).unwrap();
     with_dm(&mut doc, |dm| {
-        dm.splice_text(&body, shown.chars().count(), 0, "!")
+        dm.splice_text(&body, shown.chars().count(), 0, "!");
     });
     assert_eq!(
         model::block_text(&doc, &c, &body).unwrap(),

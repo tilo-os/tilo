@@ -298,6 +298,11 @@ pub struct ParticipantId(String);
 
 impl ParticipantId {
     /// Validate and wrap a participant id.
+    ///
+    /// # Errors
+    ///
+    /// Returns a description when `id` is empty, longer than
+    /// `MAX_PARTICIPANT_ID_BYTES`, or not printable ASCII.
     pub fn new(id: impl Into<String>) -> Result<Self, String> {
         let id = id.into();
         if id.is_empty()
@@ -318,6 +323,11 @@ impl ParticipantId {
     /// The participant of one agent task. Only the host derives it, from
     /// the task it admitted (never from anything the agent sends), so an
     /// agent can address only the view of the task it runs.
+    ///
+    /// # Errors
+    ///
+    /// Returns a description when the derived id is not a valid participant
+    /// id (see [`ParticipantId::new`]).
     pub fn for_agent_task(task_id: &str) -> Result<Self, String> {
         Self::new(format!("{AGENT_TASK_PARTICIPANT_PREFIX}{task_id}"))
     }
