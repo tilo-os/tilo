@@ -23,6 +23,17 @@
 # Each suite runs as `python3 PATH` or `bash PATH` from the repository root in
 # the ci-fast image, as root, without network. A Python suite that defines
 # unittest cases must call unittest.main() so direct execution runs them.
+#
+# Cargo tests are selected by the dependency graph, which only sees a package's
+# own directory. A package whose code reads repository files outside it (an
+# include_str! of a shipped file, a test that walks apps/) declares them in a
+# [[cargo]] entry: a change to one of its inputs checks and tests the package,
+# as a change to its own files does. `readers` lists the files that read; the
+# check finds every literal include! and every CARGO_MANIFEST_DIR path that
+# climbs out of its package, rejects one no entry lists, and requires each
+# literal include's target to match an input. Paths built at runtime rely on
+# `inputs` saying what they read. A [[cargo-exempt]] entry names a reading file
+# whose read CI never runs, with the reason.
 
 [[group]]
 name = "os"
@@ -292,6 +303,205 @@ suites = [
   "scripts/ux-bench/test_suite.py",
   "scripts/ux-bench/usability_test.py",
 ]
+
+# Cargo packages whose code reads repository files outside their directory.
+
+[[cargo]]
+package = "tilo-ui"
+# The design and spacing audits ratchet every app and shell source file; the
+# launcher audit reads each app's main.rs and the framework launcher.
+inputs = [
+  "apps/*.rs", "apps/*/tilo-app.toml", "crates/session/shell/src/*.rs",
+  "crates/sdk/tilo-app/src/framework/app.rs",
+  "vendor/winit/src/platform_impl/quit_request.rs",
+]
+readers = [
+  "crates/sdk/ui-core/src/app/close_admission.rs",
+  "crates/sdk/ui-core/tests/design_token_audit.rs",
+  "crates/sdk/ui-core/tests/spacing_token_audit.rs",
+]
+
+[[cargo]]
+package = "tilo-app-package"
+inputs = ["apps/*/Cargo.toml", "apps/*/tilo-app.toml"]
+readers = ["crates/packaging/tilo-app-package/tests/app_manifests.rs"]
+
+[[cargo]]
+package = "launcher"
+inputs = ["apps/*/tilo-app.toml", "os/usr/lib/tilo/jit-entitled.conf"]
+readers = ["crates/packaging/launcher/src/manifest.rs", "crates/packaging/launcher/src/seccomp.rs"]
+
+[[cargo]]
+package = "tilo-vm"
+inputs = ["apps/*/tilo-app.toml"]
+readers = ["crates/dev/tilo-vm/src/build.rs"]
+
+[[cargo]]
+package = "tilo-vm-protocol"
+inputs = ["os/components.toml"]
+readers = ["crates/dev/tilo-vm-protocol/src/manifest.rs"]
+
+[[cargo]]
+package = "tilo-vmd"
+inputs = ["os/components.toml", "os/scripts/install-components.py"]
+readers = ["crates/dev/tilo-vmd/tests/jobs.rs"]
+
+[[cargo]]
+package = "tilo-app-cli"
+# Scaffolding and the dev loop locate the SDK and the UI builder in the tree.
+inputs = [
+  "crates/sdk/tilo-app/Cargo.toml", "crates/sdk/ui-core/Cargo.toml", "crates/dev/ui-builder/Cargo.toml",
+]
+readers = ["crates/dev/tilo-app-cli/src/tests.rs"]
+
+[[cargo]]
+package = "tilo-app-template-smoke"
+inputs = ["crates/dev/tilo-app-cli/templates/", "crates/dev/tilo-app-cli/src/lib.rs"]
+readers = ["crates/dev/tilo-app-template-smoke/src/lib.rs"]
+
+[[cargo]]
+package = "tilo-user-identity"
+inputs = ["os/usr/lib/systemd/system/tilo-device-key-init.service"]
+readers = ["crates/collab/tilo-user-identity/src/bin/tilo-device-key-init.rs"]
+
+[[cargo]]
+package = "fs"
+inputs = [
+  "os/Containerfile", "os/usr/lib/systemd/system/fs.service", "os/usr/lib/tmpfiles.d/tilo.conf",
+  "os/usr/share/tilo/fs-capabilities.json", "crates/doc/fixtures/sample.docx",
+]
+readers = ["crates/system/fs/src/main.rs", "crates/system/fs/src/tests/mod.rs"]
+
+[[cargo]]
+package = "system-extension"
+inputs = [
+  "os/usr/share/tilo/system-extensions/hardware-catalog.d/pci-recommendations.json",
+  "os/usr/share/tilo/system-extensions/hardware-trust.d/pci-recommendations.json",
+]
+readers = ["crates/system/system-extension/src/bin/tilo-system-extension-manager.rs"]
+
+[[cargo]]
+package = "compat-service"
+inputs = ["os/usr/share/tilo/windows/fex-emulator.json", "os/usr/share/tilo/windows/fex-graphics-provider.json"]
+readers = ["crates/windows/compat-service/src/plan.rs"]
+
+[[cargo]]
+package = "installer"
+inputs = ["os/usr/share/tilo/installer-locales.txt", "crates/system/block-devices/tests/fixtures/installer.json"]
+readers = ["crates/session/installer/src/disks.rs", "crates/session/installer/src/locales.rs"]
+
+[[cargo]]
+package = "imager"
+inputs = [
+  "os/usr/share/tilo/installer-locales.txt", "crates/system/block-devices/tests/fixtures/imager.json",
+  "dist/session/tilo.desktop", "dist/session/tilo-session", "dist/session/tilo-session-runner",
+  "os/tests/fixtures/internal-bundle-v2.json", "os/usr/libexec/tilo-installer-profile-extract",
+]
+readers = [
+  "apps/imager/src/model.rs", "apps/imager/src/probe.rs", "apps/imager/src/setup/desktop_install.rs",
+  "apps/imager/src/setup/internal_bundle.rs", "apps/imager/src/write.rs",
+]
+
+[[cargo]]
+package = "tilo-imager-profile"
+# Compiles the imager's profile modules, which include the locale list.
+inputs = [
+  "apps/imager/src/model.rs", "apps/imager/src/profile.rs", "apps/imager/src/profile_cli.rs",
+  "os/usr/share/tilo/installer-locales.txt", "os/usr/libexec/tilo-installer-profile-extract",
+]
+readers = ["tools/imager-profile/src/main.rs", "tools/imager-profile/tests/embed.rs"]
+
+[[cargo]]
+package = "disks"
+inputs = ["crates/system/block-devices/tests/fixtures/disks.json"]
+readers = ["apps/disks/src/probe.rs"]
+
+[[cargo]]
+package = "qdoc"
+inputs = ["crates/doc/fixtures/"]
+readers = ["crates/doc/qdoc/src/codecs/bulk_equivalence.rs", "crates/doc/qdoc/tests/office_roundtrip.rs"]
+
+[[cargo]]
+package = "format-host"
+inputs = ["docs/app-model/formats.md"]
+readers = ["crates/doc/format-host/tests/integration.rs"]
+
+[[cargo]]
+package = "notes"
+inputs = ["crates/sdk/ui-core/assets/fonts/", "apps/settings/shots/settings.png"]
+readers = [
+  "apps/notes/src/actions.rs", "apps/notes/src/app.rs", "apps/notes/src/shortcuts_overlay.rs",
+  "apps/notes/src/shots.rs", "apps/notes/tests/support/component.rs",
+]
+
+[[cargo]]
+package = "ebook"
+inputs = ["crates/sdk/ui-core/assets/fonts/"]
+readers = ["apps/ebook/src/app/interaction_tests.rs"]
+
+[[cargo]]
+package = "shell"
+inputs = ["crates/sdk/ui-core/assets/fonts/"]
+readers = [
+  "crates/session/shell/examples/support/populated_shell_fixture.rs",
+  "crates/session/shell/src/shell/fixture_inputs.rs",
+  "crates/session/shell/src/shell/notes_app.rs",
+  "crates/session/shell/src/shell/test_support.rs",
+  "crates/session/shell/src/shell/topbar_chrome.rs",
+]
+
+[[cargo]]
+package = "calculator"
+inputs = ["crates/sdk/ui-core/tests/support/history_adapter_conformance.rs"]
+readers = ["apps/calculator/src/framework_history_tests.rs"]
+
+[[cargo]]
+package = "contacts"
+inputs = ["crates/sdk/ui-core/tests/support/history_adapter_conformance.rs"]
+readers = ["apps/contacts/src/framework_history_tests.rs"]
+
+[[cargo]]
+package = "diffmerge"
+inputs = ["crates/sdk/ui-core/tests/support/history_adapter_conformance.rs"]
+readers = ["apps/diffmerge/src/framework_history_tests.rs"]
+
+[[cargo]]
+package = "photos"
+inputs = ["crates/sdk/ui-core/tests/support/history_adapter_conformance.rs"]
+readers = ["apps/photos/src/framework_history_tests.rs"]
+
+[[cargo]]
+package = "slides"
+inputs = ["crates/sdk/ui-core/tests/support/history_adapter_conformance.rs"]
+readers = ["apps/slides/src/framework_history_tests.rs"]
+
+[[cargo]]
+package = "snippets"
+inputs = ["crates/sdk/ui-core/tests/support/history_adapter_conformance.rs"]
+readers = ["apps/snippets/src/framework_history_tests.rs"]
+
+[[cargo]]
+package = "themes"
+inputs = ["crates/sdk/ui-core/tests/support/history_adapter_conformance.rs"]
+readers = ["apps/themes/src/framework_history_tests.rs"]
+
+[[cargo]]
+package = "typst-editor"
+inputs = ["crates/sdk/ui-core/tests/support/history_adapter_conformance.rs"]
+readers = ["apps/typst-editor/src/framework_history_tests.rs"]
+
+[[cargo]]
+package = "weather"
+inputs = ["crates/sdk/ui-core/tests/support/history_adapter_conformance.rs"]
+readers = ["apps/weather/src/framework_history_tests.rs"]
+
+[[cargo-exempt]]
+file = "crates/session/shell/tests/headless_examples_smoke.rs"
+reason = "#[ignore]d: runs scripts/headless-examples/ against a built compositor on request"
+
+[[cargo-exempt]]
+file = "crates/session/shell/src/bin/ux_bench_support/tests.rs"
+reason = "#[ignore]d: writes evidence under target/ from a prebuilt ux-bench"
 
 # Exercised by a suite that is already gated.
 
