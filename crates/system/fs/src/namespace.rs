@@ -50,6 +50,16 @@ pub struct LiveRecordBlobRoots {
     pub thumbnail: Option<Hash>,
 }
 
+/// One live node naming content: its path (for path-scoped grants), its
+/// record (for record-scoped grants) and the blobs it names.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct LiveBlobOwner {
+    pub path: String,
+    pub record_id: Option<FileRecordId>,
+    pub manifest: Option<Hash>,
+    pub thumbnail: Option<Hash>,
+}
+
 #[derive(Clone, Copy, Debug, thiserror::Error, PartialEq, Eq)]
 pub enum LiveRecordBlobScanError {
     #[error("live-record blob scan limit must be between 1 and {MAX_LIVE_RECORD_BLOB_SCAN}")]
@@ -170,9 +180,23 @@ pub struct IndexedRecord {
 struct TreeIndex {
     placement: HashMap<String, (String, FileNameV1)>,
     children: HashMap<String, BTreeMap<FileNameV1, BTreeSet<String>>>,
+    /// The nodes carrying each stable record id, live or trashed. A node's
+    /// record id is written once, when the node is created or migrated.
+    records: HashMap<FileRecordId, BTreeSet<String>>,
 }
 
 impl TreeIndex {
+    fn bind_record(&mut self, id: &str, record_id: FileRecordId) {
+        self.records
+            .entry(record_id)
+            .or_default()
+            .insert(id.to_string());
+    }
+
+    fn nodes_of(&self, record_id: FileRecordId) -> impl Iterator<Item = &String> {
+        self.records.get(&record_id).into_iter().flatten()
+    }
+
     fn remove(&mut self, id: &str) {
         let Some((parent, name)) = self.placement.remove(id) else {
             return;
@@ -308,6 +332,9 @@ pub struct Namespace {
     /// only a document import can clear this (and each import re-runs the
     /// migration), which keeps `save_incremental` from rescanning all nodes.
     record_ids_complete: bool,
+    /// Heads after the last post-sync resolution: a sync that brought
+    /// nothing new needs none.
+    resolved_heads: Option<Vec<automerge::ChangeHash>>,
     #[cfg(test)]
     record_index_rebuilds: u64,
     #[cfg(test)]
@@ -402,6 +429,7 @@ impl Namespace {
             record_index_digest: RecordIndexDigest::default(),
             tree: TreeIndex::default(),
             record_ids_complete: false,
+            resolved_heads: None,
             #[cfg(test)]
             record_index_rebuilds: 0,
             #[cfg(test)]
@@ -459,6 +487,7 @@ impl Namespace {
             record_index_digest: RecordIndexDigest::default(),
             tree: TreeIndex::default(),
             record_ids_complete: false,
+            resolved_heads: None,
             #[cfg(test)]
             record_index_rebuilds: 0,
             #[cfg(test)]
@@ -530,12 +559,10 @@ impl Namespace {
         {
             return false;
         }
-        let matching = self
-            .live_node_ids()
-            .into_iter()
-            .filter(|id| self.record_id_for_id(id) == Some(revision.record_id))
-            .count();
-        if matching != 1 {
+        if self
+            .unique_live_node_for_record(revision.record_id)
+            .is_none()
+        {
             return false;
         }
         let thumbnail = self
@@ -688,18 +715,31 @@ impl Namespace {
         data: &[u8],
     ) -> anyhow::Result<()> {
         let msg = automerge::sync::Message::decode(data)?;
+        let before = self.doc.get_heads();
         self.doc.receive_incoming_sync(state, msg)?;
-        self.ensure_record_ids();
-        self.rebuild_record_index();
+        // Most sync rounds carry heads and bloom filters, not changes; the
+        // indexes are rebuilt only when the document actually changed.
+        if self.doc.get_heads() != before {
+            self.ensure_record_ids();
+            self.rebuild_record_index();
+        }
         Ok(())
     }
 
     /// Discard the pulled changes from the watermark (peers already have them), resolve, and return only the resolution delta.
     pub fn post_sync_resolve(&mut self) -> Vec<u8> {
         let _ = self.doc.save_incremental();
+        let heads = self.doc.get_heads();
+        if self.resolved_heads.as_ref() == Some(&heads) {
+            // Resolution depends only on the document, which has not
+            // changed since it last ran.
+            return Vec::new();
+        }
         self.resolve();
         self.rebuild_record_index();
-        self.doc.save_incremental()
+        let delta = self.doc.save_incremental();
+        self.resolved_heads = Some(self.doc.get_heads());
+        delta
     }
 
     fn node(&self, id: &str) -> Option<ObjId> {
@@ -719,6 +759,11 @@ impl Namespace {
             if let Some(parent) = read_str(&self.doc, &node, "parent") {
                 let name = read_name(&self.doc, &node, "name").unwrap_or_default();
                 tree.place(&id, parent, name);
+            }
+            if let Some(record_id) = read_str(&self.doc, &node, RECORD_ID_KEY)
+                .and_then(|value| Uuid::parse_str(&value).ok())
+            {
+                tree.bind_record(&id, FileRecordId(record_id));
             }
         }
         tree
@@ -998,6 +1043,7 @@ impl Namespace {
             }
             let record_id = self.deterministic_record_id(&id);
             let _ = self.doc.put(&node, RECORD_ID_KEY, record_id.0.to_string());
+            self.tree.bind_record(&id, record_id);
         }
         self.record_ids_complete = true;
     }
@@ -1852,18 +1898,14 @@ impl Namespace {
         if self.record_id_for(ROOT_INO) == Some(record_id) {
             return Some(ROOT_INO);
         }
-        let matches = self
-            .live_node_ids()
-            .into_iter()
-            .filter(|id| self.record_id_for_id(id) == Some(record_id))
-            .collect::<Vec<_>>();
-        if self.content_authority == ContentAuthority::SignedRecords && matches.len() != 1 {
-            return None;
+        if self.content_authority == ContentAuthority::SignedRecords {
+            let only = self.unique_live_node_for_record(record_id)?;
+            return self.id_to_ino.get(&only).copied();
         }
-        matches
-            .into_iter()
-            .next()
-            .and_then(|id| self.id_to_ino.get(&id).copied())
+        self.tree
+            .nodes_of(record_id)
+            .find(|id| self.record_id_for_id(id) == Some(record_id) && self.reaches_root(id))
+            .and_then(|id| self.id_to_ino.get(id).copied())
     }
 
     /// Resolve one live stable record while lazily assigning its process-local
@@ -1874,15 +1916,24 @@ impl Namespace {
         if self.record_id_for(ROOT_INO) == Some(record_id) {
             return Some(ROOT_INO);
         }
-        let mut matches = self
-            .live_node_ids()
-            .into_iter()
-            .filter(|id| self.record_id_for_id(id) == Some(record_id));
-        let only = matches.next()?;
-        if matches.next().is_some() {
+        let only = self.unique_live_node_for_record(record_id)?;
+        Some(self.ino_for_id(&only))
+    }
+
+    /// The one live node bound to `record_id`, `None` when there is none or
+    /// more than one. The structural index knows every node carrying the
+    /// id, so this costs O(nodes of the record × depth), not a scan of the
+    /// tree; each candidate is checked against the document.
+    fn unique_live_node_for_record(&self, record_id: FileRecordId) -> Option<String> {
+        let mut live = self
+            .tree
+            .nodes_of(record_id)
+            .filter(|id| self.record_id_for_id(id) == Some(record_id) && self.reaches_root(id));
+        let only = live.next()?.clone();
+        if live.next().is_some() {
             return None;
         }
-        Some(self.ino_for_id(&only))
+        Some(only)
     }
 
     /// Absolute path of `ino` within the mount — `"/"` for the root, `"/a/b/c"`
@@ -1921,21 +1972,6 @@ impl Namespace {
         }
         parts.reverse();
         Some(format!("/{}", parts.join("/")))
-    }
-
-    /// Every live node's path with its content manifest and thumbnail, in
-    /// one pass: what a reader of that path may fetch.
-    pub fn live_blob_roots_by_path(&self) -> Vec<(String, Option<Hash>, Option<Hash>)> {
-        self.live_node_ids()
-            .into_iter()
-            .filter_map(|id| {
-                Some((
-                    self.path_for_id(&id)?,
-                    self.node_hash(&id),
-                    self.thumbnail_for_id(&id),
-                ))
-            })
-            .collect()
     }
 
     /// Every live path whose file content or generated thumbnail has `hash`.
@@ -2175,6 +2211,7 @@ impl Namespace {
         let _ = self.doc.put(&obj, RECORD_ID_KEY, record_id.0.to_string());
         self.tree
             .place(&id, parent_id.to_string(), name.to_vec().into());
+        self.tree.bind_record(&id, record_id);
         Some(id)
     }
 
@@ -2222,6 +2259,7 @@ impl Namespace {
         self.doc
             .put(&obj, RECORD_ID_KEY, record_id.0.to_string())
             .ok()?;
+        self.tree.bind_record(&id, record_id);
         let ino = self.ino_for_id(&id);
         self.index_insert_node(&id);
         Some(ino)
@@ -2265,6 +2303,7 @@ impl Namespace {
         self.doc
             .put(&obj, RECORD_ID_KEY, record_id.0.to_string())
             .ok()?;
+        self.tree.bind_record(&id, record_id);
         let ino = self.ino_for_id(&id);
         self.index_insert_node(&id);
         Some(ino)
@@ -2368,6 +2407,19 @@ impl Namespace {
     /// Current heads of the document — a cheap change token (e.g. to invalidate a derived export cache).
     pub fn heads(&mut self) -> Vec<automerge::ChangeHash> {
         self.doc.get_heads()
+    }
+
+    /// Every change this document holds beyond `heads`, as one incremental
+    /// chunk for [`Self::apply_remote_and_resolve`]. Heads this document
+    /// does not know (the asker's own changes) are ignored, so an asker that
+    /// shares no history receives everything.
+    pub fn changes_since(&mut self, heads: &[automerge::ChangeHash]) -> Vec<u8> {
+        let known: Vec<automerge::ChangeHash> = heads
+            .iter()
+            .copied()
+            .filter(|hash| self.doc.get_change_by_hash(hash).is_some())
+            .collect();
+        self.doc.save_after(&known)
     }
 
     // Fine-grained document edits: the path that merges semantically.
@@ -2574,16 +2626,54 @@ impl Namespace {
         read_str(&self.doc, &self.node(id)?, "thumb").and_then(|h| hash_from_hex(&h))
     }
 
+    /// Every live node naming content, with its path: the input of the blob
+    /// provider's reverse index. One pass over the tree, where calling
+    /// [`Self::live_paths_for_blob`] per blob would scan it per request.
+    /// A record placed at more than one live node publishes no thumbnail,
+    /// as in [`Self::thumbnail_for_id`].
+    pub(crate) fn live_blob_owners(&self) -> Vec<LiveBlobOwner> {
+        let live = self.live_node_ids();
+        let signed = self.content_authority == ContentAuthority::SignedRecords;
+        let mut placements: HashMap<FileRecordId, usize> = HashMap::new();
+        if signed {
+            for id in &live {
+                if let Some(record) = self.record_id_for_id(id) {
+                    let count = placements.entry(record).or_insert(0);
+                    *count = count.saturating_add(1);
+                }
+            }
+        }
+        live.iter()
+            .filter_map(|id| {
+                let record_id = self.record_id_for_id(id);
+                let manifest = self.node_hash(id);
+                let thumbnail = if signed {
+                    record_id
+                        .filter(|record| placements.get(record) == Some(&1))
+                        .and_then(|record| self.verified_records.get(&record))
+                        .and_then(|projection| projection.thumbnail)
+                } else {
+                    self.node(id)
+                        .and_then(|obj| read_str(&self.doc, &obj, "thumb"))
+                        .and_then(|value| hash_from_hex(&value))
+                };
+                if manifest.is_none() && thumbnail.is_none() {
+                    return None;
+                }
+                Some(LiveBlobOwner {
+                    path: self.path_for_id(id)?,
+                    record_id,
+                    manifest,
+                    thumbnail,
+                })
+            })
+            .collect()
+    }
+
     fn thumbnail_for_id(&self, id: &str) -> Option<Hash> {
         if self.content_authority == ContentAuthority::SignedRecords {
             let record_id = self.record_id_for_id(id)?;
-            if self
-                .live_node_ids()
-                .into_iter()
-                .filter(|candidate| self.record_id_for_id(candidate) == Some(record_id))
-                .count()
-                != 1
-            {
+            if self.unique_live_node_for_record(record_id).as_deref() != Some(id) {
                 return None;
             }
             return self

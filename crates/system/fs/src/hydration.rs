@@ -22,6 +22,9 @@ use crate::content::Manifest;
 use crate::store::ContentStore;
 use crate::syncstate::SyncState;
 
+mod batch;
+pub use batch::{FetchReport, Want};
+
 type FetchResult = std::result::Result<Bytes, String>;
 type FetchCell = Arc<OnceCell<FetchResult>>;
 type FetchMap = HashMap<Hash, FetchCell>;
@@ -57,6 +60,8 @@ pub struct Hydrator {
     remote_sources: Arc<RwLock<HashMap<Hash, EndpointAddr>>>,
     /// Decoded, offset-indexed manifests, bounded by total chunk count.
     manifests: moka::sync::Cache<Hash, Arc<ManifestIndex>>,
+    /// One blob-protocol connection per peer, reused by every request.
+    blob_connections: AsyncMutex<HashMap<iroh_base::PublicKey, iroh::endpoint::Connection>>,
     pub runtime_handle: tokio::runtime::Handle,
 }
 
@@ -178,6 +183,7 @@ impl Hydrator {
                     u32::try_from(index.chunks.len().max(1)).unwrap_or(u32::MAX)
                 })
                 .build(),
+            blob_connections: AsyncMutex::new(HashMap::new()),
             runtime_handle: tokio::runtime::Handle::current(),
         }
     }
@@ -378,10 +384,7 @@ impl Hydrator {
     /// Returns an error if the connection fails, the peer doesn't serve the blob, or the check times out.
     pub async fn verify_remote_copy(&self, hash: Hash, peer: EndpointAddr) -> Result<()> {
         tokio::time::timeout(Duration::from_secs(20), async {
-            let conn = self
-                .endpoint
-                .connect(peer.clone(), iroh_blobs::ALPN)
-                .await?;
+            let conn = self.blob_connection(&peer).await?;
             let mut result = iroh_blobs::get::request::get_blob(conn, hash);
             while let Some(item) = result.next().await {
                 match item {
@@ -489,11 +492,12 @@ impl Hydrator {
         Ok(out)
     }
 
-    /// [`read`](Self::read) with the missing chunks fetched concurrently, up
-    /// to `parallel` at a time, over one connection to the best peer. A
-    /// placeholder fill of a large range is then bounded by bandwidth rather
-    /// than by one connection and round trip per chunk. Chunks that peer
-    /// cannot serve fall back to [`Self::read_blob`], which tries every peer.
+    /// [`read`](Self::read) with the missing chunks fetched in batched,
+    /// pipelined requests over the pooled connections (see
+    /// [`Self::fetch_many`]). A placeholder fill of a large range is then
+    /// bounded by bandwidth rather than by a round trip per chunk. Chunks no
+    /// peer served in a batch fall back to [`Self::read_blob`], which tries
+    /// every peer for each.
     ///
     /// # Errors
     ///
@@ -509,16 +513,14 @@ impl Hydrator {
 
         let manifest = self.manifest_index(manifest_hash).await?;
         let end = offset.saturating_add(size).min(manifest.total_len());
-        let mut missing = Vec::new();
-        for (_, chunk) in manifest.overlapping(offset, end) {
-            let hash = Hash::from(chunk.hash);
-            if !self.store.has(hash).await {
-                missing.push(hash);
-            }
-        }
-        missing.dedup();
-        if missing.len() > 1 {
-            self.fetch_over_one_connection(&missing, parallel).await;
+        let wants: Vec<Want> = manifest
+            .overlapping(offset, end)
+            .map(|(_, chunk)| {
+                Want::chunk(Hash::from(chunk.hash), u64::from(chunk.len), manifest_hash)
+            })
+            .collect();
+        if !wants.is_empty() {
+            self.fetch_many(wants).await;
         }
         let fetches = manifest.overlapping(offset, end).map(|(start, chunk)| {
             let (hash, len) = (Hash::from(chunk.hash), chunk.len);
@@ -540,58 +542,6 @@ impl Hydrator {
             copy_chunk_range(&mut out, bytes, *start, offset, end);
         }
         Ok(out)
-    }
-
-    /// Fetches `hashes` from the best-ranked peer on a single connection,
-    /// `parallel` requests at a time. Best effort: whatever fails is left
-    /// for the per-blob path.
-    async fn fetch_over_one_connection(&self, hashes: &[Hash], parallel: usize) {
-        let Some(peer) = self.known_peers().into_iter().next() else {
-            return;
-        };
-        let started = Instant::now();
-        let Ok(Ok(connection)) = tokio::time::timeout(
-            PEER_FETCH_TIMEOUT,
-            self.endpoint.connect(peer.clone(), iroh_blobs::ALPN),
-        )
-        .await
-        else {
-            self.record_peer_result(peer.id, started.elapsed(), false);
-            return;
-        };
-        let requests = hashes.iter().copied().map(|hash| {
-            let connection = connection.clone();
-            let peer = peer.clone();
-            async move {
-                let _guard = self.mark_fetching(hash);
-                let result = tokio::time::timeout(PEER_FETCH_TIMEOUT, async {
-                    let (bytes, _stats) = iroh_blobs::get::request::get_blob(connection, hash)
-                        .bytes_and_stats()
-                        .await?;
-                    self.store.store_fetched(hash, bytes).await?;
-                    Ok::<_, anyhow::Error>(())
-                })
-                .await;
-                if matches!(result, Ok(Ok(()))) {
-                    self.remote_sources
-                        .write()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner)
-                        .insert(hash, peer);
-                    true
-                } else {
-                    false
-                }
-            }
-        });
-        let fetched: Vec<bool> =
-            futures_util::StreamExt::collect(futures_util::StreamExt::buffer_unordered(
-                futures_util::stream::iter(requests),
-                parallel.max(1),
-            ))
-            .await;
-        let ok = fetched.iter().all(|ok| *ok);
-        self.record_peer_result(peer.id, started.elapsed(), ok);
-        connection.close(0u32.into(), b"done");
     }
 
     /// [`read`](Self::read) served only from local content: `None` when the
@@ -717,13 +667,38 @@ impl Hydrator {
         }
         let mut completed = 0_u64;
         progress(completed, total);
-        for chunk in manifest.chunks() {
-            let hash = Hash::from(chunk.hash);
-            if !self.store.has(hash).await {
-                let _ = self.read_blob(hash, 0, u64::from(chunk.len)).await?;
+        // Progress is reported per window of batched requests; a window is
+        // large enough to keep every peer's pipeline full.
+        let window_bytes = batch::BATCH_BYTES.saturating_mul(batch::WINDOW_PER_PEER as u64);
+        let chunks = manifest.chunks();
+        let mut start = 0_usize;
+        while start < chunks.len() {
+            let mut end = start;
+            let mut bytes = 0_u64;
+            while let Some(chunk) = chunks.get(end) {
+                if end > start && bytes >= window_bytes {
+                    break;
+                }
+                bytes = bytes.saturating_add(u64::from(chunk.len));
+                end = end.saturating_add(1);
             }
-            completed = completed.saturating_add(u64::from(chunk.len)).min(total);
+            let window = chunks.get(start..end).unwrap_or_default();
+            self.fetch_many(
+                window
+                    .iter()
+                    .map(|c| Want::chunk(Hash::from(c.hash), u64::from(c.len), manifest_hash))
+                    .collect(),
+            )
+            .await;
+            for chunk in window {
+                let hash = Hash::from(chunk.hash);
+                if !self.store.has(hash).await {
+                    let _ = self.read_blob(hash, 0, u64::from(chunk.len)).await?;
+                }
+            }
+            completed = completed.saturating_add(bytes).min(total);
             progress(completed, total);
+            start = end;
         }
         Ok(true)
     }
@@ -746,10 +721,7 @@ impl Hydrator {
         let started = Instant::now();
         let peer_id = peer.id;
         let result = match tokio::time::timeout(PEER_FETCH_TIMEOUT, async {
-            let conn = self
-                .endpoint
-                .connect(peer.clone(), iroh_blobs::ALPN)
-                .await?;
+            let conn = self.blob_connection(&peer).await?;
             let (bytes, _stats) = iroh_blobs::get::request::get_blob(conn, hash)
                 .bytes_and_stats()
                 .await?;

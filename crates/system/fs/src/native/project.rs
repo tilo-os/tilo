@@ -287,6 +287,7 @@ impl Projector {
         });
         let mut pending: Vec<Pending> = Vec::new();
         let mut stopped_at: Option<(PathBuf, u64)> = None;
+        self.prefetch_eager(&files, materialized);
         for e in files {
             let rel = rel_path(&e.path);
             if !e.known {
@@ -422,6 +423,44 @@ impl Projector {
             self.make_dirs(parent)?;
         }
         self.make_dir(abs)
+    }
+
+    /// Fetches the content of every small file this pass is about to write,
+    /// in a few batched requests, before writing them one by one: many small
+    /// files then cost a few round trips, not one each. Stops at the first
+    /// version not verified yet, like the pass itself.
+    fn prefetch_eager(&self, files: &[&TreeEntry], materialized: &HashMap<PathBuf, Materialized>) {
+        /// Bytes prefetched per pass; the rest follow in the next one.
+        const PREFETCH_BYTES: u64 = 256 * 1024 * 1024;
+        let mut wanted = Vec::new();
+        let mut total = 0_u64;
+        for e in files {
+            if !e.known {
+                break;
+            }
+            let Some(hash) = e.hash.filter(|_| e.size > 0 && e.size <= self.eager_bytes) else {
+                continue;
+            };
+            let current = materialized
+                .get(&rel_path(&e.path))
+                .is_some_and(|m| !m.dir && m.hash == Some(*hash.as_bytes()) && m.size == e.size);
+            if current {
+                continue;
+            }
+            total = total.saturating_add(e.size);
+            if total > PREFETCH_BYTES {
+                break;
+            }
+            wanted.push((hash, e.size));
+        }
+        if wanted.len() < 2 {
+            return;
+        }
+        let hydrator = Arc::clone(&self.content);
+        let (deadline, limit) = (self.eager_deadline, self.eager_bytes);
+        let _ = self.runtime.block_on(async move {
+            tokio::time::timeout(deadline, hydrator.prefetch_files(&wanted, limit)).await
+        });
     }
 
     fn project_dir(
