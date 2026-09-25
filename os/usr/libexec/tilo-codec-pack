@@ -99,10 +99,29 @@ MESA_COMPONENTS = (
 BASE_MESA_PACKAGE = "mesa-dri-drivers"
 
 WAITING_MESSAGE = "Hardware H.264/HEVC is waiting for a matching Mesa build from RPM Fusion."
+OFFLINE_MESSAGE = ("Waiting for an internet connection. The codecs are installed automatically "
+                   "once this device is online.")
+
+# The installer's handoff: `tilo-install --codecs` writes this into the new
+# deployment's writable /etc. It is adopted once (see adopt_installer_seed), so a
+# later Remove is never undone by the seed still being there.
+INSTALLER_SEED = "/etc/tilo/codec-pack-opt-in"
+
+# What an install reports while it runs, in order. The desktop shows the label
+# and "step n of N" (status.json `progress`).
+PROGRESS_STEPS = (
+    "Checking this device",
+    "Finding packages",
+    "Downloading codecs",
+    "Verifying signatures",
+    "Downloading the hardware video driver",
+    "Building the extensions",
+    "Activating",
+)
 
 ARCHITECTURES = {"x86_64": "x86-64", "aarch64": "arm64"}
 
-STATES = ("not-installed", "installing", "installed", "removing", "failed")
+STATES = ("not-installed", "waiting-for-network", "installing", "installed", "removing", "failed")
 MESA_STATES = ("off", "enabled", "waiting", "unsupported")
 
 # Where the booted-base guard parks a Mesa extension it must not merge, so a
@@ -316,6 +335,7 @@ def next_state(current: str, event: str, *, installed: bool = False) -> str:
         "remove-started": "removing",
         "removed": "not-installed",
         "succeeded": "installed",
+        "offline": "installed" if installed else "waiting-for-network",
     }
     if event in table:
         return table[event]
@@ -325,6 +345,16 @@ def next_state(current: str, event: str, *, installed: bool = False) -> str:
         # The previous extension is still merged and still works.
         return "installed" if installed else "failed"
     raise ValueError(f"unknown event {event}")
+
+
+def is_online(connectivity: str) -> bool:
+    """Whether NetworkManager's cached connectivity allows downloading.
+
+    "limited" and "portal" have a link but no internet (or one behind a login
+    page); "unknown", an empty answer or no NetworkManager at all are treated as
+    online, so a system without NetworkManager's connectivity check still tries.
+    """
+    return connectivity.strip().lower() not in ("none", "limited", "portal")
 
 
 def openpgp_fingerprint(armored: str) -> str:
@@ -479,6 +509,14 @@ class Layout:
         return self.state / "enabled"
 
     @property
+    def seed(self) -> Path:
+        return self.at(INSTALLER_SEED)
+
+    @property
+    def seed_adopted(self) -> Path:
+        return self.state / "installer-seed-adopted"
+
+    @property
     def parked(self) -> Path:
         return self.state / "parked"
 
@@ -526,6 +564,8 @@ def read_status(layout: Layout) -> dict:
 def write_status(layout: Layout, **changes) -> dict:
     status = read_status(layout)
     status.update(changes)
+    if status.get("state") != "installing":
+        status.pop("progress", None)
     status["schema"] = 1
     status["updated"] = now()
     status["desired"] = layout.desired.exists()
@@ -546,6 +586,34 @@ def locked(layout: Layout):
     with open(layout.state / "lock", "w") as handle:
         fcntl.flock(handle, fcntl.LOCK_EX)
         yield
+
+
+def connectivity() -> str:
+    """NetworkManager's cached connectivity state (no probe is sent).
+
+    Module-level so tests can replace it. An empty string means unknown.
+    """
+    if not shutil.which("nmcli"):
+        return ""
+    result = run(["nmcli", "-t", "-f", "CONNECTIVITY", "general"], check=False)
+    return result.stdout.strip() if result.returncode == 0 else ""
+
+
+def report_progress(layout: Layout, label: str) -> None:
+    step = PROGRESS_STEPS.index(label) + 1
+    write_status(layout, progress={"step": step, "steps": len(PROGRESS_STEPS), "label": label})
+
+
+def adopt_installer_seed(layout: Layout) -> bool:
+    """Turn the installer's opt-in into the owner's recorded choice, once."""
+    if not layout.seed.is_file() or layout.seed_adopted.exists():
+        return False
+    layout.state.mkdir(parents=True, exist_ok=True)
+    layout.desired.write_text("owner opted in during installation\n")
+    os.chmod(layout.desired, 0o644)
+    layout.seed_adopted.write_text(f"{now()}\n")
+    os.chmod(layout.seed_adopted, 0o644)
+    return True
 
 
 @dataclasses.dataclass(frozen=True)
@@ -689,7 +757,8 @@ class Keyring:
 
 
 def extract_rpm(path: Path, tree: Path, ld_conf: list[str]) -> None:
-    archive = subprocess.Popen(["rpm2archive", "-n", "-"], stdin=path.open("rb"), stdout=subprocess.PIPE)
+    with path.open("rb") as source:
+        archive = subprocess.Popen(["rpm2archive", "-n", "-"], stdin=source, stdout=subprocess.PIPE)
     try:
         with tarfile.open(fileobj=archive.stdout, mode="r|") as tar:
             for member in tar:
@@ -825,10 +894,13 @@ def bump_generation(layout: Layout) -> int:
     return generation
 
 
-def fetch(layout: Layout, base: Base, dnf: Dnf, keyring: Keyring, specs: list[str], workdir: Path) -> list[dict]:
+def fetch(layout: Layout, base: Base, dnf: Dnf, keyring: Keyring, specs: list[str], workdir: Path,
+          verifying: str | None = None) -> list[dict]:
     rpms = dnf.download(specs, workdir)
     if not rpms:
         raise PackError("nothing was downloaded")
+    if verifying is not None:
+        report_progress(layout, verifying)
     origins = dnf.origins(rpms)
     verified = []
     for path in rpms:
@@ -877,15 +949,33 @@ def parked_versions(layout: Layout, name: str) -> list[str]:
     return [p.name[len(prefix):] for p in layout.parked.iterdir() if p.name.startswith(prefix)]
 
 
+def waiting_for_network(layout: Layout, installed: bool) -> dict:
+    """Offline: remember the choice and wait; this is not a failure.
+
+    A working pack stays "installed" with no error. A pack that is not there yet
+    waits; NetworkManager's dispatcher starts the refresh unit as soon as the
+    device reaches the internet, and the boot/daily timer retries as well.
+    """
+    if installed:
+        return write_status(layout, state="installed")
+    return write_status(layout, state=next_state("", "offline", installed=False),
+                        message=OFFLINE_MESSAGE, last_error="")
+
+
 def refresh(layout: Layout, *, explicit: bool) -> dict:
     if not layout.desired.exists():
         return write_status(layout, state="not-installed", mesa="off", message="")
     previous = read_status(layout)
     installed = (layout.extensions / CODECS).exists()
+    if not is_online(connectivity()):
+        return waiting_for_network(layout, installed)
     write_status(layout, state=next_state(previous.get("state", "not-installed"),
                                           "install-started" if explicit else "refresh-started",
                                           installed=installed), last_error="")
+    if not installed:
+        write_status(layout, message="")
     try:
+        report_progress(layout, "Checking this device")
         base = probe_base(layout)
         base_mesa = base.installed.get(BASE_MESA_PACKAGE)
         dnf = Dnf(layout, base)
@@ -895,17 +985,21 @@ def refresh(layout: Layout, *, explicit: bool) -> dict:
         os.chmod(layout.cache, 0o700)
         keyring = Keyring(layout, base, work / "keyring")
 
+        report_progress(layout, "Finding packages")
         specs, waiting = select(CODEC_COMPONENTS, base, dnf)
         if not specs:
             raise PackError("no codec packages are available for this base")
-        codecs = fetch(layout, base, dnf, keyring, specs, work / "codecs")
+        report_progress(layout, "Downloading codecs")
+        codecs = fetch(layout, base, dnf, keyring, specs, work / "codecs", verifying="Verifying signatures")
 
         mesa_candidates = dnf.candidates([c.name for c in MESA_COMPONENTS]).get(MESA_COMPONENTS[0].name, [])
         decision = decide_mesa(base_mesa, mesa_candidates)
         mesa_rpms = []
         if decision.action == "enable" and decision.candidate is not None:
+            report_progress(layout, "Downloading the hardware video driver")
             mesa_rpms = fetch(layout, base, dnf, keyring, [decision.candidate.spec], work / "mesa")
 
+        report_progress(layout, "Building the extensions")
         build_extension(layout, base, CODECS, codecs, {"TILO_CODEC_PACK": CODECS})
         if mesa_rpms and base_mesa is not None:
             build_extension(layout, base, MESA, mesa_rpms, {
@@ -919,6 +1013,7 @@ def refresh(layout: Layout, *, explicit: bool) -> dict:
             if current:
                 park(layout, MESA, current.get("TILO_MESA_VERSION", "unknown"))
             mesa_state = "waiting" if decision.action == "wait" else "unsupported"
+        report_progress(layout, "Activating")
         merge(layout)
         shutil.rmtree(work, ignore_errors=True)
         generation = bump_generation(layout)
@@ -931,10 +1026,15 @@ def refresh(layout: Layout, *, explicit: bool) -> dict:
             base={"version_id": base.version_id, "mesa": base_mesa.evr if base_mesa else None},
             packages={CODECS: [r["nvra"] for r in codecs], MESA: [r["nvra"] for r in mesa_rpms]},
             generation=generation,
+            last_error="",
         )
     except (PackError, OSError, ValueError) as error:
-        state = next_state(read_status(layout).get("state", ""), "failed",
-                           installed=(layout.extensions / CODECS).exists())
+        still_installed = (layout.extensions / CODECS).exists()
+        # A download that failed because the connection went away is the same
+        # situation as starting offline, not an error to show the owner.
+        if not is_online(connectivity()):
+            return waiting_for_network(layout, still_installed)
+        state = next_state(read_status(layout).get("state", ""), "failed", installed=still_installed)
         write_status(layout, state=state, last_error=str(error))
         raise
 
@@ -994,11 +1094,15 @@ def main(argv: list[str]) -> int:
     try:
         with locked(layout):
             if command == "install":
+                # The installer's seed is consumed by an explicit opt-in too, so
+                # it cannot re-enable the pack after a later Remove.
+                adopt_installer_seed(layout)
                 layout.state.mkdir(parents=True, exist_ok=True)
                 layout.desired.write_text("owner opted in\n")
                 os.chmod(layout.desired, 0o644)
                 refresh(layout, explicit=True)
             elif command == "refresh":
+                adopt_installer_seed(layout)
                 refresh(layout, explicit=False)
             elif command == "remove":
                 remove(layout)

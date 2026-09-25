@@ -1006,6 +1006,10 @@ COPY --chmod=0755 os/tests/recovery-boot-check.sh /usr/libexec/tilo-recovery-boo
 # itself carries no codec payload. See os/usr/share/doc/tilo/codec-pack.md.
 FROM scratch AS codec-pack-files
 COPY --chmod=0755 os/usr/libexec/tilo-codec-pack /usr/libexec/tilo-codec-pack
+# Starts the deferred install the moment NetworkManager reports internet
+# connectivity, for an owner who opted in while offline.
+COPY --chmod=0755 os/usr/lib/NetworkManager/dispatcher.d/90-tilo-codec-pack \
+    /usr/lib/NetworkManager/dispatcher.d/90-tilo-codec-pack
 COPY os/usr/share/tilo/codec-pack /usr/share/tilo/codec-pack
 COPY \
     os/usr/lib/systemd/system/tilo-codec-pack@.service \
@@ -2221,7 +2225,8 @@ RUN systemctl enable greetd.service && \
     systemctl enable tilo-boot-entries.timer tilo-boot-health.service && \
     systemctl enable bootc-fetch-apply-updates.timer && \
     systemctl enable tilo-network-start.timer && \
-    systemctl enable tilo-codec-pack-guard.service tilo-codec-pack-refresh.timer
+    systemctl enable tilo-codec-pack-guard.service tilo-codec-pack-refresh.timer && \
+    systemctl enable NetworkManager-dispatcher.service
 
 # Boot-time prune. These units sit on the critical chain but their work
 # is either irrelevant to a desktop Tilo (offline man-db caching), or a
