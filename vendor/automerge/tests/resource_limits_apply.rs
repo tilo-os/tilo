@@ -651,7 +651,8 @@ fn history(doc: &mut AutoCommit, n: usize, ground: bool) -> Vec<Change> {
 #[test]
 fn fragment_growth_is_reserved_before_mutation() {
     const N: usize = 600;
-    let limit = 2 * MIB;
+    // Honest input needs about 3 MiB here and the ground chain about 7 MiB.
+    let limit = 5 * MIB;
     let mut doc = base();
     let honest = changes_bytes(&history(&mut doc.clone(), N, false));
     let ground = changes_bytes(&history(&mut doc.clone(), N, true));
@@ -839,6 +840,7 @@ fn fuzz_mutated_changes_accept_cleanly_or_refuse_unchanged() {
             for _ in 0..(1 + rng.below(3)) {
                 mutate(&mut rng, &mut value, &ids);
             }
+            let dbg = value.clone();
             let Ok(expanded) = serde_json::from_value::<ExpandedChange>(value) else {
                 continue;
             };
@@ -857,7 +859,11 @@ fn fuzz_mutated_changes_accept_cleanly_or_refuse_unchanged() {
                     accepted += 1;
                     // An accepted document stays saveable and loadable.
                     let saved = target.save();
-                    AutoCommit::load(&saved).expect("accepted history reloads");
+                    if let Err(e) = AutoCommit::load(&saved) {
+                        eprintln!("TEMPLATE {}", serde_json::to_string(&template).unwrap());
+                        eprintln!("MUTATED {}", serde_json::to_string(&dbg).unwrap());
+                        panic!("accepted history reloads: {e:?}");
+                    }
                 }
                 Err(_) => {
                     refusals += 1;
@@ -912,8 +918,17 @@ fn fuzz_mutated_change_bytes_never_panic() {
             assert_eq!(snapshot(&mut target), before);
         } else {
             accepted += 1;
-            AutoCommit::load(&target.save()).expect("accepted history reloads");
+            if let Err(e) = AutoCommit::load(&target.save()) {
+                eprintln!("ORIG {}", hex::encode(&original));
+                eprintln!("MUT  {}", hex::encode(&bytes));
+                let c = Change::try_from(&bytes[..]).unwrap();
+                eprintln!("DECODED {}", serde_json::to_string(&expanded(&c)).unwrap());
+                let o = Change::try_from(&original[..]).unwrap();
+                eprintln!("ORIGDEC {}", serde_json::to_string(&expanded(&o)).unwrap());
+                panic!("accepted history reloads: {e:?}");
+            }
         }
     }
     eprintln!("byte fuzz: {accepted} accepted");
 }
+

@@ -13,9 +13,13 @@
 //! first chunk is a document chunk; mark ordering is always validated.
 use crate::author::Authors;
 use crate::change_graph::ChangeGraphCols;
+use crate::op_set2::change::batch::native_validation::validate_incoming;
 use crate::op_set2::change::ChangeCollector;
 use crate::op_set2::op_set::MarkOrderValidator;
 use crate::op_set2::OpSet;
+use crate::resource_limits::apply::budget::Charge;
+use crate::resource_limits::dims;
+use crate::resource_limits::NativeMutationError;
 use crate::resource_limits::NativeResourceError as Error;
 use crate::resource_limits::{NativeAllowance, NativeReservation};
 use crate::storage::{self, parse, Bundle, Chunk};
@@ -46,53 +50,13 @@ impl Fragments<'_> {
         if f_in == 0 {
             return Ok(());
         }
-        let bytes = fragment_growth_bound(self.reserved, f_in, actors, graph_changes)?;
+        let bytes = dims::fragment_growth_bound(self.reserved, f_in, actors, graph_changes)?;
         self.peak.absorb(self.allowance.reserve(bytes)?)?;
         self.reserved = self.reserved.checked_add(f_in).ok_or(Error::WorkBytes)?;
         Ok(())
     }
 }
 
-/// TODO(L1): replace with `dims::fragment_growth_bound(f_old, f_in, actors)`
-/// once it lands (and `load_peak_bound` drops its F = changes fragment term;
-/// until then this is conservative double counting, never under-counting).
-///
-/// Terms, per `ChangeGraph::cache_fragment` (0.12):
-/// - `fragments: Vec<FragmentNode>` (56 bytes each) growing to
-///   `f_old + f_in`, old + new buffer live while doubling;
-/// - each new node's `deps: Vec<NodeIdx>` can name every fragment
-///   (`4` bytes each, doubling growth);
-/// - each new node's `clock: SeqClock` (`Option<NonZeroU32>` per actor,
-///   doubling growth) plus the merged `fragment_top` clock;
-/// - one call's transients: the `supercede: Vec<usize>` (every fragment) and
-///   `calculate_clock`'s visited/to-visit `BTreeSet<NodeIdx>` over every
-///   change of the graph (64 bytes per entry covers B-tree node overhead).
-fn fragment_growth_bound(
-    f_old: usize,
-    f_in: usize,
-    actors: usize,
-    changes: usize,
-) -> Result<usize> {
-    let f = f_old.checked_add(f_in).ok_or(Error::WorkBytes)?;
-    let terms = [
-        f.checked_mul(3 * 56),
-        f_in.checked_mul(f).and_then(|n| n.checked_mul(2 * 4)),
-        f_in.checked_add(1)
-            .and_then(|n| n.checked_mul(actors))
-            .and_then(|n| n.checked_mul(2 * 4)),
-        f.checked_mul(2 * std::mem::size_of::<usize>()),
-        changes.checked_mul(2 * 64),
-    ];
-    terms
-        .into_iter()
-        .try_fold(0usize, |sum, term| sum.checked_add(term?))
-        .ok_or(Error::WorkBytes)
-}
-
-// TODO(L2): run the ported 0.8 incoming preflight
-// (`resource_limits/apply/preflight.rs` on codex/am012-l2) over every document
-// and change chunk before parsing: 0.12 change parsing panics in `OpId::new`
-// when obj/key/pred counters or actor indexes exceed u32::MAX.
 pub(super) fn load_strict(
     data: &[u8],
     allowance: &NativeAllowance,
@@ -154,10 +118,17 @@ pub(super) fn load_strict(
             .checked_add(changes.len())
             .ok_or(Error::WorkBytes)?;
         fragments.reserve(&changes, actors, graph_changes)?;
-        // TODO(L2): run `native_validate_incoming` on `changes` against `doc`
-        // here once it exists, so a hostile change or orphan chunk cannot
-        // panic inside 0.12's batch apply.
+        // L2's semantic preflight simulates the exact batch (queue plus these
+        // changes) so a hostile change or orphan chunk is refused before
+        // 0.12's batch apply could error midway or panic. Its tables are
+        // charged to this turn and released after the apply.
+        let mut charge = Charge::new(fragments.allowance);
+        validate_incoming(&doc, &changes, &mut charge).map_err(|error| match error {
+            NativeMutationError::Resource(error) => error,
+            _ => Error::Invalid,
+        })?;
         doc.apply_changes(changes).map_err(|_| Error::Invalid)?;
+        drop(charge);
     }
     if !first_document && !doc.queue.is_empty() {
         return Err(Error::Invalid);

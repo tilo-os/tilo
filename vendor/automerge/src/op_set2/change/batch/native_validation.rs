@@ -334,6 +334,12 @@ impl<'a> Validation<'a> {
             }
             _ => return invalid(),
         }
+        // A delete without predecessors deletes nothing and has no document
+        // encoding (deletes are stored as successors): the saved document
+        // would no longer reproduce this change.
+        if op.action == 3 && op.pred.is_empty() {
+            return invalid();
+        }
         if op.action == 7 {
             if kind != ObjType::Text || !op.insert || !op.pred.is_empty() {
                 return invalid();
@@ -529,6 +535,55 @@ impl Counts {
         }
         Ok(counts)
     }
+}
+
+/// Upper bound on the transient allocation of `canonical(change)`: the
+/// decoded `ExpandedChange` (actor table, a doubling `Vec<legacy::Op>` with
+/// realloc overlap, per-op predecessor Vecs, cloned actor ids, owned keys,
+/// values and mark names, one decoded storage op at a time) and the rebuilt
+/// change (actor index, column encoders and output bytes).
+fn canonical_bound(change: &Change) -> std::result::Result<usize, NativeResourceError> {
+    let dims = preflight::change_dims(change.raw_bytes())?;
+    let actor_heap = change.actors().map(|a| a.to_bytes().len()).max().unwrap_or(0);
+    let refs = sum(product(dims.ops, 2)?, dims.preds)?;
+    let mut total = 0usize;
+    for bytes in [
+        budget::hash::<(usize, ActorId)>(dims.actors)?,
+        product(dims.actors, actor_heap)?,
+        product(budget::vec::<crate::legacy::Op>(dims.ops)?, 3)?,
+        product(budget::vec::<crate::legacy::OpId>(dims.preds)?, 3)?,
+        product(refs, actor_heap)?,
+        product(sum(sum(dims.key_bytes, dims.value_bytes)?, dims.mark_bytes)?, 3)?,
+        product(dims.ops, 96)?,
+        dims.op_decode_bytes()?,
+        // Rebuild: actor index/table, encoders and output.
+        product(sum(product(dims.ops, 3)?, dims.preds)?, 64)?,
+        product(change.raw_bytes().len(), 4)?,
+        product(sum(dims.ops, dims.preds)?, 64)?,
+        product(sum(sum(dims.key_bytes, dims.value_bytes)?, dims.mark_bytes)?, 2)?,
+        8192,
+    ] {
+        total = sum(total, bytes)?;
+    }
+    Ok(total)
+}
+
+/// Whether `change` is canonically encoded: a document save stores changes
+/// as columns and later reconstructs them canonically, so a change whose raw
+/// bytes differ from its canonical encoding would get a different hash after
+/// save and load (a permanently unloadable document).
+fn canonical(change: &Change) -> bool {
+    let expanded = change.decode();
+    let rebuilt = crate::storage::Change::builder()
+        .with_actor(expanded.actor_id)
+        .with_extra_bytes(expanded.extra_bytes)
+        .with_seq(expanded.seq)
+        .with_dependencies(expanded.deps)
+        .with_timestamp(expanded.time)
+        .with_start_op(expanded.start_op)
+        .with_message(expanded.message)
+        .build(expanded.operations.iter());
+    matches!(rebuilt, Ok(rebuilt) if rebuilt.bytes() == change.raw_bytes())
 }
 
 /// Fixed slack for the transient search stacks of resident operation-id
@@ -851,6 +906,13 @@ pub(crate) fn validate_incoming(
                     .and_then(|offset| start.checked_add(offset))
                     .ok_or(NativeResourceError::WorkBytes)?;
                 validation.row(change_index, Id { counter, actor }, op, &map, &clock)?;
+            }
+            let bound = canonical_bound(change)?;
+            charge.grow(bound)?;
+            let canonical = canonical(change);
+            charge.shrink(bound);
+            if !canonical {
+                return invalid();
             }
             clock.seq[a] = seq;
             clock.max_op[a] = clock.max_op[a].max(end);
