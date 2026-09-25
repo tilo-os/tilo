@@ -343,7 +343,7 @@ fn mix_core(
     }
     // Gains are read at the middle of the block so a ramp is centred on it
     // rather than lagging or leading by a whole block.
-    let mid = start + (frames as f64 / SAMPLE_RATE as f64) * 0.5;
+    let mid = start + (frames as f64 / f64::from(SAMPLE_RATE)) * 0.5;
     for mut layer in plan_audio(project, mid) {
         if layer.gain <= 0.0 {
             continue;
@@ -366,12 +366,11 @@ fn mix_core(
             .map_or((1.0, 1.0), crate::model::Track::pan_gains);
         let g = [(layer.gain * pl) as f32, (layer.gain * pr) as f32];
         let bucket = per_track.as_deref_mut().map(|buckets| {
-            match buckets.iter().position(|(t, _)| *t == layer.track) {
-                Some(i) => i,
-                None => {
-                    buckets.push((layer.track, vec![0.0f32; frames * CHANNELS]));
-                    buckets.len() - 1
-                }
+            if let Some(i) = buckets.iter().position(|(t, _)| *t == layer.track) {
+                i
+            } else {
+                buckets.push((layer.track, vec![0.0f32; frames * CHANNELS]));
+                buckets.len() - 1
             }
         });
         // A short read means the source ran out; the rest of the block stays
@@ -421,7 +420,7 @@ fn fetch_at_rate(
     // Reversed, the block covers the source *behind* the current position,
     // so the read starts there and the samples are walked backwards.
     let from = if rate < 0.0 {
-        (layer.source_time - span / SAMPLE_RATE as f64).max(0.0)
+        (layer.source_time - span / f64::from(SAMPLE_RATE)).max(0.0)
     } else {
         layer.source_time
     };
@@ -543,7 +542,7 @@ impl DecodedPcm {
 impl PcmSource for DecodedPcm {
     fn samples(&mut self, media: MediaId, from_secs: f64, frames: usize) -> Option<Vec<f32>> {
         let pcm = self.pcm_for(media)?;
-        let start = (from_secs.max(0.0) * SAMPLE_RATE as f64) as usize * CHANNELS;
+        let start = (from_secs.max(0.0) * f64::from(SAMPLE_RATE)) as usize * CHANNELS;
         if start >= pcm.len() {
             return None;
         }
@@ -625,12 +624,11 @@ fn decode_pcm(uri: &str) -> Option<Vec<f32>> {
         if !is_audio {
             return;
         }
-        if let Some(c) = convert_weak.upgrade() {
-            if let Some(target) = c.static_pad("sink") {
-                if target.is_linked() || pad.link(&target).is_ok() {
-                    linked_in.store(true, Ordering::SeqCst);
-                }
-            }
+        if let Some(c) = convert_weak.upgrade()
+            && let Some(target) = c.static_pad("sink")
+            && (target.is_linked() || pad.link(&target).is_ok())
+        {
+            linked_in.store(true, Ordering::SeqCst);
         }
     });
     // `no-more-pads` is the demuxer saying it has finished finding streams.
@@ -670,34 +668,31 @@ fn decode_pcm(uri: &str) -> Option<Vec<f32>> {
         if failed {
             break;
         }
-        match sink.try_pull_sample(gst::ClockTime::from_mseconds(500)) {
-            Some(sample) => {
-                let Some(buffer) = sample.buffer() else {
-                    continue;
-                };
-                let Ok(map) = buffer.map_readable() else {
-                    continue;
-                };
-                for chunk in map.chunks_exact(4) {
-                    out.push(f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]));
-                }
+        if let Some(sample) = sink.try_pull_sample(gst::ClockTime::from_mseconds(500)) {
+            let Some(buffer) = sample.buffer() else {
+                continue;
+            };
+            let Ok(map) = buffer.map_readable() else {
+                continue;
+            };
+            for chunk in map.chunks_exact(4) {
+                out.push(f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]));
             }
-            None => {
-                if sink.is_eos() {
-                    break;
-                }
-                // A source with no audio stream never links the sink, so the
-                // pull times out forever. That is only proof of "no audio
-                // here" once the demuxer has said it has no more pads to
-                // offer -- see `no_audio_concluded`.
-                if out.is_empty()
-                    && no_audio_concluded(
-                        settled.load(Ordering::SeqCst),
-                        linked.load(Ordering::SeqCst),
-                    )
-                {
-                    break;
-                }
+        } else {
+            if sink.is_eos() {
+                break;
+            }
+            // A source with no audio stream never links the sink, so the
+            // pull times out forever. That is only proof of "no audio
+            // here" once the demuxer has said it has no more pads to
+            // offer -- see `no_audio_concluded`.
+            if out.is_empty()
+                && no_audio_concluded(
+                    settled.load(Ordering::SeqCst),
+                    linked.load(Ordering::SeqCst),
+                )
+            {
+                break;
             }
         }
     }
@@ -867,15 +862,14 @@ impl MixMeters {
         }
         s.master_hold = s.master_hold.max(report.master.loudest());
         for (id, m) in &report.tracks {
-            let i = match s.tracks.iter().position(|t| t.track == *id) {
-                Some(i) => i,
-                None => {
-                    s.tracks.push(TrackLevel {
-                        track: *id,
-                        ..Default::default()
-                    });
-                    s.tracks.len() - 1
-                }
+            let i = if let Some(i) = s.tracks.iter().position(|t| t.track == *id) {
+                i
+            } else {
+                s.tracks.push(TrackLevel {
+                    track: *id,
+                    ..Default::default()
+                });
+                s.tracks.len() - 1
             };
             let t = &mut s.tracks[i];
             for ch in 0..CHANNELS {
@@ -1036,12 +1030,11 @@ impl MonitorSink for NullSink {
 /// caller can tell which it got from [`output_is_audible`].
 #[cfg(any(feature = "gst", feature = "decode"))]
 pub fn open_output() -> Box<dyn MonitorSink> {
-    match SystemSink::open() {
-        Some(s) => Box::new(s),
-        None => {
-            tracing::info!("no audio output available; monitoring silently");
-            Box::new(NullSink)
-        }
+    if let Some(s) = SystemSink::open() {
+        Box::new(s)
+    } else {
+        tracing::info!("no audio output available; monitoring silently");
+        Box::new(NullSink)
     }
 }
 
@@ -1102,7 +1095,7 @@ impl AudioMonitor {
         let handle = std::thread::Builder::new()
             .name("video-editor-monitor".into())
             .spawn(move || {
-                let block_secs = MONITOR_BLOCK as f64 / SAMPLE_RATE as f64;
+                let block_secs = MONITOR_BLOCK as f64 / f64::from(SAMPLE_RATE);
                 while !state.stop.load(AtomicOrdering::Relaxed) {
                     if !state.playing.load(AtomicOrdering::Relaxed) {
                         // Idle cheaply. Nothing is pushed while paused, so a
@@ -1174,7 +1167,7 @@ impl AudioMonitor {
 
     /// Where the monitor has mixed up to, in timeline seconds.
     pub fn position(&self) -> f64 {
-        self.shared.position.lock().map(|p| *p).unwrap_or(0.0)
+        self.shared.position.lock().map_or(0.0, |p| *p)
     }
 }
 
@@ -1190,7 +1183,7 @@ impl Drop for AudioMonitor {
 
 /// A [`MonitorSink`] that plays through the system's audio output.
 ///
-/// `autoaudiosink` picks whatever the host offers (PipeWire here). A machine
+/// `autoaudiosink` picks whatever the host offers (`PipeWire` here). A machine
 /// with no output at all yields `None`, and the editor falls back to
 /// [`NullSink`] — silent playback rather than no playback.
 #[cfg(any(feature = "gst", feature = "decode"))]
@@ -1257,7 +1250,7 @@ impl MonitorSink for SystemSink {
                 return false;
             };
             let frames = (block.len() / CHANNELS) as u64;
-            let ns = |f: u64| f * 1_000_000_000 / SAMPLE_RATE as u64;
+            let ns = |f: u64| f * 1_000_000_000 / u64::from(SAMPLE_RATE);
             bref.set_pts(gst::ClockTime::from_nseconds(ns(self.pushed)));
             bref.set_duration(gst::ClockTime::from_nseconds(ns(frames)));
             let Ok(mut map) = bref.map_writable() else {
@@ -1385,7 +1378,7 @@ mod tests {
 
     impl PcmSource for RampSource {
         fn samples(&mut self, _media: MediaId, from_secs: f64, frames: usize) -> Option<Vec<f32>> {
-            let start = (from_secs * SAMPLE_RATE as f64).round() as usize;
+            let start = (from_secs * f64::from(SAMPLE_RATE)).round() as usize;
             let mut out = Vec::with_capacity(frames * CHANNELS);
             for i in 0..frames {
                 let n = start + i;
@@ -1434,8 +1427,8 @@ mod tests {
     /// Which source frame a block's first and last output samples came from,
     /// read back out of the ramp.
     fn span_of(block: &[f32], len: usize) -> (f64, f64) {
-        let first = block[0] as f64 * len as f64;
-        let last = block[block.len() - CHANNELS] as f64 * len as f64;
+        let first = f64::from(block[0]) * len as f64;
+        let last = f64::from(block[block.len() - CHANNELS]) * len as f64;
         (first, last)
     }
 
@@ -1499,7 +1492,7 @@ mod tests {
         let block = mix_block(&p, at, frames, &mut src);
         let (a, b) = span_of(&block, n);
 
-        let want = (in_point + 1.0) * SAMPLE_RATE as f64;
+        let want = (in_point + 1.0) * f64::from(SAMPLE_RATE);
         let off = a - want;
         assert!(
             off.abs() < 2.0,
@@ -1528,10 +1521,10 @@ mod tests {
         let mut src = RampSource { len: n };
 
         let frames = SAMPLE_RATE as usize / 30;
-        let step = frames as f64 / SAMPLE_RATE as f64;
+        let step = frames as f64 / f64::from(SAMPLE_RATE);
         let mut previous_end: Option<f64> = None;
         for i in 0..30 {
-            let at = start + 0.5 + i as f64 * step;
+            let at = start + 0.5 + f64::from(i) * step;
             let (a, b) = span_of(&mix_block(&p, at, frames, &mut src), n);
             if let Some(end) = previous_end {
                 assert!(
@@ -1607,7 +1600,7 @@ mod tests {
         // A reversed clip starts on the source's *out* point.
         let head = mix_block(&p, 0.0, 64, &mut src);
         let (h, _) = span_of(&head, src.len);
-        let end = 10.0 * SAMPLE_RATE as f64;
+        let end = 10.0 * f64::from(SAMPLE_RATE);
         assert!(
             (h - end).abs() < 200.0,
             "the first timeline frame of a reversed clip is the source's last, got {h}",
@@ -1843,7 +1836,7 @@ mod tests {
             Arc::new(MixMeters::new()),
         );
         monitor.play(2.0);
-        let block_secs = MONITOR_BLOCK as f64 / SAMPLE_RATE as f64;
+        let block_secs = MONITOR_BLOCK as f64 / f64::from(SAMPLE_RATE);
         assert!(
             eventually(|| monitor.position() >= 2.0 + block_secs * 3.0),
             "the position advances as blocks are mixed, got {}",
@@ -1914,7 +1907,7 @@ mod tests {
 
         // Mute the track mid-playback: the very setting that reached no
         // audio path before.
-        let mut muted = p.clone();
+        let mut muted = p;
         muted.tracks[0].muted = true;
         muted.tracks[1].muted = true;
         monitor.set_project(&muted);

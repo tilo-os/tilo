@@ -318,16 +318,15 @@ impl ParamTrack {
     /// re-keying the same instant edits rather than stacks).
     pub fn set_key(&mut self, t: f64, v: f64, interp: Interp) {
         let key = Keyframe { t, v, interp };
-        match self.keys.iter().position(|k| (k.t - t).abs() < 1e-6) {
-            Some(i) => self.keys[i] = key,
-            None => {
-                let at = self
-                    .keys
-                    .iter()
-                    .position(|k| k.t > t)
-                    .unwrap_or(self.keys.len());
-                self.keys.insert(at, key);
-            }
+        if let Some(i) = self.keys.iter().position(|k| (k.t - t).abs() < 1e-6) {
+            self.keys[i] = key;
+        } else {
+            let at = self
+                .keys
+                .iter()
+                .position(|k| k.t > t)
+                .unwrap_or(self.keys.len());
+            self.keys.insert(at, key);
         }
     }
 

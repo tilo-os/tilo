@@ -20,7 +20,7 @@ pub(super) fn on_fill(theme: &Theme, fill: Color) -> (Color, Color) {
 /// exactly one font size and drifted the moment one changed.
 pub(super) fn text_baseline(rect: Rect, size: f32, tr: &mut TextRenderer) -> f64 {
     let (_, h) = tr.measure("Hg", size, None);
-    rect.center().y - h as f64 / 2.0
+    rect.center().y - f64::from(h) / 2.0
 }
 
 /// Top-left corner for `s` drawn centred both ways inside `rect`.
@@ -33,8 +33,8 @@ pub(super) fn text_centre(
 ) -> Point {
     let (w, h) = tr.measure_weighted(s, size, None, weight);
     Point::new(
-        rect.center().x - w as f64 / 2.0,
-        rect.center().y - h as f64 / 2.0,
+        rect.center().x - f64::from(w) / 2.0,
+        rect.center().y - f64::from(h) / 2.0,
     )
 }
 
@@ -58,9 +58,10 @@ pub(super) fn clip_inner_rect(cr: Rect) -> Rect {
 /// The file's own name, for a message about it — never the whole path, which
 /// would run off the notice line.
 pub(super) fn display_name(path: &Path) -> String {
-    path.file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_else(|| path.to_string_lossy().into_owned())
+    path.file_name().map_or_else(
+        || path.to_string_lossy().into_owned(),
+        |n| n.to_string_lossy().into_owned(),
+    )
 }
 
 /// Honest, human-readable summary of an import batch. Never claims a success
@@ -140,8 +141,8 @@ pub(super) fn blit_thumb(
     radius: f64,
 ) {
     use vello::peniko::ImageBrush;
-    let iw = thumb.width as f64;
-    let ih = thumb.height as f64;
+    let iw = f64::from(thumb.width);
+    let ih = f64::from(thumb.height);
     if iw <= 0.0 || ih <= 0.0 || dest.width() <= 0.0 || dest.height() <= 0.0 {
         return;
     }

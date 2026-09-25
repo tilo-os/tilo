@@ -1820,7 +1820,7 @@ pub fn delete_clips_action(ids: &[Uuid], moved: &[Clip]) -> VideoEditorAction {
     match (ids, moved) {
         ([one], []) => delete_clip_action(one),
         _ => VideoEditorAction::DeleteClips {
-            ids: ids.iter().map(std::string::ToString::to_string).collect(),
+            ids: ids.iter().map(ToString::to_string).collect(),
             moved: moved.iter().map(ClipData::from_clip).collect(),
         },
     }
@@ -1851,7 +1851,7 @@ pub fn upsert_track_action(t: &Track) -> VideoEditorAction {
 pub fn delete_track_action(id: &Uuid, clips: &[Uuid]) -> VideoEditorAction {
     VideoEditorAction::DeleteTrack {
         id: id.to_string(),
-        clips: clips.iter().map(std::string::ToString::to_string).collect(),
+        clips: clips.iter().map(ToString::to_string).collect(),
     }
 }
 
@@ -1862,7 +1862,7 @@ pub fn upsert_media_action(m: &MediaItem) -> VideoEditorAction {
 pub fn remove_media_action(id: &Uuid, clips: &[Uuid]) -> VideoEditorAction {
     VideoEditorAction::RemoveMedia {
         id: id.to_string(),
-        clips: clips.iter().map(std::string::ToString::to_string).collect(),
+        clips: clips.iter().map(ToString::to_string).collect(),
     }
 }
 
@@ -1981,9 +1981,9 @@ fn parse_colour(s: &str) -> Option<[f64; 4]> {
     if hex.len() == 6 && hex.chars().all(|c| c.is_ascii_hexdigit()) {
         let v = u32::from_str_radix(hex, 16).ok()?;
         return Some([
-            ((v >> 16) & 0xff) as f64 / 255.0,
-            ((v >> 8) & 0xff) as f64 / 255.0,
-            (v & 0xff) as f64 / 255.0,
+            f64::from((v >> 16) & 0xff) / 255.0,
+            f64::from((v >> 8) & 0xff) / 255.0,
+            f64::from(v & 0xff) / 255.0,
             1.0,
         ]);
     }
@@ -2220,7 +2220,7 @@ pub fn provide_resources(ctx: &VideoResourceCtx) -> Vec<Resource> {
             &set_project_meta_action(&marked),
         ));
         if p.has_marks() {
-            let mut cleared = snap.clone();
+            let mut cleared = snap;
             cleared.clear_marks();
             root = root.with_action(immediate(
                 "clear-marks",
@@ -3177,9 +3177,10 @@ pub fn provide_resources(ctx: &VideoResourceCtx) -> Vec<Resource> {
                     let mut next = p.clone();
                     // The lane it lands on, and the lane the change has to
                     // *make* when the project has no audio track yet.
-                    let (audio_track, fresh) = match next.placement_track(TrackKind::Audio, None) {
-                        Some(t) => (t, Vec::new()),
-                        None => {
+                    let (audio_track, fresh) =
+                        if let Some(t) = next.placement_track(TrackKind::Audio, None) {
+                            (t, Vec::new())
+                        } else {
                             let t = Track {
                                 id: Uuid::new_v4(),
                                 name: "A1".to_string(),
@@ -3194,8 +3195,7 @@ pub fn provide_resources(ctx: &VideoResourceCtx) -> Vec<Resource> {
                             let id = t.id;
                             next.tracks.push(t.clone());
                             (id, vec![t])
-                        }
-                    };
+                        };
                     if let Some(audio_id) = next.add_linked_audio(cid, audio_track) {
                         let written: Vec<Clip> = [cid, audio_id]
                             .iter()
@@ -3614,7 +3614,9 @@ pub fn provide_resources(ctx: &VideoResourceCtx) -> Vec<Resource> {
                         ParamType::Text,
                         "where the title's lines sit in the frame",
                     )
-                    .with_choices(crate::model::TextAlign::ALL.map(|a| a.as_str())),
+                    .with_choices(
+                        crate::model::TextAlign::ALL.map(crate::model::TextAlign::as_str),
+                    ),
                 ],
                 move |args: &ActionArgs| {
                     let mut next = align_base.clone();
@@ -3920,10 +3922,10 @@ mod tests {
     /// and assert about another.
     fn spec_on(ctx: &VideoResourceCtx, resource: &str, id: &str) -> ActionSpec {
         fn walk(r: &Resource, resource: &str, id: &str, out: &mut Option<ActionSpec>) {
-            if r.id.as_str() == resource {
-                if let Some(a) = r.actions.iter().find(|a| a.id == id) {
-                    *out = Some(a.clone());
-                }
+            if r.id.as_str() == resource
+                && let Some(a) = r.actions.iter().find(|a| a.id == id)
+            {
+                *out = Some(a.clone());
             }
             for c in &r.children {
                 walk(c, resource, id, out);
@@ -4737,7 +4739,7 @@ mod tests {
         assert_eq!(spec.params()[0].ty, ParamType::Number);
 
         let refused = ActionArgs::bind(
-            &spec.params(),
+            spec.params(),
             [("value".to_string(), ArgValue::Text("banana".into()))],
         );
         assert!(
@@ -4746,7 +4748,7 @@ mod tests {
         );
 
         let bound = ActionArgs::bind(
-            &spec.params(),
+            spec.params(),
             [("value".to_string(), ArgValue::Number(0.8))],
         )
         .expect("a number binds");
@@ -4906,7 +4908,7 @@ mod tests {
                 assert_eq!(p.name.as_ref(), *name, "{id} names its argument {i}");
                 assert_eq!(p.ty, *ty, "{id} declares the type of {name}");
                 assert!(p.required, "{id} needs {name}");
-                assert!(!p.description.is_empty(), "{id} says what {name} means",);
+                assert!(!p.description.is_empty(), "{id} says what {name} means");
             }
         }
 

@@ -27,7 +27,7 @@ impl VideoEditorApp {
         // the content.
         let grid = with_alpha(c.text_dim, 0.22);
         for i in 1..4 {
-            let f = i as f64 / 4.0;
+            let f = f64::from(i) / 4.0;
             let x = canvas.x0 + canvas.width() * f;
             let y = canvas.y0 + canvas.height() * f;
             let mut v = BezPath::new();
@@ -177,7 +177,7 @@ impl VideoEditorApp {
         if !l.project_rates.is_empty() {
             let rects: Vec<Rect> = l.project_rates.iter().map(|(_, r)| *r).collect();
             let labels: Vec<String> = RATE_PRESETS.iter().map(|r| rate_words(*r)).collect();
-            let refs: Vec<&str> = labels.iter().map(std::string::String::as_str).collect();
+            let refs: Vec<&str> = labels.iter().map(String::as_str).collect();
             let sel = l
                 .project_rates
                 .iter()
@@ -188,10 +188,10 @@ impl VideoEditorApp {
         if let Some(rect) = l.project_match {
             // The button names the source it will copy, so pressing it is not
             // a guess about which of several sources it meant.
-            let label = self
-                .format_source()
-                .map(|m| format!("Match {}", m.name))
-                .unwrap_or_else(|| "Match media".to_string());
+            let label = self.format_source().map_or_else(
+                || "Match media".to_string(),
+                |m| format!("Match {}", m.name),
+            );
             let shown = elide_w(&label, (rect.width() - 20.0) as f32, tr);
             draw_button(
                 scene,
@@ -285,7 +285,7 @@ impl VideoEditorApp {
                     &stamp,
                     11.0,
                     stamp_col,
-                    note_btn.x0 - 8.0 - sw2 as f64,
+                    note_btn.x0 - 8.0 - f64::from(sw2),
                     baseline,
                 );
             }
@@ -415,15 +415,13 @@ impl VideoEditorApp {
         // written ("on V2 · locked").
         let locked = self
             .selected()
-            .map(|id| !self.project.clip_editable(id))
-            .unwrap_or(false);
+            .is_some_and(|id| !self.project.clip_editable(id));
         if locked {
             let l = self.inspector_layout(r);
             let top = l
                 .opacity
                 .or(l.volume)
-                .map(|t| t.y0 - 24.0)
-                .unwrap_or(r.inspector.y0 + 170.0);
+                .map_or(r.inspector.y0 + 170.0, |t| t.y0 - 24.0);
             let veil = Rect::new(
                 r.inspector.x0,
                 top.max(r.inspector.y0),
@@ -454,9 +452,9 @@ impl VideoEditorApp {
             const STEPS: i32 = 14;
             const H: f64 = 22.0;
             for i in 0..STEPS {
-                let f = i as f64 / STEPS as f64;
+                let f = f64::from(i) / f64::from(STEPS);
                 let y0 = from_y + dir * H * f;
-                let y1 = y0 + dir * (H / STEPS as f64);
+                let y1 = y0 + dir * (H / f64::from(STEPS));
                 let band = Rect::new(r.inspector.x0, y0.min(y1), r.inspector.x1, y0.max(y1));
                 fill_rect(
                     scene,
@@ -663,7 +661,7 @@ impl VideoEditorApp {
         if self.selection.len() > 1 {
             let label = format!("{} clips selected", self.selection.len());
             let (lw, _) = tr.measure_weighted(&label, 10.5, None, TextWeight::Medium);
-            let pillr = Rect::new(x1 - lw as f64 - 14.0, heading.y0, x1, heading.y1);
+            let pillr = Rect::new(x1 - f64::from(lw) - 14.0, heading.y0, x1, heading.y1);
             // A quiet capsule with its derived edge; the count keeps the
             // accent in its words, not as a wash under them.
             well(scene, tf, theme, pillr, PANE_HEADING_H / 2.0);
@@ -695,8 +693,7 @@ impl VideoEditorApp {
             let floor = l
                 .sections
                 .first()
-                .map(|(_, rect)| rect.y0 - 8.0)
-                .unwrap_or(r.inspector.y1);
+                .map_or(r.inspector.y1, |(_, rect)| rect.y0 - 8.0);
             let area = Rect::new(
                 x0,
                 top + INSPECTOR_HEADER_H,
@@ -740,8 +737,7 @@ impl VideoEditorApp {
         fill_round(scene, tf, tag, 3.0, clip_color(theme, clip.palette));
         let name = media
             .as_ref()
-            .map(|m| m.name.clone())
-            .unwrap_or_else(|| "clip".into());
+            .map_or_else(|| "clip".into(), |m| m.name.clone());
         let shown_name = elide_w(&name, (x1 - x0 - 14.0) as f32, tr);
         text_w(
             scene,
@@ -830,7 +826,7 @@ impl VideoEditorApp {
                 &readout,
                 size,
                 c.text_primary,
-                track.x1 - pw as f64,
+                track.x1 - f64::from(pw),
                 track.y0 - 20.0,
             );
             draw_track(
@@ -1032,8 +1028,7 @@ impl VideoEditorApp {
             };
             let keyed = f
                 .param()
-                .map(|p| self.key_state(p) != KeyState::Off)
-                .unwrap_or(false);
+                .is_some_and(|p| self.key_state(p) != KeyState::Off);
             let lx = if f.param().is_some() {
                 track.x0 + KEY_BOX + 6.0
             } else {
@@ -1059,7 +1054,7 @@ impl VideoEditorApp {
                 &readout,
                 label_size,
                 c.text_primary,
-                track.x1 - pw as f64,
+                track.x1 - f64::from(pw),
                 track.y0 - 20.0,
             );
             draw_track(
@@ -1203,7 +1198,7 @@ impl VideoEditorApp {
                     }
                 })
                 .collect();
-            let refs: Vec<&str> = labels.iter().map(|s| s.as_str()).collect();
+            let refs: Vec<&str> = labels.iter().map(String::as_str).collect();
             // No preset is "selected" unless the rate is exactly on one —
             // a segmented control that always highlights something would
             // claim 1.37× was 1×.
@@ -1263,7 +1258,7 @@ impl VideoEditorApp {
                     theme,
                     meter,
                     level.map(|v| v.level).unwrap_or_default(),
-                    level.map(|v| v.hold).unwrap_or(0.0),
+                    level.map_or(0.0, |v| v.hold),
                     level.is_some_and(|v| v.clipped),
                 );
             }
@@ -1442,51 +1437,7 @@ impl VideoEditorApp {
             // While the inline editor owns this box it draws the words itself
             // (with a caret); otherwise show them, or say plainly that there
             // are none rather than leaving an empty box that looks broken.
-            if editing != Some(true) {
-                if text_src.content.trim().is_empty() {
-                    let baseline = text_baseline(rect, 13.0, tr);
-                    text(
-                        scene,
-                        tr,
-                        tf,
-                        "Click to type a title",
-                        13.0,
-                        c.text_dim,
-                        rect.x0 + 10.0,
-                        baseline,
-                    );
-                } else {
-                    // Real line breaks, on their own lines. The field used to
-                    // fold them into a `⏎` glyph because it could not carry
-                    // one; it can now, so showing the words as written is
-                    // both honest and what the frame will look like.
-                    for (i, line) in text_src.content.lines().take(3).enumerate() {
-                        let shown = elide_w(line, (rect.width() - 20.0) as f32, tr);
-                        text(
-                            scene,
-                            tr,
-                            tf,
-                            &shown,
-                            13.0,
-                            c.text_primary,
-                            rect.x0 + 10.0,
-                            rect.y0 + 18.0 + i as f64 * 18.0,
-                        );
-                    }
-                    if text_src.content.lines().count() > 3 {
-                        text(
-                            scene,
-                            tr,
-                            tf,
-                            "…",
-                            13.0,
-                            c.text_dim,
-                            rect.x0 + 10.0,
-                            rect.y0 + 18.0 + 3.0 * 18.0,
-                        );
-                    }
-                }
-            } else {
+            if editing == Some(true) {
                 // While the field is open, say what ends the edit — Enter is
                 // a line break here, so it cannot also be Accept.
                 text(
@@ -1499,6 +1450,48 @@ impl VideoEditorApp {
                     rect.x0,
                     rect.y1 + 14.0,
                 );
+            } else if text_src.content.trim().is_empty() {
+                let baseline = text_baseline(rect, 13.0, tr);
+                text(
+                    scene,
+                    tr,
+                    tf,
+                    "Click to type a title",
+                    13.0,
+                    c.text_dim,
+                    rect.x0 + 10.0,
+                    baseline,
+                );
+            } else {
+                // Real line breaks, on their own lines. The field used to
+                // fold them into a `⏎` glyph because it could not carry
+                // one; it can now, so showing the words as written is
+                // both honest and what the frame will look like.
+                for (i, line) in text_src.content.lines().take(3).enumerate() {
+                    let shown = elide_w(line, (rect.width() - 20.0) as f32, tr);
+                    text(
+                        scene,
+                        tr,
+                        tf,
+                        &shown,
+                        13.0,
+                        c.text_primary,
+                        rect.x0 + 10.0,
+                        rect.y0 + 18.0 + i as f64 * 18.0,
+                    );
+                }
+                if text_src.content.lines().count() > 3 {
+                    text(
+                        scene,
+                        tr,
+                        tf,
+                        "…",
+                        13.0,
+                        c.text_dim,
+                        rect.x0 + 10.0,
+                        rect.y0 + 18.0 + 3.0 * 18.0,
+                    );
+                }
             }
         }
         if !l.title_align.is_empty() {
@@ -1559,8 +1552,7 @@ impl VideoEditorApp {
             let cur = media
                 .as_ref()
                 .and_then(|m| m.text.as_ref())
-                .map(|t| t.color)
-                .unwrap_or([1.0; 4]);
+                .map_or([1.0; 4], |t| t.color);
             text(
                 scene,
                 tr,
@@ -1600,8 +1592,7 @@ impl VideoEditorApp {
                 media
                     .as_ref()
                     .and_then(|m| m.text.as_ref())
-                    .map(|t| t.bold)
-                    .unwrap_or(false),
+                    .is_some_and(|t| t.bold),
                 "Bold",
             ),
             (
@@ -1609,8 +1600,7 @@ impl VideoEditorApp {
                 media
                     .as_ref()
                     .and_then(|m| m.text.as_ref())
-                    .map(|t| t.italic)
-                    .unwrap_or(false),
+                    .is_some_and(|t| t.italic),
                 "Italic",
             ),
         ] {
@@ -1851,7 +1841,7 @@ impl VideoEditorApp {
             &summary,
             11.0,
             c.accent[5],
-            rect.x1 - w as f64,
+            rect.x1 - f64::from(w),
             baseline,
         );
     }
@@ -1913,12 +1903,11 @@ impl VideoEditorApp {
             // section exists to end.
             Section::Mix => {
                 let t = self.project.track(clip.track)?;
-                let clipped = self
-                    .mix
-                    .track(t.id)
-                    .is_some_and(|level| level.clipped)
-                    .then_some(" · CLIP")
-                    .unwrap_or_default();
+                let clipped = if self.mix.track(t.id).is_some_and(|level| level.clipped) {
+                    " · CLIP"
+                } else {
+                    ""
+                };
                 if !t.mix_is_set() && clipped.is_empty() {
                     return None;
                 }

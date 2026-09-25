@@ -66,7 +66,7 @@ impl Selection {
     /// take with it), promoting the primary if it was one of them.
     pub(super) fn remove_all(&mut self, gone: &[ClipId]) {
         self.ids.retain(|id| !gone.contains(id));
-        if self.primary.map(|id| gone.contains(&id)).unwrap_or(false) {
+        if self.primary.is_some_and(|id| gone.contains(&id)) {
             self.primary = self.ids.last().copied();
         }
     }
@@ -88,7 +88,7 @@ impl Selection {
     /// promoting the primary if it was one of them.
     pub(super) fn retain_existing(&mut self, p: &Project) {
         self.ids.retain(|id| p.clip(*id).is_some());
-        if self.primary.map(|id| p.clip(id).is_none()).unwrap_or(false) {
+        if self.primary.is_some_and(|id| p.clip(id).is_none()) {
             self.primary = self.ids.last().copied();
         }
     }

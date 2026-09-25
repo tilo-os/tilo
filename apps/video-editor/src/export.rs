@@ -3,7 +3,7 @@
 //! Real encode/decode runs through `GStreamer`, linked by the default `gst`
 //! feature and by the shipped image build. A deliberately minimal
 //! `--no-default-features` developer build keeps the export UI testable without
-//! GStreamer and reports that encoding is unavailable; it is not the product
+//! `GStreamer` and reports that encoding is unavailable; it is not the product
 //! configuration. Headless screenshots remain hermetic because they never
 //! start an encoder, not because the shipped app replaces export with a stub.
 
@@ -61,8 +61,8 @@ pub enum Container {
 impl Container {
     pub const ALL: [Container; 3] = [Container::Mp4, Container::WebM, Container::Mov];
     /// What the encoder actually produces — not what the container is
-    /// capable of. WebM here is VP8 and MOV is H.264, because that is what
-    /// [`encode_chain`] plugs; naming VP9 or ProRes would be telling the
+    /// capable of. `WebM` here is VP8 and MOV is H.264, because that is what
+    /// [`encode_chain`] plugs; naming VP9 or `ProRes` would be telling the
     /// user they are getting a codec this pipeline never writes.
     pub fn label(self) -> &'static str {
         match self {
@@ -234,7 +234,7 @@ pub fn video_codec(container: Container) -> VideoCodec {
     }
 }
 
-/// The audio codec each container carries. MP4 and MOV take AAC; WebM takes
+/// The audio codec each container carries. MP4 and MOV take AAC; `WebM` takes
 /// Opus, which is its companion codec the way VP8 is its video one.
 pub fn audio_codec(container: Container) -> AudioCodec {
     match container {
@@ -255,7 +255,7 @@ pub fn mux_chain(container: Container) -> (Option<&'static str>, &'static str) {
 
 /// Whether an element factory is installed — where this build can look.
 ///
-/// `media`'s registry probe is only compiled where GStreamer is linked, which
+/// `media`'s registry probe is only compiled where `GStreamer` is linked, which
 /// for this crate means a `decode` or `gst` build. Without either, nothing can
 /// be confirmed, and the selection says so ([`Selection::confirmed`]) rather
 /// than assuming an encoder is present or absent.
@@ -269,10 +269,10 @@ fn registry_available(_name: &str) -> bool {
     false
 }
 
-/// The GStreamer element chain that encodes the export, per container: the
+/// The `GStreamer` element chain that encodes the export, per container: the
 /// (video encoder, optional parser, muxer) triple.
 ///
-/// The encoder is **chosen against the machine's real GStreamer registry**,
+/// The encoder is **chosen against the machine's real `GStreamer` registry**,
 /// not hard-coded. For H.264 that means a VA-API, NVENC or QSV encoder when
 /// one is installed — covering AMD, Intel and NVIDIA, integrated and discrete
 /// — then `x264enc`, then `openh264enc`, which is the baseline this workspace
@@ -282,7 +282,7 @@ fn registry_available(_name: &str) -> bool {
 ///
 /// The muxer half stays fixed by the container:
 ///   * MP4 / MOV — `… ! h264parse ! (mp4mux|qtmux)`
-///   * WebM — `… ! webmmux`
+///   * `WebM` — `… ! webmmux`
 pub fn encode_chain(container: Container) -> (Selection, Option<&'static str>, &'static str) {
     let (parse, mux) = mux_chain(container);
     let sel = media::encode::select_video(
@@ -336,7 +336,7 @@ pub const AUDIO_BITRATE_BPS: u64 = 128_000;
 ///
 /// Kept next to [`pipeline_desc`] and built from the same pieces so the two
 /// branches cannot drift, and so the whole graph is unit-testable without a
-/// GStreamer stack.
+/// `GStreamer` stack.
 pub fn audio_branch_desc(container: Container, muxer_name: &str) -> Option<String> {
     let enc = audio_encoder(container);
     Some(format!(
@@ -552,11 +552,7 @@ impl ExportJob {
 
     /// Whether the worker is still going.
     pub fn is_running(&self) -> bool {
-        self.shared
-            .outcome
-            .lock()
-            .map(|o| o.is_none())
-            .unwrap_or(false)
+        self.shared.outcome.lock().is_ok_and(|o| o.is_none())
     }
 
     /// Ask the render to stop. The worker notices between frames, tears the
@@ -632,12 +628,12 @@ pub fn start_export(
             }
         })
         .ok();
-    if handle.is_none() {
-        if let Ok(mut slot) = shared.outcome.lock() {
-            *slot = Some(ExportStatus::Failed {
-                reason: "could not start the export worker".into(),
-            });
-        }
+    if handle.is_none()
+        && let Ok(mut slot) = shared.outcome.lock()
+    {
+        *slot = Some(ExportStatus::Failed {
+            reason: "could not start the export worker".into(),
+        });
     }
     ExportJob { shared, handle }
 }
@@ -772,7 +768,7 @@ mod gst_pipeline {
     /// accumulates, so an hour of audio still ends where the video does
     /// instead of drifting seconds out of sync.
     fn audio_frames_for(i: u64, fps: f64) -> usize {
-        let at = |n: u64| (n as f64 / fps * super::super::audio::SAMPLE_RATE as f64).round() as u64;
+        let at = |n: u64| (n as f64 / fps * f64::from(crate::audio::SAMPLE_RATE)).round() as u64;
         (at(i + 1) - at(i)) as usize
     }
 
@@ -960,7 +956,7 @@ mod gst_pipeline {
             .ok_or_else(|| "export pipeline bus".to_string())?;
         let mut result = Ok(());
         let mut watch = FlushWatch::new(
-            std::fs::metadata(&out).map(|m| m.len()).unwrap_or(0),
+            std::fs::metadata(&out).map_or(0, |m| m.len()),
             std::time::Instant::now(),
         );
         loop {
@@ -2284,9 +2280,9 @@ mod tests {
                 for y in y0..y1.min(h) {
                     for x in x0..x1.min(w) {
                         let i = (y * w + x) * 4;
-                        sum += 0.2126 * frame.rgba[i] as f64
-                            + 0.7152 * frame.rgba[i + 1] as f64
-                            + 0.0722 * frame.rgba[i + 2] as f64;
+                        sum += 0.2126 * f64::from(frame.rgba[i])
+                            + 0.7152 * f64::from(frame.rgba[i + 1])
+                            + 0.0722 * f64::from(frame.rgba[i + 2]);
                         count += 1.0;
                     }
                 }
@@ -2372,7 +2368,10 @@ mod tests {
                 let grid: Vec<f64> = gradient
                     .chunks(4)
                     .map(|p| {
-                        (0.2126 * p[0] as f64 + 0.7152 * p[1] as f64 + 0.0722 * p[2] as f64) / 255.0
+                        (0.2126 * f64::from(p[0])
+                            + 0.7152 * f64::from(p[1])
+                            + 0.0722 * f64::from(p[2]))
+                            / 255.0
                     })
                     .collect();
                 correlation(&exported, &grid)
@@ -2462,7 +2461,7 @@ mod tests {
             let mut spread = 0.0f64;
             let mut n = 0.0f64;
             for px in f.rgba.chunks(4) {
-                let (r, g, bl) = (px[0] as f64, px[1] as f64, px[2] as f64);
+                let (r, g, bl) = (f64::from(px[0]), f64::from(px[1]), f64::from(px[2]));
                 spread += (r - g).abs() + (g - bl).abs();
                 n += 1.0;
             }
