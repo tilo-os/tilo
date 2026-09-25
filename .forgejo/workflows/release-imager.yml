@@ -445,12 +445,10 @@ jobs:
       - name: Verify the installer-medium release payload
         run: |
           set -euo pipefail
-          suffix=''
-          [[ ${TILO_HARDWARE_PROFILE:-generic} == generic ]] || suffix="-${TILO_HARDWARE_PROFILE}"
-          medium="tilo-installer-linux-${{ matrix.arch }}${suffix}.img.zst"
+          medium="tilo-installer-linux-${{ matrix.arch }}.img.zst"
           test -s "dist/tilo-installer/$medium"
           test -s "dist/tilo-installer/$medium.sha256"
-          test -s "dist/tilo-installer/catalog-${{ matrix.arch }}${suffix}.json"
+          test -s "dist/tilo-installer/catalog-${{ matrix.arch }}.json"
           (cd dist/tilo-installer && sha256sum --check "$medium.sha256")
       - uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
         with:
@@ -459,9 +457,6 @@ jobs:
             dist/tilo-installer/tilo-installer-linux-${{ matrix.arch }}.img.zst
             dist/tilo-installer/tilo-installer-linux-${{ matrix.arch }}.img.zst.sha256
             dist/tilo-installer/catalog-${{ matrix.arch }}.json
-            dist/tilo-installer/tilo-installer-linux-${{ matrix.arch }}-lenovo-83ed.img.zst
-            dist/tilo-installer/tilo-installer-linux-${{ matrix.arch }}-lenovo-83ed.img.zst.sha256
-            dist/tilo-installer/catalog-${{ matrix.arch }}-lenovo-83ed.json
           if-no-files-found: error
       # Internal (USB-free) installer bundle, exported from the same live disk
       # that just passed the installation cycles. Opt-in through the protected
