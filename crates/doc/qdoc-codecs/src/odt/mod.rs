@@ -19,6 +19,12 @@ use qdoc::model::{DocMut, DocRef};
 use qdoc::schema::SCHEMA_ID;
 use tilo_content::{ContentInputs, ContentSource};
 
+/// Preservation-layer keys of the imported `content.xml` root start tag, the declarations
+/// before its automatic styles, and the automatic styles' content.
+pub(crate) const CONTENT_ROOT_KEY: &str = "odt/content-root";
+pub(crate) const CONTENT_PRELUDE_KEY: &str = "odt/content-prelude";
+pub(crate) const CONTENT_AUTOMATIC_STYLES_KEY: &str = "odt/content-automatic-styles";
+
 pub struct OdtCodec;
 
 impl FormatProvider for OdtCodec {
@@ -77,6 +83,23 @@ impl FormatProvider for OdtCodec {
                 if name != "content.xml" {
                     crate::preserve::set_preserved(doc, &format!("odt/part/{name}"), part, inputs);
                 }
+            }
+            // What surrounds the body in content.xml is written back around the regenerated
+            // body: the body content carried through verbatim refers to it.
+            if let Some(head) = content::content_head(&content) {
+                crate::preserve::set_preserved(doc, CONTENT_ROOT_KEY, head.root.as_bytes(), inputs);
+                crate::preserve::set_preserved(
+                    doc,
+                    CONTENT_PRELUDE_KEY,
+                    head.prelude.as_bytes(),
+                    inputs,
+                );
+                crate::preserve::set_preserved(
+                    doc,
+                    CONTENT_AUTOMATIC_STYLES_KEY,
+                    head.automatic_styles.as_bytes(),
+                    inputs,
+                );
             }
             Ok(())
         })
