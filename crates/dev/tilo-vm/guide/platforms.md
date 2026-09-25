@@ -12,7 +12,7 @@ another architecture needs `--arch <arch> --emulated` and is many times slower.
 | Windows ARM64 Home | QEMU with WHPX | local VNC | VM only | none (llvmpipe) |
 
 In-VM builds sync the worktree with rsync over SSH, so the host needs
-`rsync` (on Windows: from WSL, MSYS2 or cwRsync on `PATH`). Headless and vkms
+`rsync` (on Windows: MSYS2 or cwRsync on `PATH`). Headless and vkms
 slots need no GPU, so every row runs them.
 
 ## Linux: libvirt's user session
@@ -61,6 +61,11 @@ Platform** in Windows Features, then reboot Windows. `tilo-vm doctor` finds
 the Hyper-V PowerShell module, `vm create` selects `whpx` automatically; use
 `--hypervisor whpx` to select it explicitly. It never falls back to software
 CPU emulation.
+
+For component swaps that build inside the VM, install MSYS2's `rsync`
+package too (`pacman -S rsync`) and put `%USERPROFILE%\msys64\usr\bin` on
+your Windows user `PATH`. `tilo-vm` passes the Windows worktree as an MSYS2
+`/c/...` path, so `rsync` treats it as a local source.
 
 The published QCOW2 remains unchanged. Each VM gets a small QCOW2 child and
 its own copy of the UEFI variables template beside that child. Before a
