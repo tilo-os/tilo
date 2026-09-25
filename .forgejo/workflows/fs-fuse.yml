@@ -151,7 +151,7 @@ jobs:
         id: compare
         run: python3 -I tools/ci/workflow_applicability.py --workflow .forgejo/workflows/fs-fuse.yml
 
-  real-fuse:
+  builder:
     needs: applicability
     if: >-
       ${{
@@ -160,10 +160,40 @@ jobs:
          (needs.applicability.result == 'success' && needs.applicability.outputs.applicable == 'true')) &&
         true
       }}
+    runs-on: runner-quality
+    timeout-minutes: 5
+    container:
+      image: code.podesta.ai/qos/ci-control@sha256:cc33624d156302fa0c62c065b9babf1d18c6d3103116ff9b0ecf4e0f316d9ce5
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.REGISTRY_TOKEN }}
+    outputs:
+      image: ${{ steps.resolve.outputs.image }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          sparse-checkout: tools/ci/resolve_builder.py
+          sparse-checkout-cone-mode: false
+          token: ${{ secrets.REGISTRY_TOKEN }}
+      - name: Resolve the CI builder
+        id: resolve
+        env:
+          REGISTRY_TOKEN: ${{ secrets.REGISTRY_TOKEN }}
+        run: python3 tools/ci/resolve_builder.py
+
+  real-fuse:
+    needs: [applicability, builder]
+    if: >-
+      ${{
+        always() &&
+        (github.event_name != 'pull_request' ||
+         (needs.applicability.result == 'success' && needs.applicability.outputs.applicable == 'true')) &&
+        needs.builder.result == 'success'
+      }}
     runs-on: runner
     timeout-minutes: 60
     container:
-      image: code.podesta.ai/qos/tilo-builder:latest
+      image: ${{ needs.builder.outputs.image }}
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.REGISTRY_TOKEN }}
@@ -270,20 +300,20 @@ jobs:
   # ENOSPC at test 213/213. Give this non-FUSE suite a fresh container instead
   # of deleting an incomplete subset of Cargo artifacts in the live mount job.
   files-ux:
-    needs: applicability
+    needs: [applicability, builder]
     if: >-
       ${{
         always() &&
         (github.event_name != 'pull_request' ||
          (needs.applicability.result == 'success' && needs.applicability.outputs.applicable == 'true')) &&
-        true
+        needs.builder.result == 'success'
       }}
     runs-on: runner
     timeout-minutes: 30
     env:
       TILO_FS_FUSE_REQUIRED: "0"
     container:
-      image: code.podesta.ai/qos/tilo-builder:latest
+      image: ${{ needs.builder.outputs.image }}
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.REGISTRY_TOKEN }}
