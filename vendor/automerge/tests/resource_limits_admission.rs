@@ -1742,6 +1742,7 @@ mod budget {
         let mut src = medium_doc();
         let input = src.save();
         let mut first_ok = None;
+        let mut unexpected = Vec::new();
         for size in sizes() {
             let big = allowance();
             let mut registry = NativeAllocationSet::new(big.clone()).unwrap();
@@ -1772,12 +1773,13 @@ mod budget {
                 Err(NativeMutationError::Resource(NativeResourceError::WorkBytes)) => {
                     assert!(first_ok.is_none(), "refused at {size} after succeeding at {first_ok:?}");
                 }
-                other => panic!("allowance {size}: {other:?}"),
+                other => unexpected.push(format!("allowance {size}: {other:?}")),
             }
             let after = owned.save_bounded(&setup, SaveOptions::default()).unwrap().bytes().to_vec();
             assert!(before == after, "original changed at {size}");
         }
         println!("owned apply: first success at allowance {first_ok:?}");
+        assert!(unexpected.is_empty(), "expected success or WorkBytes:\n{}", unexpected.join("\n"));
         assert!(first_ok.is_some());
     }
 
@@ -2420,29 +2422,25 @@ mod columnar {
                         continue;
                     }
                     let input = chunk(*kind, &m);
-                    let outcome = catch_unwind(AssertUnwindSafe(|| {
-                        if inspect(&input, &NativeLimits::default()).is_err() {
-                            return false;
-                        }
+                    if inspect(&input, &NativeLimits::default()).is_err() {
+                        continue;
+                    }
+                    accepted += 1;
+                    // Each surface is exercised independently, so a panic in
+                    // one does not hide the other.
+                    let site = format!("kind {kind} byte {i}: {} -> {}", body[i], m[i]);
+                    let reconstructed = catch_unwind(AssertUnwindSafe(|| {
                         let _ = reconstruct(&input, &NativeLimits::default());
+                    }));
+                    let applied = catch_unwind(AssertUnwindSafe(|| {
                         let mut doc = seeded_doc();
                         let _ = incoming(&mut doc, &input, &NativeLimits::default(), &allowance(), NativeDependencyPolicy::RetainOrphans);
-                        true
                     }));
-                    match outcome {
-                        Ok(true) => accepted += 1,
-                        Ok(false) => {}
-                        Err(p) => {
-                            let msg = p
-                                .downcast_ref::<String>()
-                                .cloned()
-                                .or_else(|| p.downcast_ref::<&str>().map(|s| s.to_string()))
-                                .unwrap_or_default();
-                            let msg: String = msg.chars().take(160).collect();
-                            // Strip the byte count so identical causes group together.
-                            let msg = msg.split(" input bytes: ").last().unwrap_or(&msg).to_string();
-                            failures.push((format!("kind {kind} byte {i}: {} -> {}", body[i], m[i]), msg, hex::encode(&input)));
-                        }
+                    for p in [reconstructed.err(), applied.err()].into_iter().flatten() {
+                        let msg: String = panic_message(&*p).chars().take(160).collect();
+                        // Strip the byte count so identical causes group together.
+                        let msg = msg.split(" input bytes: ").last().unwrap_or(&msg).to_string();
+                        failures.push((site.clone(), msg, hex::encode(&input)));
                     }
                 }
             }
