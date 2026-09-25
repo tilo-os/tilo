@@ -195,5 +195,108 @@ class AuditTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
 
 
+
+READER_MANIFEST = """
+[[cargo]]
+package = "ui"
+inputs = ["apps/*/src/main.rs", "os/share/"]
+readers = ["crates/ui/tests/audit.rs"]
+"""
+
+
+class CargoReaderTests(unittest.TestCase):
+    PACKAGES = {
+        "crates/ui/Cargo.toml": '[package]\nname = "ui"\n',
+        "apps/calc/Cargo.toml": '[package]\nname = "calc"\n',
+        "apps/calc/src/main.rs": "fn main() {}\n",
+        "os/share/data.json": "{}\n",
+        "crates/ui/tests/audit.rs": (
+            'fn root() -> PathBuf {\n'
+            '    Path::new(env!("CARGO_MANIFEST_DIR")).ancestors().nth(2).unwrap().to_path_buf()\n'
+            '}\n'),
+    }
+
+    def audit(self, files: dict[str, str], manifest: str = READER_MANIFEST) -> list[str]:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            tree = {**self.PACKAGES, **files}
+            for name, text in tree.items():
+                (root / name).parent.mkdir(parents=True, exist_ok=True)
+                (root / name).write_text(text)
+            return suites.audit_cargo(root, sorted(tree), suites.parse(manifest))
+
+    def test_parse_rejects_malformed_entries(self):
+        for text in (
+            READER_MANIFEST + READER_MANIFEST.replace("audit.rs", "other.rs"),
+            READER_MANIFEST.replace('readers = ["crates/ui/tests/audit.rs"]', 'readers = ["x.py"]'),
+            READER_MANIFEST.replace('package = "ui"', 'package = "bad name"'),
+            READER_MANIFEST + "extra = 1\n",
+            '[[cargo-exempt]]\nfile = "a.rs"\n',
+            '[[cargo-exempt]]\nfile = "a.rs"\nreason = " "\n',
+            READER_MANIFEST + '[[cargo-exempt]]\nfile = "crates/ui/tests/audit.rs"\nreason = "x"\n',
+        ):
+            with self.subTest(text=text), self.assertRaises(ValueError):
+                suites.parse(text)
+
+    def test_declared_inputs_select_the_reading_package(self):
+        manifest = suites.parse(READER_MANIFEST)
+        self.assertEqual(suites.select_packages(manifest, ["apps/calc/src/main.rs"]), ["ui"])
+        self.assertEqual(suites.select_packages(manifest, ["os/share/deep/x.txt"]), ["ui"])
+        self.assertEqual(suites.select_packages(manifest, ["apps/calc/Cargo.toml"]), [])
+
+    def test_a_declared_reader_passes(self):
+        self.assertEqual(self.audit({}), [])
+
+    def test_an_undeclared_reader_is_rejected(self):
+        for text in (
+            'const A: &str = include_str!("../../../os/share/data.json");\n',
+            '#[path = "../../../crates/ui/src/shared.rs"]\nmod shared;\n',
+            'let p = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../os/share/data.json");\n',
+            'let p = concat!(env!("CARGO_MANIFEST_DIR"), "/../../os/share/data.json");\n',
+            'let p = PathBuf::from(env!("CARGO_MANIFEST_DIR"))\n    .parent()\n    .unwrap()\n    .join("x");\n',
+        ):
+            with self.subTest(text=text):
+                problems = self.audit({"apps/calc/src/lib.rs": text})
+                self.assertEqual(len(problems), 1, problems)
+                self.assertIn("apps/calc/src/lib.rs", problems[0])
+                self.assertIn('package = "calc"', problems[0])
+
+    def test_reads_inside_the_package_and_build_output_are_not_cross_package(self):
+        for text in (
+            'const A: &str = include_str!("../tests/fixtures/a.json");\n',
+            'const A: &str = include_str!("strings.ftl");\n',
+            '#[path = "platform/linux.rs"]\nmod platform;\n',
+            'let p = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");\n',
+            'let out = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/review");\n',
+            'let out = Path::new(env!("CARGO_MANIFEST_DIR")).ancestors().nth(2).unwrap().join("target");\n',
+        ):
+            with self.subTest(text=text):
+                self.assertEqual(self.audit({"apps/calc/src/lib.rs": text}), [])
+
+    def test_an_include_outside_the_declared_inputs_is_rejected(self):
+        problems = self.audit({"crates/ui/tests/audit.rs": (
+            'const A: &str = include_str!("../../../apps/calc/Cargo.toml");\n')})
+        self.assertEqual(len(problems), 1, problems)
+        self.assertIn("includes apps/calc/Cargo.toml", problems[0])
+
+    def test_stale_and_misattributed_entries_are_rejected(self):
+        problems = self.audit({"crates/ui/tests/audit.rs": "fn nothing() {}\n"})
+        self.assertTrue(any("no longer reads outside ui" in problem for problem in problems), problems)
+        problems = self.audit({}, READER_MANIFEST.replace('package = "ui"', 'package = "calc"'))
+        self.assertTrue(any("does not own it" in problem for problem in problems), problems)
+        problems = self.audit({}, READER_MANIFEST.replace('"os/share/"', '"os/gone/"'))
+        self.assertTrue(any("os/gone/ matches no tracked file" in problem for problem in problems), problems)
+        problems = self.audit({}, READER_MANIFEST.replace('package = "ui"', 'package = "nowhere"'))
+        self.assertTrue(any("no tracked Cargo.toml" in problem for problem in problems), problems)
+        problems = self.audit({}, READER_MANIFEST + (
+            '[[cargo-exempt]]\nfile = "apps/calc/src/main.rs"\nreason = "writes only"\n'))
+        self.assertTrue(any("reads nothing outside" in problem for problem in problems), problems)
+
+    def test_an_exempt_reader_needs_no_inputs(self):
+        text = 'let p = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../scripts/x.py");\n'
+        manifest = READER_MANIFEST + '[[cargo-exempt]]\nfile = "apps/calc/src/lib.rs"\nreason = "ignored test"\n'
+        self.assertEqual(self.audit({"apps/calc/src/lib.rs": text}, manifest), [])
+
+
 if __name__ == "__main__":
     unittest.main()
