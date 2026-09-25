@@ -727,10 +727,171 @@ async fn peer_may_read_blob(
     peer_may_read_blob_with_records(policy, namespace, store, peer, None, hash, None).await
 }
 
-#[allow(
-    clippy::significant_drop_tightening,
-    reason = "namespace and record guards are deliberately released only after one coherent authorization decision"
-)]
+/// What each caller of the blob guard may read, so a hydration's chunk
+/// requests do not each rescan the namespace and decode every readable
+/// manifest (hundreds of milliseconds per request on a small repository,
+/// serialised in the guard, so that a 2 MiB file's chunks timed out).
+///
+/// For one caller it is a pure function of the namespace state and the ACL
+/// revision, and is recomputed whenever either changes: a revocation, a
+/// rename or the deletion of the last readable reference takes effect at
+/// the next request, as before. Manifests are content-addressed, so their
+/// chunk lists are kept across namespace changes.
+#[derive(Default)]
+struct ReadableBlobs {
+    by_caller: std::sync::Mutex<std::collections::HashMap<Caller, Arc<CallerReadable>>>,
+    manifests:
+        std::sync::Mutex<std::collections::HashMap<iroh_blobs::Hash, Arc<Vec<iroh_blobs::Hash>>>>,
+}
+
+/// A blob caller: its device and the person certifying it.
+type Caller = (IdentityKey, Option<IdentityKey>);
+
+struct CallerReadable {
+    acl_revision: u64,
+    heads: Vec<automerge::ChangeHash>,
+    /// Manifests and thumbnails of live paths the caller may read.
+    roots: std::collections::HashSet<iroh_blobs::Hash>,
+    manifests: Vec<iroh_blobs::Hash>,
+    /// Every chunk those manifests name, built on the first chunk request.
+    chunks: tokio::sync::OnceCell<(std::collections::HashSet<iroh_blobs::Hash>, bool)>,
+}
+
+/// Distinct manifests whose chunk lists the guard keeps before starting over.
+const MAX_CACHED_MANIFESTS: usize = 4096;
+
+impl ReadableBlobs {
+    fn for_caller(
+        &self,
+        acl: &AclHandle,
+        namespace: &Arc<Mutex<Namespace>>,
+        peer: &IdentityKey,
+        person: Option<IdentityKey>,
+    ) -> Arc<CallerReadable> {
+        let acl_revision = acl.revision();
+        let mut ns = namespace
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let heads = ns.heads();
+        let key = (*peer, person);
+        if let Some(known) = self
+            .by_caller
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(&key)
+            .filter(|c| c.acl_revision == acl_revision && c.heads == heads)
+        {
+            return Arc::clone(known);
+        }
+        let permits = |path: &str| {
+            acl.permits_peer(peer, path, crate::acl::Access::Read)
+                || person
+                    .is_some_and(|person| acl.permits_peer(&person, path, crate::acl::Access::Read))
+        };
+        let mut roots = std::collections::HashSet::new();
+        let mut manifests = Vec::new();
+        for (path, manifest, thumbnail) in ns.live_blob_roots_by_path() {
+            if !permits(&path) {
+                continue;
+            }
+            if let Some(m) = manifest {
+                roots.insert(m);
+                manifests.push(m);
+            }
+            if let Some(t) = thumbnail {
+                roots.insert(t);
+            }
+        }
+        drop(ns);
+        let readable = Arc::new(CallerReadable {
+            acl_revision,
+            heads,
+            roots,
+            manifests,
+            chunks: tokio::sync::OnceCell::new(),
+        });
+        self.by_caller
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(key, Arc::clone(&readable));
+        readable
+    }
+
+    async fn chunks_of(
+        &self,
+        store: &ContentStore,
+        manifest_hash: iroh_blobs::Hash,
+    ) -> Option<Arc<Vec<iroh_blobs::Hash>>> {
+        if let Some(known) = self
+            .manifests
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(&manifest_hash)
+        {
+            return Some(Arc::clone(known));
+        }
+        let bytes = store.local(manifest_hash).await?;
+        let manifest = crate::content::Manifest::decode(&bytes).ok()?;
+        let chunks: Arc<Vec<iroh_blobs::Hash>> = Arc::new(
+            manifest
+                .chunks
+                .iter()
+                .map(|chunk| iroh_blobs::Hash::from(chunk.hash))
+                .collect(),
+        );
+        {
+            let mut cache = self
+                .manifests
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if cache.len() >= MAX_CACHED_MANIFESTS {
+                cache.clear();
+            }
+            cache.insert(manifest_hash, Arc::clone(&chunks));
+        }
+        Some(chunks)
+    }
+
+    /// Whether a readable manifest of `caller` names chunk `hash`.
+    async fn names_chunk(
+        &self,
+        store: &ContentStore,
+        caller: &CallerReadable,
+        hash: iroh_blobs::Hash,
+    ) -> bool {
+        let (chunks, complete) = caller
+            .chunks
+            .get_or_init(|| async {
+                let mut all = std::collections::HashSet::new();
+                let mut complete = true;
+                for m in &caller.manifests {
+                    match self.chunks_of(store, *m).await {
+                        Some(chunks) => all.extend(chunks.iter().copied()),
+                        None => complete = false,
+                    }
+                }
+                (all, complete)
+            })
+            .await;
+        if chunks.contains(&hash) {
+            return true;
+        }
+        if *complete {
+            return false;
+        }
+        // A manifest was not stored here when the set was built.
+        for m in &caller.manifests {
+            if let Some(chunks) = self.chunks_of(store, *m).await
+                && chunks.contains(&hash)
+            {
+                return true;
+            }
+        }
+        false
+    }
+}
+
+#[cfg(test)]
 async fn peer_may_read_blob_with_records(
     policy: &PeerPolicy,
     namespace: &Arc<Mutex<Namespace>>,
@@ -740,56 +901,48 @@ async fn peer_may_read_blob_with_records(
     hash: iroh_blobs::Hash,
     records: Option<&RecordPlane>,
 ) -> bool {
+    peer_may_read_blob_cached(
+        policy,
+        namespace,
+        store,
+        &ReadableBlobs::default(),
+        peer,
+        certified_person,
+        hash,
+        records,
+    )
+    .await
+}
+
+#[allow(
+    clippy::significant_drop_tightening,
+    clippy::too_many_arguments,
+    reason = "namespace and record guards are deliberately released only after one coherent authorization decision"
+)]
+async fn peer_may_read_blob_cached(
+    policy: &PeerPolicy,
+    namespace: &Arc<Mutex<Namespace>>,
+    store: &ContentStore,
+    readable: &ReadableBlobs,
+    peer: &IdentityKey,
+    certified_person: Option<IdentityKey>,
+    hash: iroh_blobs::Hash,
+    records: Option<&RecordPlane>,
+) -> bool {
     if policy.is_none() && records.is_none() {
         return true;
     }
 
-    let (directly_authorized, readable_manifests) = policy.as_ref().map_or_else(
-        || (false, Vec::new()),
-        |acl| {
-            let ns = namespace
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            let permits = |path: &str| {
-                acl.permits_peer(peer, path, crate::acl::Access::Read)
-                    || certified_person.is_some_and(|person| {
-                        acl.permits_peer(&person, path, crate::acl::Access::Read)
-                    })
-            };
-            let direct = ns
-                .live_paths_for_blob(hash)
-                .iter()
-                .any(|path| permits(path));
-            let manifests = ns
-                .live_node_ids()
-                .into_iter()
-                .filter_map(|id| Some((ns.path_for_id(&id)?, ns.node_hash(&id)?)))
-                .filter(|(path, _)| permits(path))
-                .map(|(_, manifest)| manifest)
-                .collect::<Vec<_>>();
-            (direct, manifests)
-        },
-    );
-
-    if directly_authorized {
-        return true;
-    }
-
-    // File hashes address manifests; range hydration requests their chunks
-    // individually. A chunk is readable only while a live, readable file's
-    // manifest names it. A learned chunk hash is not a bearer capability.
-    for manifest_hash in readable_manifests {
-        let Some(bytes) = store.local(manifest_hash).await else {
-            continue;
-        };
-        let Ok(manifest) = crate::content::Manifest::decode(&bytes) else {
-            continue;
-        };
-        if manifest
-            .chunks
-            .iter()
-            .any(|chunk| iroh_blobs::Hash::from(chunk.hash) == hash)
-        {
+    if let Some(acl) = policy.as_ref() {
+        let caller = readable.for_caller(acl, namespace, peer, certified_person);
+        if caller.roots.contains(&hash) {
+            return true;
+        }
+        // File hashes address manifests; range hydration requests their
+        // chunks individually. A chunk is readable only while a live,
+        // readable file's manifest names it. A learned chunk hash is not a
+        // bearer capability.
+        if readable.names_chunk(store, &caller, hash).await {
             return true;
         }
     }
@@ -822,6 +975,9 @@ async fn peer_may_read_blob_with_records(
     };
     reachable.is_ok_and(|records| records.into_iter().any(|record| readable.contains(&record)))
 }
+
+/// Closed connections whose caller the blob guard still recognises.
+const RETAINED_CLOSED_CALLERS: usize = 256;
 
 /// Build the request interceptor iroh-blobs consults before serving
 /// anything, or `None` for an unenforced mount. `BlobsProtocol::new(store,
@@ -864,6 +1020,13 @@ fn blob_guard(
     tokio::spawn(async move {
         let mut callers: std::collections::HashMap<u64, (IdentityKey, Option<IdentityKey>)> =
             std::collections::HashMap::new();
+        let readable = ReadableBlobs::default();
+        // A connection's close can be reported before the requests it
+        // already carried, and its id can be reused by a later connection.
+        // A caller therefore stays registered after its last connection of
+        // that id closed, until a bounded number of later closes has passed.
+        let mut open: std::collections::HashMap<u64, usize> = std::collections::HashMap::new();
+        let mut closed: std::collections::VecDeque<u64> = std::collections::VecDeque::new();
         // Re-resolve both the live namespace and live ACL for every request:
         // revocation, rename, and deleting the last readable reference all
         // take effect without ending the connection.
@@ -896,19 +1059,36 @@ fn blob_guard(
                     }
                     if let Ok(peer) = verdict {
                         callers.insert(msg.inner.connection_id, (peer, person));
+                        let n = open.entry(msg.inner.connection_id).or_default();
+                        *n = n.saturating_add(1);
                     }
                     msg.tx.send(verdict.map(|_| ())).await.ok();
                 }
                 ProviderMessage::ConnectionClosed(msg) => {
-                    callers.remove(&msg.inner.connection_id);
+                    let id = msg.inner.connection_id;
+                    let last = open.get_mut(&id).is_none_or(|n| {
+                        *n = n.saturating_sub(1);
+                        *n == 0
+                    });
+                    if last {
+                        closed.push_back(id);
+                    }
+                    while closed.len() > RETAINED_CLOSED_CALLERS {
+                        let Some(old) = closed.pop_front() else { break };
+                        if open.get(&old).is_none_or(|n| *n == 0) {
+                            open.remove(&old);
+                            callers.remove(&old);
+                        }
+                    }
                 }
                 ProviderMessage::GetRequestReceived(msg) => {
                     let ok = match callers.get(&msg.inner.connection_id) {
                         Some((peer, person)) => {
-                            peer_may_read_blob_with_records(
+                            peer_may_read_blob_cached(
                                 &policy,
                                 &namespace,
                                 &store,
+                                &readable,
                                 peer,
                                 *person,
                                 msg.inner.request.hash,
@@ -937,10 +1117,11 @@ fn blob_guard(
                     let mut ok = callers.contains_key(&msg.inner.connection_id);
                     if let Some((peer, person)) = callers.get(&msg.inner.connection_id) {
                         for hash in &msg.inner.request.hashes {
-                            if !peer_may_read_blob_with_records(
+                            if !peer_may_read_blob_cached(
                                 &policy,
                                 &namespace,
                                 &store,
+                                &readable,
                                 peer,
                                 *person,
                                 *hash,
@@ -965,10 +1146,11 @@ fn blob_guard(
                 ProviderMessage::ObserveRequestReceived(msg) => {
                     let ok = match callers.get(&msg.inner.connection_id) {
                         Some((peer, person)) => {
-                            peer_may_read_blob_with_records(
+                            peer_may_read_blob_cached(
                                 &policy,
                                 &namespace,
                                 &store,
+                                &readable,
                                 peer,
                                 *person,
                                 msg.inner.request.hash,
