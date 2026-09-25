@@ -60,6 +60,23 @@ if [ -n "$desktop_payload" ]; then
     || { printf 'release provenance: invalid TILO_DESKTOP_PAYLOAD_SHA256\n' >&2; exit 1; }
 fi
 release_children="${TILO_RELEASE_CHILDREN_JSON:-[]}"
+hardware_profile="${TILO_HARDWARE_PROFILE:-generic}"
+release_architecture="${TILO_RELEASE_ARCHITECTURE:-}"
+firmware_candidate="${TILO_FIRMWARE_CANDIDATE:-}"
+firmware_manifest="${TILO_FIRMWARE_MANIFEST_SHA256:-}"
+case "$hardware_profile" in
+  generic)
+    [ -z "$firmware_candidate$firmware_manifest" ] \
+      || { printf 'generic provenance cannot carry board firmware\n' >&2; exit 1; } ;;
+  lenovo-83ed)
+    [ "$release_architecture" = aarch64 ] \
+      || { printf 'Lenovo provenance requires native aarch64 build\n' >&2; exit 1; }
+    require_digest_ref TILO_FIRMWARE_CANDIDATE "$firmware_candidate"
+    [[ "$firmware_candidate" =~ ^code\.podesta\.ai/qos/[a-z0-9][a-z0-9._-]*@sha256:[0-9a-f]{64}$ \
+       && "$firmware_manifest" =~ ^[0-9a-f]{64}$ ]] \
+      || { printf 'Lenovo provenance requires pinned board firmware\n' >&2; exit 1; } ;;
+  *) printf 'unsupported hardware profile in provenance\n' >&2; exit 1 ;;
+esac
 printf '%s' "$release_children" | jq -e '
   type == "array"
   and (length == 0 or (map(.architecture) | sort) == ["aarch64", "x86_64"])
@@ -80,6 +97,10 @@ jq -n \
   --argjson kernels "$kernel_refs" \
   --arg app_collection "$app_collection" \
   --arg desktop_payload "$desktop_payload" \
+  --arg hardware_profile "$hardware_profile" \
+  --arg release_architecture "$release_architecture" \
+  --arg firmware_candidate "$firmware_candidate" \
+  --arg firmware_manifest "$firmware_manifest" \
   --argjson release_children "$release_children" \
   --arg generation "$TILO_GENERATION" \
   --arg epoch "$SOURCE_DATE_EPOCH" \
@@ -87,6 +108,10 @@ jq -n \
     buildDefinition: {
       buildType: "https://tilo.sh/buildtypes/bootc-os/v1",
       externalParameters: ({generation: ($generation|tonumber)}
+        + if $hardware_profile == "generic" then {}
+          else {architecture: $release_architecture, hardwareProfile: $hardware_profile,
+                firmwareManifestSha256: $firmware_manifest}
+          end
         + if ($release_children | length) == 0 then {}
           else {children: $release_children}
           end
@@ -105,6 +130,9 @@ jq -n \
           end
         + if $desktop_payload == "" then []
           else [{uri: ("tilo-desktop-payload:sha256:" + $desktop_payload)}]
+          end
+        + if $firmware_candidate == "" then []
+          else [{uri: $firmware_candidate}]
           end
       )
     },
