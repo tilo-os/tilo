@@ -1,10 +1,13 @@
 """Exercise real collector subprocess setup without opening a native window."""
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
 import tempfile
 import unittest
+
+from fixture_host_tools import PROCESS_LISTING, fixture_path
 
 
 class CodeEditorCollectorTests(unittest.TestCase):
@@ -23,12 +26,18 @@ class CodeEditorCollectorTests(unittest.TestCase):
             output = root / 'runs'
             result = subprocess.run([sys.executable,str(Path(__file__).with_name('collect-code-editor-native.py')),
                 '--binary',str(app),'--fixture-tool',str(fixture),'--scenario',str(scenario),
-                '--mode','typing','--output-root',str(output)],capture_output=True,text=True)
+                '--mode','typing','--output-root',str(output)],capture_output=True,text=True,
+                env=dict(os.environ,PATH=fixture_path(root)))
             self.assertEqual(result.returncode,1,result.stderr)
             run = next(output.iterdir())
             self.assertIn('production fixture opened',(run/'app.log').read_text())
+            self.assertEqual((run/'host-processes.txt').read_text(),PROCESS_LISTING)
             report = json.loads((run/'failed-report.json').read_text())
             self.assertIn('exited early: 7',report['capture_error'])
             self.assertFalse(report['performance_certified'])
             metadata = json.loads((run/'metadata.json').read_text())
             self.assertEqual(metadata['hashes_before'],metadata['hashes_after'])
+
+
+if __name__ == '__main__':
+    unittest.main()

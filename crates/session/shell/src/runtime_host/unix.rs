@@ -1,7 +1,7 @@
 //! Unix transport/launch edge, shared by macOS and Linux.
 use std::{
     fs::{File, OpenOptions},
-    io::{self, Write},
+    io,
     os::{
         fd::AsRawFd,
         unix::{
@@ -72,9 +72,7 @@ impl Connections {
             workspace_id: room.into(),
             app_id: app_id.into(),
         })?;
-        let length = u32::try_from(handshake.len()).map_err(io::Error::other)?;
-        identity.write_all(&length.to_le_bytes())?;
-        identity.write_all(&handshake)?;
+        runtime_identity::wire::HANDSHAKE_FRAMING.write(&mut identity, &handshake)?;
         identity.set_write_timeout(None)?;
         let fds = [collab.as_raw_fd(), identity.as_raw_fd()];
         command

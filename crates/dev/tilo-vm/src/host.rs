@@ -5,7 +5,7 @@
 //! Humans watch dev VMs in the host's native hypervisor UI, so the default
 //! adapters are exactly those a UI can see: libvirt's rootless
 //! `qemu:///session` on Linux (virt-manager, GNOME Boxes), UTM on macOS and
-//! Hyper-V on Windows. The raw `qemu` adapter (`os/dev/vm.sh`) is the
+//! Hyper-V on Windows, or WHPX with QEMU on Windows ARM64 Home. The raw `qemu` adapter (`os/dev/vm.sh`) is the
 //! headless adapter for CI and scenario tests; it is used only when asked
 //! for by name.
 //!
@@ -168,6 +168,19 @@ pub fn which_all(tool: &str) -> Vec<PathBuf> {
             }
         }
     }
+    // MSYS2's ARM64 QEMU is commonly installed without adding its bin to
+    // the Windows PATH. Keep the detected binary and firmware in one prefix.
+    if cfg!(windows)
+        && (tool == "qemu-img" || tool == "qemu-system-aarch64")
+        && let Some(home) = std::env::var_os("USERPROFILE")
+    {
+        let candidate = PathBuf::from(home)
+            .join("msys64/clangarm64/bin")
+            .join(format!("{tool}.exe"));
+        if candidate.is_file() && !found.contains(&candidate) {
+            found.push(candidate);
+        }
+    }
     found
 }
 
@@ -327,6 +340,9 @@ pub fn default_adapter(os: &str) -> &'static str {
 /// # Errors
 /// What is missing and how to install it.
 pub fn auto(facts: &HostFacts) -> Result<Choice, Missing> {
+    if facts.os == "windows" && facts.arch == "aarch64" && facts.hyperv != Some(true) {
+        return evaluate(facts, "whpx");
+    }
     evaluate(facts, default_adapter(&facts.os))
 }
 
@@ -341,6 +357,27 @@ pub fn evaluate(facts: &HostFacts, adapter: &str) -> Result<Choice, Missing> {
         fix,
     };
     match adapter {
+        "whpx" => {
+            let fix = "install MSYS2 CLANGARM64 QEMU (pacman -S mingw-w64-clang-aarch64-qemu), enable Windows Hypervisor Platform, then reboot".to_owned();
+            if facts.os != "windows" || facts.arch != "aarch64" {
+                return Err(missing("WHPX requires Windows ARM64".into(), fix));
+            }
+            let system = "qemu-system-aarch64";
+            let qemu = facts.first(system).ok_or_else(|| missing(format!("{system} not found"), fix.clone()))?;
+            let img = companion(facts, "qemu-img", qemu, system)
+                .map_err(|detail| missing(detail, fix.clone()))?;
+            let share = qemu.parent().and_then(Path::parent).map(|p| p.join("share/qemu"));
+            let code = share.as_ref().map(|p| p.join("edk2-aarch64-code.fd"))
+                .filter(|p| p.is_file()).ok_or_else(|| missing("EDK2 AArch64 firmware not found beside QEMU".into(), fix.clone()))?;
+            let vars = share.as_ref().map(|p| p.join("edk2-arm-vars.fd"))
+                .filter(|p| p.is_file()).ok_or_else(|| missing("EDK2 ARM variables template not found beside QEMU".into(), fix.clone()))?;
+            let ps = facts.first("powershell.exe").ok_or_else(|| missing("powershell.exe not found".into(), fix.clone()))?;
+            Ok(Choice { adapter: "whpx", tools: vec![
+                ToolPath::new(system, qemu), ToolPath::new("qemu-img", img),
+                ToolPath::new("firmware-code", &code), ToolPath::new("firmware-vars", &vars),
+                ToolPath::new("powershell.exe", ps),
+            ] })
+        }
         "libvirt" => {
             let tools = libvirt_tools(facts)?;
             kvm_usable(facts)?;
@@ -939,5 +976,45 @@ pub mod tests {
         assert!(why.fix.contains("Microsoft-Hyper-V"), "{}", why.fix);
         win.hyperv = Some(true);
         assert_eq!(auto(&win).unwrap().adapter, "hyperv");
+    }
+
+    #[test]
+    fn windows_arm_home_chooses_matching_qemu_and_firmware() {
+        let temp = tempfile::tempdir().unwrap();
+        let prefix = temp.path().join("clangarm64");
+        let bin = prefix.join("bin");
+        let share = prefix.join("share/qemu");
+        std::fs::create_dir_all(&bin).unwrap();
+        std::fs::create_dir_all(&share).unwrap();
+        let system = bin.join("qemu-system-aarch64.exe");
+        let img = bin.join("qemu-img.exe");
+        let code = share.join("edk2-aarch64-code.fd");
+        let vars = share.join("edk2-arm-vars.fd");
+        for file in [&system, &img, &code, &vars] {
+            std::fs::write(file, "test").unwrap();
+        }
+        let mut facts = linux(HostKind::Windows, &[]);
+        facts.os = "windows".into();
+        facts.arch = "aarch64".into();
+        facts.hyperv = Some(false);
+        facts
+            .path
+            .insert("qemu-system-aarch64".into(), vec![system]);
+        facts.path.insert("qemu-img".into(), vec![img]);
+        facts.path.insert(
+            "powershell.exe".into(),
+            vec!["C:/Windows/powershell.exe".into()],
+        );
+        let choice = auto(&facts).unwrap();
+        assert_eq!(choice.adapter, "whpx");
+        assert_eq!(choice.tool("firmware-code"), Some(code.to_str().unwrap()));
+        assert_eq!(choice.tool("firmware-vars"), Some(vars.to_str().unwrap()));
+        std::fs::remove_file(vars).unwrap();
+        assert!(
+            auto(&facts)
+                .unwrap_err()
+                .detail
+                .contains("variables template")
+        );
     }
 }

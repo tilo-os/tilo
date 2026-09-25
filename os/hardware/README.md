@@ -11,10 +11,11 @@ Add `os/hardware/profiles/<id>.json`, following the validated schema:
 
 ```json
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "id": "example-board",
   "architecture": "aarch64",
   "devicetree": "vendor/example-board.dtb",
+  "system_firmware": ["vendor/display-microcode.bin"],
   "firmware": {"radio.bin": "vendor/example-board/radio.bin"}
 }
 ```
@@ -22,7 +23,13 @@ Add `os/hardware/profiles/<id>.json`, following the validated schema:
 `architecture` is `aarch64` or `x86_64` and must match the native builder and
 installed kernel. `devicetree` names a file relative to that kernel's `dtb/`
 directory; it is `null` for ACPI or firmware-provided device descriptions.
-Only ARM64 profiles may embed a DTB. `firmware` maps local input basenames
+Only ARM64 profiles may embed a DTB. `system_firmware` lists firmware already
+installed from the reviewed distro RPM snapshot that must also be present in
+the initramfs. It is separate from board-local OEM inputs and is never copied
+from the local firmware artifact. Definitions use the logical kernel-requested
+name; the preparer accepts exactly one installed representation: uncompressed,
+XZ, or Zstandard. Version 1 definitions remain supported and have an empty
+system-firmware list. `firmware` maps local input basenames
 to unique paths under `/usr/lib/firmware/`; an empty mapping needs no local
 firmware manifest. Paths cannot be absolute, traverse directories, or contain
 shell metacharacters. Unknown fields and unsupported architectures fail.
@@ -34,6 +41,12 @@ path and hash. Adding a board does not add a new branch to the UKI builder.
 
 The first registered profile, `lenovo-83ed`, describes the Lenovo Yoga Slim 7x.
 Its kernel must supply `dtb/qcom/x1e80100-lenovo-yoga-slim7x.dtb`.
+The retained 7.2.5 RPM's MSM module contains the Adreno 740 firmware selection
+`a740_sqe.fw` (the inspected compressed module SHA-256 is
+`4d500d42033b9fa3df293dd3f8b71a50067bbb5ad9e9c2ffda16497a45f03267`).
+The profile therefore requires the distro-provided `qcom/a740_sqe.fw` and
+includes it in the initramfs so GPU initialization does not depend on the
+encrypted root already being mounted.
 
 ## Local firmware input
 
@@ -107,7 +120,8 @@ and incomplete manifests. It writes root-owned files with mode `0644`:
 
 - `/usr/lib/firmware/qcom/x1e80100/LENOVO/83ED/` contains the six firmware files.
 - `/etc/dracut.conf.d/41-tilo-hardware.conf` includes those exact firmware paths
-  in the initramfs, where display and input can need them during disk unlock.
+  plus the profile's reviewed distro-firmware paths in the initramfs, where
+  display and input can need them during disk unlock.
 - `/usr/lib/tilo/hardware-profile.json` binds the model, aarch64 architecture,
   kernel-specific DTB path, that DTB's SHA-256, and `target_update_ref`. The UKI
   builder validates this immutable image input before embedding the device

@@ -520,8 +520,12 @@ validate_disk_identity() {
 
 validate_partition_identity() {
   local partition="$1" expected_uuid="$2" expected_size="$3" label="$4"
-  local actual_uuid actual_size
-  actual_uuid="$(lsblk -dno PARTUUID "$partition" 2>/dev/null | trim_identity)"
+  local actual_uuid actual_size resolved
+  resolved="$(readlink -f "$partition")"
+  [ -b "$resolved" ] || die "$label device disappeared after selection"
+  # A newly registered GPT partition can precede its uevent/udev metadata.
+  # Read its partition entry directly instead of accepting a stale lsblk view.
+  actual_uuid="$(blkid -p -s PART_ENTRY_UUID -o value "$resolved" 2>/dev/null || true)"
   actual_size="$(blockdev --getsize64 "$partition" 2>/dev/null || true)"
   [ "${actual_uuid,,}" = "${expected_uuid,,}" ] \
     || die "$label PARTUUID changed after selection; refresh disks and review again"
@@ -596,8 +600,8 @@ validate_alongside() {
     && [ "$(readlink -f "/dev/$root_parent")" = "$DISK" ] \
     && [ "$(readlink -f "/dev/$efi_parent")" = "$DISK" ] \
     || die "alongside root and EFI partitions must both belong to $DISK"
-  root_type="$(lsblk -dno PARTTYPE "$ROOT_PARTITION" 2>/dev/null | tr '[:upper:]' '[:lower:]')"
-  efi_type="$(lsblk -dno PARTTYPE "$EFI_PARTITION" 2>/dev/null | tr '[:upper:]' '[:lower:]')"
+  root_type="$(blkid -p -s PART_ENTRY_TYPE -o value "$ROOT_PARTITION" 2>/dev/null | tr '[:upper:]' '[:lower:]')"
+  efi_type="$(blkid -p -s PART_ENTRY_TYPE -o value "$EFI_PARTITION" 2>/dev/null | tr '[:upper:]' '[:lower:]')"
   case "$root_type" in
     0fc63daf-8483-4772-8e79-3d69d8477de4|7a2e8d75-3f01-4e5a-b2c9-51f6ed90b8ab) : ;;
     *) die "$ROOT_PARTITION is not explicitly typed as a Linux/Tilo root partition" ;;
@@ -640,11 +644,11 @@ validate_alongside() {
 
 mark_alongside_tilo_root() {
   local root_type part_number
-  root_type="$(lsblk -dno PARTTYPE "$ROOT_PARTITION" 2>/dev/null | tr '[:upper:]' '[:lower:]')"
+  root_type="$(blkid -p -s PART_ENTRY_TYPE -o value "$ROOT_PARTITION" 2>/dev/null | tr '[:upper:]' '[:lower:]')"
   [ "$root_type" != 7a2e8d75-3f01-4e5a-b2c9-51f6ed90b8ab ] || return 0
   [ "$root_type" = 0fc63daf-8483-4772-8e79-3d69d8477de4 ] \
     || die "reviewed root partition type changed before Tilo ownership marking"
-  part_number="$(lsblk -dno PARTN "$ROOT_PARTITION" 2>/dev/null | tr -d '[:space:]')"
+  part_number="$(cat "/sys/class/block/${ROOT_PARTITION##*/}/partition" 2>/dev/null || true)"
   case "$part_number" in ''|*[!0-9]*) die "could not identify reviewed root partition number" ;; esac
   # The user explicitly selected this empty partition for formatting. Change
   # only its GPT type to Tilo's discovery GUID, retaining its reviewed PARTUUID
@@ -655,7 +659,7 @@ mark_alongside_tilo_root() {
   udevadm settle 2>/dev/null || true
   validate_partition_identity "$ROOT_PARTITION" "$EXPECT_ROOT_PARTUUID" \
     "$EXPECT_ROOT_SIZE_BYTES" "Tilo root partition"
-  root_type="$(lsblk -dno PARTTYPE "$ROOT_PARTITION" 2>/dev/null | tr '[:upper:]' '[:lower:]')"
+  root_type="$(blkid -p -s PART_ENTRY_TYPE -o value "$ROOT_PARTITION" 2>/dev/null | tr '[:upper:]' '[:lower:]')"
   [ "$root_type" = 7a2e8d75-3f01-4e5a-b2c9-51f6ed90b8ab ] \
     || die "Tilo root GPT type did not persist"
 }
@@ -835,10 +839,31 @@ promote_target_uki() {
 
 # --- 1. copy booted image into local container storage -----------------------
 step "Copying the running Tilo image into local container storage"
-bootc image copy-to-storage
+VM_COPY_CACHE=/usr/libexec/tilo-vm-bootc-copy-cache.py
+# VM development can bind-mount the backend and helper from its writable
+# overlay. The sealed /usr tree cannot gain a helper without an image rebuild.
+if [ ! -f "$VM_COPY_CACHE" ] \
+    && [ -f /var/lib/tilo-installer/vm-cache-code/tilo-vm-bootc-copy-cache.py ]; then
+  VM_COPY_CACHE=/var/lib/tilo-installer/vm-cache-code/tilo-vm-bootc-copy-cache.py
+fi
+VM_COPY_CACHE_MARKER=/run/tilo-installer/vm-bootc-copy-cache.enabled
+VM_CACHED_COPY=0
+if [ -e "$VM_COPY_CACHE_MARKER" ] \
+    && python3 "$VM_COPY_CACHE" check; then
+  log "  -> reusing the exact booted image from VM-local container storage"
+  VM_CACHED_COPY=1
+else
+  bootc image copy-to-storage
+fi
 LOCAL_IMG="$(podman image inspect --format '{{.Id}}' "$LOCAL_IMG")"
 [[ "$LOCAL_IMG" =~ ^sha256:[0-9a-f]{64}$ ]] || die "offline image did not resolve to an immutable ID"
 log "  -> $LOCAL_IMG"
+if [ "$VM_CACHED_COPY" -eq 0 ] && [ -e "$VM_COPY_CACHE_MARKER" ]; then
+  # Receipt creation only accelerates later VM retries; a failed write must
+  # never change the completed export or the physical install path.
+  python3 "$VM_COPY_CACHE" record \
+    || log "  -> VM copy cache receipt unavailable; next run will copy again"
+fi
 
 # Image staging can take minutes. Revalidate at the last common point before
 # either install mode formats or repartitions anything, closing the hotplug
