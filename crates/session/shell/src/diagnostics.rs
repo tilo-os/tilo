@@ -84,7 +84,7 @@ impl Default for PeerSurfaceSnapshot {
             latency_samples: 0,
             encode_wallclock_ms_p50: 0,
             encode_wallclock_ms_p99: 0,
-            chosen_encoder: EncoderKind::RoyaltyFreeSoftware,
+            chosen_encoder: EncoderKind::Openh264,
             capture_path: CapturePath::default(),
             bitrate_bytes_per_sec_ewma: 0,
         }
@@ -110,7 +110,7 @@ impl PeerSurfaceMetrics {
                 encode_ring: Vec::with_capacity(ENCODE_WALLCLOCK_CAPACITY),
                 encode_head: 0,
                 encode_capacity: ENCODE_WALLCLOCK_CAPACITY,
-                chosen_encoder: EncoderKind::RoyaltyFreeSoftware,
+                chosen_encoder: EncoderKind::Openh264,
                 capture_path: CapturePath::default(),
                 bitrate_bytes_per_sec_ewma: 0,
                 clock_offset_ns: None,

@@ -87,10 +87,7 @@ pub enum NeighbourMsg {
     },
     /// Peer's presence cursor disappeared from `key`'s coordinate space.
     PresenceCleared { peer: PeerId, key: PresenceKey },
-    /// One encoded access unit (H.264/HEVC), frame (VP9) or temporal unit
-    /// (AV1) for a shared surface, in the codec the preceding
-    /// [`Self::SurfaceStreamStart`] named. `encoded_h264` keeps its historical
-    /// name; the field carries whichever codec was announced.
+    /// Encoded H.264 frame for a shared surface.
     ///
     /// `ts` is the owner's monotonic-clock timestamp in nanoseconds; receivers
     /// diff against their own monotonic-now for motion-to-photon latency, since
@@ -108,10 +105,8 @@ pub enum NeighbourMsg {
     ///
     /// Distinct from `SurfaceFrame` so late joiners can size a decoder /
     /// receive-side view before the first NALU arrives,
-    /// avoiding a dropped frame. The codec is chosen by the sender from the
-    /// receivers' [`Self::MediaCapabilities`]: `"av1"` or `"vp9"` when every
-    /// receiver decodes it in hardware, `"h264"` otherwise (and always for a
-    /// receiver that never advertised capabilities), `"hevc-main10"` for HDR.
+    /// avoiding a dropped frame. Codec is negotiated up front (`"h264"` in v1,
+    /// room left for `"av1"`/`"h265"`).
     SurfaceStreamStart {
         surface: SurfaceId,
         /// Hashed Iroh `PeerId` of the owner; distinguishes concurrent shares in the
@@ -119,9 +114,7 @@ pub enum NeighbourMsg {
         source_peer: PeerId,
         width: u32,
         height: u32,
-        /// Codec label: `"h264"`, `"hevc-main10"`, `"vp9"` or `"av1"`.
-        /// A receiver ignores (and logs) a label it does not know, which is
-        /// why a sender only picks a codec every receiver advertised.
+        /// Codec label (`"h264"` in v1); unrecognised codecs are ignored + logged.
         codec: String,
         ts: u64,
         /// Sender's monotonic-clock reading when the message left the encode task
@@ -301,19 +294,6 @@ pub enum NeighbourMsg {
     /// transport; nothing in the frame names it. Appended to preserve all
     /// existing Postcard discriminants.
     RemoteAction { frame: Vec<u8> },
-    /// Which video codecs a peer can encode and decode, split by whether
-    /// hardware does it. Broadcast with the heartbeat so a screen-share sender
-    /// can pick a codec every viewer takes: a peer that never sends this is
-    /// assumed to decode H.264 only. Labels are the
-    /// [`Self::SurfaceStreamStart::codec`] vocabulary; unknown ones are
-    /// ignored. Appended to preserve every existing Postcard discriminant.
-    MediaCapabilities {
-        peer: PeerId,
-        hardware_decode: Vec<String>,
-        software_decode: Vec<String>,
-        hardware_encode: Vec<String>,
-        software_encode: Vec<String>,
-    },
 }
 
 #[cfg(test)]
@@ -529,16 +509,6 @@ mod tests {
                     frame: b"{}".to_vec(),
                 },
             ),
-            (
-                "media capabilities",
-                NeighbourMsg::MediaCapabilities {
-                    peer: 0xABCD,
-                    hardware_decode: vec!["av1".into(), "vp9".into()],
-                    software_decode: vec!["h264".into()],
-                    hardware_encode: vec!["av1".into()],
-                    software_encode: vec!["vp9".into()],
-                },
-            ),
         ]
     }
 
@@ -624,11 +594,10 @@ mod tests {
             NeighbourMsg::PersonalContinuityRequest { .. } => "PersonalContinuityRequest",
             NeighbourMsg::PersonalContinuityCheckpoint { .. } => "PersonalContinuityCheckpoint",
             NeighbourMsg::RemoteAction { .. } => "RemoteAction",
-            NeighbourMsg::MediaCapabilities { .. } => "MediaCapabilities",
         }
     }
 
-    const VARIANT_COUNT: usize = 22;
+    const VARIANT_COUNT: usize = 21;
 
     fn hex(bytes: &[u8]) -> String {
         use std::fmt::Write;
@@ -732,13 +701,6 @@ mod tests {
             ),
         ),
         ("remote action", "14027b7d"),
-        (
-            "media capabilities",
-            concat!(
-                "15cdd702020361763103767039010468323634010361763101",
-                "03767039",
-            ),
-        ),
         (
             "signed app document",
             concat!(

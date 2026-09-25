@@ -738,22 +738,11 @@ pub struct ChatApp {
     speaker: Option<crate::audio::SpeakerPlayback>,
     #[cfg(feature = "live-media")]
     camera: Option<crate::video::CameraCapture>,
-    // Camera encode reuses the shared Tilo video stack's encoder in the
-    // codec the call negotiated (see `call_video_codec`). H.264 publishes as
-    // raw access units on the camera track; other codecs as codec-tagged
-    // frames on the framed camera track. The self-preview decodes the same
-    // units through `ui`'s VideoPlayer.
+    // Camera encode reuses the shared Tilo video stack's bare H.264 encoder
+    // (raw NALUs: the local self-preview feeds them to `ui`'s VideoPlayer,
+    // and they publish as the camera track). No second in-app codec.
     #[cfg(feature = "live-media")]
-    cam_encoder: Option<tilo_callstream::VideoEncoder>,
-    #[cfg(feature = "live-media")]
-    cam_seq: u64,
-    /// Video decode capabilities of the other call members, refreshed with
-    /// the membership; `None` entries are peers that never announced any.
-    #[cfg(feature = "live-media")]
-    call_peer_video: Vec<Option<crate::model::VideoCaps>>,
-    /// This machine's codec capabilities, read once from the media stack.
-    #[cfg(feature = "live-media")]
-    local_codecs: Option<tilo_callstream::CodecCapabilities>,
+    cam_encoder: Option<tilo_callstream::H264Encoder>,
     #[cfg(feature = "live-media")]
     screen: Option<crate::video::ScreenCapture>,
     // Screen-share encode + framing runs the shared stack's throttle +
@@ -763,10 +752,7 @@ pub struct ChatApp {
     screen_session: Option<tilo_callstream::VideoStreamSender>,
     // Remote **camera** decoders (raw-NALU H.264 → RGBA), keyed by sender.
     #[cfg(feature = "live-media")]
-    remote_decoders: HashMap<String, tilo_callstream::VideoDecoder>,
-    // Remote **camera** receivers for the framed (non-H.264) camera track.
-    #[cfg(feature = "live-media")]
-    remote_camera_rx: HashMap<String, tilo_callstream::VideoStreamReceiver>,
+    remote_decoders: HashMap<String, tilo_callstream::H264Decoder>,
     // Remote **screen-share** receivers (reframe + decode) → featured tile,
     // keyed by sender. The receive half of the shared stack.
     #[cfg(feature = "live-media")]
@@ -932,19 +918,11 @@ impl ChatApp {
             #[cfg(feature = "live-media")]
             cam_encoder: None,
             #[cfg(feature = "live-media")]
-            cam_seq: 0,
-            #[cfg(feature = "live-media")]
-            call_peer_video: Vec::new(),
-            #[cfg(feature = "live-media")]
-            local_codecs: None,
-            #[cfg(feature = "live-media")]
             screen: None,
             #[cfg(feature = "live-media")]
             screen_session: None,
             #[cfg(feature = "live-media")]
             remote_decoders: HashMap::new(),
-            #[cfg(feature = "live-media")]
-            remote_camera_rx: HashMap::new(),
             #[cfg(feature = "live-media")]
             remote_screen_rx: HashMap::new(),
             #[cfg(feature = "live-media")]
@@ -1392,11 +1370,9 @@ impl ChatApp {
         self.speaker = None;
         self.camera = None;
         self.cam_encoder = None;
-        self.cam_seq = 0;
         self.screen = None;
         self.screen_session = None;
         self.remote_decoders.clear();
-        self.remote_camera_rx.clear();
         self.remote_screen_rx.clear();
         self.remote_media_seq.clear();
         self.remote_frames.clear();
@@ -1436,14 +1412,12 @@ impl ChatApp {
         }
     }
 
-    /// Camera → encode (negotiated codec) → local preview + publish (only
-    /// with camera on).
+    /// Camera → H.264 → local preview + publish (only with camera on).
     #[cfg(feature = "live-media")]
     fn pump_camera(&mut self, me: &str) {
         use crate::call::CallAction;
         use crate::media::TrackKind;
         use std::time::Duration;
-        use tilo_callstream::StreamCodec;
 
         let camera_on = !self.call.audio_only && self.call_allows(CallAction::Camera);
         if !camera_on {
@@ -1451,130 +1425,32 @@ impl ChatApp {
             self.cam_encoder = None;
             return;
         }
-        let Some(codec) = self.call_video_codec() else {
-            // Nothing this machine can encode is decodable by every member.
-            self.cam_encoder = None;
-            return;
-        };
         if self.camera.is_none() {
             self.camera =
                 crate::video::CameraCapture::new(crate::video::DEFAULT_W, crate::video::DEFAULT_H);
-        }
-        if self.cam_encoder.as_ref().is_none_or(|e| e.codec() != codec) {
-            self.cam_encoder = tilo_callstream::VideoEncoder::new(
-                codec,
+            // Camera encode reuses the shared stack's H.264 encoder.
+            self.cam_encoder = tilo_callstream::H264Encoder::new(
                 crate::video::DEFAULT_W,
                 crate::video::DEFAULT_H,
                 crate::video::DEFAULT_FPS,
             )
             .ok();
         }
-        let ts_ms = self.cam_seq.saturating_mul(33);
-        let unit = match (self.camera.as_mut(), self.cam_encoder.as_mut()) {
-            (Some(cam), Some(enc)) => cam
-                .poll()
-                .and_then(|rgba| enc.encode_unit(&rgba, ts_ms).ok().flatten()),
+        let nalus = match (self.camera.as_mut(), self.cam_encoder.as_mut()) {
+            (Some(cam), Some(enc)) => cam.poll().map(|rgba| enc.encode(&rgba).unwrap_or_default()),
             _ => None,
         };
-        let Some(unit) = unit else {
+        let Some(nalus) = nalus else {
             return;
         };
-        if unit.data.is_empty() {
+        if nalus.is_empty() {
             return;
         }
         // Feed the host tile's VideoPlayer so this peer sees its own
         // camera (the surface yields its placeholder to a real frame).
-        self.video.feed_encoded(codec, &unit.data);
+        self.video.feed_frame(&nalus);
         let pts = Duration::from_millis(self.media_seq.saturating_mul(33));
-        if codec == StreamCodec::H264 {
-            let _ = self.send_media_frame(me, TrackKind::Video, pts, unit.data);
-            return;
-        }
-        let frame = tilo_callstream::SurfaceFrame {
-            sequence: self.cam_seq,
-            keyframe: unit.keyframe,
-            codec,
-            display_size: Some((
-                u16::try_from(crate::video::DEFAULT_W).unwrap_or(u16::MAX),
-                u16::try_from(crate::video::DEFAULT_H).unwrap_or(u16::MAX),
-            )),
-            payload: unit.data,
-        };
-        self.cam_seq = self.cam_seq.saturating_add(1);
-        if let Ok(wire) = frame.encode() {
-            let _ = self.send_media_frame(me, TrackKind::CameraFramed, pts, wire);
-        }
-    }
-
-    /// This machine's video decode capabilities, as announced to the call.
-    /// `None` in builds without the live media engine.
-    #[cfg_attr(
-        feature = "live-media",
-        allow(
-            clippy::unnecessary_wraps,
-            reason = "`None` is the answer of builds without the live engine"
-        )
-    )]
-    #[cfg_attr(
-        not(feature = "live-media"),
-        allow(
-            clippy::unused_self,
-            clippy::needless_pass_by_ref_mut,
-            reason = "the live engine caches the probe on `self`"
-        )
-    )]
-    pub(crate) fn local_video_caps(&mut self) -> Option<crate::model::VideoCaps> {
-        #[cfg(feature = "live-media")]
-        {
-            let caps = self.local_codecs();
-            Some(crate::model::VideoCaps {
-                hardware_decode: tilo_callstream::CodecCapabilities::labels(&caps.hardware_decode),
-                software_decode: tilo_callstream::CodecCapabilities::labels(&caps.software_decode),
-            })
-        }
-        #[cfg(not(feature = "live-media"))]
-        {
-            None
-        }
-    }
-
-    #[cfg(feature = "live-media")]
-    fn local_codecs(&mut self) -> tilo_callstream::CodecCapabilities {
-        self.local_codecs
-            .get_or_insert_with(tilo_callstream::local_capabilities)
-            .clone()
-    }
-
-    /// Remember the other members' announced video capabilities.
-    #[cfg_attr(
-        not(feature = "live-media"),
-        allow(
-            clippy::needless_pass_by_ref_mut,
-            clippy::unused_self,
-            reason = "only the live engine negotiates codecs"
-        )
-    )]
-    pub(crate) fn note_call_peer_video(&mut self, me: &str, members: &[crate::model::VoiceMember]) {
-        #[cfg(feature = "live-media")]
-        {
-            self.call_peer_video = members
-                .iter()
-                .filter(|m| m.user != me)
-                .map(|m| m.video.clone())
-                .collect();
-        }
-        let _ = (me, members);
-    }
-
-    /// The codec this peer's camera and screen use in the current call: AV1
-    /// or VP9 when this machine encodes it in hardware and every other member
-    /// decodes it in hardware, otherwise H.264 (a member that never announced
-    /// capabilities pins H.264). `None` when nothing this machine can encode
-    /// is decodable by everyone.
-    #[cfg(feature = "live-media")]
-    fn call_video_codec(&mut self) -> Option<tilo_callstream::StreamCodec> {
-        let local = self.local_codecs();
-        call_video_codec(&local, &self.call_peer_video)
+        let _ = self.send_media_frame(me, TrackKind::Video, pts, nalus);
     }
 
     /// Screen capture → shared stack (throttle + encode → `SurfaceFrame`) →
@@ -1586,20 +1462,6 @@ impl ChatApp {
         use crate::media::TrackKind;
         use std::time::Duration;
 
-        // Follow the call's negotiated codec: a member joining without AV1
-        // hardware (or leaving) switches the share, starting with a keyframe.
-        let current = self
-            .screen_session
-            .as_ref()
-            .map(|s| (s.codec(), s.width(), s.height()));
-        if let Some((codec_now, w, h)) = current
-            && let Some(codec) = self.call_video_codec()
-            && codec != codec_now
-        {
-            self.screen_session =
-                tilo_callstream::VideoStreamSender::new(codec, w, h, crate::video::DEFAULT_FPS)
-                    .ok();
-        }
         let screen_result = match (self.screen.as_mut(), self.screen_session.as_mut()) {
             (Some(scr), Some(session)) => scr
                 .poll()
@@ -1658,7 +1520,7 @@ impl ChatApp {
     fn stop_unrepresentable_media_track(&mut self, kind: crate::media::TrackKind, bytes: usize) {
         let label = match kind {
             crate::media::TrackKind::Audio => "Microphone",
-            crate::media::TrackKind::Video | crate::media::TrackKind::CameraFramed => "Camera",
+            crate::media::TrackKind::Video => "Camera",
             crate::media::TrackKind::Screen => "Screen sharing",
         };
         self.media_error = Some(format!(
@@ -1668,7 +1530,7 @@ impl ChatApp {
         self.media.transport_mut().unpublish(kind);
         match kind {
             crate::media::TrackKind::Audio => self.mic = None,
-            crate::media::TrackKind::Video | crate::media::TrackKind::CameraFramed => {
+            crate::media::TrackKind::Video => {
                 self.camera = None;
                 self.cam_encoder = None;
             }
@@ -1736,19 +1598,6 @@ impl ChatApp {
                             .insert(o.sender.clone(), rgba_to_image(&frame));
                     }
                 }
-                TrackKind::CameraFramed => {
-                    // Remote camera in a negotiated non-H.264 codec: the same
-                    // codec-tagged framing as a screen share.
-                    let frames = self
-                        .remote_camera_rx
-                        .entry(o.sender.clone())
-                        .or_default()
-                        .push(&o.payload);
-                    if let Some(frame) = frames.last() {
-                        self.remote_frames
-                            .insert(o.sender.clone(), rgba_to_image(frame));
-                    }
-                }
                 TrackKind::Screen => {
                     // Remote screen-share: reframe + decode through the shared
                     // stack's receiver (the same `SurfaceFrame` framing the
@@ -1778,7 +1627,6 @@ impl ChatApp {
             for kind in [
                 crate::media::TrackKind::Audio,
                 crate::media::TrackKind::Video,
-                crate::media::TrackKind::CameraFramed,
                 crate::media::TrackKind::Screen,
             ] {
                 self.media.transport_mut().unpublish(kind);
@@ -1886,15 +1734,12 @@ impl ChatApp {
         {
             if let Some(scr) = crate::video::ScreenCapture::new(src.node, src.width, src.height) {
                 self.screen = Some(scr);
-                self.screen_session = self.call_video_codec().and_then(|codec| {
-                    tilo_callstream::VideoStreamSender::new(
-                        codec,
-                        src.width,
-                        src.height,
-                        crate::video::DEFAULT_FPS,
-                    )
-                    .ok()
-                });
+                self.screen_session = tilo_callstream::VideoStreamSender::new(
+                    src.width,
+                    src.height,
+                    crate::video::DEFAULT_FPS,
+                )
+                .ok();
                 self.media
                     .transport_mut()
                     .publish(crate::media::TrackKind::Screen);
@@ -1905,15 +1750,12 @@ impl ChatApp {
             // A recorded grant has no real PipeWire node. Tests still use the
             // production sender/transport contract, but must never block
             // opening a host device merely to verify the shared call state.
-            self.screen_session = self.call_video_codec().and_then(|codec| {
-                tilo_callstream::VideoStreamSender::new(
-                    codec,
-                    src.width,
-                    src.height,
-                    crate::video::DEFAULT_FPS,
-                )
-                .ok()
-            });
+            self.screen_session = tilo_callstream::VideoStreamSender::new(
+                src.width,
+                src.height,
+                crate::video::DEFAULT_FPS,
+            )
+            .ok();
             self.media
                 .transport_mut()
                 .publish(crate::media::TrackKind::Screen);
@@ -4152,28 +3994,6 @@ impl ChatApp {
     }
 }
 
-/// The codec a call member sends in, from this machine's capabilities and
-/// the other members' announced ones (`None` = never announced = H.264 only).
-#[cfg(feature = "live-media")]
-fn call_video_codec(
-    local: &tilo_callstream::CodecCapabilities,
-    peers: &[Option<crate::model::VideoCaps>],
-) -> Option<tilo_callstream::StreamCodec> {
-    use tilo_callstream::CodecCapabilities;
-    let receivers: Vec<CodecCapabilities> = peers
-        .iter()
-        .map(|p| match p {
-            None => CodecCapabilities::legacy_peer(),
-            Some(v) => CodecCapabilities {
-                hardware_decode: CodecCapabilities::parse_labels(&v.hardware_decode),
-                software_decode: CodecCapabilities::parse_labels(&v.software_decode),
-                ..CodecCapabilities::default()
-            },
-        })
-        .collect();
-    tilo_callstream::negotiate(local, &receivers).map(|n| n.codec)
-}
-
 /// Wrap a decoded RGBA frame as a `peniko` image for painting into a call tile.
 #[cfg(feature = "live-media")]
 fn rgba_to_image(frame: &tilo_callstream::DecodedFrame) -> vello::peniko::ImageData {
@@ -4198,29 +4018,6 @@ mod screenshare_reuse_tests {
     use crate::media::{MediaEngine, MediaObject, TrackKind};
     use std::time::{Duration, Instant};
     use tilo_callstream::VideoStreamSender;
-
-    #[test]
-    fn a_member_without_announced_capabilities_pins_h264() {
-        use tilo_callstream::{CodecCapabilities, StreamCodec};
-        let local = CodecCapabilities {
-            hardware_encode: [StreamCodec::Av1, StreamCodec::H264].into(),
-            ..CodecCapabilities::default()
-        };
-        let av1_peer = crate::model::VideoCaps {
-            hardware_decode: vec!["av1".into(), "h264".into()],
-            software_decode: vec![],
-        };
-        assert_eq!(
-            super::call_video_codec(&local, &[Some(av1_peer.clone())]),
-            Some(StreamCodec::Av1),
-            "every member decodes AV1 in hardware"
-        );
-        assert_eq!(
-            super::call_video_codec(&local, &[Some(av1_peer), None]),
-            Some(StreamCodec::H264),
-            "an older member that never announced anything decodes H.264"
-        );
-    }
 
     fn gradient(width: u32, height: u32) -> Vec<u8> {
         let mut out = Vec::with_capacity((width * height * 4) as usize);
@@ -4257,8 +4054,7 @@ mod screenshare_reuse_tests {
         app.call.muted = true; // no mic capture in the pump
 
         // A remote peer encodes a screen frame through the SHARED stack.
-        let mut sender = VideoStreamSender::new(tilo_callstream::StreamCodec::Vp9, W, H, 30)
-            .expect("shared-stack sender");
+        let mut sender = VideoStreamSender::new(W, H, 30).expect("shared-stack sender");
         let wire = sender
             .offer_frame(&gradient(W, H), Instant::now())
             .expect("shared sender accepts the frame")
@@ -4294,8 +4090,7 @@ mod screenshare_reuse_tests {
     fn screen_stream_error_is_visible_and_unpublishes_the_track() {
         let mut app = ChatApp::new_ephemeral();
         app.call.sharing = true;
-        app.screen_session =
-            VideoStreamSender::new(tilo_callstream::StreamCodec::Vp9, 96, 64, 30).ok();
+        app.screen_session = VideoStreamSender::new(96, 64, 30).ok();
         app.media.transport_mut().publish(TrackKind::Screen);
 
         app.stop_screen_for_error(&tilo_callstream::FrameError::SequenceExhausted);
@@ -4316,8 +4111,7 @@ mod screenshare_reuse_tests {
 
         let mut app = ChatApp::new_ephemeral();
         app.call.sharing = true;
-        app.screen_session =
-            VideoStreamSender::new(tilo_callstream::StreamCodec::Vp9, 96, 64, 30).ok();
+        app.screen_session = VideoStreamSender::new(96, 64, 30).ok();
         app.media.transport_mut().publish(TrackKind::Screen);
 
         assert!(!app.send_media_frame(

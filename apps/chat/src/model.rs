@@ -162,18 +162,6 @@ pub struct VoiceMember {
     /// **is** the call's signalling channel, riding the same collab transport
     /// as the messages. `None` until the peer has announced one.
     pub ticket: Option<String>,
-    /// Which video codecs the peer decodes, as announced on join. `None`
-    /// for a peer whose build predates the announcement: it is treated as
-    /// decoding H.264 only.
-    pub video: Option<VideoCaps>,
-}
-
-/// A call member's announced video decode capabilities, as codec wire labels
-/// (`"h264"`, `"vp9"`, `"av1"`, `"hevc-main10"`).
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct VideoCaps {
-    pub hardware_decode: Vec<String>,
-    pub software_decode: Vec<String>,
 }
 
 /// How a call's media is routed. Peer-to-peer below the mesh threshold (each
@@ -813,7 +801,6 @@ mod tests {
             audio_only: false,
             sharing: false,
             ticket: None,
-            video: None,
         }
     }
 

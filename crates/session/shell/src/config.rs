@@ -71,11 +71,10 @@ impl Default for DesktopConfig {
 pub struct FlatpakShareConfig {
     /// Video bitrate cap in kbps.
     pub max_bitrate_kbps: u32,
-    /// Software encoders clamp this to 30 fps; hardware encoders do not.
+    /// `OpenH264` sessions clamp this to 30 fps; hardware encoders do not.
     pub target_fps: u32,
     pub encoder: EncoderChoice,
-    /// HDR uses AV1 or HEVC Main10 when a hardware 10-bit encoder is
-    /// available and every viewer can decode it.
+    /// HDR uses HEVC Main10 when a compatible hardware encoder is available.
     #[serde(default)]
     pub hdr: Option<crate::collab::hdr_metadata::HdrConfig>,
 }
@@ -91,23 +90,17 @@ impl Default for FlatpakShareConfig {
     }
 }
 
-/// Preferred video encoder, as a preference for the media stack's element
-/// selection (see `collab::encoder::EncoderChoice::policy`).
-///
-/// Settings files written before the media stack took over keep working:
-/// `"openh264"` reads as [`Self::Software`], and `"vaapi"` / `"nvenc"`
-/// prefer that hardware family, falling back to software.
+/// Preferred video encoder backend.
 #[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum EncoderChoice {
-    /// Hardware first, then royalty-free software, then Cisco's openh264.
+    /// Select the best available backend at runtime.
     Auto,
-    /// Software encoders only.
-    #[serde(alias = "openh264")]
-    Software,
-    /// Prefer VA-API; other hardware only after software.
+    /// Force `OpenH264` software encoding.
+    Openh264,
+    /// Prefer VA-API, falling back to `OpenH264` for SDR if unavailable.
     Vaapi,
-    /// Prefer NVENC; other hardware only after software.
+    /// Prefer NVENC, falling back to `OpenH264` for SDR if unavailable.
     Nvenc,
 }
 

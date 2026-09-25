@@ -6,32 +6,22 @@
 //! backpressure and a drop counter; a sequence-gap detector on the receive
 //! side tells a late-joining viewer to wait for the next keyframe.
 //!
-//! Each frame carries a fixed 13-byte header, then the encoded access unit:
+//! Each frame carries a fixed 13-byte header, then an opaque payload
+//! (H.264 Annex-B NALUs in the current pipeline):
 //!
 //! ```text
 //! offset  bytes  field
 //! 0       8      sequence   u64 big-endian, per-stream monotonic
-//! 8       4      length     u32 big-endian, byte count of everything after flags
-//! 12      1      flags      bit 0   keyframe
-//!                           bits 1-3 codec: 0 H.264, 1 VP9, 2 AV1, 3 HEVC Main10
-//!                           bit 4   display size present
-//!                           bits 5-7 reserved (must be zero)
-//! 13      4      display    u16 BE width, u16 BE height (only with bit 4)
-//! ..      N      payload    the access unit
+//! 8       4      length     u32 big-endian, payload byte count
+//! 12      1      flags      bit 0 = keyframe (IDR); bits 1-7 reserved
+//! 13      N      payload    N = length bytes of NALU data
 //! ```
-//!
-//! An H.264 frame is byte-identical to the original format (codec 0, no
-//! display size), so peers that predate the codec field keep decoding H.264
-//! streams. Those peers reject any other codec as reserved flag bits rather
-//! than mis-decoding it. Frames of the other codecs always carry the display
-//! size: some hardware encoders pad the coded picture without signalling the
-//! size to show (see `media::DecoderConfig::display_size`).
 //!
 //! The byte transport itself — compositor gossip/QUIC, or the call
 //! app's iroh-QUIC media transport — lives outside this module, keeping
 //! framing and backpressure unit-testable without a running network stack.
 
-use media::StreamCodec;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -55,70 +45,25 @@ pub const MAX_ENCODED_FRAME_LEN: usize = 8 * 1024 * 1024;
 ///
 /// A complete maximum-sized frame fits, but a peer cannot retain arbitrary
 /// bytes by declaring a frame and never finishing it.
-pub const MAX_BUFFERED_STREAM_LEN: usize =
-    FRAME_HEADER_LEN + DISPLAY_SIZE_LEN + MAX_ENCODED_FRAME_LEN;
+pub const MAX_BUFFERED_STREAM_LEN: usize = FRAME_HEADER_LEN + MAX_ENCODED_FRAME_LEN;
 
-/// Bit 0 of the header's `flags` byte: this unit is a keyframe.
+/// Bit 0 of the header's `flags` byte: this NALU is an IDR / keyframe.
 pub const FLAG_KEYFRAME: u8 = 0b0000_0001;
-/// Bits 1-3 of the header's `flags` byte: the codec.
-pub const FLAG_CODEC_MASK: u8 = 0b0000_1110;
-/// Bit 4 of the header's `flags` byte: a 4-byte display size precedes the payload.
-pub const FLAG_DISPLAY_SIZE: u8 = 0b0001_0000;
-/// Bytes of the optional display-size field.
-pub const DISPLAY_SIZE_LEN: usize = 4;
-
-/// The codec's 3-bit id in the flags byte.
-fn codec_id(codec: StreamCodec) -> u8 {
-    match codec {
-        StreamCodec::H264 => 0,
-        StreamCodec::Vp9 => 1,
-        StreamCodec::Av1 => 2,
-        StreamCodec::HevcMain10 => 3,
-    }
-}
-
-fn codec_from_id(id: u8) -> Option<StreamCodec> {
-    match id {
-        0 => Some(StreamCodec::H264),
-        1 => Some(StreamCodec::Vp9),
-        2 => Some(StreamCodec::Av1),
-        3 => Some(StreamCodec::HevcMain10),
-        _ => None,
-    }
-}
 
 /// Bounded frame-queue size per subscriber. 3 frames matches a typical
 /// paint side's tolerance before drop-oldest kicks in.
 pub const DEFAULT_QUEUE_CAP: usize = 3;
 
-/// A single frame flowing across the substream. The payload is packed and
-/// consumed without inspection.
-#[derive(Debug, Clone, PartialEq)]
+/// A single frame flowing across the substream. Contents past the header
+/// are opaque — payload is packed/consumed without inspection.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SurfaceFrame {
     /// Per-stream sequence number; starts at 0 and increments once per `publish`.
     pub sequence: u64,
-    /// Whether this is a keyframe. Late-joining viewers must start at a
-    /// keyframe or the decoder emits garbage until the next one.
+    /// Whether this is an IDR / keyframe. Late-joining viewers must start at
+    /// a keyframe or the decoder emits garbage until the next one.
     pub keyframe: bool,
-    /// The bitstream the payload is in.
-    pub codec: StreamCodec,
-    /// The picture size to show. Written for every codec but H.264 (whose
-    /// frames stay in the original format); `None` on H.264 frames.
-    pub display_size: Option<(u16, u16)>,
     pub payload: Vec<u8>,
-}
-
-impl SurfaceFrame {
-    /// An H.264 frame in the original format.
-    pub fn h264(sequence: u64, keyframe: bool, payload: Vec<u8>) -> Self {
-        Self {
-            sequence,
-            keyframe,
-            codec: StreamCodec::H264,
-            display_size: None,
-            payload,
-        }
-    }
 }
 
 impl SurfaceFrame {
@@ -132,38 +77,19 @@ impl SurfaceFrame {
         if self.payload.len() > MAX_ENCODED_FRAME_LEN {
             return Err(FrameError::PayloadTooLarge(self.payload.len()));
         }
-        // H.264 frames stay byte-identical to the original format.
-        let display = match self.codec {
-            StreamCodec::H264 => None,
-            _ => Some(self.display_size.unwrap_or((0, 0))),
-        };
-        let body_len = if display.is_some() {
-            self.payload.len().checked_add(DISPLAY_SIZE_LEN)
-        } else {
-            Some(self.payload.len())
-        }
-        .ok_or(FrameError::LengthOverflow(self.payload.len()))?;
         let capacity = FRAME_HEADER_LEN
-            .checked_add(body_len)
+            .checked_add(self.payload.len())
             .ok_or(FrameError::LengthOverflow(self.payload.len()))?;
         let mut buf = Vec::with_capacity(capacity);
         buf.extend_from_slice(&self.sequence.to_be_bytes());
-        let len: u32 = body_len
+        let len: u32 = self
+            .payload
+            .len()
             .try_into()
             .map_err(|_| FrameError::PayloadTooLarge(self.payload.len()))?;
         buf.extend_from_slice(&len.to_be_bytes());
-        let mut flags = codec_id(self.codec) << 1;
-        if self.keyframe {
-            flags |= FLAG_KEYFRAME;
-        }
-        if display.is_some() {
-            flags |= FLAG_DISPLAY_SIZE;
-        }
+        let flags = if self.keyframe { FLAG_KEYFRAME } else { 0 };
         buf.push(flags);
-        if let Some((w, h)) = display {
-            buf.extend_from_slice(&w.to_be_bytes());
-            buf.extend_from_slice(&h.to_be_bytes());
-        }
         buf.extend_from_slice(&self.payload);
         Ok(buf)
     }
@@ -198,21 +124,10 @@ impl SurfaceFrame {
             return Ok(None);
         };
 
-        let has_display = flags & FLAG_DISPLAY_SIZE != 0;
-        let limit = if has_display {
-            MAX_ENCODED_FRAME_LEN.saturating_add(DISPLAY_SIZE_LEN)
-        } else {
-            MAX_ENCODED_FRAME_LEN
-        };
-        if length > limit {
+        if length > MAX_ENCODED_FRAME_LEN {
             return Err(FrameError::PayloadTooLarge(length));
         }
-        if flags & !(FLAG_KEYFRAME | FLAG_CODEC_MASK | FLAG_DISPLAY_SIZE) != 0 {
-            return Err(FrameError::InvalidFlags(flags));
-        }
-        let codec =
-            codec_from_id((flags & FLAG_CODEC_MASK) >> 1).ok_or(FrameError::InvalidFlags(flags))?;
-        if has_display && length < DISPLAY_SIZE_LEN {
+        if flags & !FLAG_KEYFRAME != 0 {
             return Err(FrameError::InvalidFlags(flags));
         }
         let total = FRAME_HEADER_LEN
@@ -221,33 +136,14 @@ impl SurfaceFrame {
         if input.len() < total {
             return Ok(None);
         }
-        let Some(body) = input.get(FRAME_HEADER_LEN..total) else {
+        let Some(payload_slice) = input.get(FRAME_HEADER_LEN..total) else {
             return Ok(None);
         };
-        let (display_size, payload_slice) = if has_display {
-            let (size, rest) = body
-                .split_at_checked(DISPLAY_SIZE_LEN)
-                .ok_or(FrameError::InvalidFlags(flags))?;
-            let &[w0, w1, h0, h1] = size else {
-                return Err(FrameError::InvalidFlags(flags));
-            };
-            (
-                Some((u16::from_be_bytes([w0, w1]), u16::from_be_bytes([h0, h1]))),
-                rest,
-            )
-        } else {
-            (None, body)
-        };
-        if payload_slice.len() > MAX_ENCODED_FRAME_LEN {
-            return Err(FrameError::PayloadTooLarge(payload_slice.len()));
-        }
         let payload = payload_slice.to_vec();
         Ok(Some((
             SurfaceFrame {
                 sequence,
                 keyframe: flags & FLAG_KEYFRAME != 0,
-                codec,
-                display_size,
                 payload,
             },
             total,
@@ -322,8 +218,6 @@ pub struct SurfaceStreamSender {
     pub surface: SurfaceId,
     pub source_peer: PeerId,
     next_sequence: AtomicU64,
-    /// Codec and display size stamped on every published frame.
-    format: Mutex<(StreamCodec, Option<(u16, u16)>)>,
     subscribers: Mutex<HashMap<PeerId, SubscriberQueue>>,
     queue_cap: usize,
 }
@@ -340,20 +234,9 @@ impl SurfaceStreamSender {
             surface,
             source_peer,
             next_sequence: AtomicU64::new(0),
-            format: Mutex::new((StreamCodec::H264, None)),
             subscribers: Mutex::new(HashMap::new()),
             queue_cap: cap.max(1),
         }
-    }
-
-    /// Set the codec (and, for codecs other than H.264, the display size)
-    /// stamped on frames published from now on. A new codec needs a keyframe
-    /// first; the caller publishes one next.
-    pub fn set_format(&self, codec: StreamCodec, display_size: Option<(u16, u16)>) {
-        *self
-            .format
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = (codec, display_size);
     }
 
     /// Registers a viewer; idempotent — resets the drop counter and empties the queue if already subscribed.
@@ -397,15 +280,9 @@ impl SurfaceStreamSender {
                 current.checked_add(1)
             })
             .map_err(|_| FrameError::SequenceExhausted)?;
-        let (codec, display_size) = *self
-            .format
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let frame = SurfaceFrame {
             sequence,
             keyframe,
-            codec,
-            display_size,
             payload,
         };
         // Scoped so the lock is released as soon as delivery is done, rather
@@ -576,72 +453,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn h264_frames_keep_the_original_byte_format() {
-        let bytes = SurfaceFrame::h264(5, true, vec![0, 0, 1, 0x65])
-            .encode()
-            .unwrap();
-        assert_eq!(
-            bytes,
-            [
-                0,
-                0,
-                0,
-                0,
-                0,
-                0,
-                0,
-                5,
-                0,
-                0,
-                0,
-                4,
-                FLAG_KEYFRAME,
-                0,
-                0,
-                1,
-                0x65
-            ],
-            "an H.264 frame is exactly what peers without the codec field expect"
-        );
-    }
-
-    #[test]
-    fn other_codecs_carry_their_id_and_display_size() {
-        for codec in [StreamCodec::Vp9, StreamCodec::Av1, StreamCodec::HevcMain10] {
-            let frame = SurfaceFrame {
-                sequence: 9,
-                keyframe: false,
-                codec,
-                display_size: Some((1920, 1080)),
-                payload: vec![1, 2, 3],
-            };
-            let bytes = frame.encode().unwrap();
-            let flags = bytes[12];
-            assert_ne!(flags & FLAG_CODEC_MASK, 0, "{codec:?} is not codec 0");
-            assert_ne!(flags & FLAG_DISPLAY_SIZE, 0);
-            let (back, used) = SurfaceFrame::decode(&bytes).unwrap().unwrap();
-            assert_eq!(used, bytes.len());
-            assert_eq!(back, frame);
-        }
-    }
-
-    #[test]
-    fn a_codec_id_this_build_does_not_know_is_refused() {
-        let mut bytes = SurfaceFrame::h264(0, false, vec![1]).encode().unwrap();
-        bytes[12] = 7 << 1;
-        assert_eq!(
-            SurfaceFrame::decode(&bytes),
-            Err(FrameError::InvalidFlags(7 << 1))
-        );
-    }
-
-    #[test]
     fn round_trip_single_frame() {
         let frame = SurfaceFrame {
             sequence: 42,
             keyframe: true,
-            codec: StreamCodec::H264,
-            display_size: None,
             payload: b"\x00\x00\x00\x01idr-nalu".to_vec(),
         };
         let bytes = frame.encode().expect("encode");
@@ -658,8 +473,6 @@ mod tests {
         let frame = SurfaceFrame {
             sequence: 1,
             keyframe: false,
-            codec: StreamCodec::H264,
-            display_size: None,
             payload: vec![0x11, 0x22, 0x33],
         };
         let bytes = frame.encode().expect("encode");
@@ -718,8 +531,6 @@ mod tests {
             &SurfaceFrame {
                 sequence: 0,
                 keyframe: true,
-                codec: StreamCodec::H264,
-                display_size: None,
                 payload: vec![1],
             }
             .encode()
@@ -730,8 +541,6 @@ mod tests {
             &SurfaceFrame {
                 sequence: 1,
                 keyframe: false,
-                codec: StreamCodec::H264,
-                display_size: None,
                 payload: vec![2],
             }
             .encode()
@@ -742,8 +551,6 @@ mod tests {
             &SurfaceFrame {
                 sequence: 5,
                 keyframe: false,
-                codec: StreamCodec::H264,
-                display_size: None,
                 payload: vec![3],
             }
             .encode()
@@ -770,15 +577,11 @@ mod tests {
         let f0 = SurfaceFrame {
             sequence: 0,
             keyframe: true,
-            codec: StreamCodec::H264,
-            display_size: None,
             payload: vec![1, 2, 3, 4, 5],
         };
         let f1 = SurfaceFrame {
             sequence: 1,
             keyframe: false,
-            codec: StreamCodec::H264,
-            display_size: None,
             payload: vec![9, 8, 7, 6],
         };
         let mut all = f0.encode().expect("encode");
@@ -825,8 +628,6 @@ mod tests {
         let frame = SurfaceFrame {
             sequence: 0,
             keyframe: false,
-            codec: StreamCodec::H264,
-            display_size: None,
             payload: vec![0; MAX_ENCODED_FRAME_LEN + 1],
         };
         assert_eq!(
@@ -861,16 +662,14 @@ mod tests {
         let mut invalid_flags = SurfaceFrame {
             sequence: 0,
             keyframe: false,
-            codec: StreamCodec::H264,
-            display_size: None,
             payload: vec![],
         }
         .encode()
         .expect("encode");
-        invalid_flags[12] = 0b1000_0000;
+        invalid_flags[12] = 0b10;
         assert_eq!(
             SurfaceFrame::decode(&invalid_flags),
-            Err(FrameError::InvalidFlags(0b1000_0000))
+            Err(FrameError::InvalidFlags(0b10))
         );
     }
 
@@ -898,8 +697,6 @@ mod tests {
         let valid = SurfaceFrame {
             sequence: 1,
             keyframe: true,
-            codec: StreamCodec::H264,
-            display_size: None,
             payload: vec![1],
         }
         .encode()
@@ -934,8 +731,6 @@ mod tests {
         let max = SurfaceFrame {
             sequence: u64::MAX,
             keyframe: true,
-            codec: StreamCodec::H264,
-            display_size: None,
             payload: vec![1],
         }
         .encode()
@@ -953,8 +748,6 @@ mod tests {
         let wrapped = SurfaceFrame {
             sequence: 0,
             keyframe: true,
-            codec: StreamCodec::H264,
-            display_size: None,
             payload: vec![2],
         }
         .encode()
@@ -978,8 +771,6 @@ mod tests {
         let first = SurfaceFrame {
             sequence: 5,
             keyframe: true,
-            codec: StreamCodec::H264,
-            display_size: None,
             payload: vec![1],
         }
         .encode()
@@ -993,8 +784,6 @@ mod tests {
         let stale = SurfaceFrame {
             sequence: 4,
             keyframe: false,
-            codec: StreamCodec::H264,
-            display_size: None,
             payload: vec![2],
         }
         .encode()
