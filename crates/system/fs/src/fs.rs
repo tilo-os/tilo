@@ -5898,7 +5898,7 @@ impl Filesystem for QuickFS {
                 };
                 match serde_json::to_vec(&response) {
                     Ok(bytes) if bytes.len() <= collab_types::files::MAX_HISTORY_READ_BYTES => {
-                        reply_xattr_bytes(reply, &bytes, size)
+                        reply_xattr_bytes(reply, &bytes, size);
                     }
                     _ => reply.error(to_errno(EIO)),
                 }
