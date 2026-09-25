@@ -2287,23 +2287,21 @@ fn creates_complete_starter() {
     let catalog = std::fs::read_to_string(destination.join("locales/en-US.ftl")).expect("catalog");
     assert!(catalog.contains("starter-greeting = Hello, { $name }!"));
     let main = std::fs::read_to_string(destination.join("src/main.rs")).expect("main");
-    assert!(main.contains("ui::launch::LaunchSpec"));
+    assert!(main.contains("ui::framework::run::<reading_list::App>()"));
     let library = std::fs::read_to_string(destination.join("src/lib.rs")).expect("library");
-    assert!(library.contains("LocalState::new"));
-    assert!(library.contains("Text::from_state"));
-    assert!(library.contains("ui::column!["));
-    assert!(library.contains("labeled_field(\"starter-name-label\", input)"));
-    assert!(!library.contains("with_accessible_name(\"starter-name-label\")"));
-    assert!(!library.contains("Column::new()"));
+    assert!(library.contains("pub const APP_ID: &str = \"so.tilo.reading.list\";"));
+    assert!(library.contains("#[derive(Model, Debug, Clone, PartialEq)]"));
+    assert!(library.contains("#[resource(kind = \"generated.profile\""));
+    assert!(library.contains("impl ResourceApp for App"));
+    assert!(library.contains(".input(|profile| profile.name.clone(), Profile::SET_NAME)"));
     assert!(library.contains("with_id(\"name-input\")"));
-    assert!(library.contains("TextInput::from_state(&name)"));
-    assert!(library.contains("Checkbox::from_state(&updates)"));
-    assert!(library.contains("NumberInput::from_state(&refresh_minutes)"));
-    assert!(library.contains("Slider::from_state(&volume)"));
+    assert!(library.contains(".checkbox("));
+    assert!(library.contains("NumberInput::from_state(value)"));
+    assert!(library.contains("Slider::from_state,"));
     assert!(library.contains("Dropdown::from_state("));
-    assert!(library.contains("labeled_check("));
-    assert!(!library.contains("on_change(name.text_sink())"));
-    assert!(!library.contains("with_initial_value(&name.get())"));
+    assert!(library.contains("labeled_field(\"starter-name-label\", name)"));
+    assert!(!library.contains("LocalState::new"));
+    assert!(!library.contains("ActionForm"));
     assert!(library.contains("pub mod locales;"));
     assert!(library.contains("locales::install()"));
     let locale_registry =
@@ -2314,14 +2312,16 @@ fn creates_complete_starter() {
     assert!(manifest.contains("mode = \"off\""));
     let app_test =
         std::fs::read_to_string(destination.join("tests/app.rs")).expect("generated app test");
+    assert!(app_test.contains("use reading_list::{App, Profile};"));
+    assert!(!app_test.contains("generated_app"));
+    assert!(app_test.contains("TestApp::<App>::new()"));
+    assert!(app_test.contains("Replica::<Profile>::new()"));
     assert!(app_test.contains("perform_named(\"name-input\""));
     assert!(app_test.contains("SemanticExpectation::named(\"greeting\")"));
-    assert!(app_test.contains("name_contains(\"Ada\")"));
-    assert!(app_test.contains("perform_named(\"updates-checkbox\""));
-    assert!(app_test.contains("perform_named(\"refresh-input\""));
     assert!(app_test.contains("perform_named(\"volume-slider\""));
-    assert!(app_test.contains("perform_named(\"region-select\""));
-    assert!(app_test.contains("checked(false)"));
+    assert!(app_test.contains("with_role(ui::Role::Viewer)"));
+    assert!(app_test.contains("app.undo()"));
+    assert!(app_test.contains("reopen()"));
 
     let report = doctor_app(&destination).expect("doctor generated app");
     assert!(report.is_ready(), "{}", report.summary());
@@ -3006,13 +3006,15 @@ fn data_template_renders_cells_and_uses_stable_row_ids() {
     assert!(source.contains("TableModelChange::RowsChanged"));
     assert!(source.contains("completion.complete(rows)"));
     assert!(source.contains("with_widget"));
-    assert!(source.contains("ActionBinding::static_json_for"));
+    assert!(source.contains("let actions = cx.actions();"));
+    assert!(source.contains("Review::OPEN.with(row.id)"));
     assert!(source.contains("pub id: u64"));
     let test = app_test(&spec);
     assert!(test.contains("Role::Table"));
     assert!(test.contains("row:3:0"));
     assert!(test.contains("wait_for_named"));
-    assert!(test.contains("visible rows are semantic children"));
+    assert!(test.contains("only the sparse viewport is semantic"));
+    assert!(test.contains("app.state().opened"));
 }
 
 #[test]
@@ -3072,18 +3074,36 @@ fn every_template_uses_the_toolkit_resource_action_host() {
         let manifest = cargo_toml(&spec);
         assert!(!manifest.contains("tilo-actions ="), "{template:?}");
         let source = app_lib(&spec);
+        assert!(source.contains("#[derive(Model"), "{template:?}");
+        assert!(source.contains("#[resource(kind = "), "{template:?}");
+        assert!(source.contains("#[action"), "{template:?}");
+        assert!(source.contains("impl ResourceApp for App"), "{template:?}");
         assert!(
-            source.contains("ui::widget::resource_actions::")
-                || source.contains("resource_actions::"),
+            source.contains("const ID: &'static str = crate::APP_ID;"),
             "{template:?}"
         );
-        assert!(
-            !source.contains("struct ResourceActionHost"),
-            "{template:?}"
-        );
+        assert!(!source.contains("pub fn app_root"), "{template:?}");
         assert!(!source.contains("fn resources("), "{template:?}");
-        assert!(!source.contains("start_resource_operation"), "{template:?}");
+        assert!(
+            app_main(&spec).contains("ui::framework::run::<generated_app::App>()"),
+            "{template:?}"
+        );
+        let test = app_test(&spec);
+        assert!(test.contains("TestApp::<"), "{template:?}");
+        assert!(!test.contains("app_root"), "{template:?}");
     }
+}
+
+#[test]
+fn a_legacy_generated_graph_app_still_migrates_to_the_component_context() {
+    let legacy = legacy_graph_app_template();
+    assert!(legacy.contains(LEGACY_GRAPH_ROUTER_CALL));
+    let source = format!("pub mod screens;\n\n{legacy}");
+    let migrated = migrate_generated_graph_context(&source);
+    assert!(migrated.contains(GENERATED_GRAPH_ROUTER_CALL));
+    assert!(!migrated.contains(LEGACY_GRAPH_ROUTER_CALL));
+    let current = format!("pub mod screens;\n\n{GRAPH_APP_TEMPLATE}");
+    assert_eq!(migrate_generated_graph_context(&current), current);
 }
 
 #[test]
@@ -3098,9 +3118,8 @@ fn qr_template_composes_ime_input_state_visual_output_and_accessibility() {
         template: Template::Qr,
     };
     let source = app_lib(&spec);
-    assert!(source.contains("LocalState::new"));
-    assert!(source.contains("TextInput::from_state(&payload)"));
-    assert!(!source.contains("payload.text_sink()"));
+    assert!(source.contains(".input(|code| code.payload.clone(), Code::SET_PAYLOAD)"));
+    assert!(source.contains("cx.value(|code| code.payload.clone())"));
     assert!(source.contains("ModelView::from_state"));
     assert!(source.contains("QrWidget::new"));
     assert!(source.contains("with_id(\"qr-output\")"));
@@ -3127,13 +3146,13 @@ fn workspace_template_composes_navigation_and_isolated_durable_detail_views() {
     assert!(source.contains("AppShell::new"));
     assert!(source.contains("with_narrow_screen_state"));
     assert!(source.contains("workspace-back"));
-    assert!(source.contains("ModelView::from_state(&selected"));
+    assert!(source.contains("cx.switch(&selected"));
     assert!(source.contains(".on_select"));
-    assert!(source.contains("TextInput::from_document_string"));
-    assert!(source.contains("workspace-item-{item_id}-title"));
+    assert!(source.contains("pub projects: Collection<Project>"));
+    assert!(source.contains("Workspace::SET_TITLE.map(move |title| (id, title))"));
     let test = app_test(&spec);
     assert!(test.contains("workspace_keeps_master_detail_views_isolated_and_synchronized"));
-    assert!(test.contains("perform_undo"));
+    assert!(test.contains("app.undo()"));
     assert!(app_readme(&spec).contains("responsive master-detail shell"));
 }
 
@@ -3175,8 +3194,10 @@ fn graph_template_generates_a_valid_editable_screen() {
     assert!(app_lib(&spec).contains("pub mod screens;"));
     assert!(app_lib(&spec).contains("screens::router_with("));
     assert!(app_lib(&spec).contains("components::ui_graph_context()"));
-    assert!(app_lib(&spec).contains("ActionBinding::new"));
-    assert!(app_test(&spec).contains("serialized_screen_is_interactive"));
+    assert!(app_lib(&spec).contains(GENERATED_GRAPH_ROUTER_CALL));
+    assert!(app_lib(&spec).contains("Projects::CREATE.invoke()"));
+    assert!(app_test(&spec).contains("serialized_screen_and_native_controls_share_one_resource"));
+    assert!(app_test(&spec).contains("serialized_graph_edits_have_shared_undo_history"));
     assert!(app_readme(&spec).contains("tilo-app ui tree"));
     assert!(app_readme(&spec).contains("tilo-app ui set"));
     assert!(app_readme(&spec).contains("tilo-app ui apply"));
@@ -3205,13 +3226,14 @@ fn list_template_starts_sparse_variable_and_interactive() {
     assert!(source.contains("with_semantic_key(u64::to_string)"));
     assert!(source.contains("if index % 5 == 0"));
     assert!(source.contains("Button::new"));
+    assert!(source.contains("Feed::OPEN.with(*key)"));
     assert!(source.contains("with_id(\"activity-list\")"));
     let test = app_test(&spec);
     assert!(test.contains("Role::List"));
     assert!(test.contains("key:3"));
     assert!(test.contains("open-0"));
     assert!(test.contains("wait_for_named"));
-    assert!(test.contains("first_height"));
+    assert!(test.contains("delegate measurements drive variable rows"));
 }
 
 #[test]
@@ -3264,10 +3286,10 @@ fn async_template_uses_typed_wakeup_and_keyed_result_views() {
     assert!(source.contains("with_arg(\"count\""));
     assert!(source.contains("with_id(\"task-result\")"));
     let test = app_test(&spec);
-    assert!(test.contains("app_starts_and_dispatches_typed_background_work"));
+    assert!(test.contains("app_runs_background_work_on_the_resource_input"));
     assert!(test.contains("generated.background-task:root"));
-    assert!(test.contains("ResourceOperationStart::Accepted"));
-    assert!(test.contains("InvocationUpdate::Succeeded"));
+    assert!(test.contains("wait_for_named(\"task-result\""));
+    assert!(source.contains("live.with(|scan| scan.folder.clone())"));
     let actions = headless_actions(&spec);
     assert!(actions.contains("\"action\": \"activate\""));
     assert!(actions.contains("\"expect\""));
@@ -3286,12 +3308,14 @@ fn document_template_uses_direct_durable_bindings_and_undo_contract() {
         template: Template::Document,
     };
     let source = app_lib(&spec);
-    assert!(source.contains("TextInput::from_document_string(\"document-title\")"));
-    assert!(source.contains("Text::from_document_string(\"document-title\")"));
+    assert!(source.contains(".input(|document| document.title.clone(), Document::SET_TITLE)"));
+    assert!(source.contains("cx.text(|document| document.title.clone())"));
     assert!(source.contains("multiline(true)"));
+    assert!(source.contains("#[action(destructive)]"));
     let test = app_test(&spec);
     assert!(test.contains("document_fields_are_synchronized_and_undoable"));
-    assert!(test.contains("state_mut().undo"));
+    assert!(test.contains("app.undo()"));
+    assert!(test.contains("sync_with"));
 }
 
 #[test]
@@ -3309,7 +3333,8 @@ fn generated_readme_commands_work_inside_workspace_or_standalone() {
         let readme = app_readme(&spec);
         assert!(readme.contains("tilo-app check --fix\n"));
         assert!(readme.contains("tilo-app new notes --template starter --dev"));
-        assert!(readme.contains("\"resource\":\"generated.form:root\""));
+        assert!(readme.contains("\"resource\":\"generated.profile\""));
+        assert!(readme.contains("`#[derive(Model)]` resource"));
         assert!(readme.contains("tilo-app test\n"));
         assert!(readme.contains("tilo-app dev\n"));
         assert!(readme.contains("tilo-app run\n"));

@@ -127,6 +127,19 @@ impl<R: Resource> Widget for ResourceRoot<R> {
         self.content.sync(state, path);
     }
 
+    // A subtree that swaps its children (a `ModelView`, an `Each`) reports
+    // it here; the host rebuilds its layout tree only when a container
+    // passes that on.
+    fn take_structure_dirty(&mut self) -> bool {
+        self.content.take_structure_dirty()
+    }
+
+    // The per-frame update pass drives retained models (a virtual list's
+    // pages, a table's rows); every child must see it.
+    fn update(&mut self, state: &mut AutoCommit, path: &ObjId) -> bool {
+        self.content.update(state, path)
+    }
+
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
