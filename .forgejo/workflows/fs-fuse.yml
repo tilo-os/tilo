@@ -130,6 +130,7 @@ env:
   CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: "-D warnings"
   CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS: "-D warnings"
   TILO_FS_FUSE_REQUIRED: "1"
+  TILO_REQUIRE_FUSE: "1"
 
 jobs:
   applicability:
@@ -321,6 +322,7 @@ jobs:
     timeout-minutes: 30
     env:
       TILO_FS_FUSE_REQUIRED: "0"
+      TILO_REQUIRE_FUSE: "0"
     container:
       image: ${{ needs.builder.outputs.image }}
       credentials:
