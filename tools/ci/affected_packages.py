@@ -9,7 +9,8 @@ other repository-wide build inputs fall back to the complete workspace.
 Ordinary feedback checks the closure on x86 and tests changed packages plus
 contract suites; --full qualifies both native architectures.
 The hermetic suites outside Cargo declared in tools/ci/suites.toml are selected
-by the paths they read.
+by the paths they read, as are the packages it declares to read repository files
+outside their own directory.
 The emitted matrix is consumed directly by Forgejo Actions.
 """
 
@@ -444,6 +445,10 @@ def make_plan(
     resolved_inputs = {path: resolved for path, resolved in (resolved_inputs or {}).items()
                        if path in changes}
     seeds = {owner for path in changes if (owner := owner_for(path, by_dir))}
+    # Packages whose tests or build read a changed file from outside their own
+    # directory. Their code is unchanged, so their dependants are not re-checked.
+    readers = (set(path_suites.select_packages(suite_manifest, changes)) & packages.keys()
+               if suite_manifest is not None else set())
     checked: set[str] = set()
     for resolved in resolved_inputs.values():
         seeds.update(resolved.seeds & packages.keys())
@@ -501,7 +506,7 @@ def make_plan(
         "os/Containerfile.builder" in changes
         and (root / "os/Containerfile.builder").is_file()
     )
-    quality_only = bool(changes) and all(
+    quality_only = bool(changes) and not readers and all(
         prose(path) or path in quality_paths
         or path in projected_quality_paths
         or (recipe_present and path == "os/Containerfile.builder")
@@ -523,14 +528,18 @@ def make_plan(
     else:
         selected = closure(seeds | checked, reverse_dependencies(packages, root))
         selected.update(ALWAYS_PACKAGES & packages.keys())
+        selected.update(readers)
         reason = f"{len(seeds)} changed packages, their reverse dependencies, and contract packages"
+        if readers - seeds:
+            reason += f", and {len(readers - seeds)} packages that read the changed files"
         if resolved_inputs:
             reason += " (" + "; ".join(item.detail for _, item in sorted(resolved_inputs.items())) + ")"
         full = False
     # Ordinary feedback type-checks the entire reverse-dependency closure once
-    # on x86, but links tests only for changed crates and the existing contract
-    # suites. Global/unowned workspace inputs retain complete test coverage.
-    tested = (selected if full else (seeds | ALWAYS_PACKAGES) & selected)
+    # on x86, but links tests only for changed crates, the crates that read the
+    # changed files and the existing contract suites. Global/unowned workspace
+    # inputs retain complete test coverage.
+    tested = (selected if full else (seeds | readers | ALWAYS_PACKAGES) & selected)
     shard_limit = (shard_count if force_full else
                    min(shard_count, MAX_DEVELOPER_SHARDS) if full else 1)
     effective_shards = useful_shard_count(selected, packages, shard_limit)
