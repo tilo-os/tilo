@@ -8,10 +8,11 @@ another architecture needs `--arch <arch> --emulated` and is many times slower.
 |---|---|---|---|---|
 | Linux x86_64 / aarch64 | libvirt, `qemu:///session` (`virsh`, `qemu-img`, `passt`) | virt-manager, GNOME Boxes | VM or host | virgl, else llvmpipe |
 | macOS arm64 | UTM (`utmctl`, Apple Virtualization) | UTM | VM only | none (llvmpipe) |
-| Windows x86_64 / arm64 | Hyper-V (PowerShell) | Hyper-V Manager | VM only | none (llvmpipe) |
+| Windows x86_64 / arm64 with Hyper-V | Hyper-V (PowerShell) | Hyper-V Manager | VM only | none (llvmpipe) |
+| Windows ARM64 Home | QEMU with WHPX | local VNC | VM only | none (llvmpipe) |
 
 In-VM builds sync the worktree with rsync over SSH, so the host needs
-`rsync` (on Windows: from WSL, MSYS2 or cwRsync on `PATH`). Headless and vkms
+`rsync` (on Windows: MSYS2 or cwRsync on `PATH`). Headless and vkms
 slots need no GPU, so every row runs them.
 
 ## Linux: libvirt's user session
@@ -50,6 +51,31 @@ The raw `qemu` adapter (`--hypervisor qemu`) drives `os/dev/vm.sh` with that
 script's own conventions. It is the headless adapter for CI and scenario
 tests: its VMs do not appear in virt-manager or Boxes, so it is never the
 default, and it runs only from a Tilo worktree.
+
+## Windows ARM64 Home: QEMU with WHPX
+
+Install the MSYS2 CLANGARM64 QEMU package and enable **Windows Hypervisor
+Platform** in Windows Features, then reboot Windows. `tilo-vm doctor` finds
+`qemu-system-aarch64.exe`, its matching `qemu-img.exe`, and EDK2 firmware in
+`%USERPROFILE%\msys64\clangarm64` (or QEMU on `PATH`). On Windows ARM64 without
+the Hyper-V PowerShell module, `vm create` selects `whpx` automatically; use
+`--hypervisor whpx` to select it explicitly. It never falls back to software
+CPU emulation.
+
+For component swaps that build inside the VM, install MSYS2's `rsync`
+package too (`pacman -S rsync`) and put `%USERPROFILE%\msys64\usr\bin` on
+your Windows user `PATH`. `tilo-vm` passes the Windows worktree as an MSYS2
+`/c/...` path, so `rsync` treats it as a local source.
+
+The published QCOW2 remains unchanged. Each VM gets a small QCOW2 child and
+its own copy of the UEFI variables template beside that child. Before a
+download and before starting QEMU, at least 15 GiB must remain free on the
+respective volume. The guest gets the host CPU through WHPX, a PCI serial
+device for Linux `console=ttyS0`, a separate firmware UART, a user network
+with SSH forwarded to `127.0.0.1:<ssh_port>` (default 2222), and a local VNC
+display at `127.0.0.1:5900 + (<ssh_port> % 1000)`. The serial logs are
+`<disk>.ttyS0.log` and `<disk>.uart.log`. `vm stop` sends an ACPI power button
+through QMP and waits for QEMU to exit.
 
 ## Creating a VM
 
@@ -107,6 +133,7 @@ at creation where the hypervisor has a channel for credentials:
 | Adapter | How the key gets in |
 |---|---|
 | libvirt | at creation: an SMBIOS type 11 OEM string in the domain XML (`<sysinfo type='smbios'><oemStrings><entry>io.systemd.credential.binary:ssh.authorized_keys.root=<base64></entry>`, with `<smbios mode='sysinfo'/>`) |
+| whpx | at boot: the same credential in QEMU's SMBIOS type 11 OEM string |
 | UTM, Hyper-V, qemu | once, after the first boot (below). Apple Virtualization and Hyper-V offer no SMBIOS strings or fw_cfg, the image has no cloud-init, and `os/dev/vm.sh` takes no extra QEMU arguments |
 
 The one-time step logs in with the dev account's password (`tester`,
