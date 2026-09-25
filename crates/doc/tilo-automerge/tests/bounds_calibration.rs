@@ -632,3 +632,64 @@ fn clone_credit_returns_on_drop() {
     drop(turn);
     assert_eq!(a.available_bytes(), initial);
 }
+
+/// A chain of `n` changes by one new actor on top of `base`; with `ground`
+/// every hash is ground to a leading zero byte (fragment level 1), which
+/// makes `ChangeGraph::fragments` quadratic.
+fn fragment_chain(base: &mut AutoCommit, n: usize, ground: bool) -> Vec<Change> {
+    use automerge::legacy::{OpId, OpType, SortedVec};
+    let heads = base.get_heads();
+    let mut peer = base.fork().with_actor(actor(11));
+    peer.put(ROOT, "g", 0).unwrap();
+    peer.commit();
+    let mut t = peer.get_changes(&heads).pop().unwrap().decode();
+    let start = t.start_op.get();
+    let who = t.actor_id.clone();
+    let mut deps = t.deps.clone();
+    let mut out = Vec::with_capacity(n);
+    for i in 0..n {
+        t.seq = i as u64 + 1;
+        t.start_op = std::num::NonZeroU64::new(start + i as u64).unwrap();
+        t.deps = deps.clone();
+        t.operations[0].action = OpType::Put(ScalarValue::Int(i as i64));
+        t.operations[0].pred = if i == 0 {
+            SortedVec::from(Vec::new())
+        } else {
+            SortedVec::from(vec![OpId(start + i as u64 - 1, who.clone())])
+        };
+        t.hash = None;
+        let mut time = 0i64;
+        let change = loop {
+            t.time = time;
+            let c = Change::from(t.clone());
+            if !ground || c.hash().as_ref()[0] == 0 {
+                break c;
+            }
+            time += 1;
+        };
+        deps = vec![change.hash()];
+        out.push(change);
+    }
+    out
+}
+
+#[test]
+fn ground_fragment_chain_is_charged_quadratically() {
+    let mut t = Table::default();
+    let mut base = one_actor_many_changes(50);
+    for (name, ground) in [("600 honest chain", false), ("600 ground chain", true)] {
+        let chain = fragment_chain(&mut base, 600, ground);
+        let [_, _, _, superlinear, ..] = base.native_bound_probe(&chain).unwrap();
+        println!(
+            "{name}: fragments {} superlinear bound {superlinear}",
+            fragments(&chain)
+        );
+        let mut applied = base.clone();
+        applied.apply_changes_batch(chain.clone()).unwrap();
+        let (copy, held) = retained_of(|| applied.clone());
+        drop(copy);
+        println!("{name}: retained after apply {held}");
+        measure_apply(&mut t, name, &base, chain);
+    }
+    t.finish();
+}

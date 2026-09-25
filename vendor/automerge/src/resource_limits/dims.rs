@@ -901,6 +901,12 @@ fn queue_scratch(doc: &DocDims, inc: &IncomingDims) -> Result<usize> {
         actor_seq,
     ))
     .mul(inc.changes, actor_clone);
+    // `BatchApply` admissibility pre-check (L2): `introduced:
+    // HashSet<&ActorId>` and `next: HashMap<&ActorId, u64>` over the ready
+    // batch, `queued: HashSet<ChangeHash>` over the queue.
+    s.add_sum(hash_table_peak_for(q, PTR))
+        .add_sum(hash_table_peak_for(q, PTR + 8))
+        .add_sum(hash_table_peak_for(q, size_of::<ChangeHash>()));
     // `pop_topo_sorted_ready`: unsatisfied (u32), waiting_on
     // (ChangeHash → Vec<usize>, ≤ e entries, each Vec ≤ 2× its pushes),
     // ready VecDeque<usize>, topo_order Vec<usize>, slots Vec<Option<Change>>,
