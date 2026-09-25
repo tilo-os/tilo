@@ -118,6 +118,10 @@ fn wrapped_table_cells_reserve_height_before_the_next_block() {
 }
 
 #[test]
+#[expect(
+    clippy::float_cmp,
+    reason = "a stacked field spans the full 390 px viewport exactly; the edge is assigned, not computed"
+)]
 fn narrow_tables_stack_all_fields_without_losing_the_last_value() {
     let full = table_source(3, 10, "LAST FIELD");
     let blank = table_source(3, 10, "");

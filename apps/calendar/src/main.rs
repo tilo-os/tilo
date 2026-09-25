@@ -25,6 +25,7 @@
 //!       * `--resize-from WxH` lay the SAME instance out at this size first,
 //!         then render at `--viewport`. Proves the layout reflows on a live
 //!         resize (rather than caching the first frame's breakpoint).
+//!
 //!     A malformed shot option (`--view tomorrow`, `--scroll-hour 99`,
 //!     `--sync-state lost`) is an **error**, never a silent fallback to the
 //!     default state: a review capture that quietly rendered the wrong
@@ -193,6 +194,10 @@ enum FormPopoverShot {
 /// The fixture one screenshot renders: a scenario's state, refined by the
 /// legacy flags. `build` turns it into the widget the harness lays out.
 #[derive(Clone, Debug, Default, PartialEq)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "each bool is an independent screenshot toggle mirroring one CLI flag"
+)]
 struct ShotState {
     empty: bool,
     view: Option<View>,
@@ -419,6 +424,10 @@ impl ShotState {
 /// before validation — one value per entry of [`SHOT_FLAGS`] and
 /// [`SHOT_OPTIONS`].
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "one field per independent legacy CLI flag, exactly as parsed"
+)]
 struct ShotOptions<'a> {
     view: Option<&'a str>,
     screen: Option<&'a str>,

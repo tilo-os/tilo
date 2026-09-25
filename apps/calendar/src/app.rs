@@ -627,6 +627,7 @@ impl CalendarApp {
     /// input, and files exceeding 8 MiB.
     pub fn queue_launch_ics(&mut self, target: &str) -> Result<(), String> {
         use std::io::Read as _;
+        const LIMIT: u64 = 8 * 1024 * 1024;
         if self.pending_launch_ics.is_some() {
             return Err("A calendar launch import is already pending".into());
         }
@@ -640,7 +641,6 @@ impl CalendarApp {
         } else {
             PathBuf::from(target)
         };
-        const LIMIT: u64 = 8 * 1024 * 1024;
         let file = std::fs::File::open(path).map_err(|error| format!("Import failed: {error}"))?;
         if !file
             .metadata()
@@ -4321,6 +4321,14 @@ impl CalendarApp {
 
         hits
     }
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the smart lists and project lists are painted in one top-to-bottom pass sharing the running y cursor"
+    )]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "sidebar list painting threads the paint context, sidebar bounds, running y and hit output through each section"
+    )]
     fn draw_sidebar_lists(
         &self,
         scene: &mut Scene,
@@ -4462,6 +4470,10 @@ impl CalendarApp {
     /// calendars are listed with a visibility checkbox; a Sync affordance in
     /// the heading pulls events from every visible calendar (part of
     /// [`Self::draw_sidebar`]). Returns the `y` the footer should start at.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "sidebar calendar painting threads the paint context, sidebar bounds, running y and hit output through each section"
+    )]
     fn draw_sidebar_calendars(
         &self,
         scene: &mut Scene,
@@ -4576,6 +4588,10 @@ impl CalendarApp {
     /// The footer: the mini upcoming-task rail (when there's room for it
     /// above the reserved mini-month band) followed by the mini-month
     /// navigator itself (part of [`Self::draw_sidebar`]).
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the sidebar footer threads the paint context, sidebar bounds, running y and hit output into the task rail and mini-month"
+    )]
     fn draw_sidebar_footer(
         &self,
         scene: &mut Scene,
@@ -4613,6 +4629,10 @@ impl CalendarApp {
     /// there's vertical room left above the mini-month (the CALENDARS
     /// section above may have used it up; the agenda/day views still list
     /// the tasks in full either way) (part of [`Self::draw_sidebar_footer`]).
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the task rail needs the paint context, sidebar bounds, running y, the mini-month limit and hit output"
+    )]
     fn draw_sidebar_task_rail(
         &self,
         scene: &mut Scene,
@@ -5324,6 +5344,10 @@ impl CalendarApp {
                   and c is the theme's colour set — conventional short names for this \
                   draw step"
     )]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the detail body combines the paint context with its column geometry and hit output"
+    )]
     fn draw_detail_selection(
         &self,
         scene: &mut Scene,
@@ -5378,6 +5402,10 @@ impl CalendarApp {
     #[allow(
         clippy::too_many_lines,
         reason = "the task card keeps its direct editable fields, subtasks, and hit targets co-located for responsive layout correctness"
+    )]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the task card combines the paint context with its column geometry, task id and hit output"
     )]
     fn draw_detail_task(
         &self,
@@ -5507,6 +5535,10 @@ impl CalendarApp {
                   position/width, and c is the theme's colour set — conventional short \
                   names for this draw step"
     )]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the notes header combines the paint context with the detail rect and its column geometry"
+    )]
     fn draw_detail_notes_header(
         &self,
         scene: &mut Scene,
@@ -5631,6 +5663,10 @@ impl CalendarApp {
         reason = "t is the paint transform, f is the form layout, e is the event being \
                   edited, and c is the theme's colour set — conventional short names for \
                   this draw step"
+    )]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "date rows combine the paint context with form geometry, the edited event, pointer and hit output"
     )]
     fn draw_event_form_dates(
         &self,
@@ -5769,6 +5805,10 @@ impl CalendarApp {
                   edited, and c is the theme's colour set — conventional short names for \
                   this draw step"
     )]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the calendar row combines the paint context with form geometry, the edited event, pointer and hit output"
+    )]
     fn draw_event_form_calendar(
         &self,
         scene: &mut Scene,
@@ -5834,6 +5874,10 @@ impl CalendarApp {
     #[allow(
         clippy::many_single_char_names,
         reason = "t/f/e and x/y are conventional paint, form, event, and flow geometry names"
+    )]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the chip row combines the paint context with form geometry, the edited event and hit output"
     )]
     fn draw_event_form_chips(
         scene: &mut Scene,
@@ -7173,7 +7217,7 @@ impl Widget for CalendarApp {
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         self.text_scale = theme.text_scale;
-        self.spacing = theme.tokens.spacing.clone();
+        self.spacing = theme.tokens.spacing;
         self.tokens_metrics = theme.tokens.metrics;
         self.timeline
             .set_layout_tokens(theme.text_scale, &theme.tokens.spacing);
