@@ -1318,8 +1318,6 @@ fn marks_apply_and_inverted_mark_is_refused() {
 }
 
 #[test]
-#[ignore = "0.12 ChangeCollector still panics on forged document chunks (collector.rs asserts); \
-            enable once the reconstruct hardening lands"]
 fn fuzz_mutated_document_and_bundle_bytes_never_panic() {
     let mut rng = Rng(seed(0x7a3c_91e5_0b2d_4f68));
     let mut source = random_doc(&mut rng);
