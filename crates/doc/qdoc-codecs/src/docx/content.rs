@@ -1426,12 +1426,12 @@ mod tests {
         let p = &d.materialize().blocks[0];
         let ph = qdoc::schema::FIELD_PLACEHOLDER;
         assert_eq!(p.text, format!("page {ph} and {ph}{ph}end"));
-        let atoms: Vec<_> = p
+        let atoms = p
             .marks
             .iter()
             .filter(|m| m.name == crate::preserve::MARK_DOCX_XML)
-            .collect();
-        assert_eq!(atoms.len(), 3, "{:?}", p.marks);
+            .count();
+        assert_eq!(atoms, 3, "{:?}", p.marks);
 
         // An edit through the model, then export: every piece re-emits verbatim, in place.
         let id = p.id.clone();
