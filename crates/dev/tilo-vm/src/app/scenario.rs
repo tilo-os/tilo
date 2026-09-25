@@ -40,6 +40,7 @@ struct Plan {
     root: PathBuf,
     medium: PathBuf,
     external_target: Option<PathBuf>,
+    skip_target_boot: bool,
     layout: Layout,
     unlock: Unlock,
     username: String,
@@ -148,6 +149,25 @@ impl Plan {
     }
 
     fn describe(&self) -> Value {
+        let mut commands = vec![
+            self.vm(&["init-cycle"]).display(),
+            self.vm(&["boot-installer", self.graphics.flag(), self.tpm_flag()])
+                .display(),
+            format!(
+                "drive the installer through its actions on {}",
+                self.console().display()
+            ),
+        ];
+        if !self.skip_target_boot {
+            commands.push(
+                self.vm(&["boot-target", self.graphics.flag(), self.tpm_flag()])
+                    .display(),
+            );
+            commands.push(format!(
+                "verify the greeter on {}",
+                self.console().display()
+            ));
+        }
         json!({
             "scenario": "install",
             "medium": self.medium,
@@ -160,15 +180,10 @@ impl Plan {
             "console": self.console(),
             "target": self.target(),
             "external_target": self.external_target.is_some(),
+            "skip_target_boot": self.skip_target_boot,
             "install_timeout_seconds": self.install_timeout.as_secs(),
             "keep": self.keep,
-            "commands": [
-                self.vm(&["init-cycle"]).display(),
-                self.vm(&["boot-installer", self.graphics.flag(), self.tpm_flag()]).display(),
-                format!("drive the installer through its actions on {}", self.console().display()),
-                self.vm(&["boot-target", self.graphics.flag(), self.tpm_flag()]).display(),
-                format!("verify the greeter on {}", self.console().display()),
-            ],
+            "commands": commands,
         })
     }
 }
@@ -237,7 +252,7 @@ fn write_json(dir: &Path, name: &str, value: &Value) -> Result<(), CliError> {
 }
 
 #[cfg(windows)]
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 struct VmInstallProof {
     schema: String,
@@ -245,18 +260,54 @@ struct VmInstallProof {
     booted_image_digest: String,
     installed_image_digest: String,
     composefs_digest: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    booted_composefs_digest: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    installed_composefs_digest: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    installed_update_origin: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    selected_target: Option<VmSelectedTarget>,
     target_uki_sha256: String,
     disk_guid: String,
     partuuids: VmPartuuids,
 }
 
 #[cfg(windows)]
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 struct VmPartuuids {
     efi: String,
     boot: String,
     root: String,
+}
+
+#[cfg(windows)]
+#[derive(Debug, Deserialize, serde::Serialize)]
+#[serde(deny_unknown_fields)]
+struct VmSelectedTarget {
+    schema: String,
+    target_ref: String,
+    target_digest: String,
+    architecture: String,
+    hardware_profile: String,
+    update_origin: String,
+    provenance: VmSelectedProvenance,
+    verifier_key_sha256: String,
+}
+
+#[cfg(windows)]
+#[derive(Debug, Deserialize, serde::Serialize)]
+#[serde(deny_unknown_fields)]
+struct VmSelectedProvenance {
+    source_revision: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    firmware_manifest_sha256: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    firmware_candidate: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    generation: Option<u64>,
+    invocation_id: String,
 }
 
 #[cfg(windows)]
@@ -274,24 +325,31 @@ fn canonical_uuid(value: &str) -> bool {
 
 #[cfg(windows)]
 fn parse_install_proof(bytes: &[u8]) -> Result<VmInstallProof, String> {
-    const PREFIX: &str = "TILO_VM_INSTALL_PROOF_V1=";
     let line = std::str::from_utf8(bytes).map_err(|_| "VM install proof is not UTF-8")?;
-    let payload = line
-        .strip_prefix(PREFIX)
-        .and_then(|rest| rest.strip_suffix('\n'))
+    let (version, rest) = if let Some(rest) = line.strip_prefix("TILO_VM_INSTALL_PROOF_V2=") {
+        (2, rest)
+    } else if let Some(rest) = line.strip_prefix("TILO_VM_INSTALL_PROOF_V1=") {
+        (1, rest)
+    } else {
+        return Err("VM install proof has an unknown prefix".into());
+    };
+    let payload = rest
+        .strip_suffix('\n')
         .ok_or("VM install proof needs exactly one terminated proof line")?;
     if payload.contains('\n') || payload.contains('\r') {
         return Err("VM install proof contains another line or carriage return".into());
     }
     let proof: VmInstallProof = serde_json::from_str(payload)
         .map_err(|error| format!("invalid VM install proof: {error}"))?;
-    if proof.schema != "tilo.vm-install-image-proof.v1"
-        || proof.architecture != "arm64"
+    if proof.architecture != "arm64"
         || !proof
             .booted_image_digest
             .strip_prefix("sha256:")
             .is_some_and(|hex| lowercase_hex(hex, 64))
-        || proof.booted_image_digest != proof.installed_image_digest
+        || !proof
+            .installed_image_digest
+            .strip_prefix("sha256:")
+            .is_some_and(|hex| lowercase_hex(hex, 64))
         || !lowercase_hex(&proof.composefs_digest, 128)
         || !lowercase_hex(&proof.target_uki_sha256, 64)
         || !canonical_uuid(&proof.disk_guid)
@@ -303,6 +361,105 @@ fn parse_install_proof(bytes: &[u8]) -> Result<VmInstallProof, String> {
         || proof.partuuids.boot == proof.partuuids.root
     {
         return Err("VM install proof has invalid or inconsistent identities".into());
+    }
+    if version == 1 {
+        if proof.schema != "tilo.vm-install-image-proof.v1"
+            || proof.booted_image_digest != proof.installed_image_digest
+            || proof
+                .booted_composefs_digest
+                .as_ref()
+                .is_some_and(|value| value != &proof.composefs_digest)
+            || proof
+                .installed_composefs_digest
+                .as_ref()
+                .is_some_and(|value| value != &proof.composefs_digest)
+            || proof.selected_target.is_some()
+        {
+            return Err("VM v1 install proof has inconsistent image identities".into());
+        }
+    } else {
+        let selected = proof
+            .selected_target
+            .as_ref()
+            .ok_or("VM v2 install proof has no selected target")?;
+        let booted_composefs = proof
+            .booted_composefs_digest
+            .as_deref()
+            .ok_or("VM v2 install proof has no booted composefs")?;
+        let installed_composefs = proof
+            .installed_composefs_digest
+            .as_deref()
+            .ok_or("VM v2 install proof has no installed composefs")?;
+        let update_origin = proof
+            .installed_update_origin
+            .as_deref()
+            .ok_or("VM v2 install proof has no installed update origin")?;
+        let source = &selected.provenance.source_revision;
+        let profile_matches = match selected.hardware_profile.as_str() {
+            "lenovo-83ed" => {
+                selected
+                    .provenance
+                    .firmware_manifest_sha256
+                    .as_deref()
+                    .is_some_and(|value| lowercase_hex(value, 64))
+                    && selected
+                        .provenance
+                        .firmware_candidate
+                        .as_deref()
+                        .is_some_and(|value| {
+                            value
+                                .strip_prefix(
+                                    "code.sandbox.example/qos/tilo-lenovo-83ed-firmware@sha256:",
+                                )
+                                .is_some_and(|hex| lowercase_hex(hex, 64))
+                        })
+                    && selected
+                        .provenance
+                        .generation
+                        .is_none_or(|generation| generation == 1)
+                    && selected.update_origin
+                        == format!("code.sandbox.example/qos/tilo:lenovo-83ed-{source}")
+            }
+            "generic" => {
+                selected.provenance.firmware_candidate.is_none()
+                    && selected.provenance.firmware_manifest_sha256.is_none()
+                    && selected
+                        .provenance
+                        .generation
+                        .is_some_and(|generation| generation > 0)
+                    && selected.update_origin
+                        == format!(
+                            "code.sandbox.example/qos/tilo:gen{}",
+                            selected.provenance.generation.unwrap_or_default()
+                        )
+            }
+            _ => false,
+        };
+        if proof.schema != "tilo.vm-install-image-proof.v2"
+            || !lowercase_hex(booted_composefs, 128)
+            || !lowercase_hex(installed_composefs, 128)
+            || proof.composefs_digest != installed_composefs
+            || selected.schema != "tilo.installer-offline-target.v1"
+            || selected.target_ref != format!("code.sandbox.example/qos/tilo@{}", selected.target_digest)
+            || selected.target_digest != proof.installed_image_digest
+            || selected.architecture != "aarch64"
+            || !profile_matches
+            || !lowercase_hex(source, 40)
+            || selected.provenance.invocation_id.is_empty()
+            || !selected
+                .provenance
+                .invocation_id
+                .bytes()
+                .all(|byte| byte.is_ascii_digit())
+            || !lowercase_hex(&selected.verifier_key_sha256, 64)
+            || update_origin
+                != format!(
+                    "ostree-unverified-image:docker://{}",
+                    selected.update_origin
+                )
+        {
+            return Err("VM v2 install proof has inconsistent signed target identities".into());
+        }
     }
     Ok(proof)
 }
@@ -326,7 +483,13 @@ fn check_install_proof(
             .pointer("/final_partuuids/root")
             .and_then(Value::as_str)
             != Some(&proof.partuuids.root)
-        || installer_composefs != Some(&proof.composefs_digest)
+        || installer_composefs
+            != Some(
+                proof
+                    .booted_composefs_digest
+                    .as_deref()
+                    .unwrap_or(&proof.composefs_digest),
+            )
     {
         return Err(
             "guest install proof differs from the verified source GPT or installer composefs"
@@ -334,21 +497,12 @@ fn check_install_proof(
         );
     }
     Ok(json!({
-        "schema": "tilo.windows-vm-install-proof-check.v1",
-        "guest_proof": {
-            "schema": proof.schema,
-            "architecture": proof.architecture,
-            "booted_image_digest": proof.booted_image_digest,
-            "installed_image_digest": proof.installed_image_digest,
-            "composefs_digest": proof.composefs_digest,
-            "target_uki_sha256": proof.target_uki_sha256,
-            "disk_guid": proof.disk_guid,
-            "partuuids": {
-                "efi": proof.partuuids.efi,
-                "boot": proof.partuuids.boot,
-                "root": proof.partuuids.root,
-            },
+        "schema": if proof.schema == "tilo.vm-install-image-proof.v2" {
+            "tilo.windows-vm-install-proof-check.v2"
+        } else {
+            "tilo.windows-vm-install-proof-check.v1"
         },
+        "guest_proof": proof,
         "source_check": source_check,
         "installer_composefs": installer_composefs,
     }))
@@ -426,6 +580,16 @@ impl App {
                     .into(),
             });
         }
+        if args.skip_target_boot
+            && (!cfg!(windows)
+                || args.target_disk.is_none()
+                || args.layout != Layout::GuidedAlongside)
+        {
+            return Err(CliError::Unsupported {
+                what: "skip target boot".into(),
+                alternative: "use --skip-target-boot only with a reviewed Windows guided-alongside --target-disk".into(),
+            });
+        }
         if cfg!(windows) && args.encrypt == Unlock::TpmPin {
             return Err(CliError::Unsupported {
                 what: "TPM PIN installer scenario on a Windows host".into(),
@@ -466,11 +630,18 @@ impl App {
         } else {
             std::env::current_dir().unwrap_or_default().join(medium)
         };
-        if !medium.is_file() {
+        let medium_metadata = std::fs::symlink_metadata(&medium);
+        if !medium_metadata
+            .as_ref()
+            .is_ok_and(|metadata| metadata.is_file() && !metadata.file_type().is_symlink())
+        {
             return Err(CliError::ScenarioMedium {
                 path: medium.display().to_string(),
             });
         }
+        let medium = medium
+            .canonicalize()
+            .map_err(CliError::io("resolving installer medium"))?;
         let external_target = if let Some(target) = &args.target_disk {
             let metadata = std::fs::symlink_metadata(target)
                 .map_err(CliError::io("inspecting external install target"))?;
@@ -524,6 +695,7 @@ impl App {
             root,
             medium,
             external_target,
+            skip_target_boot: args.skip_target_boot,
             layout: args.layout,
             unlock: args.encrypt,
             username: username.to_owned(),
@@ -566,6 +738,12 @@ impl App {
         };
         std::fs::create_dir_all(&plan.out)
             .map_err(CliError::io("creating the artifact directory"))?;
+        #[cfg(windows)]
+        match std::fs::remove_file(plan.out.join("vm-install-proof-checked.json")) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(CliError::io("removing stale install proof")(error)),
+        }
         if let Some(target) = &plan.external_target {
             let artifacts = plan
                 .out
@@ -593,7 +771,12 @@ impl App {
                     return Err(failed("stop", stopped.stderr.trim(), &plan));
                 }
             }
-            verify_external_target(&plan, 3, "external-target-after-boot.json")?;
+            let artifact = if plan.skip_target_boot {
+                "external-target-after-install-stop.json"
+            } else {
+                "external-target-after-boot.json"
+            };
+            verify_external_target(&plan, 3, artifact)?;
             Ok(report)
         });
         #[cfg(not(windows))]
@@ -634,16 +817,33 @@ impl App {
                 &plan,
             ));
         }
+        let checked_install_proof = report
+            .as_object_mut()
+            .and_then(|map| map.remove("_checked_install_proof"));
         if let Value::Object(map) = &mut report {
             map.insert("plan".into(), plan.describe());
             map.insert("phases".into(), json!(self.receipt.summary()));
         }
         write_json(&plan.out, "result.json", &report)?;
+        #[cfg(windows)]
+        if let Some(mut checked) = checked_install_proof {
+            checked["first_boot_verified"] = json!(!plan.skip_target_boot);
+            checked["installer_medium_sha256"] = json!(crate::disk::file_sha256(&plan.medium)?);
+            write_json(&plan.out, "vm-install-proof-checked.json", &checked)?;
+        }
+        #[cfg(not(windows))]
+        let _ = checked_install_proof;
+        let completion = if plan.skip_target_boot {
+            "target boot deferred; guest image proof and source GPT checked"
+        } else {
+            "first boot reached the greeter on the installed image"
+        };
         let text = format!(
-            "install scenario passed: {} install onto {} ({}), first boot reached the greeter on the installed image {}\nphases: {}\nartifacts: {}",
+            "install scenario passed: {} install onto {} ({}), {} {}\nphases: {}\nartifacts: {}",
             plan.layout.name(),
             report.get("target").and_then(Value::as_str).unwrap_or("?"),
             plan.unlock.name(),
+            completion,
             report
                 .get("installed_image")
                 .and_then(Value::as_str)
@@ -811,7 +1011,7 @@ impl App {
         #[cfg(windows)]
         let source_check = verify_external_target(plan, 3, "external-target-after-install.json")?;
         #[cfg(windows)]
-        if let Some(source_check) = &source_check {
+        let checked_install_proof = if let Some(source_check) = &source_check {
             let path = plan.run.join("install-proof.log");
             let size = std::fs::metadata(&path)
                 .map_err(|error| failed("verify-install-proof", error.to_string(), plan))?
@@ -829,7 +1029,38 @@ impl App {
                 .map_err(|error| failed("verify-install-proof", error, plan))?;
             let checked = check_install_proof(&proof, source_check, installed.composefs.as_deref())
                 .map_err(|error| failed("verify-install-proof", error, plan))?;
-            write_json(&plan.out, "vm-install-proof-checked.json", &checked)?;
+            Some(checked)
+        } else {
+            None
+        };
+
+        #[cfg(windows)]
+        if plan.skip_target_boot {
+            let checked = checked_install_proof.ok_or_else(|| {
+                failed(
+                    "verify-install-proof",
+                    "board install has no checked guest proof",
+                    plan,
+                )
+            })?;
+            if checked.get("schema").and_then(Value::as_str)
+                != Some("tilo.windows-vm-install-proof-check.v2")
+            {
+                return Err(failed(
+                    "verify-install-proof",
+                    "board install requires backend-derived signed target proof v2",
+                    plan,
+                ));
+            }
+            return Ok(json!({
+                "scenario": "install", "layout": plan.layout.name(),
+                "encrypt": plan.unlock.name(), "target": installed.target,
+                "installer_steps": installed.steps,
+                "installer_image": installed.composefs,
+                "installed_image": checked["guest_proof"]["installed_composefs_digest"],
+                "first_boot_verified": false, "preserved": preserved,
+                "artifacts": plan.out, "_checked_install_proof": checked,
+            }));
         }
 
         let target_boot = Instant::now();
@@ -855,7 +1086,19 @@ impl App {
             .pointer("/image/composefs")
             .and_then(Value::as_str)
             .map(str::to_owned);
-        let (Some(live), Some(booted_image)) = (&installed.composefs, &installed_image) else {
+        #[cfg(windows)]
+        let expected_composefs = checked_install_proof
+            .as_ref()
+            .and_then(|proof| {
+                proof
+                    .pointer("/guest_proof/installed_composefs_digest")
+                    .and_then(Value::as_str)
+            })
+            .or(installed.composefs.as_deref());
+        #[cfg(not(windows))]
+        let expected_composefs = installed.composefs.as_deref();
+        let (Some(live), Some(booted_image)) = (expected_composefs, installed_image.as_deref())
+        else {
             return Err(failed(
                 "first-boot",
                 "the installer or the greeter did not report the composefs image it booted, so the installed image cannot be verified",
@@ -878,7 +1121,7 @@ impl App {
                 plan,
             ));
         }
-        Ok(json!({
+        let report = json!({
             "scenario": "install",
             "layout": plan.layout.name(),
             "encrypt": plan.unlock.name(),
@@ -886,10 +1129,20 @@ impl App {
             "installer_steps": installed.steps,
             "installer_image": live,
             "installed_image": booted_image,
+            "first_boot_verified": true,
             "greeter": greeter,
             "preserved": preserved,
             "artifacts": plan.out,
-        }))
+        });
+        #[cfg(windows)]
+        let report = {
+            let mut report = report;
+            if let Some(checked) = checked_install_proof {
+                report["_checked_install_proof"] = checked;
+            }
+            report
+        };
+        Ok(report)
     }
 
     fn wait_stopped(&mut self, plan: &Plan, limit: Duration) -> bool {
@@ -1056,6 +1309,74 @@ mod tests {
         let mut changed = source;
         changed["final_partuuids"]["root"] = json!(efi);
         assert!(super::check_install_proof(&proof, &changed, Some(&"b".repeat(128))).is_err());
+        let mut extended = payload;
+        extended["booted_composefs_digest"] = json!("b".repeat(128));
+        extended["installed_composefs_digest"] = json!("b".repeat(128));
+        extended["installed_update_origin"] = json!("ostree-unverified-image:docker://tilo:gen1");
+        assert!(
+            super::parse_install_proof(format!("TILO_VM_INSTALL_PROOF_V1={extended}\n").as_bytes())
+                .is_ok()
+        );
+    }
+    #[cfg(windows)]
+    #[test]
+    fn vm_v2_proof_binds_distinct_medium_and_signed_target() {
+        let revision = "a".repeat(40);
+        let target = format!("sha256:{}", "b".repeat(64));
+        let origin = format!("code.sandbox.example/qos/tilo:lenovo-83ed-{revision}");
+        let ids = json!({
+            "efi": "11111111-1111-4111-8111-111111111111",
+            "boot": "22222222-2222-4222-8222-222222222222",
+            "root": "33333333-3333-4333-8333-333333333333",
+        });
+        let disk = "44444444-4444-4444-8444-444444444444";
+        let mut payload = json!({
+            "schema": "tilo.vm-install-image-proof.v2", "architecture": "arm64",
+            "booted_image_digest": format!("sha256:{}", "e".repeat(64)),
+            "installed_image_digest": target,
+            "booted_composefs_digest": "f".repeat(128),
+            "installed_composefs_digest": "c".repeat(128),
+            "composefs_digest": "c".repeat(128),
+            "installed_update_origin": format!("ostree-unverified-image:docker://{origin}"),
+            "selected_target": {
+                "schema": "tilo.installer-offline-target.v1",
+                "target_ref": format!("code.sandbox.example/qos/tilo@{target}"),
+                "target_digest": target, "architecture": "aarch64",
+                "hardware_profile": "lenovo-83ed", "update_origin": origin,
+                "provenance": {"source_revision": revision,
+                    "firmware_manifest_sha256": "d".repeat(64),
+                    "firmware_candidate": format!("code.sandbox.example/qos/tilo-lenovo-83ed-firmware@sha256:{}", "e".repeat(64)),
+                    "invocation_id": "123"},
+                "verifier_key_sha256": "e".repeat(64),
+            },
+            "target_uki_sha256": "d".repeat(64), "disk_guid": disk,
+            "partuuids": ids,
+        });
+        let line = format!("TILO_VM_INSTALL_PROOF_V2={payload}\n");
+        let proof = super::parse_install_proof(line.as_bytes()).expect("valid v2 guest proof");
+        let source = json!({"disk_guid": disk, "final_partuuids": ids});
+        let checked = super::check_install_proof(&proof, &source, Some(&"f".repeat(128)))
+            .expect("matching installer composefs and source GPT");
+        assert_eq!(checked["schema"], "tilo.windows-vm-install-proof-check.v2");
+        assert_eq!(checked["guest_proof"]["installed_image_digest"], target);
+        assert!(super::check_install_proof(&proof, &source, Some(&"c".repeat(128))).is_err());
+        payload["selected_target"]["target_digest"] = json!(format!("sha256:{}", "a".repeat(64)));
+        assert!(
+            super::parse_install_proof(format!("TILO_VM_INSTALL_PROOF_V2={payload}\n").as_bytes())
+                .is_err()
+        );
+        payload["selected_target"]["target_digest"] = json!(target);
+        payload["selected_target"]["hardware_profile"] = json!("generic");
+        payload["selected_target"]["update_origin"] = json!("code.sandbox.example/qos/tilo:gen7");
+        payload["selected_target"]["provenance"]["generation"] = json!(7);
+        payload["selected_target"]["provenance"]["firmware_candidate"] = Value::Null;
+        payload["selected_target"]["provenance"]["firmware_manifest_sha256"] = Value::Null;
+        payload["installed_update_origin"] =
+            json!("ostree-unverified-image:docker://code.sandbox.example/qos/tilo:gen7");
+        assert!(
+            super::parse_install_proof(format!("TILO_VM_INSTALL_PROOF_V2={payload}\n").as_bytes())
+                .is_ok()
+        );
     }
     use super::*;
 
@@ -1064,6 +1385,7 @@ mod tests {
             root: PathBuf::from("/w"),
             medium: PathBuf::from("/w/os/output/installer/qcow2/disk.qcow2"),
             external_target: None,
+            skip_target_boot: false,
             layout,
             unlock: Unlock::Passphrase,
             username: "scenario".into(),
@@ -1280,5 +1602,9 @@ mod tests {
             key == "TILO_INSTALL_TARGET_DISK" && value == &target.display().to_string()
         }));
         assert_eq!(plan.describe()["external_target"], true);
+        plan.skip_target_boot = true;
+        let described = plan.describe();
+        assert_eq!(described["skip_target_boot"], true);
+        assert!(!described["commands"].to_string().contains("boot-target"));
     }
 }

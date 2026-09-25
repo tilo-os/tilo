@@ -244,6 +244,10 @@ pub enum ScenarioCommand {
 }
 
 #[derive(Debug, Args)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "these independent Clap flags are part of the install command interface"
+)]
 pub struct InstallScenarioArgs {
     /// The installer medium (default: os/output/installer/qcow2/disk.qcow2, what os/dev/build-custom-installer.sh writes). Never modified: the VM boots a throwaway overlay.
     #[arg(long)]
@@ -251,6 +255,9 @@ pub struct InstallScenarioArgs {
     /// Existing sparse raw target file for a Windows WHPX guided-alongside cycle. The file is written in place and retained after the run.
     #[arg(long)]
     pub target_disk: Option<PathBuf>,
+    /// Stop after a verified encrypted install into a reviewed Windows raw target. For board-specific images that cannot boot on QEMU virt; requires a separate generic full-cycle proof before physical copy.
+    #[arg(long)]
+    pub skip_target_boot: bool,
     /// Account username for a retained install. Requires --credentials-stdin.
     #[arg(long, requires = "credentials_stdin")]
     pub username: Option<String>,
@@ -928,6 +935,7 @@ mod tests {
             "tpm-pin",
             "--graphics",
             "software",
+            "--skip-target-boot",
         ])
         .unwrap();
         let Some(Command::Scenario(ScenarioCommand::Install(args))) = cli.command else {
@@ -940,6 +948,7 @@ mod tests {
         assert_eq!(args.layout, crate::scenario::Layout::GuidedAlongside);
         assert_eq!(args.encrypt, crate::scenario::Unlock::TpmPin);
         assert_eq!(args.graphics, crate::scenario::Graphics::Software);
+        assert!(args.skip_target_boot);
         assert_eq!(args.install_timeout, 3600);
         let defaults = Cli::try_parse_from(["tilo-vm", "scenario", "install"]).unwrap();
         let Some(Command::Scenario(ScenarioCommand::Install(args))) = defaults.command else {
@@ -947,6 +956,7 @@ mod tests {
         };
         assert_eq!(args.layout, crate::scenario::Layout::Erase);
         assert_eq!(args.encrypt, crate::scenario::Unlock::Passphrase);
+        assert!(!args.skip_target_boot);
         assert!(
             Cli::try_parse_from(["tilo-vm", "scenario", "install", "--layout", "shrink"]).is_err()
         );

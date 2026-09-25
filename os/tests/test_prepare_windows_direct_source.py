@@ -159,6 +159,7 @@ class SourceTemplateTests(unittest.TestCase):
                            "target_uki_sha256": "d" * 64}}
                 ci_info = {"key_sha256": "b" * 64, "source_revision": "c" * 40,
                            "generation": 7, "statement_sha256": "d" * 64,
+                           "invocation_id": "1234",
                            "image_kind": "generic-index", "firmware_candidate": None,
                            "firmware_manifest_sha256": None}
                 with (patch.object(prep, "verified_ci_image", return_value=ci_info),
