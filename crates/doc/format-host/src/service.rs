@@ -4,8 +4,8 @@
 //!
 //! capnp 0.26 generates async server methods on `Rc<Self>` returning an
 //! `impl Future<Output = Result<(), capnp::Error>>`; we route everything to a
-//! `tokio::task::spawn_blocking` so the wasmtime calls (which can block for up
-//! to the 10-s wallclock budget) don't stall the capnp event loop.
+//! `tokio::task::spawn_blocking` so provider calls (which can run until their
+//! fuel budget is spent) don't stall the capnp event loop.
 
 use capnp::Error;
 

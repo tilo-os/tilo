@@ -208,6 +208,19 @@ impl WpFormat {
     }
 }
 
+/// Make the document as just imported the start of its undo history: the first undo takes back
+/// the first edit, not the file.
+///
+/// The import into the fresh document commits its content as changes (see `qdoc::DocMut::bulk`),
+/// and the undo log brackets each action from the heads of the previous boundary, so without a
+/// boundary here the first edit's entry would span the whole import.
+fn start_history_here(state: &mut ui::State) {
+    let mut doc = std::mem::take(&mut state.doc);
+    let _ = qdoc::history::commit_stamped(&mut doc);
+    state.history_mut().rebase(&mut doc);
+    state.doc = doc;
+}
+
 fn invalid_data<E: std::fmt::Display>(e: E) -> std::io::Error {
     std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string())
 }
@@ -233,6 +246,7 @@ pub fn open_document(path: &Path) -> std::io::Result<(ui::State, WordProcessorWi
         };
         format.import(&bytes, &mut dm).map_err(invalid_data)?;
     }
+    start_history_here(&mut state);
     let mut widget = WordProcessorWidget::new();
     widget.set_file(path.to_path_buf(), format);
     widget.remember_open_document(&state.doc);
@@ -337,6 +351,7 @@ pub fn new_from_template(t: Template) -> (ui::State, WordProcessorWidget, WpForm
             eprintln!("word-processor: bundled template {t:?} failed to import: {e}");
         }
     }
+    start_history_here(&mut state);
     // Intentionally do NOT call `widget.set_file(..)`: leaving the path unset
     // keeps the document untitled (the widget falls back to `Untitled.md` on
     // save). The format is returned so callers can wire it up if they wish.
