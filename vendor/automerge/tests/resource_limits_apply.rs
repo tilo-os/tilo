@@ -18,6 +18,157 @@ use automerge::{
     ScalarValue, ROOT,
 };
 use serde_json::{json, Value};
+use std::alloc::{GlobalAlloc, Layout, System};
+use std::cell::{Cell, RefCell};
+
+// ===========================================================================
+// Per-thread allocation meter (the same technique as
+// resource_limits_admission.rs and qos-peer-state's assert_precharged).
+// ===========================================================================
+#[derive(Clone, Copy, Default, Debug)]
+struct Allocations {
+    live: usize,
+    peak: usize,
+    unmatched_free: bool,
+    unreserved_peak: usize,
+    first_unreserved: Option<(usize, usize, usize)>,
+    watched_requests: usize,
+    largest_request: usize,
+}
+
+thread_local! {
+    static METER: Cell<Option<Allocations>> = const { Cell::new(None) };
+    static CHECK_ALLOWANCE: RefCell<Option<(NativeAllowance, usize)>> = const { RefCell::new(None) };
+    static WATCH_ALLOCATION_BYTES: Cell<Option<usize>> = const { Cell::new(None) };
+}
+
+struct MeasuredSystem;
+
+fn allocated(bytes: usize) {
+    let _ = METER.try_with(|meter| {
+        if let Some(mut state) = meter.get() {
+            if WATCH_ALLOCATION_BYTES.try_with(|watch| watch.get() == Some(bytes)).unwrap_or(false) {
+                state.watched_requests += 1;
+            }
+            state.largest_request = state.largest_request.max(bytes);
+            state.live = state.live.saturating_add(bytes);
+            state.peak = state.peak.max(state.live);
+            let _ = CHECK_ALLOWANCE.try_with(|check| {
+                if let Ok(check) = check.try_borrow() {
+                    if let Some((allowance, initial)) = &*check {
+                        let reserved = initial.saturating_sub(allowance.available_bytes());
+                        if state.live > reserved && state.first_unreserved.is_none() {
+                            state.first_unreserved = Some((bytes, state.live, reserved));
+                        }
+                        state.unreserved_peak = state.unreserved_peak.max(state.live.saturating_sub(reserved));
+                    }
+                }
+            });
+            meter.set(Some(state));
+        }
+    });
+}
+
+fn released(bytes: usize) {
+    let _ = METER.try_with(|meter| {
+        if let Some(mut state) = meter.get() {
+            if let Some(remaining) = state.live.checked_sub(bytes) {
+                state.live = remaining;
+            } else {
+                state.live = 0;
+                state.unmatched_free = true;
+            }
+            meter.set(Some(state));
+        }
+    });
+}
+
+// SAFETY: every operation delegates unchanged to System; the thread-local
+// meter holds only Copy scalars (and a RefCell read) and never allocates.
+unsafe impl GlobalAlloc for MeasuredSystem {
+    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+        // SAFETY: forwards the caller's valid layout.
+        let pointer = unsafe { System.alloc(layout) };
+        if !pointer.is_null() {
+            allocated(layout.size());
+        }
+        pointer
+    }
+    unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
+        // SAFETY: forwards the caller's valid layout.
+        let pointer = unsafe { System.alloc_zeroed(layout) };
+        if !pointer.is_null() {
+            allocated(layout.size());
+        }
+        pointer
+    }
+    unsafe fn dealloc(&self, pointer: *mut u8, layout: Layout) {
+        released(layout.size());
+        // SAFETY: forwards the original allocation and layout.
+        unsafe { System.dealloc(pointer, layout) };
+    }
+    unsafe fn realloc(&self, pointer: *mut u8, layout: Layout, size: usize) -> *mut u8 {
+        // SAFETY: forwards the original allocation, layout and size.
+        let grown = unsafe { System.realloc(pointer, layout, size) };
+        if !grown.is_null() {
+            // Conservative old/new overlap for a moving reallocation.
+            allocated(size);
+            released(layout.size());
+        }
+        grown
+    }
+}
+
+#[global_allocator]
+static ALLOCATOR: MeasuredSystem = MeasuredSystem;
+
+fn measure<T>(operation: impl FnOnce() -> T) -> (T, Allocations) {
+    struct Reset;
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            METER.with(|meter| meter.set(None));
+        }
+    }
+    METER.with(|meter| {
+        assert!(meter.get().is_none(), "nested measure");
+        meter.set(Some(Allocations::default()));
+    });
+    let _reset = Reset;
+    let value = operation();
+    let allocations = METER.with(|meter| meter.replace(None).unwrap());
+    (value, allocations)
+}
+
+/// Measures `operation` and asserts every allocation it made was already
+/// reserved on `allowance` when it happened.
+fn measure_under<T>(allowance: &NativeAllowance, operation: impl FnOnce() -> T) -> (T, Allocations) {
+    struct Reset;
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            CHECK_ALLOWANCE.with(|check| *check.borrow_mut() = None);
+        }
+    }
+    // The clone is made before metering starts so it is not itself measured.
+    let entry = (allowance.clone(), allowance.available_bytes());
+    CHECK_ALLOWANCE.with(|check| {
+        assert!(check.borrow().is_none());
+        *check.borrow_mut() = Some(entry);
+    });
+    let _reset = Reset;
+    let result = measure(operation);
+    assert_eq!(
+        result.1.unreserved_peak, 0,
+        "every allocation must already be reserved (bytes, live, reserved): {:?}",
+        result.1.first_unreserved
+    );
+    result
+}
+
+fn assert_precharged<T>(allowance: &NativeAllowance, operation: impl FnOnce() -> T) -> T {
+    measure_under(allowance, operation).0
+}
+
+
 
 const MIB: usize = 1024 * 1024;
 
@@ -467,7 +618,7 @@ fn counter_hidden_at_representable_bound_applies() {
     assert!(
         values
             .iter()
-            .any(|(value, _)| value.to_scalar() == Some(&ScalarValue::counter(i64::MAX))),
+            .any(|(value, _)| value.as_scalar() == Some(&ScalarValue::counter(i64::MAX))),
         "{values:?}"
     );
 }
@@ -506,12 +657,14 @@ fn bounded_apply(source: &mut AutoCommit, incoming: &[u8]) -> Result<AutoCommit,
         let original_heads = original.base_heads_bounded(&turn)?.as_slice().to_vec();
         let candidate = original.clone_bounded(&mut registry, &turn)?;
         let input = turn.normalize_input(incoming, &NativeLimits::default())?;
-        let result = candidate.apply_checked_bounded(
-            input,
-            NativeDependencyPolicy::RequireComplete,
-            &mut registry,
-            &turn,
-        );
+        let result = assert_precharged(&allowance, || {
+            candidate.apply_checked_bounded(
+                input,
+                NativeDependencyPolicy::RequireComplete,
+                &mut registry,
+                &turn,
+            )
+        });
         assert_eq!(original.base_heads_bounded(&turn)?.as_slice(), original_heads);
         match result? {
             NativeApplyResult::Applied { document, .. } => {
@@ -551,9 +704,10 @@ fn bounded_candidate_policies() {
         let mut run = |input: &[u8], policy| {
             let candidate = original.clone_bounded(&mut registry, &turn).unwrap();
             let input = turn.normalize_input(input, &NativeLimits::default()).unwrap();
-            candidate
-                .apply_checked_bounded(input, policy, &mut registry, &turn)
-                .unwrap()
+            assert_precharged(&allowance, || {
+                candidate.apply_checked_bounded(input, policy, &mut registry, &turn)
+            })
+            .unwrap()
         };
         assert!(matches!(
             run(&second, NativeDependencyPolicy::RequireComplete),
@@ -684,6 +838,16 @@ fn fragment_growth_is_reserved_before_mutation() {
     assert_eq!(snapshot(&mut doc), before);
 }
 
+/// Fuzz rounds, scaled by `AM012_FUZZ` (default 1) for longer local runs.
+fn rounds(n: usize) -> usize {
+    n * std::env::var("AM012_FUZZ").ok().and_then(|v| v.parse().ok()).unwrap_or(1)
+}
+
+/// Seed, overridable with `AM012_SEED` for longer local runs.
+fn seed(default: u64) -> u64 {
+    std::env::var("AM012_SEED").ok().and_then(|v| v.parse().ok()).unwrap_or(default)
+}
+
 /// Deterministic xorshift for the fuzz loops (no proptest dependency where
 /// this suite runs).
 struct Rng(u64);
@@ -809,10 +973,10 @@ fn mutate(rng: &mut Rng, value: &mut Value, ids: &[String]) {
 
 #[test]
 fn fuzz_mutated_changes_accept_cleanly_or_refuse_unchanged() {
-    let mut rng = Rng(0x9e37_79b9_7f4a_7c15);
+    let mut rng = Rng(seed(0x9e37_79b9_7f4a_7c15));
     let mut accepted = 0;
     let mut refusals = 0;
-    for _ in 0..60 {
+    for _ in 0..rounds(60) {
         let mut doc = random_doc(&mut rng);
         let ids: Vec<String> = {
             let changes = doc.get_changes(&[]);
@@ -885,7 +1049,7 @@ fn rechecksum(bytes: &mut [u8]) {
 
 #[test]
 fn fuzz_mutated_change_bytes_never_panic() {
-    let mut rng = Rng(0x2545_f491_4f6c_dd1d);
+    let mut rng = Rng(seed(0x2545_f491_4f6c_dd1d));
     let mut doc = random_doc(&mut rng);
     let heads = doc.get_heads();
     let mut peer = doc.fork().with_actor(actor(91));
@@ -897,7 +1061,7 @@ fn fuzz_mutated_change_bytes_never_panic() {
     let original = peer.get_changes(&heads).pop().unwrap().raw_bytes().to_vec();
     let before = snapshot(&mut doc);
     let mut accepted = 0;
-    for _ in 0..3000 {
+    for _ in 0..rounds(3000) {
         let mut bytes = original.clone();
         for _ in 0..(1 + rng.below(3)) {
             let at = 9 + rng.below(bytes.len() - 9);
@@ -932,3 +1096,265 @@ fn fuzz_mutated_change_bytes_never_panic() {
     eprintln!("byte fuzz: {accepted} accepted");
 }
 
+
+#[test]
+fn bounded_apply_is_precharged_for_rich_history_and_refusals() {
+    let mut doc = base();
+    let heads = doc.get_heads();
+    let mut peer = doc.fork().with_actor(actor(5));
+    let text = peer.get(&ROOT, "text").unwrap().unwrap().1;
+    let list = peer.get(&ROOT, "list").unwrap().unwrap().1;
+    for i in 0..200 {
+        peer.splice_text(&text, i % 5, 0, "t").unwrap();
+        if i % 7 == 0 {
+            peer.insert(&list, 0, i as i64).unwrap();
+            peer.increment(&ROOT, "count", 1).unwrap();
+        }
+        if i % 50 == 0 {
+            peer.mark(
+                &text,
+                automerge::marks::Mark::new("bold".into(), true, 0, 3),
+                automerge::marks::ExpandMark::After,
+            )
+            .unwrap();
+        }
+        peer.commit();
+    }
+    let bytes = changes_bytes(&peer.get_changes(&heads));
+    let mut restored = bounded_apply(&mut doc, &bytes).expect("rich history applies");
+    assert_eq!(restored.get_heads(), peer.get_heads());
+    // Refusals are precharged too.
+    let a = a1();
+    let change = crafted(&mut doc, |v| v["ops"][0]["pred"] = json!([format!("998@{a}")]));
+    assert!(matches!(
+        bounded_apply(&mut doc, change.raw_bytes()),
+        Err(NativeMutationError::InvalidOperation)
+    ));
+    let (mut dup, x, y) = forked_sequences();
+    dup.apply_changes([x]).unwrap();
+    assert!(matches!(
+        bounded_apply(&mut dup, y.raw_bytes()),
+        Err(NativeMutationError::DuplicateSequence)
+    ));
+}
+
+#[test]
+fn typed_history_applies_within_one_allowance() {
+    // 4_000 single-character splices committed every third keystroke.
+    let mut writer = AutoCommit::new().with_actor(actor(6));
+    let text = writer.put_object(&ROOT, "text", ObjType::Text).unwrap();
+    writer.commit();
+    let mut target = writer.fork().with_actor(actor(1));
+    let heads = writer.get_heads();
+    for i in 0..4_000usize {
+        let len = writer.length(&text);
+        writer.splice_text(&text, (i * 7) % (len + 1), 0, "k").unwrap();
+        if i % 3 == 2 {
+            writer.commit();
+        }
+    }
+    writer.commit();
+    let changes = writer.get_changes(&heads);
+    let bytes = changes_bytes(&changes);
+    let started = std::time::Instant::now();
+    let limits = NativeLimits {
+        max_chunks: 1 << 16,
+        max_heads: 1 << 16,
+        max_actors: 1 << 16,
+        ..NativeLimits::default()
+    };
+    let credit = allowance();
+    assert_eq!(
+        target
+            .apply_incoming_checked(&bytes, &limits, &credit, NativeDependencyPolicy::RequireComplete)
+            .unwrap(),
+        NativeIncomingOutcome::Applied { changed: true }
+    );
+    eprintln!("typed history: {} changes in {:?}", changes.len(), started.elapsed());
+    assert_eq!(target.text(&text).unwrap(), writer.text(&text).unwrap());
+    // One more change onto the now-large document is cheap.
+    let heads = writer.get_heads();
+    writer.splice_text(&text, 0, 0, "!").unwrap();
+    writer.commit();
+    let started = std::time::Instant::now();
+    let one = changes_bytes(&writer.get_changes(&heads));
+    incoming(&mut target, &one, NativeDependencyPolicy::RequireComplete).unwrap();
+    eprintln!("one keystroke onto it: {:?}", started.elapsed());
+}
+
+#[test]
+fn fuzz_mutated_chains_accept_cleanly_or_refuse_unchanged() {
+    // Two dependent incoming changes (the second references objects and
+    // elements created by the first); either one is mutated.
+    let mut rng = Rng(seed(0xd1b5_4a32_d192_ed03));
+    let (mut accepted, mut refusals) = (0, 0);
+    for _ in 0..rounds(40) {
+        let mut doc = random_doc(&mut rng);
+        let heads = doc.get_heads();
+        let mut peer = doc.fork().with_actor(actor(92));
+        let map = peer.put_object(&ROOT, "fresh", ObjType::Map).unwrap();
+        let list = peer.put_object(&map, "items", ObjType::List).unwrap();
+        peer.insert(&list, 0, "a").unwrap();
+        let text = peer.put_object(&map, "note", ObjType::Text).unwrap();
+        peer.splice_text(&text, 0, 0, "xyz").unwrap();
+        peer.commit();
+        peer.put(&map, "k", 1).unwrap();
+        peer.insert(&list, 1, "b").unwrap();
+        peer.delete(&list, 0).unwrap();
+        peer.splice_text(&text, 1, 1, "Q").unwrap();
+        peer.mark(
+            &text,
+            automerge::marks::Mark::new("em".into(), true, 0, 2),
+            automerge::marks::ExpandMark::Both,
+        )
+        .unwrap();
+        peer.commit();
+        let chain = peer.get_changes(&heads);
+        assert_eq!(chain.len(), 2);
+        let mut ids = vec!["_root".to_string(), "_head".to_string()];
+        for change in peer.get_changes(&[]) {
+            let v = expanded(&change);
+            let start = v["startOp"].as_u64().unwrap();
+            for k in 0..change.len() as u64 {
+                ids.push(format!("{}@{}", start + k, v["actor"].as_str().unwrap()));
+            }
+        }
+        for _ in 0..25 {
+            let which = rng.below(2);
+            let mut values: Vec<Value> = chain.iter().map(expanded).collect();
+            for _ in 0..(1 + rng.below(3)) {
+                mutate(&mut rng, &mut values[which], &ids);
+            }
+            let mut bytes = Vec::new();
+            let mut ok = true;
+            let mut previous: Option<ChangeHash> = None;
+            for (index, mut value) in values.into_iter().enumerate() {
+                if index == 1 && which == 0 {
+                    // Keep the chain linked to the mutated first change.
+                    if let Some(hash) = previous {
+                        value["deps"] = json!([hash.to_string()]);
+                    }
+                }
+                let Ok(expanded) = serde_json::from_value::<ExpandedChange>(value) else {
+                    ok = false;
+                    break;
+                };
+                let Ok(change) = catch_unwind(AssertUnwindSafe(|| Change::from(expanded))) else {
+                    ok = false;
+                    break;
+                };
+                previous = Some(change.hash());
+                bytes.extend_from_slice(change.raw_bytes());
+            }
+            if !ok {
+                continue;
+            }
+            let mut target = doc.clone();
+            let before = snapshot(&mut target);
+            let result = catch_unwind(AssertUnwindSafe(|| {
+                incoming(&mut target, &bytes, NativeDependencyPolicy::RetainOrphans)
+            }))
+            .expect("checked admission never panics");
+            match result {
+                Ok(_) => {
+                    accepted += 1;
+                    let saved = target.save();
+                    AutoCommit::load(&saved).expect("accepted history reloads");
+                }
+                Err(_) => {
+                    refusals += 1;
+                    assert_eq!(snapshot(&mut target), before);
+                }
+            }
+        }
+    }
+    eprintln!("chain fuzz: {accepted} accepted, {refusals} refused");
+    assert!(accepted > 0 && refusals > 0);
+}
+
+#[test]
+fn marks_apply_and_inverted_mark_is_refused() {
+    use automerge::marks::{ExpandMark, Mark};
+    let mut doc = base();
+    let text = doc.get(&ROOT, "text").unwrap().unwrap().1;
+    // Concurrent edits so marks span resident and concurrent elements.
+    let mut other = doc.fork().with_actor(actor(30));
+    other.splice_text(&text, 2, 0, "OTHER").unwrap();
+    other.commit();
+    doc.merge(&mut other).unwrap();
+    let heads = doc.get_heads();
+    let mut peer = doc.fork().with_actor(actor(31));
+    peer.splice_text(&text, 0, 0, "abc").unwrap();
+    let len = peer.length(&text);
+    for (start, end, expand) in [
+        (0, 1, ExpandMark::Before),
+        (0, len, ExpandMark::Both),
+        (2, 7, ExpandMark::After),
+        (len - 1, len, ExpandMark::None),
+        (3, 4, ExpandMark::Both),
+    ] {
+        peer.mark(&text, Mark::new("m".into(), true, start, end), expand).unwrap();
+    }
+    peer.commit();
+    let changes = peer.get_changes(&heads);
+    let bytes = changes_bytes(&changes);
+    let mut target = doc.clone();
+    assert_eq!(
+        incoming(&mut target, &bytes, NativeDependencyPolicy::RequireComplete).unwrap(),
+        NativeIncomingOutcome::Applied { changed: true }
+    );
+    AutoCommit::load(&target.save()).expect("marks reload");
+    assert_eq!(target.marks(&text).unwrap(), peer.marks(&text).unwrap());
+
+    // Re-anchor the end of a mark to the element before its begin.
+    let mut plain = doc.fork().with_actor(actor(32));
+    plain.mark(&text, Mark::new("m".into(), true, 3, 5), ExpandMark::None).unwrap();
+    plain.commit();
+    let mut value = expanded(&plain.get_changes(&heads).pop().unwrap());
+    let ops = value["ops"].as_array_mut().unwrap();
+    let end = ops.iter_mut().find(|op| op["action"] == json!("markEnd")).unwrap();
+    end["elemId"] = json!("_head");
+    let inverted = encode(value);
+    let mut target = doc.clone();
+    semantic_refusal(&mut target, &inverted, "mark end before begin");
+}
+
+#[test]
+#[ignore = "0.12 ChangeCollector still panics on forged document chunks (collector.rs asserts); \
+            enable once the reconstruct hardening lands"]
+fn fuzz_mutated_document_and_bundle_bytes_never_panic() {
+    let mut rng = Rng(seed(0x7a3c_91e5_0b2d_4f68));
+    let mut source = random_doc(&mut rng);
+    let document = source.save_nocompress();
+    let mut target = AutoCommit::new();
+    let before = snapshot(&mut target);
+    let mut accepted = 0;
+    for _ in 0..rounds(1500) {
+        let mut bytes = document.clone();
+        for _ in 0..(1 + rng.below(2)) {
+            let at = 9 + rng.below(bytes.len() - 9);
+            bytes[at] = match rng.below(4) {
+                0 => rng.next() as u8,
+                1 => bytes[at].wrapping_add(1),
+                2 => bytes[at].wrapping_sub(1),
+                _ => bytes[at] ^ 0x80,
+            };
+        }
+        rechecksum(&mut bytes);
+        let mut doc = target.clone();
+        let result = catch_unwind(AssertUnwindSafe(|| {
+            incoming(&mut doc, &bytes, NativeDependencyPolicy::RetainOrphans)
+        }));
+        let result = match result {
+            Ok(result) => result,
+            Err(_) => panic!("checked admission panicked on {}", hex::encode(&bytes)),
+        };
+        if result.is_err() {
+            assert_eq!(snapshot(&mut doc), before);
+        } else {
+            accepted += 1;
+            AutoCommit::load(&doc.save()).expect("accepted history reloads");
+        }
+    }
+    eprintln!("document fuzz: {accepted} accepted");
+}

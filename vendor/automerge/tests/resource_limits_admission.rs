@@ -59,6 +59,25 @@ thread_local! {
     static CHECK_ALLOWANCE: RefCell<Option<(NativeAllowance, usize)>> = const { RefCell::new(None) };
     static WATCH_ALLOCATION_BYTES: Cell<Option<usize>> = const { Cell::new(None) };
     static LABEL: Cell<&'static str> = const { Cell::new("") };
+    // Diagnostics (AM012_TRACE=1): backtrace of the first unreserved allocation.
+    static IN_TRACE: Cell<bool> = const { Cell::new(false) };
+    static FIRST_TRACE: RefCell<Option<String>> = const { RefCell::new(None) };
+}
+static TRACE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+static TRACE_INIT: std::sync::Once = std::sync::Once::new();
+
+fn capture_first_unreserved() {
+    if !TRACE.load(std::sync::atomic::Ordering::Relaxed) || IN_TRACE.with(Cell::get) {
+        return;
+    }
+    IN_TRACE.with(|t| t.set(true));
+    let trace = std::backtrace::Backtrace::force_capture().to_string();
+    let _ = FIRST_TRACE.try_with(|f| {
+        if let Ok(mut f) = f.try_borrow_mut() {
+            f.get_or_insert(trace);
+        }
+    });
+    IN_TRACE.with(|t| t.set(false));
 }
 
 /// Like `assert_precharged`, naming the operation in the failure message.
@@ -86,6 +105,7 @@ fn allocated(bytes: usize) {
                         let reserved = initial.saturating_sub(allowance.available_bytes());
                         if state.live > reserved && state.first_unreserved.is_none() {
                             state.first_unreserved = Some((bytes, state.live, reserved));
+                            capture_first_unreserved();
                         }
                         state.unreserved_peak = state.unreserved_peak.max(state.live.saturating_sub(reserved));
                     }
@@ -166,15 +186,17 @@ fn measure<T>(operation: impl FnOnce() -> T) -> (T, Allocations) {
     (value, allocations)
 }
 
-/// Measures `operation` and asserts every allocation it made was already
-/// reserved on `allowance` when it happened.
-fn measure_under<T>(allowance: &NativeAllowance, operation: impl FnOnce() -> T) -> (T, Allocations) {
+/// Measures `operation` while tracking, at each allocation, how far live
+/// bytes exceed what is reserved on `allowance`. Does not assert.
+fn measure_checked<T>(allowance: &NativeAllowance, operation: impl FnOnce() -> T) -> (T, Allocations) {
     struct Reset;
     impl Drop for Reset {
         fn drop(&mut self) {
             CHECK_ALLOWANCE.with(|check| *check.borrow_mut() = None);
         }
     }
+    TRACE_INIT.call_once(|| TRACE.store(std::env::var_os("AM012_TRACE").is_some(), std::sync::atomic::Ordering::Relaxed));
+    FIRST_TRACE.with(|f| *f.borrow_mut() = None);
     // The clone is made before metering starts so it is not itself measured.
     let entry = (allowance.clone(), allowance.available_bytes());
     CHECK_ALLOWANCE.with(|check| {
@@ -183,6 +205,18 @@ fn measure_under<T>(allowance: &NativeAllowance, operation: impl FnOnce() -> T) 
     });
     let _reset = Reset;
     let result = measure(operation);
+    if result.1.unreserved_peak != 0 {
+        if let Some(trace) = FIRST_TRACE.with(|f| f.borrow_mut().take()) {
+            eprintln!("first unreserved allocation:\n{trace}");
+        }
+    }
+    result
+}
+
+/// Measures `operation` and asserts every allocation it made was already
+/// reserved on `allowance` when it happened.
+fn measure_under<T>(allowance: &NativeAllowance, operation: impl FnOnce() -> T) -> (T, Allocations) {
+    let result = measure_checked(allowance, operation);
     assert_eq!(
         result.1.unreserved_peak, 0,
         "{}: every allocation must already be reserved (bytes, live, reserved): {:?}",
@@ -1654,38 +1688,60 @@ mod budget {
         v
     }
 
-    /// apply_incoming_checked: for every allowance size the result is either
-    /// success or WorkBytes with the document unchanged, every allocation is
-    /// pre-reserved, and success is monotone in the allowance.
+    /// apply_incoming_checked (0.8 semantics): everything up to and including
+    /// validation is precharged (normalize, preflight, parse output and
+    /// transients, validation scratch, super-linear graph terms); the linear
+    /// batch apply is deliberately not. So at every allowance the result is
+    /// either WorkBytes with zero unreserved allocation and the document
+    /// unchanged, or success; success is monotone in the allowance; and the
+    /// allowance's retained bytes return to baseline either way.
     #[test]
     fn incoming_allowance_sweep() {
         let mut src = medium_doc();
         let input = src.save();
         let mut first_ok = None;
+        let mut unexpected = Vec::new();
         for size in sizes() {
             let Ok(credit) = NativeAllowance::new(size) else { continue };
+            let baseline = credit.retained_bytes();
             let mut doc = seeded_doc();
             let before = snapshot(&mut doc);
-            let result = assert_precharged(&credit, || {
+            let (result, allocations) = measure_checked(&credit, || {
                 catch_unwind(AssertUnwindSafe(|| {
                     doc.apply_incoming_checked(&input, &NativeLimits::default(), &credit, NativeDependencyPolicy::RequireComplete)
                 }))
-            })
-            .unwrap_or_else(|_| panic!("panicked at allowance {size}"));
+            });
+            let result = result.unwrap_or_else(|_| panic!("panicked at allowance {size}"));
             match result {
                 Ok(NativeIncomingOutcome::Applied { changed: true }) => {
                     first_ok.get_or_insert(size);
-                    assert_eq!(doc.get_heads(), src.get_heads());
+                    let mut expected = src.get_heads();
+                    expected.extend(before.1.iter().copied());
+                    expected.sort();
+                    assert_eq!(doc.get_heads(), expected);
                 }
                 Err(NativeMutationError::Resource(NativeResourceError::WorkBytes)) => {
-                    assert!(first_ok.is_none(), "refused at {size} after succeeding at {first_ok:?}");
-                    assert!(snapshot(&mut doc) == before, "refusal at {size} mutated the document");
+                    if first_ok.is_some() {
+                        unexpected.push(format!("allowance {size}: refused after succeeding at {first_ok:?}"));
+                    }
+                    if allocations.unreserved_peak != 0 {
+                        unexpected.push(format!(
+                            "allowance {size}: refusal allocated unreserved (bytes, live, reserved) {:?}; rerun with AM012_TRACE=1",
+                            allocations.first_unreserved
+                        ));
+                    }
+                    if snapshot(&mut doc) != before {
+                        unexpected.push(format!("allowance {size}: refusal mutated the document"));
+                    }
                 }
-                other => panic!("allowance {size}: unexpected {other:?}"),
+                other => unexpected.push(format!("allowance {size}: {other:?}")),
             }
-            assert_eq!(credit.available_bytes() + credit.retained_bytes(), size, "leaked reservation at {size}");
+            if credit.retained_bytes() != baseline {
+                unexpected.push(format!("allowance {size}: retained {} after the call, baseline {baseline}", credit.retained_bytes()));
+            }
         }
         println!("incoming: first success at allowance {first_ok:?} for {} input bytes", input.len());
+        assert!(unexpected.is_empty(), "{}", unexpected.join("\n"));
         assert!(first_ok.is_some(), "never succeeded");
     }
 
@@ -1703,18 +1759,18 @@ mod budget {
             let outcome = catch_unwind(AssertUnwindSafe(|| -> Result<(), NativeResourceError> {
                 let mut registry = NativeAllocationSet::new(credit.clone())?;
                 let turn = registry.work_turn(credit.clone())?;
-                let normalized = assert_precharged(&credit, || turn.normalize_input(&input, &NativeLimits::default()))?;
-                let owned = assert_precharged(&credit, || normalized.reconstruct(&mut registry, &turn))?;
-                let heads = assert_precharged(&credit, || owned.base_heads_bounded(&turn))?;
+                let normalized = precharged_as(Box::leak(format!("normalize_input at allowance {size}").into_boxed_str()), &credit, || turn.normalize_input(&input, &NativeLimits::default()))?;
+                let owned = precharged_as(Box::leak(format!("reconstruct at allowance {size}").into_boxed_str()), &credit, || normalized.reconstruct(&mut registry, &turn))?;
+                let heads = precharged_as(Box::leak(format!("base_heads_bounded at allowance {size}").into_boxed_str()), &credit, || owned.base_heads_bounded(&turn))?;
                 assert_eq!(heads.as_slice(), expected_heads.as_slice());
-                let _missing = assert_precharged(&credit, || owned.has_missing_dependencies());
-                let saved = assert_precharged(&credit, || owned.save_bounded(&turn, SaveOptions::default()))?;
+                let _missing = precharged_as(Box::leak(format!("has_missing_dependencies at allowance {size}").into_boxed_str()), &credit, || owned.has_missing_dependencies());
+                let saved = precharged_as(Box::leak(format!("save_bounded at allowance {size}").into_boxed_str()), &credit, || owned.save_bounded(&turn, SaveOptions::default()))?;
                 assert_eq!(AutoCommit::load(saved.bytes()).unwrap().get_heads(), expected_heads);
                 drop(saved);
-                let history = assert_precharged(&credit, || owned.changes_since_bounded(&[], &turn))?;
+                let history = precharged_as(Box::leak(format!("changes_since_bounded at allowance {size}").into_boxed_str()), &credit, || owned.changes_since_bounded(&[], &turn))?;
                 assert_eq!(history.len(), src.get_changes(&[]).len());
                 drop(history);
-                let clone = assert_precharged(&credit, || owned.clone_bounded(&mut registry, &turn))?;
+                let clone = precharged_as(Box::leak(format!("clone_bounded at allowance {size}").into_boxed_str()), &credit, || owned.clone_bounded(&mut registry, &turn))?;
                 drop(clone);
                 Ok(())
             }))
@@ -1750,10 +1806,11 @@ mod budget {
             let owned = setup.normalize_input(&resident, &NativeLimits::default()).unwrap().reconstruct(&mut registry, &setup).unwrap();
             let before = owned.save_bounded(&setup, SaveOptions::default()).unwrap().bytes().to_vec();
             let candidate = owned.clone_bounded(&mut registry, &setup).unwrap();
-            let normalized = setup.normalize_input(&input, &NativeLimits::default()).unwrap();
             let Ok(credit) = NativeAllowance::new(size) else { continue };
             let Ok(turn) = registry.work_turn(credit.clone()) else { continue };
             let result = catch_unwind(AssertUnwindSafe(|| {
+                // Parse, validation and the batch peak are all charged to this turn.
+                let normalized = assert_precharged(&credit, || turn.normalize_input(&input, &NativeLimits::default()))?;
                 assert_precharged(&credit, || {
                     candidate.apply_checked_bounded(normalized, NativeDependencyPolicy::RequireComplete, &mut registry, &turn)
                 })
@@ -2095,6 +2152,25 @@ mod budget {
         assert!(matches!(result, Err(NativeMutationError::Resource(NativeResourceError::Unaccounted))), "{result:?}");
     }
 
+    /// Input normalized under one turn's ledger cannot be applied under
+    /// another turn (its credit would be laundered across ledgers).
+    #[test]
+    fn apply_with_input_normalized_under_another_turn_is_refused() {
+        let resident = seeded_doc().save();
+        let credit = allowance();
+        let mut registry = NativeAllocationSet::new(credit.clone()).unwrap();
+        let first = registry.work_turn(credit.clone()).unwrap();
+        let owned = first.normalize_input(&resident, &NativeLimits::default()).unwrap().reconstruct(&mut registry, &first).unwrap();
+        let input = simple_change(0x9a, "k").raw_bytes().to_vec();
+        let normalized = first.normalize_input(&input, &NativeLimits::default()).unwrap();
+        let second = registry.work_turn(allowance()).unwrap();
+        let result = catch_unwind(AssertUnwindSafe(|| {
+            owned.apply_checked_bounded(normalized, NativeDependencyPolicy::RetainOrphans, &mut registry, &second)
+        }))
+        .expect("apply_checked_bounded panicked");
+        assert!(matches!(result, Err(NativeMutationError::Resource(_))), "{result:?}");
+    }
+
     /// Reads are step-charged and pre-reserved.
     #[test]
     fn reads_are_step_bounded_and_precharged() {
@@ -2153,7 +2229,10 @@ mod shapes {
     /// level at a time with bounded steps.
     #[test]
     fn deep_nesting_is_admitted_without_recursion_blowup() {
-        let depth = if slow() { 10_000 } else { 2_000 };
+        let depth = std::env::var("AM012_DEPTH")
+            .ok()
+            .and_then(|d| d.parse().ok())
+            .unwrap_or(if slow() { 10_000 } else { 2_000 });
         let mut src = AutoCommit::new().with_actor(ActorId::from(vec![0xa1; 16]));
         let mut obj = ROOT;
         for _ in 0..depth {
@@ -2169,7 +2248,8 @@ mod shapes {
                 let mut doc = AutoCommit::new();
                 let result = doc.apply_incoming_checked(&change, &NativeLimits::default(), &allowance(), NativeDependencyPolicy::RequireComplete);
                 assert_eq!(result.unwrap(), NativeIncomingOutcome::Applied { changed: true });
-                let owned = reconstruct(&change, &NativeLimits::default()).unwrap();
+                let owned = reconstruct(&change, &NativeLimits::default())
+                    .unwrap_or_else(|e| panic!("reconstruct of {depth} nested maps ({} bytes) under 64 MiB: {e:?}", change.len()));
                 let credit = allowance();
                 let mut registry = NativeAllocationSet::new(credit.clone()).unwrap();
                 let _ = &mut registry;

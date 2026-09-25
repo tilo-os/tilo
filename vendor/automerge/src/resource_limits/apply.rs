@@ -97,14 +97,7 @@ impl NativeOwned<AutoCommit> {
             return Err(NativeResourceError::Unaccounted.into());
         }
         let mut charge = Charge::new(allowance);
-        preflight::validate(input.bytes(), &mut charge)?;
-        let shape = IncomingDims::from_shape(input.shape());
-        // The retained parsed changes, plus the load-shaped expansion of any
-        // document or bundle chunk, are reserved before parsing.
-        let mut parse_bytes = dims::incoming_changes_bound(&shape)?;
-        if preflight::has_expanding_chunks(input.bytes())? {
-            parse_bytes = budget::sum(parse_bytes, dims::load_peak_bound(&shape)?)?;
-        }
+        let parse_bytes = parse_reservation(&input, &mut charge)?;
         charge.grow(parse_bytes)?;
         let changes = parse::changes(input.bytes(), input.shape().changes)?;
         drop(input);
@@ -158,11 +151,11 @@ impl AutoCommit {
     /// the complete part and queues the rest, like ordinary `apply_changes`.
     /// The grown document is not adopted into allocation custody.
     ///
-    /// Unlike [`NativeOwned::apply_checked_bounded`], parsing and the linear
-    /// part of batch work are bounded by the inspected `limits` rather than
-    /// reserved worst-case layouts. Normalization, validation scratch and the
+    /// Unlike [`NativeOwned::apply_checked_bounded`], the linear part of
+    /// batch work is bounded by the inspected `limits` rather than a reserved
+    /// worst-case layout. Normalization, parsing, validation scratch and the
     /// super-linear change-graph growth of the batch are charged to
-    /// `allowance` and released before returning.
+    /// `allowance` before they allocate, and released before returning.
     pub fn apply_incoming_checked(
         &mut self,
         input: &[u8],
@@ -177,7 +170,8 @@ impl AutoCommit {
         let turn = registry.work_turn(allowance.clone())?;
         let input = turn.normalize_input(input, limits)?;
         let mut charge = Charge::new(allowance);
-        preflight::validate(input.bytes(), &mut charge)?;
+        let parse_bytes = parse_reservation(&input, &mut charge)?;
+        charge.grow(parse_bytes)?;
         let changes = parse::changes(input.bytes(), input.shape().changes)?;
         drop(input);
         let validated = crate::op_set2::change::batch::native_validation::validate_incoming(
@@ -201,6 +195,26 @@ impl AutoCommit {
             changed: validated.integrated != 0,
         })
     }
+}
+
+/// Run the borrowed preflight over normalized storage and return what its
+/// parse must reserve first: the retained parsed changes, one change chunk's
+/// parse transient, and the load-shaped expansion of any document or bundle
+/// chunk.
+fn parse_reservation(
+    input: &NormalizedStorage<'_>,
+    charge: &mut Charge<'_>,
+) -> Result<usize, NativeResourceError> {
+    let summary = preflight::validate(input.bytes(), charge)?;
+    let shape = IncomingDims::from_shape(input.shape());
+    let mut bytes = budget::sum(
+        dims::incoming_changes_bound(&shape)?,
+        summary.change_parse_bytes()?,
+    )?;
+    if summary.expanding {
+        bytes = budget::sum(bytes, dims::load_peak_bound(&shape)?)?;
+    }
+    Ok(bytes)
 }
 
 /// Super-linear change-graph growth of applying `changes` (fragment nodes

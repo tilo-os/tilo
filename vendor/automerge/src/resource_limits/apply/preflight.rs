@@ -278,15 +278,39 @@ impl ChangeDims {
     }
 }
 
+/// What parsing checked normalized storage needs beyond its retained output.
+#[derive(Debug, Default, Clone, Copy)]
+pub(crate) struct StorageSummary {
+    /// Largest chunk, header included.
+    pub(crate) max_chunk: usize,
+    /// Largest transient of decoding one operation of a change chunk.
+    pub(crate) max_op_decode: usize,
+    /// Whether a document or bundle chunk (native expansion) is present.
+    pub(crate) expanding: bool,
+}
+impl StorageSummary {
+    /// Transient bytes of parsing one change chunk: the owned copy of its
+    /// bytes, its dependency, actor and column descriptor Vecs (all bounded
+    /// by the chunk size), and one decoded operation at a time.
+    pub(crate) fn change_parse_bytes(&self) -> std::result::Result<usize, Error> {
+        use super::budget::product;
+        sum(sum(product(self.max_chunk, 4)?, self.max_op_decode)?, 4096)
+    }
+}
+
 /// Validate every chunk of normalized storage before any native decoder runs.
 /// The only allocation is a charged operation-id Vec per document/bundle
 /// chunk, released before the next chunk. Also used by checked load (L3).
-pub(crate) fn validate(bytes: &[u8], charge: &mut Charge<'_>) -> Result {
+pub(crate) fn validate(bytes: &[u8], charge: &mut Charge<'_>) -> Result<StorageSummary> {
+    let mut summary = StorageSummary::default();
     let mut stream = Reader(bytes);
     while !stream.0.is_empty() {
+        let before = stream.0.len();
         let (kind, mut body) = chunk(&mut stream)?;
+        summary.max_chunk = summary.max_chunk.max(before - stream.0.len());
         match kind {
             0 => {
+                summary.expanding = true;
                 let actor_count = actors(&mut body)?;
                 hashes(&mut body)?;
                 let mut meta = Columns::metadata(&mut body)?;
@@ -297,9 +321,11 @@ pub(crate) fn validate(bytes: &[u8], charge: &mut Charge<'_>) -> Result {
                 operations(&ops, kind, Some(&mut *charge))?;
             }
             1 => {
-                change_body(body)?;
+                let dims = change_body(body)?;
+                summary.max_op_decode = summary.max_op_decode.max(dims.op_decode_bytes()?);
             }
             3 => {
+                summary.expanding = true;
                 let external = hashes(&mut body)?;
                 let actor_count = actors(&mut body)?;
                 let mut meta = Columns::metadata(&mut body)?;
@@ -313,20 +339,7 @@ pub(crate) fn validate(bytes: &[u8], charge: &mut Charge<'_>) -> Result {
             _ => return Err(Error::Invalid),
         }
     }
-    Ok(())
-}
-
-/// Whether normalized storage holds a document or bundle chunk, whose native
-/// expansion needs the load-shaped reservation.
-pub(crate) fn has_expanding_chunks(bytes: &[u8]) -> Result<bool> {
-    let mut stream = Reader(bytes);
-    while !stream.0.is_empty() {
-        let (kind, _) = chunk(&mut stream)?;
-        if kind != 1 {
-            return Ok(true);
-        }
-    }
-    Ok(false)
+    Ok(summary)
 }
 
 /// Dimensions of one complete change chunk (for example `Change::raw_bytes`).
@@ -522,7 +535,13 @@ fn operations(cols: &Columns<'_>, kind: u8, mut charge: Option<&mut Charge<'_>>)
     }
     // Document and bundle operation ids must be unique.
     ids.sort_unstable();
-    if ids.windows(2).any(|pair| pair[0] == pair[1]) {
+    let unique = !ids.windows(2).any(|pair| pair[0] == pair[1]);
+    let charged = ids.capacity();
+    drop(ids);
+    if let (Some(charge), true) = (charge, kind != 1) {
+        charge.shrink(super::budget::vec::<(u32, u32)>(charged).unwrap_or(0));
+    }
+    if !unique {
         return Err(Error::Invalid);
     }
     Ok(dims)
