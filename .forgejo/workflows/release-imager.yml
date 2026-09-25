@@ -302,6 +302,124 @@ jobs:
             dist/tilo-installer/tilo-installer-linux-${{ matrix.arch }}.img.zst.sha256
             dist/tilo-installer/catalog-${{ matrix.arch }}.json
           if-no-files-found: error
+      # Internal (USB-free) installer bundle, exported from the same live disk
+      # that just passed the installation cycles. Opt-in through the protected
+      # repository variable IMAGER_INTERNAL_BUNDLE: unset does nothing, `export`
+      # tests and exports on every run, `publish` additionally publishes tagged
+      # releases as a Forgejo package and adds the catalog entries.
+      - name: Test the internal installer bundle exporter
+        if: vars.IMAGER_INTERNAL_BUNDLE == 'export' || vars.IMAGER_INTERNAL_BUNDLE == 'publish'
+        run: |
+          set -euo pipefail
+          if command -v apt-get >/dev/null; then
+            sudo -n env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+              btrfs-progs dosfstools fdisk qemu-utils util-linux
+          else
+            sudo -n dnf install -y btrfs-progs dosfstools qemu-img util-linux
+          fi
+          python3 -m unittest discover -s os/tests -p 'internal_bundle_test.py'
+          bash os/tests/internal_bundle_catalog.sh
+          sudo -n bash os/tests/internal_bundle_export.sh
+      - name: Export the internal installer bundle
+        if: vars.IMAGER_INTERNAL_BUNDLE == 'export' || vars.IMAGER_INTERNAL_BUNDLE == 'publish'
+        env:
+          TILO_INTERNAL_BUNDLE_OWNER: ${{ vars.IMAGER_INTERNAL_BUNDLE_OWNER || 'qos' }}
+        run: |
+          set -euo pipefail
+          if [[ "$GITHUB_REF" == refs/tags/imager-v* ]]; then
+            release_id="$GITHUB_REF_NAME"
+          else
+            release_id="rehearsal-${GITHUB_SHA}"
+          fi
+          rm -rf dist/tilo-internal
+          os/dev/export-internal-bundle.sh os/output/installer/qcow2/disk.qcow2 \
+            "${{ matrix.arch }}" "$release_id" dist/tilo-internal
+          ls -l dist/tilo-internal/bundle
+      - name: Publish the internal installer bundle
+        if: startsWith(github.ref, 'refs/tags/imager-v') && vars.IMAGER_INTERNAL_BUNDLE == 'publish'
+        env:
+          CREDENTIAL_BROKER: ${{ vars.IMAGER_INTERNAL_BUNDLE_CREDENTIAL_BROKER }}
+          TILO_INTERNAL_BUNDLE_OWNER: ${{ vars.IMAGER_INTERNAL_BUNDLE_OWNER || 'qos' }}
+        run: apps/imager/packaging/publish-internal-bundle.sh dist/tilo-internal/bundle
+      - uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
+        if: startsWith(github.ref, 'refs/tags/imager-v') && vars.IMAGER_INTERNAL_BUNDLE == 'publish'
+        with:
+          # Only the manifest and its catalog entry: the component images are
+          # already published and must not reach the GitHub release.
+          name: tilo-internal-catalog-${{ matrix.arch }}
+          path: |
+            dist/tilo-internal/internal-catalog-${{ matrix.arch }}.json
+            dist/tilo-internal/bundle/tilo-internal-installer-${{ matrix.arch }}.json
+          if-no-files-found: error
+
+  # USB-free installation VM round trip on the x86_64 medium this run just
+  # built and boot-tested (design spec §9). Opt-in with the same repository
+  # variable as the bundle export. The same os/dev/ci-internal-install-cycle.sh
+  # backs the manual internal-install-cycle.yml workflow.
+  internal-install-cycle:
+    timeout-minutes: 480
+    needs: medium
+    # Needs the dedicated KVM release host, which installer-only rehearsals
+    # deliberately do not use.
+    if: github.event.inputs.installer_only != 'true' && (vars.IMAGER_INTERNAL_BUNDLE == 'export' || vars.IMAGER_INTERNAL_BUNDLE == 'publish')
+    runs-on: imager-linux-x86_64
+    env:
+      FEDORA_URL: ${{ vars.TILO_INTERNAL_CYCLE_FEDORA_URL }}
+      FEDORA_SHA256: ${{ vars.TILO_INTERNAL_CYCLE_FEDORA_SHA256 }}
+      SCENARIO: all
+      TILO_INTERNAL_CYCLE_RELEASE_TAG: imager-v0.0.${{ github.run_number }}
+      TILO_INTERNAL_CYCLE_RUN_ID: release-${{ github.run_id }}-${{ github.run_attempt }}
+      TILO_INTERNAL_CYCLE_STORAGE_ROOT: /var/tmp/tilo-internal-cycle-release-${{ github.run_id }}-${{ github.run_attempt }}
+      TILO_INTERNAL_BUNDLE_OWNER: ${{ vars.IMAGER_INTERNAL_BUNDLE_OWNER || 'qos' }}
+      TILO_ACCEL: kvm
+      TILO_DISTROBOX: ""
+      TILO_MEM: "8192"
+      TILO_INTERNAL_CYCLE_MAX_INSTALL_SECONDS: "3600"
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Require a native x86_64 KVM host
+        run: ./os/dev/assert-native-arch.sh x86_64
+      - name: Install internal-cycle VM dependencies
+        run: |
+          set -euo pipefail
+          sudo -n true
+          if command -v apt-get >/dev/null; then
+            export DEBIAN_FRONTEND=noninteractive
+            sudo -n apt-get update
+            sudo -n apt-get install -y --no-install-recommends \
+              btrfs-progs capnproto curl dosfstools e2fsprogs fdisk imagemagick jq mtools \
+              openssh-client ovmf qemu-system-gui qemu-system-x86 qemu-utils socat \
+              tesseract-ocr util-linux zstd
+          elif command -v dnf >/dev/null; then
+            sudo -n dnf install -y btrfs-progs capnproto curl dosfstools e2fsprogs edk2-ovmf ImageMagick \
+              jq mtools openssh-clients qemu-device-display-virtio-vga-gl qemu-img \
+              qemu-system-x86-core qemu-ui-egl-headless qemu-ui-opengl socat tesseract util-linux zstd
+          else
+            printf 'unsupported runner OS for the internal install cycle\n' >&2
+            exit 1
+          fi
+          test -c /dev/kvm && test -r /dev/kvm && test -w /dev/kvm
+      - uses: actions/download-artifact@9bc31d5ccc31df68ecc42ccf4149144866c47d8a # v3
+        with:
+          name: tilo-installer-medium-x86_64
+          path: dist/internal-cycle-medium
+      - name: Run the VM round trip on the tested medium
+        run: |
+          set -euo pipefail
+          (cd dist/internal-cycle-medium && sha256sum --check --strict tilo-installer-linux-x86_64.img.zst.sha256)
+          zstd -d --quiet -o "$TILO_INTERNAL_CYCLE_STORAGE_ROOT.installer.raw" \
+            dist/internal-cycle-medium/tilo-installer-linux-x86_64.img.zst
+          ./os/dev/ci-internal-install-cycle.sh "$TILO_INTERNAL_CYCLE_STORAGE_ROOT.installer.raw" \
+            dist/internal-install-cycle
+      - name: Remove internal-cycle VM storage
+        if: always()
+        run: sudo -n rm -rf "$TILO_INTERNAL_CYCLE_STORAGE_ROOT" "$TILO_INTERNAL_CYCLE_STORAGE_ROOT.installer.raw"
+      - uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
+        if: always()
+        with:
+          name: tilo-internal-install-cycle-x86_64
+          path: dist/internal-install-cycle
+          if-no-files-found: error
 
   catalog:
     timeout-minutes: 60
@@ -316,6 +434,9 @@ jobs:
         with:
           path: release-assets
       - name: Assemble the release catalog
+        env:
+          TILO_INTERNAL_BUNDLE_OWNER: ${{ vars.IMAGER_INTERNAL_BUNDLE_OWNER || 'qos' }}
+          TILO_REQUIRE_INTERNAL_BUNDLE: ${{ vars.IMAGER_INTERNAL_BUNDLE == 'publish' && '1' || '0' }}
         run: |
           if [[ "$GITHUB_REF" == refs/tags/imager-v* ]]; then
             apps/imager/packaging/build-release-catalog.sh release-assets

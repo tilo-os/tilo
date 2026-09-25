@@ -129,6 +129,25 @@ class CatalogSelectionTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "signature-required"):
             catalog.media(data, self.root)
 
+    @patch.dict(os.environ, {"TILO_RELEASE_REPOSITORY": "tilo-os/releases", "TILO_RELEASE_SERVER": "https://github.com"})
+    def test_internal_bundle_entries_are_checked_but_are_not_media(self):
+        data = self.media_fixture()
+        entry = {"purpose": "tilo-internal-installer", "layout": "internal-bundle-v2",
+                 "release_id": "imager-v1.2.3", "arch": "x86_64",
+                 "manifest_url": "https://code.podesta.ai/api/packages/qos/generic/tilo-internal-installer/"
+                                 "imager-v1.2.3/tilo-internal-installer-x86_64.json",
+                 "manifest_sha256": "e" * 64, "manifest_size": 4096}
+        data["releases"].append(entry)
+        self.assertEqual(len(catalog.media(data, self.root)), 3)
+        for field, bad in (("layout", "internal-bundle-v1"), ("release_id", "imager-v9.9.9"),
+                           ("manifest_url", entry["manifest_url"].replace("code.podesta.ai", "github.com")),
+                           ("manifest_sha256", "E" * 64), ("manifest_size", 65537), ("hardware_profile", "generic")):
+            with self.subTest(field=field):
+                changed = copy.deepcopy(data)
+                changed["releases"][-1][field] = bad
+                with self.assertRaises(ValueError):
+                    catalog.media(changed, self.root)
+
     def test_explicit_public_release_origin_configuration_is_respected(self):
         data = self.media_fixture()
         for entry in data["releases"]:

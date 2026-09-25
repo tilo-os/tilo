@@ -119,6 +119,10 @@ pub enum Operation {
     },
     Reboot,
     PowerOff,
+    /// Leave a staged (USB-free) installer and restart into the operating
+    /// system it was staged from. Firmware already consumed the one-shot
+    /// `BootNext`, so a plain restart lands there.
+    ReturnToHost,
 }
 
 impl Operation {
@@ -149,6 +153,7 @@ impl Operation {
             Self::ConfirmRecoverySaved { .. } => "confirm-recovery-saved",
             Self::Reboot => "reboot",
             Self::PowerOff => "power-off",
+            Self::ReturnToHost => "return-to-host",
         }
     }
 

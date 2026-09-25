@@ -1,5 +1,6 @@
 use crate::release::InternalRelease;
 use crate::setup::internal_cache::coordinator::{Phase as WorkerPhase, Status, Token, Worker};
+use crate::setup::internal_install_flow::{StagingLink, staging_consumer};
 use crate::setup::model::{Capabilities, Experience};
 use serde::{Deserialize, Serialize};
 #[cfg(test)]
@@ -116,6 +117,7 @@ enum PendingCommand {
     Cancel,
     Release,
     Discard,
+    Consume,
 }
 
 pub(super) struct InternalDownloadFlow {
@@ -129,6 +131,11 @@ pub(super) struct InternalDownloadFlow {
     presentation: DownloadPresentation,
     pending: Option<PendingCommand>,
     revision: u64,
+    /// Consumer for verified downloads: the staging helper handoff.
+    staging: Option<StagingLink>,
+    /// The current operation was handed to the staging consumer, so a failure
+    /// is an installation failure over retained verified data.
+    consumed: bool,
     #[cfg(test)]
     catalogs: VecDeque<Vec<InternalRelease>>,
     #[cfg(test)]
@@ -137,7 +144,7 @@ pub(super) struct InternalDownloadFlow {
 
 impl InternalDownloadFlow {
     #[cfg(not(test))]
-    pub(super) fn new(capabilities: Capabilities) -> Result<Self, String> {
+    pub(super) fn new(capabilities: Capabilities, staging: StagingLink) -> Result<Self, String> {
         let preference = SelectionPreference::live()?;
         let saved = preference.load()?;
         let mut flow = Self {
@@ -151,6 +158,8 @@ impl InternalDownloadFlow {
             presentation: DownloadPresentation::default(),
             pending: None,
             revision: 0,
+            staging: Some(staging),
+            consumed: false,
             #[cfg(test)]
             catalogs: VecDeque::new(),
             #[cfg(test)]
@@ -175,6 +184,8 @@ impl InternalDownloadFlow {
             presentation: DownloadPresentation::default(),
             pending: None,
             revision: 0,
+            staging: None,
+            consumed: false,
             catalogs: VecDeque::from([Vec::new()]),
             host_architecture: std::env::consts::ARCH.into(),
         };
@@ -202,6 +213,8 @@ impl InternalDownloadFlow {
             presentation: DownloadPresentation::default(),
             pending: None,
             revision: 0,
+            staging: None,
+            consumed: false,
             catalogs: catalogs.into(),
             host_architecture: host_architecture.into(),
         };
@@ -291,16 +304,81 @@ impl InternalDownloadFlow {
 
     fn ensure_worker(&mut self) -> Result<&Worker, String> {
         if self.worker.is_none() {
-            self.worker = Some(Worker::spawn(|_, _, _, _| {
-                Err(
-                    "Protected staging is not available; verified download data was retained."
-                        .into(),
-                )
-            })?);
+            self.worker = Some(match self.staging.clone() {
+                Some(link) => Worker::spawn(staging_consumer(link))?,
+                None => Worker::spawn(|_, _, _, _| {
+                    Err(
+                        "Protected staging is not available; verified download data was retained."
+                            .into(),
+                    )
+                })?,
+            });
         }
         self.worker
             .as_ref()
             .ok_or("Download worker is unavailable.".into())
+    }
+
+    /// Follow a capability change (the host probe finished).
+    pub(super) fn set_capabilities(&mut self, capabilities: Capabilities) {
+        self.capabilities = capabilities;
+        self.revision = self.revision.wrapping_add(1);
+    }
+
+    /// Show a verified (or already consumed) download for `--shots`; no
+    /// worker or data exists.
+    pub(super) fn pose_for_shot(&mut self, consumed: bool) {
+        self.presentation = presentation_from_facts(
+            if consumed {
+                WorkerPhase::Consumed
+            } else {
+                WorkerPhase::Ready
+            },
+            [0, 0],
+            None,
+            [true, true],
+            false,
+            false,
+            None,
+        );
+        self.revision = self.revision.wrapping_add(1);
+    }
+
+    /// A verified download is held and can be handed to the staging helper.
+    pub(super) fn is_ready(&self) -> bool {
+        self.pending.is_none() && self.presentation.phase == Some(WorkerPhase::Ready)
+    }
+
+    /// Hand the held verified download to the staging consumer.
+    pub(super) fn consume(&mut self) -> Result<(), String> {
+        if !self.is_ready() {
+            return Err(crate::setup::strings::t(
+                "imager-setup-internal-error-download",
+            ));
+        }
+        let (worker, token) = self
+            .worker
+            .as_ref()
+            .zip(self.token.as_ref())
+            .ok_or("The verified download is no longer held.")?;
+        worker.consume(token)?;
+        self.consumed = true;
+        self.set_pending(
+            PendingCommand::Consume,
+            &crate::setup::strings::t("imager-setup-internal-download-consuming"),
+        );
+        Ok(())
+    }
+
+    /// The installation failure the worker reported for a consumed download.
+    pub(super) fn consume_failure(&self) -> Option<&str> {
+        (self.consumed
+            && self.pending.is_none()
+            && matches!(
+                self.presentation.phase,
+                Some(WorkerPhase::Failed | WorkerPhase::Cancelled)
+            ))
+        .then_some(self.presentation.details.as_str())
     }
 
     pub(super) fn offered_selection(&self) -> Option<SelectionKey> {
@@ -328,6 +406,7 @@ impl InternalDownloadFlow {
                             | WorkerPhase::Failed
                             | WorkerPhase::Released
                             | WorkerPhase::Discarded
+                            | WorkerPhase::Consumed
                     )
                 ))
     }
@@ -383,6 +462,7 @@ impl InternalDownloadFlow {
         let token = self.ensure_worker()?.start(release)?;
         self.saved = Some(key);
         self.token = Some(token);
+        self.consumed = false;
         self.pending = None;
         self.sync_current_status();
         Ok(())
@@ -399,6 +479,7 @@ impl InternalDownloadFlow {
         let release = self.resolve(&key)?;
         let token = self.ensure_worker()?.start(release)?;
         self.token = Some(token);
+        self.consumed = false;
         self.sync_current_status();
         Ok(())
     }
@@ -514,6 +595,9 @@ impl InternalDownloadFlow {
                 PendingCommand::Cancel => status.phase == WorkerPhase::Cancelled,
                 PendingCommand::Release => status.phase == WorkerPhase::Released,
                 PendingCommand::Discard => status.phase == WorkerPhase::Discarded,
+                PendingCommand::Consume => {
+                    matches!(status.phase, WorkerPhase::Consuming | WorkerPhase::Consumed)
+                }
             };
             let failed = status.phase == WorkerPhase::Failed;
             if !expected && !failed {
@@ -521,7 +605,12 @@ impl InternalDownloadFlow {
             }
             self.pending = None;
         }
-        let next = presentation_from_status(&status);
+        let mut next = presentation_from_status(&status);
+        if self.consumed && status.phase == WorkerPhase::Failed {
+            // The download itself stayed verified; the installer helper stopped.
+            next.title = crate::setup::strings::t("imager-setup-internal-download-kept");
+            next.details = status.error.unwrap_or_default();
+        }
         if next == self.presentation {
             return false;
         }
@@ -578,6 +667,7 @@ fn presentation_from_facts(
     uncertain: bool,
     error: Option<&str>,
 ) -> DownloadPresentation {
+    let consumption: (String, String);
     let (title, summary) = match phase {
         WorkerPhase::Authenticating => (
             "Downloading Tilo",
@@ -612,10 +702,20 @@ fn presentation_from_facts(
             "Unfinished download data discarded",
             "Owned unfinished data was discarded for this selection. Completed components or other data may remain.",
         ),
-        WorkerPhase::Consuming | WorkerPhase::Consumed => (
-            "Download unavailable",
-            "Protected staging is not available in this setup flow.",
-        ),
+        WorkerPhase::Consuming => {
+            consumption = (
+                crate::setup::strings::t("imager-setup-internal-download-consuming"),
+                crate::setup::strings::t("imager-setup-internal-download-consuming-detail"),
+            );
+            (consumption.0.as_str(), consumption.1.as_str())
+        }
+        WorkerPhase::Consumed => {
+            consumption = (
+                crate::setup::strings::t("imager-setup-internal-download-consumed"),
+                crate::setup::strings::t("imager-setup-internal-download-consumed-detail"),
+            );
+            (consumption.0.as_str(), consumption.1.as_str())
+        }
     };
     let mut details = summary.to_string();
     if let Some(progress) = progress {
