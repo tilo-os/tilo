@@ -1,6 +1,6 @@
 //! Capability-safe live audio routing between certified personal devices.
 //!
-//! PipeWire node identities never leave this process. The source shell resolves
+//! `PipeWire` node identities never leave this process. The source shell resolves
 //! a short-lived picker token to a freshly enumerated local stream, the target
 //! shell asks for explicit consent, and approval mints a random capability
 //! bound to the exact `(source, target, session)` tuple. PCM is deliberately a
@@ -54,6 +54,10 @@ fn selection_focus_valid(
     }
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "compares each claimed frame field against its expected value side by side"
+)]
 fn frame_matches(
     source: &DeviceId,
     target: &DeviceId,
@@ -178,6 +182,10 @@ fn append_bounded_pcm(pending: &mut Vec<u8>, bytes: &[u8]) {
     }
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "one reconciliation applies policy, presence and focus teardown to every route kind"
+)]
 fn reconcile_lifecycle(
     state: &mut RemoteAudioState,
     enabled: bool,
@@ -446,6 +454,13 @@ pub fn snapshot(focus: Option<&PhysicalGamepadBinding>) -> RemoteAudioView {
 }
 
 /// Offer one freshly resolved local source to one exact certified device.
+///
+/// # Errors
+///
+/// Returns a message when this device has no certified identity, `target` is
+/// not an online enrolled audio output, too many routes are active, the
+/// source picker entry expired, the service is unavailable, or the offer
+/// cannot be sent.
 pub fn request(
     network: &ShellNetwork,
     source_token: u64,
@@ -522,6 +537,12 @@ pub fn request(
 
 /// Resolve one target-local consent row. Approval starts the local sink before
 /// minting and sending the capability, so false readiness is impossible.
+///
+/// # Errors
+///
+/// Returns a message when the service is unavailable, the request expired,
+/// the local sink cannot start, too many routes are active, or the decision
+/// cannot be sent.
 pub fn authorize(
     network: &ShellNetwork,
     session_id: [u8; 16],
@@ -582,6 +603,11 @@ pub fn authorize(
 
 /// Stop either direction locally and notify the exact peer when an issued
 /// capability exists.
+///
+/// # Errors
+///
+/// Returns a message when the service is unavailable, the route is no longer
+/// active, or the peer cannot be notified.
 pub fn stop(network: &ShellNetwork, session_id: [u8; 16]) -> Result<(), String> {
     let stopped = {
         let mut state = state()
@@ -618,6 +644,10 @@ pub fn stop(network: &ShellNetwork, session_id: [u8; 16]) -> Result<(), String> 
 
 /// Consume one already-authenticated fabric envelope. Returns true when it is
 /// a remote-audio action, including rejected/stale actions.
+#[expect(
+    clippy::too_many_lines,
+    reason = "one exhaustive handler validates each remote-audio action beside its state change"
+)]
 pub fn handle_action(network: &ShellNetwork, envelope: &PersonalFabricActionEnvelope) -> bool {
     match &envelope.action {
         PersonalFabricAction::RemoteAudioOffer {
@@ -803,12 +833,11 @@ pub fn pump(network: &ShellNetwork, enabled: bool, focus: Option<&PhysicalGamepa
         let Some(capture) = route.capture.as_mut() else {
             continue;
         };
-        match capture.drain() {
-            Ok(bytes) => append_bounded_pcm(&mut route.pending_pcm, &bytes),
-            Err(_) => {
-                terminate_capture_failure(&mut guard, session_id, &mut egress);
-                continue;
-            }
+        if let Ok(bytes) = capture.drain() {
+            append_bounded_pcm(&mut route.pending_pcm, &bytes);
+        } else {
+            terminate_capture_failure(&mut guard, session_id, &mut egress);
+            continue;
         }
         for _ in 0..SEND_BUDGET {
             if route.pending_pcm.len() < MAX_REMOTE_AUDIO_FRAME_BYTES {
@@ -987,7 +1016,7 @@ impl PcmSink {
             return Err(format!("remote audio sink ended ({status})"));
         }
         match self.sender.as_ref().map(|sender| sender.try_send(bytes)) {
-            Some(Ok(())) | Some(Err(TrySendError::Full(_))) => Ok(()),
+            Some(Ok(()) | Err(TrySendError::Full(_))) => Ok(()),
             Some(Err(TrySendError::Disconnected(_))) | None => {
                 Err("remote audio sink disconnected".into())
             }
