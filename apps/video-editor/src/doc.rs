@@ -1724,6 +1724,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::float_cmp,
+        reason = "a round trip through the document stores the same f64 bits it was given"
+    )]
     fn speed_survives_the_document_in_both_directions() {
         let (mut p, cid) = one_clip();
         p.clip_mut(cid).unwrap().speed = Speed::new(2.5, true);
@@ -1734,6 +1738,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::float_cmp,
+        reason = "a round trip through the document stores the same f64 bits it was given"
+    )]
     fn keyframe_curves_survive_the_document_with_their_interpolation() {
         let (mut p, cid) = one_clip();
         {
@@ -1765,6 +1773,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::float_cmp,
+        reason = "a round trip through the document stores the same f64 bits it was given"
+    )]
     fn markers_survive_on_both_the_project_and_the_clip() {
         let (mut p, cid) = one_clip();
         p.add_marker(4.0, "act two", 3);
@@ -1844,6 +1856,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::float_cmp,
+        reason = "a round trip through the document stores the same f64 bits it was given"
+    )]
     fn a_document_written_before_any_of_this_still_loads_unchanged() {
         // The compatibility contract: every new key is absent in an older
         // document, and every default is the behaviour that document had.

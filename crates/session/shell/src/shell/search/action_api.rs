@@ -1075,8 +1075,7 @@ mod tests {
             .select(&ResourceRef::new("async-json", "wait-for-admission"))
             .expect("async action is addressable")
             .invoke_json(&mut doc, &root, &chrome, &serde_json::Map::new())
-            .err()
-            .expect("rejected admission must be returned");
+            .expect_err("rejected admission must be returned");
         assert_eq!(begins.get(), 1);
         assert!(matches!(error, ActionError::Refused(message) if message.contains("authority")));
     }

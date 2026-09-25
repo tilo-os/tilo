@@ -26,7 +26,7 @@
 
 use std::fmt::Write as _;
 
-use qdoc::codecs::xml_escape::{escape_attr, escape_text};
+use qdoc_codecs::xml_escape::{escape_attr, escape_text};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{ElementState, KeyEvent, WindowEvent};

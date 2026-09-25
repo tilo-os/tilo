@@ -163,6 +163,11 @@ pub enum Command {
 /// Top-level response envelope: an `ok` payload (per-command shape) or a structured `err`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[allow(
+    clippy::large_enum_variant,
+    reason = "one response is built and serialized per control command, so its size never matters; \
+              whether the lint fires depends on serde_json's feature set in the build"
+)]
 pub enum Response {
     /// `list_targets` response, sorted by key for deterministic output (`HashMap` order would otherwise leak into test assertions).
     Targets(Vec<TargetEntry>),

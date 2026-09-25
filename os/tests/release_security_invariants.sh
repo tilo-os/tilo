@@ -48,8 +48,9 @@ grep -Fq 'Independently rebuild the release candidate' "$workflow" \
   && grep -Fq 'independent OS builds differ' "$workflow" \
   && grep -Fq 'final sealed OS images differ' "$workflow" \
   && grep -Fq 'os/dev/reseal-image.sh' "$workflow" \
-  && grep -Fq -- '--source-date-epoch "$SOURCE_DATE_EPOCH"' "$repo/os/dev/reseal-image.sh" \
-  && grep -Fq -- '--rewrite-timestamp' "$repo/os/dev/reseal-image.sh" \
+  && grep -Fq 'mapfile -t reproducible < <(podman_epoch_args "$SOURCE_DATE_EPOCH" "${podman_args[@]}")' "$repo/os/dev/reseal-image.sh" \
+  && grep -Fq -- "printf '%s\\n' --source-date-epoch \"\$epoch\" --rewrite-timestamp" "$repo/os/dev/_common.sh" \
+  && grep -Fq -- "printf '%s\\n' --timestamp \"\$epoch\"" "$repo/os/dev/_common.sh" \
   && ok 'release compares uncached base and final sealed OS rebuilds' \
   || bad 'reproducibility is claimed without a release-blocking comparison'
 

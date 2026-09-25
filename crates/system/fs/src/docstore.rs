@@ -271,7 +271,7 @@ mod tests {
     /// Import real `.docx` bytes as v0, edit as v1, then checkout + diff — proves reconstruction from content-addressed history.
     #[tokio::test]
     async fn commits_versions_as_change_history_and_diffs() {
-        let reg = qdoc::builtin_registry();
+        let reg = qdoc_codecs::builtin_registry();
         let docx = super::super::tests::sample_docx();
 
         let mut doc = qdoc::Document::new();
@@ -356,7 +356,7 @@ mod tests {
     /// A version can be exported back to a valid `.docx` that carries the edit.
     #[tokio::test]
     async fn checked_out_version_exports_back_to_docx() {
-        let reg = qdoc::builtin_registry();
+        let reg = qdoc_codecs::builtin_registry();
         let docx = super::super::tests::sample_docx();
         let mut doc = qdoc::Document::new();
         reg.provider_for_ext("docx")
@@ -474,7 +474,7 @@ mod tests {
     /// Two peers co-edit the same file, merge, and converge; committing reuses the seed history (common prefix dedups) on both sides.
     #[tokio::test]
     async fn two_replicas_of_a_file_coedit_and_converge_incrementally() {
-        let reg = qdoc::builtin_registry();
+        let reg = qdoc_codecs::builtin_registry();
         let docx = super::super::tests::sample_docx();
         let mut base = qdoc::Document::new();
         reg.provider_for_ext("docx")
