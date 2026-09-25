@@ -1358,7 +1358,7 @@ impl App {
         Self::with_parts(Some(wake_scope), state, root_widget, inputs())
     }
 
-    #[cfg(any(test, all(feature = "native", feature = "test-support")))]
+    #[cfg(test)]
     pub(crate) fn from_scoped_parts_with_controlled_inputs(
         wake_scope: crate::wake::WakeScope,
         state: State,

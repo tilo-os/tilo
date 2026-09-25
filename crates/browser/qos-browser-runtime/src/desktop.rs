@@ -15,6 +15,7 @@ pub(crate) fn installed_applications() -> [(&'static str, &'static ApplicationDe
     ]
     .map(|definition| (definition.app_id, definition))
 }
+#[cfg(any(target_arch = "wasm32", test))]
 pub(crate) fn definitions() -> [&'static ApplicationDefinition; 4] {
     installed_applications().map(|(_, definition)| definition)
 }

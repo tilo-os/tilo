@@ -1436,15 +1436,26 @@ fn pointer_focus_keeps_native_card_in_place_but_keyboard_focus_reveals_it() {
     host.group_row_mut_for_tests(strip)
         .unwrap()
         .tick_snap_at(std::time::Instant::now() + std::time::Duration::from_secs(1));
-    assert_eq!(chrome.borrow().tree().active_group_for(strip), Some(ids[1]));
+    assert_eq!(
+        chrome.borrow().tree().desktop.active_group_for(strip),
+        Some(ids[1])
+    );
     assert_eq!(
         host.group_row_mut_for_tests(strip).unwrap().scroll_x(),
         before
     );
     assert!(host.group_at_for_tests(strip, 1).unwrap().focused());
-    chrome.borrow().tree_mut().set_active_group(strip, ids[0]);
+    chrome
+        .borrow()
+        .tree_mut()
+        .desktop
+        .set_active_group(strip, ids[0]);
     host.tick_scroll_active_into_view_for_tests();
-    chrome.borrow().tree_mut().set_active_group(strip, ids[1]);
+    chrome
+        .borrow()
+        .tree_mut()
+        .desktop
+        .set_active_group(strip, ids[1]);
     host.tick_scroll_active_into_view_for_tests();
     host.group_row_mut_for_tests(strip)
         .unwrap()

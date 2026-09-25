@@ -230,6 +230,7 @@ impl Compositor {
             .open(shell::shell::SHELL_RECORDS_PACKAGE, FIXTURE_RECORD_SCOPE)
             .expect("open the fixture's explicit Shell record namespace");
         for tab in tree
+            .desktop
             .workspaces
             .iter()
             .flat_map(|workspace| &workspace.strips)

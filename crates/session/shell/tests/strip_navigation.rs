@@ -139,6 +139,7 @@ impl Harness {
             let chrome = chrome.borrow();
             let rendered = chrome.tree();
             let tabs = rendered
+                .desktop
                 .workspaces
                 .iter()
                 .flat_map(|workspace| &workspace.strips)

@@ -644,7 +644,10 @@ async fn cloud_worker_setup_failure_retains_original_record_and_captured_view() 
     report.view_retry = None;
     workers.setup_error(ui::launch::LaunchError::ComponentSetup {
         source: Box::new(ui::launch::LaunchError::Operation("mount failed".into())),
-        record: RecordCheckout::new(record, word_processor::definition().record_kind.clone()),
+        record: Box::new(RecordCheckout::new(
+            record,
+            word_processor::definition().record_kind.clone(),
+        )),
         recovery: ui::launch::LaunchRecovery::new(Some(records), vec![report]),
     });
     assert!(!workers.recovery.is_empty());

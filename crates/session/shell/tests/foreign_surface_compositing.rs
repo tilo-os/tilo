@@ -208,6 +208,7 @@ fn create_fixture_tab_records(fb: &FrameBuilder) {
         let chrome = fb.chrome();
         let rendered = chrome.tree();
         let tabs = rendered
+            .desktop
             .workspaces
             .iter()
             .flat_map(|workspace| &workspace.strips)
