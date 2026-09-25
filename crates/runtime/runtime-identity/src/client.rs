@@ -466,6 +466,27 @@ mod tests {
         );
     }
 
+    /// The identity service's bytes: a little-endian `u32` length, then
+    /// postcard. The shell's broker and every packaged app must agree.
+    #[test]
+    fn wire_bytes_are_pinned() {
+        let mut output = Cursor::new(Vec::new());
+        write_frame(
+            &mut output,
+            &wire::Request::Sign {
+                action: "a".into(),
+                message: vec![1, 2],
+            },
+        )
+        .unwrap();
+        assert_eq!(output.into_inner(), [6, 0, 0, 0, 1, 1, b'a', 2, 1, 2]);
+        let mut input = Cursor::new(vec![4, 0, 0, 0, 2, 2, b'n', b'o']);
+        assert!(matches!(
+            read_frame::<wire::Response>(&mut input).unwrap(),
+            wire::Response::Denied(reason) if reason == "no"
+        ));
+    }
+
     #[test]
     fn oversized_frame_is_rejected_before_reading_its_body() {
         let len = u32::try_from(MAX_IDENTITY_FRAME_BYTES + 1).expect("length");

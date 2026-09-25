@@ -453,6 +453,31 @@ mod tests {
     use ed25519_dalek::{Signature, Verifier, VerifyingKey};
     use std::os::fd::IntoRawFd;
 
+    /// The identity service's bytes: the launcher's handshake is a
+    /// little-endian `u32` length then JSON; every later frame is a
+    /// little-endian `u32` length then postcard.
+    #[test]
+    fn identity_service_wire_bytes_are_pinned() {
+        let (mut app, mut service) = UnixStream::pair().expect("pair");
+        app.write_all(b"\x21\0\0\0{\"workspace_id\":\"w\",\"app_id\":\"a\"}")
+            .expect("handshake");
+        let handshake = read_frame::<Handshake>(&mut service).expect("handshake");
+        assert_eq!(
+            (handshake.workspace_id.as_str(), handshake.app_id.as_str()),
+            ("w", "a")
+        );
+
+        write_action_frame(&mut service, &Response::Denied("no".into())).expect("write");
+        let mut sent = [0_u8; 8];
+        app.read_exact(&mut sent).expect("response");
+        assert_eq!(sent, [4, 0, 0, 0, 2, 2, b'n', b'o']);
+        app.write_all(&[3, 0, 0, 0, 2, 1, b'w']).expect("request");
+        assert!(matches!(
+            read_action_frame::<Request>(&mut service).expect("request"),
+            Request::CollaborationJoin { workspace_id } if workspace_id == "w"
+        ));
+    }
+
     #[test]
     fn signing_requires_the_exact_app_action_capability() {
         let temp = tempfile::tempdir().expect("temp");

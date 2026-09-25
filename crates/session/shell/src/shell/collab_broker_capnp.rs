@@ -8513,6 +8513,23 @@ async fn authenticate_launcher_handoff(
         .filter(|pid| *pid > 0)
         .ok_or_else(|| capnp::Error::failed("collaboration peer has no usable pid".into()))?;
 
+    let handoff = read_collab_launch_handoff(stream).await?;
+    if handoff.protocol != launcher::services::COLLAB_LAUNCH_PROTOCOL_VERSION
+        || handoff.app_id.trim().is_empty()
+        || handoff.workspace_id.trim().is_empty()
+    {
+        return Err(capnp::Error::failed(
+            "collaboration launch handoff has an unsupported or empty identity".into(),
+        ));
+    }
+    attest_collab_launch(pid, &handoff).await
+}
+
+/// Read the launcher's collaboration handoff: the launch marker, then one
+/// little-endian length-prefixed JSON frame.
+async fn read_collab_launch_handoff<S: tokio::io::AsyncRead + Unpin>(
+    stream: &mut S,
+) -> Result<CollabLaunchHandoff, capnp::Error> {
     let mut marker = [0_u8; launcher::services::COLLAB_LAUNCH_MAGIC.len()];
     stream.read_exact(&mut marker).await.map_err(|error| {
         capnp::Error::failed(format!(
@@ -8544,18 +8561,12 @@ async fn authenticate_launcher_handoff(
             "could not read collaboration launch handoff: {error}"
         ))
     })?;
-    let handoff: CollabLaunchHandoff = serde_json::from_slice(&bytes).map_err(|error| {
+    serde_json::from_slice(&bytes).map_err(|error| {
         capnp::Error::failed(format!("invalid collaboration launch handoff: {error}"))
-    })?;
-    if handoff.protocol != launcher::services::COLLAB_LAUNCH_PROTOCOL_VERSION
-        || handoff.app_id.trim().is_empty()
-        || handoff.workspace_id.trim().is_empty()
-    {
-        return Err(capnp::Error::failed(
-            "collaboration launch handoff has an unsupported or empty identity".into(),
-        ));
-    }
+    })
+}
 
+async fn attest_collab_launch(pid: u32, handoff: &CollabLaunchHandoff) -> Result<(), capnp::Error> {
     // `spawn_launch` records immediately after `Command::spawn`; the child
     // can connect first on a fast machine. Retry only this narrow registration
     // race. A direct tilo-launcher command never obtains a record and fails
@@ -8626,6 +8637,24 @@ pub(crate) mod tests {
     use std::rc::Rc;
     use std::time::SystemTime;
     use tilo_actions::remote::ActionHost as _;
+
+    /// The collaboration handoff as the launcher writes it: `QCL1`, a
+    /// little-endian `u32` length, then JSON. Empty handoffs are refused.
+    #[tokio::test]
+    async fn collab_launch_handoff_bytes_are_pinned() {
+        let mut wire = b"QCL1\x3f\0\0\0".to_vec();
+        wire.extend_from_slice(
+            br#"{"protocol":1,"app_id":"so.tilo.notes","workspace_id":"room-7"}"#,
+        );
+        let handoff = read_collab_launch_handoff(&mut wire.as_slice())
+            .await
+            .unwrap();
+        assert_eq!(handoff.protocol, 1);
+        assert_eq!(handoff.app_id, "so.tilo.notes");
+        assert_eq!(handoff.workspace_id, "room-7");
+        let mut empty: &[u8] = b"QCL1\0\0\0\0";
+        assert!(read_collab_launch_handoff(&mut empty).await.is_err());
+    }
 
     use crate::shell::collab_outbound::recording::{RecordingSink, Sent};
     use crate::shell::search::providers::live_app_actions::LiveAppActionsProvider;

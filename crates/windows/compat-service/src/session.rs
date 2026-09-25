@@ -1628,6 +1628,54 @@ mod tests {
         assert!(!other_workspace_entries.contains("windows-vm-candidate-remaining"));
     }
 
+    /// The session socket's bytes: a little-endian `u32` length (carrying the
+    /// descriptor, when there is one), then JSON. Empty frames are refused.
+    #[test]
+    fn session_wire_bytes_are_pinned() {
+        const FRAME: [u8; 11] = [7, 0, 0, 0, b'{', b'"', b'k', b'"', b':', b'1', b'}'];
+        let (mut writer, mut reader) = UnixStream::pair().unwrap();
+        write_frame(&mut writer, &serde_json::json!({"k": 1}), MAX_FRAME_BYTES).unwrap();
+        let mut sent = [0_u8; FRAME.len()];
+        reader.read_exact(&mut sent).unwrap();
+        assert_eq!(sent, FRAME);
+
+        let selected = NamedTempFile::new().unwrap();
+        write_frame_with_fd(
+            &mut writer,
+            &serde_json::json!({"k": 1}),
+            MAX_FRAME_BYTES,
+            selected.as_file().as_raw_fd(),
+        )
+        .unwrap();
+        let mut sent = [0_u8; FRAME.len()];
+        reader.read_exact(&mut sent).unwrap();
+        assert_eq!(sent, FRAME);
+
+        writer.write_all(&FRAME).unwrap();
+        let value: serde_json::Value = read_frame(&mut reader, MAX_FRAME_BYTES).unwrap();
+        assert_eq!(value["k"], 1);
+
+        let body = serde_json::to_vec(&ProtocolRequest::Install {
+            version: PROTOCOL_VERSION,
+            source_name: "a.exe".to_string(),
+        })
+        .unwrap();
+        let prefix = u32::try_from(body.len()).unwrap().to_le_bytes();
+        send_length_with_fd(&writer, prefix, selected.as_file().as_raw_fd()).unwrap();
+        writer.write_all(&body).unwrap();
+        let (request, descriptor) = read_request_frame(&mut reader, MAX_FRAME_BYTES).unwrap();
+        assert!(
+            matches!(request, ProtocolRequest::Install { source_name, .. } if source_name == "a.exe")
+        );
+        assert!(descriptor.is_some());
+
+        writer.write_all(&[0, 0, 0, 0]).unwrap();
+        assert!(matches!(
+            read_frame::<serde_json::Value>(&mut reader, MAX_FRAME_BYTES),
+            Err(SessionError::FrameTooLarge)
+        ));
+    }
+
     #[test]
     fn oversized_frame_is_rejected_before_allocation() {
         let (mut writer, mut reader) = UnixStream::pair().unwrap();

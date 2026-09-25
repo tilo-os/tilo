@@ -189,6 +189,43 @@ pub fn read_frame<R: Read, T: for<'de> Deserialize<'de>>(reader: &mut R) -> std:
 mod tests {
     use super::*;
 
+    /// The storage socket's bytes: a little-endian `u32` length, then postcard.
+    /// The filesystem daemon on the other end is built separately, so any
+    /// change here must fail.
+    #[test]
+    fn storage_wire_bytes_are_pinned() {
+        const REQUEST: [u8; 11] = [7, 0, 0, 0, 1, 1, 1, b'n', 7, 1, b'v'];
+        const RESPONSE: [u8; 12] = [8, 0, 0, 0, 1, 1, 2, 0xac, 0x02, 1, 1, b'x'];
+        let (client_end, mut daemon) = UnixStream::pair().unwrap();
+        daemon
+            .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+            .unwrap();
+        let daemon = std::thread::spawn(move || {
+            let mut request = [0_u8; REQUEST.len()];
+            daemon.read_exact(&mut request).unwrap();
+            daemon.write_all(&RESPONSE).unwrap();
+            request
+        });
+        let mut client = StorageClient { stream: client_end };
+        let report = client
+            .evict(vec![EvictionSelection {
+                identity: "n".into(),
+                inode: 7,
+                version: "v".into(),
+            }])
+            .unwrap();
+        assert_eq!(daemon.join().unwrap(), REQUEST);
+        assert_eq!(
+            report,
+            EvictionReport {
+                queued_files: 1,
+                evicted_files: 2,
+                freed_bytes: 300,
+                skipped: vec!["x".into()],
+            }
+        );
+    }
+
     #[test]
     fn selection_carries_all_revalidation_identity() {
         let file = SyncedFileState {

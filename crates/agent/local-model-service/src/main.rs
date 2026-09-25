@@ -1529,6 +1529,25 @@ mod tests {
     use super::*;
     use agent_provider_config::local::RuntimeKind;
 
+    /// The model service RPC bytes: a big-endian `u32` length, then JSON. A
+    /// close before the length is a clean end of the connection.
+    #[test]
+    fn rpc_wire_bytes_are_pinned() {
+        let (mut client, mut server) = UnixStream::pair().unwrap();
+        write_rpc(&mut client, &serde_json::json!({"k": 1})).unwrap();
+        let mut sent = [0_u8; 11];
+        server.read_exact(&mut sent).unwrap();
+        assert_eq!(sent, *b"\0\0\0\x07{\"k\":1}");
+        server.write_all(b"\0\0\0\x07{\"k\":2}").unwrap();
+        let value: serde_json::Value = read_rpc(&mut client).unwrap_or_else(|_| panic!("read"));
+        assert_eq!(value["k"], 2);
+        drop(server);
+        assert!(matches!(
+            read_rpc::<serde_json::Value>(&mut client),
+            Err(RpcReadError::Closed)
+        ));
+    }
+
     #[test]
     fn service_connection_serves_two_sequential_requests() {
         let (mut client, mut server) = UnixStream::pair().unwrap();
