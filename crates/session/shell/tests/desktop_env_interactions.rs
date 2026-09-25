@@ -26,7 +26,7 @@ use shell::shell::state::{
     AppKind, GroupId, Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth, Workspace,
     WorkspaceId, WorkspaceTree,
 };
-use shell::shell::topbar_chrome::TopBarChrome;
+use shell::shell::topbar_chrome::{TOPBAR_HEIGHT_PX, TopBarChrome};
 use taffy::{AvailableSpace, Dimension, NodeId, Size, Style, TaffyTree};
 use ui::theme::Theme;
 use ui::widget::Widget;
@@ -763,9 +763,43 @@ fn expand_maximizes_beneath_the_top_bar() {
          window is expanded; got {sidebar:?}",
     );
     let topbar_height = laid_out_topbar_height(chrome);
-    assert!(
-        topbar_height > 10.0,
-        "maximize must preserve the OS-owned top bar; got height {topbar_height}",
+    assert_approx_eq!(
+        topbar_height,
+        f64::from(TOPBAR_HEIGHT_PX),
+        "maximize must preserve the full OS-owned top bar",
+    );
+    let group = host
+        .group_at_for_tests(strip_id, 0)
+        .expect("maximized group after layout");
+    let maximized = group.get_rect();
+    assert_approx_eq!(
+        maximized.y0,
+        topbar_height,
+        "maximized content must directly abut the OS top bar; topbar_bottom={topbar_height}, \
+         group={maximized:?}, blank_gap={}",
+        maximized.y0 - topbar_height,
+    );
+    assert_approx_eq!(
+        maximized.x0,
+        0.0,
+        "maximized group must reach the left edge"
+    );
+    assert_approx_eq!(
+        maximized.x1,
+        f64::from(W),
+        "maximized group must reach the right edge"
+    );
+    assert_approx_eq!(
+        maximized.y1,
+        f64::from(H),
+        "maximize must reach the work area's bottom edge; got {maximized:?}",
+    );
+    let app = group
+        .active_host_rect_for_tests()
+        .expect("maximized group's active app");
+    assert_eq!(
+        app, maximized,
+        "the hidden tab strip must reserve no space inside the maximized group",
     );
     let _ = &layout2;
 }

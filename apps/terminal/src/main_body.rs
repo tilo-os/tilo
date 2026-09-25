@@ -54,23 +54,55 @@ pub(crate) enum PtyReadDisposition {
     Closed,
 }
 
-/// Linux PTY masters can report `EIO` in the hand-off window after the master
-/// reaches the app but before the guest opens its slave. That is not a session
-/// exit: retrying lets the prompt arrive once the slave is live. `EINTR` is
-/// likewise never closure. EOF and every other error remain terminal.
-pub(crate) fn classify_pty_read(result: &std::io::Result<usize>) -> PtyReadDisposition {
+/// Linux PTY masters report `EIO` whenever no slave descriptor is open. For a
+/// hosted `ush` session that happens briefly in the hand-off window, after the
+/// master reaches the app but before the guest opens its slave, and it also
+/// happens for good once the guest exits. `session_open` tells the two apart:
+/// the supervisor keeps the session's lifetime socket open exactly while its
+/// guest runs, so `EIO` retries only while that socket is still open. A local
+/// PTY has no hand-off window, so its `EIO` always means the shell exited.
+/// `EINTR` is never closure. EOF and every other error remain terminal.
+pub(crate) fn classify_pty_read(
+    result: &std::io::Result<usize>,
+    session_open: impl FnOnce() -> bool,
+) -> PtyReadDisposition {
     match result {
         Ok(0) => PtyReadDisposition::Closed,
         Ok(n) => PtyReadDisposition::Data(*n),
-        Err(error)
-            if error.kind() == std::io::ErrorKind::Interrupted
-                || error.raw_os_error() == Some(libc::EIO) =>
-        {
+        Err(error) if error.kind() == std::io::ErrorKind::Interrupted => PtyReadDisposition::Retry,
+        Err(error) if error.raw_os_error() == Some(libc::EIO) && session_open() => {
             PtyReadDisposition::Retry
         }
         Err(_) => PtyReadDisposition::Closed,
     }
 }
+
+/// Whether the peer still holds a hosted session's lifetime socket open. The
+/// probe peeks without blocking and without changing the descriptor's flags,
+/// which it shares with the widget's own handle.
+#[cfg(unix)]
+pub(crate) fn lifetime_socket_open(socket: &std::os::unix::net::UnixStream) -> bool {
+    use std::os::fd::AsRawFd as _;
+    let mut byte = 0u8;
+    // SAFETY: `byte` is valid writable storage for the one byte requested and
+    // the descriptor stays open for the duration of the call.
+    let received = unsafe {
+        libc::recv(
+            socket.as_raw_fd(),
+            (&raw mut byte).cast::<libc::c_void>(),
+            1,
+            libc::MSG_PEEK | libc::MSG_DONTWAIT,
+        )
+    };
+    if received >= 0 {
+        return received > 0;
+    }
+    matches!(
+        std::io::Error::last_os_error().raw_os_error(),
+        Some(libc::EAGAIN | libc::EINTR)
+    )
+}
+
 /// One UI turn may parse at most this much queued PTY output. Anything beyond
 /// it stays in the bounded queue for the following frame, preserving ordering
 /// while keeping pointer input and accessibility responsive during a build
@@ -7340,6 +7372,18 @@ impl TerminalWidget {
         let session_disconnected = widget.session_disconnected.clone();
         let session_status_message = widget.session_status_message.clone();
 
+        // The reader distinguishes a hosted session's start-up `EIO` from its
+        // exit by the lifetime socket the supervisor closes when the guest
+        // ends. A local PTY has none.
+        #[cfg(unix)]
+        let reader_lifetime = widget
+            .service_lifetime
+            .as_ref()
+            .and_then(|socket| socket.try_clone().ok());
+        #[cfg(unix)]
+        let session_open = move || reader_lifetime.as_ref().is_some_and(lifetime_socket_open);
+        #[cfg(not(unix))]
+        let session_open = || false;
         let reader = std::sync::Arc::new(std::sync::Mutex::new(backend.reader));
         let reader_result = std::thread::Builder::new()
             .name("tilo-terminal-pty-reader".to_string())
@@ -7359,7 +7403,7 @@ impl TerminalWidget {
                         break;
                     };
                     let read = std::io::Read::read(&mut *r, &mut buf);
-                    match classify_pty_read(&read) {
+                    match classify_pty_read(&read, &session_open) {
                         PtyReadDisposition::Retry => {
                             // Avoid a hot loop while the guest is between
                             // opening/closing slave descriptors.
