@@ -20,14 +20,15 @@
 //! authenticated agent roster projection, and durable delegated effect
 //! admission remain separate integrations.
 //!
-//! *Which* action answers an instruction is decided by a model (`model`),
-//! from the catalogue of things the app exports (`plan::CATALOGUE`) and
-//! nothing else: the model names one entry, that name is checked against the
-//! exported set, and the app's own action carries it out. It never proposes a
-//! document mutation of its own, and an answer outside the catalogue is
-//! refused rather than acted on. When no key is present, or a call is slow or
-//! fails, a keyword vocabulary decides instead — the run continues, and which
-//! path ran is recorded and logged rather than left indistinguishable.
+//! *Which* published operations answer a request is decided by a model
+//! (`model`) that discovers, invokes and observes the live, permission-filtered
+//! catalogue the applications publish — the same one a person reaches from
+//! the palette — through a handful of generic tools (`tools`). There are no
+//! agent-only recipes: every id it names is checked against what a tool
+//! showed it and against the catalogue again at dispatch, and the broker
+//! authorizes each step. Enrolled tasks run that as a step-by-step loop
+//! (`session::agent_loop`). Without a model, a deterministic word match over
+//! the same live catalogue decides, and which path ran is recorded.
 //!
 //! The point is the shape, not the vocabulary: anything that can speak an
 //! app's actions can drive that app, in the background, without competing
@@ -63,6 +64,8 @@ extern crate self as tilo_agent;
 
 pub mod apply;
 pub mod listen;
+pub mod live;
+pub mod memory;
 pub mod model;
 pub mod plan;
 pub mod providers;

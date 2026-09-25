@@ -21,6 +21,7 @@ use crate::providers::default_selection;
 use crate::surface::{self, AppContract, View};
 use crate::wire::Link;
 
+mod agent_loop;
 mod chat;
 use chat::ChatRun;
 
@@ -131,6 +132,78 @@ fn dispatched_action_key(
 enum TaskActionStop {
     Cancelled(Option<String>),
     Failed(String),
+}
+
+/// The host's durable step bound (`MAX_AGENT_TASK_STEPS`).
+const MAX_TASK_STEPS: usize = 64;
+
+/// One planned action whose declared incremental Text parameter is written
+/// as chunk steps.
+struct ChunkedParagraph<'a> {
+    first: &'a TaskAction,
+    /// The declared continuation action.
+    next: &'a TaskAction,
+    /// The incremental Text parameter.
+    param: &'a str,
+    arguments: &'a serde_json::Map<String, serde_json::Value>,
+    text: &'a str,
+    /// Most chunks (steps) this paragraph may take.
+    budget: usize,
+}
+
+/// `arguments` with parameter `param` set to `text`.
+fn with_param(
+    arguments: &serde_json::Map<String, serde_json::Value>,
+    param: &str,
+    text: &str,
+) -> serde_json::Map<String, serde_json::Value> {
+    let mut arguments = arguments.clone();
+    arguments.insert(param.into(), serde_json::Value::String(text.into()));
+    arguments
+}
+
+/// Report one enrolled task update and wait for the broker's answer.
+fn report_enrolled(
+    link: &mut Link,
+    next_request: &mut u64,
+    sequence: &mut u64,
+    acceptance: runtime_collab::EnrolledTaskAcceptance,
+    update: runtime_collab::TaskRunUpdate,
+) -> Result<()> {
+    *sequence = sequence
+        .checked_add(1)
+        .ok_or_else(|| anyhow::anyhow!("enrolled sequence exhausted"))?;
+    let request_id = *next_request;
+    *next_request = request_id
+        .checked_add(1)
+        .ok_or_else(|| anyhow::anyhow!("request sequence exhausted"))?;
+    link.send(&CollabRequest::ReportEnrolledTask {
+        request_id,
+        acceptance,
+        sequence: *sequence,
+        update,
+    })?;
+    link.wait_enrolled_reply(request_id)
+}
+
+/// Send one live update as enrolled progress. Best effort: a refusal is
+/// logged and turns live updates off, never the task.
+fn send_live(
+    link: &mut Link,
+    next_request: &mut u64,
+    sequence: &mut u64,
+    acceptance: &runtime_collab::EnrolledTaskAcceptance,
+    message: String,
+) -> bool {
+    report_enrolled(
+        link,
+        next_request,
+        sequence,
+        acceptance.clone(),
+        runtime_collab::TaskRunUpdate::Progress { message },
+    )
+    .inspect_err(|error| tracing::warn!(%error, "live update refused; live updates stop"))
+    .is_ok()
 }
 
 /// What the next task step is built from.
@@ -364,6 +437,16 @@ pub struct Session {
     /// First accepted forwarding frame for each message. Its certified key
     /// authenticates the frame, never the inner Message.author claim.
     chat_sources: HashMap<String, (String, collab_types::Ed25519PublicKey)>,
+    /// Live activity for the enrolled task in progress (display only).
+    live: crate::live::LivePublisher,
+    /// Bumped whenever the broker republishes its catalogue.
+    broker_revision: u64,
+    /// The task catalogue survey for [`Self::broker_revision`].
+    catalogue_cache: Option<(u64, surface::Catalogue)>,
+    /// The model turn in flight while a task loop runs.
+    turn: Option<agent_loop::ActiveTurn>,
+    /// What this agent was asked, did and said in earlier tasks.
+    memory: agent_loop::Memory,
 }
 
 /// How often the agent asks again while it still has no document.
@@ -422,15 +505,21 @@ impl Session {
         // Discovery is room-wide, but writes never are. This subscription
         // lets the agent learn other applications' exported operations while
         // every mutation below still names its owning app route explicitly.
-        link.join_route(RouteSpec::cluster(cfg.cluster));
-        // The broker directs the late-join request to one existing holder.
-        ask_for_document(&mut link)?;
-        link.send(&CollabRequest::Presence {
-            key: PresenceKey::Workspace {
-                id: cfg.cluster.to_string(),
-            },
-            payload: PresencePayload::Arrived,
-        })?;
+        if managed.is_none() {
+            // A managed (enrolled) agent is limited to its task-bound broker surface: the broker
+            // refuses the cluster route, the late-join snapshot and presence on that descriptor, and
+            // one refused snapshot RPC shuts down the whole collaboration bridge. Its catalogue
+            // arrives through the enrolled ActionCatalogue instead.
+            link.join_route(RouteSpec::cluster(cfg.cluster));
+            // The broker directs the late-join request to one existing holder.
+            ask_for_document(&mut link)?;
+            link.send(&CollabRequest::Presence {
+                key: PresenceKey::Workspace {
+                    id: cfg.cluster.to_string(),
+                },
+                payload: PresencePayload::Arrived,
+            })?;
+        }
         tracing::info!(
             transport = if cfg.endpoint.is_some() { "typed-endpoint" } else { "TILO_SVC_COLLAB_FD" },
             app = %cfg.app_id,
@@ -475,6 +564,11 @@ impl Session {
             chat_catalogue_received: false,
             last_chat_action: None,
             chat_sources: HashMap::new(),
+            live: crate::live::LivePublisher::default(),
+            memory: agent_loop::Memory::default(),
+            broker_revision: 0,
+            catalogue_cache: None,
+            turn: None,
         })
     }
 
@@ -550,7 +644,7 @@ impl Session {
         loop {
             match self.link.recv(Duration::from_millis(100))? {
                 Some(CollabEvent::ActionCatalogue { surfaces }) => {
-                    self.broker_surfaces = surfaces;
+                    self.set_broker_surfaces(surfaces);
                 }
                 Some(CollabEvent::EnrolledTask(run)) => self.run_enrolled_task(&run)?,
                 Some(CollabEvent::EnrolledTaskDisconnected { detail }) => anyhow::bail!(detail),
@@ -575,6 +669,12 @@ impl Session {
         }
         if self.enrolled_active.is_none() {
             self.report_task(run, runtime_collab::TaskRunUpdate::Accepted)?;
+        } else {
+            // Live activity rides the enrolled progress carrier only.
+            self.live.start();
+            self.live
+                .set_state(crate::live::LiveState::Thinking, "Thinking", None);
+            self.live_publish(true);
         }
         self.report_task(
             run,
@@ -586,8 +686,51 @@ impl Session {
         if self.task_cancelled(run)? {
             return self.cancel_task(run, "Cancelled before planning");
         }
-        let actions = match self.plan_task(run) {
-            Ok(actions) if !actions.is_empty() => actions,
+        // A model task is a discover → invoke → observe loop over the live
+        // catalogue. A managed agent has no other planner; a legacy one
+        // without a model falls back to the rules-only survey below.
+        if matches!(run.planning, runtime_collab::TaskRunPlanning::Model)
+            && (self.chooser.loop_model().is_ok() || self.enrolled_custody.is_some())
+        {
+            return match self.run_task_loop(run)? {
+                agent_loop::LoopEnd::Finished(finish, completed) => {
+                    // `done: false` is an answer, not a fault: the agent says
+                    // in its reply what it could not do, and stays available
+                    // for the next message. Reporting it as a failed task
+                    // would mark the whole agent failed and end its
+                    // conversation. Only the loop's own faults (no model,
+                    // a bound reached, a broken turn) fail the task.
+                    let finish = if finish.done {
+                        finish
+                    } else {
+                        tracing::info!(completed, "the agent could not complete the request");
+                        crate::tools::Finish {
+                            reply: Some(finish.reply.unwrap_or_else(|| {
+                                "I couldn't complete that with the operations available here."
+                                    .into()
+                            })),
+                            done: true,
+                        }
+                    };
+                    if let Some(reply) = &finish.reply {
+                        self.live.set_reply(reply, true);
+                    }
+                    let message = match finish.reply {
+                        // The model's own reply is the durable chat answer. The
+                        // legacy Task Center carrier bounds it to 280 characters.
+                        Some(reply) if self.enrolled_active.is_some() => reply,
+                        Some(reply) => reply.chars().take(280).collect(),
+                        None => format!("Completed {completed} broker-approved action(s)"),
+                    };
+                    self.live_end(crate::live::LiveState::Done, "Done");
+                    self.report_task(run, runtime_collab::TaskRunUpdate::Succeeded { message })
+                }
+                agent_loop::LoopEnd::Failed(message) => self.fail_task(run, &message),
+                agent_loop::LoopEnd::Cancelled(message) => self.cancel_task(run, &message),
+            };
+        }
+        let (actions, reply) = match self.plan_task(run) {
+            Ok((actions, reply)) if !actions.is_empty() => (actions, reply),
             Ok(_) => {
                 return self.fail_task(run, "No permitted live action can complete this task");
             }
@@ -597,6 +740,12 @@ impl Session {
         // from the host's committed continuation, never an in-memory reply.
         let mut stepped = self.enrolled_active.is_some();
         let mut handoff = Handoff::None;
+        if let Some(reply) = &reply {
+            self.live.set_reply(reply, true);
+        }
+        // Durable step indices: one per invoked step, so a chunked paragraph
+        // takes several. Without chunking this equals the action index.
+        let mut step_index = 0_usize;
         for (index, action) in actions.iter().enumerate() {
             if self.task_cancelled(run)? {
                 return self.cancel_task(run, "Cancelled before the next action");
@@ -613,19 +762,49 @@ impl Session {
                     message: format!("Running {}/{} · {}", index + 1, actions.len(), action.label),
                 },
             )?;
-            let step = if stepped {
-                Some(u32::try_from(index).context("task plan exceeds the step range")?)
-            } else {
-                None
-            };
-            let result = match step {
-                Some(step) => self.invoke_task_step(run, step, action, &arguments, &mut stepped)?,
-                None => self
-                    .invoke_task_action(run, action, &arguments)?
-                    .map(Handoff::Legacy),
+            let result = match self.chunkable(action, &arguments) {
+                Some((param, text, next)) => {
+                    // Steps still needed after this action, one each.
+                    let later = actions.len() - index - 1;
+                    let budget = MAX_TASK_STEPS
+                        .saturating_sub(step_index + later)
+                        .clamp(1, crate::live::MAX_CHUNKS);
+                    let paragraph = ChunkedParagraph {
+                        first: action,
+                        next: &next,
+                        param: &param,
+                        arguments: &arguments,
+                        text: &text,
+                        budget,
+                    };
+                    self.run_chunked_paragraph(
+                        run,
+                        index,
+                        &mut step_index,
+                        &paragraph,
+                        &mut stepped,
+                    )?
+                }
+                None => {
+                    self.live_applying(action, &arguments, None);
+                    let result = self.run_task_step(
+                        run,
+                        index,
+                        step_index,
+                        action,
+                        &arguments,
+                        &mut stepped,
+                    )?;
+                    step_index += 1;
+                    result
+                }
             };
             match result {
-                Ok(next) => handoff = next,
+                Ok(next) => {
+                    self.chooser
+                        .mark(tilo_model_gateway::TraceEvent::ActionSettled, index);
+                    handoff = next;
+                }
                 Err(TaskActionStop::Cancelled(message)) => {
                     let detail = if self.enrolled_active.is_some() {
                         message
@@ -639,12 +818,241 @@ impl Session {
                 Err(TaskActionStop::Failed(message)) => return self.fail_task(run, &message),
             }
         }
-        self.report_task(
-            run,
-            runtime_collab::TaskRunUpdate::Succeeded {
-                message: format!("Completed {} broker-approved action(s)", actions.len()),
-            },
-        )
+        let message = match reply {
+            // The model's own reply is the durable chat answer. The legacy
+            // Task Center carrier bounds messages to 280 characters.
+            Some(reply) if self.enrolled_active.is_some() => reply,
+            Some(reply) => reply.chars().take(280).collect(),
+            None => format!("Completed {} broker-approved action(s)", actions.len()),
+        };
+        self.live_end(crate::live::LiveState::Done, "Done");
+        self.report_task(run, runtime_collab::TaskRunUpdate::Succeeded { message })
+    }
+
+    /// The broker offer `action` was built from.
+    fn offer_of(&self, action: &TaskAction) -> Option<surface::Offer> {
+        surface::broker_offers(&self.broker_surfaces)
+            .into_iter()
+            .find(|offer| {
+                offer.broker_peer_id == Some(action.peer_id)
+                    && offer.descriptor.address.resource == action.resource
+                    && offer.descriptor.address.action == action.action
+            })
+    }
+
+    /// Whether `action` is written in parts: its own descriptor declares an
+    /// incremental Text parameter ([`crate::live::INCREMENTAL_TEXT_TAG`])
+    /// whose value is longer than [`crate::live::CHUNK_MIN_TEXT`], and the
+    /// declared continuation action is published on the same resource with
+    /// that Text parameter. Only enrolled tasks chunk. Returns the parameter,
+    /// its text, and the continuation step.
+    fn chunkable(
+        &self,
+        action: &TaskAction,
+        arguments: &serde_json::Map<String, serde_json::Value>,
+    ) -> Option<(String, String, TaskAction)> {
+        if self.enrolled_active.is_none() || action.carries {
+            return None;
+        }
+        let offer = self.offer_of(action)?;
+        let (param, next) = self.continuation_of(&offer)?;
+        let text = arguments.get(&param)?.as_str()?;
+        if text.len() <= crate::live::CHUNK_MIN_TEXT {
+            return None;
+        }
+        Some((param, text.to_owned(), next))
+    }
+
+    /// The incremental Text parameter `offer` declares
+    /// ([`crate::live::INCREMENTAL_TEXT_TAG`]) and its continuation step, when
+    /// that continuation is published on the same resource with the same
+    /// Text parameter.
+    fn continuation_of(&self, offer: &surface::Offer) -> Option<(String, TaskAction)> {
+        let peer = offer.broker_peer_id?;
+        let (param, next) = crate::live::incremental_text(&offer.descriptor.contract.tags)?;
+        let text_param = |offer: &surface::Offer| {
+            offer.descriptor.params.iter().any(|candidate| {
+                candidate.name == param && candidate.ty == tilo_actions::ParamType::Text
+            })
+        };
+        if !text_param(offer) {
+            return None;
+        }
+        let continuation = surface::broker_offers(&self.broker_surfaces)
+            .into_iter()
+            .find(|candidate| {
+                candidate.broker_peer_id == Some(peer)
+                    && candidate.descriptor.address.resource == offer.descriptor.address.resource
+                    && candidate.descriptor.address.action == next
+                    && text_param(candidate)
+            })?;
+        let mut sample = serde_json::Map::new();
+        sample.insert(param.to_owned(), serde_json::Value::String("…".into()));
+        let next = task_action_from_offer(&continuation, sample).ok()?;
+        Some((param.to_owned(), next))
+    }
+
+    /// Write one incremental text as chunk steps: the first chunk through the
+    /// planned action, the rest through its declared continuation, each
+    /// through the unchanged durable step path. Before each chunk the
+    /// still-uncommitted rest is sent as the live preview.
+    fn run_chunked_paragraph(
+        &mut self,
+        run: &runtime_collab::TaskRunEnvelope,
+        index: usize,
+        step_index: &mut usize,
+        paragraph: &ChunkedParagraph<'_>,
+        stepped: &mut bool,
+    ) -> Result<Result<Handoff, TaskActionStop>> {
+        let mut rest = paragraph.text;
+        let mut target = crate::live::CHUNK_TARGET;
+        let mut chunks_left = paragraph.budget;
+        let mut last = Handoff::None;
+        let mut first = true;
+        while !rest.is_empty() {
+            if !first && self.task_cancelled(run)? {
+                return Ok(Err(TaskActionStop::Cancelled(Some(
+                    "Cancelled before the next action".into(),
+                ))));
+            }
+            let len = crate::live::next_chunk_len(rest, target, chunks_left);
+            let (chunk, after) = rest.split_at(len);
+            let (action, arguments) = if first {
+                (
+                    paragraph.first,
+                    with_param(paragraph.arguments, paragraph.param, chunk),
+                )
+            } else {
+                (
+                    paragraph.next,
+                    with_param(&paragraph.next.arguments, paragraph.param, chunk),
+                )
+            };
+            self.live_applying(paragraph.first, paragraph.arguments, Some(rest));
+            let began = Instant::now();
+            let result =
+                self.run_task_step(run, index, *step_index, action, &arguments, stepped)?;
+            *step_index += 1;
+            match result {
+                Ok(next) => last = next,
+                Err(stop) => return Ok(Err(stop)),
+            }
+            target = crate::live::adapt_chunk_target(target, began.elapsed());
+            chunks_left = chunks_left.saturating_sub(1);
+            rest = after;
+            first = false;
+        }
+        self.live.set_preview(None);
+        Ok(Ok(last))
+    }
+
+    /// Invoke one step: durable when the host keeps a step ledger, else
+    /// through the legacy invocation path.
+    fn run_task_step(
+        &mut self,
+        run: &runtime_collab::TaskRunEnvelope,
+        index: usize,
+        step_index: usize,
+        action: &TaskAction,
+        arguments: &serde_json::Map<String, serde_json::Value>,
+        stepped: &mut bool,
+    ) -> Result<Result<Handoff, TaskActionStop>> {
+        let step = if *stepped {
+            Some(u32::try_from(step_index).context("task plan exceeds the step range")?)
+        } else {
+            None
+        };
+        self.chooser
+            .mark(tilo_model_gateway::TraceEvent::ActionSubmitted, index);
+        Ok(match step {
+            Some(step) => self.invoke_task_step(run, step, action, arguments, stepped)?,
+            None => self
+                .invoke_task_action(run, action, arguments)?
+                .map(Handoff::Legacy),
+        })
+    }
+
+    /// Show `action` being applied, labelled from its own descriptor.
+    /// `pending` is its text not yet committed; without it, the value of its
+    /// first Text-typed parameter is shown.
+    fn live_applying(
+        &mut self,
+        action: &TaskAction,
+        arguments: &serde_json::Map<String, serde_json::Value>,
+        pending: Option<&str>,
+    ) {
+        if !self.live.is_active() {
+            return;
+        }
+        let offer = self.offer_of(action);
+        let pending = pending.map(str::to_owned).or_else(|| {
+            offer.as_ref()?.descriptor.params.iter().find_map(|param| {
+                (param.ty == tilo_actions::ParamType::Text)
+                    .then(|| arguments.get(param.name.as_ref())?.as_str())
+                    .flatten()
+                    .map(str::to_owned)
+            })
+        });
+        let record = self
+            .broker_surfaces
+            .iter()
+            .find(|surface| surface.peer_id == action.peer_id)
+            .map(|surface| surface.record_id.clone())
+            .unwrap_or_default();
+        self.live.set_state(
+            crate::live::LiveState::Applying,
+            &crate::live::action_label(&action.label, &action.resource_label),
+            None,
+        );
+        self.live
+            .set_preview(pending.map(|text| crate::live::LivePreview {
+                app: action.app.clone(),
+                record,
+                text,
+            }));
+        self.live_publish(true);
+    }
+
+    /// Send the live view: `flush` sends any change now, otherwise at most
+    /// [`crate::live::MAX_UPDATES_PER_SECOND`] per second. Best effort.
+    fn live_publish(&mut self, flush: bool) {
+        let Some(acceptance) = self.enrolled_active.clone() else {
+            return;
+        };
+        if !self.live.is_active() {
+            return;
+        }
+        let Session {
+            live,
+            link,
+            next_broker_request,
+            enrolled_sequence,
+            ..
+        } = self;
+        let mut send = |message: String| {
+            send_live(
+                link,
+                next_broker_request,
+                enrolled_sequence,
+                &acceptance,
+                message,
+            )
+        };
+        if flush {
+            live.flush(Instant::now(), &mut send);
+        } else {
+            live.tick(Instant::now(), &mut send);
+        }
+    }
+
+    /// The last live update of a task, sent before its terminal report
+    /// (the carrier refuses progress after it).
+    fn live_end(&mut self, state: crate::live::LiveState, label: &str) {
+        if self.live.is_active() {
+            self.live.set_state(state, label, None);
+            self.live_publish(true);
+        }
+        self.live.stop();
     }
 
     fn report_task(
@@ -653,18 +1061,13 @@ impl Session {
         update: runtime_collab::TaskRunUpdate,
     ) -> Result<()> {
         if let Some(acceptance) = self.enrolled_active.clone() {
-            self.enrolled_sequence = self
-                .enrolled_sequence
-                .checked_add(1)
-                .ok_or_else(|| anyhow::anyhow!("enrolled sequence exhausted"))?;
-            let request_id = self.next_enrolled_request()?;
-            self.link.send(&CollabRequest::ReportEnrolledTask {
-                request_id,
+            return report_enrolled(
+                &mut self.link,
+                &mut self.next_broker_request,
+                &mut self.enrolled_sequence,
                 acceptance,
-                sequence: self.enrolled_sequence,
                 update,
-            })?;
-            return self.link.wait_enrolled_reply(request_id);
+            );
         }
         self.link.send(&CollabRequest::ReportTaskRun {
             run_id: run.run_id,
@@ -674,6 +1077,7 @@ impl Session {
     }
 
     fn fail_task(&mut self, run: &runtime_collab::TaskRunEnvelope, message: &str) -> Result<()> {
+        self.live_end(crate::live::LiveState::Failed, "Needs attention");
         self.report_task(
             run,
             runtime_collab::TaskRunUpdate::Failed {
@@ -683,6 +1087,7 @@ impl Session {
     }
 
     fn cancel_task(&mut self, run: &runtime_collab::TaskRunEnvelope, message: &str) -> Result<()> {
+        self.live_end(crate::live::LiveState::Failed, "Cancelled");
         self.report_task(
             run,
             runtime_collab::TaskRunUpdate::Cancelled {
@@ -701,7 +1106,7 @@ impl Session {
             let remaining = deadline.saturating_duration_since(Instant::now());
             match self.link.recv(remaining.min(Duration::from_millis(100)))? {
                 Some(CollabEvent::ActionCatalogue { surfaces }) => {
-                    self.broker_surfaces = surfaces;
+                    self.set_broker_surfaces(surfaces);
                     self.link.defer(deferred);
                     return Ok(());
                 }
@@ -745,85 +1150,25 @@ impl Session {
                     self.link.defer(deferred);
                     return result.map_err(anyhow::Error::msg);
                 }
-                Some(CollabEvent::ActionCatalogue { surfaces }) => self.broker_surfaces = surfaces,
+                Some(CollabEvent::ActionCatalogue { surfaces }) => {
+                    self.set_broker_surfaces(surfaces)
+                }
                 Some(event) => deferred.push(event),
                 None => {}
             }
         }
     }
 
-    fn plan_task(&self, run: &runtime_collab::TaskRunEnvelope) -> Result<Vec<TaskAction>, String> {
-        let offers = surface::broker_offers(&self.broker_surfaces)
-            .into_iter()
-            .filter(|offer| {
-                offer.broker_peer_id.is_some()
-                    && matches!(
-                        offer.descriptor.contract.confirmation,
-                        tilo_actions::ConfirmationPolicy::None
-                    )
-            })
-            .collect::<Vec<_>>();
-        match run.planning {
-            runtime_collab::TaskRunPlanning::RulesOnly => {
-                let (offer, arguments) =
-                    surface::from_verbs(&run.title, &offers).map_err(|error| {
-                        format!("Rules-only planner could not choose an action: {error:?}")
-                    })?;
-                task_action_from_offer(offer, arguments).map(|action| vec![action])
-            }
-            runtime_collab::TaskRunPlanning::Model => {
-                let catalogue = surface::Catalogue {
-                    offers: offers.clone(),
-                    facts: Vec::new(),
-                    held: Vec::new(),
-                };
-                match self.chooser.choose_actions(&run.title, &[], &catalogue, 8) {
-                    Ok(answer) => answer
-                        .actions
-                        .iter()
-                        .zip(&answer.arguments)
-                        .map(|(id, arguments)| {
-                            let instruction =
-                                Instruction::from_answer(id, &run.title, Some(arguments), &offers)
-                                    .map_err(|error| {
-                                        format!("Model selected an unavailable action: {error:?}")
-                                    })?;
-                            let Instruction::Perform {
-                                id,
-                                arguments,
-                                confirmation,
-                            } = instruction
-                            else {
-                                return Err("Model task plans must name broker-published actions"
-                                    .to_string());
-                            };
-                            if !matches!(confirmation, ConfirmationEvidence::None) {
-                                return Err(
-                                    "An unattended task cannot satisfy an interactive confirmation"
-                                        .to_string(),
-                                );
-                            }
-                            let offer = surface::find(&offers, &id).ok_or_else(|| {
-                                "The planned action is no longer published".to_string()
-                            })?;
-                            task_action_from_offer(offer, arguments)
-                        })
-                        .collect(),
-                    Err(route) if self.enrolled_custody.is_some() => Err(format!(
-                        "Managed model planning unavailable: {}",
-                        route.detail()
-                    )),
-                    Err(route) => {
-                        tracing::info!(reason = %route.detail(), "model unavailable; using rules-only task planning");
-                        let (offer, arguments) =
-                            surface::from_verbs(&run.title, &offers).map_err(|error| {
-                                format!("Model fallback could not choose an action: {error:?}")
-                            })?;
-                        task_action_from_offer(offer, arguments).map(|action| vec![action])
-                    }
-                }
-            }
-        }
+    /// The rules-only planner: one surveyed action matched by the words of
+    /// the title. Model tasks run [`Self::run_task_loop`] instead.
+    fn plan_task(
+        &mut self,
+        run: &runtime_collab::TaskRunEnvelope,
+    ) -> Result<(Vec<TaskAction>, Option<String>), String> {
+        let offers = self.task_catalogue().offers;
+        let (offer, arguments) = surface::from_verbs(&run.title, &offers)
+            .map_err(|error| format!("Rules-only planner could not choose an action: {error:?}"))?;
+        task_action_from_offer(offer, arguments).map(|action| (vec![action], None))
     }
 
     /// Run one durable step of an enrolled task. Every attempt re-sends the
@@ -1132,6 +1477,8 @@ impl Session {
         let deadline = Instant::now() + wait;
         let mut deferred = Vec::new();
         loop {
+            // Keep a streaming model turn moving while the step settles.
+            self.pump_turn();
             let now = Instant::now();
             if now >= deadline {
                 self.link.defer(deferred);
@@ -1157,7 +1504,9 @@ impl Session {
                 // Only one task action is outstanding at a time; a late
                 // reply to an earlier request has no reader left.
                 Some(CollabEvent::TaskActionInvocationResult { .. }) => {}
-                Some(CollabEvent::ActionCatalogue { surfaces }) => self.broker_surfaces = surfaces,
+                Some(CollabEvent::ActionCatalogue { surfaces }) => {
+                    self.set_broker_surfaces(surfaces)
+                }
                 Some(event @ CollabEvent::Document { .. }) => {
                     match event
                         .document_mutation()
@@ -1254,7 +1603,7 @@ impl Session {
                 }
             }
             Some(CollabEvent::ActionCatalogue { surfaces }) => {
-                self.broker_surfaces = surfaces;
+                self.set_broker_surfaces(surfaces);
                 self.chat_catalogue_received = true;
                 changed = is_chat_app_id(&self.cfg.app_id);
                 tracing::debug!(
@@ -1453,14 +1802,15 @@ impl Session {
         }
     }
 
-    /// Perform the discovered operation `id` names, against whichever
-    /// document holds it. `Ok(Err(_))` is a refusal in words a person
-    /// reads; `Err(_)` is this session's own I/O failing.
+    /// Perform the discovered operation `id` names, through the broker, as
+    /// the application that publishes it. `Ok(Err(_))` is a refusal in words
+    /// a person reads; `Err(_)` is this session's own I/O failing.
     ///
-    /// Resolved against a tree rebuilt from the document **right now**,
-    /// through [`Editor::invoke`] — never against the survey `id` was
-    /// chosen from. An operation that has gone away since is a refusal
-    /// here, not a substitution.
+    /// Only a live broker publication is performed: the owning application
+    /// applies it, exactly as it applies a person's palette invocation. An
+    /// operation the agent can only see in its own replica — not published
+    /// by the application right now — is refused, never applied to the
+    /// replica behind the application's back.
     fn perform(
         &mut self,
         id: &str,
@@ -1470,12 +1820,9 @@ impl Session {
         if let Some(offer) = self.wait_for_broker_offer(id)? {
             return self.perform_broker(id, &offer, arguments, confirmation);
         }
-        if self.chat_run.is_some() {
-            return Ok(Err(
-                "The owning application is not offering this action through the broker".into(),
-            ));
-        }
-        self.perform_local(id, arguments, confirmation)
+        Ok(Err(
+            "The owning application is not offering this action through the broker".into(),
+        ))
     }
 
     /// Give the broker's independently delivered catalogue stream a chance
@@ -1509,7 +1856,7 @@ impl Session {
             let remaining = deadline.saturating_duration_since(Instant::now());
             match self.link.recv(remaining.min(Duration::from_millis(100)))? {
                 Some(CollabEvent::ActionCatalogue { surfaces }) => {
-                    self.broker_surfaces = surfaces;
+                    self.set_broker_surfaces(surfaces);
                     if let Some(offer) = find(&self.broker_surfaces) {
                         found = Some(offer);
                         break;
@@ -1653,89 +2000,6 @@ impl Session {
         }
     }
 
-    fn perform_local(
-        &mut self,
-        id: &str,
-        arguments: &serde_json::Map<String, serde_json::Value>,
-        confirmation: &ConfirmationEvidence,
-    ) -> Result<Result<StepOutcome, String>> {
-        let context = self.task_context();
-        let Some(address) = surface::decode_address(id) else {
-            return Ok(Err("that no longer names anything I can find".to_string()));
-        };
-        let namespace = surface::app_of(&address.resource).to_string();
-        let view = self.view(None);
-        let registry = surface::registry();
-        let is_primary = self
-            .editor
-            .as_ref()
-            .is_some_and(|editor| editor.contract().namespace == namespace);
-        let held = if is_primary {
-            self.editor.as_mut()
-        } else {
-            self.peers.get_mut(namespace.as_str())
-        };
-        let Some(editor) = held else {
-            return Ok(Err("that isn't open here, so I can't act on it".to_string()));
-        };
-        let target_app_id = editor.route_app_id().to_string();
-        editor.set_history_context(context);
-        let before = editor.latest_entry_id();
-        let live = editor.resources(&view);
-        let Some(descriptor) = tilo_actions::door::survey(&live)
-            .into_iter()
-            .find(|descriptor| descriptor.address == address)
-        else {
-            return Ok(Err("that no longer names anything I can find".to_string()));
-        };
-        if !surface::permitted_descriptor(&self.cfg.permissions, &descriptor) {
-            return Ok(Err("that no longer names anything I can find".to_string()));
-        }
-        if !confirmation.satisfies(&descriptor.contract.confirmation) {
-            return Ok(Err("that action requires explicit confirmation".to_string()));
-        }
-        let invoked = if confirmation.is_confirmed() {
-            editor.invoke_json_confirmed(&view, &address, arguments, &registry)
-        } else {
-            editor.invoke_json(&view, &address, arguments, &registry)
-        };
-        match invoked {
-            Ok(Some(delta)) => {
-                let end = editor.latest_entry_id();
-                let product = (editor.contract().product)(&view, &editor.doc);
-                let record = self.cfg.record.clone().unwrap_or_default();
-                let request = CollabRequest::document_incremental(delta);
-                if is_primary {
-                    self.link.send(&request)?;
-                } else {
-                    self.link.send_to_route(
-                        RouteSpec::app(target_app_id.as_str(), self.cfg.cluster),
-                        &request,
-                    )?;
-                }
-                tracing::info!(%id, "performed a discovered operation");
-                if let Some(end) = end
-                    && Some(end) != before
-                {
-                    self.capture_step(&target_app_id, &record, descriptor.action_label, end);
-                }
-                std::thread::sleep(self.cfg.pace);
-                Ok(Ok(StepOutcome {
-                    output: tilo_actions::ActionOutput::default(),
-                    product,
-                }))
-            }
-            Ok(None) => {
-                tracing::warn!(%id, "the operation changed nothing");
-                Ok(Err("that didn't change anything".to_string()))
-            }
-            Err(error) => {
-                tracing::warn!(%id, "refused: {error}");
-                Ok(Err(format!("I couldn't do that - {error}")))
-            }
-        }
-    }
-
     fn next_request_id(&mut self) -> u64 {
         let id = self.next_broker_request;
         self.next_broker_request = self.next_broker_request.saturating_add(1);
@@ -1749,6 +2013,7 @@ impl Session {
         let deadline = Instant::now() + Duration::from_secs(10);
         let mut deferred = Vec::new();
         loop {
+            self.pump_turn();
             let now = Instant::now();
             if now >= deadline {
                 self.link.defer(deferred);
@@ -1768,7 +2033,7 @@ impl Session {
                     return Ok(result);
                 }
                 Some(CollabEvent::ActionCatalogue { surfaces }) => {
-                    self.broker_surfaces = surfaces;
+                    self.set_broker_surfaces(surfaces);
                 }
                 Some(event @ CollabEvent::Document { .. }) => {
                     let _ = self.absorb_document_event(&event)?;
@@ -2038,19 +2303,13 @@ impl Session {
         let mut previous = None;
         for step in &plan.steps {
             let blocks = plan::blocks(&self.editor.as_ref().context("no document")?.snapshot()?);
-            let Some(at) = blocks.iter().position(|b| b.id == ins_id) else {
+            if !blocks.iter().any(|b| b.id == ins_id) {
                 // A step earlier in this very plan already answered the
                 // instruction and took the paragraph with it.
                 break;
-            };
+            }
             let mut outcome = None;
             let applied = match &step.instruction {
-                Instruction::Table => self.make_table(&blocks, at)?,
-                Instruction::Caption => self.caption_image(&blocks, at)?,
-                Instruction::Heading => {
-                    self.make_heading(&blocks, at)?;
-                    true
-                }
                 // A surveyed operation, named by address. Guarded by
                 // `dispatched_this_turn`: a clause asked again mid-plan can
                 // come back naming the exact step this turn already performed.
@@ -2134,6 +2393,12 @@ impl Session {
 
     /// Replace the instruction paragraph's current text with `reply` — an
     /// answer left for somebody to read, not a further action.
+    ///
+    /// Local document mode only (a paragraph addressed to the agent by name).
+    /// This and [`Self::edit`] are the last composed edits: they answer the
+    /// instruction paragraph itself. They move to the paragraph's published
+    /// operations (select the block, type or erase) once Writer publishes
+    /// them; enrolled tasks never reach this.
     fn splice_reply(&mut self, blocks: &[Block], ins_id: &str, reply: &str) -> Result<()> {
         let n = blocks
             .iter()
@@ -2143,129 +2408,6 @@ impl Session {
             ins_id,
             &wp::splice_text_action(RegionKind::Body, ins_id, 0, n, reply),
         )
-    }
-
-    /// Bullets above the instruction become a table. Returns whether it did
-    /// — `false` when there were none to work with, in which case a reply
-    /// saying so was written in place of doing anything.
-    fn make_table(&mut self, blocks: &[Block], at: usize) -> Result<bool> {
-        let bullets = plan::bullets_above(blocks, at);
-        if bullets.is_empty() {
-            let reply = format!(
-                "{}: I looked for bullets above this line and found none.",
-                self.cfg.name
-            );
-            let Some(instruction_block) = blocks.get(at) else {
-                return Ok(false);
-            };
-            self.splice_reply(blocks, &instruction_block.id, &reply)?;
-            return Ok(false);
-        }
-        let lines: Vec<&str> = bullets
-            .iter()
-            .filter_map(|&i| blocks.get(i).map(|b| b.text.as_str()))
-            .collect();
-        let rows = plan::table_cells(&lines);
-        let cols = rows.first().map_or(1, Vec::len).max(1);
-        let Some(last_bullet_block) = bullets.last().and_then(|&i| blocks.get(i)) else {
-            // `bullets` was already shown non-empty above.
-            return Ok(false);
-        };
-        let last_bullet = last_bullet_block.id.clone();
-        let before: HashSet<String> = plan::table_ids(blocks).into_iter().collect();
-
-        self.edit(
-            &last_bullet,
-            &wp::insert_table_action(&last_bullet, rows.len(), cols),
-        )?;
-
-        // The table's cells were minted inside the action; read them back.
-        let fresh = plan::blocks(&self.editor.as_ref().context("no document")?.snapshot()?);
-        let table_id = plan::table_ids(&fresh)
-            .into_iter()
-            .find(|t| !before.contains(t))
-            .context("the inserted table's cells were not found")?;
-        let cells = plan::cells_of(&fresh, &table_id);
-        for (row, col, cell_id) in cells {
-            let text = rows
-                .get(row as usize)
-                .and_then(|r| r.get(col as usize))
-                .cloned()
-                .unwrap_or_default();
-            if text.is_empty() {
-                continue;
-            }
-            self.edit(
-                &cell_id,
-                &wp::splice_text_action(RegionKind::Body, &cell_id, 0, 0, &text),
-            )?;
-        }
-        let gone: Vec<String> = bullets
-            .iter()
-            .filter_map(|&i| blocks.get(i).map(|b| b.id.clone()))
-            .collect();
-        self.edit(&last_bullet, &wp::remove_blocks_action(gone))?;
-        Ok(true)
-    }
-
-    /// A caption paragraph under the first image. Returns whether there was
-    /// one — `false` when there was nothing to caption, in which case a
-    /// reply saying so was written in place of doing anything.
-    fn caption_image(&mut self, blocks: &[Block], at: usize) -> Result<bool> {
-        let Some(img) = plan::first_image(blocks) else {
-            let reply = format!(
-                "{}: there is no image in this document to caption.",
-                self.cfg.name
-            );
-            let Some(instruction_block) = blocks.get(at) else {
-                return Ok(false);
-            };
-            self.splice_reply(blocks, &instruction_block.id, &reply)?;
-            return Ok(false);
-        };
-        let Some(img_block) = blocks.get(img) else {
-            return Ok(false);
-        };
-        let img_id = img_block.id.clone();
-        self.edit(&img_id, &wp::insert_paragraph_action(&img_id, "Figure 1"))?;
-        Ok(true)
-    }
-
-    /// A structural pass over a rough draft: the first line becomes the
-    /// title, each section label under it becomes a heading. One
-    /// `SetParagraphStyle` per level, so the sections land together rather
-    /// than one flicker at a time. An empty draft — nothing to find a
-    /// title in — leaves the document untouched; this step always counts
-    /// as done either way.
-    fn make_heading(&mut self, blocks: &[Block], at: usize) -> Result<()> {
-        let found = plan::structure(blocks, at);
-        let Some(title_id) = found.title else {
-            return Ok(());
-        };
-        self.edit(
-            &title_id,
-            &wp::set_paragraph_style_action(
-                wp::RegionKind::Body,
-                vec![title_id.clone()],
-                "heading",
-                Some(1),
-                None,
-            ),
-        )?;
-        if let Some(anchor) = found.sections.first().cloned() {
-            self.edit(
-                &anchor,
-                &wp::set_paragraph_style_action(
-                    wp::RegionKind::Body,
-                    found.sections.clone(),
-                    "heading",
-                    Some(2),
-                    None,
-                ),
-            )?;
-        }
-        tracing::info!(sections = found.sections.len(), "made the draft a document");
-        Ok(())
     }
 
     /// Show the caret on `focus`, apply `action`, broadcast the change, and
@@ -2515,6 +2657,11 @@ fn word_action_anchor(
                 ids: vec![comment.clone()],
             }
         }
+        // Resolved against the end of the body at apply time.
+        WordProcessorAction::AppendParagraph { .. }
+        | WordProcessorAction::ContinueParagraph { .. } => {
+            tilo_actions::InteractionAnchor::Resource
+        }
     }
 }
 
@@ -2743,6 +2890,7 @@ mod tests {
                     runtime_epoch: "epoch-1".into(),
                     recipient_agent: "agent-1".into(),
                     channel_lease: "channel-1".into(),
+                    history: None,
                     task: run.clone(),
                 };
                 envelope.task.planning = runtime_collab::TaskRunPlanning::Model;
@@ -2788,6 +2936,11 @@ mod tests {
                     chat_catalogue_received: false,
                     last_chat_action: None,
                     chat_sources: HashMap::new(),
+                    live: crate::live::LivePublisher::default(),
+                    memory: agent_loop::Memory::default(),
+                    broker_revision: 0,
+                    catalogue_cache: None,
+                    turn: None,
                 };
                 let action = TaskAction {
                     app: "app".into(),
@@ -2983,6 +3136,7 @@ mod tests {
                 runtime_epoch: "epoch-1".into(),
                 recipient_agent: "agent-1".into(),
                 channel_lease: "channel-1".into(),
+                history: None,
                 task: run.clone(),
             };
             envelope.task.planning = runtime_collab::TaskRunPlanning::Model;
@@ -3028,6 +3182,11 @@ mod tests {
                 chat_catalogue_received: false,
                 last_chat_action: None,
                 chat_sources: HashMap::new(),
+                live: crate::live::LivePublisher::default(),
+                memory: agent_loop::Memory::default(),
+                broker_revision: 0,
+                catalogue_cache: None,
+                turn: None,
             };
             (session, run, sent)
         }
@@ -3072,6 +3231,87 @@ mod tests {
                     _ => None,
                 })
                 .collect()
+        }
+
+        /// A long declared incremental text becomes ordered durable steps — the first
+        /// chunk appends, the rest continue — each preceded by a live preview
+        /// of the paragraph text still uncommitted.
+        #[test]
+        fn a_long_paragraph_is_written_as_ordered_chunk_steps_with_previews() {
+            let text = "The ocean covers more than seventy percent of our planet, holding \
+                        ninety-seven percent of its water and most of its life, from reefs \
+                        to trenches.";
+            let chunks =
+                crate::live::split_chunks(text, crate::live::CHUNK_TARGET, crate::live::MAX_CHUNKS);
+            assert!(chunks.len() >= 2);
+            let replies = chunks
+                .iter()
+                .map(|_| Reply::Committed(succeeded("done"), serde_json::json!({"succeeded": {}})))
+                .collect();
+            let (mut session, run, sent) = fixture(replies, vec![]);
+            session.live.start();
+            // Generic names: chunking follows the declared parameter and
+            // continuation action, never particular operation ids.
+            let mut first = action("start", false);
+            first.label = "Start".into();
+            first.arguments = with_param(&first.arguments, "body", text);
+            let next = action("more", false);
+            let paragraph = ChunkedParagraph {
+                first: &first,
+                next: &next,
+                param: "body",
+                arguments: &first.arguments,
+                text,
+                budget: crate::live::MAX_CHUNKS,
+            };
+            let mut step_index = 2;
+            let mut stepped = true;
+            session
+                .run_chunked_paragraph(&run, 1, &mut step_index, &paragraph, &mut stepped)
+                .unwrap()
+                .unwrap();
+            assert_eq!(step_index, 2 + chunks.len());
+            let mut preview = None;
+            let mut steps = Vec::new();
+            for request in sent.borrow().iter() {
+                match request {
+                    CollabRequest::ReportEnrolledTask {
+                        update: runtime_collab::TaskRunUpdate::Progress { message },
+                        ..
+                    } => {
+                        let update = crate::live::AgentLiveUpdate::decode(message).unwrap();
+                        assert_eq!(update.state, crate::live::LiveState::Applying);
+                        assert_eq!(update.label, "Start · Resource");
+                        preview = update.preview.map(|preview| preview.text);
+                    }
+                    CollabRequest::InvokeTaskAction {
+                        step,
+                        action,
+                        arguments,
+                        ..
+                    } => steps.push((
+                        *step,
+                        action.clone(),
+                        arguments["body"].as_str().unwrap().to_owned(),
+                        preview.take().expect("a preview precedes every chunk"),
+                    )),
+                    _ => {}
+                }
+            }
+            let mut rest = text.to_owned();
+            for (index, (step, action, chunk, preview)) in steps.iter().enumerate() {
+                assert_eq!(*step, Some(u32::try_from(2 + index).unwrap()));
+                let expected = if index == 0 { "start" } else { "more" };
+                assert_eq!(action, expected);
+                assert_eq!(chunk, chunks[index]);
+                assert_eq!(*preview, rest, "the preview is the uncommitted rest");
+                rest = rest[chunk.len()..].to_owned();
+            }
+            assert!(rest.is_empty());
+            assert_eq!(
+                steps.iter().map(|step| step.2.as_str()).collect::<String>(),
+                text
+            );
         }
 
         /// A pending or unanswered step is re-sent identically, and the next
@@ -3816,14 +4056,23 @@ mod tests {
             assert_no_consumer(&observed, &[PRODUCE, "view"]);
         }
 
+        /// An operation the agent sees only in its own replica — the photo
+        /// editor does not publish it through the broker — is refused, never
+        /// applied to the replica behind the application's back. The chain
+        /// stops there, so nothing consumes the earlier product either.
         #[test]
-        fn run_plan_invalidates_content_after_a_local_photos_edit() {
+        fn run_plan_refuses_an_unpublished_local_edit_and_stops_the_chain() {
             let observed = run_sequence(produced(), content_result(), Between::LocalRotate, false);
             assert_eq!(
-                observed.rotation, 1,
-                "the intervening local Document operation must really run"
+                observed.rotation, 0,
+                "an operation the application does not publish must not run"
             );
             assert_no_consumer(&observed, &[PRODUCE]);
+            assert!(
+                observed.instruction.contains("not offering this action"),
+                "{}",
+                observed.instruction
+            );
         }
 
         #[test]
@@ -4018,6 +4267,14 @@ impl Session {
         }
         self.enrolled_active = Some(decision.acceptance);
         self.enrolled_sequence = 0;
+        // The host's durable record of this agent's earlier tasks replaces
+        // what this process remembers: it survives restarts and holds the
+        // exact operations each step ran.
+        if let Some(history) = &run.history
+            && !self.memory.restore(history)
+        {
+            tracing::warn!("ignored an unreadable agent history");
+        }
         let result = self.run_task(&run.task);
         self.enrolled_active = None;
         result
