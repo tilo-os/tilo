@@ -957,10 +957,32 @@ jobs:
       # endpoint neither resolves from cloud pools nor accepts that
       # credential, so the image build uses exactly what the runner provides.
       # A missing cache fails here instead of compiling uncached for hours.
+      #
+      # A publication never uses it. That credential can write every object
+      # in the bucket, and every CI job and agent sandbox holds it, so any of
+      # them could plant compiler output in a signed image, and the
+      # independent rebuild would agree with it. Publications compile with
+      # the cache off and receive no cache settings or credentials.
       - name: Bind the runner compiler cache
         id: compiler-cache
+        env:
+          PUBLISH: ${{ steps.release-mode.outputs.publish }}
         run: |
           set -euo pipefail
+          if [[ $PUBLISH == true ]]; then
+            {
+              echo 'mode=off'
+              echo 'required=0'
+              echo 'bucket='
+              echo 'endpoint='
+              # The Containerfile's own defaults, as the independent rebuild uses.
+              echo 'region=auto'
+              echo 'use_ssl=false'
+              echo 'secret-envs='
+            } >> "$GITHUB_OUTPUT"
+            echo '::notice::publication: compiling without the shared compiler cache'
+            exit 0
+          fi
           for name in SCCACHE_BUCKET SCCACHE_ENDPOINT SCCACHE_REGION SCCACHE_S3_USE_SSL AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY; do
             value="${!name:-}"
             if [[ -z $value || $value == *$'\n'* ]]; then
@@ -969,10 +991,16 @@ jobs:
             fi
           done
           {
+            echo 'mode=shared'
+            echo 'required=1'
             printf 'bucket=%s\n' "$SCCACHE_BUCKET"
             printf 'endpoint=%s\n' "$SCCACHE_ENDPOINT"
             printf 'region=%s\n' "$SCCACHE_REGION"
             printf 'use_ssl=%s\n' "$SCCACHE_S3_USE_SSL"
+            echo 'secret-envs<<TILO_COMPILER_CACHE_SECRETS'
+            echo 'aws_access_key_id=AWS_ACCESS_KEY_ID'
+            echo 'aws_secret_access_key=AWS_SECRET_ACCESS_KEY'
+            echo 'TILO_COMPILER_CACHE_SECRETS'
           } >> "$GITHUB_OUTPUT"
           echo "::notice::compiler cache: $SCCACHE_ENDPOINT bucket $SCCACHE_BUCKET prefix tilo/image/v1"
 
@@ -1045,13 +1073,12 @@ jobs:
             SCCACHE_REGION=${{ steps.compiler-cache.outputs.region }}
             SCCACHE_S3_KEY_PREFIX=tilo/image/v1
             SCCACHE_S3_USE_SSL=${{ steps.compiler-cache.outputs.use_ssl }}
-            TILO_REQUIRE_COMPILER_CACHE=1
+            TILO_COMPILER_CACHE=${{ steps.compiler-cache.outputs.mode }}
+            TILO_REQUIRE_COMPILER_CACHE=${{ steps.compiler-cache.outputs.required }}
           # The runner injects this bucket-scoped credential from a
           # least-privilege Kubernetes Secret. BuildKit exposes them only to
           # the Rust compile RUN; they never enter an image layer or build arg.
-          secret-envs: |
-            aws_access_key_id=AWS_ACCESS_KEY_ID
-            aws_secret_access_key=AWS_SECRET_ACCESS_KEY
+          secret-envs: ${{ steps.compiler-cache.outputs.secret-envs }}
           # buildkit clamps layer timestamps to SOURCE_DATE_EPOCH for
           # reproducible image digests.
           provenance: false
@@ -1105,13 +1132,12 @@ jobs:
             SCCACHE_REGION=${{ steps.compiler-cache.outputs.region }}
             SCCACHE_S3_KEY_PREFIX=tilo/image/v1
             SCCACHE_S3_USE_SSL=${{ steps.compiler-cache.outputs.use_ssl }}
-            TILO_REQUIRE_COMPILER_CACHE=1
+            TILO_COMPILER_CACHE=${{ steps.compiler-cache.outputs.mode }}
+            TILO_REQUIRE_COMPILER_CACHE=${{ steps.compiler-cache.outputs.required }}
           # The runner injects this bucket-scoped credential from a
           # least-privilege Kubernetes Secret. BuildKit exposes them only to
           # the Rust compile RUN; they never enter an image layer or build arg.
-          secret-envs: |
-            aws_access_key_id=AWS_ACCESS_KEY_ID
-            aws_secret_access_key=AWS_SECRET_ACCESS_KEY
+          secret-envs: ${{ steps.compiler-cache.outputs.secret-envs }}
           # buildkit clamps layer timestamps to SOURCE_DATE_EPOCH for
           # reproducible image digests.
           provenance: false
@@ -1175,13 +1201,12 @@ jobs:
             SCCACHE_REGION=${{ steps.compiler-cache.outputs.region }}
             SCCACHE_S3_KEY_PREFIX=tilo/image/v1
             SCCACHE_S3_USE_SSL=${{ steps.compiler-cache.outputs.use_ssl }}
-            TILO_REQUIRE_COMPILER_CACHE=1
+            TILO_COMPILER_CACHE=${{ steps.compiler-cache.outputs.mode }}
+            TILO_REQUIRE_COMPILER_CACHE=${{ steps.compiler-cache.outputs.required }}
           # The runner injects this bucket-scoped credential from a
           # least-privilege Kubernetes Secret. BuildKit exposes them only to
           # the Rust compile RUN; they never enter an image layer or build arg.
-          secret-envs: |
-            aws_access_key_id=AWS_ACCESS_KEY_ID
-            aws_secret_access_key=AWS_SECRET_ACCESS_KEY
+          secret-envs: ${{ steps.compiler-cache.outputs.secret-envs }}
           # buildkit clamps layer timestamps to SOURCE_DATE_EPOCH for
           # reproducible image digests.
           provenance: false
@@ -1247,10 +1272,9 @@ jobs:
             SCCACHE_REGION=${{ steps.compiler-cache.outputs.region }}
             SCCACHE_S3_KEY_PREFIX=tilo/image/v1
             SCCACHE_S3_USE_SSL=${{ steps.compiler-cache.outputs.use_ssl }}
-            TILO_REQUIRE_COMPILER_CACHE=1
-          secret-envs: |
-            aws_access_key_id=AWS_ACCESS_KEY_ID
-            aws_secret_access_key=AWS_SECRET_ACCESS_KEY
+            TILO_COMPILER_CACHE=${{ steps.compiler-cache.outputs.mode }}
+            TILO_REQUIRE_COMPILER_CACHE=${{ steps.compiler-cache.outputs.required }}
+          secret-envs: ${{ steps.compiler-cache.outputs.secret-envs }}
           provenance: false
           cache-to: |
             type=registry,ref=code.sandbox.example/qos/tilo-buildcache:${{ matrix.arch }}-wpe,mode=max,ignore-error=true
@@ -1334,15 +1358,8 @@ jobs:
             TILO_APP_COLLECTION_PUBLISHER=${{ env.TILO_APP_COLLECTION_PUBLISHER }}
             TILO_GENERATION=${{ env.TILO_GENERATION }}
             TILO_CFS_DIGEST=00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-            SCCACHE_BUCKET=${{ steps.compiler-cache.outputs.bucket }}
-            SCCACHE_ENDPOINT=${{ steps.compiler-cache.outputs.endpoint }}
-            SCCACHE_REGION=${{ steps.compiler-cache.outputs.region }}
-            SCCACHE_S3_KEY_PREFIX=tilo/image/v1
-            SCCACHE_S3_USE_SSL=${{ steps.compiler-cache.outputs.use_ssl }}
-            TILO_REQUIRE_COMPILER_CACHE=1
-          secret-envs: |
-            aws_access_key_id=AWS_ACCESS_KEY_ID
-            aws_secret_access_key=AWS_SECRET_ACCESS_KEY
+            TILO_COMPILER_CACHE=off
+            TILO_REQUIRE_COMPILER_CACHE=0
           provenance: false
           no-cache: true
 
