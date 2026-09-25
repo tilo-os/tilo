@@ -385,11 +385,7 @@ fn discover_with_urls(
     cancellation: &std::sync::atomic::AtomicBool,
     urls: Vec<String>,
 ) -> Option<Autoconfig> {
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .ok()?;
-    runtime.block_on(async {
+    let discovered = ui::rt::app().block_on(async {
         tokio::select! {
             biased;
             () = async {
@@ -400,7 +396,11 @@ fn discover_with_urls(
             } => None,
             result = tokio::time::timeout(std::time::Duration::from_secs(30), discover_candidates(email, urls)) => result.ok().flatten(),
         }
-    })
+    });
+    discovered
+        .inspect_err(|error| tracing::warn!(%error, "mail: autoconfig discovery could not run"))
+        .ok()
+        .flatten()
 }
 
 #[cfg(feature = "live")]

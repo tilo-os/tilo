@@ -2,10 +2,11 @@
 //! client. **Compiled only under `--features live`.**
 //!
 //! `rustypipe` is async (tokio); the [`YtBackend`] trait is sync because it is
-//! driven from Tube's blocking fetch worker. This backend therefore owns a
-//! small current-thread tokio runtime and `block_on`s each query. That keeps
-//! the async dependency fully contained here — no other module learns about
-//! tokio.
+//! driven from Tube's blocking fetch worker. This backend therefore waits on
+//! each query with the shared app runtime's `block_on`: the query future is
+//! polled on the worker thread while the runtime thread drives sockets,
+//! timers and whatever rustypipe spawns. That keeps the async dependency
+//! fully contained here — no other module learns about tokio.
 //!
 //! ## API surface used (rustypipe 0.11.x — verified)
 //! * construct: `RustyPipe::builder()…build()?`, then `rp.query()`
@@ -79,7 +80,7 @@ pub fn bind_potoken(provider: &dyn PoTokenProvider) -> &'static str {
 /// The live rustypipe-backed data source.
 pub struct RustyPipeBackend {
     rp: RustyPipe,
-    rt: tokio::runtime::Runtime,
+    rt: &'static ui::rt::AppRuntime,
     potoken_desc: &'static str,
 }
 
@@ -98,16 +99,15 @@ impl RustyPipeBackend {
     ///
     /// # Errors
     ///
-    /// Returns `Err` if the tokio runtime or the rustypipe client fails to build.
+    /// Returns `Err` if the app runtime is unusable from the calling thread or
+    /// the rustypipe client fails to build.
     pub fn with_potoken(provider: &dyn PoTokenProvider) -> Result<Self, BackendError> {
-        // A multi-thread runtime (not current-thread): rustypipe fires internal
-        // `tokio::spawn`/blocking work (visitor-data prefetch, the botguard
-        // subprocess) that a single-threaded runtime can deadlock on.
-        let rt = tokio::runtime::Builder::new_multi_thread()
-            .worker_threads(2)
-            .enable_all()
-            .build()
-            .map_err(|e| BackendError(format!("tokio runtime: {e}")))?;
+        // rustypipe `tokio::spawn`s background work (the visitor-data
+        // prefetch and the connection tasks behind its HTTP client) that must
+        // keep running after the query that started it returns. On the app
+        // runtime those tasks live on the runtime thread and progress
+        // independently of this worker, which only polls its own query.
+        let rt = ui::rt::try_app().map_err(|e| BackendError(format!("tokio runtime: {e}")))?;
         let potoken_desc = bind_potoken(provider);
         let can_stream = provider.can_stream();
         // Build the client *inside* the runtime so anything rustypipe wires up
@@ -125,6 +125,7 @@ impl RustyPipeBackend {
                 }
                 builder.build()
             })
+            .map_err(|e| BackendError(format!("tokio runtime: {e}")))?
             .map_err(|e| BackendError(format!("rustypipe build: {e}")))?;
         Ok(Self {
             rp,
@@ -133,11 +134,18 @@ impl RustyPipeBackend {
         })
     }
 
-    fn block<F, T>(&self, fut: F) -> T
+    /// Wait on one rustypipe query from the calling worker thread. A query
+    /// error and a refused wait (e.g. called from inside a runtime) both come
+    /// back as the error's message.
+    fn block<F, T, E>(&self, fut: F) -> Result<T, String>
     where
-        F: std::future::Future<Output = T>,
+        F: std::future::Future<Output = Result<T, E>>,
+        E: std::fmt::Display,
     {
-        self.rt.block_on(fut)
+        match self.rt.block_on(fut) {
+            Ok(result) => result.map_err(|e| e.to_string()),
+            Err(e) => Err(e.to_string()),
+        }
     }
 
     /// Run one search and split the results into videos, playlists and creator

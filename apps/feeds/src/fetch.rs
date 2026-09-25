@@ -1,16 +1,18 @@
-//! Background fetch worker.
+//! Background fetching.
 //!
-//! Networking runs off the UI thread: a dedicated thread owns a Tokio
-//! runtime and a reqwest client, receives [`FetchRequest`]s over a channel,
-//! and posts [`FetchResult`]s back. The widget drains results during its
-//! `sync` pass and folds them into the store + CRDT. HTTP feeds go through
-//! reqwest + feed-rs; `gemini://` feeds go through a raw TLS socket (TOFU)
-//! and the gemtext parser.
+//! Networking runs off the UI thread: each [`FetchRequest`] becomes its own
+//! task on the shared app runtime, and posts its [`FetchResult`] back over a
+//! channel the moment it completes, so one slow feed never holds up the
+//! others. The widget drains results during its `sync` pass and folds them
+//! into the store + CRDT. HTTP feeds go through reqwest + feed-rs; `gemini://`
+//! feeds go through a raw TLS socket (TOFU) and the gemtext parser. Parsing
+//! runs on the CPU pool, not on the runtime thread.
 //!
-//! None of this is touched by `--shots` — the worker is spawned lazily on
-//! the first real fetch, so the offline screenshot stays hermetic.
+//! None of this is touched by `--shots` — the worker is created lazily on the
+//! first real fetch, so the offline screenshot stays hermetic.
 
 use std::io::Cursor;
+use std::sync::OnceLock;
 use std::sync::mpsc::{Receiver, Sender};
 use std::time::Duration;
 
@@ -51,46 +53,65 @@ pub enum FetchResult {
     },
 }
 
-/// Handle to the worker. Dropping it closes the request channel, which
-/// makes the worker thread exit after its current job.
+/// Where queued requests go.
+enum Dispatch {
+    /// Each request runs as a task on the app runtime.
+    Runtime(&'static ui::rt::AppRuntime),
+    /// The runtime could not be started; requests are dropped (the failure
+    /// was reported once as a [`FetchResult::Failed`]).
+    Unavailable,
+    /// Tests: requests are only counted, never fetched.
+    #[cfg(test)]
+    Record,
+}
+
+/// Handle to the fetcher. Dropping it drops the result channel; tasks still
+/// in flight finish and their results are discarded.
 pub struct FetchWorker {
-    tx: Sender<FetchRequest>,
+    dispatch: Dispatch,
+    results: Sender<FetchResult>,
     rx: Receiver<FetchResult>,
     pending: usize,
 }
 
 impl FetchWorker {
-    /// Spawn the worker thread + its Tokio runtime.
+    /// Create a fetcher backed by the app runtime.
     pub fn spawn() -> Self {
-        let (req_tx, req_rx) = std::sync::mpsc::channel::<FetchRequest>();
         let (res_tx, res_rx) = std::sync::mpsc::channel::<FetchResult>();
-
-        // A clone survives a failed spawn (the closure below, and the `res_tx`
-        // it owns, never runs in that case) so the honest Failed result below
-        // still has a sender to use.
-        let fallback_tx = res_tx.clone();
-        let spawned = std::thread::Builder::new()
-            .name("feeds-fetch".into())
-            .spawn(move || worker_main(&req_rx, &res_tx))
-            .is_ok();
-        if !spawned {
-            let _ = fallback_tx.send(FetchResult::Failed {
-                feed_id: None,
-                message: "failed to spawn fetch worker thread".to_string(),
-            });
-        }
-
+        let dispatch = match ui::rt::try_app() {
+            Ok(runtime) => Dispatch::Runtime(runtime),
+            Err(e) => {
+                let _ = res_tx.send(FetchResult::Failed {
+                    feed_id: None,
+                    message: format!("runtime: {e}"),
+                });
+                Dispatch::Unavailable
+            }
+        };
         Self {
-            tx: req_tx,
+            dispatch,
+            results: res_tx,
             rx: res_rx,
             pending: 0,
         }
     }
 
-    /// Queue a request. Increments the in-flight counter.
+    /// Queue a request. Increments the in-flight counter. Never waits: the
+    /// fetch runs as a task on the app runtime.
     pub fn send(&mut self, req: FetchRequest) {
-        if self.tx.send(req).is_ok() {
-            self.pending += 1;
+        match self.dispatch {
+            Dispatch::Runtime(runtime) => {
+                let results = self.results.clone();
+                runtime.spawn(async move {
+                    let result = handle(http_client(), req).await;
+                    // If the UI is gone the send fails; the task simply ends.
+                    let _ = results.send(result);
+                });
+                self.pending += 1;
+            }
+            Dispatch::Unavailable => {}
+            #[cfg(test)]
+            Dispatch::Record => self.pending += 1,
         }
     }
 
@@ -108,23 +129,20 @@ impl FetchWorker {
         self.pending
     }
 
-    /// Build a worker with no backing fetch thread, plus the sender half of its
-    /// result channel. Used by tests to drive the *non-blocking* result path
+    /// Build a worker that never fetches, plus the sender half of its result
+    /// channel. Used by tests to drive the *non-blocking* result path
     /// deterministically: enqueue requests (which never touch the network),
     /// inject `FetchResult`s through the returned sender exactly as a real
-    /// worker thread would, and assert the UI drains them. Because there's no
-    /// thread, `send()` here only records `pending` — proving that queuing a
-    /// refresh is a constant-time, network-free operation.
+    /// fetch task would, and assert the UI drains them. `send()` here only
+    /// records `pending` — proving that queuing a refresh is a constant-time,
+    /// network-free operation.
     #[cfg(test)]
     pub fn for_test() -> (Self, Sender<FetchResult>) {
-        let (req_tx, req_rx) = std::sync::mpsc::channel::<FetchRequest>();
         let (res_tx, res_rx) = std::sync::mpsc::channel::<FetchResult>();
-        // Otherwise `req_rx` would drop here, so `send()` would fail; keep it
-        // alive so the pending counter advances just like the production path.
-        std::mem::forget(req_rx);
         (
             Self {
-                tx: req_tx,
+                dispatch: Dispatch::Record,
+                results: res_tx.clone(),
                 rx: res_rx,
                 pending: 0,
             },
@@ -133,48 +151,18 @@ impl FetchWorker {
     }
 }
 
-fn worker_main(req_rx: &Receiver<FetchRequest>, res_tx: &Sender<FetchResult>) {
-    // A *multi-thread* runtime so a burst of refresh requests run concurrently
-    // rather than head-of-line-blocking each other. Previously this used a
-    // current-thread runtime and `block_on`'d each request in turn, so a single
-    // slow (or 20s-timeout) feed stalled every feed queued behind it, making a
-    // "Refresh all" feel like it hung. Now each request is `spawn`ed and posts
-    // its own result back the instant it completes — fast feeds land first.
-    let runtime = match tokio::runtime::Builder::new_multi_thread()
-        .worker_threads(6)
-        .enable_all()
-        .build()
-    {
-        Ok(rt) => rt,
-        Err(e) => {
-            let _ = res_tx.send(FetchResult::Failed {
-                feed_id: None,
-                message: format!("runtime: {e}"),
-            });
-            return;
-        }
-    };
-
-    let client = tilo_net::http::client()
-        .user_agent("Tilo-Feeds/0.1 (+https://tilo.so)")
-        .timeout(Duration::from_secs(20))
-        .build()
-        .ok();
-
-    // Receive requests on this (blocking) thread and hand each one to the
-    // runtime as an independent task. The channel `recv()` blocks here, off the
-    // UI thread, so the UI never waits on the network.
-    while let Ok(req) = req_rx.recv() {
-        let client = client.clone();
-        let res_tx = res_tx.clone();
-        runtime.spawn(async move {
-            let result = handle(client.as_ref(), req).await;
-            // If the UI is gone the send fails; the task simply ends.
-            let _ = res_tx.send(result);
-        });
-    }
-    // Drop the runtime — outstanding tasks are detached and torn down when the
-    // process exits; for app shutdown that's fine (best-effort fetches).
+/// The shared HTTP client, built on first use by the first fetch task.
+fn http_client() -> Option<&'static reqwest::Client> {
+    static CLIENT: OnceLock<Option<reqwest::Client>> = OnceLock::new();
+    CLIENT
+        .get_or_init(|| {
+            tilo_net::http::client()
+                .user_agent("Tilo-Feeds/0.1 (+https://tilo.so)")
+                .timeout(Duration::from_secs(20))
+                .build()
+                .ok()
+        })
+        .as_ref()
 }
 
 async fn handle(client: Option<&reqwest::Client>, req: FetchRequest) -> FetchResult {
@@ -257,7 +245,9 @@ async fn fetch_feed(
         return Err(format!("HTTP {}", resp.status().as_u16()));
     }
     let bytes = resp.bytes().await.map_err(|e| format!("body: {e}"))?;
-    parse_http_feed(&bytes)
+    ui::rt::cpu(move || parse_http_feed(&bytes))
+        .await
+        .map_err(|e| format!("parse: {e}"))?
 }
 
 /// Parse RSS/Atom/JSON-feed bytes into our model via feed-rs.
@@ -349,7 +339,12 @@ pub(crate) fn derive_site_url(feed_url: &str) -> String {
 
 async fn fetch_gemini(url: &str) -> Result<(Option<String>, Vec<Article>), String> {
     let body = gemini_request(url).await?;
-    let blocks = gemtext::to_blocks(&body);
+    let (body, blocks) = ui::rt::cpu(move || {
+        let blocks = gemtext::to_blocks(&body);
+        (body, blocks)
+    })
+    .await
+    .map_err(|e| format!("parse: {e}"))?;
     // Use the first heading as the feed/article title if present.
     let title = blocks
         .iter()

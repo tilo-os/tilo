@@ -233,30 +233,19 @@ fn shot_handler(args: &LaunchArgs) -> Result<(), LaunchError> {
 )]
 fn live_root(args: &LaunchArgs) -> Result<Box<dyn Widget>, LaunchError> {
     let raw_args: Vec<String> = std::env::args().collect();
-    let received_share = read_received_share_stdin(&raw_args)
-        .map(|result| result.and_then(file_explorer::received_shares::admit_link));
+    let received_share = read_received_share_stdin(&raw_args);
     let mut widget = FileExplorerWidget::new();
     if received_share.is_none()
         && let Some(path) = args.positionals().first()
     {
         navigate_launch_directory(&mut widget, std::path::Path::new(path))?;
     }
-    if let Some(result) = received_share {
-        match result {
-            Ok(status) => {
-                if let Some(mount) = status.mount {
-                    widget.navigate(std::path::PathBuf::from(mount.path));
-                    widget.set_external_status(if mount.running {
-                        file_explorer::i18n::t("files-received-file")
-                    } else {
-                        file_explorer::i18n::t("files-received-mount-starting")
-                    });
-                } else {
-                    widget.set_external_status(file_explorer::i18n::t("files-received-admitted"));
-                }
-            }
-            Err(error) => widget.set_external_status(error),
-        }
+    match received_share {
+        // Admission talks to the recipient service; the widget runs it on
+        // the app runtime and opens the mount when it is admitted.
+        Some(Ok(uri)) => widget.admit_received_share(uri),
+        Some(Err(error)) => widget.set_external_status(error),
+        None => {}
     }
     Ok(Box::new(widget))
 }
