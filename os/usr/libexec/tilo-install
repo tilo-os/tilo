@@ -1493,13 +1493,11 @@ if [ "$INTERNAL_MODE" -eq 1 ]; then
 fi
 
 VM_INSTALL_PROOF=""
+VM_INSTALL_PROOF_PORT=/dev/virtio-ports/org.tilo.vm-install-proof
 if [ "$ALONGSIDE" -eq 1 ] && [ "$ENCRYPT" -eq 1 ] \
-    && [ -e /run/tilo-installer/vm-install-proof.enabled ]; then
-  [ -f /run/tilo-installer/vm-install-proof.enabled ] \
-    && [ ! -L /run/tilo-installer/vm-install-proof.enabled ] \
-    && [ "$(stat -c '%u:%a' /run/tilo-installer/vm-install-proof.enabled)" = "0:600" ] \
-    && systemd-detect-virt --vm --quiet \
-    || die "VM install proof marker requires a root-owned private file inside a VM"
+    && [ -e "$VM_INSTALL_PROOF_PORT" ]; then
+  [ -c "$VM_INSTALL_PROOF_PORT" ] && systemd-detect-virt --vm --quiet \
+    || die "VM install proof requires a named virtio character device inside a VM"
   VM_INSTALL_PROOF=/run/tilo-installer/vm-install-proof.json
   python3 /usr/libexec/tilo-vm-install-proof.py \
     --target-root "$MNT" --deploy-etc "$DEPLOY_ETC" \
@@ -1532,12 +1530,12 @@ fi
 # instead of failing the install.
 if [ -n "$VM_INSTALL_PROOF" ]; then
   # This line is emitted only after `finish` succeeded and the encrypted
-  # target was closed. The VM harness captures it from the backend log; the
-  # guest's checked image identity must still match the host's signed CI pin.
+  # target was closed. The dedicated virtio port carries no installer logs
+  # or secrets. The host must compare the image identity to its signed CI pin.
   proof_line="TILO_VM_INSTALL_PROOF_V1=$(cat "$VM_INSTALL_PROOF")"
-  log "$proof_line"
-  printf '%s\n' "$proof_line" > /dev/console \
-    || die "VM install proof could not reach the guest console"
+  [ -c "$VM_INSTALL_PROOF_PORT" ] \
+    && printf '%s\n' "$proof_line" > "$VM_INSTALL_PROOF_PORT" \
+    || die "VM install proof could not reach its dedicated virtio port"
 fi
 if [ "$INTERNAL_MODE" -eq 1 ]; then
   step "Pointing the next restart at the installed Tilo"

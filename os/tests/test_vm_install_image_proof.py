@@ -97,7 +97,9 @@ class ProofTests(unittest.TestCase):
         emitted = backend.index('proof_line="TILO_VM_INSTALL_PROOF_V1=')
         self.assertLess(prepared, finished)
         self.assertLess(finished, emitted)
-        self.assertIn('stat -c \'%u:%a\' /run/tilo-installer/vm-install-proof.enabled', backend)
+        self.assertIn('VM_INSTALL_PROOF_PORT=/dev/virtio-ports/org.tilo.vm-install-proof', backend)
+        self.assertIn('systemd-detect-virt --vm --quiet', backend)
+        self.assertIn('printf \'%s\\n\' "$proof_line" > "$VM_INSTALL_PROOF_PORT"', backend)
 
 
 if __name__ == "__main__":
