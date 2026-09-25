@@ -36,6 +36,8 @@ class OfflineTargetTest(unittest.TestCase):
         signature = blob({"schemaVersion": 2, "mediaType": "application/vnd.oci.image.manifest.v1+json",
                           "config": config, "layers": [blob(b"signature attachment")]})
         target["mediaType"] = signature["mediaType"] = "application/vnd.oci.image.manifest.v1+json"
+        target["annotations"] = {"kind": "dev.cosignproject.cosign/image"}
+        signature["annotations"] = {"kind": "dev.cosignproject.cosign/sigs"}
         (layout / "index.json").write_text(json.dumps({
             "schemaVersion": 2, "manifests": [target, signature]}))
         self.ref = "code.podesta.ai/qos/tilo@" + target["digest"]
@@ -65,6 +67,14 @@ class OfflineTargetTest(unittest.TestCase):
     def test_tampered_blob_rejected(self):
         (self.blobs / self.layer["digest"].removeprefix("sha256:")).write_bytes(b"tampered-os-payload")
         with self.assertRaisesRegex(ValueError, "blob"):
+            offline.verify(self.root)
+
+    def test_missing_image_kind_rejected(self):
+        index_path = self.root / "oci/index.json"
+        index = json.loads(index_path.read_text())
+        index["manifests"][0].pop("annotations")
+        index_path.write_text(json.dumps(index))
+        with self.assertRaisesRegex(ValueError, "pinned target"):
             offline.verify(self.root)
 
     def test_extra_transport_file_rejected(self):
