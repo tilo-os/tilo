@@ -84,7 +84,7 @@ thread_local! {
 }
 
 /// Installs a hook recording `message @ file:line` of the last panic on this
-/// thread (and, with AM012_LOUD, printing it). Returns the previous hook.
+/// thread (with AM012_LOUD, plus the vendored backtrace frames). Returns the previous hook.
 fn record_panics() -> Box<dyn Fn(&std::panic::PanicHookInfo<'_>) + Sync + Send + 'static> {
     let previous = std::panic::take_hook();
     let loud = std::env::var_os("AM012_LOUD").is_some();
@@ -96,9 +96,14 @@ fn record_panics() -> Box<dyn Fn(&std::panic::PanicHookInfo<'_>) + Sync + Send +
             .or_else(|| info.payload().downcast_ref::<&str>().map(|s| s.to_string()))
             .unwrap_or_default();
         let at = info.location().map(|l| format!("{}:{}", l.file(), l.line())).unwrap_or_default();
-        let full = format!("{} @ {at}", msg.chars().take(120).collect::<String>());
+        let mut full = format!("{} @ {at}", msg.chars().take(120).collect::<String>());
         if loud {
-            eprintln!("panic: {full}");
+            // Keep only the vendored frames: enough to find the caller.
+            let trace = std::backtrace::Backtrace::force_capture().to_string();
+            for frame in trace.lines().filter(|l| l.contains("automerge::") || l.contains("hexane::")).take(12) {
+                full.push_str("\n    ");
+                full.push_str(frame.trim());
+            }
         }
         LAST_PANIC.with(|p| *p.borrow_mut() = Some(full));
     }));
@@ -312,7 +317,9 @@ fn mutation_sweep_never_panics_on_any_load_path() {
     println!("mutation sweep: {total} mutants x 3 paths in {:?}, {} panics", started.elapsed(), failures.len());
     let mut groups: Vec<(String, usize, String)> = Vec::new();
     for (site, path, msg, input) in &failures {
-        let key = format!("{path:?}: {}", msg.replace(|c: char| c.is_ascii_digit(), "#"));
+        // Digits masked in the message (ids, lengths), kept in the location.
+        let (text, at) = msg.rsplit_once(" @ ").unwrap_or((msg, ""));
+        let key = format!("{path:?}: {} @ {at}", text.replace(|c: char| c.is_ascii_digit(), "#"));
         match groups.iter_mut().find(|g| g.0 == key) {
             Some(g) => g.1 += 1,
             None => groups.push((key, 1, format!("{site}: (\"{site}\", \"{input}\"),"))),

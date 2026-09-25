@@ -353,6 +353,14 @@ pub trait RleValue: ColumnValueRef {
         Self::try_unpack::<C>(data).unwrap()
     }
 
+    /// qOS: [`unpack`](Self::unpack) for the streaming decoders, which also
+    /// read raw, unvalidated bytes: `None` for malformed data instead of a
+    /// panic. Same cost as `unpack` (types that skip validation in `unpack`,
+    /// i.e. `String`'s UTF-8 check, skip it here too and only bounds-check).
+    fn unpack_or_none<C: Codec>(data: &[u8]) -> Option<(usize, Self::Get<'_>)> {
+        Self::try_unpack::<C>(data).ok()
+    }
+
     /// Construct the `Get` value for a null entry.
     ///
     /// # Panics
@@ -417,6 +425,11 @@ impl<T: RleValue> RleValue for Option<T> {
     fn unpack<C: Codec>(data: &[u8]) -> (usize, Option<T::Get<'_>>) {
         let (n, v) = T::unpack::<C>(data);
         (n, Some(v))
+    }
+
+    fn unpack_or_none<C: Codec>(data: &[u8]) -> Option<(usize, Option<T::Get<'_>>)> {
+        let (n, v) = T::unpack_or_none::<C>(data)?;
+        Some((n, Some(v)))
     }
 
     fn is_null(value: Option<T::Get<'_>>) -> bool {
@@ -700,6 +713,19 @@ impl RleValue for String {
         // path.  Internal column manipulation never produces invalid UTF-8.
         let s = unsafe { std::str::from_utf8_unchecked(&data[hdr..hdr + len]) };
         (hdr + len, s)
+    }
+
+    /// qOS: bounds-checked, UTF-8 unchecked, like `unpack`. The streaming
+    /// decoder is the only caller that sees raw bytes; every raw `String`
+    /// column it reads is validated first (automerge: `Column::load`, and
+    /// the bundle column validator in `storage/bundle/validate.rs`).
+    fn unpack_or_none<C: Codec>(data: &[u8]) -> Option<(usize, &str)> {
+        let (hdr, len) = C::read_unsigned(data)?;
+        let end = hdr.checked_add(usize::try_from(len).ok()?)?;
+        let bytes = data.get(hdr..end)?;
+        // Safety: as for `unpack` above.
+        let s = unsafe { std::str::from_utf8_unchecked(bytes) };
+        Some((end, s))
     }
 
     fn pack<C: Codec>(value: &str, out: &mut Vec<u8>) -> bool {

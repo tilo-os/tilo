@@ -45,8 +45,10 @@ impl<'a, T: DeltaValue, C: Codec> DeltaDecoder<'a, T, C> {
         use crate::encoding::RunDecoder;
         let run = self.inner.next_run_max(max)?;
         let value = T::Inner::to_opt(run.value);
+        // qOS: wrapping, the release-build behaviour: raw bytes can overflow
+        // the running sum, which must not panic in debug builds either.
         if let Some(d) = value {
-            self.running += d * run.count as i64;
+            self.running = self.running.wrapping_add(d.wrapping_mul(run.count as i64));
         }
         Some(crate::Run {
             count: run.count,
@@ -72,7 +74,8 @@ impl<T: DeltaValue, C: Codec> Iterator for DeltaDecoder<'_, T, C> {
         match T::Inner::to_opt(self.inner.next()?) {
             None => Some(T::null_value()),
             Some(d) => {
-                self.running += d;
+                // qOS: wrapping, see `next_delta_run_max`.
+                self.running = self.running.wrapping_add(d);
                 Some(T::from_i64(self.running))
             }
         }

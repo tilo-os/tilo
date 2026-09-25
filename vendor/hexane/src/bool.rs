@@ -554,6 +554,10 @@ impl<'a, C: Codec> BoolDecoder<'a, C> {
             self.value = !self.value;
             self.remaining = count;
         } else {
+            // qOS: a truncated run count ends the column. Leaving `byte_pos`
+            // where it was made `next`/`nth` retry the same read forever on
+            // raw, unvalidated bytes (automerge bundles).
+            self.byte_pos = self.data.len();
             self.remaining = 0;
         }
     }
