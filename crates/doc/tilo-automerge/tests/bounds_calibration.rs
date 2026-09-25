@@ -693,3 +693,78 @@ fn ground_fragment_chain_is_charged_quadratically() {
     }
     t.finish();
 }
+
+// ── typed history (snapshot load) ──────────────────────────────────────────
+
+/// `splices` splices of "typed words " at the end of a text, committing
+/// every `every` splices.
+fn typed_history(splices: usize, every: usize) -> AutoCommit {
+    let mut doc = AutoCommit::new().with_actor(actor(1));
+    let text = doc.put_object(ROOT, "t", ObjType::Text).unwrap();
+    let mut len = 0;
+    for i in 0..splices {
+        doc.splice_text(&text, len, 0, "typed words ").unwrap();
+        len += 12;
+        if (i + 1) % every == 0 {
+            doc.commit();
+        }
+    }
+    doc.commit();
+    doc
+}
+
+/// `n` single keystrokes, committing each.
+fn keystrokes(n: usize) -> AutoCommit {
+    let mut doc = AutoCommit::new().with_actor(actor(1));
+    let text = doc.put_object(ROOT, "t", ObjType::Text).unwrap();
+    for i in 0..n {
+        doc.splice_text(&text, i, 0, "k").unwrap();
+        doc.commit();
+    }
+    doc
+}
+
+fn measure_snapshot(t: &mut Table, name: &str, doc: &mut AutoCommit) {
+    let bytes = doc.save();
+    let changes = doc.get_changes(&[]);
+    let mut limits = NativeLimits::default();
+    limits.max_operations = 1 << 22;
+    limits.max_operation_counter = 1 << 22;
+    limits.max_normalized_bytes = 64 << 20;
+    let mut scratch = allowance();
+    let checked = AutoCommit::inspect_bounded(&bytes, &limits, &mut scratch).unwrap();
+    let shape = checked.shape();
+    let load_bound = shape
+        .native_load_peak_probe(fragments(&changes), 1)
+        .unwrap();
+    let parsed_bound = shape.native_parsed_probe().unwrap();
+    let (loaded, load_peak) = peak_of(|| AutoCommit::load(&bytes).unwrap());
+    let (copy, retained) = retained_of(|| loaded.clone());
+    drop(copy);
+    drop(loaded);
+    let (held, parsed) = retained_of(|| changes.clone());
+    drop(held);
+    println!(
+        "{name}: {} ops, {} changes, {} bytes, retained {retained}",
+        shape.operations(),
+        changes.len(),
+        bytes.len()
+    );
+    t.add(name, "load peak", load_peak, load_bound, true);
+    t.add(name, "parsed changes", parsed, parsed_bound, true);
+}
+
+#[test]
+fn typed_history_snapshots_load_within_tight_bounds() {
+    println!("sizes {:?}", automerge::resource_limits::NativeShape::native_sizes_probe());
+    let mut t = Table::default();
+    for (name, mut doc) in [
+        ("typed 1k splices /3", typed_history(1_000, 3)),
+        ("typed 4k splices /3", typed_history(4_000, 3)),
+        ("typed 4k splices in 2 changes", typed_history(4_000, 2_000)),
+        ("keystrokes 10k /1", keystrokes(10_000)),
+    ] {
+        measure_snapshot(&mut t, name, &mut doc);
+    }
+    t.finish();
+}
