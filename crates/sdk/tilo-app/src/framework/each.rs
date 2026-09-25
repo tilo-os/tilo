@@ -103,6 +103,15 @@ impl<R: Resource> Widget for Each<R> {
         }
     }
 
+    // The per-frame update pass drives retained models; every row sees it.
+    fn update(&mut self, state: &mut AutoCommit, path: &ObjId) -> bool {
+        let mut changed = false;
+        for row in &mut self.rows {
+            changed |= row.widget.update(state, path);
+        }
+        changed
+    }
+
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,

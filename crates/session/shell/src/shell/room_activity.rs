@@ -19,6 +19,7 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 use std::fmt::Write as _;
 use std::rc::Rc;
 use std::time::{Duration, Instant, SystemTime};
+use tilo_automerge::ApplyIncoming;
 
 use automerge::{ChangeHash, Prop, ReadDoc, ScalarValue, Value};
 use collab_types::OpClass;
@@ -2147,7 +2148,7 @@ impl RoomActivityPane {
             // the historical clock; the replay snapshot is discarded after
             // this frame is materialised.
             let mut doc = baseline.doc.fork();
-            doc.isolate(&heads);
+            doc.isolate_at(&heads);
             let mut snapshot = baseline.clone();
             snapshot.doc = doc;
             snapshot.resync_cache_from_doc();
@@ -8987,7 +8988,7 @@ mod tests {
 
         let mut peer = automerge::AutoCommit::new();
         peer.set_actor(automerge::ActorId::from("bob".as_bytes()));
-        peer.apply_changes(
+        peer.apply_incoming(
             tree.export_changes_since(&[])
                 .iter()
                 .map(|b| automerge::Change::try_from(b.as_slice()).unwrap()),
@@ -9552,9 +9553,11 @@ mod tests {
         // Merge each way round and compare. Both sides have to land on the same
         // single band, whichever order the names arrived in.
         let mut mine = tree.doc.fork();
-        mine.merge(&mut peer.clone()).expect("peers merge");
+        mine.merge_incoming(&mut peer.clone()).expect("peers merge");
         let mut theirs = peer.fork();
-        theirs.merge(&mut tree.doc.clone()).expect("peers merge");
+        theirs
+            .merge_incoming(&mut tree.doc.clone())
+            .expect("peers merge");
 
         let a = ui::history_groups::read_named_ranges(&mine, &AuthorDirectory::new());
         let b = ui::history_groups::read_named_ranges(&theirs, &AuthorDirectory::new());
@@ -9581,7 +9584,7 @@ mod tests {
         peer.set_actor(automerge::ActorId::from("ada".as_bytes()));
         ui::history_groups::name_range(&mut peer, &start, Some(&end), "Ada's pass");
         qdoc::history::commit_stamped(&mut peer);
-        tree.doc.merge(&mut peer).expect("peers merge");
+        tree.doc.merge_incoming(&mut peer).expect("peers merge");
 
         pane.invalidate();
         pane.refresh(&mut tree);

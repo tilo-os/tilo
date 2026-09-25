@@ -10,6 +10,7 @@ CONSUMERS = {
     "build-builder-image.yml": 2,
     "build-image.yml": 1,
     "build-kernel.yml": 2,
+    "snapshot-kernel-buildroot.yml": 3,
     "snapshot-rpms.yml": 1,
     "snapshot-wpe-buildroot.yml": 3,
     "tilo-relay.yaml": 2,
@@ -45,6 +46,7 @@ class CosignInstallActionTests(unittest.TestCase):
         for name in (
             "build-builder-image.yml",
             "build-kernel.yml",
+            "snapshot-kernel-buildroot.yml",
             "snapshot-rpms.yml",
             "snapshot-wpe-buildroot.yml",
             "tilo-relay.yaml",

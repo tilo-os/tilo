@@ -22,6 +22,7 @@ ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["po
 # The Tilo action model: doc-mutating operations are replayable, undoable actions.
 tilo-actions = { path = "../../crates/collab/actions" }
 automerge.workspace = true
+tilo-automerge.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 uuid.workspace = true

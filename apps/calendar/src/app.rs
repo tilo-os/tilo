@@ -23,6 +23,7 @@ use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
 use std::path::PathBuf;
+use tilo_automerge::ApplyIncoming;
 
 use automerge::{AutoCommit, ChangeHash, ObjId};
 use chrono::{Datelike, Duration, Local, NaiveDate, NaiveDateTime, NaiveTime, Timelike};
@@ -7077,7 +7078,7 @@ impl Widget for CalendarApp {
             if let Some(p) = &self.data_path
                 && let Some(mut loaded) = crate::store::load(p)
             {
-                let _ = state.merge(&mut loaded);
+                let _ = state.merge_incoming(&mut loaded);
             }
             // Seed sample content ONLY in the demo build, and only when the
             // document is still empty.

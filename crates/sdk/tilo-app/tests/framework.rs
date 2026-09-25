@@ -202,3 +202,109 @@ fn the_palette_and_agents_see_every_action() {
         );
     }
 }
+
+fn typed(operation: ChecklistAction) -> Invoke<Checklist> {
+    Invoke::apply(&tilo_app::tilo_resource::Stamped {
+        operation,
+        now_ms: 0,
+    })
+    .unwrap()
+}
+
+#[test]
+fn the_generic_apply_action_is_for_agents_and_scripts_only() {
+    let mut app = TestApp::<ChecklistApp>::new().unwrap();
+    let resources = app.harness().resources();
+    let apply = resources
+        .iter()
+        .flat_map(|resource| &resource.actions)
+        .find(|spec| spec.id == tilo_app::tilo_resource::APPLY)
+        .expect("apply is published for agents and scripts");
+    assert!(apply.is_programmatic(), "never a palette row");
+    assert!(apply.contract.confirmation_depends_on_arguments());
+    let named = resources
+        .iter()
+        .flat_map(|resource| &resource.actions)
+        .find(|spec| spec.id == "rename")
+        .unwrap();
+    assert!(
+        !named.is_programmatic(),
+        "named actions stay in the palette"
+    );
+}
+
+#[test]
+fn a_destructive_typed_value_is_confirmed_like_its_named_action() {
+    let mut app = TestApp::<ChecklistApp>::new().unwrap();
+    // An ordinary typed edit applies directly.
+    app.invoke(typed(ChecklistAction::Rename {
+        title: "Weekly".into(),
+    }))
+    .unwrap();
+    assert_eq!(app.state().title, "Weekly");
+
+    app.invoke(Checklist::ADD.with("milk".into())).unwrap();
+    let id = app.state().items.ids().next().cloned().unwrap();
+    app.invoke(typed(ChecklistAction::SetDone {
+        item: id,
+        done: true,
+    }))
+    .unwrap();
+
+    // `clear_done` is `#[action(destructive)]`: reached through `apply` it
+    // needs the same confirmation its named declaration does.
+    assert!(matches!(
+        app.invoke(typed(ChecklistAction::ClearDone {})),
+        Err(tilo_actions::DoorError::ConfirmationRequired)
+    ));
+    assert_eq!(
+        app.state().items.len(),
+        1,
+        "the refused edit changed nothing"
+    );
+    app.invoke_confirmed(typed(ChecklistAction::ClearDone {}))
+        .unwrap();
+    assert!(app.state().items.is_empty());
+}
+
+#[test]
+fn history_restores_a_past_version_through_the_host() {
+    let mut app = TestApp::<ChecklistApp>::new().unwrap();
+    app.invoke(Checklist::RENAME.with("Groceries".into()))
+        .unwrap();
+    app.invoke(Checklist::ADD.with("milk".into())).unwrap();
+    let past = app.state();
+    let version = app.versions().pop().unwrap().hash;
+    app.invoke(Checklist::RENAME.with("Hardware".into()))
+        .unwrap();
+    app.invoke(Checklist::ADD.with("nails".into())).unwrap();
+    assert_ne!(app.state(), past);
+
+    let harness = app.harness();
+    assert!(
+        harness.targets().contains_key("history-open"),
+        "a framework app has History"
+    );
+    harness.click_named("history-open").unwrap();
+    let entry = tilo_app::history_source::entry_id_from_hash(&version.to_string());
+    let target = format!(
+        "timeline-entry:{}",
+        tilo_app::widget::history_group::hex16(&entry)
+    );
+    harness
+        .perform_semantic_named(
+            "activity_timeline",
+            Some(&target),
+            &tilo_app::a11y::Action::Activate,
+        )
+        .unwrap();
+    harness.click_named("history-restore").unwrap();
+    harness.key("Enter");
+    harness.relayout();
+    assert_eq!(app.state(), past);
+
+    // Back in the live app, the restore is one undoable step.
+    app.harness().click_named("history-back-live").unwrap();
+    assert!(app.undo());
+    assert_eq!(app.state().title, "Hardware");
+}

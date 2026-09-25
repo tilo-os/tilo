@@ -32,6 +32,20 @@ const ASYNC_APP_TEMPLATE: &str = include_str!("../templates/async.rs");
 const DOCUMENT_APP_TEMPLATE: &str = include_str!("../templates/document.rs");
 const QR_APP_TEMPLATE: &str = include_str!("../templates/qr.rs");
 const WORKSPACE_APP_TEMPLATE: &str = include_str!("../templates/workspace.rs");
+/// The graph template as generated before apps started on the framework.
+/// Kept only to recognise, and migrate, apps generated from it.
+const LEGACY_GRAPH_APP_TEMPLATE: &str = include_str!("../templates/legacy/graph.rs");
+const STARTER_APP_TESTS: &str = include_str!("../templates/tests/starter.rs");
+const DATA_APP_TESTS: &str = include_str!("../templates/tests/data.rs");
+const LIST_APP_TESTS: &str = include_str!("../templates/tests/list.rs");
+const TREE_APP_TESTS: &str = include_str!("../templates/tests/tree.rs");
+const GRAPH_APP_TESTS: &str = include_str!("../templates/tests/graph.rs");
+const GRAPH_SCREEN_TESTS: &str = include_str!("../templates/tests/graph_screen.rs");
+const ASYNC_APP_TESTS: &str = include_str!("../templates/tests/async.rs");
+const DOCUMENT_APP_TESTS: &str = include_str!("../templates/tests/document.rs");
+const QR_APP_TESTS: &str = include_str!("../templates/tests/qr.rs");
+const WORKSPACE_APP_TESTS: &str = include_str!("../templates/tests/workspace.rs");
+const NATIVE_APP_TESTS: &str = include_str!("../templates/tests/native.rs");
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Template {
@@ -63,7 +77,7 @@ impl Template {
 
     fn description(self) -> &'static str {
         match self {
-            Self::Starter => "Accessible form and standard lifecycle",
+            Self::Starter => "Profile resource edited through bound form controls",
             Self::Data => "Sparse table with retained cell controls",
             Self::List => "Sparse variable-height retained list",
             Self::Tree => "Professional hierarchy browser",
@@ -2429,14 +2443,17 @@ fn is_generated_graph_app(app_dir: &Path) -> Result<bool> {
 fn migrate_generated_graph_context(source: &str) -> String {
     let legacy_template = legacy_graph_app_template();
     if source.contains(&legacy_template) {
-        source.replacen(&legacy_template, GRAPH_APP_TEMPLATE, 1)
+        source.replacen(&legacy_template, LEGACY_GRAPH_APP_TEMPLATE, 1)
     } else {
         source.to_owned()
     }
 }
 
+/// The widget-root graph template from before `screens::router_with`: apps
+/// generated from it get the component context wired on their next
+/// component, in the widget-root form they already use.
 fn legacy_graph_app_template() -> String {
-    GRAPH_APP_TEMPLATE.replace(GENERATED_GRAPH_ROUTER_CALL, LEGACY_GRAPH_ROUTER_CALL)
+    LEGACY_GRAPH_APP_TEMPLATE.replace(GENERATED_GRAPH_ROUTER_CALL, LEGACY_GRAPH_ROUTER_CALL)
 }
 
 fn generated_graph_context_ready(app_dir: &Path) -> Result<bool> {
@@ -3996,14 +4013,14 @@ fn doctor_resolved_app_with_capnp_probe(
         &app_dir,
         "src/lib.rs",
         "app root",
-        "pub fn app_root",
+        &["impl ResourceApp for", "pub fn app_root"],
         &mut checks,
     );
     check_source_file(
         &app_dir,
         "src/main.rs",
         "launch lifecycle",
-        "LaunchSpec::new",
+        &["framework::run::<", "LaunchSpec::new"],
         &mut checks,
     );
     check_resource_action_surface(&app_dir, &mut checks);
@@ -4105,10 +4122,19 @@ fn check_resource_action_surface(app_dir: &Path, checks: &mut Vec<DoctorCheck>) 
         code.contains("OperationKind::Effect") || code.contains("OperationKind::View");
     let toolkit_surface = toolkit_host && toolkit_descriptor;
     let custom_surface = custom_catalogue && (!custom_operation || custom_invocation);
-    let (status, detail) = if toolkit_surface || custom_surface {
+    // `#[resource]` turns `#[action]` methods into the published, replayable
+    // catalogue, and `ResourceApp` hosts it; a hand-written `impl Resource`
+    // (a custom storage layout) is the same contract.
+    let framework_surface = (code.contains("#[resource(") && code.contains("#[action"))
+        || code.contains("impl Resource for");
+    let framework_host = code.contains("impl ResourceApp for");
+    let framework = framework_surface && framework_host;
+    let (status, detail) = if framework || toolkit_surface || custom_surface {
         (
             DoctorStatus::Pass,
-            if toolkit_surface {
+            if framework {
+                "the app framework publishes the resource's typed actions"
+            } else if toolkit_surface {
                 "native SDK host publishes a typed resource/action catalogue"
             } else if custom_operation {
                 "custom widget publishes and invokes a typed resource/action catalogue"
@@ -5698,19 +5724,26 @@ fn check_ui_dependency(app_dir: &Path, manifest: &toml::Table, checks: &mut Vec<
     });
 }
 
+/// Check that `relative` uses one of the `expected` generated contracts: the
+/// framework's, listed first, or an older generated app's.
 fn check_source_file(
     app_dir: &Path,
     relative: &'static str,
     label: &'static str,
-    expected: &str,
+    expected: &[&str],
     checks: &mut Vec<DoctorCheck>,
 ) {
     let path = app_dir.join(relative);
     let (status, detail) = match std::fs::read_to_string(&path) {
-        Ok(source) if source.contains(expected) => (DoctorStatus::Pass, relative.to_string()),
+        Ok(source) if expected.iter().any(|needle| source.contains(needle)) => {
+            (DoctorStatus::Pass, relative.to_string())
+        }
         Ok(_) => (
             DoctorStatus::Warning,
-            format!("{relative} does not use the generated {expected} contract"),
+            format!(
+                "{relative} does not use the generated {} contract",
+                expected.first().copied().unwrap_or_default()
+            ),
         ),
         Err(error) => (DoctorStatus::Fail, format!("{relative}: {error}")),
     };
@@ -6963,7 +6996,7 @@ fn prompt_component_template(
 fn prompt_template(input: &mut impl io::BufRead, output: &mut impl io::Write) -> Result<Template> {
     writeln!(
         output,
-        "\nStarter template:\n  1) starter    Accessible form and standard lifecycle\n  2) data       Sparse table with retained cell controls\n  3) list       Sparse variable-height retained list\n  4) tree       Professional hierarchy browser\n  5) graph      Serialized UI graph and router\n  6) async      Restartable background task with cancellation\n  7) document   Durable synchronized editor with undo\n  8) qr         IME input to accessible generated QR output\n  9) workspace  Responsive master-detail app with durable item editing"
+        "\nStarter template:\n  1) starter    Profile resource edited through bound form controls\n  2) data       Sparse table with retained cell controls\n  3) list       Sparse variable-height retained list\n  4) tree       Professional hierarchy browser\n  5) graph      Serialized UI graph and router\n  6) async      Restartable background task with cancellation\n  7) document   Durable synchronized editor with undo\n  8) qr         IME input to accessible generated QR output\n  9) workspace  Responsive master-detail app with durable item editing"
     )
     .context("showing template choices")?;
     loop {
@@ -7242,8 +7275,9 @@ fn app_lib(spec: &AppSpec) -> String {
         Template::Workspace => WORKSPACE_APP_TEMPLATE.to_owned(),
     };
     format!(
-        "//! {} application.\n\n{GENERATED_LOCALE_SETUP}\n\n{application}",
-        spec.title,
+        "//! {title} application.\n\n/// The application id.\npub const APP_ID: &str = {app_id:?};\n/// The window and launcher title.\npub const APP_TITLE: &str = {title:?};\n\n{GENERATED_LOCALE_SETUP}\n\n{application}",
+        title = spec.title,
+        app_id = spec.app_id,
     )
 }
 
@@ -7258,15 +7292,21 @@ starter-refresh-label = Refresh interval\n\
 starter-volume-label = Volume\n\
 starter-region-label = Region\n\
 starter-greeting = Hello, { $name }!\n\
+starter-reset = Reset profile\n\
 data-name-column = Name\n\
 data-actions-column = Actions\n\
 data-accessible-name = Results\n\
 data-open = Open\n\
+data-recent = Recently opened: { $rows }\n\
+data-none-opened = No rows opened yet\n\
 list-accessible-name = Activity\n\
 list-open = Open\n\
 list-loading = Loading activity…\n\
+list-last-opened = Last opened: { $activity }\n\
+list-none-opened = Nothing opened yet\n\
 tree-accessible-name = Workspace items\n\
-tree-row-action = More actions\n\
+tree-row-action = Pin\n\
+tree-pinned = Pinned: { $count }\n\
 graph-project-name = Project name\n\
 graph-create = Create\n\
 graph-create-tooltip = Create the project\n\
@@ -7276,6 +7316,7 @@ task-cancel = Cancel\n\
 task-idle = Start a background task without polling\n\
 task-loading = Loading…\n\
 task-ready = Found { $count } entries\n\
+task-folder-label = Folder\n\
 document-heading = Durable document\n\
 document-title-label = Title\n\
 document-title-placeholder = Untitled\n\
@@ -7286,6 +7327,7 @@ qr-title = QR code generator\n\
 qr-input-label = Content\n\
 qr-input-placeholder = Type text or a link\n\
 qr-output-alt = QR code for { $payload }\n\
+qr-reset = Reset QR code\n\
 workspace-root = Workspace\n\
 workspace-projects = Projects\n\
 workspace-archive = Archive\n\
@@ -7306,560 +7348,27 @@ workspace-share = Share\n",
 }
 
 fn app_main(spec: &AppSpec) -> String {
-    let register = if matches!(spec.template, Template::Document | Template::Workspace) {
-        format!(
-            "\n            {}::register_actions(app.action_registry_mut());",
-            spec.crate_name
-        )
-    } else {
-        String::new()
-    };
     format!(
-        "//! Standard Tilo lifecycle: live window, persistence, and headless driving.\n\nfn main() {{\n    ui::launch::run_or_exit(\n        &ui::launch::LaunchSpec::new({app_id:?}, {crate_name}::app_root).configure_app(|app| {{{register}\n            app.autofocus_first = true;\n            app.autofocus_on_structure_change = true;\n        }}),\n    );\n}}\n",
-        app_id = spec.app_id,
+        "//! The app's entry point: the live window, and the standard `--shots`,\n//! `--headless-drive` and `--native-audit` modes, from one declaration.\n\nfn main() {{\n    ui::framework::run::<{crate_name}::App>();\n}}\n",
         crate_name = spec.crate_name,
-        register = register,
     )
 }
 
 fn app_test(spec: &AppSpec) -> String {
-    let mut source = template_app_test(spec);
-    source.push_str(&initial_accessibility_app_test(&spec.crate_name));
-    source
-}
-
-fn starter_app_test(crate_name: &str) -> String {
-    format!(
-        r#"use ui::{{a11y::{{Action, Role}}, headless::SemanticExpectation}};
-#[test]
-fn app_responds_to_semantic_input() {{
-    let mut app = ui::headless::Driver::new(
-        ui::State::new(),
-        {crate_name}::app_root(),
-        (800, 500),
-    );
-
-    let inspection = app.inspection();
-    fn contains_widget(node: &ui::headless::InspectionNode, name: &str) -> bool {{
-        node.widget == name || node.children.iter().any(|child| contains_widget(child, name))
-    }}
-    assert!(contains_widget(&inspection.root, "FormPage"));
-    assert!(contains_widget(&inspection.root, "Form"));
-    app.resize((340, 700)).expect("automatic starter resizes");
-
-    app.perform_named("name-input", &Action::SetValue("Ada".into()))
-        .expect("the generated input remains addressable");
-
-    app.expect(
-        &SemanticExpectation::named("name-input")
-            .role(Role::TextInput)
-            .value("Ada"),
-    )
-    .expect("input semantics match");
-    app.expect(
-        &SemanticExpectation::named("greeting")
-            .role(Role::StaticText)
-            .name_contains("Ada"),
-    )
-    .expect("derived greeting semantics match");
-    app.perform_named("updates-checkbox", &Action::ToggleCheck)
-        .expect("the generated local checkbox remains addressable");
-    app.expect(
-        &SemanticExpectation::named("updates-checkbox")
-            .role(Role::Checkbox)
-            .checked(false),
-    )
-    .expect("typed boolean binding updates checkbox semantics");
-    app.perform_named("refresh-input", &Action::SetValue("30".into()))
-        .expect("the generated number input remains addressable");
-    app.expect(
-        &SemanticExpectation::named("refresh-input")
-            .role(Role::SpinButton)
-            .value("30 min"),
-    )
-    .expect("typed numeric binding updates spinbutton semantics");
-    app.perform_named("volume-slider", &Action::SetValue("75%".into()))
-        .expect("the generated slider remains addressable");
-    app.expect(
-        &SemanticExpectation::named("volume-slider")
-            .role(Role::Slider)
-            .value("75%"),
-    )
-    .expect("typed numeric binding updates slider semantics");
-    app.perform_named("region-select", &Action::SetValue("Asia/Tokyo".into()))
-        .expect("the generated dropdown remains addressable");
-    app.expect(
-        &SemanticExpectation::named("region-select")
-            .role(Role::ComboBox)
-            .value("Asia/Tokyo"),
-    )
-    .expect("typed choice binding updates combobox semantics");
-}}
-"#
-    )
-}
-
-fn template_app_test(spec: &AppSpec) -> String {
-    let crate_name = &spec.crate_name;
-    match spec.template {
-        Template::Starter => starter_app_test(crate_name),
-        Template::Data => format!(
-            r#"use std::time::Duration;
-use ui::a11y::{{Action, Role}};
-use ui::headless::SemanticExpectation;
-
-#[test]
-fn app_exposes_a_virtualized_table() {{
-    let mut app = ui::headless::Driver::new(
-        ui::State::new(),
-        {crate_name}::app_root(),
-        (800, 500),
-    );
-
-    app.perform_named("rows-table", &Action::Focus)
-        .expect("the generated table remains addressable");
-    app.wait_for_named("open-3", Duration::from_secs(1))
-        .expect("the first background page becomes ready");
-    app.perform_semantic_named("rows-table", Some("row:3:0"), &Action::Activate)
-        .expect("select a stable row id");
-    app.expect(
-        &SemanticExpectation::named("rows-table")
-            .semantic_target("row:3:0")
-            .role(Role::Row)
-            .selected(true),
-    )
-    .expect("selected row semantics match");
-
-    let semantics = app.inspection().root.semantics.expect("table semantics");
-    assert_eq!(semantics.role, Role::Table);
-    assert!(semantics.state.focused);
-    assert!(!semantics.children.is_empty(), "visible rows are semantic children");
-    let selected = semantics.children.iter()
-        .find(|row| row.action_target.as_deref() == Some("row:3:0"))
-        .expect("selected row remains in the semantic window");
-    assert!(selected.state.selected);
-    assert!(semantics.children.len() < 40, "only the sparse viewport is semantic");
-    assert_eq!(
-        semantics.children.first().and_then(|row| row.set_size),
-        Some(100_000_000),
-    );
-    app.perform_named("open-3", &Action::Activate)
-        .expect("the retained cell button remains addressable");
-}}
-"#
-        ),
-        Template::List => list_app_test(crate_name),
-        Template::Tree => tree_app_test(crate_name),
-        Template::Graph => graph_app_test(crate_name),
-        Template::Async => async_app_test(crate_name),
-        Template::Document => document_app_test(crate_name),
-        Template::Qr => qr_app_test(crate_name),
-        Template::Workspace => workspace_app_test(crate_name),
-    }
-}
-
-fn qr_app_test(crate_name: &str) -> String {
-    format!(
-        r#"use ui::{{a11y::{{Action, Role}}, headless::SemanticExpectation}};
-
-#[test]
-fn app_generates_an_accessible_visual_from_semantic_input() {{
-    let mut app = ui::headless::Driver::new(
-        ui::State::new(),
-        {crate_name}::app_root(),
-        (800, 600),
-    );
-
-    app.perform_named("qr-input", &Action::SetValue("你好 Rust GUI".into()))
-        .expect("the generated IME-capable input remains addressable");
-    app.expect(
-        &SemanticExpectation::named("qr-input")
-            .role(Role::TextInput)
-            .value("你好 Rust GUI"),
-    )
-    .expect("input semantics match");
-    app.expect(
-        &SemanticExpectation::named("qr-output")
-            .role(Role::Image)
-            .name_contains("你好 Rust GUI"),
-    )
-    .expect("generated visual output has payload-specific alternative text");
-}}
-"#
-    )
-}
-
-fn graph_app_test(crate_name: &str) -> String {
-    format!(
-        r#"use ui::{{UiGraphHandle, UiNode}};
-use ui::automerge::{{AutoCommit, ObjId}};
-use ui::tilo_actions::OperationKind;
-use ui::widget::Widget;
-
-#[test]
-fn serialized_screen_is_interactive() {{
-    let mut root = {crate_name}::app_root();
-    let document = AutoCommit::new();
-    root.invoke_resource_operation_v2(
-        OperationKind::Effect,
-        ui::widget::resource_actions::OPERATION_TYPE,
-        b"{{\"draft\":\"Atlas\"}}",
-        &document,
-        &ObjId::Root,
-    ).expect("draft action succeeds");
-    let output = root.invoke_resource_operation_v2(
-        OperationKind::Effect,
-        ui::widget::resource_actions::OPERATION_TYPE,
-        b"{{\"name\":\"Atlas\"}}",
-        &document,
-        &ObjId::Root,
-    ).expect("create action succeeds").expect("create action is handled");
-    assert_eq!(output.resources, ["generated.graph-project:atlas"]);
-}}
-
-#[test]
-fn serialized_graph_edits_have_shared_undo_history() {{
-    let graph = UiGraphHandle::from_json(include_str!("../ui/main.json"))
-        .expect("the generated graph is valid");
-    for next_label in ["Publ", "Publish"] {{
-        graph.update_node_grouped("graph-introduction", "intro-text", |node| {{
-            if let UiNode::Text {{ text: ui::UiTextSource::Static {{ value }}, .. }} = node {{
-                *value = next_label.into();
-            }}
-        }}).expect("a valid grouped runtime edit is published");
-    }}
-    assert!(matches!(
-        graph.node("graph-introduction"),
-        Ok(UiNode::Text {{ text: ui::UiTextSource::Static {{ value }}, .. }}) if value == "Publish"
-    ));
-
-    assert!(graph.undo().expect("graph history remains available"));
-    assert!(matches!(
-        graph.node("graph-introduction"),
-        Ok(UiNode::Text {{ text: ui::UiTextSource::Static {{ value }}, .. }})
-            if value.contains("read-only screen")
-    ));
-    assert!(!graph.can_undo(), "continuous typing created one undo step");
-    assert!(graph.redo().expect("the undone edit can be reapplied"));
-}}
-"#
-    )
-}
-
-fn initial_accessibility_app_test(crate_name: &str) -> String {
-    format!(
-        r#"
-#[test]
-fn initial_native_app_contract_is_certified() {{
-    let app = ui::headless::Driver::new(
-        ui::State::new(),
-        {crate_name}::app_root(),
-        (800, 600),
-    );
-    let audit = app.native_app_audit();
-    assert!(audit.is_certified(), "{{audit:#?}}");
-}}
-"#
-    )
-}
-
-fn document_app_test(crate_name: &str) -> String {
-    format!(
-        r#"use ui::{{a11y::{{Action, Role}}, headless::SemanticExpectation}};
-
-#[test]
-fn document_fields_are_synchronized_and_undoable() {{
-    let mut app = ui::headless::Driver::new(
-        ui::State::new(),
-        {crate_name}::app_root(),
-        (800, 600),
-    );
-    {crate_name}::register_actions(app.action_registry_mut());
-
-    app.perform_named(
-        "document-title-input",
-        &Action::SetValue("Project Atlas".into()),
-    )
-    .expect("the durable title input remains addressable");
-    app.expect(
-        &SemanticExpectation::named("document-title-input")
-            .role(Role::TextInput)
-            .value("Project Atlas"),
-    )
-    .expect("input semantics match the document");
-    app.expect(
-        &SemanticExpectation::named("document-title-preview")
-            .role(Role::Heading {{ level: 2 }})
-            .name("Project Atlas"),
-    )
-    .expect("preview semantics match the same document field");
-
-    app.state_mut().undo(None, None).expect("the edit is undoable");
-    app.relayout();
-    let undone = app.inspection_json().expect("undone semantic snapshot");
-    assert!(!undone.contains("Project Atlas"), "{{undone}}");
-}}
-"#
-    )
-}
-
-#[expect(
-    clippy::too_many_lines,
-    reason = "the single format template keeps the generated workspace behavior test reviewable as one artifact"
-)]
-fn workspace_app_test(crate_name: &str) -> String {
-    format!(
-        r#"use ui::{{a11y::{{Action, Role}}, headless::SemanticExpectation}};
-
-#[test]
-fn workspace_keeps_master_detail_views_isolated_and_synchronized() {{
-    let mut app = ui::headless::Driver::new(
-        ui::State::new(),
-        {crate_name}::app_root(),
-        (1000, 640),
-    );
-    {crate_name}::register_actions(app.action_registry_mut());
-    let targets = app.targets();
-    for target in [
-        "workspace-selected-item",
-        "workspace-title-input",
-        "workspace-notes-input",
-        "workspace-share",
-    ] {{
-        let rect = targets.get(target).unwrap_or_else(|| panic!("missing {{target}}"));
-        assert!(rect.width() > 0.0 && rect.height() > 0.0, "{{target}}: {{rect:?}}");
-        assert!(rect.y0 >= 0.0 && rect.y1 <= 640.0, "{{target}}: {{rect:?}}");
-    }}
-    app.perform_semantic_named("workspace-tree", Some("node:4"), &Action::Activate)
-        .expect("select the design-system project");
-    app.expect(
-        &SemanticExpectation::named("workspace-tree")
-            .semantic_target("node:4")
-            .role(Role::TreeItem)
-            .selected(true),
-    )
-    .expect("master selection semantics match");
-    app.expect(
-        &SemanticExpectation::named("workspace-selected-item")
-            .role(Role::Heading {{ level: 1 }})
-            .name("Design system"),
-    )
-    .expect("detail pane follows the stable selected id");
-    app.perform_named(
-        "workspace-title-input",
-        &Action::SetValue("Design tokens".into()),
-    )
-    .expect("edit the selected project's durable title");
-    app.expect(
-        &SemanticExpectation::named("workspace-title-preview")
-            .role(Role::Heading {{ level: 2 }})
-            .name("Design tokens"),
-    )
-    .expect("the detail preview shares the document binding");
-    app.perform_semantic_named("workspace-tree", Some("node:3"), &Action::Activate)
-        .expect("switch to another project");
-    app.expect(
-        &SemanticExpectation::named("workspace-title-input")
-            .role(Role::TextInput)
-            .value(""),
-    )
-    .expect("each project owns an isolated document path");
-    app.perform_named(
-        "workspace-title-input",
-        &Action::SetValue("Desktop refresh".into()),
-    )
-    .expect("edit the second project");
-    assert!(app.perform_undo(), "detail edits use standard document undo");
-    let snapshot = app.inspection_json().expect("undone workspace snapshot");
-    assert!(!snapshot.contains("Desktop refresh"), "{{snapshot}}");
-    app.perform_semantic_named("workspace-tree", Some("node:4"), &Action::Activate)
-        .expect("return to the first project");
-    app.expect(
-        &SemanticExpectation::named("workspace-title-input")
-            .role(Role::TextInput)
-            .value("Design tokens"),
-    )
-    .expect("the first project's persisted view remains synchronized");
-    assert!(app.dump_json().contains("workspace-item-4-title"));
-    let mut compact = ui::headless::Driver::new(
-        ui::State::new(),
-        {crate_name}::app_root(),
-        (460, 820),
-    );
-    compact.expect(
-        &SemanticExpectation::named("workspace-shell-back")
-            .role(Role::Button)
-            .name("Back"),
-    )
-    .expect("compact detail exposes accessible Back");
-    compact.perform_named("workspace-shell-back", &Action::Activate)
-        .expect("return to compact navigation");
-    compact.expect(
-        &SemanticExpectation::named("workspace-tree").role(Role::Tree),
-    )
-    .expect("compact navigation uses the full-width tree pane");
-    compact.perform_semantic_named("workspace-tree", Some("node:4"), &Action::Activate)
-        .expect("choose a compact navigation row");
-    compact.expect(
-        &SemanticExpectation::named("workspace-selected-item")
-            .role(Role::Heading {{ level: 1 }})
-            .name("Design system"),
-    )
-    .expect("compact selection navigates to full-width detail");
-    let issues = compact.accessibility_audit();
-    assert!(
-        issues.issues.is_empty(),
-        "compact workspace audit: {{issues:#?}}"
-    );
-}}
-"#
-    )
-}
-
-fn tree_app_test(crate_name: &str) -> String {
-    format!(
-        r#"use ui::a11y::{{Action, Role}};
-use ui::headless::SemanticExpectation;
-
-#[test]
-fn app_exposes_an_accessible_tree() {{
-    let mut app = ui::headless::Driver::new(
-        ui::State::new(),
-        {crate_name}::app_root(),
-        (800, 500),
-    );
-
-    app.perform_named("workspace-tree", &Action::Focus)
-        .expect("the generated tree remains addressable");
-    app.perform_semantic_named("workspace-tree", Some("node:2"), &Action::Collapse)
-        .expect("collapse a stable model node");
-    app.perform_semantic_named("workspace-tree", Some("node:2"), &Action::Expand)
-        .expect("expand a stable model node");
-    app.perform_semantic_named("workspace-tree", Some("node:3"), &Action::Activate)
-        .expect("select a stable model node");
-    app.expect(
-        &SemanticExpectation::named("workspace-tree")
-            .semantic_target("node:3")
-            .role(Role::TreeItem)
-            .selected(true),
-    )
-    .expect("selected tree row semantics match");
-    app.perform_named("more-4", &Action::Activate)
-        .expect("the retained row action remains independently addressable");
-
-    let semantics = app.inspection().root.semantics.expect("tree semantics");
-    assert_eq!(semantics.role, Role::Tree);
-    assert!(semantics.state.focused);
-    assert_eq!(semantics.name.as_deref(), Some("Workspace items"));
-    assert_eq!(semantics.value.as_deref(), Some("Desktop app"));
-    let projects = semantics.children.iter()
-        .find(|node| node.action_target.as_deref() == Some("node:2"))
-        .expect("Projects row");
-    let desktop = semantics.children.iter()
-        .find(|node| node.action_target.as_deref() == Some("node:3"))
-        .expect("Desktop app row");
-    let design = semantics.children.iter()
-        .find(|node| node.action_target.as_deref() == Some("node:4"))
-        .expect("Design system row");
-    assert_eq!(projects.state.expanded, Some(true));
-    assert!(desktop.state.selected);
-    assert!(!design.state.selected);
-    assert!(app.inspection_json().expect("widget inspection").contains("more-4"));
-}}
-"#
-    )
-}
-
-fn async_app_test(crate_name: &str) -> String {
-    format!(
-        r#"use std::time::{{Duration, Instant}};
-use ui::automerge::{{AutoCommit, ObjId}};
-use ui::tilo_actions::{{InvocationId, InvocationUpdate, OperationKind}};
-use ui::widget::{{ControlBindingKind, ResourceOperationStart, Widget}};
-
-#[test]
-fn app_starts_and_dispatches_typed_background_work() {{
-    let mut root = {crate_name}::app_root();
-    assert!(root.control_action_bindings().iter().any(|binding| matches!(
-        &binding.kind,
-        ControlBindingKind::Action(address)
-            if address.resource == "generated.background-task:root"
-                && address.action == "run"
-    )));
-    let document = AutoCommit::new();
-    let invocation = InvocationId::new();
-    assert_eq!(
-        root.start_resource_operation(
-            invocation,
-            OperationKind::Effect,
-            ui::widget::resource_actions::OPERATION_TYPE,
-            b"null",
-            &document,
-            &ObjId::Root,
-        ).expect("background operation starts"),
-        Some(ResourceOperationStart::Accepted),
-    );
-    let deadline = Instant::now() + Duration::from_secs(2);
-    loop {{
-        if let Some(update) = root.poll_resource_operation(
-            invocation,
-            false,
-            &document,
-            &ObjId::Root,
-        ) {{
-            assert!(matches!(update, InvocationUpdate::Succeeded {{ .. }}));
-            break;
-        }}
-        assert!(Instant::now() < deadline, "background operation timed out");
-        std::thread::yield_now();
-    }}
-}}
-"#
-    )
-}
-
-fn list_app_test(crate_name: &str) -> String {
-    format!(
-        r#"use std::time::Duration;
-use ui::a11y::{{Action, Role}};
-use ui::headless::SemanticExpectation;
-
-#[test]
-fn app_exposes_a_sparse_interactive_virtual_list() {{
-    let mut app = ui::headless::Driver::new(
-        ui::State::new(),
-        {crate_name}::app_root(),
-        (800, 500),
-    );
-
-    app.perform_named("activity-list", &Action::Focus)
-        .expect("the generated list remains addressable");
-    app.wait_for_named("open-0", Duration::from_secs(1))
-        .expect("the first background page becomes ready");
-    app.perform_semantic_named("activity-list", Some("key:3"), &Action::Activate)
-        .expect("select a stable model key");
-    app.expect(
-        &SemanticExpectation::named("activity-list")
-            .semantic_target("key:3")
-            .role(Role::ListItem)
-            .selected(true),
-    )
-    .expect("selected list row semantics match");
-    app.perform_named("open-0", &Action::Activate)
-        .expect("the interactive row delegate remains independently addressable");
-
-    let semantics = app.inspection().root.semantics.expect("list semantics");
-    assert_eq!(semantics.role, Role::List);
-    assert!(semantics.state.focused);
-    assert!(semantics.children.len() < 30, "only the viewport window is mounted");
-    assert_eq!(semantics.children[0].set_size, Some(100_000_000));
-    assert!(semantics.children.iter().any(|row| row.state.selected));
-    let first_height = semantics.children[0].bounds.expect("first row bounds").to_rect().height();
-    let second_height = semantics.children[1].bounds.expect("second row bounds").to_rect().height();
-    assert!((first_height - second_height).abs() > 1.0, "delegate measurements drive variable rows");
-}}
-"#
-    )
+    let tests = match spec.template {
+        Template::Starter => STARTER_APP_TESTS.to_owned(),
+        Template::Data => DATA_APP_TESTS.to_owned(),
+        Template::List => LIST_APP_TESTS.to_owned(),
+        Template::Tree => TREE_APP_TESTS.to_owned(),
+        Template::Graph => format!("{GRAPH_APP_TESTS}\n{GRAPH_SCREEN_TESTS}"),
+        Template::Async => ASYNC_APP_TESTS.to_owned(),
+        Template::Document => DOCUMENT_APP_TESTS.to_owned(),
+        Template::Qr => QR_APP_TESTS.to_owned(),
+        Template::Workspace => WORKSPACE_APP_TESTS.to_owned(),
+    };
+    // The test sources name the app crate `generated_app`: the template smoke
+    // crate runs these same tests against each template under that name.
+    format!("{tests}{NATIVE_APP_TESTS}").replace("generated_app", &spec.crate_name)
 }
 
 fn app_manifest(spec: &AppSpec) -> String {
@@ -7947,7 +7456,7 @@ fn app_readme(spec: &AppSpec) -> String {
     let _ = writeln!(out, "\nGenerated by `tilo-app new`.\n");
     let _ = writeln!(
         out,
-        "Every meaningful command is published as a stable `Resource`/`ActionSpec`. Bind UI controls to that action so clicks, search, scripts and agents enter through one route; `tilo-app doctor` rejects apps that remove this surface.\n"
+        "The app is written on the Tilo app framework: its state is a `#[derive(Model)]` resource, every edit is an `#[action]` method, and the view binds controls to those actions (`cx.input`, `cx.checkbox`, `cx.button`, `cx.control`, `cx.each`). Storage, sync, collaboration, history, per-author undo, permissions, the action palette, agents, scripts and search come from the framework; `Replica` tests the resource and `TestApp` tests the running app. `tilo-app doctor` rejects apps that remove this surface.\n"
     );
     let _ = writeln!(
         out,
@@ -8027,25 +7536,25 @@ fn app_readme(spec: &AppSpec) -> String {
     if spec.template == Template::Async {
         let _ = writeln!(
             out,
-            "\nThe starter's `run-task` button creates a `LatestTask` completion capability for its worker. Starting again or using `cancel-task` makes older completions stale, so late work cannot overwrite newer UI state. An accepted completion wakes the app automatically, and `ModelView::from_state_by` swaps the loading/result/error subtree by a small structural key."
+            "\nThe folder to scan is resource state: durable, synced and undoable. The task itself is an effect action, so the palette, agents and scripts can start and cancel it too. The `run-task` button creates a `LatestTask` completion capability for its worker, which reads its input from the resource when it starts. Starting again or using `cancel-task` makes older completions stale, so late work cannot overwrite newer UI state. An accepted completion wakes the app automatically, and `ModelView::from_state_by` swaps the loading/result/error subtree by a small structural key."
         );
     }
     if spec.template == Template::Document {
         let _ = writeln!(
             out,
-            "\nThe title and body inputs write directly to the persisted Automerge document. Their preview reads the same fields without app-owned notifications; standard undo/redo, collaboration, inspection, and autosave all observe those edits."
+            "\nThe title and body inputs invoke the document's actions; their preview reads the same fields and follows every edit (local, a collaborator's, an undo) with no notification code. Text fields are collaborative text, so concurrent typing merges character by character. `clear` is declared destructive, so it asks for confirmation wherever it is invoked."
         );
     }
     if spec.template == Template::Qr {
         let _ = writeln!(
             out,
-            "\nThe input writes to one typed `LocalState<String>`. `ModelView::from_state` rebuilds only the generated QR output when that value changes, and the replacement image carries payload-specific alternative text for inspection, tests, and screen readers."
+            "\nThe input invokes `set-payload` on the resource. `cx.value` follows the payload into a `LocalState<String>`, `ModelView::from_state` rebuilds only the generated QR output when it changes, and the replacement image carries payload-specific alternative text for inspection, tests, and screen readers."
         );
     }
     if spec.template == Template::Workspace {
         let _ = writeln!(
             out,
-            "\nThe workspace starter composes a responsive master-detail shell from ordinary retained widgets. Wide windows show navigation and detail together; compact windows expose an accessible Back action and switch between full-width panes through typed `LocalState<NarrowScreen>`. Stable tree selection changes one `LocalState<u64>` key; `ModelView` replaces only the detail subtree, while its inputs bind directly to per-item document paths. Switching projects therefore needs no synchronization callbacks and preserves independent persisted, collaborative, undoable edits."
+            "\nThe workspace starter composes a responsive master-detail shell from ordinary retained widgets. Wide windows show navigation and detail together; compact windows expose an accessible Back action and switch between full-width panes through typed `LocalState<NarrowScreen>`. The selection is view state (`cx.local`); `cx.switch` rebuilds only the detail pane when it changes, and the pane's inputs bind to the selected project's fields in the resource. Switching projects therefore needs no synchronization callbacks and preserves independent persisted, collaborative, undoable edits."
         );
     }
     let _ = writeln!(
@@ -8058,31 +7567,27 @@ fn app_readme(spec: &AppSpec) -> String {
 
 fn readme_action_example(template: Template) -> (&'static str, &'static str, &'static str) {
     match template {
-        Template::Starter => (
-            "generated.form:root",
-            "update-profile",
-            r#"{"name":"Ada","updates":true,"refresh":15,"volume":0.8,"region":"us"}"#,
-        ),
-        Template::Data => ("generated.table:root", "open", r#"{"id":42}"#),
-        Template::List => ("generated.activity-list:root", "open", r#"{"id":42}"#),
-        Template::Tree => ("generated.tree:root", "open", r#"{"id":42}"#),
+        Template::Starter => ("generated.profile", "set-name", r#"{"name":"Ada"}"#),
+        Template::Data => ("generated.table", "open", r#"{"id":42}"#),
+        Template::List => ("generated.activity-list", "open", r#"{"id":42}"#),
+        Template::Tree => ("generated.tree", "toggle-pin", r#"{"id":4}"#),
         Template::Graph => (
-            "generated.graph-project:root",
-            "create",
-            r#"{"name":"Launch plan"}"#,
+            "generated.graph-project",
+            "set-draft",
+            r#"{"draft":"Launch plan"}"#,
         ),
         Template::Async => ("generated.background-task:root", "run", "{}"),
         Template::Document => (
-            "generated.document:root",
+            "generated.document",
             "set-content",
             r#"{"title":"Plan","body":"Ship it"}"#,
         ),
         Template::Qr => (
-            "generated.qr-code:root",
+            "generated.qr-code",
             "set-payload",
             r#"{"payload":"https://example.com"}"#,
         ),
-        Template::Workspace => ("generated.workspace-item:root", "share", r#"{"id":42}"#),
+        Template::Workspace => ("generated.workspace-item", "share", r#"{"id":4}"#),
     }
 }
 

@@ -12,9 +12,9 @@ use crate::{heap, synth};
 
 /// Heap bytes this thread still holds after `build`, and what it built.
 fn held<T>(build: impl FnOnce() -> T) -> (T, isize) {
-    let before = heap::live();
+    let before = heap::held();
     let value = build();
-    (value, heap::live().wrapping_sub(before))
+    (value, heap::held().wrapping_sub(before))
 }
 
 /// A loaded document builds its block-order index on the first structural edit, an importer

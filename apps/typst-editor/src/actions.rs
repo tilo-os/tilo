@@ -213,6 +213,7 @@ mod tests {
     use crate::app::TypstApp;
     use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, Value};
     use taffy::{NodeId, TaffyTree};
+    use tilo_automerge::ApplyIncoming;
     use ui::widget::Widget;
     use winit::event::{DeviceId, ElementState, KeyEvent, Modifiers, WindowEvent};
     use winit::keyboard::{Key, KeyLocation, ModifiersState, NativeKeyCode, PhysicalKey, SmolStr};
@@ -363,7 +364,7 @@ mod tests {
             "the keystroke inserted exactly one character into the shared text"
         );
 
-        peer.merge(&mut doc).unwrap();
+        peer.merge_incoming(&mut doc).unwrap();
         assert_eq!(
             doc.get_heads(),
             peer.get_heads(),

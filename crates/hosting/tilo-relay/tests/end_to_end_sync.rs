@@ -35,6 +35,7 @@
 )]
 
 use std::time::Duration;
+use tilo_automerge::ApplyIncoming;
 
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ROOT, ReadDoc, ScalarValue, Value};
@@ -177,7 +178,7 @@ async fn reconnect_b_and_catch_up(
 
     // The queued delta is flushed on subscribe; apply it to B's doc.
     let got2 = recv_delta(&b2, "B catch-up delta").await;
-    doc_b.load_incremental(&got2).expect("B applies d2");
+    doc_b.load_incoming(&got2).expect("B applies d2");
 
     assert_eq!(read_str(doc_b, "title").as_deref(), Some("hello from A"));
     assert_eq!(read_str(doc_b, "body").as_deref(), Some("second edit"));
@@ -251,7 +252,7 @@ async fn two_devices_converge_through_host_with_offline_store_forward() {
     // B receives it via the host's fan-out and converges.
     let got1 = recv_delta(&b_client, "B live delta").await;
     let mut doc_b = AutoCommit::new();
-    doc_b.load_incremental(&got1).expect("B applies d1");
+    doc_b.load_incoming(&got1).expect("B applies d1");
     assert_eq!(read_str(&doc_b, "title").as_deref(), Some("hello from A"));
     assert_eq!(
         doc_a.get_heads(),

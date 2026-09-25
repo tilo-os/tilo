@@ -1,8 +1,5 @@
 //! Runnable lifecycle smoke test for the exact generated starter source.
 
 fn main() {
-    ui::launch::run_or_exit(&ui::launch::LaunchSpec::new(
-        "so.tilo.template-smoke",
-        tilo_app_template_smoke::starter::app_root,
-    ));
+    ui::framework::run::<tilo_app_template_smoke::starter::App>();
 }

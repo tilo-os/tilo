@@ -147,9 +147,7 @@ pub fn qemu_system(arch: &str) -> String {
 
 /// Every executable named `tool` on `PATH`, in order.
 pub fn which_all(tool: &str) -> Vec<PathBuf> {
-    let Some(paths) = std::env::var_os("PATH") else {
-        return Vec::new();
-    };
+    let paths = std::env::var_os("PATH").unwrap_or_default();
     let extensions: Vec<String> = if cfg!(windows) && Path::new(tool).extension().is_none() {
         std::env::var("PATHEXT")
             .unwrap_or_else(|_| ".EXE;.CMD;.BAT".into())
@@ -181,7 +179,29 @@ pub fn which_all(tool: &str) -> Vec<PathBuf> {
             found.push(candidate);
         }
     }
+    // MSYS2 installs rsync in usr/bin, not beside CLANGARM64 QEMU. Probe its
+    // default per-user location without changing PATH for unrelated tools.
+    if cfg!(windows)
+        && tool == "rsync"
+        && let Some(home) = std::env::var_os("USERPROFILE")
+    {
+        let candidate = PathBuf::from(home).join("msys64/usr/bin/rsync.exe");
+        if candidate.is_file() && !found.contains(&candidate) {
+            found.push(candidate);
+        }
+    }
     found
+}
+
+/// The exact host rsync executable used by worktree and image transfers.
+pub fn rsync_program() -> Option<String> {
+    if cfg!(windows) {
+        which_all("rsync")
+            .first()
+            .map(|path| path.display().to_string())
+    } else {
+        Some("rsync".into())
+    }
 }
 
 impl HostFacts {
