@@ -34,7 +34,15 @@ use super::live::Live;
 ///   holds a [`Dispatcher::begin_group`] guard for the input event), so one
 ///   Ctrl+Z takes all of it back.
 /// * **Permissions** — [`SurfaceCx::read_only`] says the participant may
-///   only view; present accordingly. Refused actions change nothing.
+///   only view; present accordingly. It follows role changes while the app
+///   runs, and [`read_only_changed`](Self::read_only_changed) announces each
+///   one. Refused actions change nothing.
+/// * **Confirmation** — a typed value whose
+///   [`risk`](tilo_actions::Action::risk) is destructive (deleting a clip)
+///   waits for the user's confirmation, like a declared destructive action.
+///   When an edit is refused or held for confirmation, the surface is
+///   presented the stored state again, undoing any optimistic preview; a
+///   confirmed edit then arrives as an ordinary change.
 /// * **Presence** — report where the user is as a [`ResourceSelection`] from
 ///   the toolkit's `Widget::presence_payload` (one line:
 ///   `selection.presence::<R>(app_id)`), and draw collaborators from the
@@ -48,6 +56,13 @@ pub trait ResourceSurface<R: Resource>: Widget {
     fn attach(&mut self, cx: SurfaceCx<R>) {
         let _ = cx;
     }
+
+    /// The participant's permission to edit changed while the app runs: a
+    /// role granted or taken away. Present accordingly. The dispatcher already
+    /// refuses or accepts edits under the new permissions.
+    fn read_only_changed(&mut self, read_only: bool) {
+        let _ = read_only;
+    }
 }
 
 /// What a surface receives when attached.
@@ -60,6 +75,7 @@ impl<R: Resource> SurfaceCx<R> {
         self.dispatch.clone()
     }
 
+    /// Whether the participant may only view, as of now.
     pub fn read_only(&self) -> bool {
         self.dispatch.read_only()
     }
@@ -109,14 +125,18 @@ impl ResourceSelection {
 pub(crate) struct SurfaceHost<R: Resource, S> {
     live: Live<R>,
     presented: u64,
+    dispatch: Dispatcher<R>,
+    read_only: bool,
     surface: S,
 }
 
 impl<R: Resource, S: ResourceSurface<R>> SurfaceHost<R, S> {
-    pub(crate) fn new(live: Live<R>, surface: S) -> Self {
+    pub(crate) fn new(live: Live<R>, dispatch: Dispatcher<R>, surface: S) -> Self {
         Self {
             presented: live.revision(),
             live,
+            read_only: dispatch.read_only(),
+            dispatch,
             surface,
         }
     }
@@ -136,6 +156,11 @@ impl<R: Resource, S: ResourceSurface<R>> Decorator for SurfaceHost<R, S> {
     }
 
     fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
+        let read_only = self.dispatch.read_only();
+        if read_only != self.read_only {
+            self.read_only = read_only;
+            self.surface.read_only_changed(read_only);
+        }
         if self.live.revision() != self.presented {
             self.presented = self.live.revision();
             self.surface.present(&self.live.get());

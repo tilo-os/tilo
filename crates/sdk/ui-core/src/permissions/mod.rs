@@ -245,6 +245,47 @@ impl PermissionContext {
     }
 }
 
+/// A participant's permissions as they stand *now*, following every change the
+/// host makes while the app runs: a role changed by the record's owner, a share
+/// revoked, a capability granted. Read-only: only the host changes them.
+///
+/// A [`PermissionContext`] is a snapshot; code that decides once at launch
+/// what a participant may do goes stale the moment their role changes. Hold
+/// one of these instead and ask again when it matters (every frame is cheap).
+#[derive(Clone)]
+pub struct LivePermissions(std::rc::Rc<std::cell::RefCell<PermissionContext>>);
+
+impl LivePermissions {
+    /// Follow the context the host shares with its components.
+    pub(crate) fn shared(context: std::rc::Rc<std::cell::RefCell<PermissionContext>>) -> Self {
+        Self(context)
+    }
+
+    /// Permissions that never change: a preview of a past version, a capture,
+    /// a test fixture.
+    pub fn fixed(context: PermissionContext) -> Self {
+        Self(std::rc::Rc::new(std::cell::RefCell::new(context)))
+    }
+
+    /// May the participant do this, as of now?
+    pub fn check(&self, scope: &PermissionScope) -> bool {
+        self.0.borrow().check(scope)
+    }
+
+    /// The permissions in force now.
+    pub fn current(&self) -> PermissionContext {
+        self.0.borrow().clone()
+    }
+}
+
+impl std::fmt::Debug for LivePermissions {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("LivePermissions")
+            .field(&*self.0.borrow())
+            .finish()
+    }
+}
+
 /// Seconds since the Unix epoch, or `None` if the clock is before the
 /// epoch (which would make every expiry comparison meaningless).
 fn unix_now() -> Option<u64> {
