@@ -112,18 +112,18 @@ impl SmartSubtransport for HttpTransport {
             .session
             .lock()
             .map_err(|_| failure("Git HTTP state unavailable"))?;
-        let session = match slot.as_ref() {
-            Some(session) => Arc::clone(session),
-            None => {
-                let session = Arc::new(Mutex::new(Session::new(
-                    raw_url,
-                    self.client.clone(),
-                    &self.settings,
-                )?));
-                *slot = Some(Arc::clone(&session));
-                session
-            }
+        let session = if let Some(session) = slot.as_ref() {
+            Arc::clone(session)
+        } else {
+            let session = Arc::new(Mutex::new(Session::new(
+                raw_url,
+                self.client.clone(),
+                &self.settings,
+            )?));
+            *slot = Some(Arc::clone(&session));
+            session
         };
+        drop(slot);
         let guard = session
             .lock()
             .map_err(|_| failure("Git HTTP state unavailable"))?;
@@ -252,7 +252,7 @@ impl Session {
             if let Some((username, password)) = &self.credentials {
                 request = request.basic_auth(username.as_str(), Some(password.as_str()));
             }
-            let response = request.send().map_err(network_error)?;
+            let response = request.send().map_err(|error| network_error(&error))?;
             if response.status() == StatusCode::UNAUTHORIZED && !self.helper_tried {
                 self.helper_tried = true;
                 let basic = response
@@ -298,8 +298,8 @@ impl Session {
     }
 }
 
-fn network_error(error: reqwest::Error) -> git2::Error {
-    if is_certificate_error(&error) {
+fn network_error(error: &reqwest::Error) -> git2::Error {
+    if is_certificate_error(error) {
         return git2::Error::new(
             git2::ErrorCode::Certificate,
             git2::ErrorClass::Net,
@@ -707,7 +707,7 @@ mod tests {
 
     #[test]
     fn relative_helpers_keep_git_prefix_and_posix_argument_quoting() {
-        let command = r#"store --file='C:/user'\''s credential store'"#;
+        let command = r"store --file='C:/user'\''s credential store'";
         let HelperCommand::Process {
             executable,
             arguments,
@@ -895,6 +895,57 @@ fn requires_shell(command: &str) -> bool {
     false
 }
 
+/// Runs one configured credential helper's `get`, preserving trusted Git
+/// helper shell syntax where a shell exists. Remote protocol/host/path/username
+/// are supplied only via stdin.
+fn run_helper_command(
+    command: &str,
+    input: &[u8],
+    deadline: Instant,
+    remaining: Duration,
+) -> Result<Result<bounded_command::Output, bounded_command::Error>, git2::Error> {
+    Ok(match parse_helper_command(command)? {
+        HelperCommand::Shell(script) => bounded_command::run(
+            "sh",
+            &["-c", &format!("{script} get")],
+            Some(input),
+            64 * 1024,
+            remaining,
+        ),
+        HelperCommand::Process {
+            executable,
+            arguments,
+            shell_command,
+        } => {
+            let result = bounded_command::run(
+                "sh",
+                &["-c", &format!("{shell_command} get")],
+                Some(input),
+                64 * 1024,
+                remaining,
+            );
+            match result {
+                Err(bounded_command::Error::Process(error))
+                    if error.kind() == io::ErrorKind::NotFound =>
+                {
+                    if requires_shell(&shell_command) {
+                        return Err(failure(
+                            "configured Git credential helper requires an installed shell for expansion",
+                        ));
+                    }
+                    let mut arguments: Vec<_> = arguments.iter().map(String::as_str).collect();
+                    arguments.push("get");
+                    let remaining = deadline
+                        .checked_duration_since(Instant::now())
+                        .ok_or_else(|| failure("Git credential helper timed out"))?;
+                    bounded_command::run(&executable, &arguments, Some(input), 64 * 1024, remaining)
+                }
+                result => result,
+            }
+        }
+    })
+}
+
 impl Helper {
     fn execute(
         &self,
@@ -909,70 +960,25 @@ impl Helper {
             let mut input =
                 Zeroizing::new(format!("protocol={}\nhost={}\n", self.protocol, self.host));
             if let Some(path) = &self.path {
-                input.push_str(&format!("path={path}\n"));
+                input.push_str("path=");
+                input.push_str(path);
+                input.push('\n');
             }
             if let Some(username) = &username {
                 if username.contains(['\r', '\n', '\0']) {
                     return Err(failure("invalid credential username"));
                 }
-                input.push_str(&format!("username={}\n", username.as_str()));
+                input.push_str("username=");
+                input.push_str(username.as_str());
+                input.push('\n');
             }
             input.push('\n');
             let remaining = deadline
                 .checked_duration_since(Instant::now())
                 .ok_or_else(|| failure("Git credential helper timed out"))?;
-            // Preserve trusted Git helper shell syntax where a shell exists.
-            // Remote protocol/host/path/username are supplied only via stdin.
-            let result = match parse_helper_command(command)? {
-                HelperCommand::Shell(script) => bounded_command::run(
-                    "sh",
-                    &["-c", &format!("{script} get")],
-                    Some(input.as_bytes()),
-                    64 * 1024,
-                    remaining,
-                ),
-                HelperCommand::Process {
-                    executable,
-                    arguments,
-                    shell_command,
-                } => {
-                    let result = bounded_command::run(
-                        "sh",
-                        &["-c", &format!("{shell_command} get")],
-                        Some(input.as_bytes()),
-                        64 * 1024,
-                        remaining,
-                    );
-                    match result {
-                        Err(bounded_command::Error::Process(error))
-                            if error.kind() == io::ErrorKind::NotFound =>
-                        {
-                            if requires_shell(&shell_command) {
-                                return Err(failure(
-                                    "configured Git credential helper requires an installed shell for expansion",
-                                ));
-                            }
-                            let mut arguments: Vec<_> =
-                                arguments.iter().map(String::as_str).collect();
-                            arguments.push("get");
-                            let remaining = deadline
-                                .checked_duration_since(Instant::now())
-                                .ok_or_else(|| failure("Git credential helper timed out"))?;
-                            bounded_command::run(
-                                &executable,
-                                &arguments,
-                                Some(input.as_bytes()),
-                                64 * 1024,
-                                remaining,
-                            )
-                        }
-                        result => result,
-                    }
-                }
-            };
-            let output = match result {
-                Ok(output) => output,
-                Err(_) => return Err(failure("Git credential helper failed or timed out")),
+            let Ok(output) = run_helper_command(command, input.as_bytes(), deadline, remaining)?
+            else {
+                return Err(failure("Git credential helper failed or timed out"));
             };
             let stdout = Zeroizing::new(output.stdout);
             let _stderr = Zeroizing::new(output.stderr);
@@ -989,10 +995,10 @@ impl Helper {
                     if username.is_none() {
                         username = Some(Zeroizing::new(value.to_owned()));
                     }
-                } else if let Some(value) = line.strip_prefix("password=") {
-                    if password.is_none() {
-                        password = Some(Zeroizing::new(value.to_owned()));
-                    }
+                } else if let Some(value) = line.strip_prefix("password=")
+                    && password.is_none()
+                {
+                    password = Some(Zeroizing::new(value.to_owned()));
                 }
             }
             if username.is_some() && password.is_some() {

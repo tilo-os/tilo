@@ -1085,8 +1085,14 @@ impl GitClientApp {
 
     // --- Drawing -------------------------------------------------------
 
+    /// The app bar's raised surface and its bottom edge.
+    fn paint_appbar_surface(scene: &mut Scene, t: Affine, theme: &Theme, bar: Rect) {
+        let raised = theme.tokens.colors.surfaces.raised;
+        draw::fill_rect(scene, t, bar, raised);
+        draw::hline(scene, t, bar.y1, bar.x0, bar.x1, draw::edge(raised));
+    }
+
     fn draw_appbar(&mut self, scene: &mut Scene, tr: &mut TextRenderer, t: Affine, theme: &Theme) {
-        let c = &theme.tokens.colors;
         let overlay = self.layout_mode() == SplitLayout::Overlay;
         // Measure every cluster before placing anything: the title is clamped
         // against measured neighbours, never against a guessed width.
@@ -1120,15 +1126,7 @@ impl GitClientApp {
             self.rect.x1,
             self.rect.y0 + self.appbar_h,
         );
-        draw::fill_rect(scene, t, bar, c.surfaces.raised);
-        draw::hline(
-            scene,
-            t,
-            bar.y1,
-            bar.x0,
-            bar.x1,
-            draw::edge(c.surfaces.raised),
-        );
+        Self::paint_appbar_surface(scene, t, theme, bar);
         let row1 = Rect::new(bar.x0, bar.y0, bar.x1, bar.y0 + m.row_h);
 
         // Hamburger toggle: shown only when the primary list column has
@@ -4003,6 +4001,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::float_cmp,
+        reason = "layout reproduces authored whole-pixel sizes and their sums exactly in binary floating point; exact equality is what the test checks"
+    )]
     fn appbar_controls_stay_inside_the_window_and_never_overlap() {
         for width in [390.0, 480.0, 680.0, 800.0, 1280.0] {
             let mut app = app_at(width, Screen::Changes);
@@ -4100,6 +4102,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::float_cmp,
+        reason = "layout reproduces authored whole-pixel sizes and their sums exactly in binary floating point; exact equality is what the test checks"
+    )]
     fn wrapped_appbar_moves_the_body_down_with_it() {
         let mut app = app_at(480.0, Screen::Changes);
         draw_frame(&mut app);
