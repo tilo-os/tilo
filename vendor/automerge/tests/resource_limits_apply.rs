@@ -838,6 +838,16 @@ fn fragment_growth_is_reserved_before_mutation() {
     assert_eq!(snapshot(&mut doc), before);
 }
 
+/// Fuzz rounds, scaled by `AM012_FUZZ` (default 1) for longer local runs.
+fn rounds(n: usize) -> usize {
+    n * std::env::var("AM012_FUZZ").ok().and_then(|v| v.parse().ok()).unwrap_or(1)
+}
+
+/// Seed, overridable with `AM012_SEED` for longer local runs.
+fn seed(default: u64) -> u64 {
+    std::env::var("AM012_SEED").ok().and_then(|v| v.parse().ok()).unwrap_or(default)
+}
+
 /// Deterministic xorshift for the fuzz loops (no proptest dependency where
 /// this suite runs).
 struct Rng(u64);
@@ -963,10 +973,10 @@ fn mutate(rng: &mut Rng, value: &mut Value, ids: &[String]) {
 
 #[test]
 fn fuzz_mutated_changes_accept_cleanly_or_refuse_unchanged() {
-    let mut rng = Rng(0x9e37_79b9_7f4a_7c15);
+    let mut rng = Rng(seed(0x9e37_79b9_7f4a_7c15));
     let mut accepted = 0;
     let mut refusals = 0;
-    for _ in 0..60 {
+    for _ in 0..rounds(60) {
         let mut doc = random_doc(&mut rng);
         let ids: Vec<String> = {
             let changes = doc.get_changes(&[]);
@@ -1039,7 +1049,7 @@ fn rechecksum(bytes: &mut [u8]) {
 
 #[test]
 fn fuzz_mutated_change_bytes_never_panic() {
-    let mut rng = Rng(0x2545_f491_4f6c_dd1d);
+    let mut rng = Rng(seed(0x2545_f491_4f6c_dd1d));
     let mut doc = random_doc(&mut rng);
     let heads = doc.get_heads();
     let mut peer = doc.fork().with_actor(actor(91));
@@ -1051,7 +1061,7 @@ fn fuzz_mutated_change_bytes_never_panic() {
     let original = peer.get_changes(&heads).pop().unwrap().raw_bytes().to_vec();
     let before = snapshot(&mut doc);
     let mut accepted = 0;
-    for _ in 0..3000 {
+    for _ in 0..rounds(3000) {
         let mut bytes = original.clone();
         for _ in 0..(1 + rng.below(3)) {
             let at = 9 + rng.below(bytes.len() - 9);
@@ -1170,4 +1180,141 @@ fn typed_history_applies_within_one_allowance() {
     let one = changes_bytes(&writer.get_changes(&heads));
     incoming(&mut target, &one, NativeDependencyPolicy::RequireComplete).unwrap();
     eprintln!("one keystroke onto it: {:?}", started.elapsed());
+}
+
+#[test]
+fn fuzz_mutated_chains_accept_cleanly_or_refuse_unchanged() {
+    // Two dependent incoming changes (the second references objects and
+    // elements created by the first); either one is mutated.
+    let mut rng = Rng(seed(0xd1b5_4a32_d192_ed03));
+    let (mut accepted, mut refusals) = (0, 0);
+    for _ in 0..rounds(40) {
+        let mut doc = random_doc(&mut rng);
+        let heads = doc.get_heads();
+        let mut peer = doc.fork().with_actor(actor(92));
+        let map = peer.put_object(&ROOT, "fresh", ObjType::Map).unwrap();
+        let list = peer.put_object(&map, "items", ObjType::List).unwrap();
+        peer.insert(&list, 0, "a").unwrap();
+        let text = peer.put_object(&map, "note", ObjType::Text).unwrap();
+        peer.splice_text(&text, 0, 0, "xyz").unwrap();
+        peer.commit();
+        peer.put(&map, "k", 1).unwrap();
+        peer.insert(&list, 1, "b").unwrap();
+        peer.delete(&list, 0).unwrap();
+        peer.splice_text(&text, 1, 1, "Q").unwrap();
+        peer.mark(
+            &text,
+            automerge::marks::Mark::new("em".into(), true, 0, 2),
+            automerge::marks::ExpandMark::Both,
+        )
+        .unwrap();
+        peer.commit();
+        let chain = peer.get_changes(&heads);
+        assert_eq!(chain.len(), 2);
+        let mut ids = vec!["_root".to_string(), "_head".to_string()];
+        for change in peer.get_changes(&[]) {
+            let v = expanded(&change);
+            let start = v["startOp"].as_u64().unwrap();
+            for k in 0..change.len() as u64 {
+                ids.push(format!("{}@{}", start + k, v["actor"].as_str().unwrap()));
+            }
+        }
+        for _ in 0..25 {
+            let which = rng.below(2);
+            let mut values: Vec<Value> = chain.iter().map(expanded).collect();
+            for _ in 0..(1 + rng.below(3)) {
+                mutate(&mut rng, &mut values[which], &ids);
+            }
+            let mut bytes = Vec::new();
+            let mut ok = true;
+            let mut previous: Option<ChangeHash> = None;
+            for (index, mut value) in values.into_iter().enumerate() {
+                if index == 1 && which == 0 {
+                    // Keep the chain linked to the mutated first change.
+                    if let Some(hash) = previous {
+                        value["deps"] = json!([hash.to_string()]);
+                    }
+                }
+                let Ok(expanded) = serde_json::from_value::<ExpandedChange>(value) else {
+                    ok = false;
+                    break;
+                };
+                let Ok(change) = catch_unwind(AssertUnwindSafe(|| Change::from(expanded))) else {
+                    ok = false;
+                    break;
+                };
+                previous = Some(change.hash());
+                bytes.extend_from_slice(change.raw_bytes());
+            }
+            if !ok {
+                continue;
+            }
+            let mut target = doc.clone();
+            let before = snapshot(&mut target);
+            let result = catch_unwind(AssertUnwindSafe(|| {
+                incoming(&mut target, &bytes, NativeDependencyPolicy::RetainOrphans)
+            }))
+            .expect("checked admission never panics");
+            match result {
+                Ok(_) => {
+                    accepted += 1;
+                    let saved = target.save();
+                    AutoCommit::load(&saved).expect("accepted history reloads");
+                }
+                Err(_) => {
+                    refusals += 1;
+                    assert_eq!(snapshot(&mut target), before);
+                }
+            }
+        }
+    }
+    eprintln!("chain fuzz: {accepted} accepted, {refusals} refused");
+    assert!(accepted > 0 && refusals > 0);
+}
+
+#[test]
+fn marks_apply_and_inverted_mark_is_refused() {
+    use automerge::marks::{ExpandMark, Mark};
+    let mut doc = base();
+    let text = doc.get(&ROOT, "text").unwrap().unwrap().1;
+    // Concurrent edits so marks span resident and concurrent elements.
+    let mut other = doc.fork().with_actor(actor(30));
+    other.splice_text(&text, 2, 0, "OTHER").unwrap();
+    other.commit();
+    doc.merge(&mut other).unwrap();
+    let heads = doc.get_heads();
+    let mut peer = doc.fork().with_actor(actor(31));
+    peer.splice_text(&text, 0, 0, "abc").unwrap();
+    let len = peer.length(&text);
+    for (start, end, expand) in [
+        (0, 1, ExpandMark::Before),
+        (0, len, ExpandMark::Both),
+        (2, 7, ExpandMark::After),
+        (len - 1, len, ExpandMark::None),
+        (3, 4, ExpandMark::Both),
+    ] {
+        peer.mark(&text, Mark::new("m".into(), true, start, end), expand).unwrap();
+    }
+    peer.commit();
+    let changes = peer.get_changes(&heads);
+    let bytes = changes_bytes(&changes);
+    let mut target = doc.clone();
+    assert_eq!(
+        incoming(&mut target, &bytes, NativeDependencyPolicy::RequireComplete).unwrap(),
+        NativeIncomingOutcome::Applied { changed: true }
+    );
+    AutoCommit::load(&target.save()).expect("marks reload");
+    assert_eq!(target.marks(&text).unwrap(), peer.marks(&text).unwrap());
+
+    // Re-anchor the end of a mark to the element before its begin.
+    let mut plain = doc.fork().with_actor(actor(32));
+    plain.mark(&text, Mark::new("m".into(), true, 3, 5), ExpandMark::None).unwrap();
+    plain.commit();
+    let mut value = expanded(&plain.get_changes(&heads).pop().unwrap());
+    let ops = value["ops"].as_array_mut().unwrap();
+    let end = ops.iter_mut().find(|op| op["action"] == json!("markEnd")).unwrap();
+    end["elemId"] = json!("_head");
+    let inverted = encode(value);
+    let mut target = doc.clone();
+    semantic_refusal(&mut target, &inverted, "mark end before begin");
 }
