@@ -112,14 +112,17 @@ class KernelSnapshotPullRequestTests(unittest.TestCase):
 
 
 class TokenFailureReportingTests(unittest.TestCase):
-    rpms_ref = "code.podesta.ai/qos/rpms@sha256:" + "d" * 64
+    x86_ref = "code.podesta.ai/qos/tilo-kernel@sha256:" + "a" * 64
+    arm_ref = "code.podesta.ai/qos/tilo-kernel@sha256:" + "b" * 64
 
     def argv(self):
-        digest = hashlib.sha256(MODULE.rpms_contents(self.rpms_ref).encode()).hexdigest()
+        contents = MODULE.kernel_contents(self.x86_ref, self.arm_ref)
+        digest = hashlib.sha256(contents.encode()).hexdigest()
         return [
             str(SCRIPT), "--server", "https://forge.invalid", "--repository", "qos/qos",
-            "--branch", "automation/rpm-snapshot-" + digest[:16],
-            "--snapshot-digest", digest, "rpms", "--rpms-ref", self.rpms_ref,
+            "--branch", "automation/kernel-snapshot-" + digest[:16],
+            "--snapshot-digest", digest, "kernel",
+            "--x86-ref", self.x86_ref, "--arm-ref", self.arm_ref,
         ]
 
     @staticmethod
@@ -159,7 +162,7 @@ class TokenFailureReportingTests(unittest.TestCase):
                 mock.patch.object(MODULE, "request", side_effect=self.http_error(403)), \
                 contextlib.redirect_stderr(stderr):
             self.assertEqual(MODULE.main(), 1)
-        self.assertIn("refused rpms snapshot pull-request creation (HTTP 403)", stderr.getvalue())
+        self.assertIn("refused kernel snapshot pull-request creation (HTTP 403)", stderr.getvalue())
         self.assertIn("RELEASE_TOKEN", stderr.getvalue())
 
     def test_missing_token_names_the_secret(self):
@@ -171,13 +174,16 @@ class TokenFailureReportingTests(unittest.TestCase):
         self.assertIn("RELEASE_TOKEN", stderr.getvalue())
 
 
-class RpmSnapshotPullRequestTests(unittest.TestCase):
+class RpmAndKernelSnapshotPullRequestTests(unittest.TestCase):
     rpms_ref = "code.podesta.ai/qos/rpms@sha256:" + "d" * 64
+    x86_ref = "code.podesta.ai/qos/tilo-kernel@sha256:" + "a" * 64
+    arm_ref = "code.podesta.ai/qos/tilo-kernel@sha256:" + "b" * 64
 
     def setUp(self):
-        contents = MODULE.rpms_contents(self.rpms_ref)
+        contents = (MODULE.rpms_contents(self.rpms_ref)
+                    + MODULE.kernel_contents(self.x86_ref, self.arm_ref))
         self.digest = hashlib.sha256(contents.encode()).hexdigest()
-        self.branch = "automation/rpm-snapshot-" + self.digest[:16]
+        self.branch = "automation/rpm-kernel-snapshot-" + self.digest[:16]
 
     def argv(self, **overrides):
         values = {"branch": self.branch, "digest": self.digest, "ref": self.rpms_ref}
@@ -185,15 +191,17 @@ class RpmSnapshotPullRequestTests(unittest.TestCase):
         return [
             str(SCRIPT), "--server", "https://forge.invalid",
             "--repository", "qos/qos", "--branch", values["branch"],
-            "--snapshot-digest", values["digest"], "rpms", "--rpms-ref", values["ref"],
+            "--snapshot-digest", values["digest"], "kernel", "--rpms-ref", values["ref"],
+            "--x86-ref", self.x86_ref, "--arm-ref", self.arm_ref,
         ]
 
-    def test_main_creates_digest_bound_pull(self):
+    def test_main_creates_one_pull_for_both_pins(self):
         result, request = run_main(self.argv())
         self.assertEqual(result, 0)
         payload = request.call_args.args[5]
         self.assertEqual(payload["head"], self.branch)
-        self.assertEqual(payload["title"], "build(os): refresh native RPM snapshot index")
+        self.assertEqual(payload["title"],
+                         "build(os): refresh the RPM snapshot and its native kernels")
         self.assertIn(self.digest, payload["body"])
 
     def test_canonical_contents_match_the_committed_pin_shape(self):
@@ -202,15 +210,28 @@ class RpmSnapshotPullRequestTests(unittest.TestCase):
                    if line.startswith("RPMS_REF="))
         self.assertEqual(MODULE.rpms_contents(ref), committed)
 
+    def test_workflow_writes_the_canonical_pin_files(self):
+        workflow = (REPO / ".forgejo/workflows/build-kernel.yml").read_text()
+        for line in (MODULE.rpms_contents("$CALLER_RPMS_REF").splitlines()[:2]
+                     + MODULE.kernel_contents("$X", "$Y").splitlines()[:2]):
+            self.assertIn(f"'{line}'", workflow)
+        self.assertIn('"RPMS_REF=$CALLER_RPMS_REF"', workflow)
+        self.assertIn('pins=(os/rpms-snapshot.env os/kernel-snapshot.env)', workflow)
+        self.assertIn('snapshot_digest="$(cat "${pins[@]}" | sha256sum', workflow)
+
     def test_rejects_mutable_or_foreign_ref(self):
         for ref in ("code.podesta.ai/qos/rpms:latest",
                     "code.podesta.ai/qos/tilo-kernel@sha256:" + "d" * 64):
             with self.subTest(ref=ref), self.assertRaises(SystemExit):
                 run_main(self.argv(ref=ref))
 
-    def test_rejects_digest_or_branch_not_bound_to_ref(self):
+    def test_rejects_digest_or_branch_not_bound_to_both_pins(self):
+        kernel_only = MODULE.kernel_contents(self.x86_ref, self.arm_ref)
+        kernel_digest = hashlib.sha256(kernel_only.encode()).hexdigest()
         for overrides in ({"digest": "e" * 64},
-                          {"branch": "automation/kernel-snapshot-" + self.digest[:16]}):
+                          {"digest": kernel_digest},
+                          {"branch": "automation/kernel-snapshot-" + self.digest[:16]},
+                          {"branch": "automation/rpm-snapshot-" + self.digest[:16]}):
             with self.subTest(overrides=overrides), self.assertRaises(SystemExit):
                 run_main(self.argv(**overrides))
 
