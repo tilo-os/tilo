@@ -239,6 +239,11 @@ pub fn render_scenario_to_path(
     render_scenario_to_path_with_theme(viewport, out, scenario, &theme)
 }
 
+/// Render a named representative Store state to a PNG with an explicit theme.
+///
+/// # Errors
+///
+/// Propagates layout, renderer initialization, and PNG-write failures.
 pub fn render_scenario_to_path_with_theme(
     viewport: (u32, u32),
     out: &Path,
@@ -415,6 +420,18 @@ pub fn parse_viewport(s: &str) -> Option<(u32, u32)> {
     Some((w.trim().parse().ok()?, h.trim().parse().ok()?))
 }
 
+fn configured_shot_theme(text_scale: Option<f32>, reduce_motion: bool) -> Theme {
+    let mut theme = match std::env::var("TILO_SHOTS_THEME").ok().as_deref() {
+        Some("light") => Theme::light(),
+        Some("high-contrast") => Theme::high_contrast(),
+        _ => Theme::dark(),
+    };
+    if let Some(scale) = text_scale {
+        theme = theme.with_text_scale(scale);
+    }
+    theme.with_reduce_motion(reduce_motion)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -540,16 +557,4 @@ mod tests {
             );
         }
     }
-}
-
-fn configured_shot_theme(text_scale: Option<f32>, reduce_motion: bool) -> Theme {
-    let mut theme = match std::env::var("TILO_SHOTS_THEME").ok().as_deref() {
-        Some("light") => Theme::light(),
-        Some("high-contrast") => Theme::high_contrast(),
-        _ => Theme::dark(),
-    };
-    if let Some(scale) = text_scale {
-        theme = theme.with_text_scale(scale);
-    }
-    theme.with_reduce_motion(reduce_motion)
 }

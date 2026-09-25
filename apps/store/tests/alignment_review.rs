@@ -160,6 +160,10 @@ fn remotes_heading_hugs_its_first_card() {
     // The card is the outermost container surface around the remote's title
     // that starts below the heading (inner flex wrappers sit inside its
     // padding).
+    #[expect(
+        clippy::suspicious_operation_groupings,
+        reason = "edge-by-edge containment test: each side compares like with like"
+    )]
     let card = by_widget_name(&app, "Container")
         .into_iter()
         .filter(|c| {
@@ -179,6 +183,10 @@ fn remotes_heading_hugs_its_first_card() {
     // The form card above and the heading are one page step apart, which is
     // larger than the heading's own gap to its cards.
     let form_title = first_named(&app, "Add a remote");
+    #[expect(
+        clippy::suspicious_operation_groupings,
+        reason = "edge-by-edge containment test: each side compares like with like"
+    )]
     let form_card = by_widget_name(&app, "Container")
         .into_iter()
         .filter(|c| {

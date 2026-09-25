@@ -4838,6 +4838,10 @@ impl Widget for StoreApp {
     }
 }
 
+fn operation_error_summary() -> &'static str {
+    "The last operation failed. Refresh the catalogue and try again."
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -5350,16 +5354,6 @@ mod tests {
 
     #[test]
     fn narrow_cards_do_not_cover_each_others_actions() {
-        let mut app = seeded_app();
-        app.items.extend(app.items.clone());
-        for (i, item) in app.items.iter_mut().enumerate() {
-            item.id = format!("test-{i}");
-            item.description =
-                "Useful software with a description that wraps onto another line.".into();
-        }
-        app.set_layout_width_hint(480.0);
-        let mut list = app.compose(&Theme::dark());
-        layout_composition(list.as_mut(), 480.0);
         fn check(widget: &dyn Widget) {
             if widget.name() == "ContentCard" {
                 let mut buttons = Vec::new();
@@ -5376,6 +5370,16 @@ mod tests {
                 check(child);
             }
         }
+        let mut app = seeded_app();
+        app.items.extend(app.items.clone());
+        for (i, item) in app.items.iter_mut().enumerate() {
+            item.id = format!("test-{i}");
+            item.description =
+                "Useful software with a description that wraps onto another line.".into();
+        }
+        app.set_layout_width_hint(480.0);
+        let mut list = app.compose(&Theme::dark());
+        layout_composition(list.as_mut(), 480.0);
         check(list.as_ref());
     }
 
@@ -5433,11 +5437,6 @@ mod tests {
 
     #[test]
     fn catalogue_cards_contain_actions_and_align_long_descriptions() {
-        let mut app = seeded_app();
-        app.set_layout_width_hint(1200.0);
-        app.items[0].description = "A useful app with a longer description. ".repeat(7);
-        let mut list = app.build_list(&Theme::dark());
-        layout_composition(list.as_mut(), 1200.0);
         fn check(widget: &dyn Widget, found: &mut usize) {
             if widget.name() == "CardGrid" {
                 let cards = widget.children();
@@ -5464,6 +5463,11 @@ mod tests {
                 check(child, found);
             }
         }
+        let mut app = seeded_app();
+        app.set_layout_width_hint(1200.0);
+        app.items[0].description = "A useful app with a longer description. ".repeat(7);
+        let mut list = app.build_list(&Theme::dark());
+        layout_composition(list.as_mut(), 1200.0);
         let mut found = 0;
         check(list.as_ref(), &mut found);
         assert_eq!(found, 3);
@@ -6253,8 +6257,4 @@ mod tests {
             );
         }
     }
-}
-
-fn operation_error_summary() -> &'static str {
-    "The last operation failed. Refresh the catalogue and try again."
 }
