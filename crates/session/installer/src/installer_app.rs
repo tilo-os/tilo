@@ -163,7 +163,10 @@ fn filesystem_support_from_manifest(manifest: &str) -> Result<[bool; FILESYSTEMS
         if !seen.insert(line) {
             return Err("The image has a duplicate initramfs driver entry".into());
         }
-        if let Some(index) = FILESYSTEMS.iter().position(|filesystem| *filesystem == line) {
+        if let Some(index) = FILESYSTEMS
+            .iter()
+            .position(|filesystem| *filesystem == line)
+        {
             supported[index] = false;
         } else {
             // The Lenovo image also omits unrelated GPU drivers to keep its UKI
