@@ -154,7 +154,7 @@ impl Daemon {
     }
 
     /// [`Self::spawn`] with extra environment; a value may name
-    /// `{profile}` for a per-daemon path under `dir`.
+    /// `@profile` for a per-daemon path under `dir`.
     fn spawn_env(
         name: &'static str,
         profile: &str,
@@ -178,7 +178,7 @@ impl Daemon {
         let mut command = Command::new(binary);
         command.env("TILO_FS_NATIVE_TRACE", "1");
         for (key, value) in env {
-            command.env(key, dir.join(value.replace("{profile}", profile)));
+            command.env(key, dir.join(value.replace("@profile", profile)));
         }
         command
             .env(
@@ -494,6 +494,10 @@ fn start_pair_with(
 }
 
 #[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one end-to-end scenario whose steps build on each other"
+)]
 fn local_changes_publish_in_journal_order_and_arrive_as_placeholders_and_files() {
     let Some((a, b)) = stores("native_sync") else {
         return;
@@ -1503,7 +1507,7 @@ fn the_lease_authority_gives_a_free_lease_to_one_of_two_devices_asking_at_once()
     // Alone, the peer asks the authority and is granted the lease.
     let start = Arc::new(std::sync::Barrier::new(1));
     let t = Instant::now();
-    let peer = contend(f2.clone(), b"pz".to_vec(), start, Duration::ZERO);
+    let peer = contend(f2, b"pz".to_vec(), start, Duration::ZERO);
     assert_eq!(peer.join().unwrap(), Ok(()));
     eprintln!(
         "the peer's first write waited {:?} for the grant",
@@ -1531,7 +1535,7 @@ fn a_version_from_a_tenancy_its_author_did_not_hold_is_kept_as_a_conflict_and_ne
         &b,
         0xa1,
         &["--lease-authority"],
-        &[("TILO_FS_TRANSPORT_GATE_SOCKET", "{profile}-gate.sock")],
+        &[("TILO_FS_TRANSPORT_GATE_SOCKET", "@profile-gate.sock")],
     );
     let host_gate = pair.dir.join("host-gate.sock");
     let peer_gate = pair.dir.join("peer-gate.sock");
