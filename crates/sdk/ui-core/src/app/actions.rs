@@ -2020,6 +2020,18 @@ impl App {
             confirmation_satisfied,
         )?;
         let kind = resolved.kind;
+        if resolved
+            .contract
+            .tags
+            .iter()
+            .any(|tag| tag == "tilo.local-device-only")
+            && actor != self.collaboration.local_author.0
+        {
+            return Err(tilo_actions::DoorError::Unavailable {
+                code: "local_device_only".into(),
+                reason: "This action uses private files on the host participant's device".into(),
+            });
+        }
         if kind == tilo_actions::OperationKind::View && actor != self.collaboration.local_author.0 {
             return Err(tilo_actions::DoorError::Unavailable {
                 code: "private_view".into(),

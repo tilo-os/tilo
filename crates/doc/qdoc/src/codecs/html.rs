@@ -46,9 +46,11 @@ impl FormatProvider for HtmlCodec {
     }
 
     fn import(&self, bytes: &[u8], doc: &mut DocMut) -> Result<(), CodecError> {
-        let src = String::from_utf8_lossy(bytes);
-        import_html(&src, doc);
-        Ok(())
+        doc.bulk(|doc| {
+            let src = String::from_utf8_lossy(bytes);
+            import_html(&src, doc);
+            Ok(())
+        })
     }
 
     fn export(&self, _doc: DocRef) -> Result<Vec<u8>, CodecError> {

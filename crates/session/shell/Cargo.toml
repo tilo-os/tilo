@@ -236,7 +236,12 @@ desktop-entry = { package = "tilo-desktop-entry", path = "../../system/desktop-e
 # the cert against the workspace owner's root key and cross-check
 # the revocation list before accepting any of the peer's CRDT ops.
 tilo-user-identity = { path = "../../collab/tilo-user-identity" }
-tilo-relay = { path = "../../hosting/tilo-relay" }
+# Mesh placement, home-peer registrations and relay shard ids.
+tilo-relay-protocol = { path = "../../hosting/tilo-relay-protocol" }
+# The authenticated relay client and co-edit session (`RelayClient`,
+# `RelayCoeditSession`) that carry workspace deltas through a home or
+# provider host.
+tilo-relay-client = { path = "../../hosting/tilo-relay-client" }
 # `network::identity` verifies raw Ed25519 signatures directly
 # against a peer's device pubkey (as recovered from their
 # DeviceCert). Same version + features shape as the dev-deps entry
@@ -264,6 +269,8 @@ tar.workspace = true
 tantivy = { version = "0.22", default-features = false, features = ["mmap"] }
 
 [dev-dependencies]
+# Network actor tests run an in-process relay to talk to.
+tilo-relay = { path = "../../hosting/tilo-relay" }
 runtime-portal = { path = "../../runtime/runtime-portal" }
 collab-fixtures = { path = "../../collab/collab-fixtures" }
 rand_chacha.workspace = true
