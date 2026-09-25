@@ -2565,6 +2565,21 @@ impl SearchProvider for LiveAppActionsProvider {
 }
 
 #[cfg(test)]
+pub(crate) fn fixture_with_directory_page(
+    broker: AppActionBroker,
+    peer: u64,
+    actor: String,
+    page: CataloguePage,
+) -> Rc<dyn SearchProvider> {
+    let provider = LiveAppActionsProvider::new(broker);
+    provider
+        .directory_pages
+        .borrow_mut()
+        .insert((peer, actor, String::new(), Vec::new()), page);
+    Rc::new(provider)
+}
+
+#[cfg(test)]
 mod tests {
     use std::cell::RefCell;
     use std::rc::Rc;
@@ -2625,13 +2640,6 @@ mod tests {
 
     #[test]
     fn job_receipts_resolve_beyond_the_preview_and_only_for_their_actor() {
-        let chrome = chrome();
-        let broker =
-            crate::shell::collab_broker_capnp::CapnpBrokerState::test_broker_with_idle_directory_queue();
-        let provider = LiveAppActionsProvider::new(broker.clone());
-        let doc = AutoCommit::new();
-        let actor = chrome.borrow().active_local_user();
-        let wanted = provider.resource_kinds().to_vec();
         fn ctx<'a>(
             chrome: &'a crate::shell::chrome_state::ChromeState,
             wanted: &'a [ResourceKind],
@@ -2645,6 +2653,14 @@ mod tests {
                 doc_root: &automerge::ROOT,
             }
         }
+
+        let chrome = chrome();
+        let broker =
+            crate::shell::collab_broker_capnp::CapnpBrokerState::test_broker_with_idle_directory_queue();
+        let provider = LiveAppActionsProvider::new(broker.clone());
+        let doc = AutoCommit::new();
+        let actor = chrome.borrow().active_local_user();
+        let wanted = provider.resource_kinds().to_vec();
         let before = provider.search_revision(&ctx(&chrome.borrow(), &wanted, &doc));
         let preview_rows = u64::try_from(super::MAX_JOB_ROWS_PER_QUERY).unwrap();
         for id in 1..=preview_rows + 3 {
@@ -3461,19 +3477,4 @@ mod tests {
             "the child fetch must carry the selected stable resource address"
         );
     }
-}
-
-#[cfg(test)]
-pub(crate) fn fixture_with_directory_page(
-    broker: AppActionBroker,
-    peer: u64,
-    actor: String,
-    page: CataloguePage,
-) -> Rc<dyn SearchProvider> {
-    let provider = LiveAppActionsProvider::new(broker);
-    provider
-        .directory_pages
-        .borrow_mut()
-        .insert((peer, actor, String::new(), Vec::new()), page);
-    Rc::new(provider)
 }
