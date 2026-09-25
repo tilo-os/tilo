@@ -1037,7 +1037,8 @@ fn build_content_xml(
     let notes = note_index(snap);
     let mut note_ctr = 0usize;
     let comments = comment_index(snap);
-    let tracked_changes = super::changes::render_tracked_changes(&snap.changes);
+    let (snap, tracked_changes) = super::changes::split_tracked_changes(snap);
+    let snap = snap.as_ref();
     let mut style_attr = |b: &BlockView| -> String {
         resolve_para_style(b, &snap.styles, &mut pstyles, &mut named_refs)
     };
@@ -2017,6 +2018,46 @@ mod tests {
             "{:?}",
             im.attrs
         );
+    }
+
+    #[test]
+    fn deleted_text_moves_between_body_and_changed_region() {
+        let body = concat!(
+            r#"<text:tracked-changes><text:changed-region xml:id="ct2" text:id="ct2"><text:deletion>"#,
+            r#"<office:change-info><dc:creator>Bob</dc:creator></office:change-info><text:p>removed words</text:p>"#,
+            r#"</text:deletion></text:changed-region></text:tracked-changes>"#,
+            r#"<text:p>Tracked: <text:change text:change-id="ct2"/>gone.</text:p>"#,
+        );
+        let mut d = Document::new();
+        OdtCodec
+            .import(&minimal_odt(body), &mut d.as_mut())
+            .unwrap();
+        let snap = d.materialize();
+        let p = &snap.blocks[0];
+        assert_eq!(p.text, "Tracked: removed wordsgone.");
+        assert!(
+            p.marks
+                .iter()
+                .any(|m| m.name == "del" && m.start == 9 && m.end == 22),
+            "{:?}",
+            p.marks
+        );
+
+        let exported = OdtCodec.export(d.as_ref()).unwrap();
+        let cont = OdtContainer::read(&exported).unwrap();
+        let content = std::str::from_utf8(cont.get("content.xml").unwrap()).unwrap();
+        assert!(
+            content.contains("<text:p>removed words</text:p></text:deletion>"),
+            "{content}"
+        );
+        assert!(
+            content.contains(r#"Tracked: <text:change text:change-id=""#),
+            "{content}"
+        );
+        assert!(!content.contains("removed wordsgone"), "{content}");
+        let mut d2 = Document::new();
+        OdtCodec.import(&exported, &mut d2.as_mut()).unwrap();
+        assert_eq!(norm(&d2.materialize()), norm(&snap));
     }
 
     #[test]
