@@ -4,6 +4,7 @@
 
 use super::container::OdtContainer;
 use crate::format::CodecError;
+use crate::preserve::{InlinePiece, MARK_ODT_XML, inline_pieces};
 use crate::resolved::Resolved;
 use qdoc::document::MarkSpan;
 use qdoc::export::InlinePlan;
@@ -45,7 +46,8 @@ pub(crate) fn export(doc: DocRef, content: &dyn ContentSource) -> Result<Vec<u8>
         .find(|(k, _)| k == "odt/part/styles.xml")
         .map(|(_, b)| style_names_in(b))
         .unwrap_or_default();
-    let content = build_content_xml(snap, &existing_style_names);
+    let head = ContentHead::preserved(&doc);
+    let content = build_content_xml(snap, &existing_style_names, &head);
 
     let mut c = OdtContainer { parts: Vec::new() };
     let mut had_mimetype = false;
@@ -332,6 +334,8 @@ fn render_inline(
     let plan = InlinePlan::new(text, marks);
     let text_len = text.chars().count();
     let mut out = String::new();
+    // A leading space would be collapsed away; see `push_odf_text`.
+    let mut after_space = true;
     let mut open: Vec<String> = Vec::new();
     let mut cur_link: Option<&str> = None;
     let close_spans = |out: &mut String, open: &mut Vec<String>| {
@@ -430,14 +434,63 @@ fn render_inline(
                 *note_ctr = note_ctr.saturating_add(1);
                 out.push_str(&super::notes::render_inline_note(note, *note_ctr));
             }
+            after_space = false;
             continue;
         }
-        for c in run.text.chars() {
-            push_text(&mut out, c);
-        }
+        push_run_text(&mut out, run, &mut after_space);
     }
     close_inline(&mut out, &mut open, &mut cur_link);
     out
+}
+
+/// Append a run's content: its text, or — for an unmodeled inline element kept verbatim —
+/// the element in place of its placeholder.
+fn push_run_text(out: &mut String, run: &qdoc::export::InlineRun<'_>, after_space: &mut bool) {
+    let atom = run
+        .marks
+        .iter()
+        .find(|m| m.name == MARK_ODT_XML)
+        .and_then(|m| m.value.as_str());
+    let Some(xml) = atom else {
+        push_odf_text(out, run.text, after_space);
+        return;
+    };
+    for piece in inline_pieces(run.text) {
+        match piece {
+            InlinePiece::Atom => {
+                out.push_str(xml);
+                *after_space = false;
+            }
+            InlinePiece::Text(t) => push_odf_text(out, t, after_space),
+        }
+    }
+}
+
+/// Append paragraph text, writing what ODF whitespace handling would otherwise collapse as
+/// elements: a tab as `text:tab`, a line break as `text:line-break`, and a space at the start
+/// or after another space as `text:s`. `after_space` carries over between runs of a paragraph.
+fn push_odf_text(out: &mut String, text: &str, after_space: &mut bool) {
+    for c in text.chars() {
+        match c {
+            '\t' => {
+                out.push_str("<text:tab/>");
+                *after_space = true;
+            }
+            '\n' => {
+                out.push_str("<text:line-break/>");
+                *after_space = true;
+            }
+            ' ' if *after_space => out.push_str("<text:s/>"),
+            ' ' => {
+                out.push(' ');
+                *after_space = true;
+            }
+            _ => {
+                push_text(out, c);
+                *after_space = false;
+            }
+        }
+    }
 }
 
 fn font_name(generic: &str) -> &'static str {
@@ -513,7 +566,7 @@ fn image_frame_xml(
     let _ = write!(frame, r#" text:anchor-type="{anchor_type}""#);
     // A graphic automatic style carries the wrap; only emit it when meaningful (a floating frame, since `as-char` ignores wrap in ODF anyway).
     if anchor != "inline" {
-        let gname = format!("gr{}", graphic_styles.len().saturating_add(1));
+        let gname = format!("Grqdoc{}", graphic_styles.len().saturating_add(1));
         graphic_styles.push((
             gname.clone(),
             super::styles::model_wrap_to_odf(wrap).to_string(),
@@ -665,10 +718,10 @@ type ParaStyleEntry = (Option<String>, String, String);
 /// Get-or-create a paragraph automatic style for `(parent, paragraph-props, text-props)`, returning its `P{n}` name. Dedups identical styles.
 fn register_auto(styles: &mut Vec<ParaStyleEntry>, key: ParaStyleEntry) -> String {
     if let Some(i) = styles.iter().position(|p| p == &key) {
-        format!("P{}", i.saturating_add(1))
+        format!("Pqdoc{}", i.saturating_add(1))
     } else {
         styles.push(key);
-        format!("P{}", styles.len())
+        format!("Pqdoc{}", styles.len())
     }
 }
 
@@ -820,7 +873,131 @@ fn named_style_def_xml(id: &str, props: &BTreeMap<String, AttrVal>) -> String {
 use crate::xml_escape::{escape_attr, escape_text, push_text};
 use qdoc::snapshot::BlockView;
 
-fn build_content_xml(snap: &Resolved<'_>, existing_style_names: &BTreeSet<String>) -> String {
+/// The imported `content.xml`'s root start tag, prelude and automatic styles (see
+/// `content::content_head`), written back around the regenerated body. Generated automatic
+/// style names carry a `qdoc` infix so they never collide with the carried-through ones.
+#[derive(Default)]
+struct ContentHead {
+    root: Option<String>,
+    prelude: String,
+    automatic_styles: String,
+}
+
+impl ContentHead {
+    fn preserved(doc: &DocRef) -> Self {
+        let get = |key: &str| {
+            qdoc::model::preserved_part(doc.doc, doc.c, key, &tilo_content::NoContent)
+                .and_then(|b| String::from_utf8(b).ok())
+        };
+        Self {
+            root: get(super::CONTENT_ROOT_KEY),
+            prelude: get(super::CONTENT_PRELUDE_KEY).unwrap_or_default(),
+            automatic_styles: get(super::CONTENT_AUTOMATIC_STYLES_KEY).unwrap_or_default(),
+        }
+    }
+
+    /// The imported root keeps its namespace declarations, so the elements carried through
+    /// verbatim resolve; the ones this exporter writes are added.
+    fn root_tag(&self) -> String {
+        const NAME: &str = "office:document-content";
+        self.root
+            .as_deref()
+            .and_then(|r| crate::preserve::merge_root_namespaces(r, NAME, CONTENT_NAMESPACES))
+            .unwrap_or_else(|| {
+                let mut tag = format!("<{NAME}");
+                for (prefix, uri) in CONTENT_NAMESPACES {
+                    let _ = write!(tag, r#" xmlns:{prefix}="{uri}""#);
+                }
+                tag.push('>');
+                tag
+            })
+    }
+
+    /// The carried automatic styles, less any this export generates again (a style that came
+    /// from an earlier export), so every name is declared once.
+    fn carried_styles(&self, generated: &str) -> String {
+        without_styles_named(
+            &self.automatic_styles,
+            &style_names_in(generated.as_bytes()),
+        )
+    }
+}
+
+/// `styles` (a sequence of style elements) without the top-level ones whose `style:name` is in
+/// `names`.
+fn without_styles_named(styles: &str, names: &BTreeSet<String>) -> String {
+    use quick_xml::events::Event;
+    let mut reader = quick_xml::Reader::from_str(styles);
+    let mut out = String::with_capacity(styles.len());
+    let mut depth = 0usize;
+    let mut at = 0usize;
+    let mut skip_from: Option<usize> = None;
+    loop {
+        let before = usize::try_from(reader.buffer_position()).unwrap_or(usize::MAX);
+        let Ok(ev) = reader.read_event() else {
+            return styles.to_string();
+        };
+        let after = usize::try_from(reader.buffer_position()).unwrap_or(usize::MAX);
+        let listed = |e: &quick_xml::events::BytesStart| {
+            super::styles::attr_val(e, b"style:name").is_some_and(|n| names.contains(&n))
+        };
+        match ev {
+            Event::Start(e) => {
+                if depth == 0 && listed(&e) {
+                    skip_from = Some(before);
+                }
+                depth = depth.saturating_add(1);
+            }
+            Event::Empty(e) if depth == 0 && listed(&e) => {
+                out.push_str(styles.get(at..before).unwrap_or_default());
+                at = after;
+            }
+            Event::End(_) => {
+                depth = depth.saturating_sub(1);
+                if depth == 0
+                    && let Some(start) = skip_from.take()
+                {
+                    out.push_str(styles.get(at..start).unwrap_or_default());
+                    at = after;
+                }
+            }
+            Event::Eof => break,
+            _ => {}
+        }
+    }
+    out.push_str(styles.get(at..).unwrap_or_default());
+    out
+}
+
+/// The namespaces the exported `content.xml` declares on its root.
+const CONTENT_NAMESPACES: &[(&str, &str)] = &[
+    ("office", "urn:oasis:names:tc:opendocument:xmlns:office:1.0"),
+    ("text", "urn:oasis:names:tc:opendocument:xmlns:text:1.0"),
+    (
+        "fo",
+        "urn:oasis:names:tc:opendocument:xmlns:xsl-fo-compatible:1.0",
+    ),
+    ("style", "urn:oasis:names:tc:opendocument:xmlns:style:1.0"),
+    ("table", "urn:oasis:names:tc:opendocument:xmlns:table:1.0"),
+    ("draw", "urn:oasis:names:tc:opendocument:xmlns:drawing:1.0"),
+    ("xlink", "http://www.w3.org/1999/xlink"),
+    (
+        "svg",
+        "urn:oasis:names:tc:opendocument:xmlns:svg-compatible:1.0",
+    ),
+    ("dc", "http://purl.org/dc/elements/1.1/"),
+    ("meta", "urn:oasis:names:tc:opendocument:xmlns:meta:1.0"),
+    (
+        "number",
+        "urn:oasis:names:tc:opendocument:xmlns:datastyle:1.0",
+    ),
+];
+
+fn build_content_xml(
+    snap: &Resolved<'_>,
+    existing_style_names: &BTreeSet<String>,
+    head: &ContentHead,
+) -> String {
     let mut body = String::new();
     let mut used: BTreeMap<String, String> = BTreeMap::new();
     let mut pstyles: Vec<ParaStyleEntry> = Vec::new();
@@ -872,7 +1049,7 @@ fn build_content_xml(snap: &Resolved<'_>, existing_style_names: &BTreeSet<String
             }
             "fidelity" => {
                 // Re-emit the preserved unmodeled element verbatim, in place.
-                if let Some(AttrVal::Str(xml)) = b.attrs.get("xml") {
+                if let Some(xml) = crate::preserve::fidelity_xml(b, "odt") {
                     body.push_str(xml);
                 }
                 i = i.saturating_add(1);
@@ -914,12 +1091,13 @@ fn build_content_xml(snap: &Resolved<'_>, existing_style_names: &BTreeSet<String
         &graphic_styles,
     );
 
-    // Declare the common ODF namespaces so re-emitted fidelity atoms (tables, drawings, …) stay
-    // well-formed. Exotic namespaces are only preserved once the content prologue is (future).
+    let root = head.root_tag();
+    let prelude = &head.prelude;
+    let carried_styles = head.carried_styles(&styles);
     format!(
         r#"<?xml version="1.0" encoding="UTF-8"?>
-<office:document-content xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0" xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0" xmlns:fo="urn:oasis:names:tc:opendocument:xmlns:xsl-fo-compatible:1.0" xmlns:style="urn:oasis:names:tc:opendocument:xmlns:style:1.0" xmlns:table="urn:oasis:names:tc:opendocument:xmlns:table:1.0" xmlns:draw="urn:oasis:names:tc:opendocument:xmlns:drawing:1.0" xmlns:xlink="http://www.w3.org/1999/xlink" xmlns:svg="urn:oasis:names:tc:opendocument:xmlns:svg-compatible:1.0" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:meta="urn:oasis:names:tc:opendocument:xmlns:meta:1.0" xmlns:number="urn:oasis:names:tc:opendocument:xmlns:datastyle:1.0">
-<office:automatic-styles>{styles}</office:automatic-styles>
+{root}{prelude}
+<office:automatic-styles>{carried_styles}{styles}</office:automatic-styles>
 <office:body><office:text>{tracked_changes}{body}</office:text></office:body>
 </office:document-content>"#
     )
@@ -1150,7 +1328,7 @@ fn render_automatic_styles(
             .unwrap_or_default();
         let _ = write!(
             styles,
-            r#"<style:style style:name="P{}" style:family="paragraph"{parent_attr}><style:paragraph-properties{pp}/><style:text-properties{tp}/></style:style>"#,
+            r#"<style:style style:name="Pqdoc{}" style:family="paragraph"{parent_attr}><style:paragraph-properties{pp}/><style:text-properties{tp}/></style:style>"#,
             idx.saturating_add(1)
         );
     }
