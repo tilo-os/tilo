@@ -156,6 +156,10 @@ impl Drop for CredentialsInput {
 }
 
 /// Parse one bounded, exact JSON object without ever echoing supplied text.
+///
+/// # Errors
+///
+/// Invalid, oversized, non-alphanumeric or matching credentials.
 pub fn parse_credentials(bytes: &[u8]) -> Result<Credentials, &'static str> {
     if bytes.is_empty() || bytes.len() > 8192 {
         return Err("credentials stdin must contain one bounded JSON object");
@@ -182,6 +186,10 @@ pub fn parse_credentials(bytes: &[u8]) -> Result<Credentials, &'static str> {
 }
 
 /// Read credentials before creating artifacts or booting the VM.
+///
+/// # Errors
+///
+/// Standard input could not be read or did not contain valid credentials.
 pub fn credentials_from_stdin() -> Result<Credentials, &'static str> {
     let mut bytes = zeroize::Zeroizing::new(Vec::new());
     std::io::stdin()
@@ -261,10 +269,12 @@ fn contains_sensitive_text(bytes: &[u8], secrets: &[&str]) -> bool {
         let units = bytes
             .chunks_exact(2)
             .map(|pair| {
+                let first = pair.first().copied().unwrap_or_default();
+                let second = pair.get(1).copied().unwrap_or_default();
                 if little_endian {
-                    u16::from_le_bytes([pair[0], pair[1]])
+                    u16::from_le_bytes([first, second])
                 } else {
-                    u16::from_be_bytes([pair[0], pair[1]])
+                    u16::from_be_bytes([first, second])
                 }
             })
             .collect::<Vec<_>>();
@@ -373,7 +383,7 @@ mod tests {
             .collect::<Vec<_>>();
         std::fs::write(&path, utf16).unwrap();
         let withheld = scrub(dir.path(), &["disksecret456"]).unwrap();
-        assert_eq!(withheld, [path.clone()]);
+        assert_eq!(withheld, std::slice::from_ref(&path));
         assert!(std::fs::read(path).unwrap().is_empty());
     }
 

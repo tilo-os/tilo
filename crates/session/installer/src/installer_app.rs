@@ -2219,6 +2219,10 @@ impl InstallerApp {
     /// Enter the Install step and kick off the backend. Prefers a worker
     /// thread (live streaming via the event-loop proxy); falls back to a
     /// blocking run when no proxy is wired (tests / no event loop).
+    #[expect(
+        clippy::too_many_lines,
+        reason = "installer preflight and worker launch are one ordered operation"
+    )]
     fn begin_install(&mut self, state: &AutoCommit, root: &ObjId) {
         if self.install_launched {
             return;
@@ -2269,8 +2273,7 @@ impl InstallerApp {
             self.set_status(&message);
             return;
         }
-        let disk_secret = secret_copy(&self.disk_password);
-        if !disk_secret.is_empty() && disk_secret.as_str() == password.as_str() {
+        if secret_copy(&self.disk_password).as_str() == password.as_str() {
             self.set_status("Choose a disk secret different from the account password");
             return;
         }
