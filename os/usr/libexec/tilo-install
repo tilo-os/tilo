@@ -177,28 +177,38 @@ fi
 # this same script again, already in the system domain, and falls through to
 # the real work below.
 #
-# If `systemd-run` is somehow unavailable we fall through and run in-process
-# (the historical behaviour) — correct on a permissive medium, and the live
-# medium also carries a scoped SELinux module (tilo-installer.cil) as a backstop.
+# A live install requires the system-service transition. Running the backend
+# directly from the greeter would bypass its enforced SELinux boundary.
 if [ -z "${TILO_INSTALL_TRANSIENT:-}" ] && command -v systemd-run >/dev/null 2>&1; then
   # tilo-installer-setup creates this from PID 1 before the greeter starts, so
   # it has a system runtime SELinux label rather than xdm_tmp_t. The latter is
   # deliberately inaccessible to an enforcing transient system service.
   [ -d /run/tilo-installer/bridge ] \
     || die "installer runtime bridge is missing (tilo-installer-setup did not complete)"
-  BRIDGE="$(mktemp -d /run/tilo-installer/bridge/run.XXXXXX)"
-  chmod 0700 "$BRIDGE"
+  BRIDGE="/run/tilo-installer/bridge/run.$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')"
   INPUT="$BRIDGE/stdin"
   OUTPUT="$BRIDGE/output"
-  umask 077
-  cat > "$INPUT"
-  : > "$OUTPUT"
-  # xdm_t has a file-creation type transition even below a var_run_t parent.
-  # Match the PID-1-created directory explicitly before the service manager
-  # opens these paths; otherwise systemd reports EXIT_STDIN (209) before exec.
-  chcon --reference=/run/tilo-installer/bridge "$BRIDGE" "$INPUT" "$OUTPUT"
-  cleanup_bridge() { rm -rf "$BRIDGE"; }
+  # Only the system manager creates and labels these files. The greeter's
+  # domain has read/write access to this dedicated type, but no create or
+  # relabel permission. No secret is passed to this preparation unit.
+  systemd-run --collect --quiet --wait --unit="tilo-bridge-prepare-$$" \
+    --property=Type=exec -- /usr/bin/bash -ec \
+    'umask 077; mkdir -m 0700 -- "$1"; : > "$1/stdin"; : > "$1/output"; /usr/sbin/restorecon -RF -- "$1"' \
+    _ "$BRIDGE"
+  cleanup_bridge() {
+    systemd-run --collect --quiet --wait --unit="tilo-bridge-clean-$$" \
+      --property=Type=exec -- /usr/bin/rm -rf -- "$BRIDGE" || true
+  }
   trap cleanup_bridge EXIT
+  [ "$(stat -c '%u:%a' "$BRIDGE")" = 0:700 ] \
+    && [ "$(stat -c '%u:%a' "$INPUT")" = 0:600 ] \
+    && [ "$(stat -c '%u:%a' "$OUTPUT")" = 0:600 ] \
+    || die "installer runtime bridge permissions are unsafe"
+  if /usr/sbin/selinuxenabled; then
+    /usr/sbin/matchpathcon -V "$BRIDGE" "$INPUT" "$OUTPUT" >/dev/null 2>&1 \
+      || die "installer runtime bridge has an unexpected SELinux label"
+  fi
+  cat > "$INPUT"
   systemd-run \
     --collect --quiet --wait \
     --unit="tilo-install-$$" \
@@ -222,6 +232,9 @@ if [ -z "${TILO_INSTALL_TRANSIENT:-}" ] && command -v systemd-run >/dev/null 2>&
   fi
   set -e
   exit "$RC"
+fi
+if [ -z "${TILO_INSTALL_TRANSIENT:-}" ]; then
+  die "systemd-run is required for the enforced installer backend"
 fi
 
 # --- parse args --------------------------------------------------------------
