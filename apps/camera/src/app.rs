@@ -6607,6 +6607,10 @@ mod tests {
     /// into each other. The capsule keeps 240 at 1× and takes the measured
     /// labels' width (plus padding) when they need more.
     #[test]
+    #[expect(
+        clippy::float_cmp,
+        reason = "the segment width is computed by the same expression from the same measurement, so it must match exactly"
+    )]
     fn mode_switcher_segments_hold_their_measured_labels_at_2x() {
         let mut tr = TextRenderer::new();
         assert_eq!(
@@ -6626,8 +6630,10 @@ mod tests {
                     .iter()
                     .find(|node| node.action_target.as_deref() == Some(target))
                     .and_then(|node| node.bounds)
-                    .map(ui::a11y::AccessBounds::to_rect)
-                    .unwrap_or_else(|| panic!("{target} is a painted segment"))
+                    .map_or_else(
+                        || panic!("{target} is a painted segment"),
+                        ui::a11y::AccessBounds::to_rect,
+                    )
             };
             let photo = segment("camera.mode:photo");
             let video = segment("camera.mode:video");
@@ -6665,6 +6671,10 @@ mod tests {
     /// each other, and on a 480 px window the filter on the title's row
     /// running into it. One measured description now places all of it.
     #[test]
+    #[expect(
+        clippy::float_cmp,
+        reason = "the geometry pins authored whole-pixel constants, which are exact in binary floating point"
+    )]
     fn gallery_chrome_keeps_title_count_filter_and_grid_apart() {
         let labels = vec!["All", "Photos", "Videos", "Favorites"];
         // 1× desktop: the authored geometry, filter beside the title.
@@ -6787,6 +6797,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::float_cmp,
+        reason = "the geometry pins authored whole-pixel constants, which are exact in binary floating point"
+    )]
     fn viewfinder_keeps_the_full_stage_at_wide_narrow_and_large_text_sizes() {
         let (mut app, mut doc, root) = sample_app();
         let heads = doc.get_heads();
@@ -7632,6 +7646,10 @@ mod tests {
     /// four floating corner controls must sit on one edge inset.
     #[test]
     fn viewfinder_capsules_contain_their_labels_at_accessibility_scale() {
+        // Tap regions are the painted rect grown to the 44 px touch minimum
+        // around its centre (`push_tap_region`): anything taller than 44 is
+        // the painted capsule itself, and centres are always painted centres.
+        const TOUCH_MIN: f64 = 44.0;
         for scale in [1.0_f32, 2.0] {
             let (mut app, mut doc, root) = sample_app();
             render_at_scaled(&mut app, &mut doc, &root, 1366.0, 768.0, scale);
@@ -7645,13 +7663,11 @@ mod tests {
                     .iter()
                     .find(|node| node.action_target.as_deref() == Some(target))
                     .and_then(|node| node.bounds)
-                    .map(ui::a11y::AccessBounds::to_rect)
-                    .unwrap_or_else(|| panic!("{target} is a painted control"))
+                    .map_or_else(
+                        || panic!("{target} is a painted control"),
+                        ui::a11y::AccessBounds::to_rect,
+                    )
             };
-            // Tap regions are the painted rect grown to the 44 px touch minimum
-            // around its centre (`push_tap_region`): anything taller than 44 is
-            // the painted capsule itself, and centres are always painted centres.
-            const TOUCH_MIN: f64 = 44.0;
             let photo = bounds_of("camera.mode:photo");
             let shutter = bounds_of("camera.shutter");
             let pill = bounds_of("camera.resolution");
@@ -7678,13 +7694,12 @@ mod tests {
                 // 2×: the measured label lines exceed the minima, so the grown
                 // capsules are what the regions report — and they contain the
                 // labels with their padding, bottom edge still on the shutter.
-                for target in ["camera.resolution"] {
-                    let pill = bounds_of(target);
-                    assert!(
-                        pill.height() + 0.5 >= pill_label_h + CTRL_PILL_PAD_Y * 2.0,
-                        "2×: {target} pill {pill:?} cannot contain a {pill_label_h} px label"
-                    );
-                }
+                let target = "camera.resolution";
+                let pill = bounds_of(target);
+                assert!(
+                    pill.height() + 0.5 >= pill_label_h + CTRL_PILL_PAD_Y * 2.0,
+                    "2×: {target} pill {pill:?} cannot contain a {pill_label_h} px label"
+                );
                 assert!(
                     photo.height() + 0.5 >= mode_label_h + MODE_LABEL_PAD_Y * 2.0,
                     "2×: mode segment {photo:?} cannot contain a {mode_label_h} px label"
