@@ -79,6 +79,10 @@ RUN test -s /usr/lib/tilo/generation \
 RUN --mount=type=bind,from=dev-inputs,source=/tilo,target=/run/tilo-dev \
     python3 /run/tilo-dev/os/scripts/unseal-rootfs.py /
 
+# tilo-vm hands a dev VM its root SSH key as an SMBIOS credential
+# (ssh.authorized_keys.root), which the sealed image refuses to import.
+RUN rm /usr/lib/bootc/kargs.d/05-credentials.toml
+
 # Fail now, not at the first slot, when this kernel cannot give a slot a seat.
 RUN --mount=type=bind,from=dev-inputs,source=/tilo,target=/run/tilo-dev \
     bash /run/tilo-dev/os/scripts/check-dev-kernel.sh /
