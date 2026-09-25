@@ -105,7 +105,7 @@ pub fn smbios_credential(public: &str) -> String {
 
 /// The one-time step for a VM that did not get the key as a credential:
 /// the dev account logs in with its password, and sudo appends the key to
-/// root's `authorized_keys`. Runs the same in a POSIX shell and PowerShell.
+/// root's `authorized_keys`. Runs the same in a POSIX shell and `PowerShell`.
 pub fn install_command(endpoint: &SshEndpoint, public: &str) -> String {
     format!(
         "ssh -t -o StrictHostKeyChecking=accept-new -p {} {DEV_ACCOUNT}@{} 'sudo install -d -m 0700 /root/.ssh && echo {} | base64 -d | sudo tee -a /root/.ssh/authorized_keys >/dev/null && sudo restorecon -R /root/.ssh'",

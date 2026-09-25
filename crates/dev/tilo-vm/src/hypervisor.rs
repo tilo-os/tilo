@@ -990,7 +990,7 @@ impl Hypervisor for Whpx {
 
 pub struct HyperV;
 
-/// A PowerShell single-quoted string literal.
+/// A `PowerShell` single-quoted string literal.
 fn ps_quote(text: &str) -> String {
     format!("'{}'", text.replace('\'', "''"))
 }

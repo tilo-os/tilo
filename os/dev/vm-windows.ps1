@@ -14,7 +14,9 @@ if (!$cycle -or !$storage -or !$medium -or !$run -or !$env:TILO_CONSOLE_PORT -or
 }
 if ($cycle -notmatch '^scenario-install-[0-9TZ-]+-[0-9]+$') { throw 'invalid scenario cycle name' }
 $cycleDir = Join-Path (Join-Path $storage 'vm-cycles') $cycle
-$target = Join-Path $cycleDir 'target.qcow2'
+$externalTarget = $env:TILO_INSTALL_TARGET_DISK
+$target = if ($externalTarget) { [IO.Path]::GetFullPath($externalTarget) } else { Join-Path $cycleDir 'target.qcow2' }
+$targetFormat = if ($externalTarget) { 'raw' } else { 'qcow2' }
 $work = Join-Path $cycleDir 'installer-work.qcow2'
 $vars = Join-Path $cycleDir 'vars.fd'
 $pidFile = Join-Path $run 'qemu.pid'
@@ -83,15 +85,22 @@ function Boot([bool]$installer, [string[]]$flags) {
     if ($free -lt 15GB) { throw 'WHPX scenario requires at least 15 GiB free on its disk volume' }
     if ($flags -contains '--tpm') { throw 'WHPX scenario has no persistent software TPM' }
     if ($flags -contains '--gl') { throw 'WHPX scenario has no configured virgl headless backend' }
+    if ($externalTarget) {
+        $file = Get-Item -LiteralPath $target -ErrorAction Stop
+        if ($file.PSIsContainer -or ($file.Attributes -band [IO.FileAttributes]::ReparsePoint) -or
+            $file.Extension -ne '.raw' -or $file.Length -lt 40GB) {
+            throw 'external target must be a regular sparse raw file of at least 40 GiB'
+        }
+    }
     $qemu = Resolve-Tool 'qemu-system-aarch64'
     $img = Resolve-Tool 'qemu-img'
     if ($installer) {
         if (!(Test-Path -LiteralPath $work)) { & $img create -f qcow2 -F qcow2 -b $medium $work | Out-Null; if ($LASTEXITCODE) { throw 'creating installer overlay failed' } }
         if (!(Test-Path -LiteralPath $target)) { & $img create -f qcow2 $target 40G | Out-Null; if ($LASTEXITCODE) { throw 'creating sparse target failed' } }
-        $disks = @('-drive', "if=none,id=medium,format=qcow2,file=$work,cache=writeback,aio=threads", '-device', 'virtio-blk-pci,drive=medium,serial=tilo-installer-medium,bootindex=1', '-drive', "if=none,id=target,format=qcow2,file=$target,cache=writeback,aio=threads", '-device', 'virtio-blk-pci,drive=target,serial=tilo-install-target')
+        $disks = @('-drive', "if=none,id=medium,format=qcow2,file=$work,cache=writeback,aio=threads", '-device', 'virtio-blk-pci,drive=medium,serial=tilo-installer-medium,bootindex=1', '-drive', "if=none,id=target,format=$targetFormat,file=$target,cache=writeback,aio=threads", '-device', 'virtio-blk-pci,drive=target,serial=tilo-install-target')
     } else {
         if (!(Test-Path -LiteralPath $target)) { throw 'installed target is missing' }
-        $disks = @('-drive', "if=none,id=target,format=qcow2,file=$target,cache=writeback,aio=threads", '-device', 'virtio-blk-pci,drive=target,serial=tilo-install-target,bootindex=1')
+        $disks = @('-drive', "if=none,id=target,format=$targetFormat,file=$target,cache=writeback,aio=threads", '-device', 'virtio-blk-pci,drive=target,serial=tilo-install-target,bootindex=1')
     }
     if (!(Test-Path -LiteralPath $vars)) {
         $template = Resolve-Firmware 'edk2-arm-vars.fd' $env:TILO_EFI_VARS
