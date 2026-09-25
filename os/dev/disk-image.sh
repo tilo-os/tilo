@@ -372,7 +372,7 @@ cleanup() {
   fi
   sudo -n umount -R "$MNT" 2>/dev/null || true
   if [ -n "${LOOP_NODE_HOLDER_PID:-}" ]; then
-    printf 'release\n' >&"$LOOP_NODE_HOLDER_IN" 2>/dev/null || true
+    printf 'release\n' >&"$LOOP_NODE_HOLDER_IN" || true
     wait "$LOOP_NODE_HOLDER_PID" 2>/dev/null || true
   fi
   [ -n "${LOOP:-}" ] && sudo -n losetup -d "$LOOP" 2>/dev/null || true
