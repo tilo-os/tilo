@@ -9,7 +9,8 @@ param(
     [string]$LogPath = 'C:\tilo-build\tilo-vm-bench.jsonl',
     [int]$MemoryMB = 4096,
     [int]$Cpus = 4,
-    [ValidateSet('create', 'start', 'slot', 'swap', 'restart', 'app')]
+    [int]$SshPort = 2244,
+    [ValidateSet('create', 'start', 'slot', 'swap', 'restart', 'app', 'stop')]
     [string[]]$Phase = @('create', 'start', 'slot', 'swap', 'restart', 'app'),
     [string]$Component = 'shell',
     [string]$App = 'notes',
@@ -42,7 +43,7 @@ $env:TILO_VM = $VmName
 $commands = [ordered]@{}
 $create = @('vm', 'create', $VmName, '--hypervisor', 'whpx', '--image', $ImagePath,
             '--disk', $DiskPath, '--headless', '--memory-mb', [string]$MemoryMB,
-            '--cpus', [string]$Cpus)
+            '--cpus', [string]$Cpus, '--ssh-port', [string]$SshPort)
 if ($DirectBootBundle) { $create += @('--direct-boot-bundle', $DirectBootBundle) }
 $commands.create = $create
 $commands.start = @('vm', 'start', $VmName)
@@ -50,6 +51,7 @@ $commands.slot = @('slot', 'create', '--headless')
 $commands.swap = @('swap', $Component, '--profile', 'dev')
 $commands.restart = @('vm', 'restart', $VmName)
 $commands.app = @('swap', "app:$App")
+$commands.stop = @('vm', 'stop', $VmName)
 
 foreach ($name in $Phase) {
     $arguments = $commands[$name]
