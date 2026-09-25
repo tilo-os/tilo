@@ -271,6 +271,10 @@ impl ZoomControl {
     }
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the button painter takes the paint context, rect, colours, label with its measured size, and corner radius"
+)]
 fn draw_button(
     scene: &mut Scene,
     transform: Affine,
