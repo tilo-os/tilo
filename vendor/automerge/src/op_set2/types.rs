@@ -140,6 +140,7 @@ impl TryFrom<Action> for ObjType {
             Action::MakeMap => Ok(ObjType::Map),
             Action::MakeList => Ok(ObjType::List),
             Action::MakeText => Ok(ObjType::Text),
+            Action::MakeTable => Ok(ObjType::Table),
             _ => Err(AutomergeError::Fail),
         }
     }
@@ -244,6 +245,20 @@ impl<'a> From<ValueRef<'a>> for types::Value<'static> {
 }
 
 impl<'a> ScalarValue<'a> {
+    /// qOS bounded admission (L1): heap capacity owned by this value
+    /// (owned `Cow` payloads only). Allocates nothing.
+    pub(crate) fn native_owned_bytes(&self) -> usize {
+        match self {
+            ScalarValue::Bytes(Cow::Owned(b)) => b.capacity(),
+            ScalarValue::Str(Cow::Owned(s)) => s.capacity(),
+            ScalarValue::Unknown {
+                bytes: Cow::Owned(b),
+                ..
+            } => b.capacity(),
+            _ => 0,
+        }
+    }
+
     pub fn as_i64(&self) -> i64 {
         match self {
             Self::Int(i) | Self::Timestamp(i) => *i,

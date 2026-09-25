@@ -203,13 +203,13 @@ impl<'a> Op<'a> {
         for (i, val) in self.succ_inc() {
             if vis(clock, &i) {
                 if let Some(v) = val {
-                    inc += v;
+                    inc = i64::wrapping_add(inc, v);
                 } else {
                     deleted = true;
                 }
             }
         }
-        (deleted, Some(counter + inc))
+        (deleted, Some(counter.wrapping_add(inc)))
     }
 
     pub(crate) fn scope_to_clock(&mut self, clock: Option<&Clock>) -> bool {

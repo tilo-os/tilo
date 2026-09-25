@@ -1,14 +1,24 @@
 //! Borrowed reads of retained native storage. A read never qualifies its source.
 //!
-//! OWNER: lane L4. Public types are the 0.8 contract verbatim; method bodies
-//! are to be ported onto 0.12 (0.8 source for reference:
-//! alignment branch vendor/automerge/src/resource_limits/retained/read*).
+//! The 0.12 port walks the op set's own column iterators (`OpIter`) instead of
+//! the public read API: the public API clones actor IDs into `ExId`s, collects
+//! result vectors and builds clocks, none of which is reserved. hexane 1.0's
+//! positioned iterators and slab searches are allocation-free, so the only heap
+//! allocation a query makes is its boxed workspace (plus, on a malformed column
+//! only, one fixed error string), and both are reserved before they happen.
+mod identity;
 mod scalar;
+mod sequence;
 use super::custody::{NativeCloneCandidate, NativeOwned, NativeWorkTurn};
-use super::{NativeReservation, NativeResourceError};
-use crate::types::OpId;
+use super::{NativeAllowance, NativeReservation, NativeResourceError};
+use crate::op_set2::op_set::OpIter;
+use crate::op_set2::types::{Action, KeyRef, ScalarValue};
+use crate::op_set2::Op;
+use crate::types::{ObjId, OpId};
 use crate::{AutoCommit, ObjType};
+use std::borrow::Cow;
 use std::cell::Cell;
+use std::mem::size_of;
 use std::ops::ControlFlow;
 /// Which visible values of a map property to visit.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -124,7 +134,7 @@ pub enum NativeValue<'value, 'doc> {
 /// ```
 pub struct NativeReadSession<'doc, 'turn> {
     document: &'doc AutoCommit,
-    allowance: &'turn super::NativeAllowance,
+    allowance: &'turn NativeAllowance,
 }
 
 impl std::fmt::Debug for NativeReadSession<'_, '_> {
@@ -174,6 +184,24 @@ pub struct NativeListEntry<'value, 'doc> {
     pub conflict: bool,
 }
 
+// A column cursor carries substantial inline state, so each query keeps its
+// cursor and possible winner in a separately reserved heap workspace. The
+// fields drop before credit, including on a visitor's early return or unwind,
+// and nested visitor queries never grow the caller's stack by a whole cursor.
+struct Query<'doc> {
+    workspace: Box<Workspace<'doc>>,
+    _reservation: NativeReservation,
+}
+struct Workspace<'doc> {
+    iter: OpIter<'doc>,
+    winner: Option<Op<'doc>>,
+}
+
+// OpIter::try_next allocates at most one of the fixed ReadOpError::InvalidOpId
+// strings on its failure path (largest: "missing actor or counter", 24
+// bytes). Every other ReadOpError variant is inline. Keep that covered too.
+const READ_ERROR_BYTES: usize = 24;
+
 impl NativeOwned<AutoCommit> {
     /// Opens a read session after checking the current turn's owner domain.
     pub fn read<'doc, 'turn>(
@@ -196,32 +224,34 @@ impl NativeCloneCandidate<AutoCommit> {
 impl<'doc, 'turn> NativeReadSession<'doc, 'turn> {
     fn new(
         document: &'doc AutoCommit,
-        allowance: &'turn super::NativeAllowance,
+        allowance: &'turn NativeAllowance,
     ) -> Result<Self, NativeResourceError> {
         if document.native_read_is_isolated() {
             return Err(NativeResourceError::Unaccounted);
         }
-        Ok(Self { document, allowance })
+        Ok(Self {
+            document,
+            allowance,
+        })
     }
+
     /// Reserve caller-owned output from this session's same current turn.
+    /// This is a budget operation, not an owner or disclosure qualification.
     pub fn reserve_output(&self, bytes: usize) -> Result<NativeReservation, NativeResourceError> {
         self.allowance.reserve(bytes)
     }
+
     /// The root of this exact document; constructing the handle allocates nothing.
     pub fn root(&self) -> NativeObject<'doc> {
         NativeObject {
             id: NativeId {
                 document: self.document,
-                id: crate::types::ObjId::root().0,
+                id: ObjId::root().0,
             },
         }
     }
-    pub fn pending_ops(&self) -> usize {
-        crate::transaction::Transactable::pending_ops(self.document)
-    }
-    pub fn operation_count(&self) -> usize {
-        todo!("L4")
-    }
+
+    /// Visits visible values without lending native owners or allocating output.
     pub fn visit_property<E>(
         &self,
         object: NativeObject<'doc>,
@@ -229,9 +259,9 @@ impl<'doc, 'turn> NativeReadSession<'doc, 'turn> {
         selection: NativeSelection,
         visitor: impl for<'value> FnMut(NativeValue<'value, 'doc>, NativeId<'doc>) -> Result<(), E>,
     ) -> Result<usize, NativeReadError<E>> {
-        let _ = (object, key, selection, visitor);
-        todo!("L4")
+        self.property(object, key, selection, None, visitor)
     }
+
     pub fn visit_property_with_steps<E>(
         &self,
         object: NativeObject<'doc>,
@@ -240,70 +270,227 @@ impl<'doc, 'turn> NativeReadSession<'doc, 'turn> {
         steps: &NativeReadSteps,
         visitor: impl for<'value> FnMut(NativeValue<'value, 'doc>, NativeId<'doc>) -> Result<(), E>,
     ) -> Result<usize, NativeReadError<E>> {
-        let _ = (object, key, selection, steps, visitor);
-        todo!("L4")
+        self.property(object, key, selection, Some(steps), visitor)
     }
+
+    fn property<E>(
+        &self,
+        object: NativeObject<'doc>,
+        key: &str,
+        selection: NativeSelection,
+        steps: Option<&NativeReadSteps>,
+        mut visitor: impl for<'value> FnMut(NativeValue<'value, 'doc>, NativeId<'doc>) -> Result<(), E>,
+    ) -> Result<usize, NativeReadError<E>> {
+        let mut query = self.query(object, Some(key), false, steps)?;
+        let mut count = 0;
+        while let Some(op) = self.next_op(&mut query, steps)? {
+            if !self.visible(&op, steps)? || matches!(op.action, Action::Delete | Action::Increment)
+            {
+                continue;
+            }
+            if selection == NativeSelection::Winner {
+                // Ops of one key are stored in ascending id order, so the last
+                // visible op is the greatest visible id: the native winner.
+                query.workspace.winner = Some(op);
+            } else {
+                self.visit_op(&op, steps, false, &mut visitor)?;
+                count += 1;
+            }
+        }
+        if let Some(op) = query.workspace.winner.take() {
+            self.visit_op(&op, steps, false, &mut visitor)?;
+            count = 1;
+        }
+        Ok(count)
+    }
+
+    /// Visits unique visible map keys, lending each key only within its callback.
     pub fn visit_keys<E>(
         &self,
         object: NativeObject<'doc>,
-        visitor: impl for<'key> FnMut(&'key str) -> Result<(), E>,
+        mut visitor: impl for<'key> FnMut(&'key str) -> Result<(), E>,
     ) -> Result<usize, NativeReadError<E>> {
-        let _ = (object, visitor);
-        todo!("L4")
+        self.keys(object, None, |key| visitor(key).map(ControlFlow::Continue))
     }
+
     pub fn visit_keys_with_steps<E>(
         &self,
         object: NativeObject<'doc>,
         steps: &NativeReadSteps,
         visitor: impl for<'key> FnMut(&'key str) -> Result<ControlFlow<()>, E>,
     ) -> Result<usize, NativeReadError<E>> {
-        let _ = (object, steps, visitor);
-        todo!("L4")
+        self.keys(object, Some(steps), visitor)
     }
-    pub fn visit_list<E>(
+
+    fn keys<E>(
         &self,
         object: NativeObject<'doc>,
-        steps: &NativeReadSteps,
-        visitor: impl for<'value> FnMut(NativeListEntry<'value, 'doc>) -> Result<ControlFlow<()>, E>,
+        steps: Option<&NativeReadSteps>,
+        mut visitor: impl for<'key> FnMut(&'key str) -> Result<ControlFlow<()>, E>,
     ) -> Result<usize, NativeReadError<E>> {
-        let _ = (object, steps, visitor);
-        todo!("L4")
+        let mut query = self.query(object, None, false, steps)?;
+        let mut previous = None;
+        let mut count = 0;
+        while let Some(op) = self.next_op(&mut query, steps)? {
+            if !self.visible(&op, steps)? || matches!(op.action, Action::Delete | Action::Increment)
+            {
+                continue;
+            }
+            let KeyRef::Map(Cow::Borrowed(key)) = op.key else {
+                // Hexane's string cursor lends immutable slab bytes. Refuse a
+                // future owning cursor representation until its work is planned.
+                return Err(NativeResourceError::Unaccounted.into());
+            };
+            if previous != Some(key) {
+                count += 1;
+                if visitor(key).map_err(NativeReadError::Visitor)?.is_break() {
+                    return Ok(count);
+                }
+                previous = Some(key);
+            }
+        }
+        Ok(count)
     }
-    /// Counts the complete current committed frontier before delivering any
-    /// hashes. Refuses pending operations; never commits or emits a prefix.
-    pub fn visit_heads(
+
+    fn next_op(
         &self,
-        maximum: usize,
-        visitor: impl FnMut(crate::ChangeHash),
-    ) -> Result<usize, NativeResourceError> {
-        let _ = (maximum, visitor);
-        todo!("L4")
+        query: &mut Query<'doc>,
+        steps: Option<&NativeReadSteps>,
+    ) -> Result<Option<Op<'doc>>, NativeResourceError> {
+        if query.workspace.iter.len() == 0 {
+            return Ok(None);
+        }
+        if let Some(steps) = steps {
+            steps.charge(1)?;
+        }
+        query
+            .workspace
+            .iter
+            .try_next()
+            .map_err(|_| NativeResourceError::Invalid)
     }
-    pub fn id_len(&self, id: NativeId<'doc>) -> Result<usize, NativeResourceError> {
-        let _ = id;
-        todo!("L4")
-    }
-    pub fn write_id(&self, id: NativeId<'doc>, sink: &mut [u8]) -> Result<usize, NativeResourceError> {
-        let _ = (id, sink);
-        todo!("L4")
-    }
-    /// Required bytes for the existing canonical binary object ID encoding.
-    pub fn id_bytes_len(&self, id: NativeId<'doc>) -> Result<usize, NativeResourceError> {
-        let _ = id;
-        todo!("L4")
-    }
-    /// Writes the existing binary encoding without allocating.
-    pub fn write_id_bytes(&self, id: NativeId<'doc>, sink: &mut [u8]) -> Result<usize, NativeResourceError> {
-        let _ = (id, sink);
-        todo!("L4")
-    }
-    /// Lends semantic counter/actor identity. The root is None.
-    pub fn visit_id_parts<R>(
+
+    fn visible(
         &self,
-        id: NativeId<'doc>,
-        visitor: impl for<'a> FnOnce(Option<(u64, &'a [u8])>) -> R,
-    ) -> Result<R, NativeResourceError> {
-        let _ = (id, visitor);
-        todo!("L4")
+        op: &Op<'doc>,
+        steps: Option<&NativeReadSteps>,
+    ) -> Result<bool, NativeResourceError> {
+        if let Some(steps) = steps {
+            if op.is_counter() {
+                // Counter visibility walks successors; charge its complete
+                // conservative span before the first successor inspection.
+                steps.charge(op.succ_inc().len())?;
+            }
+        }
+        Ok(op.visible())
+    }
+
+    fn check_id(&self, id: NativeId<'doc>) -> Result<(), NativeResourceError> {
+        if !std::ptr::eq(self.document, id.document) {
+            return Err(NativeResourceError::Invalid);
+        }
+        Ok(())
+    }
+
+    fn query(
+        &self,
+        object: NativeObject<'doc>,
+        key: Option<&str>,
+        sequence: bool,
+        steps: Option<&NativeReadSteps>,
+    ) -> Result<Query<'doc>, NativeResourceError> {
+        self.check_id(object.id)?;
+        let object = ObjId(object.id.id);
+        let ops = &self.document.doc.ops;
+        let valid_kind = matches!(
+            (sequence, ops.object_type(&object)),
+            (false, Some(ObjType::Map | ObjType::Table))
+                | (true, Some(ObjType::List | ObjType::Text))
+        );
+        if !valid_kind {
+            return Err(NativeResourceError::Invalid);
+        }
+        // Query setup itself consumes a step before any workspace allocation.
+        // Nested visitors use the same consumer ceiling without resetting it.
+        if let Some(steps) = steps {
+            steps.charge(1)?;
+        }
+        let reservation = self
+            .allowance
+            .reserve(size_of::<Workspace<'doc>>() + READ_ERROR_BYTES)?;
+        // Range planning (hexane 1.0 slab-index descent and sorted scans),
+        // iterator construction and successor cursors are allocation-free.
+        // Values and keys borrow slab slices; no public get/keys, actor clone,
+        // result Vec, clock or marking iterator is used.
+        let range = match key {
+            Some(key) => ops.prop_range(&object, key),
+            None => ops.scope_to_obj(&object),
+        };
+        let workspace = Box::new(Workspace {
+            iter: ops.iter_range(&range),
+            winner: None,
+        });
+        Ok(Query {
+            workspace,
+            _reservation: reservation,
+        })
+    }
+
+    fn visit_op<E>(
+        &self,
+        op: &Op<'doc>,
+        steps: Option<&NativeReadSteps>,
+        allow_mark: bool,
+        visitor: &mut impl for<'value> FnMut(NativeValue<'value, 'doc>, NativeId<'doc>) -> Result<(), E>,
+    ) -> Result<(), NativeReadError<E>> {
+        let id = NativeId {
+            document: self.document,
+            id: op.id,
+        };
+        let kind = match op.action {
+            Action::MakeMap => Some(ObjType::Map),
+            Action::MakeList => Some(ObjType::List),
+            Action::MakeText => Some(ObjType::Text),
+            Action::MakeTable => Some(ObjType::Table),
+            Action::Set => None,
+            Action::Mark if allow_mark => None,
+            _ => return Err(NativeResourceError::Invalid.into()),
+        };
+        let value = if let Some(kind) = kind {
+            NativeValue::Object {
+                kind,
+                object: NativeObject { id },
+            }
+        } else {
+            let scalar = match &op.value {
+                ScalarValue::Bytes(bytes) => NativeScalar::Bytes(bytes),
+                ScalarValue::Str(text) => NativeScalar::Str(text),
+                ScalarValue::Int(value) => NativeScalar::Int(*value),
+                ScalarValue::Uint(value) => NativeScalar::Uint(*value),
+                ScalarValue::F64(value) => NativeScalar::F64(*value),
+                ScalarValue::Counter(initial) => {
+                    if let Some(steps) = steps {
+                        steps.charge(op.succ_inc().len())?;
+                    }
+                    // Wrapping, exactly like the native get/list_range sums.
+                    let mut value = *initial;
+                    for (_, increment) in op.succ_inc() {
+                        if let Some(increment) = increment {
+                            value = value.wrapping_add(increment);
+                        }
+                    }
+                    NativeScalar::Counter(value)
+                }
+                ScalarValue::Timestamp(value) => NativeScalar::Timestamp(*value),
+                ScalarValue::Boolean(value) => NativeScalar::Boolean(*value),
+                ScalarValue::Unknown { type_code, bytes } => NativeScalar::Unknown {
+                    type_code: *type_code,
+                    bytes,
+                },
+                ScalarValue::Null => NativeScalar::Null,
+            };
+            NativeValue::Scalar(scalar)
+        };
+        visitor(value, id).map_err(NativeReadError::Visitor)
     }
 }

@@ -782,3 +782,82 @@ impl ExposeQueue {
         Some(())
     }
 }
+
+/// qOS bounded admission (lane L1): requested heap bytes of this log, read
+/// from capacities without allocating. `None` when the log holds state
+/// this measurement does not walk (completed patches, mark accumulators or
+/// mark sets); callers fail closed on `None`.
+impl PatchLog {
+    pub(crate) fn native_heap_bytes(&self) -> Option<usize> {
+        use std::mem::size_of;
+        fn scalar(v: &crate::ScalarValue) -> usize {
+            match v {
+                crate::ScalarValue::Bytes(b) => b.capacity(),
+                // SmolStr spills strings longer than 23 bytes into Arc<str>.
+                crate::ScalarValue::Str(s) if s.len() > 23 => s.len() + 16,
+                crate::ScalarValue::Unknown { bytes, .. } => bytes.capacity(),
+                _ => 0,
+            }
+        }
+        fn value(v: &Value) -> usize {
+            match v {
+                Value::Scalar(s) => scalar(s),
+                // The log only records freshly created objects
+                // (`hydrate::Value::new` of an `ObjType`): empty maps, lists
+                // and texts whose default containers own at most a small
+                // initial buffer.
+                _ => 256,
+            }
+        }
+        if !self.completed_patches.is_empty() || self.completed_patches.capacity() != 0 {
+            return None;
+        }
+        let mut n = self
+            .events
+            .capacity()
+            .saturating_mul(size_of::<(ObjId, Event)>());
+        for (_, e) in &self.events {
+            let extra = match e {
+                Event::PutMap { key, value: v, .. } => key.capacity() + value(v),
+                Event::PutSeq { value: v, .. } | Event::Insert { value: v, .. } => value(v),
+                Event::DeleteMap { key }
+                | Event::IncrementMap { key, .. }
+                | Event::FlagConflictMap { key } => key.capacity(),
+                Event::Splice { text, marks, .. } => {
+                    if marks.is_some() {
+                        return None;
+                    }
+                    text.capacity()
+                }
+                Event::Mark { .. } => return None,
+                _ => 0,
+            };
+            n = n.saturating_add(extra);
+        }
+        n = n.saturating_add(crate::resource_limits::dims::hash_table_bytes(
+            self.expose.capacity(),
+            size_of::<OpId>(),
+        ));
+        // path_map BTreeMap<ObjId, (Prop, ObjId)>: ≤ 1 node of 11 entries
+        // (≤ 11 × 48 + 112 bytes) per 5 entries, plus owned map keys.
+        let entries = self.path_map.len();
+        if entries != 0 {
+            n = n.saturating_add((entries / 5 + 2).saturating_mul(11 * 48 + 112));
+            for (prop, _) in self.path_map.values() {
+                if let Prop::Map(k) = prop {
+                    n = n.saturating_add(k.capacity());
+                }
+            }
+        }
+        if let Some(h) = &self.heads {
+            n = n.saturating_add(h.capacity().saturating_mul(size_of::<ChangeHash>()));
+        }
+        n = n.saturating_add(self.actors.capacity().saturating_mul(size_of::<ActorId>()));
+        for a in self.actors.iter().chain(self.speculative_actor.iter()) {
+            n = n.saturating_add(crate::resource_limits::dims::actor_heap_bytes(
+                a.to_bytes().len(),
+            ));
+        }
+        Some(n)
+    }
+}

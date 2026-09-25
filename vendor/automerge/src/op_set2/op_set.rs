@@ -33,6 +33,7 @@ mod index;
 mod insert;
 mod mark_index;
 mod marks;
+mod native_dims;
 mod op_iter;
 mod op_query;
 mod top_op;
@@ -1140,10 +1141,10 @@ impl OpSet {
             for (id, value) in succ.with_inc() {
                 if let Some(i) = value {
                     if clock.visible_before(&id) {
-                        inc1 += i;
+                        inc1 = i64::wrapping_add(inc1, i);
                     }
                     if clock.visible_after(&id) {
-                        inc2 += i;
+                        inc2 = i64::wrapping_add(inc2, i);
                     }
                 }
             }

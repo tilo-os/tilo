@@ -858,7 +858,7 @@ impl Automerge {
     /// * `patch_log` - A [`PatchLog`] to log the changes required to materialize the current state of
     ///                 the document once loaded
     #[deprecated(since = "0.5.2", note = "Use `load_with_options` instead")]
-    #[tracing::instrument(skip(data), err)]
+    #[tracing::instrument(skip(data), err(level = "debug"))]
     pub fn load_with(
         data: &[u8],
         on_error: OnPartialLoad,
@@ -879,7 +879,7 @@ impl Automerge {
     /// # Arguments
     /// * `data` - The data to load
     /// * `options` - The options to use when loading
-    #[tracing::instrument(skip(data), err)]
+    #[tracing::instrument(skip(data), err(level = "debug"))]
     pub fn load_with_options(
         data: &[u8],
         options: LoadOptions<'_>,
@@ -1950,7 +1950,7 @@ impl Automerge {
         let mut to_convert = Vec::new();
         for (obj, ops) in self.ops.iter_objs() {
             match obj.typ {
-                ObjType::Map | ObjType::List => {
+                ObjType::Map | ObjType::Table | ObjType::List => {
                     for op in ops.visible_slow(None) {
                         //if !op.visible() {
                         //    continue;
@@ -2329,4 +2329,39 @@ pub(crate) struct Isolation {
     actor_index: usize,
     seq: u64,
     clock: Clock,
+}
+
+/// qOS bounded admission (lane L1): read-only document dimensions.
+/// Allocates nothing.
+impl Automerge {
+    pub(crate) fn native_dims(&self, d: &mut crate::resource_limits::dims::DocDims) {
+        use crate::resource_limits::dims::{actor_heap_bytes, hash_table_bytes};
+        use std::mem::size_of;
+        self.ops.native_dims(d);
+        self.change_graph.native_dims(d);
+        self.queue.native_dims(d);
+        let mut exact = hash_table_bytes(self.deps.capacity(), size_of::<ChangeHash>());
+        // Authors: `authors: Vec<Author>` (capacity ≤ 2× len, owned bytes
+        // ≤ 2× len) and `actor_to_author: Vec<Option<AuthorIdx>>` (one per
+        // actor, ≤ 2× capacity, ≤ 16 bytes each).
+        let authors = self.authors.get_authors();
+        exact = exact.saturating_add(
+            authors
+                .len()
+                .saturating_mul(2 * size_of::<Author<'static>>()),
+        );
+        for a in authors {
+            exact = exact.saturating_add(a.as_bytes().len().saturating_mul(2));
+        }
+        exact = exact.saturating_add(self.ops.actors.len().saturating_mul(2 * 16));
+        if let Actor::Unused(actor) = &self.actor {
+            exact = exact.saturating_add(actor_heap_bytes(actor.to_bytes().len()));
+        }
+        if let Some(author) = &self.author {
+            exact = exact.saturating_add(author.as_bytes().len().saturating_mul(2));
+        }
+        d.exact_bytes = d.exact_bytes.saturating_add(exact);
+        d.cap.deps = (self.deps.len(), self.deps.capacity());
+        d.cap.authors = authors.len();
+    }
 }

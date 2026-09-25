@@ -250,7 +250,7 @@ impl TransactionInner {
         let value = value.into();
         let prop = prop.into();
         match (&prop, obj.typ) {
-            (Prop::Map(_), ObjType::Map) => Ok(()),
+            (Prop::Map(_), ObjType::Map | ObjType::Table) => Ok(()),
             (Prop::Seq(_), ObjType::List) => Ok(()),
             (Prop::Seq(_), ObjType::Text) => Ok(()),
             _ => Err(AutomergeError::InvalidOp(obj.typ)),
@@ -283,7 +283,7 @@ impl TransactionInner {
         let obj = self.exid_to_obj(doc, ex_obj)?;
         let prop = prop.into();
         match (&prop, obj.typ) {
-            (Prop::Map(_), ObjType::Map) => Ok(()),
+            (Prop::Map(_), ObjType::Map | ObjType::Table) => Ok(()),
             (Prop::Seq(_), ObjType::List) => Ok(()),
             _ => Err(AutomergeError::InvalidOp(obj.typ)),
         }?;
@@ -1278,7 +1278,7 @@ impl TransactionInner {
         let parent = self.exid_to_obj(doc, ex_parent)?;
 
         match (&prop, insert, parent.typ) {
-            (Prop::Map(_), _, ObjType::Map) => Ok(()),
+            (Prop::Map(_), _, ObjType::Map | ObjType::Table) => Ok(()),
             (Prop::Seq(_), _, ObjType::List) => Ok(()),
             (Prop::Seq(_), true, ObjType::Text) => Ok(()),
             _ => Err(AutomergeError::InvalidOp(parent.typ)),
@@ -1619,7 +1619,7 @@ fn increment_replacement(
     let counter = ops.iter().find(|op| op.is_counter())?;
     match counter.hydrate_value(text_encoding) {
         hydrate::Value::Scalar(ScalarValue::Counter(counter)) => Some(hydrate::Value::scalar(
-            ScalarValue::counter(i64::from(counter) + increment),
+            ScalarValue::counter(i64::from(counter).wrapping_add(*increment)),
         )),
         _ => None,
     }
@@ -1641,3 +1641,5 @@ mod tests {
         assert!(tx.get(&a, "b").unwrap().is_some());
     }
 }
+
+mod native_heap;

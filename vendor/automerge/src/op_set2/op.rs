@@ -88,8 +88,12 @@ impl ChangeOp {
     ) -> hydrate::Value {
         if self.bld.action == Action::Set {
             if let ScalarValue::Counter(c) = &self.bld.value {
-                let inc: i64 = self.succ.iter().filter_map(|(_, inc)| *inc).sum();
-                hydrate::Value::Scalar(types::ScalarValue::counter(c + inc))
+                let inc = self
+                    .succ
+                    .iter()
+                    .filter_map(|(_, inc)| *inc)
+                    .fold(0i64, i64::wrapping_add);
+                hydrate::Value::Scalar(types::ScalarValue::counter(c.wrapping_add(inc)))
             } else {
                 hydrate::Value::Scalar(self.bld.value.to_owned())
             }
@@ -983,14 +987,14 @@ impl<'a> Op<'a> {
                 if let Some(v) = val {
                     if let Some(c) = clock {
                         if c.covers(&i) {
-                            inc += v;
+                            inc = i64::wrapping_add(inc, v);
                         }
                     } else {
-                        inc += v;
+                        inc = i64::wrapping_add(inc, v);
                     }
                 }
             }
-            self.value = ScalarValue::Counter(n + inc);
+            self.value = ScalarValue::Counter(n.wrapping_add(inc));
         }
     }
 

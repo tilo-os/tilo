@@ -16,12 +16,21 @@ pub struct ListRangeItem<'a> {
     pub index: usize,
     pub value: ValueRef<'a>,
     pub conflict: bool,
+    is_mark: bool,
     pub(crate) maybe_exid: ExIdPromise<'a>,
 }
 
 impl ListRangeItem<'_> {
     pub(crate) fn op_id(&self) -> OpId {
         self.maybe_exid.id
+    }
+
+    /// qOS: whether this item is a native formatting mark boundary rather than
+    /// sequence content. Iteration and indices keep their existing behavior;
+    /// plain-text readers can skip this tag without guessing from a scalar
+    /// value (marks may themselves carry strings).
+    pub fn is_mark(&self) -> bool {
+        self.is_mark
     }
 
     pub fn id(&self) -> ExId {
@@ -32,6 +41,7 @@ impl ListRangeItem<'_> {
             index: self.index,
             value: self.value.into_owned(),
             conflict: self.conflict,
+            is_mark: self.is_mark,
             maybe_exid: self.maybe_exid.into_owned(),
         }
     }
@@ -92,6 +102,7 @@ impl ListState {
         value: ValueRef<'a>,
         index: usize,
         mut diff: Diff,
+        is_mark: bool,
     ) -> ListDiffItem<'a> {
         if self.expose && diff == Diff::Same {
             diff = Diff::Add;
@@ -99,6 +110,7 @@ impl ListState {
         let update = diff == Diff::Add && self.num_old > 0;
         ListDiffItem {
             diff,
+            is_mark,
             value,
             inc: self.inc,
             index,
@@ -143,8 +155,8 @@ impl<'a> Iterator for ListDiff<'a> {
 
             let value = if let ScalarValue::Counter(c) = &list.value {
                 let (inc1, inc2) = op_set.get_increment_diff_at_pos(list.pos, &self.clock);
-                state.inc = inc2 - inc1;
-                ValueRef::from_action_value(list.action, ScalarValue::Counter(*c + inc2))
+                state.inc = inc2.wrapping_sub(inc1);
+                ValueRef::from_action_value(list.action, ScalarValue::Counter(c.wrapping_add(inc2)))
             } else {
                 state.inc = 0;
                 ValueRef::from_action_value(list.action, list.value.clone())
@@ -156,7 +168,13 @@ impl<'a> Iterator for ListDiff<'a> {
             if let Some((next_diff, next_list)) = self.iter.peek() {
                 if next_list.inserts == list.inserts {
                     if diff.is_visible() && next_diff.is_del() {
-                        last_visible = Some(state.diff_item(list.id, value, self.index, diff));
+                        last_visible = Some(state.diff_item(
+                            list.id,
+                            value,
+                            self.index,
+                            diff,
+                            list.action == Action::Mark,
+                        ));
                     }
                     continue;
                 }
@@ -173,7 +191,13 @@ impl<'a> Iterator for ListDiff<'a> {
                 }
                 return Some(last);
             } else {
-                let mut item = state.diff_item(list.id, value, self.index, diff);
+                let mut item = state.diff_item(
+                    list.id,
+                    value,
+                    self.index,
+                    diff,
+                    list.action == Action::Mark,
+                );
                 if diff == Diff::Same && state.num_old > 1 && state.num_new == 1 {
                     // The surviving value is unchanged, but removing the other
                     // visible values clears its conflict flag. Emit a Put and,
@@ -193,6 +217,7 @@ impl<'a> Iterator for ListDiff<'a> {
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct ListDiffItem<'a> {
     pub(crate) diff: Diff,
+    is_mark: bool,
     pub(crate) value: ValueRef<'a>,
     pub(crate) inc: i64,
     pub(crate) index: usize,
@@ -209,6 +234,7 @@ impl<'a> ListDiffItem<'a> {
             index: self.index,
             value: self.value,
             conflict: self.conflict,
+            is_mark: self.is_mark,
             maybe_exid,
         }
     }
@@ -222,6 +248,7 @@ impl<'a> ListDiffItem<'a> {
             id,
             conflict,
             expose,
+            is_mark: _,
         } = self;
         match diff {
             Diff::Add => {
