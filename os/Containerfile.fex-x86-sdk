@@ -1,0 +1,23 @@
+# syntax=docker/dockerfile:1.7
+# Development candidate only. Build on a native x86-64 CI runner so RPM
+# scriptlets execute normally. A frozen RPM transaction is required before
+# this SDK can be promoted as a release input.
+ARG BASE_REF
+FROM --platform=linux/amd64 ${BASE_REF}
+RUN test "$(uname -m)" = x86_64 \
+ && dnf install -y \
+      glibc-devel.x86_64 glibc-devel.i686 \
+      libstdc++-devel.x86_64 libstdc++-devel.i686 \
+      libX11-devel.x86_64 libX11-devel.i686 \
+      libxcb-devel.x86_64 libxcb-devel.i686 \
+      mesa-libGL-devel.x86_64 mesa-libGL-devel.i686 \
+      mesa-libEGL-devel.x86_64 mesa-libEGL-devel.i686 \
+      vulkan-loader-devel.x86_64 vulkan-loader-devel.i686 \
+      alsa-lib-devel.x86_64 alsa-lib-devel.i686 \
+      wayland-devel.x86_64 wayland-devel.i686 \
+      libdrm-devel.x86_64 libdrm-devel.i686 \
+      zlib-ng-compat-devel.x86_64 zlib-ng-compat-devel.i686 \
+ && dnf clean all \
+ && test -d /usr/include \
+ && rpm -qa --qf '%{NAME}-%{EPOCHNUM}:%{VERSION}-%{RELEASE}.%{ARCH}\n' \
+      | LC_ALL=C sort > /usr/lib/tilo-fex-sdk-packages.txt
