@@ -627,6 +627,10 @@ fn typing_a_timecode_jumps_the_playhead_there() {
 }
 
 #[test]
+#[expect(
+    clippy::float_cmp,
+    reason = "the value is either untouched by the event under test or assigned a literal, so any difference is the bug"
+)]
 fn an_unreadable_timecode_says_so_instead_of_going_nowhere() {
     let mut doc = AutoCommit::new();
     VideoDoc::seed_sample(&mut doc);
@@ -1692,6 +1696,10 @@ fn reveal_inspector_rect_for_test(app: &mut VideoEditorApp, r: &Regions, rect: R
 }
 
 #[test]
+#[expect(
+    clippy::float_cmp,
+    reason = "the value is either untouched by the event under test or assigned a literal, so any difference is the bug"
+)]
 fn resource_operations_reject_wrong_kinds_without_changing_state() {
     let (mut app, doc) = app_and_doc();
     let selected_before = app.selected();
@@ -2325,6 +2333,10 @@ fn a_menu_click_resolves_past_the_separator_to_the_row_it_landed_on() {
 }
 
 #[test]
+#[expect(
+    clippy::float_cmp,
+    reason = "the value is either untouched by the event under test or assigned a literal, so any difference is the bug"
+)]
 fn the_project_button_is_dropped_rather_than_clipped_and_the_reader_is_told() {
     // A name cut to a few characters states a *different* project name,
     // which is worse than no button — but a reader must then be told the
@@ -2459,6 +2471,10 @@ fn a_cancelled_chooser_clears_the_notice_and_abandons_a_queued_open() {
 }
 
 #[test]
+#[expect(
+    clippy::float_cmp,
+    reason = "the value is either untouched by the event under test or assigned a literal, so any difference is the bug"
+)]
 fn the_shortcut_sheet_has_room_for_every_shortcut_it_lists() {
     // The sheet's card was a fixed height with a fixed column split, and
     // the row loop simply stops drawing when it runs out of card. Adding
@@ -2674,6 +2690,10 @@ fn set_in_out_shortcuts_trim_the_selected_clip() {
 }
 
 #[test]
+#[expect(
+    clippy::float_cmp,
+    reason = "the value is either untouched by the event under test or assigned a literal, so any difference is the bug"
+)]
 fn jkl_shuttle_moves_and_stops_the_playhead() {
     let (mut app, mut doc) = app_and_doc();
     app.playhead = 5.0;
@@ -3117,6 +3137,10 @@ fn dropping_in_the_track_header_gutter_places_rather_than_appends() {
 // ---- horizontal timeline scroll --------------------------------------
 
 #[test]
+#[expect(
+    clippy::float_cmp,
+    reason = "the value is either untouched by the event under test or assigned a literal, so any difference is the bug"
+)]
 fn shift_wheel_pans_the_timeline_and_clamps_to_the_content() {
     let (mut app, mut doc) = app_and_doc();
     move_to(&mut app, &mut doc, 640.0, 700.0); // over the lanes
@@ -3146,6 +3170,10 @@ fn shift_wheel_pans_the_timeline_and_clamps_to_the_content() {
 }
 
 #[test]
+#[expect(
+    clippy::float_cmp,
+    reason = "the value is either untouched by the event under test or assigned a literal, so any difference is the bug"
+)]
 fn a_horizontal_wheel_pans_without_zooming() {
     let (mut app, mut doc) = app_and_doc();
     move_to(&mut app, &mut doc, 640.0, 700.0);
@@ -3219,6 +3247,10 @@ fn zoomed_in_content_past_the_right_edge_becomes_reachable() {
 }
 
 #[test]
+#[expect(
+    clippy::float_cmp,
+    reason = "the value is either untouched by the event under test or assigned a literal, so any difference is the bug"
+)]
 fn dragging_the_scrollbar_thumb_scrolls_the_timeline() {
     let (mut app, mut doc) = app_and_doc();
     // Zoom in so the content overflows and a bar appears.
@@ -3759,6 +3791,10 @@ fn the_track_menu_lock_entry_locks_the_track() {
 // ---- affordances ------------------------------------------------------
 
 #[test]
+#[expect(
+    clippy::float_cmp,
+    reason = "the value is either untouched by the event under test or assigned a literal, so any difference is the bug"
+)]
 fn the_zoom_chip_reports_the_zoom_and_fits_the_project_to_the_window() {
     let (mut app, mut doc) = app_and_doc();
     let r = app.regions();
@@ -4820,10 +4856,13 @@ fn a_narrow_transport_gives_up_the_history_buttons_before_the_timecode() {
         let hist = app.history_buttons(&r);
         let content = app.transport_content_x(&r);
         if hist.is_empty() {
-            assert_eq!(content, TRANSPORT_PLAIN_X, "{w}px: the space comes back");
+            assert!(
+                ((content) - (TRANSPORT_PLAIN_X)).abs() < 1e-9,
+                "{w}px: the space comes back"
+            );
             continue;
         }
-        assert_eq!(content, TRANSPORT_RIGHT_X, "{w}px");
+        assert!(((content) - (TRANSPORT_RIGHT_X)).abs() < 1e-9, "{w}px");
         // Every button is inside the strip, and clear of the space the
         // readout and the scrubber then start in.
         for (which, rect) in &hist {
@@ -4881,12 +4920,22 @@ fn a_narrow_window_collapses_the_inspector_and_gives_the_transport_its_width_bac
         let r = app.regions();
         assert!(!r.inspector_overlay, "{w}x{h} keeps the inspector docked");
         assert!(app.inspector_is_visible(&r));
-        assert_eq!(r.inspector.x1, w, "docked against the right edge");
-        assert_eq!(r.preview.x1, r.inspector.x0, "the preview ends at it");
+        assert!(
+            ((r.inspector.x1) - (w)).abs() < 1e-9,
+            "docked against the right edge"
+        );
+        assert!(
+            ((r.preview.x1) - (r.inspector.x0)).abs() < 1e-9,
+            "the preview ends at it"
+        );
     }
 }
 
 #[test]
+#[expect(
+    clippy::float_cmp,
+    reason = "the value is either untouched by the event under test or assigned a literal, so any difference is the bug"
+)]
 fn the_inspector_toggle_shows_and_hides_the_collapsed_panel() {
     let (mut app, mut doc) = app_sized(500.0, 640.0);
     app.navigation.flap_settled = true;
@@ -5074,6 +5123,10 @@ fn the_inspector_scrollbar_is_grabbable_and_reaches_the_effects_section() {
 }
 
 #[test]
+#[expect(
+    clippy::float_cmp,
+    reason = "the value is either untouched by the event under test or assigned a literal, so any difference is the bug"
+)]
 fn a_press_on_the_inspector_scrollbar_does_not_fall_through_to_a_control() {
     let (mut app, mut doc) = app_and_doc();
     let r = app.regions();
@@ -5104,6 +5157,10 @@ fn a_press_on_the_inspector_scrollbar_does_not_fall_through_to_a_control() {
 }
 
 #[test]
+#[expect(
+    clippy::float_cmp,
+    reason = "the value is either untouched by the event under test or assigned a literal, so any difference is the bug"
+)]
 fn the_media_bin_scrolls_so_every_row_can_be_reached() {
     // Regression: rows past the pane were drawn outside it and reachable
     // by nothing at all.
@@ -5197,6 +5254,10 @@ fn the_bin_scrollbar_thumb_drags_the_list() {
 }
 
 #[test]
+#[expect(
+    clippy::float_cmp,
+    reason = "the value is either untouched by the event under test or assigned a literal, so any difference is the bug"
+)]
 fn a_wheel_over_the_preview_does_not_move_the_timeline() {
     let (mut app, mut doc) = app_and_doc();
     let r = app.regions();
@@ -5309,6 +5370,10 @@ fn a_refused_import_tells_the_user_what_the_file_actually_is() {
 }
 
 #[test]
+#[expect(
+    clippy::float_cmp,
+    reason = "the value is either untouched by the event under test or assigned a literal, so any difference is the bug"
+)]
 fn an_import_carries_an_unknown_frame_rate_as_unknown() {
     // A still image has no frame rate. Substituting 30 would put a number
     // in the bin that the file never stated.
@@ -5638,6 +5703,10 @@ where
 /// the CRDT — not merely in the in-memory preview — once the interaction
 /// ends. This drags each ranged control and reads the document back.
 #[test]
+#[expect(
+    clippy::float_cmp,
+    reason = "the value is either untouched by the event under test or assigned a literal, so any difference is the bug"
+)]
 fn dragging_a_geometry_control_writes_the_transform_to_the_document() {
     let (mut app, mut doc) = app_and_doc();
     let id = app.project.top_video_clip_at(23.0).unwrap().id;
@@ -5686,6 +5755,10 @@ fn dragging_a_geometry_control_writes_the_transform_to_the_document() {
 /// It is logarithmic, so normal speed is the centre and half / double are
 /// symmetric about it — and the value reaches the document.
 #[test]
+#[expect(
+    clippy::float_cmp,
+    reason = "the value is either untouched by the event under test or assigned a literal, so any difference is the bug"
+)]
 fn the_rate_control_is_logarithmic_and_re_times_the_clip() {
     assert!(
         (NumField::Speed.to_frac(1.0) - 0.5).abs() < 1e-9,
@@ -5964,6 +6037,10 @@ fn adding_a_title_places_a_clip_and_opens_its_words() {
 /// The title controls edit the *source*, so they commit a media write —
 /// a clip write would drop them on the floor.
 #[test]
+#[expect(
+    clippy::float_cmp,
+    reason = "the value is either untouched by the event under test or assigned a literal, so any difference is the bug"
+)]
 fn the_title_controls_write_the_source() {
     let (mut app, mut doc) = app_and_doc();
     app.playhead = 12.0;
@@ -7581,6 +7658,10 @@ fn an_effects_intensity_can_be_keyed_from_its_own_row() {
 }
 
 #[test]
+#[expect(
+    clippy::float_cmp,
+    reason = "the value is either untouched by the event under test or assigned a literal, so any difference is the bug"
+)]
 fn the_anchor_grid_moves_the_point_the_picture_turns_about() {
     let (mut app, mut doc) = app_and_doc();
     let cid = app.project.top_video_clip_at(23.0).unwrap().id;
@@ -9045,6 +9126,10 @@ fn the_shuttle_readout_is_really_painted_beside_the_timecode() {
 /// stop the shuttle, not start playback on top of it and leave a rate
 /// running behind the readout.
 #[test]
+#[expect(
+    clippy::float_cmp,
+    reason = "the value is either untouched by the event under test or assigned a literal, so any difference is the bug"
+)]
 fn the_play_button_shows_and_stops_a_running_shuttle() {
     let theme = Theme::dark();
     let (w, h) = (1280u32, 800u32);

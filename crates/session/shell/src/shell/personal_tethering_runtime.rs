@@ -113,7 +113,13 @@ pub fn tethering_statuses() -> Vec<TetheringStatusView> {
 }
 
 /// Queue a request only for an online certified phone. Local-hotspot control
-/// remains the existing Quick Settings NetworkManager action.
+/// remains the existing Quick Settings `NetworkManager` action.
+///
+/// # Errors
+///
+/// Returns a message when Wi-Fi Continuity is disabled, `provider` is not an
+/// online certified phone, the coordinator is unavailable, or too many
+/// requests are active or recorded.
 pub fn request_phone_tethering(
     network: &ShellNetwork,
     provider: &DeviceId,
@@ -173,6 +179,12 @@ pub fn request_phone_tethering(
     Ok(request_id)
 }
 
+/// Queue the end of an active tethering session.
+///
+/// # Errors
+///
+/// Returns a message when the coordinator is unavailable or the session is
+/// no longer active.
 pub fn disconnect_phone_tethering(request_id: TetheringId) -> Result<(), String> {
     let mut state = shell_state()
         .lock()
@@ -189,6 +201,12 @@ pub fn disconnect_phone_tethering(request_id: TetheringId) -> Result<(), String>
     Ok(())
 }
 
+/// Queue the local user's answer to a pending tethering request.
+///
+/// # Errors
+///
+/// Returns a message when the coordinator is unavailable or the request is
+/// no longer pending.
 pub fn authorize_phone_tethering(request_id: TetheringId, approved: bool) -> Result<(), String> {
     let mut state = shell_state()
         .lock()
@@ -303,13 +321,9 @@ impl PersonalTetheringRuntime {
             .filter(|snapshot| snapshot.presence.online)
             .map(|snapshot| snapshot.owner.clone())
             .collect::<BTreeSet<_>>();
-        for peer in self
-            .online_peers
-            .difference(&online)
-            .cloned()
-            .collect::<Vec<_>>()
-        {
-            self.peer_unavailable(&mut host, &local, &peer);
+        let previous = std::mem::take(&mut self.online_peers);
+        for peer in previous.difference(&online) {
+            self.peer_unavailable(&mut host, &local, peer);
         }
         self.online_peers = online;
     }
@@ -331,6 +345,10 @@ impl PersonalTetheringRuntime {
         true
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the tethering pump keeps expiry, command and peer steps in one ordered tick"
+    )]
     fn pump_with<H: TetheringHost>(
         &mut self,
         host: &mut H,
@@ -424,12 +442,11 @@ impl PersonalTetheringRuntime {
                     let Some(consent) = consent else { continue };
                     let approved = approved && self.provider_leases.is_empty();
                     let credential = if approved {
-                        match host.start_hotspot(&consent.requester) {
-                            Ok(credential) => Some(credential),
-                            Err(_) => {
-                                set_phase(request_id, TetheringPhase::Failed, 0);
-                                None
-                            }
+                        if let Ok(credential) = host.start_hotspot(&consent.requester) {
+                            Some(credential)
+                        } else {
+                            set_phase(request_id, TetheringPhase::Failed, 0);
+                            None
                         }
                     } else {
                         None
@@ -670,11 +687,12 @@ impl PersonalTetheringRuntime {
 
 fn signal_target(signal: &TetheringSignal) -> DeviceId {
     match signal {
-        TetheringSignal::Request { provider, .. } => provider.clone(),
+        TetheringSignal::Request { provider, .. } | TetheringSignal::Cancel { provider, .. } => {
+            provider.clone()
+        }
         TetheringSignal::Decision { requester, .. }
         | TetheringSignal::Credential { requester, .. }
         | TetheringSignal::Stop { requester, .. } => requester.clone(),
-        TetheringSignal::Cancel { provider, .. } => provider.clone(),
     }
 }
 

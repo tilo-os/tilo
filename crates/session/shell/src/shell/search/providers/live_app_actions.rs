@@ -1580,7 +1580,7 @@ impl LiveAppActionsProvider {
             row.resource.label, row.resource.id, presentation_text
         )
         .to_lowercase();
-        let score = if needle.is_empty() {
+        let rank = if needle.is_empty() {
             0
         } else if row.resource.label.to_lowercase().starts_with(needle) {
             100
@@ -1620,7 +1620,7 @@ impl LiveAppActionsProvider {
                     ),
             ),
             badge: presentation.and_then(|value| value.badge),
-            score,
+            score: rank,
             params: Vec::new(),
             contract: None,
             on_open: Rc::new(move |_, _, chrome, _| {

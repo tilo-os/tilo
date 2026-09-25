@@ -98,14 +98,14 @@ impl LocalHistoryNarrator {
     /// Return a result only while it still describes the request on screen.
     /// A slower generation must never overwrite a newer deterministic digest.
     pub fn take_for(&mut self, request: &NarrativeRequest) -> Option<GroundedNarrative> {
-        self.take_for_prompt(prompt_for(request))
+        self.take_for_prompt(&prompt_for(request))
     }
 
     pub fn take_status_for(&mut self, request: &NarrativeRequest) -> Option<GroundedNarrative> {
-        self.take_for_prompt(status_prompt_for(request))
+        self.take_for_prompt(&status_prompt_for(request))
     }
 
-    fn take_for_prompt(&mut self, prompt: String) -> Option<GroundedNarrative> {
+    fn take_for_prompt(&mut self, prompt: &str) -> Option<GroundedNarrative> {
         let expected = blake3::hash(prompt.as_bytes()).to_hex().to_string();
         let narrative = self
             .pending
