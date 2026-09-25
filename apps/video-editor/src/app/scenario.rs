@@ -248,6 +248,15 @@ impl ShotScenario {
     }
 }
 
+/// The capture names the framework stages besides [`ShotScenario::ALL_NAMES`]:
+/// the `--empty` and `--narrow` launch flags select them.
+pub const EMPTY_CAPTURE: &str = "empty";
+/// See [`EMPTY_CAPTURE`].
+pub const NARROW_CAPTURE: &str = "narrow";
+/// The prefix of the capture `--import PATH` selects: `import:PATH` stages the
+/// blank live app importing the file at `PATH`.
+pub const IMPORT_CAPTURE: &str = "import:";
+
 /// One-time lifecycle of deterministic screenshot setup and seeding.
 #[derive(Default)]
 pub(super) struct ShotLifecycle {
@@ -257,6 +266,63 @@ pub(super) struct ShotLifecycle {
 }
 
 impl VideoEditorApp {
+    /// Stage a framework `--shots` capture on the hosted editor. The
+    /// scenario's project has been loaded through the host already
+    /// ([`crate::VideoEditor`]'s `scenario`); this arranges the view state
+    /// around it — the selection, the open menu, the drag — on the editor's
+    /// next sync and draw, through the same one-shot lifecycle the scenario
+    /// table always used. `None` is the plain demo capture.
+    ///
+    /// Every capture but the blank one is hermetic: no sound, no decoding of
+    /// the sample project's stand-in media, waveforms computed in the frame,
+    /// so two runs compose the same scene.
+    pub fn stage_capture(&mut self, scenario: Option<&str>) {
+        if let Some(path) = scenario.and_then(|name| name.strip_prefix(IMPORT_CAPTURE)) {
+            self.stage_import(vec![PathBuf::from(path)]);
+            return;
+        }
+        self.shot_scenario = match scenario {
+            // The real live app on a blank project, as a fresh machine shows.
+            Some(EMPTY_CAPTURE) => return,
+            Some(NARROW_CAPTURE) => {
+                // The collapsed bin revealed over the editor behind its scrim;
+                // the animation never runs in a one-shot render.
+                self.bin_flap.snap(true);
+                self.navigation.flap_settled = true;
+                ShotScenario::Live
+            }
+            Some(name) => {
+                self.settle_flaps_on_next_frame();
+                ShotScenario::from_arg(name).unwrap_or(ShotScenario::Live)
+            }
+            None => {
+                self.settle_flaps_on_next_frame();
+                ShotScenario::Live
+            }
+        };
+        self.seed.demo = true;
+        self.render_pipeline.warm_waveforms_sync = true;
+        self.shot_lifecycle.applied = false;
+        self.shot_lifecycle.interaction_applied = false;
+    }
+
+    /// Start the side flaps at the capture width's natural state on the next
+    /// frame instead of animating there from wherever an earlier frame left
+    /// them: a still is of the settled layout, whatever the clock did.
+    fn settle_flaps_on_next_frame(&mut self) {
+        self.navigation.flap_settled = false;
+    }
+
+    /// Stage a `--shots --import` capture: import `paths` as real clips
+    /// (probed for real metadata), place the first on the timeline and park
+    /// the playhead in it — the path a portal pick drives. The capture waits
+    /// for the import, and for its decoded frame when decoding is compiled in,
+    /// through `has_pending_visual_work`.
+    fn stage_import(&mut self, paths: Vec<PathBuf>) {
+        self.pending_imports = paths;
+        self.media_pipeline.auto_place_imports = true;
+    }
+
     /// Deterministically arrange editor state for a `--shots` scenario. Real
     /// production edit paths are used (split/grade through the CRDT) so the
     /// captured frame reflects genuine behaviour, not a mock.
