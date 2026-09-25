@@ -14,6 +14,10 @@ gate = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(gate)
 
 class Inputs(unittest.TestCase):
+    def test_dev_ssh_transaction_has_matching_core_rpm_in_snapshot(self):
+        specs = set(gate.parser.packages(ROOT / 'os/Containerfile.dev', 'aarch64'))
+        self.assertTrue({'openssh', 'openssh-server', 'rsync'} <= specs)
+
     def setUp(self):
         self.temp=tempfile.TemporaryDirectory(); self.addCleanup(self.temp.cleanup)
         self.repo=Path(self.temp.name)
