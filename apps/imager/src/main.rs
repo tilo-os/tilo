@@ -123,6 +123,9 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     if let Some(code) = imager::setup::staging::helper::maybe_run_staging_helper(&args)? {
         std::process::exit(code);
     }
+    if let Some(code) = imager::setup::staging::final_bootnext::maybe_run(&args)? {
+        std::process::exit(code);
+    }
     if let Some(code) = imager::setup::staging::cli::maybe_run_staging_request(&args)? {
         std::process::exit(code);
     }
