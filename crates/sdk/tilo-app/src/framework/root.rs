@@ -75,7 +75,7 @@ impl<R: Resource> ResourceRoot<R> {
     /// Stage a screenshot scenario's view state: every view's
     /// [`on_stage`](super::ViewCx::on_stage) callback runs now, and every
     /// hosted surface stages on its next sync.
-    pub(crate) fn stage(&mut self, scenario: Option<&str>) {
+    pub(crate) fn stage(&self, scenario: Option<&str>) {
         self.stages.run(scenario);
     }
 

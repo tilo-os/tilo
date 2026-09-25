@@ -26,10 +26,11 @@ use super::app::ResourceApp;
 use super::root::ResourceRoot;
 
 type Stage = Box<dyn FnMut(Option<&str>)>;
+type StageList = Vec<(Weak<()>, Stage)>;
 
 /// The stage callbacks of one app's views, each tied to the view scope that
 /// registered it (a row of an `Each` drops its callbacks with the row).
-pub(crate) struct Stages(Rc<RefCell<Vec<(Weak<()>, Stage)>>>);
+pub(crate) struct Stages(Rc<RefCell<StageList>>);
 
 impl Clone for Stages {
     fn clone(&self) -> Self {
@@ -96,7 +97,7 @@ pub fn stage<A: ResourceApp>(
 }
 
 /// The instance the harness hosts `A` under.
-fn root_instance<A: ResourceApp>(harness: &mut FrameHarness) -> Result<u64, LaunchError> {
+fn root_instance<A: ResourceApp>(harness: &FrameHarness) -> Result<u64, LaunchError> {
     harness
         .component_instance_id()
         .ok_or_else(|| LaunchError::Operation(format!("{} is not hosted here", A::TITLE)))
