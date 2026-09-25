@@ -186,6 +186,7 @@ impl Execution {
             },
         );
         let result = launcher.launch(permit, services);
+        crate::agent_runtime_adapter::agent_timing("launch_requested", id);
         #[cfg(test)]
         if result.is_ok() {
             crate::agent_runtime_adapter::launch_retry::test_audit(
@@ -238,6 +239,7 @@ impl Execution {
                 .remove(&id)
                 .expect("selected connector retained");
             let result = connector.join().await;
+            crate::agent_runtime_adapter::agent_timing("gateway_connected", id);
             if let Err(error) =
                 result.and_then(|joined| self.launch_connected(id, launcher, config, joined))
             {
@@ -264,6 +266,10 @@ impl Execution {
             match event {
                 ManagedLaunchEvent::Started(supervisor) => {
                     let pending = self.capture_started(&supervisor)?;
+                    crate::agent_runtime_adapter::agent_timing(
+                        "process_started",
+                        pending.invocation,
+                    );
                     if supervisor.runtime_facts()? != pending.runtime {
                         return Err("started runtime differs from held launch facts".into());
                     }
@@ -293,18 +299,30 @@ impl Execution {
                             .map_err(|e| e.to_string())?,
                     );
                 }
-                ManagedLaunchEvent::Finished { binding, exit, .. } => {
+                ManagedLaunchEvent::Finished {
+                    binding,
+                    exit,
+                    event,
+                    ..
+                } => {
+                    tracing::info!(target: "qos_cloud_host::agent_timing", agent = %binding.agent, ?event, "managed agent process finished");
+                    crate::agent_live::process_exited(
+                        &binding.agent,
+                        !matches!(event, launcher::managed::ProcessEvent::Exited),
+                    );
                     self.finished(&binding, &exit)?;
                 }
                 ManagedLaunchEvent::Failed {
                     binding, reason, ..
                 } => {
+                    tracing::warn!(target: "qos_cloud_host::agent_timing", agent = %binding.agent, %reason, "managed agent launch failed");
                     self.uncertain_agent(&binding.agent, &reason)?;
                     self.close_identity(&binding.launch);
                 }
             }
         }
         while let Ok((id, result)) = self.admitted_rx.try_recv() {
+            crate::agent_runtime_adapter::agent_timing("channel_admitted", id);
             let result = result.and_then(|connection| {
                 let attempt = self.owner.attempt(id)?;
                 self.broker
@@ -334,6 +352,7 @@ impl Execution {
             .collect();
         for (id, available) in ready {
             self.waiting.remove(&id); // Remove before the only dispatch attempt.
+            crate::agent_runtime_adapter::agent_timing("recipient_ready", id);
             if !available {
                 self.owner
                     .uncertain(id, "recipient subscription was not established")?;
@@ -380,6 +399,13 @@ impl Execution {
             runtime_epoch: facts.runtime.runtime_epoch,
             recipient_agent: ids.agent_id.clone(),
             channel_lease: facts.channel_id,
+            // Lane E: the agent's own durable history (see agent_history).
+            history: crate::agent_history::for_dispatch(
+                &self.owner,
+                &ids.agent_id,
+                id,
+                attempt.caller.user_public_key,
+            ),
             task: TaskRunEnvelope {
                 version: 1,
                 task_id: ids.task_id.clone(),

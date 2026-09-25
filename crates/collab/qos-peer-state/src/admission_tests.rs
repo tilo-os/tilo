@@ -1291,7 +1291,7 @@ fn legacy_checkpoint_without_coverage_remains_deferred_and_metadata_cannot_regre
         unreachable!()
     };
     let mut doc = room::candidate(None, &changes).unwrap();
-    doc.delete(ROOT, coverage::FIELD).unwrap();
+    doc.delete(ROOT, coverage::FIELD_V2).unwrap();
     doc.commit();
     let legacy = NeighbourMsg::SyncResp {
         room: room.clone(),
@@ -1331,14 +1331,8 @@ fn legacy_checkpoint_without_coverage_remains_deferred_and_metadata_cannot_regre
     let mut rows = coverage::entries(&candidate).unwrap();
     let entry = rows.values_mut().next().unwrap();
     entry.sequence = 0;
-    candidate
-        .put(
-            ROOT,
-            coverage::FIELD,
-            automerge::ScalarValue::Bytes(postcard::to_allocvec(&rows).unwrap()),
-        )
-        .unwrap();
-    candidate.commit();
+    let regressed = entry.clone();
+    coverage::put(&mut candidate, regressed).unwrap();
     assert!(
         coverage::monotonic(Some(&room::candidate(None, &changes).unwrap()), &candidate).is_err()
     );

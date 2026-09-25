@@ -11,8 +11,20 @@ const MAX_GOVERNANCE_ITEMS: usize = 4096;
 const MAX_GOVERNANCE_BYTES: usize = 16 * 1024 * 1024;
 const MAX_SELECTION: usize = 256;
 
+/// Stable, typed refusal text. JavaScript maps the fixed prefixes to reason
+/// codes (`clock-skew`, `claimed-elsewhere`); the rest stay generic refusals.
+pub(crate) const CLOCK_SKEW: &str = "Cloud owner clock skew";
+pub(crate) const CLAIMED_ELSEWHERE: &str = "Cloud owner claimed elsewhere";
 fn refused(error: HostedAttemptError) -> String {
-    format!("Cloud owner enrollment refused ({error:?})")
+    match error {
+        HostedAttemptError::Expired => format!(
+            "{CLOCK_SKEW}: the Cloud challenge expired or this device's clock differs from the Cloud host"
+        ),
+        HostedAttemptError::Claimed => format!(
+            "{CLAIMED_ELSEWHERE}: this Cloud machine is already bound to another owner identity"
+        ),
+        _ => format!("Cloud owner enrollment refused ({error:?})"),
+    }
 }
 fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|byte| format!("{byte:02x}")).collect()
@@ -166,6 +178,13 @@ impl CloudOwner {
             .attempt
             .accept_enrollment(reply.as_bytes(), now)
             .map_err(refused)?;
+        Ok(checkpoint.material.to_vec())
+    }
+
+    /// Store.apply refused the signed request: stage Inspect again with the
+    /// same keys and a fresh operation key. Custody moves only on its ACK.
+    pub(crate) fn reset_apply(&mut self, now: u64) -> Result<Vec<u8>, String> {
+        let checkpoint = self.attempt.reset_apply(now).map_err(refused)?;
         Ok(checkpoint.material.to_vec())
     }
 

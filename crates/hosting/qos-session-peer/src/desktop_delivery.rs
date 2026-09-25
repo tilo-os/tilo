@@ -249,6 +249,7 @@ impl SessionOwner {
             let opened = matches!(
                 command.command,
                 qos_peer_state::desktop_command::DesktopCommand::OpenTab { .. }
+                    | qos_peer_state::desktop_command::DesktopCommand::OpenApp { .. }
             )
             .then(|| added.first().filter(|_| added.len() == 1).cloned())
             .flatten();

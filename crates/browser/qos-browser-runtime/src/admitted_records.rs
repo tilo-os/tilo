@@ -103,6 +103,101 @@ pub(crate) fn install_initial(
     install(cache, state, actor)
 }
 
+/// Boot repair for a canonical record committed ahead of its cursor journal:
+/// an older runtime could commit a record-only batch inside the publication
+/// window, leaving record H1 durable beside journal H0, which every later
+/// cursor-journal capture refuses. The committed record is loaded and must
+/// contain the admitted heads (a descendant); its delta is then published
+/// exactly as `local_owned_document` does, so the journal is staged at the
+/// record's heads. Any other mismatch is refused explicitly and nothing is
+/// changed, so retained storage stays available for recovery. Runs before
+/// `install_initial`, whose merge would otherwise leave H1 unpublished.
+/// Returns the number of repaired records.
+pub(crate) fn repair_record_basis(
+    cache: &PortableStorage,
+    state: &mut StatePeer,
+    outbox: &mut Vec<qos_peer_state::NeighbourMsg>,
+    signer: &ed25519_dalek::SigningKey,
+    include: impl Fn(&str) -> bool,
+    now: web_time::SystemTime,
+) -> Result<usize, String> {
+    let mut candidate: Option<StatePeer> = None;
+    let mut published = vec![];
+    for row in state.rows() {
+        if !include(&row.app_id) {
+            continue;
+        }
+        let route = if row.record_id.is_empty() {
+            row.app_id.clone()
+        } else {
+            format!("{}/{}", row.app_id, row.record_id)
+        };
+        let storage_key = key(state.room(), &row.app_id, &row.record_id);
+        // No committed record yet: `install_initial` projects the admitted one.
+        let Some(committed) = cache.committed_document_heads(&storage_key) else {
+            continue;
+        };
+        let mut committed = committed.map_err(|_| {
+            format!("retained record {route} is unreadable; local storage is kept for recovery")
+        })?;
+        let mut admitted = state
+            .document_heads(&row.app_id, &row.record_id)
+            .ok_or("admitted record basis missing")?;
+        committed.sort();
+        admitted.sort();
+        if committed == admitted {
+            continue;
+        }
+        let bytes = cache
+            .status(&storage_key)
+            .and_then(|status| status.committed)
+            .ok_or("retained record bytes missing")?
+            .1
+            .bytes;
+        let mut doc = automerge::AutoCommit::load(&bytes).map_err(|_| {
+            format!("retained record {route} is unreadable; local storage is kept for recovery")
+        })?;
+        if admitted
+            .iter()
+            .any(|head| doc.get_change_by_hash(head).is_none())
+        {
+            return Err(format!(
+                "retained record {route} does not descend from its admitted journal; local storage is kept for recovery"
+            ));
+        }
+        let next = candidate.get_or_insert_with(|| state.clone());
+        let message = next
+            .publish_incremental(
+                &row.app_id,
+                &row.record_id,
+                doc.save_after(&admitted),
+                signer,
+                now,
+            )
+            .map_err(|error| {
+                format!(
+                    "retained edit in {route} could not be republished ({error}); local storage is kept for recovery"
+                )
+            })?;
+        let mut repaired = next
+            .document_heads(&row.app_id, &row.record_id)
+            .ok_or("repaired record basis missing")?;
+        repaired.sort();
+        if repaired != committed {
+            return Err(format!(
+                "retained record {route} did not reach its committed heads; local storage is kept for recovery"
+            ));
+        }
+        published.push(message);
+    }
+    let count = published.len();
+    if let Some(next) = candidate {
+        *state = next;
+        outbox.extend(published);
+    }
+    Ok(count)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

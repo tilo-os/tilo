@@ -5,6 +5,8 @@ export interface PeerSnapshot {
  desktop?:{version:1;mode:'session'};
  phase:'authenticating'|'admitting'|'ready'|'incomplete'|'failed'|'closed';
  room?:string;deviceId?:string;records:CertifiedRecord[];error?:string|null;
+ /** Typed reason of `error` when known (e.g. a Cloud owner CloudErrorCode); cleared with it. */
+ errorCode?:string|null;
  pendingPrerequisites?:number;persistenceNeeded?:boolean;
  outgoingPending?:number;outgoingBlocked?:number;synchronization?:'acknowledged'|'pending'|'blocked';
  recoveryAvailable?:boolean;
@@ -14,6 +16,8 @@ export interface CertifiedPeer {
  readonly actionsV2?:CertifiedActionsV2;
  /** Installed signed service and actual browser codec/capture support only. */
  readonly mediaV1?:CertifiedMediaV1;
+ /** Invited sessions only: the invited identity scope, to pass as `invitation:{resume:true,scope}` after a reload. */
+ readonly invitedIdentity?:{scope:string};
  getSnapshot():PeerSnapshot;
  subscribe(listener:(snapshot:PeerSnapshot)=>void):()=>void;
  mountDesktop(target:HTMLElement,options:Pick<MountOptions,'app'|'instance'|'signal'|'onStatus'|'onNavigation'>&{onSurface?:(surfaceId:string)=>void;onMount?:(mount:DesktopMount)=>void}):Promise<DesktopMount>;
@@ -23,14 +27,45 @@ export interface CertifiedPeer {
  dispose():Promise<void>;
 }
 /** Resolves after authenticated join; observe ready for admitted durable records. */
-/** Injected Cloud Store enrollment (portal API or local stand-in). JSON stays opaque. */
+/**
+ * Injected Cloud Store enrollment (portal API or local stand-in). JSON stays opaque.
+ * Failures reject with a CloudAdapterError:
+ *  - code 'unavailable' | 'busy', or `status` 429/502/503/504, or a network TypeError:
+ *    transient; retried in place with jittered backoff (apply keeps its operationKey).
+ *  - code 'apply-refused' (+ `reason`): Store.apply refused this signed request (lost
+ *    first-claim race 'lost-race', expired/replaced challenge 'expired'/'replaced',
+ *    certificate not yet valid 'clock-skew'). Custody returns to Inspect with the same
+ *    keys and a fresh operationKey, then inspect/apply run again (bounded); reason
+ *    'clock-skew' surfaces as a CloudError 'clock-skew' after the reset.
+ *  - code 'claimed-elsewhere': the Store is bound to another owner root.
+ */
 export interface CloudEnrollmentAdapter{
  inspect(options:{signal:AbortSignal}):Promise<string>;
  apply(payload:string,options:{operationKey:string;signal:AbortSignal}):Promise<string>;
 }
+export interface CloudAdapterError extends Error{
+ code?:'unavailable'|'busy'|'apply-refused'|'claimed-elsewhere';
+ reason?:'lost-race'|'expired'|'replaced'|'clock-skew'|string;
+ status?:number;
+}
+/** Typed reasons on errors from connectPeer / reconnect (`error.code`); `message` is product copy. */
+export type CloudErrorCode=
+ |'clock-skew'          // device clock outside the tolerated window (or challenge expired)
+ |'claimed-elsewhere'   // this Cloud machine is bound to another owner identity
+ |'busy'                // host busy (503 etc.) after in-place retries
+ |'unavailable'         // host unreachable after in-place retries
+ |'open-in-other-tab'   // identity custody held by another tab/window
+ |'identity-lost'       // stored identity missing; explicit recovery required
+ |'apply-refused'       // Store kept refusing apply after bounded restarts
+ |'membership-refused'  // signed membership refusal (no longer an owner)
+ |'enrollment-refused'  // other signed/verified enrollment refusal
+ |'invitation-required';// invitation resume found no stored invited identity
+export interface CloudError extends Error{code:CloudErrorCode;detail?:string;cause?:unknown}
+/** Resume the most recently used stored invited identity of this origin (optionally one scope) without the invitation text. */
+export interface InvitationResume{resume:true;scope?:string}
 /** Browser-held Tilo owner identity for one Cloud machine; membership refresh uses the page origin. */
 export interface CloudOwnerOptions{accountId:string;machineId:string;label?:string;enrollment:CloudEnrollmentAdapter}
-export function connectPeer(options?:{enrollmentBaseUrl?:string;invitation?:{text:string;identity:'new-person';label:string};cloud?:CloudOwnerOptions;signal?:AbortSignal;onStatus?:(snapshot:PeerSnapshot)=>void}):Promise<CertifiedPeer>;
+export function connectPeer(options?:{enrollmentBaseUrl?:string;invitation?:{text:string;identity:'new-person';label:string}|InvitationResume;cloud?:CloudOwnerOptions;signal?:AbortSignal;onStatus?:(snapshot:PeerSnapshot)=>void}):Promise<CertifiedPeer>;
 
 export function pendingPeerRecoveryCount():number;
 export function retryPendingPeerRecovery():Promise<void>;
@@ -46,7 +81,9 @@ export type FailureScope =
   | { kind: "storage"; record?: RecordRef }
   | { kind: "renderer"; surfaceId: string }
   | { kind: "asset"; surfaceId: string; assetId: string }
-  | { kind: "permission"; record?: RecordRef };
+  | { kind: "permission"; record?: RecordRef }
+  /** Workspace service (catalogue, agent reads, snapshot) retrying in place; notice only. */
+  | { kind: "service"; route: "catalogue" | "reads" | "snapshot" };
 
 export type FailureCode =
   | "transport-unavailable" | "transport-ended" | "admission-timeout"
@@ -56,7 +93,7 @@ export type FailureCode =
   | "record-install-failed" | "storage-quota" | "storage-denied"
   | "storage-transaction-failed" | "asset-unavailable"
   | "gpu-unavailable" | "gpu-device-lost" | "renderer-initialization-failed"
-  | "permission-required";
+  | "permission-required" | "service-unavailable";
 
 export interface SessionFailure {
   id: string;

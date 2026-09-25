@@ -223,3 +223,99 @@ test('a stale chained poll (409) restarts the chain at once without counting as 
  const other=createPeerDelivery({runtime:plain.runtime,peerId:4,persist:async()=>{},fetch:async()=>new Response('x',{status:409})});
  await assert.rejects(other.start(),error=>error.staleChain===false);await other.close();await client.close();
 });
+function readHarness(statuses,{retry=true}={}){
+ const queue=[],calls=[];let next=10;const availability=[],errors=[];
+ const enqueue=()=>queue.push(request(++next,'/peer/v3/commands/catalogue',{proof:[1]}));enqueue();
+ const runtime={peer_delivery_begin:()=>JSON.stringify({kind:'ready'}),peer_delivery_next:()=>JSON.stringify(queue.shift()??{kind:'idle'}),peer_delivery_advance:(_p,id)=>{calls.push(['advance',id]);return JSON.stringify({kind:'idle'});},peer_delivery_forget:(_p,id)=>calls.push(['forget',id]),peer_delivery_stop:()=>calls.push('stop'),...(retry?{peer_delivery_retry:(_p,id)=>{calls.push(['retry',id]);enqueue();return true;}}:{})};
+ const clock={setTimeout(fn,ms){if(ms>=10000)return 0;setImmediate(fn);return 1;},clearTimeout(){}};
+ let index=0;const fetch=async()=>{const status=statuses[Math.min(index++,statuses.length-1)];if(status==='reset')throw new TypeError('network reset');return status===200?body([1]):new Response(null,{status});};
+ const client=createPeerDelivery({runtime,peerId:4,persist:async()=>{},clock,fetch,onError:error=>errors.push(error),onReadAvailability:value=>availability.push(value)});
+ return {client,calls,availability,errors,fetched:()=>index};
+}
+const settle=async(n=40)=>{for(let i=0;i<n;i++)await new Promise(r=>setImmediate(r));};
+test('a busy host (503/502/504) or reset on a read-only route retries in place and never recovers the transport',async()=>{
+ const {client,calls,availability,errors,fetched}=readHarness([503,'reset',504,200]);
+ await client.start();await settle();
+ assert.equal(errors.length,0);assert.equal(calls.includes('stop'),false);assert.equal(fetched(),4);
+ assert.equal(calls.filter(v=>v[0]==='retry').length,3);assert.deepEqual(calls.filter(v=>v[0]==='advance').map(v=>v[1]),[14]);
+ assert.deepEqual(availability.map(v=>[v.route,v.available,v.status??null]),[['catalogue',false,503],['catalogue',false,null],['catalogue',false,504],['catalogue',true,null]]);
+ await client.close();
+});
+test('an exhausted read-only retry drops only that read and keeps the session',async()=>{
+ const {client,calls,availability,errors,fetched}=readHarness([503]);
+ await client.start();await settle(80);
+ assert.equal(errors.length,0);assert.equal(calls.includes('stop'),false);assert.equal(fetched(),7);
+ assert.equal(availability.at(-1).retrying,false);assert.equal(availability.at(-1).available,false);
+ await client.close();
+});
+test('an older runtime without re-queue still reports the read unavailable instead of reconnecting',async()=>{
+ const {client,errors,availability}=readHarness([503],{retry:false});
+ await client.start();await settle();assert.equal(errors.length,0);assert.equal(availability.length,1);await client.close();
+});
+test('a malformed (400) read-only request is not treated as transient',async()=>{
+ const {client,errors}=readHarness([400]);await client.start();await settle();assert.equal(errors.length,1);await client.close();
+});
+test('a refused (401/403) read-only request backs off as read-unavailable and never escalates to recovery',async()=>{
+ for(const status of [401,403]){
+  const {client,calls,errors,availability,fetched}=readHarness([status,status,200]);
+  await client.start();await settle();
+  assert.equal(errors.length,0,'no transport or membership recovery');assert.equal(calls.includes('stop'),false);
+  assert.equal(fetched(),3);assert.equal(calls.filter(v=>v[0]==='retry').length,2);
+  assert.deepEqual(availability.map(v=>[v.available,v.status??null]),[[false,status],[false,status],[true,null]]);
+  await client.close();
+ }
+ // Persistently refused: the read is dropped alone after its bounded retries.
+ const {client,errors,fetched,availability}=readHarness([403]);await client.start();await settle(80);
+ assert.equal(errors.length,0);assert.equal(fetched(),7);assert.equal(availability.at(-1).retrying,false);await client.close();
+});
+test('a refused read is re-queued only after its backoff delay, never re-sent by the next wake',async()=>{
+ const timers=[];let t=0;const queue=[],calls=[];let next=10,fetches=0;
+ const enqueue=()=>queue.push(request(++next,'/peer/v3/reads',{proof:[1]}));enqueue();
+ const runtime={peer_delivery_begin:()=>JSON.stringify({kind:'ready'}),peer_delivery_next:()=>JSON.stringify(queue.shift()??{kind:'idle'}),peer_delivery_advance:()=>JSON.stringify({kind:'idle'}),peer_delivery_forget:(_p,id)=>calls.push(['forget',id]),peer_delivery_stop:()=>{},peer_delivery_retry:(_p,id)=>{calls.push(['retry',id]);enqueue();return true;}};
+ const clock={now:()=>t,setTimeout(fn,ms){if(ms>=10000)return 0;timers.push({fn,at:t+ms});return timers.length;},clearTimeout(){}};
+ const client=createPeerDelivery({runtime,peerId:4,persist:async()=>{},clock,fetch:async()=>{fetches++;return new Response(null,{status:403});}});
+ await client.start();await settle();
+ assert.equal(fetches,1,'nothing is re-sent before the delay');assert.equal(calls.filter(v=>v[0]==='forget').length,0,'the handle is kept for the re-queue');
+ const due=timers.splice(0);assert.equal(due.length,1);assert.ok(due[0].at>=125);t=due[0].at;due[0].fn();await settle();
+ assert.equal(fetches,2);assert.equal(calls.filter(v=>v[0]==='retry').length,1);
+ await client.close();
+});
+test('a busy host on snapshot manifest and chunk requests re-queues the exact step; exhaustion escalates',async()=>{
+ const make=(statuses)=>{
+  const queue=[request(21,'/peer/v3/snapshots',{proof:[1]})],calls=[],errors=[],availability=[];let next=21,index=0;
+  const runtime={peer_delivery_begin:()=>JSON.stringify({kind:'ready'}),peer_delivery_next:()=>JSON.stringify(queue.shift()??{kind:'idle'}),
+   peer_delivery_advance:(_p,id)=>{calls.push(['advance',id]);return JSON.stringify({kind:'idle'});},
+   peer_delivery_forget:(_p,id)=>calls.push(['forget',id]),peer_delivery_stop:()=>calls.push('stop'),
+   peer_delivery_retry:(_p,id)=>{calls.push(['retry',id]);queue.push(request(++next,'/peer/v3/snapshots/'+'ab'.repeat(16)+'/chunks/0',{method:'GET',body:[],proof:[1]}));return true;}};
+  const clock={setTimeout(fn,ms){if(ms>=10000)return 0;setImmediate(fn);return 1;},clearTimeout(){}};
+  const client=createPeerDelivery({runtime,peerId:4,persist:async()=>{},clock,fetch:async()=>{const status=statuses[Math.min(index++,statuses.length-1)];return status===200?body([1]):new Response(null,{status});},onError:error=>errors.push(error),onReadAvailability:value=>availability.push(value)});
+  return {client,calls,errors,availability};
+ };
+ const ok=make([503,503,200]);await ok.client.start();await settle();
+ assert.equal(ok.errors.length,0);assert.equal(ok.calls.filter(v=>v[0]==='retry').length,2);assert.deepEqual(ok.availability.map(v=>[v.route,v.available]),[['snapshot',false],['snapshot',false],['snapshot',true]]);await ok.client.close();
+ const busy=make([503]);await busy.client.start();await settle(80);
+ assert.equal(busy.errors.length,1);assert.equal(busy.errors[0].status,503);assert.equal(busy.calls.filter(v=>v[0]==='retry').length,6);await busy.client.close();
+});
+test('a poll answer that never applies backs off exponentially instead of re-polling the same cursor',async()=>{
+ let t=0,fetches=0,applies=false,errors=[];const timers=[];
+ // Request deadlines (30 s) are not scheduler holds; only holds are run here.
+ const clock={now:()=>t,setTimeout:(fn,ms)=>{const id=timers.length+1+Math.random();if(!String(fn).includes('timed out'))timers.push({id,fn,at:t+ms});return id;},clearTimeout(id){const i=timers.findIndex(v=>v.id===id);if(i>=0)timers.splice(i,1);}};
+ const poll=request(9,'/peer/v3/events?cursor=0103&mode=poll',{method:'GET',body:[],proof:[1]});let outstanding=false;
+ const runtime={peer_delivery_begin:()=>JSON.stringify({kind:'ready'}),peer_delivery_next(){if(outstanding)return JSON.stringify({kind:'idle'});outstanding=true;return JSON.stringify(poll);},
+  peer_delivery_advance(){if(!applies)throw 'checkpoint does not match governed coverage';return JSON.stringify({kind:'idle'});},peer_delivery_forget(){outstanding=false;},peer_delivery_stop(){},peer_delivery_discard_session(){}};
+ // Once the page applies the next poll is held open by the host (never answers here).
+ const client=createPeerDelivery({runtime,peerId:4,persist:async()=>{},clock,fetch:async()=>{fetches++;return applies?new Promise(()=>{}):body([1,2,3]);},onError:error=>errors.push(error)});
+ await client.start();
+ const settle=async()=>{for(let i=0;i<20;i++)await new Promise(r=>setImmediate(r));};
+ const run=async ms=>{const end=t+ms;for(let n=0;n<1000;n++){await settle();const due=timers.filter(v=>v.at<=end).sort((a,b)=>a.at-b.at)[0];if(!due)break;timers.splice(timers.indexOf(due),1);t=Math.max(t,due.at);due.fn();}t=end;await settle();};
+ await run(10000);
+ // 250+500+1000+2000+4000 ms of holds fit in 10 s: at most 6 polls, never hundreds.
+ assert.ok(fetches>=2&&fetches<=7,`bounded poll rate, got ${fetches}`);assert.equal(errors.length,0,'the carrier stays up');
+ const before=fetches;await run(60000);assert.ok(fetches-before<=5,`capped at 30 s holds, got ${fetches-before}`);
+ applies=true;const held=fetches;await run(31000);assert.equal(fetches,held+1,'polling resumes once the hold ends and the poll is then held by the host');
+ client.close();
+});
+test('the advance hold grows from 250 ms and is bounded at 30 s',async()=>{
+ const {advanceHoldMs}=await import('./peer-delivery.mjs');
+ assert.deepEqual([1,2,3,4,5,6,7,8,50].map(advanceHoldMs),[250,500,1000,2000,4000,8000,16000,30000,30000]);
+});

@@ -16,6 +16,28 @@ pub(super) const MAX_REQUEST: usize = 12 * 1024;
 pub(super) const MAX_RESULT: usize = 20 * 1024;
 pub(super) const FIRST_HOST_LABEL: &str = "Tilo Cloud";
 pub(super) const MAX_JOIN: usize = relay::delivery_v3::onboarding_wire::MAX_REQUEST_BYTES;
+/// Bounded tolerance between the browser clock and the Cloud host clock.
+/// Expiry stays strict (`now < expires`); only freshness bounds and
+/// not-yet-valid checks accept a clock this far behind or ahead.
+pub(super) const CLOCK_TOLERANCE_NS: u64 = 120_000_000_000;
+/// A refused Store.apply may restart from Inspect with the same keys at most
+/// this many times per durable identity (each with a fresh operation key).
+pub(super) const MAX_APPLY_RETRIES: u32 = 64;
+const CHALLENGE_TTL_NS: u64 = 300_000_000_000;
+const MEMBERSHIP_TTL_NS: u64 = 60_000_000_000;
+fn not_future(at: u64, now: u64) -> bool {
+    at <= now.saturating_add(CLOCK_TOLERANCE_NS)
+}
+/// Signature and validity of a certificate whose issuance may be up to the
+/// clock tolerance ahead of this browser. Expiry is still checked no earlier
+/// than now.
+pub(super) fn verify_certificate(certificate: &identity::DeviceCert, now: u64) -> Result<()> {
+    if !not_future(certificate.issued_at_ns, now) {
+        return Err(Error::Expired);
+    }
+    identity::verify_device_cert_at(certificate, now.max(certificate.issued_at_ns))
+        .map_err(|_| Error::Signature)
+}
 
 // Each owner drops the backing before its charge. The same original allowance
 // funds decoded material, retained bytes, and simultaneous staged checkpoints.
@@ -201,9 +223,16 @@ pub(super) struct MaterialV4 {
     /// may root-sign the challenge's host key. Absent (legacy) means false.
     #[serde(default, skip_serializing_if = "is_false")]
     pub first_claim: bool,
+    /// Count of refused applies that restarted from Inspect with these keys.
+    /// Absent (legacy) means zero; it only varies the apply operation key.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub apply_retry: u32,
 }
 fn is_false(value: &bool) -> bool {
     !*value
+}
+fn is_zero(value: &u32) -> bool {
+    *value == 0
 }
 #[derive(Serialize)]
 #[serde(tag = "step", rename_all = "snake_case", deny_unknown_fields)]
@@ -232,6 +261,9 @@ pub(super) enum Phase {
 #[derive(Serialize)]
 #[serde(tag = "step", rename_all = "snake_case")]
 pub(super) enum PhaseView<'a> {
+    /// Only a refused apply returns to the initial phase (same keys).
+    #[allow(dead_code, reason = "constructed only by the wasm32 owner flow")]
+    Initial,
     Apply {
         enrollment: &'a [u8],
         signed_at_ns: u64,
@@ -263,6 +295,8 @@ pub(super) struct MaterialView<'a> {
     phase: PhaseView<'a>,
     #[serde(skip_serializing_if = "is_false")]
     first_claim: bool,
+    #[serde(skip_serializing_if = "is_zero")]
+    apply_retry: u32,
 }
 impl Phase {
     pub fn enrollment(&self) -> Option<(&[u8], u64)> {
@@ -287,6 +321,13 @@ impl Phase {
 }
 impl MaterialV4 {
     pub fn with_phase<'a>(&'a self, phase: PhaseView<'a>) -> MaterialView<'a> {
+        self.with_phase_retry(phase, self.apply_retry)
+    }
+    pub fn with_phase_retry<'a>(
+        &'a self,
+        phase: PhaseView<'a>,
+        apply_retry: u32,
+    ) -> MaterialView<'a> {
         MaterialView {
             version: self.version,
             kind: &self.kind,
@@ -299,6 +340,7 @@ impl MaterialV4 {
             certificate: &self.certificate,
             phase,
             first_claim: self.first_claim,
+            apply_retry,
         }
     }
     pub fn device(&self) -> SigningKey {
@@ -344,10 +386,24 @@ impl MaterialV4 {
     }
     pub fn operation_id(&self, budget: &NativeAllowance) -> Result<uuid::Uuid> {
         let _errors = allocation::helper_errors(budget)?;
-        let digest = identity::canonical::signing_digest(
-            b"qos-cloud-browser-apply-v4\0",
-            &(&self.attempt_id, &self.machine_id, &self.certificate),
-        )
+        // The first apply keeps its original key; a restarted apply (fresh
+        // challenge after a refusal) must never reuse a refused key.
+        let digest = if self.apply_retry == 0 {
+            identity::canonical::signing_digest(
+                b"qos-cloud-browser-apply-v4\0",
+                &(&self.attempt_id, &self.machine_id, &self.certificate),
+            )
+        } else {
+            identity::canonical::signing_digest(
+                b"qos-cloud-browser-apply-retry-v4\0",
+                &(
+                    &self.attempt_id,
+                    &self.machine_id,
+                    &self.certificate,
+                    self.apply_retry,
+                ),
+            )
+        }
         .map_err(|_| Error::Signature)?;
         let mut bytes = [0; 16];
         bytes.copy_from_slice(&digest[..16]);
@@ -358,7 +414,8 @@ impl MaterialV4 {
         if self.version != 4
             || self.kind != "cloud-owner"
             || self.created_at_ns == 0
-            || self.created_at_ns > now
+            || !not_future(self.created_at_ns, now)
+            || self.apply_retry > MAX_APPLY_RETRIES
             || self.root_secret == [0; 32]
             || self.device_secret == [0; 32]
             || self.attempt_id == [0; 32]
@@ -376,11 +433,11 @@ impl MaterialV4 {
         {
             return Err(Error::Material);
         }
-        identity::verify_device_cert_at(&self.certificate, now).map_err(|_| Error::Signature)?;
+        verify_certificate(&self.certificate, now)?;
         let Some((bytes, signed)) = self.phase.enrollment() else {
             return Ok(());
         };
-        if signed < self.created_at_ns || signed > now {
+        if signed < self.created_at_ns || !not_future(signed, now) {
             return Err(Error::Material);
         }
         let enrollment: Held<identity::cloud_enrollment::EnrollmentRequest> =
@@ -428,7 +485,7 @@ impl MaterialV4 {
             proof, proof_at_ns, ..
         } = &self.phase
         {
-            if *proof_at_ns < signed || *proof_at_ns > now {
+            if *proof_at_ns < signed || !not_future(*proof_at_ns, now) {
                 return Err(Error::Material);
             }
             let held = read_request(proof, budget)?;
@@ -469,9 +526,11 @@ impl MaterialV4 {
     ) -> Result<()> {
         let _errors = allocation::helper_errors(budget)?;
         let _text = allocation::reserve(budget, 36 + 20)?;
-        if now < self.created_at_ns
+        // Expiry is strict; the freshness bound and material age tolerate a
+        // browser clock that is a little behind or ahead of the Store.
+        if !not_future(self.created_at_ns, now)
             || now >= challenge.expires_at_ns
-            || challenge.expires_at_ns - now > 300_000_000_000
+            || challenge.expires_at_ns - now > CHALLENGE_TTL_NS + CLOCK_TOLERANCE_NS
         {
             return Err(Error::Expired);
         }
@@ -481,6 +540,11 @@ impl MaterialV4 {
         let host = match (&challenge.root_public_key, &challenge.host_certificate) {
             (Some(root), Some(host)) if *root == self.certificate.user_public_key => Some(host),
             (None, None) if self.first_claim => None,
+            // The Store is already bound to another root: this identity can
+            // never enroll it (first claim lost, or another owner's Store).
+            (Some(root), _) if *root != self.certificate.user_public_key => {
+                return Err(Error::Claimed);
+            }
             _ => return Err(Error::Scope),
         };
         if challenge.version != 1
@@ -520,7 +584,7 @@ impl MaterialV4 {
         {
             return Err(Error::Scope);
         }
-        identity::verify_device_cert_at(host, now).map_err(|_| Error::Signature)?;
+        verify_certificate(host, now)?;
         Ok(())
     }
     pub fn check_membership(
@@ -551,10 +615,20 @@ impl MaterialV4 {
         let _expected = allocation::reserve(budget, 36)?;
         if challenge.nonce == [0; 32]
             || now >= challenge.expires_at_ns
-            || challenge.expires_at_ns - now > 60_000_000_000
+            || challenge.expires_at_ns - now > MEMBERSHIP_TTL_NS + CLOCK_TOLERANCE_NS
         {
             return Err(Error::Expired);
         }
+        for certificate in [host, &self.certificate] {
+            if !not_future(certificate.issued_at_ns, now) {
+                return Err(Error::Expired);
+            }
+        }
+        // Certificates issued slightly ahead of this clock are checked at
+        // their issuance; the challenge expiry above is already strict.
+        let checked = now
+            .max(host.issued_at_ns)
+            .max(self.certificate.issued_at_ns);
         let expected = join::MembershipChallenge::new(
             &enrolled.room,
             enrolled.workspace_id.parse().map_err(|_| Error::Scope)?,
@@ -563,7 +637,7 @@ impl MaterialV4 {
             request_id,
             challenge.nonce,
             challenge.expires_at_ns,
-            now,
+            checked,
         )
         .map_err(|_| Error::Scope)?;
         if &expected != challenge {

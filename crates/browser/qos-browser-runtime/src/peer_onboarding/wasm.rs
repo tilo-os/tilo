@@ -143,7 +143,14 @@ pub(super) async fn fetch(
         if get(&response, "ok")?.as_bool() != Some(true)
             || get(&response, "redirected")?.as_bool() != Some(false)
         {
-            return Err("onboarding HTTP reply rejected".into());
+            // Carry only the exact status out so callers can retry a busy or
+            // unreachable host (429/502/503/504); nothing else is exposed.
+            return Err(match get(&response, "status")?.as_f64() {
+                Some(status) if (100.0..=599.0).contains(&status) && status.fract() == 0.0 => {
+                    format!("onboarding HTTP reply rejected ({})", status as u16)
+                }
+                _ => "onboarding HTTP reply rejected".into(),
+            });
         }
         let stream = get(&response, "body")?;
         let mode = Object::new();

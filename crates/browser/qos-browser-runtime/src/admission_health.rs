@@ -449,6 +449,16 @@ mod tests {
         }
     }
 
+    /// Mirrors qos-peer-state's frozen v4 envelope that `durable()` writes
+    /// around the v3 base (without selected exact admission evidence).
+    #[derive(Serialize, Deserialize)]
+    struct DurableV4Fixture {
+        version: u32,
+        base: DurableFixture,
+        pending: std::collections::VecDeque<([u8; 32], qos_peer_state::NeighbourMsg, bool)>,
+        pending_bytes: usize,
+    }
+
     #[derive(Serialize, Deserialize)]
     struct DurableFixture {
         version: u32,
@@ -459,15 +469,6 @@ mod tests {
         receipts: BTreeMap<String, Vec<u8>>,
         certificates: Vec<DeviceCert>,
         revocations: Vec<RevocationEntry>,
-    }
-
-    /// The current durable envelope: a frozen v3 base plus the pending queue.
-    #[derive(Serialize, Deserialize)]
-    struct DurableV4Fixture {
-        version: u32,
-        base: DurableFixture,
-        pending: std::collections::VecDeque<([u8; 32], qos_peer_state::NeighbourMsg, bool)>,
-        pending_bytes: usize,
     }
 
     #[derive(Serialize, Deserialize)]
@@ -838,6 +839,7 @@ mod tests {
         let mut envelope: DurableV4Fixture =
             postcard::from_bytes(&admitted.durable().unwrap()).unwrap();
         assert_eq!(envelope.version, 4);
+        assert!(envelope.pending.is_empty());
         let durable = &mut envelope.base;
         assert_eq!(durable.version, 3);
         assert!(

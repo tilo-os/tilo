@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createConnectPeer} from './peer-session.mjs';
-function fixture({phase='inspect'}={}){
+function fixture({phase='inspect',createDelivery}={}){
  const calls=[];let attempt=0,refreshHint,staged=null;const state={phase};
  const namespace={profile:'certified:r',device:'d',room:'r'};
  const lease={material:Uint8Array.of(0),async save(bytes){calls.push('identity-ack');this.material=bytes;},async release(){calls.push('release-identity');}};
@@ -23,7 +23,7 @@ function fixture({phase='inspect'}={}){
  const connect=createConnectPeer({init:async()=>{},runtime,acquireIdentity:async()=>{throw Error('local enrollment forbidden');},acquireInvitedIdentity:async()=>{throw Error('invitation forbidden');},
   acquireCloudIdentity:async(cloud)=>{assert.equal(cloud.accountId,'acct');calls.push('acquire-cloud');return lease;},
   acquireStorage:async(profile,device)=>{assert.equal(profile,namespace.profile);assert.equal(device,namespace.device);calls.push('acquire-storage');return{epoch:'held',hydrate:async()=>[],commit:async()=>{},release:async()=>calls.push('release-storage')};},
-  fetchEnrollment:async()=>{throw Error('no unauthenticated fetch expected');},createMedia:options=>{refreshHint=options.refreshHint;return{initialize:async()=>{},dispose:async()=>{},available:false};},events:{}});
+  fetchEnrollment:async()=>{throw Error('no unauthenticated fetch expected');},createMedia:options=>{refreshHint=options.refreshHint;return{initialize:async()=>{},dispose:async()=>{},available:false};},...(createDelivery?{createDelivery}:{}),events:{}});
  return{calls,runtime,connect,state,refresh:signal=>refreshHint(signal),options:{cloud:{accountId:'acct',machineId:'m-1',enrollment}}};
 }
 test('Cloud owner enrolls through the injected adapter, then runs the ordinary certified Peer session',async()=>{
@@ -48,4 +48,34 @@ test('Cloud owner option requires an adapter and excludes invitations',async()=>
  await assert.rejects(f.connect({cloud:{accountId:'acct',machineId:'m-1'}}),/inspect and apply/);
  await assert.rejects(f.connect({...f.options,invitation:{text:'x',identity:'new-person',label:'g'}}),/either an invitation or a Cloud owner/);
  assert(!f.calls.includes('acquire-cloud'));
+});
+test('a valid admitted Cloud owner reconnects its transport without a membership refresh',async()=>{
+ const f=fixture({phase:'enrolled'});let refuse=false;
+ f.runtime.cloud_resume_transport=async(peer,_material,account,machine)=>{assert.equal(peer,7);assert.equal(account,'acct');assert.equal(machine,'m-1');f.calls.push('resume');if(refuse)throw 'Cloud owner refresh required: host appointment';};
+ const peer=await f.connect(f.options);
+ assert.equal(f.calls.filter(v=>v==='complete').length,1);
+ await peer.reconnect();
+ assert.equal(f.calls.filter(v=>v==='resume').length,1);assert.equal(f.calls.filter(v=>v==='complete').length,1);assert.equal(f.calls.filter(v=>v==='reconnect').length,0);
+ // Rust requires a refresh: fall back to the full owner membership refresh.
+ refuse=true;await peer.reconnect();
+ assert.equal(f.calls.filter(v=>v==='resume').length,2);assert.equal(f.calls.filter(v=>v==='complete').length,2);assert.equal(f.calls.filter(v=>v==='reconnect').length,1);
+ // After a successful full refresh, resume is preferred again.
+ refuse=false;await peer.reconnect();assert.equal(f.calls.filter(v=>v==='resume').length,3);assert.equal(f.calls.filter(v=>v==='complete').length,2);
+ await peer.dispose();
+});
+test('a prepared Cloud attempt is released when the session fails before connect',async()=>{
+ const f=fixture({phase:'enrolled'});const connect=createConnectPeer({init:async()=>{},runtime:f.runtime,acquireIdentity:async()=>{throw Error('no');},acquireCloudIdentity:async()=>({material:Uint8Array.of(0),async save(bytes){this.material=bytes;},async release(){}}),
+  acquireStorage:async()=>({epoch:'held',hydrate:async()=>{throw Error('hydrate failed');},commit:async()=>{},release:async()=>{}}),fetchEnrollment:async()=>{throw Error('no');},events:{}});
+ await assert.rejects(connect(f.options),/hydrate failed/);assert.equal(f.calls.filter(v=>v==='cancel').length,1);
+});
+test('a busy read-only route is a non-blocking service notice, cleared on the next success',async()=>{
+ let options;const f=fixture({phase:'enrolled',createDelivery:value=>{options=value;return{start:async()=>true,close:async()=>{},wake(){},commitBatch:async()=>{},refreshAuthorization:async()=>{}};}});
+ const peer=await f.connect(f.options);
+ options.onReadAvailability({route:'catalogue',available:false,retrying:true,attempt:1,status:503});
+ const notice=peer.getSnapshot().health.failures.find(v=>v.scope.kind==='service');
+ assert.deepEqual([notice.code,notice.severity,notice.scope.route,notice.recovery.length],['service-unavailable','notice','catalogue',0]);
+ assert.notEqual(peer.getSnapshot().health.transport.phase,'offline');
+ options.onReadAvailability({route:'catalogue',available:true});
+ assert.equal(peer.getSnapshot().health.failures.some(v=>v.scope.kind==='service'),false);
+ await peer.dispose();
 });

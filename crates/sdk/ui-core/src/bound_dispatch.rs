@@ -999,11 +999,13 @@ fn discover_bound_resources_with_filter(
             }
             if boundary.is_none() {
                 let resources = binding.read_document(doc, |doc, _| {
-                    let mut resources = widget.resources(doc);
+                    // A delivered invocation resolves in its invoker's own tree.
+                    let participant = crate::invocation_scope::current_participant();
+                    let mut resources = widget.resources_for(participant.as_ref(), doc);
                     if let Some(address) = address
                         && tilo_actions::door::resolve(&resources, address).is_none()
                         && let Some(resource) = widget
-                            .resource(doc, &address.resource)
+                            .resource_for(participant.as_ref(), doc, &address.resource)
                             .or_else(|| provider_resource(widget, binding, address))
                     {
                         resources.push(resource);
@@ -1672,7 +1674,9 @@ pub(crate) fn execute_resource_operation_scoped(
     ambient: Option<&tilo_actions::ActionContext>,
     scope: Option<&crate::invocation_scope::ResourceInvocationScope>,
 ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::DoorError> {
-    if spec.kind == tilo_actions::OperationKind::View && actor != local_author {
+    if spec.kind == tilo_actions::OperationKind::View
+        && !crate::invocation_scope::view_operation_permitted(actor, local_author, &spec.contract)
+    {
         return Err(tilo_actions::DoorError::Unavailable { code: "private_view".into(), reason: "A collaborator cannot move this participant's private focus or viewport; use Follow or Reveal explicitly".into() });
     }
     let started = if spec.kind == tilo_actions::OperationKind::Document {
@@ -1823,7 +1827,16 @@ pub(crate) fn invoke_resource_action_scoped(
                     let mut resources = Vec::new();
                     // The loan's root belongs to this component. Nested boundaries are
                     // independent destinations and cannot donate declarations here.
-                    collect_component_resources(widget, doc, &mut resources);
+                    // A delivered invocation resolves in its invoker's own tree.
+                    match crate::invocation_scope::current_participant() {
+                        Some(participant) => collect_participant_resources(
+                            widget,
+                            doc,
+                            &participant,
+                            &mut resources,
+                        ),
+                        None => collect_component_resources(widget, doc, &mut resources),
+                    }
                     if tilo_actions::door::resolve(&resources, &target.address.address).is_none()
                         && let Some(resource) =
                             resolve_unbound_resource(widget, doc, &target.address.address.resource)
@@ -1850,7 +1863,11 @@ pub(crate) fn invoke_resource_action_scoped(
                     // A refused private View must not invoke a Deferred encoder.
                     // The execution guard below remains an independent boundary.
                     if spec.kind == tilo_actions::OperationKind::View
-                        && actor != binding.author.0.as_str()
+                        && !crate::invocation_scope::view_operation_permitted(
+                            actor,
+                            binding.author.0.as_str(),
+                            &spec.contract,
+                        )
                     {
                         return Err(tilo_actions::DoorError::Unavailable {
                             code: "private_view".into(),
@@ -1940,6 +1957,23 @@ pub(crate) fn collect_unbound_resources(
     collect_component_resources(widget, doc, resources);
 }
 
+/// [`collect_unbound_resources`] rebuilt for one participant's own view.
+/// Never cached: it is the invoker's tree at invoke time.
+pub(crate) fn collect_participant_resources(
+    widget: &dyn Widget,
+    doc: &AutoCommit,
+    participant: &tilo_actions::ParticipantId,
+    resources: &mut Vec<tilo_actions::Resource>,
+) {
+    if widget.has_separate_document_owner() {
+        return;
+    }
+    resources.extend(widget.resources_for(Some(participant), doc));
+    widget.for_each_child(&mut |child| {
+        collect_participant_resources(child, doc, participant, resources);
+    });
+}
+
 pub(crate) fn resolve_unbound_resource(
     widget: &dyn Widget,
     doc: &AutoCommit,
@@ -1948,7 +1982,8 @@ pub(crate) fn resolve_unbound_resource(
     if widget.has_separate_document_owner() {
         return None;
     }
-    let mut found = widget.resource(doc, id);
+    let participant = crate::invocation_scope::current_participant();
+    let mut found = widget.resource_for(participant.as_ref(), doc, id);
     widget.for_each_child(&mut |child| {
         if found.is_none() {
             found = resolve_unbound_resource(child, doc, id);

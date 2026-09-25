@@ -7,6 +7,8 @@ use tilo_relay::{client::CertifiedAction, peer_actions::ActionMessage};
 use tilo_user_identity::DeviceCert;
 use uuid::Uuid;
 
+pub mod scoped;
+
 pub const APP_ID: &str = "so.tilo.agent";
 
 /// Host-owned current publication snapshot, never accepted from a remote caller.
@@ -311,34 +313,16 @@ fn validate_provider_state(
         || !hash(&state.publication_revision)
         || !hash(&state.grant_offers[0].revision)
         || state.grant_offers[0].actions.is_empty()
-        || state.grant_offers[0].actions.len() > 64
     {
         return Err("invalid current agent provider binding".into());
     }
     validate_grant_actions(&state.grant_offers[0].actions)
 }
 fn validate_grant_actions(grants: &[GrantAction]) -> Result<(), String> {
-    if grants.is_empty() || grants.len() > 64 {
-        return Err("invalid agent grant count".into());
-    }
-    let mut keys = std::collections::BTreeSet::new();
-    for grant in grants {
-        if [&grant.app_id, &grant.action].iter().any(|value| {
-            value.is_empty() || value.len() > 128 || value.chars().any(char::is_control)
-        }) || qos_agent_control_protocol::validate_grant_resource(&grant.resource).is_err()
-            || grant.record_id.len() > 128
-            || grant.record_id.chars().any(char::is_control)
-            || !keys.insert((
-                &grant.app_id,
-                &grant.record_id,
-                &grant.resource,
-                &grant.action,
-            ))
-        {
-            return Err("invalid or duplicate current agent grant".into());
-        }
-    }
-    Ok(())
+    // v1 exact tuples (bounded by MAX_ACTIONS_PER_GRANT) or v2 scope carriers
+    // (bounded by MAX_GRANT_SCOPES): the scope count replaces the exact cap.
+    qos_agent_control_protocol::validate_grant_set(grants)
+        .map_err(|_| "invalid or duplicate current agent grant".to_string())
 }
 fn mutation_binding(
     state: &AgentProviderState,
@@ -368,13 +352,22 @@ fn mutation_binding(
     };
     let mut descriptor = serde_json::json!({"resource":resource,"action":action,"resource_kind":"workspace.agents",
         "resource_label":"Workspace agents","action_label":if action=="spawn" {"Start agent"} else {"Message agent"},
-        "description":"Accept one private agent task","operation_kind":"effect","params":[],
+        "description":"Accept one private agent task","operation_kind":tilo_actions::OperationKind::Effect,"params":[],
         "contract":contract,"input":{"kind":"none"}});
+    // The offer binds by id, revision, label and exact actions. Its advisory
+    // expiry is renewed in place while the consent is unchanged (the host
+    // never enforces it at admission), so it is not part of the descriptor:
+    // renewing it must not refuse a control composed a moment earlier.
+    let grant: Vec<_> = state
+        .grant_offers
+        .iter()
+        .map(|o| serde_json::json!({"id":o.id,"revision":o.revision,"label":o.label,"actions":o.actions}))
+        .collect();
     let canonical = serde_json::to_vec(&serde_json::json!({"version":1,"descriptor":descriptor,
         "machine":state.machine,"host_device":hex::encode(state.host_device),"room":state.room,"host":state.host,"app_peer":state.app_peer.to_string(),"app_id":APP_ID,
         "package_hash":runtime.package_hash,"executable_hash":runtime.executable_hash,
         "runtime_hash":runtime.runtime_hash,"runtime_epoch":runtime.runtime_epoch,
-        "governance":state.governance_revision,"publications":state.publication_revision,"grant":state.grant_offers}))
+        "grant":grant}))
         .map_err(|e| e.to_string())?;
     let revision = blake3::hash(&canonical).to_hex().to_string();
     descriptor["revision"] = revision.clone().into();
@@ -626,7 +619,7 @@ mod tests {
             spawn.descriptor["contract"]["execution"]["cancellable"],
             false
         );
-        assert_eq!(spawn.descriptor["operation_kind"], "effect");
+        assert_eq!(spawn.descriptor["operation_kind"], "Effect");
         assert_eq!(spawn.descriptor["revision"], spawn.route.revision);
         assert_ne!(
             spawn.route.revision,
@@ -635,13 +628,39 @@ mod tests {
                 .route
                 .revision
         );
-        for field in ["governance", "publications", "peer", "host_device", "grant"] {
+        // Governance and publication revisions are re-checked at authorization and
+        // admission; they deliberately do not churn the descriptor revision, so an
+        // operation composed before an unrelated change (guest join, availability)
+        // stays valid.
+        // Nor does renewing the offer's advisory expiry in place (same id and
+        // consent): spawns composed before a renewal stay valid.
+        for field in ["governance", "publications", "offer_expiry"] {
+            let mut changed = state.clone();
+            match field {
+                "governance" => changed.governance_revision = "b".repeat(64),
+                "offer_expiry" => {
+                    changed.grant_offers[0].expires_at = "2100-01-01T00:15:00Z".into()
+                }
+                _ => changed.publication_revision = "c".repeat(64),
+            }
+            assert_eq!(
+                spawn.route.revision,
+                mutation_binding(&changed, &runtime, "spawn")
+                    .unwrap()
+                    .route
+                    .revision,
+                "{field}"
+            );
+        }
+        for field in ["peer", "host_device", "offer_id", "offer_label", "grant"] {
             let mut changed = state.clone();
             match field {
                 "governance" => changed.governance_revision = "b".repeat(64),
                 "publications" => changed.publication_revision = "c".repeat(64),
                 "peer" => changed.app_peer = 72,
                 "host_device" => changed.host_device = [9; 32],
+                "offer_id" => changed.grant_offers[0].id = "grant-2".into(),
+                "offer_label" => changed.grant_offers[0].label = "Other consent".into(),
                 _ => changed.grant_offers[0].actions[0].record_id = "note-2".into(),
             }
             assert_ne!(

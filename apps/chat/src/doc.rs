@@ -1359,6 +1359,7 @@ impl ChatDoc {
         attachment: Option<&Attachment>,
     ) -> bool {
         Self::channel_exists(doc, channel)
+            && Self::channel_has_timeline(doc, channel)
             && Self::valid_message_id(id)
             && !Self::message_id_exists(doc, id)
             && text.len() <= MAX_MESSAGE_TEXT_BYTES
@@ -1379,6 +1380,61 @@ impl ChatDoc {
                 })
             })
         })
+    }
+
+    /// Record `name` as the agent display name of `author`, beside the
+    /// message `id` it just wrote (`agent_authors/<author> = name`). Only an
+    /// agent task participant author is labelled, only when that message
+    /// exists with that author, and only when the stored name differs.
+    pub fn label_agent_author(doc: &mut AutoCommit, id: &str, author: &str, name: &str) {
+        if !author.starts_with(tilo_actions::AGENT_TASK_PARTICIPANT_PREFIX)
+            || name.trim().is_empty()
+            || name.len() > crate::actions::MAX_AGENT_AUTHOR_NAME_BYTES
+        {
+            return;
+        }
+        let authored = map_candidates(doc, &ROOT, "messages").iter().any(|channels| {
+            doc.keys(channels).any(|channel| {
+                message_lists(doc, &channel).into_iter().any(|list| {
+                    (0..doc.length(&list)).any(|index| {
+                        matches!(doc.get(&list, index), Ok(Some((Value::Object(ObjType::Map), row)))
+                            if get_str(doc, &row, "id") == id && get_str(doc, &row, "author") == author)
+                    })
+                })
+            })
+        });
+        if !authored {
+            return;
+        }
+        let agents = get_or_map(doc, &ROOT, "agent_authors");
+        if get_str(doc, &agents, author) != name {
+            let _ = doc.put(&agents, author, name);
+        }
+    }
+
+    /// Agent display names of agent-authored message authors.
+    pub fn agent_authors(doc: &AutoCommit) -> std::collections::HashMap<String, String> {
+        let Some(agents) = map_at(doc, &ROOT, "agent_authors") else {
+            return std::collections::HashMap::new();
+        };
+        doc.keys(&agents)
+            .filter(|author| author.starts_with(tilo_actions::AGENT_TASK_PARTICIPANT_PREFIX))
+            .filter_map(|author| {
+                let name = get_str(doc, &agents, &author);
+                (!name.trim().is_empty()).then_some((author, name))
+            })
+            .collect()
+    }
+
+    /// Only a text channel shows a message timeline: opening a voice channel
+    /// joins the call and no view ever renders its message list. A new message
+    /// there would be durable but seen by no one (an agent's post reported as
+    /// sent while every member looked at `#general`), so it is refused.
+    /// Rows that already exist stay readable; this gates new actions only.
+    fn channel_has_timeline(doc: &AutoCommit, channel: &str) -> bool {
+        map_at(doc, &ROOT, "channels")
+            .and_then(|channels| map_at(doc, &channels, channel))
+            .is_some_and(|row| get_str(doc, &row, "kind") != ChannelKind::Voice.as_str())
     }
 
     fn channel_exists(doc: &AutoCommit, channel: &str) -> bool {

@@ -61,6 +61,15 @@ impl OriginalInvocationData {
             time: time?,
         }))
     }
+    /// The enrolled task dispatch this invocation was admitted for, if any.
+    pub(super) fn enrolled_dispatch(
+        &self,
+    ) -> Option<&crate::enrolled_dispatch::VerifiedEnrolledDispatch> {
+        match &self.caller {
+            InvocationCaller::Enrolled(dispatch) => Some(dispatch),
+            _ => None,
+        }
+    }
 }
 
 /// Immutable original facts; there is no public constructor or deserializer.
@@ -152,7 +161,9 @@ impl OriginalInvocation {
         self.data.time.now_ns().map_err(|error| error.to_string())
     }
     fn check_lifecycle(&self) -> Result<(), String> {
+        let began = std::time::Instant::now();
         self.check_custody()?;
+        let custody_us = crate::agent_timing::us(began);
         let state = self
             .broker
             .upgrade()
@@ -169,9 +180,12 @@ impl OriginalInvocation {
             return Err("original worker connection replaced".into());
         }
         // Current certificate policy may open Store; the registry lock is gone.
+        let stage = std::time::Instant::now();
         state
             .revalidate_admission(&self.worker.route, &admitted)
             .map_err(|error| error.to_string())?;
+        let worker_us = crate::agent_timing::us(stage);
+        let stage = std::time::Instant::now();
         match &self.data.caller {
             InvocationCaller::Certified(caller) => {
                 state.current_action_caller(caller)?;
@@ -189,11 +203,14 @@ impl OriginalInvocation {
                 &self.data.time,
             )?,
         }
+        let caller_us = crate::agent_timing::us(stage);
+        let stage = std::time::Instant::now();
         let tree = state
             .membership
             .as_ref()
             .ok_or("workspace authority unavailable")?
             .snapshot()?;
+        let membership_us = crate::agent_timing::us(stage);
         let workspace = tree
             .workspaces
             .iter()
@@ -234,6 +251,18 @@ impl OriginalInvocation {
         }
         drop(tree);
         self.check_custody()?;
+        crate::agent_timing::slow(
+            "lease_check",
+            self.enrolled_dispatch()
+                .map(|dispatch| dispatch.invocation()),
+            began,
+            &[
+                ("custody_us", custody_us),
+                ("worker_us", worker_us),
+                ("caller_us", caller_us),
+                ("membership_us", membership_us),
+            ],
+        );
         Ok(())
     }
 }

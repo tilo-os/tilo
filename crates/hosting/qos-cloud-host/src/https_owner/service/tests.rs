@@ -625,9 +625,17 @@ async fn cloud_https_loopback_product_data_survives_owner_reopen() {
         reply.message,
         ActionMessage::BrokerCatalogue { .. }
     ));
+    // Nothing pending: the events poll is held (long poll) and answers idle
+    // only near its deadline, instead of an immediate empty reply.
+    let started = std::time::Instant::now();
     let (status, body) = client.get(private_wire::PRIVATE_EVENTS_TARGET).await;
     assert_eq!(status, reqwest::StatusCode::OK);
     assert!(body.is_empty(), "no watched transition is pending");
+    assert!(
+        started.elapsed() >= std::time::Duration::from_secs(1),
+        "idle events poll was answered after {:?}",
+        started.elapsed()
+    );
 
     // Detach, then a clean shutdown removes Ready after the final answers.
     let (id, _, _) = client.session.unwrap();
@@ -2275,4 +2283,196 @@ async fn cloud_https_multi_item_upload_is_one_group_and_new_sessions_catch_up_in
     );
     let _ = stop.send(());
     server.await.unwrap().unwrap();
+}
+
+/// A held poll is woken by a commit from another Cloud component (an agent
+/// worker's document commit) even when that component still holds the Store
+/// lock at the wake: the wake finds the Store busy, and the poll must be
+/// retried on the short tick rather than wait for the next unrelated commit
+/// or its 20 s idle deadline (the agent Chat delivery stall).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn cloud_https_held_poll_is_woken_by_a_commit_made_under_a_held_lock() {
+    let (_transport_root, store_root, config, ready) = deployment().await;
+    let root = store_root.path().to_owned();
+    let (stop, server, origin) = started(&config, &ready).await;
+    let mut client = Client {
+        http: reqwest::Client::builder()
+            .danger_accept_invalid_certs(true)
+            .build()
+            .unwrap(),
+        origin,
+        key: SigningKey::from_bytes(&[8; 32]),
+        session: None,
+    };
+    handshake(&mut client, &root).await;
+    let first = browser_delta(&root, MACHINE, "first ");
+    let (status, body) = client
+        .post("/peer/v3/state", chunk([1; 16], &first, 0, first.len()))
+        .await;
+    assert_eq!(status, reqwest::StatusCode::OK);
+    let first_commit = accepted(&body);
+    let mut cursor = None;
+    loop {
+        let boundary = poll(&client, cursor.as_ref())
+            .await
+            .expect("committed group");
+        cursor = Some(boundary.cursor().clone());
+        if boundary.committed().sequence >= first_commit.sequence {
+            break;
+        }
+    }
+    let held = {
+        let client = Client {
+            http: client.http.clone(),
+            origin: client.origin.clone(),
+            key: client.key.clone(),
+            session: client.session,
+        };
+        let cursor = cursor.clone();
+        tokio::spawn(async move { poll(&client, cursor.as_ref()).await })
+    };
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    // Another component commits and keeps the lock across several service
+    // ticks: every wake in that window finds the Store busy.
+    let later = browser_delta(&root, MACHINE, "under lock ");
+    let device = SigningKey::from_bytes(&[8; 32]).verifying_key().to_bytes();
+    let released = tokio::task::spawn_blocking(move || {
+        let mut store = crate::delivery::access::open(&root, MACHINE).unwrap();
+        store
+            .admit_delivery_item(device, [2; 16], &later, 1024 * 1024)
+            .unwrap();
+        std::thread::sleep(Duration::from_millis(900));
+        drop(store);
+        std::time::Instant::now()
+    })
+    .await
+    .unwrap();
+    let woken = tokio::time::timeout(Duration::from_secs(5), held)
+        .await
+        .expect("held poll woken after the lock is released, not at its idle deadline")
+        .unwrap()
+        .expect("committed group");
+    let latency = released.elapsed();
+    assert!(woken.committed().sequence > first_commit.sequence);
+    assert!(
+        latency < Duration::from_secs(2),
+        "held poll answered {latency:?} after the lock release"
+    );
+    let _ = stop.send(());
+    server.await.unwrap().unwrap();
+}
+
+/// Lane D wake-on-commit: a commit by another Cloud component (an agent
+/// worker, retention) wakes a held poll right after its durability barrier.
+/// The idle tick is disabled (60 s), so without the commit signal the poll
+/// would wait for its idle deadline; a single commit is answered at once,
+/// with no batching delay.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn cloud_https_held_poll_is_woken_at_once_by_another_components_commit() {
+    let (_transport_root, store_root, config, ready) = deployment().await;
+    let root = store_root.path().to_owned();
+    super::quiet_ticks::quiet(&root);
+    let (stop, server, origin) = started(&config, &ready).await;
+    let mut client = Client {
+        http: reqwest::Client::builder()
+            .danger_accept_invalid_certs(true)
+            .build()
+            .unwrap(),
+        origin,
+        key: SigningKey::from_bytes(&[8; 32]),
+        session: None,
+    };
+    handshake(&mut client, &root).await;
+    let first = browser_delta(&root, MACHINE, "first ");
+    let (status, body) = client
+        .post("/peer/v3/state", chunk([1; 16], &first, 0, first.len()))
+        .await;
+    assert_eq!(status, reqwest::StatusCode::OK);
+    let first_commit = accepted(&body);
+    let mut cursor = None;
+    loop {
+        let boundary = poll(&client, cursor.as_ref())
+            .await
+            .expect("committed group");
+        cursor = Some(boundary.cursor().clone());
+        if boundary.committed().sequence >= first_commit.sequence {
+            break;
+        }
+    }
+    let held = {
+        let client = Client {
+            http: client.http.clone(),
+            origin: client.origin.clone(),
+            key: client.key.clone(),
+            session: client.session,
+        };
+        let cursor = cursor.clone();
+        tokio::spawn(async move { poll(&client, cursor.as_ref()).await })
+    };
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let later = browser_delta(&root, MACHINE, "out of band ");
+    let device = SigningKey::from_bytes(&[8; 32]).verifying_key().to_bytes();
+    let committed = tokio::task::spawn_blocking(move || {
+        let mut store = crate::delivery::access::open(&root, MACHINE).unwrap();
+        store
+            .admit_delivery_item(device, [2; 16], &later, 1024 * 1024)
+            .unwrap();
+        drop(store);
+        std::time::Instant::now()
+    })
+    .await
+    .unwrap();
+    let woken = tokio::time::timeout(Duration::from_secs(5), held)
+        .await
+        .expect("held poll woken by the commit, not at its idle deadline")
+        .unwrap()
+        .expect("committed group");
+    let latency = committed.elapsed();
+    assert!(woken.committed().sequence > first_commit.sequence);
+    assert!(
+        latency < Duration::from_millis(1000),
+        "held poll answered {latency:?} after the commit"
+    );
+    let _ = stop.send(());
+    server.await.unwrap().unwrap();
+}
+
+/// A Store lock held by another Cloud component costs a serving turn only
+/// the short in-line wait (fix plan B3): the action is not run, the refusal
+/// is deferrable (the service retries it on its short tick instead of
+/// stalling the loop for seconds), and a turn after the release proceeds.
+#[tokio::test]
+async fn cloud_busy_store_turn_returns_quickly_and_is_deferrable() {
+    use super::{
+        CloudStoreSource, DeliveryOperation, OwnerBusyAfterEffect, deferrable, transient, with_turn,
+    };
+    let (_transport_dir, transport) = crate::https_owner::prepared_transport_test().await;
+    let pool = transport.host_bytes().unwrap();
+    let (dir, mut store, _) = crate::agent_owner_tests::enrolled();
+    store
+        .activate_delivery_storage(qos_relay::clock::now_ns())
+        .unwrap();
+    let source = CloudStoreSource::bind(&store).unwrap();
+    drop(store);
+    let held = crate::delivery::access::open(dir.path(), "agent-admission").unwrap();
+    let started = std::time::Instant::now();
+    let mut ran = false;
+    let busy = with_turn(&source, &pool, DeliveryOperation::Replay, |_| {
+        ran = true;
+        Ok(())
+    })
+    .unwrap_err();
+    assert!(started.elapsed() < std::time::Duration::from_millis(200));
+    assert!(!ran, "a busy turn never runs its action");
+    assert!(deferrable(&busy) && transient(&busy));
+    // Busy after an earlier committed part: retryable 503, never re-dispatched.
+    let partial = busy.context(OwnerBusyAfterEffect);
+    assert!(transient(&partial) && !deferrable(&partial));
+    drop(held);
+    with_turn(&source, &pool, DeliveryOperation::Replay, |_| Ok(())).unwrap();
+    assert!(super::ops_log::admit("test-reason").is_some());
+    assert!(
+        super::ops_log::admit("test-reason").is_none(),
+        "rate limited"
+    );
 }

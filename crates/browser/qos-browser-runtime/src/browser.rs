@@ -1850,16 +1850,22 @@ pub fn desktop_speculation_enable(id: u64, enabled: bool) -> Result<(), JsValue>
 }
 
 /// Terminal outcome of a queued desktop command (its Rust invocation): a
-/// failure snaps an optimistic reorder back to durable state; a success lets
-/// it retire once durable state shows it. `None` only schedules a frame that
+/// failure snaps an optimistic command back to durable state; a success lets
+/// it retire once durable state shows it. `receipt` is the success value (or
+/// a committed-desktop notice) whose `opened` binds an optimistic open to its
+/// committed window. `None` without a receipt only schedules a frame that
 /// re-checks the confirmation hold and deadlines.
 #[wasm_bindgen]
 pub fn desktop_command_settled(
     id: u64,
     invocation: &str,
     succeeded: Option<bool>,
+    receipt: Option<String>,
 ) -> Result<bool, JsValue> {
     let invocation: uuid::Uuid = invocation.parse().map_err(error)?;
+    let opened = receipt
+        .and_then(|receipt| serde_json::from_str(&receipt).ok())
+        .and_then(|value| crate::desktop_host::opened_window(&value));
     MOUNTS.with_borrow_mut(|mounts| {
         let mount = mounts
             .get_mut(&id)
@@ -1871,9 +1877,9 @@ pub fn desktop_command_settled(
         if speculation.is_empty() {
             return Ok(false);
         }
-        let changed = match succeeded {
-            Some(succeeded) => speculation.settle(invocation, succeeded, web_time::Instant::now()),
-            None => true,
+        let changed = match (succeeded, opened) {
+            (None, None) => true,
+            _ => speculation.settle(invocation, succeeded, opened, web_time::Instant::now()),
         };
         drop(speculation);
         if changed {

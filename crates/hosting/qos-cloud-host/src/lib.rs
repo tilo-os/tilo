@@ -20,6 +20,8 @@ use std::{
 pub mod action_server;
 pub mod actions;
 mod agent_documents;
+mod agent_history;
+mod agent_live;
 pub mod agent_owner;
 mod agent_runtime;
 pub use agent_runtime::CloudAgentCommands;
@@ -32,11 +34,13 @@ pub(crate) mod agent_workers;
 pub mod broker;
 pub mod collaboration;
 mod delivery;
+mod desktop_commands;
 pub mod gateway;
 mod https_owner;
 pub mod mesh;
 pub mod model;
 pub mod operator;
+mod peer_memo;
 pub mod runtime;
 mod storage;
 pub use actions::{ActionReceipt, ActionRequest, NativeOperation};
@@ -327,11 +331,51 @@ pub struct Store {
     root: PathBuf,
     directory: File,
     state: State,
-    _lock: File,
+    _lock: HeldLock,
     failed_commit: std::cell::Cell<Option<StoreCommitFailure>>,
     /// Last persisted aggregate bytes and files under this lock hold: the
     /// diff base of a journal append. `None` checkpoints the next commit.
     tip: std::cell::RefCell<Option<storage::Tip>>,
+}
+/// The Store's OS lock file, plus when it was taken: a hold of at least
+/// 20 ms logs one content-free `store_held` line (thread name and duration)
+/// in the long-running host, to attribute lock waits.
+struct HeldLock(
+    #[allow(dead_code, reason = "held only to keep the lock file open")] File,
+    std::time::Instant,
+    Option<&'static std::panic::Location<'static>>,
+);
+impl HeldLock {
+    fn new(lock: File) -> Self {
+        Self(lock, std::time::Instant::now(), None)
+    }
+}
+impl Store {
+    /// Name the code site that opened this Store (for `store_held` lines).
+    pub(crate) fn mark_site(&mut self, site: &'static std::panic::Location<'static>) {
+        self._lock.2 = Some(site);
+    }
+}
+impl Drop for HeldLock {
+    fn drop(&mut self) {
+        let held = self.1.elapsed();
+        if held >= std::time::Duration::from_millis(20)
+            && qos_action_broker::agent_timing::store_spans_enabled()
+        {
+            let thread = std::thread::current();
+            tracing::info!(
+                target: "qos_cloud_host::agent_timing",
+                event = "store_held",
+                thread = thread.name().unwrap_or("unnamed"),
+                site = %self.2.map_or_else(String::new, |site| format!("{}:{}", site.file(), site.line())),
+                unix_us = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map_or(0, |elapsed| elapsed.as_micros() as u64),
+                elapsed_us = held.as_micros() as u64,
+                "agent timing"
+            );
+        }
+    }
 }
 #[derive(Clone, Copy, Eq, PartialEq)]
 enum StoreOpenMode {
@@ -363,6 +407,104 @@ fn active_roster(
         }
     }
     Ok(active)
+}
+/// The current peer transition of `state` at `now`, through the exact memo
+/// (see `peer_memo`): restored only when its inputs or identity-time interval
+/// changed since the last restore.
+pub(crate) fn shared_transition(
+    state: &State,
+    now: u64,
+) -> Result<std::sync::Arc<(StatePeer, StatePeer)>> {
+    let host = SigningKey::from_bytes(&state.host_secret)
+        .verifying_key()
+        .to_bytes();
+    let memo = peer_memo::key(state, &host);
+    if let Some(found) = memo.as_ref().and_then(|key| peer_memo::lookup(key, now)) {
+        return Ok(found);
+    }
+    let began = std::time::Instant::now();
+    let peers = std::sync::Arc::new(transition_restore(state, now)?);
+    qos_action_broker::agent_timing::slow_store("store_peer_restore", began, &[]);
+    if let Some(key) = memo {
+        let until =
+            peer_memo::until(state, &peers.0, now).min(peer_memo::until(state, &peers.1, now));
+        peer_memo::retain(key, now, until, peers.clone());
+    }
+    Ok(peers)
+}
+/// Restore the committed peer of `state` at `now` and retire expired
+/// identities' enrollment metadata (the Store's current peer transition).
+fn transition_restore(state: &State, now: u64) -> Result<(StatePeer, StatePeer)> {
+    let key = SigningKey::from_bytes(&state.host_secret);
+    #[cfg(test)]
+    peer_memo::count_restore();
+    let b = state
+        .bound
+        .as_ref()
+        .ok_or_else(|| anyhow!("workspace not enrolled"))?;
+    let before = StatePeer::restore(
+        &b.peer,
+        &state.room,
+        b.authority.clone(),
+        active_roster(&b.roster, b.root, &revocations(&b.revocations)?, now)?,
+        revocations(&b.revocations)?,
+        now_time(now),
+    )
+    .map_err(anyhow::Error::msg)
+    .context(StoreUnavailable)?;
+    let mut peer = before.clone();
+    // A new browser receives only its own certificate and the pinned host.
+    // Keep expired identities in durable certificate/history evidence, but
+    // retire their current enrollment metadata before publishing governance.
+    // The shared receiver still rejects unknown expired certificates.
+    use automerge::{ROOT, ReadDoc, transaction::Transactable};
+    let expired = peer
+        .certificates()
+        .into_iter()
+        .filter(|certificate| certificate.is_expired_at(now))
+        .collect::<Vec<_>>();
+    if !expired.is_empty() {
+        let mut room = peer
+            .admitted_room()
+            .cloned()
+            .ok_or_else(|| anyhow!("room governance missing"))?;
+        let identities = room
+            .get(ROOT, "peer_identities_v1")?
+            .ok_or_else(|| anyhow!("identities missing"))?
+            .1;
+        room.set_actor(automerge::ActorId::from(
+            key.verifying_key().to_bytes().to_vec(),
+        ));
+        let mut changed = false;
+        for certificate in expired {
+            let id = hex::encode(certificate.device_public_key);
+            if room.get(&identities, &id)?.is_some() {
+                room.delete(&identities, &id)?;
+                changed = true;
+            }
+        }
+        if changed {
+            room.commit();
+            let message = NeighbourMsg::SyncResp {
+                room: state.room.clone(),
+                changes: room
+                    .get_changes(&[])
+                    .iter()
+                    .map(|change| change.raw_bytes().to_vec())
+                    .collect(),
+            };
+            // Use the ordinary pinned-governor admission path: do not edit
+            // StatePeer internals or bypass immutable receipts/topology.
+            peer.receive_from(
+                TransportOrigin::RelayDelta(key.verifying_key().to_bytes()),
+                message,
+                now_time(now),
+            )
+            .map_err(anyhow::Error::msg)
+            .context(StoreUnavailable)?;
+        }
+    }
+    Ok((before, peer))
 }
 fn now_time(ns: u64) -> web_time::SystemTime {
     web_time::SystemTime::UNIX_EPOCH + web_time::Duration::from_nanos(ns)
@@ -594,7 +736,7 @@ impl Store {
             root: root.into(),
             directory,
             state,
-            _lock: lock,
+            _lock: HeldLock::new(lock),
             failed_commit: std::cell::Cell::new(None),
             tip: std::cell::RefCell::new(tip),
         };
@@ -659,6 +801,7 @@ impl Store {
     fn save(&self, state: &State) -> Result<()> {
         self.ensure_reconciled()?;
         self.policy_now_ns()?;
+        let began = std::time::Instant::now();
         let bytes = serde_json::to_vec(state).map_err(|error| {
             let failure = StoreCommitFailure {
                 generation: state.generation,
@@ -667,8 +810,9 @@ impl Store {
             self.failed_commit.set(Some(failure));
             commit_error(anyhow::Error::new(error).context(StoreUnavailable), failure)
         })?;
+        let encode_us = qos_action_broker::agent_timing::us(began);
         delivery::early_forward::fire();
-        storage::transaction::publish_bytes_with_tip(
+        let published = storage::transaction::publish_bytes_with_tip(
             &self.directory,
             &self.root,
             &self.failed_commit,
@@ -677,13 +821,46 @@ impl Store {
             &bytes,
             &mut self.tip.borrow_mut(),
         )
-        .map_err(storage::transaction::PublishFailure::into_error)
+        .map_err(storage::transaction::PublishFailure::into_error);
+        qos_action_broker::agent_timing::slow_store(
+            "store_save",
+            began,
+            &[("bytes", bytes.len() as u64), ("encode_us", encode_us)],
+        );
+        // Wake the serving loop's held polls after the durability barrier.
+        if published.is_ok() {
+            delivery::commit_wake::committed();
+        }
+        published
     }
     fn commit(&mut self, mut state: State) -> Result<()> {
+        let began = std::time::Instant::now();
         self.ensure_reconciled()?;
         state.generation = self.next_generation()?;
+        collaboration::prune_legacy_receipts(&mut state.consumed);
+        collaboration::compact_member_responses(&mut state.join_responses);
+        collaboration::compact_member_responses(&mut state.membership_responses);
+        // Membership challenges are process-local (lane M); drop legacy ones.
+        state.membership_challenges.clear();
         delivery::prepare_commit(&self.state, &mut state, self.policy_now_ns()?)?;
-        self.publish_prepared(state)
+        let prepare_us = qos_action_broker::agent_timing::us(began);
+        let published = self.publish_prepared(state);
+        if qos_action_broker::agent_timing::store_spans_enabled() {
+            let thread = std::thread::current();
+            tracing::info!(
+                target: "qos_cloud_host::agent_timing",
+                event = "store_commit",
+                thread = thread.name().unwrap_or("unnamed"),
+                site = %self._lock.2.map_or_else(String::new, |site| format!("{}:{}", site.file().rsplit('/').next().unwrap_or(""), site.line())),
+                unix_us = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map_or(0, |elapsed| elapsed.as_micros() as u64),
+                elapsed_us = began.elapsed().as_micros() as u64,
+                prepare_us,
+                "agent timing"
+            );
+        }
+        published
     }
     fn publish_prepared(&mut self, state: State) -> Result<()> {
         self.ensure_reconciled()?;
@@ -767,80 +944,27 @@ impl Store {
     pub fn peer(&self) -> Result<StatePeer> {
         self.peer_at(self.policy_now_ns()?)
     }
+    /// The current committed peer, shared read-only: no restore and no copy
+    /// when the exact memo (see `peer_memo`) already holds it.
+    pub(crate) fn peer_shared(&self) -> Result<std::sync::Arc<(StatePeer, StatePeer)>> {
+        self.peer_transition_shared(self.policy_now_ns()?)
+    }
     fn peer_at(&self, now: u64) -> Result<StatePeer> {
-        self.peer_transition_at(now).map(|(_, peer)| peer)
+        self.peer_transition_shared(now)
+            .map(|peers| peers.1.clone())
     }
     fn peer_transition_at(&self, now: u64) -> Result<(StatePeer, StatePeer)> {
+        self.peer_transition_shared(now)
+            .map(|peers| (peers.0.clone(), peers.1.clone()))
+    }
+    fn peer_transition_shared(&self, now: u64) -> Result<std::sync::Arc<(StatePeer, StatePeer)>> {
         self.ensure_reconciled()?;
         let now = self.policy_now_or(now)?;
-        let b = self
-            .state
-            .bound
-            .as_ref()
-            .ok_or_else(|| anyhow!("workspace not enrolled"))?;
-        let before = StatePeer::restore(
-            &b.peer,
-            &self.state.room,
-            b.authority.clone(),
-            active_roster(&b.roster, b.root, &revocations(&b.revocations)?, now)?,
-            revocations(&b.revocations)?,
-            now_time(now),
-        )
-        .map_err(anyhow::Error::msg)
-        .context(StoreUnavailable)?;
-        let mut peer = before.clone();
-        // A new browser receives only its own certificate and the pinned host.
-        // Keep expired identities in durable certificate/history evidence, but
-        // retire their current enrollment metadata before publishing governance.
-        // The shared receiver still rejects unknown expired certificates.
-        use automerge::{ROOT, ReadDoc, transaction::Transactable};
-        let expired = peer
-            .certificates()
-            .into_iter()
-            .filter(|certificate| certificate.is_expired_at(now))
-            .collect::<Vec<_>>();
-        if !expired.is_empty() {
-            let mut room = peer
-                .admitted_room()
-                .cloned()
-                .ok_or_else(|| anyhow!("room governance missing"))?;
-            let identities = room
-                .get(ROOT, "peer_identities_v1")?
-                .ok_or_else(|| anyhow!("identities missing"))?
-                .1;
-            room.set_actor(automerge::ActorId::from(
-                self.key().verifying_key().to_bytes().to_vec(),
-            ));
-            let mut changed = false;
-            for certificate in expired {
-                let id = hex::encode(certificate.device_public_key);
-                if room.get(&identities, &id)?.is_some() {
-                    room.delete(&identities, &id)?;
-                    changed = true;
-                }
-            }
-            if changed {
-                room.commit();
-                let message = NeighbourMsg::SyncResp {
-                    room: self.state.room.clone(),
-                    changes: room
-                        .get_changes(&[])
-                        .iter()
-                        .map(|change| change.raw_bytes().to_vec())
-                        .collect(),
-                };
-                // Use the ordinary pinned-governor admission path: do not edit
-                // StatePeer internals or bypass immutable receipts/topology.
-                peer.receive_from(
-                    TransportOrigin::RelayDelta(self.key().verifying_key().to_bytes()),
-                    message,
-                    now_time(now),
-                )
-                .map_err(anyhow::Error::msg)
-                .context(StoreUnavailable)?;
-            }
-        }
-        Ok((before, peer))
+        shared_transition(&self.state, now)
+    }
+    #[cfg(test)]
+    pub(crate) fn peer_at_for_test(&self, now: u64) -> Result<StatePeer> {
+        self.peer_at(now)
     }
     pub fn apply(&mut self, r: &EnrollmentRequest, now: u64) -> Result<serde_json::Value> {
         self.ensure_reconciled()?;

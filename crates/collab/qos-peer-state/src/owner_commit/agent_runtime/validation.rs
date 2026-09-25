@@ -204,6 +204,10 @@ struct Envelope {
     recipient_agent: String,
     channel_lease: String,
     task: Task,
+    /// The agent's own earlier-task history (display input, bounded by
+    /// the envelope budget); round-trips exactly like every other field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    history: Option<String>,
 }
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -433,7 +437,7 @@ pub(super) fn validate(
                             .values()
                             .filter(|o| o.spawn() && !o.exited && o.phase != Phase::Failed)
                             .count()
-                        >= 4
+                        >= MAX_LIVE_PRIVATE_AGENTS
                 {
                     return Err("invalid spawn parent/identity or process capacity".into());
                 }

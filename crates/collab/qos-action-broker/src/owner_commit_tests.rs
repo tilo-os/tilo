@@ -453,7 +453,7 @@ mod owner_commit_tests {
         let owner = qos_session_peer::SessionOwner::initialize(&root.join("owner")).unwrap();
         let (handle, mailbox) = qos_session_peer::owner_commit::OwnerCommitMailbox::bounded(2);
         let route = CrdtRoute::record(
-            "dev.qos.word-processor",
+            "so.tilo.word-processor",
             owner.peer().room(),
             "tab:0000000000000001",
         );
@@ -2095,6 +2095,7 @@ async fn original_invocation_worker_rpc_retains_exact_request_and_connection() {
             },
             argument: delivered.argument,
             actor: delivered.actor,
+            participant: None,
         };
         let lease = authorize(&request)
             .expect("actual signed worker and original RPC caller must mint the exact lease");

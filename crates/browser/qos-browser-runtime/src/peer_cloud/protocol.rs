@@ -9,7 +9,8 @@ use serde::Deserialize;
 #[path = "material.rs"]
 mod material;
 use material::{
-    Bytes, Held, MAX_JOIN, MAX_MATERIAL, MAX_REQUEST, MaterialV4, Phase, PhaseView, allocation,
+    Bytes, CLOCK_TOLERANCE_NS, Held, MAX_APPLY_RETRIES, MAX_JOIN, MAX_MATERIAL, MAX_REQUEST,
+    MaterialV4, Phase, PhaseView, allocation, verify_certificate,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -23,6 +24,8 @@ pub(super) enum HostedAttemptError {
     Capacity,
     Response,
     Signature,
+    /// The Store is bound to another owner root; this identity cannot enroll it.
+    Claimed,
 }
 type Result<T> = std::result::Result<T, HostedAttemptError>;
 pub(super) struct Selection {
@@ -93,7 +96,9 @@ impl HostedAttempt {
         Ok(())
     }
     fn stage(&self, phase: PhaseView<'_>, now: u64) -> Result<Saved> {
-        let view = self.current.material.value.with_phase(phase);
+        self.stage_view(self.current.material.value.with_phase(phase), now)
+    }
+    fn stage_view(&self, view: material::MaterialView<'_>, now: u64) -> Result<Saved> {
         let bytes = material::encode_json(&view, MAX_MATERIAL, &self.budget)?;
         let material: Held<MaterialV4> = material::read_json(&bytes.value, &self.budget)?;
         material.value.validate(now, &self.budget)?;
@@ -417,15 +422,18 @@ impl HostedAttempt {
         if label.trim().is_empty() || label.len() > 128 || now == 0 {
             return Err(HostedAttemptError::Material);
         }
-        let (root, _) = identity::UserIdentity::generate(label, now);
-        let (device, _) = identity::DeviceIdentity::generate(label, now);
-        let (attempt, _) = identity::DeviceIdentity::generate("Cloud enrollment attempt", now);
+        // Issue the fresh identity slightly in the past so a Store whose clock
+        // is up to the tolerance behind this browser accepts the certificates.
+        let issued = now.saturating_sub(CLOCK_TOLERANCE_NS).max(1);
+        let (root, _) = identity::UserIdentity::generate(label, issued);
+        let (device, _) = identity::DeviceIdentity::generate(label, issued);
+        let (attempt, _) = identity::DeviceIdentity::generate("Cloud enrollment attempt", issued);
         let mut certificate = identity::DeviceCert {
             user_public_key: root.verifying_key().to_bytes(),
             device_public_key: device.verifying_key().to_bytes(),
             device_label: label.into(),
             capabilities: identity::DeviceCapabilities::member(),
-            issued_at_ns: now,
+            issued_at_ns: issued,
             expires_at_ns: None,
             signature: [0; 64],
         };
@@ -439,10 +447,11 @@ impl HostedAttempt {
             root_secret: root.to_bytes(),
             device_secret: device.to_bytes(),
             attempt_id: attempt.to_bytes(),
-            created_at_ns: now,
+            created_at_ns: issued,
             certificate,
             phase: Phase::Initial,
             first_claim: true,
+            apply_retry: 0,
         };
         material.validate(now, budget)?;
         let bytes = material::encode_json(&material, MAX_MATERIAL, budget)?;
@@ -463,6 +472,38 @@ impl HostedAttempt {
             .map_err(|_| HostedAttemptError::Capacity)?;
         output.extend_from_slice(&bytes.value);
         Ok(output)
+    }
+    /// Store.apply was refused for this signed request (lost first-claim
+    /// race, expired or replaced challenge, certificate not yet valid). Stage
+    /// a return to Inspect with the same keys and a fresh apply operation
+    /// key. Like every checkpoint it moves custody only after its exact ACK.
+    pub(super) fn reset_apply(&mut self, now: u64) -> Result<Checkpoint<'_>> {
+        self.live()?;
+        if !matches!(self.current.material.value.phase, Phase::Apply { .. }) {
+            return Err(HostedAttemptError::Phase);
+        }
+        if let Some(staged) = &self.staged {
+            if matches!(staged.material.value.phase, Phase::Initial) {
+                return Ok(self.checkpoint());
+            }
+            return Err(HostedAttemptError::Checkpoint);
+        }
+        let retry = self
+            .current
+            .material
+            .value
+            .apply_retry
+            .checked_add(1)
+            .filter(|retry| *retry <= MAX_APPLY_RETRIES)
+            .ok_or(HostedAttemptError::Capacity)?;
+        let view = self
+            .current
+            .material
+            .value
+            .with_phase_retry(PhaseView::Initial, retry);
+        let staged = self.stage_view(view, now)?;
+        self.staged = Some(staged);
+        Ok(self.checkpoint())
     }
     pub(super) fn step(&self) -> Result<HostedStep> {
         self.ready()?;
@@ -661,8 +702,7 @@ impl EnrollmentReply {
             return Err(HostedAttemptError::Scope);
         }
         for certificate in [&self.certificate, &self.host_certificate] {
-            identity::verify_device_cert_at(certificate, now)
-                .map_err(|_| HostedAttemptError::Signature)?;
+            verify_certificate(certificate, now)?;
         }
         for revocation in &self.revocations {
             identity::verify_revocation_entry(revocation)
@@ -679,8 +719,9 @@ impl EnrollmentReply {
             }
         }
         let update = &self.bootstrap.directory_update;
+        // The Store authored this update on its own clock.
         if update.author_device_public_key != self.host_certificate.device_public_key
-            || update.authored_at_ns > now
+            || update.authored_at_ns > now.saturating_add(CLOCK_TOLERANCE_NS)
         {
             return Err(HostedAttemptError::Scope);
         }

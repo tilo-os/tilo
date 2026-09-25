@@ -151,7 +151,11 @@ fn agent_owner_v2_capacity_is_explicit_and_keeps_retained_status() {
     let caller = store.agent_caller(device).unwrap();
     store.activate_private_agent_runtime_v2(&caller).unwrap();
     let input = intent(&store, &caller);
-    for n in 1..=4 {
+    // Every live spawn up to the explicit limit is admitted with the same
+    // (unchanged) descriptor/offer intent: admitting agents changes neither.
+    let limit = MAX_LIVE_PRIVATE_AGENTS as u128;
+    assert!(limit >= 16, "a workspace holds at least 16 live agents");
+    for n in 1..=limit {
         assert!(matches!(
             store
                 .admit_agent_candidate(&caller, uuid::Uuid::from_u128(n), &input)
@@ -161,8 +165,10 @@ fn agent_owner_v2_capacity_is_explicit_and_keeps_retained_status() {
     }
     let before = std::fs::read(dir.path().join("state.json")).unwrap();
     assert!(matches!(
-        store.admit_agent_candidate(&caller, uuid::Uuid::from_u128(5), &input),
-        Err(AgentCommitError::Capacity { limit: 4 })
+        store.admit_agent_candidate(&caller, uuid::Uuid::from_u128(limit + 1), &input),
+        Err(AgentCommitError::Capacity {
+            limit: MAX_LIVE_PRIVATE_AGENTS
+        })
     ));
     assert_eq!(
         std::fs::read(dir.path().join("state.json")).unwrap(),

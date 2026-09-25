@@ -66,3 +66,15 @@ test('real media disposal retains Peer custody through a late refresh bind and e
  assert(f.calls.indexOf('late-endpoint-closed')<f.calls.indexOf('release-storage'));
  assert(f.calls.indexOf('late-endpoint-closed')<f.calls.indexOf('release-identity'));
 });
+test('a resumed invited session exposes only its invited scope for the next reload',async()=>{
+ const f=fixture();let request;const connect=createConnectPeer({init:async()=>{},runtime:f.runtime,acquireIdentity:async()=>{throw Error('no');},acquireInvitedIdentity:async value=>{request=value;return{material:Uint8Array.of(0),scope:'invite-scope',async save(bytes){this.material=bytes;},async release(){}};},
+  acquireStorage:async()=>({epoch:'held',hydrate:async()=>[],commit:async()=>{},release:async()=>{}}),fetchEnrollment:async()=>{throw Error('no');},createMedia:()=>({initialize:async()=>{},dispose:async()=>{}}),events:{}});
+ const peer=await connect({invitation:{resume:true}});assert.deepEqual(request,{resume:true});assert.deepEqual(peer.invitedIdentity,{scope:'invite-scope'});await peer.dispose();
+});
+test('a still admitted guest reconnects its transport without a membership refresh',async()=>{
+ const f=fixture();let refuse=false;f.runtime.invited_resume_transport=async peer=>{assert.equal(peer,7);f.calls.push('resume');if(refuse)throw 'Invited refresh required: membership';};
+ const peer=await f.connect(f.options);const completes=()=>f.calls.filter(v=>v==='complete').length;
+ assert.equal(completes(),1);await peer.reconnect();assert.equal(f.calls.filter(v=>v==='resume').length,1);assert.equal(completes(),1);assert(!f.calls.includes('reconnect'));
+ refuse=true;await peer.reconnect();assert.equal(completes(),2);assert.equal(f.calls.filter(v=>v==='reconnect').length,1);
+ refuse=false;await peer.reconnect();assert.equal(completes(),2);assert.equal(f.calls.filter(v=>v==='resume').length,3);await peer.dispose();
+});

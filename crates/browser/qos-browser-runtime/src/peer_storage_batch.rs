@@ -2,11 +2,18 @@
 //! The budget covers retained captures, not PortableStorage's own cache, the
 //! temporary pending_writes clone, journal decode, or JS encoder overlap.
 use crate::{peer_delivery_cursor::StoredDeliveryCursor, peer_journal::Journal};
+use qos_peer_state::DocumentRow;
 use std::collections::BTreeSet;
 use ui::portable_storage::{PendingWrite, PortableStorage, ProfileNamespace, StorageKey};
 
 pub(crate) const MAX_PENDING_BATCHES: usize = 2;
 pub(crate) const MAX_PENDING_BATCH_BYTES: usize = 128 * 1024 * 1024;
+/// How long a capture waits for the canonical owner to publish a record it has
+/// already queued (the publication window is 100 ms; forced on blur/hide/close).
+/// Past this bound the record commits alone, as before, and boot repair
+/// (`admitted_records::repair_record_basis`) recovers the pair on reload.
+pub(crate) const MAX_UNPUBLISHED_RECORD_DEFERRAL: web_time::Duration =
+    web_time::Duration::from_secs(1);
 
 struct CapturedPeerBatch {
     cache: PortableStorage,
@@ -38,6 +45,7 @@ pub(crate) struct PeerStorageBatches {
     pending_bytes: usize,
     committed: Option<CommittedCursor>,
     transfer: Option<TransferCommit>,
+    unpublished_since: Option<web_time::Instant>,
 }
 impl PeerStorageBatches {
     pub(crate) fn new(peer_id: u32) -> Self {
@@ -49,6 +57,7 @@ impl PeerStorageBatches {
             pending_bytes: 0,
             committed: None,
             transfer: None,
+            unpublished_since: None,
         }
     }
     pub(crate) fn bind_lease(&mut self, epoch: &str) -> Result<(), String> {
@@ -127,6 +136,7 @@ impl PeerStorageBatches {
         self.capture_transfer(
             cache,
             required,
+            &[],
             transport_generation,
             basis,
             |id, writes, _| encode(id, writes),
@@ -134,10 +144,13 @@ impl PeerStorageBatches {
     }
     /// Capture directly from this cache, so caller-created/foreign PendingWrites
     /// cannot enter a batch. Encoding succeeds before the capture is registered.
+    /// `admitted` holds the rows of the cursor journal this peer would commit
+    /// (empty when no cursor binds record heads).
     pub(crate) fn capture_transfer<T>(
         &mut self,
         cache: &PortableStorage,
         required: &[StorageKey],
+        admitted: &[DocumentRow],
         transport_generation: u64,
         basis: impl FnOnce(Option<u64>) -> Option<u64>,
         encode: impl FnOnce(&str, &[PendingWrite], Option<&str>) -> Result<T, String>,
@@ -216,6 +229,23 @@ impl PeerStorageBatches {
             if write.namespace != *cache.namespace() || !keys.insert(&write.key) {
                 return Err("invalid storage batch namespace or duplicate key".into());
             }
+        }
+        // A canonical record queued ahead of its journal publication (a Writer
+        // keystroke inside the 100 ms publication window) must not commit
+        // alone: IndexedDB would hold record H1 beside cursor journal H0, and
+        // every later journal capture and reload refuses that pair. Report
+        // backpressure instead; both persisters retry, and the publication
+        // stages the matching journal into the same batch.
+        if unpublished_record(&writes, required, admitted)? {
+            let now = web_time::Instant::now();
+            let since = *self.unpublished_since.get_or_insert(now);
+            if now.duration_since(since) < MAX_UNPUBLISHED_RECORD_DEFERRAL {
+                return Err(
+                    "storage-pressure: a canonical record awaits its journal publication".into(),
+                );
+            }
+        } else {
+            self.unpublished_since = None;
         }
         let journals = writes
             .iter()
@@ -360,6 +390,52 @@ impl PeerStorageBatches {
             .filter(|saved| saved.transport_generation == current_generation)
             .map(|saved| &saved.cursor)
     }
+}
+
+/// Heads recorded by the canonical owner for these bytes; decode only when the
+/// capture carries none.
+fn write_heads(write: &PendingWrite) -> Result<Vec<String>, String> {
+    Ok(write
+        .document_heads()
+        .unwrap_or_else(|| {
+            automerge::AutoCommit::load(&write.value.bytes)
+                .map(|mut doc| doc.get_heads())
+                .map_err(|_| ())
+        })
+        .map_err(|_| "invalid captured record bytes")?
+        .iter()
+        .map(ToString::to_string)
+        .collect())
+}
+
+/// Whether a required record write differs from its admitted journal row.
+fn unpublished_record(
+    writes: &[PendingWrite],
+    required: &[StorageKey],
+    admitted: &[DocumentRow],
+) -> Result<bool, String> {
+    if admitted.is_empty() {
+        return Ok(false);
+    }
+    for write in writes.iter().filter(|write| required.contains(&write.key)) {
+        let (app, record) = match &write.key {
+            StorageKey::Record {
+                package, record, ..
+            } => (package.as_str(), record.as_str()),
+            StorageKey::Primary { package, .. } => (package.as_str(), ""),
+            _ => continue,
+        };
+        let Some(row) = admitted
+            .iter()
+            .find(|row| row.app_id == app && row.record_id == record)
+        else {
+            continue;
+        };
+        if write_heads(write)? != row.heads {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 fn validate_records(
@@ -668,6 +744,7 @@ mod tests {
                 .capture_transfer(
                     &cache,
                     &[record()],
+                    &[],
                     1,
                     |v| v,
                     |id, _, tag| {
@@ -695,6 +772,7 @@ mod tests {
             .capture_transfer(
                 &cache,
                 &[record()],
+                &[],
                 1,
                 |v| v,
                 |_, _, tag| {
@@ -720,6 +798,7 @@ mod tests {
                 .capture_transfer::<()>(
                     &cache,
                     &[record()],
+                    &[],
                     1,
                     |v| v,
                     |_, _, _| Err("encoder".into())
@@ -730,6 +809,7 @@ mod tests {
             .capture_transfer(
                 &cache,
                 &[record()],
+                &[],
                 1,
                 |v| v,
                 |id, _, tag| {

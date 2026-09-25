@@ -1508,6 +1508,40 @@ impl StatePeer {
             )),
         }
     }
+    /// True only when governance covers this exact route with a checkpoint by
+    /// the same author at a strictly greater sequence than `sequence`. Any other
+    /// coverage relation is not a supersession and keeps its normal handling.
+    fn superseded_checkpoint(
+        &self,
+        route: &Route,
+        source: &[u8; 32],
+        sequence: u64,
+    ) -> Result<bool, AdmissionError> {
+        let Some(room) = self.core.room_doc.as_deref() else {
+            return Ok(false);
+        };
+        let entries = crate::coverage::entries(room)?;
+        Ok(entries
+            .get(&crate::coverage::route_key(&route.app, &route.record))
+            .is_some_and(|coverage| {
+                coverage.room == self.core.room
+                    && coverage.app == route.app
+                    && coverage.record == route.record
+                    && coverage.author == *source
+                    && coverage.sequence > sequence
+            }))
+    }
+    /// A superseded checkpoint is settled without being applied, so the
+    /// delivery cursor can move past it; nothing from it enters state.
+    fn superseded_checkpoint_report() -> AdmissionReport {
+        AdmissionReport::new(
+            InputDisposition::MetadataOnly,
+            ReceiveOutcome {
+                duplicate: true,
+                ..Default::default()
+            },
+        )
+    }
     fn defer(
         &mut self,
         source: [u8; 32],
@@ -1710,6 +1744,20 @@ impl StatePeer {
             },
         ) {
             Ok(()) => {}
+            Err(collab_types::ValidationError::ReplaySeq { .. })
+                if !local_app
+                    && !candidate.encryption_required
+                    && matches!(
+                        &payload,
+                        collab_types::VersionedRoutedDocumentPayload::Cleartext(decoded)
+                            if matches!(decoded.mutation, DocumentMutation::Snapshot(_))
+                    )
+                    && self.superseded_checkpoint(&route, &source, envelope.seq)? =>
+            {
+                // Signed and authorised, but an older checkpoint than the one
+                // governance already covers for this route: never applied.
+                return Ok(Self::superseded_checkpoint_report());
+            }
             Err(collab_types::ValidationError::ReplaySeq { .. }) => {
                 return Ok(AdmissionReport::new(
                     InputDisposition::RetryLater(MissingPrerequisite::ExactHistoricalEvidence),
@@ -1772,6 +1820,13 @@ impl StatePeer {
                     retained_replay,
                     MissingPrerequisite::CheckpointCoverage,
                 );
+            }
+            if coverage.sequence > envelope.seq
+                && self.superseded_checkpoint(&route, &source, envelope.seq)?
+            {
+                // A strictly newer covered checkpoint by the same author governs
+                // this route; skip this one unapplied instead of wedging delivery.
+                return Ok(Self::superseded_checkpoint_report());
             }
             let mut snapshot = AutoCommit::new();
             match snapshot
@@ -2113,6 +2168,17 @@ impl StatePeer {
         key: &SigningKey,
         now: SystemTime,
     ) -> Result<Vec<NeighbourMsg>, String> {
+        self.signed_snapshots_with_receipts(key, now, None)
+    }
+    /// Publish exact checkpoints of every document. With `receipts_at`, the
+    /// same room change also records a durable receipt at that generation for
+    /// every covered route (one change per durable bootstrap).
+    fn signed_snapshots_with_receipts(
+        &mut self,
+        key: &SigningKey,
+        now: SystemTime,
+        receipts_at: Option<u64>,
+    ) -> Result<Vec<NeighbourMsg>, String> {
         self.validate_present_media_policy()?;
         let documents = self
             .core
@@ -2134,14 +2200,24 @@ impl StatePeer {
             .collect::<Result<Vec<_>, _>>()?;
         let (messages, coverages): (Vec<_>, Vec<_>) = prepared.into_iter().unzip();
         let coverages = coverages.into_iter().flatten().collect::<Vec<_>>();
-        if !coverages.is_empty() {
-            crate::coverage::put_all(
-                self.core
-                    .room_doc
-                    .as_deref_mut()
-                    .ok_or("missing room governance")?,
-                coverages,
-            )?;
+        let room = self
+            .core
+            .room_doc
+            .as_deref_mut()
+            .ok_or("missing room governance")?;
+        match receipts_at {
+            Some(generation) => crate::coverage::put_all_with_receipts(room, coverages, |rows| {
+                rows.iter()
+                    .map(|(route, coverage)| {
+                        Ok((
+                            route.clone(),
+                            crate::durability::DurableReceipt::new(coverage.clone(), generation)?,
+                        ))
+                    })
+                    .collect()
+            })?,
+            None if !coverages.is_empty() => crate::coverage::put_all(room, coverages)?,
+            None => {}
         }
         for message in &messages {
             self.receive(key.verifying_key().to_bytes(), message.clone(), now)?;
@@ -2180,26 +2256,80 @@ impl StatePeer {
         generation: u64,
     ) -> Result<Vec<NeighbourMsg>, String> {
         let mut candidate = self.clone();
-        let snapshots = candidate.signed_snapshots_in_place(key, now)?;
+        let snapshots = candidate.signed_snapshots_with_receipts(key, now, Some(generation))?;
         let room = candidate
             .core
             .room_doc
             .as_deref_mut()
             .ok_or("missing room governance")?;
-        let receipts = crate::coverage::entries(room)?
-            .into_iter()
-            .map(|(route, coverage)| {
-                Ok((
-                    route,
-                    crate::durability::DurableReceipt::new(coverage, generation)?,
-                ))
-            })
-            .collect::<Result<BTreeMap<_, _>, String>>()?;
-        crate::durability::put(room, receipts)?;
         crate::durability::monotonic(self.core.room_doc.as_deref(), room)?;
         let mut messages = vec![candidate.room_message()];
         messages.extend(snapshots);
         *self = candidate;
+        Ok(messages)
+    }
+    /// Publish exact checkpoints of the `dirty` routes and, in the same room
+    /// change, their coverage plus the complete durable receipt set
+    /// (`receipts` updated for each dirty route at `generation`). Equivalent
+    /// to one `publish_document` per route followed by a receipt write, but
+    /// one room change per durable commit and no interim receipt state.
+    fn publish_snapshots_with_receipts(
+        &mut self,
+        dirty: &[(Route, Vec<u8>)],
+        mut receipts: BTreeMap<String, crate::durability::DurableReceipt>,
+        generation: u64,
+        key: &SigningKey,
+        now: SystemTime,
+    ) -> Result<Vec<NeighbourMsg>, String> {
+        self.validate_present_media_policy()?;
+        let mut messages = Vec::with_capacity(dirty.len());
+        let mut coverages = Vec::with_capacity(dirty.len());
+        for (route, bytes) in dirty {
+            let (message, coverage) = self.prepare_signed_mutation(
+                &route.app,
+                &route.record,
+                DocumentMutation::Snapshot(bytes.clone()),
+                key,
+                now,
+            )?;
+            if self.core.admission_v5 {
+                let NeighbourMsg::AppDocument { envelope, .. } = &message else {
+                    unreachable!()
+                };
+                let admitted = DocumentAdmission::from_op(
+                    &self.core.room,
+                    &route.app,
+                    &route.record,
+                    envelope,
+                )
+                .map_err(err)?;
+                // Reserve admission capacity before publishing coverage.
+                self.core.exact_admissions.check(&admitted).map_err(err)?;
+            }
+            coverages.push(coverage.ok_or("missing published coverage")?);
+            messages.push(message);
+        }
+        crate::coverage::put_all_with_receipts(
+            self.core
+                .room_doc
+                .as_deref_mut()
+                .ok_or("missing room governance")?,
+            coverages,
+            |rows| {
+                for (route, _) in dirty {
+                    let route_key = crate::coverage::route_key(&route.app, &route.record);
+                    let covered = rows.get(&route_key).ok_or("missing published coverage")?;
+                    receipts.insert(
+                        route_key,
+                        crate::durability::DurableReceipt::new(covered.clone(), generation)?,
+                    );
+                }
+                Ok(receipts)
+            },
+        )?;
+        for message in &messages {
+            self.receive(key.verifying_key().to_bytes(), message.clone(), now)?;
+        }
         Ok(messages)
     }
     /// Prepare route-selective publication against the last committed peer.
@@ -2275,7 +2405,7 @@ impl StatePeer {
         let old_coverage = crate::coverage::entries(before_room)?;
         let coverage = crate::coverage::entries(room)?;
         let old_receipts = crate::durability::entries(before_room)?;
-        let mut receipts = crate::durability::entries(room)?;
+        let receipts = crate::durability::entries(room)?;
         let mut dirty = Vec::new();
         for (route, document) in &candidate.core.documents {
             let route_key = crate::coverage::route_key(&route.app, &route.record);
@@ -2293,35 +2423,16 @@ impl StatePeer {
                 dirty.push((route.clone(), document.doc.clone().save()));
             }
         }
-        let mut snapshots = Vec::new();
-        for (route, bytes) in &dirty {
-            snapshots.push(candidate.publish_document(
-                &route.app,
-                &route.record,
-                bytes.clone(),
-                key,
-                now,
-            )?);
-        }
+        let snapshots = if dirty.is_empty() {
+            Vec::new()
+        } else {
+            candidate.publish_snapshots_with_receipts(&dirty, receipts, generation, key, now)?
+        };
         let room = candidate
             .core
             .room_doc
             .as_mut()
             .ok_or("missing room governance")?;
-        let coverage = crate::coverage::entries(room)?;
-        for (route, _) in &dirty {
-            let route_key = crate::coverage::route_key(&route.app, &route.record);
-            let covered = coverage
-                .get(&route_key)
-                .ok_or("missing published coverage")?;
-            receipts.insert(
-                route_key,
-                crate::durability::DurableReceipt::new(covered.clone(), generation)?,
-            );
-        }
-        if !dirty.is_empty() {
-            crate::durability::put(room, receipts)?;
-        }
         crate::coverage::monotonic(Some(before_room), room)?;
         crate::durability::monotonic(Some(before_room), room)?;
         let changes = room
@@ -3033,3 +3144,7 @@ mod delivery_admission_resource_tests {
 #[cfg(test)]
 #[path = "state/media_tests.rs"]
 mod room_media_native_tests;
+
+#[cfg(test)]
+#[path = "state/superseded_checkpoint_tests.rs"]
+mod superseded_checkpoint_tests;

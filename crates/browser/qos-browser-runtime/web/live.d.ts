@@ -34,6 +34,31 @@ export type LiveRemoteState = {
   stale: boolean;
   interpolationDelayMs: number;
 };
+/** Agent activity states; `thinking|tool|writing|replying|applying` mean working now. */
+export type LiveAgentState = 'thinking' | 'tool' | 'writing' | 'replying' | 'applying' | 'done' | 'failed' | 'idle';
+/**
+ * One verified agent (lane H): the host's activity frame on
+ * `{app: 'so.tilo.agent', record: '@qos:agent-activity'}`, accepted only when
+ * its publisher equals `agent_publisher(room, authority, agentId)` recomputed
+ * locally and is not a roster device. Kept 15 s after the last frame. Display
+ * only; it carries no authority.
+ */
+export type LiveAgentActivity = {
+  /** Live namespace (hex) of the agent: its carets and previews use this id. */
+  publisher: string;
+  agentId: string;
+  name: string;
+  state: LiveAgentState;
+  /** Human line, e.g. "Writing in Writer" (may be empty). */
+  label: string;
+  tool: string | null;
+  /** Host wall clock of the change (ms since the epoch). */
+  atMs: number;
+  /** Member-visible status, computed by the host with the owner's agent-reads rule (null from older hosts). */
+  status: 'starting' | 'running' | 'waiting' | 'paused' | 'completed' | 'failed' | null;
+  /** performance.now() when this frame arrived. */
+  receivedAtMs: number;
+};
 type Unsubscribe = () => void;
 export interface LiveV1 {
   readonly state: LiveState;
@@ -60,5 +85,9 @@ export interface LiveV1 {
   onSignedChange(cb: (value: {publisher: string; record: LiveRecord; digest: string; result: 'admitted' | 'duplicate' | 'deferred'; receivedAtMs: number; receivedWallMs: number; admittedAtMs: number}) => void): Unsubscribe;
   onMember(cb: (value: {publisher: string; active: boolean}) => void): Unsubscribe;
   onDurable(cb: (value: {record: LiveRecord}) => void): Unsubscribe;
+  /** Agents with verified activity in the last 15 s. */
+  agents(): LiveAgentActivity[];
+  /** Every accepted activity frame (`expired: false`), then `expired: true` once the agent went quiet for 15 s. */
+  onAgentActivity(cb: (value: LiveAgentActivity & {expired: boolean}) => void): Unsubscribe;
   stats(): Record<string, unknown>;
 }

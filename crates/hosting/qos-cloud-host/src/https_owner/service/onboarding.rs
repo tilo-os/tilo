@@ -32,11 +32,59 @@ fn unavailable() -> anyhow::Error {
     CapacityUnavailable.into()
 }
 fn rejection_status(error: &anyhow::Error) -> StatusCode {
-    if error.is::<CapacityUnavailable>() {
+    if error.is::<CapacityUnavailable>() || transient(error) {
         StatusCode::SERVICE_UNAVAILABLE
     } else {
         StatusCode::FORBIDDEN
     }
+}
+/// A fixed, content-free category for an onboarding refusal log line.
+fn refusal_reason(error: &anyhow::Error) -> &'static str {
+    if error.is::<CapacityUnavailable>()
+        || error.chain().any(|cause| {
+            matches!(
+                cause.downcast_ref::<CloudDeliveryError>(),
+                Some(CloudDeliveryError::Capacity)
+            )
+        })
+    {
+        return "capacity";
+    }
+    if transient(error) {
+        return "owner_busy";
+    }
+    let message = error.to_string();
+    [
+        ("expired", "expired"),
+        ("nonce replay", "nonce_replay"),
+        ("clock regressed", "clock_regressed"),
+        ("descriptor", "descriptor_replaced"),
+        ("revoked", "device_revoked"),
+        ("another device", "device_mismatch"),
+        ("route", "route_mismatch"),
+        ("handoff", "handoff"),
+        ("signature", "signature"),
+        ("Store unavailable", "store_unavailable"),
+    ]
+    .into_iter()
+    .find(|(needle, _)| message.contains(needle))
+    .map_or("invalid", |(_, reason)| reason)
+}
+/// A content-free category for a Store-level join refusal.
+fn join_refusal_reason(message: &str) -> &'static str {
+    [
+        ("not issued", "challenge_not_issued"),
+        ("substitution", "request_id_substitution"),
+        ("expired", "expired"),
+        ("revoked", "revoked"),
+        ("not the pinned structural owner", "not_owner"),
+        ("mismatch", "scope_mismatch"),
+        ("consumed", "invitation_consumed"),
+        ("receipt", "receipt"),
+    ]
+    .into_iter()
+    .find(|(needle, _)| message.contains(needle))
+    .map_or("refused", |(_, reason)| reason)
 }
 struct SeenNonce {
     device: [u8; 32],
@@ -149,13 +197,15 @@ impl Onboarding {
         Ok(())
     }
 
+    /// Returns the untouched request when the Store was busy before the
+    /// exchange took any effect (the caller defers and retries it).
     pub(super) fn handle(
         &mut self,
         source: &CloudStoreSource,
         pool: &HostBytes,
         pins: &Pins,
         request: BufferedRequest,
-    ) {
+    ) -> Option<BufferedRequest> {
         let result = match request.route() {
             Route::OnboardingChunk => self.chunk(source, pool, pins, &request),
             Route::Onboarding(_) => self.exchange(source, pool, pins, &request),
@@ -163,13 +213,34 @@ impl Onboarding {
         };
         match result {
             Ok(body) => {
-                let _ = request.respond(StatusCode::OK, body);
+                if let Err(error) = request.respond(StatusCode::OK, body) {
+                    if let Some(suppressed) = ops_log::admit("onboarding_reply_unsent") {
+                        tracing::warn!(
+                            event = "cloud_onboarding_reply_unsent",
+                            error,
+                            suppressed,
+                            "Cloud onboarding reply could not be sent"
+                        );
+                    }
+                }
             }
+            Err(error) if deferrable(&error) => return Some(request),
             Err(error) => {
                 tracing::debug!(%error, "onboarding request refused");
+                let reason = refusal_reason(&error);
+                if let Some(suppressed) = ops_log::admit(reason) {
+                    tracing::info!(
+                        event = "cloud_onboarding_refused",
+                        reason,
+                        route = ?request.route(),
+                        suppressed,
+                        "Cloud onboarding request refused"
+                    );
+                }
                 let _ = request.respond(rejection_status(&error), b"onboarding denied".to_vec());
             }
         }
+        None
     }
 
     /// Admission, the Store join operation and the signed reply share one
@@ -436,7 +507,7 @@ impl Onboarding {
             signature: [[0; 32]; 2],
         };
         wire.signature = media_wire::split_signature(key.sign(&wire.signing_digest()?).to_bytes());
-        Ok(wire.encode()?)
+        Ok(exact_body(wire.encode()?))
     }
 
     fn chunk(
@@ -575,6 +646,17 @@ fn invoke(
             .map(crate::collaboration::MembershipRefresh::into_response),
     };
     if let Err(error) = &result {
+        if !crate::is_store_failure(error) {
+            let reason = join_refusal_reason(&error.to_string());
+            if let Some(suppressed) = ops_log::admit(reason) {
+                tracing::info!(
+                    event = "cloud_onboarding_join_refused",
+                    reason,
+                    suppressed,
+                    "Cloud Store refused an onboarding join operation"
+                );
+            }
+        }
         if let Some(failure) = error.downcast_ref::<crate::StoreCommitFailure>() {
             let failure = *failure;
             turn.source.retire();
@@ -591,4 +673,43 @@ fn invoke(
         code: 403,
         message: error.to_string(),
     }))
+}
+
+#[cfg(test)]
+mod reply_capacity_tests {
+    use super::*;
+
+    /// The HTTPS carrier's response bound (qos-session-peer `BODY_BYTES`),
+    /// which it checks against the body's allocation capacity.
+    const CARRIER_BODY_BYTES: usize = 1024 * 1024;
+
+    #[test]
+    fn large_inline_membership_reply_fits_the_carrier_capacity_bound() {
+        // An inline membership reply just under the handoff threshold: the
+        // size a grown workspace's bootstrap reaches.
+        let mut body = vec![6u8; INLINE_BYTES];
+        body[0] = 6; // OwnerMembershipComplete discriminant
+        let wire = OnboardingResponse {
+            version: 3,
+            operation: OnboardingOperation::MembershipComplete,
+            body_kind: ReplyBodyKind::InlineLegacy,
+            request_digest: [1; 32],
+            request_nonce: [2; 32],
+            host: [3; 32],
+            server_boot_id: [4; 16],
+            issued_at_ns: 1_000,
+            expires_at_ns: 2_000,
+            body_digest: *blake3::hash(&body).as_bytes(),
+            body: &body,
+            signature: [[5; 32]; 2],
+        };
+        let encoded = wire.encode().unwrap();
+        assert!(encoded.len() <= CARRIER_BODY_BYTES);
+        // The encoder's own allocation would be refused by the carrier.
+        assert!(encoded.capacity() > CARRIER_BODY_BYTES);
+        let sent = exact_body(encoded);
+        assert_eq!(sent.capacity(), sent.len());
+        assert!(sent.capacity() <= CARRIER_BODY_BYTES);
+        assert_eq!(OnboardingResponse::decode(&sent).unwrap().body, &body[..]);
+    }
 }

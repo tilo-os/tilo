@@ -210,9 +210,9 @@ impl Store {
         // A new step needs the task currently accepted for actions.
         let ledger = self.runtime_ledger().map_err(parent_failure)?;
         if !self
-            .observe_agent_runtime(&caller, &id)
+            .agent_runtime_phase(&caller, &id)
             .map_err(parent_failure)?
-            .qualified_completed
+            .1
             || ledger
                 .facts
                 .contains_key(&format!("{}:task_finished", id.invocation()))
@@ -224,6 +224,13 @@ impl Store {
                 "agent task is not currently accepted for steps".into(),
             ));
         }
+        // Scoped-grant invocation rate (security review MUST-9): one token
+        // per new step; v1 tuple grants are unbudgeted.
+        self.admit_agent_step_rate(dispatch)
+            .map_err(|e| ParentFailure::Unavailable(e.to_string()))?;
+        // Content-impact baseline (MUST-8): the covered Writer text before
+        // this step's child can execute.
+        self.note_agent_step_start(&id, step.index());
         self.append_effect_fact(
             &id,
             caller.governance_revision(),
@@ -249,7 +256,12 @@ impl Store {
         commit: ChildCommit<'_>,
     ) -> Result<ParentReceipt, ParentFailure> {
         let (caller, id) = self.step_custody(dispatch, Some(commit.step), false)?;
-        self.commit_step(&id, caller.governance_revision(), commit)
+        let step = commit.step.index();
+        let receipt = self.commit_step(&id, caller.governance_revision(), commit)?;
+        // Measured content removal of the committed step (MUST-8). Over
+        // budget stops the task: its next step is refused.
+        self.enforce_agent_step_removal(&id, step);
+        Ok(receipt)
     }
     fn commit_step(
         &mut self,

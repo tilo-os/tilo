@@ -38,6 +38,11 @@ struct Source {
     retained: std::sync::Mutex<Option<Retained>>,
     /// Shared ingress pool that charges the retained decode, once known.
     retained_pool: std::sync::OnceLock<qos_session_peer::ingress::HostBytes>,
+    /// Validated decode captured by `open_existing_store` itself (the agent
+    /// owner's Store handles), reused by later opens of the identical files.
+    opened: std::sync::Mutex<Option<OpenedRetained>>,
+    #[cfg(test)]
+    open_decodes: AtomicU64,
     #[cfg(test)]
     turns: AtomicU64,
     #[cfg(test)]
@@ -48,6 +53,15 @@ struct Source {
 /// (see `access::RetainedState`).
 struct Retained {
     state: crate::delivery::access::RetainedState,
+    peer: Option<CachedPeer>,
+    _credit: qos_session_peer::ingress::ByteCredit,
+}
+/// A validated decode captured when `open_existing_store` had to read the
+/// aggregate, with the clean observation of the exact files it came from.
+struct OpenedRetained {
+    aggregate: crate::storage::Aggregate,
+    state: crate::State,
+    tip: Option<crate::storage::Tip>,
     peer: Option<CachedPeer>,
     _credit: qos_session_peer::ingress::ByteCredit,
 }
@@ -124,6 +138,9 @@ impl CloudStoreSource {
             clock,
             retained: std::sync::Mutex::new(None),
             retained_pool: std::sync::OnceLock::new(),
+            opened: std::sync::Mutex::new(None),
+            #[cfg(test)]
+            open_decodes: AtomicU64::new(0),
             #[cfg(test)]
             turns: AtomicU64::new(0),
             #[cfg(test)]
@@ -174,7 +191,10 @@ impl CloudStoreSource {
                 }
                 return Current::Busy;
             }
-            Err(crate::delivery::access::AccessError::Denied(_error)) => return self.deny(),
+            Err(crate::delivery::access::AccessError::Denied(error)) => {
+                tracing::warn!(%error, "Cloud Store turn open denied");
+                return self.deny();
+            }
         };
         drop(state);
         #[cfg(test)]
@@ -187,7 +207,10 @@ impl CloudStoreSource {
         let peer = if opened.reused { peer } else { None };
         let mut turn = match self.turn_reusing(store, peer) {
             Ok(turn) => turn,
-            Err(_error) => return self.deny(),
+            Err(error) => {
+                tracing::warn!(%error, "Cloud Store turn validation denied");
+                return self.deny();
+            }
         };
         let result = action(&mut turn);
         let CloudStoreTurn {
@@ -277,6 +300,8 @@ impl CloudStoreSource {
         self.checked_peer(store, time).map(|_| ())
     }
     pub(crate) fn open_existing_store(&self, time: &PolicyTime) -> Result<Store> {
+        let began = std::time::Instant::now();
+        let mut open_detail = (0u64, 0u64, 0u64);
         let opened = (|| {
             self.validate_time(time)?;
             // Acquire only the existing original Store sentinel. This path cannot
@@ -287,22 +312,42 @@ impl CloudStoreSource {
             let mut peer_current = false;
             let (mut store, reused) =
                 crate::delivery::access::open_reusing(&self.0.root, &self.0.machine, |aggregate| {
-                    let retained = self.0.retained.lock().ok()?;
-                    let retained = retained.as_ref()?;
-                    if !retained.state.same_aggregate(aggregate) {
+                    let current = |peer: &Option<CachedPeer>, generation: u64| {
+                        peer.as_ref().is_some_and(|peer| {
+                            peer.generation == generation
+                                && peer.at_ns <= now
+                                && now < peer.until_ns
+                        })
+                    };
+                    if let Some(retained) = self.0.retained.lock().ok().and_then(|retained| {
+                        let retained = retained.as_ref()?;
+                        retained.state.same_aggregate(aggregate).then(|| {
+                            (
+                                current(&retained.peer, retained.state.generation()),
+                                retained.state.state_copy(),
+                            )
+                        })
+                    }) {
+                        peer_current = retained.0;
+                        return Some(retained.1);
+                    }
+                    let opened = self.0.opened.lock().ok()?;
+                    let opened = opened.as_ref()?;
+                    if !opened.aggregate.same(aggregate) {
                         return None;
                     }
-                    peer_current = retained.peer.as_ref().is_some_and(|peer| {
-                        peer.generation == retained.state.generation()
-                            && peer.at_ns <= now
-                            && now < peer.until_ns
-                    });
-                    Some(retained.state.state_copy())
+                    peer_current = current(&opened.peer, opened.state.generation);
+                    Some((opened.state.clone(), opened.tip.clone()))
                 })
                 .map_err(|error| match error {
                     crate::delivery::access::AccessError::Busy => anyhow::anyhow!("owner busy"),
                     crate::delivery::access::AccessError::Denied(error) => error,
                 })?;
+            open_detail = (
+                u64::from(reused),
+                u64::from(peer_current),
+                qos_action_broker::agent_timing::us(began),
+            );
             if reused && peer_current {
                 // The retained peer was restored from this exact validated
                 // state within its time window; only the cheap current
@@ -311,15 +356,106 @@ impl CloudStoreSource {
                 store.ensure_reconciled()?;
                 self.checked_state(&store.state, &store.directory, time)?;
             } else {
-                self.validate_store(&store, time)?;
+                let (peer, at_ns) = self.checked_peer(&store, time)?;
+                if reused {
+                    self.refresh_opened_peer(&store, peer, at_ns);
+                } else {
+                    self.retain_opened(&store, peer, at_ns);
+                }
             }
             store.bind_policy_time(time.clone())?;
             Ok(store)
         })();
-        if opened.is_err() {
+        if let Err(error) = &opened {
+            tracing::warn!(%error, "Cloud Store existing open denied");
             self.retire();
         }
+        qos_action_broker::agent_timing::slow_store(
+            "store_open",
+            began,
+            &[
+                ("reused", open_detail.0),
+                ("peer_current", open_detail.1),
+                ("read_us", open_detail.2),
+            ],
+        );
         opened
+    }
+    /// Keep a copy of a freshly read and validated decode (and the peer it
+    /// restored) for later `open_existing_store` calls over the identical
+    /// files: the agent owner then pays one decode per aggregate change, not
+    /// per open. Charged to the shared ingress pool; skipped without one.
+    fn retain_opened(&self, store: &Store, peer: StatePeer, at_ns: u64) {
+        #[cfg(test)]
+        self.0.open_decodes.fetch_add(1, Ordering::Relaxed);
+        let Some(pool) = self.0.retained_pool.get() else {
+            return;
+        };
+        let tip = store.tip.borrow().clone();
+        let Some(observed) = tip.as_ref().and_then(|tip| {
+            let directory =
+                atomic_file::StorageDirectory::from_file(store.directory.try_clone().ok()?).ok()?;
+            crate::storage::Aggregate::observe_tip(&directory, tip)
+        }) else {
+            return;
+        };
+        let bytes = observed
+            .length()
+            .checked_mul(2)
+            .and_then(|bytes| bytes.checked_add(tip.as_ref().map_or(0, |tip| tip.len() as u64)))
+            .and_then(|bytes| bytes.checked_add(1024 * 1024))
+            .and_then(|bytes| usize::try_from(bytes).ok());
+        // Release the previous copy before charging its replacement.
+        drop(
+            self.0
+                .opened
+                .lock()
+                .ok()
+                .and_then(|mut opened| opened.take()),
+        );
+        let Some(credit) = bytes.and_then(|bytes| pool.try_acquire_bulk(bytes)) else {
+            return;
+        };
+        if self.0.denied.load(Ordering::Acquire) {
+            return;
+        }
+        let generation = store.state.generation;
+        let until_ns = peer_reuse_until(&store.state, at_ns);
+        if let Ok(mut opened) = self.0.opened.lock() {
+            *opened = Some(OpenedRetained {
+                aggregate: observed,
+                state: store.state.clone(),
+                tip,
+                peer: Some(CachedPeer {
+                    peer,
+                    generation,
+                    at_ns,
+                    until_ns,
+                }),
+                _credit: credit,
+            });
+        }
+    }
+    /// A reused decode whose cached peer had lapsed: keep the peer just
+    /// restored from that same validated generation.
+    fn refresh_opened_peer(&self, store: &Store, peer: StatePeer, at_ns: u64) {
+        if let Ok(mut opened) = self.0.opened.lock() {
+            if let Some(opened) = opened
+                .as_mut()
+                .filter(|opened| opened.state.generation == store.state.generation)
+            {
+                opened.peer = Some(CachedPeer {
+                    until_ns: peer_reuse_until(&store.state, at_ns),
+                    peer,
+                    generation: store.state.generation,
+                    at_ns,
+                });
+            }
+        }
+    }
+    #[cfg(test)]
+    pub(crate) fn open_decode_count(&self) -> u64 {
+        self.0.open_decodes.load(Ordering::Relaxed)
     }
     fn validate_time(&self, time: &PolicyTime) -> Result<u64> {
         self.checked_time(time).map_err(Into::into)
@@ -344,11 +480,23 @@ impl CloudStoreSource {
             _ => false,
         }
     }
+    #[track_caller]
     pub(crate) fn retire(&self) {
         self.0.policy_origin.invalidate();
-        self.0.denied.store(true, Ordering::Release);
+        if !self.0.denied.swap(true, Ordering::AcqRel) {
+            // Content-free: which check retired this source (the first one).
+            tracing::info!(site = %std::panic::Location::caller(), "Cloud Store source retired");
+        }
         drop(self.take_retained());
+        drop(
+            self.0
+                .opened
+                .lock()
+                .ok()
+                .and_then(|mut opened| opened.take()),
+        );
     }
+    #[track_caller]
     fn deny<R>(&self) -> Current<R> {
         // This source never resumes after unknown/corrupt state. A fresh actual
         // owner binding and fresh service/session registries are required.
@@ -385,7 +533,8 @@ impl CloudStoreSource {
             self.validate_time(time)?;
             Ok((peer, now_ns))
         })();
-        if checked.is_err() {
+        if let Err(error) = &checked {
+            tracing::warn!(%error, "Cloud Store peer check denied");
             self.retire();
         }
         checked
@@ -413,13 +562,21 @@ impl CloudStoreSource {
             && ed25519_dalek::SigningKey::from_bytes(&state.host_secret)
                 .verifying_key()
                 .to_bytes()
-                == self.0.authority.device_public_key
-            && self
-                .0
-                .incarnation
-                .read()
-                .is_ok_and(|incarnation| delivery.store_generation() == *incarnation))
+                == self.0.authority.device_public_key)
         {
+            tracing::warn!("Cloud Store identity check denied");
+            return Err(CloudDeliveryError::Denied);
+        }
+        if !self
+            .0
+            .incarnation
+            .read()
+            .is_ok_and(|incarnation| delivery.store_generation() == *incarnation)
+        {
+            tracing::warn!(
+                generation = state.generation,
+                "Cloud Store incarnation check denied"
+            );
             return Err(CloudDeliveryError::Denied);
         }
         let previous = self
@@ -427,6 +584,11 @@ impl CloudStoreSource {
             .last_generation
             .fetch_max(state.generation, Ordering::AcqRel);
         if state.generation < previous || bound.authority.is_expired_at(now_ns) {
+            tracing::warn!(
+                generation = state.generation,
+                previous,
+                "Cloud Store generation or authority check denied"
+            );
             return Err(CloudDeliveryError::Denied);
         }
         Ok(now_ns)
@@ -537,6 +699,7 @@ impl CloudStoreTurn {
         Ok(report)
     }
 }
+mod agent_live;
 mod auth;
 mod config;
 mod live;
@@ -547,6 +710,7 @@ mod service;
 mod snapshot;
 mod state;
 mod transaction;
+pub(crate) use service::agent_rejection_code;
 pub(crate) use transaction::{CloudDeliveryError, CloudPinExpectation, DeliveryOperation};
 mod data;
 #[cfg(test)]

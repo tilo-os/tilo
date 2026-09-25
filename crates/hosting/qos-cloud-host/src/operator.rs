@@ -3,6 +3,8 @@ use anyhow::{Result, anyhow, bail, ensure};
 use qos_peer_state::owner_commit::{AgentRuntimeFact, PrivateAgentState};
 use serde::Serialize;
 use std::path::Path;
+mod select;
+pub use select::select_private_agent_runtime;
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 /// An actual durable host command phase. `completed` means recipient acceptance,

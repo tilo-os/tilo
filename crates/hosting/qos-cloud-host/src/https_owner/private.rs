@@ -150,7 +150,36 @@ impl CloudPrivateService {
         if !self.source.owns_turn(turn) {
             return Err(PrivateError::Unavailable);
         }
-        let result = match self.carrier.poll_events(proof, turn.peer()) {
+        let result = self.carrier.poll_events(proof, turn.peer());
+        self.fenced_event(result, turn)
+    }
+    /// Whether any watch holds a ready event: a held events poll can only
+    /// become answerable with an event while this is true.
+    pub(crate) fn has_ready_event(&self) -> bool {
+        self.carrier.has_ready_event()
+    }
+    /// A held original events poll, resumed after its parked continuation was
+    /// freshly revalidated under `turn`; the exact original bytes are rechecked.
+    pub(crate) fn poll_events_resumed(
+        &mut self,
+        session: &qos_relay::delivery_v3::auth::VerifiedSession,
+        original: &BufferedRequest,
+        turn: &CloudStoreTurn,
+    ) -> Result<Option<(CloudPendingPrivate, DirectedAction)>, PrivateError> {
+        if !self.source.owns_turn(turn) {
+            return Err(PrivateError::Unavailable);
+        }
+        let result = self
+            .carrier
+            .poll_events_resumed(session, original, turn.peer());
+        self.fenced_event(result, turn)
+    }
+    fn fenced_event(
+        &mut self,
+        result: Result<Option<(PendingPrivate, DirectedAction)>, PrivateError>,
+        turn: &CloudStoreTurn,
+    ) -> Result<Option<(CloudPendingPrivate, DirectedAction)>, PrivateError> {
+        let result = match result {
             Ok(value) => value,
             Err(error) => {
                 self.reconcile();

@@ -54,6 +54,9 @@ pub(super) struct DeliveryState {
     cursor_recovery: crate::peer_delivery::cursor_recovery::CursorRecovery,
     needs_snapshot: bool,
     live: bool,
+    /// A snapshot chunk (or its renewal) whose HTTP attempt failed transiently;
+    /// the scheduler re-issues it with a fresh proof on its next turn.
+    retry_chunk: Option<u32>,
 }
 struct Upload {
     id: [u8; 16],
@@ -122,6 +125,7 @@ impl DeliveryState {
         self.window.clear();
         self.deferred_polls.clear();
         self.chain.abandon();
+        self.retry_chunk = None;
         self.live = false;
         self.transfer = None;
         self.recovery = Default::default();
@@ -452,6 +456,62 @@ pub fn peer_delivery_forget(id: u32, request: u32) {
         }
     }
 }
+/// A read-only private request (catalogue refresh or agent read) whose HTTP
+/// attempt failed transiently (host 502/503/504, network reset, timeout) is
+/// returned to the front of the private queue instead of being dropped, so the
+/// scheduler re-issues it with a fresh proof. A snapshot manifest, renewal or
+/// chunk request is likewise re-queued at its exact step (no state advanced).
+/// Returns false (and changes nothing) for every other request; the caller
+/// then forgets it as before.
+#[wasm_bindgen]
+pub fn peer_delivery_retry(id: u32, request: u32) -> bool {
+    let Ok(peer) = owner(id) else {
+        return false;
+    };
+    if peer.closed.get() || !peer.transport_connected.get() {
+        return false;
+    }
+    let mut delivery = peer.delivery.borrow_mut();
+    if matches!(
+        delivery.pending.get(&request),
+        Some(
+            Pending::Snapshot
+                | Pending::SnapshotResume
+                | Pending::SnapshotRenew(_)
+                | Pending::SnapshotChunk(_)
+        )
+    ) {
+        let Some(pending) = delivery.pending.remove(&request) else {
+            return false;
+        };
+        if transfers::requeue(&mut delivery, &pending) {
+            delivery.incoming.remove(&request);
+            return true;
+        }
+        delivery.pending.insert(request, pending);
+        return false;
+    }
+    let read_only = matches!(
+        delivery.pending.get(&request),
+        Some(Pending::Private {
+            // Status only observes a retained invocation: re-sending it is a
+            // read, never a second dispatch.
+            operation: PrivateOperation::Catalogue
+                | PrivateOperation::AgentRead
+                | PrivateOperation::Status,
+            ..
+        })
+    );
+    if !read_only {
+        return false;
+    }
+    delivery.incoming.remove(&request);
+    if let Some(Pending::Private { action, .. }) = delivery.pending.remove(&request) {
+        delivery.actions.push_front(action);
+        return true;
+    }
+    false
+}
 #[wasm_bindgen]
 pub fn peer_delivery_next(id: u32) -> Result<String, JsValue> {
     let peer = owner(id)?;
@@ -470,6 +530,10 @@ pub fn peer_delivery_next(id: u32) -> Result<String, JsValue> {
         // issued). Its page is deferred until that commit is confirmed; the
         // ACK still follows the confirmed commit only.
         return pipelined_poll(&peer);
+    }
+    let retry_chunk = peer.delivery.borrow_mut().retry_chunk.take();
+    if let Some(index) = retry_chunk {
+        return transfers::retry_chunk(&peer, index);
     }
     if peer.delivery.borrow().transfer.is_some() {
         return Ok("{\"kind\":\"idle\"}".into());

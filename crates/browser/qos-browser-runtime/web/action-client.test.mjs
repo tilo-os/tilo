@@ -331,3 +331,47 @@ test('business cancel fences an accepted invoke while queued or discovering with
   await c.invoke({...route,invocation:'ffffffff-ffff-4fff-8fff-ffffffffffff'});assert.equal(sent.filter(m=>m.type==='invoke_bound').length,1);await c.close();
  }
 });
+test('a fresh v2 ticket dispatches at once; a stale or reopened one probes status against a new discovery first',async()=>{
+ let t=0;const consumer=parent=>({kind:'interactive',parent,slot:'test'});
+ for(const [delay,expected] of [[0,['catalogue_refresh','invoke_bound']],[6000,['catalogue_refresh','catalogue_refresh','status','invoke_bound']]]){
+  const calls=[];let disk;
+  const c=await createActionClient({version:2,clock:{now:()=>t},context:()=>context,load:async()=>disk,commit:async value=>{disk=structuredClone(value);},request:async message=>{
+   calls.push(message.type);
+   if(message.type==='catalogue_refresh')return{type:'broker_catalogue',host,catalogue};
+   return{type:'observation',host,invocation:message.invocation,update:message.type==='invoke_bound'?{state:'succeeded',invocation:message.invocation,output:{}}:null,uncertain:false,cancellation_requested:false};
+  }});
+  const {invocation:_none,...input}={...route,argument:null,confirmation:null};
+  const ticket=await c.actionsV2.beginNew(input,{consumer:consumer(crypto.randomUUID())});
+  t+=delay;const row=await c.actionsV2.drive(ticket,{dispatchFresh:true});
+  assert.equal(row.state,'succeeded');assert.deepEqual(calls,expected);
+  await c.close();
+ }
+});
+test('background recovery backs off an unchanged row to 16 s, reuses its discovery for 30 s, and resets on change',async()=>{
+ let t=0,disk,update=null;const calls=[];const second='dddddddd-dddd-4ddd-8ddd-dddddddddddd';
+ const c=await createActionClient({clock:{now:()=>t},context:()=>context,load:async()=>disk,commit:async value=>{disk=structuredClone(value);},request:async message=>{
+  calls.push(message.type);
+  if(message.type==='catalogue_refresh')return{type:'broker_catalogue',host,catalogue};
+  return{type:'observation',host,invocation:message.invocation,update:message.type==='status'&&update?{...update,invocation:message.invocation}:{state:'accepted',invocation:message.invocation},uncertain:false,cancellation_requested:false};
+ }});
+ await c.invoke({...route,invocation:id});await c.invoke({...route,invocation:second});
+ const pass=async ms=>{t+=ms;calls.length=0;await c.recover({background:true});return [...calls];};
+ const both=['status','status'];
+ // Two retained rows of one scope: one discovery, two status probes.
+ assert.deepEqual(await pass(0),['catalogue_refresh',...both]);
+ assert.deepEqual(await pass(1000),both,'unchanged: next probe after 1 s, discovery reused');
+ assert.deepEqual(await pass(1000),[],'backed off to 2 s');
+ assert.deepEqual(await pass(1000),both);
+ assert.deepEqual(await pass(4000),both);
+ assert.deepEqual(await pass(8000),both);
+ assert.deepEqual(await pass(16000),['catalogue_refresh',...both],'discovery renewed after 30 s');
+ assert.deepEqual(await pass(8000),[],'capped at 16 s');
+ assert.deepEqual(await pass(8000),both);
+ update={state:'progress',sequence:'1',phase:'working'};
+ assert.deepEqual(await pass(16000),['catalogue_refresh',...both],'32 s after the last discovery');
+ assert.deepEqual(await pass(1000),both,'a changed observation resets to 1 s');
+ // A continuous caller cannot turn this into a status loop.
+ calls.length=0;for(let i=0;i<50;i++)await c.recover({background:true});assert.equal(calls.length,0);
+ t+=1000;calls.length=0;await c.recover();assert.deepEqual(calls,['catalogue_refresh','status','status'],'an explicit recover probes at once');
+ await c.close();
+});

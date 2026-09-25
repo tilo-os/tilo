@@ -389,9 +389,7 @@ pub fn verify_room(
     crate::coverage::monotonic(before, &doc).map_err(|_| ProofError::Unknown)?;
     crate::durability::monotonic(before, &doc).map_err(|_| ProofError::Unknown)?;
     let coverage = crate::coverage::entries(&doc).map_err(|_| ProofError::Unknown)?;
-    if crate::coverage::governed_bytes(&doc)
-        .is_some_and(|bytes| postcard::to_allocvec(&coverage).ok().as_ref() != Some(&bytes))
-    {
+    if !crate::coverage::canonical(&doc) {
         return Err(ProofError::Unknown);
     }
     if coverage
@@ -401,9 +399,7 @@ pub fn verify_room(
         return Err(ProofError::Unknown);
     }
     let durable = crate::durability::entries(&doc).map_err(|_| ProofError::Unknown)?;
-    if crate::durability::governed_bytes(&doc)
-        .is_some_and(|bytes| postcard::to_allocvec(&durable).ok().as_ref() != Some(&bytes))
-    {
+    if !crate::durability::canonical(&doc) {
         return Err(ProofError::Unknown);
     }
     for (key, receipt) in durable {

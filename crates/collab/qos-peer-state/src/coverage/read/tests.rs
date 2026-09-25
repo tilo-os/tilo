@@ -29,7 +29,22 @@ fn stored(version: DocumentWireVersion) -> (AutoCommit, Vec<u8>) {
         sequence: 1,
         watermarks: BTreeMap::new(),
     };
+    // An older room: the legacy whole-map scalar only (the v2 layout is
+    // covered by `coverage_reader_prefers_v2_route_and_matches_bounded_reads`).
+    let _ = room.delete(ROOT, super::super::FIELD_V2);
+    super::super::put_legacy(
+        &mut room,
+        &BTreeMap::from([(super::super::route_key("test.app", "tab:1"), coverage)]),
+    );
+    (room, snapshot)
+}
+fn stored_v2(version: DocumentWireVersion) -> (AutoCommit, Vec<u8>) {
+    let (mut room, snapshot) = stored(version);
+    let rows = super::super::entries(&room).unwrap();
+    let coverage = rows.into_values().next().unwrap();
+    // The governor's next write migrates the scalar into the per-route map.
     super::super::put(&mut room, coverage).unwrap();
+    assert!(crate::governed_routes::legacy_bytes(&room, super::super::LAYOUT).is_none());
     (room, snapshot)
 }
 fn context() -> (NativeAllowance, NativeAllocationSet, NativeWorkTurn) {
@@ -197,7 +212,7 @@ fn coverage_reader_keeps_genuine_capacity_denial_and_does_not_decode_when_checkp
 #[test]
 fn coverage_reader_preserves_only_this_historical_fields_trailing_suffix_compatibility() {
     let (mut room, snapshot) = stored(DocumentWireVersion::QosV1);
-    let mut bytes = super::super::governed_bytes(&room).unwrap();
+    let mut bytes = crate::governed_routes::legacy_bytes(&room, super::super::LAYOUT).unwrap();
     bytes.extend_from_slice(&[0xff, 0, 42]);
     room.put(ROOT, super::super::FIELD, ScalarValue::Bytes(bytes))
         .unwrap();
@@ -246,5 +261,60 @@ fn coverage_reader_preserves_only_this_historical_fields_trailing_suffix_compati
             Err(PeerResourceError::Malformed)
         ),
         "ordinary messages stay strict"
+    );
+}
+
+#[test]
+fn coverage_reader_prefers_v2_route_and_matches_bounded_reads() {
+    for version in DocumentWireVersion::ALL {
+        let (mut room, snapshot) = stored_v2(version);
+        let (allowance, mut registry, turn) = context();
+        let native = native(&mut room, &mut registry, &turn);
+        let read = native.read(&turn).unwrap();
+        let legacy = snapshot_wire_version(
+            Some(&LegacyRead(&room)),
+            "test.app",
+            "tab:1",
+            Some(&snapshot),
+            &LegacyCoverage,
+        );
+        let bounded = assert_precharged(&allowance, || {
+            snapshot_wire_version(
+                Some(&read),
+                "test.app",
+                "tab:1",
+                Some(&snapshot),
+                &BoundedCoverage {
+                    turn: &turn,
+                    limits: limits(),
+                },
+            )
+        });
+        assert_eq!(legacy, Ok(Some(version)));
+        assert!(matches!(bounded, Ok(Some(found)) if found == version));
+        assert_eq!(
+            snapshot_wire_version(
+                Some(&LegacyRead(&room)),
+                "test.app",
+                "unknown",
+                Some(&snapshot),
+                &LegacyCoverage
+            ),
+            Ok(None)
+        );
+    }
+    // A present v2 route supersedes a (stale or malformed) legacy scalar.
+    let (mut room, snapshot) = stored_v2(DocumentWireVersion::CURRENT);
+    room.put(ROOT, super::super::FIELD, "wrong shape").unwrap();
+    room.commit();
+    assert_eq!(
+        snapshot_wire_version(
+            Some(&LegacyRead(&room)),
+            "test.app",
+            "tab:1",
+            Some(&snapshot),
+            &LegacyCoverage
+        ),
+        Ok(Some(DocumentWireVersion::CURRENT))
     );
 }

@@ -69,6 +69,10 @@ use ui::portal;
 mod block_layout;
 mod image_layout;
 mod layout_cache;
+mod participants;
+pub(crate) use participants::note_participant_outcome;
+#[cfg(test)]
+mod participant_tests;
 mod proofing;
 mod text_runs;
 mod toolbar;
@@ -857,6 +861,21 @@ fn fmt_num(v: f32) -> String {
     }
 }
 
+/// The toggleable inline mark a qdoc mark name denotes (Ctrl+B/I/U, toolbar,
+/// super/sub), for routing through `editing::toggle_mark`.
+fn inline_mark(name: &str) -> Option<crate::actions::editing::InlineMark> {
+    use crate::actions::editing::InlineMark;
+    Some(match name {
+        "strong" => InlineMark::Strong,
+        "em" => InlineMark::Em,
+        "underline" => InlineMark::Underline,
+        "strike" => InlineMark::Strike,
+        "super" => InlineMark::Superscript,
+        "sub" => InlineMark::Subscript,
+        _ => return None,
+    })
+}
+
 fn char_to_byte(text: &str, char_off: usize) -> usize {
     text.char_indices()
         .nth(char_off)
@@ -939,6 +958,12 @@ fn layout_line_tops(layout: &RichTextLayout, text: &str) -> Vec<(f64, f64)> {
 /// `apps/agent` reproduces from the outside (it has no window and no pointer,
 /// only a caret to publish), so the two sides must independently agree on the
 /// exact key shape.
+/// A digest-addressed stand-in key (`PresenceKey::from_scope_digest`).
+fn is_scope_digest_key(key: &PresenceKey) -> bool {
+    matches!(key, PresenceKey::Widget { path }
+        if matches!(path.first(), Some(PathSegment::Field(field)) if field == ui::presence::DIGEST_KEY_FIELD))
+}
+
 fn block_presence_key(block_id: &str) -> PresenceKey {
     PresenceKey::Widget {
         path: vec![
@@ -946,6 +971,42 @@ fn block_presence_key(block_id: &str) -> PresenceKey {
             PathSegment::Field(block_id.to_string()),
         ],
     }
+}
+
+/// One non-local participant's caret or selection, published by the host
+/// under that participant's identity (see
+/// [`WordProcessorWidget::participant_presence`]).
+pub use ui::ParticipantPresence;
+
+/// The presence payload for `view`, exactly as the local window derives its
+/// own in `presence_payload`: the selection's part inside the caret block
+/// when non-empty, else the bare caret; byte offsets into the block text.
+fn participant_presence_payload(
+    view: &crate::actions::participant::ParticipantView,
+    doc: &AutoCommit,
+) -> Option<ui::PresencePayload> {
+    let ctx = view.ctx(doc)?;
+    let containers = qdoc::model::open(doc, &automerge::ROOT).ok()?;
+    let obj = qdoc::model::region_block_obj(
+        doc,
+        &containers,
+        view.region.to_region(),
+        &view.caret.block,
+    )?;
+    let text = qdoc::model::block_text_on(doc, &obj).unwrap_or_default();
+    if let Some(span) = ctx
+        .format_spans
+        .iter()
+        .find(|span| span.block == view.caret.block && span.start < span.end)
+    {
+        return Some(ui::PresencePayload::Selection {
+            start: char_to_byte(&text, span.start),
+            end: char_to_byte(&text, span.end),
+        });
+    }
+    Some(ui::PresencePayload::Caret {
+        pos: char_to_byte(&text, view.caret.offset),
+    })
 }
 
 /// A resolved remote collaborator caret to paint this frame: the on-screen
@@ -1364,6 +1425,13 @@ pub struct WordProcessorWidget {
     /// The style inspector's shared color-picker popover. It owns its lifecycle,
     /// layout, drawing, and modal input routing; this editor applies its result.
     color_picker: StyleColorPicker,
+    /// Views of the other participants (agents, remote invokers) this widget
+    /// serves: bounded, idle-expiring, rebased on every change, and never
+    /// written into the document. The local window's view is `inner`.
+    participants: participants::ParticipantViews,
+    /// Set by a headless host worker (no local person): `resources` then
+    /// publishes the participant-independent catalogue schema.
+    participant_host: bool,
 }
 
 /// One process-wide built-in dictionary, shared across every word-processor
@@ -1527,6 +1595,8 @@ impl WordProcessorWidget {
             ime_rect: None,
             ime_preedit: String::new(),
             color_picker: StyleColorPicker::default(),
+            participants: participants::ParticipantViews::default(),
+            participant_host: false,
         }
     }
 
@@ -1619,11 +1689,160 @@ impl WordProcessorWidget {
         );
     }
 
+    /// This window's view for an edit: [`Self::local_participant_view`]
+    /// without the Find hits, which no editing primitive reads (keeps a
+    /// keystroke from cloning them).
+    fn local_edit_view(&self) -> crate::actions::participant::ParticipantView {
+        use crate::actions::participant::{ParticipantView, ViewPoint};
+        let caret = self.inner.caret();
+        ParticipantView {
+            caret: ViewPoint::new(caret.block.clone(), caret.offset),
+            anchor: self
+                .inner
+                .selection_anchor
+                .as_ref()
+                .map(|anchor| ViewPoint::new(anchor.block.clone(), anchor.offset)),
+            region: self.inner.region_kind(),
+            find: crate::actions::participant::FindState::default(),
+            pending: None,
+        }
+    }
+
+    /// Run one editor input through its pure `editing::*` primitive — the
+    /// function Ctrl+K and agents invoke as a published operation — against
+    /// this window's view, dispatch its envelopes and adopt its next view.
+    ///
+    /// Returns `false` only while the primitive has not landed
+    /// (`NotYetImplemented`), so the caller runs its equivalent direct path;
+    /// the keyboard↔action parity tests pin the two byte-identical. Any other
+    /// refusal (no caret, needs a selection, stale arguments) is a no-op, as
+    /// it is for the direct path.
+    fn edit_via_primitive(
+        &mut self,
+        state: &mut AutoCommit,
+        primitive: impl FnOnce(
+            &crate::actions::participant::ParticipantView,
+            &AutoCommit,
+        ) -> crate::actions::editing::EditResult,
+    ) -> bool {
+        let view = self.local_edit_view();
+        match primitive(&view, state) {
+            Err(crate::actions::editing::EditingError::NotYetImplemented(_)) => false,
+            Err(_) => true,
+            Ok((envelopes, next)) => {
+                for action in &envelopes {
+                    self.perform_action(state, action);
+                }
+                self.adopt_local_view(next, state);
+                true
+            }
+        }
+    }
+
+    /// Make `next` (an editing primitive's result, settled against the
+    /// document its envelopes produced) this window's caret and selection.
+    /// The Find bar keeps its own state.
+    fn adopt_local_view(
+        &mut self,
+        next: crate::actions::participant::ParticipantView,
+        state: &AutoCommit,
+    ) {
+        let next = next.settle(state);
+        if next.caret.block.is_empty() {
+            return;
+        }
+        self.inner.set_caret(Caret {
+            block: next.caret.block,
+            offset: next.caret.offset,
+        });
+        self.inner.selection_anchor = next.anchor.map(|anchor| Caret {
+            block: anchor.block,
+            offset: anchor.offset,
+        });
+    }
+
+    /// Apply a published view operation (`move-caret`, `select-*`,
+    /// `find-text`) to this window: the same pure function a participant's
+    /// invocation runs, adopted as the local caret/selection. `find-text`
+    /// opens the Find bar on the query, as typing it there would.
+    fn apply_local_view_operation(
+        &mut self,
+        state: &AutoCommit,
+        operation: &crate::actions::view_ops::ViewOperation,
+    ) -> Result<(), String> {
+        if let crate::actions::view_ops::ViewOperation::FindText { query } = operation {
+            if query.len() > crate::actions::editing::MAX_FIND_QUERY_BYTES {
+                return Err("the Find query is too long".into());
+            }
+            let blocks = self.search_blocks(state);
+            let effect = self.find.open(Some(query), &blocks);
+            self.apply_find_effect(state, effect);
+            return Ok(());
+        }
+        let view = self.local_edit_view();
+        let (_, next) = crate::actions::view_ops::apply(&view, state, operation)
+            .map_err(|error| error.to_string())?;
+        self.adopt_local_view(next, state);
+        Ok(())
+    }
+
+    /// Apply a view operation — a published `word-processor.view-operation`
+    /// payload, or the `search-hit#go-to` `NavigateTo` operation — for the
+    /// invoking participant, to that participant's view only. The invoker
+    /// must carry a participant; nothing is written into the document.
+    ///
+    /// # Errors
+    /// Refuses an invoker without a participant, a payload of another type,
+    /// and a refusal of the view primitive (stale range, no caret, …).
+    pub fn invoke_participant_view_operation(
+        &mut self,
+        invoker: &tilo_actions::ActionInvoker,
+        type_id: &str,
+        payload: &[u8],
+        doc: &AutoCommit,
+    ) -> Result<(), String> {
+        let Some(participant) = invoker.participant.clone() else {
+            return Err("a participant view operation needs the invoking participant".into());
+        };
+        let view = self
+            .participant_view_or_default(&participant, doc)
+            .ok_or("the document has no body to place a caret in")?;
+        let outcome = if let Some(operation) =
+            crate::actions::view_ops::decode_view_operation(type_id, payload)?
+        {
+            crate::actions::view_ops::apply(&view, doc, &operation)
+        } else if let Some(crate::actions::WordProcessorOperation::NavigateTo {
+            block,
+            start,
+            end,
+        }) = crate::actions::decode_operation(type_id, payload)?
+        {
+            crate::actions::view_ops::navigate_to(&view, doc, &block, start, end)
+        } else {
+            return Err(format!("{type_id} is not a participant view operation"));
+        };
+        let (_, next) = outcome.map_err(|error| error.to_string())?;
+        self.set_participant_view(participant, next, doc);
+        Ok(())
+    }
+
+    /// Select the whole active region (Ctrl+A, context menu).
+    fn select_all_via_primitive(&mut self, state: &mut AutoCommit) {
+        if !self.edit_via_primitive(state, crate::actions::editing::select_all) {
+            self.inner.select_all(state);
+        }
+    }
+
     /// Insert ordinary typed text through the same serializable actions exposed
     /// to agents and Ctrl+K.  A multi-block selection is a structural merge,
     /// represented by its own single envelope rather than a hidden UI-only
     /// sequence of splice/delete writes.
     fn insert_text_via_action(&mut self, state: &mut AutoCommit, text: &str) {
+        if self.edit_via_primitive(state, |view, doc| {
+            crate::actions::editing::type_text(view, doc, text)
+        }) {
+            return;
+        }
         if let Some((start, end)) = self.inner.selection_span(state) {
             let region = self.inner.region_kind();
             self.perform_action(
@@ -1662,6 +1881,9 @@ impl WordProcessorWidget {
     /// stable id is discovered from the synchronous before/after set solely to
     /// update the local caret; it is minted by the action's pinned actor.
     fn enter_via_action(&mut self, state: &mut AutoCommit) {
+        if self.edit_via_primitive(state, crate::actions::editing::new_paragraph) {
+            return;
+        }
         if self.inner.has_selection() {
             self.insert_text_via_action(state, "");
         }
@@ -1831,6 +2053,16 @@ impl WordProcessorWidget {
     /// Backspace/Delete are expressed as absolute splices or one cross-block
     /// replacement action. Selection/caret motion remains presentation-local.
     fn delete_via_action(&mut self, state: &mut AutoCommit, backward: bool) {
+        let direction = if backward {
+            crate::actions::editing::DeleteDirection::Backward
+        } else {
+            crate::actions::editing::DeleteDirection::Forward
+        };
+        if self.edit_via_primitive(state, |view, doc| {
+            crate::actions::editing::delete(view, doc, direction, 1)
+        }) {
+            return;
+        }
         if self.inner.has_selection() {
             self.insert_text_via_action(state, "");
             return;
@@ -1987,6 +2219,177 @@ impl WordProcessorWidget {
         })
     }
 
+    // ---- participant views (parity lane B) -----------------------------------
+
+    /// This window's own view as a participant view: the caret, the
+    /// selection anchor, the active region and the Find bar's query and hits.
+    /// [`Self::wp_resource_ctx`] is its projection (computed from the render
+    /// cache so it stays cheap per frame); `view.ctx(doc)` yields the same
+    /// context.
+    pub fn local_participant_view(&self) -> crate::actions::participant::ParticipantView {
+        use crate::actions::participant::{FindState, ParticipantView, ViewPoint};
+        let caret = self.inner.caret();
+        ParticipantView {
+            caret: ViewPoint::new(caret.block.clone(), caret.offset),
+            anchor: self
+                .inner
+                .selection_anchor
+                .as_ref()
+                .map(|anchor| ViewPoint::new(anchor.block.clone(), anchor.offset)),
+            region: self.inner.region_kind(),
+            find: FindState::new(
+                self.find.query(),
+                self.find.matches().iter().map(|(block, start, end)| {
+                    crate::actions::SearchTarget {
+                        block: block.clone(),
+                        start: *start,
+                        end: *end,
+                    }
+                }),
+            ),
+            pending: None,
+        }
+    }
+
+    /// `participant`'s current view, rebased onto `doc`. `None` for a
+    /// participant this widget holds no view for.
+    pub fn participant_view(
+        &self,
+        participant: &tilo_actions::ParticipantId,
+        doc: &AutoCommit,
+    ) -> Option<crate::actions::participant::ParticipantView> {
+        self.participants.view(participant, doc)
+    }
+
+    /// The view an invocation by `participant` resolves against: its stored
+    /// view, or — for a participant without one yet — a collapsed caret at the
+    /// end of the body (an agent's spawn position). `None` only for a document
+    /// without body blocks.
+    pub fn participant_view_or_default(
+        &self,
+        participant: &tilo_actions::ParticipantId,
+        doc: &AutoCommit,
+    ) -> Option<crate::actions::participant::ParticipantView> {
+        self.participants
+            .view(participant, doc)
+            .or_else(|| crate::actions::participant::ParticipantView::at_document_end(doc))
+    }
+
+    /// Store `participant`'s view, valid against `doc` as it is now (after
+    /// its envelopes were applied). Presentation state only: nothing is
+    /// written into the document. The map stays bounded (LRU, idle TTL).
+    pub fn set_participant_view(
+        &mut self,
+        participant: tilo_actions::ParticipantId,
+        view: crate::actions::participant::ParticipantView,
+        doc: &AutoCommit,
+    ) {
+        self.participants
+            .set(participant, view, doc, ui::clock::Instant::now());
+        self.lifecycle.dirty = true;
+    }
+
+    /// The name painted next to `participant`'s caret (e.g. "Agent for Ada").
+    pub fn set_participant_label(
+        &mut self,
+        participant: &tilo_actions::ParticipantId,
+        label: &str,
+    ) {
+        self.participants.set_label(participant, label);
+    }
+
+    /// Forget `participant`'s view (its task ended). Returns whether it had one.
+    pub fn remove_participant(&mut self, participant: &tilo_actions::ParticipantId) -> bool {
+        self.participants.remove(participant)
+    }
+
+    /// The resource tree as `participant` sees it. `None` is this window
+    /// (the ordinary [`tilo_actions::ResourceProvider::resources`]); any
+    /// other participant gets the tree built from its own view only, so no
+    /// other participant's caret, selection or Find hits leak into it.
+    pub fn participant_resources(
+        &self,
+        participant: Option<&tilo_actions::ParticipantId>,
+        doc: &AutoCommit,
+    ) -> Vec<tilo_actions::Resource> {
+        let Some(participant) = participant else {
+            return <Self as tilo_actions::ResourceProvider>::resources(self, doc);
+        };
+        self.participants.note_resolution(participant, doc);
+        let Some(ctx) = self
+            .participant_view_or_default(participant, doc)
+            .and_then(|view| view.ctx(doc))
+        else {
+            return Vec::new();
+        };
+        crate::actions::provide_resources(&ctx, doc)
+    }
+
+    /// Apply one participant's edit — the envelopes and next view an
+    /// `editing::*` primitive returned for that participant's view — and
+    /// store the view. Each envelope goes through the canonical executor with
+    /// the invoker in its context (durable attribution), on a dispatcher
+    /// separate from this window's, so the edit never joins the local user's
+    /// undo group.
+    ///
+    /// # Errors
+    /// Refuses an invoker without a participant, and returns the first
+    /// executor refusal; envelopes before it stay applied, the view is then
+    /// left as it was (rebased).
+    pub fn apply_participant_edit(
+        &mut self,
+        invoker: &tilo_actions::ActionInvoker,
+        state: &mut AutoCommit,
+        outcome: crate::actions::editing::EditOutcome,
+    ) -> Result<(), String> {
+        let Some(participant) = invoker.participant.clone() else {
+            return Err("a participant edit needs the invoking participant".into());
+        };
+        let (envelopes, view) = outcome;
+        let mut dispatcher = ui::ActionHost::new();
+        for action in &envelopes {
+            dispatcher
+                .try_dispatch_with_context(
+                    state,
+                    crate::actions::WORD_PROCESSOR_ACTION_TYPE,
+                    action,
+                    tilo_actions::ActionContext::for_action("org.qos.Writer", "Writer", action)
+                        .with_invoker(invoker.clone()),
+                )
+                .map_err(|error| error.to_string())?;
+        }
+        if !envelopes.is_empty() {
+            self.lifecycle.needs_commit = true;
+            self.save_status = DocumentSaveStatus::Modified;
+        }
+        self.set_participant_view(participant, view, state);
+        Ok(())
+    }
+
+    /// Every other participant's caret or selection as collaboration
+    /// presence, under the same `wp_block` key and byte offsets the local
+    /// window publishes, so peers render an agent exactly like a person.
+    /// The host publishes each entry under that participant's identity.
+    pub fn participant_presence(&self, doc: &AutoCommit) -> Vec<ParticipantPresence> {
+        let mut out = Vec::new();
+        for participant in self.participants.participants() {
+            let Some(view) = self.participants.view(participant, doc) else {
+                continue;
+            };
+            let Some(payload) = participant_presence_payload(&view, doc) else {
+                continue;
+            };
+            out.push(ParticipantPresence {
+                participant: participant.clone(),
+                label: self.participants.label(participant).map(str::to_string),
+                key: block_presence_key(&view.caret.block),
+                payload,
+            });
+        }
+        out.sort_by(|a, b| a.participant.as_str().cmp(b.participant.as_str()));
+        out
+    }
+
     /// Test hook: the last action an affordance dispatched through
     /// [`Self::perform_action`], so a test can compare it to a palette spec.
     #[cfg(test)]
@@ -1999,6 +2402,13 @@ impl WordProcessorWidget {
     /// Toggle an inline mark (bold/italic/underline/strike) over the selection,
     /// as one replayable action. A toggle with no selection is a no-op.
     fn dispatch_toggle_mark(&mut self, state: &mut AutoCommit, name: &str) {
+        if let Some(mark) = inline_mark(name)
+            && self.edit_via_primitive(state, |view, doc| {
+                crate::actions::editing::toggle_mark(view, doc, mark)
+            })
+        {
+            return;
+        }
         let Some((spans, active)) = self.inner.plan_toggle_mark(state, name) else {
             return;
         };
@@ -2015,6 +2425,13 @@ impl WordProcessorWidget {
     /// Toggle a mutually-exclusive mark (super/sub) over the selection / caret
     /// block, clearing its sibling, as one replayable action.
     fn dispatch_exclusive_mark(&mut self, state: &mut AutoCommit, name: &str, sibling: &str) {
+        if let Some(mark) = inline_mark(name)
+            && self.edit_via_primitive(state, |view, doc| {
+                crate::actions::editing::toggle_mark(view, doc, mark)
+            })
+        {
+            return;
+        }
         let (spans, active) = self.inner.plan_exclusive_mark(state, name);
         if spans.iter().all(|(_, s, e)| s >= e) {
             return;
@@ -2044,6 +2461,12 @@ impl WordProcessorWidget {
         name: &str,
         value: crate::actions::MarkVal,
     ) {
+        let primitive_value = value.clone();
+        if self.edit_via_primitive(state, |view, doc| {
+            crate::actions::editing::set_mark(view, doc, name, primitive_value)
+        }) {
+            return;
+        }
         let spans = self.inner.format_spans(state);
         if spans.iter().all(|(_, s, e)| s >= e) {
             return;
@@ -2056,6 +2479,11 @@ impl WordProcessorWidget {
 
     /// Clear a valued inline mark over the selection or caret block.
     fn dispatch_clear_mark(&mut self, state: &mut AutoCommit, name: &str) {
+        if self.edit_via_primitive(state, |view, doc| {
+            crate::actions::editing::clear_mark(view, doc, name)
+        }) {
+            return;
+        }
         let spans = self.inner.format_spans(state);
         if spans.iter().all(|(_, s, e)| s >= e) {
             return;
@@ -2073,6 +2501,16 @@ impl WordProcessorWidget {
         level: Option<i64>,
         ordered: Option<bool>,
     ) {
+        let style = crate::actions::editing::ParagraphStyle {
+            kind: kind.to_string(),
+            level,
+            ordered,
+        };
+        if self.edit_via_primitive(state, |view, doc| {
+            crate::actions::editing::set_paragraph_style(view, doc, &style)
+        }) {
+            return;
+        }
         let blocks = self.inner.paragraph_style_targets(state);
         if blocks.is_empty() {
             return;
@@ -2091,6 +2529,11 @@ impl WordProcessorWidget {
     /// paragraph targets as one replayable action: the style attr plus, for a
     /// built-in, the structural kind / level / ordered.
     fn dispatch_apply_named_style(&mut self, state: &mut AutoCommit, id: &str) {
+        if self.edit_via_primitive(state, |view, doc| {
+            crate::actions::editing::apply_named_style(view, doc, id)
+        }) {
+            return;
+        }
         let blocks = self.inner.paragraph_style_targets(state);
         if blocks.is_empty() {
             return;
@@ -9372,7 +9815,7 @@ impl WordProcessorWidget {
             // Ctrl+V keeps formatting; Ctrl+Shift+V pastes plain text.
             "v" if shift => self.clipboard_paste_plain(state),
             "v" => self.clipboard_paste(state),
-            "a" => self.inner.select_all(state),
+            "a" => self.select_all_via_primitive(state),
             // Ctrl+1/2/3 → heading levels. (Ctrl+0 is zoom-reset;
             // Body paragraph is reachable via the toolbar / panel.)
             "1" => self.dispatch_paragraph_style(state, "heading", Some(1), None),
@@ -9543,7 +9986,10 @@ impl Widget for WordProcessorWidget {
     }
 
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
-        &[crate::actions::WORD_PROCESSOR_OPERATION_TYPE]
+        &[
+            crate::actions::WORD_PROCESSOR_OPERATION_TYPE,
+            crate::actions::view_ops::WORD_PROCESSOR_VIEW_OPERATION_TYPE,
+        ]
     }
 
     fn invoke_resource_operation(
@@ -9558,6 +10004,28 @@ impl Widget for WordProcessorWidget {
 
         if kind == tilo_actions::OperationKind::Document {
             return Ok(false);
+        }
+        // A delivered invocation by a participant (an agent task) moves only
+        // that participant's view: its own `move-caret`/`select-*`/
+        // `find-text`, and `go-to` on its own search hits, cells or comments.
+        if let Some(invoker) = ui::invocation_scope::current_invoker()
+            && invoker.participant.is_some()
+            && (type_id == crate::actions::view_ops::WORD_PROCESSOR_VIEW_OPERATION_TYPE
+                || matches!(
+                    crate::actions::decode_operation(type_id, payload)?,
+                    Some(WordProcessorOperation::NavigateTo { .. })
+                ))
+        {
+            self.invoke_participant_view_operation(&invoker, type_id, payload, doc)?;
+            return Ok(true);
+        }
+        // Without a participant a view operation is this window's own
+        // (Ctrl+K, accessibility).
+        if let Some(operation) = crate::actions::view_ops::decode_view_operation(type_id, payload)?
+        {
+            self.apply_local_view_operation(doc, &operation)?;
+            self.lifecycle.dirty = true;
+            return Ok(true);
         }
         let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
             return Ok(false);
@@ -9795,6 +10263,12 @@ impl Widget for WordProcessorWidget {
         // if the portal worker finished.
         self.drain_portal(state);
         self.refresh_blocks(state);
+        // Other participants' views follow local and remote edits alike; a
+        // participant's own applied edit hands over its next view.
+        let now = ui::clock::Instant::now();
+        self.participants.adopt_outcomes(state, now);
+        self.participants.rebase(state);
+        self.participants.expire(now);
         // Reload the stylesheet from the doc unless a live, not-yet-persisted
         // local edit is in progress (a guide drag, a numeric scrub, or typing
         // into a panel field) — reloading would discard the live preview.
@@ -10676,7 +11150,87 @@ impl Widget for WordProcessorWidget {
     /// [`ResourceProvider`](tilo_actions::ResourceProvider) impl in
     /// [`crate::actions`]).
     fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+        // While a delivered invocation by a participant (an agent task) is
+        // being resolved, "the open tree" is that participant's own tree,
+        // whichever host path asks: a bound component's snapshot resolution
+        // calls `resources` on the record document, not `resources_for`.
+        // Resolving against the schema (or this window's caret) would build
+        // its positional envelopes from someone else's view.
+        // An invocation without a participant (a certified job, a person
+        // through the command path) resolves against this widget's own view,
+        // as before participant views; the declaration-only schema is never
+        // invocable.
+        match ui::invocation_scope::current_invoker() {
+            Some(invoker) => {
+                return match invoker.participant {
+                    Some(participant) => self.participant_resources(Some(&participant), doc),
+                    None => <Self as tilo_actions::ResourceProvider>::resources(self, doc),
+                };
+            }
+            None => {}
+        }
+        // Publication on a headless host worker (no local person): the
+        // participant-independent schema, not the worker caret's snapshot.
+        if self.participant_host {
+            return <Self as tilo_actions::ResourceProvider>::catalogue_schema(self, doc);
+        }
         <Self as tilo_actions::ResourceProvider>::resources(self, doc)
+    }
+    /// A delivered invocation's tree, rebuilt for its invoker's own view.
+    fn resources_for(
+        &self,
+        participant: Option<&tilo_actions::ParticipantId>,
+        doc: &AutoCommit,
+    ) -> Vec<tilo_actions::Resource> {
+        match participant {
+            None => Widget::resources(self, doc),
+            Some(participant) => self.participant_resources(Some(participant), doc),
+        }
+    }
+    fn resource_for(
+        &self,
+        participant: Option<&tilo_actions::ParticipantId>,
+        doc: &AutoCommit,
+        id: &str,
+    ) -> Option<tilo_actions::Resource> {
+        let Some(participant) = participant else {
+            return Widget::resource(self, doc, id);
+        };
+        fn find(
+            resources: Vec<tilo_actions::Resource>,
+            id: &str,
+        ) -> Option<tilo_actions::Resource> {
+            resources.into_iter().find_map(|resource| {
+                if resource.id.as_str() == id {
+                    Some(resource)
+                } else {
+                    find(resource.children, id)
+                }
+            })
+        }
+        find(self.participant_resources(Some(participant), doc), id)
+    }
+    /// An agent task joined: its view is placed at the document end on the
+    /// next sync (no document here) and published as presence from then on.
+    fn join_participant(&mut self, participant: &tilo_actions::ParticipantId) -> bool {
+        let joined = self
+            .participants
+            .join(participant.clone(), ui::clock::Instant::now());
+        self.lifecycle.dirty |= joined;
+        joined
+    }
+    fn leave_participant(&mut self, participant: &tilo_actions::ParticipantId) {
+        self.participants.remove(participant);
+        self.lifecycle.dirty = true;
+    }
+    fn set_participant_host(&mut self, host: bool) {
+        self.participant_host = host;
+    }
+    fn set_participant_label(&mut self, participant: &tilo_actions::ParticipantId, label: &str) {
+        WordProcessorWidget::set_participant_label(self, participant, label);
+    }
+    fn participant_presence(&self, doc: &AutoCommit) -> Vec<ui::ParticipantPresence> {
+        WordProcessorWidget::participant_presence(self, doc)
     }
     fn needs_redraw(&self) -> bool {
         self.lifecycle.dirty
@@ -11018,55 +11572,66 @@ impl WordProcessorWidget {
     ) -> (Vec<RemoteCaretOverlay>, Vec<RemoteSelectionOverlay>) {
         let mut carets = Vec::new();
         let mut selections = Vec::new();
+        // LIVE_V1 files carets in blocks whose scoped anchor exceeds the wire
+        // bound (e.g. 130-byte worker-minted ids) under a digest stand-in key;
+        // resolve those against this widget's own blocks. Only hashed when
+        // such a key is present.
+        let digests = presence
+            .carets
+            .keys()
+            .chain(presence.selections.keys())
+            .any(is_scope_digest_key);
         for l in &self.laid {
             let Some((_, layout)) = self.layout_cache.get(&l.id) else {
                 continue;
             };
-            let key = block_presence_key(&l.id);
-
-            // Remote selections (drawn under the text, like the local one).
-            if let Some(list) = presence.selections.get(&key) {
-                for (user, range) in list {
-                    if range.start >= range.end {
-                        continue;
-                    }
-                    let rects: Vec<Rect> = layout
-                        .selection_rects(range.start, range.end)
-                        .into_iter()
-                        .map(|(rx0, ry0, rx1, ry1)| {
-                            Rect::new(
-                                l.text_x + f64::from(rx0),
-                                l.y_top + f64::from(ry0),
-                                l.text_x + f64::from(rx1),
-                                l.y_top + f64::from(ry1),
-                            )
-                        })
-                        .collect();
-                    if !rects.is_empty() {
-                        selections.push(RemoteSelectionOverlay {
-                            user: user.clone(),
-                            rects,
-                        });
+            let exact = block_presence_key(&l.id);
+            let digest = digests.then(|| exact.digest_form()).flatten();
+            for key in std::iter::once(exact).chain(digest) {
+                // Remote selections (drawn under the text, like the local one).
+                if let Some(list) = presence.selections.get(&key) {
+                    for (user, range) in list {
+                        if range.start >= range.end {
+                            continue;
+                        }
+                        let rects: Vec<Rect> = layout
+                            .selection_rects(range.start, range.end)
+                            .into_iter()
+                            .map(|(rx0, ry0, rx1, ry1)| {
+                                Rect::new(
+                                    l.text_x + f64::from(rx0),
+                                    l.y_top + f64::from(ry0),
+                                    l.text_x + f64::from(rx1),
+                                    l.y_top + f64::from(ry1),
+                                )
+                            })
+                            .collect();
+                        if !rects.is_empty() {
+                            selections.push(RemoteSelectionOverlay {
+                                user: user.clone(),
+                                rects,
+                            });
+                        }
                     }
                 }
-            }
 
-            // Remote carets (drawn over the text, like the local one).
-            if let Some(list) = presence.carets.get(&key) {
-                for (user, byte_pos) in list {
-                    let (cx, cy, ch) = layout.caret_geometry(*byte_pos);
-                    let rect = Rect::new(
-                        l.text_x + f64::from(cx),
-                        l.y_top + f64::from(cy),
-                        l.text_x + f64::from(cx) + CARET_WIDTH,
-                        l.y_top + f64::from(cy) + f64::from(ch),
-                    );
-                    let label = presence.display_name(user);
-                    carets.push(RemoteCaretOverlay {
-                        user: user.clone(),
-                        rect,
-                        label,
-                    });
+                // Remote carets (drawn over the text, like the local one).
+                if let Some(list) = presence.carets.get(&key) {
+                    for (user, byte_pos) in list {
+                        let (cx, cy, ch) = layout.caret_geometry(*byte_pos);
+                        let rect = Rect::new(
+                            l.text_x + f64::from(cx),
+                            l.y_top + f64::from(cy),
+                            l.text_x + f64::from(cx) + CARET_WIDTH,
+                            l.y_top + f64::from(cy) + f64::from(ch),
+                        );
+                        let label = presence.display_name(user);
+                        carets.push(RemoteCaretOverlay {
+                            user: user.clone(),
+                            rect,
+                            label,
+                        });
+                    }
                 }
             }
         }
@@ -11866,6 +12431,17 @@ impl WordProcessorWidget {
     }
 
     fn paste_plain_text_via_action(&mut self, state: &mut AutoCommit, text: &str) {
+        // The published `paste` primitive; a paste beyond its per-call text
+        // bound (an agent limit, not a person's) keeps the direct fragment.
+        let content = crate::actions::editing::PasteContent::Text(text.to_string());
+        let view = self.local_edit_view();
+        if let Ok((envelopes, next)) = crate::actions::editing::paste(&view, state, &content) {
+            for action in &envelopes {
+                self.perform_action(state, action);
+            }
+            self.adopt_local_view(next, state);
+            return;
+        }
         let blocks = text
             .replace('\r', "")
             .split('\n')
@@ -12140,7 +12716,7 @@ impl WordProcessorWidget {
                 self.clipboard_paste(state);
                 self.lifecycle.needs_commit = true;
             }
-            CtxAction::SelectAll => self.inner.select_all(state),
+            CtxAction::SelectAll => self.select_all_via_primitive(state),
             CtxAction::AddToDictionary(word) => {
                 let dict = self.dictionary();
                 if dict.add_word(&word) {
@@ -12157,8 +12733,11 @@ impl WordProcessorWidget {
                 end,
                 replacement,
             } => {
-                self.inner
-                    .splice_block(state, &block, start, end, &replacement);
+                // One replayable, attributable envelope through the executor
+                // (the published apply-spelling-suggestion op builds the same
+                // splice), never a direct CRDT write.
+                let region = self.inner.region_kind();
+                self.splice_via_action(state, region, &block, start, end, &replacement);
                 self.refresh_blocks(state);
                 // The block text changed; its cache entry is stale.
                 self.spell_cache.remove(&block);

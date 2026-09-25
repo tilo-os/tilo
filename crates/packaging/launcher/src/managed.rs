@@ -9,6 +9,11 @@ use std::{
 use tilo_app_package::{BlobStore, PackageId};
 
 pub const WORKSPACE_AGENT_PACKAGE_ID: &str = "so.tilo.agent";
+/// Non-terminal managed launches one launcher holds. A started agent stays
+/// non-terminal while its process lives (idle agents wait for messages), so
+/// this must be at least the Store's live-agent limit
+/// (`qos_peer_state::owner_commit::MAX_LIVE_PRIVATE_AGENTS`, 16).
+pub const MAX_LIVE_MANAGED_LAUNCHES: usize = 16;
 
 /// Independently configured release trust. Embedded publisher keys are never
 /// added here. The enrolled host supplies this from its qualified release config.
@@ -286,12 +291,109 @@ struct RuntimeOwner {
     runtime: ManagedRuntime,
     facts: ManagedRuntimeFacts,
     live: std::sync::atomic::AtomicBool,
+    /// Last full verification and the exact filesystem stamp it covered.
+    verified: Mutex<Option<(std::time::Instant, TreeStamp)>>,
+}
+/// Longest interval a full package/runtime verification is reused while no
+/// verified file or directory changed. The full check re-reads, re-hashes
+/// and signature-verifies every payload and runtime byte (tens of
+/// milliseconds), and it ran on every process-fact read: dozens of times per
+/// agent step.
+const RUNTIME_RECHECK: std::time::Duration = std::time::Duration::from_secs(2);
+/// Most filesystem entries one stamp covers; larger trees always verify fully.
+const STAMP_ENTRIES: usize = 65_536;
+/// Metadata of every entry under the verified roots (payload, installed
+/// manifest, integrity evidence, runtime bundle), in walk order. Any write,
+/// replace, rename, link, chmod or new entry changes a file's or its parent
+/// directory's inode, length, mtime or ctime (ctime cannot be set by users),
+/// so an equal stamp means no verified byte or name changed since it was
+/// taken. It is only a reuse hint; `RUNTIME_RECHECK` bounds its age.
+#[derive(PartialEq, Eq, Debug)]
+struct TreeStamp(Vec<(PathBuf, [i64; 8])>);
+impl TreeStamp {
+    #[cfg(unix)]
+    fn of(roots: &[&Path]) -> Option<Self> {
+        use std::os::unix::fs::MetadataExt;
+        let mut entries = vec![];
+        let mut pending: Vec<PathBuf> = roots.iter().map(|root| root.to_path_buf()).collect();
+        while let Some(path) = pending.pop() {
+            let metadata = std::fs::symlink_metadata(&path).ok()?;
+            entries.push((
+                path.clone(),
+                [
+                    metadata.dev() as i64,
+                    metadata.ino() as i64,
+                    metadata.len() as i64,
+                    metadata.mode() as i64,
+                    metadata.mtime(),
+                    metadata.mtime_nsec(),
+                    metadata.ctime(),
+                    metadata.ctime_nsec(),
+                ],
+            ));
+            if entries.len() > STAMP_ENTRIES {
+                return None;
+            }
+            if metadata.is_dir() {
+                let mut children = std::fs::read_dir(&path)
+                    .ok()?
+                    .map(|entry| entry.map(|entry| entry.path()))
+                    .collect::<Result<Vec<_>, _>>()
+                    .ok()?;
+                children.sort();
+                pending.extend(children);
+            }
+        }
+        Some(Self(entries))
+    }
+    #[cfg(not(unix))]
+    fn of(_: &[&Path]) -> Option<Self> {
+        None
+    }
 }
 impl RuntimeOwner {
+    fn stamp(&self) -> Option<TreeStamp> {
+        let evidence =
+            install::integrity::record_dir(&self.package.data_root, WORKSPACE_AGENT_PACKAGE_ID);
+        TreeStamp::of(&[
+            &self.package.installed.payload_root,
+            &self.package.installed.manifest_path,
+            &evidence,
+            &self.runtime.bundle_root,
+        ])
+    }
     fn revalidate(&self) -> Result<(), String> {
         if !self.live.load(std::sync::atomic::Ordering::Acquire) {
             return Err("runtime owner stopped".into());
         }
+        let reusable = self
+            .verified
+            .lock()
+            .map_err(|_| "runtime verification cache poisoned")?
+            .as_ref()
+            .filter(|(at, _)| at.elapsed() < RUNTIME_RECHECK)
+            .map(|(_, stamp)| self.stamp().is_some_and(|now| &now == stamp))
+            .unwrap_or(false);
+        if reusable {
+            return Ok(());
+        }
+        // Stamp before and after the full check: only an unchanged tree
+        // across the whole verification is retained.
+        let before = self.stamp();
+        let began = std::time::Instant::now();
+        self.revalidate_fully()?;
+        let after = self.stamp();
+        let mut verified = self
+            .verified
+            .lock()
+            .map_err(|_| "runtime verification cache poisoned")?;
+        *verified = match (before, after) {
+            (Some(before), Some(after)) if before == after => Some((began, after)),
+            _ => None,
+        };
+        Ok(())
+    }
+    fn revalidate_fully(&self) -> Result<(), String> {
         let (manifest, executable) = self.package.verified_manifest(&self.trust)?;
         let bundle = verify_bundle(&manifest, &self.runtime)?;
         if bundle.root_hash != self.facts.runtime_hash
@@ -532,6 +634,7 @@ impl ManagedLauncher {
                 runtime,
                 facts,
                 live: true.into(),
+                verified: Mutex::new(None),
             }),
             authority,
             registry: ProcessRegistry::default(),
@@ -559,7 +662,7 @@ impl ManagedLauncher {
                 .values()
                 .filter(|attempt| !attempt.terminal.load(std::sync::atomic::Ordering::Acquire))
                 .count()
-                >= 4
+                >= MAX_LIVE_MANAGED_LAUNCHES
         {
             return Err("managed launch capacity exhausted".into());
         }
@@ -924,6 +1027,9 @@ impl ManagedLauncher {
                             std::thread::sleep(std::time::Duration::from_millis(10));
                         };
                         let process = self.process.lock().ok().and_then(|p| *p);
+                        // Operator visibility: a signal (for example a seccomp kill)
+                        // is otherwise reported only as a failure without a code.
+                        tracing::info!(agent = %self.binding.agent, ?status, "managed child exited");
                         if let Ok(status) = status {
                             self.terminal
                                 .store(true, std::sync::atomic::Ordering::Release);
@@ -1097,5 +1203,32 @@ impl Drop for OwnedChild {
     fn drop(&mut self) {
         let _ = self.0.kill();
         let _ = self.0.wait();
+    }
+}
+
+#[cfg(all(test, unix))]
+mod stamp_tests {
+    use super::TreeStamp;
+    #[test]
+    fn managed_runtime_stamp_observes_writes_replacements_and_new_entries() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("payload");
+        std::fs::create_dir_all(root.join("bin")).unwrap();
+        std::fs::write(root.join("bin/agent"), b"one").unwrap();
+        let first = TreeStamp::of(&[&root]).unwrap();
+        assert_eq!(TreeStamp::of(&[&root]), Some(TreeStamp(first.0.clone())));
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        // Same-length rewrite: mtime/ctime change.
+        std::fs::write(root.join("bin/agent"), b"two").unwrap();
+        let rewritten = TreeStamp::of(&[&root]).unwrap();
+        assert_ne!(rewritten, first);
+        // Atomic replacement: new inode.
+        std::fs::write(root.join("bin/agent.new"), b"two").unwrap();
+        let with_new = TreeStamp::of(&[&root]).unwrap();
+        assert_ne!(with_new, rewritten, "a new entry changes the stamp");
+        std::fs::rename(root.join("bin/agent.new"), root.join("bin/agent")).unwrap();
+        assert_ne!(TreeStamp::of(&[&root]).unwrap(), with_new);
+        // A missing root cannot be stamped (always verify fully).
+        assert!(TreeStamp::of(&[&dir.path().join("absent")]).is_none());
     }
 }

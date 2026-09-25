@@ -70,7 +70,9 @@ impl SessionOwner {
             return Ok(None);
         };
         match &command.command {
-            DesktopCommand::OpenTab { app: requested, .. } if requested == app => (),
+            DesktopCommand::OpenTab { app: requested, .. }
+            | DesktopCommand::OpenApp { app: requested }
+                if requested == app => {}
             DesktopCommand::DuplicateTab { .. } => (),
             _ => return Err("not a checked desktop factory command".into()),
         }

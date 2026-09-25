@@ -3,19 +3,82 @@ use super::*;
 use crate::enrolled_dispatch::{EnrolledConnection, EnrolledDispatchResult};
 
 impl CapnpBrokerState {
+    /// Owner revocation (security review MUST-10): close every enrolled
+    /// connection of `agent`. The host commits the revocation fact first.
+    pub fn close_enrolled_agent(&self, agent: &str) -> usize {
+        self.enrolled.close_agent(agent)
+    }
     pub fn enrolled_recipient_ready(&self, channel: &str) -> bool {
         self.is_accepting() && self.enrolled.ready(channel)
     }
 
     pub(super) fn enrolled_action_catalogue_json(&self, peer: u64) -> Result<String, String> {
         let connection = self.enrolled.connection(peer)?;
-        let grants = connection.grants()?;
+        // Exactly the scopes the step authorization applies to the
+        // connection's live task (frozen grants plus that task's opens).
+        let scopes =
+            self.enrolled_task_scopes(&connection, connection.active_task_id()?.as_deref())?;
         let json = self.action_catalogue_json_for(
             &connection.facts().binding.room,
             &BrokerActor::person(principal_id_for_root(connection.caller().user_public_key)),
             None,
         )?;
-        filter_enrolled_catalogue(&json, &grants)
+        // Scope-aware filter (v1 tuples stay exact degenerate scopes).
+        crate::agent_control::scoped::filter_catalogue_by_scopes(&json, &scopes)
+    }
+    /// The one effective scope set of `task` on `connection`, shared by the
+    /// enrolled catalogue and [`Self::authorize_enrolled_scoped`] so the two
+    /// cannot drift. `None` (no accepted live task) adds no opened records.
+    fn enrolled_task_scopes(
+        &self,
+        connection: &EnrolledConnection,
+        task: Option<&str>,
+    ) -> Result<Vec<qos_agent_control_protocol::GrantScope>, String> {
+        enrolled_task_scopes(&connection.grants()?, self.membership.as_deref(), task)
+    }
+    /// The broker half of the shared per-step authorization (security review
+    /// MUST-1): agent principal (role_of_agent_at) AND delegating owner, on
+    /// the Action and on the route record's Artifact, scope coverage on the
+    /// canonical live route record, explicit manifest class, frozen schema,
+    /// confirmation and bulk refused unattended, argument bounds. The Store
+    /// half runs in `capture_task_action`.
+    fn authorize_enrolled_scoped(
+        &self,
+        connection: &EnrolledConnection,
+        task: &str,
+        surface: &PublishedSurface,
+        action: &PublishedAction,
+        argument: Option<&str>,
+    ) -> Result<(), String> {
+        let membership = self
+            .membership
+            .as_ref()
+            .ok_or("workspace authority unavailable")?;
+        // Frozen scopes, plus the records this task opened with a covered
+        // open action (from the host's durable record of each open).
+        let scopes = self.enrolled_task_scopes(connection, Some(task))?;
+        let now = self.policy_now_ns()? / 1_000_000_000;
+        let tree = membership.snapshot()?;
+        let workspace = tree
+            .workspaces
+            .iter()
+            .find(|workspace| workspace.room.to_string() == surface.route.cluster_id)
+            .ok_or("workspace no longer hosted")?;
+        let delegator = principal_id_for_root(connection.caller().user_public_key);
+        crate::agent_control::scoped::authorize_published(
+            workspace,
+            now,
+            qos_agent_control_protocol::InvokingActor::Agent {
+                agent: &connection.facts().binding.agent,
+                delegator: &delegator,
+            },
+            Some(&scopes),
+            surface,
+            action,
+            argument,
+        )
+        .map(drop)
+        .map_err(|refusal| refusal.to_string())
     }
     /// Takes the exact socket authenticated alongside this proof. A PID, stored
     /// process description, or arbitrary replacement socket cannot enter here.
@@ -143,6 +206,7 @@ impl CapnpBrokerState {
         argument: Option<String>,
     ) -> Result<tokio::sync::oneshot::Receiver<crate::enrolled_dispatch::EnrolledStepResult>, String>
     {
+        let began = std::time::Instant::now();
         let connection = self.enrolled.connection(peer)?;
         let service = self
             .services
@@ -157,6 +221,19 @@ impl CapnpBrokerState {
             .cloned()
             .filter(|s| s.live && s.route.cluster_id == connection.facts().binding.room)
             .ok_or("task action is no longer live")?;
+        let offered = surface
+            .actions
+            .iter()
+            .find(|a| a.resource == resource && a.action == action)
+            .ok_or("task action is no longer published")?;
+        let task_id = connection.task(run, lease)?.task_id.clone();
+        self.authorize_enrolled_scoped(
+            &connection,
+            &task_id,
+            &surface,
+            offered,
+            argument.as_deref(),
+        )?;
         let dispatch = connection.capture_task_action(
             run,
             lease,
@@ -165,6 +242,12 @@ impl CapnpBrokerState {
             resource,
             action,
         )?;
+        crate::agent_timing::span(
+            "step_captured",
+            Some(dispatch.invocation()),
+            began.elapsed(),
+            &[("step", u64::from(step))],
+        );
         service.submit(crate::enrolled_dispatch::EnrolledStepRequest {
             dispatch,
             step,
@@ -205,6 +288,7 @@ impl CapnpBrokerState {
         ) {
             return Err("enrolled task action requires interactive confirmation".into());
         }
+        self.authorize_enrolled_scoped(&connection, &task.task_id, &surface, definition, argument)?;
         let grant =
             enrolled_action_grant(&surface.app_id, &surface.route.record_id, resource, action)?;
         let original = connection.capture_task_action(
@@ -313,26 +397,65 @@ impl CapnpBrokerState {
             .iter()
             .find(|a| a.resource == resource && a.action == action)
             .ok_or("task action is no longer published")?;
-        let registration = self
-            .host_workers
-            .lock()
-            .map_err(|_| "worker registry unavailable")?
-            .get(&peer)
-            .and_then(|worker| worker.worker_registration.clone())
-            .ok_or("task action target is not a registered host worker")?;
         let host = self.invocation_host()?;
-        let target = blake3::derive_key(
-            "qos enrolled child eager target v1",
-            &postcard::to_stdvec(&(
-                peer,
-                &registration.route.app_id,
-                &registration.route.cluster_id,
-                &registration.route.record_id,
-                registration.identity.as_bytes(),
+        // Targets: a registered host worker, or the broker's own desktop
+        // command surface (opening an application, as a person does from the
+        // launcher). Nothing else an app connection publishes qualifies.
+        let desktop = *self
+            .desktop_command_peer
+            .lock()
+            .map_err(|_| "desktop command registry unavailable")?
+            == Some(peer)
+            && surface.app_id == qos_peer_state::desktop_command::APP_ID;
+        let (target, root, device) = if desktop {
+            let target = blake3::derive_key(
+                "qos enrolled child desktop target v1",
+                &postcard::to_stdvec(&(peer, &surface.app_id, &surface.route.cluster_id))
+                    .map_err(|e| e.to_string())?,
+            );
+            // The broker itself serves this target: its identity is derived
+            // from the invocation host and room (never a registered worker).
+            let identity = |label: &str| {
+                blake3::derive_key(
+                    label,
+                    &[
+                        host.as_bytes().as_slice(),
+                        surface.route.cluster_id.as_bytes(),
+                    ]
+                    .concat(),
+                )
+            };
+            (
+                target,
+                identity("qos enrolled child desktop root v1"),
+                identity("qos enrolled child desktop device v1"),
+            )
+        } else {
+            let registration = self
+                .host_workers
+                .lock()
+                .map_err(|_| "worker registry unavailable")?
+                .get(&peer)
+                .and_then(|worker| worker.worker_registration.clone())
+                .ok_or("task action target is not a registered host worker")?;
+            let target = blake3::derive_key(
+                "qos enrolled child eager target v1",
+                &postcard::to_stdvec(&(
+                    peer,
+                    &registration.route.app_id,
+                    &registration.route.cluster_id,
+                    &registration.route.record_id,
+                    registration.identity.as_bytes(),
+                    registration.certificate.device_public_key,
+                ))
+                .map_err(|e| e.to_string())?,
+            );
+            (
+                target,
+                registration.certificate.user_public_key,
                 registration.certificate.device_public_key,
-            ))
-            .map_err(|e| e.to_string())?,
-        );
+            )
+        };
         let revision = format!(
             "e1-{}",
             blake3::hash(
@@ -350,8 +473,8 @@ impl CapnpBrokerState {
                 peer_id: peer,
                 app_id: surface.app_id.clone(),
                 record_id: surface.route.record_id.clone(),
-                root: registration.certificate.user_public_key,
-                device: registration.certificate.device_public_key,
+                root,
+                device,
                 target_binding: target,
             },
             revision,
@@ -370,6 +493,21 @@ impl CapnpBrokerState {
         if !self.is_accepting() {
             return Err("broker unavailable".into());
         }
+        let began = std::time::Instant::now();
+        let result = self.invoke_enrolled_child_timed(dispatch, request);
+        crate::agent_timing::span(
+            "child_invoke",
+            Some(dispatch.invocation()),
+            began.elapsed(),
+            &[],
+        );
+        result
+    }
+    fn invoke_enrolled_child_timed(
+        &self,
+        dispatch: &crate::enrolled_dispatch::VerifiedEnrolledDispatch,
+        request: &EnrolledChildRequest,
+    ) -> Result<Option<runtime_collab::PublishedInvocationResult>, String> {
         let connection = dispatch.live_connection()?;
         let envelope = dispatch.envelope().clone();
         let owner = enrolled_tool_owner(connection.caller(), &envelope);
@@ -427,6 +565,13 @@ impl CapnpBrokerState {
         ) {
             return Err("enrolled task action requires interactive confirmation".into());
         }
+        self.authorize_enrolled_scoped(
+            &connection,
+            &envelope.task_id,
+            &surface,
+            &offered,
+            request.argument.as_deref(),
+        )?;
         let grant = enrolled_action_grant(
             &surface.app_id,
             &surface.route.record_id,
@@ -548,8 +693,20 @@ impl CapnpChannelHandle {
     }
     pub(super) fn task_identity(&self) -> Result<AdmittedJoinIdentity, capnp::Error> {
         if self.state.enrolled.connection(self.peer_id).is_ok() {
-            self.enrolled_connection()?;
-            Ok(self.verified_identity.clone())
+            let connection = self.enrolled_connection()?;
+            // Re-derive the admitted identity (role included) from current
+            // authority instead of returning the join-time copy.
+            let mut current = super::verify_enrolled_join_identity(
+                &self.route(),
+                &connection,
+                self.state.membership.as_ref(),
+                self.state.certificate_authority.get().map(Arc::as_ref),
+            )
+            .map_err(capnp::Error::failed)?;
+            current.agent_id = self.verified_identity.agent_id.clone();
+            current.display_handle = self.verified_identity.display_handle.clone();
+            current.enrolled = self.verified_identity.enrolled;
+            Ok(current)
         } else {
             self.state
                 .revalidate_admission(&self.route(), &self.verified_identity)
@@ -585,6 +742,20 @@ impl runtime_collab::raw::enrolled_task_stream::Server for EnrolledTaskStreamSer
 
 /// The canonical grant spelling never changes the actual executor's record route.
 /// A literal record with the reserved spelling cannot alias primary-document authority.
+/// Frozen grant scopes plus the records `task` opened, from the host's
+/// durable record of each open. See
+/// [`crate::agent_control::scoped::task_effective_scopes`].
+fn enrolled_task_scopes(
+    grants: &[qos_agent_control_protocol::GrantAction],
+    authority: Option<&dyn crate::services::WorkspaceAuthority>,
+    task: Option<&str>,
+) -> Result<Vec<qos_agent_control_protocol::GrantScope>, String> {
+    let opened = match (authority, task) {
+        (Some(authority), Some(task)) => authority.task_opened_records(task)?,
+        _ => Vec::new(),
+    };
+    crate::agent_control::scoped::task_effective_scopes(grants, &opened)
+}
 fn grant_record_id(record: &str) -> Option<&str> {
     match record {
         "" => Some("@qos:package-primary"),
@@ -718,6 +889,426 @@ mod tests {
         let value: serde_json::Value =
             serde_json::from_str(&filter_enrolled_catalogue(json, &[]).unwrap()).unwrap();
         assert!(value["surfaces"].as_array().unwrap().is_empty());
+    }
+
+    mod opened_record_scopes {
+        //! The enrolled catalogue lists exactly the operations the step
+        //! authorization admits: both run on [`enrolled_task_scopes`].
+        use super::super::enrolled_task_scopes;
+        use crate::agent_control::scoped::{authorize_published, filter_catalogue_by_scopes};
+        use crate::collab_broker_capnp::{PublishedAction, PublishedInput, PublishedSurface};
+        use crate::policy::WorkspacePolicy;
+        use crate::route::CrdtRoute;
+        use crate::services::WorkspaceAuthority;
+        use crate::test_support::{Workspace, WorkspaceId};
+        use qos_agent_control_protocol::{
+            DESKTOP_APP_ID, GrantAction, GrantScope, GrantVerb, InvokingActor, NOTES_APP_ID,
+            OPEN_APP_ACTION, OPEN_APP_RESOURCE_PREFIX, OpenedRecord, OperationClass,
+            PRIMARY_RECORD_ALIAS, PackagePin, RecordScope, ResourceScope, WRITER_APP_ID,
+            scope_carrier,
+        };
+        use std::collections::{BTreeSet, HashMap};
+
+        const ROOM: &str = "room-7";
+        const OWNER: &str = "owner-person";
+        const AGENT: &str = "agent-1";
+        const TASK: &str = "task-a";
+        const OTHER_TASK: &str = "task-b";
+        const WRITER_RECORD: &str = "tab:0000000000000001";
+        const OPENED: &str = "tab:00000000000000aa";
+        const OTHER_TASK_OPENED: &str = "tab:00000000000000bb";
+        const PERSON_OPENED: &str = "tab:00000000000000cc";
+
+        /// Host durable opens, keyed by the task that opened them. A record a
+        /// person opened has no task receipt at all.
+        struct Opens(HashMap<&'static str, Vec<OpenedRecord>>);
+        impl WorkspaceAuthority for Opens {
+            fn snapshot(&self) -> Result<qos_desktop::WorkspaceTree, String> {
+                Err("not used".into())
+            }
+            fn task_opened_records(&self, task: &str) -> Result<Vec<OpenedRecord>, String> {
+                Ok(self.0.get(task).cloned().unwrap_or_default())
+            }
+        }
+        fn opens() -> Opens {
+            let notes = |record: &str| OpenedRecord {
+                app_id: NOTES_APP_ID.into(),
+                record_id: record.into(),
+            };
+            Opens(HashMap::from([
+                (TASK, vec![notes(OPENED)]),
+                (OTHER_TASK, vec![notes(OTHER_TASK_OPENED)]),
+            ]))
+        }
+        fn pin(app: &str) -> PackagePin {
+            let registry = crate::agent_control::scoped::delegation_registry();
+            let manifest = registry.manifest(app).unwrap();
+            PackagePin {
+                package_id: manifest.package_id.clone(),
+                version: manifest.version.clone(),
+                schema_digest: crate::agent_control::scoped::schema_digest(app).unwrap(),
+            }
+        }
+        fn writer_scope() -> GrantScope {
+            GrantScope {
+                app_id: WRITER_APP_ID.into(),
+                record: RecordScope::Exact(WRITER_RECORD.into()),
+                verb: GrantVerb::Write,
+                classes: vec![OperationClass::Document, OperationClass::View],
+                resource: ResourceScope::Any,
+                actions: None,
+                deny_actions: vec![],
+                package: Some(pin(WRITER_APP_ID)),
+                budgets: None,
+                explicit_workspace_consent: false,
+            }
+        }
+        fn desktop_open_scope() -> GrantScope {
+            GrantScope {
+                app_id: DESKTOP_APP_ID.into(),
+                record: RecordScope::Exact(PRIMARY_RECORD_ALIAS.into()),
+                classes: vec![OperationClass::AppOpen],
+                resource: ResourceScope::Prefix(OPEN_APP_RESOURCE_PREFIX.into()),
+                actions: Some(vec![OPEN_APP_ACTION.into()]),
+                package: Some(pin(DESKTOP_APP_ID)),
+                ..writer_scope()
+            }
+        }
+        fn grants(scopes: &[GrantScope]) -> Vec<GrantAction> {
+            scopes.iter().map(|s| scope_carrier(s).unwrap()).collect()
+        }
+        fn action(
+            resource: &str,
+            action: &str,
+            kind: tilo_actions::OperationKind,
+            confirm: bool,
+        ) -> PublishedAction {
+            let mut contract = tilo_actions::ActionContract::default();
+            if confirm {
+                contract.confirmation = tilo_actions::ConfirmationPolicy::Confirm;
+            }
+            PublishedAction {
+                resource: resource.into(),
+                action: action.into(),
+                resource_kind: resource.into(),
+                resource_label: resource.into(),
+                action_label: action.into(),
+                description: None,
+                operation_kind: kind,
+                params: vec![],
+                contract,
+                input: PublishedInput::None,
+            }
+        }
+        fn surface(app: &str, record: &str, live: bool) -> PublishedSurface {
+            use tilo_actions::OperationKind::{Document, Effect, View};
+            let actions = if app == NOTES_APP_ID {
+                vec![
+                    action("notes.notebook", "new-page", Document, false),
+                    action("notes.notebook", "replace-text", Document, false),
+                    action("notes.notebook", "open", View, false),
+                    // Host filesystem effect: outside every task scope.
+                    action("notes.notebook", "export-markdown", Effect, false),
+                    // Confirmation-requiring: refused unattended.
+                    action("notes.notebook", "delete", Document, true),
+                    // Not in the delegation manifest.
+                    action("notes.notebook", "frobnicate", Document, false),
+                ]
+            } else {
+                vec![
+                    action("word-processor.document", "type-text", Document, false),
+                    action("word-processor.document", "save", Effect, false),
+                ]
+            };
+            PublishedSurface {
+                peer_id: 9,
+                app_id: app.into(),
+                route: CrdtRoute::record(app, ROOM, record),
+                actions,
+                live,
+            }
+        }
+        fn catalogue_json(surfaces: &[PublishedSurface]) -> String {
+            let surfaces: Vec<_> = surfaces
+                .iter()
+                .map(|s| {
+                    let actions: Vec<_> = s
+                        .actions
+                        .iter()
+                        .map(|a| {
+                            serde_json::json!({"resource":a.resource,"action":a.action,
+                                "resource_kind":a.resource_kind,
+                                "operation_kind":a.operation_kind,"contract":a.contract})
+                        })
+                        .collect();
+                    serde_json::json!({"app_id":s.app_id,"record_id":s.route.record_id,
+                        "live":s.live,"actions":actions})
+                })
+                .collect();
+            serde_json::json!({"version":1,"surfaces":surfaces}).to_string()
+        }
+        type Op = (String, String, String);
+        /// Asserts listed == authorized for `task` and returns that set.
+        fn listed_equals_authorized(
+            grants: &[GrantAction],
+            task: Option<&str>,
+            surfaces: &[PublishedSurface],
+        ) -> BTreeSet<Op> {
+            let authority = opens();
+            let scopes = enrolled_task_scopes(grants, Some(&authority), task).unwrap();
+            let catalogue: serde_json::Value = serde_json::from_str(
+                &filter_catalogue_by_scopes(&catalogue_json(surfaces), &scopes).unwrap(),
+            )
+            .unwrap();
+            let listed: BTreeSet<Op> = catalogue["surfaces"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .flat_map(|s| {
+                    let record = s["record_id"].as_str().unwrap().to_owned();
+                    s["actions"].as_array().unwrap().iter().map(move |a| {
+                        (
+                            record.clone(),
+                            a["resource"].as_str().unwrap().to_owned(),
+                            a["action"].as_str().unwrap().to_owned(),
+                        )
+                    })
+                })
+                .collect();
+            let mut workspace = Workspace::test_default(WorkspaceId(7), "Room");
+            workspace.set_owner(OWNER.to_string());
+            let agent = InvokingActor::Agent {
+                agent: AGENT,
+                delegator: OWNER,
+            };
+            let authorized: BTreeSet<Op> = surfaces
+                .iter()
+                .flat_map(|s| s.actions.iter().map(move |a| (s, a)))
+                .filter(|(s, a)| {
+                    authorize_published(&workspace, 10, agent, Some(&scopes), s, a, None).is_ok()
+                })
+                .map(|(s, a)| {
+                    (
+                        s.route.record_id.clone(),
+                        a.resource.clone(),
+                        a.action.clone(),
+                    )
+                })
+                .collect();
+            assert_eq!(
+                listed, authorized,
+                "catalogue must equal the authorized set"
+            );
+            listed
+        }
+        fn op(record: &str, resource: &str, action: &str) -> Op {
+            (record.into(), resource.into(), action.into())
+        }
+        fn all_surfaces(opened_live: bool) -> Vec<PublishedSurface> {
+            vec![
+                surface(WRITER_APP_ID, WRITER_RECORD, true),
+                surface(NOTES_APP_ID, OPENED, opened_live),
+                surface(NOTES_APP_ID, OTHER_TASK_OPENED, true),
+                surface(NOTES_APP_ID, PERSON_OPENED, true),
+            ]
+        }
+        fn notes_ops(set: &BTreeSet<Op>, record: &str) -> BTreeSet<String> {
+            set.iter()
+                .filter(|(r, _, _)| r == record)
+                .map(|(_, _, a)| a.clone())
+                .collect()
+        }
+
+        #[test]
+        fn catalogue_lists_the_records_its_own_task_opened_exactly_as_authorized() {
+            let frozen = grants(&[writer_scope(), desktop_open_scope()]);
+            let set = listed_equals_authorized(&frozen, Some(TASK), &all_surfaces(true));
+            assert_eq!(
+                notes_ops(&set, OPENED),
+                BTreeSet::from(["new-page".into(), "replace-text".into(), "open".into()]),
+            );
+            assert!(set.contains(&op(WRITER_RECORD, "word-processor.document", "type-text")));
+            // Another task's open and a person's open never widen this task.
+            assert!(notes_ops(&set, OTHER_TASK_OPENED).is_empty());
+            assert!(notes_ops(&set, PERSON_OPENED).is_empty());
+            // Outside both the frozen and the opened scopes: neither.
+            for (record, resource, action) in [
+                (OPENED, "notes.notebook", "export-markdown"),
+                (OPENED, "notes.notebook", "delete"),
+                (OPENED, "notes.notebook", "frobnicate"),
+                (WRITER_RECORD, "word-processor.document", "save"),
+            ] {
+                assert!(!set.contains(&op(record, resource, action)));
+            }
+            // The other task sees its own open, not this one's.
+            let other = listed_equals_authorized(&frozen, Some(OTHER_TASK), &all_surfaces(true));
+            assert!(notes_ops(&other, OPENED).is_empty());
+            assert!(notes_ops(&other, OTHER_TASK_OPENED).contains("new-page"));
+        }
+
+        #[test]
+        fn ending_the_task_revoking_the_open_grant_or_closing_the_record_removes_them() {
+            let frozen = grants(&[writer_scope(), desktop_open_scope()]);
+            // No accepted live task (terminal or revoked): frozen scopes only.
+            let set = listed_equals_authorized(&frozen, None, &all_surfaces(true));
+            assert!(notes_ops(&set, OPENED).is_empty());
+            assert!(set.contains(&op(WRITER_RECORD, "word-processor.document", "type-text")));
+            // The open grant withdrawn: the durable open no longer counts.
+            let set = listed_equals_authorized(
+                &grants(&[writer_scope()]),
+                Some(TASK),
+                &all_surfaces(true),
+            );
+            assert!(notes_ops(&set, OPENED).is_empty());
+            // The opened record closed (its surface is no longer live).
+            let set = listed_equals_authorized(&frozen, Some(TASK), &all_surfaces(false));
+            assert!(notes_ops(&set, OPENED).is_empty());
+            assert!(set.contains(&op(WRITER_RECORD, "word-processor.document", "type-text")));
+        }
+    }
+}
+
+/// Host-set invoker of one admitted invocation (security review T15/T16,
+/// MUST-11). Whatever invoker a caller or task envelope put in `context` is
+/// discarded: the actor is the admitted `actor`, and the participant is
+/// derived by the host from what it admitted, never read from the envelope:
+/// - an enrolled task child: the participant of the owner's admitted task;
+/// - a legacy agent task run: the participant of the host-built task
+///   context's `task` group (the broker's own pending run record);
+/// - anyone else: no participant (the actor's default view).
+///
+/// The application worker keeps the participant only for this exact actor
+/// (`tilo_actions::ActionInvoker::delivered`), and the captured original
+/// request binds it, so the worker's view of the invoker is exactly this.
+pub(super) fn host_set_invoker(
+    context: Option<tilo_actions::ActionContext>,
+    actor: &BrokerActor,
+    owner: &InvocationOwner,
+) -> Result<Option<tilo_actions::ActionContext>, String> {
+    let participant = match owner {
+        InvocationOwner::Enrolled { task, .. } => {
+            Some(tilo_actions::ParticipantId::for_agent_task(task)?)
+        }
+        _ if actor.is_agent => context
+            .as_ref()
+            .and_then(|context| context.group.as_ref())
+            .filter(|group| group.kind == "task")
+            .map(|group| tilo_actions::ParticipantId::for_agent_task(&group.id))
+            .transpose()?,
+        _ => None,
+    };
+    Ok(match (context, participant) {
+        (None, None) => None,
+        (context, participant) => Some(
+            context
+                .unwrap_or_default()
+                .with_host_invoker(actor.id.clone(), participant),
+        ),
+    })
+}
+
+/// The participant a host-set context routes to (see [`host_set_invoker`]).
+pub(super) fn invoker_participant(
+    context: Option<&tilo_actions::ActionContext>,
+) -> Option<tilo_actions::ParticipantId> {
+    context?.invoker.as_ref()?.participant.clone()
+}
+
+#[cfg(test)]
+mod invoker_tests {
+    use super::*;
+
+    const TASK: &str = "11111111-1111-4111-8111-111111111111";
+
+    fn enrolled_owner() -> InvocationOwner {
+        InvocationOwner::Enrolled {
+            root: [1; 32],
+            device: [2; 32],
+            task: TASK.into(),
+            run: TASK.into(),
+            channel: TASK.into(),
+        }
+    }
+
+    fn forged() -> tilo_actions::ActionContext {
+        tilo_actions::ActionContext::default()
+            .with_group(TASK, TASK, "task")
+            .with_invoker(
+                tilo_actions::ActionInvoker::actor("person:owner")
+                    .with_participant(tilo_actions::ParticipantId::new("owner-window").unwrap()),
+            )
+    }
+
+    #[test]
+    fn forged_envelope_invoker_is_overwritten_for_an_enrolled_task() {
+        let actor = BrokerActor::person("root:agent-caller");
+        let context = host_set_invoker(Some(forged()), &actor, &enrolled_owner())
+            .unwrap()
+            .unwrap();
+        let invoker = context.invoker.clone().unwrap();
+        assert_eq!(invoker.actor, "root:agent-caller");
+        assert_eq!(
+            invoker.participant,
+            Some(tilo_actions::ParticipantId::for_agent_task(TASK).unwrap())
+        );
+        // Everything else the host built is kept.
+        assert_eq!(context.group.as_ref().map(|g| g.id.as_str()), Some(TASK));
+        assert_eq!(
+            invoker_participant(Some(&context)),
+            invoker.participant,
+            "the captured request and the delivered context agree"
+        );
+        // The worker derives exactly this invoker from the delivery.
+        assert_eq!(
+            tilo_actions::ActionInvoker::delivered(&actor.id, Some(&context)),
+            invoker
+        );
+        // A task child with no context still gets its host-derived view.
+        let bare = host_set_invoker(None, &actor, &enrolled_owner())
+            .unwrap()
+            .unwrap();
+        assert_eq!(bare.invoker, Some(invoker));
+    }
+
+    #[test]
+    fn a_person_never_gets_a_participant_from_the_envelope() {
+        let actor = BrokerActor::person("person:guest");
+        let owner = InvocationOwner::Local {
+            actor: actor.id.clone(),
+        };
+        let context = host_set_invoker(Some(forged()), &actor, &owner)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            context.invoker,
+            Some(tilo_actions::ActionInvoker::actor("person:guest"))
+        );
+        assert_eq!(invoker_participant(Some(&context)), None);
+        // No context stays no context: ordinary deliveries are unchanged.
+        assert_eq!(host_set_invoker(None, &actor, &owner).unwrap(), None);
+    }
+
+    #[test]
+    fn a_legacy_agent_run_routes_to_its_host_task_participant() {
+        let actor = BrokerActor::agent("agent:alpha");
+        let owner = InvocationOwner::Local {
+            actor: actor.id.clone(),
+        };
+        let context = host_set_invoker(Some(forged()), &actor, &owner)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            context.invoker,
+            Some(
+                tilo_actions::ActionInvoker::actor("agent:alpha")
+                    .with_participant(tilo_actions::ParticipantId::for_agent_task(TASK).unwrap())
+            )
+        );
+        let untasked = tilo_actions::ActionContext::default();
+        let context = host_set_invoker(Some(untasked), &actor, &owner)
+            .unwrap()
+            .unwrap();
+        assert_eq!(invoker_participant(Some(&context)), None);
     }
 }
 

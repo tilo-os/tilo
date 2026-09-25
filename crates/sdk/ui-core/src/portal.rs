@@ -1441,6 +1441,7 @@ mod scoped_pick_tests {
                     address: tilo_actions::ActionAddress::new("fixture", "choose"),
                     argument: None,
                     actor: "original-caller".into(),
+                    participant: None,
                 },
                 fixture.target.owner.broker_route().unwrap(),
                 Arc::new(move || {

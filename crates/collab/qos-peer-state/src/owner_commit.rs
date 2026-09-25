@@ -99,9 +99,15 @@ impl OwnerCommitRequest {
                 caller,
                 command,
             } => {
+                // OpenApp is placement-independent: the owner places it
+                // against its current desktop, so it needs no source heads.
+                let placement_independent = matches!(
+                    command.command,
+                    crate::desktop_command::DesktopCommand::OpenApp { .. }
+                );
                 if invocation.is_nil()
                     || command.source.room != self.room
-                    || command.source.heads.is_empty()
+                    || (command.source.heads.is_empty() && !placement_independent)
                     || command.source.heads.len() > 128
                     || caller.capabilities.can_act_as_host
                 {

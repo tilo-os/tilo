@@ -1,5 +1,7 @@
 /** Cloud owner identities (root + device keys) use the existing private identity store and exclusive device lease. */
 const MAX_SELECTION=256;
+// Typed reasons (`error.code`) with product copy; see peer.d.ts CloudErrorCode.
+const coded=(code,message)=>Object.assign(Error(message),{code});
 export function createCloudIdentityCustodian({runtime,locks,store}){
  return async function acquire(cloud,session,signal){
   if(!locks)throw Error('Cloud owner identity custody requires Web Locks');
@@ -13,7 +15,7 @@ export function createCloudIdentityCustodian({runtime,locks,store}){
   async function hold(name){
    let resolve,reject,unlock;const acquired=new Promise((yes,no)=>{resolve=yes;reject=no;}),held=new Promise(yes=>unlock=yes);
    const task=locks.request(name,{ifAvailable:true,mode:'exclusive'},async lock=>{resolve(Boolean(lock));if(lock)await held;});task.catch(reject);
-   if(!await acquired){await task;throw Error('Cloud owner identity custody is occupied');}
+   if(!await acquired){await task;throw coded('open-in-other-tab','Tilo is already open for this Cloud machine in another tab or window.');}
    let done=false;return async()=>{if(done)return;done=true;unlock();await task;};
   }
   check();const releaseScope=await hold(`qos-cloud-scope:${scope}`);let releaseDevice,released=false;
@@ -32,7 +34,7 @@ export function createCloudIdentityCustodian({runtime,locks,store}){
      key=candidate;releaseDevice=held;material=adopted;session.setItem(locator,key);break;
     }
    }
-   if(key&&!releaseDevice){releaseDevice=await hold(`qos-certified-device:${key}`);check();material=await store.load(key);check();if(!material)throw Error('Stored Cloud owner identity is missing; explicit recovery required');}
+   if(key&&!releaseDevice){releaseDevice=await hold(`qos-certified-device:${key}`);check();material=await store.load(key);check();if(!material)throw coded('identity-lost','The owner identity stored in this browser for this Cloud machine is missing; explicit recovery is required.');}
    else if(key){check();}
    else{material=runtime.cloud_identity_create(accountId,machineId,label);key=read(material).device_public_key;releaseDevice=await hold(`qos-certified-device:${key}`);check();await store.save(key,material);check();session.setItem(locator,key);}
    const identity=read(material);if(identity.device_public_key!==key)throw Error('Cloud owner identity locator mismatch');

@@ -54,7 +54,7 @@ impl Fixture {
     /// reconstructed state and the diff base for further commits.
     fn reopen(&self) -> (Vec<u8>, Option<Tip>) {
         // Another process: nothing this process wrote is remembered.
-        forget_durable_for_test();
+        self.forget();
         self.warm_reopen()
     }
     /// A reader in the writing process (may use what it remembers).
@@ -63,8 +63,13 @@ impl Fixture {
         let persisted = read_reconciled(&directory, &self.root).unwrap().unwrap();
         (persisted.bytes.clone(), persisted.into_tip())
     }
+    /// Forget what this process remembered about this fixture's files only
+    /// (other tests run concurrently in the same process).
+    fn forget(&self) {
+        forget_durable_directory_for_test(&self.directory);
+    }
     fn aggregate(&self) -> Aggregate {
-        forget_durable_for_test();
+        self.forget();
         let directory = StorageDirectory::from_file(self.directory.try_clone().unwrap()).unwrap();
         let mut aggregate = Aggregate::open(&directory).unwrap();
         aggregate.read_reconciled(&directory).unwrap();
@@ -319,7 +324,7 @@ fn the_writing_process_reads_what_it_wrote_without_replay_and_others_reconstruct
         let mut other = f.reopen().1;
         let theirs = successor(&current, 50);
         f.commit(&mut other, &theirs).unwrap();
-        forget_durable_for_test();
+        f.forget();
         let mut torn = f.journal();
         torn.extend_from_slice(&pseudo(20, 1));
         f.set_journal(&torn);
@@ -770,4 +775,41 @@ fn measure_commit_io() {
         run(true, false);
         run(true, true);
     }
+}
+
+/// Read-only opens of an unchanged aggregate perform no durability barrier
+/// (fix plan B4): after this process wrote (or once reconciled) the files,
+/// later readers reuse that knowledge; any foreign change reconciles again.
+#[test]
+fn unchanged_aggregate_reads_skip_reconciliation_barriers() {
+    with_journal(|| {
+        let f = fixture();
+        let mut tip = None;
+        let base = pseudo(32 * 1024, 11);
+        f.commit(&mut tip, &base).unwrap();
+        let next = successor(&base, 1);
+        f.commit(&mut tip, &next).unwrap();
+        let before = reconciles_for_test();
+        for _ in 0..5 {
+            assert_eq!(f.warm_reopen().0, next);
+        }
+        assert_eq!(reconciles_for_test(), before, "own writes need no barrier");
+        // A reader that never saw a write (another process wrote) reconciles
+        // once, then later readers reuse its observation.
+        let (_, _) = f.reopen();
+        let after_foreign = reconciles_for_test();
+        assert_eq!(after_foreign, before + 1);
+        for _ in 0..3 {
+            assert_eq!(f.warm_reopen().0, next);
+        }
+        assert_eq!(reconciles_for_test(), after_foreign);
+        // A changed journal (another writer) is read and reconciled again.
+        let mut other = tip.clone();
+        let third = successor(&next, 2);
+        f.forget();
+        f.commit(&mut other, &third).unwrap();
+        f.forget();
+        assert_eq!(f.warm_reopen().0, third);
+        assert_eq!(reconciles_for_test(), after_foreign + 1);
+    });
 }

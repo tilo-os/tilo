@@ -1425,6 +1425,10 @@ mod tests {
         );
     }
     #[tokio::test(flavor = "current_thread")]
+    #[ignore = "obsolete while the native final publication fence is closed: a host-local \
+                start has no captured original caller, and a certified caller's worker \
+                mutation is refused at exact startup replay (see production_authorizer_tests \
+                and scoped_fixture/deferred.rs); re-port when that fence opens"]
     async fn actual_worker_lost_authority_after_precommit_preserves_uncertain_effect() {
         let root = tempfile::tempdir().unwrap();
         let mut owner = SessionOwner::initialize(&root.path().join("owner")).unwrap();

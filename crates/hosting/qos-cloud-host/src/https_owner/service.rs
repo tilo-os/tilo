@@ -26,6 +26,7 @@ mod context;
 mod data;
 mod onboarding;
 mod private;
+pub(crate) use private::agent_rejection_code;
 mod registries;
 mod snapshots;
 #[cfg(test)]
@@ -42,7 +43,46 @@ const IDLE_TICK: Duration = Duration::from_millis(250);
 const BUSY_TICK: Duration = Duration::from_millis(20);
 /// Bounded wait for a contended Store lock held by another Cloud component.
 const BUSY_RETRY: Duration = Duration::from_millis(2);
+/// Installation may wait this many retries (about 2 s) for the lock.
 const BUSY_LIMIT: u32 = 1000;
+/// Serving waits only this many retries in line: the service loop is one
+/// serialized actor, so a longer wait would stall every other request. A
+/// request that still finds the Store busy is deferred (`Deferred`) and
+/// retried on the short tick without blocking the loop.
+const BUSY_INLINE: u32 = 3;
+/// Longest a deferred request waits for the Store lock before its retryable
+/// 503, and the most requests deferred at once.
+const DEFER_LIMIT: Duration = Duration::from_secs(4);
+const DEFER_MARGIN: Duration = Duration::from_millis(250);
+const MAX_DEFERRED: usize = 64;
+
+/// Rate-limited operational log lines (fix plan B7): at most one line per
+/// reason every `LOG_INTERVAL`, with the count of suppressed repeats. Only a
+/// fixed reason, route or error category is logged, never request content.
+pub(super) mod ops_log {
+    use std::{sync::Mutex, time::Instant};
+    const LOG_INTERVAL: std::time::Duration = std::time::Duration::from_secs(10);
+    static SEEN: Mutex<Vec<(&'static str, Instant, u64)>> = Mutex::new(Vec::new());
+    /// Returns the suppressed count when this reason may log now.
+    pub(in crate::https_owner) fn admit(reason: &'static str) -> Option<u64> {
+        let mut seen = SEEN.lock().ok()?;
+        let now = Instant::now();
+        match seen.iter_mut().find(|(key, ..)| *key == reason) {
+            Some((_, last, suppressed)) if now.duration_since(*last) < LOG_INTERVAL => {
+                *suppressed += 1;
+                None
+            }
+            Some((_, last, suppressed)) => {
+                *last = now;
+                Some(std::mem::take(suppressed))
+            }
+            None => {
+                seen.push((reason, now, 0));
+                Some(0)
+            }
+        }
+    }
+}
 /// How often maintenance checks delivery retention budgets.
 const RETENTION_INTERVAL: Duration = Duration::from_secs(30);
 
@@ -138,6 +178,18 @@ impl Installed {
     }
 }
 
+/// The HTTPS carrier charges and bounds a response by its allocation
+/// capacity (at most 1 MiB), not its length. Encoders and page builders grow
+/// their vectors by doubling, so a body above ~512 KiB (a membership
+/// bootstrap of a grown workspace, a full data page) could carry up to twice
+/// its length in capacity, be refused by the carrier and reach the client as
+/// a retryable 503 on every attempt. Every OK body is sent at exact capacity.
+pub(super) fn exact_body(body: Vec<u8>) -> Vec<u8> {
+    if body.capacity() == body.len() {
+        return body;
+    }
+    body.into_boxed_slice().into_vec()
+}
 fn refuse(request: BufferedRequest) {
     let _ = request.respond(StatusCode::FORBIDDEN, b"permission-denied".to_vec());
 }
@@ -151,19 +203,61 @@ impl std::fmt::Display for OwnerBusy {
     }
 }
 impl std::error::Error for OwnerBusy {}
+/// The Store was busy after part of a request already took effect: still a
+/// retryable 503, but the request is never re-dispatched as a whole.
+#[derive(Debug)]
+pub(super) struct OwnerBusyAfterEffect;
+impl std::fmt::Display for OwnerBusyAfterEffect {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Cloud owner busy after a committed part")
+    }
+}
+impl std::error::Error for OwnerBusyAfterEffect {}
+/// Whether `error` is exactly the in-line busy refusal of a turn whose action
+/// never ran (so the unchanged request may be dispatched again).
+pub(super) fn deferrable(error: &anyhow::Error) -> bool {
+    !after_effect(error)
+        && error
+            .chain()
+            .any(|cause| cause.downcast_ref::<OwnerBusy>().is_some())
+}
+/// `OwnerBusyAfterEffect` is attached as context (anyhow resolves it only
+/// through its own downcast, not through the source chain).
+fn after_effect(error: &anyhow::Error) -> bool {
+    error.downcast_ref::<OwnerBusyAfterEffect>().is_some()
+}
 /// Capacity and contention refusals are retryable 503s; everything else
 /// (authentication, authorization, invalid input) stays a closed 403.
 pub(super) fn transient(error: &anyhow::Error) -> bool {
-    error.chain().any(|cause| {
-        cause.downcast_ref::<OwnerBusy>().is_some()
-            || matches!(
-                cause.downcast_ref::<CloudDeliveryError>(),
-                Some(CloudDeliveryError::Capacity | CloudDeliveryError::Unavailable)
-            )
-    })
+    after_effect(error)
+        || error.chain().any(|cause| {
+            cause.downcast_ref::<OwnerBusy>().is_some()
+                || matches!(
+                    cause.downcast_ref::<CloudDeliveryError>(),
+                    Some(CloudDeliveryError::Capacity | CloudDeliveryError::Unavailable)
+                )
+        })
 }
 pub(super) fn refuse_error(request: BufferedRequest, error: &anyhow::Error) {
     if transient(error) {
+        let reason = if after_effect(error)
+            || error
+                .chain()
+                .any(|cause| cause.downcast_ref::<OwnerBusy>().is_some())
+        {
+            "owner_busy"
+        } else {
+            "capacity"
+        };
+        if let Some(suppressed) = ops_log::admit(reason) {
+            tracing::warn!(
+                event = "cloud_request_unavailable",
+                reason,
+                route = ?request.route(),
+                suppressed,
+                "Cloud request answered 503"
+            );
+        }
         let _ = request.respond(
             StatusCode::SERVICE_UNAVAILABLE,
             b"temporarily-unavailable".to_vec(),
@@ -176,16 +270,30 @@ fn delivery(error: CloudDeliveryError) -> anyhow::Error {
     error.into()
 }
 
-/// Run one reserved turn, waiting a bounded time while another Cloud component
-/// holds the Store lock. A denied source never resumes.
+/// Run one reserved turn, waiting only briefly (`BUSY_INLINE`) while another
+/// Cloud component holds the Store lock; then `OwnerBusy`, with the action not
+/// run. A denied source never resumes.
 fn with_turn<R>(
     source: &CloudStoreSource,
     pool: &HostBytes,
     operation: DeliveryOperation,
     action: impl FnOnce(&mut CloudStoreTurn) -> Result<R>,
 ) -> Result<R> {
+    with_turn_waiting(source, pool, operation, BUSY_INLINE, action)
+}
+/// `with_turn` with an explicit bounded number of lock retries.
+fn with_turn_waiting<R>(
+    source: &CloudStoreSource,
+    pool: &HostBytes,
+    operation: DeliveryOperation,
+    retries: u32,
+    action: impl FnOnce(&mut CloudStoreTurn) -> Result<R>,
+) -> Result<R> {
     let mut action = Some(action);
-    for _ in 0..BUSY_LIMIT {
+    for attempt in 0..=retries {
+        if attempt > 0 {
+            std::thread::sleep(BUSY_RETRY);
+        }
         let result = source.with_delivery_turn(pool, operation, |turn| {
             let action = action.take().expect("invoked once");
             Ok(action(turn))
@@ -194,7 +302,7 @@ fn with_turn<R>(
             Current::Current(Ok(result)) => return result,
             Current::Current(Err(error)) => return Err(delivery(error)),
             Current::Denied => bail!("Cloud owner denied"),
-            Current::Busy => std::thread::sleep(BUSY_RETRY),
+            Current::Busy => {}
         }
     }
     Err(OwnerBusy.into())
@@ -206,7 +314,10 @@ fn with_state_turn<R>(
     action: impl FnOnce(&mut CloudStoreTurn) -> Result<R>,
 ) -> Result<R> {
     let mut action = Some(action);
-    for _ in 0..BUSY_LIMIT {
+    for attempt in 0..=BUSY_INLINE {
+        if attempt > 0 {
+            std::thread::sleep(BUSY_RETRY);
+        }
         let result = source.with_state_turn(pool, input_len, |turn| {
             let action = action.take().expect("invoked once");
             Ok(action(turn))
@@ -215,10 +326,16 @@ fn with_state_turn<R>(
             Current::Current(Ok(result)) => return result,
             Current::Current(Err(error)) => return Err(delivery(error)),
             Current::Denied => bail!("Cloud owner denied"),
-            Current::Busy => std::thread::sleep(BUSY_RETRY),
+            Current::Busy => {}
         }
     }
     Err(OwnerBusy.into())
+}
+
+/// A request that found the Store busy before any effect, held for retry.
+struct Deferred {
+    request: BufferedRequest,
+    since: Instant,
 }
 
 pub(crate) struct CloudService {
@@ -248,6 +365,8 @@ pub(crate) struct CloudService {
     /// Raised by completed upload work and by the private broker; the serve
     /// loop waits on it besides requests and the (idle/deadline) timer.
     wake: Arc<tokio::sync::Notify>,
+    /// Requests that found the Store busy, in arrival order (fix plan B3).
+    deferred: std::collections::VecDeque<Deferred>,
 }
 
 impl CloudService {
@@ -285,7 +404,7 @@ impl CloudService {
             0
         };
         let (registry, pins, generation, expires, hint) =
-            Self::bind_registry(&source, &pool, origin, capabilities, media_mask)?;
+            Self::bind_registry(&source, &pool, origin, capabilities, media_mask, BUSY_LIMIT)?;
         let registry = Registries::new(registry, pins.descriptor, generation);
         let onboarding = onboarding::Onboarding::new(pins.boot, pool.clone())?;
         let wake = private.as_ref().map(PrivateLane::wake).unwrap_or_default();
@@ -311,10 +430,14 @@ impl CloudService {
             retention_due: Instant::now(),
             failed: false,
             wake,
+            deferred: std::collections::VecDeque::new(),
         };
-        service
-            .snapshots
-            .recover(&service.source, &service.pool, &service.work)?;
+        service.snapshots.recover_waiting(
+            &service.source,
+            &service.pool,
+            &service.work,
+            BUSY_LIMIT,
+        )?;
         service.probe = service.source.aggregate_probe();
         Ok(service)
     }
@@ -324,14 +447,20 @@ impl CloudService {
         origin: &str,
         capabilities: u64,
         media: u64,
+        retries: u32,
     ) -> Result<(CarrierRegistry, Pins, u64, u64, Vec<u8>)> {
-        let (verified, expires, now, hint) =
-            with_turn(source, pool, DeliveryOperation::Maintenance, |turn| {
+        let (verified, expires, now, hint) = with_turn_waiting(
+            source,
+            pool,
+            DeliveryOperation::Maintenance,
+            retries,
+            |turn| {
                 let (verified, expires) = turn.install_descriptor(origin, capabilities, media)?;
                 let hint = turn.descriptor_bytes(capabilities, verified.descriptor_digest())?;
                 let now = turn.fresh_now_ns()?;
                 Ok((verified, expires, now, hint))
-            })?;
+            },
+        )?;
         let registry = CarrierRegistry::new_unqualified(&verified, capabilities, now)?;
         let pins = Pins {
             boot: registry.boot_id(),
@@ -355,6 +484,16 @@ impl CloudService {
     }
     /// Denied owner, or an advertised private lane whose broker stopped: the
     /// negotiated capability would no longer be genuinely installed.
+    /// Which `is_failed` condition holds (content-free, for the stop log).
+    pub(crate) fn failure_cause(&self) -> &'static str {
+        if self.source.is_denied() {
+            "source denied"
+        } else if self.failed {
+            "owner failed"
+        } else {
+            "private lane closed"
+        }
+    }
     pub(crate) fn is_failed(&self) -> bool {
         self.failed
             || self.source.is_denied()
@@ -366,8 +505,45 @@ impl CloudService {
     }
 
     pub(crate) fn handle(&mut self, request: BufferedRequest) {
-        if request.is_cancelled() {
+        if let Some(request) = self.dispatch(request) {
+            self.defer(request, Instant::now());
+        }
+    }
+    /// Hold a request whose Store turn was busy before any effect. Bounded;
+    /// beyond the bound (or its time) it is answered with the retryable 503.
+    fn defer(&mut self, request: BufferedRequest, since: Instant) {
+        let expired = since.elapsed() >= DEFER_LIMIT
+            || request
+                .deadline()
+                .checked_sub(DEFER_MARGIN)
+                .is_none_or(|last| Instant::now() >= last);
+        if expired || self.deferred.len() >= MAX_DEFERRED {
+            refuse_error(request, &OwnerBusy.into());
             return;
+        }
+        self.deferred.push_back(Deferred { request, since });
+    }
+    /// Retry deferred requests in order until one still finds the Store busy.
+    fn retry_deferred(&mut self) {
+        let mut pending = std::mem::take(&mut self.deferred);
+        while let Some(Deferred { request, since }) = pending.pop_front() {
+            if request.is_cancelled() {
+                continue;
+            }
+            if let Some(request) = self.dispatch(request) {
+                self.defer(request, since);
+                // Still busy: keep the rest, in order, for the next tick.
+                for rest in pending.drain(..) {
+                    self.defer(rest.request, rest.since);
+                }
+            }
+        }
+    }
+    /// Route one request. Returns it untouched when its Store turn was busy
+    /// before any effect, so the caller can defer instead of answering.
+    fn dispatch(&mut self, request: BufferedRequest) -> Option<BufferedRequest> {
+        if request.is_cancelled() {
+            return None;
         }
         if self.is_failed() {
             let (status, body) = if request.route() == Route::Descriptor {
@@ -379,7 +555,7 @@ impl CloudService {
                 (StatusCode::FORBIDDEN, b"permission-denied".to_vec())
             };
             let _ = request.respond(status, body);
-            return;
+            return None;
         }
         match request.route() {
             Route::State => {
@@ -392,8 +568,9 @@ impl CloudService {
                         &self.pins,
                         request,
                     );
+                    None
                 } else {
-                    self.respond(request, |service, request| service.state(request).map(Some));
+                    self.respond(request, |service, request| service.state(request).map(Some))
                 }
             }
             Route::EventsPoll => self.poll(request),
@@ -403,7 +580,8 @@ impl CloudService {
             Route::Detach => self.respond(request, |service, request| {
                 service.detach(request).map(Some)
             }),
-            Route::Snapshot => self.respond(request, |service, request| {
+            // Snapshot work spans several turns; a busy Store answers 503.
+            Route::Snapshot => self.respond_once(request, |service, request| {
                 service
                     .snapshots
                     .request(
@@ -416,7 +594,7 @@ impl CloudService {
                     )
                     .map(Some)
             }),
-            Route::SnapshotChunk => self.respond(request, |service, request| {
+            Route::SnapshotChunk => self.respond_once(request, |service, request| {
                 service
                     .snapshots
                     .chunk(
@@ -436,7 +614,10 @@ impl CloudService {
                     &self.pins,
                     request,
                 ),
-                None => refuse(request),
+                None => {
+                    refuse(request);
+                    None
+                }
             },
             Route::Descriptor => {
                 let result = self.descriptor();
@@ -448,6 +629,7 @@ impl CloudService {
                     ),
                 };
                 let _ = request.respond(status, body);
+                None
             }
             Route::Bootstrap => self.respond(request, |service, request| {
                 service.bootstrap(request.body()).map(Some)
@@ -465,6 +647,7 @@ impl CloudService {
             // durable path (no live bit is advertised either).
             Route::LiveGrant if self.live.is_none() => {
                 let _ = request.respond(StatusCode::NOT_FOUND, b"unsupported".to_vec());
+                None
             }
             Route::LiveGrant => self.respond(request, |service, request| {
                 service.live_grant(request).map(Some)
@@ -475,14 +658,35 @@ impl CloudService {
             }
         }
     }
+    /// Answer from `handler`; a busy Store before any effect hands the
+    /// request back for deferral instead of answering.
     fn respond(
         &mut self,
         request: BufferedRequest,
         handler: impl FnOnce(&mut Self, &BufferedRequest) -> Result<Option<Vec<u8>>>,
-    ) {
+    ) -> Option<BufferedRequest> {
         match handler(self, &request) {
             Ok(Some(body)) => {
-                let _ = request.respond(StatusCode::OK, body);
+                let _ = request.respond(StatusCode::OK, exact_body(body));
+            }
+            Ok(None) => refuse(request),
+            Err(error) if deferrable(&error) => return Some(request),
+            Err(error) => {
+                tracing::debug!(%error, route = ?request.route(), "Cloud delivery request refused");
+                refuse_error(request, &error)
+            }
+        }
+        None
+    }
+    /// `respond` for handlers that are never re-dispatched.
+    fn respond_once(
+        &mut self,
+        request: BufferedRequest,
+        handler: impl FnOnce(&mut Self, &BufferedRequest) -> Result<Option<Vec<u8>>>,
+    ) -> Option<BufferedRequest> {
+        match handler(self, &request) {
+            Ok(Some(body)) => {
+                let _ = request.respond(StatusCode::OK, exact_body(body));
             }
             Ok(None) => refuse(request),
             Err(error) => {
@@ -490,6 +694,7 @@ impl CloudService {
                 refuse_error(request, &error)
             }
         }
+        None
     }
 
     /// Unauthenticated discovery serves the exact persisted signed hint bound
@@ -758,15 +963,19 @@ impl CloudService {
     /// Resume held work after any commit, near poll deadlines and on the tick.
     pub(crate) fn maintain(&mut self) {
         if self.is_failed() {
+            for deferred in std::mem::take(&mut self.deferred) {
+                refuse(deferred.request);
+            }
             return;
         }
+        self.retry_deferred();
         let sink = self.early_sink();
         let mut committed = crate::delivery::early_forward::scoped(sink.as_ref(), || {
             self.uploads
                 .pump(&self.source, &self.pool, &mut self.registry, &self.pins)
         });
         if let Some(private) = self.private.as_mut() {
-            private.pump(&self.source);
+            private.pump(&self.source, &self.pool, &mut self.registry, &self.pins);
         }
         if let Err(error) = self
             .snapshots
@@ -779,6 +988,11 @@ impl CloudService {
             self.retention_due = Instant::now() + RETENTION_INTERVAL;
             match self.retain_delivery(forced) {
                 Ok(retained) => committed |= retained,
+                Err(error) if transient(&error) => {
+                    // Busy Store: retry soon rather than after a full interval.
+                    self.retention_due = Instant::now() + IDLE_TICK;
+                    tracing::debug!(%error, "Cloud delivery retention deferred");
+                }
                 Err(error) => {
                     tracing::warn!(%error, "Cloud delivery retention deferred");
                     self.failed = self.source.is_denied();
@@ -786,7 +1000,11 @@ impl CloudService {
             }
         }
         if let Err(error) = self.renew_descriptor() {
-            tracing::warn!(%error, "Cloud descriptor renewal failed");
+            if transient(&error) {
+                tracing::debug!(%error, "Cloud descriptor renewal deferred: owner busy");
+            } else {
+                tracing::warn!(%error, "Cloud descriptor renewal failed");
+            }
             self.failed = self.source.is_denied();
         }
         let probe = self.source.aggregate_probe();
@@ -803,11 +1021,15 @@ impl CloudService {
                 private.notify_commit();
             }
         }
-        if committed || due {
+        if committed || due || self.polls.needs_retry() {
+            // `self.probe` stays the observation taken before this wake: a
+            // commit landing while held polls replay (another component's
+            // worker, an agent step) changes the probe again and wakes them
+            // on the next tick. Re-observing here would swallow it and leave
+            // every held poll parked until an unrelated commit or its idle
+            // deadline. Our own page/cursor turns never commit.
             self.polls
                 .wake(&self.source, &self.pool, &mut self.registry, &self.pins);
-            // Our own page/cursor turns never commit; re-observe after waking.
-            self.probe = self.source.aggregate_probe();
         }
     }
     fn renew_descriptor(&mut self) -> Result<()> {
@@ -824,6 +1046,7 @@ impl CloudService {
             &self.origin,
             self.installed.capabilities(),
             self.media_mask,
+            BUSY_INLINE,
         )?;
         if pins.descriptor == self.pins.descriptor {
             // Another holder already renewed within the margin; nothing changed.
@@ -892,11 +1115,13 @@ impl CloudService {
         let now = Instant::now();
         let private = self.private.as_ref();
         let baseline = crate::storage::host_perf_baseline();
-        let short = if baseline {
-            self.uploads.busy() || private.is_some_and(|p| p.busy())
-        } else {
-            private.is_some_and(|p| p.needs_retry())
-        };
+        let short = !self.deferred.is_empty()
+            || self.polls.needs_retry()
+            || if baseline {
+                self.uploads.busy() || private.is_some_and(|p| p.busy())
+            } else {
+                private.is_some_and(|p| p.needs_retry())
+            };
         let idle = IDLE_TICK;
         #[cfg(test)]
         let idle = if quiet_ticks::is_quiet(&self.source.0.root) {
@@ -919,6 +1144,12 @@ impl CloudService {
     /// private lane closes. Every admitted commit already passed its barrier.
     pub(crate) fn close(&mut self) {
         self.failed = true;
+        for deferred in std::mem::take(&mut self.deferred) {
+            let _ = deferred.request.respond(
+                StatusCode::SERVICE_UNAVAILABLE,
+                b"temporarily-unavailable".to_vec(),
+            );
+        }
         self.polls.idle_all();
         self.uploads.refuse_all();
         if let Some(private) = self.private.as_mut() {

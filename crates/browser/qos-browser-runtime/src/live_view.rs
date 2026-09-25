@@ -26,6 +26,11 @@ use vello::kurbo::{Point, Rect};
 pub(crate) const ANCHOR_MAX_BYTES: usize = 64;
 const TAG_SCOPED: u8 = 1;
 const TAG_SAME_SCOPE: u8 = 2;
+/// `[3, uvarint(start), scope_digest(key)[16]]`: used only when the scoped
+/// form does not fit the 64-byte bound (e.g. 130-byte Writer block ids). The
+/// receiver files it under `PresenceKey::from_scope_digest`, which editors
+/// resolve against their own keys (`PresenceKey::digest_form`).
+const TAG_DIGEST: u8 = 3;
 /// Offsets past this are not text positions any editor lays out.
 const MAX_OFFSET: u64 = 1 << 32;
 /// Live record id of a record-less (package-primary) document, as the host
@@ -74,6 +79,11 @@ pub(crate) fn encode_selection(
     anchor.extend_from_slice(&scope);
     let mut head = vec![TAG_SAME_SCOPE];
     push_uvarint(&mut head, u64::try_from(end).ok()?);
+    if anchor.len() > ANCHOR_MAX_BYTES {
+        anchor = vec![TAG_DIGEST];
+        push_uvarint(&mut anchor, u64::try_from(start).ok()?);
+        anchor.extend_from_slice(&key.scope_digest()?);
+    }
     (anchor.len() <= ANCHOR_MAX_BYTES).then_some((anchor, head))
 }
 
@@ -83,14 +93,19 @@ pub(crate) fn decode_selection(anchor: &[u8], head: &[u8]) -> Option<(PresenceKe
     if anchor.len() > ANCHOR_MAX_BYTES || head.len() > ANCHOR_MAX_BYTES {
         return None;
     }
-    let (&TAG_SCOPED, rest) = anchor.split_first()? else {
-        return None;
-    };
+    let (&tag, rest) = anchor.split_first()?;
     let (start, scope) = read_uvarint(rest)?;
-    let key: PresenceKey = postcard::from_bytes(scope).ok()?;
-    if postcard::to_allocvec(&key).ok()? != scope {
-        return None;
-    }
+    let key: PresenceKey = match tag {
+        TAG_SCOPED => {
+            let key: PresenceKey = postcard::from_bytes(scope).ok()?;
+            if postcard::to_allocvec(&key).ok()? != scope {
+                return None;
+            }
+            key
+        }
+        TAG_DIGEST => PresenceKey::from_scope_digest(scope.try_into().ok()?),
+        _ => return None,
+    };
     let end = match head.split_first()? {
         (&TAG_SAME_SCOPE, rest) => {
             let (end, tail) = read_uvarint(rest)?;
@@ -99,7 +114,7 @@ pub(crate) fn decode_selection(anchor: &[u8], head: &[u8]) -> Option<(PresenceKe
             }
             end
         }
-        (&TAG_SCOPED, _) => {
+        (&TAG_SCOPED | &TAG_DIGEST, _) => {
             let (other, end, _) = decode_selection(head, &[TAG_SAME_SCOPE, 0])?;
             if other != key {
                 return None;
@@ -387,7 +402,7 @@ pub(crate) struct RemoteInput {
 }
 
 /// Characters of in-flight typing shown in a caret label.
-const TYPING_PREVIEW_CHARS: usize = 24;
+const TYPING_PREVIEW_CHARS: usize = 40;
 
 /// Caret label: the member's name, plus the tail of its in-flight typing.
 fn caret_label(name: Option<&str>, typing: Option<&str>) -> Option<String> {
@@ -557,9 +572,31 @@ mod tests {
     }
 
     #[test]
+    fn long_writer_block_ids_travel_as_a_scope_digest() {
+        // Worker-minted block ids: 128-hex actor + counter (130 bytes).
+        let long = writer_block(&format!("{}.7", "ab".repeat(64)));
+        let (anchor, head) =
+            encode_selection(&long, &PresencePayload::Selection { start: 3, end: 300 }).unwrap();
+        assert_eq!(anchor[0], TAG_DIGEST);
+        assert!(anchor.len() <= ANCHOR_MAX_BYTES);
+        let (key, start, end) = decode_selection(&anchor, &head).unwrap();
+        assert_eq!((start, end), (3, 300));
+        assert_eq!(Some(key), long.digest_form());
+        // Short ids keep the exact scoped form.
+        let (anchor, _) =
+            encode_selection(&writer_block("b1"), &PresencePayload::Caret { pos: 1 }).unwrap();
+        assert_eq!(anchor[0], TAG_SCOPED);
+        // Shared vector with ui-core / the host: scope_digest(Widget{[wp_block, b1]}).
+        assert_eq!(
+            hex(&writer_block("b1").scope_digest().unwrap()),
+            "9c59c4ded04a69ccf5b2ac58797c3b77"
+        );
+        // A truncated digest is refused.
+        assert!(decode_selection(&[TAG_DIGEST, 1, 0, 0], &[TAG_SAME_SCOPE, 1]).is_none());
+    }
+
+    #[test]
     fn oversized_or_non_text_scopes_are_not_published() {
-        let long = writer_block(&"x".repeat(80));
-        assert!(encode_selection(&long, &PresencePayload::Caret { pos: 1 }).is_none());
         let key = writer_block("b");
         assert!(encode_selection(&key, &PresencePayload::Arrived).is_none());
         let view = PresenceKey::View { data: vec![1, 2] };
@@ -731,7 +768,7 @@ mod tests {
         assert!(projection.apply(&mut presence, vec![row.clone()]));
         let user = UserId("aa01".into());
         assert_eq!(presence.display_name(&user), "Ada \u{201c}hel\u{201d}");
-        row.typing = Some("x".repeat(30) + "\nend");
+        row.typing = Some("x".repeat(50) + "\nend");
         assert!(projection.apply(&mut presence, vec![row.clone()]));
         let label = presence.display_name(&user);
         assert!(

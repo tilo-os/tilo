@@ -46,6 +46,8 @@ export function createInvitedPeerSource({runtime, lease, fetchImpl=globalThis.fe
   return {
     prepare({existing,signal}={}) {return track(async()=>{
       if (closed) throw Error('Invited peer source closed');
+      // A prepared attempt the caller never connected is released, not leaked.
+      if (active?.prepared && !active.consumed) await cancel(active);
       if (active) throw Error('Invitation preparation is already pending');
       signal?.throwIfAborted();
       const controller=new AbortController();
@@ -78,13 +80,16 @@ export function createInvitedPeerSource({runtime, lease, fetchImpl=globalThis.fe
           finally{try{await reader.cancel();}catch{}}
           check(attempt);runtime.invited_descriptor(attempt.id,bytes.subarray(0,length));
         }
+        attempt.prepared = true;
         return {attempt, namespace: admitted.namespace};
       } catch (error) { await cancel(attempt); throw error; }
     });},
+    /** Releases a prepared attempt the caller will not connect (idempotent). */
+    discard(prepared) { const attempt = prepared?.attempt; return attempt && !attempt.consumed ? cancel(attempt) : Promise.resolve(); },
     connect(prepared, hydrated, callback) {return track(async()=>{
       const attempt = prepared?.attempt;
-      check(attempt);
       try {
+        check(attempt); attempt.consumed = true;
         const peer = await runtime.invited_connect(attempt.id, lease.material, hydrated, callback);
         if (closed || active !== attempt || generation !== attempt.generation) {
           await retainCleanup(()=>runtime.close_peer(peer));
@@ -94,10 +99,18 @@ export function createInvitedPeerSource({runtime, lease, fetchImpl=globalThis.fe
       } finally { await cancel(attempt); }
     });},
     reconnect(prepared,peer) {return track(async()=>{
-      const attempt=prepared?.attempt;check(attempt);
-      try{await runtime.invited_reconnect(attempt.id,lease.material,peer);check(attempt);}
+      const attempt=prepared?.attempt;
+      try{check(attempt);attempt.consumed=true;await runtime.invited_reconnect(attempt.id,lease.material,peer);check(attempt);}
       finally{await cancel(attempt);}
     });},
+    // Transport-only reconnect of a still admitted guest: no membership
+    // refresh. Rejects when Rust requires a refresh; the session then falls
+    // back to prepare + reconnect.
+    ...(typeof runtime.invited_resume_transport === 'function' ? {resume(peer) {return track(async()=>{
+      guard(); if (closed) throw Error('Invited peer source closed');
+      await runtime.invited_resume_transport(peer, lease.material);
+      guard(); if (closed) throw Error('Invited peer source closed');
+    });}} : {}),
     refresh(peer,signal) {return track(async()=>{
       const prepared=await this.prepare({existing:peer,signal});
       try{check(prepared.attempt);runtime.invited_refresh_media(prepared.attempt.id,lease.material,peer);}

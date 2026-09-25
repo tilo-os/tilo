@@ -1,6 +1,7 @@
 //! Production collaboration broker services shared by native hosts.
 pub mod agent_control;
 pub mod agent_reads;
+pub mod agent_timing;
 pub mod collab_broker;
 pub mod collab_broker_capnp;
 pub mod collab_core;

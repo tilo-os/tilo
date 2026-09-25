@@ -515,6 +515,7 @@ fn abandoned_snapshot_binding_never_blocks_the_retried_commit() {
         .capture_transfer(
             &cache,
             &[record()],
+            &[],
             1,
             |v| v,
             |id, _, tag| {
@@ -533,6 +534,7 @@ fn abandoned_snapshot_binding_never_blocks_the_retried_commit() {
         .capture_transfer(
             &cache,
             &[record()],
+            &[],
             1,
             |v| v,
             |id, _, tag| {
@@ -547,6 +549,213 @@ fn abandoned_snapshot_binding_never_blocks_the_retried_commit() {
     batches.bind_transfer(transfer, cursor(2, 2, 6), 1).unwrap();
     batches.abandon_transfer();
     batches.bind_transfer(transfer, cursor(2, 2, 6), 1).unwrap();
+}
+
+// ---- Lane W: a record-only batch inside the publication window.
+
+/// Hydrate a fresh cache from exactly what the last transactions committed.
+fn reload_cache(cache: &PortableStorage) -> PortableStorage {
+    let reloaded = PortableStorage::new("certified:room", "device").unwrap();
+    for key in [journal_key(), record()] {
+        let (_, saved) = cache.status(&key).unwrap().committed.unwrap();
+        reloaded.hydrate(key, saved.bytes, saved.actor).unwrap();
+    }
+    reloaded
+}
+/// The canonical Writer owner commits a keystroke to its record at once; the
+/// peer journal is only restaged when the publication window elapses.
+fn local_edit(cache: &PortableStorage, text: &str) {
+    let mut doc = automerge::AutoCommit::load(&cache.get(&record()).unwrap().bytes).unwrap();
+    doc.put(automerge::ROOT, "value", text).unwrap();
+    doc.commit();
+    cache
+        .put_document(record(), &mut doc, Some(vec![1; 32]))
+        .unwrap();
+}
+/// A cursor-bearing journal committed with the admitted record at H0.
+fn committed_owner(native: &mut Native) -> (PortableStorage, PeerStorageBatches, JournalStorage) {
+    let incoming = budget();
+    let cache = PortableStorage::new("certified:room", "device").unwrap();
+    let mut batches = PeerStorageBatches::new(1);
+    batches.bind_lease("lease").unwrap();
+    let state = admit(&native.consumer(), &incoming, &native.baseline()).unwrap();
+    let storage = advance_cursor(&JournalStorage::default(), cursor(1, 1, 6)).unwrap();
+    stage(&cache, &state, &[], &storage);
+    let (id, _) = capture(&mut batches, &cache);
+    batches.settle(&id, "lease", Ok(())).unwrap();
+    (cache, batches, storage)
+}
+
+#[test]
+fn record_queued_inside_the_publication_window_waits_for_its_journal() {
+    let mut native = Native::new(1);
+    let (cache, mut batches, storage) = committed_owner(&mut native);
+    let (state, _) = committed(&cache, &native);
+    local_edit(&cache, "typed in window");
+    // A persist inside the window: backpressure, nothing captured.
+    let error = batches
+        .capture_transfer(
+            &cache,
+            &[record()],
+            &state.rows(),
+            1,
+            |v| v,
+            |id, _, _| Ok(id.to_owned()),
+        )
+        .unwrap_err();
+    assert!(error.starts_with("storage-pressure:"), "{error}");
+    assert!(cache.status(&record()).unwrap().committed.is_some());
+    // The publication stages the matching journal; both commit together.
+    let mut published = state.clone();
+    let mut doc = automerge::AutoCommit::load(&cache.get(&record()).unwrap().bytes).unwrap();
+    let before = state.document_heads(APP, RECORD).unwrap();
+    let message = published
+        .publish_incremental(APP, RECORD, doc.save_after(&before), &native.key, time())
+        .unwrap();
+    let mut journal = Journal::from_state(&published, vec![message]).unwrap();
+    journal.storage = storage;
+    cache
+        .put(journal_key(), journal.encode().unwrap(), None)
+        .unwrap();
+    let (id, writes) = batches
+        .capture_transfer(
+            &cache,
+            &[record()],
+            &published.rows(),
+            1,
+            |v| v,
+            |id, writes, _| Ok((id.to_owned(), writes.to_vec())),
+        )
+        .unwrap();
+    assert_eq!(writes.len(), 2);
+    batches.settle(&id, "lease", Ok(())).unwrap();
+    let (durable, _) = committed(&reload_cache(&cache), &native);
+    assert_eq!(value(&durable).as_deref(), Some("typed in window"));
+}
+
+#[test]
+fn torn_record_only_batch_boots_after_repair_with_the_edit_intact() {
+    let mut native = Native::new(1);
+    let (cache, mut batches, _) = committed_owner(&mut native);
+    local_edit(&cache, "typed in window");
+    // An older runtime's persist inside the window committed the record
+    // alone: IndexedDB now holds record H1 with cursor journal H0.
+    let (id, writes) = capture(&mut batches, &cache);
+    assert!(writes.iter().all(|write| write.key == record()));
+    batches.settle(&id, "lease", Ok(())).unwrap();
+    let reloaded = reload_cache(&cache);
+    let (restored, journal) = committed(&reloaded, &native);
+    let storage = advance_cursor(&journal.storage, cursor(2, 2, 6)).unwrap();
+    // Without repair, re-staging H0 wedges every capture (the field symptom).
+    {
+        let wedged = reload_cache(&cache);
+        stage_journal_only(&wedged, &restored, &[], &storage);
+        let mut batches = PeerStorageBatches::new(2);
+        batches.bind_lease("lease-2").unwrap();
+        let error = batches
+            .capture(&wedged, &[record()], 1, |v| v, |id, _| Ok(id.to_owned()))
+            .unwrap_err();
+        assert_eq!(error, "cursor journal does not match exact record basis");
+    }
+    // Boot repair advances the journal to the verified descendant record.
+    let mut state = restored.clone();
+    let mut outbox = journal.into_unretired_outbox(&restored);
+    let repaired = crate::admitted_records::repair_record_basis(
+        &reloaded,
+        &mut state,
+        &mut outbox,
+        &native.key,
+        |_| true,
+        time(),
+    )
+    .unwrap();
+    assert_eq!(repaired, 1);
+    assert_eq!(value(&state).as_deref(), Some("typed in window"));
+    assert_eq!(outbox.len(), 1, "the edit is republished, not dropped");
+    stage_journal_only(&reloaded, &state, &outbox, &storage);
+    let mut batches = PeerStorageBatches::new(2);
+    batches.bind_lease("lease-2").unwrap();
+    let id = batches
+        .capture_transfer(
+            &reloaded,
+            &[record()],
+            &state.rows(),
+            1,
+            |v| v,
+            |id, _, _| Ok(id.to_owned()),
+        )
+        .unwrap();
+    batches.settle(&id, "lease-2", Ok(())).unwrap();
+    // The next boot restores the edit from the journal and needs no repair.
+    let again = reload_cache(&reloaded);
+    let (mut restored, journal) = committed(&again, &native);
+    assert_eq!(value(&restored).as_deref(), Some("typed in window"));
+    assert_eq!(journal.outbox, outbox);
+    let mut outbox = journal.outbox.clone();
+    assert_eq!(
+        crate::admitted_records::repair_record_basis(
+            &again,
+            &mut restored,
+            &mut outbox,
+            &native.key,
+            |_| true,
+            time(),
+        ),
+        Ok(0)
+    );
+}
+
+#[test]
+fn non_descendant_retained_record_is_refused_explicitly() {
+    let mut native = Native::new(1);
+    let (cache, mut batches, _) = committed_owner(&mut native);
+    // A retained record that does not contain the admitted heads.
+    let mut foreign = automerge::AutoCommit::new();
+    foreign.put(automerge::ROOT, "value", "unrelated").unwrap();
+    foreign.commit();
+    cache
+        .put_document(record(), &mut foreign, Some(vec![1; 32]))
+        .unwrap();
+    let (id, _) = capture(&mut batches, &cache);
+    batches.settle(&id, "lease", Ok(())).unwrap();
+    let reloaded = reload_cache(&cache);
+    let (restored, journal) = committed(&reloaded, &native);
+    let mut state = restored.clone();
+    let mut outbox = journal.outbox.clone();
+    let error = crate::admitted_records::repair_record_basis(
+        &reloaded,
+        &mut state,
+        &mut outbox,
+        &native.key,
+        |_| true,
+        time(),
+    )
+    .unwrap_err();
+    assert_eq!(
+        error,
+        format!(
+            "retained record {APP}/{RECORD} does not descend from its admitted journal; local storage is kept for recovery"
+        )
+    );
+    // Nothing was changed or dropped.
+    assert_eq!(state.rows(), restored.rows());
+    assert_eq!(outbox, journal.outbox);
+    assert_eq!(
+        reloaded.get(&record()).unwrap().bytes,
+        cache.get(&record()).unwrap().bytes
+    );
+}
+fn stage_journal_only(
+    cache: &PortableStorage,
+    state: &StatePeer,
+    outbox: &[NeighbourMsg],
+    storage: &JournalStorage,
+) {
+    let mut journal = Journal::from_state(state, outbox.to_vec()).unwrap();
+    journal.storage = storage.clone();
+    cache
+        .put(journal_key(), journal.encode().unwrap(), None)
+        .unwrap();
 }
 
 // ---- Lane D2: one page of several groups admits in order onto one candidate.

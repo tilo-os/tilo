@@ -8,6 +8,17 @@ use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList};
 const MAX_INVITATION: usize = 65_536;
 const MAX_MATERIAL: usize = 1_048_576;
 const MAX_COMPLETION: usize = 262_144;
+/// The guest issues its own fresh device certificate this far in the past, so
+/// a Cloud host whose clock is up to this much behind the browser still sees a
+/// certificate that is already valid. Host verification stays strict (no
+/// not-before tolerance); this only moves the issuer's own claim. Same bound as
+/// the owner path's issuance and the browser's host-clock tolerance.
+const ISSUE_BACKDATE_NS: u64 = 120_000_000_000;
+
+/// The issuance time of a certificate created at `created_at_ns`.
+fn backdated_issue(created_at_ns: u64) -> u64 {
+    created_at_ns.saturating_sub(ISSUE_BACKDATE_NS).max(1)
+}
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -71,7 +82,7 @@ impl InvitedIdentity {
             device_public_key: device.verifying_key().to_bytes(),
             device_label: label.into(),
             capabilities: DeviceCapabilities::member(),
-            issued_at_ns: now,
+            issued_at_ns: backdated_issue(now),
             expires_at_ns: None,
             signature: [0; 64],
         };
@@ -116,7 +127,9 @@ impl InvitedIdentity {
                     .verifying_key()
                     .to_bytes()
             || material.certificate.capabilities != DeviceCapabilities::member()
-            || material.certificate.issued_at_ns != material.created_at_ns
+            // Custody written before backdating issued at exactly created_at.
+            || (material.certificate.issued_at_ns != backdated_issue(material.created_at_ns)
+                && material.certificate.issued_at_ns != material.created_at_ns)
         {
             return Err("Invited identity custody mismatch".into());
         }

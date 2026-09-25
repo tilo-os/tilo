@@ -127,10 +127,19 @@ pub fn invited_identity_public(material: Vec<u8>) -> Result<String, JsValue> {
         .and_then(|value| value.public())
         .map_err(error)
 }
-#[wasm_bindgen]
-pub fn invited_begin(material: Vec<u8>, existing: Option<u32>) -> Result<u32, JsValue> {
-    let incoming = incoming_for_owner(existing)?;
-    let identity = InvitedIdentity::read_with_budget(&material, now(), &incoming).map_err(error)?;
+/// The retained invitation's single signed workspace host, its trust, and the
+/// selected delivery host/origin.
+fn workspace_host(
+    identity: &InvitedIdentity,
+) -> Result<
+    (
+        IrohWorkspaceHostHintV1,
+        WorkspaceHostTrust,
+        DeviceCert,
+        Option<String>,
+    ),
+    JsValue,
+> {
     let invitation = identity.retained_invitation().map_err(error)?;
     let mut hints = invitation
         .grant()
@@ -153,6 +162,83 @@ pub fn invited_begin(material: Vec<u8>, existing: Option<u32>) -> Result<u32, Js
         .map(|(host, _)| host.clone())
         .unwrap_or_else(|| host.host_device_certificate.clone());
     let origin = selected.map(|(_, origin)| origin);
+    Ok((host, trust, delivery_host, origin))
+}
+/// Transport-only reconnect of an admitted guest whose retained Peer still
+/// holds valid membership: no membership refresh (no host commits). Refuses
+/// with `Invited refresh required: …` on any doubt (identity, owner binding,
+/// current membership/permissions, host appointment, delivery hint); the
+/// caller then runs the full membership refresh instead.
+#[wasm_bindgen]
+pub async fn invited_resume_transport(peer: u32, material: Vec<u8>) -> Result<(), JsValue> {
+    let required = |reason: &str| error(format!("Invited refresh required: {reason}"));
+    let incoming = incoming_for_owner(Some(peer))?;
+    let identity = InvitedIdentity::read_with_budget(&material, now(), &incoming)
+        .map_err(|_| required("custody"))?;
+    if !identity.admitted() {
+        return Err(required("not admitted"));
+    }
+    let (host, _trust, delivery_host, origin) =
+        workspace_host(&identity).map_err(|_| required("workspace host"))?;
+    let current = PEERS
+        .with(|all| all.borrow().get(&peer).cloned())
+        .ok_or_else(|| error("closed Peer"))?;
+    if current.closed.get()
+        || current.media_enrollment.device != *identity.certificate()
+        || current.media_enrollment.governor != host.governing_authority
+        || current.data_host != host.host_device_certificate
+        || current.media_enrollment.host != delivery_host
+        || current.media_enrollment.workspace != host.workspace_id
+        || current.state.borrow().room() != host.room
+    {
+        return Err(required("owner changed"));
+    }
+    let time = SystemTime::now();
+    let state = current.state.borrow().clone();
+    if !state.certificates().contains(identity.certificate())
+        || state
+            .permissions(identity.certificate().device_public_key, time)
+            .is_err()
+    {
+        return Err(required("membership"));
+    }
+    if !state.certificates().contains(&host.host_device_certificate)
+        || state
+            .permissions(host.host_device_certificate.device_public_key, time)
+            .is_err()
+    {
+        return Err(required("host appointment"));
+    }
+    let hint = current.media_enrollment.hint.borrow().clone();
+    if origin.is_some() && hint.as_ref().is_none_or(|hint| hint.host != delivery_host) {
+        return Err(required("delivery hint"));
+    }
+    let mut revoked = RevocationList::new();
+    for entry in state.revocations() {
+        revoked.insert(entry).map_err(error)?;
+    }
+    let config = ValidatedOwner {
+        incoming,
+        key: identity.device_key(),
+        initial: state,
+        revoked,
+        certificate: identity.certificate().clone(),
+        host_certificate: host.host_device_certificate.clone(),
+        delivery_host,
+        workspace: host.workspace_id,
+        room: host.room.clone(),
+        delivery_hint: hint,
+        alive: None,
+        governance: GovernanceSource::Empty,
+    };
+    connect_validated(Some(peer), config, JsValue::NULL, None).await?;
+    Ok(())
+}
+#[wasm_bindgen]
+pub fn invited_begin(material: Vec<u8>, existing: Option<u32>) -> Result<u32, JsValue> {
+    let incoming = incoming_for_owner(existing)?;
+    let identity = InvitedIdentity::read_with_budget(&material, now(), &incoming).map_err(error)?;
+    let (host, trust, delivery_host, origin) = workspace_host(&identity)?;
     existing
         .map(|id| {
             let peer = PEERS
@@ -303,7 +389,8 @@ pub async fn invited_complete(id: u32, material: Vec<u8>) -> Result<String, JsVa
         .map_err(error)?;
         if expected != challenge
             || challenge.nonce == [0; 32]
-            || challenge.expires_at_ns.saturating_sub(now()) > 60_000_000_000
+            // 60 s host TTL plus the bounded browser/host clock tolerance.
+            || challenge.expires_at_ns.saturating_sub(now()) > 180_000_000_000
         {
             return Err(error(
                 "Membership challenge does not match retained identity",

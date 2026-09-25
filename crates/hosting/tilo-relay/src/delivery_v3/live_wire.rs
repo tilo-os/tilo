@@ -304,6 +304,19 @@ pub struct LiveObject {
     pub id: Vec<u8>,
 }
 
+/// Scoped text anchor: `[1, uvarint(offset), postcard(scope key)]`.
+pub const ANCHOR_TAG_SCOPED: u8 = 1;
+/// Same-scope head: `[2, uvarint(offset)]` (reuses the anchor's scope).
+pub const ANCHOR_TAG_SAME_SCOPE: u8 = 2;
+/// Digest-scoped anchor: `[3, uvarint(offset), 16-byte scope digest]`, sent
+/// only when the scoped form exceeds [`MAX_OBJECT_ID_BYTES`] (e.g. 130-byte
+/// Writer block ids). The digest is `PresenceKey::scope_digest` (ui-core);
+/// receivers resolve it against their own scopes. Additive: the anchor stays
+/// opaque bytes on the wire, so no frame encoding changes.
+pub const ANCHOR_TAG_DIGEST: u8 = 3;
+/// Byte length of an [`ANCHOR_TAG_DIGEST`] scope digest.
+pub const ANCHOR_SCOPE_DIGEST_BYTES: usize = 16;
+
 /// Text position as a stable CRDT anchor (opaque, application-encoded) plus offset.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -515,5 +528,188 @@ mod object_bytes {
         Ok(value.into_vec())
     }
 }
+
+// ---- Agent live identity and activity (lane H) -----------------------------
+
+/// Domain of [`agent_publisher`].
+pub const AGENT_PUBLISHER_DOMAIN: &[u8] = b"tilo-live-agent-v1\0";
+/// Application of the agent activity live record.
+pub const AGENT_ACTIVITY_APP: &str = "so.tilo.agent";
+/// Record of the agent activity live record (never a durable record id).
+pub const AGENT_ACTIVITY_RECORD: &str = "@qos:agent-activity";
+/// Fixed preview anchor of an activity insert; activity is state, not text.
+pub const AGENT_ACTIVITY_ANCHOR: [u8; 1] = [0xA1];
+/// Closed set of agent activity states.
+pub const AGENT_ACTIVITY_STATES: [&str; 8] = [
+    "thinking", "tool", "writing", "replying", "applying", "done", "failed", "idle",
+];
+/// Agent identifier bound (bytes).
+pub const MAX_AGENT_ID_BYTES: usize = 128;
+/// Agent display name bound (bytes).
+pub const MAX_AGENT_NAME_BYTES: usize = 64;
+/// Activity label bound (bytes).
+pub const MAX_AGENT_LABEL_BYTES: usize = 120;
+/// Activity tool name bound (bytes).
+pub const MAX_AGENT_TOOL_BYTES: usize = 64;
+
+/// Live publisher (namespace) id of an agent the host speaks for:
+/// `blake3(AGENT_PUBLISHER_DOMAIN ‖ u64le(len room) ‖ room ‖ host ‖ agent_id)`.
+/// `room` is the native room identifier (the same text given to
+/// [`room_digest`] / [`LiveNamespace::new`]), `host` the room authority (Store)
+/// device key. The output is a digest, never an enrolled device key, so no
+/// grant can name it: only the host injects into it, and receivers accept
+/// agent attribution only for a publisher equal to this recomputed value.
+pub fn agent_publisher(room: &str, host: [u8; 32], agent_id: &str) -> [u8; 32] {
+    let mut hash = blake3::Hasher::new();
+    hash.update(AGENT_PUBLISHER_DOMAIN);
+    hash.update(&(room.len() as u64).to_le_bytes());
+    hash.update(room.as_bytes());
+    hash.update(&host);
+    hash.update(agent_id.as_bytes());
+    *hash.finalize().as_bytes()
+}
+
+/// The agent's live namespace in `room`.
+pub fn agent_namespace(room: &str, host: [u8; 32], agent_id: &str) -> LiveNamespace {
+    LiveNamespace::new(room, agent_publisher(room, host, agent_id))
+}
+
+/// The shared agent activity live record.
+pub fn agent_activity_record() -> LiveRecord {
+    LiveRecord {
+        app: AGENT_ACTIVITY_APP.into(),
+        record: AGENT_ACTIVITY_RECORD.into(),
+    }
+}
+
+/// One agent activity value, carried as the JSON text of a single preview
+/// insert at [`AGENT_ACTIVITY_ANCHOR`] on [`agent_activity_record`] in the
+/// agent's namespace. Inert display state: never authority.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AgentActivity {
+    /// Exactly one.
+    pub v: u8,
+    /// Agent identifier, 1..=[`MAX_AGENT_ID_BYTES`].
+    pub agent: String,
+    /// Display name from the owner's spawn request, 1..=[`MAX_AGENT_NAME_BYTES`].
+    pub name: String,
+    /// One of [`AGENT_ACTIVITY_STATES`].
+    pub state: String,
+    /// Human activity line, 0..=[`MAX_AGENT_LABEL_BYTES`].
+    pub label: String,
+    /// Tool in use, 1..=[`MAX_AGENT_TOOL_BYTES`].
+    #[serde(default)]
+    pub tool: Option<String>,
+    /// Host wall clock of this value (display only, never ordering).
+    pub at_ms: u64,
+    /// Member-visible agent status, one of [`AGENT_STATUSES`], computed by
+    /// the host with the same rule as the owner's agent reads, so every
+    /// member shows one status. Absent from older hosts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<String>,
+}
+
+/// Closed set of [`AgentActivity::status`] (the agent-reads `AgentStatus`).
+pub const AGENT_STATUSES: [&str; 6] = [
+    "starting",
+    "running",
+    "waiting",
+    "paused",
+    "completed",
+    "failed",
+];
+
+fn clean(text: &str, min: usize, max: usize) -> Result<()> {
+    if text.len() < min || text.len() > max || text.chars().any(char::is_control) {
+        Err(LiveWireError::Invalid)
+    } else {
+        Ok(())
+    }
+}
+
+/// Longest prefix of `text` without control characters within `max` bytes, on
+/// a character boundary.
+pub fn bounded_display_text(text: &str, max: usize) -> String {
+    let mut out = String::new();
+    for ch in text
+        .chars()
+        .map(|ch| if ch.is_control() { ' ' } else { ch })
+    {
+        if out.len() + ch.len_utf8() > max {
+            break;
+        }
+        out.push(ch);
+    }
+    out
+}
+
+impl AgentActivity {
+    /// Structural bounds of every field and of the encoded JSON.
+    pub fn validate(&self) -> Result<()> {
+        if self.v != 1 || !AGENT_ACTIVITY_STATES.contains(&self.state.as_str()) {
+            return Err(LiveWireError::Invalid);
+        }
+        clean(&self.agent, 1, MAX_AGENT_ID_BYTES)?;
+        clean(&self.name, 1, MAX_AGENT_NAME_BYTES)?;
+        clean(&self.label, 0, MAX_AGENT_LABEL_BYTES)?;
+        if let Some(tool) = &self.tool {
+            clean(tool, 1, MAX_AGENT_TOOL_BYTES)?;
+        }
+        if let Some(status) = &self.status
+            && !AGENT_STATUSES.contains(&status.as_str())
+        {
+            return Err(LiveWireError::Invalid);
+        }
+        Ok(())
+    }
+    /// Compact JSON within [`MAX_PREVIEW_TEXT_BYTES`].
+    pub fn to_json(&self) -> Result<String> {
+        self.validate()?;
+        let json = serde_json::to_string(self).map_err(|_| LiveWireError::Codec)?;
+        if json.len() > MAX_PREVIEW_TEXT_BYTES {
+            return Err(LiveWireError::Invalid);
+        }
+        Ok(json)
+    }
+    /// Strict bounded parse (unknown fields rejected).
+    pub fn from_json(text: &str) -> Result<Self> {
+        if text.is_empty() || text.len() > MAX_PREVIEW_TEXT_BYTES {
+            return Err(LiveWireError::Codec);
+        }
+        let value: Self = serde_json::from_str(text).map_err(|_| LiveWireError::Codec)?;
+        value.validate()?;
+        Ok(value)
+    }
+    /// The activity preview frame (one insert at the fixed anchor).
+    pub fn to_frame(&self, seq: u64) -> Result<OpsFrame> {
+        Ok(OpsFrame::Preview {
+            seq,
+            record: agent_activity_record(),
+            ops: vec![PreviewOp::Insert {
+                at: LiveAnchor {
+                    cursor: AGENT_ACTIVITY_ANCHOR.to_vec(),
+                },
+                text: self.to_json()?,
+            }],
+        })
+    }
+    /// Parse an activity preview frame: exactly one insert at the fixed anchor
+    /// on the activity record. Returns `(seq, activity)`.
+    pub fn from_frame(frame: &OpsFrame) -> Result<(u64, Self)> {
+        let OpsFrame::Preview { seq, record, ops } = frame else {
+            return Err(LiveWireError::Invalid);
+        };
+        match ops.as_slice() {
+            [PreviewOp::Insert { at, text }]
+                if *record == agent_activity_record() && at.cursor == AGENT_ACTIVITY_ANCHOR =>
+            {
+                Ok((*seq, Self::from_json(text)?))
+            }
+            _ => Err(LiveWireError::Invalid),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests;

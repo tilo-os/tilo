@@ -203,6 +203,27 @@ async fn live_service(
     Ok(live)
 }
 
+/// Agent live publisher on the installed relay (room and host from a current
+/// turn); `None` leaves agents on the durable path only.
+fn agent_live_publisher(
+    source: &CloudStoreSource,
+    live: &InstalledLive,
+) -> Option<super::agent_live::AgentLivePublisher> {
+    let (room, host) = current(source, |turn| {
+        (
+            turn.peer().room().to_owned(),
+            turn.peer().authority().device_public_key,
+        )
+    })
+    .inspect_err(|error| tracing::warn!(%error, "agent live publisher unavailable"))
+    .ok()?;
+    Some(super::agent_live::AgentLivePublisher::start(
+        live.relay.clone(),
+        room,
+        host,
+    ))
+}
+
 async fn shutdown_signal() {
     #[cfg(unix)]
     {
@@ -308,7 +329,8 @@ async fn serve_inner(
     let result = async {
         let (queue, broker, observer) =
             spawn_private_broker(root.clone(), machine.clone(), commands, policy);
-        let private = PrivateLane::install(&source, &queue, broker, observer)?;
+        let private = PrivateLane::install(&source, &queue, broker, observer)
+            .context("private lane install")?;
         let media = Arc::new(media_service(&source, &origin).await?);
         let authority: Arc<dyn qos_session_peer::ingress::RelayAuthority> = media.clone();
         let mut transport = transport.start(authority).await?;
@@ -323,6 +345,11 @@ async fn serve_inner(
                 None
             }
         };
+        // Lane H: speak for agents in their own host-fed live namespaces. The
+        // bus never blocks the Store owner; dropped at shutdown.
+        let agent_live = live
+            .as_ref()
+            .and_then(|live| agent_live_publisher(&source, live));
         let mut service = CloudService::install(
             source.clone(),
             &origin,
@@ -331,7 +358,8 @@ async fn serve_inner(
             Some(private),
             Some(media),
             live,
-        )?;
+        )
+        .context("Cloud service install")?;
         ensure!(
             service.product_ready() && service.capabilities() == PRODUCT_DATA_V1,
             "complete product data routes unavailable"
@@ -346,6 +374,8 @@ async fn serve_inner(
         tokio::pin!(shutdown);
         // `QOS_HOST_PERF_BASELINE=1` keeps the previous polling-only loop.
         let wake = (!crate::storage::host_perf_baseline()).then(|| service.wake_handle());
+        // A Store commit by any component (agent worker, retention) wakes held polls at once.
+        let mut commits = crate::delivery::commit_wake::CommitWake::subscribe();
         let served: Result<()> = loop {
             let outbound = async {
                 match agents.as_mut() {
@@ -375,6 +405,7 @@ async fn serve_inner(
                 // Completed upload work / private replies (a wake raised
                 // while `maintain` ran is kept as the permit: no lost wake-up).
                 _ = woken => {}
+                _ = commits.changed() => {}
                 _ = tokio::time::sleep_until(service.next_wakeup()) => {}
             }
             #[cfg(test)]
@@ -383,12 +414,19 @@ async fn serve_inner(
             #[cfg(test)]
             super::service::quiet_ticks::count(&root, began.elapsed());
             if service.is_failed() {
+                tracing::warn!(cause = service.failure_cause(), "Cloud owner failed");
                 break Err(anyhow!("Cloud owner failed; restart with a fresh binding"));
             }
         };
+        // Stop the agent owner first: it winds down (withdrawing readiness,
+        // closing launches and workers) while the service and transport close.
+        if let Some(agents) = agents.as_mut() {
+            agents.request_stop();
+        }
         // Held requests get their idle/refusal answers; every admitted commit
         // already passed its Store barrier, so no owner state remains buffered.
         service.close();
+        drop(agent_live);
         let _ = std::fs::remove_file(&ready.path);
         if let Err(error) = &served {
             tracing::warn!(%error, "Cloud HTTPS service stopped");
@@ -398,15 +436,44 @@ async fn serve_inner(
     }
     .await;
     let closed = match agents.as_mut() {
-        Some(agents) => agents.close().await.map_err(anyhow::Error::msg),
+        Some(agents) => agents
+            .close_within(AGENT_STOP_BOUND)
+            .await
+            .map_err(anyhow::Error::msg),
         None => Ok(()),
     };
     source.retire();
-    // Orderly shutdown folds the Store journal into the checkpoint.
-    if let Err(error) = crate::storage::compact(&root) {
-        tracing::warn!(%error, "Cloud state journal compaction deferred");
+    // Orderly shutdown folds the Store journal into the checkpoint, bounded:
+    // an unfinished fold leaves the durable checkpoint plus journal, which the
+    // next open reads as ever.
+    match bounded_blocking(COMPACTION_BOUND, move || crate::storage::compact(&root)).await {
+        Some(Ok(_)) => {}
+        Some(Err(error)) => tracing::warn!(%error, "Cloud state journal compaction deferred"),
+        None => tracing::warn!(
+            bound_ms = COMPACTION_BOUND.as_millis() as u64,
+            "Cloud state journal compaction deferred: shutdown bound reached"
+        ),
     }
     result.and(closed)
+}
+/// Upper bound for the agent owner to stop during shutdown.
+const AGENT_STOP_BOUND: std::time::Duration = std::time::Duration::from_secs(6);
+/// Upper bound for the orderly journal fold during shutdown.
+const COMPACTION_BOUND: std::time::Duration = std::time::Duration::from_secs(4);
+/// Run `work` on its own thread and wait at most `bound`. On expiry the thread
+/// is detached (no runtime waits for it at exit) and `None` is returned.
+async fn bounded_blocking<R: Send + 'static>(
+    bound: std::time::Duration,
+    work: impl FnOnce() -> R + Send + 'static,
+) -> Option<R> {
+    let (done, result) = tokio::sync::oneshot::channel();
+    std::thread::Builder::new()
+        .name("cloud-shutdown".into())
+        .spawn(move || {
+            let _ = done.send(work());
+        })
+        .ok()?;
+    tokio::time::timeout(bound, result).await.ok()?.ok()
 }
 #[cfg(test)]
 pub(in crate::https_owner) mod tests;

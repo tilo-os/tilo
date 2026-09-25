@@ -152,6 +152,7 @@ impl RuntimeOwner {
                 }
                 *slot = LiveLaunchSlot::Permit(permit);
                 drop(slot);
+                super::agent_timing("launch_intent", attempt.custody.id().invocation());
                 #[cfg(test)]
                 test_audit(self, attempt, "barrier");
                 Ok(binding)
@@ -179,6 +180,9 @@ impl RuntimeOwner {
 }
 
 /// The handle owns its return descriptor; there is no independently pairable receiver.
+/// The connect runs on the dedicated gateway I/O runtime, never on the busy
+/// runtime-owner executor, so owner ticks cannot starve its deadline. Abort
+/// still drops the task (and any connected descriptor) before `join` returns.
 pub(crate) struct GatewayConnector {
     attempt: Arc<LiveAttempt>,
     task: tokio::task::JoinHandle<Result<UnixStream, String>>,
@@ -188,7 +192,8 @@ impl GatewayConnector {
         attempt: Arc<LiveAttempt>,
         config: crate::agent_runtime_config::ManagedConfig,
     ) -> Self {
-        let task = tokio::task::spawn_local(async move { config.model_connection().await });
+        let task = crate::agent_runtime_config::gateway_io()
+            .spawn(async move { config.model_connection().await });
         Self { attempt, task }
     }
     pub(crate) fn is_finished(&self) -> bool {

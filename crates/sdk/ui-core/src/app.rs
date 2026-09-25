@@ -22,6 +22,7 @@ mod animation_schedule;
 mod action_directory_snapshot;
 mod document_history;
 mod model_lifecycle;
+mod participants;
 mod published_invocations;
 mod retirement_assembly;
 #[cfg(test)]
@@ -2875,6 +2876,12 @@ impl App {
             )
             .unwrap_or(false)
             {
+                // Never silent: a contract violation withdraws the whole
+                // component's published surface (agents and Ctrl+K lose it).
+                tracing::error!(
+                    resources = component.resources.len(),
+                    "refusing to publish a component surface that fails action contract validation"
+                );
                 continue;
             }
             for resource in component.resources {
@@ -4123,6 +4130,26 @@ impl App {
                 });
             return;
         }
+        // The invoker is the delivered actor plus the participant the host
+        // set for it in the delivery context (never trusted from anywhere
+        // else). Resolution below rebuilds that participant's own tree, and
+        // durable attribution carries the same invoker.
+        let participant =
+            crate::invocation_scope::PublishedInvocationRequest::delivered_participant(
+                actor,
+                ambient_context,
+            );
+        let invoker = tilo_actions::ActionInvoker {
+            actor: actor.to_owned(),
+            participant: participant.clone(),
+        };
+        let attributed =
+            ambient_context.map(|context| context.clone().with_invoker(invoker.clone()));
+        let ambient_context = attributed.as_ref();
+        if let Some(participant) = &participant {
+            self.join_participant(participant);
+        }
+        let _invoker = crate::invocation_scope::InvokerScope::enter(invoker);
         let authorization = self.authorize_published_invocation(
             &crate::invocation_scope::PublishedInvocationRequest {
                 wire_id: id,
@@ -4130,6 +4157,7 @@ impl App {
                 address: address.clone(),
                 argument: argument.map(str::to_owned),
                 actor: actor.to_owned(),
+                participant,
             },
             has_explicit_invocation,
         );
@@ -4833,6 +4861,17 @@ impl App {
                 self.root_widget.as_ref(),
                 target,
             )?
+        } else if let Some(participant) = crate::invocation_scope::current_participant() {
+            // A participant's tree is rebuilt for it now, never read from the
+            // cache of this window's own view.
+            let mut resources = Vec::new();
+            crate::bound_dispatch::collect_participant_resources(
+                self.root_widget.as_ref(),
+                &self.state.doc,
+                &participant,
+                &mut resources,
+            );
+            resources
         } else if actor == self.collaboration.local_author.0 {
             self.collect_local_resources()
         } else {
@@ -4882,7 +4921,13 @@ impl App {
             scope.check_dispatch_spec(resolved)?;
         }
         let kind = resolved.kind;
-        if kind == tilo_actions::OperationKind::View && actor != self.collaboration.local_author.0 {
+        if kind == tilo_actions::OperationKind::View
+            && !crate::invocation_scope::view_operation_permitted(
+                actor,
+                &self.collaboration.local_author.0,
+                &resolved.contract,
+            )
+        {
             return Err(tilo_actions::DoorError::Unavailable {
                 code: "private_view".into(),
                 reason: "A collaborator cannot move this participant's private focus or viewport; use Follow or Reveal explicitly".into(),
@@ -23645,6 +23690,10 @@ mod focus_selection_tests;
 #[cfg(test)]
 #[path = "app/local_privacy_tests.rs"]
 mod local_privacy_tests;
+
+#[cfg(test)]
+#[path = "app/participant_invocation_tests.rs"]
+mod participant_invocation_tests;
 
 /// Finish the current writer and every retained outgoing-owner failure before
 /// reporting widget-owned durability. Reports remain owned by the runner.

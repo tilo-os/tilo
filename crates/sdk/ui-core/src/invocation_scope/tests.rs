@@ -38,6 +38,7 @@ fn scope(
         address: tilo_actions::ActionAddress::new("fixture", "write"),
         argument: None,
         actor: actor.into(),
+        participant: None,
     };
     let lease = PublishedInvocationLease::new(
         request,
@@ -455,6 +456,7 @@ fn scope_with_original_callback_gate(
         address: tilo_actions::ActionAddress::new("fixture", "write"),
         argument: None,
         actor: "original-blocked-caller".into(),
+        participant: None,
     };
     let lease = PublishedInvocationLease::new(
         request,
@@ -556,4 +558,54 @@ fn causal_scope_cancel_during_original_callback_fences_owner_check() {
         job.check().is_err(),
         "retired original custody cannot revive"
     );
+}
+
+#[test]
+fn invoker_scope_nests_and_gates_remote_view_operations() {
+    use tilo_actions::{ActionContract, ActionInvoker, ParticipantId};
+    let participant = ParticipantId::for_agent_task("t").unwrap();
+    let own_view = ActionContract::view();
+    let mut participant_view = ActionContract::view();
+    participant_view
+        .tags
+        .push(tilo_actions::PARTICIPANT_VIEW_TAG.to_owned());
+    assert_eq!(super::current_invoker(), None);
+    // The local person may always change its own view.
+    assert!(super::view_operation_permitted("me", "me", &own_view));
+    // A remote actor outside any delivered invocation may not.
+    assert!(!super::view_operation_permitted(
+        "agent:a",
+        "me",
+        &participant_view
+    ));
+    {
+        let _outer = super::InvokerScope::enter(
+            ActionInvoker::actor("agent:a").with_participant(participant.clone()),
+        );
+        assert_eq!(super::current_participant(), Some(participant.clone()));
+        assert!(super::view_operation_permitted(
+            "agent:a",
+            "me",
+            &participant_view
+        ));
+        assert!(
+            !super::view_operation_permitted("agent:a", "me", &own_view),
+            "an untagged View op would move somebody else's view"
+        );
+        assert!(
+            !super::view_operation_permitted("agent:b", "me", &participant_view),
+            "only the current invoker's own view"
+        );
+        {
+            let _inner = super::InvokerScope::enter(ActionInvoker::actor("agent:a"));
+            assert_eq!(super::current_participant(), None);
+            assert!(!super::view_operation_permitted(
+                "agent:a",
+                "me",
+                &participant_view
+            ));
+        }
+        assert_eq!(super::current_participant(), Some(participant));
+    }
+    assert_eq!(super::current_invoker(), None);
 }

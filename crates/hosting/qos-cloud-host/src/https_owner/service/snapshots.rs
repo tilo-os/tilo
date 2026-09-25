@@ -14,6 +14,11 @@ use qos_relay::delivery_v3::{
 /// Live pins across all devices, and per device.
 const LIVE: usize = 8;
 const LIVE_DEVICE: usize = 2;
+/// Lock patience of a transfer's later phases (about 100 ms), once its first
+/// turn was admitted: failing a later phase on a briefly held Store answers
+/// 503 after effects, and the client restarts the whole transfer (a new pin
+/// and several more turns). Only the first turn defers without effect.
+const PHASE_RETRIES: u32 = 50;
 /// Maintenance sweeps expired durable pins at most this often.
 const SWEEP_NS: u64 = 60_000_000_000;
 
@@ -53,6 +58,34 @@ fn chunk_target(path: &str) -> Option<([u8; 16], u32)> {
         return None;
     }
     Some((hex::decode(pin).ok()?.try_into().ok()?, index))
+}
+/// Before a device's new transfer takes a durable pin and a sidecar slot (in
+/// the same turn), release pins no live transfer serves (see
+/// `release_orphan_snapshot_pins`) and unlink sidecars without a ledger pin.
+/// Best effort: a refusal leaves them to expire and the periodic sweep.
+fn release_orphans(
+    turn: &mut CloudStoreTurn,
+    work: &HostWorkInventory,
+    device: [u8; 32],
+    live: &[[u8; 16]],
+) {
+    let released = match turn.release_orphan_snapshot_pins(device, live) {
+        Ok(released) => released.len(),
+        Err(error) => {
+            tracing::debug!(?error, "orphan snapshot pin release deferred");
+            0
+        }
+    };
+    // The pin removal barrier (above) precedes any physical unlink.
+    let unlinked = phases::remove_unpinned_sidecars(turn, work);
+    if released + unlinked > 0 {
+        tracing::info!(
+            event = "cloud_snapshot_orphans_released",
+            released,
+            unlinked,
+            "Released abandoned snapshot pins before a new transfer"
+        );
+    }
 }
 /// Re-derive the same live session in a later turn; never a fresh admission.
 fn revalidate<'r>(
@@ -120,28 +153,45 @@ impl Snapshots {
         pool: &HostBytes,
         work: &HostWorkInventory,
     ) -> Result<()> {
+        self.recover_waiting(source, pool, work, BUSY_INLINE)
+    }
+    /// `recover` with an explicit lock patience (installation waits longer).
+    pub(super) fn recover_waiting(
+        &mut self,
+        source: &CloudStoreSource,
+        pool: &HostBytes,
+        work: &HostWorkInventory,
+        retries: u32,
+    ) -> Result<()> {
         let now = qos_relay::clock::now_ns();
         self.swept_at = now;
         self.live
             .retain(|transfer| transfer.live.expires_at_ns() > now);
-        with_turn(source, pool, DeliveryOperation::Maintenance, |turn| {
-            let expired = turn.expire_snapshot_pins().map_err(delivery)?;
-            if expired.is_empty() {
-                return Ok(());
-            }
-            // The pin removal barrier precedes any physical unlink.
-            let directory = work
-                .snapshot_directory(turn.directory(), turn.workspace())
-                .map_err(|error| anyhow!("snapshot storage unavailable: {error:?}"))?;
-            for pin in expired {
-                if let Ok(Some(reservation)) = directory.open_existing(pin) {
-                    if let Err(error) = reservation.remove() {
-                        tracing::debug!(?error, "expired snapshot sidecar cleanup deferred");
+        with_turn_waiting(
+            source,
+            pool,
+            DeliveryOperation::Maintenance,
+            retries,
+            |turn| {
+                let expired = turn.expire_snapshot_pins().map_err(delivery)?;
+                phases::remove_unpinned_sidecars(turn, work);
+                if expired.is_empty() {
+                    return Ok(());
+                }
+                // The pin removal barrier precedes any physical unlink.
+                let directory = work
+                    .snapshot_directory(turn.directory(), turn.workspace())
+                    .map_err(|error| anyhow!("snapshot storage unavailable: {error:?}"))?;
+                for pin in expired {
+                    if let Ok(Some(reservation)) = directory.open_existing(pin) {
+                        if let Err(error) = reservation.remove() {
+                            tracing::debug!(?error, "expired snapshot sidecar cleanup deferred");
+                        }
                     }
                 }
-            }
-            Ok(())
-        })
+                Ok(())
+            },
+        )
     }
     pub(super) fn maintain(
         &mut self,
@@ -181,7 +231,8 @@ impl Snapshots {
             let (session, device) =
                 with_turn(source, pool, DeliveryOperation::SnapshotSelect, |turn| {
                     admit(registry, pins, turn, request)
-                })?;
+                })
+                .context("snapshot renew admission")?;
             return match self.renew(
                 source,
                 pool,
@@ -209,7 +260,8 @@ impl Snapshots {
                 (session, device),
                 generation,
             ))
-        })?;
+        })
+        .context("snapshot selection turn")?;
         let (selected, (session, device)) = match selected {
             (Ok(selected), identity, _) => (selected, identity),
             (Err(error), _, generation) => {
@@ -217,24 +269,66 @@ impl Snapshots {
                 return Self::required(reason, generation);
             }
         };
+        let live_pins = self.live_pins();
         // Worker phase: original backings and credit only, no live turn.
-        let prepared = selected.prepare().map_err(delivery)?;
-        let draft = with_turn(source, pool, DeliveryOperation::SnapshotCommit, |turn| {
-            let session = revalidate(registry, pins, turn, session)?;
-            prepared.draft(turn, session, work).map_err(delivery)
-        })?;
-        let pending = draft.persist().map_err(delivery)?;
-        let committed = with_turn(source, pool, DeliveryOperation::SnapshotCommit, |turn| {
-            let session = revalidate(registry, pins, turn, session)?;
-            pending.commit(turn, session).map_err(delivery)
-        })?;
-        let live = committed.finalize().map_err(delivery)?;
-        let manifest = with_turn(source, pool, DeliveryOperation::SnapshotSelect, |turn| {
-            let session = revalidate(registry, pins, turn, session)?;
-            Ok(live.manifest(turn, session).map_err(delivery)?.to_vec())
-        })?;
+        let prepared = selected
+            .prepare()
+            .map_err(delivery)
+            .context("snapshot prepare")?;
+        let draft = with_turn_waiting(
+            source,
+            pool,
+            DeliveryOperation::SnapshotCommit,
+            PHASE_RETRIES,
+            |turn| {
+                let session = revalidate(registry, pins, turn, session)?;
+                release_orphans(turn, work, device, &live_pins);
+                prepared.draft(turn, session, work).map_err(delivery)
+            },
+        )
+        .context("snapshot draft")?;
+        let pending = draft
+            .persist()
+            .map_err(delivery)
+            .context("snapshot persist")?;
+        let committed = with_turn_waiting(
+            source,
+            pool,
+            DeliveryOperation::SnapshotCommit,
+            PHASE_RETRIES,
+            |turn| {
+                let session = revalidate(registry, pins, turn, session)?;
+                pending.commit(turn, session).map_err(delivery)
+            },
+        )
+        .context("snapshot commit")?;
+        let live = committed
+            .finalize()
+            .map_err(delivery)
+            .context("snapshot finalize")?;
+        let manifest = with_turn_waiting(
+            source,
+            pool,
+            DeliveryOperation::SnapshotSelect,
+            PHASE_RETRIES,
+            |turn| {
+                let session = revalidate(registry, pins, turn, session)?;
+                Ok(live.manifest(turn, session).map_err(delivery)?.to_vec())
+            },
+        )?;
         self.retain(source, pool, registry, pins, session, device, live)?;
         frame(MessageType::SnapshotManifest, &manifest)
+    }
+
+    /// Pins of this process's live transfers (expired ones dropped first).
+    fn live_pins(&mut self) -> Vec<[u8; 16]> {
+        let now = qos_relay::clock::now_ns();
+        self.live
+            .retain(|transfer| transfer.live.expires_at_ns() > now);
+        self.live
+            .iter()
+            .map(|transfer| transfer.live.pin())
+            .collect()
     }
 
     /// Keep the new live pin, superseding the device's oldest beyond its bound.
@@ -258,10 +352,16 @@ impl Snapshots {
                 .position(|t| t.device == device)
                 .expect("counted device pin");
             let old = self.live.remove(oldest).live;
-            let released = with_turn(source, pool, DeliveryOperation::SnapshotRelease, |turn| {
-                let session = revalidate(registry, pins, turn, session)?;
-                old.release(turn, session).map_err(delivery)
-            });
+            let released = with_turn_waiting(
+                source,
+                pool,
+                DeliveryOperation::SnapshotRelease,
+                PHASE_RETRIES,
+                |turn| {
+                    let session = revalidate(registry, pins, turn, session)?;
+                    old.release(turn, session).map_err(delivery)
+                },
+            );
             match released {
                 Ok(released) => {
                     if let Err(error) = released.cleanup() {
@@ -308,11 +408,16 @@ impl Snapshots {
                 Renewal::Unchanged(live) => live,
                 Renewal::Pending(draft) => {
                     let pending = draft.persist().map_err(delivery)?;
-                    let committed =
-                        with_turn(source, pool, DeliveryOperation::SnapshotRenew, |turn| {
+                    let committed = with_turn_waiting(
+                        source,
+                        pool,
+                        DeliveryOperation::SnapshotRenew,
+                        PHASE_RETRIES,
+                        |turn| {
                             let session = revalidate(registry, pins, turn, session)?;
                             pending.commit(turn, session).map_err(delivery)
-                        })?;
+                        },
+                    )?;
                     committed.finalize().map_err(delivery)?
                 }
             }
@@ -322,10 +427,16 @@ impl Snapshots {
             ensure!(live.matches_digest(&digest), "renewal digest mismatch");
             live
         };
-        let manifest = with_turn(source, pool, DeliveryOperation::SnapshotSelect, |turn| {
-            let session = revalidate(registry, pins, turn, session)?;
-            Ok(live.manifest(turn, session).map_err(delivery)?.to_vec())
-        })?;
+        let manifest = with_turn_waiting(
+            source,
+            pool,
+            DeliveryOperation::SnapshotSelect,
+            PHASE_RETRIES,
+            |turn| {
+                let session = revalidate(registry, pins, turn, session)?;
+                Ok(live.manifest(turn, session).map_err(delivery)?.to_vec())
+            },
+        )?;
         self.live.push(Transfer { device, live });
         Ok(manifest)
     }
@@ -350,15 +461,27 @@ impl Snapshots {
             phases::open_recovery(source, turn, session, work, pin).map_err(delivery)
         })?;
         let read = job.read().map_err(delivery)?;
-        let selected = with_turn(source, pool, DeliveryOperation::SnapshotSelect, |turn| {
-            let session = revalidate(registry, pins, turn, session)?;
-            read.select(turn, session, digest).map_err(delivery)
-        })?;
+        let selected = with_turn_waiting(
+            source,
+            pool,
+            DeliveryOperation::SnapshotSelect,
+            PHASE_RETRIES,
+            |turn| {
+                let session = revalidate(registry, pins, turn, session)?;
+                read.select(turn, session, digest).map_err(delivery)
+            },
+        )?;
         let prepared = selected.prepare().map_err(delivery)?;
-        let ready = with_turn(source, pool, DeliveryOperation::SnapshotSelect, |turn| {
-            let session = revalidate(registry, pins, turn, session)?;
-            prepared.reconcile(turn, session).map_err(delivery)
-        })?;
+        let ready = with_turn_waiting(
+            source,
+            pool,
+            DeliveryOperation::SnapshotSelect,
+            PHASE_RETRIES,
+            |turn| {
+                let session = revalidate(registry, pins, turn, session)?;
+                prepared.reconcile(turn, session).map_err(delivery)
+            },
+        )?;
         ready.finish().map_err(delivery)
     }
 
@@ -398,10 +521,16 @@ impl Snapshots {
                 return Err(delivery(error));
             }
         };
-        let (live, reply) = with_turn(source, pool, DeliveryOperation::SnapshotSelect, |turn| {
-            let session = revalidate(registry, pins, turn, session)?;
-            prepared.authorize(turn, session).map_err(delivery)
-        })?;
+        let (live, reply) = with_turn_waiting(
+            source,
+            pool,
+            DeliveryOperation::SnapshotSelect,
+            PHASE_RETRIES,
+            |turn| {
+                let session = revalidate(registry, pins, turn, session)?;
+                prepared.authorize(turn, session).map_err(delivery)
+            },
+        )?;
         let bytes = reply.bytes().to_vec();
         self.live.push(Transfer { device, live });
         Ok(bytes)

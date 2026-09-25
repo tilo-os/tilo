@@ -161,6 +161,8 @@ impl CloudService {
         append(admissions)?;
         while next < items.len() {
             let rest = &items[next..];
+            // An earlier unit already committed: a busy Store now answers the
+            // retryable 503 instead of re-dispatching the whole request.
             let admissions = with_state_turn(&self.source, &self.pool, length(rest)?, |turn| {
                 let intent = registry.session_intent(session)?;
                 let context = turn.carrier_context(
@@ -175,6 +177,13 @@ impl CloudService {
                     turn.admit_state_group(current, rest)
                 })
                 .map_err(delivery)
+            })
+            .map_err(|error| {
+                if deferrable(&error) {
+                    error.context(OwnerBusyAfterEffect)
+                } else {
+                    error
+                }
             })?;
             ensure!(
                 !admissions.is_empty() && admissions.len() <= rest.len(),
@@ -214,7 +223,7 @@ impl CloudService {
 
     /// Answer now when a complete group exists; otherwise hold the original
     /// request until a commit, cancellation, session fence or its deadline.
-    pub(super) fn poll(&mut self, request: BufferedRequest) {
+    pub(super) fn poll(&mut self, request: BufferedRequest) -> Option<BufferedRequest> {
         let outcome = (|| -> Result<(Option<Vec<u8>>, Option<Held>)> {
             let proof = RequestProof::decode(request.proof().context("missing proof")?)?;
             let exact = Request::new(request.method().as_str(), request.target(), request.body())?;
@@ -257,7 +266,7 @@ impl CloudService {
         })();
         match outcome {
             Ok((Some(page), _)) => {
-                let _ = request.respond(StatusCode::OK, page);
+                let _ = request.respond(StatusCode::OK, super::exact_body(page));
             }
             Ok((None, Some(held))) => {
                 if let Err(request) = self.polls.park(held, request) {
@@ -267,11 +276,14 @@ impl CloudService {
                 }
             }
             Ok((None, None)) => refuse(request),
+            // The Store was busy before admission: retried, not refused.
+            Err(error) if deferrable(&error) => return Some(request),
             Err(error) => {
                 tracing::debug!(%error, "Cloud event poll refused");
                 refuse(request)
             }
         }
+        None
     }
 }
 
@@ -465,10 +477,23 @@ struct Parked {
 }
 pub(super) struct Polls {
     parked: Vec<Parked>,
+    /// A wake found the Store busy for some held poll: that poll has not yet
+    /// observed the commit that woke it. The commit signal (probe change) is
+    /// already consumed, so the service re-wakes on its short tick until
+    /// every held poll got a real turn; otherwise the poll would wait for the
+    /// next unrelated commit or its idle deadline (up to 20 s).
+    retry: bool,
 }
 impl Polls {
     pub(super) fn new() -> Self {
-        Self { parked: Vec::new() }
+        Self {
+            parked: Vec::new(),
+            retry: false,
+        }
+    }
+    /// A held poll still owes a replay turn (see `retry`).
+    pub(super) fn needs_retry(&self) -> bool {
+        self.retry && !self.parked.is_empty()
     }
     fn park(
         &mut self,
@@ -541,26 +566,52 @@ impl Polls {
         pins: &Pins,
     ) {
         let now = Instant::now();
+        // A retry wake takes one lock attempt, no in-line waits, and the
+        // first busy answer ends this wake's turns: the retry loop on the
+        // short tick must not stall the serialized service loop (private
+        // reads, invocations) while another component holds the Store.
+        let retries = if self.retry { 0 } else { BUSY_INLINE };
+        self.retry = false;
+        let mut busy = false;
         for parked in std::mem::take(&mut self.parked) {
             if parked.pending.original().is_cancelled() {
                 continue;
             }
             let deadline = parked.pending.original().deadline();
-            let result = with_turn(source, pool, DeliveryOperation::Replay, |turn| {
-                let intent = registry.session_intent(parked.pending.session_id())?;
-                let context = turn.carrier_context(
-                    pins,
-                    intent.device(),
-                    intent.requested(),
-                    intent.mandatory(),
-                )?;
-                let session =
-                    registry.resume_buffered_in(&parked.pending, &context.verification())?;
-                replay_page(turn, session, parked.cursor.as_ref())
-            });
+            let before_idle = deadline
+                .checked_sub(IDLE_MARGIN)
+                .is_some_and(|idle| now < idle);
+            if busy {
+                if before_idle {
+                    self.retry = true;
+                    self.parked.push(parked);
+                } else {
+                    let _ = parked
+                        .pending
+                        .into_request()
+                        .respond(StatusCode::OK, Vec::new());
+                }
+                continue;
+            }
+            let result =
+                with_turn_waiting(source, pool, DeliveryOperation::Replay, retries, |turn| {
+                    let intent = registry.session_intent(parked.pending.session_id())?;
+                    let context = turn.carrier_context(
+                        pins,
+                        intent.device(),
+                        intent.requested(),
+                        intent.mandatory(),
+                    )?;
+                    let session =
+                        registry.resume_buffered_in(&parked.pending, &context.verification())?;
+                    replay_page(turn, session, parked.cursor.as_ref())
+                });
             match result {
                 Ok(Some(page)) => {
-                    let _ = parked.pending.into_request().respond(StatusCode::OK, page);
+                    let _ = parked
+                        .pending
+                        .into_request()
+                        .respond(StatusCode::OK, super::exact_body(page));
                 }
                 Ok(None)
                     if deadline
@@ -571,6 +622,25 @@ impl Polls {
                 }
                 // Deadline reached with nothing new: an empty page means idle.
                 Ok(None) => {
+                    let _ = parked
+                        .pending
+                        .into_request()
+                        .respond(StatusCode::OK, Vec::new());
+                }
+                // Busy Store: stay parked until the idle deadline, then idle,
+                // and retry on the short tick (the waking commit is unseen).
+                Err(error)
+                    if deferrable(&error)
+                        && deadline
+                            .checked_sub(IDLE_MARGIN)
+                            .is_some_and(|idle| now < idle) =>
+                {
+                    busy = true;
+                    self.retry = true;
+                    self.parked.push(parked)
+                }
+                Err(error) if deferrable(&error) => {
+                    busy = true;
                     let _ = parked
                         .pending
                         .into_request()

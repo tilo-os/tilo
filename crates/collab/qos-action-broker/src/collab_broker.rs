@@ -332,6 +332,10 @@ impl AppActionBroker {
             .while_live(|state| state.observe_enrolled_child(owner, host, invocation))
     }
     /// The live dispatch witness of an accepted enrolled task on `channel`.
+    /// Owner revocation: close every enrolled connection of `agent`.
+    pub fn close_enrolled_agent(&self, agent: &str) -> usize {
+        self.state.close_enrolled_agent(agent)
+    }
     pub fn enrolled_task_dispatch(
         &self,
         channel: &str,

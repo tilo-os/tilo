@@ -8,6 +8,13 @@ use serde::{Deserialize, Deserializer, Serialize};
 use std::{cmp::Ordering, collections::HashSet};
 use thiserror::Error;
 
+mod delegation;
+mod grant_scope;
+mod scope_authorize;
+pub use delegation::*;
+pub use grant_scope::*;
+pub use scope_authorize::*;
+
 pub const PROTOCOL_VERSION: u8 = 1;
 pub const MAX_NAME_SCALARS: usize = 80;
 pub const MAX_TEXT_SCALARS: usize = 8_000;
@@ -706,6 +713,11 @@ fn validate_capabilities(capabilities: &AgentCapabilities) -> Result<(), Validat
 
 /// Validate one exact published resource address without rewriting its identity.
 /// Grant count, frame limits and the other opaque-identity bounds remain separate.
+///
+/// # Errors
+///
+/// Returns `grantAction.resource` for an empty, oversized, non-ASCII,
+/// untrimmed or control-byte resource.
 pub fn validate_grant_resource(value: &str) -> Result<(), ValidationError> {
     if value.is_empty()
         || value.len() > MAX_GRANT_RESOURCE_BYTES
@@ -723,15 +735,14 @@ fn validate_grant(offer: &GrantOffer) -> Result<(), ValidationError> {
     validate_opaque_id(&offer.revision, "grantOffer.revision")?;
     validate_timestamp(&offer.expires_at)?;
     validate_scalar_text(&offer.label, 1, MAX_LABEL_SCALARS, "grantOffer.label")?;
-    if offer.actions.is_empty() || offer.actions.len() > MAX_ACTIONS_PER_GRANT {
-        return Err(ValidationError::InvalidField("grantOffer.actions"));
-    }
-    for action in &offer.actions {
-        validate_opaque_id(&action.app_id, "grantAction.appId")?;
-        validate_opaque_id(&action.record_id, "grantAction.recordId")?;
-        validate_grant_resource(&action.resource)?;
-        validate_opaque_id(&action.action, "grantAction.action")?;
-    }
+    // v1 exact tuples (at most MAX_ACTIONS_PER_GRANT) or v2 scope carriers
+    // (at most MAX_GRANT_SCOPES): one shared shape and bound check.
+    validate_grant_set(&offer.actions).map_err(|error| match error {
+        ValidationError::InvalidField("grants") => {
+            ValidationError::InvalidField("grantOffer.actions")
+        }
+        other => other,
+    })?;
     Ok(())
 }
 

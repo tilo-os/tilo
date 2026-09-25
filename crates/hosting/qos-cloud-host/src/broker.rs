@@ -74,7 +74,7 @@ fn descriptor(
         "resource_label": "Workspace collaboration",
         "action_label": definition.label,
         "description": definition.description,
-        "operation_kind": "effect",
+        "operation_kind": qos_actions::OperationKind::Effect,
         "params": definition.params,
         "contract": definition.contract,
     })
@@ -119,25 +119,42 @@ fn catalogue(
             );
         }
     }
+    // The workspace desktop: open an application (people's launcher and
+    // agents' published open action) and the browser's layout commands.
+    let mut desktop = crate::desktop_commands::desktop_descriptors(&revision);
     if let Some(scope) = scope {
-        actions.retain(|descriptor| {
-            scope.app_id == shared::APP_ID
+        let keep = |app: &str, descriptor: &serde_json::Value| {
+            scope.app_id == app
                 && scope.record_id.is_empty()
                 && descriptor["resource"] == scope.resource
                 && descriptor["action"] == scope.action
-        });
+        };
+        actions.retain(|descriptor| keep(shared::APP_ID, descriptor));
+        desktop.retain(|descriptor| keep(qos_peer_state::desktop_command::APP_ID, descriptor));
     }
-    Ok(serde_json::json!({
-        "version": 1,
-        "surfaces": [{
-            "peer_id": qos_relay::room_workspace_id(&store.state.room)?,
+    let peer_id = qos_relay::room_workspace_id(&store.state.room)?;
+    let mut surfaces = vec![];
+    if !actions.is_empty() || scope.is_none() {
+        surfaces.push(serde_json::json!({
+            "peer_id": peer_id,
             "app_id": shared::APP_ID,
             "cluster_id": store.state.room,
             "record_id": "",
             "live": true,
             "actions": actions,
-        }],
-    }))
+        }));
+    }
+    if !desktop.is_empty() {
+        surfaces.push(serde_json::json!({
+            "peer_id": peer_id,
+            "app_id": qos_peer_state::desktop_command::APP_ID,
+            "cluster_id": store.state.room,
+            "record_id": "",
+            "live": true,
+            "actions": desktop,
+        }));
+    }
+    Ok(serde_json::json!({"version": 1, "surfaces": surfaces}))
 }
 
 fn canonical_operation(
@@ -560,6 +577,33 @@ async fn handle_inner(
                 action: action_name,
                 argument,
                 ..
+            } if app_id == qos_peer_state::desktop_command::APP_ID => {
+                if *requested_host != host || !record_id.is_empty() {
+                    bail!("desktop action route mismatch")
+                }
+                let request = crate::desktop_commands::person_request(
+                    &store.state.room,
+                    *invocation,
+                    certificate,
+                    resource,
+                    action_name,
+                    argument.as_ref(),
+                )?;
+                drop(store);
+                let mut store = open_store(root, machine, policy)?;
+                // Receipt or refusal, both carrying the desktop command id.
+                let update = store.desktop_command_update(&request, None)?;
+                Ok(observation(host, *invocation, update))
+            }
+            ActionMessage::InvokeBound {
+                host: requested_host,
+                invocation,
+                app_id,
+                record_id,
+                resource,
+                action: action_name,
+                argument,
+                ..
             } => {
                 if *requested_host != host
                     || app_id != shared::APP_ID
@@ -592,7 +636,29 @@ async fn handle_inner(
             }
             ActionMessage::Status { invocation } => {
                 let scope = format!("{}:{}", hex::encode(action.source), invocation.0);
+                let unadmitted = !store.state.receipts.contains_key(&scope)
+                    && !store.state.canonical_intents.contains_key(&scope)
+                    && !store.state.pending_models.contains_key(&scope);
+                // Never admitted and past its deadline: fence it, then answer
+                // definitively (see `unadmitted`).
+                if unadmitted
+                    && unadmitted::deadline_passed(&store.state.room, action.source, invocation.0)
+                {
+                    drop(store);
+                    let mut fenced = open_store(root, machine, policy)?;
+                    let definitive = unadmitted::fence(&mut fenced, action.source, *invocation)?;
+                    return Ok(ActionMessage::Observation {
+                        host,
+                        invocation: *invocation,
+                        update: definitive.then(|| unadmitted::not_found_update(*invocation)),
+                        uncertain: false,
+                        cancellation_requested: false,
+                    });
+                }
                 let update = store.state.receipts.get(&scope).map(|(_, receipt)| {
+                    if receipt.status == unadmitted::NOT_FOUND {
+                        return unadmitted::not_found_update(*invocation);
+                    }
                     let action_name = store
                         .state
                         .canonical_intents
@@ -657,6 +723,8 @@ pub(crate) fn reply(request: &DirectedAction, message: ActionMessage) -> Directe
         message,
     }
 }
+
+mod unadmitted;
 
 #[cfg(test)]
 mod tests {

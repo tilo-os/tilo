@@ -166,7 +166,8 @@ test('v2 frame pump after queue acknowledgement does not cancel the ticket drive
  let disk,pending={invocation,command},bridge,statusEntered,releaseStatus;const calls=[],updates=[],entered=new Promise(r=>statusEntered=r),offered=structuredClone(catalogue);
  const client=await createActionClient({version:2,context:()=>binding,load:async()=>disk,commit:async value=>{disk=structuredClone(value);},request:async m=>{calls.push(m);
   if(m.type==='catalogue_refresh')return{type:'broker_catalogue',host,catalogue:offered};
-  if(m.type==='status'&&!releaseStatus){statusEntered();await new Promise(r=>releaseStatus=r);}
+  // A fresh ticket's first dispatch goes out directly (no status probe); hold that dispatch.
+  if(m.type==='invoke_bound'&&!releaseStatus){statusEntered();await new Promise(r=>releaseStatus=r);}
   return{type:'observation',host,invocation:m.invocation,update:m.type==='invoke_bound'?{state:'succeeded',invocation:m.invocation,output:{resources:[]}}:null,uncertain:false,cancellation_requested:false};}});
  bridge=bindDesktopCommands({actions:client.actionsV2,peek:()=>pending,ack:()=>{pending=undefined;},onUpdate:row=>updates.push(row)});
  const terminal=bridge.waitForTerminal(invocation),first=bridge.pump();await entered;
@@ -184,4 +185,37 @@ test('v2 supersession before queue acknowledgement still cancels the unadmitted 
  pending={invocation:'ffffffff-ffff-4fff-8fff-ffffffffffff',command:'replacement'};await bridge.pump();releaseCatalogue();await first;
  assert.equal(disk?.entries.length??0,0,'no ticket is admitted for the superseded command');assert.equal(calls.filter(m=>m.type==='invoke_bound').length,0);
  bridge.close();await client.close();
+});
+test('a fresh v2 desktop command costs one scoped discovery and its dispatch, nothing else',async()=>{
+ let disk,pending={invocation,command};const calls=[],offered=structuredClone(catalogue);
+ const client=await createActionClient({version:2,context:()=>binding,load:async()=>disk,commit:async value=>{disk=structuredClone(value);},request:async m=>{calls.push(m);
+  if(m.type==='catalogue_refresh')return{type:'broker_catalogue',host,catalogue:offered};
+  return{type:'observation',host,invocation:m.invocation,update:m.type==='invoke_bound'?{state:'succeeded',invocation:m.invocation,output:{resources:[]}}:null,uncertain:false,cancellation_requested:false};}});
+ const bridge=bindDesktopCommands({actions:client.actionsV2,peek:()=>pending,ack:()=>{pending=undefined;}});
+ const terminal=bridge.waitForTerminal(invocation);await bridge.pump();await terminal;
+ assert.deepEqual(calls.map(m=>m.type),['catalogue_refresh','invoke_bound']);
+ assert.deepEqual(calls[0].scope,{app_id:'dev.qos.desktop',record_id:'',resource:'desktop:session',action:'command'},'the discovery is scoped to the desktop command');
+ bridge.close();await client.close();
+});
+test('a desktop open is sent at once while an agent spawn ticket waits on a host that never answers',async()=>{
+ let disk,pending;const calls=[];const offered=structuredClone(catalogue);
+ offered.surfaces.push({peer_id:'12',app_id:'so.tilo.agent',record_id:'',cluster_id:room,live:true,actions:[{resource:'agents',action:'spawn',revision:'r1',contract:{confirmation:{mode:'none'}}}]});
+ const stuck=new Set();
+ const client=await createActionClient({version:2,context:()=>binding,load:async()=>disk,commit:async value=>{disk=structuredClone(value);},request:async (m,control)=>{calls.push(m);
+  if(m.type==='catalogue_refresh')return{type:'broker_catalogue',host,catalogue:offered};
+  // The agent service never answers this spawn (a lost reply): only the caller's deadline ends the wait.
+  if(stuck.has(m.invocation))return new Promise((_resolve,reject)=>control.signal.addEventListener('abort',()=>reject(control.signal.reason),{once:true}));
+  return{type:'observation',host,invocation:m.invocation,update:m.type==='invoke_bound'?{state:'succeeded',invocation:m.invocation,output:{resources:[]}}:null,uncertain:false,cancellation_requested:false};}});
+ const spawn=await client.actionsV2.beginNew({app_peer:'12',app_id:'so.tilo.agent',record_id:'',resource:'agents',action:'spawn',revision:'r1',argument:{name:'a'},confirmation:null},{consumer:{kind:'interactive',parent:crypto.randomUUID(),slot:'agent-spawn'}});
+ stuck.add(spawn.operation);
+ const abort=new AbortController();const hung=client.actionsV2.drive(spawn,{signal:abort.signal});hung.catch(()=>{});
+ await new Promise(r=>setTimeout(r,20));
+ assert.ok(calls.some(m=>m.invocation===spawn.operation),'the spawn is waiting on the host');
+ pending={invocation,command};
+ const bridge=bindDesktopCommands({actions:client.actionsV2,peek:()=>pending,ack:()=>{pending=undefined;}});
+ const opened=bridge.waitForTerminal(invocation);
+ const began=Date.now();await bridge.pump();await opened;
+ assert.ok(Date.now()-began<1000,'the open was not serialized behind the stuck spawn');
+ assert.equal(calls.filter(m=>m.type==='invoke_bound'&&m.app_id==='dev.qos.desktop').length,1);
+ abort.abort();bridge.close();await client.close();
 });

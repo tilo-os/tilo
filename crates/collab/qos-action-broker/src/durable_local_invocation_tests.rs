@@ -241,7 +241,7 @@ async fn durable_local_rpc_exact_uuid_duplicate_cancel_and_retained_observation(
                 assert_eq!(first.invocation,*invocation.0.as_bytes());assert_eq!(first.host,binding.host);
                 let accepted=first.result.unwrap();assert!(matches!(serde_json::from_str::<tilo_actions::InvocationUpdate>(&accepted.update_json).unwrap(),tilo_actions::InvocationUpdate::Accepted{invocation:id} if id==invocation));
                 let delivered=stream.read().await.unwrap();assert_eq!(delivered.id,accepted.id);assert_eq!(delivered.invocation_uuid,Some(*invocation.0.as_bytes()));
-                let request=ui::invocation_scope::PublishedInvocationRequest{wire_id:delivered.id,invocation,address:tilo_actions::ActionAddress{resource:delivered.resource.clone(),action:delivered.action.clone()},argument:delivered.argument.clone(),actor:delivered.actor.clone()};
+                let request=ui::invocation_scope::PublishedInvocationRequest{wire_id:delivered.id,invocation,address:tilo_actions::ActionAddress{resource:delivered.resource.clone(),action:delivered.action.clone()},argument:delivered.argument.clone(),actor:delivered.actor.clone(),participant:None};
                 let lease=authorize(&request).unwrap();lease.check().unwrap();
                 let cancelled=handle.cancel_durable_published_invocation(&binding.host,invocation.0.as_bytes()).await.unwrap();assert!(cancelled.result.as_ref().unwrap().cancellation_requested);
                 assert_eq!(cancelled,handle.cancel_durable_published_invocation(&binding.host,invocation.0.as_bytes()).await.unwrap());

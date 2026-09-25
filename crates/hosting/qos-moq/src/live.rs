@@ -377,6 +377,69 @@ impl LiveRelay {
         written.is_ok()
     }
 
+    /// Host injection of one presence frame into the `presence` datagram track
+    /// of a host-fed namespace `(room, publisher)` (for example an agent the
+    /// host speaks for). Never blocks. Creates the host-fed namespace if absent.
+    /// Refused while a client session owns the namespace: the host never
+    /// speaks inside a live member's own presence. The frame is validated like
+    /// client presence (authority codec, size, strictly increasing sequence,
+    /// the namespace's presence rate bucket) and reaches MoQ and HTTPS
+    /// fallback subscribers through the same egress track. Counted in
+    /// `injected` / `injected_dropped`.
+    pub fn inject_presence(&self, room: &str, publisher: &str, frame: &[u8]) -> bool {
+        let inner = &self.0;
+        let dropped = || {
+            inner
+                .counters
+                .injected_dropped
+                .fetch_add(1, Ordering::Relaxed);
+            false
+        };
+        let Some(path) = namespace_path(room, publisher) else {
+            return dropped();
+        };
+        if frame.is_empty() || frame.len() > MAX_DATAGRAM_FRAME_BYTES {
+            return dropped();
+        }
+        let Some(seq) = inner.authority.presence_seq(frame) else {
+            return dropped();
+        };
+        // Never create (or announce) a namespace a client currently owns.
+        if let Some(slot) = inner.slot(&path, false)
+            && slot.state.lock().unwrap().client.is_some()
+        {
+            return dropped();
+        }
+        let Some(slot) = inner.slot(&path, true) else {
+            return dropped();
+        };
+        let mut state = slot.state.lock().unwrap();
+        if state.client.is_some() {
+            return dropped();
+        }
+        state.host_active = Some(Instant::now());
+        if state.last_seq.is_some_and(|last| seq <= last)
+            || !state.presence_bucket.take(Instant::now())
+        {
+            return dropped();
+        }
+        let Some(track) = state.presence.as_mut() else {
+            return dropped();
+        };
+        if track
+            .append_datagram(
+                moq_net::Timestamp::ZERO,
+                bytes::Bytes::copy_from_slice(frame),
+            )
+            .is_err()
+        {
+            return dropped();
+        }
+        state.last_seq = Some(seq);
+        inner.counters.injected.fetch_add(1, Ordering::Relaxed);
+        true
+    }
+
     /// Withdraw host-fed namespaces idle past [`HOST_SLOT_IDLE`] with no client.
     pub fn maintain(&self) {
         let now = Instant::now();

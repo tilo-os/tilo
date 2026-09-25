@@ -83,6 +83,34 @@ fn reference_digest(custody: &PublicationCustody) -> Result<Digest> {
     }
     Ok(*hash.finalize().as_bytes())
 }
+/// Unlink sidecars that no durable ledger pin names and no transfer leases.
+/// Such a sidecar can never be renewed or recovered (both require the pin),
+/// yet it holds one of the workspace's fixed sidecar slots: a delivery
+/// rotation drops every ledger pin, and without this sweep the left-over
+/// sidecars made every later snapshot draft fail with Capacity until the
+/// host was reset. Best effort; returns how many were removed.
+pub(in crate::https_owner) fn remove_unpinned_sidecars(
+    turn: &CloudStoreTurn,
+    work: &qos_session_peer::ingress::HostWorkInventory,
+) -> usize {
+    let Ok(directory) = work.snapshot_directory(turn.directory(), turn.workspace()) else {
+        return 0;
+    };
+    let pinned = &turn.delivery_ledger().pins;
+    let mut removed = 0;
+    for pin in directory.idle_pins().unwrap_or_default() {
+        if pinned.contains_key(&pin) {
+            continue;
+        }
+        if let Ok(Some(sidecar)) = directory.open_existing(pin) {
+            match sidecar.remove() {
+                Ok(()) => removed += 1,
+                Err(error) => tracing::debug!(?error, "unpinned snapshot sidecar cleanup deferred"),
+            }
+        }
+    }
+    removed
+}
 pub(in crate::https_owner) fn select(
     source: &CloudStoreSource,
     turn: &CloudStoreTurn,

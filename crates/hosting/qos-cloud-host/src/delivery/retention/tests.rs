@@ -166,17 +166,53 @@ fn pressure_rotates_at_half_budget_and_live_pins_defer_until_critical() {
         ..quiet
     };
     assert!(pool.rotation_due());
+    // History beyond the baseline is budgeted far below the pool limit.
+    let history = Pressure {
+        pool_bytes: 512 + HISTORY_BYTES,
+        ..quiet
+    };
+    assert!(history.rotation_due());
+    assert!(
+        !Pressure {
+            pool_bytes: 512 + HISTORY_BYTES - 1,
+            ..quiet
+        }
+        .rotation_due()
+    );
     assert!(
         !Pressure {
             live_pins: 1,
-            ..pool
+            ..history
         }
         .rotation_due()
     );
     assert!(
         Pressure {
             live_pins: 1,
-            pool_bytes: (schema::POOL_LIMIT * 9).div_ceil(10),
+            pool_bytes: 512 + (HISTORY_BYTES * 18).div_ceil(10),
+            ..quiet
+        }
+        .rotation_due()
+    );
+    // A large baseline raises the history budget to its own size.
+    assert!(
+        !Pressure {
+            pool_bytes: 8 * HISTORY_BYTES + HISTORY_BYTES,
+            baseline_bytes: 8 * HISTORY_BYTES,
+            ..quiet
+        }
+        .rotation_due()
+    );
+    assert!(
+        Pressure {
+            replay: HISTORY_COMMITS,
+            ..quiet
+        }
+        .rotation_due()
+    );
+    assert!(
+        !Pressure {
+            replay: HISTORY_COMMITS - 1,
             ..quiet
         }
         .rotation_due()

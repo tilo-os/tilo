@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {createLiveClient, LIVE_GRANT_TARGET} from './live-client.mjs';
+import {createLiveClient, LIVE_GRANT_TARGET, AGENT_ACTIVITY_RECORD, AGENT_ACTIVITY_EXPIRE_MS, decodeAgentActivity} from './live-client.mjs';
 import {createLiveTransport} from './live-transport.mjs';
 import {createFakeRelay} from './live-fake-relay.test.mjs';
 
@@ -85,7 +85,7 @@ function client(fake, publisher, options = {}) {
   const live = createLiveClient({
     runtime, peerId: 1, fetch: http.fetch, codec,
     transport: options.transport ?? createLiveTransport({library: fake.library}),
-    clock: fastClock, onError: error => errors.push(error),
+    clock: options.clock ?? fastClock, onError: error => errors.push(error),
   });
   return {live, api: live.api, runtime, http, errors};
 }
@@ -478,3 +478,108 @@ test('presence resumes after the relay withdraws and re-announces a member names
   a.live.close();
   b.live.close();
 });
+
+// ---- Agent activity (lane H) ---------------------------------------------------
+const SCRIBE = '5'.repeat(64);
+const HUMAN = 'c'.repeat(64);
+const activity = (fields = {}) => JSON.stringify({v: 1, agent: 'scribe', name: 'Scribe', state: 'writing', label: 'Writing in Writer', tool: null, at_ms: 1700000000000, ...fields});
+/** Runtime whose room/authority derive `scribe` -> SCRIBE, and `mole` -> a roster device. */
+function agentRuntime(publisher) {
+  const runtime = fakeRuntime(publisher);
+  runtime.agentCalls = [];
+  runtime.peer_live_agent_publisher = (id, agent) => { runtime.agentCalls.push(agent); return {scribe: SCRIBE, mole: HUMAN}[agent] ?? '0'.repeat(64); };
+  runtime.peer_live_members = () => JSON.stringify([{device: HUMAN, user: 'u1', name: 'Ada', owner: false}]);
+  return runtime;
+}
+async function publisherSession(fake, namespace) {
+  return createLiveTransport({library: fake.library}).connect({
+    endpoint: `${ORIGIN}/moq/v21/live`, authorization: encoder.encode(namespace),
+    namespace: ['tilo-live', ROOM, namespace], directions: {publish: true, subscribe: false},
+  });
+}
+
+test('agent activity decode is strict and bounded', () => {
+  assert.deepEqual(decodeAgentActivity(activity({tool: 'list_operations', state: 'tool'})), {agentId: 'scribe', name: 'Scribe', state: 'tool', label: 'Writing in Writer', tool: 'list_operations', atMs: 1700000000000, status: null});
+  assert.equal(decodeAgentActivity(activity({status: 'waiting'})).status, 'waiting');
+  assert.equal(decodeAgentActivity(activity({status: 'sleeping'})), null);
+  assert.equal(decodeAgentActivity(activity({name: '  '})).name, 'Agent');
+  assert.equal(decodeAgentActivity(activity({label: ''})).label, '');
+  for (const bad of [activity({v: 2}), activity({name: ''}), activity({extra: 1}), activity({tool: ''}), activity({label: '\u00e9'.repeat(61)}), activity({at_ms: 1.5}), activity({state: 'hacking'}), activity({agent: ''}), activity({agent: 7}), activity({at_ms: -1}),
+    activity({at_ms: 'x'}), activity({label: 'a\nb'}), activity({tool: 3}), activity({label: 'x'.repeat(2000)}), '[]', 'nope', '']) {
+    assert.equal(decodeAgentActivity(bad), null, bad.slice(0, 60));
+  }
+});
+
+test('agent activity is accepted only from the recomputed agent namespace and never reaches typing previews', async () => {
+  const fake = relay();
+  const runtime = agentRuntime('b'.repeat(64));
+  const b = client(fake, 'b'.repeat(64), {runtime});
+  const events = [];
+  const previews = [];
+  b.api.onAgentActivity(value => events.push(value));
+  b.api.onPreview(value => previews.push(value));
+  b.live.start();
+  await until(() => b.api.state === 'live', 'live');
+  const agent = await publisherSession(fake, SCRIBE);
+  const human = await publisherSession(fake, HUMAN);
+  await until(() => b.api.stats().remotes === 2, 'agent and human announced');
+  await tick();
+  const track = codec.opsTrack(AGENT_ACTIVITY_RECORD);
+  const frame = (seq, text) => codec.encodePreview({seq, record: AGENT_ACTIVITY_RECORD, ops: [{kind: 'insert', at: 'a1', text}]});
+  // A human member claiming to be the agent, and the roster device the
+  // derivation happens to name: both refused.
+  human.publishOps(track, frame(1, activity()));
+  human.publishOps(track, frame(2, activity({agent: 'mole', name: 'Mole'})));
+  agent.publishOps(track, frame(1, activity({agent: 'other', name: 'Impostor'})));
+  agent.publishOps(track, codec.encodePreview({seq: 2, record: AGENT_ACTIVITY_RECORD, ops: [{kind: 'insert', at: '01', text: activity({state: 'done'})}]}));
+  agent.publishOps(track, frame(3, activity({state: 'thinking', label: 'Thinking'})));
+  agent.publishOps(track, frame(4, activity()));
+  agent.publishOps(track, frame(4, activity({state: 'done'}))); // stale seq
+  await until(() => events.length === 2, 'agent activity');
+  assert.deepEqual(events.map(e => [e.publisher, e.agentId, e.name, e.state, e.expired]), [
+    [SCRIBE, 'scribe', 'Scribe', 'thinking', false], [SCRIBE, 'scribe', 'Scribe', 'writing', false],
+  ]);
+  await tick();
+  assert.equal(b.api.stats().agentActivityRejected, 4, 'spoofs and a wrong anchor');
+  assert.equal(b.api.stats().agentActivityAccepted, 2);
+  assert.deepEqual(b.api.agents().map(a => [a.publisher, a.agentId, a.state, a.label]), [[SCRIBE, 'scribe', 'writing', 'Writing in Writer']]);
+  assert.equal(runtime.agentCalls.filter(id => id === 'scribe').length, 1, 'the namespace is derived once per agent');
+  assert.deepEqual(previews, [], 'activity is state, not typing');
+  // The agent's Writer previews still arrive as ordinary previews.
+  const writer = {app: 'so.tilo.word-processor', record: 'doc-1'};
+  b.api.watchRecord(writer);
+  await tick();
+  agent.publishOps(codec.opsTrack(writer), codec.encodePreview({seq: 1, record: writer, ops: [{kind: 'insert', at: '01', text: 'The ocean'}]}));
+  await until(() => previews.length === 1, 'agent writer preview');
+  assert.equal(previews[0].publisher, SCRIBE);
+  agent.close();
+  human.close();
+  b.live.close();
+  assert.deepEqual(b.api.agents(), []);
+});
+
+test('an agent expires after it has been quiet for the activity window', async () => {
+  const fake = relay();
+  let skew = 0;
+  const clock = {...fastClock, now: () => performance.now() + skew};
+  const b = client(fake, 'b'.repeat(64), {runtime: agentRuntime('b'.repeat(64)), clock});
+  const events = [];
+  b.api.onAgentActivity(value => events.push(value));
+  b.live.start();
+  await until(() => b.api.state === 'live', 'live');
+  const agent = await publisherSession(fake, SCRIBE);
+  await until(() => b.api.stats().remotes === 1, 'agent announced');
+  await tick();
+  agent.publishOps(codec.opsTrack(AGENT_ACTIVITY_RECORD), codec.encodePreview({seq: 1, record: AGENT_ACTIVITY_RECORD, ops: [{kind: 'insert', at: 'a1', text: activity()}]}));
+  await until(() => events.length === 1, 'activity');
+  skew = AGENT_ACTIVITY_EXPIRE_MS - 100;
+  assert.equal(b.api.agents().length, 1, 'still within the window');
+  skew = AGENT_ACTIVITY_EXPIRE_MS + 1;
+  assert.deepEqual(b.api.agents(), [], 'hidden at once once quiet');
+  await until(() => events.length === 2, 'expiry event', 1000);
+  assert.equal(events[1].expired, true);
+  assert.equal(events[1].agentId, 'scribe');
+  agent.close();
+  b.live.close();
+});
+

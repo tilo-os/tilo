@@ -45,6 +45,15 @@ export async function createActionClient({context,load,readLegacyImage,commit,re
   const listeners=new Set(),lifetime=new AbortController(),admissions=new Map();
   const lastAbsent=new Set(),liveCreated=new Set(),cancelled=new Set(),knownRecorded=new Set(),rawRequests=new Set(),drives=new Map(),queuedInvocations=new Map();
   let ambiguous;const consuming=new Set();
+  // Tickets this live owner just admitted and has never sent: the exact discovery they were
+  // resolved against, kept briefly so the first drive dispatches at once (no second discovery,
+  // no status probe of an operation no one has seen). Any later drive takes the normal path.
+  const UNSENT_FRESH_MS=5000;const unsent=new Map();
+  // Background recovery observes a retained row again after 1 s, doubling while
+  // its observation stays unchanged, up to 16 s; a change, a new row or a live
+  // drive of that row resets it. A scoped discovery serves every row of its scope
+  // for 30 s (the host identity check), so a status probe is not a catalogue refresh.
+  const RECOVERY_BASE_MS=1000,RECOVERY_MAX_MS=16000,RECOVERY_DISCOVERY_MS=30000;const recoveryDue=new Map(),recoveryDiscovery=new Map();
   // A failed admission owns only its live row, not other accepted same-ID
   // queue references. Public abort does not release those raw references.
   const releaseUnownedCancellation=id=>{if(!queuedInvocations.has(id)&&!liveCreated.has(id)&&!disk.entries.some(row=>row.invocation===id))cancelled.delete(id);};
@@ -135,6 +144,24 @@ export async function createActionClient({context,load,readLegacyImage,commit,re
     try{control.check();if(!equal(row.binding,context()))throw Error('Action identity changed before request');response=await rpc(message,control);if(closed)throw Error('Action client closed');healthy();if(!equal(row.binding,context()))throw Error('Action identity changed during observation');}catch(error){if(closed)throw error;const next=copy(disk),item=next.entries.find(item=>item.invocation===row.invocation);if(item&&!item.terminal){item.state='unknown';item.reason=String(error.message??error);}await save(next);throw error;}
     return applyObservation(row,response);
   }
+  // The same observation with its network wait OUTSIDE the serialized storage
+  // lane: a slow or lost reply for one operation (an agent spawn whose host
+  // never answers) must not hold every later command (a desktop open) behind
+  // it. Only the durable apply of the answer, or of the failure, is serialized.
+  async function observeOff(row,message,control){
+    let response;
+    try{control.check();if(!equal(row.binding,context()))throw Error('Action identity changed before request');response=await control.wait(rpc(message,control));if(closed)throw Error('Action client closed');healthy();if(!equal(row.binding,context()))throw Error('Action identity changed during observation');}
+    catch(error){if(closed)throw error;await enqueue(async()=>{const next=copy(disk),item=next.entries.find(item=>item.invocation===row.invocation);if(item&&!item.terminal){item.state='unknown';item.reason=String(error.message??error);}await save(next);});throw error;}
+    return enqueue(()=>applyObservation(row,response));
+  }
+  // Run `operation` with its own control, outside the storage lane, after the
+  // lane settled what was queued before it (for example the ticket's admission).
+  function offLane(operation,options={},stage='observation'){
+    if(closed)return Promise.reject(Error('Action client closed'));
+    const control=actionControl({...options,parentSignal:lifetime.signal},clock,stage);
+    const task=(async()=>{await enqueue(()=>{},options,stage);control.check();await reconcileStorage();return operation(control);})();
+    const waited=control.wait(task);void waited.then(()=>control.dispose(),()=>control.dispose());return waited;
+  }
   async function applyObservation(row,response){
     const retained=disk.entries.find(item=>item.invocation===row.invocation);
     if(!retained||!equal(retained.ticket,row.ticket))throw Error('Original action was removed');
@@ -189,7 +216,7 @@ export async function createActionClient({context,load,readLegacyImage,commit,re
       control.setStage('admission');let settle;const reservation={promise:new Promise(resolve=>settle=resolve)};admissions.set(input.invocation,reservation);
       liveCreated.add(input.invocation);
       try{await save({...disk,entries:[...disk.entries,row]},control);}catch(error){if(!ambiguous){liveCreated.delete(input.invocation);releaseUnownedCancellation(input.invocation);}reservation.error=error;throw error;}finally{admissions.delete(input.invocation);settle(reservation.error);}
-      if(ticket)return copy(ticket);
+      if(ticket){unsent.set(input.invocation,{current:copy(current),at:(clock.now??Date.now)()});while(unsent.size>MAX_PENDING)unsent.delete(unsent.keys().next().value);return copy(ticket);}
       control.check();if(!equal(row.binding,context()))throw Error('Action identity changed after commit');
       if(cancelled.has(row.invocation))throw Error('Original action cancellation requested');
       control.setStage('observation');return observe(row,value,control);
@@ -201,9 +228,21 @@ export async function createActionClient({context,load,readLegacyImage,commit,re
       try{if(version===2)ticket?findTicket(ticket):findLegacy(id);}catch(error){return Promise.reject(error);}
       return drives.get(id);
     }
-    const task=enqueue(async control=>{
-      const row=ticket?findTicket(ticket):findLegacy(id),current=await bound(row,control);
-      const observed=await observe(row,{type:'status',invocation:id},control);
+    const task=offLane(async control=>{
+      const row=ticket?findTicket(ticket):findLegacy(id);
+      // Opt-in (`dispatchFresh`): callers whose command has no user-visible cancel window between
+      // admission and dispatch (the desktop command bridge). Others keep the status probe first.
+      const fresh=row.ticket&&options.dispatchFresh===true&&unsent.get(id);unsent.delete(id);
+      if(fresh&&(clock.now??Date.now)()-fresh.at<UNSENT_FRESH_MS&&liveCreated.has(id)&&!row.update&&!row.terminal&&!knownRecorded.has(id)&&!lastAbsent.has(id)&&row.intent.confirmation===null){
+        // First dispatch of this owner's own unsent ticket, against the discovery it was admitted with.
+        if(!equal(row.binding,context())||!equal(fresh.current.binding,row.binding)||fresh.current.host!==row.host)throw Error('Action identity changed');
+        const descriptor=resolve(fresh.current,row.intent);
+        if(descriptor.contract?.confirmation?.mode!=='none')throw Error('Original action requires fresh confirmation');
+        control.check();healthy();if(cancelled.has(id))throw Error('Original action cancellation requested');
+        return observeOff(find(id),copy(row.intent),control);
+      }
+      const current=await bound(row,control);
+      const observed=await observeOff(row,{type:'status',invocation:id},control);
       // Only this live owner's new rows have a known cancellation history.
       // Reopened v1 rows remain observation-only; no retained row is deleted.
       if(observed.terminal||(!row.ticket&&!liveCreated.has(id))||cancelled.has(id)||knownRecorded.has(id)||observed.knownRecorded||observed.businessCancellationRequested||observed.update||observed.cancellationRequested)return observed;
@@ -216,9 +255,9 @@ export async function createActionClient({context,load,readLegacyImage,commit,re
       const descriptor=resolve(current,row.intent);
       if(descriptor.contract?.confirmation?.mode!=='none')throw Error('Original action requires fresh confirmation');
       control.check();healthy();if(cancelled.has(id))throw Error('Original action cancellation requested');
-      return observe(find(id),copy(row.intent),control);
+      return observeOff(find(id),copy(row.intent),control);
     },options,'observation');
-    drives.set(id,task);void task.then(()=>drives.delete(id),()=>drives.delete(id));return task;
+    drives.set(id,task);const settled=()=>{drives.delete(id);recoveryDue.delete(id);};void task.then(settled,settled);return task;
   }
   const findLegacy=id=>{const row=find(id);if(row.ticket)throw Error('A retained scoped ticket is required');return row;};
   const findTicket=ticket=>{
@@ -234,20 +273,37 @@ export async function createActionClient({context,load,readLegacyImage,commit,re
     catalogue:options=>enqueue(discover,options),refreshCatalogue,
     beginNew(input,options={}){
       input=copy(input);const consumer=copy(options.consumer);
-      return enqueue(async control=>{
-        if(Object.hasOwn(input,'invocation'))throw Error('Fresh ticket admission accepts no invocation ID');
-        if(!validConsumer(consumer))throw Error('An interactive intended consumer is required');
+      if(Object.hasOwn(input,'invocation'))return Promise.reject(Error('Fresh ticket admission accepts no invocation ID'));
+      if(!validConsumer(consumer))return Promise.reject(Error('An interactive intended consumer is required'));
+      return offLane(control=>discover(control,exactScope(input)),options,'discovery').then(current=>enqueue(async control=>{
         if(disk.entries.some(row=>row.ticket&&equal(row.ticket.consumer,consumer)))throw Error('Consumer slot already retains its original operation');
-        const current=await discover(control,exactScope(input));
+        if(!equal(current.binding,context()))throw Error('Action identity changed during discovery');
         const operation=crypto.randomUUID(),ticket={version:2,namespace:disk.namespace,operation,binding:copy(current.binding),consumer};
         return invoke({...input,invocation:operation},control,current,ticket);
-      },options);
+      },options));
+    },
+    // One scoped discovery selects and admits a fresh ticket (the caller's `select` sees that exact
+    // catalogue synchronously), so a new command costs one discovery instead of two.
+    beginSelected(select,options={}){
+      const consumer=copy(options.consumer);
+      // Discovery waits outside the storage lane; only the admission is serialized.
+      return offLane(control=>discover(control,options.discoveryScope),options,'discovery').then(current=>enqueue(async control=>{
+        if(!validConsumer(consumer))throw Error('An interactive intended consumer is required');
+        if(disk.entries.some(row=>row.ticket&&equal(row.ticket.consumer,consumer)))throw Error('Consumer slot already retains its original operation');
+        if(!equal(current.binding,context()))throw Error('Action identity changed during discovery');
+        const input=copy(select(copy(current)));
+        if(Object.hasOwn(input,'invocation'))throw Error('Fresh ticket admission accepts no invocation ID');
+        if(options.discoveryScope&&!equal(exactScope(input),options.discoveryScope))throw Error('Selected action is outside its discovery scope');
+        const operation=crypto.randomUUID(),ticket={version:2,namespace:disk.namespace,operation,binding:copy(current.binding),consumer};
+        return invoke({...input,invocation:operation},control,current,ticket);
+      },options));
     },
     drive(ticket,options){ticket=copy(ticket);try{findTicket(ticket);}catch(error){return Promise.reject(error);}return driveRetained(ticket.operation,options,ticket);},
-    observe(ticket,options){ticket=copy(ticket);return enqueue(async control=>{const row=findTicket(ticket);await bound(row,control);return observe(row,{type:'status',invocation:row.invocation},control);},options,'observation');},
+    observe(ticket,options){ticket=copy(ticket);return offLane(async control=>{const row=findTicket(ticket);await bound(row,control);return observeOff(row,{type:'status',invocation:row.invocation},control);},options,'observation');},
     requestCancellation(ticket){
       ticket=copy(ticket);try{const row=findTicket(ticket);cancelled.add(row.invocation);}catch(error){return Promise.reject(error);}
-      return enqueue(async control=>{let row=findTicket(ticket);const next=copy(disk),item=next.entries.find(item=>item.invocation===row.invocation);item.businessCancellationRequested=true;item.consumerAcknowledgement=null;await save(next);row=findTicket(ticket);await bound(row,control);return observe(row,{type:'cancel',invocation:row.invocation},control);},undefined,'observation');
+      return enqueue(async()=>{const row=findTicket(ticket);const next=copy(disk),item=next.entries.find(item=>item.invocation===row.invocation);item.businessCancellationRequested=true;item.consumerAcknowledgement=null;await save(next);},undefined,'observation')
+        .then(()=>offLane(async control=>{const row=findTicket(ticket);await bound(row,control);return observeOff(row,{type:'cancel',invocation:row.invocation},control);},undefined,'observation'));
     },
     acknowledgeTerminal(ticket,acknowledgement){
       ticket=copy(ticket);acknowledgement=copy(acknowledgement);
@@ -255,7 +311,7 @@ export async function createActionClient({context,load,readLegacyImage,commit,re
     },
     async consumeTerminal(ticket){
       ticket=copy(ticket);const row=findTicket(ticket);consuming.add(row.invocation);
-      try{await recovery?.catch(()=>{});return await enqueue(async()=>{const current=findTicket(ticket);if(!certain(current)||!current.consumerAcknowledgement||!equal(current.consumerAcknowledgement.update,current.update)||!equal(current.consumerAcknowledgement.consumer,current.ticket.consumer))throw Error('Certain terminal consumer acknowledgement required');const next=copy(disk);next.entries=next.entries.filter(item=>item.invocation!==current.invocation);await save(next);liveCreated.delete(current.invocation);knownRecorded.delete(current.invocation);lastAbsent.delete(current.invocation);cancelled.delete(current.invocation);});}
+      try{await recovery?.catch(()=>{});return await enqueue(async()=>{const current=findTicket(ticket);if(!certain(current)||!current.consumerAcknowledgement||!equal(current.consumerAcknowledgement.update,current.update)||!equal(current.consumerAcknowledgement.consumer,current.ticket.consumer))throw Error('Certain terminal consumer acknowledgement required');const next=copy(disk);next.entries=next.entries.filter(item=>item.invocation!==current.invocation);await save(next);unsent.delete(current.invocation);liveCreated.delete(current.invocation);knownRecorded.delete(current.invocation);lastAbsent.delete(current.invocation);cancelled.delete(current.invocation);});}
       finally{consuming.delete(row.invocation);}
     },
   }:undefined;
@@ -276,18 +332,35 @@ export async function createActionClient({context,load,readLegacyImage,commit,re
     },options),
     status:(id,options)=>enqueue(async control=>{const row=findLegacy(id);await bound(row,control);return observe(row,{type:'status',invocation:id},control);},options,'observation'),
     cancel:(id,options)=>{if(version===2){try{findLegacy(id);}catch(error){return Promise.reject(error);}}if(disk.entries.some(row=>row.invocation===id)||admissions.has(id)||liveCreated.has(id)||queuedInvocations.has(id))cancelled.add(id);return enqueue(async control=>{const row=findLegacy(id);await bound(row,control);return observe(row,{type:'cancel',invocation:id},control);},options,'observation');},
-    recover:()=>{
+    // `background: true` (the periodic caller) honors each row's backoff and the
+    // 30 s discovery reuse; an explicit recover (a person's Check again) probes now.
+    recover:({background=false}={})=>{
       if(recovery)return recovery;
       recovery=(async()=>{
-        const rows=await enqueue(()=>disk.entries.filter(row=>!row.terminal&&!consuming.has(row.invocation)).map(row=>row.invocation));
+        const at=(clock.now??Date.now)();
+        const open=await enqueue(()=>disk.entries.filter(row=>!row.terminal&&!consuming.has(row.invocation)).map(row=>row.invocation));
+        for(const id of recoveryDue.keys())if(!open.includes(id))recoveryDue.delete(id);
+        // A row a live drive is observing right now needs no background probe.
+        const rows=background?open.filter(id=>!drives.has(id)&&(recoveryDue.get(id)?.at??0)<=at):open;
+        const discovered=new Map();
         for(let count=0;count<Math.min(16,rows.length);count++){
           const id=rows[(recoveryCursor+count)%rows.length];
           // Background network waits must not occupy the mutation lane used
           // by a new user command. Only applying the result is serialized.
           const stored=disk.entries.find(row=>row.invocation===id);if(!stored||stored.terminal||consuming.has(id))continue;const row=copy(stored);
           const control=actionControl({parentSignal:lifetime.signal},clock,'observation');
+          const before=canonical([stored.state,stored.update,stored.reason,stored.cancellationRequested]);
           try{
-            const current=await control.wait(discover(control,exactScope(row.intent)));
+            const scopeKey=canonical([exactScope(row.intent),context()]);
+            const cached=recoveryDiscovery.get(scopeKey);
+            let current;
+            if(background&&cached&&(clock.now??Date.now)()-cached.at<RECOVERY_DISCOVERY_MS)current=copy(cached.current);
+            else{
+              if(!discovered.has(scopeKey))discovered.set(scopeKey,control.wait(discover(control,exactScope(row.intent))));
+              current=await discovered.get(scopeKey);
+              recoveryDiscovery.set(scopeKey,{at:(clock.now??Date.now)(),current:copy(current)});
+              while(recoveryDiscovery.size>16)recoveryDiscovery.delete(recoveryDiscovery.keys().next().value);
+            }
             if(!equal(row.binding,current.binding)||row.host!==current.host){
               await enqueue(async()=>{const next=copy(disk),item=next.entries.find(item=>item.invocation===id);if(item&&!item.terminal){item.state='unknown';item.reason=!equal(row.binding,current.binding)?'identity-changed':'host-changed';await save(next);}});
               continue;
@@ -300,7 +373,13 @@ export async function createActionClient({context,load,readLegacyImage,commit,re
               continue;
             }
             await enqueue(()=>{control.check();if(!equal(row.binding,context()))throw Error('Action identity changed during observation');return applyObservation(row,response);});
-          }finally{control.dispose();}
+          }finally{
+            control.dispose();
+            const after=disk.entries.find(item=>item.invocation===id);
+            const previous=recoveryDue.get(id)?.delay;
+            const delay=!after||after.terminal||canonical([after.state,after.update,after.reason,after.cancellationRequested])!==before||previous===undefined?RECOVERY_BASE_MS:Math.min(RECOVERY_MAX_MS,previous*2);
+            if(after&&!after.terminal)recoveryDue.set(id,{at:(clock.now??Date.now)()+delay,delay});else recoveryDue.delete(id);
+          }
         }
         recoveryCursor=rows.length?(recoveryCursor+16)%rows.length:0;return snapshot();
       })().finally(()=>{recovery=undefined;});

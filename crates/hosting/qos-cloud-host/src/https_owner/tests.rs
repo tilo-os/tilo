@@ -271,3 +271,51 @@ fn cloud_https_current_copied_state_in_replacement_directory_is_denied() {
         "source does not resume after replacement"
     );
 }
+
+/// The agent owner's `open_existing_store` retains its own validated decode:
+/// repeated opens of an unchanged aggregate decode once, any commit forces a
+/// fresh read and validation, and a retired source keeps nothing.
+#[tokio::test]
+async fn cloud_open_existing_store_reuses_its_own_decode_until_the_aggregate_changes() {
+    let (_transport_dir, transport) = prepared_transport_test().await;
+    crate::storage::test_journal::with_journal(|| {
+        let (dir, source, _) = source();
+        source.bind_retained_pool(&transport.host_bytes().unwrap());
+        let Current::Current(time) = source.with_current(|turn| turn.policy_time().unwrap()) else {
+            panic!("actual original turn required")
+        };
+        // The service's own retained decode is released: only the open slot counts.
+        source.release_retained();
+        let generation = source.open_existing_store(&time).unwrap().state.generation;
+        let decodes = source.open_decode_count();
+        for _ in 0..3 {
+            assert_eq!(
+                source.open_existing_store(&time).unwrap().state.generation,
+                generation
+            );
+        }
+        assert_eq!(
+            source.open_decode_count(),
+            decodes,
+            "unchanged aggregate reused"
+        );
+        {
+            let mut store = source.open_existing_store(&time).unwrap();
+            let next = store.state.clone();
+            store.commit(next).unwrap();
+        }
+        let store = source.open_existing_store(&time).unwrap();
+        assert_eq!(store.state.generation, generation + 1, "commit observed");
+        drop(store);
+        assert_eq!(
+            source.open_decode_count(),
+            decodes + 1,
+            "changed aggregate decoded"
+        );
+        source.open_existing_store(&time).unwrap();
+        assert_eq!(source.open_decode_count(), decodes + 1);
+        source.retire();
+        assert!(source.open_existing_store(&time).is_err());
+        drop(dir);
+    });
+}

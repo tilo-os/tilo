@@ -33,6 +33,12 @@ return async function connectPeer(options={}){
   let createSource;
   const localContexts=new Set();let localContext;
   let authorizationRefresh,authorizationController,authorizationNeedsRefresh=false;
+  // Cloud owner or invited guest: a transport reconnect resumes the admitted
+  // owner without a
+  // membership refresh (no host commits) until a refresh is required: a
+  // refused session (401/403), a failed resumed attempt, or authorization
+  // renewal (which refreshes through performSharedRefresh).
+  let membershipRefreshRequired=false;
   let id,closed=false,closing=false,snapshot={phase:'authenticating',records:[]},connection,storage,namespace,raw,flush=Promise.resolve(),queuedPersist,failed=false,generation=0;
   const desktopCommitListeners=new Set(),actionResponseListeners=new Set();
   const subscribeDesktopCommits=listener=>{desktopCommitListeners.add(listener);return()=>desktopCommitListeners.delete(listener);};
@@ -48,6 +54,8 @@ return async function connectPeer(options={}){
   // a light report between commit boundaries then costs no deep comparison.
   let publishedHealth;
   const report=(next,force=false)=>{
+    // `errorCode` (typed reason of `error`) never outlives the error it names.
+    if(snapshot.errorCode!=null&&Object.hasOwn(next,'error')&&!Object.hasOwn(next,'errorCode'))next={...next,errorCode:null};
     if(next.health){if(next.health.admission||next.health.records)admissionRevision++;health={...health,...next.health,transport:{...health.transport,...next.health.transport,retry:health.transport.retry},failures:[...health.failures.filter(f=>!f.id.startsWith('runtime:')),...(next.health.failures??[])]};}
     for(const waiter of admissionWaiters)waiter.check();reconcileAdmission();
     const base=health,projected={...base,generation:snapshot.health?.generation??base.generation,admission:{...base.admission,deadlineAtMs:admissionDeadline}};
@@ -70,6 +78,7 @@ return async function connectPeer(options={}){
   const storagePaused=()=>failed&&!closed&&!closing;
   // Only errors raised by the storage transaction itself are storage failures.
   const storageCommit=(operation)=>{try{return Promise.resolve(operation()).catch(error=>{throw markStorageError(error);});}catch(error){return Promise.reject(markStorageError(error));}};
+  const descriptorRenewed=error=>/^(?:Error: )?descriptor-renewed:/.test(String(error?.message??error));
   function markStorageError(error){if(error&&typeof error==='object')try{error.storageFailure=true;}catch{}return error;}
   const storageBlocked=()=>Object.assign(Error(`Local storage is unavailable; saving retries automatically${snapshot.error?` (${snapshot.error})`:''}`),{name:'StorageUnavailableError',storageBlocked:true,terminal:true});
   function stopStorageRetry(){if(storageRetryTimer!==null)timerClear(storageRetryTimer);storageRetryTimer=null;}
@@ -130,7 +139,7 @@ return async function connectPeer(options={}){
   function pollActions(){
     if(!actionsV1||closed||closing||actionPolling)return;
     if(actionTimer!==null)timerClear(actionTimer);actionTimer=null;actionPolling=true;
-    void actionsV1.recover().catch(()=>{}).finally(()=>{actionPolling=false;if(!closed&&!closing)actionTimer=timerSet(pollActions,1000);});
+    void actionsV1.recover({background:true}).catch(()=>{}).finally(()=>{actionPolling=false;if(!closed&&!closing)actionTimer=timerSet(pollActions,1000);});
   }
   // `persistenceNeeded` asks this host to commit pending writes now. It is a
   // trigger, not snapshot state: the runtime's light report between commit
@@ -239,15 +248,24 @@ return async function connectPeer(options={}){
     check();runtime.peer_media_update_hint(owner,next);await refreshSharedAuthorization(check);
   }
   function clearFailure(scope){health={...health,failures:health.failures.filter(f=>f.scope.kind!==scope)};}
+  // A busy host on read-only routes (catalogue, agent reads) is retried in
+  // place by delivery: a non-blocking notice, never a transport failure.
+  function clearServiceNotice(){if(health.failures.some(f=>f.scope.kind==='service'))clearFailure('service');}
+  function serviceAvailability(value){
+    if(closed||closing)return;
+    if(value?.available){if(!health.failures.some(f=>f.scope.kind==='service'))return;clearFailure('service');report({});return;}
+    const route=['reads','snapshot'].includes(value?.route)?value.route:'catalogue';
+    health={...health,failures:[...health.failures.filter(f=>f.scope.kind!=='service'),{id:'session:service',code:'service-unavailable',scope:{kind:'service',route},severity:'notice',message:'Workspace services are temporarily unavailable. Retrying automatically.',recovery:[],occurredAtMs:now()}]};report({});
+  }
   function setFailure(scope,error){
     const text=String(error);let code=scope==='storage'?'storage-transaction-failed':'transport-unavailable';
     // A signed in-band onboarding refusal (removed member, expired grant) is the
     // host's authoritative answer: stop retrying instead of looping every few seconds.
-    if(/revoked/i.test(text)||/Workspace join rejected \(40[13]\)/.test(text))code='identity-revoked';else if(/certificate|signature|root mismatch|binding mismatch|HTTP 40[13]/i.test(text))code='certificate-rejected';else if(error?.name==='QuotaExceededError')code='storage-quota';else if(error?.name==='SecurityError')code='storage-denied';
+    if(/revoked/i.test(text)||/Workspace join rejected \(40[13]\)/.test(text)||error?.code==='membership-refused')code='identity-revoked';else if(['claimed-elsewhere','identity-lost'].includes(error?.code))code='certificate-rejected';else if(/certificate|signature|root mismatch|binding mismatch|HTTP 40[13]/i.test(text))code='certificate-rejected';else if(error?.name==='QuotaExceededError')code='storage-quota';else if(error?.name==='SecurityError')code='storage-denied';
     const terminal=['identity-revoked','certificate-rejected'].includes(code);if(terminal&&error&&typeof error==='object')error.terminal=true;
     clearFailure(scope);health={...health,failures:[...health.failures,{id:`session:${scope}`,code,scope:{kind:scope},severity:'error',message:scope==='storage'?'Changes could not be saved on this device. Saving retries automatically.':terminal?'This device needs authorization to reconnect.':'Connection is unavailable. Your saved work is retained.',recovery:[{kind:scope==='storage'?'retry-saving':terminal?'reauthenticate':'retry-connection'}],occurredAtMs:Date.now()}]};return terminal;
   }
-  function connectionFailure(error){const terminal=setFailure('connection',error);health={...health,transport:{...health.transport,phase:terminal?'failed':'offline',authenticated:false}};report({error:String(error)});}
+  function connectionFailure(error){const terminal=setFailure('connection',error);health={...health,transport:{...health.transport,phase:terminal?'failed':'offline',authenticated:false}};report({error:String(error),...(typeof error?.code==='string'?{errorCode:error.code}:{})});}
   const readyRecord=record=>{const row=health.records.find(row=>sameRecord(row.record,record));return row?.admission==='admitted'&&row.current&&row.editing.mode!=='blocked';};
   const admitted=()=>health.admission.phase==='ready'&&health.admission.pendingPrerequisites===0&&health.admission.requiredRecords.every(readyRecord);
   const terminalAdmission=()=>health.failures.find(f=>f.severity==='error'&&(f.scope.kind==='storage'||['identity-revoked','certificate-rejected','certificate-expired','signature-rejected','permission-required','crypto-unavailable','record-install-failed'].includes(f.code)));
@@ -339,8 +357,16 @@ return async function connectPeer(options={}){
   const connect=async(old)=>{
     try {
     if(typeof runtime.peer_delivery_begin!=='function')throw Object.assign(Error('Runtime HTTPS delivery is unavailable'),{terminal:true});
-    await deliveryClient?.close();await persist(false);deliveryClient=undefined;
-    actionRecovery=false;agentReadsV1?.invalidate("reconnecting");actionsV1?.invalidate("reconnecting");await refreshEnrollment();
+    await deliveryClient?.close();await persist(false);deliveryClient=undefined;clearServiceNotice();
+    actionRecovery=false;agentReadsV1?.invalidate("reconnecting");actionsV1?.invalidate("reconnecting");
+    let resumed=false;
+    if(old!==undefined&&!membershipRefreshRequired&&typeof invitedSource?.resume==='function'){
+      try{connection=invitedSource.resume(old);await connection;resumed=true;}
+      catch(error){if(closed||closing)throw error;membershipRefreshRequired=true;}
+      if(closed||closing)return;
+    }
+    if(!resumed){
+    await refreshEnrollment();
     if(closed||closing)throw Error('Session disposed during enrollment');
     if(old===undefined){
       const current=generation;
@@ -357,14 +383,22 @@ return async function connectPeer(options={}){
       connection=invitedSource?invitedSource.reconnect(invitedPrepared,old):runtime.reconnect_peer(old,raw,lease.material,localContext);await connection;
       if(closed||closing)return;
     }
+    invitedPrepared=undefined;
+    }
     clearFailure('connection');await persist();
     if(closed||closing)return;
     deliveryClient=createDelivery({runtime,peerId:id,clock:recoveryClock,persist:()=>persist(),fetch:fetchEnrollment,transfers:storage.transfers,commit:(writes,options)=>storageCommit(()=>storage.commit(writes,options)),onError:error=>{
       if(closed||closing)return;
+      // The host renewed its delivery descriptor during our handshake: a fresh
+      // enrollment (reconnect) picks up the new descriptor. Not a failure to show.
+      if(descriptorRenewed(error)){health={...health,transport:{...health.transport,phase:'reconnecting',authenticated:false}};report({});queueMicrotask(()=>{if(!closed&&!closing)void coordinator.retry().catch(()=>{});});return;}
       // Delivery stopped because this device cannot save: resume once storage recovers.
       if(storagePaused()){reconnectDeferred=true;health={...health,transport:{...health.transport,phase:'offline',authenticated:false}};report({});return;}
-      connectionFailure(error);coordinator.schedule();}});
-    await deliveryClient.start();if(closed||closing)return;
+      if(error?.terminal||error?.sessionRefused)membershipRefreshRequired=true;
+      connectionFailure(error);coordinator.schedule();},onReadAvailability:serviceAvailability});
+    try{await deliveryClient.start();}catch(error){if(resumed)membershipRefreshRequired=true;throw error;}
+    if(closed||closing)return;
+    if(!resumed)membershipRefreshRequired=false;
     if(typeof runtime.peer_action_request==='function'){
       if(!actionsV1){
         const key=JSON.stringify({type:'privateActions',workspace:namespace.room});
@@ -431,6 +465,10 @@ return async function connectPeer(options={}){
       void mediaClient.initialize().then(()=>{if(!closed&&!closing)report({},true);}).catch(error=>options.onMediaError?.(error));
     }
     if(!liveClient&&typeof runtime.peer_live_grant==='function'){liveClient=createLive({runtime,peerId:id,fetch:fetchEnrollment,onError:error=>options.onLiveError?.(error)});liveClient.start();}
+    } catch(error) {
+      // A prepared invited/Cloud attempt that never reached connect/reconnect.
+      if(invitedPrepared){const prepared=invitedPrepared;invitedPrepared=undefined;void invitedSource?.discard?.(prepared)?.catch?.(()=>{});}
+      throw error;
     } finally {
       if(localContext!==undefined){const context=localContext;localContext=undefined;if(localContexts.delete(context))runtime.cancel_local_onboarding(context);}
     }
@@ -444,7 +482,7 @@ return async function connectPeer(options={}){
     // backoff delay; a recovery attempt must not close the initial connection
     // mid-handshake. It waits for it and becomes a no-op if it succeeded.
     if(!initialConnectSettled&&setup){await setup.catch(()=>{});if(closed||closing)throw Error('Session closed');if(health.transport.authenticated)return;}
-    try{health={...health,transport:{...health.transport,phase:'reconnecting',authenticated:false}};report({});if(authorizationNeedsRefresh||authorizationRefresh)await refreshMediaHint();else await connect(id);}catch(error){if(storagePaused()){reconnectDeferred=true;throw storageBlocked();}connectionFailure(error);throw error;}
+    try{health={...health,transport:{...health.transport,phase:'reconnecting',authenticated:false}};report({});if(authorizationNeedsRefresh||authorizationRefresh)await refreshMediaHint();else await connect(id);}catch(error){if(storagePaused()){reconnectDeferred=true;throw storageBlocked();}if(!descriptorRenewed(error))connectionFailure(error);throw error;}
   },onState:retry=>{health={...health,transport:{...health.transport,phase:!health.transport.authenticated&&(retry.inFlight||retry.nextAttemptAtMs!==null)?'reconnecting':health.transport.phase,retry}};report({});}});
   const coordinator={schedule(){if(storagePaused()){reconnectDeferred=true;return;}recoveryCoordinator.schedule();},retry:()=>recoveryCoordinator.retry(),reset:()=>recoveryCoordinator.reset(),dispose:()=>recoveryCoordinator.dispose()};
   const online=()=>{if(!closed&&!closing)void reconnect().catch(()=>{});};events?.addEventListener?.('online',online);
@@ -634,7 +672,7 @@ return async function connectPeer(options={}){
     if(signal?.aborted)throw signal.reason??Error('Session aborted');
     setup=connect();try{await setup;}finally{initialConnectSettled=true;}
     if(closed||closing)throw signal?.reason??Error('Session disposed during connection');
-    return {get mediaV1(){return mediaClient?.supported()?mediaClient.mediaV1:undefined;},get liveV1(){return liveClient?.api;},get actionsV1(){return actionsV1;},get actionsV2(){return actionsV1?.actionsV2;},get agentReadsV1(){return runtime.peer_agent_reads_supported?.(id)===true?agentReadsV1:undefined;},getSnapshot:()=>snapshot,subscribe(listener){subscribers.add(listener);return()=>subscribers.delete(listener);},
+    return {get mediaV1(){return mediaClient?.supported()?mediaClient.mediaV1:undefined;},get liveV1(){return liveClient?.api;},get actionsV1(){return actionsV1;},get actionsV2(){return actionsV1?.actionsV2;},get agentReadsV1(){return runtime.peer_agent_reads_supported?.(id)===true?agentReadsV1:undefined;},get invitedIdentity(){return options.invitation&&typeof lease?.scope==='string'?{scope:lease.scope}:undefined;},getSnapshot:()=>snapshot,subscribe(listener){subscribers.add(listener);return()=>subscribers.delete(listener);},
       async mountDesktop(target,mountOptions={}){
         if(closed||closing)throw Error('Session closed');
         if(snapshot.phase!=='ready')throw Error('Certified record hydration is incomplete');

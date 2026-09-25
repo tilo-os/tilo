@@ -8,6 +8,92 @@ pub struct PublishedInvocationRequest {
     pub address: tilo_actions::ActionAddress,
     pub argument: Option<String>,
     pub actor: String,
+    /// Whose view this invocation resolves against. Set only by the host that
+    /// admitted `actor` (for an agent task, derived from the admitted task),
+    /// never taken from a caller's envelope. It routes to view state and is
+    /// never authority. Part of the exact request both ends compare.
+    pub participant: Option<tilo_actions::ParticipantId>,
+}
+impl PublishedInvocationRequest {
+    /// The invoker this request resolves for: the admitted actor plus the
+    /// host-set participant.
+    pub fn invoker(&self) -> tilo_actions::ActionInvoker {
+        tilo_actions::ActionInvoker {
+            actor: self.actor.clone(),
+            participant: self.participant.clone(),
+        }
+    }
+
+    /// The participant of a delivered invocation: the host-built delivery
+    /// context names it for this exact `actor`, or there is none
+    /// ([`tilo_actions::ActionInvoker::delivered`]).
+    pub fn delivered_participant(
+        actor: &str,
+        context: Option<&tilo_actions::ActionContext>,
+    ) -> Option<tilo_actions::ParticipantId> {
+        tilo_actions::ActionInvoker::delivered(actor, context).participant
+    }
+}
+
+thread_local! {
+    static CURRENT_INVOKERS: std::cell::RefCell<Vec<tilo_actions::ActionInvoker>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// The invoker whose resource tree a delivered invocation resolves against,
+/// for the duration of its resolution and dispatch on this thread.
+///
+/// Resource collection for resolution
+/// ([`crate::widget::Widget::resources_for`]) and view operations read it,
+/// so an invocation is resolved against the invoker's own view, rebuilt at
+/// invoke time, never against a published snapshot. Scopes nest; dropping
+/// the guard restores the enclosing invoker.
+#[must_use = "the invoker applies only while the guard is alive"]
+pub struct InvokerScope(());
+impl InvokerScope {
+    pub fn enter(invoker: tilo_actions::ActionInvoker) -> Self {
+        CURRENT_INVOKERS.with_borrow_mut(|invokers| invokers.push(invoker));
+        Self(())
+    }
+}
+impl Drop for InvokerScope {
+    fn drop(&mut self) {
+        CURRENT_INVOKERS.with_borrow_mut(|invokers| {
+            invokers.pop();
+        });
+    }
+}
+
+/// The invoker of the delivered invocation being resolved on this thread.
+/// `None` outside any delivered invocation (the local person acting).
+pub fn current_invoker() -> Option<tilo_actions::ActionInvoker> {
+    CURRENT_INVOKERS.with_borrow(|invokers| invokers.last().cloned())
+}
+
+/// The participant whose view the current resolution builds, if any.
+pub fn current_participant() -> Option<tilo_actions::ParticipantId> {
+    CURRENT_INVOKERS.with_borrow(|invokers| {
+        invokers
+            .last()
+            .and_then(|invoker| invoker.participant.clone())
+    })
+}
+
+/// Whether `actor` may invoke the View operation `contract` here. The local
+/// person always may. A remote actor may only when it is the current host-set
+/// invoker, it has its own participant view, and the operation declares that
+/// it changes only the invoking participant's view
+/// ([`tilo_actions::PARTICIPANT_VIEW_TAG`]). Every other View operation would
+/// move somebody else's private view and stays refused.
+pub fn view_operation_permitted(
+    actor: &str,
+    local_author: &str,
+    contract: &tilo_actions::ActionContract,
+) -> bool {
+    actor == local_author
+        || (contract.is_participant_view()
+            && current_invoker()
+                .is_some_and(|invoker| invoker.actor == actor && invoker.participant.is_some()))
 }
 
 /// Inert declaration retained by the actual host at original admission. This
@@ -719,6 +805,10 @@ impl DocumentAuthorization {
                 request.address.action.capacity(),
                 request.actor.capacity(),
                 request.argument.as_ref().map_or(0, String::capacity),
+                request
+                    .participant
+                    .as_ref()
+                    .map_or(0, |participant| participant.as_str().len()),
             ] {
                 bytes = bytes.checked_add(len)?;
             }

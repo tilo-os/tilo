@@ -505,7 +505,7 @@ async fn connect_validated(
         host: config.delivery_host.device_public_key,
         host_root: config.delivery_host.user_public_key,
     };
-    let (mut state, outbox, journal_storage) = if let Some(peer) = &owner {
+    let (mut state, mut outbox, journal_storage) = if let Some(peer) = &owner {
         (
             peer.state.borrow().clone(),
             peer.outbox.borrow().clone(),
@@ -573,6 +573,21 @@ async fn connect_validated(
         return Err(error(
             "stored descriptor identity does not match enrolled workspace; retain local storage for recovery",
         ));
+    }
+    // A fresh owner's retained record can be committed ahead of its cursor
+    // journal (a record-only batch inside the publication window). Advance the
+    // journal to that verified descendant before any projection or staging, or
+    // refuse explicitly; never merge it away.
+    if owner.is_none() {
+        crate::admitted_records::repair_record_basis(
+            &cache,
+            &mut state,
+            &mut outbox,
+            &key,
+            |app| crate::desktop::definition(app).is_some(),
+            SystemTime::now(),
+        )
+        .map_err(error)?;
     }
     if let Some(peer) = &owner {
         if !config.governance.is_empty() {
@@ -1062,11 +1077,18 @@ fn encode_pending_batch<T>(
             .filter(|row| crate::desktop::definition(&row.app_id).is_some())
             .map(|row| storage_key(state.room(), &row.app_id, &row.record_id))
             .collect::<Vec<_>>();
+        // Only a cursor journal binds record heads at capture and reload.
+        let admitted = if peer.journal_storage.borrow().delivery.is_some() {
+            records.as_slice()
+        } else {
+            &[]
+        };
         peer.batches
             .borrow_mut()
             .capture_transfer(
                 &peer.cache,
                 &required,
+                admitted,
                 peer.transport_generation.get(),
                 |revision| peer.admission_progress.borrow().batch_basis(revision),
                 |batch_id, writes, transfer| {

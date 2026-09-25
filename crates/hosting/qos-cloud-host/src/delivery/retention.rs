@@ -19,7 +19,9 @@
 //!   Retransmission after release is still deduplicated by the native
 //!   operation identity (a certified duplicate), never re-admitted as an edit.
 //! * **Snapshot + suffix rotation.** When the pool, roots, replay chain or
-//!   relay queue reach half of a budget, the owner certifies a fresh
+//!   relay queue reach half of a budget (history beyond the baseline is
+//!   budgeted at `HISTORY_BYTES`/`HISTORY_COMMITS`, far below the hard caps,
+//!   because every commit re-saves the whole state), the owner certifies a fresh
 //!   checkpoint of the committed peer (`durable_bootstrap_messages`) and
 //!   commits it as the first entry of a new store incarnation. Canonical
 //!   state is exactly that baseline plus the suffix committed after it.
@@ -42,6 +44,14 @@ use std::collections::{BTreeMap, BTreeSet};
 
 /// Rotate once any budget is half used, so the fresh checkpoint still fits.
 const DUE: (usize, usize) = (1, 2);
+/// Retained publication history beyond the baseline that makes a rotation
+/// due (lane T). The whole delivery state is re-saved on every Store commit
+/// (as a JSON number array, ~3.3 bytes per payload byte), so history is kept
+/// near the size of one checkpoint instead of half the 64 MiB pool limit:
+/// a rotation is due once history reaches max(this, the baseline itself).
+pub(crate) const HISTORY_BYTES: usize = 1024 * 1024;
+/// Replay entries, roots and queued relay payloads that make a rotation due.
+pub(crate) const HISTORY_COMMITS: usize = 1024;
 /// Live snapshot pins defer rotation until this fraction of a budget.
 const CRITICAL: (usize, usize) = (9, 10);
 
@@ -119,11 +129,16 @@ impl Pressure {
         // Pool pressure counts only when history beyond the baseline holds at
         // least half of it: a rotation would otherwise not free space and a
         // large workspace would rotate (resetting every consumer) repeatedly.
+        // The history budget is likewise never below the baseline itself.
+        let history = self.pool_bytes.saturating_sub(self.baseline_bytes);
+        let history_budget = HISTORY_BYTES.max(self.baseline_bytes).saturating_mul(2);
+        let commits = MAX_REFERENCES.min(HISTORY_COMMITS * 2);
         (over(self.pool_bytes, schema::POOL_LIMIT, fraction)
             && self.pool_bytes >= self.baseline_bytes.saturating_mul(2))
-            || over(self.roots, MAX_REFERENCES, fraction)
-            || over(self.replay, MAX_REFERENCES, fraction)
-            || over(self.queue, MAX_REFERENCES, fraction)
+            || over(history, history_budget, fraction)
+            || over(self.roots, commits, fraction)
+            || over(self.replay, commits, fraction)
+            || over(self.queue, commits, fraction)
     }
     /// Whether a snapshot + suffix rotation is due now.
     pub(crate) fn rotation_due(&self) -> bool {
@@ -349,3 +364,7 @@ fn referenced(delivery: &DeliveryState) -> BTreeSet<qos_relay::delivery_v3::comm
 #[cfg(test)]
 #[path = "retention/tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "retention/growth_tests.rs"]
+mod growth_tests;

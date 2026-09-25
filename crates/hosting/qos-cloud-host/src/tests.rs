@@ -1988,6 +1988,8 @@ async fn owner_action_invites_independent_root_and_role_changes_survive_restart(
         )
         .unwrap();
     let membership_proof = sign_membership_proof(membership.challenge, &guest_device).unwrap();
+    // Without process reuse (a restarted host) the refresh re-signs durably.
+    crate::collaboration::forget_reused_governance(dir.path());
     let peer_before_refresh = store.state.bound.as_ref().unwrap().peer.clone();
     let outbox_before_refresh = store.state.outbox.len();
     assert_eq!(
@@ -2177,6 +2179,8 @@ fn refresh_then_third_member_reaches_existing_live_receivers_without_checkpoint_
             16,
         )
         .unwrap();
+    // Without process reuse (a restarted host) the refresh re-signs and publishes.
+    crate::collaboration::forget_reused_governance(dir.path());
     let refresh_start = store.state.outbox.len();
     let refresh_bootstrap = store
         .membership_complete(
@@ -2796,4 +2800,133 @@ async fn guest_authenticated_action_stream_rejects_forced_owner_operation() {
     })
     .await
     .unwrap();
+}
+
+/// Lane M: an idle owner and guest re-running the membership challenge must
+/// not commit or grow the Store while nothing changed; a real membership
+/// change still commits; a pre-restart challenge cannot be completed.
+#[test]
+fn idle_membership_refreshes_make_no_store_commits() {
+    use crate::collaboration::MembershipRefresh;
+    use qos_peer_state::join::{
+        MemberRole, MembershipChallengeRequest, MembershipCompleteRequest, sign_membership_proof,
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let owner_root = SigningKey::from_bytes(&[121; 32]);
+    let owner_device = SigningKey::from_bytes(&[122; 32]);
+    let guest_root = SigningKey::from_bytes(&[123; 32]);
+    let guest_device = SigningKey::from_bytes(&[124; 32]);
+    let mut store = Store::open(dir.path(), "idle-membership").unwrap();
+    let enrollment = approved(store.inspect(10).unwrap(), &owner_root, &owner_device);
+    store.apply(&enrollment, 11).unwrap();
+    let (guest_cert, bootstrap) = invite_and_admit(
+        &mut store,
+        &owner_device,
+        &guest_root,
+        &guest_device,
+        "idle-guest",
+        [125; 32],
+        12,
+    );
+    let room = store.state.room.clone();
+    let proof = |store: &mut Store, cert: &DeviceCert, key: &SigningKey, id: [u8; 32], now| {
+        let challenge = store
+            .membership_challenge(
+                cert.device_public_key,
+                MembershipChallengeRequest {
+                    room: room.clone(),
+                    workspace_id: bootstrap.workspace_id,
+                    device_cert: cert.clone(),
+                    request_id: id,
+                },
+                now,
+            )
+            .unwrap();
+        MembershipCompleteRequest {
+            proof: sign_membership_proof(challenge.challenge, key).unwrap(),
+        }
+    };
+    let files = || {
+        (
+            std::fs::read(dir.path().join("state.json")).unwrap(),
+            std::fs::metadata(dir.path().join("state.journal")).map_or(0, |m| m.len()),
+        )
+    };
+    let owner_cert = enrollment.browser_certificate.clone();
+    let (generation, before) = (store.state.generation, files());
+    for i in 0..40u8 {
+        let now = 20 + u64::from(i);
+        let request = proof(&mut store, &owner_cert, &owner_device, [i + 1; 32], now);
+        let MembershipRefresh::Owner(_) = store
+            .membership_refresh(owner_cert.device_public_key, request, now)
+            .unwrap()
+        else {
+            panic!("structural owner must receive the owner bootstrap")
+        };
+        let request = proof(&mut store, &guest_cert, &guest_device, [100 + i; 32], now);
+        let MembershipRefresh::Member(refreshed) = store
+            .membership_refresh(guest_cert.device_public_key, request.clone(), now)
+            .unwrap()
+        else {
+            panic!("guest must receive the member bootstrap")
+        };
+        assert_eq!(refreshed.role, MemberRole::Editor);
+        // A lost-reply retry of the identical proof is answered, still no commit.
+        let MembershipRefresh::Member(retried) = store
+            .membership_refresh(guest_cert.device_public_key, request, now)
+            .unwrap()
+        else {
+            panic!("guest retry must receive the member bootstrap")
+        };
+        assert_eq!(retried, refreshed);
+    }
+    assert_eq!(
+        store.state.generation, generation,
+        "idle refreshes committed"
+    );
+    assert_eq!(files(), before, "idle refreshes grew the Store");
+
+    // A challenge issued before a host restart cannot be completed after it:
+    // outstanding challenges live only in process memory.
+    let stale = proof(&mut store, &guest_cert, &guest_device, [200; 32], 70);
+    drop(store);
+    crate::collaboration::forget_issued_challenges(dir.path());
+    crate::collaboration::forget_reused_governance(dir.path());
+    let mut store = Store::open(dir.path(), "idle-membership").unwrap();
+    let error = store
+        .membership_refresh(guest_cert.device_public_key, stale, 71)
+        .unwrap_err();
+    assert!(error.to_string().contains("not issued"), "{error}");
+    assert_eq!(files(), before, "a refused replay committed");
+
+    // A real membership change still commits and is reflected.
+    store
+        .action(
+            owner_device.verifying_key().to_bytes(),
+            &ActionRequest {
+                version: 1,
+                room: room.clone(),
+                invocation_id: "idle-demote".into(),
+                operation: NativeOperation::CollaborationSetRole {
+                    user_public_key: guest_root.verifying_key().to_bytes(),
+                    role: MemberRole::Viewer,
+                },
+            },
+            80,
+        )
+        .unwrap();
+    let generation = store.state.generation;
+    let request = proof(&mut store, &guest_cert, &guest_device, [201; 32], 81);
+    assert_eq!(store.state.generation, generation, "issuance committed");
+    let MembershipRefresh::Member(changed) = store
+        .membership_refresh(guest_cert.device_public_key, request, 81)
+        .unwrap()
+    else {
+        panic!("guest must receive the member bootstrap")
+    };
+    assert_eq!(changed.role, MemberRole::Viewer);
+    assert!(
+        store.state.generation > generation,
+        "a real change must commit"
+    );
 }

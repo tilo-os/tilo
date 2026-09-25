@@ -350,6 +350,7 @@ async fn agent_read_attachment_blocked_store_read_keeps_custody_after_waiter_dro
             None,
             true,
             &mut Default::default(),
+            &mut Default::default(),
         ));
     });
     begin.recv_timeout(Duration::from_secs(1)).unwrap();
@@ -527,6 +528,7 @@ async fn agent_read_attachment_expired_and_dropped_reads_skip_locked_store() {
                 None,
                 true,
                 &mut Default::default(),
+                &mut Default::default(),
             ));
         }
         done.send(()).unwrap();
@@ -655,6 +657,7 @@ async fn cloud_policy_clock_real_command_keeps_request_origin_and_denies_retired
         None,
         true,
         &mut AgentWorkQueue::default(),
+        &mut ReadCache::default(),
     )
     .await;
     let (reply, retained) = response.await.unwrap().into_parts();
@@ -692,4 +695,227 @@ async fn cloud_policy_clock_legacy_runtime_start_rejects_late_source_upgrade() {
             .version,
         version
     );
+}
+
+fn listed(message: ActionMessage) -> Vec<String> {
+    let ActionMessage::AgentReadResultV1 {
+        response: AgentResponse::List { agents, .. },
+        ..
+    } = message
+    else {
+        panic!("private list missing")
+    };
+    agents.into_iter().map(|agent| agent.id).collect()
+}
+fn read_owner(dir: &std::path::Path) -> (Arc<RuntimeOwner>, Arc<AgentControlProvider>) {
+    let owner = Arc::new(RuntimeOwner::open(dir, "agent-admission").unwrap());
+    let provider = AgentControlProvider::new_read_only(owner.clone());
+    publish_runtime_state(&owner, None, &mut None, false, false).unwrap();
+    (owner, provider)
+}
+fn add_agent(dir: &std::path::Path, device: [u8; 32]) -> Uuid {
+    let mut store = Store::open(dir, "agent-admission").unwrap();
+    let id = Uuid::new_v4();
+    let (caller, request) = crate::agent_owner_tests::prepare(&store, device, &id.to_string());
+    store.commit_agent_request(&request, &caller).unwrap();
+    id
+}
+const LIST: AgentRequest = AgentRequest::List {
+    version: 1,
+    cursor: None,
+};
+
+/// One Store observation serves the reads of a burst: the next read of the
+/// same caller answers without opening the Store (it completes while another
+/// holder keeps the Store lock), and any Store commit retires that basis so
+/// the following read observes the change.
+#[tokio::test]
+async fn agent_read_burst_basis_is_reused_until_the_store_changes() {
+    let (dir, mut store, device) = crate::agent_owner_tests::enrolled();
+    store
+        .activate_private_agent_ledger(&store.agent_caller(device).unwrap())
+        .unwrap();
+    drop(store);
+    let first_agent = add_agent(dir.path(), device);
+    let (owner, provider) = read_owner(dir.path());
+    let time = owner.policy_time().unwrap();
+    let mut cache = ReadCache::default();
+    let first = read_current(
+        dir.path(),
+        &owner,
+        Some(&provider),
+        None,
+        &evidence(dir.path(), LIST),
+        &time,
+        &mut cache,
+    )
+    .unwrap();
+    assert_eq!(listed(first), vec![format!("agent:{first_agent}")]);
+    assert_eq!((cache.hits, cache.misses, cache.len()), (0, 1, 1));
+
+    // Reused: answered while the Store lock is held elsewhere.
+    let reused = evidence(dir.path(), LIST);
+    let lock = Store::open(dir.path(), "agent-admission").unwrap();
+    let root = dir.path().to_path_buf();
+    let (done, answered) = std::sync::mpsc::channel();
+    let reader = std::thread::spawn({
+        let (owner, provider, time) = (owner.clone(), provider.clone(), time.clone());
+        move || {
+            let result = read_current(
+                &root,
+                &owner,
+                Some(&provider),
+                None,
+                &reused,
+                &time,
+                &mut cache,
+            )
+            .map(listed);
+            done.send(()).unwrap();
+            (result, cache)
+        }
+    });
+    let finished = answered.recv_timeout(Duration::from_secs(2));
+    drop(lock);
+    let (second, mut cache) = tokio::task::spawn_blocking(move || reader.join().unwrap())
+        .await
+        .unwrap();
+    assert!(finished.is_ok(), "a reused read opened the locked Store");
+    assert_eq!(second.unwrap(), vec![format!("agent:{first_agent}")]);
+    assert_eq!((cache.hits, cache.misses), (1, 1));
+
+    // A commit changes the Store files: the basis is retired, not reused.
+    let second_agent = add_agent(dir.path(), device);
+    let third = read_current(
+        dir.path(),
+        &owner,
+        Some(&provider),
+        None,
+        &evidence(dir.path(), LIST),
+        &time,
+        &mut cache,
+    )
+    .unwrap();
+    let mut expected = vec![
+        format!("agent:{first_agent}"),
+        format!("agent:{second_agent}"),
+    ];
+    expected.sort();
+    let mut third = listed(third);
+    third.sort();
+    assert_eq!(third, expected);
+    assert_eq!((cache.hits, cache.misses, cache.len()), (1, 2, 1));
+}
+
+/// The burst basis is consulted by private reads only. With a retained basis
+/// for the caller, its certified commands (retained status here) still take
+/// the fresh Store check, and another device's read is never answered from
+/// it.
+#[tokio::test]
+async fn agent_read_burst_basis_is_never_an_authorization() {
+    let (dir, mut store, device) = crate::agent_owner_tests::enrolled();
+    store
+        .activate_private_agent_ledger(&store.agent_caller(device).unwrap())
+        .unwrap();
+    drop(store);
+    let id = add_agent(dir.path(), device);
+    let store = Store::open(dir.path(), "agent-admission").unwrap();
+    let status = certified(
+        &store,
+        ActionMessage::Status {
+            invocation: qos_actions::InvocationId(id),
+        },
+    );
+    drop(store);
+    let (owner, provider) = read_owner(dir.path());
+    let time = owner.policy_time().unwrap();
+    let mut cache = ReadCache::default();
+    read_current(
+        dir.path(),
+        &owner,
+        Some(&provider),
+        None,
+        &evidence(dir.path(), LIST),
+        &time,
+        &mut cache,
+    )
+    .unwrap();
+    assert_eq!(cache.len(), 1);
+
+    // Another enrolled device (another Store identity) is proved freshly
+    // and denied; the retained basis is not a verdict for it.
+    let (foreign_dir, foreign, _) = crate::agent_owner_tests::enrolled();
+    let foreign_read = certified(
+        &foreign,
+        ActionMessage::AgentReadV1 {
+            host: foreign.state.room.parse().unwrap(),
+            invocation: Uuid::new_v4(),
+            request: LIST,
+        },
+    );
+    drop(foreign);
+    assert!(
+        read_current(
+            dir.path(),
+            &owner,
+            Some(&provider),
+            None,
+            &foreign_read,
+            &time,
+            &mut cache,
+        )
+        .is_err()
+    );
+    assert_eq!(
+        cache.hits, 0,
+        "a foreign caller was answered from the basis"
+    );
+
+    // A certified command of the retained caller waits for the actual Store
+    // lock: it is authorized freshly, never from the retained read basis.
+    let lock = Store::open(dir.path(), "agent-admission").unwrap();
+    let (reply, response) = oneshot::channel();
+    let command = Command {
+        policy_time: time.clone(),
+        evidence: status,
+        kind: CommandKind::Action,
+        deadline: Instant::now() + Duration::from_secs(5),
+        custody: None,
+        reply,
+    };
+    let root = dir.path().to_path_buf();
+    let (done, completed) = std::sync::mpsc::channel();
+    let thread = std::thread::spawn(move || {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(dispatch(
+            command,
+            &root,
+            &owner,
+            Some(&provider),
+            None,
+            true,
+            &mut Default::default(),
+            &mut cache,
+        ));
+        done.send(()).unwrap();
+    });
+    let early = completed.recv_timeout(Duration::from_millis(300));
+    drop(lock);
+    tokio::task::spawn_blocking(move || thread.join().unwrap())
+        .await
+        .unwrap();
+    assert!(
+        early.is_err(),
+        "a certified command completed without the Store"
+    );
+    assert!(matches!(
+        response.await.unwrap().value(),
+        Ok(CommandReply::Action(Some(
+            ActionMessage::Observation { .. }
+        )))
+    ));
+    drop(foreign_dir);
 }

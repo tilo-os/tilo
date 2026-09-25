@@ -1,7 +1,7 @@
 use super::*;
 use qos_actions::Action;
 
-pub(super) fn selected() -> (tempfile::TempDir, Arc<RuntimeOwner>) {
+pub(crate) fn selected() -> (tempfile::TempDir, Arc<RuntimeOwner>) {
     let (directory, mut store, device) = crate::agent_owner_tests::enrolled();
     let mut peer = store.peer().unwrap();
     peer.select_admission_v5().unwrap();
@@ -436,7 +436,9 @@ async fn cloud_worker_withdraws_transport_grants_and_preserves_dirty_close_custo
     let (directory, mut workers, _documents, _network) = live_workers().await;
     let live = workers.publications().unwrap();
     assert!(live.ready && !live.grants.is_empty() && live.native_v5_ready);
+    // Scoped grants (default): every frozen scope names live worker records.
     for grant in &live.grants {
+        let scope = qos_agent_control_protocol::decode_scope_carrier(grant).unwrap();
         assert!(
             workers
                 .broker
@@ -444,15 +446,9 @@ async fn cloud_worker_withdraws_transport_grants_and_preserves_dirty_close_custo
                 .iter()
                 .any(|surface| {
                     surface.live
-                        && surface.app_id == grant.app_id
-                        && (surface.route.record_id == grant.record_id
-                            || (surface.route.record_id.is_empty()
-                                && grant.record_id == RecordId::package_primary().as_str()))
-                        && surface.actions.iter().any(|action| {
-                            action.resource == grant.resource
-                                && action.action == grant.action
-                                && action.operation_kind == qos_actions::OperationKind::Document
-                        })
+                        && surface.app_id == scope.app_id
+                        && qos_agent_control_protocol::canonical_record(&surface.route.record_id)
+                            .is_ok_and(|record| scope.covers_record(&record))
                 })
         );
     }
@@ -678,7 +674,19 @@ async fn cloud_worker_setup_failure_retains_original_record_and_captured_view() 
 #[tokio::test(flavor = "current_thread")]
 async fn cloud_worker_committed_host_revocation_withdraws_publications_and_retains_custody() {
     let (directory, mut workers, _documents, _network) = live_workers().await;
+    use qos_action_broker::peer_actions::CertificateAuthority;
     use qos_user_identity::{RevocationEntry, RevocationReason, sign_revocation_entry};
+    // Broker verdicts are retained per Store observation; populate them twice
+    // (the second from the retained verdict) before the revocation commit.
+    let room: uuid::Uuid = workers.room.parse().unwrap();
+    let route = qos_action_broker::collab_broker::CrdtRoute::record(WRITER, &workers.room, RECORD);
+    for _ in 0..2 {
+        CertificateAuthority::authorize(&*workers.owner, room, &workers.certificate).unwrap();
+        workers
+            .owner
+            .authorize_host_worker(&route, &workers.certificate)
+            .unwrap();
+    }
     let root = ed25519_dalek::SigningKey::from_bytes(&[7; 32]);
     let device = ed25519_dalek::SigningKey::from_bytes(&[8; 32]);
     let mut entry = RevocationEntry {
@@ -707,6 +715,14 @@ async fn cloud_worker_committed_host_revocation_withdraws_publications_and_retai
             )
             .unwrap();
     }
+    // The revocation commit is observed before any retained verdict is reused.
+    assert!(CertificateAuthority::authorize(&*workers.owner, room, &workers.certificate).is_err());
+    assert!(
+        workers
+            .owner
+            .authorize_host_worker(&route, &workers.certificate)
+            .is_err()
+    );
     assert!(workers.publications().is_err());
     assert!(workers.pump().is_err());
     assert!(workers.close().unwrap_err().contains("custody preserved"));
@@ -870,12 +886,37 @@ async fn cloud_worker_real_primary_chat_grants_validate_as_offer_and_retained_in
             .iter()
             .any(|grant| grant.app_id == "so.tilo.chat")
     );
-    let chat_grant = publications
-        .grants
-        .iter()
-        .find(|grant| grant.app_id == "so.tilo.chat" && grant.action == "collapse")
-        .cloned()
+    // The frozen scopes cover the real seeded Chat category action.
+    let collapse = workers
+        .broker
+        .published_action_surfaces()
+        .into_iter()
+        .filter(|surface| surface.live && surface.app_id == "so.tilo.chat")
+        .find_map(|surface| {
+            surface
+                .actions
+                .iter()
+                .find(|action| action.action == "collapse")
+                .cloned()
+        })
         .expect("real seeded Chat category action");
+    let chat_grant = qos_agent_control_protocol::GrantAction {
+        app_id: "so.tilo.chat".into(),
+        record_id: "@qos:package-primary".into(),
+        resource: collapse.resource.clone(),
+        action: collapse.action.clone(),
+    };
+    let scopes = qos_agent_control_protocol::scopes_from_grants(&publications.grants).unwrap();
+    assert!(scopes.iter().any(
+        |scope| scope.covers(&qos_agent_control_protocol::ScopeTarget {
+            app_id: "so.tilo.chat",
+            record_id: "@qos:package-primary",
+            resource: &collapse.resource,
+            action: "collapse",
+            class: Some(qos_agent_control_protocol::OperationClass::Document),
+            required: qos_agent_control_protocol::GrantVerb::Write,
+        })
+    ));
     let invocation = uuid::Uuid::new_v4().to_string();
     let mut offer: Option<GrantOffer> = None;
     crate::agent_runtime::publish_runtime_state(
@@ -1368,6 +1409,7 @@ async fn cloud_worker_registered_source_pumps_and_refuses_absent_invocation() {
         address: qos_actions::ActionAddress::new("absent.resource", "absent-action"),
         argument: None,
         actor: workers.principal.clone(),
+        participant: None,
     };
     for worker in &workers.workers {
         let error = (worker.authorizer)(&request).unwrap_err();
@@ -1428,4 +1470,395 @@ async fn cloud_worker_registered_source_retirement_refuses_pump_and_connection()
         std::fs::read(directory.path().join("state.json")).unwrap(),
         before
     );
+}
+
+/// Test-local mount settings for the next `AgentWorkers::start` on this
+/// thread; restored on drop so other tests keep the unbounded default.
+struct TestMountGuard;
+impl TestMountGuard {
+    fn set(budget: std::time::Duration, refused: &[(&str, &str)]) -> Self {
+        Self::with_grace(budget, refused, UNMOUNT_GRACE)
+    }
+    fn with_grace(
+        budget: std::time::Duration,
+        refused: &[(&str, &str)],
+        grace: std::time::Duration,
+    ) -> Self {
+        TEST_MOUNT.with(|test| {
+            *test.borrow_mut() = (
+                budget,
+                refused
+                    .iter()
+                    .map(|(app, record)| ((*app).to_owned(), (*record).to_owned()))
+                    .collect(),
+                grace,
+            )
+        });
+        Self
+    }
+}
+impl Drop for TestMountGuard {
+    fn drop(&mut self) {
+        TEST_MOUNT.with(|test| {
+            *test.borrow_mut() = (std::time::Duration::MAX, Default::default(), UNMOUNT_GRACE)
+        });
+    }
+}
+fn mounted(workers: &AgentWorkers) -> Vec<(String, String)> {
+    workers
+        .workers
+        .iter()
+        .map(|w| (w.app.clone(), w.record.clone()))
+        .collect()
+}
+
+/// A refused worker connection (the broker's host-worker capacity, a failed
+/// join) skips only that record: the mount succeeds without it, and the
+/// record is retried with back-off and mounted once it is accepted.
+#[tokio::test(flavor = "current_thread")]
+async fn cloud_worker_refused_record_is_skipped_and_retried_not_fatal() {
+    let (directory, owner) = selected();
+    let guard = TestMountGuard::set(std::time::Duration::MAX, &[(WRITER, RECORD)]);
+    let (outbound, _network) = mpsc::channel(32);
+    let (mut workers, _documents) = AgentWorkers::start(directory.path(), owner, outbound)
+        .expect("one refused worker must not fail the whole mount");
+    let key = (WRITER.to_owned(), RECORD.to_owned());
+    assert!(!mounted(&workers).contains(&key));
+    assert!(
+        !workers.mounting(),
+        "the refused record is skipped, not pending"
+    );
+    let (attempts, due) = workers.skipped[&key];
+    assert_eq!(attempts, 1);
+    assert!(
+        due > std::time::Instant::now(),
+        "retried later, with back-off"
+    );
+    // Not due yet: a pump does not retry it.
+    workers.pump().unwrap();
+    assert!(!mounted(&workers).contains(&key));
+    // Accepted again and due: the next pump mounts it.
+    drop(guard);
+    workers.skipped.get_mut(&key).unwrap().1 = std::time::Instant::now();
+    workers.pump().unwrap();
+    assert!(mounted(&workers).contains(&key));
+    assert!(workers.skipped.is_empty());
+    workers.close().unwrap();
+}
+
+/// Mounting is bounded per pass: a pass that already mounted one worker and
+/// spent its budget leaves the rest pending for the next owner tick, and
+/// publications are not ready until every validated record is mounted.
+#[tokio::test(flavor = "current_thread")]
+async fn cloud_worker_mounting_is_bounded_per_pass_and_ready_only_when_complete() {
+    let (directory, owner) = selected();
+    let rows = {
+        let store = owner.store().unwrap();
+        store
+            .peer()
+            .unwrap()
+            .rows()
+            .into_iter()
+            .filter(|row| qos_session_peer::canonical_records::resolve(&row.app_id).is_some())
+            .count()
+    };
+    assert!(rows >= 2, "the seed hosts at least two records ({rows})");
+    let _guard = TestMountGuard::set(std::time::Duration::ZERO, &[]);
+    let (outbound, _network) = mpsc::channel(32);
+    let (mut workers, mut documents) =
+        AgentWorkers::start(directory.path(), owner, outbound).unwrap();
+    assert_eq!(
+        workers.workers.len(),
+        1,
+        "one worker per pass at a zero budget"
+    );
+    assert!(workers.mounting());
+    workers.set_transport_ready(true);
+    assert!(!workers.publications().unwrap().ready);
+    for pass in 2..=rows {
+        workers.pump().unwrap();
+        assert_eq!(workers.workers.len(), pass);
+    }
+    assert!(!workers.mounting());
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+    while !workers.publications().unwrap().ready {
+        workers.pump().unwrap();
+        while let Ok(pending) = documents.try_recv() {
+            apply_document(&mut workers, pending);
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "publication never became ready"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    }
+    workers.close().unwrap();
+}
+
+const NOTES: &str = "so.tilo.notes";
+
+/// One desktop command of the enrolled person through the Cloud Store owner
+/// (the same commit the broker's desktop action makes).
+fn desktop(owner: &RuntimeOwner, command: qos_desktop::session_commands::DesktopCommand) {
+    use qos_peer_state::desktop_command::{BoundCommand, CommandSource};
+    use qos_peer_state::owner_commit::{CommitOperation, OwnerCommitRequest};
+    let mut store = owner.store().unwrap();
+    let peer = store.peer().unwrap();
+    let caller = peer
+        .certificates()
+        .into_iter()
+        .find(|cert| cert.device_public_key != store.key().verifying_key().to_bytes())
+        .unwrap();
+    let request = OwnerCommitRequest {
+        room: store.state.room.clone(),
+        operation: CommitOperation::DesktopCommand {
+            invocation: uuid::Uuid::new_v4(),
+            caller,
+            command: BoundCommand {
+                source: CommandSource {
+                    room: store.state.room.clone(),
+                    heads: peer
+                        .admitted_room()
+                        .unwrap()
+                        .clone()
+                        .get_heads()
+                        .iter()
+                        .map(|head| head.0)
+                        .collect(),
+                },
+                command,
+            },
+        },
+    };
+    store.commit_desktop_command(&request, None).unwrap();
+}
+fn tab_locations(owner: &RuntimeOwner) -> Vec<qos_desktop::session_commands::TabLocation> {
+    let store = owner.store().unwrap();
+    crate::agent_owner::workspace_tree(&store.peer().unwrap())
+        .unwrap()
+        .workspaces[0]
+        .strips
+        .iter()
+        .flat_map(|strip| {
+            strip.window_groups.iter().flat_map(move |group| {
+                group
+                    .tabs
+                    .iter()
+                    .map(move |tab| qos_desktop::session_commands::TabLocation {
+                        strip: strip.id.0,
+                        group: group.id,
+                        tab: tab.id,
+                    })
+            })
+        })
+        .collect()
+}
+fn notes_workers(workers: &AgentWorkers) -> Vec<String> {
+    workers
+        .workers
+        .iter()
+        .filter(|w| w.app == NOTES)
+        .map(|w| w.record.clone())
+        .collect()
+}
+/// Pump (settling worker publications) until `done` or a bounded deadline.
+async fn pump_until(
+    workers: &mut AgentWorkers,
+    documents: &mut mpsc::Receiver<PendingHostDocument>,
+    what: &str,
+    done: impl Fn(&AgentWorkers) -> bool,
+) {
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(20);
+    loop {
+        workers.pump().unwrap();
+        while let Ok(pending) = documents.try_recv() {
+            apply_document(workers, pending);
+        }
+        if done(workers) {
+            return;
+        }
+        assert!(tokio::time::Instant::now() < deadline, "timed out: {what}");
+        tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+    }
+}
+
+/// Workers follow open windows: 90 open/close cycles of Notes (each opening
+/// a new record, as "Open Notes" does) never leave more workers than open
+/// windows plus records inside their unmount grace, and the open latency
+/// (command committed to the record's worker mounted) stays flat.
+#[tokio::test(flavor = "current_thread")]
+async fn cloud_worker_set_follows_open_windows_over_ninety_cycles() {
+    let (directory, owner) = selected();
+    let _guard =
+        TestMountGuard::with_grace(std::time::Duration::MAX, &[], std::time::Duration::ZERO);
+    let (outbound, mut network) = mpsc::channel(256);
+    let (mut workers, mut documents) =
+        AgentWorkers::start(directory.path(), owner.clone(), outbound).unwrap();
+    workers.set_transport_ready(true);
+    pump_until(&mut workers, &mut documents, "baseline", |w| !w.mounting()).await;
+    let baseline = workers.workers.len();
+    let windows = tab_locations(&owner).len();
+    assert!(
+        baseline <= windows,
+        "no worker without a window ({baseline} > {windows})"
+    );
+    let mut latencies = vec![];
+    let mut worker_times = vec![];
+    let mut mount_times = vec![];
+    let mut seen = std::collections::BTreeSet::new();
+    for cycle in 0..90 {
+        let before = tab_locations(&owner);
+        let began = std::time::Instant::now();
+        desktop(
+            &owner,
+            qos_desktop::session_commands::DesktopCommand::OpenApp { app: NOTES.into() },
+        );
+        let timing_before = workers.timing;
+        pump_until(
+            &mut workers,
+            &mut documents,
+            "open mounts its worker",
+            |w| notes_workers(w).iter().any(|r| !seen.contains(r)),
+        )
+        .await;
+        latencies.push(began.elapsed());
+        worker_times.push(workers.timing.0 - timing_before.0);
+        mount_times.push(workers.timing.1 - timing_before.1);
+        let record = notes_workers(&workers)
+            .into_iter()
+            .find(|r| !seen.contains(r))
+            .unwrap();
+        seen.insert(record);
+        assert!(
+            workers.workers.len() <= baseline + 1,
+            "cycle {cycle}: {} workers for {} windows",
+            workers.workers.len(),
+            windows + 1
+        );
+        let opened = tab_locations(&owner)
+            .into_iter()
+            .find(|tab| !before.contains(tab))
+            .unwrap();
+        desktop(
+            &owner,
+            qos_desktop::session_commands::DesktopCommand::CloseTab { location: opened },
+        );
+        pump_until(
+            &mut workers,
+            &mut documents,
+            "close unmounts its worker",
+            |w| w.workers.len() == baseline,
+        )
+        .await;
+        while network.try_recv().is_ok() {}
+    }
+    assert_eq!(seen.len(), 90, "every cycle opened a new record");
+    let mean = |slice: &[std::time::Duration]| {
+        slice.iter().sum::<std::time::Duration>() / slice.len() as u32
+    };
+    let (first, last) = (mean(&latencies[..10]), mean(&latencies[80..]));
+    let (set_first, set_last) = (mean(&worker_times[..10]), mean(&worker_times[80..]));
+    let (mount_first, mount_last) = (mean(&mount_times[..10]), mean(&mount_times[80..]));
+    let state = std::fs::metadata(directory.path().join("state.json")).map_or(0, |m| m.len());
+    eprintln!(
+        "open latency: first 10 mean {first:?}, last 10 mean {last:?} (state now {state} B); \
+         worker-set bookkeeping {set_first:?} -> {set_last:?}; mount {mount_first:?} -> {mount_last:?}"
+    );
+    // The worker set's own cost per open must not grow with closed records.
+    // (Mounting and end-to-end latency here also include Store opens and
+    // commits, which scale with the Store size every created record adds in
+    // this debug build: a Store concern, reported above, not gated here.)
+    assert!(
+        set_last <= set_first * 2 + std::time::Duration::from_millis(5),
+        "worker-set cost grew with closed records: {set_first:?} -> {set_last:?}"
+    );
+    workers.close().unwrap();
+}
+
+/// A record without a window gets its worker while an active agent task is
+/// granted it, and loses it (after the grace) once the task ends. A closed
+/// record inside its grace period is not unmounted, and reopening cancels it.
+#[tokio::test(flavor = "current_thread")]
+async fn cloud_worker_agent_task_on_closed_record_gets_its_worker() {
+    let (directory, owner) = selected();
+    let _guard =
+        TestMountGuard::with_grace(std::time::Duration::MAX, &[], std::time::Duration::ZERO);
+    let (outbound, _network) = mpsc::channel(256);
+    let (mut workers, mut documents) =
+        AgentWorkers::start(directory.path(), owner.clone(), outbound).unwrap();
+    workers.set_transport_ready(true);
+    pump_until(&mut workers, &mut documents, "baseline", |w| !w.mounting()).await;
+    let before = tab_locations(&owner);
+    desktop(
+        &owner,
+        qos_desktop::session_commands::DesktopCommand::OpenApp { app: NOTES.into() },
+    );
+    pump_until(&mut workers, &mut documents, "open", |w| {
+        !notes_workers(w).is_empty()
+    })
+    .await;
+    let record = notes_workers(&workers)[0].clone();
+    let opened = tab_locations(&owner)
+        .into_iter()
+        .find(|tab| !before.contains(tab))
+        .unwrap();
+    desktop(
+        &owner,
+        qos_desktop::session_commands::DesktopCommand::CloseTab { location: opened },
+    );
+    pump_until(&mut workers, &mut documents, "close", |w| {
+        notes_workers(w).is_empty()
+    })
+    .await;
+    // An agent task granted the closed record: its worker comes back.
+    let task = ActiveAgentTask {
+        task: uuid::Uuid::new_v4().to_string(),
+        agent: uuid::Uuid::new_v4().to_string(),
+        name: "Scribe".into(),
+        grants: vec![GrantAction {
+            app_id: NOTES.into(),
+            record_id: record.clone(),
+            resource: "note".into(),
+            action: "append".into(),
+        }],
+    };
+    let _ = workers.sync_agent_participants(std::slice::from_ref(&task));
+    pump_until(&mut workers, &mut documents, "agent record mounts", |w| {
+        notes_workers(w) == vec![record.clone()]
+    })
+    .await;
+    // The task ends: released after the grace (zero here).
+    let _ = workers.sync_agent_participants(&[]);
+    pump_until(&mut workers, &mut documents, "task end releases", |w| {
+        notes_workers(w).is_empty()
+    })
+    .await;
+    // With a real grace, an unwanted worker stays mounted until it expires.
+    workers.unmount_grace = std::time::Duration::from_secs(3600);
+    let _ = workers.sync_agent_participants(std::slice::from_ref(&task));
+    pump_until(&mut workers, &mut documents, "remount", |w| {
+        notes_workers(w) == vec![record.clone()]
+    })
+    .await;
+    let _ = workers.sync_agent_participants(&[]);
+    for _ in 0..5 {
+        workers.pump().unwrap();
+    }
+    assert_eq!(
+        notes_workers(&workers),
+        vec![record.clone()],
+        "kept inside its grace"
+    );
+    assert!(
+        workers
+            .unwanted_since
+            .contains_key(&(NOTES.to_owned(), record.clone()))
+    );
+    let _ = workers.sync_agent_participants(std::slice::from_ref(&task));
+    workers.pump().unwrap();
+    assert!(
+        workers.unwanted_since.is_empty(),
+        "wanted again cancels the grace"
+    );
+    workers.close().unwrap();
 }

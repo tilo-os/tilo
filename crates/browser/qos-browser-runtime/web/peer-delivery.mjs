@@ -8,6 +8,30 @@ const detach=/^\/peer\/v3\/sessions\/[0-9a-f]{32}$/;
 const fail=message=>Object.assign(Error(message),{code:'delivery-unavailable'});
 const FAST_RENEWAL_WINDOW_MS=10000;
 const TRANSIENT_RETRIES=3;
+// A poll/ACK answered 200 whose page Rust cannot apply (an admission refusal)
+// leaves the cursor unchanged, so the next poll returns the same page at once.
+// Such failures hold the whole scheduler on a bounded exponential backoff
+// (250 ms doubling to 30 s) until an answer applies again; they never spin.
+const ADVANCE_HOLD_BASE_MS=250,ADVANCE_HOLD_MAX_MS=30000;
+export function advanceHoldMs(failures){return Math.min(ADVANCE_HOLD_MAX_MS,ADVANCE_HOLD_BASE_MS*2**Math.max(0,Math.min(failures-1,20)));}
+// Read-only private routes (catalogue refresh, agent reads). A busy or briefly
+// unreachable host (429/502/503/504, network reset, timeout) is retried in
+// place: Rust re-queues the exact action and re-issues it with a fresh proof.
+// It is reported as temporarily unavailable and never recovers the transport.
+const READ_ONLY=new Map([['/peer/v3/commands/catalogue','catalogue'],['/peer/v3/reads','reads'],['/peer/v3/commands/status','status']]);
+const READ_RETRIES=6;
+const TRANSIENT_STATUS=new Set([429,502,503,504]);
+const readOnlyTarget=value=>value.method==='POST'&&READ_ONLY.has(value.target);
+// Snapshot manifest/renewal (POST) and chunk (GET) requests re-queue at their
+// exact step the same way; exhausted retries still escalate (a stalled
+// snapshot cannot be skipped the way a single read can).
+const snapshotTarget=value=>value.method==='POST'&&value.target==='/peer/v3/snapshots'||value.method==='GET'&&snapshotChunk.test(value.target);
+const retryRoute=value=>readOnlyTarget(value)?READ_ONLY.get(value.target):snapshotTarget(value)?'snapshot':undefined;
+// A refused (401/403) read is "read unavailable" (for example the host's
+// private lane is momentarily gone): it is retried on the read backoff and
+// never escalates to transport or membership recovery. Malformed (400) stays fatal.
+const refusedRead=error=>error?.status===401||error?.status===403;
+const transientRead=error=>!error?.terminal&&(Number.isInteger(error?.status)?TRANSIENT_STATUS.has(error.status):error?.name==='TypeError'||error?.name==='AbortError'||error?.message==='Delivery request timed out');
 // Held polls (a chain of up to 3) + private poll + ACK + a bounded window of
 // state uploads (4). The Rust scheduler bounds retained handles itself (10).
 const MAX_ACTIVE=10;
@@ -36,8 +60,17 @@ function limits(value){
  const maximum=control?(value.target==='/peer/v3/bootstrap'?32768:8192):value.target==='/peer/v3/acks'||remove?8192:value.target.startsWith('/peer/v3/commands/')||value.target==='/peer/v3/reads'?262156:1048576;
  return {body,headers,maximum,empty:get||remove||value.target==='/peer/v3/acks'};
 }
-export function createPeerDelivery({runtime,peerId,persist,transfers,commit,clock={},fetch:fetcher=globalThis.fetch,onError=()=>{}}){
- let transientFailures=0;
+export function createPeerDelivery({runtime,peerId,persist,transfers,commit,clock={},fetch:fetcher=globalThis.fetch,onError=()=>{},onReadAvailability=()=>{}}){
+ let transientFailures=0,advanceFailures=0,readFailures=0,readUnavailable=false,holdUntil=0,holdTimer=null;
+ const now=()=>(clock.now??Date.now)();
+ // Every scheduler wake-up honors the hold: a completed drive's own
+ // re-wake cannot re-issue the held poll before the delay elapses.
+ function hold(delay){
+  holdUntil=Math.max(holdUntil,now()+delay);
+  if(holdTimer!==null)(clock.clearTimeout??globalThis.clearTimeout)(holdTimer);
+  holdTimer=(clock.setTimeout??globalThis.setTimeout)(()=>{holdTimer=null;holdUntil=0;if(!closed&&!failed&&!renewing)wake();},Math.max(0,holdUntil-now()));
+ }
+ const readStatus=value=>{readUnavailable=!value.available;try{onReadAvailability(value);}catch{}};
  const pending=new Set(),stages=new Map();let lifetime=new AbortController(),closed=false,started,closing,detaching,refreshing,renewing=false,pumping=false,active=0,failed=false;
  const check=()=>{lifetime.signal.throwIfAborted();if(closed)throw fail('Delivery closed');};
  function track(operation){const promise=Promise.resolve().then(operation);pending.add(promise);promise.then(()=>pending.delete(promise),()=>pending.delete(promise));return promise;}
@@ -47,7 +80,7 @@ export function createPeerDelivery({runtime,peerId,persist,transfers,commit,cloc
   const controller=new AbortController(),parent=detachOnly?new AbortController().signal:lifetime.signal;
   const abort=()=>controller.abort(parent.reason);parent.addEventListener('abort',abort,{once:true});if(parent.aborted)abort();
   const valid=()=>{controller.signal.throwIfAborted();if(!detachOnly)check();};
-  const retryable=!detachOnly&&idempotentTarget(value);
+  const retryable=!detachOnly&&(idempotentTarget(value)||retryRoute(value)!==undefined);
   const timer=(clock.setTimeout??globalThis.setTimeout)(()=>{const error=fail('Delivery request timed out');controller.abort(error);if(!detachOnly&&!retryable)report(error);},detachOnly||CONTROL.has(value.target)?10000:30000);
   try{
    valid();const response=await fetcher(`${value.origin}${value.target}`,{method:value.method,headers,...(body.byteLength?{body}:{}),signal:controller.signal,credentials:'omit',redirect:'error',cache:'no-store'});
@@ -59,7 +92,7 @@ export function createPeerDelivery({runtime,peerId,persist,transfers,commit,cloc
     const sessionRefused=terminal&&!detachOnly&&(poll.test(value.target)||value.target==='/peer/v3/acks');
     if(sessionRefused)try{runtime.peer_delivery_discard_session?.(peerId);}catch{}
     const staleChain=response.status===409&&!detachOnly&&chainedPoll(value);
-    throw Object.assign(fail(`Delivery HTTP ${response.status}`),{terminal,sessionRefused,staleChain});
+    throw Object.assign(fail(`Delivery HTTP ${response.status}`),{status:response.status,terminal,sessionRefused,staleChain});
    }
    const reader=response.body?.getReader();if(!reader){if(empty)return new Uint8Array();throw fail('Delivery response body missing');}
    const result=new Uint8Array(maximum);let size=0;
@@ -74,8 +107,48 @@ export function createPeerDelivery({runtime,peerId,persist,transfers,commit,cloc
    if(turn&&turn%8===0)await new Promise(resolve=>setTimeout(resolve,0));
    check();
    if(value.kind==='request'){
-    const id=value.id,retryable=idempotentTarget(value);
-    try{const response=await send(value);check();if(retryable)transientFailures=0;value=decode(runtime.peer_delivery_advance(peerId,id,response));}
+    const id=value.id,retryable=idempotentTarget(value),route=retryRoute(value);let deferForget=false;
+    try{
+     let response;
+     try{response=await send(value);}
+     catch(error){
+      const readOnly=route&&route!=='snapshot';
+      if(route&&(transientRead(error)||readOnly&&refusedRead(error))&&established&&!closed&&!failed&&!renewing){
+       const status=Number.isInteger(error?.status)?error.status:null;
+       if(readFailures<READ_RETRIES&&typeof runtime.peer_delivery_retry==='function'){
+        readFailures++;const delay=Math.round(Math.min(4000,250*2**(readFailures-1))*(0.5+Math.random()*0.5));
+        readStatus({route,available:false,retrying:true,attempt:readFailures,status});
+        // Re-queue the exact action only when its delay has passed: an
+        // immediate re-queue would be re-sent by the very next wake.
+        deferForget=true;
+        (clock.setTimeout??globalThis.setTimeout)(()=>{
+         let requeued=false;
+         if(!closed&&!failed&&!renewing)try{requeued=runtime.peer_delivery_retry(peerId,id)===true;}catch{}
+         if(!requeued)try{runtime.peer_delivery_forget(peerId,id);}catch{}
+         if(!closed&&!failed&&!renewing)wake();
+        },delay);
+        return {kind:'idle'};
+       }
+       // Exhausted (or an older runtime without re-queue): a snapshot step
+       // escalates to transport recovery; a read is dropped alone (its caller
+       // times out as retryable) and the transport stays up.
+       if(route==='snapshot'){readFailures=0;throw error;}
+       // Exhausted: this read is dropped alone (its caller times out as retryable).
+       readFailures=0;readStatus({route,available:false,retrying:false,attempt:READ_RETRIES,status});
+       return {kind:'idle'};
+      }
+      throw error;
+     }
+     check();if(retryable)transientFailures=0;
+     if(route){readFailures=0;if(readUnavailable)readStatus({route,available:true});}
+     try{value=decode(runtime.peer_delivery_advance(peerId,id,response));}
+     catch(error){
+      // The host answered but the answer did not apply: hold, do not re-poll.
+      if(retryable&&established&&!closed&&!failed&&!renewing&&!error?.terminal){advanceFailures++;hold(advanceHoldMs(advanceFailures));return {kind:'idle'};}
+      throw error;
+     }
+     if(retryable)advanceFailures=0;
+    }
     catch(error){
      // A stale chained poll: forgotten below (Rust abandons that chain), then
      // the scheduler starts a new chain at once. Not a transient failure.
@@ -84,13 +157,12 @@ export function createPeerDelivery({runtime,peerId,persist,transfers,commit,cloc
      // Rust scheduler re-issues it (fresh proof) once this handle is forgotten.
      // Only repeated failures escalate to full transport recovery.
      if(retryable&&established&&!error?.terminal&&!closed&&!failed&&!renewing&&transientFailures<TRANSIENT_RETRIES){
-      transientFailures++;const delay=Math.min(2000,200*2**(transientFailures-1));
-      (clock.setTimeout??globalThis.setTimeout)(()=>{if(!closed&&!failed&&!renewing)wake();},delay);
+      transientFailures++;hold(Math.min(2000,200*2**(transientFailures-1)));
       return {kind:'idle'};
      }
      throw error;
     }
-    finally{try{runtime.peer_delivery_forget(peerId,id);}catch{}}
+    finally{if(!deferForget)try{runtime.peer_delivery_forget(peerId,id);}catch{}}
    }else if(value.kind==='stage-list'){
     const operation=value.id;try{
      if(!transfers)throw fail('Transfer storage unavailable');
@@ -153,7 +225,8 @@ export function createPeerDelivery({runtime,peerId,persist,transfers,commit,cloc
   failed=true;try{runtime.peer_delivery_stop(peerId);}catch{}lifetime.abort(error);try{onError(error);}catch{}
  }
  function wake(){
-  if(closed||failed||renewing||!started||pumping)return;pumping=true;
+  if(closed||failed||renewing||!started||pumping)return;
+  if(holdUntil&&now()<holdUntil)return;pumping=true;
   try{while(active<MAX_ACTIVE){const initial=runtime.peer_delivery_next(peerId),value=decode(initial);if(value.kind==='idle')break;if(!['request','stage-list','stage-discard','stage-open','stage-renewed','stage-write','stage-read','persist'].includes(value.kind))throw fail('Invalid delivery scheduler output');active++;track(()=>drive(initial)).catch(report).finally(()=>{active--;if(!closed&&!failed)queueMicrotask(wake);});}}
   catch(error){report(error);}finally{pumping=false;}
  }
@@ -164,7 +237,7 @@ export function createPeerDelivery({runtime,peerId,persist,transfers,commit,cloc
   started.catch(report);return started;
  }
  function close(){
-  if(closing)return closing;closed=true;lifetime.abort(fail('Delivery closed'));try{runtime.peer_delivery_stop(peerId);}catch{}
+  if(closing)return closing;closed=true;if(holdTimer!==null){(clock.clearTimeout??globalThis.clearTimeout)(holdTimer);holdTimer=null;}lifetime.abort(fail('Delivery closed'));try{runtime.peer_delivery_stop(peerId);}catch{}
   // Do not release the parent's storage/key lease while a raw fetch or write is settling.
   closing=(async()=>{while(pending.size)await Promise.allSettled([...pending]);if(refreshing)await Promise.allSettled([refreshing]);})();return closing;
  }

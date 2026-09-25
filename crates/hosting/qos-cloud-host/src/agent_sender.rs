@@ -268,10 +268,14 @@ impl CloudSender {
         intent: &ChildIntent,
         owner: &EnrolledChildOwner,
     ) -> Result<StepProgress, SenderError> {
+        use qos_action_broker::agent_timing::us;
+        let began = Instant::now();
         let child = match self.runtime.begin_step(parent, step, intent, &self.work)? {
             StepStart::Committed(_) => return self.settled(parent, step),
             StepStart::Fresh(child) | StepStart::Recovered(child) => child,
         };
+        let begin_us = us(began);
+        let stage = Instant::now();
         let attempt = self.runtime.attempt(
             parent,
             step,
@@ -280,8 +284,28 @@ impl CloudSender {
             Self::deadline(),
             &self.work,
         )?;
+        let attempt_us = us(stage);
+        let stage = Instant::now();
         self.deliver(attempt, broker, Some(dispatch), Some(owner))?;
-        self.settle_if_terminal(parent, step, child)
+        let deliver_us = us(stage);
+        let stage = Instant::now();
+        let progress = self.settle_if_terminal(parent, step, child);
+        qos_action_broker::agent_timing::span(
+            "sender_step",
+            Some(dispatch.invocation()),
+            began.elapsed(),
+            &[
+                ("begin_us", begin_us),
+                ("attempt_us", attempt_us),
+                ("deliver_us", deliver_us),
+                ("settle_us", us(stage)),
+                (
+                    "settled",
+                    u64::from(matches!(progress, Ok(StepProgress::Settled { .. }))),
+                ),
+            ],
+        );
+        progress
     }
 
     /// Observe a mapped step's original child again (no new invocation).
@@ -292,10 +316,14 @@ impl CloudSender {
         step: ParentStep,
         owner: &EnrolledChildOwner,
     ) -> Result<StepProgress, SenderError> {
+        use qos_action_broker::agent_timing::us;
+        let began = Instant::now();
         let record = parent.lookup(step)?.ok_or(SenderError::Unmapped)?;
         if record.committed.is_some() {
             return self.settled(parent, step);
         }
+        let lookup_us = us(began);
+        let stage = Instant::now();
         let attempt = self.runtime.attempt(
             parent,
             step,
@@ -304,8 +332,28 @@ impl CloudSender {
             Self::deadline(),
             &self.work,
         )?;
+        let attempt_us = us(stage);
+        let stage = Instant::now();
         self.deliver(attempt, broker, None, Some(owner))?;
-        self.settle_if_terminal(parent, step, record.child)
+        let deliver_us = us(stage);
+        let stage = Instant::now();
+        let progress = self.settle_if_terminal(parent, step, record.child);
+        qos_action_broker::agent_timing::slow(
+            "sender_observe",
+            Some(uuid::Uuid::from_bytes(step.parent())),
+            began,
+            &[
+                ("lookup_us", lookup_us),
+                ("attempt_us", attempt_us),
+                ("deliver_us", deliver_us),
+                ("settle_us", us(stage)),
+                (
+                    "settled",
+                    u64::from(matches!(progress, Ok(StepProgress::Settled { .. }))),
+                ),
+            ],
+        );
+        progress
     }
 
     fn settle_if_terminal(
@@ -406,6 +454,11 @@ pub(crate) type StepJob = (EnrolledStepRequest, oneshot::Sender<EnrolledStepResu
 const STEP_QUEUE: usize = 32;
 const STEPS_PER_PUMP: usize = 8;
 
+/// Wakes the runtime owner loop when a step arrives, so a submitted step is
+/// begun at once instead of at the next owner tick. A wake grants nothing;
+/// a spurious one only runs an ordinary tick early.
+pub(crate) static STEP_WAKE: tokio::sync::Notify = tokio::sync::Notify::const_new();
+
 /// Broker-facing door: a bounded queue into the runtime owner thread.
 pub(crate) struct CloudStepService(mpsc::Sender<StepJob>);
 impl CloudStepService {
@@ -423,6 +476,7 @@ impl EnrolledStepService for CloudStepService {
         self.0
             .try_send((request, reply))
             .map_err(|_| "enrolled step queue full or closed; retry the same step".to_string())?;
+        STEP_WAKE.notify_one();
         Ok(receiver)
     }
 }
@@ -432,7 +486,39 @@ struct PendingStep {
     parent: EnrolledTaskParent,
     step: ParentStep,
     owner: EnrolledChildOwner,
+    child: ChildTicket,
     reply: Option<oneshot::Sender<EnrolledStepResult>>,
+    /// Last full (Store-checked) observation of this step.
+    observed: Instant,
+}
+/// Longest interval between full observations of a pending step whose child
+/// row still reads nonterminal. A full observation rechecks the task custody
+/// under the Store lock (several milliseconds); the cheap journal peek in
+/// between grants nothing and only decides whether to take it now.
+const FULL_OBSERVE_INTERVAL: std::time::Duration = std::time::Duration::from_millis(250);
+/// Whether the child row may be terminal: a cheap read of the broker's own
+/// retained journal row. Unknown or unreadable rows count as possibly
+/// terminal, so they always get the full observation.
+fn child_maybe_terminal(
+    broker: &AppActionBroker,
+    owner: &EnrolledChildOwner,
+    child: ChildTicket,
+) -> bool {
+    match broker.observe_enrolled_child(owner, child.host(), child.invocation()) {
+        Ok(Some(result)) => {
+            result.uncertain
+                || serde_json::from_str::<qos_actions::InvocationUpdate>(&result.update_json)
+                    .map_or(true, |update| {
+                        matches!(
+                            update,
+                            qos_actions::InvocationUpdate::Succeeded { .. }
+                                | qos_actions::InvocationUpdate::Failed { .. }
+                                | qos_actions::InvocationUpdate::Cancelled { .. }
+                        )
+                    })
+        }
+        Ok(None) | Err(_) => true,
+    }
 }
 
 /// Owner-thread step driver: startup recovery, then live step requests.
@@ -443,8 +529,16 @@ pub(crate) struct AgentSteps {
     requests: mpsc::Receiver<StepJob>,
     pending: Vec<PendingStep>,
     recovering: Vec<ParentStep>,
+    /// Last observation pass over `recovering`.
+    recovered_at: Option<Instant>,
     pub(crate) recovered: Vec<(ParentStep, StepProgress)>,
 }
+/// Interval between observation passes over steps recovered at startup.
+/// Their original children are observed by UUID only (never re-invoked), so
+/// this bounds only how soon a late terminal row is settled; running the pass
+/// on every owner tick held the Store lock for tens of milliseconds per tick
+/// and delayed every live step behind it.
+const RECOVERY_OBSERVE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(1);
 impl AgentSteps {
     pub(crate) fn install(
         owner: &Arc<RuntimeOwner>,
@@ -464,6 +558,7 @@ impl AgentSteps {
             requests,
             pending: vec![],
             recovering,
+            recovered_at: None,
             recovered,
         })
     }
@@ -486,6 +581,8 @@ impl AgentSteps {
         broker: &AppActionBroker,
     ) {
         let invocation = request.dispatch.invocation();
+        let began = Instant::now();
+        qos_action_broker::agent_timing::mark("step_begin", Some(invocation));
         let prepared = (|| -> Result<_, String> {
             let step = ParentStep::new(*invocation.as_bytes(), request.step)
                 .map_err(|e| format!("{e:?}"))?;
@@ -504,6 +601,12 @@ impl AgentSteps {
                 .map_err(|e| e.to_string())?;
             Ok((step, parent, intent, child_owner))
         })();
+        qos_action_broker::agent_timing::span(
+            "step_prepare",
+            Some(invocation),
+            began.elapsed(),
+            &[],
+        );
         let (step, mut parent, intent, child_owner) = match prepared {
             Ok(value) => value,
             Err(error) => {
@@ -511,6 +614,14 @@ impl AgentSteps {
                 return;
             }
         };
+        // Lane E: the agent's own durable action log (agent_history).
+        crate::agent_history::note_step(
+            owner.root(),
+            &request.dispatch.envelope().recipient_agent,
+            invocation,
+            request.step,
+            &intent,
+        );
         // A retry of a step already being driven only replaces its reply.
         if let Some(existing) = self.pending.iter_mut().find(|p| p.step == step) {
             existing.reply = Some(reply);
@@ -526,21 +637,35 @@ impl AgentSteps {
         ) {
             Ok(StepProgress::Settled { continuation, .. }) => {
                 let _ = reply.send(Self::reply(owner, step, continuation));
+                qos_action_broker::agent_timing::mark("step_replied", Some(invocation));
             }
-            Ok(StepProgress::Pending(_)) => self.pending.push(PendingStep {
+            Ok(StepProgress::Pending(child)) => self.pending.push(PendingStep {
                 dispatch: request.dispatch,
                 parent,
                 step,
                 owner: child_owner,
+                child,
                 reply: Some(reply),
+                observed: Instant::now(),
             }),
             Err(error) => {
                 let _ = reply.send(Err(format!("{error:?}")));
             }
         }
     }
+    /// Pending, recovering or queued steps exist.
+    pub(crate) fn busy(&self) -> bool {
+        !self.pending.is_empty() || !self.recovering.is_empty() || !self.requests.is_empty()
+    }
     pub(crate) fn pump(&mut self, owner: &Arc<RuntimeOwner>, broker: &AppActionBroker) {
-        if !self.recovering.is_empty() {
+        if !self.recovering.is_empty()
+            && self
+                .recovered_at
+                .is_none_or(|at| at.elapsed() >= RECOVERY_OBSERVE_INTERVAL)
+        {
+            self.recovered_at = Some(Instant::now());
+            let began = Instant::now();
+            let count = self.recovering.len() as u64;
             let mut parent = owner.recovery_parent();
             let mut still = vec![];
             for step in std::mem::take(&mut self.recovering) {
@@ -565,6 +690,12 @@ impl AgentSteps {
                     }
                 }
             }
+            qos_action_broker::agent_timing::slow(
+                "steps_recovery_pass",
+                None,
+                began,
+                &[("steps", count), ("pending", still.len() as u64)],
+            );
             self.recovering = still;
         }
         for _ in 0..STEPS_PER_PUMP {
@@ -576,6 +707,13 @@ impl AgentSteps {
         let mut index = 0;
         while index < self.pending.len() {
             let pending = &mut self.pending[index];
+            if pending.observed.elapsed() < FULL_OBSERVE_INTERVAL
+                && !child_maybe_terminal(broker, &pending.owner, pending.child)
+            {
+                index += 1;
+                continue;
+            }
+            pending.observed = Instant::now();
             match self
                 .sender
                 .observe(broker, &mut pending.parent, pending.step, &pending.owner)
@@ -585,6 +723,10 @@ impl AgentSteps {
                     let done = self.pending.swap_remove(index);
                     if let Some(reply) = done.reply {
                         let _ = reply.send(Self::reply(owner, done.step, continuation));
+                        qos_action_broker::agent_timing::mark(
+                            "step_replied",
+                            Some(uuid::Uuid::from_bytes(done.step.parent())),
+                        );
                     }
                     drop(done.dispatch);
                 }

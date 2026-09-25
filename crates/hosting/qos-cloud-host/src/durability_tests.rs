@@ -294,10 +294,23 @@ fn durability_join_transport_distinguishes_owner_unavailable_from_rejection() {
     let (updates, _receiver) = tokio::sync::mpsc::channel(1);
     let service = crate::collaboration::CloudJoinService::new(dir.path(), "durability", updates);
     let runtime = runtime();
-    let result = with_failure(Checkpoint::BeforeCommit, || {
+    // Issuing a membership challenge is process-local (lane M): no commit.
+    let challenge = with_failure(Checkpoint::BeforeCommit, || {
         runtime.block_on(service.handle(
             device.verifying_key().to_bytes(),
             JoinTransportRequest::MembershipChallenge(request),
+        ))
+    });
+    let JoinTransportResponse::MembershipChallenge(challenge) = challenge else {
+        panic!("challenge issuance must not need a Store commit: {challenge:?}")
+    };
+    let proof = qos_peer_state::join::sign_membership_proof(challenge.challenge, &device).unwrap();
+    let result = with_failure(Checkpoint::BeforeCommit, || {
+        runtime.block_on(service.handle(
+            device.verifying_key().to_bytes(),
+            JoinTransportRequest::MembershipComplete(
+                qos_peer_state::join::MembershipCompleteRequest { proof },
+            ),
         ))
     });
     assert!(
@@ -743,6 +756,8 @@ fn durability_populated_current_state_and_typed_publications_survive_uncertain_r
     let refresh = MembershipCompleteRequest {
         proof: sign_membership_proof(challenge.challenge, &guest_device).unwrap(),
     };
+    // Without process reuse (a restarted host) the refresh commits a receipt.
+    crate::collaboration::forget_reused_governance(dir.path());
     store
         .membership_complete(cert.device_public_key, refresh.clone(), now)
         .unwrap();
@@ -832,7 +847,7 @@ fn durability_populated_current_state_and_typed_publications_survive_uncertain_r
         "invitations",
         "join_challenges",
         "join_responses",
-        "membership_challenges",
+        // Membership challenges are process-local (lane M), never persisted.
         "membership_responses",
     ] {
         assert!(

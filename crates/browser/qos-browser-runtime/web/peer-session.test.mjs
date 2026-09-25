@@ -935,3 +935,22 @@ test('a non-storage persistence error retries quietly without the storage banner
  snapshot=peer.getSnapshot();assert(!snapshot.health.failures.some(failure=>failure.scope.kind==='storage'));
  await peer.dispose();
 });
+test('a descriptor renewed during the handshake reconnects at once with a fresh enrollment and shows no failure',async()=>{
+ const time=clock();let delivery,starts=0;
+ const f=fixture({recoveryClock:time,createDelivery:options=>{delivery=options;return{async start(){starts++;},wake(){},close:async()=>{}};}});
+ const peer=await f.connect();assert.equal(starts,1);const attempts=f.counts().attempts;
+ delivery.onError(Error('descriptor-renewed: the host renewed its delivery descriptor during this handshake'));await drain();
+ const snapshot=peer.getSnapshot();
+ assert(!snapshot.health.failures.some(failure=>failure.scope.kind==='connection'),'no connection failure surfaced');
+ assert.equal(f.counts().attempts,attempts+1,'reconnected (fresh enrollment) without waiting for a backoff');assert.equal(starts,2);
+ await peer.dispose();
+});
+test('a refused read-only request never reaches membership recovery (the delivery client keeps it)',async()=>{
+ const time=clock();let delivery,starts=0;
+ const f=fixture({recoveryClock:time,createDelivery:options=>{delivery=options;return{async start(){starts++;},wake(){},close:async()=>{}};}});
+ const peer=await f.connect();const attempts=f.counts().attempts;
+ // A read retry only reports availability; no onError, so no reconnect or re-enrollment.
+ delivery.onReadAvailability({route:'catalogue',available:false,retrying:true,attempt:1,status:403});await drain();await time.tick(30000);
+ assert.equal(f.counts().attempts,attempts);assert.equal(starts,1);
+ await peer.dispose();
+});

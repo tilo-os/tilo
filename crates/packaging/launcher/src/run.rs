@@ -1458,9 +1458,28 @@ fn spawn_and_wait(
         Option<UnixStream>,
         Option<std::thread::JoinHandle<()>>,
     ),
-    observer: Option<&dyn crate::managed::EnrolledProcessObserver>,
+    observer: Option<(
+        &dyn crate::managed::EnrolledProcessObserver,
+        Option<PathBuf>,
+    )>,
 ) -> Result<ExitStatus, RunError> {
     const SECCOMP_CHILD_FD: i32 = 16;
+    let (observer, debug_output) = match observer {
+        Some((observer, debug_output)) => (Some(observer), debug_output),
+        None => (None, None),
+    };
+    let debug_output = debug_output.and_then(|path| {
+        std::fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .open(&path)
+            .map_err(|error| {
+                tracing::warn!(path = %path.display(), %error, "debug output log unavailable");
+            })
+            .ok()
+            .map(|file| (path, file))
+    });
     let (identity_broker_app, identity_broker_control, identity_broker_thread) = identity_broker;
 
     // Insert --seccomp <child_fd> at the front so bwrap installs it
@@ -1485,6 +1504,14 @@ fn spawn_and_wait(
         cmd.stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null());
+        if let Some((path, _)) = &debug_output {
+            tracing::warn!(
+                path = %path.display(),
+                "{DEBUG_STDERR_ENV}=1: capturing the managed child's output (debug only)",
+            );
+            cmd.stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped());
+        }
     }
 
     // pre_exec: dup the seccomp blob fd into SECCOMP_CHILD_FD, and put
@@ -1561,6 +1588,21 @@ fn spawn_and_wait(
     }
     // 5. Spawn + wait.
     let mut child = cmd.spawn().map_err(RunError::Spawn)?;
+    if let Some((_, file)) = debug_output {
+        let sink = Arc::new(std::sync::Mutex::new(file));
+        let budget = Arc::new(AtomicUsize::new(DEBUG_OUTPUT_LIMIT as usize));
+        if let Some(out) = child.stdout.take() {
+            let (sink, budget) = (sink.clone(), budget.clone());
+            let _ = std::thread::Builder::new()
+                .name("tilo-debug-stdout".into())
+                .spawn(move || copy_bounded_output(out, sink, budget));
+        }
+        if let Some(err) = child.stderr.take() {
+            let _ = std::thread::Builder::new()
+                .name("tilo-debug-stderr".into())
+                .spawn(move || copy_bounded_output(err, sink, budget));
+        }
+    }
     // Important: keep `seccomp_fd` alive until after `spawn` returns,
     // so its dup2'd copy in the child remains valid. Drop here.
     drop(seccomp_fd);
@@ -1941,8 +1983,51 @@ fn run_with_context(
             identity_broker_control,
             identity_broker_thread,
         ),
-        enrolled.map(|(_, observer)| observer),
+        enrolled.map(|(services, observer)| (observer, debug_output_log(services.data_home()))),
     )
+}
+
+/// Debug-only, off by default: when the launching host sets
+/// `TILO_LAUNCHER_DEBUG_STDERR=1`, a managed (enrolled) child's stdout and
+/// stderr go to a bounded log file in its data home instead of `/dev/null`.
+/// This changes no sandbox, policy or custody decision; it only keeps the
+/// diagnostic output a supervised app would otherwise lose.
+pub const DEBUG_STDERR_ENV: &str = "TILO_LAUNCHER_DEBUG_STDERR";
+/// Upper bound of one launch's captured output.
+const DEBUG_OUTPUT_LIMIT: u64 = 1024 * 1024;
+
+fn debug_output_log(data_home: &Path) -> Option<PathBuf> {
+    (std::env::var_os(DEBUG_STDERR_ENV).as_deref() == Some(std::ffi::OsStr::new("1")))
+        .then(|| data_home.join("launcher-debug-output.log"))
+}
+
+/// Copy `source` into `sink` until EOF or until `budget` bytes were written
+/// in total across all copiers sharing it; the rest is drained and dropped so
+/// the child never blocks on a full pipe.
+fn copy_bounded_output(
+    mut source: impl std::io::Read,
+    sink: Arc<std::sync::Mutex<std::fs::File>>,
+    budget: Arc<AtomicUsize>,
+) {
+    use std::io::Write as _;
+    let mut buf = [0u8; 8192];
+    loop {
+        let n = match source.read(&mut buf) {
+            Ok(0) | Err(_) => return,
+            Ok(n) => n,
+        };
+        let granted = budget
+            .fetch_update(AtomicOrdering::AcqRel, AtomicOrdering::Acquire, |left| {
+                Some(left.saturating_sub(n))
+            })
+            .unwrap_or(0)
+            .min(n);
+        if granted > 0 {
+            if let Ok(mut file) = sink.lock() {
+                let _ = file.write_all(buf.get(..granted).unwrap_or_default());
+            }
+        }
+    }
 }
 
 fn validated_tool_context_from_env() -> Option<String> {
@@ -3028,7 +3113,7 @@ mod managed_spawn_policy_tests {
                 &crate::netgate::EgressDecision::Blocked,
                 None,
                 (None, None, None),
-                Some(&policy),
+                Some((&policy, None)),
             );
             assert_eq!(policy.checked.load(AtomicOrdering::SeqCst), 1);
             assert_eq!(
@@ -3046,6 +3131,33 @@ mod managed_spawn_policy_tests {
                     matches!(result, Err(RunError::Spawn(ref error)) if error.kind() == std::io::ErrorKind::PermissionDenied)
                 );
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod debug_output_tests {
+    use super::*;
+
+    #[test]
+    fn debug_output_copy_is_bounded_and_drains() {
+        let path = tempfile::NamedTempFile::new().unwrap();
+        let file = std::fs::OpenOptions::new()
+            .write(true)
+            .open(path.path())
+            .unwrap();
+        let sink = Arc::new(std::sync::Mutex::new(file));
+        let budget = Arc::new(AtomicUsize::new(10));
+        copy_bounded_output(&b"0123456"[..], sink.clone(), budget.clone());
+        copy_bounded_output(&b"789abcdef"[..], sink, budget.clone());
+        assert_eq!(std::fs::read(path.path()).unwrap(), b"0123456789");
+        assert_eq!(budget.load(AtomicOrdering::SeqCst), 0);
+    }
+
+    #[test]
+    fn debug_output_is_off_by_default() {
+        if std::env::var_os(DEBUG_STDERR_ENV).is_none() {
+            assert!(debug_output_log(Path::new("/nonexistent")).is_none());
         }
     }
 }

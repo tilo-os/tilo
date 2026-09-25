@@ -248,6 +248,7 @@ impl Link {
     /// (a dead broker currently surfaces as an indefinite empty poll, not an
     /// `Err`).
     pub fn recv(&mut self, timeout: Duration) -> Result<Option<CollabEvent>> {
+        const RECV_POLL: Duration = Duration::from_millis(1);
         let deadline = std::time::Instant::now() + timeout;
         loop {
             if let Some(event) = take_next_polled(&mut self.pending, self.manager.poll()) {
@@ -257,7 +258,9 @@ impl Link {
             if now >= deadline {
                 return Ok(None);
             }
-            std::thread::sleep((deadline - now).min(Duration::from_millis(5)));
+            // A short poll: a correlated step reply is on the critical path of
+            // every streamed chunk, so it is noticed within ~1 ms, not 5.
+            std::thread::sleep((deadline - now).min(RECV_POLL));
         }
     }
 

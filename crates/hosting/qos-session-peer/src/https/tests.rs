@@ -1654,3 +1654,15 @@ async fn local_https_enrollment_renewal_may_only_request_governance_omission() {
     }
     fixture.finish().await;
 }
+
+#[tokio::test]
+async fn accepted_https_sockets_disable_nagle() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let client = tokio::spawn(async move { tokio::net::TcpStream::connect(address).await });
+    let (socket, _) = listener.accept().await.unwrap();
+    assert!(!socket.nodelay().unwrap());
+    prepare_accepted(&socket);
+    assert!(socket.nodelay().unwrap());
+    drop(client.await.unwrap().unwrap());
+}

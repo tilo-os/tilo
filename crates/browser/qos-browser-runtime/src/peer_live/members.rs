@@ -64,3 +64,29 @@ pub fn peer_live_members(id: u32) -> Result<String, JsValue> {
     serde_json::to_string(&live_member_rows(collaborators, owner_devices))
         .map_err(|e| JsValue::from_str(&e.to_string()))
 }
+
+/// Live publisher (namespace) hex of `agent_id` in this Peer's room:
+/// `live_wire::agent_publisher(room, authority device key, agent_id)`. The
+/// live client accepts agent attribution (activity, the agent label on carets
+/// and previews) only for a publisher equal to this locally recomputed value
+/// that is not a roster device, so a member cannot claim to be an agent.
+#[wasm_bindgen]
+pub fn peer_live_agent_publisher(id: u32, agent_id: String) -> Result<String, JsValue> {
+    if agent_id.is_empty()
+        || agent_id.len() > tilo_relay::delivery_v3::live_wire::MAX_AGENT_ID_BYTES
+        || agent_id.chars().any(char::is_control)
+    {
+        return Err(JsValue::from_str("invalid agent id"));
+    }
+    let peer = PEERS
+        .with(|p| p.borrow().get(&id).cloned())
+        .filter(|peer| !peer.closed.get())
+        .ok_or_else(|| JsValue::from_str("closed Peer"))?;
+    let state = peer.state.borrow();
+    let publisher = tilo_relay::delivery_v3::live_wire::agent_publisher(
+        state.room(),
+        state.authority().device_public_key,
+        &agent_id,
+    );
+    Ok(crate::live_view::hex(&publisher))
+}

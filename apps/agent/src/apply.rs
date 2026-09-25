@@ -740,7 +740,7 @@ mod tests {
             "Scribe",
         )
         .unwrap();
-        assert_eq!(editor.contract().app_id, "dev.tilo.photos");
+        assert_eq!(editor.contract().app_id, "so.tilo.photos");
         assert_eq!(editor.route_app_id(), "dev.qos.photos");
     }
     /// An action that asks the document a question between its writes,

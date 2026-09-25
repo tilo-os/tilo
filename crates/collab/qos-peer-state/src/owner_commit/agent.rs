@@ -163,6 +163,12 @@ use std::collections::BTreeMap;
 
 pub const PRIVATE_AGENT_LEDGER_VERSION: u32 = 1;
 pub const MAX_PRIVATE_AGENT_ADMISSIONS: usize = 1024;
+/// Live (admitted, not failed, process not exited) spawned agents one
+/// workspace host runs at once. An idle agent keeps its process for later
+/// messages, so this is the number of agents a workspace can hold, not a
+/// concurrency of running tasks. A Spawn beyond it is refused as
+/// `AgentCommitError::Capacity { limit: MAX_LIVE_PRIVATE_AGENTS }`.
+pub const MAX_LIVE_PRIVATE_AGENTS: usize = 16;
 const MUTATIONS_PER_ADMISSION: usize = 8;
 pub const MAX_PRIVATE_AGENT_LEDGER_BYTES: usize = 1024 * 1024 * 1024;
 
@@ -342,16 +348,41 @@ fn validate_intent(request: &[u8], grants: &[GrantAction]) -> Result<(), String>
     {
         return Err("agent admission requires canonical mutation request".into());
     }
-    if grants.is_empty() || grants.len() > 64 {
-        return Err("agent admission requires bounded exact grants".into());
-    }
-    let mut keys = std::collections::BTreeSet::new();
-    for g in grants {
-        for id in [&g.app_id, &g.record_id, &g.resource, &g.action] {
-            opaque(id)?;
+    // v1 exact tuples (at most 64) or v2 scope carriers (at most 16), with
+    // one resource bound shared with the protocol and broker (4096 bytes;
+    // MUST-16): the retained ledger no longer truncates what the broker admits.
+    qos_agent_control_protocol::validate_grant_set(grants)
+        .map_err(|e| format!("agent admission requires bounded grants: {e}"))
+}
+/// Every record a retained grant names must be a current canonical document
+/// of a delegable app. Scope carriers name all their records; the app list
+/// comes from the host-pinned delegation registry, not a hard-coded match.
+pub fn grant_records_current(peer: &StatePeer, grants: &[GrantAction]) -> Result<(), String> {
+    use qos_agent_control_protocol::{DelegationRegistry, route_record, scopes_from_grants};
+    let registry = DelegationRegistry::first_party();
+    let scopes = scopes_from_grants(grants).map_err(|e| e.to_string())?;
+    for scope in &scopes {
+        if !registry.is_delegable_app(&scope.app_id) || scope.records().is_empty() {
+            return Err("agent grant has no exact supported canonical record".into());
         }
-        if !keys.insert((&g.app_id, &g.record_id, &g.resource, &g.action)) {
-            return Err("duplicate agent grant".into());
+        // The desktop's open-application action names the room desktop,
+        // which has no application document of its own.
+        if scope.app_id == qos_agent_control_protocol::DESKTOP_APP_ID {
+            if scope.records() != [qos_agent_control_protocol::PRIMARY_RECORD_ALIAS]
+                || scope
+                    .classes
+                    .iter()
+                    .any(|class| *class != qos_agent_control_protocol::OperationClass::AppOpen)
+            {
+                return Err("desktop grant may only open applications".into());
+            }
+            continue;
+        }
+        for record in scope.records() {
+            let record = route_record(record).map_err(|e| e.to_string())?;
+            if peer.document(&scope.app_id, record).is_none() {
+                return Err("agent grant has no exact supported canonical record".into());
+            }
         }
     }
     Ok(())
@@ -645,22 +676,7 @@ pub fn prepare_agent_commit(
             {
                 return Err(AgentCommitError::Capacity { limit: 4 });
             }
-            for grant in grants {
-                let record = if grant.record_id == "@qos:package-primary" {
-                    ""
-                } else {
-                    &grant.record_id
-                };
-                if !collab_types::first_party_app_ids::is_any_first_party_app(
-                    &grant.app_id,
-                    &["so.tilo.word-processor", "so.tilo.chat"],
-                ) || peer.document(&grant.app_id, record).is_none()
-                {
-                    return Err(Rejected(
-                        "agent grant has no exact supported canonical record".into(),
-                    ));
-                }
-            }
+            grant_records_current(peer, grants).map_err(Rejected)?;
             candidate.records.insert(
                 invocation.clone(),
                 PrivateAgentRecord {
@@ -708,4 +724,71 @@ pub fn prepare_agent_commit(
     );
     candidate.validate(peer.room(), next).map_err(Rejected)?;
     Ok(PreparedAgentCommit::Candidate(candidate))
+}
+
+#[cfg(test)]
+mod scoped_grant_tests {
+    use super::*;
+    use qos_agent_control_protocol::{
+        AgentRequest, GrantScope, GrantVerb, OperationClass, PackagePin, RecordScope,
+        ResourceScope, canonical_request, scope_carrier,
+    };
+
+    fn spawn() -> Vec<u8> {
+        canonical_request(&AgentRequest::Spawn {
+            version: 1,
+            name: "Agent".into(),
+            task: "Edit".into(),
+            grant_set_id: "offer-1".into(),
+        })
+        .unwrap()
+    }
+    fn tuple(resource: String) -> GrantAction {
+        GrantAction {
+            app_id: "so.tilo.word-processor".into(),
+            record_id: "rec-1".into(),
+            resource,
+            action: "type-text".into(),
+        }
+    }
+
+    #[test]
+    fn retained_grants_share_the_protocol_resource_bound() {
+        // MUST-16: a 129..=4096-byte resource the broker admits is retained.
+        validate_intent(&spawn(), &[tuple("r".repeat(129))]).unwrap();
+        validate_intent(&spawn(), &[tuple("r".repeat(4096))]).unwrap();
+        assert!(validate_intent(&spawn(), &[tuple("r".repeat(4097))]).is_err());
+        assert!(validate_intent(&spawn(), &[]).is_err());
+        let many: Vec<_> = (0..65).map(|i| tuple(format!("r{i}"))).collect();
+        assert!(validate_intent(&spawn(), &many).is_err());
+    }
+
+    #[test]
+    fn retained_grants_accept_scope_carriers_without_the_exact_cap() {
+        let carriers: Vec<_> = (0..16)
+            .map(|i| {
+                scope_carrier(&GrantScope {
+                    app_id: "so.tilo.word-processor".into(),
+                    record: RecordScope::Exact(format!("rec-{i}")),
+                    verb: GrantVerb::Write,
+                    classes: vec![OperationClass::Document, OperationClass::View],
+                    resource: ResourceScope::Any,
+                    actions: None,
+                    deny_actions: vec![],
+                    package: Some(PackagePin {
+                        package_id: "so.tilo.word-processor".into(),
+                        version: "1".into(),
+                        schema_digest: "a".repeat(64),
+                    }),
+                    budgets: None,
+                    explicit_workspace_consent: false,
+                })
+                .unwrap()
+            })
+            .collect();
+        validate_intent(&spawn(), &carriers).unwrap();
+        let mut mixed = carriers.clone();
+        mixed.push(tuple("word-processor.document".into()));
+        assert!(validate_intent(&spawn(), &mixed).is_err());
+    }
 }
