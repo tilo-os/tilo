@@ -115,7 +115,7 @@ blake3.workspace = true
 # `--backend drm` path to fail cleanly with a useful diagnostic.
 thiserror.workspace = true
 
-ui = { package = "tilo-ui", path = "../../sdk/ui-core" }
+ui = { package = "tilo-ui", path = "../../sdk/ui-core", features = ["dmabuf-import"] }
 
 tilo-actions = { path = "../../collab/actions" }
 # The record/room-index store. The compositor keeps one document per room
@@ -317,11 +317,13 @@ smithay = { version = "0.7", default-features = false, features = [
     "desktop",
     # DRM/KMS + libseat + udev + libinput backend for running on a bare TTY.
     "backend_drm",
+    "backend_gbm",
     "backend_libinput",
     "backend_udev",
     "backend_session_libseat",
     "renderer_gl",
 ] }
+gbm = { version = "0.18", default-features = false, features = ["drm-support"] }
 # `ui::App` publishes ordinary app windows through `accesskit_winit`. The
 # compositor owns no winit application window, so its trusted chrome (including
 # OOBE and the desktop tour) uses AccessKit's native Unix/AT-SPI adapter.

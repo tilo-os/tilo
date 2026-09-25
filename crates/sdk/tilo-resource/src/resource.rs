@@ -1,0 +1,283 @@
+//! The resource contract: what any resource type provides so that it gets
+//! history, undo, collaboration, permissions, palette/agent/script exposure,
+//! search and replay without writing any of them.
+
+use std::sync::Arc;
+
+use serde::Serialize;
+use serde::de::DeserializeOwned;
+use tilo_actions::{
+    ActionArgs, ActionError, ActionParam, ActionRegistry, ActionSpec, EncodedAction,
+    ExecutionLocus, ParamType, PermissionRequirement,
+};
+
+use crate::model::{Doc, ModelError};
+
+/// A resource type. Implement it by hand for a type with its own storage
+/// layout and merge semantics (a timeline, a rich-text document, a photo edit
+/// stack); `#[resource]` implements it for a `#[derive(Model)]` record.
+///
+/// The contract is deliberately small:
+///
+/// * [`read`](Self::read) — materialise the state views render, from the live
+///   document *or* from any historical version (time travel is just `read` on
+///   an older document);
+/// * [`Action`](Self::Action) — the replayable mutation vocabulary: a
+///   serializable value whose `apply` is a pure function of the document;
+/// * [`declarations`](Self::declarations) — which mutations are offered by
+///   name to the palette, agents and scripts, with typed parameters.
+///
+/// Everything else has a default.
+pub trait Resource: Sized + 'static {
+    /// Stable kind of record this resource lives in, e.g. `"notes.notebook"`.
+    const KIND: &'static str;
+    /// Human name of one resource of this kind, e.g. `"Notebook"`.
+    const LABEL: &'static str;
+    /// The registry type id every action of this resource is replayed under.
+    const ACTION_TYPE: &'static str = Self::KIND;
+
+    /// What views render. For a record resource this is the record itself.
+    type State: 'static;
+    /// The replayable mutation. Must be deterministic: no clock, no RNG, no
+    /// local state — use [`ActionCx`](crate::ActionCx) for ids and time.
+    type Action: tilo_actions::Action + Serialize + DeserializeOwned + Clone + 'static;
+
+    /// Read the state from a document.
+    ///
+    /// # Errors
+    /// Returns [`ModelError`] when the document does not hold this resource.
+    fn read(doc: &Doc) -> Result<Self::State, ModelError>;
+
+    /// Write the initial content of a brand-new record.
+    ///
+    /// # Errors
+    /// Returns the document's write error.
+    fn initialize(_doc: &mut Doc) -> Result<(), ModelError> {
+        Ok(())
+    }
+
+    /// Mutations offered by name. The generic [`APPLY`] action is always
+    /// offered in addition, so any typed value can reach the host.
+    fn declarations() -> Vec<ActionDecl<Self>> {
+        Vec::new()
+    }
+
+    /// Resources nested inside this one (a track's clips, a list's items),
+    /// each exporting actions with their arguments already bound. Published
+    /// beneath the root resource for the palette, agents and scripts.
+    fn children(_state: &Self::State) -> Vec<tilo_actions::Resource> {
+        Vec::new()
+    }
+
+    /// Entries for the system search index.
+    fn search(_state: &Self::State) -> Vec<SearchEntry> {
+        Vec::new()
+    }
+
+    /// Register this resource's replay decoder. Override to register an
+    /// existing vocabulary under additional type ids.
+    fn register(registry: &mut ActionRegistry) {
+        registry.register::<Self::Action>(Self::ACTION_TYPE);
+    }
+}
+
+/// The id of the action every resource publishes that applies one typed
+/// [`Resource::Action`] given as JSON. It is how a custom surface, an agent or
+/// a script submits an edit that has no named declaration (a drag with its
+/// final geometry) through the same permission-checked, undoable path.
+pub const APPLY: &str = "apply";
+/// The parameter of [`APPLY`] carrying the JSON-encoded action.
+pub const APPLY_PARAM: &str = "action";
+
+/// A search index entry. `anchor` addresses what a hit opens (an item id).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SearchEntry {
+    pub anchor: Option<String>,
+    pub title: String,
+    pub text: String,
+}
+
+/// Builds a resource's action from arguments already bound against the
+/// declaration's parameters. `now_ms` is the origin's clock, captured once so
+/// replay is deterministic.
+pub type BuildAction<R> =
+    Arc<dyn Fn(&ActionArgs, i64) -> Result<<R as Resource>::Action, String> + Send + Sync>;
+
+/// One mutation offered by name.
+pub struct ActionDecl<R: Resource> {
+    pub id: &'static str,
+    pub label: String,
+    pub description: Option<String>,
+    pub params: Vec<ActionParam>,
+    pub permission: PermissionRequirement,
+    pub destructive: bool,
+    pub build: BuildAction<R>,
+}
+
+impl<R: Resource> Clone for ActionDecl<R> {
+    fn clone(&self) -> Self {
+        Self {
+            id: self.id,
+            label: self.label.clone(),
+            description: self.description.clone(),
+            params: self.params.clone(),
+            permission: self.permission,
+            destructive: self.destructive,
+            build: Arc::clone(&self.build),
+        }
+    }
+}
+
+impl<R: Resource> ActionDecl<R> {
+    pub fn new(
+        id: &'static str,
+        label: impl Into<String>,
+        params: Vec<ActionParam>,
+        build: impl Fn(&ActionArgs, i64) -> Result<R::Action, String> + Send + Sync + 'static,
+    ) -> Self {
+        Self {
+            id,
+            label: label.into(),
+            description: None,
+            params,
+            permission: PermissionRequirement::Write,
+            destructive: false,
+            build: Arc::new(build),
+        }
+    }
+
+    #[must_use]
+    pub fn describe(mut self, description: impl Into<String>) -> Self {
+        self.description = Some(description.into());
+        self
+    }
+
+    #[must_use]
+    pub fn requiring(mut self, permission: PermissionRequirement) -> Self {
+        self.permission = permission;
+        self
+    }
+
+    #[must_use]
+    pub fn destructive(mut self) -> Self {
+        self.destructive = true;
+        self
+    }
+}
+
+/// Milliseconds since the Unix epoch on this machine. Only ever read on the
+/// origin, when an action is built; never inside `apply`.
+#[must_use]
+pub fn origin_now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |elapsed| {
+            i64::try_from(elapsed.as_millis()).unwrap_or(i64::MAX)
+        })
+}
+
+/// Encode a resource action under its registry type id.
+///
+/// # Errors
+/// Returns [`ActionError::Encode`] when the action does not serialize.
+pub fn encode<R: Resource>(action: &R::Action) -> Result<EncodedAction, ActionError> {
+    EncodedAction::encode(R::ACTION_TYPE, action)
+}
+
+/// An action whose payload cannot be decoded, so the host refuses it with
+/// the builder's reason instead of applying anything.
+fn refused<R: Resource>(reason: &str) -> EncodedAction {
+    EncodedAction {
+        type_id: R::ACTION_TYPE.to_owned(),
+        payload: serde_json::to_vec(&serde_json::json!({ "refused": reason })).unwrap_or_default(),
+    }
+}
+
+fn spec_from<R: Resource>(decl: &ActionDecl<R>) -> ActionSpec {
+    let build = Arc::clone(&decl.build);
+    let mut spec = ActionSpec::typed(
+        decl.id,
+        decl.label.clone(),
+        decl.label.clone(),
+        ExecutionLocus::ClientLocal,
+        decl.params.clone(),
+        move |args| match build(args, origin_now_ms()) {
+            Ok(action) => {
+                encode::<R>(&action).unwrap_or_else(|error| refused::<R>(&error.to_string()))
+            }
+            Err(reason) => refused::<R>(&reason),
+        },
+    )
+    .requiring(decl.permission)
+    // Every document action is undone by the host's undo.
+    .reversible();
+    if let Some(description) = &decl.description {
+        spec = spec.with_description(description.clone());
+    }
+    if decl.destructive {
+        spec = spec.destructive();
+    }
+    spec
+}
+
+fn apply_spec<R: Resource>() -> ActionSpec {
+    ActionSpec::typed(
+        APPLY,
+        format!("Apply {} edit", R::LABEL),
+        "Action as JSON",
+        ExecutionLocus::ClientLocal,
+        vec![ActionParam::required_owned(
+            APPLY_PARAM,
+            ParamType::Object,
+            format!("A {} action, as JSON", R::LABEL),
+        )],
+        |args| {
+            let Some(tilo_actions::ArgValue::Object(value)) = args.get(APPLY_PARAM) else {
+                return refused::<R>("missing action");
+            };
+            match serde_json::from_value::<R::Action>(serde_json::Value::Object(value.clone())) {
+                Ok(action) => {
+                    encode::<R>(&action).unwrap_or_else(|error| refused::<R>(&error.to_string()))
+                }
+                Err(error) => refused::<R>(&error.to_string()),
+            }
+        },
+    )
+}
+
+/// The resource tree published for one open resource: every declared action,
+/// the generic [`APPLY`] action, and the nested resources.
+pub fn publish<R: Resource>(id: &str, label: &str, state: &R::State) -> tilo_actions::Resource {
+    let mut resource = tilo_actions::Resource::new(id, R::KIND, label);
+    for decl in R::declarations() {
+        resource = resource.with_action(spec_from(&decl));
+    }
+    resource
+        .with_action(apply_spec::<R>())
+        .with_children(R::children(state))
+}
+
+/// Build the action a declaration produces for JSON arguments, validating them
+/// against its parameters exactly as the host does.
+///
+/// # Errors
+/// Returns why the action is unknown or the arguments do not bind.
+pub fn build_action<R: Resource>(
+    id: &str,
+    arguments: &serde_json::Map<String, serde_json::Value>,
+    now_ms: i64,
+) -> Result<R::Action, String> {
+    if id == APPLY {
+        let value = arguments
+            .get(APPLY_PARAM)
+            .cloned()
+            .ok_or_else(|| "missing action".to_owned())?;
+        return serde_json::from_value(value).map_err(|error| error.to_string());
+    }
+    let decl = R::declarations()
+        .into_iter()
+        .find(|decl| decl.id == id)
+        .ok_or_else(|| format!("{} has no action `{id}`", R::LABEL))?;
+    let args = ActionArgs::bind_json(&decl.params, arguments).map_err(|error| error.to_string())?;
+    (decl.build)(&args, now_ms)
+}

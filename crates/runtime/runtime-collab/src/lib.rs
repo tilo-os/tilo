@@ -1210,6 +1210,20 @@ impl ChannelHandle {
                 row.set_operation_kind(&a.operation_kind);
                 row.set_params_json(&a.params_json);
                 row.set_contract_json(&a.contract_json);
+                if let Some(view) = &a.view {
+                    let mut out = row.reborrow().init_view();
+                    out.set_id(&view.id);
+                    out.set_label(&view.label);
+                    out.set_description(view.description.as_deref().unwrap_or(""));
+                    out.set_open_action(&view.open_action);
+                    out.set_primary(view.primary);
+                    if let Some(mount) = &view.mount {
+                        let mut out = out.init_mount();
+                        out.set_action(&mount.action);
+                        out.set_capability_param(&mount.capability_param);
+                        out.set_view_param(&mount.view_param);
+                    }
+                }
                 let mut input = row.init_input();
                 match &a.input {
                     ExportedInput::None => input.set_none(()),
@@ -1766,6 +1780,24 @@ pub enum ExportedInput {
     },
 }
 
+/// Explicit resource-view metadata attached to the action that opens it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExportedView {
+    pub id: String,
+    pub label: String,
+    pub description: Option<String>,
+    pub open_action: String,
+    pub primary: bool,
+    pub mount: Option<ExportedViewMount>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExportedViewMount {
+    pub action: String,
+    pub capability_param: String,
+    pub view_param: String,
+}
+
 /// One operation an application exports, as inert data.
 ///
 /// Everything a caller needs to decide whether to perform it, and
@@ -1785,6 +1817,7 @@ pub struct ExportedAction {
     pub params_json: String,
     /// JSON encoding of the complete safety/lifecycle/result contract.
     pub contract_json: String,
+    pub view: Option<ExportedView>,
     pub input: ExportedInput,
 }
 
@@ -1869,6 +1902,33 @@ fn decode_exported_action(
             wants_content: text.get_wants_content(),
         },
     };
+    let view = row
+        .has_view()
+        .then(|| row.get_view())
+        .transpose()?
+        .map(|view| {
+            let description = capnp_text(view.get_description()?)?;
+            Ok::<_, capnp::Error>(ExportedView {
+                id: capnp_text(view.get_id()?)?,
+                label: capnp_text(view.get_label()?)?,
+                description: (!description.is_empty()).then_some(description),
+                open_action: capnp_text(view.get_open_action()?)?,
+                primary: view.get_primary(),
+                mount: view
+                    .has_mount()
+                    .then(|| view.get_mount())
+                    .transpose()?
+                    .map(|mount| {
+                        Ok::<_, capnp::Error>(ExportedViewMount {
+                            action: capnp_text(mount.get_action()?)?,
+                            capability_param: capnp_text(mount.get_capability_param()?)?,
+                            view_param: capnp_text(mount.get_view_param()?)?,
+                        })
+                    })
+                    .transpose()?,
+            })
+        })
+        .transpose()?;
     Ok(ExportedAction {
         resource: capnp_text(row.get_resource()?)?,
         action: capnp_text(row.get_action()?)?,
@@ -1879,6 +1939,7 @@ fn decode_exported_action(
         operation_kind: capnp_text(row.get_operation_kind()?)?,
         params_json: capnp_text(row.get_params_json()?)?,
         contract_json: capnp_text(row.get_contract_json()?)?,
+        view,
         input,
     })
 }
@@ -2863,6 +2924,45 @@ mod tests {
         assert_eq!(
             decoded.rows[0].resource_presentation_json,
             r#"{"detail":"expires in 18 s","badge":"438 291"}"#
+        );
+    }
+
+    #[test]
+    fn exported_view_metadata_round_trips() {
+        let mut message = capnp::message::Builder::new_default();
+        {
+            let mut action = message.init_root::<collab_capnp::exported_action::Builder<'_>>();
+            action.set_resource("notes:brief");
+            action.set_action("show-editor");
+            let mut view = action.init_view();
+            view.set_id("editor");
+            view.set_label("Editor");
+            view.set_description("Edit this note");
+            view.set_open_action("show-editor");
+            view.set_primary(true);
+            let mut mount = view.init_mount();
+            mount.set_action("mount-editor");
+            mount.set_capability_param("slot_capability");
+            mount.set_view_param("slot_view");
+        }
+        let reader = message
+            .get_root_as_reader::<collab_capnp::exported_action::Reader<'_>>()
+            .expect("action reader");
+        let decoded = decode_exported_action(reader).expect("action decodes");
+        assert_eq!(
+            decoded.view,
+            Some(ExportedView {
+                id: "editor".into(),
+                label: "Editor".into(),
+                description: Some("Edit this note".into()),
+                open_action: "show-editor".into(),
+                primary: true,
+                mount: Some(ExportedViewMount {
+                    action: "mount-editor".into(),
+                    capability_param: "slot_capability".into(),
+                    view_param: "slot_view".into(),
+                }),
+            })
         );
     }
 }

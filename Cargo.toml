@@ -15,6 +15,7 @@ exclude = [
     "vendor/winit",
     "vendor/wgpu-hal",
     "vendor/openh264-sys2",
+    "vendor/wayland-backend",
 ]
 # Build `runtime-dylib` with `cargo build -p runtime-dylib --profile thin-app`;
 # it requires unwind support, unlike the default release profile.
@@ -99,6 +100,8 @@ members = [
 
     # SDK
     "crates/sdk/tilo-app",
+    "crates/sdk/tilo-resource",
+    "crates/sdk/tilo-resource-macros",
 
     # Collab
     "crates/collab/actions",
@@ -210,6 +213,7 @@ members = [
     "crates/system/tilo-native-certs",
     "crates/system/tilo-net",
     "crates/system/tilo-rollback",
+    "crates/system/tilo-seal",
     "crates/system/tilo-startup-metrics",
     "crates/system/tinker",
     "crates/system/tts",
@@ -367,6 +371,8 @@ getrandom = { version = "0.4", features = ["sys_rng"] }
 sha2 = "0.11"
 hmac = "0.13"
 blake3 = "1.8.5"
+# Raw AEAD and password-KDF crates are for `crates/system/tilo-seal` only;
+# `tools/policy/check_crypto_dependencies.py` rejects any other direct user.
 # `zeroize` keeps the cipher key wiped on drop; 0.11 made it opt-in.
 chacha20poly1305 = { version = "0.11", default-features = false, features = ["alloc", "zeroize"] }
 argon2 = { version = "0.6", default-features = false, features = ["alloc"] }
@@ -532,6 +538,13 @@ wgpu-hal = { path = "vendor/wgpu-hal" }
 genawaiter-proc-macro = { path = "vendor/genawaiter-proc-macro" }
 rustls-native-certs = { path = "crates/system/tilo-native-certs" }
 winit = { path = "vendor/winit" }
+# The pure-Rust server used by Smithay used to panic if a client disappeared
+# from inside a request callback which had just created a child object. OAuth
+# browser launches make that race easy to hit: a probing helper can connect,
+# create a registry object, and exit before dispatch finishes. Keep the
+# compositor alive and treat the vanished object as a disconnected client.
+# See vendor/wayland-backend/TILO-PATCH.md.
+wayland-backend = { path = "vendor/wayland-backend" }
 # Vendored vello variants size scratch buffers from the current scene and
 # include the matching shader/encoding changes.
 vello_encoding = { path = "vendor/vello_encoding" }
