@@ -1,5 +1,5 @@
 //! Read-only immutable history transport, independent of restore eligibility.
-use super::*;
+use super::{Access, EBUSY, EINVAL, EIO, ENOENT, Hash, QuickFS};
 use collab_types::files::{
     FileHistoryPageV1, FileHistoryReadErrorV1 as Error, FileHistoryReadQueryV1 as Query,
     FileHistoryReadResponseV1, FileHistoryReadScopeV1 as Scope, FileHistoryReadValueV1 as Value,
@@ -7,6 +7,14 @@ use collab_types::files::{
 };
 
 impl QuickFS {
+    #[expect(
+        clippy::significant_drop_tightening,
+        reason = "the frontier hashes one consistent snapshot of namespace, history and ACL"
+    )]
+    #[expect(
+        clippy::suspicious_operation_groupings,
+        reason = "a history version's `id` is the version id the content revision points at"
+    )]
     fn history_read_snapshot(
         &self,
         ino: u64,
@@ -31,27 +39,26 @@ impl QuickFS {
             .as_ref()
             .map(|(acl, _)| acl.admission_lease())
             .transpose()
-            .map_err(|_| Error::NotVisible)?;
+            .map_err(|()| Error::NotVisible)?;
         let path = namespace.path_for(ino).ok_or(Error::NotVisible)?;
-        if let (Some(acl), Some((_, identity))) = (acl.as_deref(), self.enforcement.as_ref()) {
-            if !acl.permits(identity, &path, Access::Read) {
-                return Err(Error::NotVisible);
-            }
+        if let (Some(acl), Some((_, identity))) = (acl.as_deref(), self.enforcement.as_ref())
+            && !acl.permits(identity, &path, Access::Read)
+        {
+            return Err(Error::NotVisible);
         }
         let record_id = namespace.record_id_for(ino).ok_or(Error::NotVisible)?;
         let snapshot = history.snapshot(record_id).ok_or(Error::Unavailable)?;
         let current_revision = namespace.content_revision_for(ino);
-        if let Some(revision) = current_revision {
-            if revision.validate().is_err()
+        if let Some(revision) = current_revision
+            && (revision.validate().is_err()
                 || revision.record_id != record_id
                 || !snapshot.versions.iter().any(|v| {
                     v.id == revision.version_id
                         && v.content_hash == revision.content_hash
                         && v.metadata_hash == revision.metadata_hash
-                })
-            {
-                return Err(Error::Unavailable);
-            }
+                }))
+        {
+            return Err(Error::Unavailable);
         }
         let workspace_id = self.restore_workspace().map_err(|_| Error::Unavailable)?;
         // Entire immutable set (including late backfill), order, heads and
@@ -81,6 +88,12 @@ impl QuickFS {
             current_revision,
         ))
     }
+    /// Answer a history read query for `ino`.
+    ///
+    /// # Errors
+    ///
+    /// Returns the history-read error for an invisible file, unavailable or
+    /// stale history state, or a query this transport does not answer.
     pub fn read_file_history(&self, ino: u64, query: Query) -> Result<Value, Error> {
         let (scope, snapshot, current_revision) = self.history_read_snapshot(ino)?;
         match query {
@@ -154,6 +167,12 @@ impl QuickFS {
             Query::Preview { .. } => Err(Error::InvalidRequest),
         }
     }
+    /// Read a version preview, provided the history frontier still matches.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Stale`] when the frontier moved, otherwise the errors of
+    /// [`Self::read_file_history_preview`].
     pub fn read_file_history_preview_at_frontier(
         &self,
         ino: u64,
@@ -166,6 +185,12 @@ impl QuickFS {
         }
         self.read_file_history_preview(ino, scope, version_id)
     }
+    /// Read the verified content of one history version as a preview.
+    ///
+    /// # Errors
+    ///
+    /// Returns the history-read error for an invisible file, a missing
+    /// version, oversized or unverifiable content, or unavailable storage.
     pub fn read_file_history_preview(
         &self,
         ino: u64,

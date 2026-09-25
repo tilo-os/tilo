@@ -18,6 +18,10 @@ impl Fixture {
         Self::with_signed(true).await
     }
 
+    #[expect(
+        clippy::similar_names,
+        reason = "`signed` selects the fixture mode, `signer` is its key"
+    )]
     async fn with_signed(signed: bool) -> Self {
         let directory = tempfile::tempdir().unwrap();
         let endpoint = Endpoint::bind(presets::Minimal).await.unwrap();
@@ -844,6 +848,10 @@ async fn checked_restore_every_durable_phase_reopens_exactly_and_next_edit_is_va
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "end-to-end scenario that reads top to bottom"
+)]
 async fn checked_restore_prepared_fences_same_repository_second_publisher_and_raw_writes() {
     let fixture = Fixture::new().await;
     let request = fixture.request();
@@ -968,6 +976,10 @@ async fn checked_restore_prepared_fences_same_repository_second_publisher_and_ra
     fixture.endpoint.close().await;
 }
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "end-to-end scenario that reads top to bottom"
+)]
 async fn checked_restore_nonwinning_head_invalidates_frontier_and_fresh_restore_parents_all_heads()
 {
     for signed in [true, false] {
@@ -1403,6 +1415,10 @@ async fn checked_restore_remote_signed_transaction_materializes_then_preserves_l
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[expect(
+    clippy::similar_names,
+    reason = "`stale` is the request, `state` the history it reviews"
+)]
 async fn checked_restore_legacy_same_byte_heads_have_explicit_deterministic_content_reference() {
     let fixture = Fixture::with_signed(false).await;
     let stale = fixture.request();
@@ -1683,6 +1699,10 @@ async fn checked_restore_storage_buffer_namespace_and_acl_interleaving_completes
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "end-to-end scenario that reads top to bottom"
+)]
 async fn checked_restore_production_startup_clears_exact_prepared_fence_after_participant_fault() {
     for remote_authored in [false, true] {
         for projections_already_complete in [false, true] {
@@ -1880,6 +1900,10 @@ async fn checked_restore_production_startup_clears_exact_prepared_fence_after_pa
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "end-to-end scenario that reads top to bottom"
+)]
 async fn checked_restore_startup_completion_rejects_incomplete_or_mismatching_admitted_batches() {
     for mismatching_batch in [false, true] {
         let fixture = Fixture::new().await;
@@ -2391,6 +2415,10 @@ async fn history_read_current_winner_is_separate_from_exact_restore_receipt() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+#[expect(
+    clippy::too_many_lines,
+    reason = "end-to-end scenario that reads top to bottom"
+)]
 async fn history_read_cursors_bind_workspace_mount_record_and_allow_codec_browsing() {
     use collab_types::files::{
         FileHistoryReadErrorV1 as E, FileHistoryReadQueryV1 as Q, FileHistoryReadValueV1 as V,
