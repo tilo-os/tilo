@@ -30,7 +30,7 @@ pub trait InstallBackend: Send + Sync {
         on_line: &mut dyn FnMut(String),
     ) -> std::io::Result<bool>;
 
-    /// Read-only check of a prepared alongside root and EFI partition.
+    /// Read-only check of prepared alongside root, boot, and EFI partitions.
     ///
     /// # Errors
     ///
