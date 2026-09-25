@@ -33,15 +33,16 @@ pub fn status_color(theme: &Theme, class: StatusClass) -> Color {
     }
 }
 
+/// Colour for a highlighted JSON token, from the theme's shared syntax
+/// palette so request bodies read like every other code surface.
 pub fn token_color(theme: &Theme, kind: vars::TokenKind) -> Color {
-    let c = &theme.tokens.colors;
+    let syntax = &theme.tokens.syntax;
     match kind {
-        vars::TokenKind::Key => c.semantic.info,
-        vars::TokenKind::StringValue => c.semantic.success,
-        vars::TokenKind::Number => c.accent[6],
-        vars::TokenKind::Keyword => c.semantic.warning,
-        vars::TokenKind::Punctuation => c.text_dim,
-        vars::TokenKind::Plain => c.text_primary,
+        vars::TokenKind::Key => syntax.function,
+        vars::TokenKind::StringValue => syntax.string,
+        vars::TokenKind::Number | vars::TokenKind::Keyword => syntax.number,
+        vars::TokenKind::Punctuation => syntax.operator,
+        vars::TokenKind::Plain => syntax.text,
     }
 }
 

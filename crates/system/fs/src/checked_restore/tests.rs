@@ -20,7 +20,7 @@ impl Fixture {
 
     async fn with_signed(signed: bool) -> Self {
         let directory = tempfile::tempdir().unwrap();
-        let endpoint = Endpoint::bind(presets::N0).await.unwrap();
+        let endpoint = Endpoint::bind(presets::Minimal).await.unwrap();
         let store = Arc::new(crate::store::ContentStore::memory());
         let hash = store.write_content(b"first").await.unwrap().unwrap();
         let mut namespace = Namespace::new("checked-restore-test").unwrap();

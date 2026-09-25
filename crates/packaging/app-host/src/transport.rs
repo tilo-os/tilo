@@ -17,8 +17,8 @@ use crate::app_host_capnp::app_host;
 /// After the `QAH1` marker: a big-endian `u32` length, then the launcher's
 /// JSON handoff.
 const HANDOFF_FRAMING: wire_frame::Framing = wire_frame::Framing::big_endian(1024).reject_empty();
-use crate::service::{AppHostServer, SystemCatalog};
-use crate::store::Store;
+use crate::service::AppHostServer;
+use package_store::{Catalog, PackageStore};
 
 /// Bind the Unix socket. Ensures the parent directory exists, drops a
 /// stale socket file from a previous run, and locks the socket to
@@ -43,16 +43,16 @@ pub fn bind(socket: &Path) -> anyhow::Result<UnixListener> {
 }
 
 /// Run an accept loop forever. Each accepted stream gets its own
-/// capnp-rpc system + service instance backed by the shared `Store` and
-/// system `catalog`.
+/// capnp-rpc system + service instance backed by the shared package store
+/// and its `catalog`.
 ///
 /// # Errors
 ///
 /// Returns an error if accepting a connection off the listener fails.
 pub async fn serve(
     listener: UnixListener,
-    store: Arc<Store>,
-    catalog: Arc<SystemCatalog>,
+    store: Arc<PackageStore>,
+    catalog: Arc<Catalog>,
     max_store_bytes: u64,
 ) -> anyhow::Result<()> {
     loop {
@@ -83,8 +83,8 @@ pub async fn serve(
 )]
 pub async fn handle_connection(
     mut stream: tokio::net::UnixStream,
-    store: Arc<Store>,
-    catalog: Arc<SystemCatalog>,
+    store: Arc<PackageStore>,
+    catalog: Arc<Catalog>,
     max_store_bytes: u64,
 ) -> anyhow::Result<()> {
     let mut magic = [0u8; 4];

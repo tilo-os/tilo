@@ -13,7 +13,7 @@ use std::sync::{
     Arc, Barrier, Mutex,
     mpsc::{self, Receiver},
 };
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
 use ed25519_dalek::SigningKey;
 use fs::{Namespace, ROOT_INO};
@@ -109,15 +109,6 @@ impl Drop for MountProcess {
     }
 }
 
-fn now_ns() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_nanos()
-        .try_into()
-        .unwrap_or(u64::MAX)
-}
-
 fn install_identity(
     root: &Path,
     person_seed: [u8; 32],
@@ -141,7 +132,7 @@ fn install_identity(
         } else {
             DeviceCapabilities::member()
         },
-        issued_at_ns: now_ns().saturating_sub(1_000_000_000),
+        issued_at_ns: tilo_clock::unix_now_ns().saturating_sub(1_000_000_000),
         expires_at_ns: None,
         signature: [0; 64],
     };

@@ -14,6 +14,7 @@
 use anyhow::{Context, Result, bail};
 use clap::{Args, Parser, Subcommand};
 use collab_types::Principal;
+use fs::clock::{unix_now_ms, unix_now_ns};
 use fs::full_replica::{
     HomePeerBundle, HomePeerSet, aggregate_status, hydrate_full_workspace,
     prune_obsolete_workspace_content, save_status, validate_home_peer_set,
@@ -310,6 +311,57 @@ struct AclArgs {
     acl_reload_secs: u64,
 }
 
+/// Which local data plane serves the workspace.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, clap::ValueEnum)]
+enum DataPlaneChoice {
+    /// The native tree (Tier 1) when the store volume and kernel support
+    /// it, else FUSE.
+    #[default]
+    Auto,
+    /// Always FUSE (Tier 2/3).
+    Fuse,
+    /// The native tree or fail.
+    Native,
+}
+
+/// Where and how the Tier 1 data plane runs.
+#[derive(Args, Debug, Clone)]
+struct DataPlaneArgs {
+    /// Local data plane: `auto` serves the native tree when the store volume and kernel support it.
+    #[arg(long, value_enum, default_value_t = DataPlaneChoice::Auto)]
+    data_plane: DataPlaneChoice,
+    /// Root of the dedicated Btrfs store volume holding the native room trees.
+    #[arg(long, value_name = "DIR", default_value = "/var/lib/tilo/store")]
+    store: PathBuf,
+    /// Owner (`UID:GID`) of files the native data plane materialises; defaults to the room directory's owner.
+    #[arg(long, value_name = "UID:GID")]
+    native_owner: Option<String>,
+    /// Remote files up to this many bytes are fetched before they appear; larger ones start as placeholders.
+    #[arg(long, value_name = "BYTES", default_value_t = 1024 * 1024)]
+    native_eager_bytes: u64,
+}
+
+impl Default for DataPlaneArgs {
+    fn default() -> Self {
+        Self {
+            data_plane: DataPlaneChoice::Fuse,
+            store: PathBuf::from("/var/lib/tilo/store"),
+            native_owner: None,
+            native_eager_bytes: 1024 * 1024,
+        }
+    }
+}
+
+fn parse_owner(spec: &str) -> Result<(u32, u32)> {
+    let (uid, gid) = spec
+        .split_once(':')
+        .ok_or_else(|| anyhow::anyhow!("--native-owner must be UID:GID, got {spec:?}"))?;
+    Ok((
+        uid.parse().context("--native-owner UID")?,
+        gid.parse().context("--native-owner GID")?,
+    ))
+}
+
 #[derive(Subcommand, Debug)]
 enum Command {
     /// Host a collaborative workspace and mount it locally.
@@ -329,8 +381,13 @@ enum Command {
         /// Serve typed hydration accounting and safe eviction here.
         #[arg(long)]
         storage_sock: Option<PathBuf>,
+        /// Serve the scoped document-media capability here.
+        #[arg(long)]
+        blob_sock: Option<PathBuf>,
         #[command(flatten)]
         acl: AclArgs,
+        #[command(flatten)]
+        data_plane: DataPlaneArgs,
     },
     /// Join a workspace shared by a peer (via its ticket) and mount it.
     Mount {
@@ -349,8 +406,13 @@ enum Command {
         /// Serve typed hydration accounting and safe eviction here.
         #[arg(long)]
         storage_sock: Option<PathBuf>,
+        /// Serve the scoped document-media capability here.
+        #[arg(long)]
+        blob_sock: Option<PathBuf>,
         #[command(flatten)]
         acl: AclArgs,
+        #[command(flatten)]
+        data_plane: DataPlaneArgs,
     },
     /// Mount the single exact record addressed by an endpoint-bound share link.
     MountShare {
@@ -475,7 +537,9 @@ async fn run_command() -> Result<()> {
             seed,
             control_sock,
             storage_sock,
+            blob_sock,
             acl,
+            data_plane,
         } => {
             serve(
                 mount_point,
@@ -483,7 +547,9 @@ async fn run_command() -> Result<()> {
                 seed,
                 control_sock,
                 storage_sock,
+                blob_sock,
                 acl,
+                data_plane,
             )
             .await
         }
@@ -493,7 +559,9 @@ async fn run_command() -> Result<()> {
             cache_dir,
             control_sock,
             storage_sock,
+            blob_sock,
             acl,
+            data_plane,
         } => {
             mount(
                 mount_point,
@@ -501,7 +569,9 @@ async fn run_command() -> Result<()> {
                 cache_dir,
                 control_sock,
                 storage_sock,
+                blob_sock,
                 acl,
+                data_plane,
             )
             .await
         }
@@ -858,6 +928,34 @@ fn spawn_workspace_authority_reload(
     })
 }
 
+/// Serve document media from the content store (best-effort, like the other
+/// local sockets): collaborators' media is fetched through the workspace's
+/// known peers.
+fn spawn_document_media(
+    socket: &Path,
+    endpoint: &iroh::Endpoint,
+    identity: &FsTransportIdentity,
+    hydrator: &Arc<Hydrator>,
+    store: &Arc<ContentStore>,
+) -> Option<std::thread::JoinHandle<()>> {
+    let fetcher = fs::document_media::PeerMediaFetcher::new(
+        endpoint.clone(),
+        identity.clone(),
+        Arc::clone(hydrator),
+    );
+    let media = fs::document_media::DocumentMedia::new(Arc::clone(store), Some(Arc::new(fetcher)));
+    match fs::document_media::serve_socket(socket, media) {
+        Ok(handle) => Some(handle),
+        Err(error) => {
+            eprintln!(
+                "could not serve document media at {}: {error}",
+                socket.display()
+            );
+            None
+        }
+    }
+}
+
 /// Bind and serve the document control socket (best-effort), using the same ACL/identity as the mount.
 fn spawn_control(
     sock: &Path,
@@ -1098,7 +1196,7 @@ async fn replica_workspace(
 
     let (transport_gate, _transport_gate_task) = fs::transport_gate::spawn_from_env()?;
     let paths = identity_paths();
-    let certified = load_certified_mount_identity(&paths, now_ns())?;
+    let certified = load_certified_mount_identity(&paths, unix_now_ns())?;
     let revocations = Arc::new(RwLock::new(load_revocation_list(&paths)?));
     let (device, credentials) = certified.into_parts();
     let transport_identity = FsTransportIdentity::new(credentials.clone(), revocations)
@@ -1309,13 +1407,19 @@ fn replica_namespace_fingerprint(namespace: &Arc<Mutex<Namespace>>) -> [u8; 32] 
     clippy::too_many_lines,
     reason = "Serving assembles certified transport, ACLs, durable record services, namespace recovery, and mount task lifetimes in one ordered lifecycle."
 )] // Linear CLI assembly keeps resource lifetimes explicit.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "each argument is one independent command-line option of `fs serve`"
+)]
 async fn serve(
     mount_point: PathBuf,
     cache_dir: Option<PathBuf>,
     seed: Option<PathBuf>,
     control_sock: Option<PathBuf>,
     storage_sock: Option<PathBuf>,
+    blob_sock: Option<PathBuf>,
     acl_args: AclArgs,
+    data_plane: DataPlaneArgs,
 ) -> Result<()> {
     let (transport_gate, _transport_gate_task) = fs::transport_gate::spawn_from_env()?;
     let np = namespace_path(cache_dir.as_deref());
@@ -1345,7 +1449,7 @@ async fn serve(
     }
     let history = open_history(cache_dir.as_deref())?;
     let paths = identity_paths();
-    let certified = load_certified_mount_identity(&paths, now_ns())?;
+    let certified = load_certified_mount_identity(&paths, unix_now_ns())?;
     let revocations = Arc::new(RwLock::new(load_revocation_list(&paths)?));
     let (device, credentials) = certified.into_parts();
     let share_issuer = load_workspace_share_issuer(&paths, &credentials)?;
@@ -1576,6 +1680,9 @@ async fn serve(
                 .map(|authority| authority.handle())
         })
         .or_else(|| acl.as_ref().map(|(handle, _)| handle.clone()));
+    let _media = blob_sock.as_deref().and_then(|socket| {
+        spawn_document_media(socket, &endpoint, &transport_identity, &hydrator, &store)
+    });
     let (workspace, ticket, joined_remote) = match (record_services, remote_ticket) {
         (Some(records), Some(ticket)) => (
             Workspace::join_with_records(
@@ -1694,7 +1801,7 @@ async fn serve(
             let mut interval = tokio::time::interval(Duration::from_secs(5));
             loop {
                 interval.tick().await;
-                let now = now_ms();
+                let now = unix_now_ms();
                 for entry in outbox.pending_at(now) {
                     let mut delivered = None;
                     for device in &entry.recipient_devices {
@@ -1714,7 +1821,8 @@ async fn serve(
                             break;
                         }
                     }
-                    let _ = outbox.record_attempt(entry.envelope.invite.id, delivered, now_ms());
+                    let _ =
+                        outbox.record_attempt(entry.envelope.invite.id, delivered, unix_now_ms());
                 }
             }
         })
@@ -1744,6 +1852,7 @@ async fn serve(
         false,
         false,
         managed_service.then_some(rebind_rx),
+        Some((data_plane, *history_actor.device.as_bytes())),
     )
     .await?;
     if let Some(p) = &np {
@@ -1804,13 +1913,19 @@ fn initialize_owner_record_authority(
     clippy::too_many_lines,
     reason = "Joining a workspace keeps ticket validation, certified transport, record recovery, synchronization, mounting, and final persistence in order."
 )] // Linear CLI assembly keeps resource lifetimes explicit.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "each argument is one independent command-line option of `fs mount`"
+)]
 async fn mount(
     mount_point: PathBuf,
     ticket: String,
     cache_dir: Option<PathBuf>,
     control_sock: Option<PathBuf>,
     storage_sock: Option<PathBuf>,
+    blob_sock: Option<PathBuf>,
     acl_args: AclArgs,
+    data_plane: DataPlaneArgs,
 ) -> Result<()> {
     let (transport_gate, _transport_gate_task) = fs::transport_gate::spawn_from_env()?;
     let ticket = Ticket::decode(&ticket)?;
@@ -1846,7 +1961,7 @@ async fn mount(
     }
     let history = open_history(cache_dir.as_deref())?;
     let paths = identity_paths();
-    let certified = load_certified_mount_identity(&paths, now_ns())?;
+    let certified = load_certified_mount_identity(&paths, unix_now_ns())?;
     let revocations = Arc::new(RwLock::new(load_revocation_list(&paths)?));
     let (device, credentials) = certified.into_parts();
     let transport_identity = FsTransportIdentity::new(credentials.clone(), revocations)
@@ -1905,6 +2020,9 @@ async fn mount(
         .as_ref()
         .map(|records| Arc::clone(&records.repository));
     let workspace_args = acl.as_ref().map(|(handle, _)| handle.clone());
+    let _media = blob_sock.as_deref().and_then(|socket| {
+        spawn_document_media(socket, &endpoint, &transport_identity, &hydrator, &store)
+    });
     let workspace = match record_services {
         Some(records) => {
             Workspace::join_with_records(
@@ -1976,6 +2094,7 @@ async fn mount(
         false,
         false,
         None,
+        Some((data_plane, *history_actor.device.as_bytes())),
     )
     .await?;
     if let Some(p) = &np {
@@ -2041,14 +2160,14 @@ async fn mount_share(
         SharedCredential::Named(_) => None,
     };
     let paths = identity_paths();
-    let certified = load_certified_mount_identity(&paths, now_ns())?;
+    let certified = load_certified_mount_identity(&paths, unix_now_ns())?;
     let revocations = Arc::new(RwLock::new(load_revocation_list(&paths)?));
     let (device, credentials) = certified.into_parts();
     let actor = collab_types::FileActor {
         person: collab_types::Ed25519PublicKey(credentials.user_public_key()),
         device: collab_types::Ed25519PublicKey(credentials.device_public_key()),
     };
-    credential.validate_at(actor.person, now_ms())?;
+    credential.validate_at(actor.person, unix_now_ms())?;
     let replica_signing_key = credentials.signing_key().clone();
     let (endpoint, _lookup) = sync::bind_endpoint_with_key(device.secret.clone()).await?;
     let client =
@@ -2056,13 +2175,17 @@ async fn mount_share(
     let snapshot = match fetch_shared_snapshot(&client, &credential).await {
         Ok(snapshot) => {
             if let Some(subscriptions) = &subscriptions {
-                subscriptions.record_success(subscription_key, now_ms())?;
+                subscriptions.record_success(subscription_key, unix_now_ms())?;
             }
             snapshot
         }
         Err(error) => {
             if let Some(subscriptions) = &subscriptions {
-                subscriptions.record_error(subscription_key, error.failure_code(), now_ms())?;
+                subscriptions.record_error(
+                    subscription_key,
+                    error.failure_code(),
+                    unix_now_ms(),
+                )?;
             }
             return Err(error.into());
         }
@@ -2127,7 +2250,10 @@ async fn mount_share(
         interval.tick().await;
         loop {
             interval.tick().await;
-            if poll_credential.validate_at(actor.person, now_ms()).is_err() {
+            if poll_credential
+                .validate_at(actor.person, unix_now_ms())
+                .is_err()
+            {
                 break;
             }
             match fetch_shared_snapshot(&poll_client, &poll_credential).await {
@@ -2170,7 +2296,7 @@ async fn mount_share(
                             fs::ReplicaAckV1::signed(
                                 &request,
                                 actor,
-                                now_ms(),
+                                unix_now_ms(),
                                 &poll_replica_signing_key,
                             )
                         }) {
@@ -2195,7 +2321,8 @@ async fn mount_share(
                         }
                     }
                     if let Some(subscriptions) = &poll_subscriptions
-                        && let Err(error) = subscriptions.record_success(subscription_key, now_ms())
+                        && let Err(error) =
+                            subscriptions.record_success(subscription_key, unix_now_ms())
                     {
                         eprintln!("could not persist shared-record refresh status: {error}");
                         break;
@@ -2206,7 +2333,7 @@ async fn mount_share(
                         let _ = subscriptions.record_error(
                             subscription_key,
                             RecordSubscriptionFailureCode::InvalidResponse,
-                            now_ms(),
+                            unix_now_ms(),
                         );
                     }
                     break;
@@ -2216,7 +2343,7 @@ async fn mount_share(
                         let _ = subscriptions.record_error(
                             subscription_key,
                             error.failure_code(),
-                            now_ms(),
+                            unix_now_ms(),
                         );
                     }
                     eprintln!("shared record refresh failed: {error}");
@@ -2258,6 +2385,7 @@ async fn mount_share(
         false,
         true,
         None,
+        None,
     )
     .await?;
     poll_task.abort();
@@ -2278,14 +2406,14 @@ async fn recipient_service(
     let listener = recipient_service_listener(&socket)?;
     std::fs::create_dir_all(&cache_root)?;
     let paths = identity_paths();
-    let certified = load_certified_mount_identity(&paths, now_ns())?;
+    let certified = load_certified_mount_identity(&paths, unix_now_ns())?;
     let revocations = Arc::new(RwLock::new(load_revocation_list(&paths)?));
     let (device, credentials) = certified.into_parts();
     let local_person = collab_types::Ed25519PublicKey::from_bytes(credentials.user_public_key());
     let inbox = Arc::new(fs::NamedShareInbox::open_at(
         cache_root.join("named-share-inbox.json"),
         local_person,
-        now_ms(),
+        unix_now_ms(),
     )?);
     let (inbox_endpoint, _inbox_lookup) = sync::bind_endpoint_with_key(device.secret).await?;
     let inbox_protocol = fs::NamedShareInboxProtocol::new(
@@ -2317,7 +2445,7 @@ async fn recipient_service(
             );
         }
     }
-    for envelope in inbox.entries_at(now_ms()) {
+    for envelope in inbox.entries_at(unix_now_ms()) {
         if let Err(error) = mounts.start_named(&envelope) {
             eprintln!(
                 "could not restart named received record {}: {error}",
@@ -2332,7 +2460,7 @@ async fn recipient_service(
         let mut interval = tokio::time::interval(Duration::from_secs(2));
         loop {
             interval.tick().await;
-            for envelope in named_inbox.entries_at(now_ms()) {
+            for envelope in named_inbox.entries_at(unix_now_ms()) {
                 let _ = named_mounts.start_named(&envelope);
             }
         }
@@ -2961,6 +3089,7 @@ async fn run_mount(
     read_only: bool,
     signal_recipient_ready: bool,
     mut rebind: Option<tokio::sync::mpsc::UnboundedReceiver<()>>,
+    data_plane: Option<(DataPlaneArgs, [u8; 32])>,
 ) -> Result<MountOutcome> {
     if !mount_point.exists() {
         std::fs::create_dir_all(&mount_point)?;
@@ -2981,6 +3110,7 @@ async fn run_mount(
     } else {
         fs.without_legacy_record_migration()
     };
+    let native_sync = sync.clone();
     let fs = match sync {
         Some(sync) => fs.with_sync(sync),
         None => fs,
@@ -3098,6 +3228,26 @@ async fn run_mount(
             }
         });
 
+    #[cfg(target_os = "linux")]
+    if let Some((args, device)) = data_plane.as_ref()
+        && let Some(cfg) = native_config(
+            args,
+            *device,
+            checked_history_workspace,
+            &mount_point,
+            predictive_cache_root.as_deref(),
+            read_only,
+        )?
+    {
+        let outcome = run_native(fs, cfg, native_sync, rebind).await;
+        if let Some(task) = predictive_policy_task {
+            task.abort();
+        }
+        return outcome;
+    }
+    #[cfg(not(target_os = "linux"))]
+    let _ = (&data_plane, &native_sync);
+
     // Kernel passthrough for fully local read-only opens is opt-in while the
     // backing files are a per-open materialisation of the chunk store.
     let fs = match predictive_cache_root
@@ -3190,18 +3340,122 @@ async fn run_mount(
     Ok(outcome)
 }
 
+/// Chooses the data plane and, for Tier 1, its configuration. `None` means
+/// the FUSE data plane serves the workspace.
+#[cfg(target_os = "linux")]
+fn native_config(
+    args: &DataPlaneArgs,
+    device: [u8; 32],
+    workspace: uuid::Uuid,
+    mount_point: &Path,
+    cache_dir: Option<&Path>,
+    read_only: bool,
+) -> Result<Option<fs::native::NativeConfig>> {
+    use fs::native::DataPlane;
+    let choice = match args.data_plane {
+        DataPlaneChoice::Auto => DataPlane::Auto,
+        DataPlaneChoice::Fuse => DataPlane::Fuse,
+        DataPlaneChoice::Native => DataPlane::Native,
+    };
+    let selection = match (cache_dir, read_only) {
+        (_, true) => fs::native::TierSelection {
+            native: false,
+            store: args.store.clone(),
+            reasons: vec!["read-only mounts are served by FUSE".into()],
+            report: None,
+            probe_time: Duration::ZERO,
+        },
+        (None, _) => fs::native::TierSelection {
+            native: false,
+            store: args.store.clone(),
+            reasons: vec!["no cache directory to keep the native plane's state in".into()],
+            report: None,
+            probe_time: Duration::ZERO,
+        },
+        (Some(_), false) => fs::native::tier::select(choice, &args.store),
+    };
+    println!("{}", selection.summary());
+    if let Some(report) = &selection.report {
+        eprint!("{report}");
+    }
+    if !selection.native {
+        if choice == DataPlane::Native {
+            bail!(
+                "the native data plane was requested but is unavailable: {}",
+                selection.reasons.join("; ")
+            );
+        }
+        return Ok(None);
+    }
+    let Some(cache_dir) = cache_dir else {
+        return Ok(None);
+    };
+    let mut cfg = fs::native::NativeConfig::new(
+        args.store.clone(),
+        workspace.to_string(),
+        mount_point.to_path_buf(),
+        cache_dir.join("native"),
+        device,
+    );
+    cfg.owner = args.native_owner.as_deref().map(parse_owner).transpose()?;
+    cfg.eager_bytes = args.native_eager_bytes;
+    Ok(Some(cfg))
+}
+
+/// Serves the workspace from the native tree until interrupted, terminated
+/// or asked to rebind. The bind mount lives exactly as long as this call.
+#[cfg(target_os = "linux")]
+async fn run_native(
+    fs: QuickFS,
+    cfg: fs::native::NativeConfig,
+    sync: Option<Arc<SyncHandle>>,
+    mut rebind: Option<tokio::sync::mpsc::UnboundedReceiver<()>>,
+) -> Result<MountOutcome> {
+    let fs = Arc::new(fs);
+    let content = Arc::clone(&fs.hydrator);
+    let runtime = tokio::runtime::Handle::current();
+    let plane = tokio::task::spawn_blocking(move || {
+        fs::native::NativePlane::start(cfg, fs, content, sync, runtime)
+    })
+    .await??;
+    let mut terminate = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
+    let mut health = tokio::time::interval(Duration::from_secs(1));
+    let outcome = loop {
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => {
+                println!("Interrupted, exiting...");
+                break MountOutcome::Unmounted;
+            }
+            _ = terminate.recv() => {
+                println!("Terminated, exiting...");
+                break MountOutcome::Unmounted;
+            }
+            () = async {
+                match rebind.as_mut() {
+                    Some(receiver) => { let _ = receiver.recv().await; }
+                    None => std::future::pending::<()>().await,
+                }
+            } => {
+                println!("Content peer registration requested a clean workspace rebind.");
+                break MountOutcome::RebindRequested;
+            }
+            _ = health.tick() => {
+                if plane.is_finished() {
+                    eprintln!("the native data plane stopped");
+                    break MountOutcome::Unmounted;
+                }
+            }
+        }
+    };
+    tokio::task::spawn_blocking(move || plane.stop()).await??;
+    println!("Workspace unmounted.");
+    Ok(outcome)
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum MountOutcome {
     Unmounted,
     RebindRequested,
-}
-
-fn now_ms() -> u64 {
-    fs::clock::unix_now_ms()
-}
-
-fn now_ns() -> u64 {
-    fs::clock::unix_now_ns()
 }
 
 /// Recursively ingest a directory's contents into the workspace.
@@ -3222,7 +3476,7 @@ async fn seed_from_dir(
                 let ino = namespace
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .create_dir(parent_ino, &name, now_ms())
+                    .create_dir(parent_ino, &name, unix_now_ms())
                     .ok_or_else(|| {
                         anyhow::anyhow!("seeding {name:?}: parent inode {parent_ino} vanished")
                     })?;
@@ -3239,8 +3493,8 @@ async fn seed_from_dir(
                     let mut ns = namespace
                         .lock()
                         .unwrap_or_else(std::sync::PoisonError::into_inner);
-                    if let Some(ino) = ns.create_document(parent_ino, &name, &c, now_ms()) {
-                        ns.import_document(ino, &registry, &data, now_ms());
+                    if let Some(ino) = ns.create_document(parent_ino, &name, &c, unix_now_ms()) {
+                        ns.import_document(ino, &registry, &data, unix_now_ms());
                     }
                 } else {
                     let size = data.len() as u64;
@@ -3248,7 +3502,7 @@ async fn seed_from_dir(
                     namespace
                         .lock()
                         .unwrap_or_else(std::sync::PoisonError::into_inner)
-                        .create_file(parent_ino, &name, hash.as_ref(), size, now_ms());
+                        .create_file(parent_ino, &name, hash.as_ref(), size, unix_now_ms());
                 }
             }
         }
@@ -3289,7 +3543,25 @@ mod tests {
             break;
         }
         assert!(!argv.is_empty(), "fs.service has no ExecStart=");
-        argv
+        // systemd splits an unquoted `$VAR` into words; resolve it from the
+        // unit's own `Environment=` default, which is what a boot without an
+        // override file runs.
+        let defaults: std::collections::HashMap<&str, &str> = unit
+            .lines()
+            .filter_map(|line| line.strip_prefix("Environment="))
+            .filter_map(|assignment| assignment.split_once('='))
+            .collect();
+        argv.into_iter()
+            .flat_map(|word| match word.strip_prefix('$') {
+                Some(name) => defaults
+                    .get(name)
+                    .unwrap_or_else(|| panic!("fs.service uses ${name} without a default"))
+                    .split_whitespace()
+                    .map(str::to_string)
+                    .collect::<Vec<_>>(),
+                None => vec![word],
+            })
+            .collect()
     }
 
     #[test]

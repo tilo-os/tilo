@@ -237,6 +237,11 @@ if [ "${#shipped[@]}" -lt "$REQUIRE_MIN" ]; then
     die "only ${#shipped[@]} package(s) installed, expected at least $REQUIRE_MIN"
 fi
 
+# The trees are materialised and the image's store is read-only: it never
+# installs again, so the installer's content store, staging and writer lock
+# would only double the payload bytes in the image.
+rm -rf -- "$STORE/content" "$STORE/tmp" "$STORE/.lock"
+
 # The registry is what the launcher reads; an empty one means an empty
 # palette, which is the failure this whole step exists to prevent.
 [ -s "$STORE/registry.toml" ] || die "$STORE/registry.toml is missing or empty"

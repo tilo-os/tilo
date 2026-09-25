@@ -148,6 +148,83 @@ impl LaunchRequest {
     }
 }
 
+/// Hand a URI (a web page, a `mailto:` draft, a `settings:` pane) to the
+/// current host's [`crate::host::UriOpener`].
+///
+/// On the native desktop, Unix builds with the `portal` feature go through the
+/// XDG `OpenURI` portal: inside the app sandbox there is no host `xdg-open` to
+/// spawn, and the portal is where the desktop applies its own handler choice
+/// and policy. Other native builds use the platform opener (`ShellExecute` on
+/// Windows).
+///
+/// Blocks until the handler is launched or the request is refused, so call it
+/// from a worker thread; [`open_uri_detached`] is the fire-and-forget form.
+///
+/// # Errors
+/// Returns invalid input for a URI containing NUL (which native APIs would
+/// otherwise silently truncate), and the host's error when it cannot parse or
+/// refuses the request.
+pub fn open_uri(uri: &str) -> std::io::Result<()> {
+    open_uri_with(&*crate::host::current().opener, uri)
+}
+
+/// Non-blocking [`open_uri`]: the outcome arrives on the returned channel,
+/// which the UI thread drains like any other portal result. The request runs
+/// through the host's [`crate::background::Background`]; a host that refuses
+/// background work reports it as a failed launch.
+pub fn send_open_uri(uri: &str) -> LaunchChannel {
+    let (tx, rx) = std::sync::mpsc::channel();
+    // Resolve the host here: a scoped host is only visible on this thread.
+    let opener = crate::host::current().opener;
+    let uri = uri.to_string();
+    let refused = tx.clone();
+    let spawned =
+        crate::background::Background::current().spawn("tilo-portal-open-uri", move || {
+            let _ = tx.send(match open_uri_with(&*opener, &uri) {
+                Ok(()) => LaunchOutcome::Opened,
+                Err(error) => LaunchOutcome::Failed(error.to_string()),
+            });
+        });
+    if spawned.is_err() {
+        let _ = refused.send(LaunchOutcome::Failed(
+            "this host runs no background work".to_owned(),
+        ));
+    }
+    rx
+}
+
+/// [`open_uri`] through the host's [`crate::background::Background`]. A launch
+/// failure is logged, not surfaced.
+pub fn open_uri_detached(uri: &str) {
+    let opener = crate::host::current().opener;
+    let uri = uri.to_string();
+    let spawned =
+        crate::background::Background::current().spawn("tilo-portal-open-uri", move || {
+            if let Err(error) = open_uri_with(&*opener, &uri) {
+                tracing::warn!("failed to open {uri:?}: {error}");
+            }
+        });
+    if spawned.is_err() {
+        tracing::warn!("not opening a URI: this host runs no background work");
+    }
+}
+
+/// [`open_uri`] through an opener the caller resolved itself, for work that
+/// runs away from the thread whose host it belongs to: resolve
+/// `ui::host::current().opener` there, then call this on the worker.
+///
+/// # Errors
+/// As [`open_uri`].
+pub fn open_uri_with(opener: &dyn crate::host::UriOpener, uri: &str) -> std::io::Result<()> {
+    if uri.contains('\0') {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "URI contains NUL",
+        ));
+    }
+    opener.open(uri)
+}
+
 /// A file selected by the portal and opened by its worker before the result is
 /// handed to the UI. The descriptor, rather than the path used to obtain it,
 /// is the authority to read the selected file.
@@ -528,7 +605,7 @@ pub fn map_uris(uris: &[url::Url]) -> MultiOutcome {
 /// This runs on the portal worker, immediately after the picker returns, so
 /// no UI-frame delay can turn an accepted path into a later reopen.
 #[cfg(any(feature = "portal", test))]
-pub(crate) fn open_uri(uri: &url::Url) -> OpenFileOutcome {
+pub(crate) fn open_selected_uri(uri: &url::Url) -> OpenFileOutcome {
     let Some(path) = to_local_path(uri) else {
         return OpenFileOutcome::Failed(format!("not a local file: {uri}"));
     };
@@ -936,7 +1013,7 @@ mod tests {
         source.flush().unwrap();
         let uri = url::Url::from_file_path(&path).unwrap();
 
-        let opened = match open_uri(&uri) {
+        let opened = match open_selected_uri(&uri) {
             OpenFileOutcome::Opened(opened) => opened,
             OpenFileOutcome::Cancelled | OpenFileOutcome::Failed(_) => {
                 panic!("regular temporary file must open")
@@ -965,7 +1042,10 @@ mod tests {
         symlink(&target, &link).unwrap();
         let uri = url::Url::from_file_path(&link).unwrap();
 
-        assert!(matches!(open_uri(&uri), OpenFileOutcome::Failed(_)));
+        assert!(matches!(
+            open_selected_uri(&uri),
+            OpenFileOutcome::Failed(_)
+        ));
     }
 
     #[test]
@@ -973,7 +1053,10 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let uri = url::Url::from_file_path(dir.path()).unwrap();
 
-        assert!(matches!(open_uri(&uri), OpenFileOutcome::Failed(_)));
+        assert!(matches!(
+            open_selected_uri(&uri),
+            OpenFileOutcome::Failed(_)
+        ));
     }
 
     // ---- the request builder ------------------------------------------

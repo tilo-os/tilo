@@ -149,11 +149,84 @@ mod tests {
         registry
     }
 
+    /// The id the seed gives its `n`th saved place, so tests can address a
+    /// location resource without reading the seed first.
+    fn nth_id(n: usize) -> LocationId {
+        LocationId::from_u128(u128::try_from(n).expect("small index") + 1)
+    }
+
+    /// The bundled sample places, with stable ids, written through the real
+    /// document path.
     fn seeded_doc() -> AutoCommit {
+        let mut model = crate::sample::sample_model();
+        for (n, location) in model.locations.iter_mut().enumerate() {
+            location.id = nth_id(n);
+        }
         let mut doc = AutoCommit::new();
-        WeatherDoc::write_model(&mut doc, &crate::sample::sample_model());
+        WeatherDoc::write_model(&mut doc, &model);
         doc.commit();
         doc
+    }
+
+    /// The app's published tree for `doc`: an offline app adopts the
+    /// document's saved places the way the host's `sync` does.
+    fn resources(doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+        let mut app = crate::app::WeatherApp::new();
+        let mut doc = doc.clone();
+        ui::widget::Widget::sync(&mut app, &mut doc, &automerge::ROOT);
+        ui::widget::Widget::resources(&app, &doc)
+    }
+
+    fn auckland() -> SavedLocation {
+        SavedLocation::new(
+            "Auckland",
+            "Auckland",
+            "New Zealand",
+            "NZ",
+            -36.8485,
+            174.7633,
+            "Pacific/Auckland",
+        )
+    }
+
+    fn move_to_top_rank(doc: &AutoCommit) -> f64 {
+        WeatherDoc::read_model(doc).locations[0].order_rank - 1024.0
+    }
+
+    ui::action_contract_tests! {
+        seed: seeded_doc(),
+        registry: registry(),
+        resources: |doc| resources(doc),
+        palette: [
+            "Save location",
+            "Open forecast",
+            "Use as default location",
+            "Move to top",
+            "Remove location",
+        ],
+        replay: [
+            add_location => |_| encode(&WeatherAction::AddLocation { location: auckland() }),
+            select_location => |_| encode(&select_location_action(nth_id(1))),
+            set_location_order => |_| encode(&location_order_action(&[nth_id(3), nth_id(0)])),
+            set_location_rank => |_| encode(&location_rank_action(nth_id(2), -4096.0)),
+            remove_location => |_| encode(&remove_location_action(nth_id(0))),
+        ],
+        undo: [
+            add_location => |_| encode(&WeatherAction::AddLocation { location: auckland() }),
+            remove_location => |_| encode(&remove_location_action(nth_id(0))),
+            select_location => |_| encode(&select_location_action(nth_id(2))),
+        ],
+        encodes: [
+            use_as_default => (&location_resource_id(nth_id(1)), "use-as-default", |_, _| {
+                encode(&select_location_action(nth_id(1)))
+            }),
+            move_to_top => (&location_resource_id(nth_id(1)), "move-to-top", |doc, _| {
+                encode(&location_rank_action(nth_id(1), move_to_top_rank(doc)))
+            }),
+            remove => (&location_resource_id(nth_id(2)), "remove", |_, _| {
+                encode(&remove_location_action(nth_id(2)))
+            }),
+        ],
     }
 
     #[test]
@@ -167,59 +240,6 @@ mod tests {
         assert_eq!(
             open_location_address(first),
             ActionAddress::new(location_resource_id(first), "open")
-        );
-    }
-
-    #[test]
-    fn location_mutations_replay_byte_identically_on_a_peer() {
-        let mut first = seeded_doc();
-        let bytes = first.save();
-        let mut second = AutoCommit::load(&bytes).unwrap();
-        let existing = WeatherDoc::read_model(&first).locations[0].id;
-        let added = SavedLocation::new(
-            "Auckland",
-            "Auckland",
-            "New Zealand",
-            "NZ",
-            -36.8485,
-            174.7633,
-            "Pacific/Auckland",
-        );
-        let actions = [
-            WeatherAction::AddLocation {
-                location: added.clone(),
-            },
-            WeatherAction::SelectLocation {
-                id: added.id.to_string(),
-            },
-            WeatherAction::SetLocationOrder {
-                ids: vec![added.id.to_string(), existing.to_string()],
-            },
-            WeatherAction::RemoveLocation {
-                id: existing.to_string(),
-            },
-        ];
-
-        for action in actions {
-            let envelope = tilo_actions::apply_local(&mut first, &action, encode(&action)).unwrap();
-            tilo_actions::replay(&mut second, &envelope, &registry()).unwrap();
-        }
-
-        assert_eq!(first.get_heads(), second.get_heads());
-        let model = WeatherDoc::read_model(&second);
-        assert_eq!(
-            model.locations.first().map(|location| location.id),
-            Some(added.id)
-        );
-        assert_eq!(
-            model.selected_location().map(|location| location.id),
-            Some(added.id)
-        );
-        assert!(
-            !model
-                .locations
-                .iter()
-                .any(|location| location.id == existing)
         );
     }
 

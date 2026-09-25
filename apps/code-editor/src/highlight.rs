@@ -1,35 +1,18 @@
 //! Syntax highlighting for the editor view.
 //!
 //! Tokenizing is the toolkit's grammar-backed highlighter
-//! ([`ui::widget::code_editor::SyntaxHighlighter`]); this module keeps what is
-//! specific to the editor view: the incremental per-line cache that re-parses
-//! only the edited region, and the colours the view paints each token kind in,
-//! resolved against the active [`Theme`] at draw time.
+//! ([`ui::widget::code_editor::SyntaxHighlighter`]) and colours come from the
+//! theme's shared syntax palette (`theme.tokens.syntax`); this module keeps
+//! what is specific to the editor view: the incremental per-line cache that
+//! re-parses only the edited region.
 
-use ui::theme::Theme;
-use ui::widget::code_editor::{SyntaxHighlighter, SyntaxState, TokenKind};
-use vello::peniko::Color;
+#[cfg(test)]
+use ui::widget::code_editor::TokenKind;
+use ui::widget::code_editor::{SyntaxHighlighter, SyntaxState};
 
 use crate::model::Language;
 
 pub use ui::widget::code_editor::Span;
-
-/// The view's colour for a token kind. Every colour is a theme token, so a
-/// theme swap recolours the whole editor coherently.
-pub fn token_color(kind: TokenKind, theme: &Theme) -> Color {
-    let c = &theme.tokens.colors;
-    match kind {
-        TokenKind::Keyword => c.accent[6],
-        TokenKind::Type => c.accent[7],
-        TokenKind::Function => c.semantic.info,
-        TokenKind::StringLit | TokenKind::CharLit => c.semantic.success,
-        TokenKind::Number | TokenKind::Constant => c.semantic.warning,
-        TokenKind::Comment => c.text_dim,
-        TokenKind::Attribute | TokenKind::Preprocessor => c.semantic.danger,
-        TokenKind::Operator => c.neutral[7],
-        _ => c.text_primary,
-    }
-}
 
 fn highlighter(language: Language) -> SyntaxHighlighter {
     SyntaxHighlighter::for_token_or_plain(language.grammar_token())

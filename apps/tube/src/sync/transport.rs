@@ -24,7 +24,7 @@
 use std::collections::{BTreeMap, HashMap};
 use std::io::{Read, Write};
 use std::net::{TcpStream, ToSocketAddrs};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
 use base64::Engine;
 use flate2::Compression;
@@ -33,6 +33,7 @@ use flate2::write::GzEncoder;
 use snow::params::DHChoice;
 use snow::resolvers::{CryptoResolver, DefaultResolver};
 use snow::{Builder, HandshakeState, TransportState};
+use tilo_clock::unix_now_i64;
 use zeroize::Zeroizing;
 
 use super::protocol::{
@@ -99,12 +100,6 @@ fn validate_device_info(info: &SyncDeviceInfo) -> SyncResult<()> {
         ));
     }
     Ok(())
-}
-
-fn now_epoch_secs() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |d| d.as_secs() as i64)
 }
 
 fn snow_err(e: &snow::Error) -> SyncError {
@@ -982,7 +977,7 @@ impl GrayjaySyncTransport {
 
     /// Build a `SyncSubscriptionsPackage` JSON from Tube's channel-URL list.
     fn subscriptions_json(state: &SyncState) -> SyncResult<String> {
-        let now = now_epoch_secs();
+        let now = unix_now_i64();
         let pkg = SyncSubscriptionsPackage {
             subscriptions: state
                 .subscriptions

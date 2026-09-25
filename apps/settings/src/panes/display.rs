@@ -39,6 +39,7 @@
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
+use tilo_clock::unix_now_ms;
 use ui::doc::{read_bool, read_str_or_text};
 
 use automerge::{AutoCommit, ObjId, ReadDoc, Value, transaction::Transactable};
@@ -1118,11 +1119,7 @@ impl DisplayPane {
                 let seconds = transaction
                     .as_ref()
                     .and_then(|transaction| transaction.deadline_unix_ms)
-                    .map(|deadline| {
-                        deadline
-                            .saturating_sub(settings_store::hardware::unix_ms())
-                            .div_ceil(1_000)
-                    })
+                    .map(|deadline| deadline.saturating_sub(unix_now_ms()).div_ceil(1_000))
                     .unwrap_or_default();
                 card(
                     "Keep this display configuration?",
@@ -2622,7 +2619,7 @@ mod tests {
         let mut transaction = DisplayTransaction::load().expect("Apply wrote a transaction");
         assert_eq!(transaction.state, DisplayTransactionState::Requested);
         transaction.state = DisplayTransactionState::AwaitingConfirmation;
-        transaction.deadline_unix_ms = Some(settings_store::hardware::unix_ms() + 15_000);
+        transaction.deadline_unix_ms = Some(unix_now_ms() + 15_000);
         transaction.save().unwrap();
         let _ = doc.put(&root, KEEP_DISPLAY_KEY, true);
         pane.sync(&mut doc, &root);

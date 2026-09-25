@@ -1,0 +1,503 @@
+#!/bin/bash
+# tilo-store-volume — the dedicated Btrfs volume the storage daemon serves its
+# native data plane from (docs/architecture/storage.md §6.2).
+#
+# fanotify filesystem marks are per superblock, so the room trees need a
+# filesystem of their own: never a subvolume of the root filesystem, whose
+# mark would put every file on the machine behind the daemon. The daemon
+# refuses a store on the same filesystem as /, /var or /home and serves FUSE
+# instead; this helper is what gives it a volume to accept.
+#
+#   tilo-store-volume plan --disk-bytes N --reserved-bytes N
+#       Split a whole disk between the Tilo root and the store. Prints
+#       ROOT_BYTES= and STORE_BYTES= (STORE_BYTES=0: the disk is too small).
+#   tilo-store-volume image-size --free-bytes N --filesystem-bytes N
+#       Size a store image on an existing root filesystem. Prints
+#       IMAGE_BYTES= (0: not enough free space).
+#   tilo-store-volume format <partition> --key-file F
+#       LUKS2 + Btrfs on an empty partition, unlocked by the key file.
+#       Prints LUKS_UUID= and FS_UUID=.
+#   tilo-store-volume install-config --etc DIR --luks-uuid U --fs-uuid U
+#                                    --key-file F --owner NAME
+#       Write the unlock key, crypttab, fstab and store configuration of a
+#       formatted partition into a (target system's) /etc.
+#   tilo-store-volume ensure
+#       Boot time (tilo-store-volume.service, before fs.service): give an
+#       install without a store an image-backed one, prepare the mounted
+#       volume for the local person and tell fs.service which data plane to
+#       serve.
+#   tilo-store-volume attach | detach
+#       Attach or detach the loop device of an image-backed store.
+#   tilo-store-volume status
+#       Describe the store volume for a person reading it.
+#
+# Two layouts, one mount (/var/lib/tilo/store, var-lib-tilo-store.mount):
+#
+#   partition  A whole-disk install gives the store its own LUKS2 partition
+#              after the root. It is unlocked from a key file inside the
+#              (encrypted) root, so there is no second prompt; the install's
+#              recovery key opens it too.
+#   image      Alongside installs and installs that predate the store get a
+#              preallocated, no-copy-on-write Btrfs image on the root
+#              filesystem, attached with direct I/O. The root's own encryption
+#              covers it.
+set -euo pipefail
+
+STORE_MOUNT="${TILO_STORE_MOUNT:-/var/lib/tilo/store}"
+STORE_IMAGE="${TILO_STORE_IMAGE:-/var/lib/tilo/store.img}"
+ETC="${TILO_STORE_ETC:-/etc}"
+RUNTIME="${TILO_STORE_RUNTIME:-/run/tilo-store}"
+SYSTEMCTL="${TILO_STORE_SYSTEMCTL:-systemctl}"
+MAPPER=tilo-store
+FS_LABEL=tilo-store
+
+GIB=$((1024 * 1024 * 1024))
+MIB=$((1024 * 1024))
+# The root keeps at least what an alongside install requires of it.
+ROOT_MIN_BYTES=$((32 * GIB))
+# Below this a store is not worth a partition or an image.
+STORE_MIN_BYTES=$((8 * GIB))
+# Free space an image must leave on the root filesystem, at least.
+IMAGE_RESERVE_MIN_BYTES=$((16 * GIB))
+
+# Btrfs features every store gets: the block-group tree keeps mounting large
+# volumes fast, and simple quotas account each room's subvolume from its first
+# extent (enabling them later would leave earlier extents unaccounted).
+MKFS_FEATURES=block-group-tree,squota
+# noatime: reads never turn into metadata writes, which the change journal
+# would otherwise have to discard. context=: people reach the rooms through
+# /var/workspace, whose files carried the FUSE mount's label (fusefs_t) until
+# now; labelling the whole store with it keeps every domain's existing access
+# to those files, from the session to sandboxed apps, exactly as it was.
+MOUNT_OPTIONS=noatime,context=system_u:object_r:fusefs_t:s0,nofail,x-systemd.device-timeout=30s
+# The key file is 64 random bytes; stretching it buys nothing and costs every
+# boot a second of Argon2 work, so its key slot uses the cheapest KDF.
+KEY_SLOT_KDF=(--pbkdf pbkdf2 --pbkdf-force-iterations 1000)
+# SSD-friendly and lower-latency dm-crypt, as a data volume wants.
+CRYPTTAB_OPTIONS=luks,discard,no-read-workqueue,no-write-workqueue,nofail
+
+log() { printf '%s\n' "$*"; }
+die() { printf 'tilo-store-volume: %s\n' "$*" >&2; exit 1; }
+need() { command -v "$1" >/dev/null 2>&1 || die "missing required tool: $1"; }
+
+is_uint() { [[ "${1:-}" =~ ^[0-9]+$ ]]; }
+
+# --- sizing policy -------------------------------------------------------------
+
+# Whole disk: half each, the root never below ROOT_MIN_BYTES. Half, because
+# until the store's files back the content store directly (storage.md §7.4)
+# every synced byte is also kept in the daemon's content store under
+# /var/cache on the root. The store is the last partition so it is the one
+# that can later grow into space freed behind it.
+plan_split() {
+  local disk="$1" reserved="$2" usable root store
+  [ "$disk" -gt "$reserved" ] || { printf 'ROOT_BYTES=0\nSTORE_BYTES=0\n'; return; }
+  usable=$((disk - reserved))
+  if [ "$usable" -lt $((ROOT_MIN_BYTES + STORE_MIN_BYTES)) ]; then
+    root="$usable"
+    store=0
+  else
+    root=$((usable / 2))
+    [ "$root" -ge "$ROOT_MIN_BYTES" ] || root="$ROOT_MIN_BYTES"
+    # Partition boundaries on whole MiB, as sfdisk aligns them.
+    root=$(((root + MIB - 1) / MIB * MIB))
+    store=$((usable - root))
+    if [ "$store" -lt "$STORE_MIN_BYTES" ]; then
+      root="$usable"
+      store=0
+    fi
+  fi
+  printf 'ROOT_BYTES=%s\nSTORE_BYTES=%s\n' "$root" "$store"
+}
+
+# Existing root filesystem: half of what is free beyond a reserve of 16 GiB or
+# a tenth of the filesystem, whichever is larger, in whole GiB. The image is
+# preallocated so that a full root can never turn into write errors inside the
+# store (Btrfs would go read-only).
+plan_image() {
+  local free="$1" total="$2" reserve size
+  reserve=$((total / 10))
+  [ "$reserve" -ge "$IMAGE_RESERVE_MIN_BYTES" ] || reserve="$IMAGE_RESERVE_MIN_BYTES"
+  if [ "$free" -le "$reserve" ]; then
+    size=0
+  else
+    size=$(((free - reserve) / 2 / GIB * GIB))
+    [ "$size" -ge "$STORE_MIN_BYTES" ] || size=0
+  fi
+  printf 'IMAGE_BYTES=%s\n' "$size"
+}
+
+cmd_plan() {
+  local disk="" reserved=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --disk-bytes) disk="${2:-}"; shift 2 ;;
+      --reserved-bytes) reserved="${2:-}"; shift 2 ;;
+      *) die "plan: unknown argument $1" ;;
+    esac
+  done
+  is_uint "$disk" && is_uint "$reserved" || die "plan: --disk-bytes and --reserved-bytes must be byte counts"
+  plan_split "$disk" "$reserved"
+}
+
+cmd_image_size() {
+  local free="" total=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --free-bytes) free="${2:-}"; shift 2 ;;
+      --filesystem-bytes) total="${2:-}"; shift 2 ;;
+      *) die "image-size: unknown argument $1" ;;
+    esac
+  done
+  is_uint "$free" && is_uint "$total" || die "image-size: --free-bytes and --filesystem-bytes must be byte counts"
+  plan_image "$free" "$total"
+}
+
+# --- configuration -------------------------------------------------------------
+
+# store-volume.conf is key=value, read without sourcing it.
+conf_get() {
+  local file="$ETC/tilo/store-volume.conf" key value
+  [ -f "$file" ] || return 0
+  while IFS='=' read -r key value; do
+    [ "$key" = "$1" ] && { printf '%s\n' "$value"; return 0; }
+  done < "$file"
+}
+
+write_atomic() {
+  local path="$1" mode="$2" tmp
+  tmp="$(mktemp "$path.XXXXXX")"
+  cat > "$tmp"
+  chmod "$mode" "$tmp"
+  mv -f -- "$tmp" "$path"
+}
+
+# Replace the line of a table (crypttab, fstab) whose field $2 equals $3, or
+# append it; every other line is kept byte for byte.
+set_table_line() {
+  local file="$1" field="$2" key="$3" line="$4" tmp
+  tmp="$(mktemp "$file.XXXXXX")"
+  if [ -f "$file" ]; then
+    awk -v f="$field" -v k="$key" '$0 ~ /^[[:space:]]*#/ || $f != k' "$file" > "$tmp"
+    chmod --reference="$file" "$tmp"
+  else
+    chmod 0644 "$tmp"
+  fi
+  printf '%s\n' "$line" >> "$tmp"
+  mv -f -- "$tmp" "$file"
+}
+
+# Files written into a target's /etc from the live installer are reached
+# through a /run mount, so they would be labelled for /run. Give them the label
+# their final path has; a missing SELinux toolchain means nothing to fix.
+label_like() {
+  local path="$1" final="$2" context
+  command -v matchpathcon >/dev/null 2>&1 && command -v chcon >/dev/null 2>&1 || return 0
+  context="$(matchpathcon -n "$final" 2>/dev/null)" || return 0
+  [ -n "$context" ] || return 0
+  chcon "$context" "$path" 2>/dev/null || true
+}
+
+fstab_line_partition() {
+  printf '/dev/mapper/%s %s btrfs %s 0 0' "$MAPPER" "$STORE_MOUNT" "$MOUNT_OPTIONS"
+}
+
+fstab_line_image() {
+  printf 'UUID=%s %s btrfs %s,x-systemd.requires=tilo-store-loop.service 0 0' \
+    "$1" "$STORE_MOUNT" "$MOUNT_OPTIONS"
+}
+
+valid_uuid() { [[ "${1:-}" =~ ^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$ ]]; }
+valid_user() {
+  [ "${#1}" -le 32 ] && [[ "$1" =~ ^[a-z_][a-z0-9_-]*$ ]]
+}
+
+cmd_install_config() {
+  local etc="" luks="" fsu="" key="" owner="" keydir
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --etc) etc="${2:-}"; shift 2 ;;
+      --luks-uuid) luks="${2:-}"; shift 2 ;;
+      --fs-uuid) fsu="${2:-}"; shift 2 ;;
+      --key-file) key="${2:-}"; shift 2 ;;
+      --owner) owner="${2:-}"; shift 2 ;;
+      *) die "install-config: unknown argument $1" ;;
+    esac
+  done
+  [ -d "$etc" ] || die "install-config: --etc $etc is not a directory"
+  valid_uuid "$luks" || die "install-config: invalid --luks-uuid"
+  valid_uuid "$fsu" || die "install-config: invalid --fs-uuid"
+  [ -f "$key" ] && [ "$(stat -c %s "$key")" -ge 32 ] || die "install-config: missing or short --key-file"
+  valid_user "$owner" || die "install-config: invalid --owner"
+
+  # systemd-cryptsetup's own key directory; 0700/0400 root.
+  keydir="$etc/cryptsetup-keys.d"
+  install -d -m 0700 "$keydir"
+  label_like "$keydir" /etc/cryptsetup-keys.d
+  write_atomic "$keydir/$MAPPER.key" 0400 < "$key"
+  label_like "$keydir/$MAPPER.key" "/etc/cryptsetup-keys.d/$MAPPER.key"
+
+  set_table_line "$etc/crypttab" 1 "$MAPPER" \
+    "$MAPPER UUID=$luks /etc/cryptsetup-keys.d/$MAPPER.key $CRYPTTAB_OPTIONS"
+  label_like "$etc/crypttab" /etc/crypttab
+  set_table_line "$etc/fstab" 2 "$STORE_MOUNT" "$(fstab_line_partition)"
+  label_like "$etc/fstab" /etc/fstab
+
+  install -d -m 0755 "$etc/tilo"
+  printf 'kind=partition\nluks_uuid=%s\nfs_uuid=%s\nowner=%s\n' "$luks" "$fsu" "$owner" \
+    | write_atomic "$etc/tilo/store-volume.conf" 0644
+  label_like "$etc/tilo/store-volume.conf" /etc/tilo/store-volume.conf
+  log "  store volume: LUKS2 $luks, Btrfs $fsu, unlocked from the root's key file"
+}
+
+# --- formatting ------------------------------------------------------------------
+
+make_btrfs() {
+  mkfs.btrfs -q -f -L "$FS_LABEL" -O "$MKFS_FEATURES" "$1" >/dev/null
+}
+
+cmd_format() {
+  local part="" key="" luks mapper fsu
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --key-file) key="${2:-}"; shift 2 ;;
+      -*) die "format: unknown option $1" ;;
+      *) [ -z "$part" ] || die "format: unexpected argument $1"; part="$1"; shift ;;
+    esac
+  done
+  [ -b "$part" ] || die "format: $part is not a block device"
+  [ -f "$key" ] || die "format: missing --key-file"
+  for t in cryptsetup mkfs.btrfs blkid; do need "$t"; done
+  printf '  formatting the LUKS2 store volume on %s\n' "$part" >&2
+  cryptsetup luksFormat --type luks2 --batch-mode --label "$FS_LABEL" \
+    "${KEY_SLOT_KDF[@]}" --key-file "$key" "$part"
+  luks="$(cryptsetup luksUUID "$part")"
+  valid_uuid "$luks" || die "format: could not read the store's LUKS UUID"
+  # The installer's teardown closes every luks-<uuid> mapping on the disk, so
+  # an interrupted format leaves nothing open.
+  mapper="luks-$luks"
+  cryptsetup open --key-file "$key" "$part" "$mapper"
+  if ! make_btrfs "/dev/mapper/$mapper"; then
+    cryptsetup close "$mapper" || true
+    die "format: mkfs.btrfs failed on the store volume"
+  fi
+  fsu="$(blkid -s UUID -o value "/dev/mapper/$mapper")"
+  cryptsetup close "$mapper"
+  valid_uuid "$fsu" || die "format: could not read the store filesystem UUID"
+  printf 'LUKS_UUID=%s\nFS_UUID=%s\n' "$luks" "$fsu"
+}
+
+# --- boot time -------------------------------------------------------------------
+
+is_store_mounted() {
+  [ "$(findmnt -rn -M "$STORE_MOUNT" -o FSTYPE 2>/dev/null | head -1)" = btrfs ]
+}
+
+# The person whose files the store holds (one store per local person,
+# storage.md Q3): the account the installer recorded, else the account greetd
+# starts the session for, else the only regular account. Prints "name uid:gid".
+local_person() {
+  local name uid_min uid_max candidates
+  name="$(conf_get owner)"
+  if [ -z "$name" ] && [ -f "$ETC/greetd/config.toml" ]; then
+    name="$(sed -n '/^\[initial_session\]/,/^\[/ s/^[[:space:]]*user[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' \
+      "$ETC/greetd/config.toml" | head -1)"
+  fi
+  if [ -z "$name" ]; then
+    uid_min="$(awk '$1=="UID_MIN"{print $2}' "$ETC/login.defs" 2>/dev/null)"
+    uid_max="$(awk '$1=="UID_MAX"{print $2}' "$ETC/login.defs" 2>/dev/null)"
+    is_uint "$uid_min" || uid_min=1000
+    is_uint "$uid_max" || uid_max=60000
+    candidates="$(getent passwd | awk -F: -v lo="$uid_min" -v hi="$uid_max" \
+      '$3>=lo && $3<=hi && $7 !~ /(nologin|false)$/ {print $1}')"
+    [ "$(printf '%s' "$candidates" | grep -c .)" -eq 1 ] && name="$candidates"
+  fi
+  [ -n "$name" ] && valid_user "$name" || return 1
+  getent passwd "$name" | awk -F: '$3 >= 1000 {print $1 " " $3 ":" $4; found=1} END {exit !found}'
+}
+
+# What fs.service appends to its command line. Written fresh on every boot
+# into a root-only runtime directory, so nothing stale or session-writable
+# can reach the root daemon's arguments.
+publish_data_plane() {
+  install -d -m 0755 "$RUNTIME"
+  printf 'TILO_FS_DATA_PLANE_ARGS="%s"\n' "$1" | write_atomic "$RUNTIME/fs.env" 0644
+}
+
+serve_fuse() {
+  log "$1"
+  log "Files keep being served by the FUSE data plane."
+  publish_data_plane "--data-plane=fuse"
+}
+
+# Mode, label and ownership of a mounted store. The root is root-only: people
+# reach their room through the bind at /var/workspace, never through the
+# store, which also holds the capture snapshots.
+prepare_mounted() {
+  local owner="$1" room
+  chmod 0700 "$STORE_MOUNT"
+  install -d -m 0700 "$STORE_MOUNT/live"
+  # A room the daemon created before it knew the local person belongs to
+  # root; hand it, and only root-owned entries in it, to that person.
+  for room in "$STORE_MOUNT"/live/*; do
+    [ -d "$room" ] && [ ! -L "$room" ] || continue
+    [ "$(stat -c %u "$room")" = 0 ] || continue
+    chown -R --from=0:0 "$owner" "$room"
+    log "gave room $(basename "$room") to $owner"
+  done
+}
+
+create_image() {
+  local person="$1" fs_bytes free_bytes size tmp fsu
+  for t in chattr fallocate mkfs.btrfs blkid df; do need "$t"; done
+  [ "$(findmnt -rn -T "$(dirname "$STORE_IMAGE")" -o FSTYPE | head -1)" = btrfs ] || {
+    serve_fuse "The root filesystem is not Btrfs; no store image was created."
+    return 1
+  }
+  read -r fs_bytes free_bytes < <(df -B1 --output=size,avail "$(dirname "$STORE_IMAGE")" | tail -n 1)
+  size="$(plan_image "$free_bytes" "$fs_bytes" | sed -n 's/^IMAGE_BYTES=//p')"
+  if [ "$size" -eq 0 ] && [ ! -f "$STORE_IMAGE" ]; then
+    serve_fuse "Not enough free space for a store volume: $((free_bytes / GIB)) GiB free on a $((fs_bytes / GIB)) GiB root filesystem, and a store needs $((STORE_MIN_BYTES / GIB)) GiB beyond a reserve of max(16 GiB, 10%). Free some space; the next boot tries again."
+    return 1
+  fi
+  if [ -f "$STORE_IMAGE" ]; then
+    # An image whose configuration was never written (power lost in
+    # between): adopt it rather than replace what may already hold rooms.
+    fsu="$(blkid -s UUID -o value "$STORE_IMAGE" 2>/dev/null || true)"
+    valid_uuid "$fsu" || { serve_fuse "$STORE_IMAGE exists but holds no filesystem; move it away to have a new one created."; return 1; }
+    log "Adopting the existing store image $STORE_IMAGE."
+  else
+    log "Creating a $((size / GIB)) GiB store volume at $STORE_IMAGE ($((free_bytes / GIB)) GiB were free)."
+    tmp="$STORE_IMAGE.new"
+    rm -f -- "$tmp"
+    install -m 0600 /dev/null "$tmp"
+    # No copy-on-write under a copy-on-write filesystem: the store's own
+    # Btrfs does that where it matters, and in-place writes keep the image
+    # contiguous.
+    if ! chattr +C "$tmp" || ! fallocate -l "$size" "$tmp" || ! make_btrfs "$tmp"; then
+      rm -f -- "$tmp"
+      serve_fuse "Creating the store image failed."
+      return 1
+    fi
+    fsu="$(blkid -s UUID -o value "$tmp")"
+    valid_uuid "$fsu" || { rm -f -- "$tmp"; serve_fuse "The new store image has no filesystem UUID."; return 1; }
+    mv -f -- "$tmp" "$STORE_IMAGE" || { serve_fuse "Could not put the store image in place."; return 1; }
+  fi
+  set_table_line "$ETC/fstab" 2 "$STORE_MOUNT" "$(fstab_line_image "$fsu")" \
+    && printf 'kind=image\nimage=%s\nfs_uuid=%s\nowner=%s\n' "$STORE_IMAGE" "$fsu" "$person" \
+      | write_atomic "$ETC/tilo/store-volume.conf" 0644 \
+    || { serve_fuse "Could not record the store image in $ETC."; return 1; }
+  if command -v restorecon >/dev/null 2>&1; then
+    restorecon "$ETC/fstab" "$ETC/tilo/store-volume.conf" "$STORE_IMAGE" 2>/dev/null || true
+  fi
+  "$SYSTEMCTL" daemon-reload || true
+  "$SYSTEMCTL" start "$(mount_unit)" || true
+}
+
+mount_unit() { printf '%s.mount\n' "$(systemd-escape --path "$STORE_MOUNT")"; }
+
+# A configured store whose mount is missing: a key or table written from the
+# live installer may carry the wrong SELinux label, which enforcing mode turns
+# into a failed unlock. Relabel what the unlock reads and try once more.
+retry_configured() {
+  if command -v restorecon >/dev/null 2>&1; then
+    restorecon -R "$ETC/cryptsetup-keys.d" "$ETC/crypttab" "$ETC/fstab" 2>/dev/null || true
+  fi
+  "$SYSTEMCTL" start "$(mount_unit)" 2>/dev/null || true
+}
+
+cmd_ensure() {
+  local kind person name owner
+  install -d -m 0755 "$ETC/tilo"
+  kind="$(conf_get kind)"
+  if [ "$kind" = none ]; then
+    serve_fuse "The store volume is turned off in $ETC/tilo/store-volume.conf (kind=none)."
+    return 0
+  fi
+  if ! person="$(local_person)"; then
+    serve_fuse "There is no local person to own the store's rooms yet."
+    return 0
+  fi
+  name="${person% *}"
+  owner="${person#* }"
+
+  if ! is_store_mounted; then
+    case "$kind" in
+      partition|image)
+        retry_configured
+        is_store_mounted || {
+          serve_fuse "The $kind store volume in $ETC/tilo/store-volume.conf is not mounted at $STORE_MOUNT; see 'systemctl status var-lib-tilo-store.mount'."
+          return 0
+        }
+        ;;
+      "")
+        # An install without a store: an alongside install, or one that
+        # predates the store. Give it an image-backed volume.
+        create_image "$name" || return 0
+        is_store_mounted || {
+          serve_fuse "The new store image did not mount; see 'systemctl status var-lib-tilo-store.mount'."
+          return 0
+        }
+        log "Files move to the native data plane on this start of fs.service. Nothing is copied:"
+        log "the daemon projects every room from its local content store, small files at"
+        log "once and large ones as placeholders that fill from the same store on first read."
+        ;;
+      *)
+        serve_fuse "Unknown store kind '$kind' in $ETC/tilo/store-volume.conf."
+        return 0
+        ;;
+    esac
+  fi
+
+  prepare_mounted "$owner"
+  publish_data_plane "--data-plane=auto --store=$STORE_MOUNT --native-owner=$owner"
+  log "Store volume ready at $STORE_MOUNT for $name ($owner); fs.service picks its data plane from it."
+}
+
+cmd_attach() {
+  local dev
+  [ -f "$STORE_IMAGE" ] || die "attach: no store image at $STORE_IMAGE"
+  dev="$(losetup -l -n -O NAME -j "$STORE_IMAGE" | head -1)"
+  if [ -z "$dev" ]; then
+    # Direct I/O keeps the image's pages out of the page cache a second time.
+    dev="$(losetup --find --show --nooverlap --direct-io=on "$STORE_IMAGE")"
+  fi
+  log "store image $STORE_IMAGE on $dev"
+}
+
+cmd_detach() {
+  local dev
+  [ -f "$STORE_IMAGE" ] || return 0
+  losetup -l -n -O NAME -j "$STORE_IMAGE" | while read -r dev; do
+    [ -n "$dev" ] && losetup -d "$dev" || true
+  done
+}
+
+cmd_status() {
+  local kind
+  kind="$(conf_get kind)"
+  printf 'Configured : %s\n' "${kind:-no (created at the next boot when space allows)}"
+  if is_store_mounted; then
+    printf 'Mounted    : %s\n' "$(findmnt -rn -M "$STORE_MOUNT" -o SOURCE | head -1)"
+    df -h --output=size,used,avail "$STORE_MOUNT" | sed 's/^/             /'
+  else
+    printf 'Mounted    : no\n'
+  fi
+  if [ -f "$RUNTIME/fs.env" ]; then
+    printf 'fs.service : %s\n' "$(sed -n 's/^TILO_FS_DATA_PLANE_ARGS="\(.*\)"$/\1/p' "$RUNTIME/fs.env")"
+  fi
+}
+
+sub="${1:-}"; shift || true
+case "$sub" in
+  plan) cmd_plan "$@" ;;
+  image-size) cmd_image_size "$@" ;;
+  format) cmd_format "$@" ;;
+  install-config) cmd_install_config "$@" ;;
+  ensure) cmd_ensure "$@" ;;
+  attach) cmd_attach "$@" ;;
+  detach) cmd_detach "$@" ;;
+  status) cmd_status "$@" ;;
+  -h|--help|"") sed -n '2,43p' "$0" ;;
+  *) die "unknown subcommand: $sub (try --help)" ;;
+esac

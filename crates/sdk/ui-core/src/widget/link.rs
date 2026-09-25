@@ -3,8 +3,9 @@
 //! an assistive-technology `Activate`.
 //!
 //! Activation hands the URL to the current host's [`crate::host::UriOpener`]
-//! (on the native desktop, xdg-open / the desktop portal on Linux). A host
-//! routes external opens through its own opener; a test observes them with
+//! through [`crate::portal::open_uri`] (on the native desktop, the XDG
+//! `OpenURI` portal with the `portal` feature). A host routes external opens
+//! through its own opener; a test observes them with
 //! [`crate::host::HostServices::recording`]. The most-recently-activated URL
 //! is also recorded on [`Link::last_activated`] so a parent can confirm the
 //! link fired.
@@ -20,28 +21,19 @@ use crate::theme::Theme;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 
-/// Best-effort — a launch failure is logged, not surfaced.
+/// Best-effort and non-blocking — a launch failure is logged, not surfaced.
+/// See [`crate::portal::open_uri`] for how the URL reaches the desktop.
 pub fn os_open(url: &str) {
-    if let Err(e) = try_os_open(url) {
-        tracing::warn!("Link: failed to open {url:?}: {e}");
-    }
+    crate::portal::open_uri_detached(url);
 }
 
-/// Hand a URL to the current host's [`crate::host::UriOpener`] — on the
-/// native desktop, its registered handler (`ShellExecute` on Windows rather
-/// than interpreting the URL as a command line).
+/// Hand a URL to the current host's URI handler and report the outcome.
+/// May block until the handler answers; call it from a worker thread.
 ///
 /// # Errors
-/// Returns a launch error when the host rejects the request, or invalid input
-/// for an embedded NUL (which native APIs would otherwise silently truncate).
+/// See [`crate::portal::open_uri`].
 pub fn try_os_open(url: &str) -> std::io::Result<()> {
-    if url.contains('\0') {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidInput,
-            "URL contains NUL",
-        ));
-    }
-    crate::host::current().opener.open(url)
+    crate::portal::open_uri(url)
 }
 
 #[allow(
@@ -417,6 +409,9 @@ mod tests {
     fn click_opens_url_through_the_opener_with_the_right_url() {
         let (services, recorder) = crate::host::HostServices::recording();
         let _host = crate::host::enter(&services);
+        // Opening runs as background work; pump it so the open is observable.
+        let work = crate::background::Pumped::new();
+        let _work = work.background().enter();
         let mut link = Link::new("https://example.com/page");
         let (tree, node) = laid_out(&mut link);
 
@@ -467,6 +462,7 @@ mod tests {
                 button: MouseButton::Left,
             },
         );
+        work.run_pending();
 
         assert_eq!(
             recorder.opened_uris(),
@@ -479,12 +475,15 @@ mod tests {
     #[test]
     fn keyboard_activate_opens_url() {
         let (services, recorder) = crate::host::HostServices::recording();
+        let work = crate::background::Pumped::new();
+        let _work = work.background().enter();
         let mut link = Link::new("https://w3.org");
         let mut doc = AutoCommit::new();
         let handled = crate::host::scoped(&services, || {
             link.perform_action(&crate::a11y::Action::Activate, &mut doc, &automerge::ROOT)
         });
         assert!(handled, "Activate is handled");
+        work.run_pending();
         assert_eq!(recorder.opened_uris(), ["https://w3.org"]);
     }
 

@@ -38,7 +38,6 @@
 pub mod actions;
 pub mod app;
 pub mod chrome;
-mod color_picker;
 mod comment_overlay;
 pub mod content;
 pub mod doc;

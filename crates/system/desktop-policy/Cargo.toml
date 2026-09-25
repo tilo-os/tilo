@@ -10,10 +10,12 @@ license.workspace = true
 # storage scanner. Without it the crate is the pure policy vocabulary and
 # resolver, which the desktop model embeds.
 default = ["host-storage"]
-host-storage = ["dep:atomic-file", "dep:xdg-paths"]
+host-storage = ["dep:atomic-file", "dep:package-store", "dep:xdg-paths"]
 
 [dependencies]
 xdg-paths = { path = "../xdg-paths", optional = true }
+# Which packages are installed and where their trees are.
+package-store = { path = "../../packaging/package-store", optional = true }
 atomic-file = { path = "../atomic-file", optional = true }
 serde.workspace = true
 serde_json.workspace = true

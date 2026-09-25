@@ -15,6 +15,7 @@
 
 use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use serde::{Deserialize, Serialize};
+use tilo_clock::unix_now;
 
 use tilo_app_package::PackageId;
 use tilo_app_package::manifest::{AArch64Level, Arch, IsaLevel, X86_64Level};
@@ -399,7 +400,7 @@ impl RegistryIndex {
         Self {
             format: INDEX_FORMAT,
             registry_id: registry_id.into(),
-            generated_unix: now_unix(),
+            generated_unix: unix_now(),
             signer_identity: String::new(),
             signature: String::new(),
             packages: Vec::new(),
@@ -434,7 +435,7 @@ impl RegistryIndex {
                 && e.isa == entry.isa)
         });
         self.packages.push(entry);
-        self.generated_unix = now_unix();
+        self.generated_unix = unix_now();
     }
 
     /// Canonical bytes the registry operator signs — the whole document minus the signature itself.
@@ -564,12 +565,6 @@ impl RegistryIndex {
         }
         best.map(|(e, _)| e)
     }
-}
-
-fn now_unix() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| d.as_secs())
 }
 
 #[cfg(test)]

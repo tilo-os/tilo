@@ -1061,15 +1061,14 @@ pub fn runtime_dir() -> PathBuf {
 pub fn read_installed_apps() -> Result<Vec<InstalledApp>, LaunchError> {
     tracing::info!(
         target: "tilo::app_registry",
-        system_registry = ?launcher::registry::system_registry_path(),
-        system_payload = ?std::env::var_os("TILO_APPS_SYSTEM_PAYLOAD_DIR"),
-        user_registry = ?launcher::registry::default_registry_path().ok(),
+        system_store = ?package_store::layout::system_data_dir(),
+        system_payload = ?package_store::layout::system_payload_dir(),
+        user_store = ?package_store::layout::default_user_root(),
         "reading installed application registry"
     );
-    let entries =
-        launcher::registry::list_installed().map_err(|e| LaunchError::RegistryUnreadable {
-            detail: e.to_string(),
-        })?;
+    let entries = package_store::list_installed().map_err(|e| LaunchError::RegistryUnreadable {
+        detail: e.to_string(),
+    })?;
     let mut out = Vec::with_capacity(entries.len());
     for entry in entries {
         // A missing manifest (payload deleted behind the registry's
@@ -1124,7 +1123,7 @@ pub enum InstalledContinuityRequirements {
 /// the UI-oriented app cache. This keeps every checkpoint tied to current
 /// install authority and distinguishes legacy absence from corruption.
 pub fn installed_continuity_contract(package_id: &str) -> InstalledContinuityRequirements {
-    let Ok(entries) = launcher::registry::list_installed() else {
+    let Ok(entries) = package_store::list_installed() else {
         return InstalledContinuityRequirements::Invalid;
     };
     let Some(entry) = entries.into_iter().find(|entry| entry.id == package_id) else {
@@ -1289,7 +1288,7 @@ fn default_app_candidates_from(apps: &[InstalledApp]) -> Vec<desktop_policy::App
 /// `launcher` crate too, so a package's name can't differ between
 /// "offered" and "installed".
 pub fn display_name_for_package_id(package_id: &str) -> String {
-    launcher::registry::display_name_for_package_id(package_id)
+    package_store::display_name_for_package_id(package_id)
 }
 
 /// Order: `TILO_LAUNCHER_BIN` (a **developer-build** seam only — see
@@ -4191,7 +4190,7 @@ mod tests {
         let plan = launcher::capabilities::CapabilityPlan::for_app(
             "so.tilo.books",
             &records,
-            Some(launcher::capabilities::now_unix()),
+            Some(tilo_clock::unix_now()),
         );
 
         clear_workspace_capabilities();

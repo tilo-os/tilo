@@ -13,11 +13,12 @@ use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
 use launcher::capture::CaptureCancellation;
 use launcher::manifest::read_manifest;
 use thiserror::Error;
+use tilo_clock::unix_now_ms;
 use tilo_user_identity::{DeviceCert, RevocationList};
 
 use crate::compute::{
@@ -407,7 +408,7 @@ async fn handle_delivery(
                         spec.requester,
                         spec.workspace_id,
                         &spec,
-                        now_ms(),
+                        unix_now_ms(),
                         cancellation,
                     )
                     .map_err(|error| error.to_string());
@@ -502,7 +503,7 @@ async fn advertise_all(
     health: &WorkerHealth,
     active_assignments: usize,
 ) -> Result<(), ComputeWorkerError> {
-    let issued_at_ms = now_ms();
+    let issued_at_ms = unix_now_ms();
     let active_assignments = u32::try_from(active_assignments).unwrap_or(u32::MAX);
     for workspace_id in &config.workspaces {
         client
@@ -570,18 +571,10 @@ fn inspect_health() -> Result<WorkerHealth, ComputeWorkerError> {
         ));
     }
     let mut apps = BTreeSet::new();
-    for package in launcher::registry::list_installed()
+    for package in package_store::list_installed()
         .map_err(|error| ComputeWorkerError::Health(error.to_string()))?
     {
-        let Some(data_root) = package.payload_root.parent().and_then(Path::parent) else {
-            continue;
-        };
-        let Ok(report) = install::integrity::verify(
-            data_root,
-            &package.id,
-            &package.package_id_hex,
-            &package.payload_root,
-        ) else {
+        let Ok(report) = package_store::integrity::verify(&package, &package.payload_root) else {
             continue;
         };
         let Ok(manifest) = read_manifest(&package.manifest_path) else {
@@ -642,14 +635,6 @@ fn bounded_log(mut bytes: Vec<u8>) -> Vec<u8> {
         bytes.drain(..bytes.len().saturating_sub(MAX_COMPUTE_LOG_BYTES));
     }
     bytes
-}
-
-fn now_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |duration| {
-            u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
-        })
 }
 
 struct ReadinessGuard(Arc<AtomicBool>);

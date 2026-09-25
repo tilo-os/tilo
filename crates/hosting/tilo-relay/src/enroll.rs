@@ -4,7 +4,7 @@ use std::fs::OpenOptions;
 use std::io::Write as _;
 use std::net::{Ipv4Addr, SocketAddrV4, UdpSocket};
 use std::path::PathBuf;
-use std::time::{Duration, SystemTime};
+use std::time::Duration;
 
 use anyhow::{Context, bail};
 use clap::{Parser, Subcommand};
@@ -13,6 +13,7 @@ use getrandom::{SysRng, rand_core::UnwrapErr};
 use rand::Rng as _;
 use serde::{Deserialize, Serialize};
 use socket2::{Domain, Protocol, Socket, Type};
+use tilo_clock::try_unix_now_ns;
 use tilo_relay::HomePeerRegistration;
 use tilo_user_identity::{
     DeviceCapabilities, DeviceCert, IdentityPaths, RevocationList, decode_enrollment_token,
@@ -1490,12 +1491,7 @@ fn consume_nonce(
 }
 
 fn now_ns() -> anyhow::Result<u64> {
-    Ok(u64::try_from(
-        SystemTime::now()
-            .duration_since(SystemTime::UNIX_EPOCH)?
-            .as_nanos(),
-    )
-    .unwrap_or(u64::MAX))
+    try_unix_now_ns().context("system clock precedes the Unix epoch")
 }
 
 fn socket_timeout(seconds: u64) -> Duration {

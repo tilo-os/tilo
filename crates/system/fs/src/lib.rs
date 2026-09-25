@@ -31,6 +31,8 @@ pub mod content;
 pub mod control;
 #[cfg(feature = "filesystem")]
 pub mod docstore;
+#[cfg(feature = "document-media")]
+pub mod document_media;
 #[cfg(feature = "filesystem")]
 pub mod durable_backup;
 #[cfg(feature = "filesystem")]
@@ -49,6 +51,8 @@ pub mod identity;
 pub mod named_share_delivery;
 #[cfg(feature = "filesystem")]
 pub mod namespace;
+#[cfg(all(feature = "filesystem", target_os = "linux"))]
+pub mod native;
 #[cfg(feature = "filesystem")]
 pub mod peer_auth;
 #[cfg(feature = "filesystem")]
@@ -230,9 +234,9 @@ pub use share_authority::{
 pub use share_control::{
     MAX_SHARE_CONTROL_CONNECTIONS, MAX_SHARE_CONTROL_FRAME_BYTES,
     MAX_SHARE_CONTROL_REQUESTS_PER_CONNECTION, NamedGrantMetadataV1, SHARE_CONTROL_VERSION,
-    ShareControlClock, ShareControlErrorCode, ShareControlOperationV1, ShareControlRequestV1,
-    ShareControlResponseV1, ShareControlResultV1, ShareControlServer, ShareControlServerError,
-    SystemShareControlClock, read_share_control_response, write_share_control_request,
+    ShareControlErrorCode, ShareControlOperationV1, ShareControlRequestV1, ShareControlResponseV1,
+    ShareControlResultV1, ShareControlServer, ShareControlServerError, read_share_control_response,
+    write_share_control_request,
 };
 #[cfg(feature = "filesystem")]
 pub use share_link::{FileShareLinkError, FileShareLinkV2};
@@ -242,10 +246,7 @@ pub use share_management::{
     NamedGrantRequest, ShareManagement, ShareManagementError,
 };
 #[cfg(feature = "filesystem")]
-pub use share_session::{
-    LiveActorCertification, ShareSession, ShareSessionClock, ShareSessionError,
-    SystemShareSessionClock,
-};
+pub use share_session::{LiveActorCertification, ShareSession, ShareSessionError};
 #[cfg(feature = "filesystem")]
 pub use smart::Heuristics;
 #[cfg(feature = "filesystem")]

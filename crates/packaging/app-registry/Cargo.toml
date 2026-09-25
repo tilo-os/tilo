@@ -11,6 +11,7 @@ name = "app_registry"
 path = "src/lib.rs"
 
 [dependencies]
+tilo-clock = { path = "../../system/tilo-clock" }
 # Crash-safe file replacement (temp + fsync + rename + dir fsync).
 atomic-file = { path = "../../../crates/system/atomic-file" }
 tilo-app-package = { path = "../tilo-app-package" }
@@ -34,7 +35,6 @@ xdg-paths = { path = "../../system/xdg-paths" }
 hex.workspace = true
 blake3.workspace = true
 bytes.workspace = true
-tar.workspace = true
 ed25519-dalek = { workspace = true, features = ["rand_core"] }
 semver.workspace = true
 thiserror.workspace = true

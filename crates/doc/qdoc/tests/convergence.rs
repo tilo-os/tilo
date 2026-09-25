@@ -155,8 +155,17 @@ fn content_xml(doc: &Document) -> Vec<u8> {
         .to_vec()
 }
 
+/// Cases per property: `PROPTEST_CASES` when set (the nightly run raises it),
+/// otherwise a count that keeps an ordinary test run quick.
+fn cases() -> u32 {
+    std::env::var("PROPTEST_CASES")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(64)
+}
+
 proptest! {
-    #![proptest_config(ProptestConfig { cases: 200, ..ProptestConfig::default() })]
+    #![proptest_config(ProptestConfig::with_cases(cases()))]
 
     #[test]
     fn forked_replicas_converge(a_ops in ops_strategy(), b_ops in ops_strategy()) {

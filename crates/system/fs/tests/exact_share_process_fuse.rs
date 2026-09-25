@@ -18,7 +18,7 @@ use std::sync::{
     Arc, Mutex,
     mpsc::{self, Receiver},
 };
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
 use collab_types::{
     ContentHash, ContentRevisionV1, FilePermission, FileRecordId, SHARE_CONTROL_VERSION,
@@ -92,24 +92,6 @@ impl Drop for MountedProcess {
     }
 }
 
-fn now_ns() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_nanos()
-        .try_into()
-        .unwrap_or(u64::MAX)
-}
-
-fn now_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_millis()
-        .try_into()
-        .unwrap_or(u64::MAX)
-}
-
 fn install_identity(root: &Path, root_seed: [u8; 32], device_seed: [u8; 32], owner: bool) {
     let paths = IdentityPaths::under(root);
     paths.ensure_directories().unwrap();
@@ -119,7 +101,7 @@ fn install_identity(root: &Path, root_seed: [u8; 32], device_seed: [u8; 32], own
     if owner {
         write_signing_key(&paths.user_privkey, &root_key).unwrap();
     }
-    let issued_at_ns = now_ns().saturating_sub(1_000_000_000);
+    let issued_at_ns = tilo_clock::unix_now_ns().saturating_sub(1_000_000_000);
     let mut cert = DeviceCert {
         user_public_key: root_key.verifying_key().to_bytes(),
         device_public_key: device_key.verifying_key().to_bytes(),
@@ -403,7 +385,7 @@ async fn separate_process_exact_share_evicts_restarts_and_rehydrates() {
     let host_clock = temp.path().join("host-clock-ms");
     let viewer_clock = temp.path().join("viewer-clock-ms");
     let loss_clock = temp.path().join("loss-clock-ms");
-    let clock_now = now_ms();
+    let clock_now = tilo_clock::unix_now_ms();
     write_clock(&host_clock, clock_now);
     write_clock(&viewer_clock, clock_now);
     write_clock(&loss_clock, clock_now);

@@ -14,8 +14,7 @@
 )]
 
 use app_host::install::install_tapp;
-use app_host::registry::Pinning;
-use app_host::store::Store;
+use app_host::{PackageStore, Pinning};
 
 use app_registry::config::{RegistriesConfig, RegistryRef, RegistryTrust};
 use app_registry::index::HostProfile;
@@ -24,7 +23,7 @@ use app_registry::transport::BlobNode;
 use app_registry::{publish_to_dir, registry_dir};
 
 use tilo_app_package::pack::{SigningIdentity, pack};
-use tilo_app_package::{Manifest, MemoryBlobStore, PackageId};
+use tilo_app_package::{Manifest, PackageId};
 
 /// Author a tiny signed `.tapp` for `so.tilo.editor@1.0.0`.
 fn author_tapp(identity: &SigningIdentity) -> (Vec<u8>, PackageId) {
@@ -62,10 +61,9 @@ type = "gui"
 "#
     );
     let manifest = Manifest::from_toml_str(&manifest_toml).unwrap();
-    let mut store = MemoryBlobStore::new();
-    let id = pack(&payload, &manifest, identity, &mut store).unwrap();
-    let bytes = app_registry::tapp::write_bytes(id, &store).unwrap();
-    (bytes, id)
+    let packed = pack(&payload, &manifest, identity).unwrap();
+    let bytes = tilo_app_package::tapp::to_bytes(&packed.meta, Some(&packed)).unwrap();
+    (bytes, packed.id())
 }
 
 fn file_url(dir: &std::path::Path) -> String {
@@ -113,19 +111,30 @@ async fn publish_resolve_fetch_and_install() {
         .await
         .expect("fetch + verify");
     assert_eq!(outcome.package_id, pkg_id);
-    assert_eq!(
-        outcome.bytes, tapp_bytes,
-        "fetched bytes are byte-identical"
+    assert!(
+        outcome.bytes.len() < 16 * 1024 && outcome.bytes.len() < tapp_bytes.len(),
+        "the registry serves the thin package: {} bytes against {} full",
+        outcome.bytes.len(),
+        tapp_bytes.len()
     );
 
-    // Install on the production path and confirm the payload landed.
-    let store = Store::open(&tmp.path().join("store")).unwrap();
-    let installed = install_tapp(&store, &outcome.bytes, Pinning::Tried).unwrap();
-    assert_eq!(installed, pkg_id);
-    let entry = store.resolve(installed).unwrap();
+    // Without a source for the payload, a thin package cannot install.
+    let store = PackageStore::at(tmp.path().join("store"));
+    assert!(install_tapp(&store, &outcome.bytes, Pinning::Tried, None).is_err());
+
+    // Install on the production path, fetching the payload from the
+    // registry's node, and confirm the payload landed.
+    let installed = install_tapp(
+        &store,
+        &outcome.bytes,
+        Pinning::Tried,
+        Some(&outcome.payload),
+    )
+    .unwrap();
+    assert_eq!(installed.package_id(), Some(pkg_id));
     assert!(
-        entry.payload_root.join("bin/app").exists(),
-        "payload was extracted"
+        installed.payload_root.join("bin/app").exists(),
+        "payload was materialised"
     );
 }
 

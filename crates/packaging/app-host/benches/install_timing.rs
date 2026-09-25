@@ -18,8 +18,7 @@
 mod common;
 
 use app_host::install::install_tapp;
-use app_host::registry::Pinning;
-use app_host::store::Store;
+use app_host::{PackageStore, Pinning};
 
 fn main() {
     const ITERATIONS: u32 = 10;
@@ -32,9 +31,9 @@ fn main() {
     let mut samples = Vec::with_capacity(ITERATIONS as usize);
     for _ in 0..ITERATIONS {
         let dir = tempfile::tempdir().expect("create benchmark store");
-        let store = Store::open(dir.path()).expect("open benchmark store");
+        let store = PackageStore::at(dir.path());
         let started = std::time::Instant::now();
-        install_tapp(&store, &bytes, Pinning::Tried).expect("install benchmark package");
+        install_tapp(&store, &bytes, Pinning::Tried, None).expect("install benchmark package");
         samples.push(started.elapsed());
     }
 

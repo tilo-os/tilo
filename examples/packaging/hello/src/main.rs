@@ -133,16 +133,9 @@ fn main() {
         "notifications",
         portal_xdg::Notification::send("tilo-hello reporting in"),
     );
-    // OpenUri + FileChooser + ScreenCast: these prompt the user, so
-    // they may block on the portal frontend. Wrap in a short timeout
-    // so this probe never hangs the demo — a "timed-out" line still
-    // proves the bus is reachable.
-    report_portal(
-        "open-uri",
-        with_timeout(std::time::Duration::from_millis(750), || {
-            portal_xdg::OpenUri::open("https://tilo.so/hello")
-        }),
-    );
+    // Secret: this may prompt the user, so it can block on the portal
+    // frontend. Wrap in a short timeout so this probe never hangs the
+    // demo — a "timed-out" line still proves the bus is reachable.
     report_portal(
         "secret",
         with_timeout(std::time::Duration::from_millis(750), || {

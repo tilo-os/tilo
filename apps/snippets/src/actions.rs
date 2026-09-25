@@ -19,7 +19,6 @@
 
 use automerge::AutoCommit;
 use serde::{Deserialize, Serialize};
-use std::fmt::Write;
 use uuid::Uuid;
 
 use tilo_actions::{
@@ -53,14 +52,7 @@ pub fn tag_resource_id(tag: &str) -> String {
 
 /// Stable, punctuation-safe component for custom-painted semantic controls.
 pub fn stable_key(value: &str) -> String {
-    value
-        .as_bytes()
-        .iter()
-        .fold(String::new(), |mut encoded, byte| {
-            // Writing formatted integers to a String is infallible.
-            let _ = write!(encoded, "{byte:02x}");
-            encoded
-        })
+    hex::encode(value)
 }
 
 /// Canonical view action that reveals all snippets carrying `tag`.
@@ -494,29 +486,13 @@ impl ResourceProvider for crate::app::SnippetsApp {
 mod tests {
     use super::*;
     use crate::app::SnippetsApp;
-    use tilo_actions::{ActionInput, LocalTransport};
+    use tilo_actions::LocalTransport;
     use ui::widget::Widget;
 
     fn registry() -> ActionRegistry {
         let mut r = ActionRegistry::new();
         register(&mut r);
         r
-    }
-
-    /// Build an [`EncodedAction`] from a prompted spec's closure (the same path
-    /// the palette takes on Enter).
-    fn prompted_encode(spec: &ActionSpec, arg: &str) -> EncodedAction {
-        match &spec.input {
-            ActionInput::Prompted { build, .. } => build(arg),
-            ActionInput::Immediate(_) => panic!("expected a prompted action: {}", spec.id),
-        }
-    }
-
-    fn immediate_encode(spec: &ActionSpec) -> EncodedAction {
-        match &spec.input {
-            ActionInput::Immediate(enc) => enc.clone(),
-            ActionInput::Prompted { .. } => panic!("expected an immediate action: {}", spec.id),
-        }
     }
 
     /// A demo app with its library mirrored into a shared doc — the state the
@@ -534,6 +510,58 @@ mod tests {
             .into_iter()
             .next()
             .expect("a seeded snippet")
+    }
+
+    /// The snippet id a snippet resource's address names.
+    fn snippet_id(res: &Resource) -> SnippetId {
+        res.id
+            .as_str()
+            .trim_start_matches("snippets.snippet:")
+            .parse()
+            .expect("a snippet resource names its id")
+    }
+
+    // The complete tree (every tag and snippet), not the bounded contextual
+    // root Ctrl+K shows first, so the sweep reaches each snippet's actions.
+    ui::action_contract_tests! {
+        seed: seeded().1,
+        registry: registry(),
+        resources: |doc| provide_resources(&SnippetsApp::new_demo().snippets_resource_ctx(), doc),
+        palette: ["New snippet", "Delete snippet", "Reveal tagged snippets"],
+        replay: [
+            rename => |doc| encode(&rename_action(first_snippet(doc).id, "Converged Title")),
+            set_tags => |doc| encode(&set_tags_action(
+                first_snippet(doc).id,
+                &parse_tags("ops, release"),
+            )),
+        ],
+        undo: [
+            star => |doc| {
+                let target = first_snippet(doc);
+                assert!(!target.favorite, "seed picks an unstarred snippet as the target");
+                encode(&set_favorite_action(target.id, true))
+            },
+            edit_body => |doc| encode(&set_body_action(first_snippet(doc).id, "echo converged")),
+        ],
+        encodes: [
+            delete => ("snippets.snippet", "delete", |_, res| {
+                encode(&delete_snippet_action(snippet_id(res)))
+            }),
+            toggle_favorite => ("snippets.snippet", "toggle-favorite", |doc, res| {
+                let id = snippet_id(res);
+                let starred = SnippetsDoc::get(doc, id).expect("seeded snippet").favorite;
+                encode(&set_favorite_action(id, !starred))
+            }),
+            rename => ("snippets.snippet", "rename", arg: "Renamed", |_, res| {
+                encode(&rename_action(snippet_id(res), "Renamed"))
+            }),
+            set_tags => ("snippets.snippet", "set-tags", arg: "k8s, deploy", |_, res| {
+                encode(&set_tags_action(snippet_id(res), &parse_tags("k8s, deploy")))
+            }),
+            edit_body => ("snippets.snippet", "edit-body", arg: "ls -la", |_, res| {
+                encode(&set_body_action(snippet_id(res), "ls -la"))
+            }),
+        ],
     }
 
     /// Ctrl+K publishes a bounded contextual root; a stable id lazily resolves
@@ -581,11 +609,13 @@ mod tests {
             .find(|action| action.id == "reveal")
             .expect("tag exports its reveal action");
         assert_eq!(reveal.kind, OperationKind::View);
-        let decoded_tag_name =
-            match decode_operation(SNIPPETS_OPERATION_TYPE, &immediate_encode(reveal).payload) {
-                Ok(Some(SnippetsOperation::RevealTag { tag })) => tag,
-                other => panic!("unexpected tag operation: {other:?}"),
-            };
+        let decoded_tag_name = match decode_operation(
+            SNIPPETS_OPERATION_TYPE,
+            &ui::testing::action_contract::spec_encoding(reveal, None).payload,
+        ) {
+            Ok(Some(SnippetsOperation::RevealTag { tag })) => tag,
+            other => panic!("unexpected tag operation: {other:?}"),
+        };
         assert_eq!(decoded_tag_name, tag_name);
         assert_eq!(
             reveal_tag_address(&tag_name),
@@ -604,101 +634,6 @@ mod tests {
                 .filter(|action| action.id != "open")
                 .all(|action| action.kind == OperationKind::Document),
             "snippet edits and deletes remain document actions"
-        );
-
-        // The one palette surfaces the tree's actions as rows.
-        let mut palette = ui::ActionPalette::new();
-        let mut palette_resources = resources.clone();
-        palette_resources.push(snip.clone());
-        palette.load_open_resources(&palette_resources);
-        palette.open();
-        palette.set_query("New snippet");
-        let labels = palette.result_labels();
-        assert!(
-            labels.iter().any(|l| l.contains("New snippet")),
-            "{labels:?}"
-        );
-        palette.set_query("Delete snippet");
-        let labels = palette.result_labels();
-        assert!(
-            labels.iter().any(|l| l.contains("Delete snippet")),
-            "{labels:?}"
-        );
-    }
-
-    /// The full undo covenant on one action: dispatched through the executor it
-    /// mutates the doc and records exactly one undo boundary, and Ctrl+Z reverts
-    /// precisely that action.
-    #[test]
-    fn action_records_one_undo_boundary_and_reverts() {
-        let (_app, seeded_doc) = seeded();
-        let mut state = ui::State::new();
-        state.doc = seeded_doc;
-        let target = first_snippet(&state.doc);
-        let before_heads = state.doc.get_heads();
-        assert!(
-            !target.favorite,
-            "seed picks an unstarred snippet as the target"
-        );
-
-        let action = set_favorite_action(target.id, true);
-        let encoded = encode(&action);
-        let decoded = registry().decode(&encoded).unwrap();
-        let mut tx = LocalTransport::new();
-        tilo_actions::dispatch(&mut state.doc, decoded.as_ref(), encoded, &mut tx).unwrap();
-        state.record_committed_action(before_heads, None, None);
-
-        assert!(
-            SnippetsDoc::get(&state.doc, target.id).unwrap().favorite,
-            "the action starred the snippet"
-        );
-        assert!(
-            state.peek_last_undo().is_some(),
-            "exactly one undo boundary recorded"
-        );
-
-        state.undo(None, None).expect("an undo entry to pop");
-        assert!(
-            !SnippetsDoc::get(&state.doc, target.id).unwrap().favorite,
-            "undo reverted the star and nothing else"
-        );
-    }
-
-    /// The collaboration guarantee: replaying the same encoded action on a second
-    /// independent replica (from the same base state) lands on the byte-identical
-    /// document — same head hashes, not merely the same values.
-    #[test]
-    fn action_replays_byte_identical_on_a_peer() {
-        let (_app, seeded_doc) = seeded();
-        let mut a = seeded_doc;
-        a.commit();
-        let bytes = a.save();
-        let mut b = AutoCommit::load(&bytes).unwrap();
-        assert_eq!(
-            a.get_heads(),
-            b.get_heads(),
-            "precondition: same base state"
-        );
-
-        let target = first_snippet(&a);
-        let action = rename_action(target.id, "Converged Title");
-        let encoded = encode(&action);
-
-        let env = tilo_actions::apply_local(&mut a, &action, encoded).unwrap();
-        tilo_actions::replay(&mut b, &env, &registry()).unwrap();
-
-        assert_eq!(
-            a.get_heads(),
-            b.get_heads(),
-            "replay reproduced the identical change"
-        );
-        assert_eq!(
-            SnippetsDoc::get(&a, target.id).unwrap().title,
-            "Converged Title"
-        );
-        assert_eq!(
-            SnippetsDoc::get(&a, target.id).unwrap().title,
-            SnippetsDoc::get(&b, target.id).unwrap().title,
         );
     }
 
@@ -740,51 +675,6 @@ mod tests {
         assert!(
             SnippetsDoc::list(&doc).is_empty(),
             "nothing was created by malformed actions"
-        );
-    }
-
-    /// Single source of truth: the palette's immediate specs for a snippet build
-    /// the byte-identical [`EncodedAction`] the direct builders do.
-    #[test]
-    fn palette_and_builder_encode_identically() {
-        let (app, doc) = seeded();
-        let snippet = first_snippet(&doc);
-        let snip = Widget::resource(&app, &doc, &snippet_resource_id(snippet.id))
-            .expect("a snippet resource");
-        let id_str = snip.id.as_str().trim_start_matches("snippets.snippet:");
-        let id: SnippetId = id_str.parse().unwrap();
-        let seeded_fav = SnippetsDoc::get(&doc, id).unwrap().favorite;
-
-        // Delete is immediate on both sides.
-        let del_spec = snip.actions.iter().find(|a| a.id == "delete").unwrap();
-        let from_spec = immediate_encode(del_spec);
-        let from_builder = encode(&delete_snippet_action(id));
-        assert_eq!(from_spec.type_id, from_builder.type_id);
-        assert_eq!(
-            from_spec.payload, from_builder.payload,
-            "delete is one source of truth"
-        );
-
-        // Toggle-favorite carries the flipped value, matching the toolbar Star.
-        let fav_spec = snip
-            .actions
-            .iter()
-            .find(|a| a.id == "toggle-favorite")
-            .unwrap();
-        let from_spec = immediate_encode(fav_spec);
-        let from_builder = encode(&set_favorite_action(id, !seeded_fav));
-        assert_eq!(
-            from_spec.payload, from_builder.payload,
-            "star is one source of truth"
-        );
-
-        // A prompted rename matches the rename builder for the same argument.
-        let rename_spec = snip.actions.iter().find(|a| a.id == "rename").unwrap();
-        let from_spec = prompted_encode(rename_spec, "Renamed");
-        let from_builder = encode(&rename_action(id, "Renamed"));
-        assert_eq!(
-            from_spec.payload, from_builder.payload,
-            "rename is one source of truth"
         );
     }
 

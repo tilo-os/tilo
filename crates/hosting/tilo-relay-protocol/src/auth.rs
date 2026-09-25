@@ -151,18 +151,6 @@ pub fn challenge_digest(nonce: &[u8; 32]) -> [u8; 32] {
     *hasher.finalize().as_bytes()
 }
 
-/// Wall-clock nanoseconds since the Unix epoch — the instant both sides of
-/// the handshake check certificate validity and revocation at.
-pub fn now_ns() -> u64 {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        // `u64` nanoseconds since the epoch doesn't overflow until the
-        // year 2554; clamp rather than panic on the (unreachable in
-        // practice) far side of that.
-        .map_or(0, |d| u64::try_from(d.as_nanos()).unwrap_or(u64::MAX))
-}
-
 /// Server-side: verify the client's `Hello` against `own_user_pk` +
 /// `policy` + `revocations`. Returns the authenticated peer state
 /// on success.

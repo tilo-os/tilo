@@ -32,6 +32,7 @@
 //! partial rows.
 
 use std::path::PathBuf;
+use tilo_clock::unix_now;
 
 /// Keep history useful without letting a long-lived profile turn every
 /// address-bar query, resource snapshot, or persisted JSON write into an
@@ -129,7 +130,7 @@ impl History {
     /// Record a visit to `url` with `title`, stamped at the current wall
     /// clock. De-duplicates by URL — see [`History::record_at`].
     pub fn record(&mut self, url: &str, title: &str) {
-        self.record_at(url, title, now_secs());
+        self.record_at(url, title, unix_now());
     }
 
     /// Deterministic core of [`History::record`]: record a visit stamped
@@ -168,7 +169,7 @@ impl History {
     /// capped at `limit`. Stamped at the current wall clock — see
     /// [`History::suggest_at`] for the deterministic core.
     pub fn suggest(&self, query: &str, limit: usize) -> Vec<HistoryEntry> {
-        self.suggest_at(query, limit, now_secs())
+        self.suggest_at(query, limit, unix_now())
     }
 
     /// Deterministic core of [`History::suggest`]: rank against `now`
@@ -366,14 +367,6 @@ fn bounded_text(value: &str, limit: usize) -> String {
 /// default until storage migration is explicit and crash-safe.
 pub fn history_path() -> Option<PathBuf> {
     crate::storage::data_dir().map(|d| d.join("history.json"))
-}
-
-/// Current Unix-epoch time in seconds (0 if the clock is before the
-/// epoch, which cannot happen on a sane system).
-fn now_secs() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| d.as_secs())
 }
 
 /// Recency weight in `[0, 1]`: `1.0` for a page visited *now*, halving

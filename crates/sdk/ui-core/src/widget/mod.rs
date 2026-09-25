@@ -282,11 +282,7 @@ pub(crate) fn action_directory_page_at(
 /// not repeat the same short label twice.
 pub(crate) fn humanize_control_id(id: &str) -> String {
     let tail = id.rsplit('.').next().unwrap_or(id);
-    let words = tail.replace(['_', '-'], " ");
-    let mut chars = words.chars();
-    chars.next().map_or_else(String::new, |first| {
-        first.to_uppercase().chain(chars).collect()
-    })
+    crate::format::capitalize_first(&tail.replace(['_', '-'], " "))
 }
 
 /// A reusable action-intent queue for controls, including custom widgets.
@@ -2440,9 +2436,7 @@ pub use slider::{Slider, SliderFace};
 mod text_input;
 pub use text_input::{TextActionRequest, TextInput, TextInputKind};
 pub mod code_editor;
-pub use code_editor::{
-    CodeEditor, Highlighter, HlState, Language, LineSpans, Span, TokenKind, token_color,
-};
+pub use code_editor::{CodeEditor, Highlighter, HlState, Language, LineSpans, Span, TokenKind};
 mod editable_label;
 pub use editable_label::{EditOutcome, EditableLabel};
 pub mod autocomplete;
@@ -2549,7 +2543,7 @@ pub mod time_picker;
 pub use time_picker::{TimePicker, TimeValue};
 pub mod color_picker;
 pub mod color_swatch;
-pub use color_picker::ColorPicker;
+pub use color_picker::{ColorPicker, ColorPickerOutcome, ColorSwatch};
 pub use color_swatch::ColorSwatchFace;
 pub mod popover_widget;
 pub use popover_widget::PopoverWidget;
@@ -2638,8 +2632,9 @@ pub mod image_viewer;
 pub use image_viewer::ImageViewer;
 pub mod tree_view;
 pub use tree_view::{
-    TreeChildState, TreeLoadReason, TreeLoadRequest, TreeModel, TreeModelChange, TreeNode,
-    TreeRowKey, TreeSlot, TreeView,
+    TreeChildState, TreeClickActivation, TreeHeadingAction, TreeLoadReason, TreeLoadRequest,
+    TreeModel, TreeModelChange, TreeMove, TreeNode, TreeRowAction, TreeRowDecoration, TreeRowIcon,
+    TreeRowInfo, TreeRowKey, TreeRowTone, TreeSlot, TreeView,
 };
 pub mod virtual_list;
 pub use virtual_list::{DuplicateListKey, ListModel, ListRowState, VecListModel, VirtualList};

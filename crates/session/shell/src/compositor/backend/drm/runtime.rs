@@ -21,6 +21,7 @@ use smithay::backend::input::{
     PointerButtonEvent, PointerMotionEvent, TouchEvent, TouchSlot,
 };
 use smithay::backend::libinput::{LibinputInputBackend, LibinputSessionInterface};
+use tilo_clock::unix_now_ms;
 // xkb comes from smithay's re-export, no new dependency; mirrors `XkbConfig::default()`'s `XKB_DEFAULT_*` handling via empty rule names (see `KeyboardXkb::new`).
 use smithay::backend::session::Session;
 use smithay::backend::session::libseat::{LibSeatSession, LibSeatSessionNotifier};
@@ -844,7 +845,7 @@ impl DrmDispatchState {
     fn publish_display_snapshot(&self) {
         let outputs = display_capabilities(&self.cards, &self.color_profiles);
         let snapshot = settings_store::hardware::DisplayHardwareSnapshot {
-            generated_unix_ms: settings_store::hardware::unix_ms(),
+            generated_unix_ms: unix_now_ms(),
             backend: "drm-kms-xrgb8888".into(),
             publisher_pid: std::process::id(),
             publisher_start_ticks:
@@ -2782,7 +2783,7 @@ impl DrmRuntime {
         let Some(transaction) = settings_store::hardware::DisplayTransaction::load() else {
             return;
         };
-        if transaction.expired(settings_store::hardware::unix_ms()) {
+        if transaction.expired(unix_now_ms()) {
             self.reload_input_settings();
         }
     }
@@ -2796,7 +2797,7 @@ impl DrmRuntime {
         let Some(mut transaction) = DisplayTransaction::load() else {
             return;
         };
-        let now = settings_store::hardware::unix_ms();
+        let now = unix_now_ms();
         if transaction.expired(now) {
             transaction.state = DisplayTransactionState::RevertRequested;
             transaction.message = Some("Display change timed out and was restored".into());

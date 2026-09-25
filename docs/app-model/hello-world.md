@@ -199,7 +199,7 @@ and the entrypoint binary.
 $ tilo-install install /tmp/hw-walkthrough/my-example-hello.tapp
 tilo-install: WARN — package self-signed by ed25519:d7830a490384cbbebdc713adec05dddb4ff7db090ca9bf9dd95d775841e47d4a (no trusted-attestor signature); use --require-attestor <id> to demand an attestation
 installed: my.example.hello 0.1.0
-  payload  : /tmp/tilo-hw-data/tilo-apps/payloads/my.example.hello
+  payload  : /tmp/tilo-hw-data/tilo-apps/pkgs/<package-id>
   pinned   : false
 run with:  tilo-install run my.example.hello
 ```

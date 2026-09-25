@@ -15,6 +15,8 @@ use iroh_base::EndpointAddr;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+use crate::clock::unix_now_ms;
+
 pub const FILE_SHARE_LINK_V2_DOMAIN_TAG: &str = "tilo-file-share-link-v2";
 pub const FILE_SHARE_LINK_V2_PREFIX: &str = "tilo-file://v2/";
 pub const MAX_FILE_SHARE_LINK_V2_PAYLOAD_BYTES: usize = 32 * 1024;
@@ -147,7 +149,7 @@ impl FileShareLinkV2 {
     ///
     /// Returns the same errors as [`Self::encode_uri_at`].
     pub fn encode_uri(&self) -> Result<String, FileShareLinkError> {
-        self.encode_uri_at(now_ms())
+        self.encode_uri_at(unix_now_ms())
     }
 
     /// Decode V2 only. A V1 token gets a specific reachability error rather
@@ -171,7 +173,7 @@ impl FileShareLinkV2 {
         let validation_time = link
             .invite
             .expires_at_ms
-            .map_or_else(now_ms, |deadline| deadline.saturating_sub(1));
+            .map_or_else(unix_now_ms, |deadline| deadline.saturating_sub(1));
         link.validate_at(validation_time)?;
         Ok(link)
     }
@@ -223,7 +225,7 @@ impl FileShareLinkV2 {
     ///
     /// Returns the same errors as [`Self::decode_uri_at`].
     pub fn decode_uri(uri: &str) -> Result<Self, FileShareLinkError> {
-        Self::decode_uri_at(uri, now_ms())
+        Self::decode_uri_at(uri, unix_now_ms())
     }
 
     /// Secret for online authority redemption. Never log or persist it.
@@ -252,10 +254,6 @@ fn validate_invite_secret(
         return Err(FileShareLinkError::WrongSecret);
     }
     Ok(())
-}
-
-fn now_ms() -> u64 {
-    crate::clock::unix_now_ms()
 }
 
 #[derive(Debug, Error)]

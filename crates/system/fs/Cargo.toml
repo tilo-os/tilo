@@ -9,6 +9,8 @@ license.workspace = true
 # protocols remain enabled by default for the OS; app-only consumers opt out.
 [features]
 default = ["filesystem"]
+# The document-media capability over the content store, without the mount.
+document-media = ["dep:runtime-fs"]
 filesystem = [
     "dep:clap",
     "dep:iroh",
@@ -22,7 +24,7 @@ filesystem = [
     "dep:thumbnail",
     "dep:tilo-user-identity",
     "dep:tilo-power-mgmt",
-    "dep:runtime-fs",
+    "document-media",
     "dep:libc",
     "dep:serde_bytes",
     "dep:serde_json",
@@ -34,6 +36,8 @@ filesystem = [
     "dep:rand",
     "dep:getrandom",
     "dep:fuser",
+    "dep:fs-native",
+    "dep:redb",
 ]
 
 [[bin]]
@@ -71,6 +75,11 @@ name = "performance_gate"
 path = "tests/performance_gate.rs"
 required-features = ["filesystem"]
 
+[[test]]
+name = "native_tier1"
+path = "tests/native_tier1.rs"
+required-features = ["filesystem"]
+
 [dependencies]
 bounded-command = { path = "../bounded-command" }
 atomic-file = { path = "../atomic-file" }
@@ -93,6 +102,7 @@ ed25519-dalek = { workspace = true, optional = true }
 # pdfium or the gstreamer stack into the image. PDF/video previews are the
 # client's job (the file manager builds this crate with those features on).
 thumbnail = { path = "../../media/thumbnail", optional = true }
+tilo-clock = { path = "../tilo-clock" }
 # The machine's one device key. The mount derives its iroh node key from
 # it rather than minting its own, so the node id names the device.
 tilo-user-identity = { path = "../../collab/tilo-user-identity", optional = true }
@@ -115,6 +125,7 @@ blake3 = { workspace = true, optional = true }
 postcard = { workspace = true, features = ["use-std"] }
 futures-util.workspace = true
 rand = { workspace = true, optional = true }
+redb = { workspace = true, optional = true }
 
 [dev-dependencies]
 tilo-automerge = { workspace = true, features = ["heap-probe"] }
@@ -125,6 +136,11 @@ workspace = true
 
 [target.'cfg(not(target_os = "macos"))'.dependencies]
 fuser = { workspace = true, optional = true }
+
+# The Tier 1 native data plane: fanotify journal, Btrfs capture epochs and
+# pre-content placeholders. Linux-only kernel interfaces.
+[target.'cfg(target_os = "linux")'.dependencies]
+fs-native = { path = "../fs-native", optional = true }
 
 # Shared filesystem and relay data remain available; no native mount provider.
 [target.'cfg(target_os = "macos")'.dependencies]

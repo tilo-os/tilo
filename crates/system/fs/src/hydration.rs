@@ -489,6 +489,111 @@ impl Hydrator {
         Ok(out)
     }
 
+    /// [`read`](Self::read) with the missing chunks fetched concurrently, up
+    /// to `parallel` at a time, over one connection to the best peer. A
+    /// placeholder fill of a large range is then bounded by bandwidth rather
+    /// than by one connection and round trip per chunk. Chunks that peer
+    /// cannot serve fall back to [`Self::read_blob`], which tries every peer.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the manifest or any overlapping chunk can't be loaded.
+    pub async fn read_parallel(
+        &self,
+        manifest_hash: Hash,
+        offset: u64,
+        size: u64,
+        parallel: usize,
+    ) -> Result<Vec<u8>> {
+        use futures_util::stream::{self, TryStreamExt};
+
+        let manifest = self.manifest_index(manifest_hash).await?;
+        let end = offset.saturating_add(size).min(manifest.total_len());
+        let mut missing = Vec::new();
+        for (_, chunk) in manifest.overlapping(offset, end) {
+            let hash = Hash::from(chunk.hash);
+            if !self.store.has(hash).await {
+                missing.push(hash);
+            }
+        }
+        missing.dedup();
+        if missing.len() > 1 {
+            self.fetch_over_one_connection(&missing, parallel).await;
+        }
+        let fetches = manifest.overlapping(offset, end).map(|(start, chunk)| {
+            let (hash, len) = (Hash::from(chunk.hash), chunk.len);
+            async move {
+                let bytes = match self.store.local(hash).await {
+                    Some(bytes) => bytes,
+                    None => Bytes::from(self.read_blob(hash, 0, u64::from(len)).await?),
+                };
+                Ok::<_, anyhow::Error>((start, bytes))
+            }
+        });
+        let chunks: Vec<(u64, Bytes)> = TryStreamExt::try_collect(
+            futures_util::StreamExt::buffered(stream::iter(fetches), parallel.max(1)),
+        )
+        .await?;
+        let mut out =
+            Vec::with_capacity(usize::try_from(end.saturating_sub(offset)).unwrap_or_default());
+        for (start, bytes) in &chunks {
+            copy_chunk_range(&mut out, bytes, *start, offset, end);
+        }
+        Ok(out)
+    }
+
+    /// Fetches `hashes` from the best-ranked peer on a single connection,
+    /// `parallel` requests at a time. Best effort: whatever fails is left
+    /// for the per-blob path.
+    async fn fetch_over_one_connection(&self, hashes: &[Hash], parallel: usize) {
+        let Some(peer) = self.known_peers().into_iter().next() else {
+            return;
+        };
+        let started = Instant::now();
+        let Ok(Ok(connection)) = tokio::time::timeout(
+            PEER_FETCH_TIMEOUT,
+            self.endpoint.connect(peer.clone(), iroh_blobs::ALPN),
+        )
+        .await
+        else {
+            self.record_peer_result(peer.id, started.elapsed(), false);
+            return;
+        };
+        let requests = hashes.iter().copied().map(|hash| {
+            let connection = connection.clone();
+            let peer = peer.clone();
+            async move {
+                let _guard = self.mark_fetching(hash);
+                let result = tokio::time::timeout(PEER_FETCH_TIMEOUT, async {
+                    let (bytes, _stats) = iroh_blobs::get::request::get_blob(connection, hash)
+                        .bytes_and_stats()
+                        .await?;
+                    self.store.store_fetched(hash, bytes).await?;
+                    Ok::<_, anyhow::Error>(())
+                })
+                .await;
+                if matches!(result, Ok(Ok(()))) {
+                    self.remote_sources
+                        .write()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .insert(hash, peer);
+                    true
+                } else {
+                    false
+                }
+            }
+        });
+        let fetched: Vec<bool> =
+            futures_util::StreamExt::collect(futures_util::StreamExt::buffer_unordered(
+                futures_util::stream::iter(requests),
+                parallel.max(1),
+            ))
+            .await;
+        let ok = fetched.iter().all(|ok| *ok);
+        self.record_peer_result(peer.id, started.elapsed(), ok);
+        connection.close(0u32.into(), b"done");
+    }
+
     /// [`read`](Self::read) served only from local content: `None` when the
     /// manifest or any overlapping chunk would have to be fetched from a
     /// peer. Never touches the network, so it is safe on a latency-critical

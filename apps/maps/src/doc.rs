@@ -812,11 +812,7 @@ impl MapsDoc {
     }
 }
 fn recent_id(q: &str) -> String {
-    q.trim()
-        .to_lowercase()
-        .bytes()
-        .map(|x| format!("{x:02x}"))
-        .collect()
+    hex::encode(q.trim().to_lowercase())
 }
 macro_rules! names{($a:ident,$b:ident,$t:ty,{$($v:ident=>$s:literal),+})=>{fn $a(x:$t)->&'static str{match x{$(<$t>::$v=>$s),+}}fn $b(x:&str)->Option<$t>{match x{$($s=>Some(<$t>::$v)),+,_=>None}}};}
 names!(category_name,category,Category,{Landmark=>"landmark",Cafe=>"cafe",Restaurant=>"restaurant",Bar=>"bar",Museum=>"museum",Park=>"park",Transit=>"transit",Hotel=>"hotel",Shop=>"shop",Hospital=>"hospital",Other=>"other"});

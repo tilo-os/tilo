@@ -14,14 +14,16 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering as AtomicOrdering};
 use std::time::{Duration, Instant};
 
-use crate::capabilities::{CapabilityPlan, load_capability_file, now_unix};
+use tilo_clock::unix_now;
+
+use crate::capabilities::{CapabilityPlan, load_capability_file};
 use crate::dbus_proxy::{self, DBusProxyGuard};
 use crate::manifest::{MinimalManifest, PortalPolicy, read_manifest};
 use crate::sandbox::{DBusBindPlan, build_bwrap_argv};
 use crate::seccomp::compile_baseline;
 use crate::services::{
-    EXIT_REQUIRED_SERVICE_MISSING, ServiceError, ServiceLaunchContext, resolve_identity_bind,
-    resolve_service_binds_for_launch, to_service_binds,
+    EXIT_REQUIRED_SERVICE_MISSING, ServiceError, ServiceLaunchContext, resolve_blob_bind,
+    resolve_identity_bind, resolve_service_binds_for_launch, to_service_binds,
 };
 
 #[derive(Debug, thiserror::Error)]
@@ -483,7 +485,7 @@ pub fn resolve_capabilities(manifest: &MinimalManifest, opts: &RunOptions) -> Ca
         .as_deref()
         .map(load_capability_file)
         .unwrap_or_default();
-    let mut plan = CapabilityPlan::for_app(&app_id, &records, Some(now_unix()));
+    let mut plan = CapabilityPlan::for_app(&app_id, &records, Some(unix_now()));
     // A workspace launch with no explicit author grant is a viewer. Treating
     // missing/malformed policy as authorship made every failure permissive.
     if opts.workspace_id.is_some()
@@ -1905,6 +1907,13 @@ pub fn run_with(
     )? {
         resolved.push(identity);
     }
+    if let Some(blobs) = resolve_blob_bind(
+        launch_app_id,
+        opts.workspace_id.as_deref(),
+        opts.no_services,
+    )? {
+        resolved.push(blobs);
+    }
     let binds = to_service_binds(&resolved);
 
     // 2. Seccomp baseline → tmpfile → fd.
@@ -2460,6 +2469,13 @@ fn run_with_capture_spawn<T>(
         opts.no_services,
     )? {
         resolved.push(identity);
+    }
+    if let Some(blobs) = resolve_blob_bind(
+        launch_app_id,
+        opts.workspace_id.as_deref(),
+        opts.no_services,
+    )? {
+        resolved.push(blobs);
     }
     let binds = to_service_binds(&resolved);
 

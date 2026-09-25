@@ -56,12 +56,7 @@ fn history_now_ms() -> u64 {
 /// resort.
 fn resolve_history_owner() -> String {
     if let Ok(identity) = runtime_identity::load() {
-        let mut public_key = String::with_capacity(64);
-        for byte in identity.group_public_key() {
-            use std::fmt::Write as _;
-            let _ = write!(public_key, "{byte:02x}");
-        }
-        return format!("user:{public_key}");
+        return format!("user:{}", hex::encode(identity.group_public_key()));
     }
     let path = xdg_paths::data_local_dir()
         .unwrap_or_else(std::env::temp_dir)

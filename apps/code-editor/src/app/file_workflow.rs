@@ -1,7 +1,7 @@
 use super::{
     Affine, AutoCommit, CodeApp, Conflict, ConflictChoice, EditorDoc, ElementState, Key, KeyEvent,
     ModalAction, ModalFrame, ModalSpec, PortalIntent, Project, Scene, Session, TextRenderer, Theme,
-    TreeId, WindowEvent, disk, source_filter,
+    TreeId, WindowEvent, disk, explorer, source_filter,
 };
 
 impl CodeApp {
@@ -400,7 +400,7 @@ impl CodeApp {
                     // save that follows is the one they asked for.
                     buf.stamp = None;
                 }
-                self.sidebar.set_project(&self.session.project);
+                explorer::refresh(&mut self.sidebar, &self.session.project);
                 self.invalidate_search_projection();
                 let snapshot = doc.clone();
                 if self.save_buffer(&snapshot, node, true) {
@@ -442,8 +442,8 @@ impl CodeApp {
                 let name = project.name.clone();
                 self.session = Session::new(project);
                 self.invalidate_search_projection();
-                self.sidebar.set_project(&self.session.project);
-                self.sidebar.set_active(None);
+                explorer::refresh(&mut self.sidebar, &self.session.project);
+                explorer::set_current(&mut self.sidebar, None);
                 self.bound_node = None;
                 self.editor.unbind();
                 self.reset_language_server();
@@ -466,7 +466,7 @@ impl CodeApp {
     pub(super) fn open_disk_file(&mut self, path: &std::path::Path) -> Result<(), String> {
         let path = disk::canonical(path);
         if let Some(node) = self.session.project.reveal_path(&path) {
-            self.sidebar.set_project(&self.session.project);
+            explorer::refresh(&mut self.sidebar, &self.session.project);
             self.open_node(node);
             return Ok(());
         }
@@ -474,7 +474,7 @@ impl CodeApp {
             Ok((project, node)) => {
                 self.session = Session::new(project);
                 self.invalidate_search_projection();
-                self.sidebar.set_project(&self.session.project);
+                explorer::refresh(&mut self.sidebar, &self.session.project);
                 self.bound_node = None;
                 self.reset_language_server();
                 self.open_node(node);

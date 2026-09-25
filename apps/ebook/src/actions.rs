@@ -1730,22 +1730,6 @@ mod tests {
         r
     }
 
-    /// Build an [`EncodedAction`] from a prompted spec's closure (the same path
-    /// the palette takes on Enter).
-    fn prompted_encode(spec: &ActionSpec, arg: &str) -> EncodedAction {
-        match &spec.input {
-            ActionInput::Prompted { build, .. } => build(arg),
-            ActionInput::Immediate(_) => panic!("expected a prompted action: {}", spec.id),
-        }
-    }
-
-    fn immediate_encode(spec: &ActionSpec) -> EncodedAction {
-        match &spec.input {
-            ActionInput::Immediate(enc) => enc.clone(),
-            ActionInput::Prompted { .. } => panic!("expected an immediate action: {}", spec.id),
-        }
-    }
-
     /// A reader with a book open and one seeded highlight carrying two comments,
     /// plus a standalone note and a bookmark, in the CRDT.
     fn open_with_annotations() -> (BooksApp, AutoCommit, String, Uuid) {
@@ -1798,6 +1782,185 @@ mod tests {
         let bm = Annotation::new(&book_id, AnnoKind::Bookmark, 0, 1);
         BooksDoc::upsert_annotation(&mut doc, &bm);
         (app, doc, book_id, group)
+    }
+
+    const SEEDED_GROUP: Uuid = Uuid::from_u128(0x1111_2222_3333_4444_5555_6666_7777_8888);
+
+    fn seeded_doc() -> AutoCommit {
+        let (_app, mut doc, _book, _group) = open_with_annotations();
+        doc.commit();
+        doc
+    }
+
+    fn sample_book_id() -> String {
+        open_with_annotations().2
+    }
+
+    /// The reader's published surface for `doc`: the bounded roots, the open
+    /// book with its reading actions, the registry fonts and schemes, and the
+    /// exact book and annotation resources the retained search snapshot
+    /// resolves for the document's annotations.
+    fn resources_for(doc: &AutoCommit) -> Vec<Resource> {
+        let (app, _seed, book_id, _group) = open_with_annotations();
+        let mut resources = Widget::resources(&app, doc);
+        let lazy = std::iter::once(format!("ebook.book:{book_id}"))
+            .chain(
+                BooksDoc::read_fonts(doc)
+                    .into_iter()
+                    .map(|font| format!("ebook.font:{}", font.id)),
+            )
+            .chain(
+                BooksDoc::read_schemes(doc)
+                    .into_iter()
+                    .map(|scheme| format!("ebook.scheme:{}", scheme.id)),
+            );
+        for id in lazy {
+            resources
+                .push(Widget::resource(&app, doc, &id).unwrap_or_else(|| panic!("{id} resolves")));
+        }
+        let books: Vec<crate::model::Book> = app
+            .library()
+            .iter()
+            .map(|book| book.as_ref().clone())
+            .collect();
+        let annotations = BooksDoc::list_annotations(doc);
+        let provider = crate::search_provider::BookSearchProvider::new_with_registry(
+            &books,
+            &annotations,
+            &BooksDoc::read_library_entries(doc),
+        );
+        let mut seen = std::collections::HashSet::new();
+        for annotation in &annotations {
+            let id = match annotation.kind {
+                AnnoKind::Highlight => format!("ebook.highlight:{}", annotation.group),
+                AnnoKind::Bookmark => format!("ebook.bookmark:{}", annotation.id),
+                AnnoKind::Note if annotation.group != annotation.id => {
+                    format!("ebook.comment:{}", annotation.id)
+                }
+                AnnoKind::Note => format!("ebook.note:{}", annotation.id),
+            };
+            if !seen.insert(id.clone()) {
+                continue;
+            }
+            resources.push(
+                ui::search::SearchProvider::resolve_action_resource(
+                    &provider,
+                    &tilo_actions::ActionAddress::new(&id, "open"),
+                )
+                .unwrap_or_else(|| panic!("{id} resolves")),
+            );
+        }
+        resources
+    }
+
+    fn first_note(doc: &AutoCommit, book_id: &str) -> Uuid {
+        BooksDoc::annotations_for(doc, book_id)
+            .into_iter()
+            .find(|annotation| {
+                annotation.kind == AnnoKind::Note && annotation.group == annotation.id
+            })
+            .expect("seeded standalone note")
+            .id
+    }
+
+    fn first_comment(doc: &AutoCommit) -> Uuid {
+        BooksDoc::list_annotations(doc)
+            .into_iter()
+            .find(|annotation| {
+                annotation.kind == AnnoKind::Note && annotation.group == SEEDED_GROUP
+            })
+            .expect("seeded comment")
+            .id
+    }
+
+    fn reading_progress() -> Progress {
+        Progress {
+            chapter: 2,
+            page: 7,
+            fraction: 0.625,
+            opened: 1_700_000_000_000,
+        }
+    }
+
+    fn move_highlight_action(id: Uuid) -> EbookAction {
+        move_annotation_action(
+            id,
+            AnnotationAnchor {
+                chapter: 0,
+                block: 9,
+                start: 0,
+                end: 5,
+                excerpt: "moved".into(),
+            },
+        )
+    }
+
+    fn comment_on_highlight(book_id: String) -> EncodedAction {
+        encode(
+            &CommentDraft {
+                group: SEEDED_GROUP,
+                note: NoteDraft {
+                    book_id,
+                    id: Uuid::from_u128(0x0BAD_0000_0000_0000_0000_0000_0000_00FE),
+                    anchor: AnnotationAnchor {
+                        chapter: 0,
+                        block: 3,
+                        start: 0,
+                        end: 12,
+                        excerpt: "a passage".into(),
+                    },
+                    color: HiColor::Green,
+                    text: "converge".into(),
+                },
+            }
+            .into_action(),
+        )
+    }
+
+    fn bookmark_block_nine(book_id: &str) -> EncodedAction {
+        encode(&set_bookmark_action(
+            book_id,
+            Uuid::from_u128(0xDEAD_BEEF_0000_0000_0000_0000_0000_0001),
+            0,
+            9,
+            "bm",
+            true,
+            Vec::new(),
+        ))
+    }
+
+    ui::action_contract_tests! {
+        seed: seeded_doc(),
+        registry: registry(),
+        resources: |doc| resources_for(doc),
+        palette: ["Open book", "Delete highlight", "Edit comment"],
+        replay: [
+            add_comment => |_| comment_on_highlight(sample_book_id()),
+            set_progress => |_| encode(&set_progress_action(&sample_book_id(), reading_progress())),
+            finalize_note => |doc| encode(&finalize_annotation_action(
+                first_note(doc, &sample_book_id()),
+                1_700_000_123_456,
+            )),
+            move_highlight => |doc| {
+                let highlight = BooksDoc::list_annotations(doc)
+                    .into_iter()
+                    .find(|a| a.kind == AnnoKind::Highlight)
+                    .expect("the seeded highlight");
+                encode(&move_highlight_action(highlight.id))
+            },
+        ],
+        undo: [
+            add_bookmark => |_| bookmark_block_nine(&sample_book_id()),
+            delete_highlight => |_| encode(&delete_highlight_action(SEEDED_GROUP)),
+        ],
+        encodes: [
+            delete_highlight => ("ebook.highlight", "delete-highlight", |_, _| {
+                encode(&delete_highlight_action(SEEDED_GROUP))
+            }),
+            edit_comment => ("ebook.comment", "edit-comment", arg: "revised", |doc, _| {
+                encode(&edit_note_action(first_comment(doc), "revised"))
+            }),
+        ],
     }
 
     /// Discovery exports bounded roots; exact resources are resolved from
@@ -2118,104 +2281,6 @@ mod tests {
         assert!(delete_highlight_action(group).apply(&mut doc).is_ok());
     }
 
-    /// The full undo covenant on one action: dispatched through the executor it
-    /// mutates the doc and records exactly one undo boundary, and Ctrl+Z
-    /// (the host's `undo`) reverts precisely that action.
-    #[test]
-    fn action_records_one_undo_boundary_and_reverts() {
-        let (_app, seeded, book_id, _group) = open_with_annotations();
-        // Move the seeded doc into a host State so undo is the real host path.
-        let mut state = ui::State::new();
-        state.doc = seeded;
-        let before_heads = state.doc.get_heads();
-        let before_len = BooksDoc::annotations_for(&state.doc, &book_id).len();
-
-        // Add a bookmark at a fresh block via the action + host undo recording.
-        let action = set_bookmark_action(
-            &book_id,
-            Uuid::from_u128(0xDEAD_BEEF_0000_0000_0000_0000_0000_0001),
-            0,
-            9,
-            "bm",
-            true,
-            Vec::new(),
-        );
-        let encoded = encode(&action);
-        let decoded = registry().decode(&encoded).unwrap();
-        let mut tx = LocalTransport::new();
-        tilo_actions::dispatch(&mut state.doc, decoded.as_ref(), encoded, &mut tx).unwrap();
-        state.record_committed_action(before_heads, None, None);
-
-        assert_eq!(
-            BooksDoc::annotations_for(&state.doc, &book_id).len(),
-            before_len + 1,
-            "the action added a bookmark"
-        );
-        assert!(
-            state.peek_last_undo().is_some(),
-            "exactly one undo boundary recorded"
-        );
-
-        // Ctrl+Z reverts exactly this action.
-        state.undo(None, None).expect("an undo entry to pop");
-        assert_eq!(
-            BooksDoc::annotations_for(&state.doc, &book_id).len(),
-            before_len,
-            "undo reverted the added bookmark and nothing else"
-        );
-    }
-
-    /// The collaboration guarantee: replaying the same encoded action on a second
-    /// independent replica (from the same base state) lands on the byte-identical
-    /// document — same head hashes, not merely the same values.
-    #[test]
-    fn action_replays_byte_identical_on_a_peer() {
-        let (_app, seeded, book_id, _group) = open_with_annotations();
-        // Two replicas sharing history.
-        let mut a = seeded;
-        a.commit();
-        let bytes = a.save();
-        let mut b = AutoCommit::load(&bytes).unwrap();
-        assert_eq!(
-            a.get_heads(),
-            b.get_heads(),
-            "precondition: same base state"
-        );
-
-        let action = CommentDraft {
-            group: Uuid::from_u128(0x1111_2222_3333_4444_5555_6666_7777_8888),
-            note: NoteDraft {
-                book_id: book_id.clone(),
-                id: Uuid::from_u128(0x0BAD_0000_0000_0000_0000_0000_0000_00FE),
-                anchor: AnnotationAnchor {
-                    chapter: 0,
-                    block: 3,
-                    start: 0,
-                    end: 12,
-                    excerpt: "a passage".into(),
-                },
-                color: HiColor::Green,
-                text: "converge".into(),
-            },
-        }
-        .into_action();
-        let encoded = encode(&action);
-
-        // A applies locally, producing the envelope; B replays it.
-        let env = tilo_actions::apply_local(&mut a, &action, encoded).unwrap();
-        tilo_actions::replay(&mut b, &env, &registry()).unwrap();
-
-        assert_eq!(
-            a.get_heads(),
-            b.get_heads(),
-            "replay reproduced the identical change"
-        );
-        assert_eq!(
-            BooksDoc::annotations_for(&a, &book_id).len(),
-            BooksDoc::annotations_for(&b, &book_id).len(),
-        );
-    }
-
     #[test]
     fn absolute_bookmark_actions_converge_after_divergent_peer_changes() {
         let (_app, mut base, book_id, _group) = open_with_annotations();
@@ -2294,56 +2359,23 @@ mod tests {
     }
 
     #[test]
-    fn progress_action_replays_byte_identically_and_preserves_open_timestamp() {
-        let (_app, mut a, book_id, _group) = open_with_annotations();
-        a.commit();
-        let bytes = a.save();
-        let mut b = AutoCommit::load(&bytes).expect("replica loads");
-
-        let action = set_progress_action(
-            &book_id,
-            Progress {
-                chapter: 2,
-                page: 7,
-                fraction: 0.625,
-                opened: 1_700_000_000_000,
-            },
-        );
-        let encoded = encode(&action);
-        let envelope = tilo_actions::apply_local(&mut a, &action, encoded).expect("action applies");
-        tilo_actions::replay(&mut b, &envelope, &registry()).expect("action replays");
-
-        assert_eq!(a.get_heads(), b.get_heads(), "position converges exactly");
-        assert_eq!(
-            BooksDoc::read_progress(&a, &book_id),
-            Progress {
-                chapter: 2,
-                page: 7,
-                fraction: 0.625,
-                opened: 1_700_000_000_000,
-            }
-        );
+    fn progress_action_preserves_open_timestamp() {
+        let (_app, mut doc, book_id, _group) = open_with_annotations();
+        set_progress_action(&book_id, reading_progress())
+            .apply(&mut doc)
+            .expect("action applies");
+        assert_eq!(BooksDoc::read_progress(&doc, &book_id), reading_progress());
     }
 
     #[test]
-    fn editor_finalisation_is_replayable_and_never_needs_a_direct_doc_write() {
-        let (_app, seeded, book_id, _group) = open_with_annotations();
-        let id = BooksDoc::annotations_for(&seeded, &book_id)
-            .into_iter()
-            .find(|annotation| annotation.kind == AnnoKind::Note)
-            .expect("seeded note")
-            .id;
-        let mut a = seeded;
-        a.commit();
-        let mut b = AutoCommit::load(&a.save()).expect("replica loads");
-        let action = finalize_annotation_action(id, 1_700_000_123_456);
-        let envelope = tilo_actions::apply_local(&mut a, &action, encode(&action))
+    fn editor_finalisation_stamps_the_note_through_the_action() {
+        let (_app, mut doc, book_id, _group) = open_with_annotations();
+        let id = first_note(&doc, &book_id);
+        finalize_annotation_action(id, 1_700_000_123_456)
+            .apply(&mut doc)
             .expect("finalisation applies");
-        tilo_actions::replay(&mut b, &envelope, &registry()).expect("finalisation replays");
-
-        assert_eq!(a.get_heads(), b.get_heads(), "peers converge exactly");
         assert_eq!(
-            BooksDoc::annotations_for(&a, &book_id)
+            BooksDoc::annotations_for(&doc, &book_id)
                 .into_iter()
                 .find(|annotation| annotation.id == id)
                 .expect("note remains")
@@ -2353,46 +2385,18 @@ mod tests {
     }
 
     /// Re-anchoring a highlight (the draggable marker's action) moves exactly the
-    /// one row it names — leaving the highlight's comments in place — and replays
-    /// byte-identically on a peer.
+    /// one row it names, leaving the highlight's comments in place.
     #[test]
-    fn move_annotation_reanchors_one_row_and_replays() {
-        let (_app, seeded, book_id, group) = open_with_annotations();
-        let hl = BooksDoc::annotations_for(&seeded, &book_id)
+    fn move_annotation_reanchors_one_row() {
+        let (_app, mut a, book_id, group) = open_with_annotations();
+        let hl = BooksDoc::annotations_for(&a, &book_id)
             .into_iter()
             .find(|a| a.kind == AnnoKind::Highlight)
             .expect("the seeded highlight");
         assert_eq!(hl.block, 3, "precondition: the highlight starts on block 3");
 
-        let mut a = seeded;
-        a.commit();
-        let bytes = a.save();
-        let mut b = AutoCommit::load(&bytes).unwrap();
-        assert_eq!(
-            a.get_heads(),
-            b.get_heads(),
-            "precondition: same base state"
-        );
+        move_highlight_action(hl.id).apply(&mut a).unwrap();
 
-        let action = move_annotation_action(
-            hl.id,
-            AnnotationAnchor {
-                chapter: 0,
-                block: 9,
-                start: 0,
-                end: 5,
-                excerpt: "moved".into(),
-            },
-        );
-        let encoded = encode(&action);
-        let env = tilo_actions::apply_local(&mut a, &action, encoded).unwrap();
-        tilo_actions::replay(&mut b, &env, &registry()).unwrap();
-
-        assert_eq!(
-            a.get_heads(),
-            b.get_heads(),
-            "the re-anchor replays byte-identically"
-        );
         // The same highlight row moved — its id is preserved.
         let moved = BooksDoc::annotations_for(&a, &book_id)
             .into_iter()
@@ -2411,65 +2415,6 @@ mod tests {
         assert_eq!(
             comments, 2,
             "the highlight's comments survived the re-anchor"
-        );
-    }
-
-    /// Single source of truth: a prompted "Edit comment" spec and a directly
-    /// built edit action encode byte-identically.
-    #[test]
-    fn palette_and_builder_encode_identically() {
-        let (app, doc, _book, group) = open_with_annotations();
-        let books: Vec<crate::model::Book> = app
-            .library()
-            .iter()
-            .map(|book| book.as_ref().clone())
-            .collect();
-        let annotations = BooksDoc::list_annotations(&doc);
-        let provider = crate::search_provider::BookSearchProvider::new_with_registry(
-            &books,
-            &annotations,
-            &BooksDoc::read_library_entries(&doc),
-        );
-        let hl = ui::search::SearchProvider::resolve_action_resource(
-            &provider,
-            &tilo_actions::ActionAddress::new(format!("ebook.highlight:{group}"), "open"),
-        )
-        .expect("exact highlight resource");
-        // The highlight's delete-highlight spec is the same encoded action the
-        // on-page trash button dispatches (`delete_highlight_action(group)`).
-        let spec = hl
-            .actions
-            .iter()
-            .find(|a| a.id == "delete-highlight")
-            .unwrap();
-        let from_spec = immediate_encode(spec);
-        let from_builder = encode(&delete_highlight_action(group));
-        assert_eq!(from_spec.type_id, from_builder.type_id);
-        assert_eq!(
-            from_spec.payload, from_builder.payload,
-            "one source of truth"
-        );
-
-        // And a comment's edit spec matches the edit builder for the same text.
-        let comment = annotations
-            .iter()
-            .find(|annotation| annotation.kind == AnnoKind::Note && annotation.group == group)
-            .expect("comment");
-        let exact_comment = ui::search::SearchProvider::resolve_action_resource(
-            &provider,
-            &tilo_actions::ActionAddress::new(format!("ebook.comment:{}", comment.id), "open"),
-        )
-        .expect("exact comment resource");
-        let edit_spec = exact_comment
-            .actions
-            .iter()
-            .find(|a| a.id == "edit-comment")
-            .unwrap();
-        let from_spec = prompted_encode(edit_spec, "revised");
-        let from_builder = encode(&edit_note_action(comment.id, "revised"));
-        assert_eq!(
-            from_spec.payload, from_builder.payload,
-            "edit is one source of truth"
         );
     }
 

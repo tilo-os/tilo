@@ -97,13 +97,14 @@ and protocol; it does not inherit this catalogue channel setting.
 
 ```
 $XDG_DATA_HOME/                     # default: ~/.local/share
-  tilo-apps/
+  tilo-apps/                        # the package store (crates/packaging/package-store)
     registry.toml                   # one entry per installed package
-    payloads/
-      <pkg-id>/                     # unpacked payload
-        manifest.toml
+    content/                        # the content store holding payload blobs
+    pkgs/
+      <package-id>/                 # materialised payload tree, read-only files
         bin/…                       # entrypoint(s)
         …                           # everything from the payload/ tree
+      <package-id>.pkg/             # signed-root, manifest.toml, collection.qcl
     bin/                            # PATH-shim install root
       <command>                     # copy of tilo-cli-shim
       <command>.tilo-shim            # sidecar (TOML)
@@ -129,9 +130,17 @@ $XDG_CONFIG_HOME/                   # default: ~/.config
     revoked-keys.toml
 ```
 
+Payload bytes live once, in the content store; each tree under `pkgs/`
+is materialised from it by reflink where the filesystem supports it
+(Btrfs, XFS), so tree and store share extents rather than holding two
+copies. A tree is named by its signed package id, so an update installs
+the new tree beside the old one and replaces the registry row; blobs no
+installed package references are then evicted. The launcher, the shell,
+the app host and `tilo-install` all read and write this one store.
+
 Override `$XDG_DATA_HOME` per-app for tests, or set `TILO_APPS_DATA_DIR`
-to override just the tilo-apps subtree (`tilo-launcher::registry` reads
-the same var).
+to override just the tilo-apps subtree (`package-store` reads the same
+var).
 
 ### The system store
 
@@ -141,7 +150,8 @@ An OS image ships a second store, in the same shape, at
 ```
 /usr/share/tilo-apps/
   registry.toml
-  payloads/<pkg-id>/…
+  pkgs/<package-id>/…
+  pkgs/<package-id>.pkg/…
   bin/…
 ```
 
@@ -149,11 +159,13 @@ It is written during the image build by `os/scripts/pack-apps.sh`, which
 runs the ordinary `tilo-app-package pack` + `tilo-install install` against a
 `TILO_APPS_DATA_DIR` pointed there — so every preinstalled package went
 through the same packing, signing and install path a user's own package
-goes through, and is described by the same `RegistryEntry` fields. It
-exists so a fresh install has apps to list before anyone has run
+goes through, and is described by the same `InstalledPackage` fields.
+The build drops the content store afterwards: the image's store is
+read-only, never installs again, and its trees are already materialised.
+It exists so a fresh install has apps to list before anyone has run
 `tilo-install`.
 
-`tilo-launcher::registry::list_installed` reads both stores, system first,
+`package_store::list_installed` reads both stores, system first,
 and a user entry **shadows** a system entry with the same id — installing
 your own build of a preinstalled app replaces it in the launcher rather
 than producing a duplicate row. In a developer build (debug, or
@@ -181,19 +193,23 @@ are two directories, and no manifest field selects either. See
 id                = "so.tilo.hello"
 version           = "0.1.0"
 package_id_hex    = "b8bde92e…"
-payload_root      = "/…/tilo-apps/payloads/so.tilo.hello"
-manifest_path     = "/…/tilo-apps/payloads/so.tilo.hello/manifest.toml"
+payload_root      = "/…/tilo-apps/pkgs/b8bde92e…"
+manifest_path     = "/…/tilo-apps/pkgs/b8bde92e….pkg/manifest.toml"
 publisher_key_hex = "c4c627b5…"
 pinned            = false
 installed_at      = 1783176312
+last_used         = 1783176312         # orders size-pressure eviction
 attested_by       = ""                 # empty for self-signed
 cli_commands      = ["notes"]          # PATH commands registered
 ```
 
-`payload_root` uses the reverse-DNS `id`, not the content hash — updates
-overwrite the same directory. If you need side-by-side versions (multiple
-`0.1.0` and `0.2.0` of the same package), install into a distinct
-`XDG_DATA_HOME` per version.
+There is one row per `id`; `payload_root` names the tree by the signed
+package id, so a row can never point at another package's files. If you
+need side-by-side versions (multiple `0.1.0` and `0.2.0` of the same
+package), install into a distinct `XDG_DATA_HOME` per version — their
+shared files are still stored once per store. Rows written before the
+content store existed (`payloads/<id>`) are moved into it once,
+idempotently, the next time `tilo-install` or the app host runs.
 
 ## `install`
 
@@ -205,25 +221,31 @@ tilo-install install <tapp>
     [--require-publisher <hex>]     # bind to that registry's publisher
     [--require-attestor <id>]       # refuse unless signed by this attestor
     [--allow-self-signed]           # permit self-signed as fallback
+    [--payload-from <registry-url>] # fetch blobs a thin .tapp lacks
 ```
 
 Sequence:
 
-1. Read the `.tapp` tar into an in-memory blob store.
-2. Verify the signed root and every hash. If registry constraints were
+1. Stream the `.tapp` through the format codec, checking the metadata
+   hash chain and every carried payload blob.
+2. Verify the signed root. If registry constraints were
    supplied, require both the advertised package root and publisher key;
    this prevents a valid package from another release or publisher being
    substituted after catalogue resolution. Apply trust policy (see
    [`trust.md`](./trust.md)).
 3. If a package with the same `[package].id` is already installed,
    refuse unless `--force`.
-4. Remove any old `payloads/<id>/` directory.
-5. Unpack payload into `payloads/<id>/`. Write `manifest.toml` next to
-   it explicitly (so the launcher can find it without re-reading the
-   `.tapp`).
-6. If the manifest has `[cli].commands`, drop a shim + sidecar in
+4. Put payload blobs into the content store. Blobs a thin `.tapp` does
+   not carry are looked up in the store first and fetched from
+   `--payload-from` only when missing; each is checked against its hash.
+5. Materialise `pkgs/<package-id>/` from the store and write the signed
+   record to `pkgs/<package-id>.pkg/` (the launcher reads its
+   `manifest.toml`).
+6. Replace the package's row in `registry.toml` atomically — the commit
+   point — then remove a replaced version's tree and evict blobs no
+   installed package references.
+7. If the manifest has `[cli].commands`, drop a shim + sidecar in
    `bin/` per command.
-7. Append a `RegistryEntry` to `registry.toml`.
 
 Example run against the hello demo:
 
@@ -231,7 +253,8 @@ Example run against the hello demo:
 $ tilo-install install /tmp/tilo-hello-demo/tilo-hello.tapp
 tilo-install: WARN — package self-signed by ed25519:c4c627b57… (no trusted-attestor signature); use --require-attestor <id> to demand an attestation
 installed: so.tilo.hello 0.1.0
-  payload  : /tmp/tilo-install-demo-data/tilo-apps/payloads/so.tilo.hello
+  payload  : /tmp/tilo-install-demo-data/tilo-apps/pkgs/b8bde92e…
+  stored   : 1 blob(s), 0 already in the content store
   pinned   : false
 run with:  tilo-install run so.tilo.hello
 ```
@@ -252,8 +275,8 @@ id            : so.tilo.hello
 version       : 0.1.0
 package-id    : tapp:b8bde92e2352dd7a3b3e094968272c42d51196697a5cec17f36e3595a55a71d3
 publisher     : ed25519:c4c627b57a518bc318c2854662b44f741345f6d55a45eb059d3b384048789e39
-payload-root  : /tmp/tilo-install-demo-data/tilo-apps/payloads/so.tilo.hello
-manifest      : /tmp/tilo-install-demo-data/tilo-apps/payloads/so.tilo.hello/manifest.toml
+payload-root  : /tmp/tilo-install-demo-data/tilo-apps/pkgs/b8bde92e…
+manifest      : /tmp/tilo-install-demo-data/tilo-apps/pkgs/b8bde92e….pkg/manifest.toml
 pinned        : false
 attested-by   : (self-signed)
 installed     : 0 seconds ago
@@ -353,11 +376,14 @@ Discovery order the launcher uses:
 
 ## Updates
 
-There is no in-place upgrade command yet. Update = `install --force
-<new.tapp>`:
+`tilo-install update <id>` resolves a newer version through the
+configured registries (or `--from <new.tapp>`); `install --force
+<new.tapp>` replaces an installed package too. Either way:
 
-- Registry entry retains the same `id`.
-- Old payload dir is deleted, new one written.
+- Registry entry retains the same `id`, and its pin.
+- The new tree is materialised beside the old one; files the versions
+  share are not stored or fetched again. The row replacement commits the
+  update, then the old tree and its unshared blobs go.
 - Old PATH shims are un-registered, new ones written.
 - `installed_at` refreshes.
 
