@@ -2702,56 +2702,6 @@
       "rationale": "Existing exact site from A05-10: Build graph and standalone profile tool need a narrow shared codec seam (medium; extract). Remove this exception when N01 migrates it."
     },
     {
-      "path": "apps/imager/src/setup/connection_view.rs",
-      "line": 40,
-      "rule": "native-api",
-      "fingerprint": "source:use std::os::unix::ffi::OsStrExt as _;",
-      "count": 1,
-      "finding_id": "A05-08",
-      "removal_task": "N03",
-      "rationale": "Pre-existing exact site from incoming source, attributed to A05-08: Connected-folder endpoint evidence and NTFS source bridge (high; backend). Remove this exception when N03 closes the contract."
-    },
-    {
-      "path": "apps/imager/src/setup/connection_view.rs",
-      "line": 700,
-      "rule": "native-api",
-      "fingerprint": "source:use std::os::unix::ffi::OsStringExt as _;",
-      "count": 1,
-      "finding_id": "A05-08",
-      "removal_task": "N03",
-      "rationale": "Pre-existing exact site from incoming source, attributed to A05-08: Connected-folder endpoint evidence and NTFS source bridge (high; backend). Remove this exception when N03 closes the contract."
-    },
-    {
-      "path": "apps/imager/src/setup/connection_view.rs",
-      "line": 72,
-      "rule": "native-api",
-      "fingerprint": "source:use std::os::windows::ffi::OsStrExt as _;",
-      "count": 2,
-      "finding_id": "A05-08",
-      "removal_task": "N03",
-      "rationale": "Pre-existing exact site from incoming source, attributed to A05-08: Connected-folder endpoint evidence and NTFS source bridge (high; backend). Remove this exception when N03 closes the contract."
-    },
-    {
-      "path": "apps/imager/src/setup/connection_view.rs",
-      "line": 38,
-      "rule": "platform-cfg",
-      "fingerprint": "source:cfg(unix)",
-      "count": 2,
-      "finding_id": "A05-08",
-      "removal_task": "N03",
-      "rationale": "Pre-existing exact site from incoming source, attributed to A05-08: Connected-folder endpoint evidence and NTFS source bridge (high; backend). Remove this exception when N03 closes the contract."
-    },
-    {
-      "path": "apps/imager/src/setup/connection_view.rs",
-      "line": 70,
-      "rule": "platform-cfg",
-      "fingerprint": "source:cfg(windows)",
-      "count": 1,
-      "finding_id": "A05-08",
-      "removal_task": "N03",
-      "rationale": "Pre-existing exact site from incoming source, attributed to A05-08: Connected-folder endpoint evidence and NTFS source bridge (high; backend). Remove this exception when N03 closes the contract."
-    },
-    {
       "path": "apps/imager/src/setup/controller.rs",
       "line": 359,
       "rule": "platform-cfg",

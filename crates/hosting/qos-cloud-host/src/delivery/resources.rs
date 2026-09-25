@@ -82,7 +82,7 @@ impl AggregateBytes {
 }
 impl AggregateBytes {
     /// This checkpoint with its non-empty `state.journal` replayed onto it
-    /// (see `storage::journal`). The journal copy and the replay transients
+    /// (see `qos_session_peer::store::journal`). The journal copy and the replay transients
     /// are charged before they exist; the result is a charged copy bounded by
     /// `maximum`.
     pub(crate) fn with_journal(

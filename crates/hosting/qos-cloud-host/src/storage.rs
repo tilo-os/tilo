@@ -14,6 +14,7 @@
 //! the existing `commit_existing` reconciliation of `state.json`) before any
 //! state is usable. No other process or tool reads `state.json` directly.
 use anyhow::{Context, Result, ensure};
+use qos_session_peer::store::journal;
 use serde::{
     Deserialize,
     de::{self, MapAccess, SeqAccess, Visitor},
@@ -21,12 +22,12 @@ use serde::{
 use serde_json::Value;
 use std::{fmt, path::Path};
 
-pub(crate) mod journal;
 #[cfg(test)]
 mod journal_tests;
 pub(crate) mod transaction;
 
 const CHECKPOINT: &str = "state.json";
+const JOURNAL: &str = "state.journal";
 /// Journal bound before the next commit checkpoints: the larger of this and
 /// the current checkpoint's size, so compaction costs at most one extra
 /// checkpoint write per journal worth of records.
@@ -160,7 +161,7 @@ impl Aggregate {
         let checkpoint = directory.open_read(OsStr::new(CHECKPOINT), Privacy::OwnerOnly)?;
         let checkpoint_identity = FileIdentity::of(&checkpoint)?;
         let checkpoint_len = checkpoint.metadata()?.len();
-        let journal = match directory.open_read(OsStr::new(journal::NAME), Privacy::OwnerOnly) {
+        let journal = match directory.open_read(OsStr::new(JOURNAL), Privacy::OwnerOnly) {
             Ok(file) => {
                 let identity = FileIdentity::of(&file)?;
                 let len = file.metadata()?.len();
@@ -339,7 +340,7 @@ impl Aggregate {
             && *len > 0
         {
             let writable =
-                directory.open_append_existing(OsStr::new(journal::NAME), Privacy::OwnerOnly)?;
+                directory.open_append_existing(OsStr::new(JOURNAL), Privacy::OwnerOnly)?;
             ensure!(
                 FileIdentity::of(&writable)? == *identity,
                 "cloud state journal changed while locked"
@@ -438,7 +439,7 @@ pub(crate) fn persisted_len_hint(directory: &std::fs::File) -> Option<u64> {
 /// reconstruction is the remembered state.
 #[cfg(unix)]
 mod durable {
-    use super::{Aggregate, Base, journal};
+    use super::{Aggregate, Base, JOURNAL};
     use atomic_file::{FileIdentity, Privacy, StorageDirectory};
     use std::{ffi::OsStr, fs::File, sync::Mutex};
     struct Entry {
@@ -477,7 +478,7 @@ mod durable {
             let journal = match &base.journal {
                 Some((expected, _)) => {
                     let file = directory
-                        .open_read(OsStr::new(journal::NAME), Privacy::OwnerOnly)
+                        .open_read(OsStr::new(JOURNAL), Privacy::OwnerOnly)
                         .ok()?;
                     (FileIdentity::of(&file).ok()? == *expected).then_some(Some(file))?
                 }
@@ -807,7 +808,7 @@ fn append(
     match &base.journal {
         Some((identity, len)) => {
             let mut file = directory
-                .open_append_existing(OsStr::new(journal::NAME), Privacy::OwnerOnly)
+                .open_append_existing(OsStr::new(JOURNAL), Privacy::OwnerOnly)
                 .map_err(WriteError::before)?;
             let observed = file.metadata().map_err(WriteError::before)?.len();
             if FileIdentity::of(&file).map_err(WriteError::before)? != *identity || observed != *len
@@ -840,14 +841,14 @@ fn append(
             // contents atomically (file and directory barriers included).
             directory
                 .publish(
-                    OsStr::new(journal::NAME),
+                    OsStr::new(JOURNAL),
                     &framed,
                     PublishMode::Replace,
                     Privacy::OwnerOnly,
                 )
                 .map_err(WriteError::publication)?;
             let identity = directory
-                .open_read(OsStr::new(journal::NAME), Privacy::OwnerOnly)
+                .open_read(OsStr::new(JOURNAL), Privacy::OwnerOnly)
                 .and_then(|file| FileIdentity::of(&file))
                 .map_err(|error| {
                     WriteError::new(PublicationState::PublishedDurabilityUnknown, error)
@@ -914,7 +915,7 @@ fn checkpoint(
     // was given no tip (it may hold records bound to the old checkpoint).
     let journal = match tip {
         Some(tip) => tip.base.journal.clone(),
-        None => match directory.open_read(OsStr::new(journal::NAME), Privacy::OwnerOnly) {
+        None => match directory.open_read(OsStr::new(JOURNAL), Privacy::OwnerOnly) {
             Ok(file) => Some((
                 FileIdentity::of(&file).map_err(after)?,
                 file.metadata().map_err(after)?.len(),
@@ -931,7 +932,7 @@ fn checkpoint(
             // never be observed again at a length it already saw.
             directory
                 .publish(
-                    OsStr::new(journal::NAME),
+                    OsStr::new(JOURNAL),
                     &[],
                     PublishMode::Replace,
                     Privacy::OwnerOnly,
@@ -944,7 +945,7 @@ fn checkpoint(
                     }
                 })?;
             let identity = directory
-                .open_read(OsStr::new(journal::NAME), Privacy::OwnerOnly)
+                .open_read(OsStr::new(JOURNAL), Privacy::OwnerOnly)
                 .and_then(|file| FileIdentity::of(&file))
                 .map_err(|error| {
                     WriteError::new(PublicationState::PublishedDurabilityUnknown, error)

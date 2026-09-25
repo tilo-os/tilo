@@ -1,16 +1,20 @@
-//! Known-schema JSON DTO guard. The parser's own scratch is reserved by parent.
-use super::{JsonLimits, Schema};
+//! Known-schema DTO guard: decodes a closed serde type while debiting every
+//! allocation its visitors make from a caller-supplied budget. The parser's
+//! own scratch is reserved separately by the caller.
 use serde::de::{self, DeserializeSeed, EnumAccess, MapAccess, SeqAccess, VariantAccess, Visitor};
-use std::fmt;
+use std::{alloc::Layout, fmt};
 
+/// Why a guarded decode refused its input.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum GuardError {
+pub enum GuardError {
+    /// The input needs more allocation, entries or depth than its limits allow.
     Capacity,
+    /// The input does not decode as the requested type.
     Malformed,
 }
 impl fmt::Display for GuardError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str("guarded governance JSON")
+        f.write_str("guarded DTO")
     }
 }
 impl std::error::Error for GuardError {}
@@ -21,12 +25,41 @@ impl de::Error for GuardError {
     }
 }
 fn boundary<E: de::Error>(_: GuardError) -> E {
-    E::custom("guarded governance JSON")
+    E::custom("guarded DTO")
+}
+/// The budget one guarded decode may spend.
+#[derive(Clone, Copy, Debug)]
+pub struct GuardLimits {
+    /// Bytes the decoded value and its transient visitor state may allocate.
+    pub allocation_bytes: usize,
+    /// Entries any one sequence or map may hold.
+    pub collection_entries: usize,
+    /// Deepest nesting admitted.
+    pub max_depth: usize,
+    /// Extra bytes each map or struct value pays before it is decoded, from
+    /// the key and value layouts (for example owned map node storage);
+    /// `None` refuses the input as over capacity.
+    pub map_value: fn(Layout, Layout) -> Option<usize>,
+}
+impl GuardLimits {
+    /// Limits for closed schemas of structs and externally tagged enums: 64
+    /// levels deep, with no per-entry map charge.
+    #[must_use]
+    pub const fn closed(allocation_bytes: usize, collection_entries: usize) -> Self {
+        Self {
+            allocation_bytes,
+            collection_entries,
+            max_depth: 64,
+            map_value: |_, _| Some(0),
+        }
+    }
 }
 struct Budget {
     remaining: usize,
     entries: usize,
     depth: usize,
+    max_depth: usize,
+    map_value: fn(Layout, Layout) -> Option<usize>,
     capacity: bool,
 }
 impl Budget {
@@ -41,11 +74,11 @@ impl Budget {
         Ok(())
     }
     fn enter<T>(&mut self) -> Result<(), GuardError> {
-        if self.depth == 64 {
+        if self.depth >= self.max_depth {
             return Err(self.refuse());
         }
         self.charge(Some(size_of::<T>()))?;
-        // Below 64 here, so the step is exact.
+        // Below `max_depth` here, so the step is exact.
         self.depth = self.depth.saturating_add(1);
         Ok(())
     }
@@ -54,13 +87,33 @@ impl Budget {
         self.depth = self.depth.saturating_sub(1);
     }
 }
-pub(super) fn decode<T: Schema>(bytes: &[u8], limits: JsonLimits) -> Result<T, GuardError> {
-    let mut budget = Budget {
-        remaining: limits.allocation_bytes,
-        entries: limits.collection_entries,
-        depth: 0,
-        capacity: false,
-    };
+impl Budget {
+    fn new(limits: GuardLimits) -> Self {
+        Self {
+            remaining: limits.allocation_bytes,
+            entries: limits.collection_entries,
+            depth: 0,
+            max_depth: limits.max_depth,
+            map_value: limits.map_value,
+            capacity: false,
+        }
+    }
+    fn refused(&self) -> GuardError {
+        if self.capacity {
+            GuardError::Capacity
+        } else {
+            GuardError::Malformed
+        }
+    }
+}
+/// Decode one JSON document as `T`.
+///
+/// # Errors
+///
+/// [`GuardError::Capacity`] when `limits` would be exceeded, otherwise
+/// [`GuardError::Malformed`] for input that is not exactly one `T`.
+pub fn json<T: de::DeserializeOwned>(bytes: &[u8], limits: GuardLimits) -> Result<T, GuardError> {
+    let mut budget = Budget::new(limits);
     let mut decoder = serde_json::Deserializer::from_slice(bytes);
     let value = T::deserialize(Guard {
         inner: &mut decoder,
@@ -72,8 +125,30 @@ pub(super) fn decode<T: Schema>(bytes: &[u8], limits: JsonLimits) -> Result<T, G
             .end()
             .map(|()| value)
             .map_err(|_| GuardError::Malformed),
-        Err(_) if budget.capacity => Err(GuardError::Capacity),
-        Err(_) => Err(GuardError::Malformed),
+        Err(_) => Err(budget.refused()),
+    }
+}
+/// Decode one postcard value as `T`, refusing trailing bytes.
+///
+/// # Errors
+///
+/// As [`json`].
+pub fn postcard<T: de::DeserializeOwned>(
+    bytes: &[u8],
+    limits: GuardLimits,
+) -> Result<T, GuardError> {
+    let mut budget = Budget::new(limits);
+    let mut decoder = postcard::Deserializer::from_bytes(bytes);
+    let value = T::deserialize(Guard {
+        inner: &mut decoder,
+        budget: &mut budget,
+    });
+    match value {
+        Ok(value) => match decoder.finalize() {
+            Ok([]) => Ok(value),
+            _ => Err(GuardError::Malformed),
+        },
+        Err(_) => Err(budget.refused()),
     }
 }
 struct Guard<'a, D> {
@@ -168,7 +243,7 @@ macro_rules! scalar {
 impl<'de, V: Visitor<'de>> Visitor<'de> for Visit<'_, V> {
     type Value = V::Value;
     fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str("governance JSON value")
+        f.write_str("guarded DTO value")
     }
     scalar!(visit_bool, bool);
     scalar!(visit_i8, i8);
@@ -261,6 +336,7 @@ impl<'de, V: Visitor<'de>> Visitor<'de> for Visit<'_, V> {
             inner: a,
             budget: &mut *self.budget,
             count: 0,
+            key_layout: None,
         });
         self.budget.leave();
         result.map_err(boundary)
@@ -303,6 +379,7 @@ struct Map<'a, A> {
     inner: A,
     budget: &'a mut Budget,
     count: usize,
+    key_layout: Option<Layout>,
 }
 impl<'de, A: MapAccess<'de>> MapAccess<'de> for Map<'_, A> {
     type Error = GuardError;
@@ -313,6 +390,7 @@ impl<'de, A: MapAccess<'de>> MapAccess<'de> for Map<'_, A> {
         &mut self,
         seed: S,
     ) -> Result<Option<S::Value>, GuardError> {
+        self.key_layout = Some(Layout::new::<S::Value>());
         self.inner
             .next_key_seed(Seed {
                 inner: seed,
@@ -326,6 +404,11 @@ impl<'de, A: MapAccess<'de>> MapAccess<'de> for Map<'_, A> {
         &mut self,
         seed: S,
     ) -> Result<S::Value, GuardError> {
+        let map_value = self.budget.map_value;
+        let charge = self
+            .key_layout
+            .and_then(|key| map_value(key, Layout::new::<S::Value>()));
+        self.budget.charge(charge)?;
         self.inner
             .next_value_seed(Seed {
                 inner: seed,

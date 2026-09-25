@@ -11,6 +11,9 @@ use vello::{
     kurbo::{Affine, Rect, RoundedRect},
 };
 
+/// Widest the keyboard content grows; wider surfaces centre it.
+pub(crate) const MAX_KEYBOARD_CONTENT_WIDTH: f64 = 1_120.0;
+
 pub(crate) struct KeyboardGeometry {
     pub content_rect: Rect,
     pub toolbar: Vec<(usize, Rect)>,
@@ -31,7 +34,7 @@ pub(crate) fn keyboard_geometry(
     toolbar_height: f32,
     suggestion_height: f32,
 ) -> KeyboardGeometry {
-    let width = rect.width().min(1120.0);
+    let width = rect.width().min(MAX_KEYBOARD_CONTENT_WIDTH);
     let x = rect.center().x - width * 0.5;
     let content_rect = Rect::new(x, rect.y0, x + width, rect.y1);
     let h = content_rect.height();

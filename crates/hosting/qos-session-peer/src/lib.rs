@@ -8,6 +8,8 @@ mod identity;
 pub mod owner;
 mod seed;
 pub mod store;
+/// Pre-commit forwarding of verified state items, shared with the Cloud host.
+pub use owner::delivery::early_forward;
 pub use owner::{CommitReceipt, PendingOperation, SessionOwner, Status};
 
 pub mod enrollment;
@@ -38,6 +40,10 @@ mod room_media_policy;
 mod delivery_http;
 #[cfg(feature = "media")]
 mod onboarding_http;
+/// The bounded borrowed decode of the legacy join DTO, shared with hosts that
+/// serve their own onboarding carrier.
+#[cfg(feature = "media")]
+pub use onboarding_http::input as onboarding_input;
 #[cfg(feature = "media")]
 mod private_http;
 

@@ -14933,8 +14933,6 @@ dependencies = [
  "serde_json",
  "tempfile",
  "tilo-actions",
- "tilo-folder-service",
- "tilo-install-artifacts",
  "tilo-resource",
  "tilo-ui",
  "tracing",
@@ -15133,50 +15131,10 @@ dependencies = [
 ]
 
 [[package]]
-name = "tilo-folder-service"
-version = "0.1.0"
-dependencies = [
- "advisory-lock",
- "cap-fs-ext",
- "cap-primitives",
- "cap-std",
- "hex",
- "libc",
- "qos-ntfs-protocol",
- "serde",
- "serde_json",
- "sha2 0.11.0",
- "tempfile",
- "windows-sys 0.61.2",
- "xdg-paths",
-]
-
-[[package]]
 name = "tilo-headless-schema"
 version = "0.1.0"
 dependencies = [
  "serde_json",
-]
-
-[[package]]
-name = "tilo-install-artifacts"
-version = "0.1.0"
-dependencies = [
- "advisory-lock",
- "atomic-file",
- "cap-fs-ext",
- "cap-primitives",
- "cap-std",
- "hex",
- "libc",
- "reqwest 0.13.2",
- "serde",
- "serde_json",
- "sha2 0.11.0",
- "tempfile",
- "tilo-net",
- "windows-sys 0.61.2",
- "xdg-paths",
 ]
 
 [[package]]
@@ -15363,17 +15321,8 @@ dependencies = [
 name = "tilo-relay-client"
 version = "0.1.0"
 dependencies = [
- "automerge",
- "ed25519-dalek 3.0.0",
- "iroh",
- "iroh-base",
  "postcard",
- "rand 0.10.1",
- "serde",
- "thiserror 2.0.18",
- "tilo-clock",
  "tilo-relay-protocol",
- "tilo-user-identity",
  "tokio",
  "wire-frame",
 ]

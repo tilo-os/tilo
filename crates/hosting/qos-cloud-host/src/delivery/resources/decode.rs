@@ -1,5 +1,4 @@
 //! Closed aggregate reconstruction. Memory custody is not native authority.
-mod guard;
 #[path = "mutation.rs"]
 mod mutation;
 mod parser;
@@ -7,12 +6,13 @@ use super::{AggregateBytes, CodecBudget, Count, ResourceError, StateOutput, priv
 use crate::{ActionReceipt, Bound, State, StoredPublication};
 use automerge::resource_limits::NativeReservation;
 pub(crate) use mutation::MetadataChange;
+use qos_peer_state::resources::dto_guard::{self as guard, GuardLimits};
 use qos_relay::delivery_v3::commit::{
     MAX_REFERENCES, PublicationRef,
     resources::{HeldDeliveryLedger, HeldPublicationPool, LedgerCustody, PoolMapCustody},
 };
 use serde::{Deserialize, Serialize, ser::SerializeStruct};
-use std::collections::BTreeMap;
+use std::{alloc::Layout, collections::BTreeMap};
 
 #[derive(Clone, Copy)]
 pub(crate) struct DecodeLimits {
@@ -253,6 +253,51 @@ fn nested(error: qos_relay::delivery_v3::commit::resources::ResourceError) -> Re
         E::Unaccounted => ResourceError::Malformed,
     }
 }
+/// Guard limits for the closed Cloud shadow types: they nest deeper than the
+/// governance schemas and include owned maps and internally tagged `Content`.
+fn guard_limits(limits: DecodeLimits) -> GuardLimits {
+    GuardLimits {
+        allocation_bytes: limits.allocation_bytes,
+        collection_entries: limits.collection_entries,
+        max_depth: 256,
+        map_value: shadow_map_value,
+    }
+}
+/// Named structs, Value maps, private unique maps and tagged Content all pay
+/// here, per actual value seed: its concrete node storage, and four slots of
+/// the largest reachable closed inline owner/enum. Internally tagged
+/// NativeOperation uses serde Content then constructs its selected DTO outside
+/// the traversal, so each object slot covers Vec initial and old/new growth
+/// plus Box payload. Its Content tree, map/sequence allocations and owned
+/// strings are already paid separately by the guard. Private runtime facts
+/// avoid Content entirely in their shadow codec.
+fn shadow_map_value(key: Layout, value: Layout) -> Option<usize> {
+    let inline = size_of::<State>()
+        .max(size_of::<crate::NativeOperation>())
+        .max(size_of::<qos_peer_state::NeighbourMsg>());
+    map_node(key, value)?.checked_add(inline.checked_mul(4)?)
+}
+// Rust1.97 BTree node: parent pointer,u16 index,u16 length,11 keys,11
+// values; Internal adds12 child pointers. One full node per final entry covers
+// all live leaves/internal nodes and split-root overlap. Charge before value
+// decode, therefore before native insertion. Layout extension includes padding.
+fn map_node(key: Layout, value: Layout) -> Option<usize> {
+    fn array(item: Layout, n: usize) -> Option<Layout> {
+        Layout::from_size_align(item.pad_to_align().size().checked_mul(n)?, item.align()).ok()
+    }
+    let mut node = Layout::new::<usize>();
+    for next in [
+        Layout::new::<u16>(),
+        Layout::new::<u16>(),
+        array(key, 11)?,
+        array(value, 11)?,
+    ] {
+        node = node.extend(next).ok()?.0;
+    }
+    node = node.pad_to_align();
+    node = node.extend(Layout::array::<usize>(12).ok()?).ok()?.0;
+    Some(node.pad_to_align().size())
+}
 fn guarded(error: guard::GuardError) -> ResourceError {
     match error {
         guard::GuardError::Capacity => ResourceError::Capacity,
@@ -279,7 +324,8 @@ impl HeldCloudState {
         }
         let _parser = reserve(budget, parser::bytes(input.as_bytes())?)?;
         let fields = reserve(budget, limits.allocation_bytes)?;
-        let mut shadow = guard::state(input.as_bytes(), limits).map_err(guarded)?;
+        let mut shadow =
+            guard::json::<ShadowState>(input.as_bytes(), guard_limits(limits)).map_err(guarded)?;
         if !matches!(
             (shadow.version, shadow.delivery.is_some()),
             (4 | 5, false) | (6, true)
@@ -303,7 +349,8 @@ impl HeldCloudState {
         let scratch = encode_fork(&self.state, limits.maximum_bytes, budget)?;
         let _parser = reserve(budget, parser::bytes(scratch.as_bytes())?)?;
         let fields = reserve(budget, limits.allocation_bytes)?;
-        let fork = guard::fork(scratch.as_bytes(), limits).map_err(guarded)?;
+        let fork =
+            guard::json::<ForkWire>(scratch.as_bytes(), guard_limits(limits)).map_err(guarded)?;
         if fork.state.delivery.is_some() {
             return Err(ResourceError::Malformed);
         }

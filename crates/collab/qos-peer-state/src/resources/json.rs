@@ -1,5 +1,5 @@
 //! Closed governance JSON boundary. No native allocation qualification.
-mod guard;
+pub mod guard;
 
 use super::PeerResourceError;
 use automerge::resource_limits::{NativeReservation, NativeWorkTurn};
@@ -36,7 +36,11 @@ impl<T: Schema> JsonHeld<T> {
         let reservation = turn
             .reserve(limits.allocation_bytes)
             .map_err(|_| PeerResourceError::Capacity)?;
-        let value = guard::decode(bytes, limits).map_err(|error| match error {
+        let value = guard::json(
+            bytes,
+            guard::GuardLimits::closed(limits.allocation_bytes, limits.collection_entries),
+        )
+        .map_err(|error| match error {
             guard::GuardError::Capacity => PeerResourceError::Capacity,
             guard::GuardError::Malformed => PeerResourceError::Malformed,
         })?;

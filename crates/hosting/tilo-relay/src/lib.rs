@@ -73,10 +73,9 @@ pub mod agent_reads;
 pub mod antientropy;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod app_serving;
-// The Cloud stack's relay session client (v2 actions, agent reads, legacy
-// qOS ALPNs, interactive owners) needs the daemon's delivery and join
-// records, so it stays in the daemon crate. `tilo-relay-client` remains the
-// dependency-light client for devices that only need the v1 session.
+// The relay session client (v2 actions, agent reads, legacy ALPNs,
+// interactive owners) needs the daemon's delivery and join records, so it
+// lives in the daemon crate; `tilo-relay-client` holds only the frame codec.
 pub mod client;
 pub mod clock;
 pub mod coedit;
