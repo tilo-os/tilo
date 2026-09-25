@@ -48,9 +48,10 @@
 # An older UI may omit `--encrypt`, but the backend still encrypts. It must
 # provide `--pin`; otherwise installation fails closed. We:
 #
-#   1. copy the currently-booted bootc image into local container storage
+#   1. authenticate and import a separately signed offline target when one is
+#      preloaded; otherwise copy the currently-booted image into local storage
 #      (`bootc image copy-to-storage` -> containers-storage:localhost/bootc),
-#   2. install from that copied image, in a privileged podman container, onto
+#   2. install from the selected image, in a privileged podman container, onto
 #      the target disk (wipes it, --filesystem layout). tilo-disk-encrypt builds
 #      the GPT + LUKS2 layout and bootc installs `to-filesystem` into the opened
 #      mapping — see that script for why the volume is not created by
@@ -69,8 +70,9 @@
 # Everything human-readable goes to stdout (the UI tails it line by line);
 # exit 0 == success, non-zero == failure.
 #
-# This is intentionally an OFFLINE, self-install model: the live system
-# installs *itself* onto the disk — no network pull needed for the OS bits.
+# This is intentionally an OFFLINE model: no network pull is needed for the OS
+# bits. Development media self-install; CI media can carry a distinct signed
+# target whose digest and provenance are checked before any disk mutation.
 # The target image *reference* recorded in the install (so future
 # `bootc upgrade` knows where to pull from) is bound by a hardware profile.
 # Generic images retain the official latest default and trusted overrides.
@@ -992,6 +994,15 @@ use_encrypted_copy_scratch() {
     || die "/var/tmp is not the reviewed encrypted scratch directory"
 }
 copy_booted_image() {
+  if [ "$OFFLINE_TARGET" -eq 1 ]; then
+    step "Importing the independently signed offline Tilo target"
+    LOCAL_IMG="$(python3 /usr/libexec/tilo-installer-offline-target.py import)" \
+      || die "offline target import or embedded update origin failed"
+    [[ "$LOCAL_IMG" =~ ^(sha256:)?[0-9a-f]{64}$ ]] \
+      || die "offline target did not resolve to an immutable image ID"
+    validate_disk_identity
+    return
+  fi
   step "Copying the running Tilo image into local container storage"
   VM_COPY_CACHE=/usr/libexec/tilo-vm-bootc-copy-cache.py
   # VM development can bind-mount the backend and helper from its writable
@@ -1023,6 +1034,23 @@ copy_booted_image() {
 
   validate_disk_identity
 }
+
+# A separately signed target is optional. Its metadata, OCI manifest, Cosign
+# signature and CI provenance must be checked before any target-disk mutation.
+# Absence retains the development self-install path; a partial or invalid
+# offline target fails closed instead of falling back to the booted overlay.
+OFFLINE_TARGET=0
+if [ -e /var/lib/tilo-installer/target-oci ] \
+    || [ -L /var/lib/tilo-installer/target-oci ]; then
+  python3 /usr/libexec/tilo-installer-offline-target.py verify >/dev/null \
+    || die "preloaded signed target failed verification"
+  offline_origin="$(python3 -c 'import json; print(json.load(open("/run/tilo-installer/offline-target.json"))["update_origin"])')"
+  # The live medium may be generic so it can boot QEMU virt, while the signed
+  # installed image is Lenovo-specific. The helper authenticates this origin
+  # against target SLSA and the target image's embedded hardware profile.
+  TILO_TARGET_IMGREF="$offline_origin"
+  OFFLINE_TARGET=1
+fi
 
 # Recheck the selected disk before preparing the encrypted target. The source
 # copy now follows preparation so its scratch cannot fill the live staging root.
@@ -1545,7 +1573,9 @@ if [ -n "$VM_INSTALL_PROOF" ]; then
   # This line is emitted only after `finish` succeeded and the encrypted
   # target was closed. The dedicated virtio port carries no installer logs
   # or secrets. The host must compare the image identity to its signed CI pin.
-  proof_line="TILO_VM_INSTALL_PROOF_V1=$(cat "$VM_INSTALL_PROOF")"
+  proof_version=V1
+  [ "$OFFLINE_TARGET" -eq 0 ] || proof_version=V2
+  proof_line="TILO_VM_INSTALL_PROOF_${proof_version}=$(cat "$VM_INSTALL_PROOF")"
   [ -c "$VM_INSTALL_PROOF_PORT" ] \
     && printf '%s\n' "$proof_line" > "$VM_INSTALL_PROOF_PORT" \
     || die "VM install proof could not reach its dedicated virtio port"

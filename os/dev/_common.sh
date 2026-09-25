@@ -204,9 +204,16 @@ start_qemu() {
 # Run a command in the guest over SSH (password auth via sshpass, on the host
 # since that's where the forwarded port binds). Returns the command's output.
 gssh() {
-  sshpass -p "$TILO_PASS" ssh -p "$TILO_SSH_PORT" \
+  # VM automation must never fall through to the desktop's graphical askpass
+  # helper. sshpass owns the one permitted password prompt; if it cannot
+  # answer, fail the test instead of disrupting the physical session.
+  command -v sshpass >/dev/null 2>&1 || die "sshpass is required for unattended VM access"
+  env -u SSH_ASKPASS -u SSH_ASKPASS_REQUIRE DISPLAY= WAYLAND_DISPLAY= \
+    sshpass -p "$TILO_PASS" ssh -F /dev/null -p "$TILO_SSH_PORT" \
     -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
-    -o ConnectTimeout=5 -o LogLevel=ERROR \
+    -o ConnectTimeout=5 -o LogLevel=ERROR -o BatchMode=no \
+    -o NumberOfPasswordPrompts=1 -o PreferredAuthentications=password \
+    -o PubkeyAuthentication=no -o KbdInteractiveAuthentication=no \
     "$TILO_USER@127.0.0.1" "$@"
 }
 

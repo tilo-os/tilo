@@ -984,6 +984,7 @@ dependencies = [
 name = "atomic-file"
 version = "0.1.0"
 dependencies = [
+ "advisory-lock",
  "rustix 1.1.4",
  "serde",
  "serde_json",
@@ -1091,8 +1092,6 @@ checksum = "c08606f8c3cbf4ce6ec8e28fb0014a2c086708fe954eaa885384a6165172e7e8"
 [[package]]
 name = "automerge"
 version = "0.12.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2fb849130973a7808a167887f56b1e8bdc36b9b541542602dcb337f34aecf47b"
 dependencies = [
  "cfg-if",
  "flate2",
@@ -1102,6 +1101,7 @@ dependencies = [
  "itertools 0.15.0",
  "js-sys",
  "leb128",
+ "miniz_oxide",
  "rand 0.10.1",
  "rustc-hash 2.1.1",
  "serde",
@@ -5668,8 +5668,6 @@ checksum = "e712f64ec3850b98572bffac52e2c6f282b29fe6c5fa6d42334b30be438d95c1"
 [[package]]
 name = "hexane"
 version = "1.0.0-alpha.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "81df830f11babb0eee9a082e09135ef0a7d8791f3fe9b279bb9485bf7eaf23e0"
 dependencies = [
  "leb128",
  "thiserror 2.0.18",
@@ -11438,6 +11436,7 @@ dependencies = [
  "ed25519-dalek 3.0.0",
  "flate2",
  "hex",
+ "neighbour-wire",
  "postcard",
  "qos-agent-control-protocol",
  "serde",
@@ -13679,14 +13678,12 @@ dependencies = [
  "tilo-power-mgmt",
  "tilo-projector",
  "tilo-relay",
- "tilo-relay-client",
  "tilo-relay-protocol",
  "tilo-startup-metrics",
  "tilo-test-env",
  "tilo-ui",
  "tilo-user-identity",
  "tokio",
- "tokio-util",
  "toml 1.0.6+spec-1.1.0",
  "tracing",
  "tracing-subscriber",
@@ -15075,6 +15072,10 @@ name = "tilo-automerge"
 version = "0.1.0"
 dependencies = [
  "automerge",
+ "flate2",
+ "hex",
+ "serde_json",
+ "sha2 0.11.0",
  "tilo-automerge",
 ]
 
@@ -15186,10 +15187,12 @@ dependencies = [
 name = "tilo-folder-service"
 version = "0.1.0"
 dependencies = [
+ "advisory-lock",
  "cap-fs-ext",
  "cap-primitives",
  "cap-std",
  "dirs 6.0.0",
+ "hex",
  "libc",
  "qos-ntfs-protocol",
  "serde",
@@ -15210,17 +15213,20 @@ dependencies = [
 name = "tilo-install-artifacts"
 version = "0.1.0"
 dependencies = [
+ "advisory-lock",
  "atomic-file",
  "cap-fs-ext",
  "cap-primitives",
  "cap-std",
  "dirs 6.0.0",
+ "hex",
  "libc",
  "reqwest 0.13.2",
  "serde",
  "serde_json",
  "sha2 0.11.0",
  "tempfile",
+ "tilo-net",
  "windows-sys 0.61.2",
 ]
 
@@ -15472,6 +15478,7 @@ version = "0.1.0"
 dependencies = [
  "serde",
  "serde_json",
+ "tracing",
  "web-time",
 ]
 

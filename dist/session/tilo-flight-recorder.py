@@ -15,7 +15,12 @@ LOG_LIMIT = 4 * 1024 * 1024
 
 def persist(path: Path, retained: bytearray) -> None:
     temporary = path.with_suffix(path.suffix + ".tmp")
-    with temporary.open("wb") as stream:
+    # `os.replace` installs the temporary inode, including its mode.  Do not
+    # rely on the caller's umask here: compositor/app stderr may contain paths,
+    # account names, document titles, or other session-private diagnostics.
+    descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    os.fchmod(descriptor, 0o600)
+    with os.fdopen(descriptor, "wb") as stream:
         stream.write(retained)
         stream.flush()
         os.fsync(stream.fileno())
@@ -23,10 +28,16 @@ def persist(path: Path, retained: bytearray) -> None:
 
 
 def main() -> int:
-    if len(sys.argv) != 2:
+    if len(sys.argv) not in (2, 5):
         return 2
     path = Path(sys.argv[1])
     retained = bytearray()
+    if len(sys.argv) == 5:
+        timestamp, pid, shell = sys.argv[2:]
+        retained.extend(
+            f"tilo-flight-record-v1 start={timestamp} pid={pid} shell={shell}\n".encode()
+        )
+        persist(path, retained)
     source = sys.stdin.buffer.raw
     selector = selectors.DefaultSelector()
     selector.register(source, selectors.EVENT_READ)

@@ -337,6 +337,9 @@ fn vm_free_floor(configured: u64, hypervisor: &str) -> u64 {
 }
 
 fn on_path(tool: &str) -> bool {
+    if tool == "rsync" {
+        return !crate::host::which_all(tool).is_empty();
+    }
     let Some(paths) = std::env::var_os("PATH") else {
         return false;
     };

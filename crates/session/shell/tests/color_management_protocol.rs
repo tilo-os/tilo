@@ -35,6 +35,7 @@ use wayland_protocols::wp::color_management::v1::client::{
     wp_color_manager_v1::{
         self, Feature, Primaries, RenderIntent, TransferFunction, WpColorManagerV1,
     },
+    wp_image_description_creator_icc_v1::{self, WpImageDescriptionCreatorIccV1},
     wp_image_description_creator_params_v1::{self, WpImageDescriptionCreatorParamsV1},
     wp_image_description_v1::{self, WpImageDescriptionV1},
 };
@@ -146,6 +147,18 @@ impl Dispatch<WpImageDescriptionCreatorParamsV1, ()> for ClientAppState {
         _: &mut Self,
         _: &WpImageDescriptionCreatorParamsV1,
         _: wp_image_description_creator_params_v1::Event,
+        (): &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+    }
+}
+
+impl Dispatch<WpImageDescriptionCreatorIccV1, ()> for ClientAppState {
+    fn event(
+        _: &mut Self,
+        _: &WpImageDescriptionCreatorIccV1,
+        _: wp_image_description_creator_icc_v1::Event,
         (): &(),
         _: &Connection,
         _: &QueueHandle<Self>,
@@ -292,6 +305,98 @@ fn client_negotiation_advertises_bt2020_pq_and_parametric_feature() {
         "SetPrimaries feature not advertised: {:?}",
         app.supported_features
     );
+}
+
+#[test]
+fn unsupported_icc_new_id_disconnects_only_the_client_without_panicking_dispatch() {
+    let event_loop: EventLoop<'static, State> = EventLoop::try_new().expect("calloop event loop");
+    let mut display: Display<State> = Display::new().expect("wayland display");
+    let mut server_state = State::new(event_loop.handle(), display.handle());
+    let (client_side, server_side) = UnixStream::pair().expect("socket pair");
+    display
+        .handle()
+        .insert_client(server_side, Arc::new(ClientState::default()))
+        .expect("insert client");
+
+    let conn = Connection::from_socket(client_side).expect("client from socket");
+    let mut event_queue = conn.new_event_queue::<ClientAppState>();
+    let qh = event_queue.handle();
+    let _registry = conn.display().get_registry(&qh, ());
+    let mut app = ClientAppState::default();
+    pump(
+        &conn,
+        &mut event_queue,
+        &mut app,
+        &mut display,
+        &mut server_state,
+        |state| state.color_manager_done,
+        "color manager ready",
+    );
+
+    app.color_manager
+        .as_ref()
+        .expect("color manager")
+        .create_icc_creator(&qh, ());
+    conn.flush().expect("flush unsupported request");
+
+    // This exact dispatch used to abort the compositor in wayland-backend's
+    // post-callback new-id bookkeeping. A protocol error must be confined to
+    // this client instead.
+    display
+        .dispatch_clients(&mut server_state)
+        .expect("unsupported ICC request must not panic server dispatch");
+    display
+        .flush_clients()
+        .expect("flush client protocol error");
+    // Prove the error stayed client-scoped by inserting and dispatching a
+    // second ordinary Wayland client after the first one was killed.
+    let (survivor_side, survivor_server) = UnixStream::pair().expect("survivor socket pair");
+    display
+        .handle()
+        .insert_client(survivor_server, Arc::new(ClientState::default()))
+        .expect("insert survivor client");
+    let survivor = Connection::from_socket(survivor_side).expect("survivor client");
+    let survivor_queue = survivor.new_event_queue::<ClientAppState>();
+    let survivor_qh = survivor_queue.handle();
+    let _survivor_registry = survivor.display().get_registry(&survivor_qh, ());
+    survivor.flush().expect("flush survivor request");
+    display
+        .dispatch_clients(&mut server_state)
+        .expect("survivor dispatch remains serviceable");
+}
+
+#[test]
+fn unsupported_windows_scrgb_new_id_does_not_panic_dispatch() {
+    let event_loop: EventLoop<'static, State> = EventLoop::try_new().expect("calloop event loop");
+    let mut display: Display<State> = Display::new().expect("wayland display");
+    let mut server_state = State::new(event_loop.handle(), display.handle());
+    let (client_side, server_side) = UnixStream::pair().expect("socket pair");
+    display
+        .handle()
+        .insert_client(server_side, Arc::new(ClientState::default()))
+        .expect("insert client");
+    let conn = Connection::from_socket(client_side).expect("client from socket");
+    let mut event_queue = conn.new_event_queue::<ClientAppState>();
+    let qh = event_queue.handle();
+    let _registry = conn.display().get_registry(&qh, ());
+    let mut app = ClientAppState::default();
+    pump(
+        &conn,
+        &mut event_queue,
+        &mut app,
+        &mut display,
+        &mut server_state,
+        |state| state.color_manager_done,
+        "color manager ready",
+    );
+    app.color_manager
+        .as_ref()
+        .expect("color manager")
+        .create_windows_scrgb(&qh, ());
+    conn.flush().expect("flush unsupported request");
+    display
+        .dispatch_clients(&mut server_state)
+        .expect("unsupported scRGB request must not panic server dispatch");
 }
 
 #[test]

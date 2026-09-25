@@ -27,7 +27,7 @@ strip changes context; switching a window or tab changes focus within it.
 | Open/close Overview | Super+Tab | Overview button |
 | Preview workspace in Overview | Up/Down | Workspace rail |
 | Commit preview | Enter | Select workspace |
-| Previous/next workspace | Super+Up/Down | Workspace arrows/wheel |
+| Previous/next workspace | Super+Page Up/Page Down | Workspace arrows/wheel |
 | Previous/next strip | Super+Shift+Up/Down | Strip navigation |
 | Cycle previous/next window | Alt+Shift+Tab / Alt+Tab | Select group/tab |
 | Spatial previous/next window | Super+Left/Right | Select group/tab |
@@ -48,6 +48,9 @@ Super+Left/Right clamps because it describes a spatial direction.
 | Open recovery terminal | Super+Enter | Global search/open Terminal |
 | Close focused tab | Super+W | Tab close |
 | Duplicate focused tab | Super+D | Tab action |
+| Maximize/restore focused window group | Super+Up | Frame maximize/restore |
+| Move active tab into a new group | Super+Shift+Enter | Drag tab into a gap |
+| Move active tab into adjacent group | Super+[/] | Drag tab onto adjacent group |
 | Previous/next tab in current group | Ctrl+Shift+Tab / Ctrl+Tab | Tab strip |
 | Open wireless display picker | Super+P | Quick Settings / display route |
 

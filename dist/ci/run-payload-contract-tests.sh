@@ -33,6 +33,7 @@ fi
 
 "$repo_root/dist/session/tests/host-session-lifecycle.sh"
 python3 "$repo_root/dist/session/tests/flight-recorder.py"
+python3 "$repo_root/dist/session/tests/session-report.py"
 "$repo_root/dist/session/tests/private-dbus-handoff.sh"
 "$repo_root/dist/session/tests/private-user-manager-handoff.sh"
 "$repo_root/dist/rpm/test-signing-contract.sh"
@@ -65,6 +66,8 @@ done
 overlay_helper="$repo_root/dist/rpm/usroverlay-install.sh"
 grep -Fq -- "-name 'tilo-session-[0-9]*.rpm'" "$overlay_helper"
 grep -Fq -- 'include_devel=1' "$overlay_helper"
+grep -Fq -- '--arm-devel' "$overlay_helper"
+grep -Fq -- '--disarm-devel' "$overlay_helper"
 if grep -Fq -- "-name 'tilo-session*.rpm'" "$overlay_helper"; then
     echo "usroverlay helper still selects the optional developer RPM by default" >&2
     exit 1
@@ -80,6 +83,7 @@ install -m644 "$repo_root/dist/session/tilo-import-folders.desktop" "$fhs/usr/sh
 install -m755 "$repo_root/dist/session/tilo-session" "$fhs/usr/libexec/tilo-session"
 install -m755 "$repo_root/dist/session/tilo-session-runner" "$fhs/usr/libexec/tilo-session-runner"
 install -m755 "$repo_root/dist/session/tilo-flight-recorder.py" "$fhs/usr/libexec/tilo-flight-recorder"
+install -m755 "$repo_root/dist/session/tilo-session-report.py" "$fhs/usr/libexec/tilo-session-report"
 install -m755 "$repo_root/dist/session/tilo-session-dev" "$fhs/usr/libexec/tilo-session-dev"
 install -m644 "$repo_root/dist/session/tilo.desktop" "$fhs/usr/share/wayland-sessions/tilo.desktop"
 install -m644 "$repo_root/dist/session/tilo-app.desktop" "$fhs/usr/share/wayland-sessions/tilo-app.desktop"
@@ -224,6 +228,7 @@ sed "s#/usr/bin/tilo-import-folders#$nix/bin/tilo-import-folders#g" "$repo_root/
 install -m755 "$repo_root/dist/session/tilo-session" "$nix/libexec/tilo-session"
 install -m755 "$repo_root/dist/session/tilo-session-runner" "$nix/libexec/tilo-session-runner"
 install -m755 "$repo_root/dist/session/tilo-flight-recorder.py" "$nix/libexec/tilo-flight-recorder"
+install -m755 "$repo_root/dist/session/tilo-session-report.py" "$nix/libexec/tilo-session-report"
 install -m644 "$repo_root/dist/session/tilo.desktop" "$nix/share/wayland-sessions/tilo.desktop"
 install -m644 "$repo_root/os/etc/pam.d/tilo-unlock" "$nix/etc/pam.d/tilo-unlock"
 install -m644 "$repo_root/os/usr/share/xdg-desktop-portal/portals/tilo.portal" \

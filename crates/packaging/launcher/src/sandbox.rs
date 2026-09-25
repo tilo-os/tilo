@@ -359,6 +359,26 @@ fn push_continuity_environment(argv: &mut Vec<String>) {
             argv.extend(["--setenv".to_string(), key.to_string(), value]);
         }
     }
+    // The shell owns this path and always points it inside the app's one
+    // writable bind. Preserve it across `--clearenv` so startup checkpoints
+    // survive a compositor crash or forced reboot. Refuse arbitrary paths:
+    // this diagnostic must never turn into a sandbox write primitive.
+    if let Ok(value) = std::env::var("TILO_STARTUP_METRICS_PATH")
+        && value.starts_with("/run/tilo/app/startup-")
+        && std::path::Path::new(&value)
+            .extension()
+            .is_some_and(|extension| extension == "json")
+        && value.len() <= 160
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'/' | b'.' | b'-' | b'_'))
+    {
+        argv.extend([
+            "--setenv".to_string(),
+            "TILO_STARTUP_METRICS_PATH".to_string(),
+            value,
+        ]);
+    }
 }
 
 fn push_app_metadata(argv: &mut Vec<String>, manifest: &MinimalManifest, payload_mount: &Path) {
@@ -486,20 +506,21 @@ pub fn build_bwrap_argv_for_entry(
     argv.push("--dev".to_string());
     argv.push("/dev".to_string());
 
+    // Bind the runtime and its canonical ELF interpreter paths before the
+    // broad read-only `/lib` and `/lib64` profile mounts below. Bubblewrap
+    // processes these actions in order: attempting to create
+    // `/lib/ld-linux.so.2` beneath an already-mounted read-only `/lib` fails
+    // before the app can exec. The later parent bind leaves the existing
+    // child mount visible, while the selected bundle itself lives under the
+    // sandbox-private `/run` tree.
+    push_runtime_bundle(&mut argv, runtime);
+
     // The system read profile: fixed, identical for every package, fed by
     // no manifest field.
     crate::profile::push_system_profile(
         &mut argv,
         egress_decision(manifest, capabilities).shares_host_network(),
     );
-
-    // Keep the runtime outside the broad host `/usr` and `/usr/lib` profile.
-    // A nested mount there is either hidden when the parent is mounted later,
-    // or cannot be created after the read-only parent mount. `/run` is private
-    // to this sandbox, so the selected bundle remains visible regardless of
-    // system-profile ordering. Canonical loader/libc paths are still re-bound
-    // because ELFs hard-code `INTERP` and ignore LD_LIBRARY_PATH for it.
-    push_runtime_bundle(&mut argv, runtime);
 
     // User-granted capabilities after the system profile (read-write wins
     // over read-only). `-try` variants throughout: a stale grant (deleted
@@ -1091,6 +1112,41 @@ mod tests {
     }
 
     #[test]
+    fn argv_forwards_only_shell_owned_startup_metrics_paths() {
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set(
+            "TILO_STARTUP_METRICS_PATH",
+            "/run/tilo/app/startup-42-dead_beef.json",
+        );
+        let argv = build_bwrap_argv(
+            &mk_manifest("off"),
+            Path::new("/host/pkg"),
+            None,
+            &[],
+            None,
+            None,
+            &CapabilityPlan::empty(),
+        );
+        assert_eq!(
+            setenv_value(&argv, "TILO_STARTUP_METRICS_PATH"),
+            Some("/run/tilo/app/startup-42-dead_beef.json")
+        );
+
+        env.set("TILO_STARTUP_METRICS_PATH", "/home/user/metrics.json");
+        let argv = build_bwrap_argv(
+            &mk_manifest("off"),
+            Path::new("/host/pkg"),
+            None,
+            &[],
+            None,
+            None,
+            &CapabilityPlan::empty(),
+        );
+        drop(env);
+        assert_eq!(setenv_value(&argv, "TILO_STARTUP_METRICS_PATH"), None);
+    }
+
+    #[test]
     fn argv_exports_the_app_name_from_the_manifest() {
         // TILO_APP_NAME exported alongside TILO_PACKAGE_ID for the window title.
         let m = mk_manifest("off");
@@ -1239,8 +1295,8 @@ mod tests {
             .position(|w| w[0] == "--ro-bind-try" && w[1] == "/usr/lib" && w[2] == "/usr/lib")
             .expect("system /usr/lib profile bind");
         assert!(
-            rt_pos > usr_lib_pos,
-            "the selected runtime must be mounted after /usr/lib so the host profile cannot cover it: {argv:?}"
+            rt_pos < usr_lib_pos,
+            "the selected runtime and its canonical loader children must be mounted before the broad read-only library profile: {argv:?}"
         );
         assert!(
             !argv.iter().any(|arg| arg.ends_with("/libgcc_s.so.1")),

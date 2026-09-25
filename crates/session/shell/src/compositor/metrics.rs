@@ -6,7 +6,9 @@
 //! exact submitted serial).
 //!
 //! Entirely env-var driven (`TILO_FRAME_TRACE`, `TILO_FRAME_SUMMARY`, `TILO_FRAME_WARMUP_MS`);
-//! disabled, every [`FrameRecorder`] method is a `bool` branch. [`summarize`] is pure — the same function the live binary and unit tests call, so they can't drift.
+//! disabled, every [`FrameRecorder`] method is a `bool` branch. Production host sessions set a
+//! private trace path so the final second before an abrupt reset remains measurable. [`summarize`]
+//! is pure — the same function the live binary and unit tests call, so they can't drift.
 
 use std::io::Write;
 use std::time::{Duration, Instant};
@@ -44,6 +46,10 @@ pub struct FrameSample {
     /// Input-to-presenter-retirement for an asynchronously presented frame.
     /// Unlike `input_latency_us`, this cannot be satisfied merely by enqueueing.
     pub input_retirement_latency_us: Option<u32>,
+    /// Presentation queue was full while this tick had paint work to do.
+    pub backpressured: bool,
+    /// Microseconds after the target deadline when this frame was submitted.
+    pub deadline_late_us: u32,
 }
 
 impl FrameSample {
@@ -58,7 +64,7 @@ impl FrameSample {
     fn write_csv_row(&self, out: &mut impl Write) -> std::io::Result<()> {
         writeln!(
             out,
-            "{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}",
+            "{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}",
             self.seq,
             self.start_us,
             self.period_us,
@@ -78,6 +84,8 @@ impl FrameSample {
             self.input_retirement_latency_us
                 .map(|v| v.to_string())
                 .unwrap_or_default(),
+            u8::from(self.backpressured),
+            self.deadline_late_us,
         )
     }
 }
@@ -85,7 +93,7 @@ impl FrameSample {
 /// Header line for the `TILO_FRAME_TRACE` CSV, kept next to [`FrameSample::write_csv_row`] so the two cannot drift.
 pub const CSV_HEADER: &str = "seq,start_us,period_us,input_us,pump_us,layout_us,scene_us,\
 submit_us,testctl_us,clients_us,sleep_us,painted,present_async,input_latency_us,\
-input_retirement_latency_us";
+input_retirement_latency_us,backpressured,deadline_late_us";
 
 /// Percentile bundle for one measured quantity, in microseconds.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize)]
@@ -154,6 +162,8 @@ pub struct FrameSummary {
     /// Input-to-submit-return; this is input-to-queue on threaded presenters.
     pub input_latency: Percentiles,
     pub input_retirement_latency: Percentiles,
+    pub backpressured_ticks: u64,
+    pub deadline_lateness: Percentiles,
     /// Fraction of painted frames whose period was within [`ON_CADENCE_TOLERANCE_US`] of `target_period_us`; meaningless (reported 0.0) when no target was supplied.
     pub on_cadence_ratio: f64,
     /// The refresh interval the loop was aiming at, microseconds.
@@ -165,6 +175,10 @@ pub struct FrameSummary {
 pub const ON_CADENCE_TOLERANCE_US: u32 = 2_000;
 
 /// Reduce samples to a [`FrameSummary`]. Pure: no clock, no I/O, no env. `target_period_us` is the refresh interval the loop was pacing to; 0 disables the cadence ratio.
+#[allow(
+    clippy::too_many_lines,
+    reason = "one pure reduction keeps every summary field derived from the same sample pass"
+)]
 pub fn summarize(samples: &[FrameSample], target_period_us: u32) -> FrameSummary {
     if samples.is_empty() {
         return FrameSummary::default();
@@ -266,6 +280,14 @@ pub fn summarize(samples: &[FrameSample], target_period_us: u32) -> FrameSummary
                 .filter_map(|s| s.input_retirement_latency_us)
                 .collect::<Vec<_>>(),
         ),
+        backpressured_ticks: samples.iter().filter(|s| s.backpressured).count() as u64,
+        deadline_lateness: percentiles(
+            &samples
+                .iter()
+                .filter(|s| s.painted)
+                .map(|s| s.deadline_late_us)
+                .collect::<Vec<_>>(),
+        ),
         on_cadence_ratio,
         target_period_us,
     }
@@ -285,6 +307,12 @@ pub struct FrameRecorder {
     samples: Vec<FrameSample>,
     warmup_us: u64,
     trace: Option<std::io::BufWriter<std::fs::File>>,
+    /// Flush cadence for crash-durable production traces.  Flushing every row
+    /// perturbs the very loop being measured; flushing once per second bounds
+    /// hard-reset loss while keeping the hot path buffered.
+    next_trace_flush_us: u64,
+    trace_path: Option<std::path::PathBuf>,
+    trace_rows: usize,
     summary_path: Option<std::path::PathBuf>,
     target_period_us: u32,
     /// When an input was consumed and no painted frame has closed the loop on it yet.
@@ -298,6 +326,13 @@ pub struct FrameRecorder {
 
 /// Cap on retained samples: 200k ticks is ~55 minutes at 60 Hz and ~7 MB of `FrameSample`.
 const MAX_RETAINED: usize = 200_000;
+
+const TRACE_FLUSH_INTERVAL_US: u64 = 1_000_000;
+/// About 23 minutes at 144 ticks/s. Rewrites compactly at half this size, so
+/// the trace remains a small rolling pre-crash window instead of growing for
+/// the whole login. It must not exceed [`MAX_RETAINED`], whose in-memory tail
+/// supplies the compacted file.
+const MAX_TRACE_ROWS: usize = MAX_RETAINED;
 
 /// Env var naming the per-tick CSV trace path.
 pub const TRACE_ENV: &str = "TILO_FRAME_TRACE";
@@ -339,6 +374,9 @@ impl FrameRecorder {
             samples: Vec::new(),
             warmup_us: 0,
             trace: None,
+            next_trace_flush_us: TRACE_FLUSH_INTERVAL_US,
+            trace_path: None,
+            trace_rows: 0,
             summary_path: None,
             target_period_us: 0,
             pending_input: None,
@@ -358,6 +396,7 @@ impl FrameRecorder {
             .ok()
             .and_then(|v| v.trim().parse::<u64>().ok())
             .unwrap_or(DEFAULT_WARMUP_MS);
+        let mut opened_trace_path = None;
         let trace = trace_path.and_then(|p| match std::fs::File::create(&p) {
             Ok(mut f) => {
                 if let Err(e) = writeln!(f, "{CSV_HEADER}") {
@@ -367,6 +406,7 @@ impl FrameRecorder {
                     );
                     return None;
                 }
+                opened_trace_path = Some(std::path::PathBuf::from(p));
                 Some(std::io::BufWriter::new(f))
             }
             Err(e) => {
@@ -378,6 +418,7 @@ impl FrameRecorder {
         me.enabled = true;
         me.warmup_us = warmup_ms.saturating_mul(1_000);
         me.trace = trace;
+        me.trace_path = opened_trace_path;
         me.summary_path = summary_path.map(std::path::PathBuf::from);
         me.samples.reserve(4096);
         eprintln!(
@@ -461,6 +502,12 @@ impl FrameRecorder {
         self.cur.sleep_us = us(d);
     }
 
+    pub fn mark_backpressured(&mut self) {
+        if self.enabled {
+            self.cur.backpressured = true;
+        }
+    }
+
     /// Record the submit phase and close any outstanding input-latency measurement. `async_present` records whether the submit merely queued the frame for another thread.
     pub fn mark_submit(
         &mut self,
@@ -491,6 +538,12 @@ impl FrameRecorder {
             } else {
                 self.cur.input_retirement_latency_us = self.cur.input_latency_us;
             }
+        }
+    }
+
+    pub fn mark_deadline_lateness(&mut self, d: Duration) {
+        if self.enabled {
+            self.cur.deadline_late_us = us(d);
         }
     }
 
@@ -530,8 +583,64 @@ impl FrameRecorder {
             eprintln!("frame-metrics: trace write failed ({e}); disabling trace");
             self.trace = None;
         }
+        if sample.start_us >= self.next_trace_flush_us {
+            if let Some(trace) = self.trace.as_mut()
+                && let Err(error) = trace.flush()
+            {
+                eprintln!("frame-metrics: trace flush failed ({error}); disabling trace");
+                self.trace = None;
+            }
+            self.next_trace_flush_us = sample.start_us.saturating_add(TRACE_FLUSH_INTERVAL_US);
+        }
         if sample.start_us >= self.warmup_us && self.samples.len() < MAX_RETAINED {
             self.samples.push(sample);
+        }
+        self.trace_rows = self
+            .trace_rows
+            .saturating_add(usize::from(self.trace.is_some()));
+        if self.trace_rows >= MAX_TRACE_ROWS {
+            self.compact_trace();
+        }
+    }
+
+    fn compact_trace(&mut self) {
+        let (Some(path), Some(mut trace)) = (self.trace_path.clone(), self.trace.take()) else {
+            return;
+        };
+        if let Err(error) = trace.flush() {
+            eprintln!("frame-metrics: trace flush failed ({error}); disabling trace");
+            return;
+        }
+        let keep = MAX_TRACE_ROWS / 2;
+        let retained = self
+            .samples
+            .iter()
+            .rev()
+            .take(keep)
+            .copied()
+            .collect::<Vec<_>>();
+        match std::fs::File::create(&path) {
+            Ok(mut file) => {
+                if writeln!(file, "{CSV_HEADER}").is_err()
+                    || retained
+                        .iter()
+                        .rev()
+                        .try_for_each(|sample| sample.write_csv_row(&mut file))
+                        .is_err()
+                {
+                    eprintln!(
+                        "frame-metrics: compacting {} failed; disabling trace",
+                        path.display()
+                    );
+                    return;
+                }
+                self.trace_rows = retained.len();
+                self.trace = Some(std::io::BufWriter::new(file));
+            }
+            Err(error) => eprintln!(
+                "frame-metrics: reopening compacted trace {} failed ({error}); disabling trace",
+                path.display()
+            ),
         }
     }
 
@@ -704,6 +813,24 @@ mod tests {
             "a 60 Hz loop against a 60 Hz target must be ~100% on cadence, got {}",
             sum60.on_cadence_ratio
         );
+    }
+
+    #[test]
+    fn summarize_reports_backpressure_and_painted_deadline_lateness() {
+        let mut idle = sample(0, 0, 0, false);
+        idle.backpressured = true;
+        idle.deadline_late_us = 99_000;
+        let mut first = sample(1, 7_000, 7_000, true);
+        first.deadline_late_us = 300;
+        let mut second = sample(2, 14_000, 7_000, true);
+        second.backpressured = true;
+        second.deadline_late_us = 1_200;
+
+        let summary = summarize(&[idle, first, second], 6_944);
+        assert_eq!(summary.backpressured_ticks, 2);
+        assert_eq!(summary.deadline_lateness.count, 2);
+        assert_eq!(summary.deadline_lateness.p50, 300);
+        assert_eq!(summary.deadline_lateness.max, 1_200);
     }
 
     #[test]
@@ -959,6 +1086,8 @@ mod tests {
             present_async: false,
             input_latency_us: Some(12),
             input_retirement_latency_us: Some(13),
+            backpressured: true,
+            deadline_late_us: 14,
         }
         .write_csv_row(&mut buf)
         .expect("write csv row into a Vec");
@@ -968,6 +1097,28 @@ mod tests {
             CSV_HEADER.split(',').count(),
             "trace rows must have exactly as many columns as the header:\n  header: {CSV_HEADER}\n  row:    {}",
             row.trim_end()
+        );
+    }
+
+    #[test]
+    fn production_trace_flushes_periodically_without_waiting_for_clean_exit() {
+        let dir = tempfile::tempdir().expect("trace tempdir");
+        let path = dir.path().join("frame.csv");
+        let file = std::fs::File::create(&path).expect("create trace");
+        let mut file = file;
+        writeln!(file, "{CSV_HEADER}").expect("write trace header");
+        let mut recorder = FrameRecorder::disabled();
+        recorder.enabled = true;
+        recorder.trace = Some(std::io::BufWriter::new(file));
+        recorder.trace_path = Some(path.clone());
+        let base = Instant::now();
+        recorder.begin_tick(base + Duration::from_secs(1));
+        recorder.end_tick();
+
+        let bytes = std::fs::read(&path).expect("read flushed trace");
+        assert!(
+            !bytes.is_empty(),
+            "one-second trace must reach disk before Drop"
         );
     }
 }

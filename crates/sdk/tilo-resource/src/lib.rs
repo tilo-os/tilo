@@ -59,7 +59,8 @@
 //!   scripts list and invoke ([`publish`]), with permissions per action;
 //! * **history** — every action is a change attributed to its author with its
 //!   label and time ([`history`]); any version can be read back
-//!   ([`history::read_at`]);
+//!   ([`history::read_at`]) and restored, field by field and item by item,
+//!   from the record's stored [`Shape`];
 //! * **search** — text fields are indexed by default ([`Resource::search`]).
 //!
 //! ## Custom resource types
@@ -95,6 +96,7 @@ pub mod model;
 pub mod order;
 pub mod replica;
 pub mod resource;
+pub mod shape;
 
 pub use action::{
     ActionCx, ActionRef, Binds, Invoke, Mapped, Operation, Outcome, Refusal, Stamped,
@@ -106,6 +108,7 @@ pub use resource::{
     APPLY, APPLY_PARAM, ActionDecl, BuildAction, Resource, SearchEntry, build_action, encode,
     origin_now_ms, publish,
 };
+pub use shape::{FieldShape, Shape};
 pub use tilo_resource_macros::{Model, resource};
 
 /// Items the generated code refers to. Not part of the public API.

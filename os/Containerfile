@@ -1513,8 +1513,10 @@ COPY os/usr/share/xdg-desktop-portal/tilo-portals.conf /usr/share/xdg-desktop-po
 # privacy / discovery trade-off.
 COPY os/usr/lib/systemd/user/shell-peer-sync.service /usr/lib/systemd/user/shell-peer-sync.service
 
-# OS infra config (C3 zram swap, C4 locale).
-COPY os/etc/systemd/zram-generator.conf /etc/systemd/zram-generator.conf
+# OS infra config (C3 zram swap, C4 locale) and the suspend policy that
+# freezes user sessions before the kernel freezer reaches processes blocked
+# on the userspace collaborative filesystem.
+COPY os/etc/systemd/ /etc/systemd/
 COPY os/etc/locale.conf /etc/locale.conf
 COPY os/etc/chrony.conf /etc/chrony.conf
 COPY os/usr/share/tilo/installer-locales.txt /usr/share/tilo/installer-locales.txt

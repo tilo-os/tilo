@@ -97,7 +97,7 @@ const PRIMARY_IDENTITY_FILE: &str = "primary.json";
 /// because this is a compatibility migration for that section, not a global
 /// settings-document schema version.
 const HOST_INPUT_MIGRATION_VERSION_KEY: &str = "host_input_migration_version";
-const HOST_INPUT_MIGRATION_VERSION: u64 = 2;
+const HOST_INPUT_MIGRATION_VERSION: u64 = 3;
 
 /// Sequence for same-directory temporary owner-claim files.  The final claim
 /// is a hard link, not this name; `create_new` simply prevents a stale temp
@@ -201,9 +201,6 @@ fn host_keyboard_updates(
     read: &mut impl FnMut(&str, &str) -> Option<String>,
 ) -> serde_json::Map<String, serde_json::Value> {
     let mut input = serde_json::Map::new();
-    if existing.contains_key("keyboard_layout") || existing.contains_key("keyboard_layouts") {
-        return input;
-    }
     let Some(raw_sources) = read("org.gnome.desktop.input-sources", "sources") else {
         return input;
     };
@@ -211,8 +208,22 @@ fn host_keyboard_updates(
     let Some(active) = source_ids.first() else {
         return input;
     };
-    input.insert("keyboard_layout".into(), serde_json::json!(active));
-    input.insert("keyboard_layouts".into(), serde_json::json!(source_ids));
+    // Version 2 accidentally persisted the settings-store default (`us`) before
+    // it consulted the host.  Treat only that exact singleton/default state as
+    // an unowned migration value.  A multi-layout list or any non-US choice is
+    // an explicit Tilo preference and must continue to win.
+    let stale_v2_default = existing
+        .get(HOST_INPUT_MIGRATION_VERSION_KEY)
+        .and_then(serde_json::Value::as_u64)
+        .is_some_and(|version| version == 2)
+        && existing.get("keyboard_layout") == Some(&serde_json::json!("us"))
+        && existing.get("keyboard_layouts") == Some(&serde_json::json!(["us"]));
+    if !existing.contains_key("keyboard_layout") && !existing.contains_key("keyboard_layouts")
+        || stale_v2_default
+    {
+        input.insert("keyboard_layout".into(), serde_json::json!(active));
+        input.insert("keyboard_layouts".into(), serde_json::json!(source_ids));
+    }
     if !existing.contains_key("compose_key")
         && let Some(compose) = read("org.gnome.desktop.input-sources", "xkb-options")
             .and_then(|raw| parse_gnome_compose_key(&raw))
@@ -1051,6 +1062,52 @@ mod tests {
             host_keyboard_updates(&existing, &mut |_, _| Some("[('xkb', 'de')]".into())).is_empty(),
             "an existing Tilo keyboard selection must win as one coherent preference"
         );
+    }
+
+    #[test]
+    fn version_three_repairs_only_the_stale_version_two_us_default() {
+        let stale = serde_json::Map::from_iter([
+            ("keyboard_layout".into(), serde_json::json!("us")),
+            ("keyboard_layouts".into(), serde_json::json!(["us"])),
+            (
+                HOST_INPUT_MIGRATION_VERSION_KEY.into(),
+                serde_json::json!(2),
+            ),
+        ]);
+        let repaired = host_input_migration_updates(&stale, |schema, key| {
+            (schema == "org.gnome.desktop.input-sources" && key == "sources")
+                .then(|| "[('xkb', 'de+nodeadkeys')]".into())
+        });
+        assert_eq!(
+            repaired.get("keyboard_layout"),
+            Some(&serde_json::json!("de:nodeadkeys"))
+        );
+        assert_eq!(
+            repaired.get("keyboard_layouts"),
+            Some(&serde_json::json!(["de:nodeadkeys"]))
+        );
+        assert_eq!(
+            repaired.get(HOST_INPUT_MIGRATION_VERSION_KEY),
+            Some(&serde_json::json!(3))
+        );
+
+        let explicit = serde_json::Map::from_iter([
+            ("keyboard_layout".into(), serde_json::json!("us")),
+            (
+                "keyboard_layouts".into(),
+                serde_json::json!(["us", "de:nodeadkeys"]),
+            ),
+            (
+                HOST_INPUT_MIGRATION_VERSION_KEY.into(),
+                serde_json::json!(2),
+            ),
+        ]);
+        let preserved = host_input_migration_updates(&explicit, |schema, key| {
+            (schema == "org.gnome.desktop.input-sources" && key == "sources")
+                .then(|| "[('xkb', 'de+nodeadkeys')]".into())
+        });
+        assert!(!preserved.contains_key("keyboard_layout"));
+        assert!(!preserved.contains_key("keyboard_layouts"));
     }
 
     #[test]

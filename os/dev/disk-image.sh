@@ -24,6 +24,9 @@
 #                            create the account on first boot, never in this step
 #     --bootc-helper FILE     execute this verified ARM64 bootc inside the image
 #                            instead of the image's /usr/bin/bootc
+#     --offline-target-dir DIR
+#                            copy a verified, digest-pinned OCI target into the
+#                            live installer's writable /var for offline installs
 #     --raw                   leave the raw image, skip the qcow2 conversion
 #
 # Why not bib: bib has no composefs, UKI or backend-selection surface anywhere
@@ -78,6 +81,7 @@ RETAIN="${TILO_RETAINED_GENERATIONS:-3}"; UKI_BUDGET=160M
 KARGS=(); USERSPEC=""; TARGET_IMGREF=""; SEALED_SOURCE_IMGREF=""
 FIRSTBOOT_SEED=""
 BOOTC_HELPER=""
+OFFLINE_TARGET_DIR=""
 KEEP_RAW=0; DEFAULT_KARGS=yes
 
 while [ $# -gt 0 ]; do
@@ -99,6 +103,7 @@ while [ $# -gt 0 ]; do
     --sealed-source-imgref) SEALED_SOURCE_IMGREF="$2"; shift ;;
     --firstboot-seed) FIRSTBOOT_SEED="$2"; shift ;;
     --bootc-helper) BOOTC_HELPER="$2"; shift ;;
+    --offline-target-dir) OFFLINE_TARGET_DIR="$2"; shift ;;
     --raw) KEEP_RAW=1 ;;
     -h|--help) sed -n '2,20p' "$0"; exit 0 ;;
     -*) die "unknown option: $1" ;;
@@ -128,6 +133,14 @@ if [ -n "$FIRSTBOOT_SEED" ]; then
   source "$(dirname "${BASH_SOURCE[0]}")/../usr/libexec/tilo-firstboot-user"
   valid_sha512_crypt "$firstboot_hash" \
     || die "--firstboot-seed must contain a complete SHA-512 crypt hash"
+fi
+
+if [ -n "$OFFLINE_TARGET_DIR" ]; then
+  [ -d "$OFFLINE_TARGET_DIR" ] && [ ! -L "$OFFLINE_TARGET_DIR" ] \
+    || die "--offline-target-dir must name a regular directory"
+  python3 "$(dirname "${BASH_SOURCE[0]}")/installer-offline-target.py" \
+    verify "$OFFLINE_TARGET_DIR" \
+    || die "offline target OCI layout failed validation"
 fi
 
 if [ -n "$BOOTC_HELPER" ]; then
@@ -675,6 +688,36 @@ if [ -n "$FIRSTBOOT_SEED" ]; then
   sudo -n ln -sfn /usr/lib/systemd/system/tilo-firstboot-user.service \
     "$t_etc/systemd/system/multi-user.target.wants/tilo-firstboot-user.service"
   msg "seeded $firstboot_user for first-boot account creation"
+fi
+
+# The transport is copied to writable /var only after bootc has installed the
+# sealed live image. Its manifest and every blob are rechecked both before and
+# after the copy; the guest still verifies the CI signature before using it.
+if [ -n "$OFFLINE_TARGET_DIR" ]; then
+  t_var="$(sudo -n sh -c "ls -d $MNT/state/os/*/var $MNT/ostree/deploy/*/var 2>/dev/null | head -1")"
+  [ -n "$t_var" ] || die "could not find the installed live medium's /var"
+  sudo -n mount -o remount,rw "$MNT"
+  sudo -n install -d -m 0700 "$t_var/lib/tilo-installer"
+  sudo -n python3 "$(dirname "${BASH_SOURCE[0]}")/installer-offline-target.py" \
+    install "$OFFLINE_TARGET_DIR" "$t_var/lib/tilo-installer/target-oci" \
+    || die "could not stage the verified offline target into the live medium"
+  # The host runner may have no SELinux policy or restorecon at all. Use the
+  # install image's own file_contexts through the same confined offline-label
+  # method as first-boot account seeding above. The guest installer service
+  # must be able to read these blobs while SELinux remains enforcing.
+  label_args=(--rm --privileged -v "$t_var:/target-var")
+  if [ -n "$SRC_REF" ]; then
+    label_args+=(--network host
+      -v "$REGCONF:/etc/containers/registries.conf.d/98-local.conf:ro")
+  fi
+  sudo -n podman run "${label_args[@]}" "${TLS_ARGS[@]+"${TLS_ARGS[@]}"}" \
+    "$RUNREF" bash -c '
+      set -e
+      mount --bind /target-var /var
+      fc=/etc/selinux/targeted/contexts/files/file_contexts
+      test -r "$fc"
+      setfiles -F "$fc" /var/lib/tilo-installer/target-oci
+    ' || die "could not apply the installer image SELinux labels to the offline target"
 fi
 
 # WSL kernels can omit vfat entirely. bootc can still finalize the boot tree in

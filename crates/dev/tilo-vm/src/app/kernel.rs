@@ -105,7 +105,7 @@ pub fn rsync_modules(
         .map(|p| format!("{}/", p.display()))
         .unwrap_or_default();
     CommandLine::new(
-        "rsync",
+        &crate::host::rsync_program().unwrap_or_else(|| "rsync".into()),
         &["--archive", "--delete", "--checksum", "--compress"],
     )
     .arg("--rsh")
@@ -832,8 +832,12 @@ mod tests {
             &vm_staging_dir("wt-1a2b"),
         );
         let text = command.display();
+        assert_eq!(
+            command.program,
+            crate::host::rsync_program().unwrap_or_else(|| "rsync".into())
+        );
         assert!(
-            text.starts_with("rsync --archive --delete --checksum --compress"),
+            text.contains("--archive --delete --checksum --compress"),
             "{text}"
         );
         assert!(

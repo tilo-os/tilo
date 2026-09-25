@@ -90,6 +90,7 @@ tempfile.workspace = true
 # One owner for ~/.config/tilo/settings.json.
 settings-store = { path = "../../system/settings-store" }
 xdg-paths = { path = "../../system/xdg-paths" }
+tilo-startup-metrics = { path = "../../system/tilo-startup-metrics" }
 desktop-policy = { path = "../../system/desktop-policy" }
 # Canonical desktop model: workspaces, strips, groups, tabs, permissions.
 tilo-desktop-model = { path = "../desktop-model" }
@@ -168,7 +169,6 @@ automerge.workspace = true
 tilo-automerge.workspace = true
 taffy.workspace = true
 vello.workspace = true
-tilo-startup-metrics = { path = "../../system/tilo-startup-metrics" }
 parking_lot.workspace = true
 
 libc.workspace = true
@@ -287,6 +287,7 @@ runtime-portal = { path = "../../runtime/runtime-portal" }
 atomic-file = { path = "../../system/atomic-file", features = ["test-support"] }
 qos-session-peer = { path = "../../hosting/qos-session-peer", default-features = false, features = ["test-support"] }
 qos-action-broker = { path = "../../collab/qos-action-broker", features = ["test-support"] }
+tilo-startup-metrics = { path = "../../system/tilo-startup-metrics", features = ["test-support"] }
 collab-fixtures = { path = "../../collab/collab-fixtures" }
 rand_chacha.workspace = true
 pollster.workspace = true

@@ -1148,8 +1148,9 @@ sudo rpm-ostree install ./dist/rpm/build/RPMS/x86_64/tilo-session-[0-9]*.rpm
 # Or: this boot only, no reboot. Mounts a writable overlay on /usr and unpacks
 # the same files into it. Everything under /usr is gone at the next boot.
 sudo dist/rpm/usroverlay-install.sh
-# Add `--devel` only when you explicitly need the developer session entry.
-sudo dist/rpm/usroverlay-install.sh --devel
+# Arm the developer entry only while you explicitly need it, then disarm it.
+sudo dist/rpm/usroverlay-install.sh --arm-devel
+sudo dist/rpm/usroverlay-install.sh --disarm-devel
 sudo dist/rpm/usroverlay-install.sh --uninstall
 ```
 
@@ -1198,7 +1199,8 @@ code 38), which is a refusal, not an unimplemented backend.
 
 ### Edit → build → log into your own build
 
-Once, after installing `tilo-session-devel`:
+After installing `tilo-session-devel`, or while the transient developer entry is
+armed with `usroverlay-install.sh --arm-devel`:
 
 ```bash
 cargo build -p shell --features dev-session
@@ -1209,6 +1211,17 @@ chmod 600 ~/.config/tilo/dev-session
 Then log out and pick **"Tilo (my build)"**. Every iteration after that is
 `cargo build -p shell --features dev-session`, log out, log back in — the config
 file keeps pointing at the same path.
+
+For a transient host trial, disarm the entry when that development run is over:
+
+```bash
+sudo dist/rpm/usroverlay-install.sh --disarm-devel
+```
+
+This removes only `tilo-dev.desktop` and its developer wrapper; the packaged
+**Tilo** session remains installed. A persistently layered
+`tilo-session-devel` package remains an explicit package-manager choice and must
+be uninstalled through the package manager when no longer wanted.
 
 `--features dev-session` adds the marker required by `/usr/libexec/tilo-session-dev`.
 Release builds omit this marker even with the feature enabled, unless they also

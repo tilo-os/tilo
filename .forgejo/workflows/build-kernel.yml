@@ -52,6 +52,11 @@ on:
       - "tools/ci/workflow_applicability.py"
       - "tools/ci/prepare_pr_history.py"
   workflow_dispatch:
+    inputs:
+      rpms_ref:
+        description: Signed frozen RPM index to build against after a snapshot handoff
+        required: false
+        type: string
   workflow_call:
     inputs:
       rpms_ref:

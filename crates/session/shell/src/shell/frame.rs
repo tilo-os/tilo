@@ -456,6 +456,20 @@ pub struct FrameBuilder {
     next_scene_revision: u64,
 }
 
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct AnimationDemand {
+    pub host: u32,
+    pub floating: bool,
+    pub transient: bool,
+    pub osk: bool,
+}
+
+impl AnimationDemand {
+    pub(crate) fn any(self) -> bool {
+        self.host != 0 || self.floating || self.transient || self.osk
+    }
+}
+
 struct FramePresentationInputs {
     text_renderer: TextRenderer,
     theme: Theme,
@@ -1659,19 +1673,25 @@ impl FrameBuilder {
     /// loop uses this to decide whether the next frame needs repainting, so
     /// it can idle instead of burning a core on an unchanged scene.
     pub fn needs_animation_frame(&self) -> bool {
-        self.host.needs_animation_frame()
-            || self
+        self.animation_demand().any()
+    }
+
+    pub(crate) fn animation_demand(&self) -> AnimationDemand {
+        AnimationDemand {
+            host: self.host.animation_demand_bits(Instant::now()),
+            floating: self
                 .floating_overlays
                 .iter()
-                .any(|(_, surface)| surface.needs_animation_frame())
-            || self
+                .any(|(_, surface)| surface.needs_animation_frame()),
+            transient: self
                 .transient_overlays
                 .iter()
-                .any(|(_, surface)| surface.needs_animation_frame())
-            || self
+                .any(|(_, surface)| surface.needs_animation_frame()),
+            osk: self
                 .osk_overlay
                 .as_ref()
-                .is_some_and(Widget::needs_animation_frame)
+                .is_some_and(Widget::needs_animation_frame),
+        }
     }
 
     /// Earliest one-shot widget deadline. Unlike animation demand this lets

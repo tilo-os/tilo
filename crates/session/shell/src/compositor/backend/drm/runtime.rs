@@ -8,7 +8,7 @@
 //! runs under `cargo test`. `DrmRuntime::new` fails cleanly with `Err` rather than panicking when there is no seat.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
-use std::os::fd::OwnedFd;
+use std::os::fd::{AsFd, AsRawFd, FromRawFd, OwnedFd};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Receiver, Sender, SyncSender, channel, sync_channel};
 use std::sync::{Arc, Mutex};
@@ -75,6 +75,10 @@ struct KeyRepeat {
 }
 
 impl KeyRepeat {
+    fn next_deadline(&self) -> Option<std::time::Instant> {
+        self.held.as_ref().map(|held| held.next)
+    }
+
     fn press(
         &mut self,
         keycode: xkb::Keycode,
@@ -2281,7 +2285,6 @@ pub struct DrmRuntime {
     /// compositor rather than Settings so closing/crashing the app cannot
     /// strand the session on a blank mode.
     last_display_transaction_check: std::time::Instant,
-    last_display_snapshot_publish: std::time::Instant,
     last_icc_profile_refresh: std::time::Instant,
     icc_profiles: IccProfileWorker,
 }
@@ -2483,6 +2486,37 @@ fn register_event_sources(
 }
 
 impl DrmRuntime {
+    /// Duplicate the internal calloop poll fd so a parent loop can wait on
+    /// libinput/libseat/udev readiness directly. The duplicate owns only the
+    /// descriptor reference; `event_loop` remains the sole event dispatcher.
+    ///
+    /// # Errors
+    ///
+    /// Returns the OS error when the descriptor cannot be duplicated.
+    pub fn duplicate_event_fd(&self) -> std::io::Result<OwnedFd> {
+        let raw = unsafe {
+            libc::fcntl(
+                self.event_loop.as_fd().as_raw_fd(),
+                libc::F_DUPFD_CLOEXEC,
+                3,
+            )
+        };
+        if raw < 0 {
+            Err(std::io::Error::last_os_error())
+        } else {
+            // SAFETY: F_DUPFD_CLOEXEC returned a new descriptor owned by us.
+            Ok(unsafe { OwnedFd::from_raw_fd(raw) })
+        }
+    }
+
+    /// Deadline for work generated wholly inside this runtime rather than by
+    /// one of its registered fds. Native keyboard repeat is the only such
+    /// source today; exposing it lets the parent compositor block on the
+    /// nested calloop fd when otherwise idle without delaying held keys.
+    pub fn next_service_deadline(&self) -> Option<std::time::Instant> {
+        self.dispatch.key_repeat.next_deadline()
+    }
+
     /// Acquire the session, enumerate DRM devices, attach libinput, and wire everything onto an internal calloop — returns `Err`, not a panic, matching the binary entry point's `eprintln!` + `exit(1)` contract.
     ///
     /// # Errors
@@ -2594,7 +2628,6 @@ impl DrmRuntime {
             scanouts,
             commands: Some(rx),
             last_display_transaction_check: std::time::Instant::now(),
-            last_display_snapshot_publish: std::time::Instant::now(),
             last_icc_profile_refresh: std::time::Instant::now(),
             icc_profiles,
         })
@@ -2713,7 +2746,11 @@ impl DrmRuntime {
 
     /// Check the timed display confirmation independently of settings-file
     /// changes. The compositor loop calls this continuously, but filesystem
-    /// work is bounded to four times a second.
+    /// work is bounded to four times a second. Capability snapshots are
+    /// published only when their inputs change (startup, hotplug, display
+    /// settings, or ICC results): building one force-probes every KMS
+    /// connector, and doing that periodically on this input-thread path can
+    /// stall pointer and keyboard dispatch for seconds on real hardware.
     pub fn poll_display_transaction(&mut self) {
         let now = std::time::Instant::now();
         if now.duration_since(self.last_display_transaction_check)
@@ -2741,12 +2778,6 @@ impl DrmRuntime {
         if now.duration_since(self.last_icc_profile_refresh) >= std::time::Duration::from_secs(30) {
             self.last_icc_profile_refresh = now;
             self.icc_profiles.request_refresh();
-        }
-        if now.duration_since(self.last_display_snapshot_publish)
-            >= std::time::Duration::from_secs(5)
-        {
-            self.last_display_snapshot_publish = now;
-            self.dispatch.publish_display_snapshot();
         }
         let Some(transaction) = settings_store::hardware::DisplayTransaction::load() else {
             return;
@@ -5264,7 +5295,12 @@ mod tests {
         let start = std::time::Instant::now();
         let key = xkb::Keycode::new(38); // evdev KEY_A + 8
         let mut repeat = KeyRepeat::default();
+        assert_eq!(repeat.next_deadline(), None);
         repeat.press(key, start, std::time::Duration::from_millis(300), 20);
+        assert_eq!(
+            repeat.next_deadline(),
+            Some(start + std::time::Duration::from_millis(300))
+        );
         assert!(
             repeat
                 .due(start + std::time::Duration::from_millis(299))
@@ -5275,10 +5311,15 @@ mod tests {
             [key]
         );
         assert_eq!(
+            repeat.next_deadline(),
+            Some(start + std::time::Duration::from_millis(350))
+        );
+        assert_eq!(
             repeat.due(start + std::time::Duration::from_millis(401)),
             [key, key]
         );
         repeat.release(key);
+        assert_eq!(repeat.next_deadline(), None);
         assert!(
             repeat
                 .due(start + std::time::Duration::from_secs(1))

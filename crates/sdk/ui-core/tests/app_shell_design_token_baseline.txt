@@ -70,7 +70,6 @@ apps/word-processor/src/widget.rs literal_color 18
 apps/word-processor/src/widget.rs white_or_black 2
 crates/session/shell/src/compositor/backend/headless.rs literal_color 1
 crates/session/shell/src/compositor/backend/winit.rs literal_color 1
-crates/session/shell/src/compositor/capture.rs white_or_black 2
 crates/session/shell/src/compositor/projection_capture.rs literal_color 1
 crates/session/shell/src/shell/frame.rs literal_color 1
 crates/session/shell/src/shell/frame.rs white_or_black 2

@@ -328,6 +328,16 @@ fn create_window_render_prepared(
 
 fn create_native_renderer(device_handle: &crate::gpu::DeviceHandle) -> Result<Renderer, String> {
     let device = &device_handle.device;
+    // Vello's default heuristic uses every available core minus two. On a
+    // 16-thread laptop that means fourteen simultaneous Vulkan pipeline
+    // compilations for each freshly opened app, competing with the compositor
+    // and making the whole desktop appear frozen. Two workers keep startup
+    // parallel without turning one window into a system-wide CPU burst.
+    let shader_threads = std::env::var("TILO_VELLO_INIT_THREADS")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .and_then(std::num::NonZeroUsize::new)
+        .unwrap_or(std::num::NonZeroUsize::MIN.saturating_add(1));
     tilo_startup_metrics::mark("window-vello-init-start");
     let renderer = Renderer::new(
         device,
@@ -341,7 +351,7 @@ fn create_native_renderer(device_handle: &crate::gpu::DeviceHandle) -> Result<Re
             // this framework never selects, increasing startup and GPU
             // memory pressure on exactly the low-end devices we target.
             antialiasing_support: vello::AaSupport::area_only(),
-            num_init_threads: None,
+            num_init_threads: Some(shader_threads),
             pipeline_cache: None,
         },
     )

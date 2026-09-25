@@ -286,10 +286,10 @@ impl HostApplicationsProvider {
                         drop(tree);
                         drop(st);
                         host_apps::queue_launch(host_apps::QueuedLaunch {
-                            desktop_id: app.desktop_id,
-                            display_name: app.name,
+                            app,
                             placement,
                             portal_workspace_id,
+                            requested_at: std::time::Instant::now(),
                         })
                     } else {
                         host_apps::launch(&desktop_id, None).map(|_| ())

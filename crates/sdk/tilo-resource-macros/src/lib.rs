@@ -30,6 +30,9 @@ fn krate() -> Tokens {
 ///
 /// Field attributes: `#[model(rename = "key")]`, `#[model(skip)]` (not
 /// stored; `Default::default()` on read).
+///
+/// A struct's `Model::SHAPE` lists its stored fields, so layout-aware services
+/// (History restore) reconcile it field by field.
 #[proc_macro_derive(Model, attributes(model))]
 pub fn derive_model(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
@@ -79,6 +82,7 @@ fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
                 let mut missing = Vec::new();
                 let mut writes = Vec::new();
                 let mut texts = Vec::new();
+                let mut shapes = Vec::new();
                 for field in &fields.named {
                     let ident = field.ident.as_ref().ok_or_else(|| {
                         syn::Error::new(field.span(), "named field without a name")
@@ -97,9 +101,15 @@ fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
                     ));
                     writes.push(quote!(#krate::write_key::<#ty>(doc, obj, #key, &self.#ident)?;));
                     texts.push(quote!(#krate::Model::collect_text(&self.#ident, out);));
+                    shapes.push(quote!(#krate::FieldShape {
+                        key: #key,
+                        shape: <#ty as #krate::Model>::SHAPE,
+                    }));
                 }
                 Ok(quote! {
                     impl #impl_generics #krate::Model for #name #type_generics #where_clause {
+                        const SHAPE: #krate::Shape = #krate::Shape::Record(&[#(#shapes),*]);
+
                         fn load(
                             doc: &#krate::Doc,
                             value: &#krate::__private::Value<'_>,
@@ -156,6 +166,8 @@ fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
                     .ok_or_else(|| syn::Error::new(fields.span(), "expected one field"))?;
                 Ok(quote! {
                     impl #impl_generics #krate::Model for #name #type_generics #where_clause {
+                        const SHAPE: #krate::Shape = <#ty as #krate::Model>::SHAPE;
+
                         fn load(
                             doc: &#krate::Doc,
                             value: &#krate::__private::Value<'_>,
@@ -778,6 +790,10 @@ fn expand_resource(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Resul
 
             fn search(state: &Self) -> ::std::vec::Vec<#krate::SearchEntry> {
                 #search
+            }
+
+            fn shape() -> ::core::option::Option<#krate::Shape> {
+                ::core::option::Option::Some(<Self as #krate::Model>::SHAPE)
             }
         }
     })
