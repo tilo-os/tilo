@@ -516,7 +516,12 @@ mod tests {
         );
         assert!(platform.writes.is_empty());
         std::fs::remove_file(platform.var("BootNext")).unwrap();
-        platform.image[0] ^= 1;
+        let loader_offset = platform
+            .image
+            .windows(b"verified ARM64 loader".len())
+            .position(|bytes| bytes == b"verified ARM64 loader")
+            .unwrap();
+        platform.image[loader_offset] ^= 1;
         assert!(arm(&mut platform, &receipt).is_err());
         assert!(platform.writes.is_empty());
         platform.disk.guid = "99999999-bbbb-4ccc-8ddd-eeeeeeeeeeee".into();
