@@ -200,6 +200,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::float_cmp,
+        reason = "the rhythm tokens are exact literals, not computed values"
+    )]
     fn rhythm_is_monotone_token_steps() {
         const { assert!(rhythm::TIGHT < rhythm::RELATED) };
         const { assert!(rhythm::RELATED < rhythm::SIBLING) };
