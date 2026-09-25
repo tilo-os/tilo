@@ -4,6 +4,7 @@
 
 use super::container::DocxContainer;
 use crate::format::CodecError;
+use crate::preserve::{InlinePiece, MARK_DOCX_XML, inline_pieces, merge_root_namespaces};
 use crate::resolved::Resolved;
 use crate::xml_escape::{escape_attr, push_text};
 use qdoc::export::InlinePlan;
@@ -447,16 +448,18 @@ pub(crate) fn export(doc: DocRef, content: &dyn ContentSource) -> Result<Vec<u8>
         .blocks
         .iter()
         .rev()
-        .find_map(|b| match b.attrs.get("xml") {
-            Some(AttrVal::Str(xml))
-                if b.kind == "fidelity" && super::section::is_section_properties(xml) =>
-            {
-                Some(xml.as_str())
-            }
-            _ => None,
-        });
+        .filter(|b| b.kind == "fidelity")
+        .filter_map(|b| crate::preserve::fidelity_xml(b, "docx"))
+        .find(|xml| super::section::is_section_properties(xml));
     let section = super::section::plan(&mut c, original_sectpr, &hf_parts, &cols);
     let sectpr = section.sectpr.clone();
+    let root = qdoc::model::preserved_part(
+        doc.doc,
+        doc.c,
+        super::DOCUMENT_ROOT_KEY,
+        &tilo_content::NoContent,
+    )
+    .and_then(|b| String::from_utf8(b).ok());
     let notes = super::notes::export_notes(&doc);
     let comments = super::comments::export_comments(&doc);
     let (document, named_refs, numbering, images) = build_document_xml(
@@ -465,6 +468,7 @@ pub(crate) fn export(doc: DocRef, content: &dyn ContentSource) -> Result<Vec<u8>
         &notes.id_map,
         &notes.kind_map,
         &comments.id_map,
+        root.as_deref(),
     );
     let has_lists = snap.blocks.iter().any(|b| b.kind == "list_item");
     // A document default language forces styles.xml emission via `<w:docDefaults>`, so the language always has a home.
@@ -1033,22 +1037,42 @@ fn render_runs(text: &str, marks: &[qdoc::document::MarkSpan], ids: &RunIds) -> 
             None => (String::new(), ""),
         };
         let rpr = run_props(&run.marks);
+        // An unmodeled inline element kept verbatim: re-emitted in place of its placeholder.
+        let atom = run
+            .marks
+            .iter()
+            .find(|m| m.name == MARK_DOCX_XML)
+            .and_then(|m| m.value.as_str());
         out.push_str(&xref_open);
         out.push_str(&wrap_open);
-        out.push_str("<w:r>");
-        if !rpr.is_empty() {
-            let _ = write!(out, "<w:rPr>{rpr}</w:rPr>");
+        let pieces = match atom {
+            Some(_) => inline_pieces(run.text),
+            None => vec![InlinePiece::Text(run.text)],
+        };
+        for piece in pieces {
+            match piece {
+                InlinePiece::Atom => out.push_str(atom.unwrap_or_default()),
+                InlinePiece::Text(text) => push_run(&mut out, text, &rpr, is_del),
+            }
         }
-        if is_del {
-            out.push_str(&del_run_content(run.text));
-        } else {
-            out.push_str(&run_content(run.text));
-        }
-        out.push_str("</w:r>");
         out.push_str(wrap_close);
         out.push_str(xref_close);
     }
     out
+}
+
+/// One `w:r` of `text` with run properties `rpr`; deleted text uses `w:delText`.
+fn push_run(out: &mut String, text: &str, rpr: &str, is_del: bool) {
+    out.push_str("<w:r>");
+    if !rpr.is_empty() {
+        let _ = write!(out, "<w:rPr>{rpr}</w:rPr>");
+    }
+    if is_del {
+        out.push_str(&del_run_content(text));
+    } else {
+        out.push_str(&run_content(text));
+    }
+    out.push_str("</w:r>");
 }
 
 fn jc_xml(b: &BlockView) -> String {
@@ -1441,7 +1465,7 @@ fn render_block(
         }
         "fidelity" => {
             // Section properties are rebuilt and appended after the last block.
-            if let Some(AttrVal::Str(xml)) = b.attrs.get("xml")
+            if let Some(xml) = crate::preserve::fidelity_xml(b, "docx")
                 && !super::section::is_section_properties(xml)
             {
                 body.push_str(xml);
@@ -1482,6 +1506,7 @@ fn build_document_xml(
     note_ids: &BTreeMap<String, i64>,
     note_kinds: &BTreeMap<String, qdoc::model::NoteKind>,
     comment_ids: &BTreeMap<String, i64>,
+    root: Option<&str>,
 ) -> (String, BTreeSet<String>, Numbering, ImageExport) {
     let mut body = String::new();
     let mut named_refs: BTreeSet<String> = BTreeSet::new();
@@ -1495,15 +1520,17 @@ fn build_document_xml(
         .enumerate()
         .map(|(i, c)| (c.id.clone(), index_to_i64(i)))
         .collect();
-    // Bookmark ids are assigned from 0 in sorted-name order so output is deterministic.
+    // Bookmark ids are assigned in sorted-name order so output is deterministic, from the
+    // first id no verbatim-kept bookmark uses.
     let bookmark_ids: BTreeMap<String, i64> = {
+        let base = first_free_bookmark_id(snap);
         let mut names: Vec<String> = snap.bookmarks.iter().map(|bm| bm.name.clone()).collect();
         names.sort();
         names.dedup();
         names
             .into_iter()
             .enumerate()
-            .map(|(i, name)| (name, index_to_i64(i)))
+            .map(|(i, name)| (name, index_to_i64(i).saturating_add(base)))
             .collect()
     };
     let ids = RunIds {
@@ -1527,12 +1554,89 @@ fn build_document_xml(
         );
     }
 
+    // The imported document's root keeps its namespace declarations (and `mc:Ignorable`), so
+    // the elements carried through verbatim resolve; the ones this exporter writes are added.
+    let root = root
+        .and_then(|r| merge_root_namespaces(r, "w:document", DOCUMENT_NAMESPACES))
+        .unwrap_or_else(|| {
+            let mut tag = String::from("<w:document");
+            for (prefix, uri) in DOCUMENT_NAMESPACES {
+                let _ = write!(tag, r#" xmlns:{prefix}="{uri}""#);
+            }
+            tag.push('>');
+            tag
+        });
     // sectPr is a direct child of `w:body`, placed after the last block.
     let document = format!(
         r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<w:document xmlns:w="{W_NS}" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:m="http://schemas.openxmlformats.org/officeDocument/2006/math" xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing" xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006" xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:v="urn:schemas-microsoft-com:vml" xmlns:w10="urn:schemas-microsoft-com:office:word" xmlns:wne="http://schemas.microsoft.com/office/word/2006/wordml"><w:body>{body}{sectpr}</w:body></w:document>"#
+{root}<w:body>{body}{sectpr}</w:body></w:document>"#
     );
     (document, named_refs, numbering, imgs)
+}
+
+/// The namespaces the exported `word/document.xml` declares on its root.
+const DOCUMENT_NAMESPACES: &[(&str, &str)] = &[
+    ("w", W_NS),
+    (
+        "r",
+        "http://schemas.openxmlformats.org/officeDocument/2006/relationships",
+    ),
+    (
+        "m",
+        "http://schemas.openxmlformats.org/officeDocument/2006/math",
+    ),
+    (
+        "wp",
+        "http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing",
+    ),
+    (
+        "mc",
+        "http://schemas.openxmlformats.org/markup-compatibility/2006",
+    ),
+    ("o", "urn:schemas-microsoft-com:office:office"),
+    ("v", "urn:schemas-microsoft-com:vml"),
+    ("w10", "urn:schemas-microsoft-com:office:word"),
+    (
+        "wne",
+        "http://schemas.microsoft.com/office/word/2006/wordml",
+    ),
+];
+
+/// The largest `w:id` of a `w:bookmarkStart` inside XML carried through verbatim, so the
+/// bookmarks the exporter numbers itself start above it and never collide.
+fn max_bookmark_id(xml: &str) -> Option<i64> {
+    let mut max = None;
+    let mut rest = xml;
+    while let Some(at) = rest.find("<w:bookmarkStart") {
+        rest = rest.get(at.saturating_add(1)..).unwrap_or_default();
+        let tag = rest
+            .get(..rest.find('>').unwrap_or(rest.len()))
+            .unwrap_or_default();
+        let id = tag
+            .find("w:id=\"")
+            .and_then(|p| tag.get(p.saturating_add(6)..))
+            .and_then(|v| v.split('"').next())
+            .and_then(|v| v.parse::<i64>().ok());
+        max = max.max(id);
+    }
+    max
+}
+
+/// The first bookmark id free of every id used by verbatim XML in `snap`.
+fn first_free_bookmark_id(snap: &DocSnapshot) -> i64 {
+    let verbatim = snap.blocks.iter().flat_map(|b| {
+        let block = crate::preserve::fidelity_xml(b, "docx");
+        let inline = b
+            .marks
+            .iter()
+            .filter(|m| m.name == MARK_DOCX_XML)
+            .filter_map(|m| m.value.as_str());
+        block.into_iter().chain(inline)
+    });
+    verbatim
+        .filter_map(max_bookmark_id)
+        .max()
+        .map_or(0, |m| m.saturating_add(1))
 }
 
 #[cfg(test)]
