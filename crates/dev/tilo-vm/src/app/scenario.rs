@@ -611,9 +611,7 @@ impl App {
             ],
         );
         if scrubbed.is_err() && plan.run.is_dir() {
-            let _ = self.runner.output(&plan.vm(&["stop"]));
-            std::fs::remove_dir_all(&plan.run)
-                .map_err(CliError::io("removing unsanitized VM runtime logs"))?;
+            discard_unsanitized_runtime(&plan, &mut self.runner)?;
         }
         let withheld = scrubbed.map_err(CliError::io("scrubbing scenario artifacts and logs"))?;
         if !plan.keep && !preserve_failed_external {
@@ -986,8 +984,9 @@ fn scrub_scenario_logs_with(
     secrets: &[&str],
     mut inspect: impl FnMut(&Path, &[&str]) -> std::io::Result<Vec<PathBuf>>,
 ) -> std::io::Result<Vec<PathBuf>> {
-    // Both paths are attempted even if the first fails. On any failure, never
-    // retain a runtime directory that may contain raw serial output.
+    // Both paths are attempted even if the first fails. The caller must stop
+    // the VM before deleting a runtime directory after either failure: the
+    // pid file must survive until the stop command has used it.
     let artifacts = inspect(out, secrets);
     let runtime = if run.is_dir() {
         inspect(run, secrets)
@@ -999,16 +998,27 @@ fn scrub_scenario_logs_with(
             artifacts.extend(runtime);
             Ok(artifacts)
         }
-        (artifacts, runtime) => {
-            if run.is_dir() {
-                std::fs::remove_dir_all(run)?;
-            }
-            Err(artifacts
-                .err()
-                .or_else(|| runtime.err())
-                .expect("one scrub failed"))
-        }
+        (artifacts, runtime) => Err(artifacts
+            .err()
+            .or_else(|| runtime.err())
+            .expect("one scrub failed")),
     }
+}
+
+fn discard_unsanitized_runtime(plan: &Plan, runner: &mut dyn Runner) -> Result<(), CliError> {
+    // A failed first stop may leave QEMU holding serial.log open. Never delete
+    // qemu.pid before a second stop and a confirmed stopped status.
+    let _ = runner.output(&plan.vm(&["stop"]));
+    let stopped = runner
+        .output(&plan.vm(&["status"]))
+        .is_ok_and(|status| status.success && status.stdout.trim_start().starts_with("stopped"));
+    if !stopped {
+        return Err(CliError::Unsupported {
+            what: "unsanitized VM runtime logs".into(),
+            alternative: "VM is still running; stop it and remove its runtime logs before retaining artifacts".into(),
+        });
+    }
+    std::fs::remove_dir_all(&plan.run).map_err(CliError::io("removing unsanitized VM runtime logs"))
 }
 
 /// Poll until the console answers as `app`, returning its first state.
@@ -1101,7 +1111,7 @@ mod tests {
     }
 
     #[test]
-    fn scrub_failure_still_checks_runtime_and_removes_it() {
+    fn scrub_failure_still_checks_runtime_and_preserves_pid_for_stop() {
         let dir = tempfile::tempdir().unwrap();
         let out = dir.path().join("artifacts");
         let run = dir.path().join("runtime");
@@ -1120,20 +1130,19 @@ mod tests {
         .unwrap_err();
         assert_eq!(error.to_string(), "injected artifact read failure");
         assert_eq!(inspected, [out, run.clone()]);
-        assert!(
-            !run.exists(),
-            "failed scrub must not retain raw serial logs"
-        );
+        assert!(run.is_dir(), "the pid file must survive until stop retries");
+        assert!(std::fs::read(run.join("serial.log")).unwrap().is_empty());
     }
 
     #[test]
-    fn runtime_scrub_failure_removes_raw_logs() {
+    fn runtime_scrub_failure_preserves_pid_for_stop_retry() {
         let dir = tempfile::tempdir().unwrap();
         let out = dir.path().join("artifacts");
         let run = dir.path().join("runtime");
         std::fs::create_dir(&out).unwrap();
         std::fs::create_dir(&run).unwrap();
         std::fs::write(run.join("serial.log"), "typed disksecret456").unwrap();
+        std::fs::write(run.join("qemu.pid"), "123").unwrap();
         let error = scrub_scenario_logs_with(&out, &run, &["disksecret456"], |path, secrets| {
             if path == run {
                 Err(std::io::Error::other("injected runtime read failure"))
@@ -1143,10 +1152,57 @@ mod tests {
         })
         .unwrap_err();
         assert_eq!(error.to_string(), "injected runtime read failure");
-        assert!(
-            !run.exists(),
-            "failed scrub must not retain raw serial logs"
-        );
+        assert!(run.join("qemu.pid").exists());
+    }
+
+    #[test]
+    fn failed_stop_keeps_pid_and_successful_retry_removes_runtime() {
+        struct StopRunner {
+            status: &'static str,
+            calls: Vec<String>,
+        }
+        impl Runner for StopRunner {
+            fn output(
+                &mut self,
+                command: &CommandLine,
+            ) -> Result<crate::hypervisor::Output, CliError> {
+                let action = command.args.last().cloned().unwrap_or_default();
+                self.calls.push(action.clone());
+                Ok(crate::hypervisor::Output {
+                    success: true,
+                    status: "0".into(),
+                    stdout: if action == "status" {
+                        self.status.into()
+                    } else {
+                        String::new()
+                    },
+                    stderr: String::new(),
+                })
+            }
+            fn interactive(&mut self, _: &CommandLine) -> Result<bool, CliError> {
+                unreachable!()
+            }
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let mut plan = plan(Layout::Erase);
+        plan.run = dir.path().join("runtime");
+        std::fs::create_dir(&plan.run).unwrap();
+        std::fs::write(plan.run.join("qemu.pid"), "123").unwrap();
+        std::fs::write(plan.run.join("serial.log"), "sensitive").unwrap();
+        let mut running = StopRunner {
+            status: "running",
+            calls: Vec::new(),
+        };
+        assert!(discard_unsanitized_runtime(&plan, &mut running).is_err());
+        assert_eq!(running.calls, ["stop", "status"]);
+        assert!(plan.run.join("qemu.pid").exists());
+        let mut stopped = StopRunner {
+            status: "stopped",
+            calls: Vec::new(),
+        };
+        discard_unsanitized_runtime(&plan, &mut stopped).unwrap();
+        assert_eq!(stopped.calls, ["stop", "status"]);
+        assert!(!plan.run.exists());
     }
 
     #[cfg(unix)]
