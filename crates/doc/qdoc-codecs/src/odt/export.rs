@@ -464,19 +464,14 @@ fn span_styles(
 /// Append a run's content: its text, or — for an unmodeled inline element kept verbatim —
 /// the element in place of its placeholder.
 fn push_run_text(out: &mut String, run: &qdoc::export::InlineRun<'_>, after_space: &mut bool) {
-    let atom = run
-        .marks
-        .iter()
-        .find(|m| m.name == MARK_ODT_XML)
-        .and_then(|m| m.value.as_str());
-    let Some(xml) = atom else {
+    let Some(atom) = crate::preserve::inline_atom(&run.marks, MARK_ODT_XML) else {
         push_odf_text(out, run.text, after_space);
         return;
     };
     for piece in inline_pieces(run.text) {
         match piece {
             InlinePiece::Atom => {
-                out.push_str(xml);
+                out.push_str(atom.unwrap_or_default());
                 *after_space = false;
             }
             InlinePiece::Text(t) => push_odf_text(out, t, after_space),

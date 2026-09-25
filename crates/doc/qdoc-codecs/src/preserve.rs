@@ -70,6 +70,24 @@ pub fn fidelity_xml<'a>(b: &'a BlockView, format: &str) -> Option<&'a str> {
     }
 }
 
+/// The inline element a run's placeholders stand for, for the exporter of `own_mark`'s format:
+/// `Some(Some(xml))` for its own kept element, `Some(None)` for one kept by the other office
+/// codec (its placeholders are left out: that XML means nothing here), `None` when the run
+/// holds no kept element.
+pub fn inline_atom<'a>(
+    marks: &[&'a qdoc::document::MarkSpan],
+    own_mark: &str,
+) -> Option<Option<&'a str>> {
+    let mut foreign = false;
+    for m in marks {
+        if m.name == own_mark {
+            return Some(m.value.as_str());
+        }
+        foreign |= m.name == MARK_DOCX_XML || m.name == MARK_ODT_XML;
+    }
+    foreign.then_some(None)
+}
+
 /// One piece of a run covered by an inline-XML mark: the element itself (for each placeholder
 /// character) or text typed next to it that inherited the mark.
 pub enum InlinePiece<'a> {
