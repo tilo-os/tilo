@@ -1397,8 +1397,10 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setop
 #   * The signature check the launcher performs before every mount
 #     accepts this bake (the pubkey is the trust root).
 COPY --from=builder /usr/lib/tilo-runtime/ /usr/lib/tilo-runtime/
-COPY --from=builder /out/runtime-bundle-publisher.hex /usr/share/tilo/runtime-bundle-publisher.hex
-COPY --from=builder /out/browser-runtime-publisher.hex /usr/share/tilo/browser-runtime-publisher.hex
+COPY --from=builder \
+    /out/runtime-bundle-publisher.hex \
+    /out/browser-runtime-publisher.hex \
+    /usr/share/tilo/
 # Trust list read by the launcher — one hex pubkey per line, `#` for
 # comments. The baked publisher is the only entry by default; operators
 # can extend it via `echo <hex> >> /etc/tilo/runtime-bundle-trusted-publishers.txt`.
