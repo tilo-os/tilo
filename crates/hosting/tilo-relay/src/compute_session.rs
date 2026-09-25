@@ -217,6 +217,24 @@ async fn authenticate_server(
     Ok(peer)
 }
 
+/// Refresh membership, admit `device` if the workspace allows it, and load
+/// its durable compute backlog. `None` when the device is not admitted.
+/// Blocking I/O: run it on the blocking pool with the workspace lock held.
+fn admit_compute_peer(
+    workspace: &mut crate::workspace::WorkspaceRuntime,
+    device: [u8; 32],
+) -> Result<Option<Vec<crate::store::PendingEntry>>, crate::store::StoreError> {
+    let devices = workspace.store.load_membership()?;
+    workspace.membership.set(devices);
+    if !workspace.membership.contains(&device) {
+        if !workspace.admit_authenticated {
+            return Ok(None);
+        }
+        workspace.admit_device(device)?;
+    }
+    workspace.store.load_compute_pending(&device).map(Some)
+}
+
 async fn attach_workspace(
     workspaces: &WorkspaceRegistry,
     peer: &AuthenticatedPeer,
@@ -237,28 +255,28 @@ async fn attach_workspace(
         return Ok(false);
     };
     let (pending, admitted) = {
-        let mut workspace = workspace.lock().await;
-        let devices = workspace.store.load_membership()?;
-        workspace.membership.set(devices);
-        let admitted = if workspace.membership.contains(&peer.device_public_key) {
-            true
-        } else if workspace.admit_authenticated {
-            workspace.admit_device(peer.device_public_key)?;
-            true
-        } else {
-            false
-        };
-        if admitted {
-            let pending = workspace
-                .store
-                .load_compute_pending(&peer.device_public_key)?;
-            workspace
-                .compute
-                .attach(peer.device_public_key, outbound.clone(), disconnect.clone());
-            drop(workspace);
-            (pending, true)
-        } else {
-            (Vec::new(), false)
+        // Admission may persist membership and the backlog is a directory
+        // scan: blocking I/O, so it runs on the blocking pool. The workspace
+        // lock moves with it, so nothing is queued between the scan and the
+        // attach below.
+        let device = peer.device_public_key;
+        let workspace = workspace.lock_owned().await;
+        let (mut workspace, admission) = tokio::task::spawn_blocking(move || {
+            let mut workspace = workspace;
+            let admission = admit_compute_peer(&mut workspace, device);
+            (workspace, admission)
+        })
+        .await
+        .map_err(|_| std::io::Error::other("compute backlog scan panicked"))?;
+        match admission? {
+            Some(pending) => {
+                workspace
+                    .compute
+                    .attach(device, outbound.clone(), disconnect.clone());
+                drop(workspace);
+                (pending, true)
+            }
+            None => (Vec::new(), false),
         }
     };
     if !admitted {

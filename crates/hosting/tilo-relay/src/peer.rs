@@ -304,8 +304,13 @@ where
         let bytes = crate::frame::encode(&envelope)?;
         write.write_all(&bytes).await?;
     }
-    for path in replay_cleanup {
-        std::fs::remove_file(path)?;
+    if !replay_cleanup.is_empty() {
+        tilo_rt::io::run(move || {
+            replay_cleanup
+                .into_iter()
+                .try_for_each(std::fs::remove_file)
+        })
+        .await?;
     }
     if let Some(direct_reply) = direct_reply {
         let bytes = crate::frame::encode(&direct_reply)?;
@@ -393,33 +398,37 @@ async fn handle_subscribe(
             reason: "workspace not bound on this relay".into(),
         }));
     };
-    let mut wr = ws.lock().await;
-    let devices = wr.store.load_membership()?;
-    wr.membership.set(devices);
-    // Membership gates DEVICE subscribers. Peer-relay subscribers are
-    // already gated by cross-user auth (they must chain to the same
-    // user root, same handshake as any device) plus the
-    // `can_act_as_host` capability — they don't need to appear in the
-    // workspace membership list to legitimately federate.
-    let is_federated = peer.role == crate::auth::PeerRole::PeerRelay
-        && peer.user_public_key == *session.own_user_public_key
-        && wr.known_peer_relays.contains(&peer.device_public_key);
-    if !wr.membership.contains(&peer.device_public_key)
-        && !wr.admitted_users.contains(&peer.user_public_key)
-        && !is_federated
-    {
-        if wr.admit_authenticated {
-            wr.admit_device(peer.device_public_key)?;
-        } else {
+    let admission = Admission {
+        device: peer.device_public_key,
+        user: peer.user_public_key,
+        federating: peer.role == crate::auth::PeerRole::PeerRelay
+            && peer.user_public_key == *session.own_user_public_key,
+    };
+    // Admission may persist membership and the replay scans the retained
+    // and pending directories: blocking I/O, so it runs on the blocking
+    // pool. The workspace lock moves with it, so no delta can be fanned out
+    // between the scan and the subscriber registration below.
+    let wr = ws.lock_owned().await;
+    let (mut wr, prepared) = tokio::task::spawn_blocking(move || {
+        let mut wr = wr;
+        let prepared = prepare_subscribe(&mut wr, admission, workspace_id);
+        (wr, prepared)
+    })
+    .await
+    .map_err(|_| PeerError::Io(std::io::Error::other("subscribe replay scan panicked")))?;
+    let (retained_count, pending_count) = match prepared? {
+        SubscribeOutcome::Rejected(reason) => {
             return Ok(Some(Envelope::NotAuthorised {
                 workspace_id,
-                reason: "device not in workspace membership".into(),
+                reason: reason.into(),
             }));
         }
-    }
-    let (retained_count, retained) = load_retained_replay(&wr, workspace_id, replay)?;
-    let pending_count =
-        load_pending_replay(&wr, peer, workspace_id, &retained, replay, replay_cleanup)?;
+        SubscribeOutcome::Admitted(prepared) => {
+            replay.extend(prepared.replay);
+            replay_cleanup.extend(prepared.cleanup);
+            (prepared.retained_count, prepared.pending_count)
+        }
+    };
     wr.add_subscriber(Subscriber {
         device_public_key: peer.device_public_key,
         role: peer.role,
@@ -433,6 +442,76 @@ async fn handle_subscribe(
     Ok(Some(Envelope::Ready {
         workspace_id,
         pending_deltas: pending_count.saturating_add(retained_count),
+    }))
+}
+
+/// Who is subscribing, copied out so admission can run off the async
+/// workers.
+#[derive(Clone, Copy)]
+struct Admission {
+    device: [u8; 32],
+    user: [u8; 32],
+    /// A peer relay of the relay's own user, federating rather than
+    /// subscribing as a device.
+    federating: bool,
+}
+
+/// The replay backlog gathered for an admitted subscriber.
+struct PreparedReplay {
+    replay: Vec<Envelope>,
+    cleanup: Vec<std::path::PathBuf>,
+    retained_count: u32,
+    pending_count: u32,
+}
+
+enum SubscribeOutcome {
+    Admitted(PreparedReplay),
+    Rejected(&'static str),
+}
+
+/// Refresh membership, admit the peer, and load its replay backlog. Blocking
+/// I/O: run it on the blocking pool with the workspace lock held.
+fn prepare_subscribe(
+    wr: &mut crate::workspace::WorkspaceRuntime,
+    admission: Admission,
+    workspace_id: u64,
+) -> Result<SubscribeOutcome, PeerError> {
+    let devices = wr.store.load_membership()?;
+    wr.membership.set(devices);
+    // Membership gates DEVICE subscribers. Peer-relay subscribers are
+    // already gated by cross-user auth (they must chain to the same
+    // user root, same handshake as any device) plus the
+    // `can_act_as_host` capability — they don't need to appear in the
+    // workspace membership list to legitimately federate.
+    let is_federated = admission.federating && wr.known_peer_relays.contains(&admission.device);
+    if !wr.membership.contains(&admission.device)
+        && !wr.admitted_users.contains(&admission.user)
+        && !is_federated
+    {
+        if wr.admit_authenticated {
+            wr.admit_device(admission.device)?;
+        } else {
+            return Ok(SubscribeOutcome::Rejected(
+                "device not in workspace membership",
+            ));
+        }
+    }
+    let mut replay = Vec::new();
+    let mut cleanup = Vec::new();
+    let (retained_count, retained) = load_retained_replay(wr, workspace_id, &mut replay)?;
+    let pending_count = load_pending_replay(
+        wr,
+        &admission.device,
+        workspace_id,
+        &retained,
+        &mut replay,
+        &mut cleanup,
+    )?;
+    Ok(SubscribeOutcome::Admitted(PreparedReplay {
+        replay,
+        cleanup,
+        retained_count,
+        pending_count,
     }))
 }
 
@@ -473,13 +552,13 @@ fn load_retained_replay(
 /// A write failure therefore leaves the queue intact for reconnect.
 fn load_pending_replay(
     wr: &crate::workspace::WorkspaceRuntime,
-    peer: &AuthenticatedPeer,
+    device: &[u8; 32],
     workspace_id: u64,
     retained: &std::collections::HashSet<Vec<u8>>,
     replay: &mut Vec<Envelope>,
     replay_cleanup: &mut Vec<std::path::PathBuf>,
 ) -> Result<u32, PeerError> {
-    let pending = wr.store.load_pending(&peer.device_public_key)?;
+    let pending = wr.store.load_pending(device)?;
     let mut pending_count = 0u32;
     for entry in pending {
         // A retained document message may also have been queued while this

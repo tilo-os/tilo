@@ -7257,7 +7257,9 @@ dependencies = [
  "thiserror 2.0.18",
  "tilo-app-package",
  "tilo-desktop-entry",
+ "tilo-rt",
  "tilo-test-env",
+ "tokio",
  "toml 1.0.6+spec-1.1.0",
  "tracing",
  "tracing-subscriber",
@@ -14395,8 +14397,11 @@ dependencies = [
  "reqwest 0.13.2",
  "serde",
  "serde_json",
+ "tempfile",
  "thiserror 2.0.18",
  "tilo-net",
+ "tilo-rt",
+ "tokio",
  "url",
  "wire-frame",
  "zeroize",
@@ -17483,6 +17488,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.18",
  "tilo-net",
+ "tokio",
 ]
 
 [[package]]

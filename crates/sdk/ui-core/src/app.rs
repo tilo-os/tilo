@@ -818,8 +818,10 @@ impl App {
         }
         let binding = component.callback_binding();
         let inputs = construction(inputs, &binding);
-        if let Some(route) = inputs.collab_manager.primary_route()
-            && !binding.matches_broker_route(Some(route))
+        // The manager may still be connecting; the route it announced is the
+        // only one the broker can acknowledge, so check that one now.
+        if let Some(route) = inputs.collab_manager.requested_primary_route()
+            && !binding.matches_route(route)
         {
             return Err(component.setup_error(crate::launch::LaunchError::BindingMismatch));
         }
