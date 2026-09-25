@@ -176,6 +176,13 @@ pins a promoted WPE buildroot for both architectures. Until then the nightly
 image omits the browser, with a warning, instead of failing every night; `v*`
 tags still require the browser.
 
+Windows apps on ARM follow the repository variables `TILO_FEX_PAYLOAD_REF` and
+`TILO_WINDOWS_GUEST_REF` on every event, tags included. Until both are set, the
+aarch64 image is built without the Windows provider, with a warning and the
+`org.tilo.with-windows=0` label. See
+[Windows providers](../os/docs/windows-provider-packaging.md). x86_64 always
+includes Windows apps.
+
 Before allocating any build lane, the plan job reads the
 `org.opencontainers.image.revision` label of the current `latest` image with
 `skopeo inspect`. When it equals the scheduled commit, the run ends there:

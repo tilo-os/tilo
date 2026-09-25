@@ -67,9 +67,10 @@ instructions="$(containerfile_instructions "$containerfile" | awk '
 # additional COPYs and a validation RUN before initramfs generation. External
 # AT-SPI validation adds two narrowly scoped COPY instructions.
 # Firewall-first NetworkManager ordering adds one explicit drop-in COPY.
-# Keep the current 137-instruction bound exact and reviewed.
-[ "$instructions" -le 137 ] || {
-  echo "rootfs layer budget exceeded: $instructions instructions (maximum 137)" >&2
+# Recording whether the Windows provider is included adds an ARG and a LABEL.
+# Keep the current 139-instruction bound exact and reviewed.
+[ "$instructions" -le 139 ] || {
+  echo "rootfs layer budget exceeded: $instructions instructions (maximum 139)" >&2
   exit 1
 }
 
