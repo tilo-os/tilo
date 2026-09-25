@@ -1,0 +1,25 @@
+name: CI / Windows ARM64 imager handoff
+
+# Run a native, focused check for Windows-only firmware and disk code without
+# invoking the full imager release (which also builds media and all packages).
+on:
+  workflow_dispatch:
+
+jobs:
+  final-bootnext:
+    runs-on: imager-windows-aarch64
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Require native ARM64 Windows
+        shell: powershell
+        run: |
+          $Processors = @(Get-CimInstance Win32_Processor)
+          if ($Processors.Count -eq 0 -or @($Processors | Where-Object { $_.Architecture -ne 12 }).Count -ne 0) {
+            throw "This check requires a native Windows ARM64 runner"
+          }
+      - name: Test final BootNext handoff and compile Windows adapter
+        shell: powershell
+        run: |
+          cargo test -p imager --lib --locked --target aarch64-pc-windows-msvc final_bootnext::tests
+          if ($LASTEXITCODE -ne 0) { throw "Windows ARM64 imager handoff tests failed" }
