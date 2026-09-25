@@ -167,7 +167,10 @@ fn filesystem_support_from_manifest(manifest: &str) -> Result<[bool; FILESYSTEMS
             .iter()
             .position(|filesystem| *filesystem == line)
         {
-            supported[index] = false;
+            let Some(flag) = supported.get_mut(index) else {
+                return Err("The image has an invalid initramfs driver manifest".into());
+            };
+            *flag = false;
         } else {
             // The Lenovo image also omits unrelated GPU drivers to keep its UKI
             // within the verified-boot size limit. Those entries do not change
@@ -1452,7 +1455,7 @@ impl InstallerApp {
 
     fn available_filesystem_indices(&self) -> Vec<usize> {
         (0..FILESYSTEMS.len())
-            .filter(|index| self.supported_filesystems[*index])
+            .filter(|index| self.supported_filesystems.get(*index) == Some(&true))
             .collect()
     }
 
@@ -2766,33 +2769,7 @@ impl InstallerApp {
         children.push(Box::new(Text::new("Installation options").with_size(xl)));
 
         if self.profile_completion.is_none() || !completion.filesystem.is_complete() {
-            children.push(Box::new(Text::new("Filesystem").with_size(base)));
-            let choices = self.available_filesystem_indices();
-            if !choices.is_empty() {
-                let selected = choices
-                    .iter()
-                    .position(|index| *index == self.selected_fs)
-                    .unwrap_or(0);
-                children.push(Box::new(SegChoice::new(
-                    choices
-                        .iter()
-                        .map(|index| FILESYSTEMS[*index].to_string())
-                        .collect(),
-                    choices.iter().map(|index| fs_path(*index)).collect(),
-                    selected,
-                )));
-                children.push(Box::new(
-                    Text::new(fs_description(self.selected_fs))
-                        .with_size(sm)
-                        .with_color(dim),
-                ));
-            } else {
-                children.push(Box::new(
-                    Text::new(&self.filesystem_policy_message())
-                        .with_size(sm)
-                        .with_color(theme.tokens.colors.semantic.danger),
-                ));
-            }
+            self.compose_filesystem_choice(theme, children);
         }
 
         children.push(Box::new(Text::new("Disk encryption").with_size(base)));
@@ -2874,6 +2851,38 @@ impl InstallerApp {
             NEXT_PATH,
             "Next",
             !self.filesystem_policy_ready(),
+        ));
+    }
+
+    fn compose_filesystem_choice(&self, theme: &Theme, children: &mut Vec<Box<dyn Widget>>) {
+        let base = theme.tokens.typography.scale.base;
+        let sm = theme.tokens.typography.scale.sm;
+        children.push(Box::new(Text::new("Filesystem").with_size(base)));
+        let choices = self.available_filesystem_indices();
+        if choices.is_empty() {
+            children.push(Box::new(
+                Text::new(&self.filesystem_policy_message())
+                    .with_size(sm)
+                    .with_color(theme.tokens.colors.semantic.danger),
+            ));
+            return;
+        }
+        let selected = choices
+            .iter()
+            .position(|index| *index == self.selected_fs)
+            .unwrap_or(0);
+        children.push(Box::new(SegChoice::new(
+            choices
+                .iter()
+                .filter_map(|index| FILESYSTEMS.get(*index).map(|name| (*name).to_string()))
+                .collect(),
+            choices.iter().map(|index| fs_path(*index)).collect(),
+            selected,
+        )));
+        children.push(Box::new(
+            Text::new(fs_description(self.selected_fs))
+                .with_size(sm)
+                .with_color(theme.text_dim),
         ));
     }
 

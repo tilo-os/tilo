@@ -1065,10 +1065,13 @@ impl InstallerApp {
                     .iter()
                     .position(|candidate| *candidate == filesystem)
                     .ok_or_else(|| format!("Unknown filesystem {filesystem:?}"))?;
-                if !self.supported_filesystems[index] {
+                if self.supported_filesystems.get(index) != Some(&true) {
                     return Err(format!(
                         "{} cannot boot from this image's initramfs",
-                        FILESYSTEMS[index]
+                        FILESYSTEMS
+                            .get(index)
+                            .copied()
+                            .unwrap_or("unknown filesystem")
                     ));
                 }
                 self.selected_fs = index;
