@@ -442,12 +442,12 @@ pub fn rsync_command(layout: &Path, endpoint: &SshEndpoint, key: Option<&str>) -
     let mut words = vec![sh_quote(&ssh.program)];
     let options = ssh.args.len().saturating_sub(1);
     words.extend(ssh.args.iter().take(options).map(|a| sh_quote(a)));
-    let mut source = layout.display().to_string();
+    let mut source = crate::vmbuild::rsync_source(layout);
     if !source.ends_with('/') {
         source.push('/');
     }
     CommandLine::new(
-        "rsync",
+        &crate::host::rsync_program().unwrap_or_else(|| "rsync".into()),
         &["--archive", "--delete", "--whole-file", "--stats"],
     )
     .arg("--rsh")
