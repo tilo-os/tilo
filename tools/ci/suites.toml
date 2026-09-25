@@ -337,7 +337,10 @@ readers = [
 [[cargo]]
 package = "tilo-app-package"
 inputs = ["apps/*/Cargo.toml", "apps/*/tilo-app.toml"]
-readers = ["crates/packaging/tilo-app-package/tests/app_manifests.rs"]
+readers = [
+  "crates/packaging/tilo-app-package/tests/app_manifests.rs",
+  "crates/packaging/tilo-app-package/src/validate.rs",
+]
 
 [[cargo]]
 package = "launcher"
