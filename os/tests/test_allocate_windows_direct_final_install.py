@@ -164,7 +164,7 @@ class AllocateTests(unittest.TestCase):
                 return {}
 
             with patch.object(allocate.platform, "system", return_value="Windows"), \
-                 patch.object(allocate.ctypes, "windll", SimpleNamespace(shell32=SimpleNamespace(IsUserAnAdmin=lambda: True))), \
+                 patch.object(allocate.ctypes, "windll", SimpleNamespace(shell32=SimpleNamespace(IsUserAnAdmin=lambda: True)), create=True), \
                  patch.object(allocate, "GIB", MIB), \
                  patch.object(allocate.stage, "snapshot", side_effect=snapshot), \
                  patch.object(allocate, "windows_c_and_recovery", side_effect=c_volume), \
