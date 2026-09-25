@@ -136,7 +136,7 @@ fn hdr_surface_quadrants() {
 
 /// The receive-side call site: a plain SDR (H.264) stream never runs
 /// through the CPU HDR->SDR tone-mapper on either output (both leave
-/// `hdr_tonemap` disabled), without the `hdr-decode` feature.
+/// `hdr_tonemap` disabled).
 #[test]
 #[allow(
     clippy::similar_names,

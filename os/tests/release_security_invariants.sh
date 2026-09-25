@@ -48,17 +48,20 @@ grep -Fq 'Independently rebuild the release candidate' "$workflow" \
   && grep -Fq 'independent OS builds differ' "$workflow" \
   && grep -Fq 'final sealed OS images differ' "$workflow" \
   && grep -Fq 'os/dev/reseal-image.sh' "$workflow" \
-  && grep -Fq -- '--source-date-epoch "$SOURCE_DATE_EPOCH"' "$repo/os/dev/reseal-image.sh" \
-  && grep -Fq -- '--rewrite-timestamp' "$repo/os/dev/reseal-image.sh" \
+  && grep -Fq 'mapfile -t reproducible < <(podman_epoch_args "$SOURCE_DATE_EPOCH" "${podman_args[@]}")' "$repo/os/dev/reseal-image.sh" \
+  && grep -Fq -- "printf '%s\\n' --source-date-epoch \"\$epoch\" --rewrite-timestamp" "$repo/os/dev/_common.sh" \
+  && grep -Fq -- "printf '%s\\n' --timestamp \"\$epoch\"" "$repo/os/dev/_common.sh" \
   && ok 'release compares uncached base and final sealed OS rebuilds' \
   || bad 'reproducibility is claimed without a release-blocking comparison'
 
 # Integration images skip the second uncached build, but every publication
-# (tag, nightly or protected manual main release) must still run it.
+# (tag, nightly or protected manual main release) must still run it. The third
+# publication branch unbinds the shared compiler cache
+# (tools/tests/test_publication_compiler_cache.py).
 grep -A1 -F -- '- name: Independently rebuild the release candidate' "$workflow" \
     | grep -Fq "if: steps.release-mode.outputs.publish == 'true'" \
   && grep -Fq 'PUBLISH: ${{ steps.release-mode.outputs.publish }}' "$workflow" \
-  && test "$(grep -Fc 'if [[ $PUBLISH == true ]]; then' "$workflow")" -eq 2 \
+  && test "$(grep -Fc 'if [[ $PUBLISH == true ]]; then' "$workflow")" -eq 3 \
   && ok 'every publication, and only a publication, pays for the uncached rebuild' \
   || bad 'the uncached reproducibility rebuild no longer gates exactly the publications'
 

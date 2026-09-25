@@ -172,7 +172,7 @@ fn the_topbar_commands_and_side_toggles_keep_one_sibling_step_at_every_width() {
                 );
             }
         }
-        assert!(TOPBAR_GAP >= S1, "the topbar step is on the scale");
+        const { assert!(TOPBAR_GAP >= S1, "the topbar step is on the scale") };
         let (first, last) = (row.first().unwrap().1, row.last().unwrap().1);
         assert_close(
             first.x0 - r.topbar.x0,
@@ -197,7 +197,7 @@ fn every_track_head_clears_its_lane_and_its_neighbours_by_a_token_step() {
         assert_close(pair[1].2.y0 - pair[0].2.y1, S1, "lane ↔ lane");
     }
     for (_, kind, lane) in &lanes {
-        let head = app.track_head_rect(&r, lane);
+        let head = VideoEditorApp::track_head_rect(&r, lane);
         assert_close(lane.x0 - head.x1, S1, "head ↔ lane stripe");
         let h = chrome_layout::track_head(head);
         assert!(
@@ -459,7 +459,7 @@ fn the_go_to_field_stacks_its_three_lines_above_the_transport() {
         let r = app.regions();
         let l = app.goto_layout(&r, &mut tr, &theme);
         let ty = l.type_sizes;
-        let (line_xs, line_xl) = (line(&mut tr, ty.xs), line(&mut tr, ty.xl));
+        let (line_xs, timecode_line) = (line(&mut tr, ty.xs), line(&mut tr, ty.xl));
         assert!(
             l.label_top >= l.card.y0,
             "@{scale}x: the caption starts in the card"
@@ -469,7 +469,7 @@ fn the_go_to_field_stacks_its_three_lines_above_the_transport() {
             "@{scale}x: the caption runs into the timecode"
         );
         assert!(
-            l.entry_top + line_xl <= l.hint_top,
+            l.entry_top + timecode_line <= l.hint_top,
             "@{scale}x: the timecode runs into the hint"
         );
         assert!(

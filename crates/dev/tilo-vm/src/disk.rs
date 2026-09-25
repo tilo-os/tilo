@@ -1,11 +1,15 @@
 //! `vm create` without `--image`: fetch the dev disk CI published to the
-//! forge's generic packages (`.forgejo/workflows/dev-disk.yml`), resume and
+//! forge's generic packages (`os/dev/publish-dev-disk.sh`), resume and
 //! verify the download, and cache it under the platform cache dir.
 //!
 //! ```text
-//! <PACKAGES>/<tag>/tilo-vm-disk.json   the manifest: disks per arch and format, sha256
-//! <PACKAGES>/<tag>/<file>               one disk (qcow2 or vhdx)
+//! <PACKAGES>/<tag>/tilo-vm-disk-<arch>.json   one architecture's manifest: its disks per format, sha256
+//! <PACKAGES>/<tag>/<file>                      one disk (qcow2 or vhdx)
 //! ```
+//!
+//! Each architecture's CI lane publishes on its own, so a tag can hold one
+//! architecture before, or without, the other; a tag is offered to a host
+//! once that host's manifest exists.
 //!
 //! HTTP goes through `curl`, present on every supported host; the token
 //! travels in a header file, never on the command line.
@@ -47,8 +51,45 @@ pub struct Disk {
     pub size: u64,
 }
 
-pub fn manifest_url(tag: &str) -> String {
-    format!("{PACKAGES}/{tag}/tilo-vm-disk.json")
+/// How many of the newest main or release tags `vm create` without `--tag`
+/// looks through for one that has this host's architecture.
+pub const TAGS_SEARCHED: usize = 8;
+
+/// The manifest `arch`'s lane publishes for `tag`.
+pub fn manifest_url(tag: &str, arch: &str) -> String {
+    format!("{PACKAGES}/{tag}/tilo-vm-disk-{arch}.json")
+}
+
+/// Lists the files of one published tag.
+pub fn files_url(tag: &str) -> String {
+    format!("https://code.podesta.ai/api/v1/packages/qos/generic/tilo-vm-disk/{tag}/files")
+}
+
+/// What a tag offers, as `<arch> <format>`, from its file listing: the disks
+/// of every architecture whose manifest (the commit point) exists.
+pub fn offered_in_files(tag: &str, files_json: &str) -> Vec<String> {
+    #[derive(Deserialize)]
+    struct File {
+        name: String,
+    }
+    let files: Vec<File> = serde_json::from_str(files_json).unwrap_or_default();
+    let names: Vec<&str> = files.iter().map(|f| f.name.as_str()).collect();
+    let mut offered = Vec::new();
+    for name in &names {
+        let Some(arch) = name
+            .strip_prefix("tilo-vm-disk-")
+            .and_then(|rest| rest.strip_suffix(".json"))
+        else {
+            continue;
+        };
+        for format in ["qcow2", "vhdx"] {
+            if names.contains(&format!("tilo-vm-{tag}-{arch}.{format}").as_str()) {
+                offered.push(format!("{arch} {format}"));
+            }
+        }
+    }
+    offered.sort();
+    offered
 }
 
 /// The disk format a hypervisor imports.
@@ -287,6 +328,12 @@ pub fn get(
 /// The newest published tag of a main or release build, from the forge's
 /// package list (newest first by creation time).
 pub fn newest_tag(versions_json: &str) -> Option<String> {
+    candidate_tags(versions_json).into_iter().next()
+}
+
+/// Published tags in the order `vm create` without `--tag` tries them: main
+/// and release builds newest first; branch builds only when there are none.
+pub fn candidate_tags(versions_json: &str) -> Vec<String> {
     #[derive(Deserialize)]
     struct Published {
         name: String,
@@ -294,17 +341,17 @@ pub fn newest_tag(versions_json: &str) -> Option<String> {
         #[serde(default)]
         created_at: String,
     }
-    let mut versions: Vec<Published> = serde_json::from_str(versions_json).ok()?;
+    let Ok(mut versions) = serde_json::from_str::<Vec<Published>>(versions_json) else {
+        return Vec::new();
+    };
     versions.retain(|v| v.name == "tilo-vm-disk");
     versions.sort_by(|a, b| b.created_at.cmp(&a.created_at));
-    let channel = |v: &&Published| {
+    let channel = |v: &Published| {
         v.version.starts_with("main-") || v.version.starts_with(|c: char| c.is_ascii_digit())
     };
-    versions
-        .iter()
-        .find(channel)
-        .or_else(|| versions.first())
-        .map(|v| v.version.clone())
+    let (channels, rest): (Vec<_>, Vec<_>) = versions.into_iter().partition(|v| channel(v));
+    let chosen = if channels.is_empty() { rest } else { channels };
+    chosen.into_iter().map(|v| v.version).collect()
 }
 
 /// Hex SHA-256 of a file.
@@ -429,9 +476,30 @@ mod tests {
         assert!(manifest.pick("x86_64", format_for("hyperv")).is_none());
         assert_eq!(manifest.offered(), ["x86_64 qcow2"]);
         assert_eq!(
-            manifest_url("main-1a2b3c4"),
-            "https://code.podesta.ai/api/packages/qos/generic/tilo-vm-disk/main-1a2b3c4/tilo-vm-disk.json"
+            manifest_url("main-1a2b3c4", "x86_64"),
+            "https://code.podesta.ai/api/packages/qos/generic/tilo-vm-disk/main-1a2b3c4/tilo-vm-disk-x86_64.json"
         );
+        assert_eq!(
+            files_url("main-1a2b3c4"),
+            "https://code.podesta.ai/api/v1/packages/qos/generic/tilo-vm-disk/main-1a2b3c4/files"
+        );
+    }
+
+    #[test]
+    fn a_tag_offers_only_architectures_whose_manifest_is_committed() {
+        let files = r#"[
+          {"name": "tilo-vm-main-1a2b3c4-ci-aarch64.qcow2"},
+          {"name": "tilo-vm-main-1a2b3c4-ci-aarch64.qcow2.sha256"},
+          {"name": "tilo-vm-disk-aarch64.json"},
+          {"name": "tilo-vm-main-1a2b3c4-ci-x86_64.qcow2"}
+        ]"#;
+        // x86_64's disk is uploaded but its lane has not committed it yet.
+        assert_eq!(
+            offered_in_files("main-1a2b3c4-ci", files),
+            ["aarch64 qcow2"]
+        );
+        assert!(offered_in_files("main-1a2b3c4-ci", "[]").is_empty());
+        assert!(offered_in_files("main-1a2b3c4-ci", "not json").is_empty());
     }
 
     #[test]
@@ -488,6 +556,11 @@ mod tests {
         ]"#;
         assert_eq!(newest_tag(versions).as_deref(), Some("main-bbbbbbb"));
         assert_eq!(newest_tag("[]"), None);
+        assert_eq!(candidate_tags(versions), ["main-bbbbbbb", "main-ccccccc"]);
+        let branches_only = r#"[
+          {"name": "tilo-vm-disk", "version": "feature-x-aaaaaaa-ci", "created_at": "2026-09-22T10:00:00Z"}
+        ]"#;
+        assert_eq!(candidate_tags(branches_only), ["feature-x-aaaaaaa-ci"]);
     }
 
     #[test]

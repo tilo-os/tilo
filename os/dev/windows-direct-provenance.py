@@ -459,7 +459,8 @@ def verify_ci_image(image, key, children, kind, command_json=None, key_arg=None)
             **statement}
 
 
-def dual_ci_medium_gate(args, board_checked, board_child_digest):
+def dual_ci_medium_gate(args, board_checked, board_child_digest,
+                        board_source_revision):
     """Require paired CI media and separate generic full-boot proof for board copy."""
     names = ("generic_ci_image", "generic_index_manifest", "generic_child_manifest",
              "generic_vm_proof_checked", "generic_medium_identity",
@@ -480,6 +481,8 @@ def dual_ci_medium_gate(args, board_checked, board_child_digest):
     require(all(index_provenance[field] == child_provenance[field]
                 for field in ("source_revision", "generation", "invocation_id")),
             "generic child SLSA differs from signed release index")
+    require(child_provenance["source_revision"] == board_source_revision,
+            "generic and Lenovo CI images must come from the same source revision")
     generic_checked = checked_guest_proof(
         args.generic_vm_proof_checked, child_digest, child_image, child_provenance)
     require(generic_checked["schema"] == PROOF_SCHEMA_V2,

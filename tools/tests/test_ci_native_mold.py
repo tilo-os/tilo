@@ -135,6 +135,26 @@ class NativeMoldBuilderPolicyTests(unittest.TestCase):
             self.assertIn(f'- "{path}"', workflow)
         self.assertIn("bash /tmp/verify-native-mold.sh", recipe)
 
+    def test_builder_makes_mold_the_native_default_linker(self) -> None:
+        recipe = (ROOT / "os" / "Containerfile.builder").read_text(encoding="utf-8")
+        verify = (ROOT / "tools" / "ci" / "verify-native-mold.sh").read_text(
+            encoding="utf-8"
+        )
+        # CI overrides CARGO_HOME, so the default lives in the root config,
+        # keyed on the native triple only, with the wrapper's explicit target.
+        self.assertIn('target="$(uname -m)-unknown-linux-gnu"', recipe)
+        self.assertIn("> /.cargo/config.toml", recipe)
+        self.assertIn(
+            "'[target.%s]\\nlinker = \"/usr/local/bin/tilo-ci-mold\"\\n\\n[env]\\n"
+            "TILO_CI_MOLD_TARGET = \"%s\"\\n'",
+            recipe,
+        )
+        self.assertNotIn("rustflags", recipe.split("> /.cargo/config.toml")[0].rsplit("RUN", 1)[1])
+        # The image build proves Cargo links with mold without job settings.
+        self.assertIn('CARGO_HOME="$work/cargo-home"', verify)
+        self.assertIn("env -u TILO_CI_MOLD_TARGET -u RUSTC_WRAPPER", verify)
+        self.assertIn('readelf -p .comment "$default_binary" | grep -F \'mold \'', verify)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -6,6 +6,7 @@ pub mod hub;
 pub mod identity;
 pub mod input_firewall;
 pub mod invite;
+pub mod media_caps;
 pub mod protocol;
 pub mod replica;
 pub mod streaming;
@@ -17,8 +18,8 @@ pub mod workspace_control;
 
 pub use actor::{Actor, HostIdentity, NetCmd, NetEvent, WorkspaceControlRoute};
 pub use behaviour::{load_or_create_keypair, peer_salt_from_keypair};
-pub use decoder::{DecodedFrame, DecodedPixels, DecoderError, H264Decoder, VideoDecoder};
-pub use encoder::{EncodeError, H264Encoder};
+pub use decoder::{DecodedFrame, DecodedPixels, DecoderError, VideoDecoder};
+pub use encoder::{EncodeError, VideoEncoder};
 pub use hub::{Hub, TopicSubscriber};
 pub use identity::{PeerIdentity, PeerIdentityError, PeerIdentityStore};
 pub use input_firewall::{Denial, RemoteInputFirewall, ShellView};

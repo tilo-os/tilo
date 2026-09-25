@@ -462,14 +462,15 @@ fn a_gated_file_refuses_writers_with_ebusy_and_still_serves_readers() {
     let err = w.write_at(b"x", 0).unwrap_err();
     assert_eq!(err.raw_os_error(), Some(libc::EBUSY), "{err}");
     assert!(h.stats().gated_denials.load(Ordering::Relaxed) >= 1);
-    // While this process holds a writable descriptor its reads are refused
-    // too: the kernel does not say which kind of access an event is for.
+    // Each access is judged by the call that makes it: reads by the same
+    // process, even through its writable descriptor, are served.
     let mut probe = vec![0u8; 16];
-    let err = File::open(&path)
+    File::open(&path)
         .unwrap()
-        .read_at(&mut probe, 0)
-        .unwrap_err();
-    assert_eq!(err.raw_os_error(), Some(libc::EBUSY), "{err}");
+        .read_exact_at(&mut probe, 0)
+        .unwrap();
+    w.read_exact_at(&mut probe, 16).unwrap();
+    assert_eq!(probe, vec![7u8; 16]);
 
     // Once the lease is back, the same descriptor writes.
     h.ungate_writes(&path).unwrap();

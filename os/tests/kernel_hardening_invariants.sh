@@ -615,6 +615,12 @@ for required in \
   '"vsyscall=none"'; do
   grep -Fq "$required" "$kargs" || bad "required kernel argument missing: $required"
 done
+# Firmware OEM strings, fw_cfg and boot-loader drop-ins must not become
+# systemd credentials of a sealed boot; the unsealed dev image removes the file.
+grep -Fxq 'kargs = ["systemd.import_credentials=no"]' "$repo/os/usr/lib/bootc/kargs.d/05-credentials.toml" \
+  && grep -Fq 'os/usr/lib/bootc/kargs.d/05-credentials.toml' "$image_recipe" \
+  && grep -Fq 'rm /usr/lib/bootc/kargs.d/05-credentials.toml' "$repo/os/Containerfile.dev" \
+  || bad 'a sealed boot can import systemd credentials from firmware or the boot loader'
 [ "$fail" -ne 0 ] || ok 'required boot-time hardening arguments are pinned'
 
 grep -Fq 'failures=$((failures + 1))' "$audit" \
@@ -813,7 +819,7 @@ for required in \
   'LimitCORE=0' \
   'NoNewPrivileges=yes' \
   'KeyringMode=private' \
-  'CapabilityBoundingSet=CAP_SYS_ADMIN CAP_DAC_READ_SEARCH CAP_CHOWN CAP_FOWNER CAP_DAC_OVERRIDE' \
+  'CapabilityBoundingSet=CAP_SYS_ADMIN CAP_DAC_READ_SEARCH CAP_CHOWN CAP_FOWNER CAP_DAC_OVERRIDE CAP_SYS_PTRACE' \
   'AmbientCapabilities=' \
   'DevicePolicy=closed' \
   'DeviceAllow=/dev/fuse rw' \

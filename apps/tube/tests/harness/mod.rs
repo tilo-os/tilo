@@ -118,7 +118,7 @@ impl<W: Widget> Harness<W> {
         fn walk(w: &dyn Widget, depth: usize, out: &mut Vec<(usize, Option<String>, Rect)>) {
             out.push((depth, w.test_id().map(str::to_owned), w.get_rect()));
             for c in w.children() {
-                walk(c, depth + 1, out);
+                walk(c, depth.saturating_add(1), out);
             }
         }
         let mut out = Vec::new();

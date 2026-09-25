@@ -1132,6 +1132,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::float_cmp,
+        reason = "off, pass-through and clamped slider values are exact sentinels, not computed"
+    )]
     fn imported_repeat_settings_are_shown_as_the_live_rate_or_disabled() {
         let disabled = MouseKeyboardPane::with_catalog(
             InputPrefs {

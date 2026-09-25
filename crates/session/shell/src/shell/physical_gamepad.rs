@@ -162,7 +162,8 @@ impl EventBuffer {
             .events
             .iter()
             .rposition(|queued| matches!(queued, ForwardedGamepadEvent::Button { .. }))
-            .map_or(0, |index| index + 1);
+            // `index` is a position in `events`, so it is below usize::MAX.
+            .map_or(0, |index| index.saturating_add(1));
         let replace = match event {
             ForwardedGamepadEvent::Axis { axis, .. } => self
                 .events
@@ -207,6 +208,11 @@ fn manager() -> &'static Mutex<PhysicalGamepadManager> {
 }
 
 /// Snapshot locally connected, strictly classified controllers.
+///
+/// # Errors
+///
+/// Returns a message when the gamepad manager is unavailable or the local
+/// controller catalog cannot be refreshed.
 pub fn local_physical_gamepads() -> Result<Vec<LocalPhysicalGamepadView>, String> {
     let now = Instant::now();
     let mut manager = manager()
@@ -219,6 +225,13 @@ pub fn local_physical_gamepads() -> Result<Vec<LocalPhysicalGamepadView>, String
 /// Begin forwarding after a trusted shell action. The source token is local
 /// and the app/workspace/session binding must have been derived from current
 /// compositor focus by the native integration.
+///
+/// # Errors
+///
+/// Returns a message when typed-gamepad continuity is disabled, this device
+/// has no certified identity, `target` is not an online remote device, the
+/// controller is gone, already forwarded, cannot be opened, or is busy while
+/// starting, or the forwarding request cannot be sent.
 pub fn start_physical_gamepad_forwarding(
     network: &ShellNetwork,
     source_token: u64,
@@ -296,12 +309,18 @@ pub fn start_physical_gamepad_forwarding(
             sent: VecDeque::new(),
         },
     );
+    drop(manager);
     Ok(session)
 }
 
 /// Explicitly stop one local forwarding. Removal is unconditional even when
 /// the target vanished; a reachable target receives the typed stop and
 /// neutralizes every virtual control.
+///
+/// # Errors
+///
+/// Returns a message when the gamepad manager is unavailable, the session is
+/// unknown, or the typed stop cannot be sent to the target.
 pub fn stop_physical_gamepad_forwarding(
     network: &ShellNetwork,
     session: u64,
@@ -335,6 +354,10 @@ pub fn stop_all_physical_gamepads(network: &ShellNetwork) {
 /// Advance physical input without ever blocking the compositor. Any loss of
 /// policy, exact focus, target presence, source synchronization or delivery
 /// tears down the whole lease rather than risking stuck or misdirected input.
+#[expect(
+    clippy::too_many_lines,
+    reason = "one pump applies every teardown condition before forwarding input"
+)]
 pub fn pump_physical_gamepads(
     network: &ShellNetwork,
     current_binding: Option<&PhysicalGamepadBinding>,

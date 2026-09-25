@@ -26,6 +26,11 @@ pub(crate) fn verify_clockwise_rgba(
     if source.len() != byte_len || actual.len() != byte_len {
         return Err("RGBA byte length does not match dimensions".into());
     }
+    #[expect(
+        clippy::arithmetic_side_effects,
+        clippy::indexing_slicing,
+        reason = "source_y < sh and source_x < sw, so sh - 1 - source_y cannot underflow and both pixel offsets are at most sw * sh * 4 - 4; both buffers were checked to be exactly sw * sh * 4 bytes, computed without overflow"
+    )]
     for source_y in 0..sh {
         for source_x in 0..sw {
             // A clockwise quarter-turn maps (x,y) to (H-1-y,x).

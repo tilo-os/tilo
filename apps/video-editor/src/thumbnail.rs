@@ -13,7 +13,7 @@
 //!
 //! Frames come from a **bounded pool** of decode workers ([`MAX_WORKERS`]),
 //! each owning one pipeline that is reused across every request for the same
-//! source. Standing up a whole engine per thumbnail — one GStreamer pipeline
+//! source. Standing up a whole engine per thumbnail — one `GStreamer` pipeline
 //! per cell — is what made a scrolled timeline unusable.
 //!
 //! Every request has three terminal outcomes and no fourth: a real frame, a
@@ -57,37 +57,58 @@ const MAX_FRAMES_PER_SOURCE: usize = 96;
 /// Decode workers across the whole app — and therefore the cap on live
 /// pipelines. Each worker keeps one engine and reuses it for consecutive
 /// requests against the same source.
-#[cfg_attr(not(feature = "decode"), allow(dead_code))]
+#[cfg_attr(
+    not(feature = "decode"),
+    allow(dead_code, reason = "only the decoder path uses it")
+)]
 const MAX_WORKERS: usize = 2;
 
 /// Requested buckets waiting for a worker. Beyond this the oldest request is
 /// dropped: it is off-screen by now, and the renderer will ask again if not.
-#[cfg_attr(not(feature = "decode"), allow(dead_code))]
+#[cfg_attr(
+    not(feature = "decode"),
+    allow(dead_code, reason = "only the decoder path uses it")
+)]
 const MAX_QUEUED: usize = 64;
 
 /// How long a worker waits for a frame at the seeked position before giving up
 /// on that request.
-#[cfg_attr(not(feature = "decode"), allow(dead_code))]
+#[cfg_attr(
+    not(feature = "decode"),
+    allow(dead_code, reason = "only the decoder path uses it")
+)]
 const FRAME_TIMEOUT: Duration = Duration::from_secs(6);
 
 /// How long to let a freshly-opened pipeline preroll before seeking it.
-#[cfg_attr(not(feature = "decode"), allow(dead_code))]
+#[cfg_attr(
+    not(feature = "decode"),
+    allow(dead_code, reason = "only the decoder path uses it")
+)]
 const PREROLL_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// How far past the requested time a frame may sit and still count as the
 /// answer to that seek — a little over one frame at any sane rate.
-#[cfg_attr(not(feature = "decode"), allow(dead_code))]
+#[cfg_attr(
+    not(feature = "decode"),
+    allow(dead_code, reason = "only the decoder path uses it")
+)]
 const SEEK_SLOP_MS: u64 = 100;
 
 /// How far from the requested time a frame may sit and still be worth showing
 /// when the pipeline could not land on it (a keyframe-only source). Matches
 /// the window `frame_at` will reach across for a decoded neighbour.
-#[cfg_attr(not(feature = "decode"), allow(dead_code))]
+#[cfg_attr(
+    not(feature = "decode"),
+    allow(dead_code, reason = "only the decoder path uses it")
+)]
 const FALLBACK_SLOP_MS: u64 = 2_000;
 
 /// How long an idle worker holds its pipeline open before retiring. Keeps a
 /// scrub responsive without pinning a decoder for a timeline nobody is using.
-#[cfg_attr(not(feature = "decode"), allow(dead_code))]
+#[cfg_attr(
+    not(feature = "decode"),
+    allow(dead_code, reason = "only the decoder path uses it")
+)]
 const WORKER_IDLE: Duration = Duration::from_secs(20);
 
 /// How far [`ThumbnailCache::frame_at`] will reach for an already-decoded
@@ -101,13 +122,16 @@ const NEAR_BUCKETS: u32 = (2.0 / STRIP_BUCKET_SECS) as u32;
 pub fn bucket_of(t: f64) -> u32 {
     (t.max(0.0) / STRIP_BUCKET_SECS)
         .floor()
-        .min(u32::MAX as f64) as u32
+        .min(f64::from(u32::MAX)) as u32
 }
 
 /// The centre time (seconds) of `bucket`.
-#[cfg_attr(not(test), allow(dead_code))]
+#[cfg_attr(
+    not(test),
+    allow(dead_code, reason = "only the tests map a bucket back to a time")
+)]
 fn bucket_time(bucket: u32) -> f64 {
-    (bucket as f64 + 0.5) * STRIP_BUCKET_SECS
+    (f64::from(bucket) + 0.5) * STRIP_BUCKET_SECS
 }
 
 /// A decoded/generated thumbnail: tightly packed `width*height*4` RGBA.
@@ -171,6 +195,10 @@ impl Thumb {
 /// Generate a representative thumbnail frame for a `palette` slot: a soft
 /// vertical gradient with a horizon band and a gentle corner vignette, in the
 /// palette's colour family — reads as a frame, not a flat swatch.
+#[expect(
+    clippy::many_single_char_names,
+    reason = "pixel maths: w/h and x/y are the frame and pixel, r/g/b the channels"
+)]
 pub fn representative(palette: u8, w: u32, h: u32) -> Thumb {
     let w = w.max(1);
     let h = h.max(1);
@@ -183,7 +211,7 @@ pub fn representative(palette: u8, w: u32, h: u32) -> Thumb {
     let bottom = [base.r * 0.32, base.g * 0.32, base.b * 0.32];
     let mut rgba = vec![0u8; (w * h * 4) as usize];
     let (wf, hf) = (f64::from(w), f64::from(h));
-    for y in 0..h {
+    for (y, row) in (0..h).zip(rgba.chunks_exact_mut(w as usize * 4)) {
         let yf = f64::from(y) / hf;
         // Vertical gradient top→bottom.
         let mut r = top[0] + (bottom[0] - top[0]) * yf;
@@ -195,17 +223,18 @@ pub fn representative(palette: u8, w: u32, h: u32) -> Thumb {
             g *= 0.82;
             b *= 0.82;
         }
-        for x in 0..w {
+        for (x, px) in (0..w).zip(row.as_chunks_mut::<4>().0) {
             let xf = f64::from(x) / wf;
             // Gentle corner vignette.
             let dx = (xf - 0.5) * 2.0;
             let dy = (yf - 0.5) * 2.0;
             let v = (1.0 - 0.28 * (dx * dx + dy * dy)).clamp(0.0, 1.0);
-            let i = ((y * w + x) * 4) as usize;
-            rgba[i] = ((r * v) * 255.0).round().clamp(0.0, 255.0) as u8;
-            rgba[i + 1] = ((g * v) * 255.0).round().clamp(0.0, 255.0) as u8;
-            rgba[i + 2] = ((b * v) * 255.0).round().clamp(0.0, 255.0) as u8;
-            rgba[i + 3] = 255;
+            *px = [
+                ((r * v) * 255.0).round().clamp(0.0, 255.0) as u8,
+                ((g * v) * 255.0).round().clamp(0.0, 255.0) as u8,
+                ((b * v) * 255.0).round().clamp(0.0, 255.0) as u8,
+                255,
+            ];
         }
     }
     Thumb::new(w, h, Arc::new(rgba), false)
@@ -215,7 +244,14 @@ pub fn representative(palette: u8, w: u32, h: u32) -> Thumb {
 /// `max_w` x `max_h`, preserving aspect. Caching frames at source resolution
 /// would put megabytes per cell in RAM for a 4K clip; the strip only ever
 /// draws them a few dozen pixels wide.
-#[cfg_attr(not(feature = "decode"), allow(dead_code))]
+#[cfg_attr(
+    not(feature = "decode"),
+    allow(dead_code, reason = "only the decoder path uses it")
+)]
+#[expect(
+    clippy::many_single_char_names,
+    reason = "pixel maths: x/y are the output pixel, r/g/b/a its channel sums, n the count"
+)]
 fn downscale(src: &[u8], sw: u32, sh: u32, max_w: u32, max_h: u32) -> (u32, u32, Vec<u8>) {
     if sw == 0 || sh == 0 || src.len() < (sw as usize * sh as usize * 4) {
         return (sw, sh, src.to_vec());
@@ -223,38 +259,44 @@ fn downscale(src: &[u8], sw: u32, sh: u32, max_w: u32, max_h: u32) -> (u32, u32,
     if sw <= max_w && sh <= max_h {
         return (sw, sh, src.to_vec());
     }
-    let scale = (max_w as f64 / sw as f64).min(max_h as f64 / sh as f64);
-    let dw = ((sw as f64 * scale).round() as u32).max(1);
-    let dh = ((sh as f64 * scale).round() as u32).max(1);
+    let scale = (f64::from(max_w) / f64::from(sw)).min(f64::from(max_h) / f64::from(sh));
+    let dw = ((f64::from(sw) * scale).round() as u32).max(1);
+    let dh = ((f64::from(sh) * scale).round() as u32).max(1);
     let mut out = vec![0u8; dw as usize * dh as usize * 4];
-    for y in 0..dh {
-        let y0 = (y as u64 * sh as u64 / dh as u64) as u32;
-        let y1 = (((y + 1) as u64 * sh as u64 / dh as u64) as u32)
+    // `src` holds at least `sw * sh` pixels (checked above), so it has at
+    // least `sh` whole rows of `sw` pixels each.
+    let (src_px, _) = src.as_chunks::<4>();
+    let src_rows = || src_px.chunks_exact(sw as usize);
+    for (y, out_row) in (0..dh).zip(out.chunks_exact_mut(dw as usize * 4)) {
+        let y0 = (u64::from(y) * u64::from(sh) / u64::from(dh)) as u32;
+        let y1 = ((u64::from(y + 1) * u64::from(sh) / u64::from(dh)) as u32)
             .max(y0 + 1)
             .min(sh);
-        for x in 0..dw {
-            let x0 = (x as u64 * sw as u64 / dw as u64) as u32;
-            let x1 = (((x + 1) as u64 * sw as u64 / dw as u64) as u32)
+        for (x, out_px) in (0..dw).zip(out_row.as_chunks_mut::<4>().0) {
+            let x0 = (u64::from(x) * u64::from(sw) / u64::from(dw)) as u32;
+            let x1 = ((u64::from(x + 1) * u64::from(sw) / u64::from(dw)) as u32)
                 .max(x0 + 1)
                 .min(sw);
             let (mut r, mut g, mut b, mut a) = (0u32, 0u32, 0u32, 0u32);
             let mut n = 0u32;
-            for sy in y0..y1 {
-                for sx in x0..x1 {
-                    let i = ((sy as usize * sw as usize) + sx as usize) * 4;
-                    r += src[i] as u32;
-                    g += src[i + 1] as u32;
-                    b += src[i + 2] as u32;
-                    a += src[i + 3] as u32;
+            let rows = src_rows()
+                .skip(y0 as usize)
+                .take(y1.saturating_sub(y0) as usize);
+            for row in rows {
+                let span = row
+                    .iter()
+                    .skip(x0 as usize)
+                    .take(x1.saturating_sub(x0) as usize);
+                for &[pr, pg, pb, pa] in span {
+                    r += u32::from(pr);
+                    g += u32::from(pg);
+                    b += u32::from(pb);
+                    a += u32::from(pa);
                     n += 1;
                 }
             }
             let n = n.max(1);
-            let o = ((y as usize * dw as usize) + x as usize) * 4;
-            out[o] = (r / n) as u8;
-            out[o + 1] = (g / n) as u8;
-            out[o + 2] = (b / n) as u8;
-            out[o + 3] = (a / n) as u8;
+            *out_px = [(r / n) as u8, (g / n) as u8, (b / n) as u8, (a / n) as u8];
         }
     }
     (dw, dh, out)
@@ -264,7 +306,10 @@ fn downscale(src: &[u8], sw: u32, sh: u32, max_w: u32, max_h: u32) -> (u32, u32,
 
 /// What we know about one (source, time-bucket) frame.
 #[derive(Clone)]
-#[cfg_attr(not(feature = "decode"), allow(dead_code))]
+#[cfg_attr(
+    not(feature = "decode"),
+    allow(dead_code, reason = "only the decoder path uses it")
+)]
 enum Slot {
     /// A worker has been asked for it and has not answered yet.
     Pending,
@@ -284,7 +329,10 @@ struct SourceFrames {
 }
 
 /// A decode request handed to the pool.
-#[cfg_attr(not(feature = "decode"), allow(dead_code))]
+#[cfg_attr(
+    not(feature = "decode"),
+    allow(dead_code, reason = "only the decoder path uses it")
+)]
 struct Job {
     id: MediaId,
     path: PathBuf,
@@ -302,7 +350,10 @@ struct Outcome {
 }
 
 #[derive(Default)]
-#[cfg_attr(not(feature = "decode"), allow(dead_code))]
+#[cfg_attr(
+    not(feature = "decode"),
+    allow(dead_code, reason = "only the decoder path uses it")
+)]
 struct Queue {
     jobs: VecDeque<Job>,
     live_workers: usize,
@@ -334,7 +385,13 @@ pub struct ThumbnailCache {
     /// Monotonic stamp for LRU eviction.
     clock: u64,
     pool: Arc<Pool>,
-    #[cfg_attr(not(any(feature = "decode", test)), allow(dead_code))]
+    #[cfg_attr(
+        not(any(feature = "decode", test)),
+        allow(
+            dead_code,
+            reason = "only the decoder workers and the tests send on it"
+        )
+    )]
     tx: Sender<Outcome>,
     rx: Receiver<Outcome>,
 }
@@ -372,37 +429,34 @@ impl ThumbnailCache {
     /// Pull completed decodes into the cache. Call each `sync`.
     pub fn drain(&mut self) {
         while let Ok(Outcome { id, bucket, thumb }) = self.rx.try_recv() {
-            match thumb {
-                Some(t) => {
-                    self.failures.remove(&id);
-                    let t = Arc::new(t);
-                    if bucket == SWATCH_BUCKET {
-                        self.swatch_pending.remove(&id);
-                        self.swatch.insert(id, t);
-                    } else {
-                        self.frames
-                            .entry(id)
-                            .or_default()
-                            .slots
-                            .insert(bucket, Slot::Ready(t));
-                    }
-                }
-                None => {
-                    // Terminal. Record it so the slot stops being pending and
-                    // is never re-requested.
+            if let Some(t) = thumb {
+                self.failures.remove(&id);
+                let t = Arc::new(t);
+                if bucket == SWATCH_BUCKET {
                     self.swatch_pending.remove(&id);
-                    if bucket != SWATCH_BUCKET {
-                        self.frames
-                            .entry(id)
-                            .or_default()
-                            .slots
-                            .insert(bucket, Slot::Failed);
-                    }
-                    let n = self.failures.entry(id).or_insert(0);
-                    *n += 1;
-                    if *n >= FAILURES_BEFORE_GIVING_UP || bucket == SWATCH_BUCKET {
-                        self.write_off(id);
-                    }
+                    self.swatch.insert(id, t);
+                } else {
+                    self.frames
+                        .entry(id)
+                        .or_default()
+                        .slots
+                        .insert(bucket, Slot::Ready(t));
+                }
+            } else {
+                // Terminal. Record it so the slot stops being pending and
+                // is never re-requested.
+                self.swatch_pending.remove(&id);
+                if bucket != SWATCH_BUCKET {
+                    self.frames
+                        .entry(id)
+                        .or_default()
+                        .slots
+                        .insert(bucket, Slot::Failed);
+                }
+                let n = self.failures.entry(id).or_insert(0);
+                *n += 1;
+                if *n >= FAILURES_BEFORE_GIVING_UP || bucket == SWATCH_BUCKET {
+                    self.write_off(id);
                 }
             }
             self.evict(id);
@@ -547,7 +601,7 @@ impl ThumbnailCache {
                 drop(q);
                 let pool = self.pool.clone();
                 let tx = self.tx.clone();
-                std::thread::spawn(move || run_worker(pool, tx));
+                std::thread::spawn(move || run_worker(&pool, &tx));
             }
         }
         self.pool.wake.notify_one();
@@ -576,6 +630,10 @@ impl ThumbnailCache {
     ///
     /// Failure is recorded exactly as the pool records it, so a source that
     /// cannot be decoded is written off here too rather than retried.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the swatch request plus `ensure_strip`'s filmstrip span, spelled the same way"
+    )]
     pub fn warm_blocking(
         &mut self,
         id: MediaId,
@@ -592,7 +650,7 @@ impl ThumbnailCache {
         if !source.is_decodable() || self.undecodable.contains(&id) {
             return;
         }
-        let want_swatch = !self.swatch.get(&id).map(|t| t.real).unwrap_or(false);
+        let want_swatch = !self.swatch.get(&id).is_some_and(|t| t.real);
         // Which filmstrip buckets are still unanswered.
         let mut wanted: Vec<(u32, f64)> = Vec::new();
         let span = (out_point - in_point).max(0.0);
@@ -617,15 +675,12 @@ impl ThumbnailCache {
             return;
         };
         if want_swatch {
-            match session.frame_at(at) {
-                Some(t) => {
-                    self.swatch_pending.remove(&id);
-                    self.swatch.insert(id, Arc::new(t));
-                }
-                None => {
-                    self.write_off(id);
-                    return;
-                }
+            if let Some(t) = session.frame_at(at) {
+                self.swatch_pending.remove(&id);
+                self.swatch.insert(id, Arc::new(t));
+            } else {
+                self.write_off(id);
+                return;
             }
         }
         for (bucket, t) in wanted {
@@ -750,20 +805,26 @@ impl Drop for ThumbnailCache {
 
 /// Take the next job, preferring one for `preferred` so a worker keeps reusing
 /// the pipeline it already has open.
-#[cfg_attr(not(feature = "decode"), allow(dead_code))]
+#[cfg_attr(
+    not(feature = "decode"),
+    allow(dead_code, reason = "only the decoder path uses it")
+)]
 fn take_job(q: &mut Queue, preferred: Option<&Path>) -> Option<Job> {
-    if let Some(p) = preferred {
-        if let Some(i) = q.jobs.iter().position(|j| j.path == p) {
-            return q.jobs.remove(i);
-        }
+    if let Some(p) = preferred
+        && let Some(i) = q.jobs.iter().position(|j| j.path == p)
+    {
+        return q.jobs.remove(i);
     }
     q.jobs.pop_front()
 }
 
 /// One worker: owns at most one engine, reuses it across consecutive requests
 /// for the same source, and retires after [`WORKER_IDLE`] with nothing to do.
-#[cfg_attr(not(feature = "decode"), allow(dead_code))]
-fn run_worker(pool: Arc<Pool>, tx: Sender<Outcome>) {
+#[cfg_attr(
+    not(feature = "decode"),
+    allow(dead_code, reason = "only the decoder path uses it")
+)]
+fn run_worker(pool: &Pool, tx: &Sender<Outcome>) {
     let mut session: Option<Session> = None;
     loop {
         let job = {
@@ -796,16 +857,15 @@ fn run_worker(pool: Arc<Pool>, tx: Sender<Outcome>) {
                     continue; // spurious wake
                 }
             }
-            let job = match picked {
-                Some(j) => j,
-                None => continue,
+            let Some(job) = picked else {
+                continue;
             };
             drop(guard);
             job
         };
 
         // Reuse the open pipeline when the source has not changed.
-        let reopen = session.as_ref().map(|s| s.path != job.path).unwrap_or(true);
+        let reopen = session.as_ref().is_none_or(|s| s.path != job.path);
         if reopen {
             session = Session::open(&job.path);
         }
@@ -832,14 +892,20 @@ fn run_worker(pool: Arc<Pool>, tx: Sender<Outcome>) {
 
 /// One open source: the engine plus the last frame timestamp it handed back,
 /// so a fresh seek can tell a new picture from the one already on screen.
-#[cfg_attr(not(feature = "decode"), allow(dead_code))]
+#[cfg_attr(
+    not(feature = "decode"),
+    allow(dead_code, reason = "only the decoder path uses it")
+)]
 struct Session {
     path: PathBuf,
     engine: ::media::MediaEngine,
     last_pts: Option<u64>,
 }
 
-#[cfg_attr(not(feature = "decode"), allow(dead_code))]
+#[cfg_attr(
+    not(feature = "decode"),
+    allow(dead_code, reason = "only the decoder path uses it")
+)]
 impl Session {
     fn open(path: &Path) -> Option<Session> {
         let mut engine = ::media::MediaEngine::new();
@@ -912,8 +978,7 @@ impl Session {
                 // land before the requested time.
                 let better = fallback
                     .as_ref()
-                    .map(|(_, _, _, p)| got.3.abs_diff(target_ms) < p.abs_diff(target_ms))
-                    .unwrap_or(true);
+                    .is_none_or(|(_, _, _, p)| got.3.abs_diff(target_ms) < p.abs_diff(target_ms));
                 if better {
                     fallback = Some(got);
                 }
@@ -935,7 +1000,10 @@ impl Session {
 }
 
 /// Turn decoded source-resolution pixels into a cached thumbnail.
-#[cfg_attr(not(feature = "decode"), allow(dead_code))]
+#[cfg_attr(
+    not(feature = "decode"),
+    allow(dead_code, reason = "only the decoder path uses it")
+)]
 fn scaled_thumb(rgba: &[u8], w: u32, h: u32) -> Thumb {
     let (tw, th, px) = downscale(rgba, w, h, THUMB_W, THUMB_H);
     Thumb::new(tw, th, Arc::new(px), true)
@@ -1259,16 +1327,12 @@ mod tests {
             hydration: crate::media::Hydration::Local,
         };
         cache.ensure_strip(id, 0, &local, 0.0, 10.0, 8);
-        let stuck = cache
-            .frames
-            .get(&id)
-            .map(|f| {
-                f.slots
-                    .values()
-                    .filter(|s| matches!(s, Slot::Pending))
-                    .count()
-            })
-            .unwrap_or(0);
+        let stuck = cache.frames.get(&id).map_or(0, |f| {
+            f.slots
+                .values()
+                .filter(|s| matches!(s, Slot::Pending))
+                .count()
+        });
         assert_eq!(stuck, 0, "a refused request leaves nothing pending");
         // Draining the backlog and asking again does queue the work. One cell
         // only: each request stands up a real pipeline, and this test is about

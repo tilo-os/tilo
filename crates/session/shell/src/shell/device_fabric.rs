@@ -39,6 +39,8 @@ pub const REMOTE_AUDIO_PROTOCOL_VERSION: u16 = 1;
 pub const REMOTE_AUDIO_SAMPLE_RATE_HZ: u32 = 48_000;
 pub const REMOTE_AUDIO_CHANNELS: u8 = 2;
 pub const REMOTE_AUDIO_FRAME_SAMPLES: u16 = 960;
+/// Bytes in one interleaved S16LE sample frame across all channels.
+pub const REMOTE_AUDIO_SAMPLE_FRAME_BYTES: usize = REMOTE_AUDIO_CHANNELS as usize * 2;
 pub const MAX_REMOTE_AUDIO_FRAME_BYTES: usize =
     REMOTE_AUDIO_FRAME_SAMPLES as usize * REMOTE_AUDIO_CHANNELS as usize * 2;
 pub const MAX_REMOTE_AUDIO_SESSIONS: usize = 4;
@@ -377,7 +379,7 @@ pub enum PersonalFabricAction {
         forwarding_id: [u8; 16],
         lease_nonce: [u8; 16],
     },
-    /// Request a shell-owned, live audio route. Local PipeWire node identities
+    /// Request a shell-owned, live audio route. Local `PipeWire` node identities
     /// never cross the certified-device boundary. Appending wire variants is
     /// intentional: postcard encodes enum discriminants by declaration order.
     RemoteAudioOffer {
@@ -783,7 +785,9 @@ impl PersonalFabricActionEnvelope {
                     || *sequence == 0
                     || pcm_s16le.is_empty()
                     || pcm_s16le.len() > MAX_REMOTE_AUDIO_FRAME_BYTES
-                    || pcm_s16le.len() % (usize::from(REMOTE_AUDIO_CHANNELS) * 2) != 0
+                    || !pcm_s16le
+                        .len()
+                        .is_multiple_of(REMOTE_AUDIO_SAMPLE_FRAME_BYTES)
                 {
                     return Err(FabricError::InvalidAction);
                 }
@@ -796,7 +800,9 @@ impl PersonalFabricActionEnvelope {
                     return Err(FabricError::InvalidAction);
                 }
             }
-            PersonalFabricAction::RemoteAudioCancel { session_id } => {
+            PersonalFabricAction::RemoteAudioCancel { session_id }
+            | PersonalFabricAction::DisplayMirrorRequest { session_id }
+            | PersonalFabricAction::DisplayMirrorStop { session_id } => {
                 if session_id == &[0; 16] {
                     return Err(FabricError::InvalidAction);
                 }
@@ -815,7 +821,8 @@ impl PersonalFabricActionEnvelope {
                     return Err(FabricError::InvalidAction);
                 }
             }
-            PersonalFabricAction::DeviceHealthProbe { nonce } => {
+            PersonalFabricAction::DeviceHealthProbe { nonce }
+            | PersonalFabricAction::InputLeaseRevoked { nonce } => {
                 if nonce == &[0; 16] {
                     return Err(FabricError::InvalidAction);
                 }
@@ -876,12 +883,6 @@ impl PersonalFabricActionEnvelope {
                 authorization,
             } => {
                 if !valid_bluetooth_pairing_action(request_id, address, authorization) {
-                    return Err(FabricError::InvalidAction);
-                }
-            }
-            PersonalFabricAction::DisplayMirrorRequest { session_id }
-            | PersonalFabricAction::DisplayMirrorStop { session_id } => {
-                if session_id == &[0; 16] {
                     return Err(FabricError::InvalidAction);
                 }
             }
@@ -1060,11 +1061,6 @@ impl PersonalFabricActionEnvelope {
                     || lease.nonce == [0; 16]
                     || lease.validate_at(now_unix_ms).is_err()
                 {
-                    return Err(FabricError::InvalidAction);
-                }
-            }
-            PersonalFabricAction::InputLeaseRevoked { nonce } => {
-                if nonce == &[0; 16] {
                     return Err(FabricError::InvalidAction);
                 }
             }
@@ -2800,6 +2796,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one table of wire encodings pins every existing action discriminant"
+    )]
     fn new_action_variants_do_not_renumber_existing_wire_actions() {
         let placement = postcard::to_allocvec(&PersonalFabricAction::SetDisplayPlacement {
             rect: DisplayRect {

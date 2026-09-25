@@ -12,7 +12,9 @@
 use std::path::{Component, Path};
 
 use super::{EIO, EISDIR, ENOENT, ENOTDIR, FileType, Hash, QuickFS, now_ms};
-use crate::namespace::{ContentAuthority, ROOT_INO, WriteLease};
+use crate::namespace::{
+    ContentAuthority, LeaseRequest, PosixAttrs, ROOT_INO, VersionFence, WriteLease,
+};
 
 /// One file or directory of the workspace tree as the record plane sees it.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -32,6 +34,30 @@ pub struct TreeEntry {
     /// record whose revision has not been verified yet reads as empty; it is
     /// not empty, just not known.
     pub known: bool,
+    /// The stable record this path is. A rename keeps it.
+    pub record: Option<collab_types::FileRecordId>,
+    /// Replicated permission bits and whether the content is a symbolic
+    /// link's target.
+    pub posix: PosixAttrs,
+    /// The record's write lease, when it is lease-class.
+    pub lease: Option<WriteLease>,
+    /// The tenancy the current version was written in, and who held the
+    /// lease in that epoch.
+    pub fence: Option<VersionFence>,
+    pub fence_holder: Option<[u8; 32]>,
+}
+
+/// How a write lease was obtained.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LeaseSource {
+    /// Taken or renewed here: no other device arbitrates this room, or this
+    /// device does.
+    Local,
+    /// Granted by the room's lease authority.
+    Granted,
+    /// Taken without an answer from the lease authority, which could not be
+    /// reached: versions written under it lose to a granted tenancy.
+    Optimistic,
 }
 
 /// Splits a root-relative path into its name components. Anything that is
@@ -50,6 +76,32 @@ pub fn path_components(rel: &Path) -> Result<Vec<Vec<u8>>, i32> {
         })
         .filter(|c| !matches!(c, Ok(v) if v.is_empty()))
         .collect()
+}
+
+/// The write lease of the record at `ino`, the tenancy its current version
+/// was written in, and who held that tenancy.
+fn lease_of(
+    ns: &crate::namespace::Namespace,
+    ino: u64,
+) -> (Option<WriteLease>, Option<VersionFence>, Option<[u8; 32]>) {
+    let Some(record) = ns.record_id_for(ino) else {
+        return (None, None, None);
+    };
+    let Some(lease) = ns.write_lease(record) else {
+        return (None, None, None);
+    };
+    let fence = ns
+        .content_revision_for(ino)
+        .and_then(|r| ns.version_fence(record, r.content_hash.map(|h| h.0), r.byte_len));
+    let holder = fence.and_then(|f| ns.lease_holder(record, f.epoch));
+    (Some(lease), fence, holder)
+}
+
+/// The published POSIX attributes of the record at `ino`, else the default.
+fn posix_of(ns: &crate::namespace::Namespace, ino: u64, dir: bool) -> PosixAttrs {
+    ns.record_id_for(ino)
+        .and_then(|r| ns.posix_attrs(r))
+        .unwrap_or_else(|| PosixAttrs::default_for(dir))
 }
 
 fn to_errno(error: &std::io::Error) -> i32 {
@@ -87,17 +139,48 @@ impl QuickFS {
         Ok(cur)
     }
 
-    /// Applies a locally captured directory.
+    /// Applies a locally captured directory with its default mode.
     ///
     /// # Errors
     ///
     /// The errno of the directory creation that failed.
     pub fn apply_local_dir(&self, rel: &Path) -> Result<(), i32> {
+        self.apply_local_dir_as(rel, PosixAttrs::default_for(true))
+    }
+
+    /// Applies a locally captured directory with mode bits `attrs`.
+    ///
+    /// # Errors
+    ///
+    /// The errno of the directory creation that failed.
+    pub fn apply_local_dir_as(&self, rel: &Path, attrs: PosixAttrs) -> Result<(), i32> {
         let components = path_components(rel)?;
         if components.is_empty() {
             return Ok(());
         }
-        self.ensure_dir_components(&components).map(|_| ())
+        let ino = self.ensure_dir_components(&components)?;
+        self.set_posix(ino, attrs, true)
+    }
+
+    /// Publishes `attrs` for the record at `ino` when they differ from what
+    /// it has.
+    fn set_posix(&self, ino: u64, attrs: PosixAttrs, dir: bool) -> Result<(), i32> {
+        let delta = {
+            let mut ns = self.ns();
+            let record = ns.record_id_for(ino).ok_or(EIO)?;
+            let current = ns
+                .posix_attrs(record)
+                .unwrap_or_else(|| PosixAttrs::default_for(dir));
+            if current == attrs {
+                return Ok(());
+            }
+            if !ns.put_posix_attrs(record, &attrs) {
+                return Err(EIO);
+            }
+            ns.save_incremental()
+        };
+        self.publish(delta);
+        Ok(())
     }
 
     /// Applies a locally captured file version with content `data`, written
@@ -110,6 +193,27 @@ impl QuickFS {
     /// The errno of the record operation that failed (`EDQUOT` when the
     /// record's history is full, `EIO` when publication failed).
     pub fn apply_local_file(&self, rel: &Path, data: &[u8], mtime_ms: u64) -> Result<(), i32> {
+        self.apply_local_file_as(rel, data, mtime_ms, PosixAttrs::default_for(false), None)
+    }
+
+    /// [`Self::apply_local_file`] with the file's mode bits, or for a
+    /// symbolic link (`attrs.symlink`) whose target bytes are `data`. The
+    /// attributes are published before the content, so a peer never shows
+    /// the new content with the old type or mode. A version written under a
+    /// write lease carries its tenancy (`fence`), published in the same
+    /// change as the content.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::apply_local_file`].
+    pub fn apply_local_file_as(
+        &self,
+        rel: &Path,
+        data: &[u8],
+        mtime_ms: u64,
+        attrs: PosixAttrs,
+        fence: Option<VersionFence>,
+    ) -> Result<(), i32> {
         let components = path_components(rel)?;
         let Some((name, parents)) = components.split_last() else {
             return Err(EISDIR);
@@ -130,7 +234,8 @@ impl QuickFS {
                 ino
             }
         };
-        self.commit_content_at(ino, data, mtime_ms)
+        self.set_posix(ino, attrs, false)?;
+        self.commit_content_fenced(ino, data, mtime_ms, fence)
             .map_err(|e| to_errno(&e))
     }
 
@@ -160,6 +265,37 @@ impl QuickFS {
                 other => other,
             },
         }
+    }
+
+    /// Applies a locally captured rename of `from` to `to`: the record keeps
+    /// its identity, so its history, access and every reference to it follow
+    /// it, and a directory brings its subtree. A record already at `to` is
+    /// replaced as `rename(2)` replaces it (one signed transaction).
+    ///
+    /// # Errors
+    ///
+    /// `ENOENT` when `from` is not a record here, else the errno of the
+    /// signed rename that failed. The caller falls back to a removal and a
+    /// creation, which loses identity but never content.
+    pub fn apply_local_move(&self, from: &Path, to: &Path) -> Result<(), i32> {
+        let source = path_components(from)?;
+        let target = path_components(to)?;
+        let (Some((name, parents)), Some((new_name, new_parents))) =
+            (source.split_last(), target.split_last())
+        else {
+            return Err(libc::EBUSY);
+        };
+        if target.starts_with(&source) {
+            return Err(libc::EINVAL);
+        }
+        let parent = self.ino_at(parents).ok_or(ENOENT)?;
+        if self.lookup_kind(parent, name).is_none() {
+            return Err(ENOENT);
+        }
+        let new_parent = self.ensure_dir_components(new_parents)?;
+        let delta = self.rename_named(parent, name, new_parent, new_name)?;
+        self.publish(delta);
+        Ok(())
     }
 
     /// Removes a directory and everything below it, deepest first, each as
@@ -206,7 +342,7 @@ impl QuickFS {
                 }
                 let mut path = prefix.clone();
                 path.push(name.to_vec());
-                let (hash, size, mtime_ms, known) = {
+                let (hash, size, mtime_ms, known, record, posix, lease) = {
                     let ns = self.ns();
                     let attr = ns.getattr(ino);
                     let mtime_ms = attr
@@ -221,6 +357,9 @@ impl QuickFS {
                         attr.map_or(0, |a| a.size),
                         mtime_ms,
                         known,
+                        ns.record_id_for(ino),
+                        posix_of(&ns, ino, kind == FileType::Directory),
+                        lease_of(&ns, ino),
                     )
                 };
                 let dir_entry = kind == FileType::Directory;
@@ -231,6 +370,11 @@ impl QuickFS {
                     size,
                     mtime_ms,
                     known,
+                    record,
+                    posix,
+                    lease: lease.0,
+                    fence: lease.1,
+                    fence_holder: lease.2,
                 });
                 if dir_entry {
                     stack.push((ino, path));
@@ -238,6 +382,24 @@ impl QuickFS {
             }
         }
         out
+    }
+
+    /// Publishes `device`'s changeset mark (see
+    /// [`crate::namespace::ChangesetMark`]).
+    pub fn put_changeset_mark(&self, device: [u8; 32], mark: &crate::namespace::ChangesetMark) {
+        let delta = {
+            let mut ns = self.ns();
+            if !ns.put_changeset_mark(device, mark) {
+                return;
+            }
+            ns.save_incremental()
+        };
+        self.publish(delta);
+    }
+
+    /// Every device's latest changeset mark.
+    pub fn changeset_marks(&self) -> Vec<([u8; 32], crate::namespace::ChangesetMark)> {
+        self.ns().changeset_marks()
     }
 
     /// The current time as the record plane stamps it.
@@ -273,7 +435,202 @@ impl QuickFS {
             size: attr.size,
             mtime_ms,
             known,
+            record: ns.record_id_for(ino),
+            posix: posix_of(&ns, ino, attr.kind == FileType::Directory),
+            lease: lease_of(&ns, ino).0,
+            fence: lease_of(&ns, ino).1,
+            fence_holder: lease_of(&ns, ino).2,
         })
+    }
+
+    /// The write lease of the file at `rel`, if it has one.
+    pub fn write_lease_at(&self, rel: &Path) -> Option<WriteLease> {
+        let components = path_components(rel).ok()?;
+        let ino = self.ino_at(&components)?;
+        let ns = self.ns();
+        ns.write_lease(ns.record_id_for(ino)?)
+    }
+
+    /// Who held `record`'s write lease in `epoch`.
+    pub fn lease_holder_of(&self, record: [u8; 16], epoch: u64) -> Option<[u8; 32]> {
+        self.ns().lease_holder(
+            collab_types::FileRecordId(uuid::Uuid::from_bytes(record)),
+            epoch,
+        )
+    }
+
+    /// Makes `me` the room's lease authority, when it is not already.
+    pub fn claim_lease_authority(&self, me: [u8; 32]) {
+        let delta = {
+            let mut ns = self.ns();
+            if ns.lease_authority() == Some(me) || !ns.put_lease_authority(me) {
+                return;
+            }
+            ns.save_incremental()
+        };
+        self.publish(delta);
+    }
+
+    /// The room's lease authority, if one claimed it.
+    pub fn lease_authority(&self) -> Option<[u8; 32]> {
+        self.ns().lease_authority()
+    }
+
+    /// Acquires the write lease of `rel` for `me`. A live lease `me` holds
+    /// is renewed; another device's live lease is `Err(Some(lease))`. A
+    /// free lease comes from the room's lease authority when that is
+    /// another device: `me` asks and waits up to `wait` for its answer,
+    /// and takes the lease optimistically when none comes.
+    ///
+    /// # Errors
+    ///
+    /// Another holder's live lease, or `None` when there is no such file.
+    pub fn acquire_write_lease(
+        &self,
+        rel: &Path,
+        me: [u8; 32],
+        ttl: std::time::Duration,
+        wait: std::time::Duration,
+    ) -> Result<(WriteLease, LeaseSource), Option<WriteLease>> {
+        let components = path_components(rel).map_err(|_| None)?;
+        let ino = self.ino_at(&components).ok_or(None)?;
+        let (record, current, authority) = {
+            let ns = self.ns();
+            let record = ns.record_id_for(ino).ok_or(None)?;
+            (record, ns.write_lease(record), ns.lease_authority())
+        };
+        let now = now_ms();
+        let held = current.filter(|l| l.is_live(now));
+        let asks = match (held, authority) {
+            (Some(l), _) if l.holder != me => return Err(Some(l)),
+            // Renewal, or nobody else arbitrates.
+            (Some(_), _) | (None, None) => None,
+            (None, Some(a)) if a == me => None,
+            (None, Some(a)) => Some(a),
+        };
+        let Some(_authority) = asks else {
+            let granted = authority == Some(me) && held.is_none();
+            return self
+                .take_lease(record, me, ttl, granted)
+                .map(|l| (l, LeaseSource::Local));
+        };
+        let nonce = u64::try_from(
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.as_nanos()),
+        )
+        .unwrap_or(u64::MAX);
+        let delta = {
+            let mut ns = self.ns();
+            if !ns.put_lease_request(record, me, LeaseRequest { nonce }) {
+                return Err(None);
+            }
+            ns.save_incremental()
+        };
+        self.publish(delta);
+        let before = current.map_or(0, |l| l.epoch);
+        let started = std::time::Instant::now();
+        let answer = loop {
+            std::thread::sleep(std::time::Duration::from_millis(5));
+            let lease = self.ns().write_lease(record);
+            let now = now_ms();
+            match lease {
+                Some(l) if l.holder == me && l.granted && l.epoch > before && l.is_live(now) => {
+                    break Some(Ok(l));
+                }
+                Some(l) if l.holder != me && l.is_live(now) => break Some(Err(l)),
+                _ => {}
+            }
+            if started.elapsed() >= wait {
+                break None;
+            }
+        };
+        let delta = {
+            let mut ns = self.ns();
+            ns.remove_lease_request(record, me);
+            ns.save_incremental()
+        };
+        self.publish(delta);
+        match answer {
+            Some(Ok(lease)) => Ok((lease, LeaseSource::Granted)),
+            Some(Err(lease)) => Err(Some(lease)),
+            None => self
+                .take_lease(record, me, ttl, false)
+                .map(|l| (l, LeaseSource::Optimistic)),
+        }
+    }
+
+    /// Answers pending lease requests as the room's lease authority: each
+    /// request for a lease nobody holds is granted with a new epoch, one at
+    /// a time, so of two devices asking at once exactly one gets it.
+    /// `answered` remembers requests already decided. Returns the grants.
+    #[allow(
+        clippy::significant_drop_tightening,
+        reason = "requests are answered one at a time under one namespace lock, so two grants cannot interleave"
+    )]
+    pub fn arbitrate_lease_requests(
+        &self,
+        ttl: std::time::Duration,
+        answered: &mut std::collections::HashSet<(collab_types::FileRecordId, [u8; 32], u64)>,
+    ) -> Vec<(std::path::PathBuf, WriteLease)> {
+        let ttl_ms = u64::try_from(ttl.as_millis()).unwrap_or(u64::MAX);
+        let mut granted = Vec::new();
+        let delta = {
+            let mut ns = self.ns();
+            for (record, device, request) in ns.lease_requests() {
+                if !answered.insert((record, device, request.nonce)) {
+                    continue;
+                }
+                let current = ns.write_lease(record);
+                let Ok(lease) = WriteLease::take(current, device, now_ms(), ttl_ms) else {
+                    continue;
+                };
+                let lease = WriteLease {
+                    granted: true,
+                    ..lease
+                };
+                if ns.put_write_lease(record, &lease) {
+                    let path = ns
+                        .ino_for_record_id(record)
+                        .and_then(|ino| ns.path_for(ino))
+                        .map(|p| std::path::PathBuf::from(p.trim_start_matches('/')))
+                        .unwrap_or_default();
+                    granted.push((path, lease));
+                }
+            }
+            (!granted.is_empty()).then(|| ns.save_incremental())
+        };
+        if let Some(delta) = delta {
+            self.publish(delta);
+        }
+        granted
+    }
+
+    fn take_lease(
+        &self,
+        record: collab_types::FileRecordId,
+        me: [u8; 32],
+        ttl: std::time::Duration,
+        granted: bool,
+    ) -> Result<WriteLease, Option<WriteLease>> {
+        let ttl_ms = u64::try_from(ttl.as_millis()).unwrap_or(u64::MAX);
+        let delta = {
+            let mut ns = self.ns();
+            let current = ns.write_lease(record);
+            let mut lease = WriteLease::take(current, me, now_ms(), ttl_ms).map_err(Some)?;
+            if granted && current.is_none_or(|c| c.epoch != lease.epoch) {
+                lease.granted = true;
+            }
+            if current == Some(lease) {
+                return Ok(lease);
+            }
+            if !ns.put_write_lease(record, &lease) {
+                return Err(None);
+            }
+            (lease, ns.save_incremental())
+        };
+        self.publish(delta.1);
+        Ok(delta.0)
     }
 
     /// Takes or renews the write lease of the file at `rel` for device `me`

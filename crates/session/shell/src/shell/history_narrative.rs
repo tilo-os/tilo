@@ -98,14 +98,14 @@ impl LocalHistoryNarrator {
     /// Return a result only while it still describes the request on screen.
     /// A slower generation must never overwrite a newer deterministic digest.
     pub fn take_for(&mut self, request: &NarrativeRequest) -> Option<GroundedNarrative> {
-        self.take_for_prompt(prompt_for(request))
+        self.take_for_prompt(&prompt_for(request))
     }
 
     pub fn take_status_for(&mut self, request: &NarrativeRequest) -> Option<GroundedNarrative> {
-        self.take_for_prompt(status_prompt_for(request))
+        self.take_for_prompt(&status_prompt_for(request))
     }
 
-    fn take_for_prompt(&mut self, prompt: String) -> Option<GroundedNarrative> {
+    fn take_for_prompt(&mut self, prompt: &str) -> Option<GroundedNarrative> {
         let expected = blake3::hash(prompt.as_bytes()).to_hex().to_string();
         let narrative = self
             .pending
@@ -141,8 +141,9 @@ fn select_installed_model(list: &str, requested: Option<&str>) -> Option<String>
             let columns = line.split_whitespace().collect::<Vec<_>>();
             let name = (*columns.first()?).to_string();
             let size = columns.windows(2).find_map(|pair| {
-                let value = pair[0].replace(',', "").parse::<f64>().ok()?;
-                let multiplier = match pair[1].to_ascii_uppercase().as_str() {
+                let [value, unit] = pair else { return None };
+                let value = value.replace(',', "").parse::<f64>().ok()?;
+                let multiplier = match unit.to_ascii_uppercase().as_str() {
                     "KB" => 1_000_f64,
                     "MB" => 1_000_000_f64,
                     "GB" => 1_000_000_000_f64,

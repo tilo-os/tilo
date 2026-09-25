@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Verify the exact native builder's opt-in linker, runtime, and ELF hardening.
+# Verify the native builder's default linker, runtime, and ELF hardening.
 set -euo pipefail
 
 arch=$(uname -m)
@@ -57,5 +57,18 @@ for profile in dev thin; do
         readelf -n "$work/$profile" | grep -F SHSTK
     fi
 done
+
+# Cargo must pick mold without any job-level setting, including when a job
+# redirects CARGO_HOME to its restored download cache as CI does.
+mkdir -p "$work/crate/src" "$work/cargo-home"
+cp "$work/smoke.rs" "$work/crate/src/main.rs"
+printf '[package]\nname = "mold-default"\nversion = "0.0.0"\nedition = "2024"\n' \
+    >"$work/crate/Cargo.toml"
+env -u TILO_CI_MOLD_TARGET -u RUSTC_WRAPPER CARGO_HOME="$work/cargo-home" \
+    CARGO_TARGET_DIR="$work/crate/target" \
+    cargo build --offline --quiet --manifest-path "$work/crate/Cargo.toml"
+default_binary="$work/crate/target/debug/mold-default"
+[[ $("$default_binary" 1000) == 1498500 ]]
+readelf -p .comment "$default_binary" | grep -F 'mold '
 
 printf 'native mold smoke passed on %s\n' "$arch"

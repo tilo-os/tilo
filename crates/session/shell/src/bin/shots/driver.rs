@@ -717,7 +717,7 @@ impl ShellDriver {
     /// Build the privacy-sensitive state through the same capability and
     /// compositor exposure stores the live shell reads. The display label is
     /// deliberately different from the principal id to guard agent typing.
-    pub fn seed_agent_screen_exposure_for_shots(&mut self, surface_id: u64) {
+    pub fn seed_agent_screen_exposure_for_shots(&self, surface_id: u64) {
         use shell::shell::chrome_state::ActiveExposure;
         use shell::shell::state::{CapOverride, Collaborator, Subject, Verb};
 
@@ -852,7 +852,10 @@ impl ShellDriver {
                     && !active.collaborators.iter().any(|person| person.id == id)
                 {
                     let mut collaborator = Collaborator::new(id, name);
-                    collaborator.active_tab = tab_ids.get(index % tab_ids.len().max(1)).copied();
+                    collaborator.active_tab = index
+                        .checked_rem(tab_ids.len())
+                        .and_then(|slot| tab_ids.get(slot))
+                        .copied();
                     active.collaborators.push(collaborator);
                 }
             }
@@ -1795,6 +1798,10 @@ impl ShellDriver {
             let state = handle.borrow();
             let mut tree = state.tree_mut();
             let entries = self.fb.host().room_activity().entries().to_vec();
+            #[expect(
+                clippy::indexing_slicing,
+                reason = "entries.len() >= 4, so 0 <= first_end < split <= last < entries.len()"
+            )]
             if entries.len() >= 4 {
                 let split = entries.len() / 2;
                 if split >= 2 && entries.len().saturating_sub(split) >= 2 {

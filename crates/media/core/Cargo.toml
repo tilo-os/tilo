@@ -19,6 +19,11 @@ decode = ["dep:gstreamer", "dep:gstreamer-app", "dep:gstreamer-video"]
 # (the video editor's export) turns it on; one that only decodes does not need
 # it, and `decode` already links gstreamer so both together add nothing.
 encode = ["dep:gstreamer"]
+# The real-time encoder and decoder (`realtime`): screen sharing, calls and
+# recording. Links the same GStreamer stack as `decode`; without it the
+# real-time constructors report `RealtimeError::NotCompiled`, so a consumer
+# that only sometimes needs video compiles without the gstreamer dev stack.
+realtime = ["dep:gstreamer", "dep:gstreamer-app", "dep:gstreamer-video"]
 
 [dependencies]
 bounded-command = { path = "../../system/bounded-command" }
