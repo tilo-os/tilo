@@ -27,12 +27,12 @@ fn frame_pts(app: &PlayerApp) -> Option<u64> {
         .map(|frame| frame.pts_ms)
 }
 
-fn invoke(app: &mut PlayerApp, doc: &automerge::AutoCommit, operation: PlayerOperation) {
+fn invoke(app: &mut PlayerApp, doc: &automerge::AutoCommit, operation: &PlayerOperation) {
     assert!(
         app.invoke_resource_operation(
             tilo_actions::OperationKind::Effect,
             OPERATION_TYPE,
-            &serde_json::to_vec(&operation).unwrap(),
+            &serde_json::to_vec(operation).unwrap(),
             doc,
             &automerge::ROOT,
         )
@@ -46,7 +46,9 @@ fn wait_for(
     description: &str,
     ready: impl Fn(&PlayerApp) -> bool,
 ) {
-    let deadline = Instant::now() + Duration::from_secs(15);
+    let deadline = Instant::now()
+        .checked_add(Duration::from_secs(15))
+        .expect("deadline is representable");
     loop {
         app.sync(doc, &automerge::ROOT);
         if ready(app) {
@@ -159,9 +161,9 @@ fn exercise_app(root: &Path) {
     assert_eq!(app.player().engine().unwrap().audio_tracks().len(), 1);
     assert!(app.player().is_playing());
 
-    invoke(&mut app, &doc, PlayerOperation::TogglePlayback);
+    invoke(&mut app, &doc, &PlayerOperation::TogglePlayback);
     assert!(!app.player().is_playing());
-    invoke(&mut app, &doc, PlayerOperation::SeekSeconds(2.0));
+    invoke(&mut app, &doc, &PlayerOperation::SeekSeconds(2.0));
     wait_for(
         &mut app,
         &mut doc,
@@ -169,7 +171,9 @@ fn exercise_app(root: &Path) {
         |app| frame_pts(app).is_some_and(|pts| (1_960..=2_040).contains(&pts)),
     );
     let paused_pts = frame_pts(&app).unwrap();
-    let hold_until = Instant::now() + Duration::from_millis(200);
+    let hold_until = Instant::now()
+        .checked_add(Duration::from_millis(200))
+        .expect("hold deadline is representable");
     while Instant::now() < hold_until {
         app.sync(&mut doc, &automerge::ROOT);
         assert_eq!(frame_pts(&app).unwrap(), paused_pts);
@@ -178,14 +182,14 @@ fn exercise_app(root: &Path) {
     }
 
     let audio_before_resume = audio_buffers.load(Ordering::Relaxed);
-    invoke(&mut app, &doc, PlayerOperation::TogglePlayback);
+    invoke(&mut app, &doc, &PlayerOperation::TogglePlayback);
     wait_for(
         &mut app,
         &mut doc,
         "resumed picture and audio progression",
         |app| {
             app.player().is_playing()
-                && frame_pts(app).is_some_and(|pts| pts >= paused_pts + 160)
+                && frame_pts(app).is_some_and(|pts| pts >= paused_pts.saturating_add(160))
                 && audio_buffers.load(Ordering::Relaxed) > audio_before_resume
         },
     );
