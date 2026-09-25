@@ -77,7 +77,7 @@ fn terminal_semantics(inspection: &str) -> serde_json::Value {
         .unwrap_or_else(|| panic!("Terminal semantics must be present: {inspection}"))
 }
 
-struct RecordingMaster(crossbeam_channel::Sender<PtySize>);
+struct RecordingMaster(std::sync::mpsc::Sender<PtySize>);
 
 impl MasterPty for RecordingMaster {
     fn get_size(&self) -> Result<PtySize, anyhow::Error> {
@@ -110,7 +110,7 @@ impl MasterPty for RecordingMaster {
     }
 }
 
-struct ChannelWriter(crossbeam_channel::Sender<Vec<u8>>);
+struct ChannelWriter(std::sync::mpsc::Sender<Vec<u8>>);
 
 impl Write for ChannelWriter {
     fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
@@ -125,13 +125,13 @@ impl Write for ChannelWriter {
 
 fn recording_widget() -> (
     crate::TerminalWidget,
-    crossbeam_channel::Receiver<Vec<u8>>,
-    crossbeam_channel::Sender<Vec<u8>>,
-    crossbeam_channel::Receiver<PtySize>,
+    std::sync::mpsc::Receiver<Vec<u8>>,
+    std::sync::mpsc::Sender<Vec<u8>>,
+    std::sync::mpsc::Receiver<PtySize>,
 ) {
-    let (write_tx, writes) = crossbeam_channel::unbounded();
-    let (output, output_rx) = crossbeam_channel::unbounded();
-    let (resize_tx, resizes) = crossbeam_channel::unbounded();
+    let (write_tx, writes) = std::sync::mpsc::channel();
+    let (output, output_rx) = std::sync::mpsc::channel();
+    let (resize_tx, resizes) = std::sync::mpsc::channel();
     let widget = crate::TerminalWidget::new(
         Arc::new(Mutex::new(Box::new(ChannelWriter(write_tx)))),
         Arc::new(Mutex::new(Box::new(RecordingMaster(resize_tx)))),
@@ -257,7 +257,7 @@ fn external_history_does_not_resize_or_reset_the_live_terminal_at_any_width() {
         let history = driver.inspection_json().unwrap();
         assert!(history.contains(EXPECTED_LIMITATION));
         assert!(
-            resizes.is_empty(),
+            resizes.try_recv().is_err(),
             "opening History resized the PTY at width {width}"
         );
         assert!(find_terminal_semantics(&history).is_none());
@@ -270,7 +270,7 @@ fn external_history_does_not_resize_or_reset_the_live_terminal_at_any_width() {
         );
         assert_eq!(resource_snapshot(&driver), before_resources);
         assert!(
-            resizes.is_empty(),
+            resizes.try_recv().is_err(),
             "closing History resized the PTY at width {width}"
         );
         assert_eq!(std::sync::Arc::strong_count(&waker), 2);
@@ -293,7 +293,7 @@ fn external_history_does_not_resize_or_reset_the_live_terminal_at_any_width() {
         let _ = resizes.try_iter().collect::<Vec<_>>();
         driver.resize((width + 80, 240)).unwrap();
         assert!(
-            !resizes.is_empty(),
+            resizes.try_recv().is_ok(),
             "ordinary live window resize must still reach the PTY at width {width}"
         );
     }

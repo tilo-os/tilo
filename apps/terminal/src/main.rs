@@ -458,7 +458,7 @@ mod launch_tests {
         }
     }
 
-    struct ChanWriter(crossbeam_channel::Sender<Vec<u8>>);
+    struct ChanWriter(std::sync::mpsc::Sender<Vec<u8>>);
     impl Write for ChanWriter {
         fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
             let _ = self.0.send(bytes.to_vec());
@@ -474,8 +474,8 @@ mod launch_tests {
         OPEN_COUNT.store(0, Ordering::SeqCst);
         let args = controlled_args();
         OPEN_COUNT.store(0, Ordering::SeqCst);
-        let (write_tx, writes) = crossbeam_channel::unbounded();
-        let (output, output_rx) = crossbeam_channel::unbounded();
+        let (write_tx, writes) = std::sync::mpsc::channel();
+        let (output, output_rx) = std::sync::mpsc::channel();
         let widget = TerminalWidget::new(
             Arc::new(Mutex::new(Box::new(ChanWriter(write_tx)))),
             Arc::new(Mutex::new(Box::new(MockMaster))),
@@ -506,14 +506,17 @@ mod launch_tests {
             std::ptr::eq(definition, &terminal::framework_history::HISTORY)
         }));
         assert_eq!(Arc::strong_count(&waker), 2);
-        assert!(writes.is_empty());
+        assert!(matches!(
+            writes.try_recv(),
+            Err(std::sync::mpsc::TryRecvError::Empty)
+        ));
         output.send(b"retained output\r\n".to_vec()).unwrap();
         drop(app);
         assert_eq!(Arc::strong_count(&waker), 1);
         assert!(output.send(b"after drop".to_vec()).is_err());
         assert!(matches!(
             writes.try_recv(),
-            Err(crossbeam_channel::TryRecvError::Disconnected)
+            Err(std::sync::mpsc::TryRecvError::Disconnected)
         ));
     }
 }
