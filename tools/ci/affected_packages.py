@@ -88,6 +88,9 @@ QUALITY_ONLY_HELPERS = {
 # file in the mandatory repository-policy suite. A file missing from this exact
 # map retains native Rust checks.
 QUALITY_ONLY_CONTROL_INPUTS = {
+    "os/rpms-snapshot.env": (
+        "tools/tests/test_rpm_pin_contract.py",
+    ),
     ".forgejo/workflows/build-builder-image.yml": (
         "os/tests/test_builder_candidate_workflow.py",
         "os/tests/release_pipeline_invariants.sh",
