@@ -177,7 +177,7 @@ class CheckAggregateTests(unittest.TestCase):
         self.assertIn("suites_required: ${{ steps.plan.outputs.suites_required }}", select)
         self.assertIn("suites: ${{ steps.plan.outputs.suites }}", select)
         plan = step_script(self.workflow, "plan")
-        self.assertIn("if [ '${{ github.event_name }}' = push ]; then\n"
+        self.assertIn("if [ \"$EVENT_NAME\" = push ]; then\n"
                       "  # Pull requests run", plan)
         self.assertIn("selection_args+=(--all-suites)", plan)
         self.assertEqual(self.aggregate(suites_required="true", suites="success")[0], 0)
