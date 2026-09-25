@@ -75,6 +75,19 @@ fn line_growth(tr: &mut TextRenderer, size: f32) -> f64 {
     (line - line / scale).max(0.0)
 }
 
+/// A side panel's base surface with its separating left edge.
+fn paint_side_panel(scene: &mut Scene, t: Affine, theme: &Theme, panel: Rect) {
+    let base = theme.tokens.colors.surfaces.base;
+    scene.fill(Fill::NonZero, t, base, None, &panel);
+    scene.stroke(
+        &Stroke::new(1.0),
+        t,
+        ui::surface::edge_on(base),
+        None,
+        &Line::new((panel.x0, panel.y0), (panel.x0, panel.y1)),
+    );
+}
+
 fn file_open_request() -> PickRequest {
     PickRequest::open("Open file", "Open")
         .thread_name("hex-portal-open")
@@ -1198,14 +1211,7 @@ impl HexView {
             self.rect.x1,
             m.grid_bottom,
         );
-        scene.fill(Fill::NonZero, t, tokens.colors.surfaces.base, None, &panel);
-        scene.stroke(
-            &Stroke::new(1.0),
-            t,
-            ui::surface::edge_on(tokens.colors.surfaces.base),
-            None,
-            &Line::new((panel.x0, panel.y0), (panel.x0, panel.y1)),
-        );
+        paint_side_panel(scene, t, theme, panel);
 
         let pad = f64::from(tokens.spacing.s4);
         let x = panel.x0 + pad;
@@ -1491,6 +1497,26 @@ impl HexView {
         }
     }
 
+    /// The search sheet's match counter: empty with no query, otherwise the
+    /// match count (and current position when the list is complete).
+    fn search_count_label(&self) -> String {
+        let query_empty = self.search_input.value().is_empty();
+        if self.matches.is_empty() {
+            if query_empty {
+                String::new()
+            } else {
+                "no matches".to_string()
+            }
+        } else {
+            if self.matches_truncated {
+                format!("{}+ matches", self.matches.len())
+            } else {
+                let pos = self.match_idx.map_or(0, |i| i + 1);
+                format!("{pos}/{}", self.matches.len())
+            }
+        }
+    }
+
     fn draw_search_overlay(
         &mut self,
         scene: &mut Scene,
@@ -1561,21 +1587,7 @@ impl HexView {
 
         // Match counter. It stays app-owned because it describes byte-search
         // policy, while the shared field owns all text-editing behaviour.
-        let query_empty = self.search_input.value().is_empty();
-        let count = if self.matches.is_empty() {
-            if query_empty {
-                String::new()
-            } else {
-                "no matches".to_string()
-            }
-        } else {
-            if self.matches_truncated {
-                format!("{}+ matches", self.matches.len())
-            } else {
-                let pos = self.match_idx.map_or(0, |i| i + 1);
-                format!("{pos}/{}", self.matches.len())
-            }
-        };
+        let count = self.search_count_label();
         let count_w = if count.is_empty() {
             0.0
         } else {
@@ -2906,6 +2918,10 @@ mod tests {
     /// and line height, so paint and hit-testing share one geometry at every
     /// text scale: a painted cell's centre maps back to its own byte.
     #[test]
+    #[expect(
+        clippy::float_cmp,
+        reason = "layout reproduces authored whole-pixel sizes and their sums exactly in binary floating point; exact equality is what the test checks"
+    )]
     fn grid_pitches_follow_the_measured_mono_metrics_and_hit_their_cells() {
         let mut tr = TextRenderer::new();
         let base = CellMetrics::measure(&mut tr);

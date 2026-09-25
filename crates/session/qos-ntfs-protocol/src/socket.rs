@@ -36,7 +36,7 @@ pub fn address(path: &str) -> io::Result<libc::sockaddr_un> {
         return Err(io::Error::other("socket locator limit"));
     }
     for (to, from) in addr.sun_path.iter_mut().zip(name.as_bytes_with_nul()) {
-        *to = *from as libc::c_char;
+        *to = libc::c_char::from_ne_bytes([*from]);
     }
     Ok(addr)
 }

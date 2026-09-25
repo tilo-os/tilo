@@ -488,7 +488,6 @@ impl NoteComposer {
 
     /// Shadow, card background/border, the "Note" header, excerpt and the
     /// (already laid-out) shared text input.
-
     fn draw_note_chrome(
         &mut self,
         scene: &mut Scene,

@@ -3179,6 +3179,8 @@ mod tests {
 
     #[test]
     fn approved_home_peer_registration_exposes_distinct_stable_node_ids() {
+        use std::os::unix::fs::PermissionsExt as _;
+
         let dir = tempfile::tempdir().unwrap();
         let root = ed25519_dalek::SigningKey::from_bytes(&[9; 32]);
         let cert = payload(&root).cert;
@@ -3192,7 +3194,6 @@ mod tests {
         );
         assert_eq!(json[0]["relay_service_node_id"], hex::encode([8; 32]));
         assert_eq!(json[0]["relay_workspace_ids"], serde_json::json!([2, 9]));
-        use std::os::unix::fs::PermissionsExt as _;
         assert_eq!(
             std::fs::metadata(dir.path().join("home-peers.json"))
                 .unwrap()

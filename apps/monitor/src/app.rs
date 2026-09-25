@@ -3925,6 +3925,10 @@ impl MonitorApp {
         clippy::many_single_char_names,
         reason = "t/y/c/p/v are the standard graphics convention: transform, position, colour tokens, and this row's process/value"
     )]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the stat grid combines paint context and content rect with the process, its origin and the measured row height"
+    )]
     fn draw_detail_stat_grid(
         scene: &mut Scene,
         t: Affine,

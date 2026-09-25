@@ -1104,6 +1104,10 @@ impl ContainersApp {
         }
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one flat match giving every hit region its accessible role, name and description"
+    )]
     fn semantic_copy(&self, hit: &Hit) -> (Role, String, Option<String>, AccessState) {
         let focusable = AccessState::new().focusable(true);
         match hit {
@@ -1143,7 +1147,7 @@ impl ContainersApp {
                 let image = self.engine.images.get(*index);
                 (
                     Role::ListItem,
-                    image.map_or_else(|| "Image".into(), |i| i.reference()),
+                    image.map_or_else(|| "Image".into(), crate::model::Image::reference),
                     image.map(|i| format!("{}; {}", ui::format::bytes(i.size_bytes), i.created)),
                     focusable,
                 )
@@ -2136,7 +2140,7 @@ impl Widget for ContainersApp {
             .find(|region| region.rect.contains(self.cursor))?;
         Some(match &hit.hit {
             Hit::Section(section) => section.label(),
-            Hit::NewContainer | Hit::DistroCreate => "Create container",
+            Hit::NewContainer | Hit::DistroCreate | Hit::CreateSubmit => "Create container",
             Hit::SelectContainer(_) => "Open container details",
             Hit::SelectImage(_) => "Show image details",
             Hit::Action { action, .. } => action.label(),
@@ -2151,7 +2155,6 @@ impl Widget for ContainersApp {
             Hit::DetailTab(tab) => tab.label(),
             Hit::CloseDetail => "Back to containers (Esc)",
             Hit::CreateField(field) => field.label(),
-            Hit::CreateSubmit => "Create container",
             Hit::CreateCancel => "Cancel (Esc)",
             Hit::ComboToggle => "Show installed images",
             Hit::ComboPick(_) => "Use this image",
@@ -2257,26 +2260,7 @@ impl Widget for ContainersApp {
             controls
         };
         if let Some(pull) = &self.pull {
-            let status = pull.failed.as_ref().map_or_else(
-                || {
-                    if pull.done {
-                        format!("Finished pulling {}", pull.reference)
-                    } else {
-                        pull.lines
-                            .last()
-                            .cloned()
-                            .unwrap_or_else(|| format!("Pulling {}", pull.reference))
-                    }
-                },
-                |error| format!("Pull failed: {error}"),
-            );
-            children.push(
-                AccessNode::new(Role::ProgressBar)
-                    .with_name("Image pull")
-                    .with_value(status)
-                    .with_live(Politeness::Polite)
-                    .with_state(AccessState::new().busy(!pull.done && pull.failed.is_none())),
-            );
+            children.push(pull_progress_node(pull));
         }
         if let Some(toast) = &self.toast {
             children.push(
@@ -2529,6 +2513,28 @@ impl Default for ViewState {
     }
 }
 
+/// The live progress bar announcing an image pull's current status.
+fn pull_progress_node(pull: &PullProgress) -> AccessNode {
+    let status = pull.failed.as_ref().map_or_else(
+        || {
+            if pull.done {
+                format!("Finished pulling {}", pull.reference)
+            } else {
+                pull.lines
+                    .last()
+                    .cloned()
+                    .unwrap_or_else(|| format!("Pulling {}", pull.reference))
+            }
+        },
+        |error| format!("Pull failed: {error}"),
+    );
+    AccessNode::new(Role::ProgressBar)
+        .with_name("Image pull")
+        .with_value(status)
+        .with_live(Politeness::Polite)
+        .with_state(AccessState::new().busy(!pull.done && pull.failed.is_none()))
+}
+
 impl ContainersApp {
     #[allow(
         clippy::expect_used,
@@ -2691,7 +2697,7 @@ impl ContainersApp {
         }
     }
 
-    pub(crate) fn row_height(&self, theme: &Theme) -> f64 {
+    pub(crate) fn row_height(theme: &Theme) -> f64 {
         if theme.tokens.typography.scale.base >= LARGE_TEXT_BASE_SIZE {
             84.0
         } else {
@@ -2812,6 +2818,10 @@ mod palette_launcher_tests {
     }
 
     #[test]
+    #[expect(
+        clippy::float_cmp,
+        reason = "layout reproduces authored whole-pixel sizes and their sums exactly in binary floating point; exact equality is what the test checks"
+    )]
     fn compact_selection_is_a_full_page_drill_in() {
         let mut app = ContainersApp::new(false);
         app.rect = Rect::new(0.0, 0.0, 390.0, 844.0);
@@ -2825,12 +2835,12 @@ mod palette_launcher_tests {
         assert!(app.uses_compact_layout(&theme));
         assert!(app.uses_single_pane_detail(&theme));
         assert_eq!(app.header_height(&theme), 120.0);
-        assert_eq!(app.row_height(&theme), ROW_HEIGHT);
+        assert_eq!(ContainersApp::row_height(&theme), ROW_HEIGHT);
 
         let large = ui::theme::Theme::dark().with_text_scale(2.0);
         app.rect = Rect::new(0.0, 0.0, 768.0, 900.0);
         assert!(app.uses_single_pane_detail(&large));
-        assert_eq!(app.row_height(&large), 84.0);
+        assert_eq!(ContainersApp::row_height(&large), 84.0);
     }
 
     /// Opening the app-scoped palette seeds it from the app's *real*

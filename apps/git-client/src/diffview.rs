@@ -210,7 +210,7 @@ impl DiffView {
             viewport,
             diff,
             scroll,
-            settings,
+            *settings,
             hover_hunk,
             staged_side,
             armed_hunk,
@@ -231,7 +231,7 @@ impl DiffView {
         viewport: Rect,
         diff: &FileDiff,
         scroll: f64,
-        settings: &Settings,
+        settings: Settings,
         hover_hunk: Option<usize>,
         staged_side: bool,
         armed_hunk: Option<usize>,
@@ -280,7 +280,7 @@ impl DiffView {
         );
 
         let result = if settings.diff_layout == DiffLayout::SideBySide {
-            Self::draw_split(scene, tr, t, theme, viewport, diff, scroll, *settings, m)
+            Self::draw_split(scene, tr, t, theme, viewport, diff, scroll, settings, m)
         } else {
             Self::draw_unified(
                 scene,
@@ -290,7 +290,7 @@ impl DiffView {
                 viewport,
                 diff,
                 scroll,
-                *settings,
+                settings,
                 hover_hunk,
                 staged_side,
                 armed_hunk,
@@ -629,6 +629,10 @@ impl DiffView {
         }
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "gutter painting combines paint context and origin with the line's numbers and measured metrics"
+    )]
     fn draw_linenos(
         scene: &mut Scene,
         tr: &mut TextRenderer,
@@ -888,6 +892,10 @@ mod tests {
     /// scaled path changes nothing for a user who has not enlarged text — and
     /// grow the pitch and gutter with the glyphs at 2×.
     #[test]
+    #[expect(
+        clippy::float_cmp,
+        reason = "layout reproduces authored whole-pixel sizes and their sums exactly in binary floating point; exact equality is what the test checks"
+    )]
     fn metrics_match_the_constants_at_1x_and_follow_the_text_scale() {
         let d = parse_unified("x.rs", "rust", "@@ -10,3 +10,4 @@\n a\n-b\n+c\n+d\n");
         let theme = Theme::dark();

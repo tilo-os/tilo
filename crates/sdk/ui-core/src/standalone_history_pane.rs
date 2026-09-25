@@ -128,9 +128,9 @@ impl StandaloneHistoryPane {
     /// A host-produced, grounded comparison or selection detail. No document
     /// handle is retained by this presentation tree.
     pub fn set_comparison_summary(&mut self, summary: Option<&str>) {
-        *self.summary_value.borrow_mut() = summary
+        summary
             .unwrap_or("standalone-history-select-hint")
-            .to_owned();
+            .clone_into(&mut self.summary_value.borrow_mut());
     }
 
     pub fn clear(&mut self) {

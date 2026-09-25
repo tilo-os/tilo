@@ -65,9 +65,10 @@ pub struct PeoplePrivacy {
 }
 
 /// What this device can honestly do with face clusters.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub enum FaceCapability {
     /// The owner has not opted in; no local scan should begin.
+    #[default]
     DisabledByOwner,
     /// The owner opted in but no separately verified local face model exists.
     /// Generic OCR/vision capabilities never satisfy this case.
@@ -197,12 +198,6 @@ pub struct PeopleController {
 struct PersistedPeople {
     privacy: PeoplePrivacy,
     clusters: BTreeMap<String, LocalPersonCluster>,
-}
-
-impl Default for FaceCapability {
-    fn default() -> Self {
-        Self::DisabledByOwner
-    }
 }
 
 impl PeopleController {
@@ -452,7 +447,6 @@ impl PeopleController {
             .collect()
     }
 
-    #[must_use]
     pub fn all_clusters(&self) -> impl Iterator<Item = &LocalPersonCluster> {
         self.clusters.values()
     }
@@ -576,17 +570,13 @@ impl PeopleController {
             .into_iter()
             .map(|photo_id| LocalClusterPhoto { photo_id })
             .collect();
-        let Some(cluster) = self.clusters.get(id) else {
+        let Some(cluster) = self.clusters.get_mut(id) else {
             return PeopleChange::Unchanged;
         };
         if chosen.is_empty() || !chosen.is_subset(&cluster.photos) || chosen == cluster.photos {
             return PeopleChange::Unchanged;
         }
         let origin = cluster.origin;
-        let cluster = self
-            .clusters
-            .get_mut(id)
-            .expect("cluster was checked above");
         for photo in &chosen {
             cluster.photos.remove(photo);
         }

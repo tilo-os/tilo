@@ -359,7 +359,7 @@ mod tests {
         }
         match read_frame::<wire::Request>(&mut requests).expect("join request") {
             wire::Request::CollaborationJoin { workspace_id } => {
-                assert_eq!(workspace_id, "workspace")
+                assert_eq!(workspace_id, "workspace");
             }
             _ => panic!("wrong join request"),
         }
