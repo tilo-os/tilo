@@ -165,8 +165,6 @@ fn checked_native_reconstruct_change_bundle_and_document_tail() {
 }
 
 #[test]
-#[ignore = "vendored automerge 0.12: checked reconstruct and apply_incoming_checked refuse \
-            every bundle chunk with Invalid although plain load accepts it"]
 fn checked_native_reconstruct_change_bundle() {
     let mut doc = AutoCommit::new().with_actor(ActorId::from(&[3_u8][..]));
     doc.put(ROOT, "a", 1_i64).unwrap();

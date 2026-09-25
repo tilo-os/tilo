@@ -1683,7 +1683,9 @@ struct BundleParts {
 }
 fn columns(b: &[u8], at: &mut usize) -> Vec<(u64, usize)> {
     let n = read_uleb(b, at);
-    (0..n).map(|_| (read_uleb(b, at), read_uleb(b, at) as usize)).collect()
+    (0..n)
+        .map(|_| (read_uleb(b, at), read_uleb(b, at) as usize))
+        .collect()
 }
 impl BundleParts {
     fn parse(bytes: &[u8]) -> Self {
@@ -1718,7 +1720,12 @@ impl BundleParts {
                 (spec, d)
             })
             .collect();
-        BundleParts { prefix, meta, ops, rest: body[p..].to_vec() }
+        BundleParts {
+            prefix,
+            meta,
+            ops,
+            rest: body[p..].to_vec(),
+        }
     }
     fn col(cols: &mut [(u64, Vec<u8>)], spec: u64) -> &mut Vec<u8> {
         &mut cols.iter_mut().find(|(s, _)| *s == spec).expect("column").1
@@ -1759,7 +1766,11 @@ fn bundle_history() -> (AutoCommit, AutoCommit, Vec<ChangeHash>) {
         peer.commit();
         merged.merge(&mut peer).unwrap();
     }
-    let hashes = merged.get_changes(&heads).iter().map(Change::hash).collect();
+    let hashes = merged
+        .get_changes(&heads)
+        .iter()
+        .map(Change::hash)
+        .collect();
     (doc, merged, hashes)
 }
 
@@ -1781,7 +1792,11 @@ fn bundles_apply_and_reconstruct_like_plain_load() {
     );
     assert_eq!(target.get_heads(), plain_heads(&doc, &one));
     // Every new change (three actors), onto an existing document.
-    let many = merged.bundle(hashes.iter().copied()).unwrap().bytes().to_vec();
+    let many = merged
+        .bundle(hashes.iter().copied())
+        .unwrap()
+        .bytes()
+        .to_vec();
     let mut target = doc.clone();
     assert_eq!(
         incoming(&mut target, &many, NativeDependencyPolicy::RequireComplete).unwrap(),
@@ -1820,9 +1835,16 @@ fn bundles_apply_and_reconstruct_like_plain_load() {
 #[test]
 fn forged_bundle_inverse_permutations_are_refused() {
     let (doc, merged, hashes) = bundle_history();
-    let original = merged.bundle(hashes.iter().copied()).unwrap().bytes().to_vec();
+    let original = merged
+        .bundle(hashes.iter().copied())
+        .unwrap()
+        .bytes()
+        .to_vec();
     let parts = BundleParts::parse(&original);
-    assert!(parts.ops.iter().any(|(s, _)| *s == 0xb3), "0.12 bundles use the inverse column");
+    assert!(
+        parts.ops.iter().any(|(s, _)| *s == 0xb3),
+        "0.12 bundles use the inverse column"
+    );
     assert_eq!(parts.encode(), original, "test codec round-trips");
     let inverse = decode_delta(&parts.ops.iter().find(|(s, _)| *s == 0xb3).unwrap().1);
     let rows = inverse.len() as i64;
@@ -1861,7 +1883,9 @@ fn forged_bundle_inverse_permutations_are_refused() {
         let mut start = decode_delta(BundleParts::col(&mut p.meta, 0x13));
         let mut max = decode_delta(BundleParts::col(&mut p.meta, 0x23));
         let first = 0;
-        let second = (1..actors.len()).find(|i| actors[*i] == actors[first]).expect("two changes by one actor");
+        let second = (1..actors.len())
+            .find(|i| actors[*i] == actors[first])
+            .expect("two changes by one actor");
         start[first] += 1;
         max[first] += 1;
         assert!(start[second] <= max[first]);
@@ -1876,7 +1900,10 @@ fn forged_bundle_inverse_permutations_are_refused() {
         }))
         .unwrap_or_else(|_| panic!("{name}: panicked"));
         assert!(
-            matches!(result, Err(NativeMutationError::Resource(NativeResourceError::Invalid))),
+            matches!(
+                result,
+                Err(NativeMutationError::Resource(NativeResourceError::Invalid))
+            ),
             "{name}: {result:?}"
         );
         assert_eq!(snapshot(&mut target), before, "{name}");

@@ -177,17 +177,47 @@ fn measure(case: &Case) -> (usize, usize, usize) {
 #[test]
 fn typed_history_allowance_tracks_measured_peak() {
     let cases = [
-        Case { name: "1k splices x12, commit/3", splices: 1_000, word: "typed words ", per_commit: 3 },
-        Case { name: "4k splices x12, commit/3", splices: 4_000, word: "typed words ", per_commit: 3 },
-        Case { name: "10k keystrokes, commit/1", splices: 10_000, word: "a", per_commit: 1 },
-        Case { name: "4k splices x12, 2 changes", splices: 4_000, word: "typed words ", per_commit: 2_000 },
+        Case {
+            name: "1k splices x12, commit/3",
+            splices: 1_000,
+            word: "typed words ",
+            per_commit: 3,
+        },
+        Case {
+            name: "4k splices x12, commit/3",
+            splices: 4_000,
+            word: "typed words ",
+            per_commit: 3,
+        },
+        Case {
+            name: "10k keystrokes, commit/1",
+            splices: 10_000,
+            word: "a",
+            per_commit: 1,
+        },
+        Case {
+            name: "4k splices x12, 2 changes",
+            splices: 4_000,
+            word: "typed words ",
+            per_commit: 2_000,
+        },
     ];
-    eprintln!("{:<28} {:>9} {:>12} {:>12} {:>6}", "shape", "snapshot", "peak", "allowance", "ratio");
+    eprintln!(
+        "{:<28} {:>9} {:>12} {:>12} {:>6}",
+        "shape", "snapshot", "peak", "allowance", "ratio"
+    );
     for case in &cases {
         let (len, peak, needed) = measure(case);
         let ratio = needed as f64 / peak.max(1) as f64;
-        eprintln!("{:<28} {:>9} {:>12} {:>12} {:>6.2}", case.name, len, peak, needed, ratio);
-        assert!(ratio <= 5.0, "{}: allowance {needed} vs peak {peak}", case.name);
+        eprintln!(
+            "{:<28} {:>9} {:>12} {:>12} {:>6.2}",
+            case.name, len, peak, needed, ratio
+        );
+        assert!(
+            ratio <= 5.0,
+            "{}: allowance {needed} vs peak {peak}",
+            case.name
+        );
     }
 }
 
@@ -199,18 +229,29 @@ fn large_typed_history_fits_one_64_mib_turn_with_margin() {
     let (mut doc, text) = typed(8_400, "typed words ", 3);
     let snapshot = doc.save();
     let needed = minimal_allowance(&snapshot);
-    eprintln!("100k typed chars: snapshot {} B, minimal allowance {needed} B", snapshot.len());
+    eprintln!(
+        "100k typed chars: snapshot {} B, minimal allowance {needed} B",
+        snapshot.len()
+    );
     assert!(needed <= 56 * 1024 * 1024, "needs {needed} bytes");
     let mut fresh = AutoCommit::new();
     let allowance = NativeAllowance::new(64 * 1024 * 1024).unwrap();
     fresh
-        .apply_incoming_checked(&snapshot, &limits(), &allowance, NativeDependencyPolicy::RequireComplete)
+        .apply_incoming_checked(
+            &snapshot,
+            &limits(),
+            &allowance,
+            NativeDependencyPolicy::RequireComplete,
+        )
         .unwrap();
     assert_eq!(fresh.text(&text).unwrap(), doc.text(&text).unwrap());
-    assert_eq!(allowance.retained_bytes(), NativeAllowance::new(64 * 1024 * 1024).unwrap().retained_bytes());
+    assert_eq!(
+        allowance.retained_bytes(),
+        NativeAllowance::new(64 * 1024 * 1024)
+            .unwrap()
+            .retained_bytes()
+    );
 }
-
-
 
 /// A snapshot merged into an existing replica that already holds the first
 /// half of the history (the `merge_committed` shape): not blank, so the
@@ -230,22 +271,45 @@ fn snapshot_into_existing_replica_tracks_measured_peak() {
         let allowance = NativeAllowance::new(bytes).unwrap();
         let mut target = base.clone();
         target
-            .apply_incoming_checked(&snapshot, &limits(), &allowance, NativeDependencyPolicy::RequireComplete)
+            .apply_incoming_checked(
+                &snapshot,
+                &limits(),
+                &allowance,
+                NativeDependencyPolicy::RequireComplete,
+            )
             .map(|outcome| (outcome, target))
     };
     let mut target = base.clone();
     let allowance = NativeAllowance::new(64 * 1024 * 1024).unwrap();
     let (outcome, peak) = peak_of(|| {
-        target.apply_incoming_checked(&snapshot, &limits(), &allowance, NativeDependencyPolicy::RequireComplete)
+        target.apply_incoming_checked(
+            &snapshot,
+            &limits(),
+            &allowance,
+            NativeDependencyPolicy::RequireComplete,
+        )
     });
-    assert_eq!(outcome.unwrap(), NativeIncomingOutcome::Applied { changed: true });
+    assert_eq!(
+        outcome.unwrap(),
+        NativeIncomingOutcome::Applied { changed: true }
+    );
     assert_eq!(target.text(&text).unwrap(), doc.text(&text).unwrap());
     let (mut low, mut high) = (64usize, 64 * 1024 * 1024);
     while high - low > high / 100 {
         let mid = low + (high - low) / 2;
-        if apply(mid).is_ok() { high = mid } else { low = mid }
+        if apply(mid).is_ok() {
+            high = mid
+        } else {
+            low = mid
+        }
     }
-    eprintln!("merge 4k splices into half replica: peak {peak} allowance {high} ratio {:.2}", high as f64 / peak as f64);
-    assert!(high as f64 <= 4.0 * peak as f64, "needs {high} for a peak of {peak}");
+    eprintln!(
+        "merge 4k splices into half replica: peak {peak} allowance {high} ratio {:.2}",
+        high as f64 / peak as f64
+    );
+    assert!(
+        high as f64 <= 4.0 * peak as f64,
+        "needs {high} for a peak of {peak}"
+    );
     assert!(high <= 48 * 1024 * 1024, "needs {high}");
 }
