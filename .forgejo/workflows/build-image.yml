@@ -34,6 +34,14 @@ on:
         description: "Independently reviewed SHA-256 of the firmware manifest"
         required: false
         default: ""
+      fex_payload_candidate:
+        description: "One-off ARM FEX OCI digest; requires a paired guest and Lenovo main dispatch"
+        required: false
+        default: ""
+      windows_guest_candidate:
+        description: "One-off x86 guest OCI digest; requires a paired FEX payload and Lenovo main dispatch"
+        required: false
+        default: ""
       app_collection_url:
         description: "Pinned tilo-apps-<arch>.tar.gz URL; empty uses vars.TILO_APP_COLLECTION_URL."
         required: false
@@ -705,8 +713,26 @@ jobs:
         env:
           FEX_PAYLOAD_REF: ${{ vars.TILO_FEX_PAYLOAD_REF }}
           WINDOWS_GUEST_REF: ${{ vars.TILO_WINDOWS_GUEST_REF }}
+          FEX_PAYLOAD_CANDIDATE: ${{ inputs.fex_payload_candidate }}
+          WINDOWS_GUEST_CANDIDATE: ${{ inputs.windows_guest_candidate }}
+          HARDWARE_PROFILE: ${{ needs.plan.outputs.hardware-profile }}
         run: |
           set -euo pipefail
+          if [[ -n "$FEX_PAYLOAD_CANDIDATE" || -n "$WINDOWS_GUEST_CANDIDATE" ]]; then
+            [[ "$GITHUB_EVENT_NAME" == workflow_dispatch && "$GITHUB_REF" == refs/heads/main \
+               && "$HARDWARE_PROFILE" == lenovo-83ed ]] || {
+              echo '::error::one-off Windows provider inputs require a Lenovo main dispatch'; exit 1;
+            }
+            [[ "$FEX_PAYLOAD_CANDIDATE" =~ ^code\.podesta\.ai/qos/[a-z0-9][a-z0-9._/-]*@sha256:[0-9a-f]{64}$ \
+               && "$WINDOWS_GUEST_CANDIDATE" =~ ^code\.podesta\.ai/qos/[a-z0-9][a-z0-9._/-]*@sha256:[0-9a-f]{64}$ ]] || {
+              echo '::error::one-off Windows provider inputs require two immutable registry digests'; exit 1;
+            }
+            FEX_PAYLOAD_REF="$FEX_PAYLOAD_CANDIDATE"
+            WINDOWS_GUEST_REF="$WINDOWS_GUEST_CANDIDATE"
+            provider_input_class=development-only
+          else
+            provider_input_class=repository-pinned
+          fi
           with_windows="$(python3 os/dev/windows_provider.py mode --arch "$(uname -m)" \
             --fex-ref "$FEX_PAYLOAD_REF" --guest-ref "$WINDOWS_GUEST_REF")"
           if [[ $with_windows == 0 ]]; then
@@ -715,6 +741,7 @@ jobs:
           # FROM needs a parseable reference even in the unselected stage.
           {
             echo "TILO_WITH_WINDOWS=$with_windows"
+            echo "TILO_WINDOWS_PROVIDER_INPUT_CLASS=$provider_input_class"
             echo "FEX_PAYLOAD_REF=${FEX_PAYLOAD_REF:-scratch}"
             echo "WINDOWS_GUEST_REF=${WINDOWS_GUEST_REF:-scratch}"
           } >> "$GITHUB_ENV"
@@ -996,6 +1023,7 @@ jobs:
             WINDOWS_GUEST_REF=${{ env.WINDOWS_GUEST_REF || 'scratch' }}
             TILO_WITH_BROWSER=${{ env.TILO_WITH_BROWSER }}
             TILO_WITH_WINDOWS=${{ env.TILO_WITH_WINDOWS }}
+            TILO_WINDOWS_PROVIDER_INPUT_CLASS=${{ env.TILO_WINDOWS_PROVIDER_INPUT_CLASS }}
             TILO_HARDWARE_PROFILE=${{ needs.plan.outputs.hardware-profile }}
             TILO_TARGET_IMGREF=${{ needs.plan.outputs.hardware-profile == 'lenovo-83ed' && format('code.podesta.ai/qos/tilo:lenovo-83ed-{0}', github.sha) || '' }}
             TILO_PREBUILT_APPS=${{ env.TILO_PREBUILT_APPS }}
@@ -1063,6 +1091,7 @@ jobs:
             WINDOWS_GUEST_REF=${{ env.WINDOWS_GUEST_REF || 'scratch' }}
             TILO_WITH_BROWSER=${{ env.TILO_WITH_BROWSER }}
             TILO_WITH_WINDOWS=${{ env.TILO_WITH_WINDOWS }}
+            TILO_WINDOWS_PROVIDER_INPUT_CLASS=${{ env.TILO_WINDOWS_PROVIDER_INPUT_CLASS }}
             TILO_HARDWARE_PROFILE=${{ needs.plan.outputs.hardware-profile }}
             TILO_TARGET_IMGREF=${{ needs.plan.outputs.hardware-profile == 'lenovo-83ed' && format('code.podesta.ai/qos/tilo:lenovo-83ed-{0}', github.sha) || '' }}
             TILO_PREBUILT_APPS=${{ env.TILO_PREBUILT_APPS }}
@@ -1159,6 +1188,7 @@ jobs:
             WINDOWS_GUEST_REF=${{ env.WINDOWS_GUEST_REF || 'scratch' }}
             TILO_WITH_BROWSER=${{ env.TILO_WITH_BROWSER }}
             TILO_WITH_WINDOWS=${{ env.TILO_WITH_WINDOWS }}
+            TILO_WINDOWS_PROVIDER_INPUT_CLASS=${{ env.TILO_WINDOWS_PROVIDER_INPUT_CLASS }}
             TILO_HARDWARE_PROFILE=${{ needs.plan.outputs.hardware-profile }}
             TILO_TARGET_IMGREF=${{ needs.plan.outputs.hardware-profile == 'lenovo-83ed' && format('code.podesta.ai/qos/tilo:lenovo-83ed-{0}', github.sha) || '' }}
             TILO_PREBUILT_APPS=${{ env.TILO_PREBUILT_APPS }}
