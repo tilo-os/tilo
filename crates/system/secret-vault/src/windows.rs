@@ -141,7 +141,9 @@ pub(super) fn load_or_create_key(
     };
     if migrating && dir.join("vault.enc").try_exists()? {
         let encrypted = std::fs::read(dir.join("vault.enc"))?;
-        if format.open(&key, &encrypted).is_none() {
+        let vault_key = super::key_from_bytes(key.as_slice())
+            .ok_or_else(|| io::Error::other("legacy vault key has the wrong length"))?;
+        if format.open(&vault_key, &encrypted).is_none() {
             return Err(io::Error::other(
                 "legacy key does not unlock the existing vault",
             ));
@@ -179,7 +181,10 @@ fn finish_legacy_migration(
         ));
     }
     match std::fs::read(dir.join("vault.enc")) {
-        Ok(encrypted) if format.open(key, &encrypted).is_none() => {
+        Ok(encrypted)
+            if super::key_from_bytes(key)
+                .is_none_or(|vault_key| format.open(&vault_key, &encrypted).is_none()) =>
+        {
             return Err(io::Error::other(
                 "protected key does not unlock the existing vault",
             ));

@@ -27,10 +27,7 @@ vello.workspace = true
 winit.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-argon2.workspace = true
-chacha20poly1305.workspace = true
-getrandom.workspace = true
-rand_core.workspace = true
+tilo-seal = { path = "../../crates/system/tilo-seal" }
 atomic-file = { path = "../../crates/system/atomic-file" }
 
 [lints]
