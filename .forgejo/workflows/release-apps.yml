@@ -428,6 +428,9 @@ jobs:
           if-no-files-found: error
 
   authorize-publish:
+    # Pull requests only plan affected apps. Do not allocate a Kata runner for
+    # an authorization job whose steps are all skipped for that event.
+    if: "github.event_name != 'pull_request'"
     needs: plan
     runs-on: runner-quality
     timeout-minutes: 15
