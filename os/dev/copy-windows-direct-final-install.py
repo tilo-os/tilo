@@ -3,12 +3,15 @@
 
 The caller creates the empty final partitions first and records their actual
 Windows-assigned GPT IDs in the reviewed plan. Execute writes only the final
-ESP, /boot, and LUKS-root content extents. Seven-partition direct plans need
-no physical live source; older nine-partition staged plans remain supported.
+ESP, /boot, and LUKS-root content extents. Only seven-partition direct plans
+are accepted.
 The direct route does not create staging partitions on the physical disk or
 change UEFI firmware state. A matching source receipt binds every final extent
 to a full SHA-256 digest of the VM-installed raw image. It is an integrity
 receipt, not a CI provenance or signature attestation.
+Successful execution is not proof that the guest installed the verified CI
+image and does not make the disk bootable; guest provenance and EFI BootNext
+must be checked separately before reporting a completed physical install.
 """
 from __future__ import annotations
 
