@@ -505,7 +505,7 @@ pub(crate) fn export(doc: DocRef, content: &dyn ContentSource) -> Result<Vec<u8>
     let keep = kept_regions(&doc, &c, &breaks, original_sectpr);
     let hf_parts = super::headers::export_parts(&doc, keep);
     let section = super::section::plan(&mut c, original_sectpr, &breaks, &hf_parts, keep, &cols);
-    let numbering = Numbering::new(c.get("word/numbering.xml"));
+    let numbering = Numbering::new(c.get("word/numbering.xml"), c.get("word/styles.xml"));
     let root = qdoc::model::preserved_part(
         doc.doc,
         doc.c,
@@ -1252,6 +1252,9 @@ struct Numbering {
     base: i64,
     /// `(ordered, format, start)` → added numId.
     ids: Vec<((bool, String, i64), i64)>,
+    /// The package's styles define `ListParagraph`, the paragraph style Word gives list
+    /// items. Referencing it undefined makes `LibreOffice` drop the items' numbering.
+    list_paragraph_style: bool,
 }
 
 /// What a list item numbers: `(ordered, format, start)`.
@@ -1281,9 +1284,16 @@ fn max_attr_value(xml: &str, key: &str) -> Option<i64> {
 }
 
 impl Numbering {
-    fn new(original: Option<&[u8]>) -> Self {
+    fn new(original: Option<&[u8]>, styles: Option<&[u8]>) -> Self {
+        let list_paragraph_style = styles.is_some_and(|s| {
+            s.windows(br#"w:styleId="ListParagraph""#.len())
+                .any(|w| w == br#"w:styleId="ListParagraph""#)
+        });
         let Some(xml) = original.and_then(|b| std::str::from_utf8(b).ok()) else {
-            return Self::default();
+            return Self {
+                list_paragraph_style,
+                ..Self::default()
+            };
         };
         let mut reg = super::styles::StyleRegistry::default();
         super::styles::parse_numbering(xml.as_bytes(), &mut reg);
@@ -1305,6 +1315,16 @@ impl Numbering {
             known,
             base,
             ids: Vec::new(),
+            list_paragraph_style,
+        }
+    }
+
+    /// The paragraph style reference of a list item without one of its own.
+    fn paragraph_style(&self) -> String {
+        if self.list_paragraph_style {
+            r#"<w:pStyle w:val="ListParagraph"/>"#.to_string()
+        } else {
+            String::new()
         }
     }
 
@@ -1746,7 +1766,7 @@ fn render_block(
             // A list item keeps its own paragraph style when it had one.
             let style = match b.attrs.get(super::paragraph::ATTR_PPR) {
                 Some(AttrVal::Str(kept)) if super::paragraph::has_style(kept) => String::new(),
-                _ => r#"<w:pStyle w:val="ListParagraph"/>"#.to_string(),
+                _ => numbering.paragraph_style(),
             };
             let num = format!(
                 r#"<w:numPr><w:ilvl w:val="{level}"/><w:numId w:val="{numid}"/></w:numPr>"#

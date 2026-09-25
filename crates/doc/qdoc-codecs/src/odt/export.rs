@@ -718,10 +718,12 @@ struct ListStyle {
 /// The opening `<text:list …>` tag for the list `li` lives in, referencing a reconstructed
 /// `text:list-style` (deduped on its key), plus `text:start-value` (a restart) or
 /// `text:continue-numbering`. Without a style a list re-imports, and renders, unnumbered.
-fn open_list_tag(li: &BlockView, list_styles: &mut Vec<ListStyle>) -> String {
+fn open_list_tag(li: &BlockView, head: &ContentHead, list_styles: &mut Vec<ListStyle>) -> String {
     let key = ListKey::of(li);
     let start = key.start;
-    let name = if let Some(s) = list_styles.iter().find(|s| s.key == key) {
+    let name = if let Some(kept) = head.reused_list_style(li, &key) {
+        kept.to_string()
+    } else if let Some(s) = list_styles.iter().find(|s| s.key == key) {
         s.name.clone()
     } else {
         let name = format!("Lqdoc{}", list_styles.len().saturating_add(1));
@@ -966,6 +968,21 @@ impl ContentHead {
         }
     }
 
+    /// The imported style of the list `li` is in, while it still numbers `li` the way the
+    /// model says (`key`).
+    fn reused_list_style<'b>(&self, li: &'b BlockView, key: &ListKey) -> Option<&'b str> {
+        let Some(AttrVal::Str(style)) = li.attrs.get(super::content::ODT_LIST_STYLE) else {
+            return None;
+        };
+        let ordered = self.registry.list_ordered.get(style.as_str()).copied()?;
+        let numbering = self.registry.list_numbering.get(style.as_str());
+        let format = numbering.and_then(|n| n.num_format).unwrap_or("decimal");
+        let start = numbering.and_then(|n| n.num_start).unwrap_or(1);
+        let agrees =
+            ordered == key.ordered && (!ordered || (format == key.format && start == key.start));
+        agrees.then_some(style.as_str())
+    }
+
     /// The imported automatic paragraph style of `b`, while the block's modeled paragraph
     /// attributes (no named style, alignment, line spacing) still agree with it.
     fn reused_para_style<'b>(&self, b: &'b BlockView) -> Option<&'b str> {
@@ -1123,6 +1140,7 @@ fn build_content_xml(
                     snap,
                     &mut i,
                     &mut body,
+                    head,
                     &mut list_styles,
                     &mut style_attr,
                     &mut used,
@@ -1255,6 +1273,7 @@ fn render_list_run(
     snap: &Resolved<'_>,
     i: &mut usize,
     body: &mut String,
+    head: &ContentHead,
     list_styles: &mut Vec<ListStyle>,
     style_attr: &mut impl FnMut(&BlockView) -> String,
     used: &mut BTreeMap<String, String>,
@@ -1282,7 +1301,7 @@ fn render_list_run(
             while depth < target {
                 depth = depth.saturating_add(1);
                 let open = if depth == 1 || (depth == target && top.as_ref() != Some(&key)) {
-                    open_list_tag(li, list_styles)
+                    open_list_tag(li, head, list_styles)
                 } else {
                     "<text:list>".to_string()
                 };

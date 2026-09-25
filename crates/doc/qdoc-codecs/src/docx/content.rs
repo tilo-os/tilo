@@ -710,11 +710,12 @@ impl BodyState {
             return;
         };
         // The unmodeled properties ride on the block verbatim; the style reference only when
-        // the model did not take it up (as a heading, list or lifted named style).
+        // the model did not take it up (as a heading or lifted named style) — a list item's
+        // always, as the model has no paragraph style for it.
         let mut kept = std::mem::take(&mut self.ppr_kept);
         let style = self.ppr_style.take();
-        let used_style = self.p_numid.is_some()
-            || self.p_style.as_deref().is_some_and(|s| {
+        let used_style = self.p_numid.is_none()
+            && self.p_style.as_deref().is_some_and(|s| {
                 reg.heading_level(s).is_some()
                     || (reg.is_named_para(s) && reg.style_props(s).is_some())
             });
