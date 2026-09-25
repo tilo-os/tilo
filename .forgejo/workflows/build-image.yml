@@ -422,6 +422,10 @@ jobs:
           PAYLOAD_SHA256_AARCH64: ${{ vars.TILO_DESKTOP_PAYLOAD_SHA256_AARCH64 }}
         run: |
           set -euo pipefail
+          # Building the compositor from source links shell alongside the other
+          # release binaries; four concurrent thin-LTO jobs exhaust the native
+          # OS runner's memory and take its Docker daemon down, so the build
+          # arguments below halve the job count for that path.
           echo 'TILO_PREBUILT_DESKTOP=0' >> "$GITHUB_ENV"
           case "$(uname -m)" in
             x86_64)
@@ -919,6 +923,7 @@ jobs:
             TILO_WITH_WINDOWS=${{ env.TILO_WITH_WINDOWS }}
             TILO_PREBUILT_APPS=${{ env.TILO_PREBUILT_APPS }}
             TILO_PREBUILT_DESKTOP=${{ env.TILO_PREBUILT_DESKTOP }}
+            TILO_CARGO_BUILD_JOBS=${{ env.TILO_PREBUILT_DESKTOP == '1' && '4' || '2' }}
             TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY=${{ env.TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY }}
             TILO_APP_COLLECTION_PUBLISHER=${{ env.TILO_APP_COLLECTION_PUBLISHER }}
             TILO_GENERATION=${{ env.TILO_GENERATION }}
@@ -983,6 +988,7 @@ jobs:
             TILO_WITH_WINDOWS=${{ env.TILO_WITH_WINDOWS }}
             TILO_PREBUILT_APPS=${{ env.TILO_PREBUILT_APPS }}
             TILO_PREBUILT_DESKTOP=${{ env.TILO_PREBUILT_DESKTOP }}
+            TILO_CARGO_BUILD_JOBS=${{ env.TILO_PREBUILT_DESKTOP == '1' && '4' || '2' }}
             TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY=${{ env.TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY }}
             TILO_APP_COLLECTION_PUBLISHER=${{ env.TILO_APP_COLLECTION_PUBLISHER }}
             TILO_GENERATION=${{ env.TILO_GENERATION }}
@@ -1076,6 +1082,7 @@ jobs:
             TILO_WITH_WINDOWS=${{ env.TILO_WITH_WINDOWS }}
             TILO_PREBUILT_APPS=${{ env.TILO_PREBUILT_APPS }}
             TILO_PREBUILT_DESKTOP=${{ env.TILO_PREBUILT_DESKTOP }}
+            TILO_CARGO_BUILD_JOBS=${{ env.TILO_PREBUILT_DESKTOP == '1' && '4' || '2' }}
             TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY=${{ env.TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY }}
             TILO_APP_COLLECTION_PUBLISHER=${{ env.TILO_APP_COLLECTION_PUBLISHER }}
             TILO_GENERATION=${{ env.TILO_GENERATION }}
