@@ -863,10 +863,15 @@ fn shipped_daemons_partition_restart_and_converge_through_real_fuse() {
         conflict_versions.sort();
         (heads == conflict_versions).then_some((content, history))
     };
-    let (host_content, host_history) = wait_for(PROCESS_TIMEOUT, || converged(&host_mount));
-    eprintln!("barrier: host converged");
-    let (peer_content, peer_history) = wait_for(PROCESS_TIMEOUT, || converged(&peer_mount));
-    eprintln!("barrier: peer converged");
+    // A device shows the conflict as soon as it holds both heads, and the
+    // winner once it has projected them; both converge on the same one.
+    let ((host_content, host_history), (peer_content, peer_history)) =
+        wait_for(PROCESS_TIMEOUT, || {
+            let host = converged(&host_mount)?;
+            let peer = converged(&peer_mount)?;
+            (host == peer).then_some((host, peer))
+        });
+    eprintln!("barrier: host and peer converged");
     assert_eq!(
         host_content, peer_content,
         "the same signed head must win live"
