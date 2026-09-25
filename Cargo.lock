@@ -6334,6 +6334,7 @@ version = "0.1.0"
 dependencies = [
  "advisory-lock",
  "automerge",
+ "blake3",
  "block-devices",
  "bounded-command",
  "cap-fs-ext",
