@@ -10,6 +10,7 @@ use crate::storage::{parse, Header, RawColumns};
 use crate::types::{ActorId, ChangeHash};
 use crate::Change;
 
+use super::builder::{validate_change_columns, validate_op_columns};
 use super::{BundleChangeIter, BundleChangeIterUnverified, OpIter, OpIterUnverified, ParseError};
 
 /// `(actor, counter)` order index of the `ID_CTR_INVERSE` column. Must
@@ -184,6 +185,10 @@ impl<'a> BundleStorage<'a, Unverified> {
         if let (Some(changes_meta), Some(ops_meta)) =
             (changes_meta_raw.uncompressed(), ops_meta_raw.uncompressed())
         {
+            // qOS load-path hardening: framing before any streaming decoder.
+            validate_change_columns(&changes_meta, changes.value)
+                .and_then(|()| validate_op_columns(&ops_meta, ops.value))
+                .map_err(parse::ParseError::Error)?;
             BundleChangeIterUnverified::try_new(&changes_meta, changes.value)
                 .map_err(|e| parse::ParseError::Error(ParseError::InvalidColumns(Box::new(e))))?;
             let id_ctr = extract_id_ctr_values(&changes_meta, changes.value, &ops_meta, ops.value)
@@ -239,6 +244,10 @@ impl<'a> BundleStorage<'a, Unverified> {
         out.extend_from_slice(&ops_data_buf);
         let new_ops_end = out.len();
 
+        // qOS load-path hardening: framing before any streaming decoder.
+        validate_change_columns(&changes_meta, &out[new_changes_start..new_changes_end])
+            .and_then(|()| validate_op_columns(&ops_meta, &out[new_ops_start..new_ops_end]))
+            .map_err(parse::ParseError::Error)?;
         BundleChangeIterUnverified::try_new(
             &changes_meta,
             &out[new_changes_start..new_changes_end],

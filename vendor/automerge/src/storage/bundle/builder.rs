@@ -611,6 +611,64 @@ impl<'a> BundleChangeIterUnverified<'a> {
     }
 }
 
+/// qOS load-path hardening: checks every change column's framing with the
+/// value type its decoder in `BundleChangeIterInner::try_new` uses, so the
+/// streaming decoders never see input they would panic or spin on.
+pub(crate) fn validate_change_columns(
+    columns: &RawColumns<compression::Uncompressed>,
+    data: &[u8],
+) -> Result<(), ParseError> {
+    use super::validate::{delta, rle};
+    for col in columns.iter() {
+        let d = data.get(col.data()).ok_or(ParseError::Needed)?;
+        match col.spec() {
+            change::ACTOR => rle::<Option<ActorIdx>>(d)?,
+            change::SEQ | change::START_OP | change::MAX_OP | change::TIMESTAMP | change::DEPS => {
+                delta(d)?
+            }
+            change::MESSAGE => rle::<Option<String>>(d)?,
+            change::DEP_COUNT | change::EXTRA_COUNT => rle::<Option<u64>>(d)?,
+            change::EXTRA => {}
+            spec => return Err(ParseError::InvalidChangeColumn(u32::from(spec))),
+        }
+    }
+    Ok(())
+}
+
+/// qOS load-path hardening: the op-column counterpart of
+/// [`validate_change_columns`], mirroring `OpIterInner::try_new`.
+pub(crate) fn validate_op_columns(
+    columns: &RawColumns<compression::Uncompressed>,
+    data: &[u8],
+) -> Result<(), ParseError> {
+    use super::validate::{boolean, delta, rle};
+    for col in columns.iter() {
+        let d = data.get(col.data()).ok_or(ParseError::Needed)?;
+        type C = ColumnType;
+        match (col.spec().id(), col.spec().col_type()) {
+            (ops::OBJ_COL_ID | ops::KEY_COL_ID | ops::ID_COL_ID | ops::PRED_COL_ID, C::Actor) => {
+                rle::<Option<ActorIdx>>(d)?
+            }
+            (
+                ops::OBJ_COL_ID
+                | ops::KEY_COL_ID
+                | ops::PRED_COL_ID
+                | ops::ID_CTR_INVERSE_COL_ID
+                | ops::ID_COL_ID,
+                C::DeltaInteger,
+            ) => delta(d)?,
+            (ops::KEY_COL_ID | ops::MARK_NAME_COL_ID, C::String) => rle::<Option<String>>(d)?,
+            (ops::INSERT_COL_ID | ops::EXPAND_COL_ID, C::Boolean) => boolean(d)?,
+            (ops::ACTION_COL_ID, C::Integer) => rle::<Option<Action>>(d)?,
+            (ops::VAL_COL_ID, C::ValueMetadata) => rle::<Option<ValueMeta>>(d)?,
+            (ops::VAL_COL_ID, C::Value) => {}
+            (ops::PRED_COL_ID, C::Group) => rle::<Option<u64>>(d)?,
+            _ => return Err(ParseError::InvalidOpColumn(u32::from(col.spec()))),
+        }
+    }
+    Ok(())
+}
+
 impl<'a> BundleChangeIterInner<'a> {
     fn try_new(
         columns: &RawColumns<compression::Uncompressed>,
@@ -681,7 +739,10 @@ impl<'a> BundleChangeIterInner<'a> {
         let message = self.message.next().flatten().map(Cow::Borrowed);
         let dep_count = self.dep_count.next().flatten().unwrap_or(0) as usize;
 
-        let mut deps = Vec::with_capacity(dep_count);
+        // qOS load-path hardening: `dep_count` is untrusted; reserving it
+        // up front turns a forged count into a capacity-overflow panic or an
+        // allocation abort. Each dep needs its own value, so grow as read.
+        let mut deps = Vec::with_capacity(dep_count.min(MAX_PREALLOCATED_ITEMS));
         for _ in 0..dep_count {
             let dep = self
                 .deps
@@ -692,7 +753,11 @@ impl<'a> BundleChangeIterInner<'a> {
         }
 
         let extra_count = self.extra_count.next().flatten().unwrap_or(0) as usize;
-        let (extra, tail) = self.extra.split_at(extra_count);
+        // qOS load-path hardening: a forged count must not split past the end.
+        let (extra, tail) = self
+            .extra
+            .split_at_checked(extra_count)
+            .ok_or(ReadOpError::MissingValue("extra"))?;
         let extra = Cow::Borrowed(extra);
         self.extra = tail;
 
@@ -707,6 +772,22 @@ impl<'a> BundleChangeIterInner<'a> {
             deps,
             extra,
         }))
+    }
+}
+
+/// qOS load-path hardening: the most entries a decoder reserves for an
+/// untrusted count before it has read them.
+const MAX_PREALLOCATED_ITEMS: usize = 1024;
+
+/// qOS load-path hardening: `OpId::new` (via `OpId`/`ObjId`/`ElemId::try_load`)
+/// unwraps a `u32` conversion of the counter; a forged counter above
+/// `u32::MAX` is an invalid op id, not a panic.
+fn counter(ctr: Option<i64>) -> Result<Option<i64>, ReadOpError> {
+    match ctr {
+        Some(c) if c > i64::from(u32::MAX) => {
+            Err(ReadOpError::InvalidOpId("counter too large".to_string()))
+        }
+        c => Ok(c),
     }
 }
 
@@ -796,18 +877,20 @@ impl<'a> OpIterInner<'a> {
     fn try_next(&mut self) -> Result<Option<OpBuilder<'a>>, ParseError> {
         let id_actor = self.id_actor.next().flatten();
         let id_ctr = self.id_ctr.next().copied();
-        let id = match OpId::try_load(id_actor, id_ctr) {
+        // qOS load-path hardening: `OpId::new` panics on a counter above
+        // `u32::MAX`; refuse such counters before any `try_load`.
+        let id = match OpId::try_load(id_actor, counter(id_ctr)?) {
             Ok(id) => id,
             Err(_) => return Ok(None),
         };
 
         let obj_actor = self.obj_actor.next().flatten();
-        let obj_ctr = self.obj_ctr.next().flatten();
+        let obj_ctr = counter(self.obj_ctr.next().flatten())?;
         let obj = ObjId::try_load(obj_actor, obj_ctr)?;
 
         let key_str = self.key_str.next().flatten();
         let key_actor = self.key_actor.next().flatten();
-        let key_ctr = self.key_ctr.next().flatten();
+        let key_ctr = counter(self.key_ctr.next().flatten())?;
         let key = KeyRef::try_load(key_str, key_actor, key_ctr)?;
 
         let action = self
@@ -824,16 +907,21 @@ impl<'a> OpIterInner<'a> {
             .next()
             .flatten()
             .ok_or(ReadOpError::MissingValue("value_meta"))?;
-        let (value_raw, tail) = self.value.split_at(value_meta.length());
+        // qOS load-path hardening: the value metadata's length is untrusted.
+        let (value_raw, tail) = self
+            .value
+            .split_at_checked(value_meta.length())
+            .ok_or(ReadOpError::MissingValue("value"))?;
         self.value = tail;
         let value = ScalarValue::from_raw(value_meta, value_raw)
             .map_err(|_| ReadOpError::MissingValue("value"))?;
 
         let pred_count = self.pred_count.next().flatten().unwrap_or(0) as usize;
-        let mut pred = Vec::with_capacity(pred_count);
+        // qOS load-path hardening: see `deps` above.
+        let mut pred = Vec::with_capacity(pred_count.min(MAX_PREALLOCATED_ITEMS));
         for _ in 0..pred_count {
             let pred_actor = self.pred_actor.next().flatten();
-            let pred_ctr = self.pred_ctr.next().flatten();
+            let pred_ctr = counter(self.pred_ctr.next().flatten())?;
             pred.push(OpId::try_load(pred_actor, pred_ctr)?);
         }
 

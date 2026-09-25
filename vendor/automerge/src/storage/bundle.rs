@@ -12,6 +12,7 @@ mod builder;
 mod error;
 mod meta;
 mod storage;
+mod validate;
 
 pub use builder::BundleChangeIter;
 
