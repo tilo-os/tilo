@@ -10,12 +10,12 @@
 #                  (TILO_RPMS_TRUST=unsigned).
 #   kernel         the pinned signed one (os/kernel-snapshot.env) when the
 #                  registry still has it; otherwise the newest CI-built kernel
-#                  for this architecture whose signed provenance names the
-#                  current base and RPM snapshot; otherwise a local build of
-#                  os/kernel/Containerfile, reused while its inputs are unchanged.
-#                  TILO_KERNEL_TRUST=unsigned only when the chosen kernel cannot
-#                  pass the signed check (a local kernel, or a local RPM snapshot
-#                  its provenance cannot name).
+#                  for this architecture whose signed provenance binds a signed
+#                  build environment; otherwise a local build of
+#                  os/kernel/Containerfile on the pinned kernel buildroot
+#                  (os/kernel-buildroot-snapshot.env), reused while its inputs
+#                  are unchanged. TILO_KERNEL_TRUST=unsigned only when the chosen
+#                  kernel cannot pass the signed check (a local kernel).
 #   owner key      the RFC 8032 test-vector key the CI build-validation lane uses
 #                  (.forgejo/workflows/build-image.yml), never a production key.
 #   series         TILO_ALLOW_EMPTY_SERIES=1, as in that lane.
@@ -23,19 +23,20 @@
 #   Rust builder   TILO_CARGO_FRESHNESS=content: the builder keeps its target
 #                  cache and recompiles only what changed (os/Containerfile).
 #
-# The kernel choice is cached in $TILO_OUTPUT/local-inputs/, keyed by the base,
-# the RPM snapshot and the pin, so a rebuild does not ask the registry again.
+# The kernel choice is cached in $TILO_OUTPUT/local-inputs/, keyed by the
+# kernel and kernel buildroot pins, so a rebuild does not ask the registry again.
 
 _li_arch="$(uname -m)"
 case "$_li_arch" in
-  x86_64) _li_pin_var=KERNEL_RPMS_X86_64_REF ;;
-  aarch64) _li_pin_var=KERNEL_RPMS_AARCH64_REF ;;
+  x86_64) _li_pin_var=KERNEL_RPMS_X86_64_REF; _li_buildroot_var=KERNEL_BUILDROOT_X86_64_REF ;;
+  aarch64) _li_pin_var=KERNEL_RPMS_AARCH64_REF; _li_buildroot_var=KERNEL_BUILDROOT_AARCH64_REF ;;
   *) die "local builds support x86_64 and aarch64, not $_li_arch" ;;
 esac
 # shellcheck disable=SC1091
 . "$TILO_OS_DIR/base-snapshot.env"
 _li_published_rpms="$(sed -n 's/^RPMS_REF=//p' "$TILO_OS_DIR/rpms-snapshot.env")"
 _li_pin="$(sed -n "s/^$_li_pin_var=//p" "$TILO_OS_DIR/kernel-snapshot.env")"
+_li_buildroot="$(sed -n "s/^$_li_buildroot_var=//p" "$TILO_OS_DIR/kernel-buildroot-snapshot.env")"
 _li_cache="$TILO_OUTPUT/local-inputs"
 mkdir -p "$_li_cache"
 
@@ -70,15 +71,11 @@ fi
 export RPMS_REF TILO_RPMS_TRUST
 
 # --- kernel --------------------------------------------------------------------
-# Does the kernel's signed provenance name this base and RPM snapshot?
+# Is the kernel signed, and does its signed provenance bind a signed build
+# environment? The same check os/dev/build-image.sh makes.
 _li_kernel_binds() {
-  command -v cosign >/dev/null || return 1
-  cosign verify --key "$TILO_REPO/keys/cosign.pub" "$1" >/dev/null 2>&1 || return 1
-  cosign verify-attestation --key "$TILO_REPO/keys/cosign.pub" --type slsaprovenance1 "$1" 2>/dev/null |
-    jq -e --arg base "$BASE_REF" --arg rpms "$_li_published_rpms" '
-      [(if type == "array" then .[] else . end) | .payload | @base64d | fromjson | .predicate]
-      | any(any(.buildDefinition.resolvedDependencies[]?; .uri == $base)
-            and any(.buildDefinition.resolvedDependencies[]?; .uri == $rpms))' >/dev/null 2>&1
+  command -v cosign >/dev/null && command -v skopeo >/dev/null || return 1
+  "$TILO_OS_DIR/dev/verify-kernel-provenance.sh" "$1" >/dev/null 2>&1
 }
 _li_exists() {
   podman image exists "$1" 2>/dev/null || skopeo inspect --raw "docker://$1" >/dev/null 2>&1
@@ -99,7 +96,7 @@ _li_kernel_note=""
 if [ -n "${KERNEL_RPMS_REF:-}" ]; then
   _li_kernel_note="from the environment"
 else
-  _li_key="$(printf '%s\n' "$_li_arch" "$BASE_REF" "$_li_published_rpms" "$_li_pin" | sha256sum | cut -c1-16)"
+  _li_key="$(printf '%s\n' "$_li_arch" "$_li_buildroot" "$_li_pin" | sha256sum | cut -c1-16)"
   _li_cached="$_li_cache/kernel-$_li_key"
   if [ -s "$_li_cached" ] && _li_ref="$(head -1 "$_li_cached")" && podman image exists "$_li_ref" 2>/dev/null; then
     KERNEL_RPMS_REF="$_li_ref"
@@ -111,9 +108,10 @@ else
     [ -z "$_li_pin" ] || msg "local inputs: the pinned kernel $_li_pin is gone from the registry; looking for the newest CI-built one"
     KERNEL_RPMS_REF="$(_li_newest_ci_kernel || true)"
     if [ -n "$KERNEL_RPMS_REF" ]; then
-      _li_kernel_note="the newest CI-built $_li_arch kernel whose signed provenance names this base and RPM snapshot"
+      _li_kernel_note="the newest CI-built $_li_arch kernel whose signed provenance binds a signed build environment"
     else
-      _li_kernel_hash="$( { printf '%s\n' "$BASE_REF" "$RPMS_REF"; git -C "$TILO_REPO" ls-files -s -- os/kernel os/external-assets/github-assets.tsv; } | sha256sum | cut -c1-16)"
+      [ -n "$_li_buildroot" ] || die "no $_li_buildroot_var in os/kernel-buildroot-snapshot.env to build a local kernel on; run the snapshot-kernel-buildroot workflow"
+      _li_kernel_hash="$( { printf '%s\n' "$_li_buildroot"; git -C "$TILO_REPO" ls-files -s -- os/kernel os/external-assets/github-assets.tsv; } | sha256sum | cut -c1-16)"
       KERNEL_RPMS_REF="localhost/tilo-kernel:$_li_arch-$_li_kernel_hash"
       if podman image exists "$KERNEL_RPMS_REF"; then
         _li_kernel_note="a local build of os/kernel/Containerfile, reused (its inputs are unchanged)"
@@ -122,7 +120,7 @@ else
         "$TILO_OS_DIR/dev/cache-github-assets.sh" v4l2loopback-0.15.3-a7e4a4d.tar.gz >&2
         podman build -f "$TILO_OS_DIR/kernel/Containerfile" \
           --build-context "github-assets=$TILO_OS_DIR/external-assets/cache" \
-          --build-arg "BASE_REF=$BASE_REF" --build-arg "RPMS_REF=$RPMS_REF" \
+          --build-arg "KERNEL_BUILDROOT_REF=$_li_buildroot" \
           --build-arg "SOURCE_DATE_EPOCH=$(git -C "$TILO_REPO" log -1 --format=%ct)" \
           --tag "$KERNEL_RPMS_REF" "$TILO_REPO" >&2 || die "the local kernel build failed (see above)"
         _li_kernel_note="a local build of os/kernel/Containerfile"
@@ -135,11 +133,11 @@ fi
 if [ -z "${TILO_KERNEL_TRUST:-}" ]; then
   case "$KERNEL_RPMS_REF" in
     code.podesta.ai/qos/tilo-kernel@sha256:*)
-      if [ "$TILO_RPMS_TRUST" = signed ] && _li_kernel_binds "$KERNEL_RPMS_REF"; then
+      if _li_kernel_binds "$KERNEL_RPMS_REF"; then
         TILO_KERNEL_TRUST=signed
       else
         TILO_KERNEL_TRUST=unsigned
-        _li_kernel_note="$_li_kernel_note; unsigned, because its provenance cannot name the RPM snapshot $RPMS_REF"
+        _li_kernel_note="$_li_kernel_note; unsigned, because its signature or provenance does not verify"
       fi ;;
     *) TILO_KERNEL_TRUST=unsigned ;;
   esac

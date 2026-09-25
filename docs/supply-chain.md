@@ -155,10 +155,11 @@ operate it. Companion to `docs/superpowers/specs/2026-06-30-tilo-security-archit
   unless all of those claims match the current build inputs.
   **When you add/remove/rename a package in `os/Containerfile`,** merging it
   to `main` re-runs `snapshot-rpms` (or dispatch it by hand). Once the new
-  index is signed and verified, the workflow calls `build-kernel.yml` with it,
-  and that run pushes one `automation/rpm-kernel-snapshot-<digest16>` branch
-  updating both `os/rpms-snapshot.env` and `os/kernel-snapshot.env`, then opens
-  its pull request; merge that PR once its required checks pass. The pin
+  index is signed and verified, the workflow pushes one
+  `automation/rpm-snapshot-<digest16>` branch updating `os/rpms-snapshot.env`
+  and opens its pull request; merge that PR once its required checks pass. The
+  kernel does not build against this snapshot, so the pin never waits for a
+  kernel rebuild. The pin
   records the commit the index was built from (`RPMS_SOURCE_REVISION`), and
   each refresh decision compares against that commit rather than the previous
   push, so a package change that lands while a pin is in review is still
@@ -168,6 +169,16 @@ operate it. Companion to `docs/superpowers/specs/2026-06-30-tilo-security-archit
   Before publishing, the snapshot replays the image's erase of base packages it
   later needs again (the pkgconf family) and re-resolves the whole package set
   offline, so an incomplete snapshot fails in CI rather than in an image build.
+- **Kernel buildroots.** The kernel's build dependencies and the Fedora kernel
+  SRPM come from their own snapshot, `os/Containerfile.kernel-buildroot`,
+  instead of the OS frozen RPM snapshot. `snapshot-kernel-buildroot` resolves
+  it natively on x86-64 and ARM64 against the mirrored base, checks the SRPM's
+  Fedora signature, records its checksum, the base and the package manifest,
+  deletes every repository file so a kernel build cannot fall back to the
+  network, and signs each digest through the non-exportable release key. Both
+  pins land in `os/kernel-buildroot-snapshot.env` through an
+  `automation/kernel-buildroot-snapshot-<digest16>` pull request. A base
+  refresh re-runs it; an OS package change does not.
 - **Native custom kernels.** Kernel CI rebuilds the hardened kernel separately
   on native x86-64 and ARM64 runners, checks the runner architecture, signs
   each digest through the non-exportable release key, and advances both pins
@@ -175,12 +186,11 @@ operate it. Companion to `docs/superpowers/specs/2026-06-30-tilo-security-archit
   source-input race checks pass. Promotion creates a deterministic,
   snapshot-bound automation branch and pull request rather than bypassing
   protected `main`; normal required checks and merge policy remain
-  authoritative. Kernel provenance binds `RPMS_REF`, so a new RPM index never
-  lands alone: `snapshot-rpms` rebuilds the kernels against it through
-  `build-kernel.yml` and both pins merge in one pull request, keeping OS builds
-  verifiable at every `main` commit. Kernel CI skips its own rebuild for a push
-  that only lands those pins, and for a push that `snapshot-rpms` will answer
-  with a new index and kernels built against it.
+  authoritative. Each kernel builds FROM its signature-verified native
+  buildroot and its provenance binds that buildroot (and the base the
+  buildroot records), not `RPMS_REF`. Kernel CI therefore rebuilds only for
+  kernel inputs: the kernel sources, config and patches, the buildroot pin,
+  the Rust module signer and the kernel build scripts.
 - **Pin promotion credentials.** Pin promotion pushes its automation branch
   with the job token but opens the pull request through
   `os/dev/open-snapshot-pr.py` with protected secret `RELEASE_TOKEN`. Forgejo
@@ -189,8 +199,13 @@ operate it. Companion to `docs/superpowers/specs/2026-06-30-tilo-security-archit
   cannot read pull requests, check that `RELEASE_TOKEN` exists and still grants
   repository access; the branch is already pushed, so a PR can be opened from
   it by hand in the meantime. OS CI selects the matching pin, verifies
-  its Cosign signature, OCI architecture, and SLSA source/base/RPM provenance
-  before BuildKit can consume it,
+  its Cosign signature, OCI architecture, and SLSA source, architecture and
+  digest provenance, then verifies the signature of the build environment
+  that provenance binds (`os/dev/verify-kernel-provenance.sh`), before
+  BuildKit can consume it. The kernel is not compared with the OS image's own
+  RPM snapshot or base: the kernel packages carry no userspace, and their
+  runtime dependencies resolve from the OS snapshot during the image's
+  kernel swap,
   and binds both kernel digests into the signed multi-architecture release
   provenance. ARM64 additionally requires kernel pointer authentication, BTI,
   KASLR, and full module-region randomization.
@@ -208,8 +223,9 @@ operate it. Companion to `docs/superpowers/specs/2026-06-30-tilo-security-archit
   published — the mirror adds durability, not a second artifact to trust.
   **To refresh the base:** edit `BASE_SOURCE` if the Fedora release is
   changing, dispatch `mirror-base`, commit the `BASE_REF` it prints, then
-  merge the RPM and kernel pin PR that follows — the frozen package set is
-  resolved against the base and has to follow it. The mirror job refuses to
+  merge the RPM and kernel buildroot pin PRs that follow — both are resolved
+  against the base and have to follow it — and then the kernel pin PR that the
+  new buildroot produces. The mirror job refuses to
   report a reference that is not a multi-arch index or whose `ostree.linux`
   does not match the Fedora release `BASE_SOURCE` claims, so a silent major
   bump fails the job instead of shipping.

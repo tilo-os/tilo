@@ -29,8 +29,7 @@ mapfile -t frozen_consumers < <(
     "$repo/os/Containerfile.dev" \
     "$repo/os/Containerfile.host" \
     "$repo/os/containers/tilo-relay/Containerfile" \
-    "$repo/os/dev/composefs/Containerfile" \
-    "$repo/os/kernel/Containerfile"
+    "$repo/os/dev/composefs/Containerfile"
 )
 
 for file in "${frozen_consumers[@]}"; do
@@ -132,73 +131,63 @@ has "$workflow" 'driver = "vfs"' \
   'snapshot promotion isolates Podman storage from the runner overlay'
 has "$workflow" 'rm -f -- "${AWS_WEB_IDENTITY_TOKEN_FILE:-}"' \
   'snapshot promotion preserves web-identity token cleanup when extending its exit trap'
-# Kernel provenance binds RPMS_REF, so an RPM pin is only usable together with
-# kernels built against it. The snapshot workflow therefore opens no pull
-# request itself: it hands the published index to build-kernel.yml, which
-# proposes both pins in one pull request.
+# The kernel builds on its own signed buildroot and never reads this snapshot,
+# so the RPM pin lands in its own pull request and never waits for a kernel.
 kernel_workflow="$repo/.forgejo/workflows/build-kernel.yml"
-kernels_job="$(sed -n '/^  kernels:/,/^  [a-z-]*:$/p' "$workflow")"
-if grep -Fq 'needs: promote-snapshot' <<<"$kernels_job" \
-   && grep -Fq 'uses: ./.forgejo/workflows/build-kernel.yml' <<<"$kernels_job" \
-   && grep -Fq 'rpms_ref: ${{ needs.promote-snapshot.outputs.rpms-ref }}' <<<"$kernels_job" \
-   && grep -Fq 'secrets: inherit' <<<"$kernels_job" \
-   && ! grep -Fq 'runs-on:' <<<"$kernels_job" \
-   && grep -Fq 'rpms-ref: ${{ steps.attest.outputs.ref }}' "$workflow" \
-   && grep -Fq '  workflow_call:' "$kernel_workflow" \
-   && grep -Fq 'CALLER_RPMS_REF: ${{ inputs.rpms_ref }}' "$kernel_workflow" \
-   && ! grep -Eq 'open-snapshot-pr\.py|os/rpms-snapshot\.env' <<<"$(sed -n '/^jobs:/,$p' "$workflow")"; then
-  ok 'the RPM snapshot is pinned only together with kernels rebuilt against it'
+promotion_step="$(sed -n '/- name: Propose the frozen snapshot pin through protected main/,$p' "$workflow")"
+if ! grep -Eq 'build-kernel\.yml|workflow_call|rpms_ref' <<<"$(sed -n '/^jobs:/,$p' "$workflow")" \
+   && ! grep -Eq '^  workflow_call:|RPMS_REF|rpms-snapshot\.env' "$kernel_workflow" \
+   && ! grep -Eq 'from=rpms|RPMS_REF' "$repo/os/kernel/Containerfile" \
+   && grep -Fq 'RPMS_INDEX_REF: ${{ steps.attest.outputs.ref }}' <<<"$promotion_step" \
+   && grep -Fq '"RPMS_SOURCE_REVISION=$GITHUB_SHA" > os/rpms-snapshot.env' <<<"$promotion_step" \
+   && grep -Fq 'rpms --rpms-ref "$ref" --source-revision "$GITHUB_SHA"' <<<"$promotion_step"; then
+  ok 'the RPM snapshot pin lands on its own, independent of the kernel'
 else
-  bad 'an RPM snapshot pin can land without its matching kernel pin'
+  bad 'the RPM snapshot pin still waits for, or is bundled with, a kernel rebuild'
 fi
-promotion_step="$(sed -n '/- name: Propose both kernel pins atomically through protected main/,$p' "$kernel_workflow")"
-has "$kernel_workflow" 'python3 os/dev/rpm-snapshot-inputs.py \' \
-  'combined pin promotion rejects RPM snapshot input changes during the kernel builds'
-if grep -Fq -- '--base "$GITHUB_SHA" --head FETCH_HEAD --require-equivalent' <<<"$promotion_step" \
-   && grep -Fq 'git checkout --detach FETCH_HEAD' <<<"$promotion_step" \
-   && ! grep -Fq 'git rebase' <<<"$promotion_step"; then
-  ok 'pin promotion applies its pins on the current main tip'
+if grep -Fq 'git checkout --detach FETCH_HEAD' <<<"$promotion_step" \
+   && ! grep -Fq 'git rebase' <<<"$promotion_step" \
+   && grep -Fq 'kernel inputs changed during promotion; refusing stale PR' "$kernel_workflow"; then
+  ok 'pin promotion applies its pins on the current main tip; kernel pins refuse moved inputs'
 else
   bad 'pin promotion can publish pins built from stale inputs'
+fi
+# Inputs moving on main during a run must not starve RPM pin promotion: a pin
+# newer than main's lands, supersedes older pin PRs, and requests the next
+# refresh.
+if grep -Fq -- '--base "$GITHUB_SHA" --head FETCH_HEAD --require-newer-than-pin' <<<"$promotion_step" \
+   && grep -Fq -- '--base "$GITHUB_SHA" --head FETCH_HEAD --require-equivalent || moved=true' <<<"$promotion_step" \
+   && grep -Fq 'superseded+=(--supersede "$candidate")' <<<"$promotion_step" \
+   && grep -Fq 'actions/workflows/snapshot-rpms.yml/dispatches' <<<"$promotion_step"; then
+  ok 'RPM pin promotion converges while inputs keep moving on main'
+else
+  bad 'RPM pin promotion can be starved by a busy main'
 fi
 # Protected main refuses direct pushes; the pins land through a digest-named
 # automation branch. The job token pushes it but gets 404 from the
 # pull-request API, so RELEASE_TOKEN opens the PR (whose checks then run).
-if grep -Fq 'branch="automation/rpm-kernel-snapshot-${snapshot_digest:0:16}"' <<<"$promotion_step" \
-   && grep -Fq 'pins=(os/rpms-snapshot.env os/kernel-snapshot.env)' <<<"$promotion_step" \
-   && grep -Fq 'snapshot=(kernel --rpms-ref "$CALLER_RPMS_REF" --rpms-source-revision "$GITHUB_SHA")' <<<"$promotion_step" \
+if grep -Fq 'branch="automation/rpm-snapshot-${snapshot_digest:0:16}"' <<<"$promotion_step" \
    && grep -Fq -- '--force-with-lease="refs/heads/$branch:$remote_tip"' <<<"$promotion_step" \
    && grep -Fq 'python3 os/dev/open-snapshot-pr.py' <<<"$promotion_step" \
    && grep -Fq 'FORGEJO_TOKEN: ${{ secrets.RELEASE_TOKEN }}' <<<"$promotion_step" \
-   && ! grep -Eq 'FORGEJO_TOKEN: \$\{\{ (secrets\.REGISTRY_TOKEN|github\.token) \}\}' <<<"$promotion_step" \
+   && ! grep -Eq 'FORGEJO_TOKEN: \$\{\{ (secrets\.REGISTRY_TOKEN|github\.token) \}\}' "$workflow" "$kernel_workflow" \
    && ! grep -Eq 'git push [^|]*HEAD:(main|\$\{?GITHUB_REF_NAME)' "$workflow" "$kernel_workflow"; then
   ok 'snapshot pins land through a RELEASE_TOKEN PR, never a direct push to main'
 else
   bad 'snapshot pin promotion pushes to main or opens its PR without RELEASE_TOKEN'
 fi
 if grep -Fq 'Forgejo refused the snapshot pin push to $branch' <<<"$promotion_step" \
+   && grep -Fq 'Forgejo refused the snapshot pin push to $branch' "$kernel_workflow" \
    && ! grep -Fq 'branch races' "$kernel_workflow"; then
   ok 'a refused snapshot pin push is reported as refused'
 else
   bad 'a refused snapshot pin push can be misreported'
 fi
-# Inputs moving on main during a run must not starve pin promotion: a combined
-# pin newer than main's lands, supersedes older pin PRs, and requests the next
-# refresh. A standalone kernel pin still refuses, since it binds main's RPM pin.
-if grep -Fq -- '--base "$GITHUB_SHA" --head FETCH_HEAD --require-newer-than-pin' <<<"$promotion_step" \
-   && grep -Fq 'if [ -z "$CALLER_RPMS_REF" ] && [ "$moved" = true ]; then' <<<"$promotion_step" \
-   && grep -Fq 'superseded+=(--supersede "$candidate")' <<<"$promotion_step" \
-   && grep -Fq 'actions/workflows/snapshot-rpms.yml/dispatches' <<<"$promotion_step"; then
-  ok 'combined pin promotion converges while inputs keep moving on main'
-else
-  bad 'combined pin promotion can be starved by a busy main'
-fi
-# Kernel provenance binds RPMS_REF, so an OS build can only verify once the
-# new RPM pin and the kernel rebuilt against it have both merged.
+# An OS build verifies only against a merged pin.
 if grep -Fq 'actions/workflows/build-image.yml/dispatches' "$workflow"; then
-  bad 'snapshot promotion dispatches an image build before its pin and kernel land'
+  bad 'snapshot promotion dispatches an image build before its pin lands'
 else
-  ok 'snapshot promotion leaves image builds to the merged RPM and kernel pins'
+  ok 'snapshot promotion leaves image builds to the merged RPM pin'
 fi
 has "$workflow" 'COSIGN_KEY_REF must name a non-exportable KMS/HSM key' \
   'snapshot signing requires a non-exportable key'
