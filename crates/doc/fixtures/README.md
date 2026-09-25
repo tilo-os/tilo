@@ -11,3 +11,23 @@ office packages in each consuming crate.
 
 Tests should reference these files with `include_bytes!`, so they remain
 hermetic and do not depend on the process working directory.
+
+## LibreOffice-authored fidelity fixtures
+
+Written by LibreOffice (26.8, flatpak `org.libreoffice.LibreOffice`) from the flat-ODF
+sources in `src/`, converted with `soffice --headless --convert-to docx|odt`; run
+`src/regenerate.sh` to rebuild them all, and `src/regenerate.sh --check FILE…` to have
+LibreOffice re-open exported files. `qdoc-codecs`' `tests/office_fidelity.rs` imports, edits
+and exports each one and checks that what the model does not represent survives.
+
+- `lo-structure.docx`, `lo-structure.odt` — from `src/structure.fodt`: headings, custom
+  paragraph and character styles, an external hyperlink, a bookmark, nested numbered and
+  bulleted lists, a table with merged cells, a two-column section, a page break, a header
+  and a "Page N of M" footer, and custom document properties.
+- `lo-annotations.docx`, `lo-annotations.odt` — from `src/annotations.fodt`: a footnote,
+  an endnote, a comment, a tracked insertion and deletion, and a bookmark reference.
+- `lo-fields.docx`, `lo-fields.odt` — from `src/fields.fodt`: a table of contents, page
+  number/count, title and date fields, variables, a caption sequence, and plain-text,
+  checkbox, dropdown and date content controls (`w:sdt` in docx).
+- `lo-drawings.docx`, `lo-drawings.odt` — from `src/drawings.fodt`: an inline image, a text
+  box, a custom shape, a formula (OMML in docx, a MathML object in odt) and a chart.
