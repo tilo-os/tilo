@@ -151,6 +151,40 @@ pub struct ContentStore {
     /// Open deferred-durability groups, and whether a write inside one
     /// still waits for its database sync; see [`ContentStore::defer_sync`].
     deferred: std::sync::Mutex<(usize, bool)>,
+    /// The runtime the persistent store's actors run on (declared last, so
+    /// it outlives the store handle).
+    runtime: Option<StoreRuntime>,
+}
+
+/// A runtime of the content store's own. The store's actors batch their
+/// database transactions on timers; on the daemon's runtime they stalled
+/// whenever a worker blocked on the namespace lock while the content pruner
+/// held that lock and waited for the store, and with them every timer and
+/// socket of the daemon.
+struct StoreRuntime(Option<tokio::runtime::Runtime>);
+
+impl StoreRuntime {
+    fn new() -> std::io::Result<Self> {
+        tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .thread_name("fs-content-store")
+            .enable_all()
+            .build()
+            .map(|runtime| Self(Some(runtime)))
+    }
+
+    fn handle(&self) -> Option<&tokio::runtime::Handle> {
+        self.0.as_ref().map(tokio::runtime::Runtime::handle)
+    }
+}
+
+impl Drop for StoreRuntime {
+    fn drop(&mut self) {
+        // Dropping a runtime blocks, which an async caller must not do.
+        if let Some(runtime) = self.0.take() {
+            runtime.shutdown_background();
+        }
+    }
 }
 
 impl ContentStore {
@@ -207,8 +241,18 @@ impl ContentStore {
                 }
             })),
         });
-        let store = FsStore::load_with_opts(dir.join("blobs.db"), options).await?;
-        migrate_legacy_auto_tags(&store, dir).await?;
+        let runtime = StoreRuntime::new()?;
+        let root = dir.to_path_buf();
+        let store = runtime
+            .handle()
+            .ok_or_else(|| anyhow::anyhow!("content store runtime is gone"))?
+            .spawn(async move {
+                let store = FsStore::load_with_opts(root.join("blobs.db"), options).await?;
+                migrate_legacy_auto_tags(&store, &root).await?;
+                Ok::<_, anyhow::Error>(store)
+            })
+            .await
+            .map_err(|error| anyhow::anyhow!("opening the content store failed: {error}"))??;
         gc_ready.store(true, Ordering::Release);
         Ok(Self {
             backend: Backend::Fs(store),
@@ -217,6 +261,7 @@ impl ContentStore {
             mutation: tokio::sync::Mutex::new(()),
             gc_live,
             deferred: std::sync::Mutex::new((0, false)),
+            runtime: Some(runtime),
         })
     }
 
@@ -233,6 +278,7 @@ impl ContentStore {
             mutation: tokio::sync::Mutex::new(()),
             gc_live,
             deferred: std::sync::Mutex::new((0, false)),
+            runtime: None,
         }
     }
 
@@ -250,7 +296,19 @@ impl ContentStore {
             mutation: tokio::sync::Mutex::new(()),
             gc_live: Arc::new(RwLock::new(None)),
             deferred: std::sync::Mutex::new((0, false)),
+            runtime: None,
         }
+    }
+
+    /// The runtime the persistent store runs on, for a caller that must wait
+    /// on the store from a thread that holds a lock the daemon's own runtime
+    /// may be blocked on. `None` for the in-memory store, which runs on the
+    /// caller's runtime.
+    pub fn runtime(&self) -> Option<tokio::runtime::Handle> {
+        self.runtime
+            .as_ref()
+            .and_then(StoreRuntime::handle)
+            .cloned()
     }
 
     pub fn store(&self) -> &Store {

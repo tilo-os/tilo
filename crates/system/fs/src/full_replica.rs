@@ -404,12 +404,16 @@ pub async fn prune_obsolete_workspace_content(
         // the physical deletion. A changed generation terminates this sweep;
         // the next pass recomputes roots before releasing anything else. The
         // lease is a std::Mutex guard, which cannot be held across an await,
-        // so the whole lease — generation hashing included — runs on a
-        // blocking thread that waits on the store through the runtime handle.
+        // so the whole lease runs on a blocking thread that waits on the
+        // store. It waits through the store's own runtime: this runtime's
+        // workers may be blocked on the lease, and the eviction's timers and
+        // the store's actors must not depend on them.
         let selected = hashes.iter().copied().collect::<HashSet<_>>();
         let store = Arc::clone(&hydrator.store);
         let namespace = Arc::clone(namespace);
-        let runtime = tokio::runtime::Handle::current();
+        let runtime = store
+            .runtime()
+            .unwrap_or_else(tokio::runtime::Handle::current);
         let generation = generation.clone();
         let batch_removed = tokio::task::spawn_blocking(move || -> Result<Option<u64>> {
             let mut namespace = namespace
