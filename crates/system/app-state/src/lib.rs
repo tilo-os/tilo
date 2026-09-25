@@ -9,7 +9,7 @@
 //! [`FsStore`] is the native implementation: one directory per document
 //! (`<data home>/<package-id>/state.automerge` for a package's own document,
 //! below it for rooms and records), atomic replacement, synced appends, an
-//! actor sidecar for restart continuity and `flock` gates for single or
+//! actor sidecar for restart continuity and advisory-lock gates for single or
 //! shared ownership. Identifiers are validated so an app can't address
 //! another app's storage or the shared workspace FUSE root.
 //!
@@ -34,14 +34,13 @@
 
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Write};
-#[cfg(unix)]
-use std::os::fd::AsRawFd;
 #[cfg(windows)]
 use std::os::windows::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use advisory_lock::{FileLock, LockMode, TryLockError};
 use durable_store::{DurableStore, StorageKey, WriteOp};
 
 use automerge::transaction::Transactable;
@@ -1125,8 +1124,7 @@ fn same_file(_file: &File, _path: &Path) -> bool {
     false
 }
 
-#[cfg(unix)]
-fn acquire_gate(path: &Path, exclusive: bool) -> Result<File, StoreError> {
+fn acquire_gate(path: &Path, exclusive: bool) -> Result<FileLock, StoreError> {
     let file = OpenOptions::new()
         .create(true)
         .read(true)
@@ -1135,61 +1133,16 @@ fn acquire_gate(path: &Path, exclusive: bool) -> Result<File, StoreError> {
         .open(path)
         .map_err(|e| io_err(format!("opening gate {}", path.display()), e))?;
     let mode = if exclusive {
-        libc::LOCK_EX
+        LockMode::Exclusive
     } else {
-        libc::LOCK_SH
+        LockMode::Shared
     };
-    // SAFETY: the owned file descriptor remains live for this call and the returned lease.
-    if unsafe { libc::flock(file.as_raw_fd(), mode | libc::LOCK_NB) } != 0 {
-        let error = io::Error::last_os_error();
-        if error.kind() == io::ErrorKind::WouldBlock {
-            return Err(StoreError::WriterBusy {
-                path: path.to_path_buf(),
-            });
-        }
-        return Err(io_err("acquiring canonical gate", error));
-    }
-    Ok(file)
-}
-
-#[cfg(windows)]
-fn acquire_gate(path: &Path, exclusive: bool) -> Result<File, StoreError> {
-    let file = OpenOptions::new()
-        .create(true)
-        .read(true)
-        .write(true)
-        .truncate(false)
-        .open(path)
-        .map_err(|e| io_err(format!("opening gate {}", path.display()), e))?;
-    let result = if exclusive {
-        file.try_lock()
-    } else {
-        file.try_lock_shared()
-    };
-    match result {
-        Ok(()) => Ok(file),
-        Err(std::fs::TryLockError::WouldBlock) => Err(StoreError::WriterBusy {
+    FileLock::try_lock(file, mode).map_err(|error| match error {
+        TryLockError::WouldBlock => StoreError::WriterBusy {
             path: path.to_path_buf(),
-        }),
-        Err(std::fs::TryLockError::Error(error)) => Err(io_err("acquiring canonical gate", error)),
-    }
-}
-
-#[cfg(not(any(unix, windows)))]
-fn acquire_gate(path: &Path, exclusive: bool) -> Result<File, StoreError> {
-    if exclusive {
-        return Err(io_err(
-            "canonical gate unsupported",
-            io::Error::from(io::ErrorKind::Unsupported),
-        ));
-    }
-    OpenOptions::new()
-        .create(true)
-        .read(true)
-        .write(true)
-        .truncate(false)
-        .open(path)
-        .map_err(|e| io_err("opening gate", e))
+        },
+        TryLockError::Error(error) => io_err("acquiring canonical gate", error),
+    })
 }
 
 /// Atomically assign a legacy source to one room.  A marker is deliberately
@@ -1391,40 +1344,10 @@ fn stale_sibling(dir: &Path) -> PathBuf {
     candidate
 }
 
-/// Take an exclusive, non-blocking `flock` on `path`. `None` when another
+/// Take an exclusive, non-blocking lock on `path`. `None` when another
 /// process holds it, or (conservatively) when the lock file can't even be created.
-#[cfg(unix)]
-fn acquire_writer_lock(path: &Path) -> Option<File> {
-    let file = OpenOptions::new()
-        .create(true)
-        .read(true)
-        .write(true)
-        .truncate(false)
-        .open(path)
-        .ok()?;
-    // SAFETY: `file` owns a live fd for the duration of the call.
-    let rc = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
-    (rc == 0).then_some(file)
-}
-
-/// Windows file sharing is fixed when the handle is opened. Denying every
-/// share mode gives this live `File` the same process-lifetime exclusivity as
-/// `flock`; closing it releases the lock even after a crash.
-#[cfg(windows)]
-fn acquire_writer_lock(path: &Path) -> Option<File> {
-    OpenOptions::new()
-        .create(true)
-        .read(true)
-        .write(true)
-        .truncate(false)
-        .share_mode(0)
-        .open(path)
-        .ok()
-}
-
-#[cfg(not(any(unix, windows)))]
-fn acquire_writer_lock(_path: &Path) -> Option<File> {
-    None
+fn acquire_writer_lock(path: &Path) -> Option<FileLock> {
+    FileLock::try_open(path, LockMode::Exclusive).ok()
 }
 
 #[cfg(test)]

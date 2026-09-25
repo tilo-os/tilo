@@ -2,7 +2,6 @@ use std::env;
 use std::fs;
 use std::fs::OpenOptions;
 use std::io::Write;
-use std::os::fd::AsRawFd;
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::Path;
 use std::process::ExitCode;
@@ -394,7 +393,7 @@ fn ensure_egress_runtime_root() -> Result<(), String> {
         .map_err(|error| format!("cannot secure egress runtime root: {error}"))
 }
 
-fn acquire_controller_lock() -> Result<fs::File, String> {
+fn acquire_controller_lock() -> Result<advisory_lock::FileLock, String> {
     ensure_egress_runtime_root()?;
     let file = OpenOptions::new()
         .read(true)
@@ -404,15 +403,8 @@ fn acquire_controller_lock() -> Result<fs::File, String> {
         .mode(0o600)
         .open(CONTROLLER_LOCK)
         .map_err(|error| format!("cannot open Windows controller lock: {error}"))?;
-    // SAFETY: `file` is an open regular root-owned lock file kept alive by the
-    // caller for the entire controller transaction.
-    if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) } != 0 {
-        return Err(format!(
-            "cannot lock Windows controller: {}",
-            std::io::Error::last_os_error()
-        ));
-    }
-    Ok(file)
+    advisory_lock::FileLock::exclusive(file)
+        .map_err(|error| format!("cannot lock Windows controller: {error}"))
 }
 
 fn write_status_summary<R: VmBackend>(backend: &R, config: &ApplianceConfig) -> Result<(), String> {
@@ -677,33 +669,18 @@ fn require_regular_file(path: &Path, label: &str) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
-    use std::fs::OpenOptions;
-    use std::os::fd::AsRawFd;
+    use advisory_lock::{FileLock, LockMode, TryLockError};
 
     #[test]
     fn controller_lock_contract_is_exclusive_across_concurrent_callers() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("controller.lock");
-        let first = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(false)
-            .open(&path)
-            .unwrap();
-        let second = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .open(&path)
-            .unwrap();
-        // SAFETY: both descriptors name the same test-only regular file.
-        assert_eq!(unsafe { libc::flock(first.as_raw_fd(), libc::LOCK_EX) }, 0);
-        // SAFETY: nonblocking flock checks the second independent descriptor.
-        assert_eq!(
-            unsafe { libc::flock(second.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) },
-            -1
-        );
-        // SAFETY: release the advisory lock before the descriptors close.
-        assert_eq!(unsafe { libc::flock(first.as_raw_fd(), libc::LOCK_UN) }, 0);
+        let first = FileLock::open(&path, LockMode::Exclusive).unwrap();
+        assert!(matches!(
+            FileLock::try_open(&path, LockMode::Exclusive),
+            Err(TryLockError::WouldBlock)
+        ));
+        drop(first);
+        drop(FileLock::try_open(&path, LockMode::Exclusive).unwrap());
     }
 }

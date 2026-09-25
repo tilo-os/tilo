@@ -650,19 +650,23 @@ fn saver_loop(
 /// requires an explicit assertion that those writers have been stopped.
 /// # Errors
 /// Refuses a directory with an existing cooperating writer or unusable lock.
-pub fn lock_workspace(root: &Path) -> Result<std::fs::File, String> {
+pub fn lock_workspace(root: &Path) -> Result<advisory_lock::FileLock, String> {
+    use advisory_lock::{FileLock, LockMode, TryLockError};
     std::fs::create_dir_all(root).map_err(|e| e.to_string())?;
-    let file = std::fs::OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .open(root.join(".notes-writer.lock"))
-        .map_err(|e| e.to_string())?;
-    file.try_lock().map_err(|e| {
-        format!("notebook is already open; stop all legacy Notes writers before migration: {e}")
+    let path = root.join(".notes-writer.lock");
+    let lock = FileLock::try_open(&path, LockMode::Exclusive).map_err(|e| match e {
+        TryLockError::WouldBlock => {
+            let owner = advisory_lock::owner_pid(&path)
+                .map(|pid| format!(" (by process {pid})"))
+                .unwrap_or_default();
+            format!(
+                "notebook is already open{owner}; stop all legacy Notes writers before migration"
+            )
+        }
+        TryLockError::Error(e) => e.to_string(),
     })?;
-    Ok(file)
+    lock.record_owner().map_err(|e| e.to_string())?;
+    Ok(lock)
 }
 
 #[cfg(test)]

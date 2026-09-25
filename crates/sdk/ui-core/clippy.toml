@@ -23,6 +23,15 @@ disallowed-methods = [
     { path = "reqwest::blocking::get", reason = "use tilo_net::http::blocking_client()" },
     { path = "std::env::set_var", reason = "inject the path, or use tilo_test_env::ScopedEnv/TestHome in tests (see DEVELOPMENT.md)" },
     { path = "std::env::remove_var", reason = "inject the path, or use tilo_test_env::ScopedEnv/TestHome in tests (see DEVELOPMENT.md)" },
+    # A lock that merely closes stays held while a spawned child still shares
+    # the descriptor. `advisory_lock::FileLock` unlocks explicitly on drop.
+    { path = "std::fs::File::lock", reason = "use advisory_lock::FileLock" },
+    { path = "std::fs::File::lock_shared", reason = "use advisory_lock::FileLock" },
+    { path = "std::fs::File::try_lock", reason = "use advisory_lock::FileLock" },
+    { path = "std::fs::File::try_lock_shared", reason = "use advisory_lock::FileLock" },
+    { path = "std::fs::File::unlock", reason = "use advisory_lock::FileLock" },
+    { path = "libc::flock", reason = "use advisory_lock::FileLock" },
+    { path = "rustix::fs::flock", reason = "use advisory_lock::FileLock" },
     { path = "std::time::Instant::now", reason = "read the clock through `crate::time::now()`" },
     { path = "std::time::SystemTime::now", reason = "read the clock through `crate::time::wall()`" },
     { path = "std::thread::spawn", reason = "run background work through `crate::background::Background::spawn`" },

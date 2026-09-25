@@ -108,18 +108,18 @@ struct KeyStatus {
 struct Owner {
     directory: PathBuf,
     handle: File,
-    gate: File,
+    gate: advisory_lock::FileLock,
     exclusive: bool,
     /// Held by the primary shared writer: the actor sidecar is its alone.
     /// Kept open, never read, for the lock it holds.
-    writer_lock: Option<File>,
+    writer_lock: Option<advisory_lock::FileLock>,
 }
 
 impl Owner {
     fn check(&self) -> Result<(), StoreError> {
         for (opened, path) in [
             (&self.handle, self.directory.clone()),
-            (&self.gate, self.directory.join(CANONICAL_GATE)),
+            (self.gate.file(), self.directory.join(CANONICAL_GATE)),
         ] {
             if !same_file(opened, &path) {
                 return Err(StoreError::SourceChanged { path });

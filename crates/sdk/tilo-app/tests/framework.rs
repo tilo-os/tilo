@@ -1,0 +1,204 @@
+#![allow(clippy::unwrap_used, clippy::expect_used, reason = "test assertions")]
+
+//! The framework on the real component runtime: controls invoke actions,
+//! undo reverts them, viewers are refused, state survives a relaunch, and
+//! the history of every action is attributed.
+
+use tilo_app::prelude::*;
+
+#[derive(Model, Default, Debug, Clone, PartialEq)]
+pub struct Checklist {
+    pub title: String,
+    pub items: Collection<Item>,
+}
+
+#[derive(Model, Default, Debug, Clone, PartialEq)]
+pub struct Item {
+    pub text: String,
+    pub done: bool,
+}
+
+#[resource(kind = "test.checklist", label = "Checklist")]
+impl Checklist {
+    /// Rename the checklist.
+    #[action]
+    pub fn rename(&mut self, title: String) {
+        self.title = title;
+    }
+
+    /// Add an item.
+    #[action]
+    pub fn add(&mut self, cx: &mut ActionCx, text: String) {
+        self.items.push(cx.id(), Item { text, done: false });
+    }
+
+    /// Check or uncheck an item.
+    #[action]
+    pub fn set_done(&mut self, item: &Id, done: bool) -> Result<(), &'static str> {
+        self.items.get_mut(item).ok_or("no such item")?.done = done;
+        Ok(())
+    }
+
+    /// Remove every checked item.
+    #[action(destructive)]
+    pub fn clear_done(&mut self) {
+        self.items.retain(|_, item| !item.done);
+    }
+}
+
+struct ChecklistApp;
+
+impl ResourceApp for ChecklistApp {
+    type Resource = Checklist;
+    const ID: &'static str = "so.tilo.test-checklist";
+    const TITLE: &'static str = "Checklist";
+
+    fn view(cx: &mut ViewCx<Checklist>) -> Element {
+        Box::new(
+            Column::new()
+                .push(Box::new(
+                    cx.input(|list| list.title.clone(), Checklist::RENAME)
+                        .with_id("title"),
+                ))
+                .push(Box::new(cx.text(|list| {
+                    let open = list.items.values().filter(|item| !item.done).count();
+                    format!("{open} open")
+                })))
+                .push(Box::new(cx.each(
+                    |list| &list.items,
+                    |row| {
+                        let id = row.item().cloned().unwrap_or_else(|| Id::from_raw(""));
+                        Box::new(row.checkbox(
+                            row.read(|item| item.map(|item| item.text.clone()).unwrap_or_default()),
+                            |item| item.done,
+                            Checklist::SET_DONE.map(move |done| (id.clone(), done)),
+                        ))
+                    },
+                )))
+                .push(Box::new(
+                    cx.button("Clear done", Checklist::CLEAR_DONE.invoke()),
+                )),
+        )
+    }
+}
+
+fn texts(app: &TestApp<ChecklistApp>) -> Vec<(String, bool)> {
+    app.state()
+        .items
+        .values()
+        .map(|item| (item.text.clone(), item.done))
+        .collect()
+}
+
+#[test]
+fn actions_through_the_door_update_the_record_and_the_view() {
+    let mut app = TestApp::<ChecklistApp>::new().unwrap();
+    app.invoke(Checklist::ADD.with("milk".into())).unwrap();
+    app.invoke(Checklist::ADD.with("eggs".into())).unwrap();
+    assert_eq!(
+        texts(&app),
+        [("milk".into(), false), ("eggs".into(), false)]
+    );
+    let inspection = app.harness().inspection_json().unwrap();
+    assert!(inspection.contains("2 open"), "{inspection}");
+
+    // The row's checkbox is bound to set-done for its own item.
+    let checkbox = app
+        .harness()
+        .targets()
+        .keys()
+        .find(|name| name.starts_with("set-done-"))
+        .cloned()
+        .unwrap();
+    app.harness().click_named(&checkbox).unwrap();
+    assert_eq!(
+        app.state().items.values().filter(|item| item.done).count(),
+        1
+    );
+
+    // A destructive action asks for confirmation: the unconfirmed click is
+    // refused and changes nothing; the confirmed invocation applies.
+    app.harness().click_named("clear-done").unwrap();
+    assert_eq!(app.state().items.len(), 2);
+    assert!(app.invoke(Checklist::CLEAR_DONE.invoke()).is_err());
+    app.invoke_confirmed(Checklist::CLEAR_DONE.invoke())
+        .unwrap();
+    assert_eq!(app.state().items.len(), 1);
+}
+
+#[test]
+fn typing_in_a_bound_field_is_an_action() {
+    let mut app = TestApp::<ChecklistApp>::new().unwrap();
+    app.harness().click_named("title").unwrap();
+    app.harness().type_text("Groceries");
+    assert_eq!(app.state().title, "Groceries");
+}
+
+#[test]
+fn undo_and_redo_revert_actions() {
+    let mut app = TestApp::<ChecklistApp>::new().unwrap();
+    app.invoke(Checklist::RENAME.with("First".into())).unwrap();
+    app.invoke(Checklist::RENAME.with("Second".into())).unwrap();
+    assert!(app.undo());
+    assert_eq!(app.state().title, "First");
+    assert!(app.redo());
+    assert_eq!(app.state().title, "Second");
+}
+
+#[test]
+fn undo_reverts_a_text_splice_exactly() {
+    let mut app = TestApp::<ChecklistApp>::new().unwrap();
+    app.invoke(Checklist::RENAME.with("first thought".into()))
+        .unwrap();
+    app.invoke(Checklist::RENAME.with("second thought".into()))
+        .unwrap();
+    assert!(app.undo());
+    assert_eq!(app.state().title, "first thought");
+    assert!(app.undo());
+    assert_eq!(app.state().title, "");
+    assert!(app.redo());
+    assert!(app.redo());
+    assert_eq!(app.state().title, "second thought");
+}
+
+#[test]
+fn a_viewer_cannot_edit() {
+    let mut app = TestApp::<ChecklistApp>::with_role(tilo_app::Role::Viewer).unwrap();
+    assert!(app.invoke(Checklist::ADD.with("sneaky".into())).is_err());
+    assert!(app.state().items.is_empty());
+}
+
+#[test]
+fn state_survives_a_relaunch() {
+    let mut app = TestApp::<ChecklistApp>::new().unwrap();
+    app.invoke(Checklist::ADD.with("persisted".into())).unwrap();
+    let app = app.reopen().unwrap();
+    assert_eq!(texts(&app), [("persisted".into(), false)]);
+}
+
+#[test]
+fn every_action_is_an_attributed_version() {
+    let mut app = TestApp::<ChecklistApp>::new().unwrap();
+    app.invoke(Checklist::RENAME.with("Weekly".into())).unwrap();
+    let last = app.versions().pop().unwrap();
+    assert_eq!(
+        last.summary().as_deref(),
+        Some("Rename the checklist · Checklist")
+    );
+}
+
+#[test]
+fn the_palette_and_agents_see_every_action() {
+    let mut app = TestApp::<ChecklistApp>::new().unwrap();
+    let resources = app.harness().resources();
+    let ids: Vec<_> = resources
+        .iter()
+        .flat_map(|resource| resource.actions.iter().map(|spec| spec.id.clone()))
+        .collect();
+    for id in ["rename", "add", "set-done", "clear-done", "apply"] {
+        assert!(
+            ids.iter().any(|candidate| candidate == id),
+            "{id} in {ids:?}"
+        );
+    }
+}

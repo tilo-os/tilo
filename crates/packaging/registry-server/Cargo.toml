@@ -20,6 +20,7 @@ path = "src/main.rs"
 # of scope — deployments put the server behind nginx or Caddy.
 
 [dependencies]
+advisory-lock = { path = "../../system/advisory-lock" }
 xdg-paths = { path = "../../system/xdg-paths" }
 # Crash-safe file replacement (temp + fsync + rename + dir fsync).
 atomic-file = { path = "../../../crates/system/atomic-file" }
@@ -44,7 +45,6 @@ tracing-subscriber = { workspace = true, features = ["env-filter"] }
 bytes.workspace = true
 anyhow.workspace = true
 blake3 = { workspace = true }
-libc = { workspace = true }
 zeroize.workspace = true
 # Moderation fetches run in the deployed container. Use its maintained CA
 # bundle so newly issued public certificates do not depend on the root set

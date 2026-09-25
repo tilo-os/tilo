@@ -21,6 +21,7 @@ path = "src/main.rs"
 dev-overrides = []
 
 [dependencies]
+advisory-lock = { path = "../../system/advisory-lock" }
 atomic-file = { path = "../../system/atomic-file" }
 bounded-command = { path = "../../system/bounded-command" }
 # The registry wire format + the per-entry publisher signature check.
@@ -37,7 +38,6 @@ clap_complete.workspace = true
 xdg-paths = { path = "../../system/xdg-paths" }
 hex.workspace = true
 blake3.workspace = true
-libc.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
