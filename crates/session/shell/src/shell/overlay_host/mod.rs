@@ -1759,12 +1759,6 @@ pub struct ShellOverlayHost {
     /// tab whose content changed without its id changing still gets
     /// rebuilt.
     tab_tiles: std::collections::HashMap<u64, String>,
-    /// Last foreign-frame sequence observed for a tab which still displays
-    /// its retained opening card.  A client's first buffer does not mutate
-    /// the workspace document, so this is the one-shot signal which retries
-    /// the card -> live-surface replacement without polling/rebuilding the
-    /// whole desktop while it is idle.
-    opening_foreign_frames: std::collections::HashMap<u64, u64>,
     /// Session-local bindings from `(owner, surface)` to the peer-window tab
     /// whose runtime content was replaced by a `PeerView`. These never enter
     /// `ChromeState` or its replicated workspace document.
@@ -2662,20 +2656,6 @@ fn tile_signature(tile: &crate::shell::state::TileContent) -> String {
     serde_json::to_string(tile).unwrap_or_default()
 }
 
-/// Whether `tile`, about to replace a tab's contents, is a client window
-/// that hasn't drawn anything yet — only a foreign surface can answer
-/// yes, since everything else is on screen the moment it's built. Looser
-/// than the window group's own paint-time check, because the tab's rect
-/// only reaches the client once this swap has happened.
-fn window_is_still_starting(tile: &crate::shell::state::TileContent) -> bool {
-    match tile {
-        crate::shell::state::TileContent::Foreign { surface_id, .. } => {
-            crate::compositor::foreign::store().frame_seq(*surface_id) == 0
-        }
-        _ => false,
-    }
-}
-
 /// `(strip_id, groups)` where each group is `(group_id, tab_ids)` — the
 /// per-strip snapshot [`ShellOverlayHost::groups_per_strip`] returns for
 /// tests.
@@ -3212,7 +3192,6 @@ impl ShellOverlayHost {
             notification_stack: None,
             last_chrome_revision: u64::MAX,
             tab_tiles: std::collections::HashMap::new(),
-            opening_foreign_frames: std::collections::HashMap::new(),
             peer_stream_tabs: std::collections::HashMap::new(),
             personal_display: None,
             // User intent is durable, while the root filters it against the
@@ -4924,10 +4903,7 @@ impl ShellOverlayHost {
         };
         chrome.borrow_mut().retry_new_tab_records();
         let current_rev = chrome.borrow().revision;
-        let foreign_frame_arrived = self.opening_foreign_frames.iter().any(|(surface, seen)| {
-            crate::compositor::foreign::store().frame_seq(*surface) != *seen
-        });
-        if current_rev == self.last_chrome_revision && !foreign_frame_arrived {
+        if current_rev == self.last_chrome_revision {
             return false;
         }
         let mut any_change = false;
@@ -5000,31 +4976,15 @@ impl ShellOverlayHost {
                     for (idx, tab) in g.tabs.iter().enumerate() {
                         let signature = tile_signature(&tab.tile);
                         if live_tab_ids.contains(&tab.id) {
-                            // A placeholder becoming a window: held
-                            // off by `window_is_still_starting` until the
-                            // surface has drawn, so a swap doesn't replace
-                            // an "opening" card with a blank frame — the
-                            // signature is left unrecorded so it retries.
-                            let still_starting = window_is_still_starting(&tab.tile);
-                            if let crate::shell::state::TileContent::Foreign {
-                                surface_id, ..
-                            } = &tab.tile
-                            {
-                                if still_starting {
-                                    self.opening_foreign_frames.insert(
-                                        *surface_id,
-                                        crate::compositor::foreign::store().frame_seq(*surface_id),
-                                    );
-                                } else {
-                                    self.opening_foreign_frames.remove(surface_id);
-                                }
-                            }
+                            // Install the foreign widget before its first
+                            // buffer: layout must publish its configure size.
+                            // TileHost retains visibility and owns the opening
+                            // card until the new content is ready to present.
                             let resource_replaced = !creation_failures.contains_key(&tab.id)
                                 && live
                                     .host_for_tab_mut(tab.id)
                                     .is_some_and(|host| host.record_creation_refused());
                             if (tab_tiles.get(&tab.id) != Some(&signature) || resource_replaced)
-                                && !still_starting
                                 && let Some(host) = live.host_for_tab_mut(tab.id)
                             {
                                 host.replace_content(crate::shell::to_ui_tile_for_tab_with_inputs(
@@ -33655,68 +33615,6 @@ mod resync_strips_tests {
     }
 
     #[test]
-    fn restored_opening_tab_swaps_to_live_surface_when_first_frame_arrives() {
-        struct ForeignSurfaceGuard(u64);
-
-        impl Drop for ForeignSurfaceGuard {
-            fn drop(&mut self) {
-                crate::compositor::foreign::store().forget(self.0);
-            }
-        }
-
-        // The frame store is process-wide and ordinary Rust tests run in
-        // parallel. A process-unique notification token makes a suitable
-        // synthetic surface id without colliding with another fixture.
-        let surface = crate::shell::notification::Notification::new("fixture", "fixture").id;
-        let _surface = ForeignSurfaceGuard(surface);
-        let (mut tree, strip_id, group_id) = one_group_seed();
-        let tab_id = tree.desktop.workspaces[0].strips[0].window_groups[0].tabs[0].id;
-        tree.desktop.workspaces[0].strips[0].window_groups[0].tabs[0] = Tab {
-            id: tab_id,
-            title: "Terminal".into(),
-            tile: TileContent::PeerWindow {
-                app_id: "dev.tilo.terminal".into(),
-                label: "Terminal".into(),
-                note: "Opening here…".into(),
-            },
-        };
-        let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&tree);
-
-        {
-            let mut state = chrome.borrow_mut();
-            {
-                let mut live = state.tree_mut();
-                live.desktop.workspaces[0].strips[0].window_groups[0].tabs[0].tile =
-                    TileContent::Foreign {
-                        app_id: "dev.tilo.terminal".into(),
-                        surface_id: surface,
-                    };
-                live.desktop.external_revision = live.desktop.external_revision.wrapping_add(1);
-            }
-            assert!(state.sync_external_tree_revision());
-        }
-        // Drains the revision; the still-starting card itself stays put.
-        let _ = host.take_structure_dirty();
-        assert_eq!(host.active_tile_rect(group_id), Some(Rect::ZERO));
-        assert_eq!(
-            host.opening_foreign_frames.get(&surface),
-            Some(&0),
-            "the retained opening card must remember the frame generation it is waiting on"
-        );
-
-        crate::compositor::foreign::store().publish_rgba(surface, &[0, 0, 0, 255], 1, 1);
-        assert!(
-            host.take_structure_dirty(),
-            "the first frame must retry the card-to-surface projection without a tree revision"
-        );
-        assert!(
-            !host.opening_foreign_frames.contains_key(&surface),
-            "the one-shot waiter is retired once the live surface is installed"
-        );
-        let _ = strip_id;
-    }
-
-    #[test]
     fn history_nested_open_retries_exact_new_record_after_the_parent_loan() {
         let (tree, _, _) = one_group_seed();
         let store = ui::record::RecordStore::in_memory();
@@ -35351,4 +35249,12 @@ mod roster_rows {
             "the hint cannot paint above a session-action sheet"
         );
     }
+}
+
+#[cfg(test)]
+pub(crate) fn install_fixture_search_provider(
+    host: &mut ShellOverlayHost,
+    provider: std::rc::Rc<dyn crate::shell::search::SearchProvider>,
+) {
+    host.search_registry.register_or_replace(provider);
 }
