@@ -33,7 +33,7 @@ RUN sed -i \
 
 # Repository tooling must never change the RPM database used for resolution.
 FROM configured-base AS metadata-tools
-RUN dnf install -y createrepo_c \
+RUN dnf install -y createrepo_c dnf5-plugins \
  && dnf clean packages
 
 # Fedora's virtio-win project currently publishes this RPM unsigned. Treating
@@ -99,6 +99,18 @@ RUN bash /tilo-verify-signatures.sh /repo /tilo-assets.tsv /tilo-fedora44-primar
  && createrepo_c --quiet /repo \
  && printf '[frozen]\nname=Tilo frozen package snapshot\nbaseurl=file:///repo\ngpgcheck=0\nenabled=1\n' > /repo/frozen.repo \
  && rpm -qa --qf '%{NAME}\t%{VERSION}\t%{RELEASE}\t%{ARCH}\n' | sort > /repo/tilo-metadata-tools.txt
+# The newest build of every package must resolve its dependencies from this
+# repository alone. A mirror caught mid-sync serves an update without the
+# subpackages it pins exactly (glibc without its matching glibc-common); the
+# offline install below can still pass by keeping the base's older copies,
+# while an image stage that upgrades then fails. Refuse that snapshot here,
+# before it is pushed or signed, so a later run takes a consistent mirror.
+# Superseded builds that the transactions also stored are never chosen over
+# the newest, so only the newest build of each package has to be closed.
+# Multilib (i686) builds enter only as dependencies of native ones, and their
+# conditional cross-architecture requirements are over-approximated here, so
+# the check covers native and noarch builds.
+RUN --network=none dnf repoclosure --newest --arch="$(uname -m),noarch" --setopt=reposdir=/repo --repo frozen
 
 # Prove closure on the ORIGINAL base, not the createrepo tooling environment.
 # The final COPY depends on this stage, so an optimizer cannot prune the check.

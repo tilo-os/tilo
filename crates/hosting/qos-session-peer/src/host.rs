@@ -2469,10 +2469,10 @@ mod tests {
         };
         envelope.seq += 1;
         if incomplete {
-            envelope.encryption = Some(collab_types::EncryptionMetadata {
-                epoch: 1,
-                channel: collab_types::document_channel_id(app_id, cluster_id, record_id),
-            });
+            envelope.encryption = Some(collab_types::EncryptionMetadata::mls_application(
+                1,
+                collab_types::document_channel_id(app_id, cluster_id, record_id),
+            ));
             envelope.payload = vec![1, 2, 3];
         }
         collab_types::sign_op(envelope, &owner.identity.native).unwrap();

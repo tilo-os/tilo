@@ -73,7 +73,7 @@ enum Action {
         model: String,
     },
     /// Ask the root-owned hardware policy for this machine's exact signed
-    /// BootPack and enqueue it for immutable deployment staging.
+    /// `BootPack` and enqueue it for immutable deployment staging.
     StageAccelerator,
     #[command(hide = true)]
     Worker {
@@ -366,12 +366,14 @@ impl HttpsTransport for ReqwestTransport {
         }
         let mut response = response;
         let mut count = 0_u64;
-        let mut buffer = [0_u8; 32 * 1024];
+        let mut buffer = vec![0_u8; 32 * 1024];
         loop {
             let read = response.read(&mut buffer)?;
             if read == 0 {
                 break;
             }
+            // `Read` never reports more bytes than the buffer holds.
+            let chunk = buffer.get(..read).ok_or(ServiceError::PartialTooLarge)?;
             let read = u64::try_from(read).map_err(|_| ServiceError::PartialTooLarge)?;
             count = count
                 .checked_add(read)
@@ -379,9 +381,7 @@ impl HttpsTransport for ReqwestTransport {
             if count > maximum_bytes {
                 return Err(ServiceError::PartialTooLarge);
             }
-            destination.write_all(
-                &buffer[..usize::try_from(read).map_err(|_| ServiceError::PartialTooLarge)?],
-            )?;
+            destination.write_all(chunk)?;
             // State is published by the service after every confirmed write,
             // not optimistically from Content-Length.
             progress(count);
@@ -479,7 +479,7 @@ impl ProcessSupervisor for SystemdSupervisor {
     }
     fn start(&mut self, command: &VllmCommand) -> Result<ProcessHandle, ServiceError> {
         let digest = hex::encode(Sha256::digest(command.endpoint.model_id.as_bytes()));
-        let unit = format!("tilo-vllm-{}", &digest[..16]);
+        let unit = format!("tilo-vllm-{}", digest.get(..16).unwrap_or(&digest));
         let mut launch = Command::new("systemd-run");
         launch
             .args([
@@ -510,8 +510,8 @@ impl ProcessSupervisor for SystemdSupervisor {
         // Loading model weights routinely takes minutes. This worker is
         // already detached from Settings, so favour a truthful bounded wait
         // over reporting a healthy large model as failed after 20 seconds.
-        let deadline = Instant::now() + Duration::from_secs(10 * 60);
-        while Instant::now() < deadline {
+        let started = Instant::now();
+        while started.elapsed() < Duration::from_secs(10 * 60) {
             if std::net::TcpStream::connect_timeout(
                 &address.parse().map_err(|_| ServiceError::InvalidEndpoint)?,
                 Duration::from_millis(250),
@@ -525,9 +525,9 @@ impl ProcessSupervisor for SystemdSupervisor {
         let mut stop = Command::new("systemctl");
         stop.args(["--user", "stop", &unit]);
         let _ = bounded_command::run_prepared(stop, None, 64 * 1024, Duration::from_secs(30));
-        return Err(ServiceError::Backend(
+        Err(ServiceError::Backend(
             "verified vLLM service did not become ready".into(),
-        ));
+        ))
     }
     fn stop(&mut self, handle: &ProcessHandle) -> Result<(), ServiceError> {
         let mut stop = Command::new("systemctl");
@@ -556,8 +556,7 @@ fn local_hardware() -> HardwareSnapshot {
                     .ok()
             })
         })
-        .map(|kib| kib / 1024)
-        .unwrap_or(0);
+        .map_or(0, |kib| kib / 1024);
     let free_storage_mib = free_storage_mib("/var/lib/tilo/models").unwrap_or(0);
     let mut accelerators = Vec::new();
     // NVIDIA's vendor tool is called with a fixed query/format, never a
@@ -598,8 +597,7 @@ fn local_hardware() -> HardwareSnapshot {
                 let vram_mib = std::fs::read_to_string(device.join("mem_info_vram_total"))
                     .ok()
                     .and_then(|bytes| bytes.trim().parse::<u64>().ok())
-                    .map(|bytes| bytes / 1024 / 1024)
-                    .unwrap_or(0);
+                    .map_or(0, |bytes| bytes / 1024 / 1024);
                 accelerators.push(Accelerator::Amd {
                     vram_mib,
                     rocm: rocm.clone(),
@@ -621,8 +619,7 @@ fn local_hardware() -> HardwareSnapshot {
     }
     HardwareSnapshot {
         cpu_threads: std::thread::available_parallelism()
-            .map(|count| count.get() as u16)
-            .unwrap_or(1),
+            .map_or(1, |count| u16::try_from(count.get()).unwrap_or(u16::MAX)),
         memory_mib,
         free_storage_mib,
         accelerators,
@@ -635,6 +632,10 @@ fn free_storage_mib(path: &str) -> Option<u64> {
         return None;
     }
     let info = unsafe { info.assume_init() };
+    #[allow(
+        clippy::useless_conversion,
+        reason = "statvfs field widths differ between libc targets"
+    )]
     u64::try_from(info.f_bavail)
         .ok()?
         .checked_mul(u64::try_from(info.f_frsize).ok()?)?
@@ -755,7 +756,7 @@ fn recommendation(
                 .iter()
                 .filter_map(|item| match item {
                     Accelerator::Nvidia { vram_mib, .. } => Some(*vram_mib),
-                    _ => None,
+                    Accelerator::Amd { .. } => None,
                 })
                 .max();
             (
@@ -972,7 +973,9 @@ fn forward_to_service(cli: &Cli) -> Result<Option<String>, String> {
 
 fn same_user(stream: &UnixStream) -> bool {
     let mut credentials = std::mem::MaybeUninit::<libc::ucred>::uninit();
-    let mut length = std::mem::size_of::<libc::ucred>() as libc::socklen_t;
+    let Ok(mut length) = libc::socklen_t::try_from(std::mem::size_of::<libc::ucred>()) else {
+        return false;
+    };
     // SAFETY: `credentials` points to a correctly-sized output buffer and
     // `stream` is a Unix-domain socket supplied by UnixListener::accept.
     let result = unsafe {
@@ -981,7 +984,7 @@ fn same_user(stream: &UnixStream) -> bool {
             libc::SOL_SOCKET,
             libc::SO_PEERCRED,
             credentials.as_mut_ptr().cast(),
-            &mut length,
+            &raw mut length,
         )
     };
     result == 0
@@ -1293,45 +1296,7 @@ fn stage_recommended_accelerator() -> Result<(), String> {
 fn run_local(cli: Cli) -> Result<Option<String>, String> {
     let (root, catalog_path, key_path) = paths(&cli)?;
     if let Action::Snapshot { format } = &cli.command {
-        if format != "json" {
-            return Err("snapshot supports only --format json".into());
-        }
-        let catalog = load_catalog(&catalog_path, &key_path)?;
-        let service = LocalModelService::open(
-            &root,
-            ReqwestTransport::new().map_err(|error| error.to_string())?,
-            SystemdSupervisor,
-        )
-        .map_err(|error| error.to_string())?;
-        let hardware = local_hardware();
-        let (recommended, runtime) = match recommended_model(&catalog, &hardware) {
-            Ok((model, kind)) => (Some(package(model)), Ok(kind)),
-            Err(reason) => (None, Err(reason)),
-        };
-        let models = service
-            .state()
-            .models
-            .iter()
-            .filter_map(|(id, managed)| {
-                catalog
-                    .models
-                    .iter()
-                    .find(|model| &model.id == id)
-                    .map(|model| InstalledLocalModel {
-                        package: package(model),
-                        phase: phase(&managed.status),
-                    })
-            })
-            .collect();
-        let payload = LocalModelSnapshot {
-            hardware: recommendation(&hardware, runtime, recommended.is_some()),
-            recommendation: recommended,
-            models,
-            accelerator_setup: accelerator_setup_snapshot(),
-        };
-        return Ok(Some(
-            serde_json::to_string(&payload).map_err(|error| error.to_string())?,
-        ));
+        return local_snapshot(&root, &catalog_path, &key_path, format).map(Some);
     }
     let catalog = load_catalog(&catalog_path, &key_path)?;
     let mut service = LocalModelService::open(
@@ -1369,12 +1334,10 @@ fn run_local(cli: Cli) -> Result<Option<String>, String> {
             service
                 .queue_install(release)
                 .map_err(|error| error.to_string())?;
-            enqueue_worker(&root, &catalog_path, &key_path, &model, revision.as_deref()).map_err(
-                |error| {
-                    let _ = service.record_failure(&model, &error);
-                    error
-                },
-            )?;
+            enqueue_worker(&root, &catalog_path, &key_path, &model, revision.as_deref())
+                .inspect_err(|error| {
+                    let _ = service.record_failure(&model, error);
+                })?;
         }
         Action::Start { model } => {
             if !catalog.models.iter().any(|release| release.id == model) {
@@ -1383,9 +1346,8 @@ fn run_local(cli: Cli) -> Result<Option<String>, String> {
             service
                 .mark_starting(&model)
                 .map_err(|error| error.to_string())?;
-            enqueue_start_worker(&root, &catalog_path, &key_path, &model).map_err(|error| {
-                let _ = service.record_failure(&model, &error);
-                error
+            enqueue_start_worker(&root, &catalog_path, &key_path, &model).inspect_err(|error| {
+                let _ = service.record_failure(&model, error);
             })?;
         }
         Action::Stop { model } => {
@@ -1396,32 +1358,7 @@ fn run_local(cli: Cli) -> Result<Option<String>, String> {
         }
         Action::StageAccelerator => stage_recommended_accelerator()?,
         Action::Worker { model, revision } => {
-            let release = catalog
-                .models
-                .iter()
-                .find(|release| {
-                    release.id == model
-                        && revision
-                            .as_ref()
-                            .is_none_or(|revision| revision == &release.version)
-                })
-                .ok_or_else(|| "model/revision is not in the signed catalog".to_string())?;
-            let runtime = signed_runtime_for(&catalog, &local_hardware(), release)?;
-            if let Err(error) = service
-                .install_with_runtime_progress(runtime, release)
-                .and_then(|_| {
-                    service
-                        .start(
-                            runtime,
-                            release,
-                            allocate_loopback_port().map_err(ServiceError::Backend)?,
-                        )
-                        .map(|_| ())
-                })
-            {
-                let _ = service.record_failure(&model, error.to_string());
-                return Err(error.to_string());
-            }
+            run_install_worker(&mut service, &catalog, &model, revision.as_ref())?;
         }
         Action::WorkerStart { model } => {
             let release = catalog
@@ -1435,9 +1372,93 @@ fn run_local(cli: Cli) -> Result<Option<String>, String> {
                 return Err(error.to_string());
             }
         }
-        Action::Snapshot { .. } | Action::Serve { .. } => unreachable!(),
+        // The dispatcher answers these itself and never hands them over.
+        Action::Snapshot { .. } | Action::Serve { .. } => {
+            return Err("not a local model action".into());
+        }
     }
     Ok(None)
+}
+
+/// The signed catalog, this machine's recommendation and installed models,
+/// as the JSON snapshot Settings renders.
+fn local_snapshot(
+    root: &PathBuf,
+    catalog_path: &PathBuf,
+    key_path: &PathBuf,
+    format: &str,
+) -> Result<String, String> {
+    if format != "json" {
+        return Err("snapshot supports only --format json".into());
+    }
+    let catalog = load_catalog(catalog_path, key_path)?;
+    let service = LocalModelService::open(
+        root,
+        ReqwestTransport::new().map_err(|error| error.to_string())?,
+        SystemdSupervisor,
+    )
+    .map_err(|error| error.to_string())?;
+    let hardware = local_hardware();
+    let (recommended, runtime) = match recommended_model(&catalog, &hardware) {
+        Ok((model, kind)) => (Some(package(model)), Ok(kind)),
+        Err(reason) => (None, Err(reason)),
+    };
+    let models = service
+        .state()
+        .models
+        .iter()
+        .filter_map(|(id, managed)| {
+            catalog
+                .models
+                .iter()
+                .find(|model| &model.id == id)
+                .map(|model| InstalledLocalModel {
+                    package: package(model),
+                    phase: phase(&managed.status),
+                })
+        })
+        .collect();
+    let payload = LocalModelSnapshot {
+        hardware: recommendation(&hardware, runtime, recommended.is_some()),
+        recommendation: recommended,
+        models,
+        accelerator_setup: accelerator_setup_snapshot(),
+    };
+    serde_json::to_string(&payload).map_err(|error| error.to_string())
+}
+
+/// Install then start one signed release in the detached worker, recording
+/// any failure in the service state Settings observes.
+fn run_install_worker(
+    service: &mut LocalModelService<ReqwestTransport, SystemdSupervisor>,
+    catalog: &CatalogPayload,
+    model: &str,
+    revision: Option<&String>,
+) -> Result<(), String> {
+    let release = catalog
+        .models
+        .iter()
+        .find(|release| {
+            release.id == model && revision.is_none_or(|revision| revision == &release.version)
+        })
+        .ok_or_else(|| "model/revision is not in the signed catalog".to_string())?;
+    let runtime = signed_runtime_for(catalog, &local_hardware(), release)?;
+    if let Err(error) = service
+        .install_with_runtime_progress(runtime, release)
+        .and_then(|_| {
+            service
+                .start(
+                    runtime,
+                    release,
+                    allocate_loopback_port().map_err(ServiceError::Backend)?,
+                )
+                .map(|_| ())
+        })
+    {
+        let _ = service.record_failure(model, error.to_string());
+        return Err(error.to_string());
+    }
+    Ok(())
 }
 
 fn enqueue_worker(
@@ -1449,7 +1470,10 @@ fn enqueue_worker(
 ) -> Result<(), String> {
     let executable = std::env::current_exe().map_err(|error| error.to_string())?;
     let digest = hex::encode(Sha256::digest(model.as_bytes()));
-    let unit = format!("tilo-model-download-{}", &digest[..16]);
+    let unit = format!(
+        "tilo-model-download-{}",
+        digest.get(..16).unwrap_or(&digest)
+    );
     let mut command = Command::new("systemd-run");
     command
         .args(["--user", "--collect", "--service-type=exec", "--unit"])
@@ -1488,7 +1512,7 @@ fn enqueue_start_worker(
 ) -> Result<(), String> {
     let executable = std::env::current_exe().map_err(|error| error.to_string())?;
     let digest = hex::encode(Sha256::digest(model.as_bytes()));
-    let unit = format!("tilo-model-start-{}", &digest[..16]);
+    let unit = format!("tilo-model-start-{}", digest.get(..16).unwrap_or(&digest));
     let mut command = Command::new("systemd-run");
     command
         .args(["--user", "--collect", "--service-type=exec", "--unit"])

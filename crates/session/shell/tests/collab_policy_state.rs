@@ -314,10 +314,7 @@ fn mls_ciphertext_can_be_redacted_without_decryption() {
         OpClass::Splice,
         b"opaque MLS ciphertext".to_vec(),
         1,
-        EncryptionMetadata {
-            epoch: 7,
-            channel: ChannelId::new(),
-        },
+        EncryptionMetadata::mls_application(7, ChannelId::new()),
     );
     validate_inbound_op(&target, &mut f.state).unwrap();
     f.state.record_validated_op(target.clone());
@@ -445,10 +442,7 @@ fn threshold_mls_validation_and_compaction_compose() {
         OpClass::Splice,
         SystemTime::now(),
         1,
-        EncryptionMetadata {
-            epoch: alice.epoch(),
-            channel,
-        },
+        EncryptionMetadata::mls_application(alice.epoch(), channel),
     );
     op.signature = threshold_sign(&threshold_a, &threshold_b, &op.signing_bytes().unwrap());
     validate_inbound_op(&op, &mut state).unwrap();

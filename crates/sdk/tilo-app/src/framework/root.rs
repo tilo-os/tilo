@@ -18,6 +18,7 @@ use ui_core::{LocalState, Theme};
 
 use super::dispatch::Dispatcher;
 use super::live::Live;
+use super::stage::Stages;
 use super::view::Updaters;
 
 pub(crate) struct ResourceRoot<R: Resource> {
@@ -34,6 +35,7 @@ pub(crate) struct ResourceRoot<R: Resource> {
     /// of a past version.
     permissions: Option<LivePermissions>,
     write: Option<PermissionScope>,
+    stages: Stages,
     content: Element,
 }
 
@@ -51,6 +53,7 @@ impl<R: Resource> ResourceRoot<R> {
         alive: Rc<()>,
         dispatch: Dispatcher<R>,
         saved: LocalState<RecordSaveStatus>,
+        stages: Stages,
         content: Element,
     ) -> Self {
         Self {
@@ -64,8 +67,16 @@ impl<R: Resource> ResourceRoot<R> {
             saved,
             permissions: None,
             write: None,
+            stages,
             content,
         }
+    }
+
+    /// Stage a screenshot scenario's view state: every view's
+    /// [`on_stage`](super::ViewCx::on_stage) callback runs now, and every
+    /// hosted surface stages on its next sync.
+    pub(crate) fn stage(&self, scenario: Option<&str>) {
+        self.stages.run(scenario);
     }
 
     /// Follow `permissions`: the resource is editable while they grant
@@ -195,6 +206,12 @@ impl<R: Resource> Decorator for ResourceRoot<R> {
 
     fn name(&self) -> &'static str {
         "ResourceApp"
+    }
+
+    // A screenshot harness reaches the root to stage a scenario's view state
+    // (`framework::stage`).
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        Some(self)
     }
 
     fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {

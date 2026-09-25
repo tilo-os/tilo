@@ -1,6 +1,7 @@
 //! The contract a custom widget or renderer implements to take part in a
 //! resource: collaboration, history, undo, permissions and the action door.
 
+use std::cell::RefCell;
 use std::rc::Rc;
 
 use tilo_resource::Resource;
@@ -65,6 +66,18 @@ pub trait ResourceSurface<R: Resource>: Widget {
     /// refuses or accepts edits under the new permissions.
     fn read_only_changed(&mut self, read_only: bool) {
         let _ = read_only;
+    }
+
+    /// Stage view state for a screenshot scenario (`None` for a plain
+    /// `--shots`): a selection, an open menu, a drag in flight. Called at the
+    /// start of the sync after the scenario's actions applied, so the surface
+    /// has been presented their result and its own `sync` follows with the
+    /// document. Edits it dispatches here are submitted like any other and
+    /// applied before the frame is captured. Must be deterministic: the same
+    /// scenario stages the same scene on every run. Never called in a live
+    /// window.
+    fn stage(&mut self, scenario: Option<&str>) {
+        let _ = scenario;
     }
 }
 
@@ -139,8 +152,14 @@ pub(crate) struct SurfaceHost<R: Resource, S> {
     presented: u64,
     dispatch: Dispatcher<R>,
     read_only: bool,
+    /// A scenario to stage on the next sync.
+    staging: Staging,
     surface: S,
 }
+
+/// The scenario a surface stages on its next sync: outer `None` is nothing
+/// to stage, inner `None` is a plain `--shots`.
+pub(crate) type Staging = Rc<RefCell<Option<Option<String>>>>;
 
 impl<R: Resource, S: ResourceSurface<R>> SurfaceHost<R, S> {
     pub(crate) fn new(live: Live<R>, dispatch: Dispatcher<R>, surface: S) -> Self {
@@ -149,8 +168,13 @@ impl<R: Resource, S: ResourceSurface<R>> SurfaceHost<R, S> {
             live,
             read_only: dispatch.read_only(),
             dispatch,
+            staging: Staging::default(),
             surface,
         }
+    }
+
+    pub(crate) fn staging(&self) -> Staging {
+        Rc::clone(&self.staging)
     }
 }
 
@@ -176,6 +200,10 @@ impl<R: Resource, S: ResourceSurface<R>> Decorator for SurfaceHost<R, S> {
         if self.live.revision() != self.presented {
             self.presented = self.live.revision();
             self.surface.present(&self.live.get());
+        }
+        let staged = self.staging.borrow_mut().take();
+        if let Some(scenario) = staged {
+            self.surface.stage(scenario.as_deref());
         }
         self.surface.sync(state, path);
     }

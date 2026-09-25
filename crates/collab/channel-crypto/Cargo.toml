@@ -46,10 +46,10 @@ openmls_traits = "0.6"
 thiserror.workspace = true
 serde.workspace = true
 postcard.workspace = true
-chacha20poly1305.workspace = true
-getrandom.workspace = true
-rand.workspace = true
 zeroize.workspace = true
+# Content keys, key-history bundles and persisted state are sealed through
+# the shared construction.
+tilo-seal = { path = "../../system/tilo-seal" }
 
 [dev-dependencies]
 # Used in the integration test that wraps a ciphertext inside a

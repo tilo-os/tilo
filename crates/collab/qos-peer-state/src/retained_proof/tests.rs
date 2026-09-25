@@ -342,10 +342,10 @@ fn signed_route_crypto_and_strict_body_fail_closed() {
                 collab_types::sign_op(envelope, &key).unwrap();
             }
             _ => {
-                envelope.encryption = Some(collab_types::EncryptionMetadata {
-                    epoch: 1,
-                    channel: collab_types::document_channel_id(APP, ROOM, "one"),
-                });
+                envelope.encryption = Some(collab_types::EncryptionMetadata::mls_application(
+                    1,
+                    collab_types::document_channel_id(APP, ROOM, "one"),
+                ));
                 envelope.payload = vec![1, 2, 3];
                 collab_types::sign_op(envelope, &key).unwrap();
             }

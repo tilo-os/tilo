@@ -5966,6 +5966,45 @@ impl FrameHarness {
         result
     }
 
+    /// The instance id of the hosted application component, the
+    /// `instance_id` its bound actions are addressed by. `None` when the root
+    /// is not a component.
+    pub fn component_instance_id(&self) -> Option<crate::application::InstanceId> {
+        self.root
+            .callback_binding()
+            .map(|binding| binding.instance_id)
+    }
+
+    /// The scene the last laid-out frame encoded: what [`Self::render_rgba`]
+    /// rasterises. Its encoding is exact where pixels are not, so a capture's
+    /// determinism is asserted on it.
+    pub fn scene(&self) -> &Scene {
+        &self.scene
+    }
+
+    /// Reach the first retained widget of type `T` — found through
+    /// [`Widget::as_any_mut`], depth first along `children_mut`, into hosted
+    /// components — run `visit` on it, then run one input-free frame (the
+    /// host tick and a relayout) so whatever it queued is handled as after an
+    /// event. `None` when no widget of that type opts in to `as_any_mut`.
+    ///
+    /// This is how a screenshot scenario stages view state (a selection, an
+    /// open dialog) in the widget that owns it, instead of reaching around it.
+    pub fn with_widget_mut<T: 'static, O>(&mut self, visit: impl FnOnce(&mut T) -> O) -> Option<O> {
+        fn find<T: 'static>(widget: &mut dyn Widget) -> Option<&mut T> {
+            if widget.as_any_mut().is_some_and(|any| any.is::<T>()) {
+                return widget.as_any_mut()?.downcast_mut::<T>();
+            }
+            widget.children_mut().into_iter().find_map(find::<T>)
+        }
+        self.pump_component_wakes();
+        let output = visit(find::<T>(self.root.as_mut())?);
+        self.relayout();
+        self.host_tick();
+        self.relayout();
+        Some(output)
+    }
+
     /// Deliver an out-of-band payload the way the live host delivers a
     /// [`crate::app::UserEvent::External`] — a worker's progress line, or a
     /// wake-up for requests the app queued itself — then run the host tick.

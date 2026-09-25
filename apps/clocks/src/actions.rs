@@ -54,6 +54,12 @@ pub enum ClockOperation {
     },
 }
 
+/// Decodes a Clocks operation payload; returns `Ok(None)` for other operation types.
+///
+/// # Errors
+///
+/// Returns a message when `type_id` is the Clocks operation type but the
+/// payload is not a valid JSON-encoded [`ClockOperation`].
 pub fn decode(type_id: &str, payload: &[u8]) -> Result<Option<ClockOperation>, String> {
     if type_id != OPERATION_TYPE {
         return Ok(None);

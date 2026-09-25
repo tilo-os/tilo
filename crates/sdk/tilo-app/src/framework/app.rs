@@ -22,7 +22,6 @@ use {
     ui_core::application::{
         ApplicationHost, ComponentRunnerInputs, NativeProcessHost, PreparedComponentInputs,
     },
-    ui_core::bound_dispatch::BoundActionAddress,
     ui_core::headless::FrameHarness,
     ui_core::launch::{LaunchArgs, LaunchSpec},
     ui_core::permissions::{Actor, PermissionContext, Role, UserId},
@@ -32,6 +31,7 @@ use {
 use super::dispatch::Dispatcher;
 use super::live::Live;
 use super::root::ResourceRoot;
+use super::stage::Stages;
 use super::view::{Updaters, ViewCx};
 
 /// A framework app: one resource type and a view of it.
@@ -67,9 +67,12 @@ pub trait ResourceApp: 'static {
         &[]
     }
 
-    /// The actions that stage a screenshot scenario, applied through the
-    /// same door as every control before the frame is captured.
-    fn scenario(name: &str) -> Vec<Invoke<Self::Resource>> {
+    /// The actions that stage the resource for a capture: `Some(name)` for
+    /// `--shots --scenario NAME`, `None` for a plain `--shots`. They apply
+    /// through the same door as every control; then the views stage their
+    /// view state ([`ViewCx::on_stage`], `ResourceSurface::stage`) and the
+    /// frame is captured. See [`stage`](super::stage).
+    fn scenario(name: Option<&str>) -> Vec<Invoke<Self::Resource>> {
         let _ = name;
         Vec::new()
     }
@@ -172,6 +175,7 @@ pub(crate) fn build_root<A: ResourceApp>(
     let alive = Rc::new(());
     let dispatch = Dispatcher::new(resource_id, read_only);
     let saved = ui_core::LocalState::new(ui_core::record::RecordSaveStatus::Saved);
+    let stages = Stages::new();
     let mut cx = ViewCx::root(
         live.clone(),
         updaters.clone(),
@@ -179,6 +183,7 @@ pub(crate) fn build_root<A: ResourceApp>(
         dispatch.clone(),
         published,
         saved.clone(),
+        stages.clone(),
     );
     let content = A::view(&mut cx);
     ResourceRoot::new(
@@ -190,6 +195,7 @@ pub(crate) fn build_root<A: ResourceApp>(
         alive,
         dispatch,
         saved,
+        stages,
         content,
     )
     .following(permissions, scope)
@@ -333,20 +339,7 @@ fn capture<A: ResourceApp>(
     harness: &mut FrameHarness,
     args: &LaunchArgs,
 ) -> Result<(), LaunchError> {
-    let Some(name) = args.scenario.as_deref() else {
-        return Ok(());
-    };
-    for invoke in A::scenario(name) {
-        let address = BoundActionAddress {
-            instance_id: CAPTURE_INSTANCE,
-            address: tilo_actions::ActionAddress::new(<A::Resource as Resource>::KIND, invoke.id),
-        };
-        harness
-            .invoke_bound_action(&address, &invoke.arguments)
-            .map_err(operation)?;
-    }
-    harness.relayout();
-    Ok(())
+    super::stage::stage::<A>(harness, args.scenario.as_deref())
 }
 
 #[cfg(not(target_arch = "wasm32"))]

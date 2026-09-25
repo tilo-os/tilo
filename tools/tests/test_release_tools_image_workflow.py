@@ -19,7 +19,7 @@ class ReleaseToolsImageWorkflowTests(unittest.TestCase):
     def test_image_installs_only_publication_runtime_tools(self) -> None:
         self.assertRegex(
             self.containerfile,
-            r"FROM registry\.fedoraproject\.org/fedora-minimal:42@sha256:[0-9a-f]{64}",
+            r"FROM registry\.fedoraproject\.org/fedora-minimal:44@sha256:[0-9a-f]{64}",
         )
         install = self.containerfile.split("RUN microdnf install", 1)[1].split("&&", 1)[0]
         for compiler in ("cargo", "rustc", "gcc", "clang", "make", "cmake"):
@@ -79,12 +79,12 @@ class ReleaseToolsImageWorkflowTests(unittest.TestCase):
         self.assertIn('bash os/tests/release_tools_image.sh "$image"', verify)
 
     def test_isolated_publisher_uses_the_verified_public_compiler_free_image(self) -> None:
-        expected = (
-            "code.podesta.ai/public/tilo-release-tools@"
-            "sha256:a59c9b664bc4aa09da7a747b77aa72c965608d6da9fa5659a3e70e01810b764b"
-        )
         publish = self.release_workflow.split("\n  publish:\n", 1)[1]
-        self.assertIn(f"image: {expected}", publish)
+        # release-apps.yml is the single owner of the reviewed digest.
+        self.assertRegex(
+            publish,
+            r"image: code\.podesta\.ai/public/tilo-release-tools@sha256:[0-9a-f]{64}\n",
+        )
         self.assertNotIn("image: ${{ needs.plan.outputs.builder_image }}", publish)
         container = publish.split("    container:\n", 1)[1].split(
             "    timeout-minutes:", 1

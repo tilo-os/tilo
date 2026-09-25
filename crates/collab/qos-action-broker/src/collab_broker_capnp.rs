@@ -6142,6 +6142,8 @@ impl channel_handle::Server for CapnpChannelHandle {
             return Promise::err(error);
         }
         let broker_channels = self.state.broker_channels.clone();
+        let publisher = Arc::clone(self.state.publisher());
+        let route = self.route();
         Promise::from_future(async move {
             let p = params.get()?;
             let artifact_id_bytes = p.get_artifact_id()?.to_vec();
@@ -6153,7 +6155,32 @@ impl channel_handle::Server for CapnpChannelHandle {
                 ))
             })?;
             let artifact = ArtifactId(uuid);
-            let (ops, exhausted) = read_scrollback(&broker_channels, artifact, before_seq, max);
+            let (ops, mut exhausted) = read_scrollback(&broker_channels, artifact, before_seq, max);
+            // Local history ends here: ask the channel's other devices for
+            // what lies before it. Their answer lands in durable history, so
+            // the page is reported as not exhausted and the endpoint's next
+            // request picks it up.
+            if exhausted {
+                let peer_bound = ops
+                    .iter()
+                    .filter_map(|bytes| postcard::from_bytes::<SignedOp>(bytes).ok())
+                    .map(|op| op.seq)
+                    .min()
+                    .unwrap_or(before_seq);
+                let ask = broker_channels
+                    .lock()
+                    .is_ok_and(|mut ch| ch.request_peer_history(artifact, peer_bound));
+                if ask
+                    && publisher.scrollback_request(
+                        &route,
+                        artifact,
+                        peer_bound,
+                        u16::try_from(max).unwrap_or(u16::MAX),
+                    )
+                {
+                    exhausted = false;
+                }
+            }
             let batch = results.get().init_batch();
             fill_scrollback_batch(batch, &ops, exhausted)?;
             Ok(())
@@ -7934,6 +7961,7 @@ fn handle_signed_op_send_for_artifact(
             let mut mls_vault = None;
             if let Ok(mut ch) = state.broker_channels.lock() {
                 mls_vault.clone_from(&ch.mls_vault);
+                ch.record_history(&envelope);
                 let ch_state = ch.state_for(artifact);
                 ch_state.record_validated_op(envelope.clone());
                 if envelope.op_class == collab_types::OpClass::Compaction
@@ -8055,12 +8083,11 @@ fn read_scrollback(
     let Ok(mut ch) = broker_channels.lock() else {
         return (Vec::new(), true);
     };
-    let ch_state = ch.state_for(artifact);
     // `max` is a peer-supplied page size; clamp rather than wrap so an
     // oversized request degrades to "as many as the u16 cap allows"
     // instead of silently truncating to an unrelated smaller number.
     let capped_max = u16::try_from(max).unwrap_or(u16::MAX);
-    let (ops, exhausted) = ch_state.scrollback_for(artifact, before_seq, capped_max);
+    let (ops, exhausted) = ch.scrollback_page(artifact, before_seq, capped_max);
     let encoded: Vec<Vec<u8>> = ops
         .into_iter()
         .filter_map(|op| postcard::to_stdvec(&op).ok())
@@ -11941,10 +11968,7 @@ pub mod tests {
             collab_types::OpClass::Splice,
             SystemTime::now(),
             2,
-            collab_types::EncryptionMetadata {
-                epoch: 7,
-                channel: expected_channel,
-            },
+            collab_types::EncryptionMetadata::mls_application(7, expected_channel),
         );
         sign_op(&mut encrypted, &device).expect("device signs opaque MLS envelope");
         let authorized = state
@@ -11993,10 +12017,7 @@ pub mod tests {
             collab_types::OpClass::Splice,
             SystemTime::now(),
             3,
-            collab_types::EncryptionMetadata {
-                epoch: 8,
-                channel: legacy_channel,
-            },
+            collab_types::EncryptionMetadata::mls_application(8, legacy_channel),
         );
         sign_op(&mut legacy_encrypted, &device).expect("device signs legacy MLS envelope");
         state

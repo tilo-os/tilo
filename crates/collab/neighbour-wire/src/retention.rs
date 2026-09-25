@@ -41,6 +41,18 @@ pub fn retention(msg: &NeighbourMsg, shell_checkpoint: bool) -> Option<([u8; 32]
             ..
         } => {
             let route = format!("app\0{app_id}\0{record_id}");
+            let channel = *blake3::hash(route.as_bytes()).as_bytes();
+            // Content-key ciphertext carries its storage class in the signed
+            // encryption metadata, so a host retains encrypted history
+            // without reading it. A single-use MLS application message is
+            // never retained: no later reader could open it.
+            if let Some(metadata) = envelope.encryption {
+                let retention = match metadata.retention()? {
+                    collab_types::ContentRetention::Checkpoint => Retention::Checkpoint,
+                    collab_types::ContentRetention::Delta => Retention::Delta,
+                };
+                return Some((channel, retention));
+            }
             let frame = collab_types::DocumentFrame::decode(&envelope.payload).ok()?;
             // A segmented snapshot replaces the checkpoint with its first
             // segment and retains the rest as the tail behind it, so a
@@ -60,7 +72,7 @@ pub fn retention(msg: &NeighbourMsg, shell_checkpoint: bool) -> Option<([u8; 32]
                 )
                 | collab_types::DocumentFrame::Segment(_) => Retention::Delta,
             };
-            return Some((*blake3::hash(route.as_bytes()).as_bytes(), retention));
+            return Some((channel, retention));
         }
         NeighbourMsg::PersonalContinuityCheckpoint {
             user_public_key, ..
@@ -135,6 +147,42 @@ mod tests {
                 .collect();
             assert_eq!(retained, [first, "delta", "delta", "delta"]);
         }
+    }
+
+    /// Encrypted history is retained by its signed storage class, never by
+    /// decoding ciphertext; single-use MLS messages are not retained.
+    #[test]
+    fn host_retains_content_key_ciphertext_by_its_signed_class() {
+        let channel = collab_types::ChannelId::new();
+        let classify = |metadata| {
+            let mut msg = frame(vec![0xde, 0xad]);
+            if let NeighbourMsg::AppDocument { envelope, .. } = &mut msg {
+                envelope.encryption = Some(metadata);
+            }
+            retention(&msg, false).map(|(_, retention)| retention)
+        };
+        assert_eq!(
+            classify(collab_types::EncryptionMetadata::content_key(
+                3,
+                channel,
+                collab_types::ContentRetention::Checkpoint,
+            )),
+            Some(Retention::Checkpoint)
+        );
+        assert_eq!(
+            classify(collab_types::EncryptionMetadata::content_key(
+                3,
+                channel,
+                collab_types::ContentRetention::Delta,
+            )),
+            Some(Retention::Delta)
+        );
+        assert_eq!(
+            classify(collab_types::EncryptionMetadata::mls_application(
+                3, channel
+            )),
+            None
+        );
     }
 
     #[test]

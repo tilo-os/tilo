@@ -718,14 +718,19 @@ impl App {
                     encrypted = envelope.encryption.is_some(),
                     "applying document mutation"
                 );
+                self.collaboration
+                    .history
+                    .observe_live(envelope.artifact, envelope.seq);
                 self.apply_signed_document_envelope(&envelope, decrypted_payload.as_deref());
             }
             CollabEvent::ScrollbackBatch {
-                artifact: _,
+                artifact,
                 ops,
                 decrypted_payloads,
-                exhausted: _,
+                oldest_seq,
+                exhausted,
             } => {
+                self.continue_document_history(artifact, oldest_seq, exhausted);
                 // Broker pre-validated each envelope, trusted the same
                 // way as a live document mutation.
                 tracing::debug!(
@@ -737,6 +742,59 @@ impl App {
                 self.apply_document_scrollback(ops, &decrypted_payloads);
             }
             _ => {}
+        }
+    }
+
+    /// A history view reports how many loaded ops of `artifact` lie above
+    /// its viewport; older history is fetched as it nears the loaded edge.
+    pub fn document_history_viewport(
+        &mut self,
+        artifact: collab_types::ArtifactId,
+        loaded_ops_above_viewport: usize,
+    ) {
+        if let Some(request) = self
+            .collaboration
+            .history
+            .on_viewport(artifact, loaded_ops_above_viewport)
+        {
+            self.send_history_request(request);
+        }
+    }
+
+    /// Something needs `artifact`'s history back to `seq` (opening an older
+    /// version, a backwards search); pages are fetched until it is loaded.
+    pub fn load_document_history_back_to(&mut self, artifact: collab_types::ArtifactId, seq: u64) {
+        if let Some(request) = self
+            .collaboration
+            .history
+            .ensure_loaded_back_to(artifact, seq)
+        {
+            self.send_history_request(request);
+        }
+    }
+
+    fn continue_document_history(
+        &mut self,
+        artifact: collab_types::ArtifactId,
+        oldest_seq: Option<u64>,
+        exhausted: bool,
+    ) {
+        if let Some(request) = self
+            .collaboration
+            .history
+            .on_batch(artifact, oldest_seq, exhausted)
+        {
+            self.send_history_request(request);
+        }
+    }
+
+    fn send_history_request(&mut self, request: crate::collaboration::CollabRequest) {
+        if let Err(error) = self.collaboration.manager.try_send(request) {
+            tracing::debug!(
+                ?error,
+                "collab: history page request not sent; retried on next trigger"
+            );
+            self.collaboration.history.reset_in_flight();
         }
     }
 
@@ -955,13 +1013,19 @@ impl App {
                 decrypted_payload,
                 ..
             } => {
+                self.collaboration
+                    .history
+                    .observe_live(envelope.artifact, envelope.seq);
                 self.apply_signed_document_envelope(&envelope, decrypted_payload.as_deref());
             }
             CollabEvent::ScrollbackBatch {
+                artifact,
                 ops,
                 decrypted_payloads,
-                ..
+                oldest_seq,
+                exhausted,
             } => {
+                self.continue_document_history(artifact, oldest_seq, exhausted);
                 self.apply_document_scrollback(ops, &decrypted_payloads);
             }
             CollabEvent::FollowChanged { peer_id } => match peer_id {

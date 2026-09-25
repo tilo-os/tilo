@@ -272,6 +272,8 @@ pub(super) struct CollaborationRuntime {
     /// A record checkout asks its new route for the current document once
     /// that route is acknowledged.
     pub(super) snapshot_on_ready: bool,
+    /// On-demand paging of document op history.
+    pub(super) history: crate::collaboration::DocumentHistory,
 }
 
 impl CollaborationRuntime {
@@ -284,6 +286,7 @@ impl CollaborationRuntime {
             room_manager: None,
             local_author,
             snapshot_on_ready: false,
+            history: crate::collaboration::DocumentHistory::default(),
         }
     }
 }

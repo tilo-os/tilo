@@ -3548,8 +3548,9 @@ async fn send_document_frame(
 ) -> Result<(), DocumentPublicationError> {
     let workspace_id = route.spec.cluster_id.to_string();
     let record_id = route.spec.record.as_deref().unwrap_or("");
+    let artifact = collab_types::document_artifact_id(&route.spec.app_id, &workspace_id, record_id);
     let Some((payload, encryption_metadata)) =
-        prepare_document_payload(&route.encryption, cleartext)
+        prepare_document_payload(&route.encryption, artifact, cleartext)
     else {
         return Err(state.publication_failed("document encryption", "payload unavailable", true));
     };
@@ -3572,7 +3573,6 @@ async fn send_document_frame(
         }
         LocalSdkDocumentSigner::Host(identity) => identity.signing_public_key(),
     };
-    let artifact = collab_types::document_artifact_id(&route.spec.app_id, &workspace_id, record_id);
     let author = collab_types::Ed25519PublicKey::from_bytes(author);
     let attestation =
         collab_types::document_attestation_id(&route.spec.app_id, &workspace_id, record_id);
@@ -3676,28 +3676,41 @@ async fn send_document_frame(
     Ok(())
 }
 
+/// Storage class of one cleartext document frame: a snapshot (or its first
+/// segment) starts a new retained baseline, everything else follows it.
+fn document_frame_retention(cleartext: &[u8]) -> collab_types::ContentRetention {
+    match collab_types::DocumentFrame::decode(cleartext) {
+        Ok(collab_types::DocumentFrame::Whole(collab_types::DocumentMutation::Snapshot(_))) => {
+            collab_types::ContentRetention::Checkpoint
+        }
+        Ok(collab_types::DocumentFrame::Segment(segment))
+            if segment.kind == collab_types::DocumentMutationKind::Snapshot
+                && segment.index == 0 =>
+        {
+            collab_types::ContentRetention::Checkpoint
+        }
+        _ => collab_types::ContentRetention::Delta,
+    }
+}
+
+/// Seal one frame under the route's current channel content key, so every
+/// member — including one added later — can read it from history.
 fn prepare_document_payload(
     encryption: &std::sync::Arc<std::sync::Mutex<Option<channel_crypto::ChannelGroup>>>,
+    artifact: collab_types::ArtifactId,
     cleartext: Vec<u8>,
 ) -> Option<(Vec<u8>, Option<collab_types::EncryptionMetadata>)> {
-    let Ok(mut guard) = encryption.lock() else {
+    let Ok(guard) = encryption.lock() else {
         tracing::warn!("collab: MLS endpoint lock poisoned; dropping mutation");
         return None;
     };
-    let Some(group) = guard.as_mut() else {
+    let Some(group) = guard.as_ref() else {
         return Some((cleartext, None));
     };
-    let epoch = group.epoch();
-    match group.encrypt(&cleartext) {
-        Ok(ciphertext) => Some((
-            ciphertext,
-            Some(collab_types::EncryptionMetadata {
-                epoch,
-                channel: group.channel_id(),
-            }),
-        )),
+    match group.seal_content(artifact, document_frame_retention(&cleartext), &cleartext) {
+        Ok((metadata, ciphertext)) => Some((ciphertext, Some(metadata))),
         Err(error) => {
-            tracing::warn!(%error, "collab: MLS encryption failed; dropping mutation");
+            tracing::warn!(%error, "collab: content encryption failed; dropping mutation");
             None
         }
     }
@@ -4056,17 +4069,21 @@ async fn dispatch_sdk_request(
             before_seq,
             max,
         } => {
-            let (ops, decrypted_payloads, exhausted) = match route
+            let (ops, decrypted_payloads, oldest_seq, exhausted) = match route
                 .channel
                 .fetch_scrollback_for(artifact.0.as_bytes(), before_seq, u32::from(max))
                 .await
             {
                 Ok(batch) => {
                     let mut payloads = Vec::new();
-                    let ops = batch
+                    let decoded: Vec<SignedOp> = batch
                         .ops
                         .into_iter()
                         .filter_map(|bytes| postcard::from_bytes::<SignedOp>(&bytes).ok())
+                        .collect();
+                    let oldest_seq = decoded.iter().map(|op| op.seq).min();
+                    let ops = decoded
+                        .into_iter()
                         .filter_map(|op| match decrypt_document_payload(&op, &route.encryption) {
                             // History pages arrive newest first, so a
                             // transfer split across pages completes when its
@@ -4086,15 +4103,16 @@ async fn dispatch_sdk_request(
                             }
                         })
                         .collect();
-                    (ops, payloads, batch.done)
+                    (ops, payloads, oldest_seq, batch.done)
                 }
-                Err(_) => (Vec::new(), Vec::new(), true),
+                Err(_) => (Vec::new(), Vec::new(), None, true),
             };
             let _ = inbound_tx
                 .send_document(CollabEvent::ScrollbackBatch {
                     artifact,
                     ops,
                     decrypted_payloads,
+                    oldest_seq,
                     exhausted,
                 })
                 .await;
@@ -4668,14 +4686,25 @@ fn decrypt_document_payload(
         let group = guard
             .as_mut()
             .ok_or(collab_types::DocumentMutationError::RouteMismatch)?;
-        if group.channel_id() != metadata.channel || group.epoch() < metadata.epoch {
+        if group.channel_id() != metadata.channel {
             return Err(collab_types::DocumentMutationError::RouteMismatch);
         }
+        // Content-key ops open from any epoch this member holds a key for
+        // (history included); v1 MLS messages only at the current epoch.
         let plaintext = group
-            .decrypt(&envelope.payload)
-            .map_err(|_| collab_types::DocumentMutationError::RouteMismatch)?;
+            .open_content(envelope.artifact, &metadata, &envelope.payload)
+            .map_err(|_| collab_types::DocumentMutationError::RouteMismatch)?
+            .to_vec();
         drop(guard);
         let _frame = collab_types::DocumentFrame::decode(&plaintext)?;
+        // The clear storage class hosts retained the op under must describe
+        // what it actually contains.
+        if metadata
+            .retention()
+            .is_some_and(|retention| retention != document_frame_retention(&plaintext))
+        {
+            return Err(collab_types::DocumentMutationError::RouteMismatch);
+        }
         Ok(Some(plaintext))
     } else {
         if encryption
@@ -8228,42 +8257,57 @@ mod tests {
     }
 
     #[test]
-    fn signed_document_event_decrypts_at_endpoint_and_rejects_replay() {
+    fn signed_document_event_decrypts_content_keys_for_history_and_late_joiners() {
         let channel = collab_types::ChannelId::new();
+        let artifact = collab_types::ArtifactId::new();
         let alice_key = channel_crypto::MemberKey::generate("alice").unwrap();
         let bob_key = channel_crypto::MemberKey::generate("bob").unwrap();
-        let bob_package = bob_key.fresh_key_package().unwrap();
         let mut alice = channel_crypto::ChannelGroup::create(channel, alice_key).unwrap();
-        let welcome = alice.add_member(bob_package).unwrap();
-        let bob =
-            channel_crypto::ChannelGroup::process_welcome(channel, &welcome, bob_key).unwrap();
+        let addition = alice.admit(bob_key.fresh_key_package().unwrap()).unwrap();
+        let bob = channel_crypto::ChannelGroup::process_welcome_with_history(
+            channel,
+            &addition.welcome,
+            &addition.key_history,
+            bob_key,
+        )
+        .unwrap();
         let plaintext = DocumentMutation::Incremental(b"secret change".to_vec())
             .encode_for(collab_types::DocumentWireVersion::QosV1)
             .unwrap();
         let alice_endpoint = std::sync::Arc::new(std::sync::Mutex::new(Some(alice)));
         let (ciphertext, metadata) =
-            prepare_document_payload(&alice_endpoint, plaintext.clone()).unwrap();
+            prepare_document_payload(&alice_endpoint, artifact, plaintext.clone()).unwrap();
         let metadata = metadata.expect("a provisioned endpoint never sends plaintext");
         assert_eq!(metadata.channel, channel);
-        let op = SignedOp::new_unsigned_with_encryption(
-            ciphertext,
-            collab_types::ArtifactId::new(),
-            collab_types::Ed25519PublicKey::from_bytes([9; 32]),
-            collab_types::AttestationId::new(),
-            collab_types::OpClass::Splice,
-            crate::time::SystemTime::UNIX_EPOCH,
-            1,
-            metadata,
+        assert_eq!(
+            metadata.retention(),
+            Some(collab_types::ContentRetention::Delta)
         );
+        let build = |payload: Vec<u8>, artifact, metadata| {
+            SignedOp::new_unsigned_with_encryption(
+                payload,
+                artifact,
+                collab_types::Ed25519PublicKey::from_bytes([9; 32]),
+                collab_types::AttestationId::new(),
+                collab_types::OpClass::Splice,
+                crate::time::SystemTime::UNIX_EPOCH,
+                1,
+                metadata,
+            )
+        };
+        let op = build(ciphertext.clone(), artifact, metadata);
         let endpoint = std::sync::Arc::new(std::sync::Mutex::new(Some(bob)));
-        let event = signed_document_event(op.clone(), "alice".into(), &endpoint).unwrap();
-        assert!(matches!(
-            event.document_mutation(),
-            Some(Ok(DocumentMutation::Incremental(data))) if data == b"secret change"
-        ));
+        for _ in 0..2 {
+            // Live delivery and a later scrollback read of the same op.
+            let event = signed_document_event(op.clone(), "alice".into(), &endpoint).unwrap();
+            assert!(matches!(
+                event.document_mutation(),
+                Some(Ok(DocumentMutation::Incremental(data))) if data == b"secret change"
+            ));
+        }
         let plaintext_downgrade = SignedOp::new_unsigned(
             plaintext,
-            collab_types::ArtifactId::new(),
+            artifact,
             collab_types::Ed25519PublicKey::from_bytes([9; 32]),
             collab_types::AttestationId::new(),
             collab_types::OpClass::Splice,
@@ -8275,8 +8319,84 @@ mod tests {
             "a provisioned MLS route must reject plaintext downgrade"
         );
         assert!(
-            signed_document_event(op, "alice".into(), &endpoint).is_err(),
-            "the MLS receive ratchet must reject replaying one ciphertext"
+            signed_document_event(
+                build(
+                    ciphertext.clone(),
+                    collab_types::ArtifactId::new(),
+                    metadata
+                ),
+                "alice".into(),
+                &endpoint
+            )
+            .is_err(),
+            "content is bound to its artifact"
+        );
+        let mislabeled = collab_types::EncryptionMetadata::content_key(
+            metadata.epoch,
+            channel,
+            collab_types::ContentRetention::Checkpoint,
+        );
+        assert!(
+            signed_document_event(
+                build(ciphertext, artifact, mislabeled),
+                "alice".into(),
+                &endpoint
+            )
+            .is_err(),
+            "the clear storage class must match the content"
+        );
+
+        // A member added afterwards reads the op from history.
+        let carol_key = channel_crypto::MemberKey::generate("carol").unwrap();
+        let addition = alice_endpoint
+            .lock()
+            .unwrap()
+            .as_mut()
+            .unwrap()
+            .admit(carol_key.fresh_key_package().unwrap())
+            .unwrap();
+        let carol = channel_crypto::ChannelGroup::process_welcome_with_history(
+            channel,
+            &addition.welcome,
+            &addition.key_history,
+            carol_key,
+        )
+        .unwrap();
+        let carol_endpoint = std::sync::Arc::new(std::sync::Mutex::new(Some(carol)));
+        let event = signed_document_event(op, "alice".into(), &carol_endpoint).unwrap();
+        assert!(matches!(
+            event.document_mutation(),
+            Some(Ok(DocumentMutation::Incremental(data))) if data == b"secret change"
+        ));
+    }
+
+    #[test]
+    fn snapshots_are_sealed_as_retained_checkpoints() {
+        let snapshot = DocumentMutation::Snapshot(b"whole".to_vec())
+            .encode()
+            .unwrap();
+        assert_eq!(
+            document_frame_retention(&snapshot),
+            collab_types::ContentRetention::Checkpoint
+        );
+        let big = DocumentMutation::Snapshot(
+            vec![1; 3 * collab_types::document_transfer::DOCUMENT_SEGMENT_BYTES],
+        )
+        .encode_frames()
+        .unwrap();
+        let classes: Vec<_> = big
+            .iter()
+            .map(|frame| document_frame_retention(frame))
+            .collect();
+        assert_eq!(
+            classes.first(),
+            Some(&collab_types::ContentRetention::Checkpoint)
+        );
+        assert!(
+            classes
+                .iter()
+                .skip(1)
+                .all(|class| *class == collab_types::ContentRetention::Delta)
         );
     }
 
@@ -8501,6 +8621,116 @@ mod tests {
             vec![(artifact.0.as_bytes().to_vec(), 10, 50)],
             "artifact / before_seq / max round-tripped verbatim",
         );
+    }
+
+    /// A member added after the history was written fetches it through the
+    /// real SDK transport and decrypts every page with the key history it
+    /// received on joining — no other member is running.
+    #[test]
+    fn joiner_decrypts_fetched_history_with_no_other_member_online() {
+        let app_id = "so.tilo.history-test";
+        let cluster = Uuid::from_u128(7);
+        let workspace = cluster.to_string();
+        let channel = collab_types::document_channel_id(app_id, &workspace, "");
+        let artifact = collab_types::document_artifact_id(app_id, &workspace, "");
+        let mut alice = channel_crypto::ChannelGroup::create(
+            channel,
+            channel_crypto::MemberKey::generate("alice").unwrap(),
+        )
+        .unwrap();
+        let history: Vec<Vec<u8>> = (1..=20_u64)
+            .map(|seq| {
+                let frame = collab_types::DocumentMutation::Incremental(
+                    format!("change {seq}").into_bytes(),
+                )
+                .encode()
+                .unwrap();
+                let (metadata, ciphertext) = alice
+                    .seal_content(artifact, document_frame_retention(&frame), &frame)
+                    .unwrap();
+                let op = SignedOp::new_unsigned_with_encryption(
+                    ciphertext,
+                    artifact,
+                    collab_types::Ed25519PublicKey::from_bytes([3; 32]),
+                    collab_types::AttestationId::new(),
+                    collab_types::OpClass::Splice,
+                    crate::time::SystemTime::UNIX_EPOCH,
+                    seq,
+                    metadata,
+                );
+                postcard::to_stdvec(&op).unwrap()
+            })
+            .collect();
+        let carol_key = channel_crypto::MemberKey::generate("carol").unwrap();
+        let addition = alice.admit(carol_key.fresh_key_package().unwrap()).unwrap();
+        let carol = channel_crypto::ChannelGroup::process_welcome_with_history(
+            channel,
+            &addition.welcome,
+            &addition.key_history,
+            carol_key,
+        )
+        .unwrap();
+        drop(alice);
+
+        let broker = FakeBroker {
+            captures: std::sync::Arc::new(std::sync::Mutex::new(Captures::default())),
+            op_backlog: vec![],
+            presence_backlog: vec![],
+            context_backlog: vec![],
+            scrollback_response: Some(SeedScrollback {
+                ops: history,
+                earliest_seq: 1,
+                latest_seq: 20,
+                done: true,
+            }),
+        };
+        let (fd, captures, _th) = stand_up_fake_broker(broker);
+        let mut mgr = CollaborationManager::from_sdk_fd_for_test(fd, app_id, cluster);
+        assert!(wait_until(
+            || !captures.lock().unwrap().joined.is_empty(),
+            HANG_GUARD
+        ));
+        mgr.install_document_encryption(
+            RouteSpec {
+                app_id: app_id.to_owned(),
+                cluster_id: cluster,
+                record: None,
+            },
+            carol,
+        )
+        .unwrap();
+        mgr.send(CollabRequest::FetchScrollback {
+            artifact,
+            before_seq: 21,
+            max: 50,
+        });
+        let events = poll_until(&mut mgr, |events| {
+            events
+                .iter()
+                .any(|e| matches!(e, CollabEvent::ScrollbackBatch { .. }))
+        });
+        let (ops, payloads, oldest_seq) = events
+            .into_iter()
+            .find_map(|e| match e {
+                CollabEvent::ScrollbackBatch {
+                    ops,
+                    decrypted_payloads,
+                    oldest_seq,
+                    ..
+                } => Some((ops, decrypted_payloads, oldest_seq)),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(ops.len(), 20);
+        assert_eq!(oldest_seq, Some(1));
+        for (index, payload) in payloads.iter().enumerate() {
+            assert_eq!(
+                collab_types::DocumentMutation::decode(payload.as_deref().unwrap()).unwrap(),
+                collab_types::DocumentMutation::Incremental(
+                    format!("change {}", index + 1).into_bytes()
+                )
+            );
+        }
     }
 
     #[test]

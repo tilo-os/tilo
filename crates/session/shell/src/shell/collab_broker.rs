@@ -528,6 +528,7 @@ impl DrainQueues {
         let artifact = envelope.artifact;
         if let Ok(mut ch) = self.channels.lock() {
             let mls_vault = ch.mls_vault.clone();
+            ch.record_history(&envelope);
             let state = ch.state_for(artifact);
             state.record_validated_op(envelope.clone());
             if envelope.op_class == OpClass::Compaction
@@ -610,12 +611,14 @@ impl DrainQueues {
             std::mem::take(&mut *buf)
         };
         for entry in drained_req {
+            // Answer from durable history as well as the memory window, so a
+            // member who joined on another device can page back through
+            // everything this device retained.
             let (ops, _exhausted) = {
                 let Ok(mut ch) = self.channels.lock() else {
                     continue;
                 };
-                let state = ch.state_for(entry.artifact);
-                state.scrollback_for(entry.artifact, entry.before_seq, entry.max)
+                ch.scrollback_page(entry.artifact, entry.before_seq, entry.max)
             };
             if !ops.is_empty() {
                 let boxed: Vec<Box<collab_types::SignedOp>> =
@@ -637,6 +640,14 @@ impl DrainQueues {
             std::mem::take(&mut *buf)
         };
         for entry in drained_resp {
+            // Pages this device asked for land in durable history, where the
+            // requesting endpoint's next page request finds them.
+            if let Ok(mut ch) = self.channels.lock() {
+                let stored = ch.accept_peer_history(entry.artifact, &entry.ops);
+                if stored > 0 {
+                    tracing::debug!(artifact = ?entry.artifact, stored, "collab history: stored peer page");
+                }
+            }
             let waiting = self
                 .pending
                 .lock()
@@ -653,10 +664,12 @@ impl DrainQueues {
             }
             // Closing half of a cooperative round-trip;
             // exhausted=true so the app doesn't re-ask.
+            let oldest_seq = entry.ops.iter().map(|op| op.seq).min();
             let event = CollabEvent::ScrollbackBatch {
                 artifact: entry.artifact,
                 ops: entry.ops.into_iter().map(Box::new).collect(),
                 decrypted_payloads: Vec::new(),
+                oldest_seq,
                 exhausted: true,
             };
             for route in waiting {
@@ -703,12 +716,23 @@ fn spawn_inner(
     #[cfg(test)]
     let mls_authority = None;
     #[cfg(not(test))]
+    match crate::shell::collab_history::CollabHistoryStore::open_for_session() {
+        Ok(history) => {
+            if let Ok(mut state) = channels.lock() {
+                state.history = Some(history);
+            }
+        }
+        Err(error) => {
+            tracing::warn!(%error, "durable collaboration history unavailable; scrollback is limited to memory");
+        }
+    }
+    #[cfg(not(test))]
     if config.is_none() {
         match crate::shell::collab_mls_authority::SecretServiceMlsVault::open_for_session() {
             Ok(vault) => {
                 let vault = Arc::new(vault);
                 if let Ok(mut state) = channels.lock() {
-                    state.install_mls_vault(vault.clone());
+                    state.install_mls_vault(Arc::clone(&vault));
                 }
                 if let Some(workspaces) = membership.clone() {
                     match crate::shell::collab_mls_authority::MlsAuthorityCoordinator::open(
@@ -1138,10 +1162,7 @@ mod tests {
             OpClass::Splice,
             std::time::SystemTime::now(),
             1,
-            collab_types::EncryptionMetadata {
-                epoch: 9,
-                channel: expected_channel,
-            },
+            collab_types::EncryptionMetadata::mls_application(9, expected_channel),
         );
         assert_eq!(
             validate_document_route(&route, &envelope),
@@ -1181,10 +1202,7 @@ mod tests {
             OpClass::Splice,
             std::time::SystemTime::now(),
             2,
-            collab_types::EncryptionMetadata {
-                epoch: 10,
-                channel: legacy_channel,
-            },
+            collab_types::EncryptionMetadata::mls_application(10, legacy_channel),
         );
         assert_eq!(
             validate_document_route(&route, &legacy_envelope),
