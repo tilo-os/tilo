@@ -10,6 +10,11 @@ pub use crate::collab_broker_capnp::{
 /// Reads a fresh immutable projection from the host's committed authority.
 /// Mutations go back to that host; this interface owns no replica or persistence.
 pub trait WorkspaceAuthority: Send + Sync {
+    /// A fresh immutable projection of the committed workspace tree.
+    ///
+    /// # Errors
+    ///
+    /// Returns a message when the committed authority cannot be read.
     fn snapshot(&self) -> Result<WorkspaceTree, String>;
     fn legacy_journal_root(&self) -> Option<std::path::PathBuf> {
         None
@@ -18,6 +23,10 @@ pub trait WorkspaceAuthority: Send + Sync {
     /// from the host's own durable record of each open (never from the agent).
     /// Consumed by the task's effective scopes
     /// (`qos_agent_control_protocol::scopes_with_opened_records`).
+    ///
+    /// # Errors
+    ///
+    /// Returns a message when the host's record of opened records cannot be read.
     fn task_opened_records(
         &self,
         task: &str,
@@ -28,6 +37,11 @@ pub trait WorkspaceAuthority: Send + Sync {
 }
 /// Legacy native projection only; success is not an aggregate durability receipt.
 pub trait LegacyWorkspaceProjection: Send + Sync {
+    /// Records one effect receipt in the legacy projection.
+    ///
+    /// # Errors
+    ///
+    /// Returns a message when the projection cannot record the receipt.
     fn record_effect(
         &self,
         room: &str,
@@ -36,6 +50,11 @@ pub trait LegacyWorkspaceProjection: Send + Sync {
         context: tilo_actions::ActionContext,
         status: tilo_actions::EffectReceiptStatus,
     ) -> Result<(), String>;
+    /// Records one task status update in the legacy projection.
+    ///
+    /// # Errors
+    ///
+    /// Returns a message when the projection cannot record the update.
     fn record_task_update(
         &self,
         room: &str,
@@ -110,10 +129,19 @@ pub struct LaunchableApplication {
 }
 pub trait LauncherServices: Send + Sync {
     fn applications(&self) -> Vec<LaunchableApplication>;
+    /// Launches `app` into `workspace`.
+    ///
+    /// # Errors
+    ///
+    /// Returns a message when the host cannot launch the application.
     fn launch(&self, app: &str, workspace: &Workspace) -> Result<(), String>;
     /// Launch `app` into `workspace`, opening the content-addressed bytes
     /// named by the lowercase BLAKE3 `content_hash` read-only. An empty hash
     /// is a plain launch. A host that cannot stage content refuses one.
+    ///
+    /// # Errors
+    ///
+    /// Returns a message when the launch fails or content staging is unsupported.
     fn launch_content(
         &self,
         app: &str,
@@ -164,6 +192,11 @@ pub trait WorkspaceGovernanceServices: Send + Sync {
     fn invoke(&self, request: &WorkspaceGovernanceRequest<'_>) -> Result<(), String>;
 }
 pub trait ContinuationServices: Send + Sync {
+    /// Reports one application instance's continuation metadata.
+    ///
+    /// # Errors
+    ///
+    /// Returns a message when the host cannot retain the metadata.
     fn report(
         &self,
         room: RoomId,
@@ -172,10 +205,20 @@ pub trait ContinuationServices: Send + Sync {
         schema: u16,
         metadata: Vec<u8>,
     ) -> Result<(), String>;
+    /// Clears one application instance's continuation metadata.
+    ///
+    /// # Errors
+    ///
+    /// Returns a message when the host cannot clear the metadata.
     fn clear(&self, room: RoomId, app: &str, instance: u64) -> Result<(), String>;
 }
-/// Called on the broker LocalSet; returned Cap'n Proto clients never cross threads.
+/// Called on the broker `LocalSet`; returned Cap'n Proto clients never cross threads.
 pub trait WorkspaceControlServices: Send + Sync {
+    /// Opens the workspace control handle of `room` for `target`.
+    ///
+    /// # Errors
+    ///
+    /// Returns a Cap'n Proto error when the handle cannot be opened.
     fn open(
         &self,
         room: RoomId,
@@ -187,6 +230,10 @@ pub trait WorkspaceControlServices: Send + Sync {
 /// The broker-authenticated identity passed to native realtime continuity.
 /// The service never accepts caller-supplied routing or peer ownership.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[expect(
+    clippy::struct_field_names,
+    reason = "peer, app and workspace ids are the three distinct identities this context carries"
+)]
 pub struct RealtimeRequestContext {
     peer_id: u64,
     app_id: String,
@@ -226,12 +273,22 @@ impl RealtimeRequestContext {
 /// capture leases and certified device-fabric state. The shared broker owns
 /// admission, exact route binding, wire bounds, and disconnect cleanup.
 pub trait RealtimeServices: Send + Sync {
+    /// Runs one realtime continuity command.
+    ///
+    /// # Errors
+    ///
+    /// Returns a message when the host refuses or cannot run the command.
     fn command(
         &self,
         context: &RealtimeRequestContext,
         command_json: &[u8],
     ) -> Result<Vec<u8>, String>;
 
+    /// Subscribes to realtime continuity events for this context.
+    ///
+    /// # Errors
+    ///
+    /// Returns a message when the host refuses the subscription.
     fn subscribe(
         &self,
         context: &RealtimeRequestContext,

@@ -5,7 +5,7 @@ use ui::application::{
     ApplicationHost, ComponentRunnerInputs, NativeProcessHost, PreparedComponentInputs,
 };
 use ui::launch::LaunchError;
-use ui::record::{RecordCheckout, RecordId, RecordOpenError};
+use ui::record::{RecordCheckout, RecordId, RecordOpenError, RecordStore};
 
 static NATIVE_LAUNCH_TARGET: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
 
@@ -79,57 +79,7 @@ pub fn prepare_default(
                 return Err(LaunchError::Record(RecordOpenError::MissingRecord));
             }
             if let Some(root) = legacy_root {
-                let retirement = root.join(".notes-canonical-v1");
-                match std::fs::symlink_metadata(&retirement) {
-                    Ok(_) => {
-                        return Err(LaunchError::Operation(
-                            "this personal notebook was retired into canonical storage; relaunch with its explicit --notebook-dir and, when configured, --notebook-state-dir".into(),
-                        ));
-                    }
-                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-                    Err(error) => {
-                        return Err(LaunchError::Operation(format!(
-                            "{}: {error}",
-                            retirement.display()
-                        )));
-                    }
-                }
-                let metadata_path = crate::storage::workspace_file_path(root);
-                let has_source = match std::fs::metadata(&metadata_path) {
-                    Ok(_) => true,
-                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
-                    Err(error) => {
-                        return Err(LaunchError::Operation(format!(
-                            "{}: {error}",
-                            metadata_path.display()
-                        )));
-                    }
-                };
-                if has_source {
-                    let imported = crate::legacy_import::source_key(root)
-                        .and_then(|key| {
-                            crate::legacy_import::import_legacy_into(
-                                &records,
-                                root,
-                                key,
-                                checkout.clone(),
-                            )
-                        })
-                        .map_err(|error| match error {
-                            crate::legacy_import::ImportError::Durability {
-                                message,
-                                checkout,
-                                records,
-                                ..
-                            } => LaunchError::ComponentSetup {
-                                source: Box::new(LaunchError::Operation(message)),
-                                record: Box::new(checkout),
-                                recovery: ui::launch::LaunchRecovery::records(records),
-                            },
-                            other => LaunchError::Operation(other.to_string()),
-                        })?;
-                    selected = imported.initial_selected;
-                }
+                selected = import_quiescent_legacy(&records, root, &checkout)?;
             }
         }
         Err(error) => return Err(LaunchError::Record(error)),
@@ -177,4 +127,64 @@ pub fn prepare_default(
         initial_view,
         runner_inputs,
     )
+}
+
+/// Import a quiescent legacy workspace at `root` into the missing canonical
+/// notebook, refusing a retired source. Returns the imported selection.
+#[allow(
+    clippy::result_large_err,
+    reason = "launch setup must preserve the recovery-bearing ComponentSetup error variant"
+)]
+fn import_quiescent_legacy(
+    records: &RecordStore,
+    root: &Path,
+    checkout: &RecordCheckout,
+) -> Result<Option<crate::model::PageId>, LaunchError> {
+    let retirement = root.join(".notes-canonical-v1");
+    match std::fs::symlink_metadata(&retirement) {
+        Ok(_) => {
+            return Err(LaunchError::Operation(
+                "this personal notebook was retired into canonical storage; relaunch with its explicit --notebook-dir and, when configured, --notebook-state-dir".into(),
+            ));
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => {
+            return Err(LaunchError::Operation(format!(
+                "{}: {error}",
+                retirement.display()
+            )));
+        }
+    }
+    let metadata_path = crate::storage::workspace_file_path(root);
+    let has_source = match std::fs::metadata(&metadata_path) {
+        Ok(_) => true,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+        Err(error) => {
+            return Err(LaunchError::Operation(format!(
+                "{}: {error}",
+                metadata_path.display()
+            )));
+        }
+    };
+    if has_source {
+        let imported = crate::legacy_import::source_key(root)
+            .and_then(|key| {
+                crate::legacy_import::import_legacy_into(records, root, key, checkout.clone())
+            })
+            .map_err(|error| match error {
+                crate::legacy_import::ImportError::Durability {
+                    message,
+                    checkout,
+                    records,
+                    ..
+                } => LaunchError::ComponentSetup {
+                    source: Box::new(LaunchError::Operation(message)),
+                    record: Box::new(checkout),
+                    recovery: ui::launch::LaunchRecovery::records(records),
+                },
+                other => LaunchError::Operation(other.to_string()),
+            })?;
+        return Ok(imported.initial_selected);
+    }
+    Ok(None)
 }

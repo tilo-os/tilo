@@ -1249,6 +1249,10 @@ impl Widget for MainPanel {
             metrics: self.scroll_metrics(),
         })
     }
+    #[expect(
+        clippy::float_cmp,
+        reason = "the clamped target is compared exactly: identical means the scroll did not move"
+    )]
     fn apply_primary_vertical_scroll(
         &mut self,
         action: ui::widget::PrimaryScrollAction,

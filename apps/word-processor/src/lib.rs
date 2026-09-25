@@ -241,6 +241,11 @@ pub fn open_document(path: &Path) -> std::io::Result<(ui::State, WordProcessorWi
 /// Open through the launch owner's retained file scope. Required history is
 /// consumed before importing the selected file; the file remains its sole
 /// local writer.
+///
+/// # Errors
+///
+/// Fails if the retained file history cannot be read, if `path` cannot be read,
+/// or if the codec for its format rejects the bytes.
 pub fn open_document_with_records(
     path: &Path,
     records: &ui::RecordSet,
@@ -1249,6 +1254,11 @@ mod tests {
 
 pub mod component;
 pub use component::definition;
+/// Initialize a checked New record as an empty Writer document.
+///
+/// # Errors
+///
+/// Never fails today; the `Result` matches the record-initializer contract.
 pub fn initialize_empty_document(doc: &mut AutoCommit) -> Result<(), String> {
     WordProcessor::initialize_empty_document(doc)
 }

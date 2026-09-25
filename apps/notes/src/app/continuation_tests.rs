@@ -69,7 +69,7 @@ fn pending() -> PendingMarkdownImport {
 
 #[test]
 fn continuation_replaced_identical_pending_import_is_a_different_job() {
-    let (doc, mut app, _) = canonical();
+    let (mut doc, mut app, _) = canonical();
     app.stage_pending_import(pending()).unwrap();
     let first = app.notes_invocation_domain(&doc);
     let bytes = doc.clone().save();
@@ -77,7 +77,7 @@ fn continuation_replaced_identical_pending_import_is_a_different_job() {
     app.stage_pending_import(pending()).unwrap();
     assert_ne!(first, app.notes_invocation_domain(&doc));
     assert_eq!(
-        doc.clone().save(),
+        doc.save(),
         bytes,
         "job identity is local, not a notebook write"
     );

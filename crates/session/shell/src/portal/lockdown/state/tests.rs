@@ -18,7 +18,7 @@ fn observer_remains_attached_when_missing_parents_under_symlink_are_created() {
     });
     watch_policy_at(path.clone(), &listener).unwrap();
     PolicyStore::at_path(&path)
-        .set_policy(Default::default())
+        .set_policy(LockdownPolicy::default())
         .unwrap();
     assert!(path.parent().unwrap().exists());
     observed.lock().unwrap().clear();
@@ -39,7 +39,7 @@ fn observer_remains_attached_when_missing_parents_under_symlink_are_created() {
         "a later durable restriction must still reach the startup observer"
     );
     PolicyStore::at_path(real.join("tilo/portal/lockdown.json"))
-        .set_policy(Default::default())
+        .set_policy(LockdownPolicy::default())
         .unwrap();
     assert_eq!(
         *observed.lock().unwrap(),
@@ -77,7 +77,7 @@ fn committed_restriction_is_delivered_before_later_relaxation() {
     });
     at_commit.recv().unwrap();
     PolicyStore::at_path(&path)
-        .set_policy(Default::default())
+        .set_policy(LockdownPolicy::default())
         .unwrap();
     release.send(()).unwrap();
     delayed.join().unwrap();
@@ -102,11 +102,11 @@ fn delayed_relaxation_notification_cannot_overtake_newer_durable_restriction() {
     let (committed, at_commit) = mpsc::channel();
     let (release, wait) = mpsc::channel();
     let delayed = std::thread::spawn(move || {
-        old.set_policy_with_hook(Default::default(), || {
+        old.set_policy_with_hook(LockdownPolicy::default(), || {
             committed.send(()).unwrap();
             wait.recv().unwrap();
         })
-        .unwrap()
+        .unwrap();
     });
     at_commit.recv().unwrap();
     let newest = PolicyStore::at_path(&path);
@@ -172,7 +172,11 @@ fn callbacks_can_inspect_current_policy_but_reentrant_mutation_is_rejected() {
     let callback_path = path.clone();
     let listener: Arc<PolicyListener> = Arc::new(move |policy| {
         assert_eq!(callback_store.policy(), *policy);
-        assert!(callback_store.set_policy(Default::default()).is_err());
+        assert!(
+            callback_store
+                .set_policy(LockdownPolicy::default())
+                .is_err()
+        );
         let nested: Arc<PolicyListener> =
             Arc::new(|_| panic!("reentrant observer must not be installed"));
         assert!(watch_policy_at(callback_path.clone(), &nested).is_err());

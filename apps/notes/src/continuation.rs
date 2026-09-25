@@ -107,8 +107,8 @@ impl BuilderDomain {
             ),
         }
     }
-    fn exact_parts(&self, arguments: ContinuationArguments<'_>) -> Option<Vec<Vec<u8>>> {
-        let text = match arguments {
+    fn exact_parts(&self, arguments: &ContinuationArguments<'_>) -> Option<Vec<Vec<u8>>> {
+        let text = match *arguments {
             ContinuationArguments::Text(value) => Some(value),
             ContinuationArguments::Json(values) => values
                 .get(tilo_actions::resource::PROMPTED_PARAM)
@@ -144,7 +144,7 @@ pub(crate) fn builder(
                 handler,
             }),
             ContinuationQuery::Exact(arguments) => {
-                domain.exact_parts(arguments).map(|mut target| {
+                domain.exact_parts(&arguments).map(|mut target| {
                     target.insert(0, version.as_bytes().to_vec());
                     ContinuationEvidence::Exact {
                         target: ContinuationKey::new("notes.continuation.target.v1", target),
@@ -180,7 +180,7 @@ pub(crate) fn fixed_target(
                     handler,
                 })
             }
-            _ => None,
+            ContinuationQuery::Exact(_) => None,
         }
     }
 }

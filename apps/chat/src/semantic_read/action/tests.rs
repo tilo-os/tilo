@@ -71,7 +71,7 @@ fn semantic_read_action_encodes_requested_capacity_and_closed_resource() {
         assert_eq!(decoded["pageSize"], page_size);
         assert!(decoded.get("heads").is_none());
     }
-    let mut wrong = resource.clone();
+    let mut wrong = resource;
     wrong.id = tilo_actions::ResourceId::new("chat.channel:two");
     assert_eq!(
         validate_request(&wrong, br#"{"channel":"one","pageSize":1,"cursor":null}"#).unwrap_err(),
@@ -130,7 +130,7 @@ fn semantic_read_action_existing_door_refuses_unqualified_read_and_json_contract
     let address = tilo_actions::ActionAddress::new("chat.channel:one", "read-messages");
     assert!(matches!(
         tilo_actions::door::encode_json(
-            &[resource.clone()],
+            std::slice::from_ref(&resource),
             &address,
             serde_json::json!({"pageSize":2}).as_object().unwrap()
         ),

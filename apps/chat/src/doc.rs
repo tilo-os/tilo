@@ -1676,6 +1676,11 @@ impl ChatDoc {
     /// string, or several `Text`s left by concurrent lazy creation — is
     /// upgraded in place to one `Text` holding exactly [`Self::draft_text`]'s
     /// projection, so offsets computed against a read stay valid for the write.
+    ///
+    /// # Panics
+    ///
+    /// Panics only if the drafts map just resolved or created here refuses a
+    /// new `Text`, which requires a corrupted document.
     #[allow(
         clippy::expect_used,
         reason = "the target is the drafts map just resolved or created in this call, so put_object cannot fail short of a corrupted document"
@@ -2936,7 +2941,7 @@ mod tests {
                 let mut b = base.fork();
                 ChatDoc::set_draft_from(&mut a, "c_crit", "", "left");
                 ChatDoc::set_draft_from(&mut b, "c_crit", "", "right");
-                a.merge(&mut b).unwrap();
+                a.merge_incoming(&mut b).unwrap();
                 let draft = ChatDoc::draft_text(&a, "c_crit");
                 assert!(
                     draft.contains("left") && draft.contains("right"),
@@ -2959,7 +2964,7 @@ mod tests {
         let mut b = a.fork();
         // B appends while A's composer still shows "hello".
         ChatDoc::set_draft_from(&mut b, "c_crit", "hello", "hello world");
-        a.merge(&mut b).unwrap();
+        a.merge_incoming(&mut b).unwrap();
         // A capitalises against its stale base; B's characters must survive.
         ChatDoc::set_draft_from(&mut a, "c_crit", "hello", "Hello");
         assert_eq!(ChatDoc::draft_text(&a, "c_crit"), "Hello world");
@@ -2967,7 +2972,7 @@ mod tests {
         let mut c = a.fork();
         ChatDoc::set_draft_from(&mut a, "c_crit", "Hello world", "Hello, world");
         ChatDoc::set_draft_from(&mut c, "c_crit", "Hello world", "Hello world!");
-        a.merge(&mut c).unwrap();
+        a.merge_incoming(&mut c).unwrap();
         assert_eq!(ChatDoc::draft_text(&a, "c_crit"), "Hello, world!");
     }
 
@@ -2991,7 +2996,7 @@ mod tests {
                 let mut b = base.fork();
                 ChatDoc::push_message_with_id(&mut a, channel, "m_left", msg("left", NOW));
                 ChatDoc::push_message_with_id(&mut b, channel, "m_right", msg("right", NOW + 1));
-                a.merge(&mut b).unwrap();
+                a.merge_incoming(&mut b).unwrap();
                 let mut texts: Vec<String> = ChatDoc::list_messages(&a, channel)
                     .into_iter()
                     .map(|m| m.text)
@@ -3016,7 +3021,7 @@ mod tests {
             let mut b = base.fork();
             ChatDoc::set_read_watermark(&mut a, "c_crit", "u_a", 3);
             ChatDoc::set_read_watermark(&mut b, "c_crit", "u_b", 5);
-            a.merge(&mut b).unwrap();
+            a.merge_incoming(&mut b).unwrap();
             assert_eq!(ChatDoc::read_watermark(&a, "c_crit", "u_a"), 3);
             assert_eq!(ChatDoc::read_watermark(&a, "c_crit", "u_b"), 5);
         }
@@ -3039,14 +3044,14 @@ mod tests {
                 );
                 let text = format!("m{n:04} hello");
                 ChatDoc::set_draft_from(&mut a, "c_crit", &shown, &text);
-                b.merge(&mut a).unwrap();
-                a.merge(&mut b).unwrap();
+                b.merge_incoming(&mut a).unwrap();
+                a.merge_incoming(&mut b).unwrap();
                 let draft = ChatDoc::draft_text(&a, "c_crit");
                 assert_eq!(draft, text);
                 ChatDoc::push_message(&mut a, "c_crit", msg(&draft, NOW + n));
                 ChatDoc::clear_draft(&mut a, "c_crit");
-                b.merge(&mut a).unwrap();
-                a.merge(&mut b).unwrap();
+                b.merge_incoming(&mut a).unwrap();
+                a.merge_incoming(&mut b).unwrap();
                 shown = ChatDoc::draft_text(&a, "c_crit");
                 assert_eq!(shown, "", "send {n} consumes the draft");
                 assert_eq!(

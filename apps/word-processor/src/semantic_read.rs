@@ -43,6 +43,11 @@ fn compare(order: &[u8], id: &str, other_order: &[u8], other_id: &str) -> Orderi
     qdoc::order::cmp_keys(order, other_order).then(id.cmp(other_id))
 }
 /// Root-record convenience projection; the owner still supplies/stamps the canonical record route.
+///
+/// # Errors
+///
+/// Returns a [`ReadError`] when the document has pending operations, the cursor
+/// is stale or invalid for this basis, or the page exceeds its limits.
 pub fn read_text(
     doc: &AutoCommit,
     owner_heads: &[automerge::ChangeHash],
@@ -52,8 +57,13 @@ pub fn read_text(
     read_text_at(doc, owner_heads, &ROOT, cursor, limits)
 }
 /// One order scan retains only the next requested number of blocks plus one lookahead.
-/// Invalid order rows are skipped exactly as qdoc::model::blocks_in_order does; valid oversized
+/// Invalid order rows are skipped exactly as `qdoc::model::blocks_in_order` does; valid oversized
 /// metadata or exhausted scan work refuses the page rather than silently dropping content.
+///
+/// # Errors
+///
+/// Returns a [`ReadError`] when the document has pending operations, the cursor
+/// is stale or invalid for this basis, or the page exceeds its limits.
 pub fn read_text_at(
     doc: &AutoCommit,
     owner_heads: &[automerge::ChangeHash],
@@ -65,6 +75,10 @@ pub fn read_text_at(
     let root = source.legacy_object(root)?;
     read_source(&source, &root, cursor, limits)
 }
+#[expect(
+    clippy::too_many_lines,
+    reason = "one bounded page scan; cursor, lookahead and limit accounting share its state"
+)]
 fn read_source<'doc>(
     source: &Source<'_, 'doc, '_>,
     root: &Object<'doc>,

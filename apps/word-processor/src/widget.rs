@@ -1190,6 +1190,10 @@ struct StagedOverlays {
     toolbar_overflow: bool,
 }
 
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "independent per-window UI flags; grouping them would not form a state machine"
+)]
 pub struct WordProcessorWidget {
     inner: WordProcessor,
     rect: Rect,
@@ -1443,6 +1447,10 @@ impl Default for WordProcessorWidget {
 
 impl WordProcessorWidget {
     /// Construct from the canonical record; this performs no document writes.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the document does not carry the Writer schema.
     pub fn from_document(state: &AutoCommit) -> Result<Self, String> {
         let mut widget = Self::new();
         widget.inner = WordProcessor::from_document(state)?;
@@ -1460,6 +1468,10 @@ impl WordProcessorWidget {
         OUTLINE_PANEL_W * self.text_scale
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "field-by-field initialization of the whole widget state"
+    )]
     pub fn new() -> Self {
         Self {
             inner: WordProcessor::new(),
@@ -1724,7 +1736,7 @@ impl WordProcessorWidget {
                 for action in &envelopes {
                     self.perform_action(state, action);
                 }
-                self.adopt_local_view(next, state);
+                self.adopt_local_view(&next, state);
                 true
             }
         }
@@ -1735,7 +1747,7 @@ impl WordProcessorWidget {
     /// The Find bar keeps its own state.
     fn adopt_local_view(
         &mut self,
-        next: crate::actions::participant::ParticipantView,
+        next: &crate::actions::participant::ParticipantView,
         state: &AutoCommit,
     ) {
         let next = next.settle(state);
@@ -1773,7 +1785,7 @@ impl WordProcessorWidget {
         let view = self.local_edit_view();
         let (_, next) = crate::actions::view_ops::apply(&view, state, operation)
             .map_err(|error| error.to_string())?;
-        self.adopt_local_view(next, state);
+        self.adopt_local_view(&next, state);
         Ok(())
     }
 
@@ -1813,7 +1825,7 @@ impl WordProcessorWidget {
             return Err(format!("{type_id} is not a participant view operation"));
         };
         let (_, next) = outcome.map_err(|error| error.to_string())?;
-        self.set_participant_view(participant, next, doc);
+        self.set_participant_view(&participant, &next, doc);
         Ok(())
     }
 
@@ -2043,6 +2055,14 @@ impl WordProcessorWidget {
 
     /// Backspace/Delete are expressed as absolute splices or one cross-block
     /// replacement action. Selection/caret motion remains presentation-local.
+    /// Characters in the projected block `id`, or 0 when it is not projected.
+    fn block_char_len(&self, id: &str) -> usize {
+        self.blocks
+            .iter()
+            .find(|entry| entry.id == id)
+            .map_or(0, |entry| entry.text.chars().count())
+    }
+
     fn delete_via_action(&mut self, state: &mut AutoCommit, backward: bool) {
         let direction = if backward {
             crate::actions::editing::DeleteDirection::Backward
@@ -2064,11 +2084,7 @@ impl WordProcessorWidget {
         let Some(index) = blocks.iter().position(|id| id == &caret.block) else {
             return;
         };
-        let len = self
-            .blocks
-            .iter()
-            .find(|entry| entry.id == caret.block)
-            .map_or(0, |entry| entry.text.chars().count());
+        let len = self.block_char_len(&caret.block);
         if backward
             && caret.offset == 0
             && self
@@ -2115,11 +2131,7 @@ impl WordProcessorWidget {
             let Some(previous) = blocks.get(index.saturating_sub(1)).cloned() else {
                 return;
             };
-            let previous_len = self
-                .blocks
-                .iter()
-                .find(|entry| entry.id == previous)
-                .map_or(0, |entry| entry.text.chars().count());
+            let previous_len = self.block_char_len(&previous);
             self.perform_action(
                 state,
                 &crate::actions::replace_selection_action(
@@ -2271,8 +2283,8 @@ impl WordProcessorWidget {
     /// written into the document. The map stays bounded (LRU, idle TTL).
     pub fn set_participant_view(
         &mut self,
-        participant: tilo_actions::ParticipantId,
-        view: crate::actions::participant::ParticipantView,
+        participant: &tilo_actions::ParticipantId,
+        view: &crate::actions::participant::ParticipantView,
         doc: &AutoCommit,
     ) {
         self.participants
@@ -2353,7 +2365,7 @@ impl WordProcessorWidget {
             self.lifecycle.needs_commit = true;
             self.save_status = DocumentSaveStatus::Modified;
         }
-        self.set_participant_view(participant, view, state);
+        self.set_participant_view(&participant, &view, state);
         Ok(())
     }
 
@@ -3055,30 +3067,28 @@ impl WordProcessorWidget {
                     return;
                 }
                 if let Some(invocation) = self.resource_file_invocation.take() {
-                    {
-                        let update = match result {
-                            Ok(()) => tilo_actions::InvocationUpdate::Succeeded {
+                    let update = match result {
+                        Ok(()) => tilo_actions::InvocationUpdate::Succeeded {
+                            invocation,
+                            output: tilo_actions::ActionOutput::default(),
+                        },
+                        Err(message) if message == "file picker was cancelled" => {
+                            tilo_actions::InvocationUpdate::Cancelled {
                                 invocation,
-                                output: tilo_actions::ActionOutput::default(),
-                            },
-                            Err(message) if message == "file picker was cancelled" => {
-                                tilo_actions::InvocationUpdate::Cancelled {
-                                    invocation,
-                                    message: Some(message),
-                                }
+                                message: Some(message),
                             }
-                            Err(message) => tilo_actions::InvocationUpdate::Failed {
-                                invocation,
-                                error: tilo_actions::ActionFailure {
-                                    code: "word_processor.file_operation_failed".into(),
-                                    message,
-                                    details: None,
-                                    retryable: false,
-                                },
+                        }
+                        Err(message) => tilo_actions::InvocationUpdate::Failed {
+                            invocation,
+                            error: tilo_actions::ActionFailure {
+                                code: "word_processor.file_operation_failed".into(),
+                                message,
+                                details: None,
+                                retryable: false,
                             },
-                        };
-                        self.finish_file_operation(update);
+                        },
                     };
+                    self.finish_file_operation(update);
                 }
             }
             // Still open (Empty) — leave the channel in place; a hangup
@@ -3095,18 +3105,16 @@ impl WordProcessorWidget {
                     return;
                 }
                 if let Some(invocation) = self.resource_file_invocation.take() {
-                    {
-                        let update = tilo_actions::InvocationUpdate::Failed {
-                            invocation,
-                            error: tilo_actions::ActionFailure {
-                                code: "word_processor.portal_worker_lost".into(),
-                                message: "file picker stopped without returning a result".into(),
-                                details: None,
-                                retryable: false,
-                            },
-                        };
-                        self.finish_file_operation(update);
+                    let update = tilo_actions::InvocationUpdate::Failed {
+                        invocation,
+                        error: tilo_actions::ActionFailure {
+                            code: "word_processor.portal_worker_lost".into(),
+                            message: "file picker stopped without returning a result".into(),
+                            details: None,
+                            retryable: false,
+                        },
                     };
+                    self.finish_file_operation(update);
                 }
             }
         }
@@ -5119,6 +5127,10 @@ impl WordProcessorWidget {
     /// Flip toggles, crop controls, and placement controls. Registers its controls
     /// as `panel_hits` so pointer and assistive-technology activation share one
     /// dispatch path.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one immediate-mode paint pass for the image inspector panel"
+    )]
     fn draw_image_inspector(
         &mut self,
         scene: &mut Scene,
@@ -6363,6 +6375,10 @@ impl WordProcessorWidget {
     /// Chrome bands above the canvas — toolbar, recovery banner, Find bar,
     /// ruler — plus the canvas/page geometry they reserve around. The first
     /// pass of [`Self::draw`].
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one immediate-mode paint pass for the window chrome"
+    )]
     fn draw_frame_chrome(
         &mut self,
         scene: &mut Scene,
@@ -7718,6 +7734,10 @@ impl WordProcessorWidget {
     /// spell-check squiggles, footnote superscripts) and the caret for every
     /// laid item. Collects the footnote/comment/change-card bookkeeping that
     /// the passes after this one render.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one immediate-mode paint pass for a page's content"
+    )]
     fn draw_page_content(
         &mut self,
         scene: &mut Scene,
@@ -9916,6 +9936,10 @@ impl Widget for WordProcessorWidget {
         })
     }
 
+    #[expect(
+        clippy::float_cmp,
+        reason = "the clamped target is compared exactly: identical means the scroll did not move"
+    )]
     fn apply_primary_vertical_scroll(
         &mut self,
         action: ui::widget::PrimaryScrollAction,
@@ -10512,6 +10536,10 @@ impl Widget for WordProcessorWidget {
         self.draw_layout_bar(scene, transform, text_renderer, theme, lbar);
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the widget's single winit event dispatch"
+    )]
     fn handle_event(
         &mut self,
         event: &WindowEvent,
@@ -10754,7 +10782,7 @@ impl Widget for WordProcessorWidget {
                 );
             }
             WindowEvent::Ime(winit::event::Ime::Preedit(text, _)) => {
-                self.ime_preedit = text.clone();
+                self.ime_preedit.clone_from(text);
                 self.lifecycle.dirty = true;
                 *handled = true;
             }
@@ -10917,6 +10945,10 @@ impl Widget for WordProcessorWidget {
         Some(tree.into_access_node())
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one flat semantic action dispatch mirroring the pointer hit inventory"
+    )]
     fn perform_action_at(
         &mut self,
         action: &ui::a11y::Action,
@@ -11142,14 +11174,11 @@ impl Widget for WordProcessorWidget {
         // through the command path) resolves against this widget's own view,
         // as before participant views; the declaration-only schema is never
         // invocable.
-        match ui::invocation_scope::current_invoker() {
-            Some(invoker) => {
-                return match invoker.participant {
-                    Some(participant) => self.participant_resources(Some(&participant), doc),
-                    None => <Self as tilo_actions::ResourceProvider>::resources(self, doc),
-                };
-            }
-            None => {}
+        if let Some(invoker) = ui::invocation_scope::current_invoker() {
+            return match invoker.participant {
+                Some(participant) => self.participant_resources(Some(&participant), doc),
+                None => <Self as tilo_actions::ResourceProvider>::resources(self, doc),
+            };
         }
         // Publication on a headless host worker (no local person): the
         // participant-independent schema, not the worker caret's snapshot.
@@ -11175,9 +11204,6 @@ impl Widget for WordProcessorWidget {
         doc: &AutoCommit,
         id: &str,
     ) -> Option<tilo_actions::Resource> {
-        let Some(participant) = participant else {
-            return Widget::resource(self, doc, id);
-        };
         fn find(
             resources: Vec<tilo_actions::Resource>,
             id: &str,
@@ -11190,6 +11216,9 @@ impl Widget for WordProcessorWidget {
                 }
             })
         }
+        let Some(participant) = participant else {
+            return Widget::resource(self, doc, id);
+        };
         find(self.participant_resources(Some(participant), doc), id)
     }
     /// An agent task joined: its view is placed at the document end on the
@@ -11302,6 +11331,10 @@ impl WordProcessorWidget {
     /// Draw the expanded, durable comment thread above the inline margin
     /// anchor. The panel is on-demand, retaining the compact canvas as the
     /// primary surface while keeping each persisted reply visible and usable.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one immediate-mode paint pass for a comment thread"
+    )]
     fn draw_comment_thread(
         &mut self,
         scene: &mut Scene,
@@ -12421,7 +12454,7 @@ impl WordProcessorWidget {
             for action in &envelopes {
                 self.perform_action(state, action);
             }
-            self.adopt_local_view(next, state);
+            self.adopt_local_view(&next, state);
             return;
         }
         let blocks = text

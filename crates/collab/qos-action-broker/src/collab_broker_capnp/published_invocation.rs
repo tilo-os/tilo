@@ -7,10 +7,10 @@ use ui::invocation_scope::{
 
 #[derive(Clone)]
 pub(super) enum InvocationCaller {
-    Certified(VerifiedActionCaller),
+    Certified(Box<VerifiedActionCaller>),
     Local {
         route: CrdtRoute,
-        admitted: AdmittedJoinIdentity,
+        admitted: Box<AdmittedJoinIdentity>,
     },
     Enrolled(crate::enrolled_dispatch::VerifiedEnrolledDispatch),
 }
@@ -100,6 +100,11 @@ impl OriginalInvocation {
     pub fn policy_time(&self) -> &crate::peer_actions::PolicyTime {
         &self.data.time
     }
+    /// The original caller's device certificate.
+    ///
+    /// # Errors
+    ///
+    /// Returns a message when the original caller carried no certificate.
     pub fn certificate(&self) -> Result<&tilo_user_identity::DeviceCert, String> {
         match &self.data.caller {
             // A network caller's verified device certificate is its signed
@@ -109,7 +114,7 @@ impl OriginalInvocation {
                     caller
                         .network
                         .as_ref()
-                        .map(|evidence| evidence.certificate())
+                        .map(tilo_relay::client::CertifiedAction::certificate)
                 })
             }
             InvocationCaller::Local { admitted, .. } => admitted.certificate.as_ref(),
@@ -132,6 +137,10 @@ impl OriginalInvocation {
     }
     /// Pure custody check: no owner callback, workspace snapshot or Store open.
     /// Its returned sample belongs to the original registered clock and origin.
+    ///
+    /// # Errors
+    ///
+    /// Returns a message when the broker, worker, certificate, task custody or clock lapsed.
     pub fn check_custody(&self) -> Result<u64, String> {
         let now = self.data.time.now_ns().map_err(|error| error.to_string())?;
         let state = self
@@ -145,14 +154,15 @@ impl OriginalInvocation {
             .host_workers
             .lock()
             .map_err(|_| "worker registry unavailable")?;
-        if workers
+        let same_worker = workers
             .get(&self.peer)
             .and_then(|entry| entry.worker_registration.as_ref())
-            != Some(&self.worker)
-        {
+            == Some(&self.worker);
+        drop(workers);
+        drop(state);
+        if !same_worker {
             return Err("original invocation worker connection retired or replaced".into());
         }
-        drop(workers);
         tilo_user_identity::verify_device_cert_at(self.certificate()?, now)
             .map_err(|_| "original invocation certificate expired")?;
         if let InvocationCaller::Enrolled(dispatch) = &self.data.caller {
@@ -160,6 +170,10 @@ impl OriginalInvocation {
         }
         self.data.time.now_ns().map_err(|error| error.to_string())
     }
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one ordered custody, admission, caller and permission recheck with its timing marks"
+    )]
     fn check_lifecycle(&self) -> Result<(), String> {
         let began = std::time::Instant::now();
         self.check_custody()?;
@@ -180,12 +194,12 @@ impl OriginalInvocation {
             return Err("original worker connection replaced".into());
         }
         // Current certificate policy may open Store; the registry lock is gone.
-        let stage = std::time::Instant::now();
+        let mark = std::time::Instant::now();
         state
             .revalidate_admission(&self.worker.route, &admitted)
             .map_err(|error| error.to_string())?;
-        let worker_us = crate::agent_timing::us(stage);
-        let stage = std::time::Instant::now();
+        let worker_us = crate::agent_timing::us(mark);
+        let mark = std::time::Instant::now();
         match &self.data.caller {
             InvocationCaller::Certified(caller) => {
                 state.current_action_caller(caller)?;
@@ -203,14 +217,15 @@ impl OriginalInvocation {
                 &self.data.time,
             )?,
         }
-        let caller_us = crate::agent_timing::us(stage);
-        let stage = std::time::Instant::now();
+        let caller_us = crate::agent_timing::us(mark);
+        let mark = std::time::Instant::now();
         let tree = state
             .membership
             .as_ref()
             .ok_or("workspace authority unavailable")?
             .snapshot()?;
-        let membership_us = crate::agent_timing::us(stage);
+        drop(state);
+        let membership_us = crate::agent_timing::us(mark);
         let workspace = tree
             .workspaces
             .iter()
@@ -254,7 +269,7 @@ impl OriginalInvocation {
         crate::agent_timing::slow(
             "lease_check",
             self.enrolled_dispatch()
-                .map(|dispatch| dispatch.invocation()),
+                .map(crate::enrolled_dispatch::VerifiedEnrolledDispatch::invocation),
             began,
             &[
                 ("custody_us", custody_us),
@@ -269,6 +284,10 @@ impl OriginalInvocation {
 impl CapnpBrokerState {
     /// Allocate the actual socket and its opaque host-local callback together.
     /// A second socket with an equal route/certificate gets a different token.
+    ///
+    /// # Errors
+    ///
+    /// Returns a message when the broker refuses the worker connection.
     pub fn connect_local_worker_with_authorizer(
         self: &Arc<Self>,
         route: CrdtRoute,
@@ -292,13 +311,15 @@ impl CapnpBrokerState {
         let authorize = Arc::new(move |request: &PublishedInvocationRequest| -> Result<PublishedInvocationLease, String> {
             let state = broker.upgrade().ok_or("original invocation broker retired")?;
             let (peer, data) = {
-                let pending = state.pending_invocations.lock().map_err(|_| "invocation registry unavailable")?;
-                let pending = pending.get(&request.wire_id).ok_or("original invocation is not retained")?;
+                let registry = state.pending_invocations.lock().map_err(|_| "invocation registry unavailable")?;
+                let pending = registry.get(&request.wire_id).ok_or("original invocation is not retained")?;
                 let data = pending.original.clone().ok_or("original invocation authority was not captured")?;
                 if data.request != *request || data.route != worker.route || pending.update.invocation() != request.invocation {
                     return Err("delivered invocation differs from original request or worker route".into());
                 }
-                (pending.peer_id, data)
+                let peer = pending.peer_id;
+                drop(registry);
+                (peer, data)
             };
             let original = Arc::new(OriginalInvocation { broker: broker.clone(), peer, worker: worker.clone(), data });
             original.check_lifecycle()?;

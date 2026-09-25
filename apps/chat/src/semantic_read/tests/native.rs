@@ -113,7 +113,8 @@ fn semantic_native_chat_refuses_work_memory_and_preserves_guard_after_seal() {
         read_messages_native(&read, "one", None, limits(1)),
         Err(ReadError::Resource(NativeResourceError::WorkBytes))
     ));
-    drop(read);
+    // `read` borrows `turn` and holds no resources of its own; ending the turn
+    // leaves the page's retained credit as the only owner.
     drop(turn);
     assert_eq!(page.page().messages[0].text, "hello");
     let retained = current.retained_bytes();

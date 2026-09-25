@@ -1,6 +1,7 @@
 include!("../../../crates/sdk/ui-core/tests/support/history_adapter_conformance.rs");
 
 use automerge::{ObjType, ScalarValue, Value};
+use tilo_automerge::ApplyIncoming as _;
 use ui::widget::Widget;
 
 fn test_root() -> Box<dyn Widget> {
@@ -212,7 +213,7 @@ fn compatible_unknown_objects_lists_and_scalars_restore_exactly() {
     let restored_create = doc.get(&restored_view, "create").unwrap().unwrap().1;
     let restored_future = doc.get(&restored_create, "future").unwrap().unwrap().1;
     let restored_list = doc.get(&restored_future, "values").unwrap().unwrap().1;
-    let mut restored_deep = restored_future.clone();
+    let mut restored_deep = restored_future;
     for _ in 0..40 {
         restored_deep = doc.get(&restored_deep, "next").unwrap().unwrap().1;
     }
@@ -345,7 +346,7 @@ fn wrong_map_types_and_true_concurrent_field_conflict_refuse_without_writes() {
     let right_view = right.get(ROOT, "view").unwrap().unwrap().1;
     let right_create = right.get(&right_view, "create").unwrap().unwrap().1;
     right.put(&right_create, "image", "right scalar").unwrap();
-    left.merge(&mut right).unwrap();
+    left.merge_incoming(&mut right).unwrap();
     assert_eq!(left.get_all(&left_create, "image").unwrap().len(), 2);
     let heads = left.get_heads();
     let pending = left.pending_ops();
@@ -681,6 +682,10 @@ fn managed_history_retains_public_palette_prompt_confirm_and_pull_overlays() {
 }
 
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one managed-history scenario proving every retained private surface"
+)]
 fn managed_history_retains_private_instances_scroll_engine_intent_and_channels() {
     let (mut doc, selected, _) = fixture();
     crate::doc::ViewDoc::set_section(&mut doc, crate::doc::Section::Containers);
@@ -1043,6 +1048,10 @@ fn control_custody_containers_unreachable_private_route_seals_e_and_discards_h()
 }
 
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one managed-history scenario proving every retained private surface"
+)]
 fn control_custody_containers_mounted_callbacks_suppress_hidden_and_semantic_f_is_confirmed_once() {
     let (mut doc, selected, _) = fixture();
     crate::doc::ViewDoc::set_selected(&mut doc, Some("armed-container"));

@@ -2291,6 +2291,10 @@ fn trackpad_pinch_zooms_smoothly_and_keeps_the_reading_position() {
 /// so the Writer selected by the host can receive it instead. When a
 /// non-Writer owns focus neither retained Writer may consume or mutate it.
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one scenario covering pinch and Ctrl+wheel across focused and unfocused Writers"
+)]
 fn pinch_and_ctrl_wheel_only_zoom_the_host_focused_writer() {
     use winit::{
         dpi::PhysicalPosition,
@@ -3721,6 +3725,22 @@ fn multi_block_typing_dispatches_one_replace_selection_action() {
 #[test]
 fn shared_clipboard_preserves_rich_paste_and_plain_paste_semantics() {
     const CHILD: &str = "TILO_WRITER_CLIPBOARD_TEST_CHILD";
+    #[derive(Default)]
+    struct TestClipboard(std::sync::Mutex<Option<String>>);
+    impl ui::clipboard::ClipboardBackend for TestClipboard {
+        fn set_text(&self, _: ui::clipboard::ClipboardTarget, text: &str) -> bool {
+            *self.0.lock().unwrap() = Some(text.to_string());
+            true
+        }
+
+        fn text(&self, _: ui::clipboard::ClipboardTarget) -> Option<String> {
+            self.0.lock().unwrap().clone()
+        }
+
+        fn name(&self) -> &'static str {
+            "writer-clipboard-test"
+        }
+    }
     if std::env::var_os(CHILD).is_none() {
         let output = std::process::Command::new(std::env::current_exe().unwrap())
             .args([
@@ -3742,22 +3762,6 @@ fn shared_clipboard_preserves_rich_paste_and_plain_paste_semantics() {
         return;
     }
 
-    #[derive(Default)]
-    struct TestClipboard(std::sync::Mutex<Option<String>>);
-    impl ui::clipboard::ClipboardBackend for TestClipboard {
-        fn set_text(&self, _: ui::clipboard::ClipboardTarget, text: &str) -> bool {
-            *self.0.lock().unwrap() = Some(text.to_string());
-            true
-        }
-
-        fn text(&self, _: ui::clipboard::ClipboardTarget) -> Option<String> {
-            self.0.lock().unwrap().clone()
-        }
-
-        fn name(&self) -> &'static str {
-            "writer-clipboard-test"
-        }
-    }
     let services = ui::host::HostServices::null()
         .with_clipboard(std::sync::Arc::new(TestClipboard::default()));
     let _host = ui::host::enter(&services);
@@ -6296,7 +6300,7 @@ fn a_named_peers_caret_is_labelled_with_their_name() {
     );
 }
 
-/// A LIVE_V1 caret whose block id is too long for the 64-byte anchor arrives
+/// A `LIVE_V1` caret whose block id is too long for the 64-byte anchor arrives
 /// under the digest stand-in key; the widget resolves it to its own block, so
 /// agent-written (130-byte id) paragraphs still show carets and selections.
 #[test]
@@ -7010,7 +7014,7 @@ fn tile_host_preserves_completed_direct_open_result_across_record_intent_release
         .set_base_dir(directory.join("recovery"));
     let mut tile =
         ui::widget::TileHost::new(ui::widget::TileContent::App(Box::new(word_processor)));
-    tile.bind_record(store.clone(), first.clone());
+    tile.bind_record(store.clone(), first);
     let mut outer = AutoCommit::new();
     tile.sync(&mut outer, &automerge::ROOT);
     store

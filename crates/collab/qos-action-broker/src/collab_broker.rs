@@ -93,11 +93,18 @@ impl RoomSubscription {
     }
 }
 
+impl Default for FanoutState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl FanoutState {
     #[cfg(any(test, feature = "test-support"))]
     pub fn set_peer_counter_for_test(&self, value: u64) {
         self.peer_id_counter.store(value, Ordering::Relaxed);
     }
+    #[must_use]
     pub fn new() -> Self {
         Self {
             stopped: AtomicBool::new(false),
@@ -137,6 +144,14 @@ impl FanoutState {
     /// Mint the next typed connection id, reserving zero for the broker root
     /// and `u64::MAX` for the current-connection sentinel. The counter itself
     /// remains the number of accepted connections, including before the first.
+    ///
+    /// # Panics
+    ///
+    /// Panics once `u64::MAX - 1` connections were accepted.
+    #[expect(
+        clippy::expect_used,
+        reason = "exhausting a 64-bit connection counter cannot happen within one process"
+    )]
     pub fn next_peer_id(&self) -> u64 {
         let previous = self
             .peer_id_counter
@@ -144,7 +159,8 @@ impl FanoutState {
                 count.checked_add(1).filter(|next| *next < u64::MAX)
             })
             .expect("application peer id space exhausted");
-        previous + 1
+        // `fetch_update` only stored `previous + 1` when it stayed below `u64::MAX`.
+        previous.saturating_add(1)
     }
 
     /// How many typed connections this broker has ever accepted. Read as a
@@ -276,6 +292,11 @@ impl AppActionBroker {
             .unwrap_or(false)
     }
 
+    /// Installs one admitted managed connection for `caller`.
+    ///
+    /// # Errors
+    ///
+    /// Returns a message when the broker stopped or the connection is not admissible.
     pub fn install_enrolled_connection(
         &self,
         connection: launcher::managed::channel::AdmittedManagedConnection,
@@ -284,6 +305,11 @@ impl AppActionBroker {
         self.state
             .while_live(|state| state.install_enrolled_connection(connection, caller))
     }
+    /// Dispatches one enrolled task envelope for `caller`.
+    ///
+    /// # Errors
+    ///
+    /// Returns a message when the broker stopped or the task cannot be dispatched.
     pub fn dispatch_enrolled_task(
         &self,
         invocation: uuid::Uuid,
@@ -294,6 +320,10 @@ impl AppActionBroker {
             .while_live(|state| state.dispatch_enrolled_task(invocation, caller, envelope))
     }
     /// See [`crate::collab_broker_capnp::CapnpBrokerState::install_fixture_enrolled_connection`].
+    ///
+    /// # Errors
+    ///
+    /// Returns a message when the broker stopped or the fixture connection is refused.
     #[cfg(any(test, feature = "test-support"))]
     pub fn install_fixture_enrolled_connection(
         &self,
@@ -304,6 +334,11 @@ impl AppActionBroker {
         self.state
             .while_live(|state| state.install_fixture_enrolled_connection(process, stream, caller))
     }
+    /// Binds one child invocation of an accepted enrolled dispatch.
+    ///
+    /// # Errors
+    ///
+    /// Returns a message when the broker stopped or the child action is not bindable.
     pub fn enrolled_child_binding(
         &self,
         dispatch: &crate::enrolled_dispatch::VerifiedEnrolledDispatch,
@@ -314,6 +349,11 @@ impl AppActionBroker {
         self.state
             .while_live(|state| state.enrolled_child_binding(dispatch, peer, resource, action))
     }
+    /// Invokes one bound child action of an accepted enrolled dispatch.
+    ///
+    /// # Errors
+    ///
+    /// Returns a message when the broker stopped or the child invocation is refused.
     pub fn invoke_enrolled_child(
         &self,
         dispatch: &crate::enrolled_dispatch::VerifiedEnrolledDispatch,
@@ -322,6 +362,11 @@ impl AppActionBroker {
         self.state
             .while_live(|state| state.invoke_enrolled_child(dispatch, request))
     }
+    /// Observes the retained result of one child invocation.
+    ///
+    /// # Errors
+    ///
+    /// Returns a message when the broker stopped or the owner may not observe it.
     pub fn observe_enrolled_child(
         &self,
         owner: &crate::collab_broker_capnp::EnrolledChildOwner,
@@ -331,11 +376,15 @@ impl AppActionBroker {
         self.state
             .while_live(|state| state.observe_enrolled_child(owner, host, invocation))
     }
-    /// The live dispatch witness of an accepted enrolled task on `channel`.
     /// Owner revocation: close every enrolled connection of `agent`.
     pub fn close_enrolled_agent(&self, agent: &str) -> usize {
         self.state.close_enrolled_agent(agent)
     }
+    /// The live dispatch witness of an accepted enrolled task on `channel`.
+    ///
+    /// # Errors
+    ///
+    /// Returns a message when the broker stopped or no such accepted task is live.
     pub fn enrolled_task_dispatch(
         &self,
         channel: &str,
@@ -376,7 +425,7 @@ impl AppActionBroker {
     }
 
     /// Bounded, nonblocking bridge from shell chrome into the broker's
-    /// LocalSet-owned application directory capabilities. Palette code must
+    /// `LocalSet`-owned application directory capabilities. Palette code must
     /// poll the returned oneshot in its cache owner; it must never block a
     /// compositor frame on a Cap'n Proto RPC.
     #[must_use]
@@ -391,6 +440,10 @@ impl AppActionBroker {
     }
 
     /// Reusable native broker attachment for an ordinary standalone peer.
+    ///
+    /// # Errors
+    ///
+    /// Returns a message when the broker stopped or has no invocation host.
     pub fn peer_action_attachment(
         &self,
     ) -> Result<(crate::peer_actions::PeerActionQueue, uuid::Uuid), String> {
@@ -630,6 +683,10 @@ pub struct BrokerHandle {
 }
 impl BrokerHandle {
     /// Observe current private host-worker provenance for a native publication.
+    ///
+    /// # Errors
+    ///
+    /// Returns a message when the live broker cannot evaluate the provenance.
     pub fn is_current_host_worker(
         &self,
         peer: u64,
@@ -642,6 +699,11 @@ impl BrokerHandle {
         }
     }
 
+    /// Connects one local host worker for `route` under `certificate`.
+    ///
+    /// # Errors
+    ///
+    /// Returns a message when the broker is unavailable or refuses the worker.
     pub fn connect_local_worker(
         &self,
         route: CrdtRoute,
@@ -653,6 +715,11 @@ impl BrokerHandle {
             .connect_local_worker(route, certificate)
     }
 
+    /// Connects one local host worker together with its published-invocation authorizer.
+    ///
+    /// # Errors
+    ///
+    /// Returns a message when the broker is unavailable or refuses the worker.
     pub fn connect_local_worker_with_authorizer(
         &self,
         route: CrdtRoute,
@@ -818,6 +885,10 @@ fn join_owned_thread(thread: JoinHandle<()>, identity: Option<usize>) {
     }
 }
 /// Start the production broker with explicit host-owned authority and services.
+///
+/// # Errors
+///
+/// Returns an I/O error when the broker socket or thread cannot be set up.
 pub fn spawn_with_services(
     socket: PathBuf,
     membership: Option<crate::services::WorkspaceAuthorityHandle>,
@@ -833,7 +904,15 @@ pub fn spawn_with_services(
 }
 
 /// Native compatibility fixtures only; production callers inject current authority.
+///
+/// # Errors
+///
+/// Returns an I/O error when the broker socket or thread cannot be set up.
 #[cfg(any(test, feature = "test-support"))]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "fixture twin of spawn_with_services that also injects trusted devices"
+)]
 pub fn spawn_with_test_services(
     socket: PathBuf,
     membership: Option<crate::services::WorkspaceAuthorityHandle>,
@@ -856,6 +935,10 @@ pub fn spawn_with_test_services(
     )
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the single constructor behind the production and fixture spawn entry points"
+)]
 fn spawn_inner(
     socket: PathBuf,
     membership: Option<crate::services::WorkspaceAuthorityHandle>,
@@ -868,7 +951,7 @@ fn spawn_inner(
 ) -> std::io::Result<BrokerHandle> {
     let quit = Arc::new(AtomicBool::new(false));
     let thread = crate::collab_broker_capnp::spawn_configured(
-        socket.clone(),
+        &socket,
         &fanout,
         channels.clone(),
         publisher,
@@ -890,14 +973,33 @@ fn spawn_inner(
 }
 
 /// Ordinary peer production constructor. All trust and durability belong to the caller's owner.
+///
+/// # Errors
+///
+/// Returns an I/O error when the publisher is not wired or the broker cannot start.
 pub fn spawn_native_peer(
     socket: PathBuf,
     membership: crate::services::WorkspaceAuthorityHandle,
     publisher: Arc<crate::collab_outbound::PeerPublisher>,
     config: crate::peer_actions::NativePeerBrokerConfig,
 ) -> std::io::Result<BrokerHandle> {
-    spawn_native_peer_with_services(socket, membership, publisher, config, Default::default())
+    spawn_native_peer_with_services(
+        socket,
+        membership,
+        publisher,
+        config,
+        crate::services::HostServices::default(),
+    )
 }
+/// [`spawn_native_peer`] with explicit host services.
+///
+/// # Errors
+///
+/// Returns an I/O error when the publisher is not wired or the broker cannot start.
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "public constructor contract: callers hand over their configuration"
+)]
 pub fn spawn_native_peer_with_services(
     socket: PathBuf,
     membership: crate::services::WorkspaceAuthorityHandle,

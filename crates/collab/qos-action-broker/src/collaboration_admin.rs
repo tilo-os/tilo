@@ -106,7 +106,12 @@ pub fn action_definitions() -> Vec<CollaborationActionDefinition> {
 /// Installed only by a native owner with its operational V5 writer.
 pub fn media_action_definitions() -> Vec<CollaborationActionDefinition> {
     use tilo_actions::{ActionParam as P, ParamType as T};
-    let contract = action_definitions()[0].contract.clone();
+    // The issue action's privileged admin contract; the list is never empty.
+    let contract = action_definitions()
+        .into_iter()
+        .next()
+        .map(|definition| definition.contract)
+        .unwrap_or_default();
     let counters = || {
         vec![
             P::required("call_id", T::Text, "Canonical governed call identifier"),
@@ -329,6 +334,10 @@ impl std::fmt::Display for CollaborationAdminError {
 impl std::error::Error for CollaborationAdminError {}
 
 /// Decode one canonical action id and its exact JSON argument.
+///
+/// # Errors
+///
+/// Returns a message when the action is unknown or its argument is missing, oversized or malformed.
 pub fn parse_operation(
     action: &str,
     argument: Option<&str>,
@@ -438,7 +447,7 @@ mod tests {
             "00".repeat(32),
             "AB".repeat(32),
             "01".repeat(31),
-            format!("{} ", id),
+            format!("{id} "),
         ] {
             let mut value = base.clone();
             value["call_id"] = serde_json::json!(key);

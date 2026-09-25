@@ -3810,7 +3810,7 @@ fn declaration_only(spec: &ActionSpec) -> ActionSpec {
             move |_| refuse(),
         ),
     };
-    out.description = spec.description.clone();
+    out.description.clone_from(&spec.description);
     out.with_contract(spec.contract.clone())
 }
 
@@ -5097,7 +5097,7 @@ mod tests {
             .put(automerge::ROOT, "local-fixture", true)
             .unwrap();
         state.doc.commit();
-        state.doc.merge(&mut remote).unwrap();
+        state.doc.merge_incoming(&mut remote).unwrap();
         state
             .doc
             .put(automerge::ROOT, "unfinished-fixture", true)

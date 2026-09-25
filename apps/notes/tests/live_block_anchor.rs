@@ -1,4 +1,4 @@
-//! LIVE_V1: a Notes caret is anchored to the block's stable CRDT id, which
+//! `LIVE_V1`: a Notes caret is anchored to the block's stable CRDT id, which
 //! both peers read from the shared notebook, so a remote caret keeps naming
 //! the same block after blocks are inserted above it on the receiver.
 

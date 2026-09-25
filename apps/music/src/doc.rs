@@ -171,7 +171,7 @@ pub fn seed_empty_shared(doc: &mut AutoCommit) {
         .get_all(&ROOT, "library")
         .is_ok_and(|values| values.is_empty());
     if untouched {
-        let _ = doc.load_incremental(empty_seed_genesis());
+        let _ = tilo_automerge::ApplyIncoming::load_incoming(doc, empty_seed_genesis());
     }
     if !is_seeded(doc) {
         seed(doc, &Library::default(), &Playback::default());
@@ -806,7 +806,7 @@ mod tests {
             set_liked(&mut b, "tk_b", true);
             create_playlist_with_id(&mut a, "pl_a", "A");
             create_playlist_with_id(&mut b, "pl_b", "B");
-            a.merge(&mut b).unwrap();
+            a.merge_incoming(&mut b).unwrap();
             let lib = load_library(&a);
             assert!(
                 lib.liked.contains("tk_a") && lib.liked.contains("tk_b"),

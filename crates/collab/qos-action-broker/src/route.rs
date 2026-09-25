@@ -70,6 +70,7 @@ impl CrdtRoute {
     /// Widen an app-scoped route to its cluster — presence rides this.
     /// "Who else is here" is a fact about the room, so a peer editing a
     /// different document is still a legitimate audience for it.
+    #[must_use]
     pub fn to_cluster_scope(&self) -> Self {
         Self::cluster(self.cluster_id.clone())
     }

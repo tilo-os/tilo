@@ -169,6 +169,8 @@ struct ExternalLinkJob {
 }
 type ImportedAssets = Vec<(String, Vec<u8>)>;
 type LoadedImage = (String, Option<Vec<u8>>);
+/// Document heads, pending operations, selected page and tag filter.
+type CanonicalProjectionKey = (Vec<ChangeHash>, usize, Option<PageId>, Option<TagId>);
 struct PendingMarkdownImport {
     path: PathBuf,
     body: String,
@@ -660,7 +662,7 @@ pub struct NotesApp {
     /// Inputs of the last canonical projection: document heads, pending
     /// operations, selected page and tag filter. `sync` re-projects the
     /// whole page tree only when one of them moved instead of every frame.
-    canonical_synced: Option<(Vec<ChangeHash>, usize, Option<PageId>, Option<TagId>)>,
+    canonical_synced: Option<CanonicalProjectionKey>,
     /// Top-bar taffy node — present only while `built_narrow`.
     topbar_node: Option<NodeId>,
     /// Rect of the narrow-mode top bar, from `apply_layout`.
@@ -2211,6 +2213,10 @@ impl NotesApp {
         Ok(())
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one flat dispatch over every canonical Notes event kind"
+    )]
     fn apply_canonical_event(
         &mut self,
         doc: &mut AutoCommit,
@@ -2963,7 +2969,7 @@ impl NotesApp {
                     format!("Image insert failed: {error}"),
                     ui::widget::toast::ToastKind::Error,
                 );
-                Err(error.to_string())
+                Err(error)
             }
         }
     }
@@ -4304,7 +4310,7 @@ impl Widget for NotesApp {
                     self.self_dirty = true;
                 }
                 Ok(ui::widget::ResourceOperationStart::Completed(output)) => {
-                    self.complete_markdown_operation(Ok(output.clone()))
+                    self.complete_markdown_operation(Ok(output.clone()));
                 }
                 Ok(ui::widget::ResourceOperationStart::Accepted) => {}
             }

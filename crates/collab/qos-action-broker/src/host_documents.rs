@@ -90,19 +90,32 @@ impl HostDocuments {
             certificate,
         })
     }
+    /// Binds these host documents to one policy-time lifetime.
+    ///
+    /// # Errors
+    ///
+    /// Returns a message when `time` is unusable or another lifetime is already bound.
     pub fn register_policy_time(&self, time: PolicyTime) -> Result<(), String> {
         time.now_ns().map_err(|error| error.to_string())?;
-        let registered = self.policy_time.get_or_init(|| Some(time.clone()));
-        if registered
-            .as_ref()
-            .is_none_or(|registered| !registered.same_origin(&time))
-        {
+        let mut candidate = Some(time);
+        let registered = self.policy_time.get_or_init(|| candidate.take());
+        // `candidate` is still present only when another registration came first.
+        let same_lifetime = match (registered, candidate) {
+            (Some(_), None) => true,
+            (Some(registered), Some(time)) => registered.same_origin(&time),
+            (None, _) => false,
+        };
+        if !same_lifetime {
             return Err("host documents already belong to another policy lifetime".into());
         }
         Ok(())
     }
     /// Stop producers atomically with the final queue admission. Exact receipts
     /// and intrinsic health remain available for settlement after retirement.
+    ///
+    /// # Errors
+    ///
+    /// Returns a message when the handoff state is unavailable.
     pub fn close_admission(&self) -> Result<(), String> {
         self.state
             .lock()
@@ -127,7 +140,7 @@ impl HostDocuments {
     pub fn fail(&self, reason: impl Into<String>) -> String {
         let reason = reason.into();
         if let Ok(mut state) = self.state.lock() {
-            state.failure.get_or_insert(reason.clone());
+            state.failure.get_or_insert_with(|| reason.clone());
         }
         self.permits.close();
         reason
@@ -135,6 +148,11 @@ impl HostDocuments {
     pub fn outstanding_handoffs(&self) -> usize {
         LIMIT.saturating_sub(self.permits.available_permits())
     }
+    /// Number of exact owner receipts awaiting their commit.
+    ///
+    /// # Errors
+    ///
+    /// Returns a message when the handoff state is unavailable.
     pub fn pending_exact_receipts(&self) -> Result<usize, String> {
         Ok(self
             .state
@@ -201,7 +219,8 @@ impl BoundSigner {
                     .lock()
                     .map_err(|_| "host handoff unavailable")?;
                 service.check_admission(&state)?;
-                service.sender.try_send(PendingHostDocument {
+                // The admission fence stays held until the request is queued.
+                let sent = service.sender.try_send(PendingHostDocument {
                     route,
                     certificate,
                     mutation,
@@ -210,11 +229,16 @@ impl BoundSigner {
                     reply,
                     service: service.clone(),
                     permit,
-                })
+                });
+                drop(state);
+                // A refused request is dropped here, after the fence is released.
+                sent.is_ok()
             };
             // The shared permit ceiling is no larger than queue capacity, so
             // this send never needs another await after the admission fence.
-            sent.map_err(|_| service.fail("host signer unavailable; outcome unknown"))?;
+            if !sent {
+                return Err(service.fail("host signer unavailable; outcome unknown"));
+            }
             // Reconnect/replay may leave this bounded request queued indefinitely.
             // Only the ready serialized owner turn starts its execution deadline.
             let deadline = start
@@ -227,8 +251,9 @@ impl BoundSigner {
             .await;
             match response {
                 Ok(Ok(result)) => result,
-                Ok(Err(_)) => Err(service.fail("host signing reply lost; outcome unknown")),
-                Err(_) => Err(service.fail("host signing reply lost; outcome unknown")),
+                Ok(Err(_)) | Err(_) => {
+                    Err(service.fail("host signing reply lost; outcome unknown"))
+                }
             }
         })
     }
@@ -246,6 +271,10 @@ impl OwnerCommitService for HostDocuments {
             None => Ok(()),
         }
     }
+    #[expect(
+        clippy::significant_drop_tightening,
+        reason = "the matched handoff is consumed by its receipt check; the lint misreads the move"
+    )]
     fn commit(&self, request: OwnerCommitRequest) -> CommitFuture {
         let this = self.clone();
         Box::pin(async move {
@@ -253,11 +282,13 @@ impl OwnerCommitService for HostDocuments {
             let bytes = postcard::to_stdvec(&request).map_err(|e| this.fail(e.to_string()))?;
             let matched = {
                 let mut state = this.state.lock().map_err(|_| "host handoff unavailable")?;
-                state
+                let matched = state
                     .pending
                     .iter()
                     .position(|entry| entry.bytes == bytes)
-                    .map(|i| state.pending.remove(i))
+                    .map(|i| state.pending.remove(i));
+                drop(state);
+                matched
             };
             if let Some(handoff) = matched {
                 handoff
@@ -282,6 +313,10 @@ impl OwnerCommitService for HostDocuments {
 impl PendingHostDocument {
     /// This value exists only before apply consumes it. Started completion and
     /// postcommit receipt custody have different types and cannot enter here.
+    ///
+    /// # Errors
+    ///
+    /// Returns the latched service failure, which then replaces `reason` in the reply.
     pub fn reject_unstarted(
         self,
         deadline: std::time::Instant,

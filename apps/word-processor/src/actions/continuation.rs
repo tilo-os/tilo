@@ -89,8 +89,8 @@ pub(super) fn view(
 /// Only the audited pure Writer argument encoders use this helper. In
 /// particular place-image is excluded: evaluating its builder can fetch data.
 /// Both real invocation and evidence reuse the original normalization closure.
-fn pure_encoding(spec: &ActionSpec, args: ContinuationArguments<'_>) -> Option<EncodedAction> {
-    let encoded = match args {
+fn pure_encoding(spec: &ActionSpec, args: &ContinuationArguments<'_>) -> Option<EncodedAction> {
+    let encoded = match *args {
         ContinuationArguments::Json(args) => spec.build_json(args).ok()?,
         ContinuationArguments::Immediate => match spec.fixed_invocation_encoding() {
             Some(encoded) => encoded.clone(),
@@ -108,7 +108,7 @@ pub(crate) fn pure(spec: ActionSpec, handler: &'static str, domain: Parts) -> Ac
     spec.with_continuation_identity(move |query| match query {
         ContinuationQuery::Draft => Some(evidence(handler, domain.clone(), false)),
         ContinuationQuery::Exact(args) => {
-            let encoded = pure_encoding(&builder, args)?;
+            let encoded = pure_encoding(&builder, &args)?;
             let mut target = domain.clone();
             target.extend([encoded.type_id.into_bytes(), encoded.payload]);
             Some(evidence(handler, target, true))
@@ -161,11 +161,10 @@ pub(super) fn file(spec: ActionSpec, variant: u8, context: Option<&FileContext>)
                 Some(evidence("file-operation-and-chooser.v1", domain, false))
             }
             ContinuationQuery::Exact(args) => {
-                let encoded = pure_encoding(&builder, args)?;
+                let encoded = pure_encoding(&builder, &args)?;
                 let operation =
                     super::decode_operation(&encoded.type_id, &encoded.payload).ok()??;
                 let (path, format) = match operation {
-                    WordProcessorOperation::Open { .. } => return None, // native destination mount unresolved
                     WordProcessorOperation::Save { path: Some(path) }
                     | WordProcessorOperation::SaveAs { path: Some(path) } => {
                         let path = PathBuf::from(path);
@@ -175,7 +174,9 @@ pub(super) fn file(spec: ActionSpec, variant: u8, context: Option<&FileContext>)
                     WordProcessorOperation::Save { path: None } => {
                         (context.path.clone()?, context.format?)
                     }
-                    _ => return None, // no invented destination for a future picker
+                    // Open: native destination mount unresolved. Anything else: no
+                    // invented destination for a future picker.
+                    _ => return None,
                 };
                 let mut target = domain;
                 target.extend([

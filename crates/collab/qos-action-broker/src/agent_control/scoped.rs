@@ -522,7 +522,7 @@ mod tests {
         };
         assert!(authorize_published(&w, 10, stranger, Some(&scopes), &s, &typing, None).is_err());
         // Surface republished under another app id (T8).
-        let mut forged = s.clone();
+        let mut forged = s;
         forged.app_id = "so.tilo.chat".into();
         assert_eq!(
             authorize_published(&w, 10, AGENT_ACTOR, Some(&scopes), &forged, &typing, None),

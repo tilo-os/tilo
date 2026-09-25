@@ -768,11 +768,8 @@ pub fn agent_authored(
 fn bounded_agent_name(name: &str) -> String {
     let name = name.trim();
     let name = if name.is_empty() { "Agent" } else { name };
-    let mut end = name.len().min(MAX_AGENT_AUTHOR_NAME_BYTES);
-    while !name.is_char_boundary(end) {
-        end -= 1;
-    }
-    name[..end].to_owned()
+    let end = name.floor_char_boundary(MAX_AGENT_AUTHOR_NAME_BYTES);
+    name.get(..end).unwrap_or(name).to_owned()
 }
 
 #[allow(
@@ -1713,7 +1710,12 @@ fn build_call_resource(
                         }),
                     },
                 )
-                .expect("native call request is serializable")
+                // Unreachable for these bounded string fields; refuse at
+                // invocation rather than panicking the resource builder.
+                .unwrap_or_else(|error| EncodedAction {
+                    type_id: tilo_actions::resource::INVALID_ARGUMENTS_TYPE.into(),
+                    payload: error.to_string().into_bytes(),
+                })
             }
         },
     ))
@@ -2331,7 +2333,7 @@ mod tests {
     }
 
     /// A voice channel has no timeline anyone sees (opening it joins the
-    /// call), so it offers no `post`/`attach`, and a SendMessage into it is
+    /// call), so it offers no `post`/`attach`, and a `SendMessage` into it is
     /// refused: an agent's post can never land where no member can read it.
     #[test]
     fn voice_channels_offer_no_post_and_refuse_messages() {

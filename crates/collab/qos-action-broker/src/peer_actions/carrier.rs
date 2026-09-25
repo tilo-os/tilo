@@ -1,5 +1,8 @@
 //! Bounded carrier-neutral access to the same native broker request queue.
-use super::*;
+use super::{
+    ActionMessage, Arc, CertifiedAction, DirectedAction, OwnedSemaphorePermit, PeerActionQueue,
+    PolicyTime, Request, bounded_reply, mpsc, oneshot,
+};
 use tokio::time::Instant;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CarrierError {
@@ -44,14 +47,19 @@ pub struct CarrierTransitions(
     tokio::sync::broadcast::Receiver<(CertifiedAction, Option<tilo_actions::InvocationUpdate>)>,
 );
 impl CarrierTransitions {
+    /// The next bounded transition, if one is ready.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CarrierError::Closed`] once the stream closed, lagged or carried an unbounded update.
     pub fn try_next(&mut self) -> Result<Option<CarrierTransition>, CarrierError> {
         match self.0.try_recv() {
             Ok((source, Some(update))) => Ok(Some(CarrierTransition { source, update })),
             Ok((_, None))
-            | Err(tokio::sync::broadcast::error::TryRecvError::Closed)
-            | Err(tokio::sync::broadcast::error::TryRecvError::Lagged(_)) => {
-                Err(CarrierError::Closed)
-            }
+            | Err(
+                tokio::sync::broadcast::error::TryRecvError::Closed
+                | tokio::sync::broadcast::error::TryRecvError::Lagged(_),
+            ) => Err(CarrierError::Closed),
             Err(tokio::sync::broadcast::error::TryRecvError::Empty) => Ok(None),
         }
     }
@@ -66,6 +74,11 @@ impl PendingPeerAction {
     pub fn deadline(&self) -> Instant {
         self.deadline
     }
+    /// The bounded reply, once the broker produced it.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`CarrierError`] once the action completed, was refused, lost its reply or passed its deadline.
     pub fn try_reply(&mut self) -> Result<Option<DirectedAction>, CarrierError> {
         if self.completed {
             return Err(CarrierError::Closed);
@@ -106,6 +119,11 @@ impl PeerActionQueue {
     pub fn carrier_transitions(&self) -> CarrierTransitions {
         CarrierTransitions(self.transitions.subscribe())
     }
+    /// Submits one certified action to the bounded broker queue.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`CarrierError`] when the queue is full or closed or the deadline already passed.
     pub fn submit_certified(
         &self,
         evidence: CertifiedAction,
@@ -113,6 +131,11 @@ impl PeerActionQueue {
     ) -> Result<PendingPeerAction, CarrierError> {
         self.submit_carrier(evidence, None, None, deadline, None)
     }
+    /// [`Self::submit_certified`] under a retained policy time.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`CarrierError`] when the time is retired, the queue is full or closed, or the deadline passed.
     pub fn submit_certified_with_policy_time(
         &self,
         evidence: CertifiedAction,
@@ -121,6 +144,11 @@ impl PeerActionQueue {
     ) -> Result<PendingPeerAction, CarrierError> {
         self.submit_carrier(evidence, None, None, deadline, Some(time))
     }
+    /// [`Self::submit_transition`] under a retained policy time.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`CarrierError`] when the transition does not match `evidence`, the time is retired, or submission fails.
     pub fn submit_transition_with_policy_time(
         &self,
         evidence: CertifiedAction,
@@ -130,6 +158,11 @@ impl PeerActionQueue {
     ) -> Result<PendingPeerAction, CarrierError> {
         self.submit_transition_inner(evidence, transition, deadline, Some(time))
     }
+    /// Submits a durable transition poll for the invocation `evidence` names.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`CarrierError`] when the transition does not match `evidence` or submission fails.
     pub fn submit_transition(
         &self,
         evidence: CertifiedAction,
@@ -174,7 +207,10 @@ impl PeerActionQueue {
         if let Some(time) = &policy_time {
             time.now_ns().map_err(|_| CarrierError::Rejected)?;
         }
-        let deadline = deadline.min(Instant::now() + std::time::Duration::from_secs(5));
+        let now = Instant::now();
+        let deadline = now
+            .checked_add(std::time::Duration::from_secs(5))
+            .map_or(deadline, |ceiling| deadline.min(ceiling));
         if deadline <= Instant::now() {
             return Err(CarrierError::Deadline);
         }

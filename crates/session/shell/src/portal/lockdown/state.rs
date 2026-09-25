@@ -5,10 +5,14 @@ use std::collections::VecDeque;
 use std::fs;
 use std::io::Write;
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock, Weak};
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "independent persisted lockdown switches, one per portal capability"
+)]
 pub struct LockdownPolicy {
     pub disable_printing: bool,
     pub disable_save_to_disk: bool,
@@ -238,7 +242,7 @@ impl PolicyStore {
         Ok(())
     }
 }
-fn persist(path: &PathBuf, policy: &LockdownPolicy) -> std::io::Result<()> {
+fn persist(path: &Path, policy: &LockdownPolicy) -> std::io::Result<()> {
     let parent = path
         .parent()
         .ok_or_else(|| failed("lockdown policy path has no parent"))?;
@@ -259,8 +263,7 @@ fn persist(path: &PathBuf, policy: &LockdownPolicy) -> std::io::Result<()> {
     file.write_all(&encoded)
         .and_then(|()| file.sync_all())
         .map_err(|e| failed(&format!("cannot write lockdown policy: {e}")))?;
-    fs::rename(&tmp, path.as_path())
-        .map_err(|e| failed(&format!("cannot commit lockdown policy: {e}")))?;
+    fs::rename(&tmp, path).map_err(|e| failed(&format!("cannot commit lockdown policy: {e}")))?;
     fs::File::open(parent)
         .and_then(|directory| directory.sync_all())
         .map_err(|e| failed(&format!("cannot sync lockdown policy: {e}")))?;

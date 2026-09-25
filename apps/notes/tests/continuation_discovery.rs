@@ -56,7 +56,7 @@ fn notes_continuation_daily_discovery_does_not_publish_preallocated_destination(
     discovery(false);
 }
 
-fn destination_ids(encoded: EncodedAction, source: Uuid, duplicate: bool) -> BTreeSet<Uuid> {
+fn destination_ids(encoded: &EncodedAction, source: Uuid, duplicate: bool) -> BTreeSet<Uuid> {
     assert_eq!(encoded.type_id, actions::NOTES_ACTION_TYPE);
     let action: NotesAction = serde_json::from_slice(&encoded.payload).unwrap();
     if duplicate {
@@ -110,12 +110,12 @@ fn retained_declaration(duplicate: bool, json: bool) {
     // the current bug by minting replacement IDs during discovery again.
     let resources = live.resources();
     let first = destination_ids(
-        encode_retained(&resources, &target, json),
+        &encode_retained(&resources, &target, json),
         f.root,
         duplicate,
     );
     let second = destination_ids(
-        encode_retained(&resources, &target, json),
+        &encode_retained(&resources, &target, json),
         f.root,
         duplicate,
     );

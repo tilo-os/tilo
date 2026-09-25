@@ -400,6 +400,10 @@ mod launch_tests {
     }
     static OPEN_COUNT: AtomicUsize = AtomicUsize::new(0);
 
+    #[expect(
+        clippy::unnecessary_wraps,
+        reason = "matches the launch spec's fallible root-factory signature"
+    )]
     fn capture_args(args: &LaunchArgs) -> Result<Box<dyn Widget>, LaunchError> {
         CONTROLLED_ARGS.with(|captured| *captured.borrow_mut() = Some(args.clone()));
         Ok(Box::new(ui::widget::Text::new("argument capture")))
@@ -501,10 +505,16 @@ mod launch_tests {
         assert_eq!(OPEN_COUNT.load(Ordering::SeqCst), 1);
         let (installed, root) = app.controlled_history_definitions_for_test();
         assert!(installed.is_some_and(|definition| {
-            std::ptr::eq(definition, &terminal::framework_history::HISTORY)
+            std::ptr::eq(
+                definition,
+                std::ptr::from_ref(&terminal::framework_history::HISTORY),
+            )
         }));
         assert!(root.is_some_and(|definition| {
-            std::ptr::eq(definition, &terminal::framework_history::HISTORY)
+            std::ptr::eq(
+                definition,
+                std::ptr::from_ref(&terminal::framework_history::HISTORY),
+            )
         }));
         assert_eq!(Arc::strong_count(&waker), 2);
         assert!(matches!(

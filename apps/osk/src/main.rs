@@ -432,6 +432,10 @@ mod launch_tests {
         static OPENS:Cell<usize>=const {Cell::new(0)};
         static FACTORIES:Cell<usize>=const {Cell::new(0)};
     }
+    #[expect(
+        clippy::unnecessary_wraps,
+        reason = "matches the launch spec's fallible root-factory signature"
+    )]
     fn capture(args: &LaunchArgs) -> Result<Box<dyn Widget>, LaunchError> {
         ARGS.with_borrow_mut(|slot| *slot = Some(args.clone()));
         Ok(Box::new(ui::widget::Text::new("args")))
@@ -452,6 +456,10 @@ mod launch_tests {
         ui::persist::open_canonical_at(app, &DIRECTORY.with_borrow(|p| p.clone().unwrap()))
     }
     #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one launch scenario proving both prepared modes end to end"
+    )]
     fn framework_history_actual_both_prepared_modes_share_durable_owner_and_exact_root_definition()
     {
         drop(
@@ -583,7 +591,7 @@ mod launch_tests {
         let root = shot_root_with_model(&args, Box::new(osk::GeometricSwipeModel::english()));
         assert!(std::ptr::eq(
             root.document_history_definition().unwrap(),
-            &osk::framework_history::HISTORY
+            std::ptr::from_ref(&osk::framework_history::HISTORY)
         ));
         assert!(root.history_registration().unwrap().is_none());
         launch_spec().validate_history_declaration().unwrap();
@@ -712,6 +720,10 @@ mod launch_tests {
         )
     }
     #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one launch scenario proving both prepared modes end to end"
+    )]
     fn framework_history_native_both_modes_return_live_rebuild_idle_settles_once_without_input() {
         drop(
             LaunchSpec::new_with_args("dev.tilo.osk-args", capture)

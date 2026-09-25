@@ -812,6 +812,10 @@ impl CapnpBrokerState {
 
     /// Launch `app_id` into `workspace`, optionally opening content-addressed
     /// bytes read-only, and record the terminal outcome as an invocation.
+    ///
+    /// # Errors
+    ///
+    /// Returns a message when the caller may not launch the application or no launcher is installed.
     pub fn launch_application(
         &self,
         workspace: &Workspace,
@@ -840,7 +844,7 @@ impl CapnpBrokerState {
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let invocation = tilo_actions::InvocationId(uuid::Uuid::from_u128(u128::from(id)));
         let update = match launcher.launch_content(app_id, workspace, content_hash) {
-            Ok(_) => tilo_actions::InvocationUpdate::Succeeded {
+            Ok(()) => tilo_actions::InvocationUpdate::Succeeded {
                 invocation,
                 output: tilo_actions::ActionOutput::default(),
             },
@@ -848,7 +852,7 @@ impl CapnpBrokerState {
                 invocation,
                 error: tilo_actions::ActionFailure {
                     code: "launch_failed".into(),
-                    message: error.to_string(),
+                    message: error,
                     details: None,
                     retryable: false,
                 },

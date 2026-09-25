@@ -129,6 +129,7 @@ impl ParticipantView {
     /// selection collapses; before that (or if the edit was refused) the
     /// fallback `caret` stands. A view without a pending caret is returned
     /// unchanged. Pure.
+    #[must_use]
     pub fn settle(&self, doc: &AutoCommit) -> Self {
         let mut out = self.clone();
         let Some(pending) = out.pending.take() else {
@@ -200,7 +201,7 @@ impl ParticipantView {
         }
         let containers = qdoc::model::open(doc, &automerge::ROOT).ok()?;
         let order = qdoc::model::region_blocks_in_order(doc, &containers, self.region.to_region());
-        if !order.iter().any(|b| *b == self.caret.block) {
+        if !order.contains(&self.caret.block) {
             return None;
         }
         let ordered = self.ordered_selection(&order);

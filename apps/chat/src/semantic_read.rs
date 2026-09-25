@@ -1,4 +1,4 @@
-//! Immutable message pages over ChatDoc storage. No action publication or caller authority is minted here.
+//! Immutable message pages over `ChatDoc` storage. No action publication or caller authority is minted here.
 pub mod action;
 mod native;
 use automerge::AutoCommit;
@@ -39,6 +39,11 @@ use qdoc::semantic_read::{
 use std::ops::ControlFlow;
 /// Read only the selected channel's canonical message list. A page retains at most the requested
 /// messages plus one lookahead; text is streamed from borrowed native scalar atoms.
+///
+/// # Errors
+///
+/// Returns a [`ReadError`] when the document has pending operations, the cursor
+/// is stale or invalid for this channel, or the page exceeds its limits.
 pub fn read_messages(
     doc: &AutoCommit,
     owner_heads: &[automerge::ChangeHash],
@@ -48,6 +53,10 @@ pub fn read_messages(
 ) -> Result<Page, ReadError> {
     read_source(&Source::legacy(doc, owner_heads), channel, cursor, limits)
 }
+#[expect(
+    clippy::too_many_lines,
+    reason = "one bounded page scan; cursor, lookahead and limit accounting share its state"
+)]
 fn read_source(
     source: &Source<'_, '_, '_>,
     channel: &str,

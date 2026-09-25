@@ -171,12 +171,20 @@ pub fn store(doc: &mut AutoCommit, model: &CalcModel) {
 
 /// Initialize one checked New record with the live empty Calculator model.
 /// Screenshot/demo fixtures never enter this path.
+///
+/// # Errors
+///
+/// Returns the history-schema validation error for the written document.
 pub fn initialize_empty(doc: &mut AutoCommit) -> Result<(), String> {
     initialize(doc, &CalcModel::default())
 }
 
 /// Initialize the Calculator schema from an explicit model. Native live roots
 /// pass the empty model; screenshot/demo roots may pass their explicit fixture.
+///
+/// # Errors
+///
+/// Returns the history-schema validation error for the written document.
 pub fn initialize(doc: &mut AutoCommit, model: &CalcModel) -> Result<(), String> {
     store(doc, model);
     crate::framework_history::validate(doc)
@@ -224,6 +232,11 @@ pub fn load(doc: &AutoCommit) -> Option<CalcModel> {
 /// Read a checked Existing record without migrating, seeding, or repairing it.
 /// Both current map documents and the Calculator's legacy list documents are
 /// projected by the same history schema used by native version restoration.
+///
+/// # Errors
+///
+/// Returns a description of the first schema violation when the record is
+/// missing its marker or holds an invalid row or field.
 pub fn load_existing(doc: &AutoCommit) -> Result<CalcModel, String> {
     if !is_seeded(doc) {
         return Err("Calculator record is missing its schema marker".into());

@@ -1,4 +1,5 @@
 use super::*;
+use tilo_automerge::ApplyIncoming as _;
 
 fn keyboard() -> OskWidget {
     OskWidget::new_with_swipe_model(Box::new(GeometricSwipeModel::english()))
@@ -114,15 +115,15 @@ impl Widget for LiveFixture {
     }
     fn invoke_resource_operation(
         &mut self,
-        k: OperationKind,
-        t: &str,
-        b: &[u8],
-        d: &AutoCommit,
-        p: &ObjId,
+        kind: OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        doc: &AutoCommit,
+        path: &ObjId,
     ) -> Result<bool, String> {
         self.keyboard
             .borrow_mut()
-            .invoke_resource_operation(k, t, b, d, p)
+            .invoke_resource_operation(kind, type_id, payload, doc, path)
     }
     fn document_action_applied(
         &mut self,
@@ -137,7 +138,7 @@ impl Widget for LiveFixture {
             let mut probe = probe.borrow_mut();
             probe
                 .envelopes
-                .push((a.clone(), b.to_vec(), d.base_heads().to_vec()));
+                .push((a.clone(), b.to_vec(), d.base_heads()));
             if probe.supersede && probe.envelopes.len() == 1 {
                 assert_no_reentrant_offer(&mut keyboard, d);
                 assert!(keyboard.select_text_layout("qwerty"));
@@ -177,26 +178,35 @@ impl Widget for LiveFixture {
     fn apply_layout(&mut self, t: &TaffyTree<()>, n: NodeId, p: Point) {
         self.keyboard.borrow_mut().apply_layout(t, n, p);
     }
-    fn draw(&mut self, s: &mut Scene, a: Affine, t: &mut TextRenderer, h: &Theme, p: &PresenceCtx) {
-        self.keyboard.borrow_mut().draw(s, a, t, h, p);
-    }
-    fn handle_event(
+    fn draw(
         &mut self,
-        e: &WindowEvent,
-        s: f64,
-        m: &winit::event::Modifiers,
-        d: &mut AutoCommit,
-        p: &ObjId,
-        h: &mut bool,
-        f: &mut Option<NodeId>,
-        n: NodeId,
-        t: &TaffyTree<()>,
+        scene: &mut Scene,
+        transform: Affine,
+        text: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
     ) {
         self.keyboard
             .borrow_mut()
-            .handle_event(e, s, m, d, p, h, f, n, t);
+            .draw(scene, transform, text, theme, presence);
     }
-    fn name(&self) -> &str {
+    fn handle_event(
+        &mut self,
+        event: &WindowEvent,
+        scale: f64,
+        modifiers: &winit::event::Modifiers,
+        doc: &mut AutoCommit,
+        path: &ObjId,
+        handled: &mut bool,
+        focus: &mut Option<NodeId>,
+        node: NodeId,
+        taffy: &TaffyTree<()>,
+    ) {
+        self.keyboard.borrow_mut().handle_event(
+            event, scale, modifiers, doc, path, handled, focus, node, taffy,
+        );
+    }
+    fn name(&self) -> &'static str {
         "live-osk-fixture"
     }
     fn get_rect(&self) -> Rect {
@@ -299,7 +309,7 @@ fn document() -> (AutoCommit, automerge::ChangeHash) {
 fn invoke(f: &mut Fixture, resource: &str, action: &str) {
     f.queue.borrow_mut().push_back(ControlInvocation {
         address: ActionAddress::new(resource, action),
-        arguments: Default::default(),
+        arguments: serde_json::Map::default(),
     });
     f.driver.key("Shift");
 }
@@ -453,7 +463,7 @@ fn framework_history_finite_drain_stale_lifetime_and_newer_field_survive_old_ack
     }
     assert_eq!(offers.len(), 3);
     assert!(root.drafts.pending());
-    root.refresh_control_action_availability(&Default::default());
+    root.refresh_control_action_availability(&std::collections::HashSet::default());
     root.set_suggestions_enabled(true);
     assert!(
         root.take_control_invocation().is_none(),
@@ -663,7 +673,7 @@ fn framework_history_four_layout_masks_validate_preview_current_target_and_resul
     let canonical = keyboard().with_layout(KeyboardLayout::qwerty());
     assert!(std::ptr::eq(
         canonical.document_history_definition().unwrap(),
-        &crate::framework_history::HISTORY
+        std::ptr::from_ref(&crate::framework_history::HISTORY)
     ));
     let mut collision = KeyboardLayout::qwerty();
     collision.rows[0][0].width = 2.;
@@ -672,7 +682,7 @@ fn framework_history_four_layout_masks_validate_preview_current_target_and_resul
         .with_layout(KeyboardLayout::qwerty());
     assert!(std::ptr::eq(
         recovered.document_history_definition().unwrap(),
-        &crate::framework_history::HISTORY
+        std::ptr::from_ref(&crate::framework_history::HISTORY)
     ));
     let mut custom = KeyboardLayout::qwerty();
     custom.name = "custom".into();
@@ -766,7 +776,8 @@ fn framework_history_passive_rendering_retains_runtime_and_current_im_queue() {
     let before = runtime(&f.keyboard.borrow());
     let key_calls = keys.get();
     let callback =
-        f.keyboard.borrow().on_key.as_deref().unwrap() as *const dyn FnMut(KeyAction) as *const ();
+        std::ptr::from_ref::<dyn FnMut(KeyAction)>(f.keyboard.borrow().on_key.as_deref().unwrap())
+            .cast::<()>();
     let predictor = std::ptr::from_ref(&f.keyboard.borrow().predictor);
     let heads = f.driver.state_mut().doc.get_heads();
     let bytes = f.driver.state_mut().doc.save();
@@ -801,7 +812,8 @@ fn framework_history_passive_rendering_retains_runtime_and_current_im_queue() {
     f.driver.click_named("history-back-live").unwrap();
     assert_eq!(runtime(&f.keyboard.borrow()), before);
     assert_eq!(
-        f.keyboard.borrow().on_key.as_deref().unwrap() as *const dyn FnMut(KeyAction) as *const (),
+        std::ptr::from_ref::<dyn FnMut(KeyAction)>(f.keyboard.borrow().on_key.as_deref().unwrap())
+            .cast::<()>(),
         callback
     );
     assert_eq!(
@@ -908,7 +920,7 @@ impl ui::widget::AppWidget for LiveFixture {
     fn app_kind(&self) -> ui::widget::AppKind {
         ui::widget::AppKind::Editor
     }
-    fn app_title(&self) -> &str {
+    fn app_title(&self) -> &'static str {
         "OSK controlled root"
     }
     fn app_icon(&self) -> ui::widget::IconDescriptor {
@@ -926,6 +938,10 @@ fn framework_history_real_component_tile_settles_through_its_actual_registry() {
 fn framework_history_real_legacy_tile_settles_restores_and_reopens_through_enclosing_registry() {
     real_owned_tile_settles_and_restores(false);
 }
+#[expect(
+    clippy::too_many_lines,
+    reason = "one owned-tile scenario proving settle and restore end to end"
+)]
 fn real_owned_tile_settles_and_restores(component: bool) {
     use ui::application::{AppComponent, ApplicationDefinition, HostContext, LaunchTarget};
     {
@@ -989,7 +1005,7 @@ fn real_owned_tile_settles_and_restores(component: bool) {
             .unwrap();
             context
                 .initialize_new_record(|target| {
-                    target.merge(&mut doc).map_err(|e| e.to_string())?;
+                    target.merge_incoming(&mut doc).map_err(|e| e.to_string())?;
                     Ok(())
                 })
                 .unwrap();
@@ -1010,7 +1026,7 @@ fn real_owned_tile_settles_and_restores(component: bool) {
                 .reserve_record(&checkout)
                 .unwrap()
                 .initialize(|target| {
-                    target.merge(&mut doc).map_err(|e| e.to_string())?;
+                    target.merge_incoming(&mut doc).map_err(|e| e.to_string())?;
                     Ok(())
                 })
                 .unwrap();
@@ -1143,7 +1159,7 @@ fn framework_history_legacy_tile_document_action_must_not_mutate_outer_state() {
     crate::actions::register(driver.action_registry_mut());
     let outer_heads = driver.state_mut().doc.get_heads();
     let outer_bytes = driver.state_mut().doc.save();
-    let record_heads = store.with(&checkout.id, |doc| doc.get_heads()).unwrap();
+    let record_heads = store.with(&checkout.id, AutoCommit::get_heads).unwrap();
     root.borrow_mut().set_suggestions_enabled(false);
     driver.relayout();
     driver.key("Shift");
@@ -1153,7 +1169,7 @@ fn framework_history_legacy_tile_document_action_must_not_mutate_outer_state() {
         &automerge::ROOT,
         CONFIG_SUGGESTIONS_KEY,
     );
-    let record_after = store.with(&checkout.id, |doc| doc.get_heads()).unwrap();
+    let record_after = store.with(&checkout.id, AutoCommit::get_heads).unwrap();
     let record_value = store
         .read(&checkout.id, |doc| {
             read_config_bool(doc, &automerge::ROOT, CONFIG_SUGGESTIONS_KEY)
@@ -1217,6 +1233,10 @@ fn round1_native_app(root: Box<dyn Widget>) -> ui::App {
     app
 }
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one owned-tile scenario proving settle and restore end to end"
+)]
 fn framework_history_round1_registered_native_reentrant_ack_preserves_newer_and_unrelated_drafts() {
     let directory = tempfile::tempdir().unwrap();
     let mut owners = ui::record::RecordOwners::new(directory.path().join("profile"));
@@ -1259,7 +1279,10 @@ fn framework_history_round1_registered_native_reentrant_ack_preserves_newer_and_
     tile.bind_record(store.clone(), checkout.clone());
     let mut app = round1_native_app(Box::new(tile));
     let before = store
-        .read(&checkout.id, |doc| doc.base_heads().to_vec())
+        .read(
+            &checkout.id,
+            automerge::transaction::Transactable::base_heads,
+        )
         .unwrap();
     let outer = app.state_mut_for_test().doc.save();
     assert!(app.controlled_local_idle_for_test());
@@ -1268,12 +1291,18 @@ fn framework_history_round1_registered_native_reentrant_ack_preserves_newer_and_
     assert!(keyboard.borrow().drafts.has(1));
     assert!(!keyboard.borrow().drafts.has(2));
     let captured_heads = store
-        .read(&checkout.id, |doc| doc.base_heads().to_vec())
+        .read(
+            &checkout.id,
+            automerge::transaction::Transactable::base_heads,
+        )
         .unwrap();
     assert!(!app.controlled_local_idle_for_test());
     assert_eq!(
         store
-            .read(&checkout.id, |doc| doc.base_heads().to_vec())
+            .read(
+                &checkout.id,
+                automerge::transaction::Transactable::base_heads
+            )
             .unwrap(),
         captured_heads
     );
@@ -1304,7 +1333,10 @@ fn framework_history_round1_registered_native_reentrant_ack_preserves_newer_and_
     }
     assert_eq!(
         store
-            .read(&checkout.id, |doc| doc.base_heads().to_vec())
+            .read(
+                &checkout.id,
+                automerge::transaction::Transactable::base_heads
+            )
             .unwrap(),
         probe.envelopes.last().unwrap().2
     );
@@ -1330,7 +1362,10 @@ fn framework_history_round1_registered_native_reentrant_ack_preserves_newer_and_
     assert_eq!(acks.get(), 5);
     assert_eq!(
         store
-            .read(&checkout.id, |doc| doc.base_heads().to_vec())
+            .read(
+                &checkout.id,
+                automerge::transaction::Transactable::base_heads
+            )
             .unwrap(),
         probe.envelopes.last().unwrap().2
     );
@@ -1341,7 +1376,7 @@ fn framework_history_round1_registered_native_explicit_ack_removes_matching_stal
     keyboard.borrow_mut().set_suggestions_enabled(false);
     let queue = Rc::new(RefCell::new(VecDeque::from([ControlInvocation {
         address: ActionAddress::new("osk.keyboard.suggestions", "disable"),
-        arguments: Default::default(),
+        arguments: serde_json::Map::default(),
     }])));
     let acks = Rc::new(Cell::new(0));
     let probe = Rc::new(RefCell::new(ReentrantAck::default()));

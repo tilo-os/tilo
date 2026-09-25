@@ -1,7 +1,5 @@
 //! The existing room Chat document, checked and projected without demo seeding.
-use ui::application::{
-    AppComponent, ApplicationDefinition, HostContext, LaunchTarget, RestoreInput,
-};
+use ui::application::{AppComponent, ApplicationDefinition, HostContext, LaunchTarget};
 use ui::{launch::LaunchError, record::RecordKind, widget::IconDescriptor};
 static DEFINITION: std::sync::LazyLock<ApplicationDefinition> =
     std::sync::LazyLock::new(|| ApplicationDefinition {
@@ -11,16 +9,12 @@ static DEFINITION: std::sync::LazyLock<ApplicationDefinition> =
         record_kind: RecordKind::new("chat.workspace"),
         required: vec![],
         optional: vec![],
-        create,
+        create: |context, target, _| create(context, &target),
     });
 pub fn definition() -> &'static ApplicationDefinition {
     &DEFINITION
 }
-fn create(
-    mut context: HostContext,
-    target: LaunchTarget,
-    _: RestoreInput,
-) -> Result<AppComponent, LaunchError> {
+fn create(mut context: HostContext, target: &LaunchTarget) -> Result<AppComponent, LaunchError> {
     if !context.record().id.is_package_primary() {
         return Err(LaunchError::BindingMismatch);
     }
@@ -82,7 +76,7 @@ impl ui::widget::AppWidget for crate::ChatApp {
     fn app_kind(&self) -> ui::widget::AppKind {
         ui::widget::AppKind::Editor
     }
-    fn app_title(&self) -> &str {
+    fn app_title(&self) -> &'static str {
         "Chat"
     }
     fn app_icon(&self) -> IconDescriptor {

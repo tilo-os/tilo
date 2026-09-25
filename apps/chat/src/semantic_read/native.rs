@@ -1,5 +1,5 @@
 //! Retained native mechanics only; current owner/disclosure qualification is external.
-use super::*;
+use super::{Cursor, Limits, Message, Page, ReadError, Source, read_source};
 use automerge::resource_limits::{NativeReadSession, NativeReservation};
 use qdoc::semantic_read::source::Object;
 use std::mem::size_of;
@@ -33,6 +33,10 @@ fn output_bound(limits: Limits) -> Result<usize, ReadError> {
             .ok_or(ReadError::Limit)
     })
 }
+/// # Errors
+///
+/// Returns a [`ReadError`] when the output reservation or a limit is refused, or
+/// the cursor is stale or invalid for this basis.
 pub fn read_messages_native(
     read: &NativeReadSession<'_, '_>,
     channel: &str,

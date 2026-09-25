@@ -62,17 +62,37 @@ pub struct PolicyClockTestControl(Arc<Mutex<TestSample>>);
 #[cfg(any(test, feature = "test-support"))]
 impl PolicyClockTestControl {
     pub fn set_wall_ns(&self, wall_ns: u64) {
-        self.0.lock().unwrap().wall_ns = wall_ns;
+        self.sample().wall_ns = wall_ns;
     }
+    /// Advances the controlled monotonic reading by `elapsed`.
+    ///
+    /// # Panics
+    ///
+    /// Panics when the controlled monotonic reading would overflow.
+    #[expect(
+        clippy::expect_used,
+        reason = "test control: an overflowing test clock is a broken test, not a runtime state"
+    )]
     pub fn advance_monotonic(&self, elapsed: std::time::Duration) {
-        let mut sample = self.0.lock().unwrap();
+        let mut sample = self.sample();
         sample.monotonic = sample
             .monotonic
             .checked_add(elapsed)
             .expect("test monotonic overflow");
     }
+    /// The controlled sample, still usable after a panicking test poisoned it.
+    fn sample(&self) -> std::sync::MutexGuard<'_, TestSample> {
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
 }
 impl OwnerPolicyClock {
+    /// A clock seeded from the current wall time.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PolicyClockError`] when the wall clock is before the Unix epoch or out of range.
     pub fn new() -> Result<Self, PolicyClockError> {
         Ok(Self(Arc::new(Clock {
             state: Mutex::new(State {
@@ -84,6 +104,11 @@ impl OwnerPolicyClock {
             test_sample: None,
         })))
     }
+    /// Current policy time in Unix nanoseconds, never running backwards.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PolicyClockError`] once the clock failed or its state is unavailable.
     pub fn now_ns(&self) -> Result<u64, PolicyClockError> {
         let mut state = self.0.state.lock().map_err(|_| PolicyClockError)?;
         #[cfg(any(test, feature = "test-support"))]
@@ -153,6 +178,11 @@ impl PolicyOrigin {
     pub fn invalidate(&self) {
         self.0.invalid.store(true, Ordering::Release);
     }
+    /// Captures a retained time of this origin.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PolicyClockError`] when the origin is retired or the clock failed.
     pub fn capture(&self) -> Result<PolicyTime, PolicyClockError> {
         let value = PolicyTime {
             clock: self.0.clock.clone(),
@@ -178,6 +208,11 @@ impl PolicyTime {
     pub fn same_origin(&self, other: &Self) -> bool {
         self.clock.same_clock(&other.clock) && Weak::ptr_eq(&self.origin, &other.origin)
     }
+    /// Current time of the retained clock while its origin is live.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PolicyClockError`] when the origin is retired or the clock failed.
     pub fn now_ns(&self) -> Result<u64, PolicyClockError> {
         let origin = self.origin.upgrade().ok_or(PolicyClockError)?;
         if origin.invalid.load(Ordering::Acquire) {
@@ -203,7 +238,7 @@ mod tests {
         assert_eq!(time.now_ns(), Ok(200));
         control.set_wall_ns(50);
         control.advance_monotonic(Duration::from_nanos(5));
-        assert_eq!(time.clone().now_ns(), Ok(205));
+        assert_eq!(time.now_ns(), Ok(205));
         control.set_wall_ns(300);
         assert_eq!(clock.now_ns(), Ok(300));
         control.set_wall_ns(1);
@@ -241,7 +276,11 @@ mod tests {
             unix_ns: 1,
             failed: false,
         };
-        assert!(state.advance(start - Duration::from_nanos(1), 0).is_err());
+        assert!(
+            state
+                .advance(start.checked_sub(Duration::from_nanos(1)).unwrap(), 0)
+                .is_err()
+        );
         assert!(state.advance(start + Duration::from_nanos(1), 2).is_err());
     }
     #[test]

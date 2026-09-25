@@ -1,5 +1,5 @@
 //! Retained native mechanics only; current owner/disclosure qualification is external.
-use super::*;
+use super::{Candidate, Cursor, Limits, Page, ReadError, Segment, Source, read_source};
 use automerge::resource_limits::{NativeObject, NativeReadSession, NativeReservation};
 use std::mem::size_of;
 /// Backing drops before the original current-turn credit. No extraction or Clone.
@@ -33,6 +33,10 @@ fn output_bound(limits: Limits) -> Result<usize, ReadError> {
             .ok_or(ReadError::Limit)
     })
 }
+/// # Errors
+///
+/// Returns a [`ReadError`] when the output reservation or a limit is refused, or
+/// the cursor is stale or invalid for this basis.
 pub fn read_text_native<'doc>(
     read: &NativeReadSession<'doc, '_>,
     root: NativeObject<'doc>,

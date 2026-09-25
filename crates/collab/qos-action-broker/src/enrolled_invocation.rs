@@ -1,5 +1,10 @@
 //! Concrete managed-descriptor installation and private enrolled RPC delivery.
-use super::*;
+use super::{
+    AdmittedJoinIdentity, Arc, AsyncMutex, BrokerActor, CapnpBrokerState, CapnpChannelHandle,
+    CrdtRoute, DurableInvocation, EnrolledDurable, InvocationCaller, InvocationJob, InvocationKey,
+    InvocationOwner, PendingWorker, Promise, PublishedAction, PublishedSurface, Rc, WorkerBinding,
+    mpsc, principal_id_for_root,
+};
 use crate::enrolled_dispatch::{EnrolledConnection, EnrolledDispatchResult};
 
 impl CapnpBrokerState {
@@ -37,7 +42,7 @@ impl CapnpBrokerState {
         enrolled_task_scopes(&connection.grants()?, self.membership.as_deref(), task)
     }
     /// The broker half of the shared per-step authorization (security review
-    /// MUST-1): agent principal (role_of_agent_at) AND delegating owner, on
+    /// MUST-1): agent principal (`role_of_agent_at`) AND delegating owner, on
     /// the Action and on the route record's Artifact, scope coverage on the
     /// canonical live route record, explicit manifest class, frozen schema,
     /// confirmation and bulk refused unattended, argument bounds. The Store
@@ -82,6 +87,10 @@ impl CapnpBrokerState {
     }
     /// Takes the exact socket authenticated alongside this proof. A PID, stored
     /// process description, or arbitrary replacement socket cannot enter here.
+    ///
+    /// # Errors
+    ///
+    /// Returns a message when the broker stopped, no agent owner is installed, or the caller or process is refused.
     pub fn install_enrolled_connection(
         &self,
         admitted: launcher::managed::channel::AdmittedManagedConnection,
@@ -108,12 +117,16 @@ impl CapnpBrokerState {
             stream,
             caller,
             owner,
-            facts,
+            &facts,
         )
     }
     /// In-process enrolled Agent connection over a fixture process (test and
     /// `test-support` builds only). Same owner authorization, certificate
     /// authority join check, worker admission and RPC surface as production.
+    ///
+    /// # Errors
+    ///
+    /// Returns a message when the broker stopped, no agent owner is installed, or the caller or process is refused.
     #[cfg(any(test, feature = "test-support"))]
     pub fn install_fixture_enrolled_connection(
         &self,
@@ -136,7 +149,7 @@ impl CapnpBrokerState {
             .get()
             .ok_or("current certificate authority unavailable")?
             .authorize_join(room, &caller)?;
-        self.install_enrolled_process(process, stream, caller, owner, facts)
+        self.install_enrolled_process(process, stream, caller, owner, &facts)
     }
     fn install_enrolled_process(
         &self,
@@ -144,9 +157,10 @@ impl CapnpBrokerState {
         stream: std::os::unix::net::UnixStream,
         caller: tilo_user_identity::DeviceCert,
         owner: Arc<dyn crate::enrolled_dispatch::EnrolledAgentOwner>,
-        facts: launcher::managed::channel::ChannelProcessFacts,
+        facts: &launcher::managed::channel::ChannelProcessFacts,
     ) -> Result<String, String> {
-        let connection = EnrolledConnection::new(process, caller.clone(), owner)?;
+        let (root, device) = (caller.user_public_key, caller.device_public_key);
+        let connection = EnrolledConnection::new(process, caller, owner)?;
         let mut workers = self
             .workers
             .lock()
@@ -161,13 +175,19 @@ impl CapnpBrokerState {
                 host_scope: None,
                 registration: None,
                 route: CrdtRoute::app(crate::agent_control::APP_ID, &facts.binding.room),
-                root: caller.user_public_key,
-                device: caller.device_public_key,
+                root,
+                device,
                 enrolled: Some(connection),
             },
         });
-        Ok(facts.channel_id)
+        drop(workers);
+        Ok(facts.channel_id.clone())
     }
+    /// The live dispatch witness of an accepted enrolled task on `channel`.
+    ///
+    /// # Errors
+    ///
+    /// Returns a message when the broker stopped or no such accepted task is live.
     pub fn enrolled_task_dispatch(
         &self,
         channel: &str,
@@ -178,6 +198,11 @@ impl CapnpBrokerState {
         }
         self.enrolled.task_dispatch(channel, invocation)
     }
+    /// Dispatches one enrolled task envelope to its live recipient.
+    ///
+    /// # Errors
+    ///
+    /// Returns a message when the broker stopped or the dispatch is refused.
     pub fn dispatch_enrolled_task(
         &self,
         invocation: uuid::Uuid,
@@ -226,7 +251,7 @@ impl CapnpBrokerState {
             .iter()
             .find(|a| a.resource == resource && a.action == action)
             .ok_or("task action is no longer published")?;
-        let task_id = connection.task(run, lease)?.task_id.clone();
+        let task_id = connection.task(run, lease)?.task_id;
         self.authorize_enrolled_scoped(
             &connection,
             &task_id,
@@ -257,6 +282,10 @@ impl CapnpBrokerState {
             argument,
         })
     }
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "explicit protocol inputs stay separate parameters"
+    )]
     pub(super) fn start_enrolled_task_action(
         &self,
         peer: u64,
@@ -376,6 +405,10 @@ impl CapnpBrokerState {
     /// Current exact target of an eager published action for an enrolled
     /// task child: host, worker registration identity and a stable revision
     /// of the offered action. A replaced worker or changed action differs.
+    ///
+    /// # Errors
+    ///
+    /// Returns a message when the task custody lapsed or the action is no longer live and granted.
     pub fn enrolled_child_binding(
         &self,
         dispatch: &crate::enrolled_dispatch::VerifiedEnrolledDispatch,
@@ -485,6 +518,10 @@ impl CapnpBrokerState {
     /// a repeat with the same request returns the retained row (no second
     /// effect); a changed request is refused. Fresh admission rechecks the
     /// live task custody, its immutable grants and the exact current target.
+    ///
+    /// # Errors
+    ///
+    /// Returns a message when the broker stopped, the request conflicts with a retained row, or admission is refused.
     pub fn invoke_enrolled_child(
         &self,
         dispatch: &crate::enrolled_dispatch::VerifiedEnrolledDispatch,
@@ -503,6 +540,10 @@ impl CapnpBrokerState {
         );
         result
     }
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one ordered replay check, admission and journal settlement for a child invocation"
+    )]
     fn invoke_enrolled_child_timed(
         &self,
         dispatch: &crate::enrolled_dispatch::VerifiedEnrolledDispatch,
@@ -526,7 +567,13 @@ impl CapnpBrokerState {
         let existing =
             |state: &Self| -> Result<Option<runtime_collab::PublishedInvocationResult>, String> {
                 match state.journal_record(&key)? {
-                    Some(record) if record.intent["request"] != intent => {
+                    Some(record)
+                        if record
+                            .intent
+                            .get("request")
+                            .unwrap_or(&serde_json::Value::Null)
+                            != &intent =>
+                    {
                         Err("invocation identity reused with different intent".into())
                     }
                     Some(record) => child_result(&record).map(Some),
@@ -624,6 +671,10 @@ impl CapnpBrokerState {
     }
     /// Retained row of an enrolled child for the host's recovery sender. It
     /// admits nothing; an absent row stays absent (never a new invocation).
+    ///
+    /// # Errors
+    ///
+    /// Returns a message when the broker stopped or the owner may not read the row.
     pub fn observe_enrolled_child(
         &self,
         owner: &EnrolledChildOwner,
@@ -703,8 +754,12 @@ impl CapnpChannelHandle {
                 self.state.certificate_authority.get().map(Arc::as_ref),
             )
             .map_err(capnp::Error::failed)?;
-            current.agent_id = self.verified_identity.agent_id.clone();
-            current.display_handle = self.verified_identity.display_handle.clone();
+            current
+                .agent_id
+                .clone_from(&self.verified_identity.agent_id);
+            current
+                .display_handle
+                .clone_from(&self.verified_identity.display_handle);
             current.enrolled = self.verified_identity.enrolled;
             Ok(current)
         } else {
@@ -779,6 +834,7 @@ fn enrolled_action_grant(
     })
 }
 
+#[cfg(test)]
 fn filter_enrolled_catalogue(
     json: &str,
     grants: &[qos_agent_control_protocol::GrantAction],

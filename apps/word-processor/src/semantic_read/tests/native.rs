@@ -162,8 +162,7 @@ fn semantic_native_writer_binds_nested_roots_and_complete_frontier() {
     }
     doc.commit();
     let (candidate, allocations) = cloned(&doc);
-    let current = allowance();
-    let turn = allocations.work_turn(current.clone()).unwrap();
+    let turn = allocations.work_turn(allowance()).unwrap();
     let read = candidate.read_unqualified(&turn).unwrap();
     let mut roots = [None, None];
     for (index, key) in ["left", "right"].into_iter().enumerate() {
@@ -202,9 +201,9 @@ fn semantic_native_writer_binds_nested_roots_and_complete_frontier() {
         let mut fork = base
             .clone()
             .with_actor(automerge::ActorId::from(vec![actor]));
-        fork.put(ROOT, "branch", actor as u64).unwrap();
+        fork.put(ROOT, "branch", u64::from(actor)).unwrap();
         fork.commit();
-        joined.merge(&mut fork).unwrap();
+        joined.merge_incoming(&mut fork).unwrap();
     }
     assert_eq!(joined.base_heads().len(), 65);
     let (candidate, allocations) = cloned(&joined);

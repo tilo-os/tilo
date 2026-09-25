@@ -51,7 +51,7 @@ fn canonical_chat_repaints_only_for_document_changes_and_consumed_input() {
             position: winit::dpi::PhysicalPosition::new(5.0, 5.0),
         },
         1.0,
-        &Default::default(),
+        &winit::event::Modifiers::default(),
         &mut doc,
         &ROOT,
         &mut handled,
@@ -83,7 +83,7 @@ fn canonical_chat_repaints_only_for_document_changes_and_consumed_input() {
             button: MouseButton::Left,
         },
         1.0,
-        &Default::default(),
+        &winit::event::Modifiers::default(),
         &mut doc,
         &ROOT,
         &mut handled,
@@ -155,7 +155,6 @@ fn canonical_composer_exports_ime_purpose_through_app_root() {
 
 #[test]
 fn canonical_composer_semantics_follow_the_actual_editor_focus() {
-    let (mut frame, _records, _checkout) = semantic_component_harness("chat-focused-composer");
     fn find<'a>(node: &'a ui::a11y::AccessNode, target: &str) -> Option<&'a ui::a11y::AccessNode> {
         if node.action_target.as_deref() == Some(target) {
             return Some(node);
@@ -182,6 +181,7 @@ fn canonical_composer_semantics_follow_the_actual_editor_focus() {
         node.semantics.as_ref().map_or(0, access)
             + node.children.iter().map(focused_count).sum::<usize>()
     }
+    let (mut frame, _records, _checkout) = semantic_component_harness("chat-focused-composer");
 
     let inspection = frame.inspection();
     let composer = inspect(&inspection.root, "chat.composer")
@@ -574,21 +574,23 @@ fn semantic_composer_enter_shift_enter_and_empty_clear_use_the_real_input_path()
 
 /// The composer's exported value, as a browser bridge or screen reader sees it.
 fn semantic_value(node: &ui::headless::InspectionNode, target: &str) -> Option<String> {
-    fn find(node: &ui::a11y::AccessNode, target: &str) -> Option<Option<String>> {
+    fn find<'a>(node: &'a ui::a11y::AccessNode, target: &str) -> Option<&'a ui::a11y::AccessNode> {
         if node.action_target.as_deref() == Some(target) {
-            return Some(node.value.clone());
+            return Some(node);
         }
         node.children.iter().find_map(|child| find(child, target))
     }
-    node.semantics
+    match node
+        .semantics
         .as_ref()
         .and_then(|semantic| find(semantic, target))
-        .or_else(|| {
-            node.children
-                .iter()
-                .find_map(|child| semantic_value(child, target).map(Some))
-        })
-        .flatten()
+    {
+        Some(found) => found.value.clone(),
+        None => node
+            .children
+            .iter()
+            .find_map(|child| semantic_value(child, target)),
+    }
 }
 
 /// Regression: the product workload sends message after message through the

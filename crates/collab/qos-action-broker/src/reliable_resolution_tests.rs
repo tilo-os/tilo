@@ -164,7 +164,7 @@ async fn reliable_resolution_binding_uses_exact_captured_signed_worker() {
                     crate::test_support::WorkspaceId(83),
                     "Original room",
                 );
-                workspace.set_owner(&principal_id_for_root(cert.user_public_key));
+                workspace.set_owner(principal_id_for_root(cert.user_public_key));
                 workspace.owner = None;
                 workspace.capabilities = workspace
                     .capabilities
@@ -311,7 +311,7 @@ async fn reliable_resolution_binding_uses_exact_captured_signed_worker() {
                         .lock()
                         .unwrap()
                         .get(&903)
-                        .is_some_and(|sender| sender.is_closed())
+                        .is_some_and(tokio::sync::mpsc::UnboundedSender::is_closed)
                     {
                         break;
                     }

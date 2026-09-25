@@ -7,6 +7,7 @@ publish.workspace = true
 [features]
 test-support = []
 [dependencies]
+advisory-lock = { path = "../../system/advisory-lock" }
 launcher = { path = "../../packaging/launcher" }
 qos-agent-control-protocol = { path = "../../agent/control-protocol" }
 parking_lot.workspace = true
@@ -42,5 +43,6 @@ tempfile.workspace = true
 qos-session-peer = { path = "../../hosting/qos-session-peer" }
 word-processor = { path = "../../../apps/word-processor" }
 ed25519-dalek.workspace = true
+tilo-automerge.workspace = true
 [lints]
 workspace = true

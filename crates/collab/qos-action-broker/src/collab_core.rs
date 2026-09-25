@@ -14,6 +14,11 @@ use collab_types::{
 
 /// Native vault adapter; no identity or Secret Service discovery occurs here.
 pub trait SnapshotReceiptVault: Send + Sync {
+    /// Mints the snapshot receipt for `envelope` on `channel`.
+    ///
+    /// # Errors
+    ///
+    /// Returns a message when the vault cannot mint the receipt.
     fn mint_snapshot_receipt(&self, channel: ChannelId, envelope: &SignedOp) -> Result<(), String>;
 }
 

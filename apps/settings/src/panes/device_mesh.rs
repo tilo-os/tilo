@@ -11,6 +11,7 @@ use ui::doc::{read_bool, read_str};
 
 use automerge::{AutoCommit, ObjId, transaction::Transactable};
 use taffy::{NodeId, TaffyTree};
+use tilo_relay_protocol::config::CheckpointPrefixRecovery;
 use tilo_relay_protocol::{DeviceRole, RelayConfig, ReplicationIntent};
 use tilo_user_identity::RevocationReason;
 use ui::theme::Theme;
@@ -737,7 +738,7 @@ impl DeviceMeshPane {
                                 // Workspace discovery proves only that the room exists. It
                                 // cannot confer the native shell governor's retained authority.
                                 shell_authority: None,
-                                checkpoint_prefix_recovery: Default::default(),
+                                checkpoint_prefix_recovery: CheckpointPrefixRecovery::default(),
                             });
                     } else if !*enabled {
                         self.config.remove_workspace(*id);
@@ -806,7 +807,7 @@ impl DeviceMeshPane {
                         replication: ReplicationIntent::FullWorkspace,
                         admitted_users: Vec::new(),
                         shell_authority: None,
-                        checkpoint_prefix_recovery: Default::default(),
+                        checkpoint_prefix_recovery: CheckpointPrefixRecovery::default(),
                     })
                     .collect();
             }
@@ -2206,7 +2207,7 @@ mod tests {
             replication: ReplicationIntent::OnDemand,
             admitted_users: Vec::new(),
             shell_authority: None,
-            checkpoint_prefix_recovery: Default::default(),
+            checkpoint_prefix_recovery: CheckpointPrefixRecovery::default(),
         });
         config.save(&path).unwrap();
 
@@ -2327,7 +2328,7 @@ mod tests {
             replication: ReplicationIntent::OnDemand,
             admitted_users: Vec::new(),
             shell_authority: None,
-            checkpoint_prefix_recovery: Default::default(),
+            checkpoint_prefix_recovery: CheckpointPrefixRecovery::default(),
         });
         config.save(&path).unwrap();
 

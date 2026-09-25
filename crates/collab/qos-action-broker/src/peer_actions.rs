@@ -1,5 +1,5 @@
 //! Permissioned peer adapter for the ordinary native action broker.
-//! Only inert authenticated requests cross into its bounded LocalSet queue.
+//! Only inert authenticated requests cross into its bounded `LocalSet` queue.
 use std::sync::Arc;
 use tilo_relay::client::{CertifiedAction, CertifiedActionEvent};
 use tilo_relay::peer_actions::{ActionMessage, DirectedAction};
@@ -38,9 +38,18 @@ impl ActionRegistrationBarrier {
 /// policy remain mandatory broker checks independent of this provider.
 pub trait CertificateAuthority: Send + Sync {
     /// Installed local runtime clock/origin; never supplied by a wire peer.
+    ///
+    /// # Errors
+    ///
+    /// Returns a message when the installed clock cannot be read.
     fn policy_time(&self) -> Result<Option<PolicyTime>, String> {
         Ok(None)
     }
+    /// Checks `_certificate` for `_room` at the retained policy `_time`.
+    ///
+    /// # Errors
+    ///
+    /// Returns a message when the certificate is not authorized then; the default always refuses.
     fn authorize_with_policy_time(
         &self,
         _room: Uuid,
@@ -51,6 +60,10 @@ pub trait CertificateAuthority: Send + Sync {
     }
     /// Exact current pinned host authority for a broker-allocated private app
     /// descriptor. Ordinary and remote joins must never use this exception.
+    ///
+    /// # Errors
+    ///
+    /// Returns a message when the certificate is not the pinned host; the default always refuses.
     fn authorize_host_worker(
         &self,
         _route: &crate::route::CrdtRoute,
@@ -59,12 +72,21 @@ pub trait CertificateAuthority: Send + Sync {
         Err("local host worker authority unavailable".into())
     }
 
+    /// Checks `certificate` against the owner's current identity store for `room`.
+    ///
+    /// # Errors
+    ///
+    /// Returns a message when the certificate is unknown, revoked or not a member.
     fn authorize(
         &self,
         room: Uuid,
         certificate: &tilo_user_identity::DeviceCert,
     ) -> Result<(), String>;
     /// Local SDK admission may additionally require a host's current enrollment record.
+    ///
+    /// # Errors
+    ///
+    /// Returns a message when [`Self::authorize`] refuses or the certificate acts as a host.
     fn authorize_join(
         &self,
         room: Uuid,
@@ -144,6 +166,10 @@ pub struct Request {
     pub poll: Option<tilo_actions::InvocationId>,
     pub notification: Option<tilo_actions::InvocationUpdate>,
     pub reply: oneshot::Sender<Result<ActionMessage, ()>>,
+    #[expect(
+        clippy::pub_underscore_fields,
+        reason = "held only for its drop: the queue slot is released when the request is dropped"
+    )]
     pub _permit: Arc<OwnedSemaphorePermit>,
 }
 
@@ -151,6 +177,14 @@ impl Request {
     /// Required owner time on qualified private paths; None is legacy custody.
     pub fn policy_time(&self) -> Option<&PolicyTime> {
         self.policy_time.as_ref()
+    }
+    /// The queue-slot permit this request holds until it is dropped.
+    #[expect(
+        clippy::used_underscore_binding,
+        reason = "the public field keeps its drop-only name for existing callers"
+    )]
+    pub(crate) fn permit(&self) -> &Arc<OwnedSemaphorePermit> {
+        &self._permit
     }
 }
 
@@ -189,7 +223,10 @@ impl PeerActionQueue {
         poll: Option<tilo_actions::InvocationId>,
         notification: Option<tilo_actions::InvocationUpdate>,
     ) -> Result<ActionMessage, RequestFailure> {
-        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+        let now = tokio::time::Instant::now();
+        let deadline = now
+            .checked_add(std::time::Duration::from_secs(5))
+            .unwrap_or(now);
         let result = async {
             let permit = self
                 .permits
@@ -233,6 +270,11 @@ impl PeerActionQueue {
         result
     }
 
+    /// Submits one request through the bounded queue, as the relay adapter does.
+    ///
+    /// # Errors
+    ///
+    /// Returns `()` when the request is refused or its reply is lost.
     #[cfg(any(test, feature = "test-support"))]
     pub async fn request_for_test(
         &self,
@@ -272,6 +314,10 @@ impl PeerActionQueue {
     /// Serve an attached broker on the SAME certified state/private session.
     /// The caller must retain this task alongside its state receiver; failure
     /// must tear down that session, so stale capability cannot survive.
+    ///
+    /// # Errors
+    ///
+    /// Returns `()` once serving stops for any reason; the session is then closed.
     pub async fn serve(
         &self,
         session: Arc<tilo_relay::RelayCoeditSession>,
@@ -289,6 +335,10 @@ impl PeerActionQueue {
     /// Serve and report when this exact relay attachment acknowledges the
     /// expected durable broker capability. The acknowledgement returns to
     /// false when this serving future exits.
+    ///
+    /// # Errors
+    ///
+    /// Returns why serving stopped; a closed transport also closes the session.
     pub async fn serve_with_readiness(
         &self,
         session: Arc<tilo_relay::RelayCoeditSession>,
@@ -305,6 +355,11 @@ impl PeerActionQueue {
         result
     }
 
+    /// [`Self::serve_with_readiness`] that pauses at `barrier` before registering.
+    ///
+    /// # Errors
+    ///
+    /// Returns why serving stopped; a closed transport also closes the session.
     #[cfg(feature = "test-support")]
     pub async fn serve_with_readiness_and_registration_barrier_for_test(
         &self,
@@ -349,7 +404,7 @@ impl PeerActionQueue {
             barrier
                 .wait()
                 .await
-                .map_err(|_| PeerActionAttachmentError::Failed)?;
+                .map_err(|()| PeerActionAttachmentError::Failed)?;
         }
         session
             .enable_actions(room)
@@ -392,9 +447,8 @@ impl PeerActionQueue {
                     let update = update.ok_or(PeerActionAttachmentError::Failed)?;
                     if source.action().room != room { continue; }
                     if let Some((evidence, invocation, previous)) = watches.iter_mut().find(|(evidence, invocation, _)| evidence.action().source == source.action().source && *invocation == update.invocation()) {
-                        if let ActionMessage::Observation { update: Some(prior), .. } = previous {
-                            if sequence(&update).zip(sequence(prior)).is_some_and(|(next, old)| next <= old) { continue; }
-                        }
+                        if let ActionMessage::Observation { update: Some(prior), .. } = previous
+                            && sequence(&update).zip(sequence(prior)).is_some_and(|(next, old)| next <= old) { continue; }
                         let response = self.request("transition_poll", Some(evidence.clone()), Some(*invocation), Some(update)).await.map_err(|_| PeerActionAttachmentError::Failed)?;
                         if response != *previous { send(&session, evidence, response.clone()).map_err(attachment_send_error)?; *previous = response; }
                     }
@@ -476,6 +530,10 @@ fn bounded_reply(request: &DirectedAction, message: ActionMessage) -> DirectedAc
     reply
 }
 
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "independent diagnostic facts about one oversized reply"
+)]
 struct ReplyLimitDiagnostics {
     message_kind: &'static str,
     route_valid: bool,
@@ -547,6 +605,10 @@ fn reply_limit_diagnostics(reply: &DirectedAction) -> ReplyLimitDiagnostics {
     }
 }
 
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "a `map_err` adapter receives the error by value"
+)]
 fn attachment_send_error(error: tilo_relay::client::ClientError) -> PeerActionAttachmentError {
     match error {
         tilo_relay::client::ClientError::PrivateTransportClosed => {

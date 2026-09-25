@@ -171,7 +171,7 @@ async fn native_peer_facade_real_relay_durable_broker_application_stream() {
         assert!(fixture.state.certificate_authority.set(authority.clone()).is_ok());
         assert!(invoke(&request).validate(), "empty canonical package-primary record is valid");
         let (relay_key, relay_cert) = device(55, true);
-        let relay = Relay::start(RelayConfig { state_root: relay_root.path().into(), workspaces: vec![WorkspaceBinding { id: ws, pin: true, replication: tilo_relay::ReplicationIntent::FullWorkspace, admitted_users: vec![], shell_authority: None, checkpoint_prefix_recovery: Default::default() }], ..Default::default() }, RelayIdentity { user_public_key: relay_cert.user_public_key, device_signing_key: relay_key, device_cert: relay_cert, revocations: RevocationList::new() }).await.unwrap();
+        let relay = Relay::start(RelayConfig { state_root: relay_root.path().into(), workspaces: vec![WorkspaceBinding { id: ws, pin: true, replication: tilo_relay::ReplicationIntent::FullWorkspace, admitted_users: vec![], shell_authority: None, checkpoint_prefix_recovery: tilo_relay::CheckpointPrefixRecovery::default() }], ..Default::default() }, RelayIdentity { user_public_key: relay_cert.user_public_key, device_signing_key: relay_key, device_cert: relay_cert, revocations: RevocationList::new() }).await.unwrap();
         relay.set_workspace_membership(ws, true, vec![device(52, false).1.device_public_key, device(53, false).1.device_public_key, device(54, false).1.device_public_key], relay_root.path().into()).await.unwrap();
         let caller = client(&relay, 52, room).await;
         let other = client(&relay, 53, room).await;
@@ -332,7 +332,7 @@ async fn native_peer_facade_real_relay_durable_broker_application_stream() {
         assert!(matches!(reply(&caller, started).await, ActionMessage::Observation { update: Some(tilo_actions::InvocationUpdate::Accepted { .. }), .. }));
         let silent_delivery = stream.read_request().send().promise.await.unwrap();
         let silent_wire = silent_delivery.get().unwrap().get_id();
-        fixture.state.pending_invocations.lock().unwrap().get_mut(&silent_wire).unwrap().last_activity = std::time::Instant::now() - Duration::from_secs(2);
+        fixture.state.pending_invocations.lock().unwrap().get_mut(&silent_wire).unwrap().last_activity = std::time::Instant::now().checked_sub(Duration::from_secs(2)).unwrap();
         fixture.state.expire_stale_invocations_at(std::time::Instant::now(), Duration::from_secs(1), Duration::from_secs(1));
         let unknown = send(&caller, room, 52, invoke(&silent));
         assert!(matches!(reply(&caller, unknown).await, ActionMessage::Observation { uncertain: true, .. }));
@@ -402,7 +402,7 @@ fn native_peer_facade_recording_only_startup_cannot_advertise_durable_attachment
         crate::test_support::WorkspaceId(71),
         "Explicit native peer",
     );
-    room.set_owner(&principal_id_for_root(device(52, false).1.user_public_key));
+    room.set_owner(principal_id_for_root(device(52, false).1.user_public_key));
     let room_id = Uuid::parse_str(&room.room.to_string()).unwrap();
     tree.workspaces.push(room);
     tree.persist_path = Some(root.path().join("must-not-be-used/state.json"));
@@ -482,7 +482,7 @@ async fn native_peer_facade_draining_bridge_retains_inflight_permits() {
                         replication: tilo_relay::ReplicationIntent::FullWorkspace,
                         admitted_users: vec![],
                         shell_authority: None,
-                        checkpoint_prefix_recovery: Default::default(),
+                        checkpoint_prefix_recovery: tilo_relay::CheckpointPrefixRecovery::default(),
                     }],
                     ..Default::default()
                 },

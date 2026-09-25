@@ -1,4 +1,4 @@
-//! Test-only mutable policy fixture. Production hosts implement WorkspaceAuthority.
+//! Test-only mutable policy fixture. Production hosts implement `WorkspaceAuthority`.
 use crate::services::{LegacyWorkspaceProjection, WorkspaceAuthority};
 pub use collab_types::{CapOverride, Subject, Verb};
 pub use qos_desktop::{RoomId, Workspace, WorkspaceId};
@@ -81,6 +81,7 @@ impl LegacyWorkspaceProjection for WorkspaceTreeHandle {
                     invocation, actor, context, status,
                 ));
         }
+        drop(tree);
         Ok(())
     }
     fn record_task_update(

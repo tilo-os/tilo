@@ -32,15 +32,33 @@ pub struct AgentProviderState {
 /// used by the Store while validating its candidate transaction.
 pub trait AgentProviderAuthority: Send + Sync {
     /// Exact immutable grants of the retained same-caller Spawn; never today's offer.
+    ///
+    /// # Errors
+    ///
+    /// Returns a message when no retained same-caller Spawn grants exist.
     fn parent_grants(&self, caller: &DeviceCert, agent: &str) -> Result<Vec<GrantAction>, String>;
+    /// Proves the live managed process of the caller's retained parent agent.
+    ///
+    /// # Errors
+    ///
+    /// Returns a message when no verified live parent process exists.
     fn parent_process(
         &self,
         caller: &DeviceCert,
         agent: &str,
     ) -> Result<VerifiedManagedProcess, String>;
+    /// Reads the current live provider publication.
+    ///
+    /// # Errors
+    ///
+    /// Returns a message when the current publication cannot be read.
     fn snapshot(&self) -> Result<AgentProviderState, String>;
     /// Message must revalidate every inherited grant against current policy and
     /// publications. Any revoked grant rejects the whole request, without shrinking it.
+    ///
+    /// # Errors
+    ///
+    /// Returns a message when the caller or any inherited grant is not currently authorized.
     fn authorize(
         &self,
         caller: &DeviceCert,
@@ -55,7 +73,7 @@ pub struct AgentControlProvider {
 
 pub use tilo_relay::agent_reads::{AgentMutationBinding, AgentMutationRoute, AgentReadBinding};
 
-/// No public/data constructor: only verified certified InvokeBound can mint this.
+/// No public/data constructor: only verified certified `InvokeBound` can mint this.
 pub struct VerifiedAgentAdmission {
     invocation: Uuid,
     intent: AgentIntentV2,
@@ -77,11 +95,16 @@ impl VerifiedAgentAdmission {
     pub fn parent_process(&self) -> Option<&VerifiedManagedProcess> {
         self.parent_process.as_ref()
     }
+    /// Re-checks that the admitted publication, runtime and parent custody are unchanged.
+    ///
+    /// # Errors
+    ///
+    /// Returns a message when any of them changed after admission verification.
     pub fn revalidate(&self) -> Result<(), String> {
-        if let Some(process) = &self.parent_process {
-            if process.facts()?.runtime != self.runtime {
-                return Err("agent parent runtime changed".into());
-            }
+        if let Some(process) = &self.parent_process
+            && process.facts()?.runtime != self.runtime
+        {
+            return Err("agent parent runtime changed".into());
         }
         let (state, runtime) = self.provider.current()?;
         if state != self.publication || runtime != self.runtime {
@@ -122,6 +145,11 @@ impl AgentControlProvider {
         }
         Ok((state, runtime))
     }
+    /// Current spawn and message bindings of the live runtime.
+    ///
+    /// # Errors
+    ///
+    /// Returns a message when the runtime or current publication is unavailable or invalid.
     pub fn mutation_bindings(&self) -> Result<[AgentMutationBinding; 2], String> {
         let (state, runtime) = self.current()?;
         Ok([
@@ -129,6 +157,11 @@ impl AgentControlProvider {
             mutation_binding(&state, &runtime, "message")?,
         ])
     }
+    /// Current catalogue surface of the live agent provider.
+    ///
+    /// # Errors
+    ///
+    /// Returns a message when the runtime or current publication is unavailable or invalid.
     pub fn catalogue_surface(&self) -> Result<serde_json::Value, String> {
         let (state, runtime) = self.current()?;
         Ok(
@@ -138,6 +171,11 @@ impl AgentControlProvider {
                        mutation_binding(&state,&runtime,"message")?.descriptor]}),
         )
     }
+    /// Current read binding for `caller`, with mutation bindings only while runtime custody holds.
+    ///
+    /// # Errors
+    ///
+    /// Returns a message when the caller is not authorized or the current binding is invalid.
     pub fn read_binding(&self, caller: &DeviceCert) -> Result<AgentReadBinding, String> {
         self.authority
             .authorize(caller, &AgentRequest::Capabilities { version: 1 })?;
@@ -166,14 +204,23 @@ impl AgentControlProvider {
                 device: hex::encode(caller.device_public_key),
                 host: state.host.to_string(),
             },
-            spawn: bindings.as_ref().map(|b| b[0].clone()),
-            message: bindings.as_ref().map(|b| b[1].clone()),
+            spawn: bindings.as_ref().map(|[spawn, _]| spawn.clone()),
+            message: bindings.as_ref().map(|[_, message]| message.clone()),
         };
         if !tilo_relay::agent_reads::valid_binding(&binding, state.host) {
             return Err("invalid current agent read binding".into());
         }
         Ok(binding)
     }
+    /// Verifies one certified bound invocation against the current native descriptor.
+    ///
+    /// # Errors
+    ///
+    /// Returns a message when the evidence, caller, request or grants do not match current state.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one linear admission check over the certified invocation; splitting it would scatter the ordered checks"
+    )]
     pub fn verify_invocation(
         self: &Arc<Self>,
         evidence: &CertifiedAction,
@@ -215,8 +262,8 @@ impl AgentControlProvider {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map_err(|_| "clock unavailable")?
-            .as_nanos()
-            .min(u128::from(u64::MAX)) as u64;
+            .as_nanos();
+        let now = u64::try_from(now).unwrap_or(u64::MAX);
         tilo_user_identity::verify_device_cert_at(caller, now)
             .map_err(|_| "agent caller certificate rejected")?;
         if caller.capabilities.can_act_as_host
@@ -227,10 +274,11 @@ impl AgentControlProvider {
         let bytes = serde_json::to_vec(argument.as_ref().ok_or("agent request missing")?)
             .map_err(|e| e.to_string())?;
         let request = decode_control_request(action, &bytes)?;
-        if let AgentRequest::Spawn { grant_set_id, .. } = &request {
-            if grant_set_id != &state.grant_offers[0].id {
-                return Err("agent grant offer changed".into());
-            }
+        let offer = current_offer(&state)?;
+        if let AgentRequest::Spawn { grant_set_id, .. } = &request
+            && grant_set_id != &offer.id
+        {
+            return Err("agent grant offer changed".into());
         }
         let grants = self.authority.authorize(caller, &request)?;
         let parent_grants = if let AgentRequest::Message { agent_id, .. } = &request {
@@ -238,12 +286,7 @@ impl AgentControlProvider {
         } else {
             None
         };
-        validate_control_grants(
-            &request,
-            &state.grant_offers[0],
-            &grants,
-            parent_grants.as_deref(),
-        )?;
+        validate_control_grants(&request, offer, &grants, parent_grants.as_deref())?;
         let parent_process = if let AgentRequest::Message { agent_id, .. } = &request {
             let proof = self.authority.parent_process(caller, agent_id)?;
             let facts = proof.facts()?;
@@ -303,20 +346,30 @@ fn validate_provider_state(
             && s.bytes()
                 .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
     };
+    let invalid = || "invalid current agent provider binding".to_string();
+    let [offer] = state.grant_offers.as_slice() else {
+        return Err(invalid());
+    };
     if state.machine.is_empty()
         || state.room.is_nil()
         || state.host.is_nil()
         || state.app_peer == 0
         || runtime.package_id != APP_ID
-        || state.grant_offers.len() != 1
         || !hash(&state.governance_revision)
         || !hash(&state.publication_revision)
-        || !hash(&state.grant_offers[0].revision)
-        || state.grant_offers[0].actions.is_empty()
+        || !hash(&offer.revision)
+        || offer.actions.is_empty()
     {
-        return Err("invalid current agent provider binding".into());
+        return Err(invalid());
     }
-    validate_grant_actions(&state.grant_offers[0].actions)
+    validate_grant_actions(&offer.actions)
+}
+/// The single current grant offer that [`validate_provider_state`] requires.
+fn current_offer(state: &AgentProviderState) -> Result<&GrantOffer, String> {
+    match state.grant_offers.as_slice() {
+        [offer] => Ok(offer),
+        _ => Err("invalid current agent provider binding".into()),
+    }
 }
 fn validate_grant_actions(grants: &[GrantAction]) -> Result<(), String> {
     // v1 exact tuples (bounded by MAX_ACTIONS_PER_GRANT) or v2 scope carriers
@@ -370,7 +423,9 @@ fn mutation_binding(
         "grant":grant}))
         .map_err(|e| e.to_string())?;
     let revision = blake3::hash(&canonical).to_hex().to_string();
-    descriptor["revision"] = revision.clone().into();
+    if let Some(fields) = descriptor.as_object_mut() {
+        fields.insert("revision".into(), revision.clone().into());
+    }
     Ok(AgentMutationBinding {
         route: AgentMutationRoute {
             app_peer: state.app_peer.to_string(),
@@ -413,6 +468,10 @@ fn validate_control_grants(
 
 #[cfg(test)]
 mod tests {
+    #![allow(
+        clippy::significant_drop_tightening,
+        reason = "test fixtures scope their state guards to a block; early drops add nothing"
+    )]
     use super::*;
     fn provider_data() -> (AgentProviderState, ManagedRuntimeFacts) {
         (
@@ -469,7 +528,7 @@ mod tests {
                 .lock()
                 .unwrap()
                 .clone()
-                .ok_or("Store unavailable".into())
+                .ok_or_else(|| "Store unavailable".into())
         }
         fn authorize(
             &self,
@@ -599,7 +658,7 @@ mod tests {
                 "app" => bad.app_id = "a".repeat(129),
                 "record" => bad.record_id = "a".repeat(129),
                 _ => bad.action = "a".repeat(129),
-            };
+            }
             assert!(validate_grant_actions(&[bad]).is_err(), "{field}");
         }
     }
@@ -639,7 +698,7 @@ mod tests {
             match field {
                 "governance" => changed.governance_revision = "b".repeat(64),
                 "offer_expiry" => {
-                    changed.grant_offers[0].expires_at = "2100-01-01T00:15:00Z".into()
+                    changed.grant_offers[0].expires_at = "2100-01-01T00:15:00Z".into();
                 }
                 _ => changed.publication_revision = "c".repeat(64),
             }

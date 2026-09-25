@@ -1,8 +1,12 @@
 //! Original caller custody belongs to each accepted file operation.
-use super::*;
+use super::{AutoCommit, ObjId, Widget, WordProcessorWidget, WpFormat};
 use ui::invocation_scope::ResourceInvocationScope;
 
 impl WordProcessorWidget {
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "mirrors the widget's resource-operation entry point plus the caller's invocation scope"
+    )]
     pub(super) fn start_file_operation(
         &mut self,
         invocation: tilo_actions::InvocationId,

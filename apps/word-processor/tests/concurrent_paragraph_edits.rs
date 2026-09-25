@@ -15,6 +15,7 @@
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjType, ReadDoc};
 use tilo_actions::Action;
+use tilo_automerge::ApplyIncoming as _;
 use word_processor::actions::{
     MarkVal, RegionKind, Span, WordProcessorAction, set_mark_action, splice_text_action,
     split_block_action,
@@ -43,8 +44,8 @@ fn apply(doc: &mut AutoCommit, action: &WordProcessorAction) {
 fn merge_both(a: &mut AutoCommit, b: &mut AutoCommit) -> qdoc::DocSnapshot {
     let mut a_copy = a.clone();
     let mut b_copy = b.clone();
-    a.merge(&mut b_copy).unwrap();
-    b.merge(&mut a_copy).unwrap();
+    a.merge_incoming(&mut b_copy).unwrap();
+    b.merge_incoming(&mut a_copy).unwrap();
     let snap_a = snapshot(a);
     let snap_b = snapshot(b);
     assert_eq!(
@@ -70,7 +71,7 @@ fn only_text(snap: &qdoc::DocSnapshot) -> &str {
 }
 
 fn splice(block: &str, at: usize, del: usize, ins: &str) -> WordProcessorAction {
-    splice_text_action(RegionKind::Body, block, at, at + del, ins)
+    splice_text_action(RegionKind::Body, block, at, at.saturating_add(del), ins)
 }
 
 #[test]
@@ -228,8 +229,7 @@ fn legacy_conflicted_document() -> (AutoCommit, String) {
         doc.splice_text(&t, 0, 0, text).unwrap();
         doc.commit();
     }
-    let mut b_copy = b.clone();
-    a.merge(&mut b_copy).unwrap();
+    a.merge_incoming(&mut b).unwrap();
     (a, block)
 }
 
@@ -285,7 +285,7 @@ fn legacy_scalar_paragraph_opens_and_upgrades_to_text_on_first_edit() {
     );
     // Once upgraded, further concurrent edits merge character-level.
     let mut a_copy = a.clone();
-    b.merge(&mut a_copy).unwrap();
+    b.merge_incoming(&mut a_copy).unwrap();
     apply(&mut a, &splice(&block, 0, 0, "A:"));
     apply(&mut b, &splice(&block, 17, 0, " B"));
     let snap = merge_both(&mut a, &mut b);

@@ -38,6 +38,10 @@ impl EnrolledProcess {
         Self(ProcessKind::Managed(process))
     }
     /// Current exact process facts; fails once the process is gone.
+    ///
+    /// # Errors
+    ///
+    /// Returns a message once the process is gone or its facts cannot be read.
     pub fn facts(&self) -> Result<ChannelProcessFacts, String> {
         match &self.0 {
             ProcessKind::Managed(process) => process.facts(),
@@ -118,18 +122,48 @@ pub enum EnrolledDispatchResult {
 /// Each callback resolves the retained operation's original caller, then checks
 /// current authority under its own Store lock. No broker lock spans callbacks.
 pub trait EnrolledAgentOwner: Send + Sync {
+    /// Checks that `caller` may run the enrolled `process`.
+    ///
+    /// # Errors
+    ///
+    /// Returns a message when the process or caller is not currently authorized.
     fn authorize_process(
         &self,
         process: &EnrolledProcess,
         caller: &DeviceCert,
     ) -> Result<(), String>;
+    /// Commits the dispatch intent of one verified enrolled task.
+    ///
+    /// # Errors
+    ///
+    /// Returns a message when the owner refuses or cannot commit the dispatch.
     fn dispatch(&self, dispatch: &VerifiedEnrolledDispatch) -> Result<DispatchCommit, String>;
+    /// Commits the recipient's verified acceptance.
+    ///
+    /// # Errors
+    ///
+    /// Returns a message when the owner refuses or cannot commit the acceptance.
     fn accept(
         &self,
         acceptance: &VerifiedRecipientAcceptance,
     ) -> Result<OwnerCommitReceipt, String>;
+    /// Commits one verified task update.
+    ///
+    /// # Errors
+    ///
+    /// Returns a message when the owner refuses or cannot commit the update.
     fn update(&self, update: &VerifiedTaskUpdate) -> Result<OwnerCommitReceipt, String>;
+    /// Records one non-durable progress update.
+    ///
+    /// # Errors
+    ///
+    /// Returns a message when the owner refuses the progress update.
     fn progress(&self, update: &VerifiedTaskUpdate) -> Result<(), String>;
+    /// Checks that the accepted task may invoke `action` on `resource`.
+    ///
+    /// # Errors
+    ///
+    /// Returns a message when the task is not currently authorized for the action.
     fn authorize_task_action(
         &self,
         dispatch: &VerifiedEnrolledDispatch,
@@ -140,6 +174,10 @@ pub trait EnrolledAgentOwner: Send + Sync {
     ) -> Result<(), String>;
     /// Required original-context lifecycle check. Legacy callbacks cannot
     /// substitute a fresh clock for an already admitted invocation.
+    ///
+    /// # Errors
+    ///
+    /// Returns a message when the action is not authorized at `time`; the default always refuses.
     fn authorize_task_action_with_policy_time(
         &self,
         _dispatch: &VerifiedEnrolledDispatch,
@@ -151,6 +189,11 @@ pub trait EnrolledAgentOwner: Send + Sync {
     ) -> Result<(), String> {
         Err("original enrolled action policy context unavailable".into())
     }
+    /// Current grants of `caller`'s enrolled `process`.
+    ///
+    /// # Errors
+    ///
+    /// Returns a message when the grants cannot be resolved for this caller.
     fn grants(
         &self,
         process: &EnrolledProcess,
@@ -161,6 +204,10 @@ pub trait EnrolledAgentOwner: Send + Sync {
     /// private owner as its dispatch. `bind` and `commit` return only after
     /// the owner's commit. Defaults refuse: without the step ledger no managed
     /// child can be mapped, driven or released for an enrolled task.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`ParentFailure`] when the step ledger is unavailable or refuses the step.
     fn task_step(
         &self,
         _dispatch: &VerifiedEnrolledDispatch,
@@ -168,6 +215,11 @@ pub trait EnrolledAgentOwner: Send + Sync {
     ) -> Result<Option<ParentRecord>, ParentFailure> {
         Err(step_ledger_unavailable())
     }
+    /// Retained parent step bound to `child`, if any.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`ParentFailure`] when the step ledger is unavailable or refuses the lookup.
     fn task_step_child(
         &self,
         _dispatch: &VerifiedEnrolledDispatch,
@@ -175,6 +227,11 @@ pub trait EnrolledAgentOwner: Send + Sync {
     ) -> Result<Option<ParentRecord>, ParentFailure> {
         Err(step_ledger_unavailable())
     }
+    /// Durably binds `step` to `child` with its exact `intent`.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`ParentFailure`] when the step ledger is unavailable or refuses the binding.
     fn bind_task_step(
         &self,
         _dispatch: &VerifiedEnrolledDispatch,
@@ -184,6 +241,11 @@ pub trait EnrolledAgentOwner: Send + Sync {
     ) -> Result<ParentRecord, ParentFailure> {
         Err(step_ledger_unavailable())
     }
+    /// Durably commits one child result to its parent step.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`ParentFailure`] when the step ledger is unavailable or refuses the commit.
     fn commit_task_step(
         &self,
         _dispatch: &VerifiedEnrolledDispatch,
@@ -219,6 +281,10 @@ pub static CHILD_SETTLED: tokio::sync::Notify = tokio::sync::Notify::const_new()
 pub trait EnrolledStepService: Send + Sync {
     /// Queue one step. The reply arrives once the parent committed the step's
     /// exact result; a dropped reply means "still pending, retry the step".
+    ///
+    /// # Errors
+    ///
+    /// Returns a message when the step cannot be queued.
     fn submit(
         &self,
         request: EnrolledStepRequest,
@@ -236,6 +302,11 @@ pub struct EnrolledTaskParent {
     dispatch: VerifiedEnrolledDispatch,
 }
 impl EnrolledTaskParent {
+    /// Parent custody for the still-active accepted task of `dispatch`.
+    ///
+    /// # Errors
+    ///
+    /// Returns a message when the connection is lost or the original task is no longer active.
     pub fn new(dispatch: &VerifiedEnrolledDispatch) -> Result<Self, String> {
         let connection = dispatch.live_connection()?;
         {
@@ -253,6 +324,7 @@ impl EnrolledTaskParent {
             {
                 return Err("original enrolled task is no longer active".into());
             }
+            drop(state);
         }
         Ok(Self {
             connection,
@@ -350,6 +422,11 @@ impl VerifiedEnrolledDispatch {
     pub fn canonical_envelope(&self) -> &str {
         &self.data.canonical
     }
+    /// Live process custody of this dispatch's connection.
+    ///
+    /// # Errors
+    ///
+    /// Returns a message when the connection is lost or no longer matches this dispatch.
     pub fn process(&self) -> Result<EnrolledProcess, String> {
         let connection = self.live_connection()?;
         Ok(connection.process.clone())
@@ -366,10 +443,19 @@ impl VerifiedEnrolledDispatch {
         }
         Ok(connection)
     }
+    /// Current process facts of this dispatch's live connection.
+    ///
+    /// # Errors
+    ///
+    /// Returns a message when the connection is lost or no longer matches this dispatch.
     pub fn revalidate(&self) -> Result<ChannelProcessFacts, String> {
         self.live_connection()?.revalidate()
     }
     /// Original accepted-task custody only. This never opens the owner Store.
+    ///
+    /// # Errors
+    ///
+    /// Returns a message when the connection is lost or changed, or the task is no longer active.
     pub fn check_action_custody_at(&self, now_ns: u64) -> Result<ChannelProcessFacts, String> {
         let connection = self
             .connection
@@ -394,6 +480,7 @@ impl VerifiedEnrolledDispatch {
         {
             return Err("original enrolled task is no longer active".into());
         }
+        drop(state);
         Ok(facts)
     }
     pub(crate) fn authorize_original_action(
@@ -435,6 +522,11 @@ impl VerifiedRecipientAcceptance {
     pub fn acceptance(&self) -> &EnrolledTaskAcceptance {
         &self.acceptance
     }
+    /// Current process facts, while the acceptance still matches its envelope.
+    ///
+    /// # Errors
+    ///
+    /// Returns a message when the acceptance changed or the dispatch no longer validates.
     pub fn revalidate(&self) -> Result<ChannelProcessFacts, String> {
         if !self.acceptance.matches(self.envelope()) {
             return Err("enrolled acceptance changed".into());
@@ -470,6 +562,11 @@ impl VerifiedTaskUpdate {
     pub fn update(&self) -> &TaskRunUpdate {
         &self.update
     }
+    /// Current process facts of the accepted task.
+    ///
+    /// # Errors
+    ///
+    /// Returns a message when the acceptance or dispatch no longer validates.
     pub fn revalidate(&self) -> Result<ChannelProcessFacts, String> {
         self.accepted.revalidate()
     }
@@ -594,9 +691,8 @@ impl EnrolledConnection {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map_err(|_| "clock unavailable")?
-            .as_nanos()
-            .min(u128::from(u64::MAX)) as u64;
-        self.revalidate_at(now)
+            .as_nanos();
+        self.revalidate_at(u64::try_from(now).unwrap_or(u64::MAX))
     }
     fn revalidate_at(&self, now_ns: u64) -> Result<ChannelProcessFacts, String> {
         if !self.alive.load(Ordering::Acquire) {
@@ -634,6 +730,7 @@ impl EnrolledConnection {
         let (sender, receiver) = mpsc::channel(32);
         state.subscribed = true;
         state.sender = Some(sender);
+        drop(state);
         Ok(receiver)
     }
     pub(crate) fn close(&self) {
@@ -686,7 +783,7 @@ impl EnrolledConnection {
                 .ok_or("enrolled recipient not subscribed")?;
             // The exact envelope is charged before the durable effect boundary,
             // including ambiguous sends. There is no eviction or replay permit.
-            state.retained_bytes += data.canonical.len();
+            state.retained_bytes = state.retained_bytes.saturating_add(data.canonical.len());
             state.retained.insert(
                 data.envelope.message_id.clone(),
                 RetainedDispatch {
@@ -698,6 +795,7 @@ impl EnrolledConnection {
                     sent: false,
                 },
             );
+            drop(state);
             sender
         };
         let witness = VerifiedEnrolledDispatch {
@@ -728,6 +826,7 @@ impl EnrolledConnection {
                 return Err("enrolled dispatch permit already consumed".into());
             }
             retained.sent = true;
+            drop(state);
         }
         // Consumed even when the receiver disappears. Status is the only retry.
         sender
@@ -737,14 +836,14 @@ impl EnrolledConnection {
     }
     pub(crate) fn accept(
         self: &Arc<Self>,
-        acceptance: EnrolledTaskAcceptance,
+        acceptance: &EnrolledTaskAcceptance,
     ) -> Result<OwnerCommitReceipt, String> {
         self.authorize()?;
         let data = self
             .state
             .lock()
             .map_err(|_| "enrolled registry unavailable")?
-            .begin_acceptance(&acceptance)?;
+            .begin_acceptance(acceptance)?;
         let witness = VerifiedRecipientAcceptance {
             dispatch: VerifiedEnrolledDispatch {
                 connection: Arc::downgrade(self),
@@ -756,12 +855,12 @@ impl EnrolledConnection {
         self.state
             .lock()
             .map_err(|_| "enrolled registry unavailable")?
-            .finish_acceptance(&acceptance, &self.facts.binding.room, result)
+            .finish_acceptance(acceptance, &self.facts.binding.room, result)
     }
 
     pub(crate) fn report(
         self: &Arc<Self>,
-        acceptance: EnrolledTaskAcceptance,
+        acceptance: &EnrolledTaskAcceptance,
         sequence: u64,
         update: TaskRunUpdate,
     ) -> Result<(), String> {
@@ -776,7 +875,7 @@ impl EnrolledConnection {
                 .retained
                 .get_mut(&acceptance.message_id)
                 .ok_or("unknown enrolled dispatch")?;
-            if retained.accepted.as_ref() != Some(&acceptance)
+            if retained.accepted.as_ref() != Some(acceptance)
                 || !acceptance.matches(&retained.data.envelope)
             {
                 return Err("enrolled update requires committed exact acceptance".into());
@@ -793,7 +892,9 @@ impl EnrolledConnection {
                 return Err("enrolled task commit pending".into());
             }
             retained.callback_pending = true;
-            retained.data.clone()
+            let data = retained.data.clone();
+            drop(state);
+            data
         };
         let witness = VerifiedTaskUpdate {
             accepted: VerifiedRecipientAcceptance {
@@ -831,6 +932,7 @@ impl EnrolledConnection {
         result?;
         retained.last_update = Some((sequence, update));
         retained.terminal = terminal;
+        drop(state);
         Ok(())
     }
     pub(crate) fn authorize_task_action(
@@ -886,6 +988,7 @@ impl EnrolledConnection {
             })
             .map(|entry| entry.data.clone())
             .ok_or("original enrolled task disappeared")?;
+        drop(state);
         Ok(VerifiedEnrolledDispatch {
             connection: Arc::downgrade(self),
             data,
@@ -899,7 +1002,8 @@ impl EnrolledConnection {
         if state.action_slots >= 8192 {
             return Err("enrolled action retention full".into());
         }
-        state.action_slots += 1;
+        state.action_slots = state.action_slots.saturating_add(1);
+        drop(state);
         Ok(())
     }
     pub(crate) fn remember_action(
@@ -916,6 +1020,7 @@ impl EnrolledConnection {
             return Err("enrolled action handle conflict".into());
         }
         state.invocations.insert(id, (message, grant));
+        drop(state);
         Ok(())
     }
     pub(crate) fn authorize_action_observation(
@@ -938,7 +1043,9 @@ impl EnrolledConnection {
                 .ok_or("enrolled action task lost")?
                 .data
                 .clone();
-            (data, grant.clone())
+            let grant = grant.clone();
+            drop(state);
+            (data, grant)
         };
         let witness = VerifiedEnrolledDispatch {
             connection: Arc::downgrade(self),
@@ -969,7 +1076,7 @@ impl EnrolledConnection {
             .state
             .lock()
             .map_err(|_| "enrolled registry unavailable")?;
-        state
+        let envelope = state
             .retained
             .values()
             .find(|entry| {
@@ -978,8 +1085,9 @@ impl EnrolledConnection {
                     && entry.data.envelope.task.run_id == run
                     && entry.data.envelope.task.lease == lease
             })
-            .map(|entry| entry.data.envelope.clone())
-            .ok_or_else(|| "unknown enrolled task lease".into())
+            .map(|entry| entry.data.envelope.clone());
+        drop(state);
+        envelope.ok_or_else(|| "unknown enrolled task lease".into())
     }
 }
 impl Drop for EnrolledConnection {
@@ -1012,6 +1120,7 @@ impl EnrolledRegistry {
             return Err("enrolled connection already installed".into());
         }
         registry.insert(peer, connection);
+        drop(registry);
         Ok(())
     }
     pub(crate) fn connection(&self, peer: u64) -> Result<Arc<EnrolledConnection>, String> {
@@ -1103,15 +1212,15 @@ impl EnrolledRegistry {
             .connections
             .lock()
             .map(|mut registry| {
-                let peers: Vec<u64> = registry
-                    .iter()
-                    .filter(|(_, c)| c.facts.binding.agent == agent)
-                    .map(|(peer, _)| *peer)
-                    .collect();
-                peers
-                    .into_iter()
-                    .filter_map(|peer| registry.remove(&peer))
-                    .collect()
+                let mut closed = Vec::new();
+                registry.retain(|_, connection| {
+                    let revoked = connection.facts.binding.agent == agent;
+                    if revoked {
+                        closed.push(Arc::clone(connection));
+                    }
+                    !revoked
+                });
+                closed
             })
             .unwrap_or_default();
         for connection in &closed {
@@ -1230,6 +1339,12 @@ fn validate_enrolled_envelope(envelope: &EnrolledTaskEnvelope) -> Result<(), Str
 
 #[cfg(test)]
 mod tests {
+    #![allow(
+        clippy::arithmetic_side_effects,
+        clippy::cast_possible_truncation,
+        clippy::field_reassign_with_default,
+        reason = "fixture ids are small constants; tests spell out each field they vary"
+    )]
     use super::*;
     fn envelope() -> EnrolledTaskEnvelope {
         let id = "11111111-1111-4111-8111-111111111111".to_string();
@@ -1309,7 +1424,7 @@ mod tests {
         let mut state = RecipientState::default();
         state
             .retained
-            .insert(accepted.message_id.clone(), retained(data.clone(), true));
+            .insert(accepted.message_id.clone(), retained(data, true));
         state.begin_acceptance(&accepted).unwrap();
         assert!(state.retained[&accepted.message_id].accepted.is_none());
         assert!(

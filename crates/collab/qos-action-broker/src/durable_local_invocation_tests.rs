@@ -157,7 +157,7 @@ async fn durable_local_rpc_exact_uuid_duplicate_cancel_and_retained_observation(
                     "Original room",
                 );
                 workspace.room=qos_desktop::RoomId::parse(owner.peer().room()).unwrap();
-                workspace.set_owner(&principal_id_for_root(cert.user_public_key));
+                workspace.set_owner(principal_id_for_root(cert.user_public_key));
                 workspace.owner = None;
                 workspace.capabilities = workspace
                     .capabilities
@@ -232,7 +232,7 @@ async fn durable_local_rpc_exact_uuid_duplicate_cancel_and_retained_observation(
 
                 let stream=handle.subscribe_stable_invocations().await.unwrap();
                 let (_,binding)=handle.resolve_published_action_for_invocation(903,"original-r1","workspace:atlas","open").await.unwrap();
-                let invocation=tilo_actions::InvocationId(uuid::Uuid::from_u128(0xabcdef00000000000000000000000001));
+                let invocation=tilo_actions::InvocationId(uuid::Uuid::from_u128(0xabcd_ef00_0000_0000_0000_0000_0000_0001));
                 let (first,duplicate)=tokio::join!(
                     handle.invoke_resolved_published_action_durable(invocation.0.as_bytes(),&binding,"original-r1","workspace:atlas","open",Some("original"),"{}"),
                     handle.invoke_resolved_published_action_durable(invocation.0.as_bytes(),&binding,"original-r1","workspace:atlas","open",Some("original"),"{}")

@@ -515,6 +515,10 @@ fn durable_import_without_retirement_marker_reopens_the_same_graph() {
     assert!(source.join(".notes-canonical-v1").is_file());
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "one historical-custody scenario covering import, reopen and history"
+)]
 fn assert_historical_qos_custody(imported: bool) {
     let f = LegacyFixture::rich();
     let historical = f.write_qos_canonical_v1(imported);
@@ -575,7 +579,8 @@ fn assert_historical_qos_custody(imported: bool) {
         live.wait_until(ui::clock::Duration::ZERO, |_| {
             records
                 .read(&checkout.id, |doc| {
-                    doc.pending_ops() == 0 && NotesDoc::list_pages(doc).len() == original_pages + 1
+                    doc.pending_ops() == 0
+                        && NotesDoc::list_pages(doc).len() == original_pages.saturating_add(1)
                 })
                 .unwrap_or(false)
         }),
@@ -585,7 +590,7 @@ fn assert_historical_qos_custody(imported: bool) {
         records
             .read(&checkout.id, |doc| NotesDoc::list_pages(doc).len())
             .unwrap(),
-        original_pages + 1
+        original_pages.saturating_add(1)
     );
     live.click_named("history-open").unwrap();
     select(&mut live, selected);
@@ -667,7 +672,7 @@ fn historical_qos_marker_tampering_never_opens_or_forks_custody() {
             "workspace" => marker["workspace"] = "other-room".into(),
             "package" => marker["package"] = "dev.foreign.notes".into(),
             "record" => {
-                marker["record"] = format!("derived:notes-legacy-v1@{}", "ab".repeat(32)).into()
+                marker["record"] = format!("derived:notes-legacy-v1@{}", "ab".repeat(32)).into();
             }
             "extra" => marker["unexpected"] = true.into(),
             _ => unreachable!(),

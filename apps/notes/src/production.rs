@@ -57,63 +57,7 @@ pub fn prepare_notebook_with_source(
         Err(error) => return Err(error.to_string()),
     };
     let (records, checkout, custody) = if let Some(saved) = saved {
-        if saved.version != 1 || saved.workspace != workspace_id {
-            return Err("this source is retired into a different canonical storage/workspace; open its original custody".into());
-        }
-        let requested_state = state_root.canonicalize().map_err(|e| {
-            format!(
-                "canonical custody state root is unavailable; reopen its original state root: {e}"
-            )
-        })?;
-        if saved.state_root != requested_state {
-            return Err("this source is retired into a different canonical storage/workspace; open its original custody".into());
-        }
-        let profile = match saved.package.as_str() {
-            "dev.tilo.notes" => {
-                let key = crate::legacy_import::source_key(root).map_err(|e| e.to_string())?;
-                let checkout = crate::legacy_import::destination(key);
-                if saved.record != checkout.id.as_str() {
-                    return Err("this source is retired into a different canonical storage/workspace; open its original custody".into());
-                }
-                SavedCustodyProfile::Current(checkout)
-            }
-            "dev.qos.notes" => {
-                let key = crate::legacy_import::qos_source_key(root).map_err(|e| e.to_string())?;
-                let source_key = crate::legacy_import::source_key_hex(key);
-                let record = crate::legacy_import::qos_destination(key);
-                if saved.record != record {
-                    return Err("this source is retired into a different canonical storage/workspace; open its original custody".into());
-                }
-                let evidence = ui::record::LocalCanonicalCompatibility::qos_notes_v1(
-                    workspace_id,
-                    &source_key,
-                    &record,
-                )
-                .ok_or("invalid historical canonical custody marker")?;
-                SavedCustodyProfile::Historical(evidence)
-            }
-            _ => {
-                return Err("canonical custody marker has an unsupported package".into());
-            }
-        };
-        let mut owners = ui::record::RecordOwners::new(requested_state);
-        let records = owners
-            .open(&saved.package, workspace_id)
-            .map_err(|e| e.to_string())?;
-        let checkout = match profile {
-            SavedCustodyProfile::Current(checkout) => {
-                records
-                    .try_open_record(&checkout)
-                    .map_err(|e| e.to_string())?;
-                checkout
-            }
-            SavedCustodyProfile::Historical(evidence) => {
-                records
-                    .try_open_local_compatibility(&evidence)
-                    .map_err(|e| e.to_string())?;
-                evidence.checkout().clone()
-            }
-        };
+        let (records, checkout) = reopen_saved_custody(root, state_root, workspace_id, &saved)?;
         (records, checkout, None)
     } else {
         let key = crate::legacy_import::source_key(root).map_err(|e| e.to_string())?;
@@ -189,4 +133,70 @@ pub fn prepare_notebook_with_source(
         records,
         checkout,
     })
+}
+
+/// Reopen the canonical record a retired source's custody marker names,
+/// refusing any mismatch with the requested source, state root or workspace.
+fn reopen_saved_custody(
+    root: &Path,
+    state_root: &Path,
+    workspace_id: &str,
+    saved: &CanonicalCustodyV1,
+) -> Result<(RecordStore, RecordCheckout), String> {
+    if saved.version != 1 || saved.workspace != workspace_id {
+        return Err("this source is retired into a different canonical storage/workspace; open its original custody".into());
+    }
+    let requested_state = state_root.canonicalize().map_err(|e| {
+        format!("canonical custody state root is unavailable; reopen its original state root: {e}")
+    })?;
+    if saved.state_root != requested_state {
+        return Err("this source is retired into a different canonical storage/workspace; open its original custody".into());
+    }
+    let profile = match saved.package.as_str() {
+        "dev.tilo.notes" => {
+            let key = crate::legacy_import::source_key(root).map_err(|e| e.to_string())?;
+            let checkout = crate::legacy_import::destination(key);
+            if saved.record != checkout.id.as_str() {
+                return Err("this source is retired into a different canonical storage/workspace; open its original custody".into());
+            }
+            SavedCustodyProfile::Current(checkout)
+        }
+        "dev.qos.notes" => {
+            let key = crate::legacy_import::qos_source_key(root).map_err(|e| e.to_string())?;
+            let source_key = crate::legacy_import::source_key_hex(key);
+            let record = crate::legacy_import::qos_destination(key);
+            if saved.record != record {
+                return Err("this source is retired into a different canonical storage/workspace; open its original custody".into());
+            }
+            let evidence = ui::record::LocalCanonicalCompatibility::qos_notes_v1(
+                workspace_id,
+                &source_key,
+                &record,
+            )
+            .ok_or("invalid historical canonical custody marker")?;
+            SavedCustodyProfile::Historical(evidence)
+        }
+        _ => {
+            return Err("canonical custody marker has an unsupported package".into());
+        }
+    };
+    let mut owners = ui::record::RecordOwners::new(requested_state);
+    let records = owners
+        .open(&saved.package, workspace_id)
+        .map_err(|e| e.to_string())?;
+    let checkout = match profile {
+        SavedCustodyProfile::Current(checkout) => {
+            records
+                .try_open_record(&checkout)
+                .map_err(|e| e.to_string())?;
+            checkout
+        }
+        SavedCustodyProfile::Historical(evidence) => {
+            records
+                .try_open_local_compatibility(&evidence)
+                .map_err(|e| e.to_string())?;
+            evidence.checkout().clone()
+        }
+    };
+    Ok((records, checkout))
 }

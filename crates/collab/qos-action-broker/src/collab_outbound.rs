@@ -83,12 +83,22 @@ impl PeerPublisher {
             .as_ref()
             .is_some_and(|owner| owner.requires_room(room))
     }
+    /// Health of the installed durable owner commit.
+    ///
+    /// # Errors
+    ///
+    /// Returns a message when no owner commit is installed or it is unhealthy.
     pub fn owner_commit_health(&self) -> Result<(), String> {
         self.owner_commit
             .as_ref()
             .ok_or("durable owner commit unsupported")?
             .health()
     }
+    /// Commits one request through the installed durable owner.
+    ///
+    /// # Errors
+    ///
+    /// Returns a message when no healthy owner commit is installed or the commit fails.
     pub async fn commit_owner(
         &self,
         request: qos_peer_state::owner_commit::OwnerCommitRequest,
@@ -243,8 +253,8 @@ impl PeerPublisher {
 /// for assertions against the broker's single typed ingress.
 #[cfg(any(test, feature = "test-support"))]
 pub mod recording {
-    use super::*;
-    use std::sync::Mutex;
+    use super::{ArtifactId, PeerPresence, PeerPublishSink, SignedOp};
+    use std::sync::{Mutex, MutexGuard, PoisonError};
 
     /// What actually reached the wire, in order.
     #[derive(Debug, Clone, PartialEq)]
@@ -273,23 +283,18 @@ pub mod recording {
 
     impl RecordingSink {
         /// Everything published so far, oldest first.
-        ///
-        /// # Panics
-        ///
-        /// Panics if the internal mutex is poisoned by a prior panic on
-        /// another thread.
         pub fn snapshot(&self) -> Vec<Sent> {
-            self.sent.lock().unwrap().clone()
+            self.sent().clone()
         }
 
         /// Takes everything published so far, leaving the sink empty.
-        ///
-        /// # Panics
-        ///
-        /// Panics if the internal mutex is poisoned by a prior panic on
-        /// another thread.
         pub fn drain(&self) -> Vec<Sent> {
-            std::mem::take(&mut *self.sent.lock().unwrap())
+            std::mem::take(&mut *self.sent())
+        }
+
+        /// The record, still readable after a panicking test thread poisoned it.
+        fn sent(&self) -> MutexGuard<'_, Vec<Sent>> {
+            self.sent.lock().unwrap_or_else(PoisonError::into_inner)
         }
     }
 
@@ -301,7 +306,7 @@ pub mod recording {
             record_id: String,
             envelope: SignedOp,
         ) {
-            self.sent.lock().unwrap().push(Sent::Signed {
+            self.sent().push(Sent::Signed {
                 app_id,
                 cluster_id,
                 record_id,
@@ -310,7 +315,7 @@ pub mod recording {
         }
 
         fn app_presence(&self, app_id: String, cluster_id: String, presence: PeerPresence) {
-            self.sent.lock().unwrap().push(Sent::Presence {
+            self.sent().push(Sent::Presence {
                 app_id,
                 cluster_id,
                 presence,
@@ -318,10 +323,7 @@ pub mod recording {
         }
 
         fn scrollback_request(&self, _artifact: ArtifactId, before_seq: u64, max: u16) {
-            self.sent
-                .lock()
-                .unwrap()
-                .push(Sent::Scrollback { before_seq, max });
+            self.sent().push(Sent::Scrollback { before_seq, max });
         }
     }
 }

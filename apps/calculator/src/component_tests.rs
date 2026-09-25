@@ -99,10 +99,10 @@ fn activate(driver: &mut FrameHarness, name: &str) {
 
 fn expression_value(driver: &FrameHarness) -> String {
     fn find(node: &ui::headless::InspectionNode) -> Option<String> {
-        if let Some(semantics) = &node.semantics {
-            if semantics.name.as_deref() == Some("Calculator") {
-                return semantics.value.clone();
-            }
+        if let Some(semantics) = &node.semantics
+            && semantics.name.as_deref() == Some("Calculator")
+        {
+            return semantics.value.clone();
         }
         node.children.iter().find_map(find)
     }
@@ -119,8 +119,7 @@ fn assert_existing_refused_unchanged(fixture: &Fixture, instance: u64, checkout:
     });
     assert!(matches!(
         fixture.try_component(instance, existing(checkout)),
-        Err(ui::launch::LaunchError::Operation(_))
-            | Err(ui::launch::LaunchError::ComponentSetup { .. })
+        Err(ui::launch::LaunchError::Operation(_) | ui::launch::LaunchError::ComponentSetup { .. })
     ));
     assert_eq!(
         fixture.records.read(&checkout.id, |doc| {
@@ -168,7 +167,7 @@ fn checked_admission_refuses_wrong_package_kind_and_device_namespace() {
     let foreign_records = RecordOwners::portable(fixture.cache.clone())
         .open("dev.qos.foreign", WORKSPACE)
         .unwrap();
-    let package_error = match HostContext::prepare(
+    let Err(package_error) = HostContext::prepare(
         crate::definition(),
         foreign_records,
         fixture.views.clone(),
@@ -178,9 +177,8 @@ fn checked_admission_refuses_wrong_package_kind_and_device_namespace() {
         fixture.author.clone(),
         tilo_actions::ActionContext::default(),
         &LaunchTarget::New,
-    ) {
-        Ok(_) => panic!("foreign package namespace must be refused"),
-        Err(error) => error,
+    ) else {
+        panic!("foreign package namespace must be refused");
     };
     assert!(matches!(
         package_error,

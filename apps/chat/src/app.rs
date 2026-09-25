@@ -766,6 +766,11 @@ pub enum ChatRuntime {
 }
 
 impl ChatApp {
+    /// Project a checked Chat record for `identity`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the record carries no Chat workspace schema.
     pub fn from_document(
         doc: &AutoCommit,
         identity: LocalIdentity,
@@ -1515,7 +1520,8 @@ impl ChatApp {
             .iter()
             .any(|namespace| namespace == id)
         {
-            return format!("Audio stream {}", &id[id.len().saturating_sub(6)..]);
+            let tail = id.ceil_char_boundary(id.len().saturating_sub(6));
+            return format!("Audio stream {}", id.get(tail..).unwrap_or(id));
         }
         // `is_me` rather than a bare comparison: a peer that has adopted the
         // room's address for itself still wrote its earlier lines under the
@@ -1750,7 +1756,7 @@ impl ChatApp {
         }
         let (composer, key) = match self.focus {
             Focus::Thread => (&self.composer_thread, self.thread_draft_key()?),
-            _ => (&self.composer_main, self.active_channel.clone()),
+            Focus::Main => (&self.composer_main, self.active_channel.clone()),
         };
         if key.is_empty() {
             return None;
@@ -2568,10 +2574,8 @@ impl Continuable for ChatApp {
 impl Collaborative for ChatApp {
     fn take_collab_requests(&mut self) -> Vec<ui::collaboration::CollabRequest> {
         self.queue_realtime_registration();
-        if self.realtime.target_media_ready {
-            if self.realtime_target_media_ready() {
-                self.realtime.target_media_ready = false;
-            }
+        if self.realtime.target_media_ready && self.realtime_target_media_ready() {
+            self.realtime.target_media_ready = false;
         }
         let mut requests = std::mem::take(&mut self.realtime.requests);
         let before = self.native_voice.snapshot.state;
@@ -2808,6 +2812,10 @@ impl Widget for ChatApp {
             ),
         })
     }
+    #[expect(
+        clippy::float_cmp,
+        reason = "the clamped target is compared exactly: identical means the scroll did not move"
+    )]
     fn apply_primary_vertical_scroll(
         &mut self,
         action: ui::widget::PrimaryScrollAction,
@@ -3347,7 +3355,7 @@ impl Widget for ChatApp {
                 };
                 let focused = self.host_focused
                     && self.keyboard_target.map_or_else(
-                        || input.is_some_and(|input| ui::Widget::is_focused(input)),
+                        || input.is_some_and(ui::Widget::is_focused),
                         |target| target == index,
                     );
                 let mut state = AccessState::new().focusable(true).focused(focused);
@@ -3448,6 +3456,10 @@ impl Widget for ChatApp {
     /// assistive-technology activation from taking a separate, untracked
     /// mutation path: `on_hit` builds the same `ChatAction` and delegates it
     /// to `ActionHost` for history and collaboration.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one flat semantic-target dispatch mirroring the pointer hit inventory"
+    )]
     fn perform_semantic_action(
         &mut self,
         target: &str,

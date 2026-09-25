@@ -285,6 +285,20 @@ pub struct ControlledCreateRequest {
     events: Sender<Bg>,
 }
 
+/// The armed retention fixture: the app, its runtime request and result
+/// channels, the retention observer, the restart-arm flag, and the runtime
+/// replacement request channel and trigger.
+#[cfg(any(test, feature = "test-support"))]
+pub type ArmedRetentionRoot = (
+    ContainersApp,
+    Receiver<ControlledRuntimeRequest>,
+    Sender<Result<(), String>>,
+    Rc<RefCell<Option<HistoryRetentionSnapshot>>>,
+    Rc<Cell<bool>>,
+    Receiver<ControlledRuntimeRequest>,
+    Rc<Cell<bool>>,
+);
+
 #[cfg(any(test, feature = "test-support"))]
 #[derive(Clone, Debug, PartialEq)]
 pub struct HistoryRetentionSnapshot {
@@ -431,6 +445,7 @@ pub struct ContainersApp {
 }
 
 /// Input dependencies are independent of whether the runtime is live.
+#[derive(Clone, Copy)]
 struct InputFactories {
     text: fn() -> TextInput,
     search: fn() -> SearchField,
@@ -678,15 +693,7 @@ impl ContainersApp {
     }
 
     #[cfg(any(test, feature = "test-support"))]
-    pub fn history_test_armed_retention_root() -> (
-        Self,
-        Receiver<ControlledRuntimeRequest>,
-        Sender<Result<(), String>>,
-        Rc<RefCell<Option<HistoryRetentionSnapshot>>>,
-        Rc<Cell<bool>>,
-        Receiver<ControlledRuntimeRequest>,
-        Rc<Cell<bool>>,
-    ) {
+    pub fn history_test_armed_retention_root() -> ArmedRetentionRoot {
         let (mut app, requests, results) = Self::history_test_runtime_root();
         app.list_scroll = 41.0;
         app.detail_scroll = 17.0;
@@ -757,14 +764,18 @@ impl ContainersApp {
                 created: "controlled".into(),
                 ports: Vec::new(),
                 mounts: Vec::new(),
-                env: hydrated
-                    .then(|| vec![("MODE".into(), "controlled".into())])
-                    .unwrap_or_default(),
+                env: if hydrated {
+                    vec![("MODE".into(), "controlled".into())]
+                } else {
+                    Vec::new()
+                },
                 labels: Vec::new(),
                 stats: crate::model::Stats::default(),
-                logs: hydrated
-                    .then(|| vec!["controlled detail".into()])
-                    .unwrap_or_default(),
+                logs: if hydrated {
+                    vec!["controlled detail".into()]
+                } else {
+                    Vec::new()
+                },
             }],
             ..Engine::default()
         }
@@ -791,7 +802,7 @@ impl ContainersApp {
             .map(|invocation| {
                 (
                     invocation.address.resource.clone(),
-                    invocation.address.action.clone(),
+                    invocation.address.action,
                 )
             });
         observer.replace(Some(HistoryRetentionSnapshot {
@@ -1892,32 +1903,7 @@ fn container_resource(
                 && let Some(identity) = continuation
                 && identity.target_id == container.id
             {
-                let identity = identity.clone();
-                spec = spec.with_continuation_identity(move |query| {
-                    let target = ui::tilo_actions::ContinuationKey::new(
-                        "containers.controlled.target",
-                        [
-                            identity.runtime_epoch.to_be_bytes().to_vec(),
-                            identity.target_epoch.to_be_bytes().to_vec(),
-                            identity.target_id.as_bytes().to_vec(),
-                        ],
-                    );
-                    let handler = ui::tilo_actions::ContinuationKey::new(
-                        "containers.controlled.handler",
-                        [b"restart-v1".to_vec()],
-                    );
-                    Some(match query {
-                        ui::tilo_actions::ContinuationQuery::Exact(_) => {
-                            ui::tilo_actions::ContinuationEvidence::Exact { target, handler }
-                        }
-                        ui::tilo_actions::ContinuationQuery::Draft => {
-                            ui::tilo_actions::ContinuationEvidence::Draft {
-                                resolution_domain: target,
-                                handler,
-                            }
-                        }
-                    })
-                });
+                spec = with_restart_continuation(spec, identity.clone());
             }
             if *verb == "remove" {
                 spec = spec.destructive();
@@ -1949,6 +1935,38 @@ fn container_resource(
     }
     resource.children.push(logs);
     resource
+}
+
+/// Declare the controlled-runtime continuation identity of a `restart` spec.
+fn with_restart_continuation(
+    spec: ActionSpec,
+    identity: ContinuationRuntimeIdentity,
+) -> ActionSpec {
+    spec.with_continuation_identity(move |query| {
+        let target = ui::tilo_actions::ContinuationKey::new(
+            "containers.controlled.target",
+            [
+                identity.runtime_epoch.to_be_bytes().to_vec(),
+                identity.target_epoch.to_be_bytes().to_vec(),
+                identity.target_id.as_bytes().to_vec(),
+            ],
+        );
+        let handler = ui::tilo_actions::ContinuationKey::new(
+            "containers.controlled.handler",
+            [b"restart-v1".to_vec()],
+        );
+        Some(match query {
+            ui::tilo_actions::ContinuationQuery::Exact(_) => {
+                ui::tilo_actions::ContinuationEvidence::Exact { target, handler }
+            }
+            ui::tilo_actions::ContinuationQuery::Draft => {
+                ui::tilo_actions::ContinuationEvidence::Draft {
+                    resolution_domain: target,
+                    handler,
+                }
+            }
+        })
+    })
 }
 
 fn image_resource(image: &crate::model::Image, engine_live: bool) -> Resource {

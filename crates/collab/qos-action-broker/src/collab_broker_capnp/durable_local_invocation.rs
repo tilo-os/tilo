@@ -7,6 +7,8 @@ pub(super) struct LocalCaller {
     peer: u64,
     route: CrdtRoute,
     admitted: AdmittedJoinIdentity,
+    /// Validated from `admitted` once, at capture.
+    owner: InvocationOwner,
     time: crate::peer_actions::PolicyTime,
 }
 impl LocalCaller {
@@ -18,6 +20,7 @@ impl LocalCaller {
         let caller = Self {
             peer: channel.peer_id,
             route: channel.route(),
+            owner: Self::owner_of(&channel.verified_identity)?,
             admitted: channel.verified_identity.clone(),
             time,
         };
@@ -41,7 +44,7 @@ impl LocalCaller {
         Ok(owner)
     }
     fn owner(&self) -> InvocationOwner {
-        Self::owner_of(&self.admitted).expect("validated original local owner")
+        self.owner.clone()
     }
     fn current(&self, state: &CapnpBrokerState) -> Result<AdmittedJoinIdentity, String> {
         if !state.is_accepting() {
@@ -64,7 +67,7 @@ impl LocalCaller {
         let current = state
             .revalidate_admission(&self.route, &self.admitted)
             .map_err(|error| error.to_string())?;
-        if Self::owner_of(&current)? != Self::owner_of(&self.admitted)? {
+        if Self::owner_of(&current)? != self.owner {
             return Err("original local caller changed".into());
         }
         Ok(current)
@@ -72,7 +75,7 @@ impl LocalCaller {
     fn origin(&self) -> InvocationCaller {
         InvocationCaller::Local {
             route: self.route.clone(),
-            admitted: self.admitted.clone(),
+            admitted: Box::new(self.admitted.clone()),
         }
     }
 }
@@ -131,7 +134,7 @@ impl<'a> DurableContext<'a> {
     }
     pub(super) fn origin(self) -> InvocationCaller {
         match self {
-            Self::Peer(c, _) => InvocationCaller::Certified(c.clone()),
+            Self::Peer(c, _) => InvocationCaller::Certified(Box::new(c.clone())),
             Self::Local { caller, .. } => caller.origin(),
         }
     }
@@ -286,13 +289,17 @@ impl CapnpBrokerState {
             .lookup(&key)?;
         if let Some(record) = &record {
             let contract: tilo_actions::ActionContract =
-                serde_json::from_value(record.intent["contract"].clone())
+                serde_json::from_value(record.intent.get("contract").cloned().unwrap_or_default())
                     .map_err(|_| "journal action contract invalid")?;
-            let app = record.intent["app_id"]
-                .as_str()
+            let app = record
+                .intent
+                .get("app_id")
+                .and_then(serde_json::Value::as_str)
                 .ok_or("journal app invalid")?;
-            let action = record.intent["action"]
-                .as_str()
+            let action = record
+                .intent
+                .get("action")
+                .and_then(serde_json::Value::as_str)
                 .ok_or("journal action invalid")?;
             let now = self.checked_policy_time(Some(&caller.time))?.1 / 1_000_000_000;
             self.authorize_invocation_permission(
@@ -317,10 +324,13 @@ impl CapnpBrokerState {
             uuid::Uuid::from_bytes(request.binding.host),
             request.invocation,
         )?;
-        if existing
-            .as_ref()
-            .is_some_and(|record| record.intent["request"] != request.intent())
-        {
+        if existing.as_ref().is_some_and(|record| {
+            record
+                .intent
+                .get("request")
+                .unwrap_or(&serde_json::Value::Null)
+                != &request.intent()
+        }) {
             return Err("invocation identity reused with different intent".into());
         }
         Ok(existing)
@@ -403,9 +413,17 @@ fn write_observation(
     Ok(())
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "one ordered parse, replay check, admission and dispatch of a durable local invocation"
+)]
+#[expect(
+    clippy::significant_drop_tightening,
+    reason = "the resolved offer permit and durable context are held through dispatch on purpose"
+)]
 pub(super) fn invoke(
     channel: Rc<CapnpChannelHandle>,
-    params: channel_handle::InvokeResolvedPublishedActionDurableParams,
+    params: &channel_handle::InvokeResolvedPublishedActionDurableParams,
     mut results: channel_handle::InvokeResolvedPublishedActionDurableResults,
 ) -> Promise<(), capnp::Error> {
     let parsed = (|| {
@@ -532,7 +550,7 @@ pub(super) fn invoke(
             )
             .await
             .map_err(capnp::Error::failed)?;
-        let _admission = state
+        let admission = state
             .admission_lock
             .lock()
             .map_err(|_| capnp::Error::failed("invocation admission unavailable".into()))?;
@@ -607,6 +625,7 @@ pub(super) fn invoke(
             .local_existing(&caller, &request)
             .map_err(capnp::Error::failed)?
             .ok_or_else(|| capnp::Error::failed("admitted invocation missing".into()))?;
+        drop(admission);
         write_observation(
             results.get().init_observation(),
             host,
@@ -616,8 +635,8 @@ pub(super) fn invoke(
     })
 }
 pub(super) fn observe(
-    channel: Rc<CapnpChannelHandle>,
-    params: channel_handle::PublishedInvocationObservationParams,
+    channel: &CapnpChannelHandle,
+    params: &channel_handle::PublishedInvocationObservationParams,
     mut results: channel_handle::PublishedInvocationObservationResults,
 ) -> Promise<(), capnp::Error> {
     let outcome = (|| {
@@ -627,7 +646,7 @@ pub(super) fn observe(
             p.get_invocation()?,
             "invocation UUID",
         )?));
-        let caller = LocalCaller::capture(&channel).map_err(capnp::Error::failed)?;
+        let caller = LocalCaller::capture(channel).map_err(capnp::Error::failed)?;
         let record = channel
             .state
             .local_status(&caller, host, id)
@@ -640,8 +659,8 @@ pub(super) fn observe(
     }
 }
 pub(super) fn cancel(
-    channel: Rc<CapnpChannelHandle>,
-    params: channel_handle::CancelDurablePublishedInvocationParams,
+    channel: &CapnpChannelHandle,
+    params: &channel_handle::CancelDurablePublishedInvocationParams,
     mut results: channel_handle::CancelDurablePublishedInvocationResults,
 ) -> Promise<(), capnp::Error> {
     let outcome = (|| {
@@ -651,8 +670,8 @@ pub(super) fn cancel(
             p.get_invocation()?,
             "invocation UUID",
         )?));
-        let caller = LocalCaller::capture(&channel).map_err(capnp::Error::failed)?;
-        let _admission = channel
+        let caller = LocalCaller::capture(channel).map_err(capnp::Error::failed)?;
+        let admission = channel
             .state
             .admission_lock
             .lock()
@@ -661,18 +680,20 @@ pub(super) fn cancel(
             .state
             .local_status(&caller, host, id)
             .map_err(capnp::Error::failed)?;
-        if let Some(record) = &record {
-            if !record.update.is_terminal() && !record.cancellation_requested {
-                channel
-                    .state
-                    .cancel_durable_record(record)
-                    .map_err(capnp::Error::failed)?;
-            }
+        if let Some(record) = &record
+            && !record.update.is_terminal()
+            && !record.cancellation_requested
+        {
+            channel
+                .state
+                .cancel_durable_record(record)
+                .map_err(capnp::Error::failed)?;
         }
         let record = channel
             .state
             .local_status(&caller, host, id)
             .map_err(capnp::Error::failed)?;
+        drop(admission);
         write_observation(results.get().init_observation(), host, id, record.as_ref())
     })();
     match outcome {

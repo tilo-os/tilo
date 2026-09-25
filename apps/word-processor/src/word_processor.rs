@@ -2177,6 +2177,10 @@ impl WordProcessor {
     }
 
     /// Initialize a new canonical document before an application projects it.
+    ///
+    /// # Errors
+    ///
+    /// Never fails today; the `Result` matches the record-initializer contract.
     pub fn initialize_empty_document(state: &mut AutoCommit) -> Result<(), String> {
         let mut editor = Self::new();
         editor.bind(state, &automerge::ROOT);
@@ -2184,6 +2188,10 @@ impl WordProcessor {
     }
 
     /// Project an admitted document without seeding schema, styles or paragraphs.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the document does not carry the Writer schema.
     pub fn from_document(state: &AutoCommit) -> Result<Self, String> {
         let containers =
             qdoc::model::open(state, &automerge::ROOT).map_err(|error| error.to_string())?;

@@ -1,3 +1,7 @@
+#![allow(
+    clippy::needless_pass_by_value,
+    reason = "fixture builders take the JSON they embed by value, like `json!`"
+)]
 use super::*;
 use serde_json::{Value, json};
 fn fixture(update: Value) -> Value {
@@ -135,7 +139,7 @@ fn guarded_journal_strict_presence_and_guarded_update_shape() {
     let mut v = base.clone();
     v["records"][0]["update"]["selection_digest"] = "44".repeat(32).into();
     invalid.push(v);
-    let mut v = base.clone();
+    let mut v = base;
     v["records"][0]["update"]["output"] = json!({"value":"must not be retained"});
     invalid.push(v);
     let mut v = fixture(accepted());
@@ -283,9 +287,8 @@ fn guarded_journal_duplicate_unknown_and_oversized_updates_do_not_hide_payload()
         let mut invalid = value.clone();
         invalid["records"][0][target]["extra"] = Value::String("x".repeat(100_000));
         let (_dir, root) = disk(&invalid);
-        let error = match InvocationJournal::open(&root) {
-            Ok(_) => panic!("oversized guarded metadata accepted"),
-            Err(e) => e,
+        let Err(error) = InvocationJournal::open(&root) else {
+            panic!("oversized guarded metadata accepted")
         };
         assert!(error.contains("preflight"), "{error}");
     }
@@ -429,9 +432,8 @@ fn duplicate_extent_must_fail_preflight(target: &str) {
             guarded::preflight(&mut file).is_err(),
             "duplicate {target} with first extent {extra_bytes} reached owned decoding"
         );
-        let error = match InvocationJournal::open(&root) {
-            Ok(_) => panic!("duplicate {target} was admitted"),
-            Err(error) => error,
+        let Err(error) = InvocationJournal::open(&root) else {
+            panic!("duplicate {target} was admitted")
         };
         assert!(error.contains("preflight"), "{error}");
     }

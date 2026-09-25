@@ -1,5 +1,13 @@
 //! Revision-bound invocation through the original certified channel.
-use super::*;
+use super::{
+    BrokerActor, CapnpBrokerState, CapnpChannelHandle, DIRECTORY_MAX_CONFIRMATION_BYTES,
+    DIRECTORY_MAX_IDENTIFIER_BYTES, DIRECTORY_MAX_PARAMS_BYTES, DIRECTORY_MAX_QUERY_REVISION_BYTES,
+    DirectoryActionConfirmation, Duration, HostWorkerReadGuard, InvocationCaller,
+    LocalActionDirectoryRegistry, PrivateWorkerRegistration, Promise, PublishedAction,
+    PublishedSurface, Rc, RegisteredActionDirectory, channel_handle, invocation_target_peer,
+    published_directory_action, validate_directory_identifier, validate_directory_target_input,
+    validate_directory_text, write_directory_row,
+};
 
 struct CapturedResolution {
     registered: RegisteredActionDirectory,
@@ -17,7 +25,7 @@ pub(super) struct ResolvedOffer {
 
 fn check_registration(
     registered: &RegisteredActionDirectory,
-    worker: &Option<PrivateWorkerRegistration>,
+    worker: Option<&PrivateWorkerRegistration>,
     state: &CapnpBrokerState,
     directories: &LocalActionDirectoryRegistry,
     peer: u64,
@@ -37,7 +45,7 @@ fn check_registration(
         .map_err(|_| "worker registry unavailable")?
         .get(&peer)
         .and_then(|current| current.worker_registration.clone());
-    if &current_worker != worker {
+    if current_worker.as_ref() != worker {
         return Err("application worker connection changed during resolution".into());
     }
     Ok(())
@@ -49,7 +57,13 @@ impl ResolvedOffer {
         directories: &LocalActionDirectoryRegistry,
         peer: u64,
     ) -> Result<(), String> {
-        check_registration(&self.registered, &self.worker, state, directories, peer)
+        check_registration(
+            &self.registered,
+            self.worker.as_ref(),
+            state,
+            directories,
+            peer,
+        )
     }
     pub(super) fn offered(&self, peer_id: u64) -> (PublishedSurface, PublishedAction) {
         (
@@ -66,13 +80,11 @@ impl ResolvedOffer {
 }
 fn binding_worker<'a>(
     registered: &RegisteredActionDirectory,
-    worker: &'a Option<PrivateWorkerRegistration>,
+    worker: Option<&'a PrivateWorkerRegistration>,
     state: &CapnpBrokerState,
     peer: u64,
 ) -> Result<&'a PrivateWorkerRegistration, String> {
-    let worker = worker
-        .as_ref()
-        .ok_or("registered original worker unavailable")?;
+    let worker = worker.ok_or("registered original worker unavailable")?;
     let current = state
         .host_workers
         .lock()
@@ -94,12 +106,12 @@ fn binding_worker<'a>(
     {
         return Err("application stable invocation stream unavailable".into());
     }
-    if !state
+    if state
         .invocation_subscribers
         .lock()
         .map_err(|_| "application invocation stream unavailable")?
         .get(&peer)
-        .is_some_and(|sender| !sender.is_closed())
+        .is_none_or(tokio::sync::mpsc::UnboundedSender::is_closed)
     {
         return Err("application invocation stream closed".into());
     }
@@ -138,7 +150,7 @@ impl CapturedResolution {
         state: &CapnpBrokerState,
         peer: u64,
     ) -> Result<runtime_collab::PublishedInvocationBinding, String> {
-        let worker = binding_worker(&self.registered, &self.worker, state, peer)?;
+        let worker = binding_worker(&self.registered, self.worker.as_ref(), state, peer)?;
         binding_data(&self.registered, worker, peer, state.invocation_host()?)
     }
 }
@@ -149,7 +161,7 @@ impl ResolvedOffer {
         peer: u64,
         host: uuid::Uuid,
     ) -> Result<runtime_collab::PublishedInvocationBinding, String> {
-        let worker = binding_worker(&self.registered, &self.worker, state, peer)?;
+        let worker = binding_worker(&self.registered, self.worker.as_ref(), state, peer)?;
         binding_data(&self.registered, worker, peer, host)
     }
 }
@@ -170,9 +182,17 @@ impl CapnpBrokerState {
             .map_err(|_| "worker registry unavailable")?
             .get(&peer)
             .and_then(|current| current.worker_registration.clone());
-        let current = binding_worker(&registered, &worker, self, peer)?;
+        let current = binding_worker(&registered, worker.as_ref(), self, peer)?;
         binding_data(&registered, current, peer, host)
     }
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the exact directory route and revision the capture is bound to"
+    )]
+    #[expect(
+        clippy::future_not_send,
+        reason = "runs on the broker's single-threaded LocalSet"
+    )]
     async fn capture_directory_resolution(
         &self,
         directories: &LocalActionDirectoryRegistry,
@@ -211,7 +231,7 @@ impl CapnpBrokerState {
         )
         .await
         .map_err(|_| "action directory resolution timeout")??;
-        check_registration(&registered, &worker, self, directories, peer)?;
+        check_registration(&registered, worker.as_ref(), self, directories, peer)?;
         Ok(CapturedResolution {
             registered,
             worker,
@@ -219,6 +239,14 @@ impl CapnpBrokerState {
             permit,
         })
     }
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the exact directory route and revision the offer is bound to"
+    )]
+    #[expect(
+        clippy::future_not_send,
+        reason = "runs on the broker's single-threaded LocalSet"
+    )]
     pub(super) async fn resolve_invocation_offer(
         &self,
         directories: &LocalActionDirectoryRegistry,
@@ -262,9 +290,13 @@ impl CapnpBrokerState {
 
 /// Read-only discovery preserves ordinary resolution variants. A reliable
 /// binding is emitted only from this same bounded captured resolution.
+#[expect(
+    clippy::too_many_lines,
+    reason = "one ordered parse, bounded capture, admission recheck and reply of a resolution"
+)]
 pub(super) fn resolve(
     channel: Rc<CapnpChannelHandle>,
-    params: channel_handle::ResolvePublishedActionParams,
+    params: &channel_handle::ResolvePublishedActionParams,
     mut results: channel_handle::ResolvePublishedActionResults,
 ) -> Promise<(), capnp::Error> {
     let parsed = (|| {
@@ -319,7 +351,7 @@ pub(super) fn resolve(
     };
     let host_guard = HostWorkerReadGuard::for_channel(&channel.state, channel.peer_id, &admitted);
     Promise::from_future(async move {
-        HostWorkerReadGuard::check(&host_guard)?;
+        HostWorkerReadGuard::check(host_guard.as_ref())?;
         let state = &channel.state;
         let captured = state
             .capture_directory_resolution(
@@ -333,8 +365,8 @@ pub(super) fn resolve(
             )
             .await
             .map_err(capnp::Error::failed)?;
-        HostWorkerReadGuard::check(&host_guard)?;
-        let _admission = state
+        HostWorkerReadGuard::check(host_guard.as_ref())?;
+        let admission = state
             .admission_lock
             .lock()
             .map_err(|_| capnp::Error::failed("invocation admission unavailable".into()))?;
@@ -347,7 +379,7 @@ pub(super) fn resolve(
         let current = state.revalidate_admission(&route, &admitted)?;
         check_registration(
             &captured.registered,
-            &captured.worker,
+            captured.worker.as_ref(),
             state,
             &channel.directories,
             peer,
@@ -368,16 +400,16 @@ pub(super) fn resolve(
         let mut out = results.get();
         match &captured.resolution {
             runtime_collab::ActionDirectoryResolution::Found(row) => {
-                write_directory_row(out.reborrow().init_resolution().init_found(), row)
+                write_directory_row(out.reborrow().init_resolution().init_found(), row);
             }
             runtime_collab::ActionDirectoryResolution::NotFound => {
-                out.reborrow().init_resolution().set_not_found(())
+                out.reborrow().init_resolution().set_not_found(());
             }
             runtime_collab::ActionDirectoryResolution::StaleRevision => {
-                out.reborrow().init_resolution().set_stale_revision(())
+                out.reborrow().init_resolution().set_stale_revision(());
             }
             runtime_collab::ActionDirectoryResolution::Unavailable => {
-                out.reborrow().init_resolution().set_unavailable(())
+                out.reborrow().init_resolution().set_unavailable(());
             }
         }
         if let Some(binding) = binding {
@@ -390,13 +422,15 @@ pub(super) fn resolve(
             target.set_device(&binding.device);
             target.set_target_binding(&binding.target_binding);
         }
+        drop(admission);
+        drop(captured);
         Ok(())
     })
 }
 
 pub(super) fn invoke(
     channel: Rc<CapnpChannelHandle>,
-    params: channel_handle::InvokeResolvedPublishedActionParams,
+    params: &channel_handle::InvokeResolvedPublishedActionParams,
     results: channel_handle::InvokeResolvedPublishedActionResults,
 ) -> Promise<(), capnp::Error> {
     invoke_checked(channel, params, results)
@@ -420,9 +454,17 @@ fn bounded_text(
     Ok(value.to_owned())
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "one ordered parse, offer resolution, admission recheck and dispatch of an invocation"
+)]
+#[expect(
+    clippy::significant_drop_tightening,
+    reason = "the admission guard and resolved offer permit are held through dispatch on purpose"
+)]
 fn invoke_checked(
     channel: Rc<CapnpChannelHandle>,
-    params: channel_handle::InvokeResolvedPublishedActionParams,
+    params: &channel_handle::InvokeResolvedPublishedActionParams,
     mut results: channel_handle::InvokeResolvedPublishedActionResults,
 ) -> Promise<(), capnp::Error> {
     let parsed = (|| {
@@ -540,7 +582,7 @@ fn invoke_checked(
         // No admission mutex or owner guard is held over directory RPC. The
         // original caller/time and exact capability registration are checked
         // again under the same serialization used by every owned dispatch.
-        let _admission = state
+        let admission = state
             .admission_lock
             .lock()
             .map_err(|_| capnp::Error::failed("invocation admission unavailable".into()))?;
@@ -595,7 +637,7 @@ fn invoke_checked(
                 None,
                 Some(InvocationCaller::Local {
                     route,
-                    admitted: current,
+                    admitted: Box::new(current),
                 }),
                 Some(&time),
                 None,
@@ -609,6 +651,8 @@ fn invoke_checked(
         results.get().set_id(job.id);
         results.get().set_update_json(&update);
         drop(job.completion);
+        drop(admission);
+        drop(offer);
         Ok(())
     })
 }

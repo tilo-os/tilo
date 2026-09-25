@@ -794,7 +794,7 @@ impl ChatApp {
                 self.attach_file(doc, std::path::Path::new(&path));
             }
             Hit::StartCall if self.call_allows(crate::call::CallAction::Join) => {
-                self.on_hit_start_call(doc)
+                self.on_hit_start_call(doc);
             }
             Hit::CloseThread => {
                 self.thread_open = None;

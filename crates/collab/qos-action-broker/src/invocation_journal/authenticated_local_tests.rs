@@ -1,3 +1,7 @@
+#![allow(
+    clippy::needless_pass_by_value,
+    reason = "fixture builders take the JSON they embed by value, like `json!`"
+)]
 use super::*;
 use serde_json::{Value, json};
 
@@ -132,7 +136,7 @@ fn authenticated_local_journal_rejects_downgrade_and_ambiguous_agent() {
         .remove("agent");
     invalid.push(missing);
     for bad in [
-        "".to_string(),
+        String::new(),
         "x".repeat(513),
         "agent\nother".to_string(),
         "agent\0other".to_string(),
@@ -212,7 +216,7 @@ fn authenticated_local_journal_v3_decoder_never_reinterprets_owner() {
         .as_u64()
         .unwrap();
     assert!(
-        !matches!(version, 1 | 2 | 3),
+        !matches!(version, 1..=3),
         "the frozen v3 version gate rejects v4 before observation"
     );
 }

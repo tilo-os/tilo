@@ -1,6 +1,9 @@
 //! Broker-authenticated workspace collaboration administration surface.
 
-use super::*;
+use super::{
+    Arc, CapnpBrokerState, CrdtRoute, InvocationEnvelope, PublishedAction, PublishedInput,
+    PublishedSurface,
+};
 use crate::collaboration_admin as collaboration;
 
 impl CapnpBrokerState {

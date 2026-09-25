@@ -139,7 +139,7 @@ mod durable_local_matrix {
             let encoded = serde_json::to_string(&contract).unwrap();
             let descriptor = row.descriptor.as_mut().unwrap();
             descriptor.operation_kind = "effect".into();
-            descriptor.contract_json = encoded.clone();
+            descriptor.contract_json.clone_from(&encoded);
             row.visibility_contract_json = encoded;
             write_directory_row(results.get().init_resolution().init_found(), &row);
             Promise::ok(())
@@ -179,7 +179,7 @@ mod durable_local_matrix {
                 "Durable actual RPC",
             );
             workspace.room = qos_desktop::RoomId::parse(owner.peer().room()).unwrap();
-            workspace.set_owner(&principal_id_for_root(cert.user_public_key));
+            workspace.set_owner(principal_id_for_root(cert.user_public_key));
             workspace.owner = None;
             workspace.capabilities = workspace
                 .capabilities
@@ -365,10 +365,7 @@ mod durable_local_matrix {
             let lease = (self.authorize)(&request).unwrap();
             lease.check().unwrap();
             let path = env.root.path().join("effect-count");
-            let prior = std::fs::read_to_string(&path)
-                .ok()
-                .map(|n| n.parse::<usize>().unwrap())
-                .unwrap_or(0);
+            let prior = std::fs::read_to_string(&path).map_or(0, |n| n.parse::<usize>().unwrap());
             std::fs::write(path, (prior + 1).to_string()).unwrap();
             delivered.id
         }
@@ -875,7 +872,7 @@ mod durable_local_matrix {
                                         .lock()
                                         .unwrap()
                                         .get(&903)
-                                        .is_some_and(|sender| sender.is_closed())
+                                        .is_some_and(tokio::sync::mpsc::UnboundedSender::is_closed)
                                     {
                                         break;
                                     }

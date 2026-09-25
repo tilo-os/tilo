@@ -1447,6 +1447,10 @@ pub(crate) fn page_resource(m: &PageMeta, pages: &[PageMeta], doc: &AutoCommit) 
     page_resource_from_index(m, &index, doc, workspace.as_ref(), 0, &mut remaining)
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "the published page-resource action table: one independent spec per action"
+)]
 fn page_resource_from_index(
     m: &PageMeta,
     index: &PageResourceIndex<'_>,

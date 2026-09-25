@@ -55,13 +55,11 @@ impl InvocationOwner {
         if let Self::AuthenticatedLocal {
             agent: Some(agent), ..
         } = self
-        {
-            if agent.is_empty()
+            && (agent.is_empty()
                 || agent.len() > 512
-                || agent.bytes().any(|byte| byte.is_ascii_control())
-            {
-                return Err("invalid authenticated local invocation agent".into());
-            }
+                || agent.bytes().any(|byte| byte.is_ascii_control()))
+        {
+            return Err("invalid authenticated local invocation agent".into());
         }
         if let Self::Enrolled {
             task, run, channel, ..
@@ -109,7 +107,7 @@ struct Snapshot {
 
 pub(super) struct InvocationJournal {
     root: PathBuf,
-    _lock: File,
+    _lock: advisory_lock::FileLock,
     snapshot: Snapshot,
     poisoned: bool,
     #[cfg(test)]
@@ -144,6 +142,10 @@ impl InvocationJournal {
         })
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one ordered open, lock, decode and validation pass over the journal snapshot"
+    )]
     fn open_with_barriers(
         root: &Path,
         parent_barrier: impl FnOnce(&Path) -> std::io::Result<()>,
@@ -182,7 +184,7 @@ impl InvocationJournal {
             .open(root.join("owner.lock"))
             .map_err(|_| "invocation journal lock unavailable")?;
         private_file(&lock)?;
-        lock.try_lock()
+        let lock = advisory_lock::FileLock::try_exclusive(lock)
             .map_err(|_| "invocation journal already has a writer")?;
         let mut observed_snapshot = None;
         let snapshot = if created {
@@ -215,7 +217,7 @@ impl InvocationJournal {
             observed_snapshot = Some(file);
             snapshot
         };
-        if !matches!(snapshot.version, 1 | 2 | 3 | 4) || snapshot.host.is_nil() {
+        if !matches!(snapshot.version, 1..=4) || snapshot.host.is_nil() {
             return Err("invocation journal version or host unsupported".into());
         }
         let mut keys = HashSet::new();
@@ -501,7 +503,7 @@ impl InvocationJournal {
         outcome
     }
 
-    fn write_snapshot(&mut self) -> Result<(), String> {
+    fn write_snapshot(&self) -> Result<(), String> {
         let bytes =
             serde_json::to_vec(&self.snapshot).map_err(|_| "invocation journal encoding failed")?;
         if bytes.len() as u64 > Self::MAX_BYTES {

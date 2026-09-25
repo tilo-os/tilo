@@ -278,7 +278,7 @@ mod owner_commit_tests {
         let sent = Rc::new(RefCell::new(vec![]));
         let events = Rc::new(RefCell::new(vec![]));
         let mut manager = CollaborationManager::with_peer_transport(WorkerTransport {
-            route: route.clone(),
+            route,
             ack: false,
             sent: sent.clone(),
             events: events.clone(),
@@ -374,7 +374,7 @@ mod owner_commit_tests {
             "Actual owner barrier",
         );
         workspace.room = uuid::Uuid::parse_str(owner.peer().room()).unwrap().into();
-        workspace.set_owner(&principal_id_for_root(
+        workspace.set_owner(principal_id_for_root(
             owner.peer().authority().user_public_key,
         ));
         let mut tree = WorkspaceTree::default();
@@ -714,7 +714,7 @@ mod owner_commit_tests {
                     request.get().set_id(1);
                     request
                         .get()
-                        .set_update_json(&serde_json::to_string(&update).unwrap());
+                        .set_update_json(serde_json::to_string(&update).unwrap());
                     let response = tokio::task::spawn_local(request.send().promise);
                     let pending = f.mailbox.recv().await.unwrap();
                     assert!(!response.is_finished());
@@ -1316,7 +1316,7 @@ mod owner_commit_tests {
                 crate::test_support::WorkspaceId(81),
                 "Host worker room",
             );
-            workspace.set_owner(&principal_id_for_root(cert.user_public_key));
+            workspace.set_owner(principal_id_for_root(cert.user_public_key));
             let route = CrdtRoute::record(
                 "so.tilo.word-processor",
                 workspace.room.to_string(),
@@ -1422,7 +1422,7 @@ mod owner_commit_tests {
                     callbacks.recv().await.unwrap(),
                     callbacks.recv().await.unwrap(),
                 ];
-                called.sort();
+                called.sort_unstable();
                 assert_eq!(called, ["query", "resolve"]);
                 if revoke {
                     *authority.certificate.lock().unwrap() = None;
@@ -1885,46 +1885,6 @@ async fn original_invocation_worker_rpc_retains_exact_request_and_connection() {
             self.authorize(route.cluster_id.parse().unwrap(), cert)
         }
     }
-    struct HeldHostDirectory {
-        entered: mpsc::UnboundedSender<&'static str>,
-        release: Rc<tokio::sync::Notify>,
-        row: runtime_collab::ActionDirectoryRow,
-    }
-    impl action_directory::Server for HeldHostDirectory {
-        fn query(
-            self: Rc<Self>,
-            _params: action_directory::QueryParams,
-            mut results: action_directory::QueryResults,
-        ) -> Promise<(), capnp::Error> {
-            Promise::from_future(async move {
-                self.entered.send("query").unwrap();
-                self.release.notified().await;
-                write_directory_page(
-                    results.get().init_page(),
-                    &runtime_collab::ActionDirectoryPage {
-                        revision: "directory-r1".into(),
-                        rows: vec![self.row.clone()],
-                        next_cursor: vec![],
-                        exhausted: true,
-                        stale_cursor: false,
-                        budget_exhausted: false,
-                    },
-                )
-            })
-        }
-        fn resolve(
-            self: Rc<Self>,
-            _params: action_directory::ResolveParams,
-            mut results: action_directory::ResolveResults,
-        ) -> Promise<(), capnp::Error> {
-            Promise::from_future(async move {
-                self.entered.send("resolve").unwrap();
-                self.release.notified().await;
-                write_directory_row(results.get().init_resolution().init_found(), &self.row);
-                Ok(())
-            })
-        }
-    }
     fn presentation(
         room: &str,
         cert: &tilo_user_identity::DeviceCert,
@@ -2002,7 +1962,7 @@ async fn original_invocation_worker_rpc_retains_exact_request_and_connection() {
             crate::test_support::WorkspaceId(83),
             "Original room",
         );
-        workspace.set_owner(&principal_id_for_root(cert.user_public_key));
+        workspace.set_owner(principal_id_for_root(cert.user_public_key));
         workspace.owner = None;
         workspace.capabilities = workspace
             .capabilities

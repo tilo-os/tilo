@@ -78,7 +78,7 @@ impl ProjectDoc {
         let untouched =
             doc.get_all(&ROOT, V2_KEY).is_ok_and(|v| v.is_empty()) && Self::legacy(doc).is_none();
         if untouched && let Some(genesis) = blank_genesis() {
-            let _ = doc.load_incremental(genesis);
+            let _ = tilo_automerge::ApplyIncoming::load_incoming(doc, genesis);
         }
         Self::seed(doc);
     }
@@ -700,7 +700,7 @@ mod tests {
                 "Exposure",
                 &exposure
             ));
-            a.merge(&mut b).unwrap();
+            a.merge_incoming(&mut b).unwrap();
             let project = ProjectDoc::read(&a);
             assert!(
                 project.graph.nodes.contains_key("exposure-a")

@@ -5,13 +5,21 @@ pub use qos_agent_control_protocol::{AgentError, AgentErrorCode, AgentOperation,
 use qos_agent_control_protocol::{
     AgentOperationState, AgentRequest, GrantAction, GrantOffer, canonical_request,
 };
-use qos_peer_state::owner_commit::*;
+use qos_peer_state::owner_commit::{
+    AgentChange, AgentCommitError, AgentControlPhase, AgentIds, AgentMutation, AgentStateSnapshot,
+    CommitOperation, OwnerCommitRequest, OwnerCommitService, VerifiedAgentCaller,
+};
 use std::{
     collections::BTreeMap,
     sync::{Arc, Mutex},
 };
 
 pub trait AgentAuthority: WorkspaceAuthority {
+    /// Re-verifies `caller` against the current workspace governance.
+    ///
+    /// # Errors
+    ///
+    /// Returns a message when the caller is no longer an admitted agent caller.
     fn current(
         &self,
         caller: &VerifiedAgentCaller,
@@ -23,6 +31,11 @@ pub struct GrantCatalogueSnapshot {
 }
 /// The catalogue is injected by the host. Browser aliases cannot construct publication custody.
 pub trait GrantCatalogue: Send + Sync {
+    /// Returns the host's current delegable grant catalogue for `caller`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an [`AgentError`] when the catalogue cannot be produced for this caller.
     fn current(&self, caller: &VerifiedAgentCaller) -> Result<GrantCatalogueSnapshot, AgentError>;
 }
 #[derive(Clone, Debug)]
@@ -167,6 +180,12 @@ impl AgentAdmission {
         .map_err(|e| error(AgentErrorCode::InternalError, e.to_string()))?;
         Ok((blake3::hash(&bytes).to_hex().to_string(), catalogue.actions))
     }
+    /// Issues (or re-issues) the bounded grant offer for the current owner.
+    ///
+    /// # Errors
+    ///
+    /// Returns an [`AgentError`] when the caller is not the current owner, no delegable
+    /// offer exists, the offer registry is unavailable or full, or the clock is out of range.
     pub fn offers(&self, caller: &VerifiedAgentCaller) -> Result<Vec<GrantOffer>, AgentError> {
         let (revision, actions) = self.current_offer(caller)?;
         let time = now();
@@ -188,7 +207,9 @@ impl AgentAdmission {
             ));
         }
         let expires = time.saturating_add(300);
-        let expires_at = chrono::DateTime::from_timestamp(expires as i64, 0)
+        let expires_at = i64::try_from(expires)
+            .ok()
+            .and_then(|seconds| chrono::DateTime::from_timestamp(seconds, 0))
             .ok_or_else(|| {
                 error(
                     AgentErrorCode::InternalError,
@@ -211,10 +232,10 @@ impl AgentAdmission {
                 expires,
             },
         );
+        drop(offers);
         Ok(vec![offer])
     }
     fn replay(
-        &self,
         caller: &VerifiedAgentCaller,
         snapshot: &AgentStateSnapshot,
         invocation: &str,
@@ -243,6 +264,12 @@ impl AgentAdmission {
             request_digest: receipt.binding.request_digest,
         }))
     }
+    /// Admits one spawn intent against a held grant offer and commits its preparation.
+    ///
+    /// # Errors
+    ///
+    /// Returns an [`AgentError`] when the request is invalid, the offer is missing, foreign,
+    /// expired or changed, or the owner commit fails without a reconcilable prior admission.
     pub fn prepare(
         &self,
         caller: &VerifiedAgentCaller,
@@ -257,36 +284,45 @@ impl AgentAdmission {
         })
         .map_err(|e| error(AgentErrorCode::InvalidRequest, e.to_string()))?;
         let (fresh, snapshot) = self.current(caller)?;
-        if let Some(prior) = self.replay(&fresh, &snapshot, invocation, &request)? {
+        if let Some(prior) = Self::replay(&fresh, &snapshot, invocation, &request)? {
             return Ok(prior);
         }
         let (revision, actions) = self.current_offer(&fresh)?;
-        {
+        let (held_device, held_expires, held_unchanged) = {
             let offers = self
                 .offers
                 .lock()
                 .map_err(|_| error(AgentErrorCode::InternalError, "Offer registry unavailable"))?;
-            let held = offers.get(&input.grant_set_id).ok_or_else(|| {
-                error(
-                    AgentErrorCode::GrantExpired,
-                    "Refresh grant offers before a new command",
-                )
-            })?;
-            if held.device != fresh.device() {
-                return Err(error(
-                    AgentErrorCode::PermissionDenied,
-                    "Offer belongs to another caller",
-                ));
-            }
-            if held.expires <= now() {
-                return Err(error(AgentErrorCode::GrantExpired, "Grant offer expired"));
-            }
-            if held.offer.revision != revision || held.offer.actions != actions {
-                return Err(error(
-                    AgentErrorCode::GrantRevisionChanged,
-                    "Grant offer changed",
-                ));
-            }
+            offers
+                .get(&input.grant_set_id)
+                .map(|held| {
+                    (
+                        held.device,
+                        held.expires,
+                        held.offer.revision == revision && held.offer.actions == actions,
+                    )
+                })
+                .ok_or_else(|| {
+                    error(
+                        AgentErrorCode::GrantExpired,
+                        "Refresh grant offers before a new command",
+                    )
+                })?
+        };
+        if held_device != fresh.device() {
+            return Err(error(
+                AgentErrorCode::PermissionDenied,
+                "Offer belongs to another caller",
+            ));
+        }
+        if held_expires <= now() {
+            return Err(error(AgentErrorCode::GrantExpired, "Grant offer expired"));
+        }
+        if !held_unchanged {
+            return Err(error(
+                AgentErrorCode::GrantRevisionChanged,
+                "Grant offer changed",
+            ));
         }
         let mut digest = blake3::Hasher::new_derive_key("qOS agent control invocation v1");
         digest.update(&fresh.device());
@@ -330,7 +366,7 @@ impl AgentAdmission {
                 // A concurrent prepare may have won, or publication may precede a lost barrier.
                 // Read-only reconciliation: never resubmit the owner mutation here.
                 let (current, snapshot) = self.current(&fresh)?;
-                if let Some(prior) = self.replay(&current, &snapshot, invocation, &request)? {
+                if let Some(prior) = Self::replay(&current, &snapshot, invocation, &request)? {
                     return Ok(prior);
                 }
                 let code = match failure {
@@ -343,6 +379,11 @@ impl AgentAdmission {
             }
         }
     }
+    /// Reports the retained admission state of one invocation for its caller.
+    ///
+    /// # Errors
+    ///
+    /// Returns an [`AgentError`] when the caller is not current or no admission is retained.
     pub fn status(
         &self,
         caller: &VerifiedAgentCaller,

@@ -1,6 +1,6 @@
 //! Current committed reads on the actual admitted channel.
 mod capture;
-use super::*;
+use super::{Arc, CapnpChannelHandle, CrdtRoute, Duration, Ordering, Rc};
 pub(super) use capture::Budget;
 pub use capture::DocumentBytes;
 use runtime_collab::committed_document::{MAX_DOCUMENT_BYTES, Reply, Request};
@@ -20,6 +20,11 @@ impl NativeDocumentReadContext {
     pub fn certificate(&self) -> &tilo_user_identity::DeviceCert {
         &self.certificate
     }
+    /// Re-checks the admitted channel's live custody and admission.
+    ///
+    /// # Errors
+    ///
+    /// Returns a message once the broker, worker, launcher custody or admission ended.
     pub fn revalidate(&self) -> Result<(), String> {
         (self.revalidate)()
     }
@@ -37,9 +42,17 @@ pub trait NativeDocumentReads: Send + Sync {
     fn requires_room(&self, room: &str) -> bool;
     /// Must check exact current selected custody, caller certificate, and native
     /// document Read permission. Called again before every returned chunk.
+    ///
+    /// # Errors
+    ///
+    /// Returns a message when the caller may not read the document now.
     fn authorize(&self, context: &NativeDocumentReadContext) -> Result<(), String>;
     /// Called only after the broker reserves maximum bytes. Implementations must
     /// use the actual bounded native save, refusing before output allocation.
+    ///
+    /// # Errors
+    ///
+    /// Returns a message when the document cannot be captured within `maximum` bytes.
     fn capture(
         &self,
         context: &NativeDocumentReadContext,
@@ -107,10 +120,7 @@ impl CapnpChannelHandle {
         context.revalidate()?;
         Ok(context)
     }
-    pub(super) fn committed_document_dispatch(
-        self: Rc<Self>,
-        request: Request,
-    ) -> Result<Reply, String> {
+    pub(super) fn committed_document_dispatch(&self, request: &Request) -> Result<Reply, String> {
         let required = self
             .state
             .services
@@ -132,7 +142,7 @@ impl CapnpChannelHandle {
         if slot.closed {
             return Err("committed read channel expired".into());
         }
-        match request {
+        match *request {
             Request::Cancel { capture, token } => {
                 if !slot.active.as_ref().is_some_and(|active| {
                     active.capture.id == capture && active.capture.acknowledges(token)

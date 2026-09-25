@@ -49,7 +49,7 @@ impl AgentReadCustody {
     pub fn from_request(request: &crate::peer_actions::Request) -> Self {
         Self {
             policy_time: request.policy_time().cloned(),
-            _permit: request._permit.clone(),
+            _permit: request.permit().clone(),
         }
     }
 }
@@ -70,6 +70,11 @@ impl<T> AgentReadReply<T> {
     pub fn into_parts(self) -> (T, Option<AgentReadCustody>) {
         (self.value, self.custody)
     }
+    /// Maps the value while keeping its custody.
+    ///
+    /// # Errors
+    ///
+    /// Returns the error of `f` unchanged.
     pub fn try_map<U, E>(self, f: impl FnOnce(T) -> Result<U, E>) -> Result<AgentReadReply<U>, E> {
         let value = f(self.value)?;
         Ok(AgentReadReply::new(value, self.custody))
@@ -92,6 +97,11 @@ pub trait CertifiedAgentReads: Send + Sync {
 
 /// Execute the disposable read with its original evidence and correlate the
 /// bounded result before the ordinary broker hands it to response custody.
+///
+/// # Errors
+///
+/// Returns an [`AgentReadError`] when the request is invalid for `host`, the
+/// deadline passes, the owner read fails, or its result does not correlate.
 pub async fn read_from_owner(
     owner: &dyn CertifiedAgentReads,
     host: uuid::Uuid,

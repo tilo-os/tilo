@@ -41,50 +41,6 @@ pub trait WorkspacePolicy {
     fn shares_of(&self, resource: &ResourceRef) -> Vec<&CapOverride>;
 }
 
-#[cfg(test)]
-mod retained_clock_tests {
-    use super::*;
-    #[test]
-    fn retained_policy_clock_samples_membership_and_grant_at_same_time() {
-        let mut workspace = crate::test_support::Workspace::test_default(
-            crate::test_support::WorkspaceId(2),
-            "Timed room",
-        );
-        let user = "member".to_string();
-        workspace.grant_capability(
-            CapOverride::membership(
-                Subject::person(&user),
-                workspace.room.to_string(),
-                Verb::Read,
-            )
-            .with_expiry(100),
-        );
-        workspace.grant_capability(
-            CapOverride::grant(
-                Subject::person(&user),
-                Scope::App("app".into()),
-                Verb::Write,
-            )
-            .with_expiry(100),
-        );
-        let before = workspace.actor_for_person_at(&user, 50);
-        assert_eq!(workspace.role_of_at(&user, 50), Some(CapRole::Viewer));
-        assert_eq!(
-            workspace.decide_at(&before, &ResourceRef::App("app".into()), Verb::Write, 50),
-            CapDecision::Allow
-        );
-        assert_eq!(workspace.role_of_at(&user, 101), None);
-        assert_ne!(
-            workspace.decide_at(
-                &workspace.actor_for_person_at(&user, 101),
-                &ResourceRef::App("app".into()),
-                Verb::Write,
-                101
-            ),
-            CapDecision::Allow
-        );
-    }
-}
 impl WorkspacePolicy for Workspace {
     fn grant_capability(&mut self, mut cap: CapOverride) -> String {
         if cap.id.is_empty() {
@@ -344,12 +300,56 @@ pub fn redacted_effect_receipt(
         invocation.0.to_string(),
     ));
     redact_receipt_context(&mut context);
-    let receipt = WorkspaceEffectReceipt {
+    WorkspaceEffectReceipt {
         invocation,
         actor: bounded_receipt_text(actor, 160),
         context,
         status,
         completed_at,
-    };
-    receipt
+    }
+}
+
+#[cfg(test)]
+mod retained_clock_tests {
+    use super::*;
+    #[test]
+    fn retained_policy_clock_samples_membership_and_grant_at_same_time() {
+        let mut workspace = crate::test_support::Workspace::test_default(
+            crate::test_support::WorkspaceId(2),
+            "Timed room",
+        );
+        let user = "member".to_string();
+        workspace.grant_capability(
+            CapOverride::membership(
+                Subject::person(&user),
+                workspace.room.to_string(),
+                Verb::Read,
+            )
+            .with_expiry(100),
+        );
+        workspace.grant_capability(
+            CapOverride::grant(
+                Subject::person(&user),
+                Scope::App("app".into()),
+                Verb::Write,
+            )
+            .with_expiry(100),
+        );
+        let before = workspace.actor_for_person_at(&user, 50);
+        assert_eq!(workspace.role_of_at(&user, 50), Some(CapRole::Viewer));
+        assert_eq!(
+            workspace.decide_at(&before, &ResourceRef::App("app".into()), Verb::Write, 50),
+            CapDecision::Allow
+        );
+        assert_eq!(workspace.role_of_at(&user, 101), None);
+        assert_ne!(
+            workspace.decide_at(
+                &workspace.actor_for_person_at(&user, 101),
+                &ResourceRef::App("app".into()),
+                Verb::Write,
+                101
+            ),
+            CapDecision::Allow
+        );
+    }
 }

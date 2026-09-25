@@ -355,18 +355,15 @@ fn prepare_launch_inputs(
     // untitled defaults. The index and file keep their original distinct writers.
     let (room, room_autosave) = ui::persist::open_room("so.tilo.word-processor", &room_id);
     let records = ui::RecordSet::for_local_files("so.tilo.word-processor")?.with_home(room_id);
-    let (mut state, widget): (State, Box<dyn Widget>) = match file_arg(args) {
-        Some(path) => {
-            let (state, widget, _) = word_processor::open_document_with_records(path, &records)?;
-            (state, Box::new(widget))
-        }
-        None => {
-            let reader = records.file_history_reader()?;
-            reader.require_local_creation()?;
-            let mut widget = WordProcessorWidget::new();
-            widget.retain_file_history(reader);
-            (State::new(), Box::new(widget))
-        }
+    let (mut state, widget): (State, Box<dyn Widget>) = if let Some(path) = file_arg(args) {
+        let (state, widget, _) = word_processor::open_document_with_records(path, &records)?;
+        (state, Box::new(widget))
+    } else {
+        let reader = records.file_history_reader()?;
+        reader.require_local_creation()?;
+        let mut widget = WordProcessorWidget::new();
+        widget.retain_file_history(reader);
+        (State::new(), Box::new(widget))
     };
     let app_id = named_actor("wp").unwrap_or_else(|| distinct_actor("wp", state.doc.get_actor()));
     ui::diag!("word-processor: automerge actor {app_id}");

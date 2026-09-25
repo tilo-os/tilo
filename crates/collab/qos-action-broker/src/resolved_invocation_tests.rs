@@ -161,7 +161,7 @@ async fn resolved_invocation_rpc_retains_actual_original_and_exact_worker() {
             crate::test_support::WorkspaceId(83),
             "Original room",
         );
-        workspace.set_owner(&principal_id_for_root(cert.user_public_key));
+        workspace.set_owner(principal_id_for_root(cert.user_public_key));
         workspace.owner = None;
         workspace.capabilities = workspace
             .capabilities

@@ -1,5 +1,7 @@
 //! Local media authority originates at the real launcher handoff, never wire JSON.
-use super::*;
+#[cfg(target_os = "linux")]
+use super::AsRawFd;
+use super::{Arc, AtomicBool, CapnpBrokerState, CapnpChannelHandle, Ordering, Rc};
 use runtime_collab::native_media::{Request, Snapshot};
 
 /// Immutable route plus a live connection/process/admission check. There is no
@@ -26,6 +28,11 @@ impl NativeMediaRequestContext {
     pub fn record_id(&self) -> &str {
         &self.record_id
     }
+    /// Re-checks that the admitted connection, process and route are still live.
+    ///
+    /// # Errors
+    ///
+    /// Returns a message once the connection, process or admission lapsed.
     pub fn revalidate(&self) -> Result<(), String> {
         (self.revalidate)()
     }
@@ -59,7 +66,7 @@ impl PeerProcess {
     pub(super) fn from_socket(stream: &tokio::net::UnixStream) -> Option<Self> {
         use std::os::fd::FromRawFd;
         let mut fd: libc::c_int = -1;
-        let mut len = std::mem::size_of_val(&fd) as libc::socklen_t;
+        let mut len = libc::socklen_t::try_from(std::mem::size_of_val(&fd)).ok()?;
         // SAFETY: live connected socket; writable correctly sized output. The
         // kernel returns a new owned pidfd for the socket's actual peer task.
         let result = unsafe {
@@ -67,8 +74,8 @@ impl PeerProcess {
                 stream.as_raw_fd(),
                 libc::SOL_SOCKET,
                 libc::SO_PEERPIDFD,
-                (&mut fd as *mut libc::c_int).cast(),
-                &mut len,
+                (&raw mut fd).cast(),
+                &raw mut len,
             )
         };
         if result != 0 || fd < 0 {
@@ -95,9 +102,13 @@ impl PeerProcess {
             revents: 0,
         };
         // SAFETY: one initialized pollfd, owned pidfd, nonblocking query.
-        unsafe { libc::poll(&mut poll, 1, 0) == 0 }
+        unsafe { libc::poll(&raw mut poll, 1, 0) == 0 }
     }
     #[cfg(not(target_os = "linux"))]
+    #[expect(
+        clippy::unused_self,
+        reason = "mirrors the Linux pidfd check, which reads this process handle"
+    )]
     fn alive(&self) -> bool {
         false
     }
@@ -145,6 +156,10 @@ impl ProcessMonitor {
         state: &Arc<CapnpBrokerState>,
         peer: u64,
     ) -> Self {
+        #[cfg_attr(
+            not(target_os = "linux"),
+            expect(unused_mut, reason = "only Linux monitors a local process")
+        )]
         let mut task = None;
         #[cfg(target_os = "linux")]
         if let Some(connection) = local.as_ref() {
@@ -193,6 +208,10 @@ impl Drop for ProcessMonitor {
 }
 
 impl CapnpChannelHandle {
+    #[expect(
+        clippy::suspicious_operation_groupings,
+        reason = "a route's cluster is the connection's workspace; the names differ by layer"
+    )]
     fn native_media_context(
         &self,
         stopping: bool,

@@ -56,6 +56,7 @@ impl Capture {
         if len == 0 || len > MAX_DOCUMENT_BYTES || id == 0 {
             return Err("invalid native document capture".into());
         }
+        let now = std::time::Instant::now();
         Ok(Self {
             body,
             _reservation: reservation,
@@ -63,7 +64,9 @@ impl Capture {
             revision,
             next: 0,
             token: [0; 16],
-            deadline: std::time::Instant::now() + std::time::Duration::from_secs(5),
+            deadline: now
+                .checked_add(std::time::Duration::from_secs(5))
+                .unwrap_or(now),
             expired: false,
         })
     }
@@ -83,14 +86,21 @@ impl Capture {
         if self.next >= total {
             return Err("committed document capture finished".into());
         }
-        let end = total.min(self.next + CHUNK_BYTES);
-        let bytes = self.body.bytes()[self.next..end].to_vec();
+        let end = total.min(self.next.saturating_add(CHUNK_BYTES));
+        let bytes = self
+            .body
+            .bytes()
+            .get(self.next..end)
+            .ok_or("committed document cursor out of range")?
+            .to_vec();
+        let total =
+            u32::try_from(total).map_err(|_| "committed document exceeds the wire limit")?;
         self.next = end;
         self.token = uuid::Uuid::new_v4().into_bytes();
         Ok(runtime_collab::committed_document::Reply::Chunk {
             capture: self.id,
             revision: self.revision,
-            total: total as u32,
+            total,
             offset,
             bytes,
             token: self.token,
@@ -114,6 +124,10 @@ impl Capture {
 }
 #[cfg(test)]
 mod tests {
+    #![allow(
+        clippy::cast_possible_truncation,
+        reason = "fixture offsets are a few chunks, far below u32::MAX"
+    )]
     use super::*;
     struct Bytes(Vec<u8>);
     impl DocumentBytes for Bytes {

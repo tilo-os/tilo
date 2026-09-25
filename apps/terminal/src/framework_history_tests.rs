@@ -123,12 +123,15 @@ impl Write for ChannelWriter {
     }
 }
 
-fn recording_widget() -> (
+/// A widget plus its recorded writes, its output feed and its recorded resizes.
+type RecordingWidget = (
     crate::TerminalWidget,
     std::sync::mpsc::Receiver<Vec<u8>>,
     std::sync::mpsc::Sender<Vec<u8>>,
     std::sync::mpsc::Receiver<PtySize>,
-) {
+);
+
+fn recording_widget() -> RecordingWidget {
     let (write_tx, writes) = std::sync::mpsc::channel();
     let (output, output_rx) = std::sync::mpsc::channel();
     let (resize_tx, resizes) = std::sync::mpsc::channel();

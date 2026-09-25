@@ -56,6 +56,11 @@ pub fn decode_view_operation(
 
 /// Apply one view operation to the invoker's view. Pure; returns no
 /// envelopes, only the next view.
+///
+/// # Errors
+///
+/// Returns an [`EditingError`] when the view has no caret in
+/// `doc` or the target is stale or out of range for this document.
 pub fn apply(view: &ParticipantView, doc: &AutoCommit, operation: &ViewOperation) -> EditResult {
     match operation {
         ViewOperation::MoveCaret { to } => editing::move_caret(view, doc, to),
@@ -69,6 +74,11 @@ pub fn apply(view: &ParticipantView, doc: &AutoCommit, operation: &ViewOperation
 /// The existing `search-hit#go-to` (`WordProcessorOperation::NavigateTo`)
 /// for a participant view: select one exact body range, as the widget's
 /// `navigate_to_range` does for its own window.
+///
+/// # Errors
+///
+/// Returns an [`EditingError`] when the view has no caret in
+/// `doc` or the target is stale or out of range for this document.
 pub fn navigate_to(
     view: &ParticipantView,
     doc: &AutoCommit,
@@ -150,6 +160,10 @@ fn view_spec(
 /// invoker's own view, so a remote participant may run them; the evidence domain is the
 /// participant's current view because `move-caret {to: block-end}` resolves
 /// against it.
+#[expect(
+    clippy::too_many_lines,
+    reason = "the published view-operation table: one independent spec per operation"
+)]
 pub(super) fn add_operations(root: &mut Resource, ctx: &WpResourceCtx) {
     let caret = ViewPoint::new(&ctx.caret_block, ctx.caret_offset);
     let selection = ctx.selection.as_ref().map(|selection| {

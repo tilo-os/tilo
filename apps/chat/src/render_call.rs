@@ -475,7 +475,7 @@ impl ChatApp {
             );
             let alpha = reveal * reveal * (3.0 - 2.0 * reveal);
             scene.push_layer(Fill::NonZero, BlendMode::default(), alpha, tf, &clip);
-            self.draw_huddle_chips(
+            Self::draw_huddle_chips(
                 PaintContext::new(scene, tf, tr, theme),
                 panel,
                 strip_y,
@@ -545,7 +545,6 @@ impl ChatApp {
     /// Adaptive participant chips beneath the strip header — one per
     /// non-host member, wrapping to the panel width.
     fn draw_huddle_chips(
-        &self,
         paint: PaintContext<'_>,
         panel: Rect,
         strip_y: f64,

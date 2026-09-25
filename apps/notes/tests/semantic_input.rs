@@ -31,9 +31,9 @@ fn named(driver: &Driver, name: &str) -> Vec<(String, Option<String>)> {
     routes(&driver.inspection().root, name, &mut found);
     found
 }
-fn perform(driver: &mut Driver, route: &(String, Option<String>), action: Action) {
+fn perform(driver: &mut Driver, route: &(String, Option<String>), action: &Action) {
     driver
-        .perform_semantic_named(&route.0, route.1.as_deref(), &action)
+        .perform_semantic_named(&route.0, route.1.as_deref(), action)
         .unwrap();
 }
 
@@ -50,7 +50,7 @@ fn published_new_note_and_page_tokens_use_the_canonical_component_once() {
         .iter()
         .find(|r| r.1.as_deref() == Some("notes:new-page"))
         .unwrap();
-    perform(&mut a, sidebar, Action::Activate);
+    perform(&mut a, sidebar, &Action::Activate);
     assert_eq!(
         f.records
             .read(&checkout.id, |doc| NotesDoc::list_pages(doc).len())
@@ -62,7 +62,7 @@ fn published_new_note_and_page_tokens_use_the_canonical_component_once() {
         .into_iter()
         .find(|r| r.1.as_deref().is_some_and(|t| t.starts_with("notes:page:")))
         .unwrap();
-    perform(&mut a, &page, Action::Activate);
+    perform(&mut a, &page, &Action::Activate);
     assert_eq!(revision(&f, &checkout), before, "selection is local");
     for action in [Action::Activate, Action::Focus] {
         assert!(
@@ -85,7 +85,7 @@ fn published_new_note_and_page_tokens_use_the_canonical_component_once() {
         .into_iter()
         .find(|r| r.1.as_deref() == Some("notes.first_note"))
         .unwrap();
-    perform(&mut a, &first, Action::Activate);
+    perform(&mut a, &first, &Action::Activate);
     assert_eq!(
         f.records
             .read(&checkout.id, |doc| NotesDoc::list_pages(doc).len())
@@ -120,7 +120,7 @@ fn published_title_edits_the_retained_label_and_commits_through_enter_and_blur()
     let title = named(&a, "Page title");
     assert_eq!(title.len(), 1, "one truthful title surface");
     let title = title[0].clone();
-    perform(&mut a, &title, Action::Focus);
+    perform(&mut a, &title, &Action::Focus);
     assert_eq!(
         a.focused_access_node()
             .expect("semantic Focus must focus the real retained title")
@@ -128,11 +128,11 @@ fn published_title_edits_the_retained_label_and_commits_through_enter_and_blur()
             .as_deref(),
         Some("Page title")
     );
-    perform(&mut a, &title, Action::SetValue("Semantic title".into()));
+    perform(&mut a, &title, &Action::SetValue("Semantic title".into()));
     perform(
         &mut a,
         &title,
-        Action::SetSelection {
+        &Action::SetSelection {
             anchor: 2,
             focus: 8,
         },
@@ -152,8 +152,8 @@ fn published_title_edits_the_retained_label_and_commits_through_enter_and_blur()
             .unwrap(),
         "Semantic title"
     );
-    perform(&mut a, &title, Action::Focus);
-    perform(&mut a, &title, Action::SetValue("Blur title".into()));
+    perform(&mut a, &title, &Action::Focus);
+    perform(&mut a, &title, &Action::SetValue("Blur title".into()));
     a.perform_named("block_editor", &Action::Focus).unwrap();
     assert_eq!(
         f.records
@@ -210,7 +210,7 @@ fn title_route_obeys_remote_refresh_replacement_and_revoked_authority() {
         Some("Remote title"),
     );
     a.relayout();
-    perform(&mut a, &original, Action::Focus);
+    perform(&mut a, &original, &Action::Focus);
     assert_eq!(
         a.focused_access_node().unwrap().value.as_deref(),
         Some("Remote title")
@@ -252,21 +252,21 @@ fn title_route_obeys_remote_refresh_replacement_and_revoked_authority() {
     )
     .at_unix_time(100);
     let before = revision(&f, &checkout);
-    perform(&mut a, &replacement, Action::Focus);
+    perform(&mut a, &replacement, &Action::Focus);
     let canonical = a.focused_access_node().unwrap().value;
     // Local inline staging remains available, as for ordinary keyboard input;
     // the actual canonical rename is authorized when the user commits it.
-    perform(&mut a, &replacement, Action::SetValue("denied".into()));
+    perform(&mut a, &replacement, &Action::SetValue("denied".into()));
     a.key("Enter");
     assert_eq!(revision(&f, &checkout), before);
-    perform(&mut a, &replacement, Action::Focus);
+    perform(&mut a, &replacement, &Action::Focus);
     assert_eq!(a.focused_access_node().unwrap().value, canonical);
     let pages = f
         .records
         .read(&checkout.id, |doc| NotesDoc::list_pages(doc).len())
         .unwrap();
     let create = named(&a, "New note")[0].clone();
-    perform(&mut a, &create, Action::Activate);
+    perform(&mut a, &create, &Action::Activate);
     let rect = semantic_rect(&a, "notes:new-page");
     a.click_at(rect.center().x, rect.center().y);
     assert_eq!(
@@ -292,7 +292,7 @@ fn revoked_authority_rejects_empty_notes_semantic_and_pointer_creation() {
     )
     .at_unix_time(100);
     for route in named(&a, "New note") {
-        perform(&mut a, &route, Action::Activate);
+        perform(&mut a, &route, &Action::Activate);
     }
     let rect = semantic_rect(&a, "notes:new-page");
     a.click_at(rect.center().x, rect.center().y);

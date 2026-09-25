@@ -14,20 +14,26 @@ pub const SLOW: Duration = Duration::from_millis(1);
 fn unix_us() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |elapsed| elapsed.as_micros() as u64)
+        .map_or(0, saturating_micros)
+}
+
+/// Whole microseconds of `elapsed`, saturated at [`u64::MAX`].
+fn saturating_micros(elapsed: Duration) -> u64 {
+    u64::try_from(elapsed.as_micros()).unwrap_or(u64::MAX)
 }
 
 /// One point event.
 pub fn mark(event: &'static str, invocation: Option<uuid::Uuid>) {
-    match invocation {
-        Some(invocation) => tracing::info!(
+    if let Some(invocation) = invocation {
+        tracing::info!(
             target: "qos_cloud_host::agent_timing",
             event, %invocation, unix_us = unix_us(), "agent timing"
-        ),
-        None => tracing::info!(
+        );
+    } else {
+        tracing::info!(
             target: "qos_cloud_host::agent_timing",
             event, unix_us = unix_us(), "agent timing"
-        ),
+        );
     }
 }
 
@@ -39,7 +45,7 @@ pub fn span(
     elapsed: Duration,
     details: &[(&'static str, u64)],
 ) {
-    let elapsed_us = elapsed.as_micros() as u64;
+    let elapsed_us = saturating_micros(elapsed);
     let mut detail = String::new();
     for (name, value) in details {
         use std::fmt::Write;
@@ -49,15 +55,16 @@ pub fn span(
             if detail.is_empty() { "" } else { " " }
         );
     }
-    match invocation {
-        Some(invocation) => tracing::info!(
+    if let Some(invocation) = invocation {
+        tracing::info!(
             target: "qos_cloud_host::agent_timing",
             event, %invocation, unix_us = unix_us(), elapsed_us, detail = %detail, "agent timing"
-        ),
-        None => tracing::info!(
+        );
+    } else {
+        tracing::info!(
             target: "qos_cloud_host::agent_timing",
             event, unix_us = unix_us(), elapsed_us, detail = %detail, "agent timing"
-        ),
+        );
     }
 }
 
@@ -97,5 +104,5 @@ pub fn slow_store(event: &'static str, started: Instant, details: &[(&'static st
 
 /// Microseconds since `started`, for detail fields.
 pub fn us(started: Instant) -> u64 {
-    started.elapsed().as_micros() as u64
+    saturating_micros(started.elapsed())
 }

@@ -6,6 +6,10 @@ use ui::{
 };
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "persisted peer-local view schema; each flag is an independent panel toggle"
+)]
 struct LocalView {
     workspace: String,
     channel: String,
@@ -27,7 +31,7 @@ impl crate::ChatApp {
     pub(crate) fn capture_local(&self) -> Result<Option<ApplicationLocalView>, ThawError> {
         let call_offset = match self.call.placement.attachment() {
             ui::floating_surface::Attachment::App { offset } => [offset.x, offset.y],
-            _ => [0., 0.],
+            ui::floating_surface::Attachment::Desktop { .. } => [0., 0.],
         };
         let view = LocalView {
             workspace: self.active_ws.clone(),

@@ -134,6 +134,11 @@ impl CalculatorApp {
     /// Project an already admitted Calculator record without authoring schema
     /// or replacing malformed content. The checked component initializes New
     /// records before calling this constructor; Existing records stay read-only.
+    ///
+    /// # Errors
+    ///
+    /// Returns the schema error when the record is not a valid Calculator
+    /// document.
     pub fn from_document(doc: &AutoCommit) -> Result<Self, String> {
         let mut app = Self::with_model(crate::doc::load_existing(doc)?);
         app.seeded = true;
@@ -813,10 +818,23 @@ impl CalculatorApp {
 
     // -- keyboard ------------------------------------------------------------
 
+    /// Keyboard and IME input an unfocused instance must leave unclaimed.
+    fn ignores_unfocused_input(&self, event: &WindowEvent) -> bool {
+        !self.host_focused
+            && matches!(
+                event,
+                WindowEvent::KeyboardInput { .. } | WindowEvent::Ime(_)
+            )
+    }
+
     fn on_key(&mut self, key: &WKey, modifiers: winit::event::Modifiers, doc: &mut AutoCommit) {
         self.on_key_with_paste(key, modifiers, doc, ui::clipboard_paste);
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one flat per-key dispatch table for every Calculator mode"
+    )]
     fn on_key_with_paste(
         &mut self,
         key: &WKey,
@@ -1235,6 +1253,7 @@ impl Widget for CalculatorApp {
     }
 
     fn sync(&mut self, state: &mut AutoCommit, _path: &ObjId) {
+        use automerge::transaction::Transactable as _;
         if !self.seeded {
             if crate::doc::is_seeded(state) {
                 let _ = crate::doc::load_into(state, &mut self.model);
@@ -1262,7 +1281,6 @@ impl Widget for CalculatorApp {
         // Reload only when the document moved: committed heads differ, or a
         // transaction is or was open. Reloading every frame re-read every
         // history row, function and surface on each pointer move.
-        use automerge::transaction::Transactable as _;
         let heads = state.base_heads();
         let pending = state.pending_ops();
         let unchanged = self
@@ -1394,12 +1412,7 @@ impl Widget for CalculatorApp {
         // Keyboard and IME input belongs to the host-selected Calculator only;
         // an unfocused instance must leave it unclaimed so that selected sibling
         // can receive the same event. Pointer routing remains geometry-based.
-        if !self.host_focused
-            && matches!(
-                event,
-                WindowEvent::KeyboardInput { .. } | WindowEvent::Ime(_)
-            )
-        {
+        if self.ignores_unfocused_input(event) {
             return;
         }
         self.relayout();

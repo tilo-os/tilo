@@ -157,7 +157,7 @@ impl ParticipantViews {
                 .is_some_and(|before| before != heads);
             if applied {
                 self.joining.retain(|(id, _)| *id != participant);
-                self.set(participant, next, doc, now);
+                self.set(&participant, &next, doc, now);
             }
         }
     }
@@ -189,19 +189,19 @@ impl ParticipantViews {
     /// recently used views to stay within [`MAX_PARTICIPANT_VIEWS`].
     pub(crate) fn set(
         &mut self,
-        participant: ParticipantId,
-        view: ParticipantView,
+        participant: &ParticipantId,
+        view: &ParticipantView,
         doc: &AutoCommit,
         now: Instant,
     ) {
         let label = self
             .entries
-            .get(&participant)
+            .get(participant)
             .and_then(|entry| entry.label.clone());
         let entry = pin(view, label, doc, now);
         self.entries.insert(participant.clone(), entry);
         self.expire(now);
-        self.evict_lru_except(&participant);
+        self.evict_lru_except(participant);
     }
 
     /// Set the name shown next to `participant`'s caret. Unknown participants
@@ -256,7 +256,7 @@ impl ParticipantViews {
     pub(crate) fn rebase(&mut self, doc: &AutoCommit) {
         for (participant, joined) in std::mem::take(&mut self.joining) {
             if let Some(view) = ParticipantView::at_document_end(doc) {
-                self.set(participant, view, doc, joined);
+                self.set(&participant, &view, doc, joined);
             }
         }
         if self.entries.is_empty() {
@@ -267,7 +267,7 @@ impl ParticipantViews {
             if view.caret != entry.caret.point
                 || view.anchor.as_ref() != entry.anchor.as_ref().map(|a| &a.point)
             {
-                *entry = pin(view, entry.label.take(), doc, entry.touched);
+                *entry = pin(&view, entry.label.take(), doc, entry.touched);
             }
         }
     }
@@ -286,11 +286,7 @@ fn truncate(text: &str, max: usize) -> &str {
     if text.len() <= max {
         return text;
     }
-    let mut end = max;
-    while !text.is_char_boundary(end) {
-        end -= 1;
-    }
-    &text[..end]
+    text.get(..text.floor_char_boundary(max)).unwrap_or(text)
 }
 
 /// The canonical Text object of `block` in `region`, if it has one.
@@ -327,7 +323,7 @@ fn pin_point(doc: &AutoCommit, region: RegionKind, point: ViewPoint) -> Pinned {
     Pinned { point, cursor }
 }
 
-fn pin(view: ParticipantView, label: Option<String>, doc: &AutoCommit, now: Instant) -> Entry {
+fn pin(view: &ParticipantView, label: Option<String>, doc: &AutoCommit, now: Instant) -> Entry {
     // A caret the edit could only describe relative to blocks it minted
     // resolves now, against the document the edit produced.
     let view = view.settle(doc);

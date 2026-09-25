@@ -1,5 +1,8 @@
 //! Selected-file reconciliation preserves the admitted document graph.
-use super::*;
+use super::{
+    Affine, AutoCommit, DocumentSaveStatus, Point, Rect, Scene, TextRenderer, Theme, WindowEvent,
+    WordProcessorWidget, WpFormat, t,
+};
 
 pub(super) fn same_file_content(
     document: &AutoCommit,
@@ -192,9 +195,161 @@ impl WordProcessorWidget {
     }
 }
 
+impl FileChoice {
+    pub(super) fn install_custody(
+        &mut self,
+        domain: &ui::ControlDomain,
+        attachment: ui::control_custody::CustodyAttachment,
+    ) {
+        for emitter in &mut self.emitters {
+            let _ = emitter.install_custody(domain, attachment);
+        }
+    }
+    pub(super) fn take(&mut self) -> Option<tilo_actions::ControlInvocation> {
+        self.emitters
+            .iter_mut()
+            .find_map(ui::widget::ActionEmitter::take)
+    }
+    pub(super) fn refresh(
+        &mut self,
+        allowed: &std::collections::HashSet<tilo_actions::ActionAddress>,
+    ) {
+        for emitter in &mut self.emitters {
+            emitter.refresh_availability(allowed);
+        }
+    }
+    pub(super) fn bindings(&self) -> Vec<ui::widget::ControlBindingMetadata> {
+        self.emitters
+            .iter()
+            .enumerate()
+            .map(|(i, e)| e.metadata(format!("file-choice:{i}")))
+            .collect()
+    }
+    fn emit(&mut self, index: usize) {
+        if let Some(emitter) = self.emitters.get_mut(index) {
+            let _ = emitter.emit(());
+        }
+    }
+    pub(super) fn event(&mut self, event: &WindowEvent, scale: f64) {
+        use ui::widget::modal_frame::ModalHit;
+        use winit::event::{ElementState, MouseButton};
+        use winit::keyboard::{Key, NamedKey};
+        match event {
+            WindowEvent::CursorMoved { position, .. } => {
+                self.pointer = Some(Point::new(position.x / scale, position.y / scale));
+            }
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+                ..
+            } => {
+                if let Some(ModalHit::Action(i)) =
+                    self.pointer.and_then(|p| self.layout.as_ref()?.hit(p))
+                {
+                    self.emit(i);
+                }
+            }
+            WindowEvent::KeyboardInput { event, .. } if event.state == ElementState::Pressed => {
+                match &event.logical_key {
+                    Key::Named(NamedKey::Tab | NamedKey::ArrowLeft | NamedKey::ArrowRight) => {
+                        self.focus = 1 - self.focus;
+                    }
+                    Key::Named(NamedKey::Enter | NamedKey::Space) => self.emit(self.focus),
+                    _ => {}
+                }
+            }
+            _ => {}
+        }
+    }
+    pub(super) fn draw(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        viewport: Rect,
+    ) {
+        use ui::widget::modal_frame::{ModalAction, ModalFrame, ModalSpec};
+        let title = t("file-choice-title");
+        let body = t("file-choice-body");
+        let labels = [t("file-choice-keep"), t("file-choice-use")];
+        let mut actions = [
+            ModalAction::primary(&labels[0]),
+            ModalAction::secondary(&labels[1]),
+        ];
+        for (i, action) in actions.iter_mut().enumerate() {
+            action.focused = self.focus == i;
+            action.enabled = self
+                .emitters
+                .get(i)
+                .is_some_and(ui::widget::ActionEmitter::is_available);
+        }
+        let spec = ModalSpec::new(&title).closable(false).actions(&actions);
+        let preliminary = ModalFrame::layout(viewport, &spec, tr, theme);
+        let width = crate::num::f32_of_f64(preliminary.body.width().max(1.0));
+        let size = (theme.tokens.typography.scale.sm / theme.text_scale).max(12.0);
+        let (_, height) = tr.measure(&body, size, Some(width));
+        let spec = spec.body_height(f64::from(height) / f64::from(theme.text_scale) + 8.0);
+        let layout = ModalFrame::layout(viewport, &spec, tr, theme);
+        ModalFrame::paint_backdrop(scene, transform, tr, theme, &layout, &spec);
+        tr.draw_text(
+            scene,
+            &body,
+            size,
+            ModalFrame::ink(theme).0,
+            transform * Affine::translate((layout.body.x0, layout.body.y0)),
+            Some(width),
+        );
+        ModalFrame::paint_actions(scene, transform, tr, theme, &layout, &spec);
+        self.layout = Some(layout);
+    }
+    pub(super) fn accessibility(&self) -> ui::a11y::AccessNode {
+        use ui::a11y::{AccessNode, AccessState, Role};
+        let mut children = Vec::new();
+        for (i, label) in ["file-choice-keep", "file-choice-use"].iter().enumerate() {
+            let mut node = AccessNode::new(Role::Button)
+                .with_name(t(label))
+                .with_action_target(format!("file-choice:{i}"))
+                .with_state(AccessState {
+                    focusable: true,
+                    focused: self.focus == i,
+                    ..Default::default()
+                });
+            if let Some(rect) = self.layout.as_ref().and_then(|l| l.actions.get(i)) {
+                node = node.with_bounds(*rect);
+            }
+            children.push(node);
+        }
+        let mut node = AccessNode::new(Role::Dialog)
+            .with_name(t("file-choice-title"))
+            .with_description(t("file-choice-body"))
+            .with_state(AccessState {
+                modal: true,
+                ..Default::default()
+            })
+            .with_children(children);
+        if let Some(layout) = &self.layout {
+            node = node.with_bounds(layout.card);
+        }
+        node
+    }
+    pub(super) fn accessible_action(&mut self, action: &ui::a11y::Action, keys: &[u64]) {
+        if let Some(index) =
+            (0..2).find(|i| keys.last() == Some(&ui::a11y::hash_key(&format!("file-choice:{i}"))))
+        {
+            if matches!(action, ui::a11y::Action::Activate) {
+                self.emit(index);
+            } else if matches!(action, ui::a11y::Action::Focus) {
+                self.focus = index;
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::widget::{ReadDoc, Widget};
     fn markdown(bytes: &[u8]) -> AutoCommit {
         let mut document = AutoCommit::new();
         let containers = qdoc::model::init(&mut document, &automerge::ROOT);
@@ -429,153 +584,5 @@ mod tests {
             )
             .unwrap()
         );
-    }
-}
-
-impl FileChoice {
-    pub(super) fn install_custody(
-        &mut self,
-        domain: &ui::ControlDomain,
-        attachment: ui::control_custody::CustodyAttachment,
-    ) {
-        for emitter in &mut self.emitters {
-            let _ = emitter.install_custody(domain, attachment);
-        }
-    }
-    pub(super) fn take(&mut self) -> Option<tilo_actions::ControlInvocation> {
-        self.emitters
-            .iter_mut()
-            .find_map(ui::widget::ActionEmitter::take)
-    }
-    pub(super) fn refresh(
-        &mut self,
-        allowed: &std::collections::HashSet<tilo_actions::ActionAddress>,
-    ) {
-        for emitter in &mut self.emitters {
-            emitter.refresh_availability(allowed);
-        }
-    }
-    pub(super) fn bindings(&self) -> Vec<ui::widget::ControlBindingMetadata> {
-        self.emitters
-            .iter()
-            .enumerate()
-            .map(|(i, e)| e.metadata(format!("file-choice:{i}")))
-            .collect()
-    }
-    fn emit(&mut self, index: usize) {
-        if let Some(emitter) = self.emitters.get_mut(index) {
-            let _ = emitter.emit(());
-        }
-    }
-    pub(super) fn event(&mut self, event: &WindowEvent, scale: f64) {
-        use ui::widget::modal_frame::ModalHit;
-        use winit::event::{ElementState, MouseButton};
-        use winit::keyboard::{Key, NamedKey};
-        match event {
-            WindowEvent::CursorMoved { position, .. } => {
-                self.pointer = Some(Point::new(position.x / scale, position.y / scale))
-            }
-            WindowEvent::MouseInput {
-                state: ElementState::Pressed,
-                button: MouseButton::Left,
-                ..
-            } => {
-                if let Some(ModalHit::Action(i)) =
-                    self.pointer.and_then(|p| self.layout.as_ref()?.hit(p))
-                {
-                    self.emit(i);
-                }
-            }
-            WindowEvent::KeyboardInput { event, .. } if event.state == ElementState::Pressed => {
-                match &event.logical_key {
-                    Key::Named(NamedKey::Tab | NamedKey::ArrowLeft | NamedKey::ArrowRight) => {
-                        self.focus = 1 - self.focus
-                    }
-                    Key::Named(NamedKey::Enter | NamedKey::Space) => self.emit(self.focus),
-                    _ => {}
-                }
-            }
-            _ => {}
-        }
-    }
-    pub(super) fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        viewport: Rect,
-    ) {
-        use ui::widget::modal_frame::{ModalAction, ModalFrame, ModalSpec};
-        let title = t("file-choice-title");
-        let body = t("file-choice-body");
-        let labels = [t("file-choice-keep"), t("file-choice-use")];
-        let mut actions = [
-            ModalAction::primary(&labels[0]),
-            ModalAction::secondary(&labels[1]),
-        ];
-        for (i, action) in actions.iter_mut().enumerate() {
-            action.focused = self.focus == i;
-            action.enabled = self.emitters[i].is_available();
-        }
-        let spec = ModalSpec::new(&title).closable(false).actions(&actions);
-        let preliminary = ModalFrame::layout(viewport, &spec, tr, theme);
-        let width = crate::num::f32_of_f64(preliminary.body.width().max(1.0));
-        let size = (theme.tokens.typography.scale.sm / theme.text_scale).max(12.0);
-        let (_, height) = tr.measure(&body, size, Some(width));
-        let spec = spec.body_height(f64::from(height) / f64::from(theme.text_scale) + 8.0);
-        let layout = ModalFrame::layout(viewport, &spec, tr, theme);
-        ModalFrame::paint_backdrop(scene, transform, tr, theme, &layout, &spec);
-        tr.draw_text(
-            scene,
-            &body,
-            size,
-            ModalFrame::ink(theme).0,
-            transform * Affine::translate((layout.body.x0, layout.body.y0)),
-            Some(width),
-        );
-        ModalFrame::paint_actions(scene, transform, tr, theme, &layout, &spec);
-        self.layout = Some(layout);
-    }
-    pub(super) fn accessibility(&self) -> ui::a11y::AccessNode {
-        use ui::a11y::{AccessNode, AccessState, Role};
-        let mut children = Vec::new();
-        for (i, label) in ["file-choice-keep", "file-choice-use"].iter().enumerate() {
-            let mut node = AccessNode::new(Role::Button)
-                .with_name(t(label))
-                .with_action_target(format!("file-choice:{i}"))
-                .with_state(AccessState {
-                    focusable: true,
-                    focused: self.focus == i,
-                    ..Default::default()
-                });
-            if let Some(rect) = self.layout.as_ref().and_then(|l| l.actions.get(i)) {
-                node = node.with_bounds(*rect);
-            }
-            children.push(node);
-        }
-        let mut node = AccessNode::new(Role::Dialog)
-            .with_name(t("file-choice-title"))
-            .with_description(t("file-choice-body"))
-            .with_state(AccessState {
-                modal: true,
-                ..Default::default()
-            })
-            .with_children(children);
-        if let Some(layout) = &self.layout {
-            node = node.with_bounds(layout.card);
-        }
-        node
-    }
-    pub(super) fn accessible_action(&mut self, action: &ui::a11y::Action, keys: &[u64]) {
-        if let Some(index) =
-            (0..2).find(|i| keys.last() == Some(&ui::a11y::hash_key(&format!("file-choice:{i}"))))
-        {
-            if matches!(action, ui::a11y::Action::Activate) {
-                self.emit(index);
-            } else if matches!(action, ui::a11y::Action::Focus) {
-                self.focus = index;
-            }
-        }
     }
 }

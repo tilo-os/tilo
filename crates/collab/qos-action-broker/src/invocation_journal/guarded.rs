@@ -1,5 +1,8 @@
 //! Inert private storage only. Nothing here constructs live disclosure authority.
-use super::*;
+use super::{
+    Deserialize, DurableInvocation, File, InvocationId, InvocationJournal, InvocationKey,
+    InvocationUpdate, Read, Serialize,
+};
 use serde::de::{DeserializeSeed, IgnoredAny, MapAccess, SeqAccess, Visitor};
 use serde::ser::SerializeStruct;
 use std::{cell::Cell, fmt, io::BufReader, rc::Rc};
@@ -10,12 +13,7 @@ const MAX_REQUIREMENT: u64 = 256;
 pub(super) struct Digest(pub [u8; 32]);
 impl Serialize for Digest {
     fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
-        let mut bytes = [0u8; 64];
-        for (i, b) in self.0.iter().copied().enumerate() {
-            bytes[i * 2] = b"0123456789abcdef"[(b >> 4) as usize];
-            bytes[i * 2 + 1] = b"0123456789abcdef"[(b & 15) as usize];
-        }
-        s.serialize_str(std::str::from_utf8(&bytes).expect("hex ASCII"))
+        s.serialize_str(&hex::encode(self.0))
     }
 }
 impl<'de> Deserialize<'de> for Digest {
@@ -30,15 +28,12 @@ impl<'de> Deserialize<'de> for Digest {
                 if s.len() != 64 {
                     return Err(E::custom("invalid guarded digest length"));
                 }
-                let mut out = [0; 32];
-                for (i, b) in s.bytes().enumerate() {
-                    let n = match b {
-                        b'0'..=b'9' => b - b'0',
-                        b'a'..=b'f' => b - b'a' + 10,
-                        _ => return Err(E::custom("noncanonical guarded digest")),
-                    };
-                    out[i / 2] |= n << (if i % 2 == 0 { 4 } else { 0 });
+                if !s.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')) {
+                    return Err(E::custom("noncanonical guarded digest"));
                 }
+                let mut out = [0; 32];
+                hex::decode_to_slice(s, &mut out)
+                    .map_err(|_| E::custom("noncanonical guarded digest"))?;
                 Ok(Digest(out))
             }
         }
@@ -305,7 +300,8 @@ impl<'de> Deserialize<'de> for RawUpdate {
 }
 impl RawUpdate {
     fn check_duplicates(&self, guarded: bool) -> Result<(), String> {
-        let fields: &[&str] = match self.value["state"].as_str() {
+        let state = self.value.get("state").and_then(serde_json::Value::as_str);
+        let fields: &[&str] = match state {
             Some("accepted") => &["state", "invocation"],
             Some("progress") => &[
                 "state",
@@ -326,11 +322,11 @@ impl RawUpdate {
             .duplicate
             .iter()
             .any(|key| guarded || fields.contains(&key.as_str()))
-            || (self.value["state"] == "failed"
+            || (state == Some("failed")
                 && self.error_duplicate.iter().any(|key| {
                     guarded || ["code", "message", "details", "retryable"].contains(&key.as_str())
                 }))
-            || (self.value["state"] == "succeeded"
+            || (state == Some("succeeded")
                 && self
                     .output_duplicate
                     .iter()
@@ -446,8 +442,10 @@ impl<'de> Deserialize<'de> for DurableInvocation {
 }
 impl Serialize for DurableInvocation {
     fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
-        let mut row =
-            s.serialize_struct("DurableInvocation", 6 + usize::from(self.guarded.is_some()))?;
+        let mut row = s.serialize_struct(
+            "DurableInvocation",
+            if self.guarded.is_some() { 7 } else { 6 },
+        )?;
         row.serialize_field("key", &self.key)?;
         row.serialize_field("intent", &self.intent)?;
         row.serialize_field("wire_id", &self.wire_id)?;
@@ -475,7 +473,8 @@ struct Count<R> {
 impl<R: Read> Read for Count<R> {
     fn read(&mut self, b: &mut [u8]) -> std::io::Result<usize> {
         let n = self.reader.read(b)?;
-        self.position.set(self.position.get() + n as u64);
+        self.position
+            .set(self.position.get().saturating_add(n as u64));
         Ok(n)
     }
 }
@@ -569,7 +568,7 @@ impl<'de> Visitor<'de> for Probe {
                     }
                     present = true;
                     map.next_value::<IgnoredAny>()?;
-                    requirement_bytes = self.position.get() - start;
+                    requirement_bytes = self.position.get().saturating_sub(start);
                 }
                 (2, 4) => {
                     if update_seen {
@@ -577,7 +576,7 @@ impl<'de> Visitor<'de> for Probe {
                     }
                     update_seen = true;
                     map.next_value::<IgnoredAny>()?;
-                    update_bytes = self.position.get() - start;
+                    update_bytes = self.position.get().saturating_sub(start);
                 }
                 _ => {
                     map.next_value::<IgnoredAny>()?;

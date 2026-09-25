@@ -1,7 +1,5 @@
 //! Calculator's checked application entry point for native and browser hosts.
-use ui::application::{
-    AppComponent, ApplicationDefinition, HostContext, LaunchTarget, RestoreInput,
-};
+use ui::application::{AppComponent, ApplicationDefinition, HostContext, LaunchTarget};
 use ui::{launch::LaunchError, record::RecordKind, widget::IconDescriptor};
 
 static DEFINITION: std::sync::LazyLock<ApplicationDefinition> =
@@ -12,18 +10,14 @@ static DEFINITION: std::sync::LazyLock<ApplicationDefinition> =
         record_kind: RecordKind::new("calculator.document"),
         required: vec![],
         optional: vec![],
-        create,
+        create: |context, target, _| create(context, &target),
     });
 
 pub fn definition() -> &'static ApplicationDefinition {
     &DEFINITION
 }
 
-fn create(
-    mut context: HostContext,
-    target: LaunchTarget,
-    _: RestoreInput,
-) -> Result<AppComponent, LaunchError> {
+fn create(mut context: HostContext, target: &LaunchTarget) -> Result<AppComponent, LaunchError> {
     if matches!(target, LaunchTarget::New) {
         context
             .initialize_new_record(crate::doc::initialize_empty)

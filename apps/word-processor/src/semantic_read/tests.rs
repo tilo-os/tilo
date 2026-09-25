@@ -1,4 +1,5 @@
 use super::*;
+use tilo_automerge::ApplyIncoming as _;
 use automerge::{ROOT, ReadDoc, transaction::Transactable};
 
 fn fixture(texts: &[&str]) -> AutoCommit {
@@ -220,7 +221,7 @@ fn semantic_read_uses_exact_bound_root_and_refuses_cross_root_cursor() {
 fn semantic_read_uses_borrowed_owner_heads_without_cloning_legacy_isolation() {
     let mut doc = fixture(&["hello"]);
     let heads = doc.base_heads();
-    doc.isolate(&vec![heads[0]; 20_000]);
+    doc.isolate_at(&vec![heads[0]; 20_000]);
     let (basis, largest) = allocation_meter::largest(|| {
         qdoc::semantic_read::begin(&doc, &heads, limits(1), 64).map(|(basis, _)| basis)
     });

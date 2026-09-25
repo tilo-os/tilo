@@ -1,4 +1,12 @@
+#![allow(
+    clippy::similar_names,
+    clippy::arithmetic_side_effects,
+    clippy::significant_drop_tightening,
+    clippy::unused_self,
+    reason = "fixture keys pair host/governor names, epoch offsets are small constants, and guards stay scoped to their assertions"
+)]
 use super::*;
+use crate::peer_actions::OwnerPolicyClock;
 use ed25519_dalek::SigningKey;
 use std::sync::atomic::{AtomicBool, Ordering};
 use tilo_relay::delivery_v3::{

@@ -1,6 +1,10 @@
-//! LocalSet half of the certified peer facade. Kept beside broker admission so
+//! `LocalSet` half of the certified peer facade. Kept beside broker admission so
 //! no application capability or actor constructor crosses the network queue.
-use super::*;
+use super::{
+    Arc, CallerInvocation, CapnpBrokerState, CrdtRoute, DirectoryActionConfirmation,
+    LocalActionDirectoryRegistry, Rc, VerifiedActionCaller, VerifiedJoinIdentity,
+    admit_verified_join_at,
+};
 use tilo_relay::peer_actions::{ActionMessage, Confirmation};
 
 impl CapnpBrokerState {
@@ -30,7 +34,7 @@ impl CapnpBrokerState {
         if let Some(authority) = self.certificate_authority.get() {
             match &policy_time {
                 Some(time) => {
-                    authority.authorize_with_policy_time(evidence.action().room, cert, time)?
+                    authority.authorize_with_policy_time(evidence.action().room, cert, time)?;
                 }
                 None => authority.authorize(evidence.action().room, cert)?,
             }
@@ -64,14 +68,19 @@ impl CapnpBrokerState {
         })
     }
 
+    #[expect(
+        clippy::significant_drop_tightening,
+        reason = "each request's queue permit and read custody live until its reply is sent"
+    )]
     pub(super) fn start_peer_action_bridge(
         self: &Arc<Self>,
         directories: Rc<LocalActionDirectoryRegistry>,
     ) -> Option<tokio::task::JoinHandle<()>> {
-        let Some(mut receiver) = self.peer_action_rx.lock().ok().and_then(|mut rx| rx.take())
-        else {
-            return None;
-        };
+        let mut receiver = self
+            .peer_action_rx
+            .lock()
+            .ok()
+            .and_then(|mut rx| rx.take())?;
         let state = self.clone();
         Some(tokio::task::spawn_local(async move {
             while let Some(request) = receiver.recv().await {
@@ -119,12 +128,29 @@ impl CapnpBrokerState {
                     let _ = request.reply.send(response);
                     // Explicit use captures the guard in this future despite
                     // precise field capture. Cancellation also drops it here.
+                    #[expect(
+                        clippy::used_underscore_binding,
+                        reason = "the permit is named only to release it at this point"
+                    )]
                     drop(request._permit);
                 });
             }
         }))
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        clippy::too_many_lines,
+        reason = "one certified-request dispatcher over the relay action vocabulary"
+    )]
+    #[expect(
+        clippy::significant_drop_tightening,
+        reason = "the resolved offer keeps its capacity permit until dispatch; the lint misreads its later borrows"
+    )]
+    #[expect(
+        clippy::future_not_send,
+        reason = "runs on the broker's single-threaded LocalSet"
+    )]
     async fn peer_action(
         &self,
         directories: &LocalActionDirectoryRegistry,
@@ -170,21 +196,25 @@ impl CapnpBrokerState {
                         scope.as_ref(),
                     )?)
                     .map_err(|_| "catalogue unavailable")?;
-                if let Some(owner) = self.services.certified_agent_reads.as_ref() {
-                    if let Ok(reply) = owner.binding(evidence.clone(), deadline, custody).await {
-                        let binding = reply.value();
-                        // Native fallback does not forward Cloud mutation commands.
-                        // Only an actual same-host read-only provider may be exposed here.
-                        if tokio::time::Instant::now() < deadline
-                            && tilo_relay::agent_reads::valid_binding(binding, host)
-                            && binding.agent.room == evidence.action().room.to_string()
-                            && binding.agent.device == hex::encode(evidence.action().source)
-                            && binding.spawn.is_none()
-                            && binding.message.is_none()
-                        {
-                            catalogue["agentReadsV1"] = serde_json::to_value(binding)
-                                .map_err(|_| "invalid agent read binding")?;
-                        }
+                if let Some(owner) = self.services.certified_agent_reads.as_ref()
+                    && let Ok(reply) = owner.binding(evidence.clone(), deadline, custody).await
+                {
+                    let binding = reply.value();
+                    // Native fallback does not forward Cloud mutation commands.
+                    // Only an actual same-host read-only provider may be exposed here.
+                    if tokio::time::Instant::now() < deadline
+                        && tilo_relay::agent_reads::valid_binding(binding, host)
+                        && binding.agent.room == evidence.action().room.to_string()
+                        && binding.agent.device == hex::encode(evidence.action().source)
+                        && binding.spawn.is_none()
+                        && binding.message.is_none()
+                        && let Some(fields) = catalogue.as_object_mut()
+                    {
+                        fields.insert(
+                            "agentReadsV1".into(),
+                            serde_json::to_value(binding)
+                                .map_err(|_| "invalid agent read binding")?,
+                        );
                     }
                 }
                 Ok(ActionMessage::BrokerCatalogue { host, catalogue })
@@ -195,7 +225,9 @@ impl CapnpBrokerState {
                     .certified_agent_reads
                     .as_ref()
                     .ok_or("certified agent owner unavailable")?;
-                let reply = crate::agent_reads::read_from_owner(
+                // The original Request still owns the same Arc until send; the
+                // carrier's PendingPeerAction retains it through response release.
+                let (message, _) = crate::agent_reads::read_from_owner(
                     owner.as_ref(),
                     host,
                     evidence.clone(),
@@ -203,10 +235,8 @@ impl CapnpBrokerState {
                     custody,
                 )
                 .await
-                .map_err(|e| e.to_string())?;
-                // The original Request still owns the same Arc until send; the
-                // carrier's PendingPeerAction retains it through response release.
-                let (message, _custody) = reply.into_parts();
+                .map_err(|e| e.to_string())?
+                .into_parts();
                 Ok(message)
             }
             ActionMessage::Status { invocation } => self.peer_observation(&caller, *invocation),
@@ -252,7 +282,12 @@ impl CapnpBrokerState {
                     return Err("local sentinel forbidden".into());
                 }
                 if let Some(record) = self.verified_invocation_status(&caller, *invocation)? {
-                    if record.intent["request"] != request.intent() {
+                    if record
+                        .intent
+                        .get("request")
+                        .unwrap_or(&serde_json::Value::Null)
+                        != &request.intent()
+                    {
                         return Err("changed invocation intent".into());
                     }
                     return self.peer_observation(&caller, *invocation);
@@ -305,7 +340,7 @@ impl CapnpBrokerState {
                 };
                 // The directory await is outside admission serialization. Recheck
                 // current certificate, room permission and duplicate before a grant.
-                let _admission = self
+                let admission = self
                     .admission_lock
                     .lock()
                     .map_err(|_| "admission unavailable")?;
@@ -314,7 +349,12 @@ impl CapnpBrokerState {
                     offer.check_registration(self, directories, request.peer_id)?;
                 }
                 if let Some(record) = self.verified_invocation_status(&caller, *invocation)? {
-                    if record.intent["request"] != request.intent() {
+                    if record
+                        .intent
+                        .get("request")
+                        .unwrap_or(&serde_json::Value::Null)
+                        != &request.intent()
+                    {
                         return Err("changed invocation intent".into());
                     }
                     return self.peer_observation(&caller, *invocation);
@@ -344,7 +384,9 @@ impl CapnpBrokerState {
                     Some((&caller, &request)),
                     revision.as_deref(),
                 )?;
-                self.peer_observation(&caller, *invocation)
+                let observation = self.peer_observation(&caller, *invocation);
+                drop(admission);
+                observation
             }
             _ => Err("unsupported action request".into()),
         }

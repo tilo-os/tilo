@@ -2,10 +2,16 @@
 pub use qos_peer_state::owner_commit::PrivatePolicyBasis;
 #[cfg(test)]
 mod tests {
+    #![allow(
+        clippy::similar_names,
+        clippy::arithmetic_side_effects,
+        reason = "fixture keys pair root/room names; epoch offsets are small constants"
+    )]
     use super::*;
     use automerge::{AutoCommit, ROOT, ReadDoc, ScalarValue, transaction::Transactable};
     use collab_types::caps::{CapOverride, Expiry, Scope, Subject, Verb};
     use ed25519_dalek::SigningKey;
+    use tilo_automerge::ApplyIncoming;
     use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, sign_device_cert};
     fn peer(blobs: &[Vec<u8>], title: &str) -> qos_peer_state::StatePeer {
         let root = SigningKey::from_bytes(&[21; 32]);
@@ -25,7 +31,7 @@ mod tests {
         let changes = qos_peer_state::seed_room(&room, &cert, &roster).unwrap();
         let mut doc = AutoCommit::new();
         for bytes in changes {
-            doc.apply_changes([automerge::Change::from_bytes(bytes).unwrap()])
+            doc.apply_incoming([automerge::Change::from_bytes(bytes).unwrap()])
                 .unwrap();
         }
         let caps = doc.get(ROOT, "capabilities").unwrap().unwrap().1;

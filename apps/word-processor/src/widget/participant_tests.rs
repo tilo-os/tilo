@@ -9,6 +9,7 @@ use super::*;
 use crate::actions::participant::{FindState, ParticipantView, ViewPoint};
 use crate::actions::{RegionKind, SearchTarget};
 use tilo_actions::{ActionInvoker, ParticipantId, Resource};
+use tilo_automerge::ApplyIncoming as _;
 
 fn pid(name: &str) -> ParticipantId {
     ParticipantId::new(name).unwrap()
@@ -70,8 +71,8 @@ fn two_participants_keep_independent_views_and_trees() {
     let doc_before = state.doc.clone().save();
 
     let (agent, other) = (pid("agent-a"), pid("agent-b"));
-    wp.set_participant_view(agent.clone(), selecting(&ids[0], 0, 5), &state.doc);
-    wp.set_participant_view(other.clone(), caret(&ids[1], 3), &state.doc);
+    wp.set_participant_view(&agent, &selecting(&ids[0], 0, 5), &state.doc);
+    wp.set_participant_view(&other, &caret(&ids[1], 3), &state.doc);
 
     // Each participant reads back exactly its own view.
     assert_eq!(
@@ -125,7 +126,7 @@ fn participant_tree_matches_the_pure_projection_of_its_view() {
     let (mut wp, state, ids) = widget_with(&["alpha beta", "gamma"]);
     let agent = pid("agent");
     let view = selecting(&ids[1], 1, 4);
-    wp.set_participant_view(agent.clone(), view.clone(), &state.doc);
+    wp.set_participant_view(&agent, &view, &state.doc);
     let expected = crate::actions::provide_resources(&view.ctx(&state.doc).unwrap(), &state.doc);
     let actual = wp.participant_resources(Some(&agent), &state.doc);
     let ids_of = |resources: &[Resource]| -> Vec<String> {
@@ -175,8 +176,8 @@ fn views_rebase_under_concurrent_edits() {
     let (mut wp, mut state, ids) = widget_with(&["hello world", "tail"]);
     let (writer, reader) = (pid("writer"), pid("reader"));
     // writer's caret sits after "hello"; reader selects "world".
-    wp.set_participant_view(writer.clone(), caret(&ids[0], 5), &state.doc);
-    wp.set_participant_view(reader.clone(), selecting(&ids[0], 6, 11), &state.doc);
+    wp.set_participant_view(&writer, &caret(&ids[0], 5), &state.doc);
+    wp.set_participant_view(&reader, &selecting(&ids[0], 6, 11), &state.doc);
 
     // A remote peer inserts "Oh, " at the block start.
     let mut remote = state.doc.fork();
@@ -190,7 +191,7 @@ fn views_rebase_under_concurrent_edits() {
         };
         dm.splice_text(&ids[0], 0, 0, "Oh, ");
     }
-    state.doc.merge(&mut remote).unwrap();
+    state.doc.merge_incoming(&mut remote).unwrap();
     wp.sync(&mut state.doc, &state.root);
 
     assert_eq!(
@@ -231,18 +232,18 @@ fn views_rebase_under_concurrent_edits() {
         // "Oh, hello world" → "Oh, world": removes [4, 10), around writer's 9.
         dm.splice_text(&ids[0], 4, 6, "");
     }
-    state.doc.merge(&mut remote).unwrap();
+    state.doc.merge_incoming(&mut remote).unwrap();
     assert_eq!(
         wp.participant_view(&writer, &state.doc),
         Some(caret(&ids[0], 4))
     );
 
     // The caret block disappears: park at the document end, no selection.
-    wp.set_participant_view(reader.clone(), selecting(&ids[1], 0, 2), &state.doc);
+    wp.set_participant_view(&reader, &selecting(&ids[1], 0, 2), &state.doc);
     let mut remote = state.doc.fork();
     let containers = qdoc::model::open(&remote, &automerge::ROOT).unwrap();
     remote.delete(&containers.blocks, ids[1].as_str()).unwrap();
-    state.doc.merge(&mut remote).unwrap();
+    state.doc.merge_incoming(&mut remote).unwrap();
     wp.sync(&mut state.doc, &state.root);
     let parked = wp.participant_view(&reader, &state.doc).unwrap();
     assert_eq!(parked.anchor, None);
@@ -254,8 +255,8 @@ fn a_participant_edit_advances_its_own_caret_but_not_the_windows_undo() {
     let (mut wp, mut state, ids) = widget_with(&["hello", "other"]);
     let _ = wp.take_committed_action();
     let (agent, human) = (pid("agent"), pid("human-2"));
-    wp.set_participant_view(agent.clone(), caret(&ids[0], 5), &state.doc);
-    wp.set_participant_view(human.clone(), caret(&ids[0], 5), &state.doc);
+    wp.set_participant_view(&agent, &caret(&ids[0], 5), &state.doc);
+    wp.set_participant_view(&human, &caret(&ids[0], 5), &state.doc);
     let local_before = wp.local_participant_view();
 
     let invoker = ActionInvoker::actor("agent-actor").with_participant(agent.clone());
@@ -305,9 +306,9 @@ fn a_participant_edit_advances_its_own_caret_but_not_the_windows_undo() {
 fn participant_presence_uses_the_block_key_and_byte_offsets() {
     let (mut wp, state, ids) = widget_with(&["héllo wörld", "two"]);
     let (typist, selector) = (pid("typist"), pid("selector"));
-    wp.set_participant_view(typist.clone(), caret(&ids[0], 2), &state.doc);
+    wp.set_participant_view(&typist, &caret(&ids[0], 2), &state.doc);
     wp.set_participant_label(&typist, "Agent for Ada");
-    wp.set_participant_view(selector.clone(), selecting(&ids[0], 6, 11), &state.doc);
+    wp.set_participant_view(&selector, &selecting(&ids[0], 6, 11), &state.doc);
 
     let presence = wp.participant_presence(&state.doc);
     assert_eq!(presence.len(), 2);
@@ -335,7 +336,7 @@ fn the_view_map_is_bounded_expires_and_caps_find() {
     let start = ui::clock::Instant::now();
     for i in 0..=MAX_PARTICIPANT_VIEWS {
         let at = start + ui::clock::Duration::from_millis(u64::try_from(i).unwrap());
-        views.set(pid(&format!("p{i}")), caret(&ids[0], 1), doc, at);
+        views.set(&pid(&format!("p{i}")), &caret(&ids[0], 1), doc, at);
     }
     assert_eq!(views.len(), MAX_PARTICIPANT_VIEWS);
     assert!(
@@ -359,7 +360,7 @@ fn the_view_map_is_bounded_expires_and_caps_find() {
         find: FindState::new("q".repeat(4 * MAX_FIND_QUERY_BYTES), hits),
         ..caret(&ids[0], 0)
     };
-    views.set(pid("finder"), finder, doc, later);
+    views.set(&pid("finder"), &finder, doc, later);
     let stored = views.view(&pid("finder"), doc).unwrap();
     assert_eq!(stored.find.query.len(), MAX_FIND_QUERY_BYTES);
     assert_eq!(
@@ -540,11 +541,7 @@ fn assert_keyboard_action_parity(
     agent_widget.sync(&mut agent_state.doc, &agent_state.root);
     let agent = pid("parity-agent");
     let invoker = ActionInvoker::actor("agent-actor").with_participant(agent.clone());
-    agent_widget.set_participant_view(
-        agent.clone(),
-        keyboard.local_participant_view(),
-        &agent_state.doc,
-    );
+    agent_widget.set_participant_view(&agent, &keyboard.local_participant_view(), &agent_state.doc);
 
     for (input, step) in inputs.iter().zip(steps) {
         let view = agent_widget
@@ -843,7 +840,7 @@ fn joined_participants_start_at_the_document_end_and_leave_cleanly() {
 fn a_noted_outcome_is_adopted_only_after_its_edit_applied() {
     let (mut wp, mut state, ids) = widget_with(&["split here", "tail"]);
     let agent = pid("agent-task:9");
-    wp.set_participant_view(agent.clone(), caret(&ids[0], 5), &state.doc);
+    wp.set_participant_view(&agent, &caret(&ids[0], 5), &state.doc);
     let view = wp.participant_view(&agent, &state.doc).unwrap();
     let invoker = ActionInvoker::actor("agent-actor").with_participant(agent.clone());
 
@@ -862,7 +859,7 @@ fn a_noted_outcome_is_adopted_only_after_its_edit_applied() {
 
     // Applied: the caret lands in the block the split created.
     {
-        let _scope = ui::invocation_scope::InvokerScope::enter(invoker.clone());
+        let _scope = ui::invocation_scope::InvokerScope::enter(invoker);
         let _ = wp.participant_resources(Some(&agent), &state.doc);
         let (envelopes, next) = crate::actions::editing::new_paragraph(&view, &state.doc).unwrap();
         note_participant_outcome(&next);
@@ -979,7 +976,7 @@ fn a_participant_host_resolves_a_delivered_invocation_against_the_invokers_view(
     let (mut wp, state, ids) = widget_with(&["first paragraph", "tail"]);
     Widget::set_participant_host(&mut wp, true);
     let agent = pid("agent-task:5");
-    wp.set_participant_view(agent.clone(), caret(&ids[1], 4), &state.doc);
+    wp.set_participant_view(&agent, &caret(&ids[1], 4), &state.doc);
     let tree = {
         let _scope = ui::invocation_scope::InvokerScope::enter(
             ActionInvoker::actor("agent-actor").with_participant(agent.clone()),

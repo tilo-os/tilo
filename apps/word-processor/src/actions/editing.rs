@@ -694,34 +694,31 @@ impl MarkTarget {
     fn new(r: &Resolved<'_>) -> Self {
         let selection_blocks = r.selection_blocks();
         let font_ranges = r.font_ranges();
-        let mut active = [false; 6];
-        for mark in InlineMark::ALL {
-            active[mark.index()] = match mark.sibling() {
+        // `ALL` is in `index()` order, so the mapped array is indexed by mark.
+        let active = InlineMark::ALL.map(|mark| {
+            if mark.sibling().is_none() {
                 // `plan_toggle_mark`: over the selection, region-aware.
-                None => {
-                    let spans: Vec<_> = selection_blocks.iter().filter(|(_, s, e)| s < e).collect();
-                    !spans.is_empty()
-                        && spans
-                            .iter()
-                            .all(|(b, s, e)| r.has_mark_over_region(b, *s, *e, mark.name()))
-                }
+                let spans: Vec<_> = selection_blocks.iter().filter(|(_, s, e)| s < e).collect();
+                !spans.is_empty()
+                    && spans
+                        .iter()
+                        .all(|(b, s, e)| r.has_mark_over_region(b, *s, *e, mark.name()))
+            } else {
                 // `plan_exclusive_mark`: over the font ranges, body reader.
-                Some(_) => {
-                    let spans: Vec<_> = font_ranges.iter().filter(|(_, s, e)| s < e).collect();
-                    !spans.is_empty()
-                        && spans.iter().all(|(b, s, e)| {
-                            qdoc::model::has_mark_over(
-                                r.rd.doc,
-                                &r.rd.containers,
-                                b,
-                                *s,
-                                *e,
-                                mark.name(),
-                            )
-                        })
-                }
-            };
-        }
+                let spans: Vec<_> = font_ranges.iter().filter(|(_, s, e)| s < e).collect();
+                !spans.is_empty()
+                    && spans.iter().all(|(b, s, e)| {
+                        qdoc::model::has_mark_over(
+                            r.rd.doc,
+                            &r.rd.containers,
+                            b,
+                            *s,
+                            *e,
+                            mark.name(),
+                        )
+                    })
+            }
+        });
         Self {
             region: r.rd.region,
             view: r.view.clone(),
@@ -732,7 +729,7 @@ impl MarkTarget {
     }
 
     fn toggle(&self, mark: InlineMark) -> EditOutcome {
-        let active = self.active[mark.index()];
+        let active = self.active.get(mark.index()).copied().unwrap_or(false);
         let value = (!active).then_some(MarkVal::Bool(true));
         let (ranges, also_clear) = match mark.sibling() {
             None => (&self.selection_blocks, Vec::new()),
@@ -895,6 +892,11 @@ impl PasteTarget {
 
 /// Typing: replace the selection, or insert at the caret; the caret advances
 /// past the inserted text and the selection collapses.
+///
+/// # Errors
+///
+/// Returns an [`EditingError`] when the view has no caret or selection in `doc`,
+/// or when the arguments are stale or out of range for this document.
 pub fn type_text(view: &ParticipantView, doc: &AutoCommit, text: &str) -> EditResult {
     let r = resolve(view, doc)?;
     Ok(TypeTarget::new(&r).build(text))
@@ -904,6 +906,11 @@ pub fn type_text(view: &ParticipantView, doc: &AutoCommit, text: &str) -> EditRe
 /// back into a paragraph. Replaces a non-empty selection first (two
 /// envelopes, like the keyboard). The caret lands in the new block once the
 /// split is applied ([`ParticipantView::settle`]).
+///
+/// # Errors
+///
+/// Returns an [`EditingError`] when the view has no caret or selection in `doc`,
+/// or when the arguments are stale or out of range for this document.
 pub fn new_paragraph(view: &ParticipantView, doc: &AutoCommit) -> EditResult {
     let r = resolve(view, doc)?;
     let region = r.rd.region;
@@ -968,6 +975,11 @@ pub fn new_paragraph(view: &ParticipantView, doc: &AutoCommit) -> EditResult {
 /// into a paragraph at its start. A larger `count` (≤ [`MAX_ERASE_COUNT`])
 /// is Shift+Arrow `count` times then Backspace: one `ReplaceSelection` over
 /// that extent, a paragraph join counting as one character.
+///
+/// # Errors
+///
+/// Returns an [`EditingError`] when the view has no caret or selection in `doc`,
+/// or when the arguments are stale or out of range for this document.
 pub fn delete(
     view: &ParticipantView,
     doc: &AutoCommit,
@@ -981,6 +993,11 @@ pub fn delete(
 /// Toggle one inline mark on the selection (on unless it already covers every
 /// selected span). Super/subscript, like the toolbar, cover the whole caret
 /// block without a selection and clear their sibling when turned on.
+///
+/// # Errors
+///
+/// Returns an [`EditingError`] when the view has no caret or selection in `doc`,
+/// or when the arguments are stale or out of range for this document.
 pub fn toggle_mark(view: &ParticipantView, doc: &AutoCommit, mark: InlineMark) -> EditResult {
     let r = resolve(view, doc)?;
     Ok(MarkTarget::new(&r).toggle(mark))
@@ -988,6 +1005,11 @@ pub fn toggle_mark(view: &ParticipantView, doc: &AutoCommit, mark: InlineMark) -
 
 /// Set a valued inline mark (font, size, colour, highlight) on the selection,
 /// or the whole caret block without one.
+///
+/// # Errors
+///
+/// Returns an [`EditingError`] when the view has no caret or selection in `doc`,
+/// or when the arguments are stale or out of range for this document.
 pub fn set_mark(
     view: &ParticipantView,
     doc: &AutoCommit,
@@ -999,12 +1021,22 @@ pub fn set_mark(
 }
 
 /// Remove one inline mark from the selection, or the whole caret block.
+///
+/// # Errors
+///
+/// Returns an [`EditingError`] when the view has no caret or selection in `doc`,
+/// or when the arguments are stale or out of range for this document.
 pub fn clear_mark(view: &ParticipantView, doc: &AutoCommit, name: &str) -> EditResult {
     let r = resolve(view, doc)?;
     Ok(MarkTarget::new(&r).set(name, None))
 }
 
 /// Set paragraph kind/level/ordered on the selected blocks, or the caret block.
+///
+/// # Errors
+///
+/// Returns an [`EditingError`] when the view has no caret or selection in `doc`,
+/// or when the arguments are stale or out of range for this document.
 pub fn set_paragraph_style(
     view: &ParticipantView,
     doc: &AutoCommit,
@@ -1015,6 +1047,11 @@ pub fn set_paragraph_style(
 }
 
 /// Apply a named document style to the selected blocks, or the caret block.
+///
+/// # Errors
+///
+/// Returns an [`EditingError`] when the view has no caret or selection in `doc`,
+/// or when the arguments are stale or out of range for this document.
 pub fn apply_named_style(view: &ParticipantView, doc: &AutoCommit, style: &str) -> EditResult {
     let r = resolve(view, doc)?;
     Ok(StyleTarget::new(&r).named(style))
@@ -1022,6 +1059,11 @@ pub fn apply_named_style(view: &ParticipantView, doc: &AutoCommit, style: &str) 
 
 /// Paste text or Markdown over the selection or at the caret
 /// (`PasteFragment`); the caret lands after the pasted content.
+///
+/// # Errors
+///
+/// Returns an [`EditingError`] when the view has no caret or selection in `doc`,
+/// or when the arguments are stale or out of range for this document.
 pub fn paste(view: &ParticipantView, doc: &AutoCommit, content: &PasteContent) -> EditResult {
     let blocks = clip_blocks(content)?;
     let r = resolve(view, doc)?;
@@ -1082,6 +1124,11 @@ impl AppendTarget {
 /// `append-paragraph`: add `text` as a paragraph at the end of the body and
 /// leave the caret after it, so the rest of a long paragraph can be typed
 /// there (`type-text`).
+///
+/// # Errors
+///
+/// Returns an [`EditingError`] when the view has no caret or selection in `doc`,
+/// or when the arguments are stale or out of range for this document.
 pub fn append_paragraph(view: &ParticipantView, doc: &AutoCommit, text: &str) -> EditResult {
     if text.is_empty() || text.chars().count() > MAX_ACTION_TEXT_CHARS {
         return Err(EditingError::Invalid(
@@ -1106,6 +1153,11 @@ pub(crate) fn paste_blocks(
 
 /// Replace one misspelled body word with a suggestion (`SpliceText`). A caret
 /// or anchor after the word in the same block moves with the text.
+///
+/// # Errors
+///
+/// Returns an [`EditingError`] when the view has no caret or selection in `doc`,
+/// or when the arguments are stale or out of range for this document.
 pub fn apply_spelling_suggestion(
     view: &ParticipantView,
     doc: &AutoCommit,
@@ -1166,6 +1218,11 @@ fn suggestion_action(
 }
 
 /// Move (and collapse) the caret. View-only: returns no envelopes.
+///
+/// # Errors
+///
+/// Returns an [`EditingError`] when the view has no caret or selection in `doc`,
+/// or when the arguments are stale or out of range for this document.
 pub fn move_caret(view: &ParticipantView, doc: &AutoCommit, to: &CaretTarget) -> EditResult {
     let base = view.settle(doc);
     let rd = RegionDoc::open(doc, base.region)?;
@@ -1197,6 +1254,11 @@ fn selected(base: &ParticipantView, anchor: ViewPoint, caret: ViewPoint) -> Part
 }
 
 /// Select an explicit range (anchor at `start`, caret at `end`). View-only.
+///
+/// # Errors
+///
+/// Returns an [`EditingError`] when the view has no caret or selection in `doc`,
+/// or when the arguments are stale or out of range for this document.
 pub fn select_range(
     view: &ParticipantView,
     doc: &AutoCommit,
@@ -1210,6 +1272,11 @@ pub fn select_range(
 }
 
 /// Select one whole block. View-only.
+///
+/// # Errors
+///
+/// Returns an [`EditingError`] when the view has no caret or selection in `doc`,
+/// or when the arguments are stale or out of range for this document.
 pub fn select_block(view: &ParticipantView, doc: &AutoCommit, block: &str) -> EditResult {
     let base = view.settle(doc);
     let rd = RegionDoc::open(doc, base.region)?;
@@ -1219,6 +1286,11 @@ pub fn select_block(view: &ParticipantView, doc: &AutoCommit, block: &str) -> Ed
 }
 
 /// Select the whole region (Ctrl+A). View-only.
+///
+/// # Errors
+///
+/// Returns an [`EditingError`] when the view has no caret or selection in `doc`,
+/// or when the arguments are stale or out of range for this document.
 pub fn select_all(view: &ParticipantView, doc: &AutoCommit) -> EditResult {
     let base = view.settle(doc);
     let rd = RegionDoc::open(doc, base.region)?;
@@ -1233,6 +1305,11 @@ pub fn select_all(view: &ParticipantView, doc: &AutoCommit) -> EditResult {
 /// Find bar), filling the view's bounded hits (≤ 64) and selecting the first
 /// hit as the Find bar does. An empty query clears Find. View-only; the
 /// existing `search-hit#go-to` then selects another hit.
+///
+/// # Errors
+///
+/// Returns an [`EditingError`] when the view has no caret or selection in `doc`,
+/// or when the arguments are stale or out of range for this document.
 pub fn find(view: &ParticipantView, doc: &AutoCommit, query: &str) -> EditResult {
     if query.len() > MAX_FIND_QUERY_BYTES {
         return Err(EditingError::Invalid(format!(
@@ -1445,6 +1522,10 @@ pub(super) fn large_selection(ctx: &WpResourceCtx, doc: &AutoCommit) -> bool {
 /// (`word-processor.document`) for the participant whose context is `ctx`.
 /// Document operations encode positional envelopes; the view operations are
 /// published by [`super::view_ops::add_operations`].
+#[expect(
+    clippy::too_many_lines,
+    reason = "the published editing-operation table: one independent spec per operation"
+)]
 pub(super) fn add_operations(root: &mut Resource, ctx: &WpResourceCtx, doc: &AutoCommit) {
     let view = ParticipantView::from_ctx(ctx);
     // Every participant's tree and the catalogue schema carry the same
@@ -1508,12 +1589,18 @@ pub(super) fn add_operations(root: &mut Resource, ctx: &WpResourceCtx, doc: &Aut
     );
 
     // Both shapes take no input and share one contract.
-    let paragraph = match (&r, new_paragraph(&view, doc)) {
-        (Some(_), Ok((actions, _))) if actions.len() == 1 => ActionSpec::immediate_encoded(
+    let paragraph_edit = new_paragraph(&view, doc);
+    let paragraph = match (
+        &r,
+        paragraph_edit
+            .as_ref()
+            .map(|(actions, _)| actions.as_slice()),
+    ) {
+        (Some(_), Ok([action])) => ActionSpec::immediate_encoded(
             op::NEW_PARAGRAPH,
             "New paragraph",
             locus(),
-            encode(&actions[0]),
+            encode(action),
         ),
         // Refusal shapes declare the registered envelope type and refuse only
         // when invoked. A zero-parameter `typed` spec would carry the
@@ -2024,9 +2111,10 @@ mod tests {
         id: &str,
         args: serde_json::Value,
     ) -> EncodedAction {
-        spec(&root(view, doc), id)
-            .build_json(args.as_object().unwrap())
-            .unwrap()
+        let serde_json::Value::Object(args) = args else {
+            panic!("operation arguments are a JSON object");
+        };
+        spec(&root(view, doc), id).build_json(&args).unwrap()
     }
 
     // ---- the widget's current envelope builders, verbatim over the model ----
@@ -2371,6 +2459,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one table-driven parity proof over every published editing operation"
+    )]
     fn formatting_and_styles_match_the_widget_envelopes_byte_for_byte() {
         let (mut state, mut wp, ids) = writer(&["alpha", "beta", "gamma"]);
         apply(
@@ -2482,6 +2574,10 @@ mod tests {
     // ---- published operations = primitives ---------------------------------
 
     #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one table-driven parity proof over every published editing operation"
+    )]
     fn published_operations_encode_exactly_the_primitive_for_the_same_view() {
         let (state, _, ids) = writer(&["alpha", "beta", "gamma"]);
         let doc = &state.doc;
@@ -2672,8 +2768,31 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one table-driven parity proof over every published editing operation"
+    )]
     fn catalogue_schema_is_view_independent_and_covers_every_participant_tree() {
         use tilo_actions::{ResourceProvider as _, catalogue_schema, catalogue_schema_bytes, door};
+        // Nothing published fires an unregistered envelope: a fixed encoding
+        // must be a real Writer action or operation (a sentinel would make
+        // the host drop the whole surface).
+        fn fixed_encodings_are_registered(resource: &Resource) {
+            for spec in &resource.actions {
+                if let Some(encoded) = spec.fixed_invocation_encoding() {
+                    assert_ne!(
+                        encoded.type_id,
+                        tilo_actions::resource::INVALID_ARGUMENTS_TYPE,
+                        "{} {}",
+                        resource.id.0,
+                        spec.id
+                    );
+                }
+            }
+            for child in &resource.children {
+                fixed_encodings_are_registered(child);
+            }
+        }
         let (mut state, mut wp, ids) = writer(&["Hello world", "hello again", "tail"]);
         apply(
             &mut state.doc,
@@ -2706,29 +2825,11 @@ mod tests {
             }
         }
         assert!(published.windows(2).all(|pair| pair[0] == pair[1]));
-        // Nothing published fires an unregistered envelope: a fixed encoding
-        // must be a real Writer action or operation (a sentinel would make
-        // the host drop the whole surface).
-        fn fixed_encodings_are_registered(resource: &Resource) {
-            for spec in &resource.actions {
-                if let Some(encoded) = spec.fixed_invocation_encoding() {
-                    assert_ne!(
-                        encoded.type_id,
-                        tilo_actions::resource::INVALID_ARGUMENTS_TYPE,
-                        "{} {}",
-                        resource.id.0,
-                        spec.id
-                    );
-                }
-            }
-            resource
-                .children
-                .iter()
-                .for_each(fixed_encodings_are_registered);
+        // Nothing published fires an unregistered envelope (see
+        // `fixed_encodings_are_registered`).
+        for resource in &crate::actions::catalogue_schema(doc) {
+            fixed_encodings_are_registered(resource);
         }
-        crate::actions::catalogue_schema(doc)
-            .iter()
-            .for_each(fixed_encodings_are_registered);
         let schema = door::survey(&crate::actions::catalogue_schema(doc));
         // Every operation any participant can reach is declared identically.
         let (_, found) = find(&at(&ids[0], 0), doc, "hello").unwrap();
@@ -3007,6 +3108,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one table-driven parity proof over every published editing operation"
+    )]
     fn view_operations_move_select_and_find_without_touching_the_document() {
         let (state, _, ids) = writer(&["Hello world", "hello again"]);
         let doc = &state.doc;
@@ -3416,6 +3521,14 @@ mod tests {
     /// invocation against it must refuse, never encode a positional envelope.
     #[test]
     fn every_catalogue_schema_operation_refuses_when_invoked() {
+        fn walk(resource: &Resource, out: &mut Vec<(String, ActionSpec)>) {
+            for spec in &resource.actions {
+                out.push((resource.id.0.clone(), spec.clone()));
+            }
+            for child in &resource.children {
+                walk(child, out);
+            }
+        }
         use tilo_actions::{ActionInput, ParamType};
         let (mut state, _, ids) = writer(&["Hello world", "second"]);
         apply(
@@ -3429,26 +3542,20 @@ mod tests {
             ),
         );
         let invalid = tilo_actions::resource::INVALID_ARGUMENTS_TYPE;
-        fn walk(resource: &Resource, out: &mut Vec<(String, ActionSpec)>) {
-            for spec in &resource.actions {
-                out.push((resource.id.0.clone(), spec.clone()));
-            }
-            resource.children.iter().for_each(|child| walk(child, out));
-        }
         let mut specs = Vec::new();
-        crate::actions::catalogue_schema(&state.doc)
-            .iter()
-            .for_each(|resource| walk(resource, &mut specs));
+        for resource in &crate::actions::catalogue_schema(&state.doc) {
+            walk(resource, &mut specs);
+        }
         assert!(specs.len() > 30);
         for (resource, spec) in &specs {
             let what = format!("{resource}#{}", spec.id);
             match &spec.input {
                 ActionInput::Immediate(encoded) => panic!("{what} fires {encoded:?}"),
                 ActionInput::Deferred { build, .. } => {
-                    assert_eq!(build().type_id, invalid, "{what}")
+                    assert_eq!(build().type_id, invalid, "{what}");
                 }
                 ActionInput::Prompted { build, .. } => {
-                    assert_eq!(build("1").type_id, invalid, "{what}")
+                    assert_eq!(build("1").type_id, invalid, "{what}");
                 }
             }
             let args: serde_json::Map<String, serde_json::Value> = spec

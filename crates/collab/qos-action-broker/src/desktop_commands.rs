@@ -1,5 +1,8 @@
 //! Native semantic service consuming the ordinary durable invocation stream.
-use super::*;
+use super::{
+    Arc, CapnpBrokerState, CrdtRoute, InvocationEnvelope, PublishedAction, PublishedInput,
+    PublishedSurface, enrolled_invocation,
+};
 use qos_peer_state::desktop_command::{
     self as command, DesktopCommandError, DesktopCommandId, DesktopCommandReceipt, DesktopRefusal,
 };
@@ -99,6 +102,10 @@ impl CapnpBrokerState {
         Ok(())
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one ordered admission, owner commit and receipt path for a desktop command"
+    )]
     async fn execute_desktop_command(
         &self,
         peer_id: u64,
@@ -150,7 +157,7 @@ impl CapnpBrokerState {
                         dispatch.envelope(),
                     ),
                     Some(crate::services::DesktopOpener {
-                        agent: facts.binding.agent.clone(),
+                        agent: facts.binding.agent,
                         task: dispatch.envelope().task_id.clone(),
                     }),
                 )

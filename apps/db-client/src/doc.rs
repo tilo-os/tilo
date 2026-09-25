@@ -85,7 +85,7 @@ pub fn adopt_shared_schema(doc: &mut AutoCommit) {
                 .is_ok_and(|values| values.is_empty())
         });
     if fresh {
-        let _ = doc.load_incremental(schema_genesis());
+        let _ = tilo_automerge::ApplyIncoming::load_incoming(doc, schema_genesis());
     }
 }
 
@@ -289,7 +289,7 @@ mod tests {
             crate::actions::save_query_action(right_id, "R", "SELECT 2")
                 .apply(&mut b)
                 .unwrap();
-            a.merge(&mut b).unwrap();
+            a.merge_incoming(&mut b).unwrap();
             let text = EditorDoc::read_sql(&a);
             assert!(
                 text.contains("left") && text.contains("right"),
