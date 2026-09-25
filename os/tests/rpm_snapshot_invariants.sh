@@ -147,8 +147,8 @@ else
 fi
 if grep -Fq 'git checkout --detach FETCH_HEAD' <<<"$promotion_step" \
    && ! grep -Fq 'git rebase' <<<"$promotion_step" \
-   && grep -Fq 'kernel inputs changed during promotion; refusing stale PR' "$kernel_workflow"; then
-  ok 'pin promotion applies its pins on the current main tip; kernel pins refuse moved inputs'
+   && grep -Fq 'refusing to regress' "$kernel_workflow"; then
+  ok 'pin promotion applies its pins on the current main tip and never regresses a newer pin'
 else
   bad 'pin promotion can publish pins built from stale inputs'
 fi
