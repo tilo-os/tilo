@@ -774,9 +774,9 @@ fn win_arg(text: &str) -> String {
     let mut slashes = 0;
     for c in text.chars() {
         match c {
-            '\\' => slashes += 1,
+            '\\' => slashes = slashes.saturating_add(1),
             '"' => {
-                result.push_str(&"\\".repeat(slashes * 2 + 1));
+                result.push_str(&"\\".repeat(slashes.saturating_mul(2).saturating_add(1)));
                 result.push('"');
                 slashes = 0;
             }
@@ -787,7 +787,7 @@ fn win_arg(text: &str) -> String {
             }
         }
     }
-    result.push_str(&"\\".repeat(slashes * 2));
+    result.push_str(&"\\".repeat(slashes.saturating_mul(2)));
     result.push('"');
     result
 }
@@ -798,7 +798,7 @@ impl Whpx {
     }
 
     fn qmp_port(vm: &Vm<'_>) -> u16 {
-        20_000 + vm.ssh_port() % 40_000
+        20_000_u16.saturating_add(vm.ssh_port() % 40_000)
     }
 
     fn qemu_args(vm: &Vm<'_>) -> Vec<String> {
