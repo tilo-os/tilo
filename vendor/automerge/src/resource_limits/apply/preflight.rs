@@ -258,6 +258,10 @@ pub(crate) struct ChangeDims {
     pub(crate) max_key: usize,
     /// Largest mark name of one operation.
     pub(crate) max_mark_name: usize,
+    /// Sum of raw value payload bytes.
+    pub(crate) value_bytes: usize,
+    /// Sum of mark-name bytes.
+    pub(crate) mark_bytes: usize,
     /// Actor table entries (author plus other actors).
     pub(crate) actors: usize,
 }
@@ -500,7 +504,10 @@ fn operations(cols: &Columns<'_>, kind: u8, mut charge: Option<&mut Charge<'_>>)
         let key = keys.cell()?.string_len()?;
         dims.key_bytes = dims.key_bytes.checked_add(key).ok_or(Error::Invalid)?;
         dims.max_key = dims.max_key.max(key);
-        dims.max_mark_name = dims.max_mark_name.max(marks.cell()?.string_len()?);
+        let mark = marks.cell()?.string_len()?;
+        dims.max_mark_name = dims.max_mark_name.max(mark);
+        dims.mark_bytes = dims.mark_bytes.checked_add(mark).ok_or(Error::Invalid)?;
+        dims.value_bytes = dims.value_bytes.checked_add(len).ok_or(Error::Invalid)?;
         if kind != 1 {
             let actor = id_actor.required()?;
             let ctr = id_counter.required()?;
