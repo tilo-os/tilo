@@ -164,31 +164,53 @@ pub fn encode(project: &Project) -> Vec<u8> {
     out
 }
 
-/// The `version` / `min_reader` a file declares, without loading it.
-pub fn header_versions(bytes: &[u8]) -> Result<(u16, u16), ProjectFileError> {
-    if bytes.len() < HEADER_LEN || &bytes[..MAGIC.len()] != MAGIC {
+/// The fixed header's fields: `(version, min_reader, declared payload length)`.
+fn header_fields(bytes: &[u8]) -> Result<(u16, u16, u32), ProjectFileError> {
+    let Some([magic @ .., v0, v1, r0, r1, l0, l1, l2, l3]) = bytes.get(..HEADER_LEN) else {
+        return Err(ProjectFileError::NotAProject);
+    };
+    if magic != MAGIC.as_slice() {
         return Err(ProjectFileError::NotAProject);
     }
-    let version = u16::from_le_bytes([bytes[9], bytes[10]]);
-    let min_reader = u16::from_le_bytes([bytes[11], bytes[12]]);
+    Ok((
+        u16::from_le_bytes([*v0, *v1]),
+        u16::from_le_bytes([*r0, *r1]),
+        u32::from_le_bytes([*l0, *l1, *l2, *l3]),
+    ))
+}
+
+/// The `version` / `min_reader` a file declares, without loading it.
+///
+/// # Errors
+///
+/// [`ProjectFileError::NotAProject`] when `bytes` do not open with a whole
+/// project-file header.
+pub fn header_versions(bytes: &[u8]) -> Result<(u16, u16), ProjectFileError> {
+    let (version, min_reader, _) = header_fields(bytes)?;
     Ok((version, min_reader))
 }
 
 /// Read project-file `bytes` back into the model.
+///
+/// # Errors
+///
+/// [`ProjectFileError::NotAProject`] without a project header,
+/// [`ProjectFileError::TooNew`] when the file needs a newer reader,
+/// [`ProjectFileError::Truncated`] when the payload is shorter than the header
+/// declares, and [`ProjectFileError::Corrupt`] when the payload does not load.
 pub fn decode(bytes: &[u8]) -> Result<Project, ProjectFileError> {
-    let (_version, min_reader) = header_versions(bytes)?;
+    let (_version, min_reader, declared) = header_fields(bytes)?;
     if min_reader > MIN_READER_VERSION {
         return Err(ProjectFileError::TooNew {
             file_min_reader: min_reader,
             this_reader: MIN_READER_VERSION,
         });
     }
-    let declared = u32::from_le_bytes([bytes[13], bytes[14], bytes[15], bytes[16]]) as usize;
+    let declared = declared as usize;
     let present = bytes.len() - HEADER_LEN;
-    if present < declared {
+    let Some(payload) = bytes.get(HEADER_LEN..HEADER_LEN + declared) else {
         return Err(ProjectFileError::Truncated { declared, present });
-    }
-    let payload = &bytes[HEADER_LEN..HEADER_LEN + declared];
+    };
     let doc = AutoCommit::load(payload).map_err(|e| ProjectFileError::Corrupt(e.to_string()))?;
     Ok(VideoDoc::load_project(&doc))
 }
@@ -202,12 +224,21 @@ pub fn decode(bytes: &[u8]) -> Result<Project, ProjectFileError> {
 /// header is what covers the risk that buys — a write cut short is detected
 /// as [`ProjectFileError::Truncated`] on the way back in, instead of loading
 /// as a convincing half-project.
+///
+/// # Errors
+///
+/// [`ProjectFileError::Io`] when the file cannot be written.
 pub fn save(path: &Path, project: &Project) -> Result<(), ProjectFileError> {
     std::fs::write(path, encode(project))
         .map_err(|e| ProjectFileError::Io(format!("Could not save: {e}")))
 }
 
 /// Read a project from `path`.
+///
+/// # Errors
+///
+/// [`ProjectFileError::Io`] when the file cannot be read, otherwise whatever
+/// [`decode`] reports for its contents.
 pub fn load(path: &Path) -> Result<Project, ProjectFileError> {
     let bytes =
         std::fs::read(path).map_err(|e| ProjectFileError::Io(format!("Could not open: {e}")))?;
@@ -356,10 +387,10 @@ pub mod recents {
     /// How a recent entry is labelled in the menu: the file's stem, which is
     /// what the user named the project.
     pub fn label(entry: &Path) -> String {
-        entry
-            .file_stem()
-            .map(|s| s.to_string_lossy().into_owned())
-            .unwrap_or_else(|| entry.to_string_lossy().into_owned())
+        entry.file_stem().map_or_else(
+            || entry.to_string_lossy().into_owned(),
+            |s| s.to_string_lossy().into_owned(),
+        )
     }
 }
 
@@ -500,6 +531,22 @@ mod tests {
         assert_eq!(
             header_versions(&[0u8; 4]).unwrap_err(),
             ProjectFileError::NotAProject
+        );
+    }
+
+    #[test]
+    fn every_short_prefix_of_a_header_is_not_a_project() {
+        let bytes = encode(&Project::new("t"));
+        for n in 0..HEADER_LEN {
+            assert_eq!(
+                header_versions(&bytes[..n]),
+                Err(ProjectFileError::NotAProject),
+                "{n} bytes"
+            );
+        }
+        assert_eq!(
+            header_versions(&bytes[..HEADER_LEN]),
+            Ok((FORMAT_VERSION, MIN_READER_VERSION))
         );
     }
 

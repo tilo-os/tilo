@@ -54,28 +54,31 @@ impl Rgb {
     }
     /// Apply a per-clip [`Filters`] grade. Brightness scales, contrast
     /// pivots around mid-grey, saturation lerps toward/away from luma.
-    pub fn graded(self, f: &Filters) -> Rgb {
-        let bright = Filters::gain(f.brightness);
-        let contrast = Filters::gain(f.contrast);
-        let sat = Filters::gain(f.saturation);
+    #[must_use]
+    pub fn graded(self, filters: &Filters) -> Rgb {
+        let bright = Filters::gain(filters.brightness);
+        let contrast = Filters::gain(filters.contrast);
+        let sat = Filters::gain(filters.saturation);
         let apply = |c: f64| {
             let c = c * bright; // brightness
             (c - 0.5) * contrast + 0.5 // contrast pivot
         };
         let (mut r, mut g, mut b) = (apply(self.r), apply(self.g), apply(self.b));
-        let l = 0.2126 * r + 0.7152 * g + 0.0722 * b;
-        r = l + (r - l) * sat;
-        g = l + (g - l) * sat;
-        b = l + (b - l) * sat;
+        let luma = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+        r = luma + (r - luma) * sat;
+        g = luma + (g - luma) * sat;
+        b = luma + (b - luma) * sat;
         Rgb::new(r, g, b)
     }
     /// Scale toward black by `gain` (the fade/opacity envelope).
+    #[must_use]
     pub fn faded(self, gain: f64) -> Rgb {
         let g = gain.clamp(0.0, 1.0);
         Rgb::new(self.r * g, self.g * g, self.b * g)
     }
 
     /// Apply an ordered stack of [`ClipEffect`]s, in list order, after the grade.
+    #[must_use]
     pub fn with_effects(self, effects: &[ClipEffect]) -> Rgb {
         effects.iter().fold(self, apply_effect)
     }
@@ -84,6 +87,7 @@ impl Rgb {
     /// shader looks up, evaluated directly. Sits between the grade and the
     /// effect stack, exactly where the compositor puts it, so this
     /// representative colour and the composited frame agree about order.
+    #[must_use]
     pub fn with_curve(self, curve: &crate::curve::Curve) -> Rgb {
         if curve.is_identity() {
             return self;
@@ -399,9 +403,9 @@ pub fn render_rgba(project: &Project, playhead: f64, width: u32, height: u32) ->
     };
 
     let black = Rgb::new(0.0, 0.0, 0.0);
-    for y in 0..h {
+    for (y, row) in buf.chunks_exact_mut(w * 4).enumerate() {
         let yf = y as f64 / h as f64;
-        for x in 0..w {
+        for out in row.as_chunks_mut::<4>().0 {
             let mut px = match bands {
                 None => black,
                 Some(base) => {
@@ -430,11 +434,12 @@ pub fn render_rgba(project: &Project, playhead: f64, width: u32, height: u32) ->
                 };
                 px = mix(px, target, f.alpha);
             }
-            let i = (y * w + x) * 4;
-            buf[i] = (px.r * 255.0).round().clamp(0.0, 255.0) as u8;
-            buf[i + 1] = (px.g * 255.0).round().clamp(0.0, 255.0) as u8;
-            buf[i + 2] = (px.b * 255.0).round().clamp(0.0, 255.0) as u8;
-            buf[i + 3] = 255;
+            *out = [
+                (px.r * 255.0).round().clamp(0.0, 255.0) as u8,
+                (px.g * 255.0).round().clamp(0.0, 255.0) as u8,
+                (px.b * 255.0).round().clamp(0.0, 255.0) as u8,
+                255,
+            ];
         }
     }
     buf
@@ -625,7 +630,7 @@ pub fn plan_layers(project: &Project, playhead: f64) -> Vec<Layer> {
         .collect();
     // Bottom → top: V1 (index 1) is drawn first, V2 over it. `locked` is
     // an editing lock, not a visibility one, so it never hides a layer.
-    video.sort_by(|a, b| a.index.cmp(&b.index));
+    video.sort_by_key(|a| a.index);
 
     let mut out = Vec::new();
     for track in video {
@@ -859,7 +864,7 @@ mod tests {
                 let top = p.top_video_clip_at(23.0).unwrap();
                 assert_eq!(media, top.media);
             }
-            _ => panic!("expected a clip at the playhead"),
+            CompositedFrame::Empty => panic!("expected a clip at the playhead"),
         }
     }
 
@@ -930,18 +935,16 @@ mod tests {
         // adding a grayscale effect desaturates its composite base.
         let cid = p.clips[0].id;
         p.clip_mut(cid).unwrap().clear_effects();
-        let before = match composite(&p, 6.0) {
-            CompositedFrame::Clip { base, .. } => base,
-            _ => panic!("expected clip"),
+        let CompositedFrame::Clip { base: before, .. } = composite(&p, 6.0) else {
+            panic!("expected clip");
         };
         p.clip_mut(cid).unwrap().effects = vec![ClipEffect {
             id: uuid::Uuid::new_v4(),
             kind: EffectKind::Grayscale,
             amount: 1.0,
         }];
-        let after = match composite(&p, 6.0) {
-            CompositedFrame::Clip { base, .. } => base,
-            _ => panic!("expected clip"),
+        let CompositedFrame::Clip { base: after, .. } = composite(&p, 6.0) else {
+            panic!("expected clip");
         };
         let spread = |c: Rgb| (c.r - c.g).abs() + (c.g - c.b).abs();
         assert!(
@@ -1185,23 +1188,24 @@ mod tests {
         );
 
         let (project, _mid) = project_referencing(&f);
-        let mut dec = PreviewDecoder::new();
+        let mut decoder = PreviewDecoder::new();
         assert!(
-            dec.is_real_decode(),
+            decoder.is_real_decode(),
             "the decode feature must use the real pipeline"
         );
         // Preroll is async: pump until a frame lands or a short deadline.
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
         let mut got = false;
         while std::time::Instant::now() < deadline {
-            if dec.update(&project, 1.0) {
+            if decoder.update(&project, 1.0) {
                 got = true;
                 break;
             }
             std::thread::sleep(std::time::Duration::from_millis(50));
         }
         assert!(got, "the real pipeline decoded a frame of the clip");
-        let frame = dec.frame().expect("decoded frame");
+        let frame = decoder.frame().expect("decoded frame");
+
         assert_eq!(frame.width, 192);
         assert_eq!(frame.height, 108);
         assert_eq!(frame.rgba.len(), 192 * 108 * 4);

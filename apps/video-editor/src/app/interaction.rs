@@ -1,13 +1,21 @@
+#[allow(
+    clippy::wildcard_imports,
+    reason = "this file is one part of the `VideoEditorApp` impl split out of `app.rs`; it shares the parent's whole scope"
+)]
 use super::*;
 
 // ==========================================================================
 // Event handling helpers
 // ==========================================================================
 impl VideoEditorApp {
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the keyboard map: one arm per binding, in the order the help sheet lists them"
+    )]
     pub(super) fn handle_key(
         &mut self,
         key: &Key,
-        modifiers: &winit::event::Modifiers,
+        modifiers: winit::event::Modifiers,
         state: &mut AutoCommit,
         r: &Regions,
     ) -> bool {
@@ -143,10 +151,10 @@ impl VideoEditorApp {
                 } else {
                     frame_step(self.project.fps)
                 };
-                if !self.selection.is_empty() {
-                    self.nudge_selected(state, -step);
-                } else {
+                if self.selection.is_empty() {
                     self.step_frame(if shift { -self.project.fps } else { -1.0 });
+                } else {
+                    self.nudge_selected(state, -step);
                 }
                 true
             }
@@ -156,10 +164,10 @@ impl VideoEditorApp {
                 } else {
                     frame_step(self.project.fps)
                 };
-                if !self.selection.is_empty() {
-                    self.nudge_selected(state, step);
-                } else {
+                if self.selection.is_empty() {
                     self.step_frame(if shift { self.project.fps } else { 1.0 });
+                } else {
+                    self.nudge_selected(state, step);
                 }
                 true
             }
@@ -401,11 +409,11 @@ impl VideoEditorApp {
             f64::from(sp.s4),
         );
         let line_xs = line_height(tr, type_sizes.xs);
-        let line_xl = line_height(tr, type_sizes.xl);
+        let timecode_line = line_height(tr, type_sizes.xl);
         // Three measured lines — caption, the timecode, the hint — each one
         // spacing step apart, inside the card's inset; so the field grows
         // with the text instead of drawing its 2× timecode through its hint.
-        let h = s3 + line_xs + s1 + line_xl + s1 + line_xs + s3;
+        let h = s3 + line_xs + s1 + timecode_line + s1 + line_xs + s3;
         let w = GOTO_CARD_W.min(self.rect.width() - 2.0 * s4);
         // Anchored just above the transport, whose playhead time it edits.
         let y1 = r.transport.y0 - s2;
@@ -413,7 +421,7 @@ impl VideoEditorApp {
         let card = Rect::new(cx - w / 2.0, y1 - h, cx + w / 2.0, y1);
         let label_top = card.y0 + s3;
         let entry_top = label_top + line_xs + s1;
-        let hint_top = entry_top + line_xl + s1;
+        let hint_top = entry_top + timecode_line + s1;
         GotoLayout {
             card,
             type_sizes,
@@ -432,6 +440,10 @@ impl VideoEditorApp {
             || self.goto_entry.is_some()
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one hit test per pressable region, in paint order"
+    )]
     pub(super) fn handle_press(&mut self, state: &mut AutoCommit, r: &Regions, shift: bool) {
         let p = self.last_mouse;
 
@@ -442,7 +454,7 @@ impl VideoEditorApp {
             // question has no scrim dismissal and no close control: its way
             // out is the Cancel it shows.
             let hit = self
-                .with_dialog_layout(|app, tr, theme| app.discard_layout(tr, theme))
+                .with_dialog_layout(super::VideoEditorApp::discard_layout)
                 .flatten()
                 .and_then(|l| l.modal.hit(p));
             let choice = match hit {
@@ -595,8 +607,9 @@ impl VideoEditorApp {
                             origin: p,
                             active: false,
                         });
-                        self.pending_rename =
-                            (rename_window && self.bin_name_rect(rect).contains(p)).then_some(mid);
+                        self.pending_rename = (rename_window
+                            && VideoEditorApp::bin_name_rect(rect).contains(p))
+                        .then_some(mid);
                         self.last_click_media = Some((mid, Instant::now()));
                     }
                     return;
@@ -637,7 +650,7 @@ impl VideoEditorApp {
         // walks the playhead through the places the mix went over, wrapping
         // round — which is the difference between a warning you can act on
         // and one you can only be annoyed by.
-        if self.mix.clipped() && self.clip_flag_rect(r).contains(p) {
+        if self.mix.clipped() && VideoEditorApp::clip_flag_rect(r).contains(p) {
             self.go_to_next_clipping();
             return;
         }
@@ -667,7 +680,7 @@ impl VideoEditorApp {
                 }
             }
             for (tid, _kind, lane) in self.lane_rects(r) {
-                let header = self.track_head_rect(r, &lane);
+                let header = VideoEditorApp::track_head_rect(r, &lane);
                 if header.contains(p) {
                     // The same bands the paint reads (`chrome_layout::track_head`),
                     // so the pill under the pointer is the pill that was drawn.
@@ -870,11 +883,11 @@ impl VideoEditorApp {
             }
             return;
         }
-        if let Some(rect) = l.add_marker {
-            if rect.contains(p) {
-                self.add_marker_here(state);
-                return;
-            }
+        if let Some(rect) = l.add_marker
+            && rect.contains(p)
+        {
+            self.add_marker_here(state);
+            return;
         }
         // The project's format is project-level too, so it answers whether or
         // not a clip is selected -- above the `l.valid` gate, which is what
@@ -910,28 +923,27 @@ impl VideoEditorApp {
             (l.contrast, Param::Contrast, Drag::Contrast),
             (l.saturation, Param::Saturation, Drag::Saturation),
         ] {
-            if let Some(track) = track {
-                if hit_slider(track, p) {
-                    self.drag = Some(drag);
-                    let v = ((p.x - track.x0) / track.width()).clamp(0.0, 1.0);
-                    self.preview_param(param, v);
-                    return;
-                }
+            if let Some(track) = track
+                && hit_slider(track, p)
+            {
+                self.drag = Some(drag);
+                let v = ((p.x - track.x0) / track.width()).clamp(0.0, 1.0);
+                self.preview_param(param, v);
+                return;
             }
         }
         // Fade in / out sliders (value in seconds, 0..clip-duration).
         let max = self
             .selected()
             .and_then(|id| self.project.clip(id))
-            .map(|c| c.duration())
-            .unwrap_or(0.0);
-        if let Some(track) = l.fade_in {
-            if hit_slider(track, p) {
-                self.drag = Some(Drag::FadeIn);
-                let frac = ((p.x - track.x0) / track.width()).clamp(0.0, 1.0);
-                self.preview_edit(move |c| c.fade_in = (frac * max).clamp(0.0, c.duration()));
-                return;
-            }
+            .map_or(0.0, crate::model::Clip::duration);
+        if let Some(track) = l.fade_in
+            && hit_slider(track, p)
+        {
+            self.drag = Some(Drag::FadeIn);
+            let frac = ((p.x - track.x0) / track.width()).clamp(0.0, 1.0);
+            self.preview_edit(move |c| c.fade_in = (frac * max).clamp(0.0, c.duration()));
+            return;
         }
         if let Some(track) = l.fade_out
             && hit_slider(track, p)
@@ -941,14 +953,14 @@ impl VideoEditorApp {
             self.preview_edit(move |c| c.fade_out = (frac * max).clamp(0.0, c.duration()));
             return;
         }
-        if let Some(track) = l.transition_len {
-            if hit_slider(track, p) {
-                self.drag = Some(Drag::TransitionLen);
-                let frac = ((p.x - track.x0) / track.width()).clamp(0.0, 1.0);
-                let max = self.transition_len_max();
-                self.preview_edit(move |c| c.transition_duration = (frac * max).max(0.01));
-                return;
-            }
+        if let Some(track) = l.transition_len
+            && hit_slider(track, p)
+        {
+            self.drag = Some(Drag::TransitionLen);
+            let frac = ((p.x - track.x0) / track.width()).clamp(0.0, 1.0);
+            let max = self.transition_len_max();
+            self.preview_edit(move |c| c.transition_duration = (frac * max).max(0.01));
+            return;
         }
         for (t, rect) in &l.transitions {
             if rect.contains(p) {
@@ -1018,20 +1030,20 @@ impl VideoEditorApp {
                 return;
             }
         }
-        if let Some(canvas) = l.curve_canvas {
-            if canvas.contains(p) {
-                self.press_curve(state, canvas, p);
-                return;
-            }
+        if let Some(canvas) = l.curve_canvas
+            && canvas.contains(p)
+        {
+            self.press_curve(state, canvas, p);
+            return;
         }
-        if let Some(rect) = l.curve_reset {
-            if rect.contains(p) {
-                let ch = self.curve_channel;
-                self.edit_selected(state, move |c| {
-                    *c.curves.spline_mut(ch) = crate::curve::Spline::identity();
-                });
-                return;
-            }
+        if let Some(rect) = l.curve_reset
+            && rect.contains(p)
+        {
+            let ch = self.curve_channel;
+            self.edit_selected(state, move |c| {
+                *c.curves.spline_mut(ch) = crate::curve::Spline::identity();
+            });
+            return;
         }
         // Key controls. An unkeyed parameter takes one click to start
         // animating; a keyed one opens the menu that shapes, removes and
@@ -1052,7 +1064,7 @@ impl VideoEditorApp {
             if hit_slider(track, p) {
                 self.drag = Some(Drag::Num(f));
                 let frac = ((p.x - track.x0) / track.width()).clamp(0.0, 1.0);
-                self.set_num(f, f.from_frac(frac));
+                self.set_num(f, f.at_frac(frac));
                 return;
             }
         }
@@ -1074,11 +1086,11 @@ impl VideoEditorApp {
                 return;
             }
         }
-        if let Some(rect) = l.reset_transform {
-            if rect.contains(p) {
-                self.edit_selected(state, |c| c.transform = crate::model::Transform::default());
-                return;
-            }
+        if let Some(rect) = l.reset_transform
+            && rect.contains(p)
+        {
+            self.edit_selected(state, |c| c.transform = crate::model::Transform::default());
+            return;
         }
         for (rate, rect) in l.speed_presets.clone() {
             if rect.contains(p) {
@@ -1089,23 +1101,23 @@ impl VideoEditorApp {
                 return;
             }
         }
-        if let Some(rect) = l.reverse {
-            if rect.contains(p) {
-                let now = self
-                    .selected_clip()
-                    .map(|c| (c.speed.rate(), c.speed.reverse));
-                if let Some((rate, rev)) = now {
-                    self.set_speed_selected(state, rate, !rev);
-                }
-                return;
+        if let Some(rect) = l.reverse
+            && rect.contains(p)
+        {
+            let now = self
+                .selected_clip()
+                .map(|c| (c.speed.rate(), c.speed.reverse));
+            if let Some((rate, rev)) = now {
+                self.set_speed_selected(state, rate, !rev);
             }
+            return;
         }
         // Colour key.
-        if let Some(rect) = l.key_enable {
-            if rect.contains(p) {
-                self.toggle_key_enabled(state);
-                return;
-            }
+        if let Some(rect) = l.key_enable
+            && rect.contains(p)
+        {
+            self.toggle_key_enabled(state);
+            return;
         }
         for (col, rect) in l.key_colors.clone() {
             if rect.contains(p) {
@@ -1113,16 +1125,16 @@ impl VideoEditorApp {
                 return;
             }
         }
-        if let Some(rect) = l.key_pick {
-            if rect.contains(p) {
-                // Only writes a colour when there really is a decoded frame
-                // to read one from; with none the button is drawn disabled
-                // and this is a no-op rather than a made-up sample.
-                if let Some(col) = self.preview_pixel(0.5, 0.5) {
-                    self.edit_selected(state, move |c| c.key.color = col);
-                }
-                return;
+        if let Some(rect) = l.key_pick
+            && rect.contains(p)
+        {
+            // Only writes a colour when there really is a decoded frame
+            // to read one from; with none the button is drawn disabled
+            // and this is a no-op rather than a made-up sample.
+            if let Some(col) = self.preview_pixel(0.5, 0.5) {
+                self.edit_selected(state, move |c| c.key.color = col);
             }
+            return;
         }
         // Mask.
         for (shape, rect) in l.mask_shapes.clone() {
@@ -1131,40 +1143,39 @@ impl VideoEditorApp {
                 return;
             }
         }
-        if let Some(rect) = l.mask_fit {
-            if rect.contains(p) {
-                let (src_aspect, frame_aspect) = self.selected_aspects();
-                self.edit_selected(state, move |c| {
-                    let shape = c.mask.shape;
-                    let (feather, invert) = (c.mask.feather, c.mask.invert);
-                    c.mask =
-                        crate::model::Mask::over(shape, &c.transform, src_aspect, frame_aspect);
-                    c.mask.feather = feather;
-                    c.mask.invert = invert;
-                });
-                return;
-            }
+        if let Some(rect) = l.mask_fit
+            && rect.contains(p)
+        {
+            let (src_aspect, frame_aspect) = self.selected_aspects();
+            self.edit_selected(state, move |c| {
+                let shape = c.mask.shape;
+                let (feather, invert) = (c.mask.feather, c.mask.invert);
+                c.mask = crate::model::Mask::over(shape, &c.transform, src_aspect, frame_aspect);
+                c.mask.feather = feather;
+                c.mask.invert = invert;
+            });
+            return;
         }
-        if let Some(rect) = l.mask_invert {
-            if rect.contains(p) {
-                self.edit_selected(state, |c| c.mask.invert = !c.mask.invert);
-                return;
-            }
+        if let Some(rect) = l.mask_invert
+            && rect.contains(p)
+        {
+            self.edit_selected(state, |c| c.mask.invert = !c.mask.invert);
+            return;
         }
-        if let Some(rect) = l.mix_reset {
-            if rect.contains(p) {
-                self.reset_selected_track_mix(state);
-                return;
-            }
+        if let Some(rect) = l.mix_reset
+            && rect.contains(p)
+        {
+            self.reset_selected_track_mix(state);
+            return;
         }
         // Title properties.
-        if let Some(rect) = l.title_text {
-            if rect.contains(p) {
-                if let Some(m) = self.selected_media_item().map(|m| m.id) {
-                    self.begin_title_edit(m);
-                }
-                return;
+        if let Some(rect) = l.title_text
+            && rect.contains(p)
+        {
+            if let Some(m) = self.selected_media_item().map(|m| m.id) {
+                self.begin_title_edit(m);
             }
+            return;
         }
         for (align, rect) in l.title_align.clone() {
             if rect.contains(p) {
@@ -1172,11 +1183,12 @@ impl VideoEditorApp {
                 return;
             }
         }
-        if let Some(rect) = l.title_font {
-            if rect.contains(p) && self.font_picker.is_none() {
-                self.open_font_picker();
-                return;
-            }
+        if let Some(rect) = l.title_font
+            && rect.contains(p)
+            && self.font_picker.is_none()
+        {
+            self.open_font_picker();
+            return;
         }
         for (col, rect) in l.title_colors.clone() {
             if rect.contains(p) {
@@ -1184,17 +1196,17 @@ impl VideoEditorApp {
                 return;
             }
         }
-        if let Some(rect) = l.title_bold {
-            if rect.contains(p) {
-                self.edit_title(state, |t| t.bold = !t.bold);
-                return;
-            }
+        if let Some(rect) = l.title_bold
+            && rect.contains(p)
+        {
+            self.edit_title(state, |t| t.bold = !t.bold);
+            return;
         }
-        if let Some(rect) = l.title_italic {
-            if rect.contains(p) {
-                self.edit_title(state, |t| t.italic = !t.italic);
-                return;
-            }
+        if let Some(rect) = l.title_italic
+            && rect.contains(p)
+        {
+            self.edit_title(state, |t| t.italic = !t.italic);
+            return;
         }
         if l.split.contains(p) {
             self.split_selected(state);
@@ -1219,39 +1231,36 @@ impl VideoEditorApp {
         let ch = self.curve_channel;
         let (x, y) = curve_coords(canvas, p);
         let existing = clip.curves.spline(ch).point_near(x, y, POINT_GRAB);
-        let idx = match existing {
-            Some(i) => i,
-            None => {
-                // A new point is a discrete edit, so it commits now; the drag
-                // that follows previews and commits again on release.
-                let mut placed = None;
-                self.edit_selected(doc, |c| {
-                    placed = c.curves.spline_mut(ch).set_point(x, y);
-                });
-                match placed {
+        let idx = if let Some(i) = existing {
+            i
+        } else {
+            // A new point is a discrete edit, so it commits now; the drag
+            // that follows previews and commits again on release.
+            let mut placed = None;
+            self.edit_selected(doc, |c| {
+                placed = c.curves.spline_mut(ch).set_point(x, y);
+            });
+            if let Some(i) = placed {
+                i
+            } else {
+                // Refused — too close to a neighbour for a point to mean
+                // anything. Grab the neighbour rather than doing nothing.
+                let Some(clip) = self.selected().and_then(|id| self.project.clip(id)) else {
+                    return;
+                };
+                match clip.curves.spline(ch).point_near(x, y, POINT_GRAB * 2.0) {
                     Some(i) => i,
-                    // Refused — too close to a neighbour for a point to mean
-                    // anything. Grab the neighbour rather than doing nothing.
-                    None => {
-                        let Some(clip) = self.selected().and_then(|id| self.project.clip(id))
-                        else {
-                            return;
-                        };
-                        match clip.curves.spline(ch).point_near(x, y, POINT_GRAB * 2.0) {
-                            Some(i) => i,
-                            None => return,
-                        }
-                    }
+                    None => return,
                 }
             }
         };
         self.drag = Some(Drag::CurvePoint { channel: ch, idx });
     }
 
-    pub(super) fn press_export(&mut self, state: &mut AutoCommit, p: Point) {
+    pub(super) fn press_export(&mut self, state: &AutoCommit, p: Point) {
         // Laid out from the current state, as the next frame will paint it —
         // see `chrome_theme`.
-        let Some(l) = self.with_dialog_layout(|app, tr, theme| app.export_layout(tr, theme)) else {
+        let Some(l) = self.with_dialog_layout(super::VideoEditorApp::export_layout) else {
             return;
         };
         match l.modal.hit(p) {
