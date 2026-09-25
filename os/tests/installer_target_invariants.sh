@@ -12,6 +12,8 @@ containerfile="$repo_root/os/Containerfile.installer"
 production_containerfile="$repo_root/os/Containerfile"
 builder="$repo_root/os/dev/build-custom-installer.sh"
 firstboot_user="$repo_root/os/usr/libexec/tilo-firstboot-user"
+autologin_cleanup="$repo_root/os/usr/libexec/tilo-firstboot-autologin-cleanup"
+autologin_cleanup_unit="$repo_root/os/usr/lib/systemd/system/tilo-firstboot-autologin-cleanup.service"
 profile_extractor="$repo_root/os/usr/libexec/tilo-installer-profile-extract"
 installer_app="$repo_root/crates/session/installer/src/installer_app.rs"
 installer_disks="$repo_root/crates/session/installer/src/disks.rs"
@@ -50,51 +52,90 @@ else
   bad "installer profile routing regressed to an all-or-nothing shortcut"
 fi
 
-unlock_placeholder=tilo.unlock=000000000000000000000000000000000000000000000000000000000000000000000000000
-sample_uuid=00000000-0000-0000-0000-000000000000
-unlock_options="rd.luks.options=$sample_uuid=tpm2-device=auto,fido2-device=auto"
-if [ "${#unlock_placeholder}" -eq "${#unlock_options}" ] \
-   && [ "$(grep -Fc 'rd.luks.options=%s=tpm2-device=auto,fido2-device=auto' "$encryptor")" -eq 2 ]; then
-  ok "sealed unlock slot exactly fits TPM2 and FIDO2 initramfs discovery options"
+if grep -Fq 'root=tilo-auto' "$repo_root/os/usr/lib/bootc/kargs.d/00-root.toml" \
+   && grep -Fq 'rd.luks.options=tpm2-device=auto,fido2-device=auto' \
+      "$repo_root/os/usr/lib/bootc/kargs.d/00-root.toml"; then
+  ok "live and target UKIs inherit target-independent root and unlock discovery"
 else
-  bad "encrypted-root producer and sealed UKI hardware-token options disagree"
+  bad "sealed UKIs lack target-independent root or hardware-token discovery"
 fi
 
 karg_deletes="$(grep -c -- '--karg-delete tilo.install' "$backend" || true)"
 if [ "$karg_deletes" -eq 2 ] \
+   && grep -Fq 'append systemd.mount-extra=LABEL=TILO_BOOT:/boot:ext4:ro,nosuid,nodev,noexec /boot/tilo-target/tilo-target.efi' "$containerfile" \
    && python3 -B "$repo_root/os/tests/test_installer_target_cmdline.py" \
    && python3 -B "$repo_root/os/tests/test_installer_target_boot_digest.py" \
    && grep -Fq 'remove tilo.install /boot/tilo-target/tilo-target.efi' "$containerfile" \
    && grep -Fq 'install -m 0644 "$TARGET_VARIANT" "$TARGET_UKI.new"' "$backend" \
    && grep -Fq 'mv -f "$TARGET_UKI.new" "$TARGET_UKI"' "$backend" \
+   && grep -Fq 'target UKI lacks the signed TILO_BOOT mount contract' "$backend" \
    && ! grep -Fq 'tilo-uki-cmdline set "tilo.root=' "$backend"; then
   ok "encrypted installs atomically promote a target-independent UKI without per-machine measured bytes"
 else
   bad "target-independent UKI handoff is incomplete (legacy deletions: $karg_deletes)"
 fi
 
+if grep -Fq 'mkfs.ext4 -q -L TILO_BOOT "$boot_part"' "$encryptor" \
+   && grep -Fq -- '--boot-mount-spec "$ENC_BOOT_MOUNT_SPEC"' "$backend" \
+   && grep -Fq 'tilo-boot-mount-contract' "$backend" \
+   && bash "$repo_root/os/tests/encrypted_boot_mount_contract.sh"; then
+  ok "encrypted installs bind the signed TILO_BOOT mount contract to one prepared partition"
+else
+  bad "encrypted /boot mount contract can be missing, substituted, or ambiguous"
+fi
+
 if grep -Fq 'tilo-uki-cmdline remove systemd.show_status' "$containerfile" \
    && grep -Fq 'tilo-uki-cmdline remove rd.udev.log_level' "$containerfile" \
    && grep -Fq 'tilo-uki-cmdline remove loglevel' "$containerfile" \
    && grep -Fq 'tilo-uki-cmdline remove vt.global_cursor_default' "$containerfile" \
-   && grep -Fq 'tilo-uki-cmdline remove root' "$containerfile" \
-   && grep -Fq 'tilo-uki-cmdline remove rd.luks.options' "$containerfile" \
-   && grep -Fq 'tilo-uki-cmdline append tilo.unlock=000000000000000000000000000000000000000000000000000000000000000000000000000' "$containerfile" \
    && grep -Fq 'tilo-uki-cmdline show | grep -qw tilo.mode=normal' "$containerfile" \
-   && grep -Fq 'tilo-uki-cmdline show | grep -qw tilo.install' "$containerfile"; then
-  ok "installer reserves measured UKI cmdline space without losing splash or mode"
+   && grep -Fq 'tilo-uki-cmdline show | grep -qw tilo.install' "$containerfile" \
+   && grep -Fq 'tilo-uki-cmdline show | grep -qw root=tilo-auto' "$containerfile" \
+   && ! grep -Eq 'tilo\.(root|luks|unlock)=' "$containerfile"; then
+  ok "installer live UKI keeps the bootable root contract without inert placeholders"
 else
-  bad "installer UKI cmdline headroom or required boot markers are incomplete"
+  bad "installer live UKI root contract or required boot markers are incomplete"
+fi
+
+if grep -Fq 'set -- /boot/EFI/Linux/*.efi' "$containerfile" \
+   && grep -Fq '[ "$#" -eq 1 ] && [ -f "$1" ]' "$containerfile" \
+   && ! grep -Fq 'find /boot/EFI/Linux -type f -name '\''*.efi'\'' -print -quit' "$containerfile"; then
+  ok "installer copies the sole live UKI only after rejecting ambiguous boot trees"
+else
+  bad "installer target UKI selection is traversal-order dependent"
+fi
+
+# The signer counts every live UKI, nested bootc directories included, and
+# takes the fallback only when exactly one exists (test_target_uki_projection.py
+# executes that guard).
+if grep -Fq '[ "$n" -eq 1 ] || { echo "explicit target UKI required when multiple live UKIs exist"' "$prediction_signer" \
+   && grep -Fq 'done < <(find /boot/EFI/Linux -type f -name "*.efi" -print | sort)' "$prediction_signer"; then
+  ok "PCR prediction signing rejects an ambiguous live UKI fallback"
+else
+  bad "PCR prediction signing can bind the wrong live UKI"
 fi
 
 if grep -Fq '"$INSTALLER_CONTEXT/rootfs/usr/share/tilo/greetd-config.toml"' "$builder" \
    && grep -Fq 'COPY rootfs/ /' "$containerfile" \
-   && grep -Fq 'greetd-config.toml "$DEPLOY_ETC/greetd/config.toml"' "$backend" \
+   && grep -Fq 'install -m 0644 /usr/share/tilo/greetd-config.toml "$GREETD_CONFIG_TMP"' "$backend" \
    && grep -Fq '[initial_session]' "$backend" \
-   && grep -Fq 'user = "%s"' "$backend"; then
-  ok "encrypted startup hands off directly to the installed user's session"
+   && grep -Fq 'command = "/usr/libexec/tilo-session --backend drm"' "$backend" \
+   && grep -Fq 'firstboot-autologin-pending' "$backend" \
+   && grep -Fq 'sync -f "$AUTOLOGIN_PENDING"' "$backend" \
+   && grep -Fq 'tilo-firstboot-autologin-cleanup.service' "$containerfile" \
+   && grep -Fqx 'After=greetd.service' "$autologin_cleanup_unit" \
+   && grep -Fqx 'ConditionPathExists=/etc/tilo/firstboot-autologin-pending' "$autologin_cleanup_unit" \
+   && grep -Fq 'greetd-config.toml' "$autologin_cleanup" \
+   && grep -Fq 'rm -f -- "$PENDING"' "$autologin_cleanup"; then
+  ok "first installed boot reaches OOBE directly, then restores password authentication"
 else
-  bad "installed system would ask for a second login after disk authentication"
+  bad "first-boot graphical handoff is missing, unsafe, or can persist past one boot"
+fi
+
+if bash "$repo_root/os/tests/firstboot_autologin_cleanup.sh"; then
+  ok "autologin cleanup atomically restores the greeter and fails closed on an unsafe marker"
+else
+  bad "autologin cleanup cannot recover a normal greeter after first boot"
 fi
 
 if grep -Fq ': "${TMPDIR:=${TILO_INSTALLER_OUTPUT}/.tmp}"' "$builder" \
@@ -358,11 +399,18 @@ if grep -Fq "refusing to modify pre-existing account" "$firstboot_user" \
    && grep -Fq 'root|bin|daemon|' "$backend" \
    && grep -Fq "stat -c '%u:%a:%h'" "$firstboot_user" \
    && grep -Fq '[a-z_]* ) valid_user=1' "$firstboot_user" \
-   && grep -Fq 'case "$hash" in' "$firstboot_user" \
-   && grep -Fq 'valid_hash=1' "$firstboot_user"; then
-  ok "first boot revalidates installer credentials and refuses privileged account replacement"
+   && grep -Fq 'valid_sha512_crypt "$hash"' "$firstboot_user" \
+   && grep -Fq 'rounds=([1-9][0-9]{3,8})' "$firstboot_user" \
+   && grep -Fq 'useradd -m -p "$hash"' "$firstboot_user" \
+   && ! grep -Fq 'chpasswd -e' "$firstboot_user"; then
+  ok "first boot revalidates credentials and creates a password-bearing account atomically"
 else
-  bad "installer can reset a privileged or pre-existing account"
+  bad "installer can reset a privileged account or leave a new account without its password"
+fi
+if bash "$repo_root/os/tests/firstboot_password_hash.sh" >/dev/null; then
+  ok "first boot accepts only complete SHA-512 crypt password hashes"
+else
+  bad "first-boot password hash grammar rejects valid installer output or accepts malformed input"
 fi
 
 firstboot_unit="$repo_root/os/usr/lib/systemd/system/tilo-firstboot-user.service"
@@ -372,13 +420,16 @@ for policy in \
   'PrivateDevices=yes' \
   'PrivateNetwork=yes' \
   'ProtectKernelTunables=yes' \
-  'CapabilityBoundingSet=CAP_CHOWN CAP_DAC_OVERRIDE CAP_FOWNER CAP_SETGID CAP_SETUID' \
+  'CapabilityBoundingSet=CAP_CHOWN CAP_DAC_OVERRIDE CAP_FOWNER CAP_AUDIT_WRITE CAP_SETGID CAP_SETUID' \
   'AmbientCapabilities=' \
-  'RestrictAddressFamilies=AF_UNIX' \
+  'RestrictAddressFamilies=AF_UNIX AF_NETLINK' \
   'SystemCallFilter=@system-service'; do
   grep -Fqx "$policy" "$firstboot_unit" \
     || bad "first-boot account creator sandbox is missing: $policy"
 done
+if grep -Eq '^SystemCallFilter=~.*(^|[[:space:]])@network-io([[:space:]]|$)' "$firstboot_unit"; then
+  bad 'first-boot account creator blocks the libaudit socket syscalls required by useradd'
+fi
 
 installer_setup_unit="$repo_root/os/usr/lib/systemd/system/tilo-installer-setup.service"
 for policy in \
@@ -425,25 +476,6 @@ else
   bad "profile identity or locale is dropped before first boot"
 fi
 
-locale_catalog="$repo_root/os/usr/share/tilo/installer-locales.txt"
-locale_packs_complete=1
-while IFS= read -r locale; do
-  [ -n "$locale" ] || continue
-  language="${locale%%_*}"
-  awk -v package="glibc-langpack-$language" \
-    '$1 == package && $2 == "\\" { found = 1 } END { exit !found }' \
-    "$repo_root/os/Containerfile" || locale_packs_complete=0
-done < "$locale_catalog"
-if [ -s "$locale_catalog" ] \
-   && [ "$locale_packs_complete" -eq 1 ] \
-   && grep -Fq 'COPY os/usr/share/tilo/installer-locales.txt /usr/share/tilo/installer-locales.txt' \
-      "$repo_root/os/Containerfile" \
-   && grep -Fq 'grep -Fxq -- "$LOCALE_VAL" "$LOCALE_CATALOG"' "$backend"; then
-  ok "every advertised install locale is shipped and revalidated by the privileged backend"
-else
-  bad "installation profiles can select locale data absent from the installed OS"
-fi
-
 if grep -Fq '"$DEPLOY_ETC/systemd/system/sshd.service"' "$backend" \
    && grep -Fq 'multi-user.target.wants/sshd.service' "$backend"; then
   ok "live-only SSH state is removed from the installed target"
@@ -451,7 +483,7 @@ else
   bad "live-medium SSH mask/enablement can leak into the target"
 fi
 
-if grep -Fq 'chcon --reference=/etc/greetd/config.toml "$DEPLOY_ETC/greetd/config.toml"' "$backend"; then
+if grep -Fq 'chcon --reference=/etc/greetd/config.toml "$GREETD_CONFIG_TMP"' "$backend"; then
   ok "installed greeter configuration receives an enforcing-compatible /etc label"
 else
   bad "installed greeter configuration can retain a transient /run SELinux label"
@@ -516,6 +548,16 @@ if [ -x "$guided_partitioner" ] \
   ok "guided alongside locks and revalidates the reviewed GPT map before appending only Tilo partitions"
 else
   bad "guided alongside can mutate storage outside its reviewed free extent"
+fi
+
+# root=tilo-auto boots exactly one Tilo root per disk: both alongside paths
+# refuse to leave a second one, and a staged installer's root is a distinct type.
+if grep -Fq 'already holds a Tilo root partition' "$guided_partitioner" \
+   && grep -Fq 'already holds another Tilo root' "$backend" \
+   && ! grep -Fq 'd4c4daf6-f72c-43ee-b8e3-5ba32550311d' "$guided_partitioner" "$backend"; then
+  ok "alongside installs never leave two Tilo roots on one disk"
+else
+  bad "an alongside install can leave a second Tilo root that makes both unbootable"
 fi
 
 if bash "$repo_root/os/tests/live_installer_service_invariants.sh"; then

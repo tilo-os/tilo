@@ -259,7 +259,10 @@ How it works:
   fresh root and writes `name:hash` (password via the pure-Rust `tilo-crypto`) into the
   deployment's writable `/etc/tilo/install-user.conf`.
 - On the installed system's first boot, `tilo-firstboot-user.service` creates the
-  account from that file (`useradd -G wheel` + `chpasswd -e`) and shreds it.
+  account from that file (`useradd -p <sha512-crypt-hash> -G wheel`) and shreds it. The
+  installer then launches that account once into OOBE; after greetd consumes that
+  first-session handoff, it restores the normal password greeter for every later
+  login and reboot.
 
 ```bash
 # 1. Build + load the desktop image (the installer is FROM localhost/tilo).

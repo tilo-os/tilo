@@ -218,6 +218,20 @@ if grep -Fqx '# CONFIG_PROC_PAGE_MONITOR is not set' "$running_kernel_config" 2>
 else
   warn "procfs still exposes pagemap, smaps, or clear_refs interfaces"
 fi
+# systemd 259 requires BPF LSM plus BTF for its PID 1 filesystem restriction
+# program. If either is absent systemd exits before it can start any service.
+# `bpf` must also be in the live LSM stack; a compiled option alone is inert.
+if grep -Fqx 'CONFIG_BPF_LSM=y' "$running_kernel_config" 2>/dev/null \
+   && grep -Fqx 'CONFIG_DEBUG_INFO_BTF=y' "$running_kernel_config" 2>/dev/null; then
+  ok "kernel includes BPF LSM and BTF for systemd filesystem restrictions"
+else
+  warn "kernel lacks BPF LSM or BTF required by systemd RestrictFileSystems="
+fi
+active_lsms="$(cat /sys/kernel/security/lsm 2>/dev/null || true)"
+case ":$active_lsms:" in
+  *:bpf:*) ok "BPF LSM is active for systemd filesystem restrictions" ;;
+  *)       warn "BPF LSM is absent from the active LSM stack: ${active_lsms:-unavailable}" ;;
+esac
 for interface in \
   DEVKMEM PROC_KCORE COREDUMP FW_LOADER_USER_HELPER FANOTIFY DNOTIFY \
   CUSE FUSE_PASSTHROUGH VIRTIO_FS FUSE_DAX FUSE_IO_URING \
@@ -230,7 +244,7 @@ for interface in \
   DYNAMIC_DEBUG_CORE SLUB_DEBUG DEBUG_MEMORY_INIT RCU_TRACE \
   TRACEFS_AUTOMOUNT_DEPRECATED IMA EVM \
   SECURITY_SELINUX_BOOTPARAM SECURITY_SELINUX_DEVELOP SECURITY_TOMOYO \
-  SECURITY_IPE BPF_LSM \
+  SECURITY_IPE \
   PERSISTENT_KEYRINGS BIG_KEYS TRUSTED_KEYS ENCRYPTED_KEYS KEY_DH_OPERATIONS \
   KEY_NOTIFICATIONS SIGNED_PE_FILE_VERIFICATION SYSTEM_BLACKLIST_AUTH_UPDATE \
   SECURITY_SELINUX_AVC_STATS \
