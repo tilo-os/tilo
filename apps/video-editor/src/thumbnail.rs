@@ -57,37 +57,58 @@ const MAX_FRAMES_PER_SOURCE: usize = 96;
 /// Decode workers across the whole app — and therefore the cap on live
 /// pipelines. Each worker keeps one engine and reuses it for consecutive
 /// requests against the same source.
-#[cfg_attr(not(feature = "decode"), allow(dead_code))]
+#[cfg_attr(
+    not(feature = "decode"),
+    allow(dead_code, reason = "only the decoder path uses it")
+)]
 const MAX_WORKERS: usize = 2;
 
 /// Requested buckets waiting for a worker. Beyond this the oldest request is
 /// dropped: it is off-screen by now, and the renderer will ask again if not.
-#[cfg_attr(not(feature = "decode"), allow(dead_code))]
+#[cfg_attr(
+    not(feature = "decode"),
+    allow(dead_code, reason = "only the decoder path uses it")
+)]
 const MAX_QUEUED: usize = 64;
 
 /// How long a worker waits for a frame at the seeked position before giving up
 /// on that request.
-#[cfg_attr(not(feature = "decode"), allow(dead_code))]
+#[cfg_attr(
+    not(feature = "decode"),
+    allow(dead_code, reason = "only the decoder path uses it")
+)]
 const FRAME_TIMEOUT: Duration = Duration::from_secs(6);
 
 /// How long to let a freshly-opened pipeline preroll before seeking it.
-#[cfg_attr(not(feature = "decode"), allow(dead_code))]
+#[cfg_attr(
+    not(feature = "decode"),
+    allow(dead_code, reason = "only the decoder path uses it")
+)]
 const PREROLL_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// How far past the requested time a frame may sit and still count as the
 /// answer to that seek — a little over one frame at any sane rate.
-#[cfg_attr(not(feature = "decode"), allow(dead_code))]
+#[cfg_attr(
+    not(feature = "decode"),
+    allow(dead_code, reason = "only the decoder path uses it")
+)]
 const SEEK_SLOP_MS: u64 = 100;
 
 /// How far from the requested time a frame may sit and still be worth showing
 /// when the pipeline could not land on it (a keyframe-only source). Matches
 /// the window `frame_at` will reach across for a decoded neighbour.
-#[cfg_attr(not(feature = "decode"), allow(dead_code))]
+#[cfg_attr(
+    not(feature = "decode"),
+    allow(dead_code, reason = "only the decoder path uses it")
+)]
 const FALLBACK_SLOP_MS: u64 = 2_000;
 
 /// How long an idle worker holds its pipeline open before retiring. Keeps a
 /// scrub responsive without pinning a decoder for a timeline nobody is using.
-#[cfg_attr(not(feature = "decode"), allow(dead_code))]
+#[cfg_attr(
+    not(feature = "decode"),
+    allow(dead_code, reason = "only the decoder path uses it")
+)]
 const WORKER_IDLE: Duration = Duration::from_secs(20);
 
 /// How far [`ThumbnailCache::frame_at`] will reach for an already-decoded
@@ -105,7 +126,10 @@ pub fn bucket_of(t: f64) -> u32 {
 }
 
 /// The centre time (seconds) of `bucket`.
-#[cfg_attr(not(test), allow(dead_code))]
+#[cfg_attr(
+    not(test),
+    allow(dead_code, reason = "only the tests map a bucket back to a time")
+)]
 fn bucket_time(bucket: u32) -> f64 {
     (f64::from(bucket) + 0.5) * STRIP_BUCKET_SECS
 }
@@ -220,7 +244,10 @@ pub fn representative(palette: u8, w: u32, h: u32) -> Thumb {
 /// `max_w` x `max_h`, preserving aspect. Caching frames at source resolution
 /// would put megabytes per cell in RAM for a 4K clip; the strip only ever
 /// draws them a few dozen pixels wide.
-#[cfg_attr(not(feature = "decode"), allow(dead_code))]
+#[cfg_attr(
+    not(feature = "decode"),
+    allow(dead_code, reason = "only the decoder path uses it")
+)]
 #[expect(
     clippy::many_single_char_names,
     reason = "pixel maths: x/y are the output pixel, r/g/b/a its channel sums, n the count"
@@ -279,7 +306,10 @@ fn downscale(src: &[u8], sw: u32, sh: u32, max_w: u32, max_h: u32) -> (u32, u32,
 
 /// What we know about one (source, time-bucket) frame.
 #[derive(Clone)]
-#[cfg_attr(not(feature = "decode"), allow(dead_code))]
+#[cfg_attr(
+    not(feature = "decode"),
+    allow(dead_code, reason = "only the decoder path uses it")
+)]
 enum Slot {
     /// A worker has been asked for it and has not answered yet.
     Pending,
@@ -299,7 +329,10 @@ struct SourceFrames {
 }
 
 /// A decode request handed to the pool.
-#[cfg_attr(not(feature = "decode"), allow(dead_code))]
+#[cfg_attr(
+    not(feature = "decode"),
+    allow(dead_code, reason = "only the decoder path uses it")
+)]
 struct Job {
     id: MediaId,
     path: PathBuf,
@@ -317,7 +350,10 @@ struct Outcome {
 }
 
 #[derive(Default)]
-#[cfg_attr(not(feature = "decode"), allow(dead_code))]
+#[cfg_attr(
+    not(feature = "decode"),
+    allow(dead_code, reason = "only the decoder path uses it")
+)]
 struct Queue {
     jobs: VecDeque<Job>,
     live_workers: usize,
@@ -349,7 +385,13 @@ pub struct ThumbnailCache {
     /// Monotonic stamp for LRU eviction.
     clock: u64,
     pool: Arc<Pool>,
-    #[cfg_attr(not(any(feature = "decode", test)), allow(dead_code))]
+    #[cfg_attr(
+        not(any(feature = "decode", test)),
+        allow(
+            dead_code,
+            reason = "only the decoder workers and the tests send on it"
+        )
+    )]
     tx: Sender<Outcome>,
     rx: Receiver<Outcome>,
 }
@@ -763,7 +805,10 @@ impl Drop for ThumbnailCache {
 
 /// Take the next job, preferring one for `preferred` so a worker keeps reusing
 /// the pipeline it already has open.
-#[cfg_attr(not(feature = "decode"), allow(dead_code))]
+#[cfg_attr(
+    not(feature = "decode"),
+    allow(dead_code, reason = "only the decoder path uses it")
+)]
 fn take_job(q: &mut Queue, preferred: Option<&Path>) -> Option<Job> {
     if let Some(p) = preferred
         && let Some(i) = q.jobs.iter().position(|j| j.path == p)
@@ -775,7 +820,10 @@ fn take_job(q: &mut Queue, preferred: Option<&Path>) -> Option<Job> {
 
 /// One worker: owns at most one engine, reuses it across consecutive requests
 /// for the same source, and retires after [`WORKER_IDLE`] with nothing to do.
-#[cfg_attr(not(feature = "decode"), allow(dead_code))]
+#[cfg_attr(
+    not(feature = "decode"),
+    allow(dead_code, reason = "only the decoder path uses it")
+)]
 fn run_worker(pool: &Pool, tx: &Sender<Outcome>) {
     let mut session: Option<Session> = None;
     loop {
@@ -844,14 +892,20 @@ fn run_worker(pool: &Pool, tx: &Sender<Outcome>) {
 
 /// One open source: the engine plus the last frame timestamp it handed back,
 /// so a fresh seek can tell a new picture from the one already on screen.
-#[cfg_attr(not(feature = "decode"), allow(dead_code))]
+#[cfg_attr(
+    not(feature = "decode"),
+    allow(dead_code, reason = "only the decoder path uses it")
+)]
 struct Session {
     path: PathBuf,
     engine: ::media::MediaEngine,
     last_pts: Option<u64>,
 }
 
-#[cfg_attr(not(feature = "decode"), allow(dead_code))]
+#[cfg_attr(
+    not(feature = "decode"),
+    allow(dead_code, reason = "only the decoder path uses it")
+)]
 impl Session {
     fn open(path: &Path) -> Option<Session> {
         let mut engine = ::media::MediaEngine::new();
@@ -946,7 +1000,10 @@ impl Session {
 }
 
 /// Turn decoded source-resolution pixels into a cached thumbnail.
-#[cfg_attr(not(feature = "decode"), allow(dead_code))]
+#[cfg_attr(
+    not(feature = "decode"),
+    allow(dead_code, reason = "only the decoder path uses it")
+)]
 fn scaled_thumb(rgba: &[u8], w: u32, h: u32) -> Thumb {
     let (tw, th, px) = downscale(rgba, w, h, THUMB_W, THUMB_H);
     Thumb::new(tw, th, Arc::new(px), true)
