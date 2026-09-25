@@ -1203,8 +1203,6 @@ impl DisksApp {
         );
     }
 
-    /// Health dot + short label at a glance (part of [`Self::draw_drive_row`]).
-
     // ---- detail header -------------------------------------------------
     fn draw_header(
         scene: &mut Scene,
@@ -1510,6 +1508,10 @@ impl DisksApp {
     /// Draw a capsule chip at `(x, y)` and return its rect so the caller can
     /// place the next chip after this one's measured width. The capsule wraps
     /// the label's measured line box (24 px at 1×) and centres the label on it.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "paint helper threads scene, renderer, theme, transform, position and label"
+    )]
     fn draw_chip(
         scene: &mut Scene,
         tr: &mut TextRenderer,
@@ -2433,6 +2435,10 @@ impl DisksApp {
     /// [`Self::draw_smart_attr_table`]). `xs` is `(id_x, name_x, val_x,
     /// stat_x)` from [`Self::draw_smart_attr_table_header`].
     #[allow(clippy::too_many_arguments, reason = "see the comment above txt")]
+    #[expect(
+        clippy::many_single_char_names,
+        reason = "c/t/i/a/g follow the file's paint convention: colours, transform, row index, attribute, band gap"
+    )]
     fn draw_smart_attr_row(
         scene: &mut Scene,
         tr: &mut TextRenderer,
@@ -3352,12 +3358,6 @@ impl DisksApp {
             ..ActionContract::default()
         }))
     }
-
-    /// Refresh scroll extents and derive the frame's shared geometry before
-    /// any paint pass consumes it.
-
-    /// Paint the selected drive's header, action band, tabs, and clipped tab
-    /// content. The empty state follows the same detail-pane boundary.
 
     /// Resolve an operation payload against the latest locally-probed
     /// topology. Resource invocations may arrive after a collaborator's

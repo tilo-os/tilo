@@ -912,7 +912,7 @@ impl Widget for DiskUsageApp {
     fn next_wake_deadline(&self) -> Option<Instant> {
         (self.scan_rx.is_some() || self.picker_rx.is_some())
             .then_some(())
-            .map(|_| Instant::now() + Duration::from_millis(80))
+            .map(|()| Instant::now() + Duration::from_millis(80))
     }
 }
 

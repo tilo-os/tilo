@@ -236,6 +236,10 @@ pub(crate) struct OverviewEventCtx<'a> {
     pub(crate) taffy: &'a TaffyTree<()>,
 }
 
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "independent view flags of the app root, not a state machine"
+)]
 pub struct Core {
     pub model: WeatherModel,
     /// Display units — read from the shared Settings store (`region`), never
@@ -2343,6 +2347,10 @@ impl Core {
         self.refresh_btn = refresh;
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "paint pass threads the shared scene, transform, renderer and theme"
+    )]
     fn draw_detail_header(
         &mut self,
         rect: Rect,
@@ -4077,6 +4085,10 @@ impl DetailBodyLayout {
     /// the measured line plus the same token pad the painter leaves, rounded
     /// up; design-table cards grow by exactly their lines' extra height, and
     /// their inner offsets shift by the growth of the lines above them.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "solves the whole body layout table in one pass, top to bottom"
+    )]
     fn measure(
         mw: f64,
         snap: &WeatherSnapshot,
@@ -4188,8 +4200,8 @@ impl DetailBodyLayout {
         );
         let aq_tile_value_dy = d.aq_tile_value_dy + g(text.aq_tile_label);
         let aq_tile_sub_inset = d.aq_tile_unit_inset + g(text.aq_tile_label);
-        let aq_tiles_h = aq_rows as f64 * aq_tile_h + (aq_rows as f64 - 1.0) * gap;
-        let aq_block_h = card_header_h + aq_hero_h + s3 + aq_tiles_h + d.aq_bottom_pad;
+        let aq_tile_grid_h = aq_rows as f64 * aq_tile_h + (aq_rows as f64 - 1.0) * gap;
+        let aq_block_h = card_header_h + aq_hero_h + s3 + aq_tile_grid_h + d.aq_bottom_pad;
 
         let body_h =
             hero_h + gap + tiles_block_h + gap + hourly_h + gap + days_block_h + gap + aq_block_h;
@@ -4316,7 +4328,7 @@ impl DayRowGeometry {
 }
 
 fn tile_columns(mw: f64) -> usize {
-    let gap = Spacing::BASE.s3 as f64;
+    let gap = f64::from(Spacing::BASE.s3);
     (((mw + gap) / (TILE_MIN_W + gap)).floor() as usize).clamp(2, 5)
 }
 
@@ -4654,6 +4666,10 @@ mod chip_metrics_tests {
     use ui::tokens::spacing::Spacing;
 
     #[test]
+    #[expect(
+        clippy::float_cmp,
+        reason = "1x chips must equal the authored constants exactly"
+    )]
     fn one_x_rows_keep_the_authored_chip() {
         let sp = Spacing::default();
         let m = ChipMetrics::new(&sp, 1.0);
@@ -4663,6 +4679,10 @@ mod chip_metrics_tests {
     }
 
     #[test]
+    #[expect(
+        clippy::float_cmp,
+        reason = "whole-pixel snapping is exact by construction (`ceil`)"
+    )]
     fn scaled_rows_land_on_whole_pixels() {
         let sp = Spacing::default();
         let m = ChipMetrics::new(&sp, 2.0);
@@ -4678,6 +4698,10 @@ mod chip_metrics_tests {
     /// stacking measured lines plus token gaps produced — and a whole pixel
     /// that holds both scaled lines and their gaps at 2×.
     #[test]
+    #[expect(
+        clippy::float_cmp,
+        reason = "1x header must equal the authored constant and 2x must be a whole pixel"
+    )]
     fn detail_header_is_authored_at_one_x() {
         let sp = Spacing::default();
         assert_eq!(detail_header_h(&sp, 1.0), DETAIL_HEADER_H);
@@ -4696,6 +4720,10 @@ mod chip_metrics_tests {
     /// still inside their cards; token-sized rows hold their line plus the
     /// same theme pad the painter leaves.
     #[test]
+    #[expect(
+        clippy::float_cmp,
+        reason = "1x sections must equal the authored heights and 2x ones whole pixels exactly"
+    )]
     fn detail_body_layout_is_authored_at_one_x_and_grows_whole() {
         let model = crate::sample::sample_model();
         let snap = model
