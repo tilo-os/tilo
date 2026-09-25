@@ -26,8 +26,23 @@ jobs:
           export DEBIAN_FRONTEND=noninteractive
           sudo -n apt-get update -qq
           sudo -n apt-get install -y --no-install-recommends podman fuse-overlayfs e2fsprogs jq
-          echo "default-podman=$(podman info --format json | jq -c '{driver:.store.graphDriverName,graphRoot:.store.graphRoot,graphOptions:.store.graphOptions}')"
+          echo "default-podman=$(podman info --format json | jq -c '{driver:.store.graphDriverName,graphRoot:.store.graphRoot,graphOptions:.store.graphOptions,graphStatus:.store.graphStatus}')"
           echo "runner-temp-filesystem=$(findmnt -n -o FSTYPE -T "$RUNNER_TEMP")"
+          context="$RUNNER_TEMP/tilo-storage-benchmark"
+          mkdir -p "$context"
+          head -c 268435456 /dev/urandom > "$context/payload"
+          printf hello > "$context/hello"
+          printf 'FROM scratch\nCOPY payload /payload\n' > "$context/Parentfile"
+          benchmark() {
+            local kind=$1 start elapsed
+            printf 'FROM localhost/tilo-probe-parent:%s\nCOPY hello /hello\n' "$kind" > "$context/Childfile"
+            podman build -q --file "$context/Parentfile" --tag "localhost/tilo-probe-parent:$kind" "$context"
+            start=$(date +%s%3N)
+            podman build -q --file "$context/Childfile" --tag "localhost/tilo-probe-child:$kind" "$context"
+            elapsed=$(( $(date +%s%3N) - start ))
+            echo "::notice::$kind parent=256MiB child COPY=5B child-build-ms=$elapsed"
+          }
+          benchmark default
           backing="$RUNNER_TEMP/tilo-native-overlay-probe.img"
           mount_dir="$RUNNER_TEMP/tilo-native-overlay-probe"
           loop=''
@@ -47,10 +62,7 @@ jobs:
           printf '[storage]\ndriver="overlay"\ngraphroot="%s/graph"\nrunroot="%s/run"\n' \
             "$mount_dir" "$mount_dir" > "$mount_dir/storage.conf"
           export CONTAINERS_STORAGE_CONF="$mount_dir/storage.conf"
-          echo "native-podman=$(podman info --format json | jq -c '{driver:.store.graphDriverName,graphRoot:.store.graphRoot,graphOptions:.store.graphOptions}')"
+          echo "native-podman=$(podman info --format json | jq -c '{driver:.store.graphDriverName,graphRoot:.store.graphRoot,graphOptions:.store.graphOptions,graphStatus:.store.graphStatus}')"
           test "$(podman info --format json | jq -r .store.graphDriverName)" = overlay
-          mkdir -p /tmp/tilo-device-probe
-          printf 'FROM scratch\nCOPY hello /hello\n' > /tmp/tilo-device-probe/Containerfile
-          printf hello > /tmp/tilo-device-probe/hello
-          podman build --file /tmp/tilo-device-probe/Containerfile --tag localhost/tilo-device-probe /tmp/tilo-device-probe
+          benchmark native
           echo '::notice::ARM disk runner supports Podman FUSE and loop nodes via guest devtmpfs'
