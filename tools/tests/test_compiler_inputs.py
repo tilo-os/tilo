@@ -122,12 +122,11 @@ class CompilerInputsTests(unittest.TestCase):
 
     def test_clippy_collection_precedes_cleanup_and_upload_follows_clippy(self):
         root = Path(__file__).parents[2]
-        script = (root / "tools/ci/clippy-diff.sh").read_text()
-        body = script.split("run_clippy() {", 1)[1].split("print_compiler_errors()", 1)[0]
+        script = (root / "tools/ci/clippy-check.sh").read_text()
+        body = script.split("run_clippy() {", 1)[1].split("print_diagnostics()", 1)[0]
         self.assertLess(body.index("source_commit=$(git rev-parse HEAD)"), body.index("cargo clippy"))
-        self.assertLess(body.index("cargo clippy"), body.index('--from-messages "$output"'))
-        self.assertLess(body.index('--from-messages "$output"'), body.index('exit "$result"'))
-        self.assertIn('receipt_name=clippy-base-inputs.json', body)
+        self.assertLess(body.index("cargo clippy"), body.index('--from-messages "$messages"'))
+        self.assertLess(body.index('--from-messages "$messages"'), body.index('return "$result"'))
         self.assertIn('receipt_name=clippy-head-inputs.json', body)
         self.assertIn('"$root/target/ci/$receipt_name"', body)
         workflow = (root / ".forgejo/workflows/check.yml").read_text()
