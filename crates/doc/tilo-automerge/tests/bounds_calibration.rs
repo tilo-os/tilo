@@ -243,7 +243,7 @@ fn loaded(doc: &mut AutoCommit) -> AutoCommit {
 // ── measurement ─────────────────────────────────────────────────────────────
 
 /// Usefulness ceiling for `footprint / retained` on non-trivial documents.
-const USEFUL_RATIO: f64 = 16.0;
+const USEFUL_RATIO: f64 = 8.0;
 
 struct Row {
     name: &'static str,

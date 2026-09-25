@@ -1256,6 +1256,20 @@ where
         self.slabs.len()
     }
 
+    /// Requested heap bytes held by this column: the slab table, every
+    /// slab's data buffer and the per-slab index, from capacities; O(slabs)
+    /// and allocation-free. qOS local modification (see `PROVENANCE.md`).
+    pub fn heap_bytes(&self) -> usize {
+        let mut n = self
+            .slabs
+            .capacity()
+            .saturating_mul(std::mem::size_of::<Slab<TailOf<T, C>>>());
+        for slab in &self.slabs {
+            n = n.saturating_add(slab.data.capacity());
+        }
+        n.saturating_add(self.index.heap_bytes())
+    }
+
     pub fn get(&self, index: usize) -> Option<T::Get<'_>> {
         self.iter().nth(index)
     }
