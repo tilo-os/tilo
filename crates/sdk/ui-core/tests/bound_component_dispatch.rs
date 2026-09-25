@@ -2440,9 +2440,10 @@ fn prepared_runner_nested_mount_failure_retains_each_original_report_once() {
             .err()
             .unwrap()
         };
-        let tilo_ui::launch::LaunchError::ComponentSetup { mut reports, .. } = error else {
+        let tilo_ui::launch::LaunchError::ComponentSetup { recovery, .. } = error else {
             panic!("missing setup recovery");
         };
+        let mut reports = recovery.into_close_reports().unwrap();
         assert_eq!(reports.len(), 2);
         reports.sort_by_key(|report| report.recovery.as_ref().unwrap().instance_id);
         for (index, report) in reports.iter_mut().enumerate() {
