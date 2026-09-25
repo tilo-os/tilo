@@ -221,27 +221,6 @@ impl<R: Resource> Widget for Each<R> {
         dirty
     }
 
-    // A transparent container forwards document-capable operation admission
-    // to the handlers it hosts (see the toolkit's `Widget` docs).
-    fn start_resource_operation_with_document(
-        &mut self,
-        invocation: tilo_actions::InvocationId,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        doc: &mut AutoCommit,
-        path: &ObjId,
-    ) -> Result<Option<ui_core::widget::ResourceOperationStart>, String> {
-        for child in self.children_mut() {
-            if let Some(started) = child.start_resource_operation_with_document(
-                invocation, kind, type_id, payload, doc, path,
-            )? {
-                return Ok(Some(started));
-            }
-        }
-        Ok(None)
-    }
-
     fn children(&self) -> Vec<&dyn Widget> {
         self.rows.iter().map(|row| row.widget.as_ref()).collect()
     }
