@@ -68,18 +68,15 @@ class VerifyKernelProvenanceTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stderr, "")
 
-    def test_accepts_a_kernel_built_before_the_buildroot_from_a_signed_snapshot(self):
-        # Any signed RPM snapshot: there is no equality with the OS build's own.
+    def test_rejects_a_kernel_built_from_a_signed_rpm_snapshot(self):
         result = self.run_verify((EARLIER_RPMS,), (EARLIER_RPMS,))
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("before the kernel buildroot", result.stderr)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("does not bind", result.stderr)
 
-    def test_rejects_an_unsigned_build_environment(self):
-        for bound in ((BUILDROOT,), (EARLIER_RPMS,)):
-            with self.subTest(bound=bound):
-                result = self.run_verify(bound, ())
-                self.assertNotEqual(result.returncode, 0)
-                self.assertIn("is not signed", result.stderr)
+    def test_rejects_an_unsigned_buildroot(self):
+        result = self.run_verify((BUILDROOT,), ())
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("is not signed", result.stderr)
 
     def test_rejects_an_unsigned_kernel(self):
         result = self.run_verify((BUILDROOT,), (BUILDROOT,), kernel_signed=False)

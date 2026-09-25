@@ -185,7 +185,7 @@ if grep -Fq 'runner: runner-disk-100g' "$kernel_workflow" \
    && ! grep -Fq "github.event_name == 'workflow_dispatch' && github.ref != 'refs/heads/main'" "$kernel_workflow" \
    && grep -Fq 'kernel-build-support.sh stage-modules "$(uname -m)"' "$repo/os/kernel/Containerfile" \
    && grep -Fq 'sh "$self" stage-boot "$arch" "$ksrc" "$stage" "$kver"' "$repo/os/kernel/build-support.sh" \
-   && grep -Fq '.pushsection .discard.tilo_module_cert' "$repo/os/kernel/build-support.sh" \
+   && grep -Fq 'certs/system_certificates.S|*/certs/system_certificates.S|' "$repo/os/kernel/cc-wrapper.sh" \
    && grep -Fq 'python3 /work/check-signing-identity.py "$ksrc/vmlinux"' "$repo/os/kernel/build-support.sh" \
    && grep -Fq '"$stage/lib/modules/$kver/vmlinuz" "$ksrc/scripts/extract-vmlinux"' "$repo/os/kernel/build-support.sh" \
    && grep -Fq '"$stage/lib/modules/$kver/vmlinuz"' "$repo/os/kernel/build-support.sh" \
