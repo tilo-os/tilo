@@ -53,6 +53,9 @@ jobs:
       # The builder image carries the encoders and muxers the footage tests
       # need, so their absence here is a failure, not a skip.
       TILO_REQUIRE_MEDIA: "1"
+      # llvmpipe is always present here: a GPU test that cannot get an
+      # adapter is a failure, not a skip.
+      TILO_REQUIRE_GPU: "1"
       # Keep this identical to the nextest gpu-golden override. These tests
       # need an idle software Vulkan renderer, not merely serialization with
       # one another; the isolated tail below retains full daily coverage.
@@ -103,7 +106,11 @@ jobs:
 
       # Build/run tests first so the following checks can reuse emitted
       # rlibs/rmeta instead of compiling metadata before codegen.
+      # Every test run uses LANG=C.UTF-8, TZ=UTC and a fresh HOME/XDG tree
+      # (tools/test-env.sh, through tools/with-test-environment.sh).
       - name: Run every workspace test
+        env:
+          TILO_REQUIRE_AUDIO: "1"
         run: >-
           bash tools/ci/measure.sh "nightly workspace nextest" --
           bash scripts/ci-run.sh "cargo nextest --workspace" --
@@ -177,6 +184,7 @@ jobs:
         run: >-
           bash tools/ci/measure.sh "nightly workspace examples" --
           bash scripts/ci-run.sh "cargo test --workspace --examples" --
+          bash tools/with-test-environment.sh
           cargo test --workspace --examples --locked
 
       - name: Save test results
