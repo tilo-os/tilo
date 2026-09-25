@@ -5,6 +5,7 @@
 //! capability before doing work.
 
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use super::folders::FolderScan;
 use super::model::{Capabilities, Experience, FolderMode, FolderSelection, SetupPlan};
@@ -31,6 +32,25 @@ pub struct FolderChoice {
     pub mode_overridden: bool,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct FolderIdentity(u64);
+
+impl FolderIdentity {
+    fn fresh() -> Self {
+        static NEXT: AtomicU64 = AtomicU64::new(1);
+        loop {
+            let value = NEXT.fetch_add(1, Ordering::Relaxed);
+            if value != 0 {
+                return Self(value);
+            }
+        }
+    }
+
+    fn token(self) -> String {
+        format!("{value:016x}", value = self.0)
+    }
+}
+
 /// Owns the in-process choices shown by the setup screens.
 ///
 /// Navigation and folder choices are changed through methods so returning to
@@ -42,6 +62,7 @@ pub struct SetupController {
     capabilities: Capabilities,
     chosen_experience: Option<Experience>,
     remembered_folders: Vec<FolderChoice>,
+    remembered_folder_identities: Vec<FolderIdentity>,
     plan: SetupPlan,
 }
 
@@ -54,6 +75,7 @@ impl SetupController {
             capabilities,
             chosen_experience: None,
             remembered_folders: Vec::new(),
+            remembered_folder_identities: Vec::new(),
             plan: SetupPlan {
                 // `chosen_experience` gates navigation, so this placeholder is
                 // never treated as a reviewed choice.
@@ -95,6 +117,11 @@ impl SetupController {
         self.default_mode
     }
 
+    #[must_use]
+    pub fn chosen_experience(&self) -> Option<Experience> {
+        self.chosen_experience
+    }
+
     /// Set the common folder policy. Per-folder overrides remain intact.
     /// Folders that inherit or explicitly choose `Later` stay remembered but
     /// are excluded from the effective plan.
@@ -131,6 +158,8 @@ impl SetupController {
             mode: self.default_mode,
             mode_overridden: false,
         });
+        self.remembered_folder_identities
+            .push(FolderIdentity::fresh());
         self.invalidate_folder_review();
         self.rebuild_effective_folders();
         Ok(())
@@ -145,6 +174,8 @@ impl SetupController {
             mode: self.default_mode,
             mode_overridden: false,
         });
+        self.remembered_folder_identities
+            .push(FolderIdentity::fresh());
         self.invalidate_folder_review();
         self.rebuild_effective_folders();
     }
@@ -167,6 +198,7 @@ impl SetupController {
             return false;
         }
         self.remembered_folders.remove(index);
+        self.remembered_folder_identities.remove(index);
         self.invalidate_folder_review();
         self.rebuild_effective_folders();
         true
@@ -249,6 +281,25 @@ impl SetupController {
     #[must_use]
     pub fn folders(&self) -> &[FolderChoice] {
         &self.remembered_folders
+    }
+
+    /// Return the opaque, process-local identity paired with this folder.
+    /// The token is safe to publish locally because it contains no path data.
+    #[must_use]
+    pub fn folder_token(&self, index: usize) -> Option<String> {
+        self.remembered_folder_identities
+            .get(index)
+            .copied()
+            .map(FolderIdentity::token)
+    }
+
+    /// Resolve a previously published folder identity against the current
+    /// selection order. Removed identities never retarget a surviving folder.
+    #[must_use]
+    pub fn folder_index(&self, token: &str) -> Option<usize> {
+        self.remembered_folder_identities
+            .iter()
+            .position(|identity| identity.token() == token)
     }
 
     /// Count selected source bytes independently of whether a destination has

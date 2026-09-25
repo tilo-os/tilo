@@ -6,8 +6,8 @@ broker="${2:-}"
 output="${3:-}"
 : "${RUNNER_TEMP:?RUNNER_TEMP is required}"
 : "${GITHUB_WORKSPACE:?GITHUB_WORKSPACE is required}"
-[[ "$kind" =~ ^(release|homebrew|winget|site)$ ]] && [[ "$output" = "$RUNNER_TEMP"/* ]] \
-  || { printf 'usage: %s {release|homebrew|winget|site} BROKER RUNNER_TEMP/OUTPUT\n' "$0" >&2; exit 2; }
+[[ "$kind" =~ ^(release|homebrew|winget|site|internal-bundle)$ ]] && [[ "$output" = "$RUNNER_TEMP"/* ]] \
+  || { printf 'usage: %s {release|homebrew|winget|site|internal-bundle} BROKER RUNNER_TEMP/OUTPUT\n' "$0" >&2; exit 2; }
 [[ "$broker" = /* && -x "$broker" && ! -L "$broker" ]] \
   || { printf 'credential broker must be an absolute executable non-symlink\n' >&2; exit 1; }
 [ "$(realpath "$broker")" = "$broker" ] \

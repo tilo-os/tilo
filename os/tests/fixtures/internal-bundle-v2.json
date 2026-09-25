@@ -1,0 +1,42 @@
+{
+  "schema": 2,
+  "purpose": "tilo-internal-installer",
+  "release_id": "fixture-only",
+  "architecture": "x86_64",
+  "firmware": "uefi",
+  "secure_boot": "disabled",
+  "installer_protocol": 1,
+  "source_image_bytes": 65536,
+  "components": [
+    {
+      "role": "staging-esp",
+      "filename": "staging-esp.img",
+      "byte_size": 4096,
+      "sha256": "a3c255caf361412ed2cd90ecff6437ed02630ad54940e9024642e13cfc104c52",
+      "partition_type_guid": "c12a7328-f81f-11d2-ba4b-00a0c93ec93b",
+      "filesystem_type": "vfat",
+      "filesystem_uuid": "1234-ABCD",
+      "minimum_partition_bytes": 4096,
+      "source_offset": 17408
+    },
+    {
+      "role": "staging-root",
+      "filename": "staging-root.img",
+      "byte_size": 8192,
+      "sha256": "14d3313fa050fbd2cedc5d87eab247d8b048f116a4b357a4d4fd652924f2b8b5",
+      "partition_type_guid": "0fc63daf-8483-4772-8e79-3d69d8477de4",
+      "filesystem_type": "btrfs",
+      "filesystem_uuid": "12345678-1234-4234-8234-123456789abc",
+      "minimum_partition_bytes": 42949672960,
+      "source_offset": 21504
+    }
+  ],
+  "boot_binding": {
+    "efi_path": "/EFI/BOOT/BOOTX64.EFI",
+    "uki_architecture": "x86_64",
+    "uki_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "uki_cmdline": "init_on_alloc=1 init_on_free=1 lockdown=integrity slab_nomerge randomize_kstack_offset=on page_alloc.shuffle=1 vsyscall=none tilo.generation=7 rw preempt=full console=tty0 console=ttyS0,115200 quiet splash plymouth.ignore-serial-consoles tilo.mode=normal composefs=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb root=UUID=12345678-1234-4234-8234-123456789abc  tilo.luks=000000000000000000000000000000000000000000000 tilo.unlock=000000000000000000000000000000000000000000000000000000000000000000000000000 tilo.install",
+    "root_locator": "UUID=12345678-1234-4234-8234-123456789abc",
+    "composefs_digest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+  }
+}
