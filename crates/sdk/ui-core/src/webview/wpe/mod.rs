@@ -1006,6 +1006,9 @@ fn dispatch(state: &mut EngineState, cmd: WebViewCommand) {
             WebViewCommand::Reload => ffi::webkit_web_view_reload(state.view),
             WebViewCommand::StopLoading => ffi::webkit_web_view_stop_loading(state.view),
             WebViewCommand::SetAudioMuted(_) => {}
+            // The WPE engine never enters document or video fullscreen, so
+            // there is nothing to leave.
+            WebViewCommand::ExitFullscreen => {}
             WebViewCommand::Resize {
                 width,
                 height,
