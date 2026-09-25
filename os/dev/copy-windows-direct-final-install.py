@@ -377,7 +377,8 @@ def run(args):
             args.vm_proof_checked, child_digest, args.ci_image, ci_provenance)
         require(checked["schema"] == provenance.PROOF_SCHEMA_V2,
                 "physical install requires backend-derived signed target proof v2")
-        dual_gate = provenance.dual_ci_medium_gate(args, checked, child_digest)
+        dual_gate = provenance.dual_ci_medium_gate(
+            args, checked, child_digest, ci_provenance["source_revision"])
         guest = checked["guest_proof"]
         require(source_receipt.get("ci_index_digest") == index_digest
                 and source_receipt.get("ci_child_digest") == child_digest
