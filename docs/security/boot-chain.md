@@ -318,6 +318,24 @@ unprivileged BPF: `CONFIG_BPF_UNPRIV_DEFAULT_OFF=y` and the image policy keep
 that disabled. `tilo-security-audit` verifies both the compiled options and
 that `bpf` is present in the live LSM stack.
 
+### No boot-time system or configuration extensions
+
+The composefs digest in the UKI command line seals `/usr`. A systemd system
+extension would overlay it after that check. Fedora presets
+`systemd-sysext.service` and `systemd-confext.service`. At every boot they merge
+each image or plain directory under `/etc`, `/run` and
+`/var/lib/{extensions,confexts}`, and systemd's default image policy accepts
+unsigned images. A file written to `/var` would then replace sealed `/usr`, or
+`/etc`, content on the next boot.
+
+systemd has no setting that refuses directory extensions or unsigned images for
+those services. The image therefore masks both, and the `systemd-sysext.socket`
+Varlink endpoint, so it merges nothing by itself. A caller who merges an
+extension on purpose runs `systemd-sysext` with its own `--image-policy`. Doing
+that already requires root, which can change the system in other ways too.
+Only the unsealed development image (`os/Containerfile.dev`) unmasks
+`systemd-sysext.service`, for its development layers.
+
 PCR 7 measures the Secure Boot policy. A former LUKS TPM design bound only to
 that register; it has been removed because PCR 7 does not identify the selected
 Tilo UKI. With Secure Boot off, such a binding would merely record "Secure Boot
