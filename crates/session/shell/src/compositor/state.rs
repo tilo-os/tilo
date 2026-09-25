@@ -14,7 +14,7 @@ use std::sync::{Arc, Mutex};
 enum ForeignCommitCapture {
     NoBuffer,
     Removed,
-    Shm,
+    DirectBuffer,
     Dmabuf(u64),
 }
 
@@ -612,21 +612,6 @@ pub struct State {
     /// Live app-owned secondary surfaces, outside the normal workspace tree.
     pub(crate) floating_toplevels: Vec<FloatingToplevel>,
     pub(crate) floating_toplevel_events: Vec<FloatingToplevelEvent>,
-}
-
-fn foreign_root(surface: &WlSurface) -> Option<WlSurface> {
-    use smithay::wayland::compositor::get_parent;
-
-    let mut current = surface.clone();
-    let mut found_parent = false;
-    for _ in 0..64 {
-        let Some(parent) = get_parent(&current) else {
-            return found_parent.then_some(current);
-        };
-        current = parent;
-        found_parent = true;
-    }
-    None
 }
 
 impl State {
@@ -1752,10 +1737,12 @@ impl State {
             match &attrs.current().buffer {
                 Some(wl_compositor::BufferAssignment::NewBuffer(buffer)) => {
                     let outcome = match association {
+                        ForeignCommitCapture::DirectBuffer => {
+                            store().capture_commit(surface_id, buffer)
+                        }
                         ForeignCommitCapture::Dmabuf(token) => {
                             store().capture_commit_associated(surface_id, buffer, Some(token))
                         }
-                        ForeignCommitCapture::Shm => CaptureOutcome::Queued,
                         ForeignCommitCapture::NoBuffer | ForeignCommitCapture::Removed => return,
                     };
                     if let CaptureOutcome::Failed(reason) = outcome {
@@ -2565,47 +2552,6 @@ impl RemoteInputSink for State {
 }
 
 impl State {
-    fn refresh_foreign_subsurface_tree(&self, root: &WlSurface) {
-        use smithay::wayland::compositor::{TraversalAction, with_surface_tree_upward};
-
-        let root_id = surface_id(root);
-        if !self.should_capture_foreign_surface(root_id) {
-            return;
-        }
-        let mut children = Vec::new();
-        with_surface_tree_upward(
-            root,
-            (0_i32, 0_i32),
-            |surface, states, parent| {
-                let location = if surface == root {
-                    *parent
-                } else {
-                    let offset = states
-                        .cached_state
-                        .get::<wl_compositor::SubsurfaceCachedState>()
-                        .current()
-                        .location;
-                    (
-                        parent.0.saturating_add(offset.x),
-                        parent.1.saturating_add(offset.y),
-                    )
-                };
-                TraversalAction::DoChildren(location)
-            },
-            |surface, _, location| {
-                if surface != root {
-                    children.push(crate::compositor::foreign::ChildFrame {
-                        surface: surface_id(surface),
-                        x: location.0,
-                        y: location.1,
-                    });
-                }
-            },
-            |_, _, _| true,
-        );
-        crate::compositor::foreign::store().set_children(root_id, children);
-    }
-
     fn prepare_pending_foreign_capture(&self, surface: &WlSurface) {
         let surface_id = crate::compositor::state::surface_id(surface);
         // `new_toplevel` registers the protocol surface before adopting it
@@ -2617,7 +2563,6 @@ impl State {
         // subsurface objects are registered through different paths, so this
         // does not turn arbitrary child commits into tiled windows.
         let captured_here = self.client_input.is_known(surface_id)
-            || foreign_root(surface).is_some()
             || self.osk_surface == Some(surface_id)
             || self.is_floating_toplevel(surface_id)
             || self.is_output_presentation_surface(surface_id)
@@ -2625,51 +2570,33 @@ impl State {
         if !captured_here {
             return;
         }
-        let (association, blocker) = wl_compositor::with_states(surface, |states| {
+        let association = wl_compositor::with_states(surface, |states| {
             let mut attrs = states
                 .cached_state
                 .get::<wl_compositor::SurfaceAttributes>();
             let buffer = match &attrs.pending().buffer {
-                Some(wl_compositor::BufferAssignment::NewBuffer(buffer)) => buffer.clone(),
+                Some(wl_compositor::BufferAssignment::NewBuffer(buffer)) => buffer,
                 Some(wl_compositor::BufferAssignment::Removed) => {
-                    return (ForeignCommitCapture::Removed, None);
+                    return ForeignCommitCapture::Removed;
                 }
-                None => return (ForeignCommitCapture::NoBuffer, None),
+                None => return ForeignCommitCapture::NoBuffer,
+            };
+            let Some(dmabuf) = smithay::wayland::dmabuf::get_dmabuf(buffer).ok().cloned() else {
+                return ForeignCommitCapture::DirectBuffer;
             };
             drop(attrs);
             let Some(client) = surface.client() else {
-                return (ForeignCommitCapture::NoBuffer, None);
+                return ForeignCommitCapture::NoBuffer;
             };
-            if let Ok(dmabuf) = smithay::wayland::dmabuf::get_dmabuf(&buffer).cloned() {
-                if let Some((token, barrier)) = crate::compositor::foreign::store()
-                    .prepare_dmabuf_capture(surface_id, client, dmabuf)
-                {
-                    // `with_states` holds Smithay's PrivateSurfaceData mutex.
-                    // `add_blocker` takes that same non-reentrant mutex, so it
-                    // must happen after this callback returns. Doing it here
-                    // self-deadlocked the compositor on the first GPU-backed
-                    // app commit (most visibly Chat).
-                    return (ForeignCommitCapture::Dmabuf(token), Some(barrier));
-                }
-                return (ForeignCommitCapture::NoBuffer, None);
-            }
-            match crate::compositor::surface_readback::copy_shm_frame(&buffer) {
-                Ok(frame) => {
-                    if crate::compositor::foreign::store().prepare_shm_capture(surface_id, frame) {
-                        (ForeignCommitCapture::Shm, None)
-                    } else {
-                        (ForeignCommitCapture::NoBuffer, None)
-                    }
-                }
-                Err(error) => {
-                    crate::compositor::foreign::store().note_failure(surface_id, error.to_string());
-                    (ForeignCommitCapture::NoBuffer, None)
-                }
+            if let Some((token, barrier)) = crate::compositor::foreign::store()
+                .prepare_dmabuf_capture(surface_id, client, dmabuf)
+            {
+                wl_compositor::add_blocker(surface, barrier);
+                ForeignCommitCapture::Dmabuf(token)
+            } else {
+                ForeignCommitCapture::NoBuffer
             }
         });
-        if let Some(blocker) = blocker {
-            wl_compositor::add_blocker(surface, blocker);
-        }
         wl_compositor::with_states(surface, |states| {
             states
                 .data_map
@@ -2687,16 +2614,14 @@ impl State {
     /// Re-evaluate transactions whose off-thread buffer capture completed.
     /// Called by the compositor loop on its owning thread; worker threads only
     /// flip barriers and enqueue owning client handles.
-    pub fn pump_foreign_capture_barriers(&mut self, display: &DisplayHandle) -> bool {
+    pub fn pump_foreign_capture_barriers(&mut self, display: &DisplayHandle) {
         let completed = crate::compositor::foreign::drain_completed_dmabuf_captures();
-        let changed = !completed.is_empty();
         for client in completed {
             let Some(client_state) = client.get_data::<ClientState>() else {
                 continue;
             };
             client_state.compositor_state.blocker_cleared(self, display);
         }
-        changed
     }
 }
 
@@ -2916,12 +2841,8 @@ impl CompositorHandler for State {
                 || self.active_sessions.contains_key(&surface_id)
         };
         // Foreign-surface compositing: an adopted toplevel's buffer is captured every commit for `ForeignSurfaceWidget` to paint — independent of the share path above.
-        let foreign_root = foreign_root(surface);
-        if self.should_capture_foreign_surface(surface_id) || foreign_root.is_some() {
+        if self.should_capture_foreign_surface(surface_id) {
             Self::capture_foreign_surface(surface, surface_id);
-        }
-        if let Some(root) = foreign_root {
-            self.refresh_foreign_subsurface_tree(&root);
         }
         let floating_has_new_buffer = self.is_floating_toplevel(surface_id)
             && wl_compositor::with_states(surface, |states| {
@@ -3015,15 +2936,10 @@ impl CompositorHandler for State {
 
     fn destroyed(&mut self, surface: &WlSurface) {
         let id = crate::compositor::state::surface_id(surface);
-        let root = foreign_root(surface);
         self.drop_transients_for_surface(id);
         self.surface_handles.remove(&id);
         self.surface_tracker.forget(id);
         self.unregister_share_session(id);
-        crate::compositor::foreign::store().forget(id);
-        if let Some(root) = root {
-            self.refresh_foreign_subsurface_tree(&root);
-        }
     }
 }
 
@@ -3611,14 +3527,6 @@ impl XdgShellHandler for State {
     /// `app_id` may be unset here; falls back to `anon-<id>`, rewritten by [`Self::app_id_changed`].
     fn new_toplevel(&mut self, surface: ToplevelSurface) {
         let surface_id = crate::compositor::state::surface_id(surface.wl_surface());
-        let authenticated_launch_key = surface.wl_surface().client().and_then(|client| {
-            client
-                .get_data::<ClientState>()
-                .and_then(|data| data.package_id.clone())
-        });
-        if let Some(launch_key) = authenticated_launch_key.as_deref() {
-            crate::shell::launcher::attribute_surface_launch(surface_id, launch_key);
-        }
         let announced_app_id = wl_compositor::with_states(surface.wl_surface(), |states| {
             states
                 .data_map
@@ -3693,7 +3601,6 @@ impl XdgShellHandler for State {
     fn toplevel_destroyed(&mut self, surface: ToplevelSurface) {
         // Remove the matching `Foreign` tab so the chrome stops advertising a destroyed surface.
         let surface_id = crate::compositor::state::surface_id(surface.wl_surface());
-        crate::shell::launcher::forget_surface_launch(surface_id);
         if self.osk_surface == Some(surface_id) {
             self.osk_surface = None;
         }

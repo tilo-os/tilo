@@ -1,6 +1,5 @@
 [Unit]
 Description=Tilo confined shell runtime supervisor
-PartOf=tilo-graphical-session.target
 # Every packaged app that declares `ush = "required@<v>"` in its manifest is
 # refused at launch when this socket is absent — tilo-launcher's
 # resolve_service_binds returns RequiredMissing rather than starting an app
@@ -26,17 +25,12 @@ TimeoutStopSec=10s
 # host kernel state or share IPC/keyring state with the desktop session.
 PrivateTmp=yes
 PrivateIPC=yes
-# These directives create a systemd mount namespace that prevents this trusted
-# supervisor from constructing the nested Bubblewrap guest: `/proc` mounts fail
-# with EPERM and the `/usr` OverlayFS mount fails with EINVAL. The app never
-# receives those powers; Bubblewrap unshares the guest and ush immediately
-# installs seccomp and Landlock before starting its shell.
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
 ProtectControlGroups=yes
 ProtectClock=yes
-# Keep the supervisor out of the host UTS namespace while allowing Bubblewrap
-# to name its nested guest. `yes` also denies sethostname(2) to descendants and
-# makes ush exit before Terminal receives its first prompt.
-ProtectHostname=private
+ProtectHostname=yes
 RestrictRealtime=yes
 LockPersonality=yes
 RemoveIPC=yes

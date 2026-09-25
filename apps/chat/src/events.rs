@@ -956,7 +956,6 @@ impl ChatApp {
             );
         }
         self.call.join(channel.to_string());
-        self.media.activate_for_call();
         self.perform_action(
             doc,
             &actions::ChatAction::JoinCall {

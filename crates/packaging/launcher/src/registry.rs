@@ -66,7 +66,6 @@ pub fn list_installed() -> Result<Vec<InstalledPackage>, RegistryError> {
         Some(path) => read_registry(&path)?,
         None => Vec::new(),
     };
-    relocate_system_entries(&mut out)?;
     for entry in read_registry(&default_registry_path()?)? {
         match out.iter_mut().find(|e| e.id == entry.id) {
             // Same id in both stores: the user's install runs. Replacing in place
@@ -146,7 +145,6 @@ pub fn default_registry_path() -> Result<PathBuf, RegistryError> {
 /// The image-wide app store. Read-only at runtime: populated during
 /// the image build so a first boot already has a registry to list.
 pub const SYSTEM_DATA_DIR: &str = "/usr/share/tilo-apps";
-pub const SYSTEM_PAYLOAD_DIR: &str = "/usr/lib/tilo-apps";
 
 /// Whether this session was handed an app store of its own.
 ///
@@ -205,40 +203,6 @@ pub fn system_registry_path() -> Option<PathBuf> {
     Some(system_data_dir()?.join("registry.toml"))
 }
 
-/// Root containing immutable system payloads. Developer sessions relocate a
-/// complete staged store without editing its signed/release-shaped registry;
-/// translate only canonical `/usr/lib/tilo-apps` paths from that system row.
-fn system_payload_dir() -> PathBuf {
-    std::env::var_os("TILO_APPS_SYSTEM_PAYLOAD_DIR")
-        .filter(|path| !path.is_empty())
-        .map_or_else(|| PathBuf::from(SYSTEM_PAYLOAD_DIR), PathBuf::from)
-}
-
-fn relocate_system_entries(entries: &mut [InstalledPackage]) -> Result<(), RegistryError> {
-    let target = system_payload_dir();
-    if target == Path::new(SYSTEM_PAYLOAD_DIR) {
-        return Ok(());
-    }
-    let source = Path::new(SYSTEM_PAYLOAD_DIR);
-    for entry in entries {
-        let payload_suffix = entry.payload_root.strip_prefix(source).map_err(|_| {
-            RegistryError::SystemPayloadOutsideRoot {
-                id: entry.id.clone(),
-                path: entry.payload_root.clone(),
-            }
-        })?;
-        let manifest_suffix = entry.manifest_path.strip_prefix(source).map_err(|_| {
-            RegistryError::SystemPayloadOutsideRoot {
-                id: entry.id.clone(),
-                path: entry.manifest_path.clone(),
-            }
-        })?;
-        entry.payload_root = target.join(payload_suffix);
-        entry.manifest_path = target.join(manifest_suffix);
-    }
-    Ok(())
-}
-
 /// Root install directory. Honours the `TILO_APPS_DATA_DIR` override for
 /// tests/dev-mode; falls back to `$XDG_DATA_HOME` or
 /// `$HOME/.local/share/tilo-apps`.
@@ -270,8 +234,6 @@ pub enum RegistryError {
     },
     #[error("registry parse: {0}")]
     Parse(String),
-    #[error("system package {id} path {path} is outside {SYSTEM_PAYLOAD_DIR}")]
-    SystemPayloadOutsideRoot { id: String, path: PathBuf },
 }
 
 #[cfg(test)]
@@ -338,54 +300,6 @@ mod tests {
         .expect("read")
         .expect("preinstalled notes is installed");
         assert!(found.payload_root.starts_with(system.path()));
-    }
-
-    #[test]
-    fn relocated_system_store_uses_the_developer_payload_root() {
-        let system = tempfile::tempdir().expect("system registry");
-        let user = tempfile::tempdir().expect("user registry");
-        let relocated = tempfile::tempdir().expect("relocated payload");
-        let payload = relocated.path().join("payloads/dev.tilo.chat");
-        std::fs::create_dir_all(&payload).unwrap();
-        let manifest = payload.join("manifest.toml");
-        std::fs::write(&manifest, "").unwrap();
-        std::fs::write(
-            system.path().join("registry.toml"),
-            "[[entry]]\nid='dev.tilo.chat'\npayload_root='/usr/lib/tilo-apps/payloads/dev.tilo.chat'\nmanifest_path='/usr/lib/tilo-apps/payloads/dev.tilo.chat/manifest.toml'\n",
-        )
-        .unwrap();
-        let mut env = tilo_test_env::ScopedEnv::new();
-        env.set("TILO_APPS_SYSTEM_DIR", system.path())
-            .set("TILO_APPS_SYSTEM_PAYLOAD_DIR", relocated.path())
-            .set("TILO_APPS_DATA_DIR", user.path());
-        let entry = find_installed("dev.tilo.chat")
-            .expect("registry readable")
-            .expect("chat installed");
-        drop(env);
-        assert_eq!(entry.payload_root, payload);
-        assert_eq!(entry.manifest_path, manifest);
-    }
-
-    #[test]
-    fn relocated_system_store_rejects_non_system_paths() {
-        let system = tempfile::tempdir().expect("system registry");
-        let user = tempfile::tempdir().expect("user registry");
-        let relocated = tempfile::tempdir().expect("relocated payload");
-        std::fs::write(
-            system.path().join("registry.toml"),
-            "[[entry]]\nid='dev.tilo.bad'\npayload_root='/tmp/borrowed'\nmanifest_path='/tmp/borrowed/manifest.toml'\n",
-        )
-        .unwrap();
-        let mut env = tilo_test_env::ScopedEnv::new();
-        env.set("TILO_APPS_SYSTEM_DIR", system.path())
-            .set("TILO_APPS_SYSTEM_PAYLOAD_DIR", relocated.path())
-            .set("TILO_APPS_DATA_DIR", user.path());
-        let result = list_installed();
-        drop(env);
-        assert!(matches!(
-            result,
-            Err(RegistryError::SystemPayloadOutsideRoot { .. })
-        ));
     }
 
     #[test]

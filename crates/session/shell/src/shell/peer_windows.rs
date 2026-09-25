@@ -121,41 +121,6 @@ pub(crate) fn mark_failed_host_restore(tree: &mut WorkspaceTree, desktop_id: &st
     changed
 }
 
-/// Settle a persisted host-app card whose process started but never produced
-/// a surface. Unlike an Xwayland outage this is not automatically retryable:
-/// retrying every frame would create an unbounded process loop.
-pub(crate) fn mark_timed_out_host_restore(tree: &mut WorkspaceTree, desktop_id: &str) -> bool {
-    let Some(app) = crate::shell::host_apps::find(desktop_id) else {
-        return false;
-    };
-    let mut changed = false;
-    for ws in &mut tree.desktop.workspaces {
-        for strip in &mut ws.strips {
-            for group in &mut strip.window_groups {
-                for tab in &mut group.tabs {
-                    let TileContent::LocalApp { app_id, note, .. } = &mut tab.tile else {
-                        continue;
-                    };
-                    if note == OPENING
-                        && (app.desktop_id.eq_ignore_ascii_case(app_id)
-                            || app
-                                .window_identities
-                                .iter()
-                                .any(|id| id.eq_ignore_ascii_case(app_id)))
-                    {
-                        *note = "The app started but did not open a window.".to_string();
-                        changed = true;
-                    }
-                }
-            }
-        }
-    }
-    if changed {
-        tree.flush_to_disk();
-    }
-    changed
-}
-
 /// Every peer window with no note on it yet.
 fn pending(tree: &WorkspaceTree) -> Vec<Pending> {
     let mut out = Vec::new();
@@ -186,34 +151,6 @@ fn pending(tree: &WorkspaceTree) -> Vec<Pending> {
     out
 }
 
-/// Older builds persisted a host window's toolkit identity and then marked
-/// the card permanently missing when that identity was not a package id. If
-/// the current desktop-entry catalogue can now resolve that identity, the
-/// error is stale rather than user state: clear it so the normal restore path
-/// can migrate and relaunch the app. A genuinely absent application remains
-/// an answered card and is not retried on every tick.
-pub fn retry_resolvable_host_app_errors(tree: &mut WorkspaceTree) -> bool {
-    let mut changed = false;
-    for workspace in &mut tree.desktop.workspaces {
-        for strip in &mut workspace.strips {
-            for group in &mut strip.window_groups {
-                for tab in &mut group.tabs {
-                    let TileContent::LocalApp { app_id, note, .. } = &mut tab.tile else {
-                        continue;
-                    };
-                    if note == "Not installed on this machine"
-                        && crate::shell::host_apps::resolve(app_id).is_some()
-                    {
-                        note.clear();
-                        changed = true;
-                    }
-                }
-            }
-        }
-    }
-    changed
-}
-
 /// Start a local instance of `item`'s app, bound to `item`'s tab. `Err`
 /// carries the sentence to put on the card — what is actually the case,
 /// never a promise ("not installed", not "coming soon").
@@ -237,7 +174,7 @@ fn open_for(tree: &mut WorkspaceTree, item: &Pending) -> Result<OpenResult, Stri
     // untouched until the compatibility environment is published instead of
     // starting the app without DISPLAY and permanently replacing the retryable
     // state with an "Opening here…" card.
-    if item.local && crate::shell::host_apps::resolve(&item.app_id).is_some() {
+    if item.local && crate::shell::host_apps::app_for_window_id(&item.app_id).is_some() {
         let availability = crate::shell::host_apps::x11_availability();
         if availability == crate::shell::host_apps::X11Availability::Starting
             || (item.retry_x11 && availability != crate::shell::host_apps::X11Availability::Ready)
@@ -262,7 +199,7 @@ fn open_for(tree: &mut WorkspaceTree, item: &Pending) -> Result<OpenResult, Stri
         .or_else(|err| {
             if item.local
                 && matches!(err, launcher::LaunchError::NotInstalled { .. })
-                && let Some(app) = crate::shell::host_apps::resolve(&item.app_id)
+                && let Some(app) = crate::shell::host_apps::app_for_window_id(&item.app_id)
             {
                 crate::shell::host_apps::note_placement(&app, Placement::IntoTab(item.tab));
                 return crate::shell::host_apps::launch(&app.desktop_id, None).map(|_| ());
@@ -736,48 +673,6 @@ mod tests {
     }
 
     #[test]
-    #[serial_test::serial(process_env)]
-    fn stale_missing_note_for_a_resolvable_host_app_is_retried_once() {
-        let data = tempfile::tempdir().expect("temporary XDG data home");
-        let applications = data.path().join("applications");
-        std::fs::create_dir_all(&applications).expect("applications directory");
-        std::fs::write(
-            applications.join("rygel-preferences.desktop"),
-            "[Desktop Entry]\nType=Application\nName=Rygel Preferences\nExec=/bin/true\nStartupWMClass=org.gnome.Rygel.Preferences\n",
-        )
-        .expect("desktop entry");
-        let mut env = tilo_test_env::ScopedEnv::new();
-        env.set("XDG_DATA_HOME", data.path());
-        crate::shell::host_apps::invalidate_cache();
-
-        let (mut tree, tab) = tree_with_local_app("org.gnome.Rygel.Preferences");
-        assert!(set_note(
-            &mut tree,
-            tab,
-            "Not installed on this machine".into()
-        ));
-        assert!(retry_resolvable_host_app_errors(&mut tree));
-        assert_eq!(local_app_note(&tree, tab), "");
-        assert!(any_pending(&tree));
-
-        assert!(set_note(
-            &mut tree,
-            tab,
-            "Not installed on this machine".into()
-        ));
-        if let TileContent::LocalApp { app_id, .. } =
-            &mut tree.desktop.workspaces[0].strips[0].window_groups[0].tabs[0].tile
-        {
-            *app_id = "org.example.ActuallyMissing".into();
-        }
-        assert!(!retry_resolvable_host_app_errors(&mut tree));
-        assert_eq!(local_app_note(&tree, tab), "Not installed on this machine");
-
-        crate::shell::host_apps::invalidate_cache();
-        drop(env);
-    }
-
-    #[test]
     fn an_ownerless_window_stays_pending_until_room_authority_arrives() {
         let mut ws = room_owned_by("quinten");
         ws.owner = None;
@@ -845,40 +740,6 @@ mod tests {
         crate::shell::host_apps::invalidate_cache();
         crate::shell::launcher::clear_pending_placements();
         crate::shell::host_apps::set_x11_unavailable();
-    }
-
-    #[test]
-    #[serial_test::serial(process_env)]
-    fn timed_out_host_restore_becomes_an_explicit_non_retrying_error() {
-        let data = tempfile::tempdir().expect("temporary XDG data home");
-        let applications = data.path().join("applications");
-        std::fs::create_dir_all(&applications).expect("applications directory");
-        std::fs::write(
-            applications.join("org.example.Windowless.desktop"),
-            "[Desktop Entry]\nType=Application\nName=Windowless App\nExec=/bin/true\nStartupWMClass=Windowless\n",
-        )
-        .expect("desktop entry");
-        let mut env = tilo_test_env::ScopedEnv::new();
-        env.set("XDG_DATA_HOME", data.path());
-        crate::shell::host_apps::invalidate_cache();
-
-        let (mut tree, tab) = tree_with_local_app("org.example.Windowless");
-        assert!(set_note(&mut tree, tab, OPENING.to_string()));
-        assert!(mark_timed_out_host_restore(
-            &mut tree,
-            "org.example.Windowless"
-        ));
-        assert_eq!(
-            local_app_note(&tree, tab),
-            "The app started but did not open a window."
-        );
-        assert!(
-            !any_pending(&tree),
-            "timeout errors must not relaunch every frame"
-        );
-
-        crate::shell::host_apps::invalidate_cache();
-        drop(env);
     }
 }
 
