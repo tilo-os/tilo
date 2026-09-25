@@ -367,7 +367,7 @@ impl PasswordsSurface {
 
     fn list_capacity(rect: Rect) -> usize {
         let first_row = rect.y0 + 168.0;
-        ((rect.y1 - first_row) / 76.0).floor().max(0.0) as usize
+        ui::num::usize_of_f64(((rect.y1 - first_row) / 76.0).floor().max(0.0))
     }
 
     fn max_list_scroll(&self, rect: Rect) -> usize {
@@ -800,6 +800,10 @@ impl PasswordsSurface {
         self.editor_inputs.custom_fields.set_text("");
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "saving a draft validates and persists every item kind in one sequential flow"
+    )]
     fn save_draft(&mut self) {
         let Some(model) = self.model.as_mut() else {
             self.mode = ShowcaseMode::Vault;
@@ -1042,11 +1046,11 @@ impl PasswordsSurface {
             })
             .count();
         self.editor_fields_top(panel)
-            + f64::from(u32::try_from(ordinary).unwrap_or(0)) * self.editor_field_step(panel)
+            + f64::from(u32::try_from(ordinary).unwrap_or(0)) * Self::editor_field_step(panel)
             + if self.draft_kind == SecretItemKind::SecureNote {
                 0.0
             } else {
-                self.editor_generate_height(panel)
+                Self::editor_generate_height(panel)
             }
     }
 
@@ -1079,14 +1083,14 @@ impl PasswordsSurface {
             }
             - self.editor_scroll
     }
-    fn editor_field_step(&self, panel: Rect) -> f64 {
+    fn editor_field_step(panel: Rect) -> f64 {
         if Self::editor_is_compact(panel) {
             72.0
         } else {
             68.0
         }
     }
-    fn editor_generate_height(&self, _panel: Rect) -> f64 {
+    fn editor_generate_height(_panel: Rect) -> f64 {
         52.0
     }
 
@@ -1128,7 +1132,7 @@ impl PasswordsSurface {
         let bounds = if let Some(index) = ordinary.iter().position(|candidate| *candidate == field)
         {
             let top = self.editor_fields_top(panel)
-                + f64::from(u32::try_from(index).unwrap_or(0)) * self.editor_field_step(panel)
+                + f64::from(u32::try_from(index).unwrap_or(0)) * Self::editor_field_step(panel)
                 + 16.0;
             (top, top + 52.0)
         } else {
@@ -1404,7 +1408,7 @@ impl PasswordsSurface {
         &mut self,
         event: &WindowEvent,
         scale: f64,
-        modifiers: &winit::event::Modifiers,
+        modifiers: winit::event::Modifiers,
         state: &mut AutoCommit,
         path: &ObjId,
         focus: &mut Option<NodeId>,
@@ -1458,7 +1462,7 @@ impl PasswordsSurface {
                 input.handle_event(
                     event,
                     scale,
-                    modifiers,
+                    &modifiers,
                     state,
                     path,
                     &mut input_handled,
@@ -1473,7 +1477,7 @@ impl PasswordsSurface {
             input.handle_event(
                 event,
                 scale,
-                modifiers,
+                &modifiers,
                 state,
                 path,
                 &mut input_handled,
@@ -1595,6 +1599,10 @@ impl PasswordsSurface {
         self.export_portal = Some(crate::transfer::export_request().send());
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "drains each transfer channel in turn; keeping the states together keeps the vault update ordering visible"
+    )]
     fn poll_transfers(&mut self) {
         if let Some(rx) = self.restore_portal.as_ref() {
             match rx.try_recv() {
@@ -1854,6 +1862,10 @@ impl PasswordsSurface {
         true
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "hit-testing for the transfer dialog follows the drawn layout top-to-bottom"
+    )]
     fn activate_transfer(&mut self, point: Point) -> bool {
         let rect = self.transfer_rect();
         let Some(dialog) = &mut self.transfer_dialog else {
@@ -1981,6 +1993,10 @@ impl PasswordsSurface {
 
     /// Touch does not synthesize a mouse click on every compositor. Route the
     /// primary controls explicitly, using the same generous visual regions.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "touch hit-testing mirrors every drawn control in paint order"
+    )]
     fn activate_touch(&mut self, point: Point) -> bool {
         if self.transfer_dialog.is_some() {
             return self.activate_transfer(point);
@@ -2147,7 +2163,7 @@ impl PasswordsSurface {
             for (index, field) in ordinary.into_iter().enumerate() {
                 let y = self.editor_fields_top(panel)
                     + 20.0
-                    + f64::from(u32::try_from(index).unwrap_or(0)) * self.editor_field_step(panel);
+                    + f64::from(u32::try_from(index).unwrap_or(0)) * Self::editor_field_step(panel);
                 if Rect::new(x, y, panel.x1 - 36.0, y + 48.0).contains(point) {
                     self.active_field = Some(field);
                     return true;
@@ -2193,6 +2209,10 @@ impl PasswordsSurface {
         false
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "thin wrapper that forwards every text drawing parameter"
+    )]
     fn text(
         tr: &mut TextRenderer,
         scene: &mut Scene,
@@ -2209,7 +2229,7 @@ impl PasswordsSurface {
             text,
             size,
             color,
-            transform * Affine::translate((x, y)),
+            transform.pre_translate((x, y).into()),
             None,
             weight,
         );
@@ -2230,7 +2250,6 @@ impl PasswordsSurface {
         );
     }
     fn pill(
-        &self,
         scene: &mut Scene,
         tr: &mut TextRenderer,
         transform: Affine,
@@ -2382,6 +2401,10 @@ impl PasswordsSurface {
         )
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "declarative drawing of the transfer dialog that reads top-to-bottom"
+    )]
     fn draw_transfer_dialog(
         &mut self,
         scene: &mut Scene,
@@ -2762,6 +2785,10 @@ impl PasswordsSurface {
         }
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "declarative drawing of the item list that reads top-to-bottom"
+    )]
     fn draw_list(
         &mut self,
         scene: &mut Scene,
@@ -2823,7 +2850,7 @@ impl PasswordsSurface {
             let Some(item) = self.items.get(item_index) else {
                 continue;
             };
-            let y = tabs_y + 52.0 + display_index as f64 * 76.0;
+            let y = tabs_y + 52.0 + ui::num::f64_of_usize(display_index) * 76.0;
             let row = Rect::new(rect.x0, y, rect.x1, y + 66.0);
             Self::card(
                 scene,
@@ -2901,9 +2928,13 @@ impl PasswordsSurface {
                 rect.x1 - 4.0,
                 tabs_y + 52.0,
                 rect.x1,
-                tabs_y + 52.0 + shown as f64 * 76.0 - 10.0,
+                tabs_y + 52.0 + ui::num::f64_of_usize(shown) * 76.0 - 10.0,
             );
-            let metrics = ScrollMetrics::new(total as f64, shown as f64, scroll as f64);
+            let metrics = ScrollMetrics::new(
+                ui::num::f64_of_usize(total),
+                ui::num::f64_of_usize(shown),
+                ui::num::f64_of_usize(scroll),
+            );
             if let Some(thumb) = Scrollbar::vertical().thumb_rect(track, metrics) {
                 scene.fill(
                     Fill::NonZero,
@@ -2916,6 +2947,10 @@ impl PasswordsSurface {
         }
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "declarative drawing of the detail pane that reads top-to-bottom"
+    )]
     fn draw_detail(
         &self,
         scene: &mut Scene,
@@ -2988,7 +3023,7 @@ impl PasswordsSurface {
             rect.y0 + 64.0,
             TextWeight::Medium,
         );
-        self.pill(
+        Self::pill(
             scene,
             tr,
             transform,
@@ -3188,6 +3223,10 @@ impl PasswordsSurface {
         );
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "declarative drawing of the editor that reads top-to-bottom"
+    )]
     fn draw_editor(
         &mut self,
         scene: &mut Scene,
@@ -3290,7 +3329,7 @@ impl PasswordsSurface {
             SecretItemKind::SecureNote => {}
         }
         let mut y = self.editor_fields_top(rect);
-        let field_step = self.editor_field_step(rect);
+        let field_step = Self::editor_field_step(rect);
         let input_presence = PresenceCtx::empty();
         for (label, field) in fields {
             let placeholder = match field {
@@ -3374,7 +3413,7 @@ impl PasswordsSurface {
                     TextWeight::Medium,
                 );
             }
-            y += self.editor_generate_height(rect);
+            y += Self::editor_generate_height(rect);
         }
         Self::text(
             tr,
@@ -3534,6 +3573,10 @@ impl PasswordsSurface {
         }
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "declarative drawing of the health report that reads top-to-bottom"
+    )]
     fn draw_health(
         &self,
         scene: &mut Scene,
@@ -3651,7 +3694,7 @@ impl PasswordsSurface {
             ]
         };
         for (i, (title, count, detail)) in cards.iter().enumerate() {
-            let y = rect.y0 + 218.0 + i as f64 * 96.0;
+            let y = rect.y0 + 218.0 + ui::num::f64_of_usize(i) * 96.0;
             Self::card(
                 scene,
                 transform,
@@ -3705,7 +3748,7 @@ impl PasswordsSurface {
     }
 
     fn max_app_access_scroll(&self, rect: Rect) -> f64 {
-        let content = self.app_grants.len() as f64 * 88.0;
+        let content = ui::num::f64_of_usize(self.app_grants.len()) * 88.0;
         (content - Self::app_access_viewport(rect).height()).max(0.0)
     }
 
@@ -3726,20 +3769,25 @@ impl PasswordsSurface {
             .app_access_scroll
             .clamp(0.0, self.max_app_access_scroll(rect));
         let content_y = point.y - viewport.y0 + scroll;
-        let index = (content_y / 88.0) as usize;
-        let row_y = viewport.y0 + index as f64 * 88.0 - scroll;
+        let index = ui::num::usize_of_f64(content_y / 88.0);
+        let row_y = viewport.y0 + ui::num::f64_of_usize(index) * 88.0 - scroll;
         if !Rect::new(viewport.x1 - 106.0, row_y, viewport.x1, row_y + 76.0).contains(point) {
             return false;
         }
         let Some(grant) = self.app_grants.get(index).cloned() else {
             return false;
         };
-        self.revoke_app_grant_index(index, grant, rect)
+        self.revoke_app_grant_index(index, &grant, rect)
     }
 
-    fn revoke_app_grant_index(&mut self, index: usize, grant: CredentialGrant, rect: Rect) -> bool {
+    fn revoke_app_grant_index(
+        &mut self,
+        index: usize,
+        grant: &CredentialGrant,
+        rect: Rect,
+    ) -> bool {
         if let Some(model) = &mut self.model {
-            match model.revoke_app_grant(&grant) {
+            match model.revoke_app_grant(grant) {
                 Ok(true) => self.status = "App access revoked".into(),
                 Ok(false) => self.status = "That access was already removed".into(),
                 Err(error) => self.status = error,
@@ -3753,6 +3801,10 @@ impl PasswordsSurface {
         true
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "declarative drawing of the app access list that reads top-to-bottom"
+    )]
     fn draw_app_access(
         &self,
         scene: &mut Scene,
@@ -3836,7 +3888,7 @@ impl PasswordsSurface {
             .app_access_scroll
             .clamp(0.0, self.max_app_access_scroll(rect));
         for (index, grant) in self.app_grants.iter().enumerate() {
-            let y = viewport.y0 + index as f64 * 88.0 - scroll;
+            let y = viewport.y0 + ui::num::f64_of_usize(index) * 88.0 - scroll;
             let row = Rect::new(viewport.x0, y, viewport.x1, y + 76.0);
             if row.y1 < viewport.y0 || row.y0 > viewport.y1 {
                 continue;
@@ -3854,7 +3906,7 @@ impl PasswordsSurface {
                 15.0,
                 c.text_primary,
                 transform.pre_translate((row.x0 + 16.0, row.y0 + 14.0).into()),
-                Some((row.width() - 132.0).max(40.0) as f32),
+                Some(ui::num::f32_of_f64((row.width() - 132.0).max(40.0))),
                 TextWeight::Bold,
             );
             let scope = grant.origin.as_deref().unwrap_or("This saved account");
@@ -3864,7 +3916,7 @@ impl PasswordsSurface {
                 12.0,
                 c.text_dim,
                 transform.pre_translate((row.x0 + 16.0, row.y0 + 43.0).into()),
-                Some((row.width() - 132.0).max(40.0) as f32),
+                Some(ui::num::f32_of_f64((row.width() - 132.0).max(40.0))),
                 TextWeight::Regular,
             );
             Button::paint(
@@ -3881,7 +3933,7 @@ impl PasswordsSurface {
         }
         scene.pop_layer();
         let metrics = ScrollMetrics::new(
-            self.app_grants.len() as f64 * 88.0,
+            ui::num::f64_of_usize(self.app_grants.len()) * 88.0,
             viewport.height(),
             scroll,
         );
@@ -4022,7 +4074,7 @@ impl Widget for PasswordsSurface {
             match self.mode {
                 ShowcaseMode::Vault if self.mobile_detail => {
                     self.draw_detail(scene, tr, transform, theme, compact_content);
-                    self.pill(
+                    Self::pill(
                         scene,
                         tr,
                         transform,
@@ -4048,7 +4100,7 @@ impl Widget for PasswordsSurface {
                         c.text_primary,
                     );
                 }
-                ShowcaseMode::Vault => {
+                ShowcaseMode::Vault | ShowcaseMode::Import | ShowcaseMode::Export => {
                     self.draw_list(scene, tr, transform, theme, compact_content, true);
                 }
                 ShowcaseMode::Editor | ShowcaseMode::DeleteConfirm => {
@@ -4059,9 +4111,6 @@ impl Widget for PasswordsSurface {
                 }
                 ShowcaseMode::AppAccess => {
                     self.draw_app_access(scene, tr, transform, theme, compact_content);
-                }
-                ShowcaseMode::Import | ShowcaseMode::Export => {
-                    self.draw_list(scene, tr, transform, theme, compact_content, true);
                 }
             }
             if self.drawer.is_open() {
@@ -4104,6 +4153,10 @@ impl Widget for PasswordsSurface {
         }
         self.draw_transfer_dialog(scene, tr, transform, theme, presence);
     }
+    #[expect(
+        clippy::too_many_lines,
+        reason = "event routing is ordered by precedence (dialogs, editor, list); splitting it would hide that order"
+    )]
     fn handle_event(
         &mut self,
         event: &WindowEvent,
@@ -4270,7 +4323,7 @@ impl Widget for PasswordsSurface {
                 _ => {}
             }
         }
-        if self.route_editor_inputs(event, scale, modifiers, state, path, focus, node, taffy) {
+        if self.route_editor_inputs(event, scale, *modifiers, state, path, focus, node, taffy) {
             *handled = true;
             return;
         }
@@ -4358,7 +4411,8 @@ impl Widget for PasswordsSurface {
                         && self.last_pointer.x <= list.x1
                         && self.last_pointer.y >= first_y
                     {
-                        let display_index = ((self.last_pointer.y - first_y) / 76.0) as usize;
+                        let display_index =
+                            ui::num::usize_of_f64((self.last_pointer.y - first_y) / 76.0);
                         let scroll = self.list_scroll.min(self.max_list_scroll(list));
                         if display_index < Self::list_capacity(list)
                             && let Some(item_index) = self
@@ -4366,7 +4420,7 @@ impl Widget for PasswordsSurface {
                                 .get(scroll.saturating_add(display_index))
                                 .copied()
                         {
-                            let row_y = first_y + display_index as f64 * 76.0;
+                            let row_y = first_y + ui::num::f64_of_usize(display_index) * 76.0;
                             if Rect::new(list.x1 - 52.0, row_y, list.x1, row_y + 68.0)
                                 .contains(self.last_pointer)
                             {
@@ -4498,7 +4552,7 @@ impl Widget for PasswordsSurface {
                             let y = self.editor_fields_top(panel)
                                 + 20.0
                                 + f64::from(u32::try_from(index).unwrap_or(0))
-                                    * self.editor_field_step(panel);
+                                    * Self::editor_field_step(panel);
                             if Rect::new(x, y, panel.x1 - 36.0, y + 44.0)
                                 .contains(self.last_pointer)
                             {
@@ -4603,9 +4657,11 @@ impl Widget for PasswordsSurface {
                             .contains(self.last_pointer)
                     {
                         let rows = match delta {
-                            MouseScrollDelta::LineDelta(_, y) => y.abs().ceil() as usize,
+                            MouseScrollDelta::LineDelta(_, y) => {
+                                ui::num::usize_of_f64(f64::from(y.abs().ceil()))
+                            }
                             MouseScrollDelta::PixelDelta(position) => {
-                                (position.y.abs() / 38.0).ceil() as usize
+                                ui::num::usize_of_f64((position.y.abs() / 38.0).ceil())
                             }
                         }
                         .max(1);
@@ -4688,6 +4744,10 @@ impl Widget for PasswordsSurface {
                     && id == touch.id
                 {
                     let point = Point::new(touch.location.x / scale, touch.location.y / scale);
+                    #[expect(
+                        clippy::cast_possible_truncation,
+                        reason = "a rounded drag distance in rows; the float-to-int cast saturates"
+                    )]
                     let rows = ((start.y - point.y) / 76.0).round() as isize;
                     let next = initial_scroll.saturating_add_signed(rows);
                     let list = self.current_list_rect();
@@ -4849,8 +4909,30 @@ impl Widget for PasswordsSurface {
     fn name(&self) -> &'static str {
         "PasswordsSurface"
     }
+    #[expect(
+        clippy::too_many_lines,
+        reason = "builds the whole accessibility tree mirroring the drawn layout"
+    )]
     fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
         use ui::a11y::{AccessNode, AccessState, Role};
+        fn normalize_sibling_keys(node: &mut AccessNode, path: &str) {
+            if node.children.iter().any(|child| child.key.is_some()) {
+                for (index, child) in node.children.iter_mut().enumerate() {
+                    if child.key.is_none() {
+                        child.key = Some(ui::a11y::hash_key(&(
+                            path,
+                            child.role,
+                            child.name.as_deref(),
+                            index,
+                        )));
+                    }
+                }
+            }
+            for (index, child) in node.children.iter_mut().enumerate() {
+                normalize_sibling_keys(child, &format!("{path}/{index}"));
+            }
+        }
+
         let rows = self
             .visible_indices()
             .into_iter()
@@ -5226,24 +5308,6 @@ impl Widget for PasswordsSurface {
                     .with_children(controls),
             ];
         }
-        fn normalize_sibling_keys(node: &mut AccessNode, path: &str) {
-            if node.children.iter().any(|child| child.key.is_some()) {
-                for (index, child) in node.children.iter_mut().enumerate() {
-                    if child.key.is_none() {
-                        child.key = Some(ui::a11y::hash_key(&(
-                            path,
-                            child.role,
-                            child.name.as_deref(),
-                            index,
-                        )));
-                    }
-                }
-            }
-            for (index, child) in node.children.iter_mut().enumerate() {
-                normalize_sibling_keys(child, &format!("{path}/{index}"));
-            }
-        }
-
         if !self.status.is_empty() {
             children.push(AccessNode::new(Role::StaticText).with_name(&self.status));
         }
@@ -5253,6 +5317,10 @@ impl Widget for PasswordsSurface {
         normalize_sibling_keys(&mut root, "passwords");
         Some(root)
     }
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one match arm per semantic action target"
+    )]
     fn perform_semantic_action(
         &mut self,
         target: &str,
@@ -5311,7 +5379,7 @@ impl Widget for PasswordsSurface {
                 let Some(grant) = self.app_grants.get(index).cloned() else {
                     return false;
                 };
-                self.revoke_app_grant_index(index, grant, self.current_panel_rect());
+                self.revoke_app_grant_index(index, &grant, self.current_panel_rect());
             }
             ("passwords.import", Action::Activate) => self.request_import(),
             ("passwords.export", Action::Activate) => self.request_export_confirmation(),
@@ -5575,6 +5643,18 @@ mod tests {
     use super::*;
 
     #[test]
+    fn list_capacity_counts_whole_rows_and_never_goes_negative() {
+        let capacity =
+            |height: f64| PasswordsSurface::list_capacity(Rect::new(0.0, 0.0, 400.0, height));
+        assert_eq!(capacity(0.0), 0);
+        assert_eq!(capacity(168.0), 0);
+        assert_eq!(capacity(168.0 + 75.9), 0);
+        assert_eq!(capacity(168.0 + 76.0), 1);
+        assert_eq!(capacity(168.0 + 3.0 * 76.0 + 10.0), 3);
+        assert_eq!(capacity(f64::MAX), usize::MAX);
+    }
+
+    #[test]
     fn desktop_columns_are_disjoint_and_inside_viewport() {
         let content = Rect::new(24.0, 24.0, 1416.0, 876.0);
         let sidebar = Rect::new(content.x0, content.y0, content.x0 + 190.0, content.y1);
@@ -5605,6 +5685,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::float_cmp,
+        reason = "layout offsets are sums of exactly representable constants"
+    )]
     fn large_text_uses_the_compact_single_pane_layout() {
         let mut app = PasswordsSurface::demo(ShowcaseMode::Vault);
         let content = Rect::new(24.0, 24.0, 1256.0, 776.0);
@@ -5629,6 +5713,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::float_cmp,
+        reason = "scroll offsets are clamped to exactly these values, not computed approximately"
+    )]
     fn short_phone_sidebar_retains_and_clamps_real_scroll_state() {
         let mut app = PasswordsSurface::demo(ShowcaseMode::Vault);
         let content = Rect::new(24.0, 24.0, 366.0, 244.0);
@@ -5651,6 +5739,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::float_cmp,
+        reason = "scroll offsets are clamped to exactly these values, not computed approximately"
+    )]
     fn app_access_is_scrollable_revocable_and_assistive_on_a_phone() {
         let root = std::env::temp_dir().join(format!(
             "tilo-passwords-access-ui-{}-{}",
@@ -5697,7 +5789,7 @@ mod tests {
         assert!(!json.contains("not-rendered"));
 
         let grant = app.app_grants[9].clone();
-        assert!(app.revoke_app_grant_index(9, grant, panel));
+        assert!(app.revoke_app_grant_index(9, &grant, panel));
         assert_eq!(app.app_grants.len(), 9);
         assert_eq!(crate::PasswordsModel::open_in(&root).app_grants().len(), 9);
         std::fs::remove_dir_all(root).ok();
@@ -5754,7 +5846,7 @@ mod tests {
         );
         assert!(segments.windows(2).all(|pair| pair[0].x1 < pair[1].x0));
 
-        let step = app.editor_field_step(panel);
+        let step = PasswordsSurface::editor_field_step(panel);
         assert!(step >= 64.0, "field labels must clear the previous input");
         let first_input_bottom = app.editor_fields_top(panel) + 64.0;
         let next_label_top = app.editor_fields_top(panel) + step;
@@ -5782,6 +5874,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::float_cmp,
+        reason = "scroll offsets are clamped to exactly these values, not computed approximately"
+    )]
     fn short_phone_editor_scrolls_every_field_behind_a_fixed_action_bar() {
         let mut app = PasswordsSurface::demo(ShowcaseMode::Editor);
         let panel = Rect::new(24.0, 24.0, 366.0, 496.0);
@@ -5807,6 +5903,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::float_cmp,
+        reason = "scroll offsets are clamped to exactly these values, not computed approximately"
+    )]
     fn short_editor_focus_scrolls_fields_into_view_and_restores_the_top() {
         let mut app = PasswordsSurface::demo(ShowcaseMode::Editor);
         let panel = Rect::new(24.0, 24.0, 366.0, 496.0);
@@ -5835,13 +5935,13 @@ mod tests {
 
     #[test]
     fn demo_inventory_contains_no_renderable_secret() {
+        use std::fmt::Write as _;
         let items = demo_items();
         assert!(
             items.iter().all(
                 |item| item.password.is_empty() || item.password.starts_with("never-rendered-")
             )
         );
-        use std::fmt::Write as _;
         let visible = items.iter().fold(String::new(), |mut text, item| {
             write!(text, "{} {} {:?}", item.title, item.username, item.origins).unwrap();
             text
