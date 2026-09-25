@@ -19,10 +19,10 @@ on:
         type: string
 
 concurrency:
-  # Keep every event and commit independent so required PR evidence cannot be
-  # replaced by a push or by a newer revision.
-  group: check-${{ github.event_name }}-${{ github.sha }}
-  cancel-in-progress: false
+  # A newer PR revision supersedes the old revision's checks. Main pushes
+  # retain every exact-commit receipt; branch pushes cannot cancel PR checks.
+  group: check-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   CARGO_HOME: /cargo-home
