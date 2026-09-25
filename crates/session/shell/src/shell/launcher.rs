@@ -1153,8 +1153,16 @@ pub fn installed_apps() -> Result<Vec<InstalledApp>, LaunchError> {
         }
     }
     let apps = read_installed_apps()?;
-    *lock(&APP_CACHE) = Some((apps.clone(), Instant::now()));
-    APP_CACHE_REVISION.fetch_add(1, Ordering::Relaxed);
+    let mut cache = lock(&APP_CACHE);
+    let changed = cache.as_ref().is_none_or(|(cached, _)| cached != &apps);
+    *cache = Some((apps.clone(), Instant::now()));
+    // The TTL controls disk freshness, not search identity. Advancing this
+    // generation for identical records invalidates both native and host app
+    // indexes, making a just-discovered action disappear before invocation.
+    if changed {
+        APP_CACHE_REVISION.fetch_add(1, Ordering::Relaxed);
+    }
+    drop(cache);
     Ok(apps)
 }
 
@@ -2526,6 +2534,11 @@ pub fn placement_and_instance_for_toplevel(
     }
 }
 
+#[cfg(test)]
+pub(crate) fn attach_continuity_instance_for_test(package_id: &str, instance: u64) {
+    attach_continuity_instance(package_id, instance);
+}
+
 /// Attach the launch instance to the existing pending placement note. This is
 /// called after the real launcher command is assembled, never by pure command
 /// construction, so tests and previews cannot invent a resumable instance.
@@ -2568,6 +2581,10 @@ pub fn stage_continuation_resume(
 /// CRDT route once the process starts.
 pub fn stage_continuation_record(room: RoomId, tab: u64, record_instance: u64) {
     lock(&PENDING_CONTINUATION_RESUME).insert((room, tab), (None, record_instance));
+}
+
+pub(crate) fn clear_staged_continuation(room: RoomId, tab: u64) {
+    lock(&PENDING_CONTINUATION_RESUME).remove(&(room, tab));
 }
 
 fn take_staged_resume(
@@ -3098,6 +3115,52 @@ mod tests {
         assert_eq!(display_name_for_package_id("Notes"), "Notes");
         // A degenerate id must not produce an empty (unclickable) label.
         assert!(!display_name_for_package_id("so.tilo.").is_empty());
+    }
+
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn unchanged_app_cache_refresh_preserves_search_generation() {
+        let tmp = tempfile::tempdir().unwrap();
+        let payload = install_fixture(tmp.path(), "dev.tilo.calculator", "gui");
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("TILO_APPS_DATA_DIR", tmp.path());
+        invalidate_app_cache();
+        let initial = installed_apps().unwrap();
+        let initial_generation = gui_apps_generation();
+        let expire = || {
+            lock(&APP_CACHE).as_mut().unwrap().1 = Instant::now()
+                .checked_sub(APP_CACHE_TTL)
+                .expect("test clock has enough history to expire the app cache");
+        };
+        expire();
+        let unchanged = installed_apps().unwrap();
+        let unchanged_generation = gui_apps_generation();
+
+        let manifest = payload.join("manifest.toml");
+        let changed_manifest = std::fs::read_to_string(&manifest)
+            .unwrap()
+            .replace("1.2.3", "1.2.4");
+        std::fs::write(&manifest, changed_manifest).unwrap();
+        expire();
+        let changed = installed_apps().unwrap();
+        let changed_generation = gui_apps_generation();
+
+        std::fs::write(tmp.path().join("registry.toml"), "").unwrap();
+        expire();
+        let removed = installed_apps().unwrap();
+        let removed_generation = gui_apps_generation();
+        env.remove("TILO_APPS_DATA_DIR");
+        invalidate_app_cache();
+
+        assert_eq!(unchanged, initial);
+        assert_eq!(
+            unchanged_generation, initial_generation,
+            "an unchanged TTL refresh must not invalidate retained search results"
+        );
+        assert_eq!(changed[0].version, "1.2.4");
+        assert_ne!(changed_generation, unchanged_generation);
+        assert!(removed.is_empty());
+        assert_ne!(removed_generation, changed_generation);
     }
 
     #[test]

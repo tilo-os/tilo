@@ -256,33 +256,7 @@ fn open_for(tree: &mut WorkspaceTree, item: &Pending) -> Result<OpenResult, Stri
     let Some(ws) = tree.desktop.workspaces.get(item.workspace) else {
         return Err("That workspace is gone".to_string());
     };
-    // Before the launch, or a note written after races the window's toplevel.
-    launcher::set_pending_placement(&item.app_id, Placement::IntoTab(item.tab));
-    if let Ok(registry) = crate::shell::personal_continuity_registry::global_registry().lock()
-        && let Ok(launch) =
-            crate::shell::personal_continuity::LaunchIntent::app(item.app_id.clone())
-        && let Some(record_instance) = registry.record_instance_for_tab(
-            ws.room,
-            crate::shell::personal_continuity::AppInstanceId(item.tab),
-            &launch,
-        )
-    {
-        if let Some(continuation) = registry.continuation_for_tab(
-            ws.room,
-            crate::shell::personal_continuity::AppInstanceId(item.tab),
-            &launch,
-        ) {
-            launcher::stage_continuation_resume(
-                ws.room,
-                item.tab,
-                continuation.resume.schema_version(),
-                continuation.resume.bytes().to_vec(),
-                record_instance.0,
-            );
-        } else {
-            launcher::stage_continuation_record(ws.room, item.tab, record_instance.0);
-        }
-    }
+    stage_continuation_for_tab(tree, item);
     let launched = launcher::launch_in_workspace(&item.app_id, ws)
         .map(|_| ())
         .or_else(|err| {
@@ -310,6 +284,68 @@ fn open_for(tree: &mut WorkspaceTree, item: &Pending) -> Result<OpenResult, Stri
                 other => format!("Could not open it here: {other}"),
             })
         }
+    }
+}
+
+/// Stage the exact continuation selected for a pending tab before launching.
+fn stage_continuation_for_tab(tree: &WorkspaceTree, item: &Pending) {
+    let Some(ws) = tree.desktop.workspaces.get(item.workspace) else {
+        return;
+    };
+    let matches_current_tab = ws
+        .strips
+        .iter()
+        .flat_map(|strip| &strip.window_groups)
+        .flat_map(|group| &group.tabs)
+        .any(|tab| {
+            tab.id == item.tab
+                && matches!(
+                    (&tab.tile, item.local),
+                    (TileContent::LocalApp { app_id, .. }, true)
+                        | (TileContent::PeerWindow { app_id, .. }, false)
+                        if app_id == &item.app_id
+                )
+        });
+    if !matches_current_tab {
+        return;
+    }
+    // Before the launch, or a note written after races the window's toplevel.
+    launcher::set_pending_placement(&item.app_id, Placement::IntoTab(item.tab));
+    launcher::clear_staged_continuation(ws.room, item.tab);
+    let shared = crate::shell::personal_continuity_registry::global_registry();
+    let Ok(mut registry) = shared.lock() else {
+        return;
+    };
+    let tab = crate::shell::personal_continuity::AppInstanceId(item.tab);
+    // The process cache is tab-keyed. Never let a stale local association
+    // shadow an exact remote offer after a tab changes kind/room/app.
+    registry.forget_local_binding(tab);
+    if item.local {
+        let Some(record) = tree.local_app_record(item.tab, ws.room, &item.app_id) else {
+            return;
+        };
+        registry.bind_tab(
+            tab,
+            crate::shell::personal_continuity::AppInstanceId(record),
+        );
+    }
+    let Ok(launch) = crate::shell::personal_continuity::LaunchIntent::app(item.app_id.clone())
+    else {
+        return;
+    };
+    let Some(record_instance) = registry.record_instance_for_tab(ws.room, tab, &launch) else {
+        return;
+    };
+    if let Some(continuation) = registry.continuation_for_tab(ws.room, tab, &launch) {
+        launcher::stage_continuation_resume(
+            ws.room,
+            item.tab,
+            continuation.resume.schema_version(),
+            continuation.resume.bytes().to_vec(),
+            record_instance.0,
+        );
+    } else {
+        launcher::stage_continuation_record(ws.room, item.tab, record_instance.0);
     }
 }
 
@@ -845,3 +881,7 @@ mod tests {
         drop(env);
     }
 }
+
+#[cfg(test)]
+#[path = "peer_windows_local_record_tests.rs"]
+mod local_record_restart_tests;
