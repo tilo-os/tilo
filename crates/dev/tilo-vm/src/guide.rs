@@ -36,7 +36,7 @@ pub const TOPICS: &[(&str, &str, &str)] = &[
     ),
     (
         "images",
-        "Containerfile, unit, /etc and package changes: vm upgrade --from local, rollback-image",
+        "Containerfile, unit, /etc and package changes: vm upgrade --from local or --from sha:<commit>, rollback-image",
         include_str!("../guide/images.md"),
     ),
     (
@@ -160,6 +160,42 @@ mod tests {
         let swapping = topic("swapping").unwrap();
         assert!(swapping.contains("## Verify your swap"));
         assert!(swapping.contains("tilo-vm slot exec -- sha256sum"));
+    }
+
+    #[test]
+    fn every_vm_upgrade_source_a_guide_shows_is_accepted() {
+        let mut seen = 0;
+        for (name, _, text) in TOPICS {
+            for line in text.lines() {
+                let Some(rest) = line.split("vm upgrade").nth(1) else {
+                    continue;
+                };
+                let Some(from) = rest.split("--from").nth(1) else {
+                    continue;
+                };
+                let from = from
+                    .trim_start_matches([' ', '='])
+                    .split([' ', '`', ')', ','])
+                    .next()
+                    .unwrap_or_default()
+                    .replace("<commit>", "1a2b3c4")
+                    .replace("<sha7>", "1a2b3c4")
+                    .replace("<tag>", "main-1a2b3c4");
+                if from.is_empty() {
+                    continue;
+                }
+                seen += 1;
+                assert!(
+                    crate::imageup::parse_from(&from, None).is_ok(),
+                    "guide {name} shows `vm upgrade --from {from}`, which vm upgrade refuses: {line}"
+                );
+            }
+        }
+        assert!(seen >= 5, "found only {seen} vm upgrade --from examples");
+        let images = topic("images").unwrap();
+        assert!(images.contains("## Pick the fastest loop"));
+        assert!(images.contains("--from sha:<commit>"));
+        assert!(images.contains("code.podesta.ai/qos/tilo-ci:main-<sha7>-<arch>"));
     }
 
     #[test]
