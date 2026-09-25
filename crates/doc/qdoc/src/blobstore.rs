@@ -628,6 +628,53 @@ fn cell() -> &'static RwLock<Arc<dyn BlobStore>> {
     })
 }
 
+/// A store and transport that replace the process-wide ones on one thread, for as long as the
+/// [`BlobScope`] that [`scope`] returned lives.
+#[derive(Clone)]
+struct Scoped {
+    store: Arc<dyn BlobStore>,
+    transport: Option<Arc<dyn BlobTransport>>,
+}
+
+std::thread_local! {
+    static SCOPED: std::cell::RefCell<Option<Scoped>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Replaces the process-wide store and transport on the thread that created it; dropping it
+/// restores what the thread used before. See [`scope`].
+#[must_use = "the scope ends when this is dropped"]
+pub struct BlobScope {
+    previous: Option<Scoped>,
+    /// Tied to the thread whose override it restores.
+    _thread: std::marker::PhantomData<*const ()>,
+}
+
+impl Drop for BlobScope {
+    fn drop(&mut self) {
+        let previous = self.previous.take();
+        SCOPED.with(|s| *s.borrow_mut() = previous);
+    }
+}
+
+/// Use `store` and `transport` instead of the process-wide ones on this thread until the returned
+/// guard drops.
+///
+/// For code that must not see or disturb the process's store: a test that needs a store with its
+/// own quota or contents, or a transport of its own, installs it here and cannot leave it behind for
+/// whatever runs next, even when it fails. Scopes nest; each restores the one it replaced.
+pub fn scope(store: Arc<dyn BlobStore>, transport: Option<Arc<dyn BlobTransport>>) -> BlobScope {
+    let previous = SCOPED.with(|s| s.borrow_mut().replace(Scoped { store, transport }));
+    BlobScope {
+        previous,
+        _thread: std::marker::PhantomData,
+    }
+}
+
+/// This thread's scoped store and transport, if a [`scope`] is active.
+fn scoped() -> Option<Scoped> {
+    SCOPED.with(|s| s.borrow().clone())
+}
+
 /// Install the process-wide store. A global rather than a handle threaded through `DocMut`,
 /// because otherwise every codec and every caller of `put_blob` needs the parameter, and the store is a property of the machine rather than of a document.
 pub fn set_store(store: Arc<dyn BlobStore>) {
@@ -640,7 +687,11 @@ pub fn set_store(store: Arc<dyn BlobStore>) {
 /// in-memory when absent. [`set_store`] overrides either choice. A trusted
 /// local runtime can supply one shared directory; sandboxed hosts must still
 /// provide their authorized content transport rather than an ambient path.
+/// A [`scope`] on the calling thread takes precedence over all of these.
 pub fn store() -> Arc<dyn BlobStore> {
+    if let Some(scoped) = scoped() {
+        return scoped.store;
+    }
     match cell().read() {
         Ok(s) => s.clone(),
         Err(_) => Arc::new(MemoryBlobStore::default()),
@@ -708,8 +759,11 @@ pub fn clear_transport() {
     }
 }
 
-/// The process-wide transport, if one has been installed.
+/// The process-wide transport, if one has been installed; within a [`scope`], the scope's.
 pub fn transport() -> Option<Arc<dyn BlobTransport>> {
+    if let Some(scoped) = scoped() {
+        return scoped.transport;
+    }
     transport_cell().read().ok()?.clone()
 }
 
@@ -843,7 +897,9 @@ pub fn put(bytes: &[u8]) -> Option<String> {
     match transport() {
         Some(t) => t.offer(&hash, bytes),
         // A document's images are stored while the app is still starting, so having nowhere to offer them
-        // *yet* is the common case, not the odd one; `set_transport` flushes these.
+        // *yet* is the common case, not the odd one; `set_transport` flushes these. Content stored in
+        // a scope stays there: the process's transport must not offer it later.
+        None if scoped().is_some() => {}
         None => {
             if let Ok(mut q) = pending_offers().write()
                 && q.len() < MAX_PENDING_OFFERS

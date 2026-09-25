@@ -982,10 +982,28 @@ impl FrameBuilder {
     /// The compositor's frame loop needs this too, or a hosted app that
     /// depends on it (e.g. the terminal draining its PTY) never advances.
     pub fn pump_apps(&mut self, doc: &mut AutoCommit, root: &ObjId) -> bool {
+        let started = std::time::Instant::now();
         self.replicate_room_records();
+        let records_done = std::time::Instant::now();
         self.pump_room_contents();
+        let rooms_done = std::time::Instant::now();
         self.host.sync(doc, root);
-        self.host.update(doc, root)
+        let sync_done = std::time::Instant::now();
+        let changed = self.host.update(doc, root);
+        let update_done = std::time::Instant::now();
+        let total = update_done.duration_since(started);
+        if total >= std::time::Duration::from_millis(50) {
+            tracing::warn!(
+                target: "tilo::latency",
+                elapsed_ms = total.as_secs_f64() * 1_000.0,
+                records_ms = records_done.duration_since(started).as_secs_f64() * 1_000.0,
+                rooms_ms = rooms_done.duration_since(records_done).as_secs_f64() * 1_000.0,
+                sync_ms = sync_done.duration_since(rooms_done).as_secs_f64() * 1_000.0,
+                update_ms = update_done.duration_since(sync_done).as_secs_f64() * 1_000.0,
+                "widget app pump stalled compositor input"
+            );
+        }
+        changed
     }
 
     /// Turn "a peer's changes landed in the tree" into "the widget tree is

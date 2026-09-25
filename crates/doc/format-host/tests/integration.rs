@@ -1,14 +1,17 @@
 //! Integration tests for the format-router host:
-//! * `single_provider_round_trip` — registry with the markdown wasm, exercise
-//!   detect + importAs + exportAs on a small `.md` fixture **through Cap'n
-//!   Proto** end to end, byte-equality on round-trip.
+//! * `single_provider_round_trip` — registry with the Markdown provider,
+//!   exercise detect + importAs + exportAs on a real document **through
+//!   Cap'n Proto** end to end, byte-equality on round-trip.
+//! * `markdown_provider_in_process` — the same provider driven directly:
+//!   host entropy reaches the guest, and malformed canonical bytes surface as
+//!   a structured error.
 //! * `registry_hot_reload` — start empty, drop a provider in, assert the next
 //!   call sees it.
 //! * `unknown_mime_returns_clear_error` — no provider for the mime →
 //!   `importAs` rejects with a clear `unsupported` message.
-//! * `resource_limit_kills_runaway` — feed in a hand-written WAT component
-//!   whose `detect` spins forever; assert it gets killed at the wallclock
-//!   deadline and the host stays up.
+//! * `runaway_guest_exhausts_fuel` / `memory_hog_hits_cap` /
+//!   `oversized_initial_memory_is_refused` — hand-written hostile guests are
+//!   stopped by the per-call limits and the host stays usable.
 
 #![allow(
     clippy::unwrap_used,
@@ -21,31 +24,53 @@
 )]
 
 use std::path::PathBuf;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use capnp_rpc::{RpcSystem, rpc_twoparty_capnp, twoparty};
 use format_host::format_router_capnp::format_router;
 use format_host::router::{Router, load_into};
-use format_host::runner::{LoadedComponent, MAX_WALLCLOCK, spawn_epoch_ticker};
+use format_host::runner::{self, Limits, LoadedProvider};
 use format_host::{transport, watch::spawn_watcher};
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
-/// Path to the markdown wasm component built by `tests/run-component-integration.sh`.
+const BUILD_HINT: &str =
+    "builds a WASM provider; run crates/doc/format-host/tests/run-provider-integration.sh";
+
+/// Path to the Markdown provider built by `tests/run-provider-integration.sh`.
 fn markdown_wasm() -> PathBuf {
     let here = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    here.parent()
+    let wasm = here
+        .parent()
         .expect("format-host crate has a parent directory")
         .join("qdoc-codec-markdown-wasm")
         .join("target")
-        .join("wasm32-wasip2")
+        .join("wasm32-unknown-unknown")
         .join("release")
-        .join("qdoc_codec_markdown_wasm.wasm")
+        .join("qdoc_codec_markdown_wasm.wasm");
+    assert!(wasm.is_file(), "Markdown provider is missing; {BUILD_HINT}");
+    wasm
 }
 
-/// Spin up the host in-process: shared engine, router with a freshly-written
-/// registry, capnp transport on a tempdir Unix socket. Returns a closure that
-/// (a) hands back a connected `format_router::Client`, (b) shuts the listener
-/// down at drop.
+/// A real Markdown document: this repository's format-provider guide.
+const REAL_DOC: &[u8] = include_bytes!("../../../../docs/app-model/formats.md");
+
+/// A module that satisfies the ABI and runs `import_body` as its import entry
+/// point.
+fn hostile_guest(memory_pages: &str, import_body: &str) -> Vec<u8> {
+    let wat = format!(
+        r#"(module
+            (memory (export "memory") {memory_pages})
+            (func (export "tilo_fp_abi_version") (result i32) i32.const 1)
+            (func (export "tilo_fp_alloc") (param i32) (result i32) i32.const 1024)
+            (func (export "tilo_fp_detect") (param i32 i32) (result i64) i64.const 0)
+            (func (export "tilo_fp_import") (param i32 i32) (result i64) {import_body})
+            (func (export "tilo_fp_export") (param i32 i32) (result i64) i64.const 0))"#
+    );
+    wat::parse_str(wat).expect("hostile guest WAT must parse")
+}
+
+/// Spin up the host in-process: router with a freshly-written registry,
+/// capnp transport on a tempdir Unix socket.
 struct HostHarness {
     socket: PathBuf,
     _tmp: tempfile::TempDir,
@@ -59,9 +84,7 @@ impl HostHarness {
         std::fs::write(&registry_path, registry_text)?;
         let socket = tmp.path().join("format-router.sock");
 
-        let engine = LoadedComponent::engine()?;
-        spawn_epoch_ticker(engine.clone());
-        let router = Router::new(engine);
+        let router = Router::new(runner::engine());
         load_into(&router, &registry_path)?;
         spawn_watcher(router.clone(), registry_path.clone())?;
         let listener = transport::bind(&socket)?;
@@ -109,22 +132,9 @@ fn client_for(stream: tokio::net::UnixStream) -> format_router::Client {
     client
 }
 
-#[test]
-#[ignore = "builds a WASM component; run crates/doc/format-host/tests/run-component-integration.sh"]
-fn single_provider_round_trip() {
-    let wasm = markdown_wasm();
-    assert!(
-        wasm.is_file(),
-        "markdown component is missing; run crates/doc/format-host/tests/run-component-integration.sh"
-    );
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .unwrap();
-    let local = tokio::task::LocalSet::new();
-    local.block_on(&rt, async move {
-        let reg_text = format!(
-            r#"
+fn markdown_registry(wasm: &std::path::Path) -> String {
+    format!(
+        r#"
 [[provider]]
 mime     = "text/markdown"
 package  = "so.tilo.qdoc-md"
@@ -132,9 +142,51 @@ wasm     = "{}"
 version  = "1.0.0"
 priority = "builtin"
 "#,
-            wasm.display()
-        );
-        let h = HostHarness::new(&reg_text).unwrap();
+        wasm.display()
+    )
+}
+
+#[allow(
+    clippy::future_not_send,
+    reason = "capnp-rpc requests are Rc-based and run on the test LocalSet"
+)]
+async fn import_as(client: &format_router::Client, bytes: &[u8]) -> Vec<u8> {
+    let mut imp = client.import_as_request();
+    {
+        let mut p = imp.get();
+        p.set_bytes(bytes);
+        p.set_provider_id("so.tilo.qdoc-md");
+    }
+    let response = imp.send().promise.await.unwrap();
+    response.get().unwrap().get_canonical().unwrap().to_vec()
+}
+
+#[allow(
+    clippy::future_not_send,
+    reason = "capnp-rpc requests are Rc-based and run on the test LocalSet"
+)]
+async fn export_as(client: &format_router::Client, canonical: &[u8]) -> Vec<u8> {
+    let mut exp = client.export_as_request();
+    {
+        let mut p = exp.get();
+        p.set_canonical(canonical);
+        p.set_provider_id("so.tilo.qdoc-md");
+    }
+    let response = exp.send().promise.await.unwrap();
+    response.get().unwrap().get_bytes().unwrap().to_vec()
+}
+
+#[test]
+#[ignore = "builds a WASM provider; run crates/doc/format-host/tests/run-provider-integration.sh"]
+fn single_provider_round_trip() {
+    let wasm = markdown_wasm();
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let local = tokio::task::LocalSet::new();
+    local.block_on(&rt, async move {
+        let h = HostHarness::new(&markdown_registry(&wasm)).unwrap();
         let client = h.connect().await.unwrap();
 
         // list() — the provider shows up.
@@ -168,59 +220,45 @@ priority = "builtin"
         // import → export round trip. Exported markdown is idempotent (qdoc
         // tests prove this); after one round trip the same source re-imports
         // to identical bytes.
-        let src = b"# Title\n\nHello **world**.\n";
-        let mut imp = client.import_as_request();
-        {
-            let mut p = imp.get();
-            p.set_bytes(src);
-            p.set_provider_id("so.tilo.qdoc-md");
-        }
-        let response = imp.send().promise.await.unwrap();
-        let canonical_a: Vec<u8> = response.get().unwrap().get_canonical().unwrap().to_vec();
+        let canonical_a = import_as(&client, REAL_DOC).await;
         assert!(
             !canonical_a.is_empty(),
             "canonical bytes flow through capnp"
         );
+        let out_a = export_as(&client, &canonical_a).await;
+        let text = String::from_utf8(out_a.clone()).unwrap();
+        assert!(text.starts_with("# Format providers"), "got {text:?}");
+        assert!(text.contains("tilo-format-host"), "body text survives");
 
-        let mut exp = client.export_as_request();
-        {
-            let mut p = exp.get();
-            p.set_canonical(&canonical_a);
-            p.set_provider_id("so.tilo.qdoc-md");
-        }
-        let response = exp.send().promise.await.unwrap();
-        let out_a: Vec<u8> = response.get().unwrap().get_bytes().unwrap().to_vec();
-        assert!(
-            out_a.starts_with(b"# Title"),
-            "got {:?}",
-            String::from_utf8_lossy(&out_a)
-        );
-
-        // Re-import the exported markdown; re-export; assert idempotence.
-        let mut imp2 = client.import_as_request();
-        {
-            let mut p = imp2.get();
-            p.set_bytes(&out_a);
-            p.set_provider_id("so.tilo.qdoc-md");
-        }
-        let response = imp2.send().promise.await.unwrap();
-        let canonical_b: Vec<u8> = response.get().unwrap().get_canonical().unwrap().to_vec();
-        let mut exp2 = client.export_as_request();
-        {
-            let mut p = exp2.get();
-            p.set_canonical(&canonical_b);
-            p.set_provider_id("so.tilo.qdoc-md");
-        }
-        let response = exp2.send().promise.await.unwrap();
-        let out_b: Vec<u8> = response.get().unwrap().get_bytes().unwrap().to_vec();
+        let canonical_b = import_as(&client, &out_a).await;
+        let out_b = export_as(&client, &canonical_b).await;
         assert_eq!(
             out_a, out_b,
             "round-trip is idempotent through the WASM boundary"
         );
-
-        // Drop registry to trigger Drop of the temp dir.
-        let _ = h.registry_path;
     });
+}
+
+#[test]
+#[ignore = "builds a WASM provider; run crates/doc/format-host/tests/run-provider-integration.sh"]
+fn markdown_provider_in_process() {
+    let provider =
+        LoadedProvider::from_path(&runner::engine(), &markdown_wasm(), Limits::default()).unwrap();
+    let detected = provider.detect(b"# Heading\n\n- item\n").unwrap();
+    assert_eq!(detected.mime.as_deref(), Some("text/markdown"));
+    // Each import creates a fresh Automerge actor from host entropy, so two
+    // imports of the same text never share an actor id.
+    let a = provider.import_doc(REAL_DOC).unwrap();
+    let b = provider.import_doc(REAL_DOC).unwrap();
+    assert_ne!(a, b, "actor ids must come from host entropy");
+    assert_eq!(
+        provider.export_doc(&a).unwrap(),
+        provider.export_doc(&b).unwrap()
+    );
+    let err = provider
+        .export_doc(b"not an automerge document")
+        .unwrap_err();
+    assert_eq!(err.kind, "parse", "{err:?}");
 }
 
 #[test]
@@ -253,13 +291,9 @@ fn unknown_mime_returns_clear_error() {
 }
 
 #[test]
-#[ignore = "builds a WASM component; run crates/doc/format-host/tests/run-component-integration.sh"]
+#[ignore = "builds a WASM provider; run crates/doc/format-host/tests/run-provider-integration.sh"]
 fn registry_hot_reload() {
     let wasm = markdown_wasm();
-    assert!(
-        wasm.is_file(),
-        "markdown component is missing; run crates/doc/format-host/tests/run-component-integration.sh"
-    );
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -276,18 +310,7 @@ fn registry_hot_reload() {
         assert_eq!(initial.len(), 0, "initial registry is empty");
 
         // Rewrite the registry file in place — inotify picks it up.
-        let new_text = format!(
-            r#"
-[[provider]]
-mime     = "text/markdown"
-package  = "so.tilo.qdoc-md"
-wasm     = "{}"
-version  = "1.0.0"
-priority = "builtin"
-"#,
-            wasm.display()
-        );
-        std::fs::write(&h.registry_path, new_text).unwrap();
+        std::fs::write(&h.registry_path, markdown_registry(&wasm)).unwrap();
         // The watcher debounces 100ms; give it a couple ticks.
         for _ in 0..40 {
             tokio::time::sleep(Duration::from_millis(100)).await;
@@ -306,44 +329,50 @@ priority = "builtin"
 }
 
 #[test]
-fn resource_limit_kills_runaway() {
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .unwrap();
-    let local = tokio::task::LocalSet::new();
-    local.block_on(&rt, async move {
-        // Compile the WAT to a Component Model wasm at test time.
-        let wat_src = include_str!("fixtures/infinite-loop.wat");
-        let wasm = wat::parse_str(wat_src).expect("infinite-loop WAT fixture must parse");
-        let engine = LoadedComponent::engine().unwrap();
-        spawn_epoch_ticker(engine.clone());
-        let comp = LoadedComponent::from_bytes(&engine, &wasm)
-            .expect("infinite-loop fixture must load as a component");
+fn runaway_guest_exhausts_fuel() {
+    let wasm = hostile_guest("1", "(loop $spin (br $spin)) unreachable");
+    let limits = Limits {
+        fuel: 50_000_000,
+        ..Limits::default()
+    };
+    let provider = LoadedProvider::from_bytes(&runner::engine(), &wasm, limits).unwrap();
+    let started = Instant::now();
+    let err = provider.import_doc(b"head").unwrap_err();
+    assert_eq!(err.kind, "resource_limit", "{err:?}");
+    assert!(err.message.starts_with("fuel budget exhausted"), "{err:?}");
+    assert!(
+        started.elapsed() < Duration::from_secs(10),
+        "took {:?}",
+        started.elapsed()
+    );
+    // Every call gets a fresh budget: the provider stays usable.
+    let err = provider.import_doc(b"again").unwrap_err();
+    assert_eq!(err.kind, "resource_limit", "{err:?}");
+}
 
-        // The detect call spins forever. Wasmtime's epoch deadline should
-        // kill it within the 10-s wallclock budget; we wrap the call in
-        // spawn_blocking so the test runtime stays responsive.
-        let started = std::time::Instant::now();
-        let res = tokio::task::spawn_blocking(move || comp.detect(b"head"))
-            .await
-            .expect("join ok");
-        let elapsed = started.elapsed();
-        // Preserve a generous allowance for a heavily scheduled CI host while
-        // deriving the bound from the production deadline.
-        let latest_expected = MAX_WALLCLOCK + MAX_WALLCLOCK;
-        assert!(elapsed < latest_expected, "took {elapsed:?}");
-        match res {
-            Ok(_) => panic!("infinite-loop component returned cleanly — epoch not bumping?"),
-            Err(e) => {
-                assert_eq!(e.kind, "resource_limit", "unexpected error {e:?}");
-                assert!(
-                    e.message.starts_with("wallclock budget exhausted:"),
-                    "the runaway must reach epoch interruption, not fail early in canonical ABI lowering: {e:?}"
-                );
-            }
-        }
-        // The host stays up — a second call on a fresh component succeeds.
-        let _ = LoadedComponent::engine().unwrap();
-    });
+#[test]
+fn memory_hog_hits_cap() {
+    // Grow one page at a time until the host refuses.
+    let wasm = hostile_guest(
+        "1",
+        "(loop $grow (drop (memory.grow (i32.const 1))) (br $grow)) unreachable",
+    );
+    let limits = Limits {
+        max_memory_bytes: 16 * 1024 * 1024,
+        ..Limits::default()
+    };
+    let provider = LoadedProvider::from_bytes(&runner::engine(), &wasm, limits).unwrap();
+    let err = provider.import_doc(b"head").unwrap_err();
+    assert_eq!(err.kind, "resource_limit", "{err:?}");
+    assert!(err.message.starts_with("memory cap hit"), "{err:?}");
+}
+
+#[test]
+fn oversized_initial_memory_is_refused() {
+    // 8192 pages = 512 MiB, twice the default ceiling.
+    let wasm = hostile_guest("8192", "i64.const 0");
+    let err = LoadedProvider::from_bytes(&runner::engine(), &wasm, Limits::default())
+        .err()
+        .expect("a module whose initial memory exceeds the cap must not load");
+    assert!(err.to_string().contains("instantiating"), "{err:#}");
 }

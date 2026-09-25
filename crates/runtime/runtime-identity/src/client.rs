@@ -3,6 +3,8 @@
 use std::io::{self, Read, Write};
 use std::sync::Mutex;
 
+use wire_frame::FrameError;
+
 use crate::{NotAvailable, wire};
 
 trait BrokerIo: Read + Write + Send {}
@@ -211,23 +213,9 @@ pub(super) fn write_frame<T: serde::Serialize>(
     stream: &mut (impl Read + Write + ?Sized),
     value: &T,
 ) -> Result<(), NotAvailable> {
-    let bytes = postcard::to_allocvec(value).map_err(|error| {
-        NotAvailable::ConnectionFailed(io::Error::new(io::ErrorKind::InvalidData, error))
-    })?;
-    if bytes.len() > MAX_IDENTITY_FRAME_BYTES {
-        return Err(NotAvailable::ConnectionFailed(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "identity frame exceeds 64 MiB",
-        )));
-    }
-    let len = u32::try_from(bytes.len()).map_err(|_| {
-        NotAvailable::ConnectionFailed(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "frame too large",
-        ))
-    })?;
-    stream.write_all(&len.to_le_bytes())?;
-    stream.write_all(&bytes)?;
+    wire::FRAMING
+        .write_value(stream, value)
+        .map_err(connection_failed)?;
     stream.flush()?;
     Ok(())
 }
@@ -235,27 +223,15 @@ pub(super) fn write_frame<T: serde::Serialize>(
 pub(super) fn read_frame<T: serde::de::DeserializeOwned>(
     stream: &mut (impl Read + Write + ?Sized),
 ) -> Result<T, NotAvailable> {
-    let mut len = [0_u8; 4];
-    stream.read_exact(&mut len)?;
-    let len = u32::from_le_bytes(len) as usize;
-    if len > MAX_IDENTITY_FRAME_BYTES {
-        return Err(NotAvailable::ConnectionFailed(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "identity frame exceeds 64 MiB",
-        )));
-    }
-    let mut bytes = vec![0_u8; len];
-    stream.read_exact(&mut bytes)?;
-    postcard::from_bytes(&bytes).map_err(|error| {
-        NotAvailable::ConnectionFailed(io::Error::new(io::ErrorKind::InvalidData, error))
-    })
+    wire::FRAMING
+        .read_value(stream)
+        .map_err(connection_failed)?
+        .ok_or_else(|| connection_failed(FrameError::Closed))
 }
 
-/// Bound app-controlled broker traffic while allowing real document
-/// snapshots. Postcard keeps byte vectors compact; the preceding JSON wire
-/// represented every byte as a decimal number and hit its 1 MiB cap much
-/// earlier than the underlying document did.
-pub(super) const MAX_IDENTITY_FRAME_BYTES: usize = 64 * 1024 * 1024;
+pub(super) fn connection_failed(error: FrameError) -> NotAvailable {
+    NotAvailable::ConnectionFailed(error.into())
+}
 
 #[cfg(test)]
 mod tests {
@@ -466,9 +442,30 @@ mod tests {
         );
     }
 
+    /// The identity service's bytes: a little-endian `u32` length, then
+    /// postcard. The shell's broker and every packaged app must agree.
+    #[test]
+    fn wire_bytes_are_pinned() {
+        let mut output = Cursor::new(Vec::new());
+        write_frame(
+            &mut output,
+            &wire::Request::Sign {
+                action: "a".into(),
+                message: vec![1, 2],
+            },
+        )
+        .unwrap();
+        assert_eq!(output.into_inner(), [6, 0, 0, 0, 1, 1, b'a', 2, 1, 2]);
+        let mut input = Cursor::new(vec![4, 0, 0, 0, 2, 2, b'n', b'o']);
+        assert!(matches!(
+            read_frame::<wire::Response>(&mut input).unwrap(),
+            wire::Response::Denied(reason) if reason == "no"
+        ));
+    }
+
     #[test]
     fn oversized_frame_is_rejected_before_reading_its_body() {
-        let len = u32::try_from(MAX_IDENTITY_FRAME_BYTES + 1).expect("length");
+        let len = u32::try_from(wire::FRAMING.max_len() + 1).expect("length");
         let mut bytes = Cursor::new(len.to_le_bytes().to_vec());
         assert_eq!(
             error_kind(read_frame::<wire::Response>(&mut bytes)),
@@ -495,7 +492,7 @@ mod tests {
     fn outbound_limit_rejects_without_writing_partial_frame() {
         let request = wire::Request::Sign {
             action: "oversized".into(),
-            message: vec![0; MAX_IDENTITY_FRAME_BYTES],
+            message: vec![0; wire::FRAMING.max_len()],
         };
         let mut output = Cursor::new(Vec::new());
         assert_eq!(

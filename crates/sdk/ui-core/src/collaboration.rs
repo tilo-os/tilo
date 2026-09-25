@@ -332,6 +332,7 @@ pub struct ExportedAction {
     pub operation_kind: String,
     pub params_json: String,
     pub contract_json: String,
+    pub view: Option<tilo_actions::ResourceViewDescriptor>,
     pub input: ExportedInput,
 }
 

@@ -5,7 +5,7 @@
 //! one launcher-passed connected Unix descriptor (`TILO_SVC_MODEL_GATEWAY_FD`).
 
 #[cfg(unix)]
-use std::io::{Read, Write};
+use std::io::Write;
 #[cfg(unix)]
 use std::os::fd::{FromRawFd, RawFd};
 #[cfg(unix)]
@@ -20,7 +20,9 @@ use zeroize::Zeroizing;
 pub const SERVICE_NAME: &str = "model-gateway";
 pub const SERVICE_FD_ENV: &str = "TILO_SVC_MODEL_GATEWAY_FD";
 pub const RPC_VERSION: u16 = 3;
-pub const MAX_FRAME_BYTES: usize = 2 * 1024 * 1024;
+/// Every gateway request and response: a little-endian `u32` length, then
+/// JSON.
+pub const FRAMING: wire_frame::Framing = wire_frame::Framing::little_endian(2 * 1024 * 1024);
 /// The only encoded-preview media types accepted by the local vision RPC.
 /// Keeping this vocabulary closed means a caller cannot ask the trusted
 /// gateway to fetch a URL or interpret an arbitrary document as an image.
@@ -305,19 +307,10 @@ pub fn write_frame<T: Serialize>(stream: &mut UnixStream, value: &T) -> Result<(
     let body = Zeroizing::new(
         serde_json::to_vec(value).map_err(|error| ClientError::Protocol(error.to_string()))?,
     );
-    if body.len() > MAX_FRAME_BYTES {
-        return Err(ClientError::Protocol(
-            "request exceeds gateway frame limit".into(),
-        ));
-    }
-    let len = u32::try_from(body.len())
-        .map_err(|_| ClientError::Protocol("request exceeds gateway frame limit".into()))?;
-    stream
-        .write_all(&len.to_le_bytes())
-        .map_err(|_| ClientError::Unavailable)?;
-    stream
-        .write_all(&body)
-        .map_err(|_| ClientError::Unavailable)?;
+    FRAMING.write(stream, &body).map_err(|error| match error {
+        wire_frame::FrameError::Io(_) => ClientError::Unavailable,
+        _ => ClientError::Protocol("request exceeds gateway frame limit".into()),
+    })?;
     stream.flush().map_err(|_| ClientError::Unavailable)
 }
 
@@ -329,21 +322,47 @@ pub fn write_frame<T: Serialize>(stream: &mut UnixStream, value: &T) -> Result<(
 /// [`ClientError::Protocol`] for an invalid length or payload.
 #[cfg(unix)]
 pub fn read_frame<T: for<'a> Deserialize<'a>>(stream: &mut UnixStream) -> Result<T, ClientError> {
-    let mut length = [0_u8; 4];
-    stream
-        .read_exact(&mut length)
-        .map_err(|_| ClientError::Unavailable)?;
-    let length = usize::try_from(u32::from_le_bytes(length))
-        .map_err(|_| ClientError::Protocol("invalid frame length".into()))?;
-    if length > MAX_FRAME_BYTES {
-        return Err(ClientError::Protocol("gateway frame exceeds limit".into()));
+    let mut body = Zeroizing::new(Vec::new());
+    match FRAMING.read_into(stream, &mut body) {
+        Ok(true) => {}
+        Err(wire_frame::FrameError::TooLarge(_)) => {
+            return Err(ClientError::Protocol("gateway frame exceeds limit".into()));
+        }
+        Ok(false) | Err(_) => return Err(ClientError::Unavailable),
     }
-    let mut body = Zeroizing::new(vec![0_u8; length]);
-    stream
-        .read_exact(&mut body)
-        .map_err(|_| ClientError::Unavailable)?;
     serde_json::from_slice(&body)
         .map_err(|_| ClientError::Protocol("invalid gateway response".into()))
+}
+
+#[cfg(all(test, unix))]
+mod wire_tests {
+    use super::*;
+
+    /// The gateway socket's bytes: a little-endian `u32` length, then JSON.
+    #[test]
+    fn gateway_wire_bytes_are_pinned() {
+        use std::io::Read as _;
+        let (mut client, mut gateway) = UnixStream::pair().unwrap();
+        write_frame(
+            &mut client,
+            &Response {
+                ok: true,
+                output: Some("x".into()),
+                configured: None,
+                error: None,
+            },
+        )
+        .unwrap();
+        let mut sent = [0_u8; 28];
+        gateway.read_exact(&mut sent).unwrap();
+        assert_eq!(sent[..4], [24, 0, 0, 0]);
+        assert_eq!(&sent[4..], br#"{"ok":true,"output":"x"}"#);
+
+        gateway.write_all(&[12, 0, 0, 0]).unwrap();
+        gateway.write_all(br#"{"ok":false}"#).unwrap();
+        let response: Response = read_frame(&mut client).unwrap();
+        assert!(!response.ok);
+    }
 }
 
 #[cfg(all(test, not(unix)))]

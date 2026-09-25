@@ -201,7 +201,7 @@ schemes = ["web+notes"]
 - `kind = "app"` has an `[entrypoint]` with `bin` (or the correct split
   binary for `type = "both"`).
 - `kind = "format-provider"` has non-empty `providers.mime` AND ships a
-  `component.wasm` in the payload.
+  `provider.wasm` in the payload.
 - provider extensions, concrete MIME types, and URI schemes use their strict
   normalized identifier grammars; active/reserved `file`, `data`, and
   `javascript` schemes are rejected.

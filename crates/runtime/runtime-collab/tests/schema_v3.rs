@@ -536,6 +536,7 @@ async fn publish_actions_round_trips_both_input_shapes() {
                             params_json: "[]".into(),
                             contract_json: r#"{"permission":"write"}"#.into(),
                             input: ExportedInput::None,
+                            view: None,
                         },
                         ExportedAction {
                             resource: "word-processor.document".into(),
@@ -552,6 +553,7 @@ async fn publish_actions_round_trips_both_input_shapes() {
                                 placeholder: "content hash".into(),
                                 wants_content: true,
                             },
+                            view: None,
                         },
                     ],
                 )

@@ -32,6 +32,7 @@ tokio = { workspace = true, features = ["rt", "net", "io-util", "macros", "sync"
 tokio-util.workspace = true
 serde.workspace = true
 postcard = { workspace = true, features = ["use-std"] }
+wire-frame = { path = "../../system/wire-frame", features = ["postcard"] }
 
 [dev-dependencies]
 tempfile.workspace = true

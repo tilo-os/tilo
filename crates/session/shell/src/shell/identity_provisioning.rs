@@ -14,7 +14,7 @@ use getrandom::{SysRng, rand_core::UnwrapErr};
 use rand_core::Rng;
 use serde::{Deserialize, Serialize};
 use std::fs::OpenOptions;
-use std::io::{self, Read, Write};
+use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
@@ -26,8 +26,8 @@ use std::fs;
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 
 use ui::widget::identity_flow::{
-    IdentityFlowError, IdentityRecord, IdentityStore, InviteEnvelope, PairingBrokerRequest,
-    PairingBrokerResponse, PairingHandshake,
+    IdentityFlowError, IdentityRecord, IdentityStore, InviteEnvelope, PAIRING_FRAMING,
+    PairingBrokerRequest, PairingBrokerResponse, PairingHandshake,
 };
 
 pub struct PairingBrokerServer {
@@ -220,29 +220,14 @@ impl PairingBrokerServer {
                         return;
                     };
                     let mut stream = rustls::StreamOwned::new(connection, tcp);
-                    let mut len = [0; 4];
-                    if stream.read_exact(&mut len).is_err() {
-                        return;
-                    }
-                    let len = u32::from_be_bytes(len) as usize;
-                    if len > 256 * 1024 {
-                        return;
-                    }
-                    let mut bytes = vec![0; len];
-                    if stream.read_exact(&mut bytes).is_err() {
-                        return;
-                    }
-                    let response = match postcard::from_bytes::<PairingBrokerRequest>(&bytes) {
-                        Ok(request) => serve_pairing_request(&authority, &purpose, request),
-                        Err(_) => PairingBrokerResponse::Denied,
+                    let response = match PAIRING_FRAMING
+                        .read_value::<_, PairingBrokerRequest>(&mut stream)
+                    {
+                        Ok(Some(request)) => serve_pairing_request(&authority, &purpose, request),
+                        Err(wire_frame::FrameError::Decode(_)) => PairingBrokerResponse::Denied,
+                        Ok(None) | Err(_) => return,
                     };
-                    if let Ok(bytes) = postcard::to_allocvec(&response) {
-                        let Ok(response_len) = u32::try_from(bytes.len()) else {
-                            return;
-                        };
-                        let _ = stream.write_all(&response_len.to_be_bytes());
-                        let _ = stream.write_all(&bytes);
-                    }
+                    let _ = PAIRING_FRAMING.write_value(&mut stream, &response);
                 });
             }
         });

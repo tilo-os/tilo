@@ -99,7 +99,8 @@ impl Document {
     pub fn new() -> Self {
         let mut doc = AutoCommit::new();
         let c = crate::model::init(&mut doc, &ROOT);
-        let ids = IdGen::new(doc.get_actor().to_hex_string());
+        let mut ids = IdGen::new(doc.get_actor().to_hex_string());
+        ids.allow_commits();
         doc.commit();
         Self { doc, c, ids }
     }
@@ -110,7 +111,8 @@ impl Document {
     pub fn load(bytes: &[u8]) -> Result<Self, DocError> {
         let doc = AutoCommit::load(bytes).map_err(|e| DocError::Load(e.to_string()))?;
         let c = crate::model::open(&doc, &ROOT)?;
-        let ids = crate::model::try_seeded_id_gen(&doc, &c)?;
+        let mut ids = crate::model::try_seeded_id_gen(&doc, &c)?;
+        ids.allow_commits();
         Ok(Self { doc, c, ids })
     }
 
@@ -638,7 +640,8 @@ impl Document {
         let mut doc = AutoCommit::load(&bytes).expect("fork load");
         doc.set_actor(automerge::ActorId::random());
         let c = crate::model::open(&doc, &ROOT).expect("fork open");
-        let ids = IdGen::new(doc.get_actor().to_hex_string());
+        let mut ids = IdGen::new(doc.get_actor().to_hex_string());
+        ids.allow_commits();
         Document { doc, c, ids }
     }
 
@@ -666,8 +669,10 @@ impl Document {
         };
         let candidate_doc = AutoCommit::load(&merged).expect("merge: reload");
         let candidate_containers = crate::model::open(&candidate_doc, &ROOT).expect("merge: open");
-        let candidate_ids = crate::model::try_seeded_id_gen(&candidate_doc, &candidate_containers)
-            .expect("merged qdoc exhausted its id namespace; refusing to reuse an identifier");
+        let mut candidate_ids =
+            crate::model::try_seeded_id_gen(&candidate_doc, &candidate_containers)
+                .expect("merged qdoc exhausted its id namespace; refusing to reuse an identifier");
+        candidate_ids.allow_commits();
         self.doc = candidate_doc;
         self.c = candidate_containers;
         self.ids = candidate_ids;

@@ -155,6 +155,9 @@ impl InstallerApp {
             )
             .with_action(self.next_spec())
             .with_action(self.back_spec());
+        if let Some(spec) = self.return_to_host_spec() {
+            root = root.with_action(spec);
+        }
         root = root
             .with_child(self.keyboard_resource())
             .with_child(self.network_resource())
@@ -203,6 +206,36 @@ impl InstallerApp {
         };
         gate(nullary("next", label, &Operation::Next), blocked)
             .with_description("Validate this step and move to the next one, exactly as the wizard's Next button does.")
+    }
+
+    /// Staged installs only: the way back to the retained operating system,
+    /// offered on every screen except while installing or once done.
+    fn return_to_host_spec(&self) -> Option<ActionSpec> {
+        let host = self.internal_host()?;
+        let blocked = match self.install_state {
+            InstallState::Running => Some((
+                "install_running",
+                "The install is running; wait for it to finish or fail".to_owned(),
+            )),
+            InstallState::Done => Some((
+                "install_done",
+                "Tilo is installed; use Reboot now (reboot@installer.power) instead".to_owned(),
+            )),
+            InstallState::Idle | InstallState::Failed => None,
+        };
+        Some(
+            gate(
+                nullary(
+                    "return-to-host",
+                    &format!("Return to {}", host.display_name()),
+                    &Operation::ReturnToHost,
+                ),
+                blocked,
+            )
+            .with_description(
+                "Leave the installer without changing this disk and restart into the existing system.",
+            ),
+        )
     }
 
     fn back_spec(&self) -> ActionSpec {
@@ -362,7 +395,7 @@ impl InstallerApp {
             ));
         for (index, disk) in self.disks.iter().enumerate() {
             let blocked = on_step.clone().or_else(|| {
-                if disk.is_system {
+                if disk.blocks_install() {
                     Some((
                         "installer_disk",
                         "The running installer disk cannot be used as its own destination"
@@ -379,7 +412,7 @@ impl InstallerApp {
             });
             let badge = if self.selected_disk == Some(index) {
                 "selected"
-            } else if disk.is_system {
+            } else if disk.blocks_install() {
                 "installer medium"
             } else if disk.read_only {
                 "read-only"
@@ -899,6 +932,14 @@ impl InstallerApp {
                     "alongside" => InstallMethod::Alongside,
                     other => return Err(format!("Unknown install method {other:?}")),
                 };
+                if method == InstallMethod::Erase && self.selected_disk_hosts_installer() {
+                    // The backend refuses it too: this disk holds the running
+                    // installer and the operating system it was staged from.
+                    return Err(
+                        "This disk holds the running installer and your existing system; Tilo can only be installed alongside it"
+                            .into(),
+                    );
+                }
                 if self.install_method != method {
                     Self::clear_text(state, root, ERASE_CONFIRM_PATH);
                     self.erase_confirmation.clear();
@@ -929,7 +970,7 @@ impl InstallerApp {
                 let usable = self
                     .disks
                     .get(index)
-                    .is_some_and(|disk| !disk.is_system && !disk.read_only);
+                    .is_some_and(|disk| !disk.blocks_install() && !disk.read_only);
                 if !usable {
                     return Err(format!("{device} cannot be an installation target"));
                 }
@@ -941,6 +982,9 @@ impl InstallerApp {
                     self.storage_preflight_passed = false;
                 }
                 self.selected_disk = Some(index);
+                if self.selected_disk_hosts_installer() {
+                    self.install_method = InstallMethod::Alongside;
+                }
                 self.status.clear();
                 self.dirty_structure = true;
                 done()
@@ -1125,6 +1169,24 @@ impl InstallerApp {
                     done()
                 } else {
                     Err(self.status_or("Could not run the power action"))
+                }
+            }
+            Operation::ReturnToHost => {
+                if self.internal_host().is_none() {
+                    return Err("This installer was not staged next to an existing system".into());
+                }
+                if matches!(
+                    self.install_state,
+                    InstallState::Running | InstallState::Done
+                ) {
+                    return Err(
+                        "Returning is offered before the install starts or after it fails".into(),
+                    );
+                }
+                if self.run_power(PowerAction::Reboot) {
+                    done()
+                } else {
+                    Err(self.status_or("Could not restart"))
                 }
             }
         }

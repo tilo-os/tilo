@@ -1372,13 +1372,17 @@ implementation is required.
 ```rust
 let result = LocalState::new(LoadState::Loading);
 let worker_result = result.writer();
+let unavailable = result.writer();
 
-std::thread::spawn(move || {
+let spawned = ui::background::Background::current().spawn("load project", move || {
     worker_result.set(load_project().map_or_else(
         |error| LoadState::Failed(error.to_string()),
         LoadState::Ready,
     ));
 });
+if spawned.is_err() {
+    unavailable.set(LoadState::Failed("Loading is unavailable on this host".into()));
+}
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum LoadScreen { Loading, Ready, Failed }
@@ -1398,6 +1402,13 @@ let body = ModelView::from_state_by(
 );
 ```
 
+Start workers through `ui::background::Background::current().spawn`, not
+`std::thread::spawn`. The host decides how background work runs: a native
+process uses a thread pool, a deterministic test drives a pumped queue, and a
+host that cannot run background work refuses it with `Unsupported`. Report a
+refusal as a failure instead of leaving a spinner running. Later examples omit that branch
+for brevity.
+
 Use the ordinary `LocalState` handle for UI-thread reads and callbacks. Move
 `LocalStateWriter` into workers so an idle window cannot miss their changes.
 Several writers may update the same state; updates are serialized and each
@@ -1416,7 +1427,7 @@ let run_task = task.clone();
 
 let run_job = move || {
     let completion = run_task.begin(LoadState::Loading);
-    std::thread::spawn(move || {
+    let _ = ui::background::Background::current().spawn("load project", move || {
         let value = load_project().map_or_else(
             |error| LoadState::Failed(error.to_string()),
             LoadState::Ready,
@@ -1446,7 +1457,7 @@ the model:
 
 ```rust
 let completion = self.page_request.begin();
-std::thread::spawn(move || {
+let _ = ui::background::Background::current().spawn("fetch page", move || {
     let _ = completion.complete(fetch_page(range));
 });
 
@@ -1803,7 +1814,7 @@ impl TableModel for QueryRows {
     }
     fn request_range(&mut self, visible: std::ops::Range<usize>) {
         let completion = self.page_request.begin();
-        std::thread::spawn(move || {
+        let _ = ui::background::Background::current().spawn("fetch page", move || {
             let _ = completion.complete(fetch_page(visible));
         });
     }
@@ -2011,7 +2022,7 @@ the event-loop wakeup:
 fn request_load(&mut self, request: TreeLoadRequest) -> bool {
     let page = page_containing(request.slot);
     let completion = self.page_request.begin();
-    std::thread::spawn(move || {
+    let _ = ui::background::Background::current().spawn("fetch children", move || {
         let _ = completion.complete(fetch_children(page));
     });
     true

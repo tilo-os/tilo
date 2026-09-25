@@ -1,11 +1,12 @@
 //! Tilo-device session route adapter.
 //!
 //! Discovery remains owned by the device-mesh runtime. Remote accepts a
-//! verified snapshot and delegates route selection to `tilo-relay`. Only an
+//! verified snapshot and delegates route selection to the relay's shared
+//! mesh placement (`tilo-relay-protocol`). Only an
 //! exact-target route is accepted for control; a workspace-wide relay is
 //! reported as unavailable rather than leaking input through fan-out.
 
-use tilo_relay::{RemoteControlRoute, ServerAdvertisement, route_remote_control};
+use tilo_relay_protocol::{RemoteControlRoute, ServerAdvertisement, route_remote_control};
 
 /// Certified-device routing key.
 pub type DeviceKey = [u8; 32];
@@ -116,7 +117,7 @@ pub fn short_device_id(device: &DeviceKey) -> String {
 mod tests {
     use std::collections::BTreeSet;
 
-    use tilo_relay::{DeviceRole, ServiceCapabilities};
+    use tilo_relay_protocol::{DeviceRole, ServiceCapabilities};
 
     use super::*;
 
@@ -130,7 +131,7 @@ mod tests {
             accelerators: BTreeSet::new(),
             priority: 0,
             latency_ms: 12,
-            power: tilo_relay::PowerAvailability::External,
+            power: tilo_relay_protocol::PowerAvailability::External,
             energy_saver: false,
             active_assignments: 0,
             assignment_capacity: 8,

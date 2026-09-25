@@ -265,7 +265,7 @@ crates/session/shell/src/compositor/backend/drm/runtime.rs pixel_const 1
 crates/session/shell/src/compositor/backend/drm/scale.rs pixel_const 4
 crates/session/shell/src/compositor/capture.rs pixel_const 2
 crates/session/shell/src/compositor/drag_feedback.rs pixel_const 9
-crates/session/shell/src/compositor/lock_screen.rs pixel_const 2
+crates/session/shell/src/compositor/lock_screen.rs pixel_const 3
 crates/session/shell/src/onboarding_view.rs pixel_const 11
 crates/session/shell/src/shell/capture_surface.rs pixel_const 4
 crates/session/shell/src/shell/collaboration_launchpad.rs pixel_const 4
@@ -287,7 +287,7 @@ crates/session/shell/src/shell/remote_cursors.rs pixel_const 4
 crates/session/shell/src/shell/room_activity.rs pixel_const 13
 crates/session/shell/src/shell/search/mod.rs pixel_const 1
 crates/session/shell/src/shell/sidebar_wheel_chrome.rs pixel_const 4
-crates/session/shell/src/shell/sidebar_wheel_disc.rs pixel_const 14
+crates/session/shell/src/shell/sidebar_wheel_disc.rs pixel_const 13
 crates/session/shell/src/shell/topbar_chrome.rs pixel_const 6
 crates/session/shell/src/shell/workspace_settings.rs pixel_const 16
 crates/session/shell/src/shell/workspace_settings_overlay.rs pixel_const 3
