@@ -5117,26 +5117,6 @@ mod tests {
         assert_eq!(PhotosDoc::edits(&doc).rotate_quarters, 1);
     }
 
-    /// The determinism contract: the same envelope applied to two replicas
-    /// that started equal leaves them equal.
-    #[test]
-    fn the_same_action_replays_to_the_same_state() {
-        let mut a = doc_with_image();
-        let mut b = doc_with_image();
-        let action = PhotosAction::SetEdits {
-            crop: Rect01 {
-                x: 0.1,
-                y: 0.2,
-                w: 0.5,
-                h: 0.5,
-            },
-            rotate_quarters: 3,
-        };
-        action.apply(&mut a).unwrap();
-        action.apply(&mut b).unwrap();
-        assert_eq!(PhotosDoc::edits(&a), PhotosDoc::edits(&b));
-    }
-
     #[test]
     fn an_action_round_trips_through_the_registry() {
         let mut registry = ActionRegistry::new();
@@ -5901,5 +5881,142 @@ mod tests {
                 .iter()
                 .any(|child| child.id.0 == "photos.library-analysis")
         );
+    }
+
+    const CROP_ARG: &str = "0.25,0.25,0.5,0.5";
+
+    fn registry() -> ActionRegistry {
+        let mut registry = ActionRegistry::new();
+        register(&mut registry);
+        registry
+    }
+
+    fn apply_all(doc: &mut AutoCommit, actions: Vec<PhotosAction>) {
+        for action in actions {
+            action.apply(doc).expect("seed action applies");
+        }
+        doc.commit();
+    }
+
+    /// A small library built through the actions the app dispatches: two
+    /// imported photographs, one open and rotated, with shared metadata, an
+    /// approved person, an album, an explicit location and a shared analysis
+    /// — so every kind of published document action has something to act on.
+    fn contract_library() -> AutoCommit {
+        let mut doc = AutoCommit::new();
+        PhotosDoc::seed(&mut doc);
+        let harbour = portable_photo("/photos/harbour.png", 800, 400);
+        let market = portable_photo("/photos/market.png", 640, 480);
+        let market_content = market.image.content.clone().expect("portable content");
+        let (harbour_id, market_id) = (harbour.id.clone(), market.id.clone());
+        apply_all(
+            &mut doc,
+            vec![
+                PhotosAction::ImportPhoto { photo: harbour },
+                PhotosAction::ImportPhoto { photo: market },
+                PhotosAction::SelectPhoto {
+                    photo_id: harbour_id.clone(),
+                },
+                PhotosAction::set(&Edits::default().rotated_right()),
+                PhotosAction::SetMetadata {
+                    photo_id: harbour_id.clone(),
+                    folder: Some("2026 travels".into()),
+                    people: Vec::new(),
+                    tags: vec!["harbour".into()],
+                    captured_at: Some("2026-09-07".into()),
+                },
+                PhotosAction::SetPersonMembership {
+                    person: "Sam".into(),
+                    photo_ids: vec![harbour_id.clone(), market_id.clone()],
+                },
+                PhotosAction::SaveAlbum {
+                    id: "photos.album:summer".into(),
+                    name: "Summer".into(),
+                    photo_ids: vec![harbour_id],
+                    create: true,
+                },
+                PhotosAction::SetPhotoLocation {
+                    photo_id: market_id.clone(),
+                    location: PhotoLocation {
+                        latitude: 37.7749,
+                        longitude: -122.4194,
+                        label: Some("San Francisco".to_owned()),
+                        provenance: crate::model::LocationProvenance {
+                            source: "exif".to_owned(),
+                            scope: "shared".to_owned(),
+                        },
+                    },
+                },
+                PhotosAction::SetImageAnalysis {
+                    photo_id: market_id,
+                    analysis: Some(shared_analysis(market_content)),
+                },
+            ],
+        );
+        doc
+    }
+
+    fn nth_photo_id(doc: &AutoCommit, n: usize) -> String {
+        PhotosDoc::library(doc).photos[n].id.clone()
+    }
+
+    ui::action_contract_tests! {
+        seed: contract_library(),
+        registry: registry(),
+        resources: |doc| PhotosResources.resources(doc),
+        palette: ["Rotate right", "Reset edits", "Favorite", "Remove album", "Remove person label"],
+        replay: [
+            set_edits => |_| encode(&PhotosAction::SetEdits {
+                crop: Rect01 {
+                    x: 0.1,
+                    y: 0.2,
+                    w: 0.5,
+                    h: 0.5,
+                },
+                rotate_quarters: 3,
+            }),
+            set_favorites => |doc| encode(&PhotosAction::SetFavorites {
+                photo_ids: vec![nth_photo_id(doc, 0), nth_photo_id(doc, 1)],
+                favorite: true,
+            }),
+        ],
+        undo: [
+            set_metadata => |doc| encode(&PhotosAction::SetMetadata {
+                photo_id: nth_photo_id(doc, 1),
+                folder: Some("Markets".into()),
+                people: vec!["Sam".into()],
+                tags: vec!["market".into(), "fruit".into()],
+                captured_at: None,
+            }),
+            rename_person => |_| encode(&PhotosAction::RenamePerson {
+                from: "Sam".into(),
+                to: "Samantha".into(),
+            }),
+        ],
+        encodes: [
+            rotate_right => (IMAGE_KIND, "rotate-right", |doc, _| {
+                encode(&PhotosAction::set(&PhotosDoc::edits(doc).rotated_right()))
+            }),
+            crop => (IMAGE_KIND, "crop", arg: CROP_ARG, |doc, _| {
+                let region = parse_crop_arg(CROP_ARG).expect("a valid crop region");
+                encode(&PhotosAction::set(&PhotosDoc::edits(doc).cropped_from_view(region)))
+            }),
+            favorite => ("photos.photo", "favorite", |_, res| {
+                encode(&PhotosAction::SetFavorite {
+                    photo_id: res.id.0.clone(),
+                    favorite: true,
+                })
+            }),
+            remove_photo => ("photos.photo", "remove", |_, res| {
+                encode(&PhotosAction::RemovePhoto {
+                    photo_id: res.id.0.clone(),
+                })
+            }),
+            remove_album => ("photos.album:summer", "remove", |_, _| {
+                encode(&PhotosAction::RemoveAlbum {
+                    id: "photos.album:summer".into(),
+                })
+            }),
+        ],
     }
 }

@@ -1139,6 +1139,15 @@ fn run_measurement(tx: mpsc::Sender<WorkerMessage>) {
 mod tests {
     use super::*;
 
+    // Speed Test keeps no document: it publishes only effect operations, so
+    // the contract is the surface sweep (protocol validation) and Ctrl+K.
+    ui::action_contract_tests! {
+        seed: AutoCommit::new(),
+        registry: ui::tilo_actions::ActionRegistry::new(),
+        resources: |doc| SpeedTestApp::new().resources(doc),
+        palette: ["Run speed test", "Change test region"],
+    }
+
     #[test]
     fn wide_metadata_row_never_touches_primary_action() {
         for height in [520.0, 640.0, 760.0, 900.0] {
