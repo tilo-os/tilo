@@ -1577,14 +1577,14 @@ impl Session {
     fn instruction_issuer(&mut self) -> Option<String> {
         let editor = self.editor.as_mut()?;
         let mine = editor.actor_hex();
-        qdoc::history::versions(&mut editor.doc)
+        tilo_resource::history::versions(&mut editor.doc)
             .into_iter()
             .rev()
             .find(|version| {
-                !qdoc::history::is_schema_genesis(version)
-                    && !version.actor_hex.eq_ignore_ascii_case(&mine)
+                !qdoc::model::is_schema_genesis(version)
+                    && !version.actor.eq_ignore_ascii_case(&mine)
             })
-            .map(|version| version.actor_hex)
+            .map(|version| version.actor)
     }
 
     fn task_context(&self) -> Option<tilo_actions::ActionContext> {
@@ -1639,7 +1639,7 @@ impl Session {
         )
         .is_some()
         {
-            qdoc::history::commit_stamped(&mut editor.doc);
+            tilo_resource::history::commit_stamped(&mut editor.doc);
             let data = editor.doc.save_incremental();
             if !data.is_empty() {
                 self.link.send(&CollabRequest::document_incremental(data))?;

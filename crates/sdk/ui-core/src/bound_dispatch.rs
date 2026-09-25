@@ -1334,7 +1334,10 @@ impl RecordActionState {
     /// undo burst; preserve its original provenance before serialization does so.
     pub(crate) fn commit_for_save(&self, doc: &mut AutoCommit) {
         if let Some(pending) = &self.pending {
-            qdoc::history::commit_stamped_with_message(doc, pending.context.change_message());
+            tilo_resource::history::commit_stamped_with_message(
+                doc,
+                pending.context.change_message(),
+            );
         } else if doc.pending_ops() != 0 {
             // Legacy widget input is not wrapped in a bound action frame.
             // Persistence must still close that transaction or DocWriter sees
@@ -1350,7 +1353,10 @@ impl RecordActionState {
         history: &mut crate::state::UndoLog,
     ) {
         if let Some(pending) = self.pending.take() {
-            qdoc::history::commit_stamped_with_message(doc, pending.context.change_message());
+            tilo_resource::history::commit_stamped_with_message(
+                doc,
+                pending.context.change_message(),
+            );
             history.record_committed_span_in(
                 pending.before,
                 doc.get_heads(),
@@ -1674,7 +1680,7 @@ impl ActionFrame {
                 (None, pending) => pending.as_ref().map(|pending| &pending.context),
             }
         };
-        qdoc::history::commit_stamped_with_message(
+        tilo_resource::history::commit_stamped_with_message(
             doc,
             context.and_then(tilo_actions::ActionContext::change_message),
         );

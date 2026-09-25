@@ -1037,7 +1037,7 @@ impl WorkspaceTree {
     /// change rather than letting a run coalesce. Cheap when nothing is
     /// pending, so the compositor also calls it once a frame.
     pub fn commit_room_change(&mut self) {
-        let _ = qdoc::history::commit_stamped(&mut self.doc);
+        let _ = tilo_resource::history::commit_stamped(&mut self.doc);
     }
 
     /// Snapshot of the current automerge change-graph heads, the
@@ -1608,7 +1608,7 @@ impl WorkspaceTree {
         }
 
         if !governs {
-            let _ = qdoc::history::commit_stamped(doc);
+            let _ = tilo_resource::history::commit_stamped(doc);
             doc.reset_diff_cursor();
             return;
         }
@@ -1645,7 +1645,7 @@ impl WorkspaceTree {
         }
         Self::project_peer_names(doc, &peer_names);
         Self::project_peer_identities(doc, &peer_identities);
-        let _ = qdoc::history::commit_stamped(doc);
+        let _ = tilo_resource::history::commit_stamped(doc);
         // Nothing reads this doc through patches, so the log is pure
         // overhead — worse, `PatchLog::migrate_actors` panics when a
         // peer's actor can't be spliced into it in sort order.
@@ -3160,7 +3160,7 @@ impl WorkspaceTree {
             workspace_id,
             receipt,
         ) {
-            let _ = qdoc::history::commit_stamped_at_with_message(
+            let _ = tilo_resource::history::commit_stamped_at_with_message(
                 &mut self.doc,
                 receipt.completed_at,
                 receipt.context.change_message(),
@@ -5851,7 +5851,7 @@ mod automerge_foundation_tests {
             .unwrap();
             doc.put(&identities, endpoint.to_string(), ScalarValue::Bytes(bytes))
                 .unwrap();
-            let _ = qdoc::history::commit_stamped(doc);
+            let _ = tilo_resource::history::commit_stamped(doc);
         }
         let spoof = guest.export_room_changes_since(room, &[]).unwrap();
         assert!(
