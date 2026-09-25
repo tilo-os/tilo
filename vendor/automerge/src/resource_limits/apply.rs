@@ -128,8 +128,7 @@ impl NativeOwned<AutoCommit> {
         // take its duplicate-sequence refusal after partially mutating.
         owned
             .value
-            .doc
-            .apply_changes_batch(changes)
+            .native_apply_batch(changes)
             .map_err(|_| NativeMutationError::InvalidOperation)?;
         drop(charge);
         let missing_dependencies = !owned.value.doc.queue.is_empty();
@@ -192,7 +191,7 @@ impl AutoCommit {
         let _growth = allowance.reserve(superlinear_growth(self, &incoming)?)?;
         // Validation covered the exact queue and input, so batch apply cannot
         // take its duplicate-sequence refusal after partially mutating.
-        self.apply_changes_batch(changes)
+        self.native_apply_batch(changes)
             .map_err(|_| NativeMutationError::InvalidOperation)?;
         Ok(NativeIncomingOutcome::Applied {
             changed: validated.integrated != 0,

@@ -192,6 +192,26 @@ impl AutoCommit {
             && self.save_cursor.is_empty()
     }
 
+    /// qOS bounded admission: [`Self::apply_changes_batch`] for checked
+    /// admission. A document with an armed diff cursor keeps logging into its
+    /// active patch log; otherwise the batch logs into a discarding log. Batch
+    /// apply records an event per applied op into any log, and an inactive
+    /// log's events are dead (`update_diff_cursor` truncates them), yet they
+    /// used to be about four fifths of an applied typing history's memory.
+    pub(crate) fn native_apply_batch(
+        &mut self,
+        changes: Vec<crate::Change>,
+    ) -> Result<(), AutomergeError> {
+        self.ensure_transaction_closed();
+        if self.isolation.is_none() && self.patch_log.is_active() {
+            self.doc
+                .apply_changes_batch_log_patches(changes, &mut self.patch_log)
+        } else {
+            self.doc
+                .apply_changes_batch_log_patches(changes, &mut PatchLog::discarding())
+        }
+    }
+
     /// qOS bounded admission: native bounded reads cover the full current view only.
     pub(crate) fn native_read_is_isolated(&self) -> bool {
         self.isolation.is_some()

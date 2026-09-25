@@ -127,7 +127,9 @@ pub(super) fn load_strict(
             NativeMutationError::Resource(error) => error,
             _ => Error::Invalid,
         })?;
-        doc.apply_changes(changes).map_err(|_| Error::Invalid)?;
+        // A discarding patch log: nothing reads the per-op events of a load.
+        doc.apply_changes_batch_log_patches(changes, &mut crate::PatchLog::discarding())
+            .map_err(|_| Error::Invalid)?;
         drop(charge);
     }
     if !first_document && !doc.queue.is_empty() {

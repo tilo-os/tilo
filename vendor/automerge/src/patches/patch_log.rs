@@ -54,6 +54,11 @@ pub struct PatchLog {
     /// transaction produces no ops the actor is removed from the document again on commit/rollback,
     /// so these must be removed from the patch log too (see [`PatchLog::finish_transaction`]).
     speculative_actor: Option<ActorId>,
+    /// qOS bounded admission: a log that records nothing. Batch apply writes
+    /// an event per applied op into whatever log it is handed; checked
+    /// admission into a document with no armed diff cursor passes a
+    /// discarding log so those dead events are never allocated.
+    discard: bool,
 }
 
 #[derive(Clone, PartialEq, Debug)]
@@ -236,6 +241,7 @@ impl PatchLog {
             path_hint: 0,
             actors: vec![],
             speculative_actor: None,
+            discard: false,
         }
     }
 
@@ -248,6 +254,14 @@ impl PatchLog {
 
     pub fn null() -> Self {
         Self::new(false)
+    }
+
+    /// qOS bounded admission: an inactive log that records no events at all.
+    pub(crate) fn discarding() -> Self {
+        Self {
+            discard: true,
+            ..Self::new(false)
+        }
     }
 
     /// Create a new [`PatchLog`] which does record changes.
@@ -271,6 +285,9 @@ impl PatchLog {
     }
 
     fn push_event(&mut self, obj: ObjId, event: Event) {
+        if self.discard {
+            return;
+        }
         self.events.push((obj, event));
     }
 
@@ -323,6 +340,9 @@ impl PatchLog {
     }
 
     pub(crate) fn increment_map(&mut self, obj: ObjId, key: &str, n: i64, id: OpId) {
+        if self.discard {
+            return;
+        }
         self.events.push((
             obj,
             Event::IncrementMap {
@@ -376,6 +396,9 @@ impl PatchLog {
         conflict: bool,
         expose: bool,
     ) {
+        if self.discard {
+            return;
+        }
         if expose && value.is_object() {
             self.expose.insert(id);
         }
@@ -399,6 +422,9 @@ impl PatchLog {
         conflict: bool,
         expose: bool,
     ) {
+        if self.discard {
+            return;
+        }
         if expose && value.is_object() {
             self.expose.insert(id);
         }
@@ -447,6 +473,9 @@ impl PatchLog {
         text: &str,
         marks: Option<Arc<MarkSet>>,
     ) {
+        if self.discard {
+            return;
+        }
         self.events.push((
             obj,
             Event::Splice {
@@ -458,6 +487,9 @@ impl PatchLog {
     }
 
     pub(crate) fn mark(&mut self, obj: ObjId, index: usize, len: usize, marks: &Arc<MarkSet>) {
+        if self.discard {
+            return;
+        }
         if let Some((_, Event::Mark { marks: tail_marks })) = self.events.last_mut() {
             tail_marks.add(index, len, marks);
             return;
@@ -476,6 +508,9 @@ impl PatchLog {
         conflict: bool,
         expose: bool,
     ) {
+        if self.discard {
+            return;
+        }
         if expose && value.is_object() {
             self.expose.insert(id);
         }
@@ -553,6 +588,7 @@ impl PatchLog {
             heads: None,
             actors: self.actors.clone(),
             speculative_actor: None,
+            discard: false,
         }
     }
 
