@@ -4,10 +4,7 @@
 //!
 //! Keys are base-36 fractions written with `0-9a-z`. They never end in `0`,
 //! which makes plain string order the same as fraction order, so a key can be
-//! stored as an ordinary string scalar and compared anywhere. [`bytes`] is
-//! the same idea in base 256, for documents that store keys as bytes.
-
-pub mod bytes;
+//! stored as an ordinary string scalar and compared anywhere.
 
 const DIGITS: &[u8; 36] = b"0123456789abcdefghijklmnopqrstuvwxyz";
 const BASE: u8 = 36;

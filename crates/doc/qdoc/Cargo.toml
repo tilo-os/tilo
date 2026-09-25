@@ -22,13 +22,7 @@ quick-xml.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
-# Hyperlink targets a rich-text action may carry.
-url.workspace = true
 tracing.workspace = true
-# Ordering keys, history, batched writes and diffs shared by every resource,
-# and the resource contract rich text implements.
-tilo-resource = { path = "../../sdk/tilo-resource" }
-tilo-actions = { path = "../../collab/actions" }
 
 [dev-dependencies]
 proptest.workspace = true

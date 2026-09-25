@@ -186,7 +186,7 @@ impl Default for StyleSheet {
 
 /// The built-in style ids. Everything else in a document's sheet is a
 /// user-defined ("custom") style, which — unlike a built-in — can be deleted.
-pub use qdoc::rich_text::BUILTIN_STYLES;
+pub const BUILTIN_STYLES: [&str; 6] = ["body", "heading1", "heading2", "heading3", "list", "quote"];
 
 impl StyleSheet {
     /// Resolve a style, falling back to Body for unknown ids.

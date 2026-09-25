@@ -97,7 +97,7 @@ impl NoteKind {
 }
 
 /// A block's `(order_key, id)` pair, ordered exactly as [`ordered_keys`] orders blocks
-/// (fractional key via [`tilo_resource::order::bytes::cmp`], then id as a tiebreak). Used as the in-memory order index's key type.
+/// (fractional key via [`crate::order::cmp_keys`], then id as a tiebreak). Used as the in-memory order index's key type.
 /// Key and id are shared with the `id → key` map, so the index holds each only once.
 #[derive(Clone, PartialEq, Eq)]
 struct OrderKey {
@@ -107,7 +107,7 @@ struct OrderKey {
 
 impl Ord for OrderKey {
     fn cmp(&self, other: &Self) -> Ordering {
-        tilo_resource::order::bytes::cmp(&self.key, &other.key).then_with(|| self.id.cmp(&other.id))
+        crate::order::cmp_keys(&self.key, &other.key).then_with(|| self.id.cmp(&other.id))
     }
 }
 impl PartialOrd for OrderKey {
@@ -150,35 +150,10 @@ struct OrderIndex {
     by_container: HashMap<ObjId, ContainerOrder>,
 }
 
-/// The last block placed by an insert that did not build the order index:
-/// where it went and the next block's key, which bounds the next insert after
-/// it too.
-struct InsertRun {
-    container: ObjId,
-    last: String,
-    key: Vec<u8>,
-    hi: Option<Vec<u8>>,
-}
-
-/// Collision-free block id generator.
-///
-/// Inside an action it mints from the action's deterministic context
-/// ([`Self::for_action`]): ids are then a function of the action and the
-/// document it applies to, identical on the origin and on every replica
-/// replaying it, and minting costs nothing however large the document.
-/// Writers outside an action (an importer, an owned [`crate::Document`])
-/// count per replica: `{actor_hex}.{counter}`.
+/// Per-replica, collision-free block id generator: `{actor_hex}.{counter}`.
 pub struct IdGen {
     actor_hex: String,
     next: Option<u64>,
-    /// The action minting, when writing inside one.
-    action: Option<tilo_resource::ActionCx>,
-    /// The key an insert just placed, and its upper bound, until the block
-    /// is recorded (see [`DocMut::order_after_in`]).
-    placing: Option<(ObjId, Vec<u8>, Option<Vec<u8>>)>,
-    /// The last block inserted without the order index, so the next insert
-    /// after it (a paste, a table's cells) needs no scan.
-    run: Option<InsertRun>,
     /// In-memory block-order index (see [`OrderIndex`]); private bookkeeping carried on `IdGen` since it threads through every `DocMut`.
     order: OrderIndex,
     /// Blocks and marks buffered by an open [`DocMut::bulk`] scope.
@@ -204,9 +179,6 @@ impl Clone for IdGen {
             // Deleted IDs remain part of durable history. A staged edit must
             // inherit the counter rather than reseeding from visible objects.
             next: self.next,
-            action: None,
-            placing: None,
-            run: None,
             order: OrderIndex::default(),
             bulk: bulk::Bulk::default(),
             commits_allowed: false,
@@ -231,9 +203,6 @@ impl IdGen {
         Self {
             actor_hex,
             next: Some(0),
-            action: None,
-            placing: None,
-            run: None,
             order: OrderIndex::default(),
             bulk: bulk::Bulk::default(),
             commits_allowed: false,
@@ -246,27 +215,6 @@ impl IdGen {
         Self {
             actor_hex,
             next: Some(next),
-            action: None,
-            placing: None,
-            run: None,
-            order: OrderIndex::default(),
-            bulk: bulk::Bulk::default(),
-            commits_allowed: false,
-            unseeded: false,
-        }
-    }
-
-    /// Mint ids from an applying action's context: deterministic under
-    /// replay, and independent of the document's size (no scan of existing
-    /// ids — an action's context is unique to the action and the version it
-    /// applies to, so its ids cannot collide with ids minted elsewhere).
-    pub fn for_action(cx: tilo_resource::ActionCx) -> Self {
-        Self {
-            actor_hex: String::new(),
-            next: None,
-            action: Some(cx),
-            placing: None,
-            run: None,
             order: OrderIndex::default(),
             bulk: bulk::Bulk::default(),
             commits_allowed: false,
@@ -291,9 +239,6 @@ impl IdGen {
     /// Returns [`IdGenError::Exhausted`] after the final counter has been
     /// issued, so a durable identifier can never be reused.
     pub fn try_mint(&mut self) -> Result<String, IdGenError> {
-        if let Some(action) = &mut self.action {
-            return Ok(action.id().as_str().to_owned());
-        }
         let counter = self.next.ok_or_else(|| IdGenError::Exhausted {
             actor_hex: self.actor_hex.clone(),
         })?;
@@ -577,14 +522,8 @@ pub fn is_schema_genesis_actor(actor: &automerge::ActorId) -> bool {
     actor.to_bytes() == GENESIS_ACTOR
 }
 
-/// Whether `version` is the schema genesis rather than something a person
-/// wrote. See [`is_schema_genesis_actor`].
-pub fn is_schema_genesis(version: &tilo_resource::history::Version) -> bool {
-    version.actor == schema_genesis_actor_hex()
-}
-
 /// The schema genesis actor as hex, for comparing against a recorded
-/// actor. See [`is_schema_genesis_actor`].
+/// `actor_hex`. See [`is_schema_genesis_actor`].
 pub fn schema_genesis_actor_hex() -> String {
     automerge::ActorId::from(GENESIS_ACTOR).to_hex_string()
 }
@@ -1390,7 +1329,7 @@ struct OrderedBlock {
 }
 
 /// Every block of `container` that carries an order key, sorted into document order (fractional key via
-/// [`tilo_resource::order::bytes::cmp`], then id as a tiebreak). One walk over the container and one over each block.
+/// [`crate::order::cmp_keys`], then id as a tiebreak). One walk over the container and one over each block.
 fn ordered_blocks(doc: &AutoCommit, container: &ObjId) -> Vec<OrderedBlock> {
     ORDERED_KEYS_SCANS.with(|c| c.set(c.get().saturating_add(1)));
     let mut v: Vec<OrderedBlock> = doc
@@ -1406,9 +1345,7 @@ fn ordered_blocks(doc: &AutoCommit, container: &ObjId) -> Vec<OrderedBlock> {
             })
         })
         .collect();
-    v.sort_by(|a, b| {
-        tilo_resource::order::bytes::cmp(&a.order, &b.order).then_with(|| a.id.cmp(&b.id))
-    });
+    v.sort_by(|a, b| crate::order::cmp_keys(&a.order, &b.order).then_with(|| a.id.cmp(&b.id)));
     v
 }
 
@@ -1431,39 +1368,6 @@ pub fn blocks_in_order(doc: &AutoCommit, c: &Containers) -> Vec<String> {
     ordered_keys(doc, &c.blocks)
 }
 
-/// One ordered body block's place in the document.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct SpineEntry {
-    pub order: Vec<u8>,
-    pub id: String,
-    pub kind: String,
-}
-
-/// Every ordered body block in document order, with its order key and kind:
-/// the document's spine, read without materialising any block's text.
-pub fn body_spine(doc: &AutoCommit, c: &Containers) -> Vec<SpineEntry> {
-    ordered_blocks(doc, &c.blocks)
-        .into_iter()
-        .map(|b| SpineEntry {
-            order: b.order,
-            id: b.id,
-            kind: b.fields.kind.unwrap_or_default(),
-        })
-        .collect()
-}
-
-/// One body block's spine entry; `None` when the block is gone or has no
-/// order key (and so is not part of the document).
-pub fn body_spine_entry(doc: &AutoCommit, c: &Containers, id: &str) -> Option<SpineEntry> {
-    let obj = block_obj(doc, &c.blocks, id)?;
-    let fields = block_fields(doc, &obj);
-    Some(SpineEntry {
-        order: fields.order?,
-        id: id.to_owned(),
-        kind: fields.kind.unwrap_or_default(),
-    })
-}
-
 /// Materialize exactly the requested body blocks, in the supplied order.
 ///
 /// This is deliberately unlike [`materialize`] and [`materialize_region`]: it
@@ -1481,7 +1385,7 @@ pub fn materialize_blocks(doc: &AutoCommit, c: &Containers, ids: &[String]) -> V
         .collect()
 }
 
-/// The byte length of every body block's fractional order key. [`tilo_resource::order::bytes::between`] keeps these
+/// The byte length of every body block's fractional order key. [`crate::order::key_between`] keeps these
 /// logarithmic in a run of sequential appends; a scheme that grows keys linearly makes every comparison O(n).
 /// The perf test asserts the max stays small — a direct, mode-independent guard on key growth.
 pub fn block_order_key_lengths(doc: &AutoCommit, c: &Containers) -> Vec<usize> {
@@ -1714,7 +1618,7 @@ pub fn preserved_part(doc: &AutoCommit, c: &Containers, key: &str) -> Option<Vec
                 })
                 .collect();
             // Sort by fractional order key, then segment id as a deterministic tiebreak.
-            segs.sort_by(|a, b| tilo_resource::order::bytes::cmp(&a.0, &b.0).then(a.1.cmp(&b.1)));
+            segs.sort_by(|a, b| crate::order::cmp_keys(&a.0, &b.0).then(a.1.cmp(&b.1)));
             Some(segs.into_iter().flat_map(|(_, _, b)| b).collect())
         }
         // Legacy single-blob form: the whole part as one `Bytes` scalar.
@@ -1755,7 +1659,7 @@ pub fn preserved_atoms(doc: &AutoCommit, c: &Containers, key: &str) -> Vec<(Stri
             Some((ord, sid, bytes))
         })
         .collect();
-    segs.sort_by(|a, b| tilo_resource::order::bytes::cmp(&a.0, &b.0).then(a.1.cmp(&b.1)));
+    segs.sort_by(|a, b| crate::order::cmp_keys(&a.0, &b.0).then(a.1.cmp(&b.1)));
     segs.into_iter().map(|(_, sid, b)| (sid, b)).collect()
 }
 
@@ -2131,19 +2035,6 @@ impl DocMut<'_> {
     /// A fractional key ordered strictly after block `after` (or at the front when `after` is `None`) within
     /// `container`. Uses the in-memory order index so the lookup is O(log n), not an O(n log n) rescan.
     fn order_after_in(&mut self, container: &ObjId, after: Option<&str>) -> Vec<u8> {
-        // An action's insert after a known block needs only that block's
-        // successor. Finding it reads each block's order key once; building
-        // the index sorts them all, and an action's generator lives for one
-        // action. Staged (bulk) inserts and long-lived generators use the
-        // index.
-        if self.ids.action.is_some()
-            && !self.bulk_active()
-            && !self.ids.order.by_container.contains_key(container)
-            && let Some((key, hi)) = self.order_after_scanning(container, after)
-        {
-            self.ids.placing = Some((container.clone(), key.clone(), hi));
-            return key;
-        }
         self.ensure_order_cache(container);
         let co = self
             .ids
@@ -2172,57 +2063,7 @@ impl DocMut<'_> {
                 None => (co.entries.iter().next_back().map(|k| k.key.clone()), None),
             },
         };
-        tilo_resource::order::bytes::between(lo.as_deref(), hi.as_deref())
-    }
-
-    /// The key for a block inserted after `after` in `container`, and the
-    /// key of the block that follows it, without building the order index:
-    /// from the run of inserts this generator is making, or one pass over
-    /// the container's order keys. `None` when `after` has no order key (the
-    /// caller then appends via the index).
-    fn order_after_scanning(
-        &self,
-        container: &ObjId,
-        after: Option<&str>,
-    ) -> Option<(Vec<u8>, Option<Vec<u8>>)> {
-        use tilo_resource::order::bytes::{between, cmp};
-        let after = after?;
-        if let Some(run) = &self.ids.run
-            && &run.container == container
-            && run.last == after
-        {
-            let hi = run.hi.clone();
-            return Some((between(Some(&run.key), hi.as_deref()), hi));
-        }
-        let order_of = |doc: &AutoCommit, obj: &ObjId| match doc.get(obj, BLOCK_ORDER) {
-            Ok(Some((Value::Scalar(value), _))) => match value.as_ref() {
-                ScalarValue::Bytes(key) => Some(key.clone()),
-                _ => None,
-            },
-            _ => None,
-        };
-        let after_key = order_of(self.doc, &block_obj(self.doc, container, after)?)?;
-        let mut next: Option<(Vec<u8>, String)> = None;
-        for item in self.doc.map_range(container, ..) {
-            if !matches!(item.value, ValueRef::Object(ObjType::Map)) {
-                continue;
-            }
-            let Some(key) = order_of(self.doc, &item.id()) else {
-                continue;
-            };
-            let id = item.key.as_ref();
-            let past_after = cmp(&key, &after_key).then_with(|| id.cmp(after)).is_gt();
-            let before_next = next.as_ref().is_none_or(|(next_key, next_id)| {
-                cmp(&key, next_key)
-                    .then_with(|| id.cmp(next_id.as_str()))
-                    .is_lt()
-            });
-            if past_after && before_next {
-                next = Some((key, id.to_owned()));
-            }
-        }
-        let hi = next.map(|(key, _)| key);
-        Some((between(Some(&after_key), hi.as_deref()), hi))
+        crate::order::key_between(lo.as_deref(), hi.as_deref())
     }
 
     fn order_after(&mut self, after: Option<&str>) -> Vec<u8> {
@@ -2248,17 +2089,6 @@ impl DocMut<'_> {
         if let Some(co) = self.ids.order.by_container.get_mut(container) {
             co.insert(id.into(), key.into());
         }
-        self.ids.run = match self.ids.placing.take() {
-            Some((placed, placed_key, hi)) if &placed == container && placed_key == key => {
-                Some(InsertRun {
-                    container: placed,
-                    last: id.to_owned(),
-                    key: placed_key,
-                    hi,
-                })
-            }
-            _ => None,
-        };
     }
 
     /// Drop a block from the order index (on delete). A no-op if the container's index hasn't been built
@@ -2288,58 +2118,6 @@ impl DocMut<'_> {
             return self.stage_block(container, after, kind);
         }
         let key = self.order_after_in(&container, after);
-        let id = self.ids.mint();
-        let obj = self
-            .doc
-            .put_object(&container, id.as_str(), ObjType::Map)
-            .unwrap();
-        self.doc
-            .put(&obj, BLOCK_ORDER, ScalarValue::Bytes(key.clone()))
-            .unwrap();
-        self.doc.put(&obj, BLOCK_KIND, kind).unwrap();
-        self.doc
-            .put_object(&obj, BLOCK_ATTRS, ObjType::Map)
-            .unwrap();
-        self.record_order(&container, &id, &key);
-        id
-    }
-
-    /// Insert a block after `after` and before `next` — the block known to
-    /// follow it — reading only those two blocks' order keys. Falls back to
-    /// [`Self::insert_block_in`] when `next` is unknown, gone, or not after
-    /// `after`.
-    ///
-    /// # Panics
-    /// As [`Self::insert_block_in`]: when the region's container cannot be
-    /// written, which the containers this view resolved rule out.
-    pub fn insert_block_before_in(
-        &mut self,
-        region: Region,
-        after: &str,
-        next: Option<&str>,
-        kind: &str,
-    ) -> String {
-        let container = self.region_container(region);
-        let key_of = |doc: &AutoCommit, id: &str| {
-            let obj = block_obj(doc, &container, id)?;
-            match doc.get(&obj, BLOCK_ORDER) {
-                Ok(Some((Value::Scalar(value), _))) => match value.as_ref() {
-                    ScalarValue::Bytes(key) => Some(key.clone()),
-                    _ => None,
-                },
-                _ => None,
-            }
-        };
-        let bounds = match (self.bulk_active(), next) {
-            (false, Some(next)) => key_of(self.doc, after).zip(key_of(self.doc, next)),
-            _ => None,
-        };
-        let Some((low, high)) =
-            bounds.filter(|(low, high)| tilo_resource::order::bytes::cmp(low, high).is_lt())
-        else {
-            return self.insert_block_in(region, Some(after), kind);
-        };
-        let key = tilo_resource::order::bytes::between(Some(&low), Some(&high));
         let id = self.ids.mint();
         let obj = self
             .doc

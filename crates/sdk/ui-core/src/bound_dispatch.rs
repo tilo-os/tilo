@@ -1334,10 +1334,7 @@ impl RecordActionState {
     /// undo burst; preserve its original provenance before serialization does so.
     pub(crate) fn commit_for_save(&self, doc: &mut AutoCommit) {
         if let Some(pending) = &self.pending {
-            tilo_resource::history::commit_stamped_with_message(
-                doc,
-                pending.context.change_message(),
-            );
+            qdoc::history::commit_stamped_with_message(doc, pending.context.change_message());
         } else if doc.pending_ops() != 0 {
             // Legacy widget input is not wrapped in a bound action frame.
             // Persistence must still close that transaction or DocWriter sees
@@ -1353,10 +1350,7 @@ impl RecordActionState {
         history: &mut crate::state::UndoLog,
     ) {
         if let Some(pending) = self.pending.take() {
-            tilo_resource::history::commit_stamped_with_message(
-                doc,
-                pending.context.change_message(),
-            );
+            qdoc::history::commit_stamped_with_message(doc, pending.context.change_message());
             history.record_committed_span_in(
                 pending.before,
                 doc.get_heads(),
@@ -1680,7 +1674,7 @@ impl ActionFrame {
                 (None, pending) => pending.as_ref().map(|pending| &pending.context),
             }
         };
-        tilo_resource::history::commit_stamped_with_message(
+        qdoc::history::commit_stamped_with_message(
             doc,
             context.and_then(tilo_actions::ActionContext::change_message),
         );
@@ -1903,7 +1897,6 @@ impl CallbackBinding {
         if bracket.is_none() && !commit {
             return Ok(false);
         }
-        let keep_open = widget.keeps_undo_step_open();
         let context = widget.take_commit_context();
         let metadata = widget.get_state();
         let handle = ACTIVE
@@ -1954,11 +1947,7 @@ impl CallbackBinding {
                 }
             }
         }
-        // A step the widget keeps open closes at its next boundary, or
-        // before an undo, a save or a merge.
-        if !keep_open {
-            self.finish_action_boundary(doc)?;
-        }
+        self.finish_action_boundary(doc)?;
         // Arbitrary widget delivery happens after releasing the frame borrow.
         widget.on_commit();
         Ok(true)

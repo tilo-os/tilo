@@ -725,10 +725,6 @@ pub trait Decorator {
         self.inner_mut().take_committed_action()
     }
 
-    fn keeps_undo_step_open(&self) -> bool {
-        self.inner().keeps_undo_step_open()
-    }
-
     fn set_undo_status(&mut self, status: &mut dyn FnMut() -> crate::undo::UndoStatus) {
         self.inner_mut().set_undo_status(status)
     }
@@ -1487,10 +1483,6 @@ impl<T: Decorator> Widget for T {
 
     fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
         Decorator::take_committed_action(self)
-    }
-
-    fn keeps_undo_step_open(&self) -> bool {
-        Decorator::keeps_undo_step_open(self)
     }
 
     fn set_undo_status(&mut self, status: &mut dyn FnMut() -> crate::undo::UndoStatus) {

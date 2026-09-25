@@ -816,7 +816,7 @@ mod tests {
             .set_actor(automerge::ActorId::from("alice".as_bytes()));
         let c = qdoc::model::init(&mut s.doc, &s.root);
         let mut ids = qdoc::IdGen::new(s.doc.get_actor().to_hex_string());
-        ui::tilo_resource::history::commit_stamped_at(&mut s.doc, 1_000_000);
+        qdoc::history::commit_stamped_at(&mut s.doc, 1_000_000);
         let p = {
             let mut dm = qdoc::DocMut {
                 doc: &mut s.doc,
@@ -827,7 +827,7 @@ mod tests {
             dm.splice_text(&id, 0, 0, "Start.");
             id
         };
-        ui::tilo_resource::history::commit_stamped_at(&mut s.doc, 1_000_010);
+        qdoc::history::commit_stamped_at(&mut s.doc, 1_000_010);
 
         // Session one: five more edits, seconds apart.
         for stamp in (1_000_020..).step_by(10).take(5) {
@@ -844,7 +844,7 @@ mod tests {
                 ids: &mut ids,
             };
             dm.splice_text(&p, at, 0, " one");
-            ui::tilo_resource::history::commit_stamped_at(&mut s.doc, stamp);
+            qdoc::history::commit_stamped_at(&mut s.doc, stamp);
         }
 
         // Session two, an hour later, by a peer — forked, edited under its own
@@ -867,7 +867,7 @@ mod tests {
                 ids: &mut pids,
             };
             dm.splice_text(&p, at, 0, " two");
-            ui::tilo_resource::history::commit_stamped_at(&mut peer, stamp);
+            qdoc::history::commit_stamped_at(&mut peer, stamp);
         }
         s.doc.merge_incoming(&mut peer).expect("peers merge");
 
@@ -887,7 +887,7 @@ mod tests {
                 ids: &mut ids,
             };
             dm.splice_text(&p, at, 0, " three");
-            ui::tilo_resource::history::commit_stamped_at(&mut s.doc, stamp);
+            qdoc::history::commit_stamped_at(&mut s.doc, stamp);
         }
         (s, Vec::new())
     }

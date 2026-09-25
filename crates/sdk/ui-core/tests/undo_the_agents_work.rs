@@ -62,7 +62,7 @@ impl Report {
         let mut doc = AutoCommit::new();
         doc.set_actor(ActorId::from(PERSON.as_bytes()));
         let c = qdoc::model::init(&mut doc, &ROOT);
-        tilo_resource::history::commit_stamped_at(&mut doc, 1_780_000_000);
+        qdoc::history::commit_stamped_at(&mut doc, 1_780_000_000);
 
         let mut report = Self {
             doc,
@@ -93,7 +93,7 @@ impl Report {
             };
             f(&mut dm)
         };
-        tilo_resource::history::commit_stamped_at(&mut self.doc, at);
+        qdoc::history::commit_stamped_at(&mut self.doc, at);
         out
     }
 
@@ -216,13 +216,13 @@ fn the_undo_is_a_new_change_and_leaves_the_agents_authorship_standing() {
     let (mut report, _intro) = Report::started_by_a_person();
     agent_writes_two_paragraphs(&mut report);
 
-    let versions_before = tilo_resource::history::versions(&mut report.doc).len();
+    let versions_before = qdoc::history::versions(&mut report.doc).len();
     let run = agents_run(&mut report.doc);
     report.doc.set_actor(ActorId::from(PERSON.as_bytes()));
     revert_run(&mut report.doc, &run, Some(&actor_hex(AGENT)), &directory()).expect("run");
-    tilo_resource::history::commit_stamped_at(&mut report.doc, 1_780_000_400);
+    qdoc::history::commit_stamped_at(&mut report.doc, 1_780_000_400);
 
-    let versions = tilo_resource::history::versions(&mut report.doc);
+    let versions = qdoc::history::versions(&mut report.doc);
     assert!(
         versions.len() > versions_before,
         "history grew: {} -> {}",
@@ -230,12 +230,12 @@ fn the_undo_is_a_new_change_and_leaves_the_agents_authorship_standing() {
         versions.len()
     );
     assert_eq!(
-        versions.last().unwrap().actor,
+        versions.last().unwrap().actor_hex,
         actor_hex(PERSON),
         "the undo is attributed to the person who asked for it"
     );
     assert!(
-        versions.iter().any(|v| v.actor == actor_hex(AGENT)),
+        versions.iter().any(|v| v.actor_hex == actor_hex(AGENT)),
         "and the agent's own changes are still in the history, still its own"
     );
 
@@ -262,7 +262,7 @@ fn every_peer_converges_on_the_undo() {
     let run = agents_run(&mut report.doc);
     report.doc.set_actor(ActorId::from(PERSON.as_bytes()));
     revert_run(&mut report.doc, &run, Some(&actor_hex(AGENT)), &directory()).expect("run");
-    tilo_resource::history::commit_stamped_at(&mut report.doc, 1_780_000_400);
+    qdoc::history::commit_stamped_at(&mut report.doc, 1_780_000_400);
 
     bob.merge(&mut report.doc).expect("peers merge");
 
@@ -314,7 +314,7 @@ fn a_paragraph_the_person_edited_afterwards_is_kept_and_reported() {
 
     report.doc.set_actor(ActorId::from(PERSON.as_bytes()));
     let out = revert_run(&mut report.doc, &run, Some(&actor_hex(AGENT)), &dir).expect("run");
-    tilo_resource::history::commit_stamped_at(&mut report.doc, 1_780_000_400);
+    qdoc::history::commit_stamped_at(&mut report.doc, 1_780_000_400);
 
     assert!(
         !out.is_complete(),
@@ -362,7 +362,7 @@ fn a_persons_edit_elsewhere_does_not_block_the_undo() {
     report.doc.set_actor(ActorId::from(PERSON.as_bytes()));
     let out =
         revert_run(&mut report.doc, &run, Some(&actor_hex(AGENT)), &directory()).expect("run");
-    tilo_resource::history::commit_stamped_at(&mut report.doc, 1_780_000_400);
+    qdoc::history::commit_stamped_at(&mut report.doc, 1_780_000_400);
 
     assert!(
         out.is_complete(),
@@ -391,12 +391,12 @@ fn undoing_a_run_twice_does_not_undo_it_twice_over() {
 
     report.doc.set_actor(ActorId::from(PERSON.as_bytes()));
     revert_run(&mut report.doc, &run, Some(&actor_hex(AGENT)), &directory()).expect("run");
-    tilo_resource::history::commit_stamped_at(&mut report.doc, 1_780_000_400);
+    qdoc::history::commit_stamped_at(&mut report.doc, 1_780_000_400);
     let once = report.body();
 
     let again =
         revert_run(&mut report.doc, &run, Some(&actor_hex(AGENT)), &directory()).expect("run");
-    tilo_resource::history::commit_stamped_at(&mut report.doc, 1_780_000_500);
+    qdoc::history::commit_stamped_at(&mut report.doc, 1_780_000_500);
 
     assert_eq!(report.body(), once, "the second undo changed nothing");
     assert_eq!(once, before, "and the first one did the whole job");
@@ -433,7 +433,7 @@ fn photo_started_by_a_person() -> AutoCommit {
     let img = doc.put_object(ROOT, "image", ObjType::Map).unwrap();
     doc.put(&img, "crop_w", 4000).unwrap();
     doc.put(&img, "crop_h", 3000).unwrap();
-    tilo_resource::history::commit_stamped_at(&mut doc, 1_780_000_000);
+    qdoc::history::commit_stamped_at(&mut doc, 1_780_000_000);
     doc
 }
 
@@ -455,7 +455,7 @@ fn agent_crops(doc: &mut AutoCommit) {
     let (_, img) = doc.get(ROOT, "image").unwrap().unwrap();
     doc.put(&img, "crop_w", 1200).unwrap();
     doc.put(&img, "crop_h", 900).unwrap();
-    tilo_resource::history::commit_stamped_at(doc, 1_780_000_200);
+    qdoc::history::commit_stamped_at(doc, 1_780_000_200);
 }
 
 /// The room document — the compositor's, the only one that sees both apps.
@@ -463,7 +463,7 @@ fn room() -> AutoCommit {
     let mut doc = AutoCommit::new();
     doc.set_actor(ActorId::from("compositor".as_bytes()));
     doc.put(ROOT, "workspaces", "seed").unwrap();
-    tilo_resource::history::commit_stamped_at(&mut doc, 1_780_000_000);
+    qdoc::history::commit_stamped_at(&mut doc, 1_780_000_000);
     doc
 }
 
@@ -504,7 +504,7 @@ fn one_instruction_two_apps() -> (AutoCommit, AutoCommit, Report, AgentRun) {
         &steps,
     )
     .expect("a run with steps is recorded");
-    tilo_resource::history::commit_stamped_at(&mut room, 1_780_000_400);
+    qdoc::history::commit_stamped_at(&mut room, 1_780_000_400);
 
     let run = read_runs(&room).pop().expect("the run reads back");
     (room, photo, report, run)
@@ -539,8 +539,8 @@ fn one_instruction_across_two_applications_is_one_undo() {
     ];
     let report_out = undo_run(&run, Some(&actor_hex(AGENT)), &directory(), &mut open);
     drop(open);
-    tilo_resource::history::commit_stamped_at(&mut photo, 1_780_000_500);
-    tilo_resource::history::commit_stamped_at(&mut report.doc, 1_780_000_500);
+    qdoc::history::commit_stamped_at(&mut photo, 1_780_000_500);
+    qdoc::history::commit_stamped_at(&mut report.doc, 1_780_000_500);
 
     assert!(
         report_out.is_complete(),
@@ -635,14 +635,14 @@ fn a_field_somebody_overwrote_afterwards_is_kept() {
     photo.set_actor(ActorId::from(PERSON.as_bytes()));
     let (_, img) = photo.get(ROOT, "image").unwrap().unwrap();
     photo.put(&img, "crop_w", 1600).unwrap();
-    tilo_resource::history::commit_stamped_at(&mut photo, 1_780_000_450);
+    qdoc::history::commit_stamped_at(&mut photo, 1_780_000_450);
 
     let step = run
         .step_for(PHOTO_EDITOR, "file:/photos/figure-1.png")
         .unwrap();
     let out =
         revert_run(&mut photo, &step.run, Some(&actor_hex(AGENT)), &directory()).expect("run");
-    tilo_resource::history::commit_stamped_at(&mut photo, 1_780_000_500);
+    qdoc::history::commit_stamped_at(&mut photo, 1_780_000_500);
 
     assert!(
         !out.is_complete(),
@@ -727,21 +727,21 @@ fn the_schema_genesis_is_nobodys_run() {
     let (mut report, _intro) = Report::started_by_a_person();
     agent_writes_two_paragraphs(&mut report);
 
-    let versions = tilo_resource::history::versions(&mut report.doc);
+    let versions = qdoc::history::versions(&mut report.doc);
     let genesis = versions
         .iter()
-        .find(|v| qdoc::model::is_schema_genesis(v))
+        .find(|v| qdoc::history::is_schema_genesis(v))
         .expect("the document carries the shared schema genesis")
         .clone();
 
     assert!(
-        latest_run_by(&mut report.doc, &genesis.actor).is_none(),
+        latest_run_by(&mut report.doc, &genesis.actor_hex).is_none(),
         "the genesis is not a run anybody can undo"
     );
     let rows = HistorySource::new().entries(&mut report.doc);
     assert!(
         rows.iter()
-            .all(|r| r.id != entry_id_from_hash(&genesis.hash.to_string())),
+            .all(|r| r.id != entry_id_from_hash(&genesis.change_hash)),
         "and it is not offered as a revision either"
     );
 }
@@ -754,13 +754,13 @@ fn entry_ids_are_stable_across_peers() {
     agent_writes_two_paragraphs(&mut report);
     let mut peer = report.doc.fork();
 
-    let here: Vec<_> = tilo_resource::history::versions(&mut report.doc)
+    let here: Vec<_> = qdoc::history::versions(&mut report.doc)
         .into_iter()
-        .map(|v| entry_id_from_hash(&v.hash.to_string()))
+        .map(|v| entry_id_from_hash(&v.change_hash))
         .collect();
-    let there: Vec<_> = tilo_resource::history::versions(&mut peer)
+    let there: Vec<_> = qdoc::history::versions(&mut peer)
         .into_iter()
-        .map(|v| entry_id_from_hash(&v.hash.to_string()))
+        .map(|v| entry_id_from_hash(&v.change_hash))
         .collect();
     assert_eq!(here, there, "content addresses, so both peers agree");
 }
@@ -791,7 +791,7 @@ fn an_author_chip_has_everything_it_needs_to_undo_that_author() {
     report.doc.set_actor(ActorId::from(PERSON.as_bytes()));
     let out =
         revert_run(&mut report.doc, &run, Some(&actor_hex(AGENT)), &directory()).expect("run");
-    tilo_resource::history::commit_stamped_at(&mut report.doc, 1_780_000_400);
+    qdoc::history::commit_stamped_at(&mut report.doc, 1_780_000_400);
 
     assert_eq!(
         out.covered, 2,
@@ -833,7 +833,7 @@ fn a_run_found_by_author_stops_at_somebody_elses_change() {
     report.doc.set_actor(ActorId::from(PERSON.as_bytes()));
     let out =
         revert_run(&mut report.doc, &run, Some(&actor_hex(AGENT)), &directory()).expect("run");
-    tilo_resource::history::commit_stamped_at(&mut report.doc, 1_780_000_400);
+    qdoc::history::commit_stamped_at(&mut report.doc, 1_780_000_400);
 
     assert_eq!(
         out.covered, 1,
