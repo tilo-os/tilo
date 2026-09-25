@@ -42,6 +42,10 @@ _stage_path = Path(__file__).with_name("windows-direct-common.py")
 _spec = importlib.util.spec_from_file_location("tilo_windows_direct_common", _stage_path)
 stage = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(stage)
+_provenance_path = Path(__file__).with_name("windows-direct-provenance.py")
+_provenance_spec = importlib.util.spec_from_file_location("tilo_windows_direct_provenance", _provenance_path)
+provenance = importlib.util.module_from_spec(_provenance_spec)
+_provenance_spec.loader.exec_module(provenance)
 
 
 def require(condition, message):
@@ -351,6 +355,9 @@ def run(args):
     require(platform.system() == "Windows" and ctypes.windll.shell32.IsUserAnAdmin(),
             "physical final copy requires elevated native Windows")
     if args.command == "execute":
+        require(all(path is not None for path in
+                    (args.ci_index_manifest, args.ci_child_manifest, args.vm_proof_checked)),
+                "execute requires CI manifests and checked VM install proof")
         require(re.fullmatch(r".+@sha256:[0-9a-f]{64}", args.ci_image or "") is not None
                 and source_receipt.get("ci_image") == args.ci_image,
                 "VM source receipt does not bind the digest-pinned CI image")
@@ -359,12 +366,18 @@ def run(args):
                 and source_receipt.get("ci_verification_key_sha256")
                 == hashlib.sha256(key.read_bytes()).hexdigest(),
                 "VM source receipt does not bind the CI verification key")
-        for command in (["cosign", "verify", "--key", str(key), args.ci_image],
-                        ["cosign", "verify-attestation", "--key", str(key),
-                         "--type", "slsaprovenance1", args.ci_image]):
-            verified = subprocess.run(command, capture_output=True, text=True, timeout=180)
-            require(verified.returncode == 0,
-                    "CI image signature or provenance verification failed")
+        provenance.verify_ci_image(args.ci_image, key,
+                                   args.cosign_command_json, args.cosign_key_arg)
+        index_digest, child_digest = provenance.signed_ci_child(
+            args.ci_image, args.ci_index_manifest, args.ci_child_manifest)
+        checked = provenance.checked_guest_proof(args.vm_proof_checked, child_digest)
+        guest = checked["guest_proof"]
+        require(source_receipt.get("ci_index_digest") == index_digest
+                and source_receipt.get("ci_child_digest") == child_digest
+                and source_receipt.get("vm_proof_checked_sha256")
+                == hashlib.sha256(args.vm_proof_checked.read_bytes()).hexdigest()
+                and source_receipt.get("installed_uki_sha256") == guest["target_uki_sha256"],
+                "VM source receipt does not bind verified CI child and checked guest proof")
     disk_number = plan["windows_disk"]["number"]
     current = stage.snapshot(disk_number)
     require(stage.disk_matches(plan, current), "Windows disk identity or state changed")
@@ -376,6 +389,15 @@ def run(args):
     live_number = live_windows_partition(rows, disk_number)
     hashes = source_preflight(args.source_raw, source_receipt, rows, final_rows,
                               plan["windows_disk"]["size_bytes"])
+    if args.command == "execute":
+        with args.source_raw.open("rb", buffering=0) as source:
+            source_disk_guid, _ = read_gpt(source, plan["windows_disk"]["size_bytes"])
+            require(source_disk_guid == guest["disk_guid"],
+                    "VM source disk identity differs from checked guest proof")
+            require(provenance.installed_uki_sha256(
+                source, final_rows[0], guest["composefs_digest"])
+                == guest["target_uki_sha256"],
+                "VM source ESP UKI differs from checked guest proof")
     with stage.open_physical_drive(disk_number) as target:
         validate_physical(plan, stage_receipt, current, target)
         with args.source_raw.open("rb", buffering=0) as source:
@@ -393,6 +415,10 @@ def run(args):
               "live_windows_content_hash_compared": False,
               "physical_readback_verified": True}
     if args.command == "execute":
+        output["ci_index_digest"] = index_digest
+        output["ci_child_digest"] = child_digest
+        output["installed_uki_sha256"] = guest["target_uki_sha256"]
+        output["vm_proof_checked_sha256"] = source_receipt["vm_proof_checked_sha256"]
         require(args.output is not None, "execute requires --output")
         stage.atomic_json(args.output, output)
     print(json.dumps(output, indent=2))
@@ -410,6 +436,11 @@ def main(argv=None):
         command.add_argument("--ci-image", help="digest-pinned CI-signed OCI image; required for execute")
         command.add_argument("--verify-key", type=Path,
                              help="CI Cosign public key; required for execute")
+        command.add_argument("--cosign-command-json", type=Path)
+        command.add_argument("--cosign-key-arg")
+        command.add_argument("--ci-index-manifest", type=Path)
+        command.add_argument("--ci-child-manifest", type=Path)
+        command.add_argument("--vm-proof-checked", type=Path)
         command.add_argument("--output", type=Path)
         command.set_defaults(handler=run)
     args = parser.parse_args(argv)
