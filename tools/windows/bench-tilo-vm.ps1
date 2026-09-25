@@ -4,6 +4,7 @@ param(
     [Parameter(Mandatory = $true)][string]$CliPath,
     [string]$VmName = 'tilo-whpx-dev',
     [string]$ImagePath,
+    [string]$Tag,
     [string]$DiskPath = 'C:\tilo-build\tilo-whpx-dev.qcow2',
     [string]$DirectBootBundle,
     [string]$LogPath = 'C:\tilo-build\tilo-vm-bench.jsonl',
@@ -24,9 +25,13 @@ $revision = (& git rev-parse HEAD 2>$null)
 if ($LASTEXITCODE -ne 0) { $revision = '' }
 
 if ($Phase -contains 'create') {
-    if (-not $ImagePath) { throw '-ImagePath is required for the create phase.' }
-    $ImagePath = [System.IO.Path]::GetFullPath($ImagePath)
-    if ($Execute) { $ImagePath = (Resolve-Path -LiteralPath $ImagePath).Path }
+    if ([bool]$ImagePath -eq [bool]$Tag) {
+        throw 'Specify exactly one of -ImagePath or -Tag for the create phase.'
+    }
+    if ($ImagePath) {
+        $ImagePath = [System.IO.Path]::GetFullPath($ImagePath)
+        if ($Execute) { $ImagePath = (Resolve-Path -LiteralPath $ImagePath).Path }
+    }
     if ($DirectBootBundle) {
         $DirectBootBundle = [System.IO.Path]::GetFullPath($DirectBootBundle)
         if ($Execute) { $DirectBootBundle = (Resolve-Path -LiteralPath $DirectBootBundle).Path }
@@ -41,9 +46,10 @@ if ($Execute -and ($Phase -contains 'swap' -or $Phase -contains 'app')) {
 # All slot operations address this VM without writing .tilo-vm into the tree.
 $env:TILO_VM = $VmName
 $commands = [ordered]@{}
-$create = @('vm', 'create', $VmName, '--hypervisor', 'whpx', '--image', $ImagePath,
+$create = @('vm', 'create', $VmName, '--hypervisor', 'whpx',
             '--disk', $DiskPath, '--headless', '--memory-mb', [string]$MemoryMB,
             '--cpus', [string]$Cpus, '--ssh-port', [string]$SshPort)
+if ($Tag) { $create += @('--tag', $Tag) } else { $create += @('--image', $ImagePath) }
 if ($DirectBootBundle) { $create += @('--direct-boot-bundle', $DirectBootBundle) }
 $commands.create = $create
 $commands.start = @('vm', 'start', $VmName)
@@ -73,6 +79,7 @@ foreach ($name in $Phase) {
         vm = $VmName
         revision = $revision
         image = $ImagePath
+        tag = $Tag
         directBoot = [bool]$DirectBootBundle
         component = $(if ($name -eq 'swap') { $Component } else { $null })
         app = $(if ($name -eq 'app') { $App } else { $null })
