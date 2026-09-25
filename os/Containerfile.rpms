@@ -65,11 +65,6 @@ ARG TARGETARCH
 # download-only, then collect the cached RPMs into a repo. Preserve the full
 # weak-dependency closure; unavailable packages must fail resolution.
 #
-# Download the Fedora kernel SRPM so os/kernel/Containerfile can
-# rebuild it offline against this same digest-pinned base (no live-mirror
-# fetch mid-build — required for the kernel image to be reproducible).
-# dnf5 uses --srpm; dnf4 uses --source; try dnf5 first (the base's dnf is
-# dnf5) and fall back to dnf4 semantics if the flag isn't recognised.
 # --downloadonly skips packages the base already has installed, so a direct
 # spec the image later erases (pkgconf, for its development payloads) could not
 # be installed again when a later stage needs it; download every direct spec too.
@@ -82,9 +77,6 @@ RUN test -n "${PACKAGES}" \
  && dnf download -y --destdir=/repo --exclude='qemu-user-static*' ${PACKAGES} \
  && cp /vendor/virtio-win-0.1.302-1.noarch.rpm /repo/ \
  && test -n "$(ls /repo/*.rpm 2>/dev/null)" \
- && ( dnf5 download --srpm --destdir=/repo kernel 2>/dev/null \
-      || dnf --enablerepo='*-source' download --source --destdir=/repo kernel ) \
- && ls -1 /repo/kernel-*.src.rpm >/dev/null \
  && printf '%s\n' ${PACKAGES} | sort -u > /repo/tilo-direct-package-specs.txt
 
 FROM metadata-tools AS repository
