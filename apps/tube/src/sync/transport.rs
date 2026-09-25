@@ -321,29 +321,18 @@ impl GrayjaySession {
 
         // Frame: [messageSize u32][appId u32][pairingLen u32][pairing][main].
         let app_id: u32 = 0;
-        let message_size = (4 + 4 + pairing_msg.len() + main_len) as u32;
-        let mut out = Vec::with_capacity(4 + message_size as usize);
-        out.extend_from_slice(&message_size.to_le_bytes());
-        out.extend_from_slice(&app_id.to_le_bytes());
-        out.extend_from_slice(&(pairing_msg.len() as u32).to_le_bytes());
-        out.extend_from_slice(&pairing_msg);
+        let mut message = Vec::with_capacity(4 + 4 + pairing_msg.len() + main_len);
+        message.extend_from_slice(&app_id.to_le_bytes());
+        message.extend_from_slice(&(pairing_msg.len() as u32).to_le_bytes());
+        message.extend_from_slice(&pairing_msg);
         let main_message = main_buf.get(..main_len).ok_or_else(|| {
             SyncError::Transport("Noise produced an invalid handshake length".into())
         })?;
-        out.extend_from_slice(main_message);
-        stream.write_all(&out).map_err(|error| io_err(&error))?;
+        message.extend_from_slice(main_message);
+        write_frame(&mut stream, &message)?;
 
         // Response: [len u32][mainMsg2].
-        let mut lenb = [0u8; 4];
-        read_exact(&mut stream, &mut lenb)?;
-        let resp_len = u32::from_le_bytes(lenb) as usize;
-        if resp_len > MAXIMUM_PACKET_SIZE_ENCRYPTED {
-            return Err(SyncError::Transport(format!(
-                "handshake response too large: {resp_len}"
-            )));
-        }
-        let mut resp = vec![0u8; resp_len];
-        read_exact(&mut stream, &mut resp)?;
+        let resp = read_frame(&mut stream)?;
         let mut scratch = vec![0u8; 512];
         hs.read_message(&resp, &mut scratch)
             .map_err(|error| snow_err(&error))?;
@@ -401,16 +390,7 @@ impl GrayjaySession {
             .map_err(|error| snow_err(&error))?;
 
         // Read the first frame: [messageSize][appId][pairingLen][pairing][main].
-        let mut lenb = [0u8; 4];
-        read_exact(&mut stream, &mut lenb)?;
-        let message_size = u32::from_le_bytes(lenb) as usize;
-        if message_size > MAXIMUM_PACKET_SIZE_ENCRYPTED {
-            return Err(SyncError::Transport(format!(
-                "handshake frame too large: {message_size}"
-            )));
-        }
-        let mut msg = vec![0u8; message_size];
-        read_exact(&mut stream, &mut msg)?;
+        let msg = read_frame(&mut stream)?;
         if msg.len() < 8 {
             return Err(SyncError::Transport("handshake frame too short".into()));
         }
@@ -478,13 +458,10 @@ impl GrayjaySession {
         let rn = hs
             .write_message(&[], &mut response_buffer)
             .map_err(|error| snow_err(&error))?;
-        let mut out = Vec::with_capacity(4 + rn);
-        out.extend_from_slice(&(rn as u32).to_le_bytes());
         let response = response_buffer.get(..rn).ok_or_else(|| {
             SyncError::Transport("Noise produced an invalid handshake length".into())
         })?;
-        out.extend_from_slice(response);
-        stream.write_all(&out).map_err(|error| io_err(&error))?;
+        write_frame(&mut stream, response)?;
 
         let transport = hs.into_transport_mode().map_err(|error| snow_err(&error))?;
 
@@ -510,29 +487,16 @@ impl GrayjaySession {
             .transport
             .write_message(plaintext, &mut cipher)
             .map_err(|error| snow_err(&error))?;
-        let mut out = Vec::with_capacity(4 + len);
-        out.extend_from_slice(&(len as u32).to_le_bytes());
         let encrypted = cipher.get(..len).ok_or_else(|| {
             SyncError::Transport("Noise produced an invalid ciphertext length".into())
         })?;
-        out.extend_from_slice(encrypted);
-        self.stream
-            .write_all(&out)
-            .map_err(|error| io_err(&error))?;
-        Ok(())
+        write_frame(&mut self.stream, encrypted)
     }
 
     /// Read + decrypt one raw frame into its plaintext bytes.
     fn read_encrypted(&mut self) -> SyncResult<Vec<u8>> {
-        let mut lenb = [0u8; 4];
-        read_exact(&mut self.stream, &mut lenb)?;
-        let mlen = u32::from_le_bytes(lenb) as usize;
-        if mlen > MAXIMUM_PACKET_SIZE_ENCRYPTED {
-            return Err(SyncError::Transport(format!("frame too large: {mlen}")));
-        }
-        let mut cipher = vec![0u8; mlen];
-        read_exact(&mut self.stream, &mut cipher)?;
-        let mut plain = vec![0u8; mlen];
+        let cipher = read_frame(&mut self.stream)?;
+        let mut plain = vec![0u8; cipher.len()];
         let plen = self
             .transport
             .read_message(&cipher, &mut plain)
@@ -835,6 +799,29 @@ fn stream_header(payload: &[u8]) -> SyncResult<(i32, usize, &[u8])> {
 
 fn read_exact(stream: &mut TcpStream, buf: &mut [u8]) -> SyncResult<()> {
     stream.read_exact(buf).map_err(|error| io_err(&error))
+}
+
+/// Every Grayjay sync packet: a little-endian `u32` length, then the Noise
+/// handshake message or ciphertext.
+const FRAMING: wire_frame::Framing =
+    wire_frame::Framing::little_endian(MAXIMUM_PACKET_SIZE_ENCRYPTED);
+
+fn write_frame(stream: &mut impl Write, payload: &[u8]) -> SyncResult<()> {
+    let frame = FRAMING
+        .encode(payload)
+        .map_err(|error| SyncError::Transport(error.to_string()))?;
+    stream.write_all(&frame).map_err(|error| io_err(&error))
+}
+
+fn read_frame(stream: &mut impl Read) -> SyncResult<Vec<u8>> {
+    match FRAMING.read(stream) {
+        Ok(Some(frame)) => Ok(frame),
+        Ok(None) => Err(io_err(&std::io::ErrorKind::UnexpectedEof.into())),
+        Err(wire_frame::FrameError::TooLarge(len)) => {
+            Err(SyncError::Transport(format!("frame too large: {len}")))
+        }
+        Err(error) => Err(io_err(&error.into())),
+    }
 }
 
 fn parse_authorized_name(payload: &[u8]) -> String {
@@ -1160,6 +1147,18 @@ mod tests {
     use super::*;
     use std::net::TcpListener;
     use std::thread;
+
+    /// Grayjay peers read these bytes: a little-endian `u32` length, then the
+    /// packet, at most 65535 bytes.
+    #[test]
+    fn packet_framing_is_pinned() {
+        let mut wire = Vec::new();
+        write_frame(&mut wire, b"noise").unwrap();
+        assert_eq!(wire, [5, 0, 0, 0, b'n', b'o', b'i', b's', b'e']);
+        assert_eq!(read_frame(&mut wire.as_slice()).unwrap(), b"noise");
+        assert!(read_frame(&mut [0_u8, 0, 1, 0].as_slice()).is_err());
+        assert!(write_frame(&mut Vec::new(), &vec![0; 65_536]).is_err());
+    }
 
     fn request_all_subscriptions(session: &mut GrayjaySession, device: &DeviceKey) {
         let request = SyncSessionData::request_all(device.public_base64());

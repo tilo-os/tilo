@@ -15,7 +15,8 @@ pub(crate) static CANCELLED: std::sync::atomic::AtomicBool =
 pub const READ_BYTES: u64 = 256 * 1024 * 1024;
 pub const WALL_SECONDS: u64 = 20;
 const OUTPUT_BYTES: usize = 4 * 1024 * 1024;
-const FRAME_BYTES: usize = 65_536;
+/// Child-to-parent reports: a little-endian `u32` length, then one JSON value.
+const FRAMING: wire_frame::Framing = wire_frame::Framing::little_endian(65_536);
 unsafe extern "C" {
     fn qos_child_prepare(
         input: i32,
@@ -49,14 +50,9 @@ impl Drop for Child {
         }
     }
 }
-fn frame(output: &mut File, value: &serde_json::Value) -> io::Result<()> {
+fn frame(output: &mut impl Write, value: &serde_json::Value) -> io::Result<()> {
     let bytes = serde_json::to_vec(value)?;
-    if bytes.len() > FRAME_BYTES {
-        return Err(io::Error::other("output frame limit"));
-    }
-    let len = u32::try_from(bytes.len()).map_err(io::Error::other)?;
-    output.write_all(&len.to_le_bytes())?;
-    output.write_all(&bytes)
+    Ok(FRAMING.write(output, &bytes)?)
 }
 fn child_output(capacity: u64, operation: &NativeOperation, read_limit: u64) -> io::Result<()> {
     // prepare() retained only input fd 3 and output fd 4; _exit avoids stale inherited File destructors.
@@ -287,29 +283,12 @@ fn read_output(mut input: File, deadline: Instant, peer: Option<i32>) -> io::Res
 fn decode(mut bytes: &[u8]) -> io::Result<Report> {
     let mut facts = Vec::new();
     let mut done = None;
-    while !bytes.is_empty() {
+    let mut payload = Vec::new();
+    while FRAMING.read_into(&mut bytes, &mut payload)? {
         if done.is_some() {
             return Err(io::Error::other("trailing child output"));
         }
-        let length = bytes
-            .get(..4)
-            .ok_or_else(|| io::Error::other("truncated frame"))?;
-        let length = u32::from_le_bytes(length.try_into().map_err(io::Error::other)?);
-        let length = usize::try_from(length).map_err(io::Error::other)?;
-        if length > FRAME_BYTES {
-            return Err(io::Error::other("oversized frame"));
-        }
-        bytes = bytes
-            .get(4..)
-            .ok_or_else(|| io::Error::other("frame header"))?;
-        let frame: serde_json::Value = serde_json::from_slice(
-            bytes
-                .get(..length)
-                .ok_or_else(|| io::Error::other("truncated body"))?,
-        )?;
-        bytes = bytes
-            .get(length..)
-            .ok_or_else(|| io::Error::other("frame body"))?;
+        let frame: serde_json::Value = serde_json::from_slice(&payload)?;
         if let Some(fact) = frame.get("fact") {
             facts.push(fact.clone());
         } else if let Some(summary) = frame.get("done") {
@@ -448,6 +427,14 @@ mod tests {
         drop(peer);
         assert!(check_peer(Some(parent.as_raw_fd())).is_err());
     }
+    /// The child's report bytes: a little-endian `u32` length, then JSON.
+    #[test]
+    fn child_report_bytes_are_pinned() {
+        let mut output = Vec::new();
+        frame(&mut output, &serde_json::json!({"fact": 1})).unwrap();
+        assert_eq!(output, b"\x0a\0\0\0{\"fact\":1}");
+    }
+
     #[test]
     fn child_framing_refuses_trailing_unknown_and_oversized_results() {
         let valid = serde_json::json!({"done":{"schema":2,"status":0,"stats":{"bytes":0,"calls":0,"writes":0}}});
