@@ -37,10 +37,13 @@
 )]
 
 use std::ffi::OsString;
+use std::io::{IsTerminal, Write};
 use std::process::{Command, ExitCode, Stdio};
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
-use clap::{Parser, Subcommand};
+use clap::{CommandFactory, Parser, Subcommand};
+use clap_complete::Shell;
 
 /// Where the privileged half lives. Overridable so the CLI can be exercised
 /// against a stub in a test without a machine to break.
@@ -64,8 +67,24 @@ struct Cli {
     cmd: Cmd,
 }
 
+#[derive(Parser)]
+#[command(
+    name = "system",
+    about = "Manage the Tilo OS image",
+    after_help = "Examples:\n  system status\n  system update\n  system update --yes\n  system rollback"
+)]
+struct SystemCli {
+    #[command(subcommand)]
+    cmd: SystemCmd,
+}
+
 #[derive(Subcommand)]
 enum Cmd {
+    /// Generate shell completions on standard output.
+    Completions {
+        #[arg(value_enum)]
+        shell: Shell,
+    },
     /// System image, boot, rollback, and repair commands.
     #[command(
         after_help = "Examples:\n  tilo system status\n  tilo system update\n  tilo system update --yes\n  tilo system rollback"
@@ -142,9 +161,14 @@ enum SystemCmd {
 }
 
 fn main() -> ExitCode {
-    let args = system_alias_args(std::env::args_os().collect());
-    let cli = Cli::parse_from(args);
-    match run(cli) {
+    let args: Vec<OsString> = std::env::args_os().collect();
+    let result = if invoked_as(&args, "system") {
+        let cli = SystemCli::parse_from(args);
+        require_system_provider().and_then(|()| run_system(cli.cmd))
+    } else {
+        run(Cli::parse_from(args))
+    };
+    match result {
         Ok(code) => code,
         Err(e) => {
             eprintln!("tilo: {e:#}");
@@ -153,27 +177,33 @@ fn main() -> ExitCode {
     }
 }
 
-/// The image exposes a `system` symlink only where its deployment provider is
-/// installed.  Preserve that short spelling without giving a different parser
-/// or command implementation a chance to drift from `tilo system`.
-fn system_alias_args(mut args: Vec<OsString>) -> Vec<OsString> {
-    if args
-        .first()
+fn invoked_as(args: &[OsString], name: &str) -> bool {
+    args.first()
         .and_then(|arg| std::path::Path::new(arg).file_stem())
-        .is_some_and(|name| name == "system")
-    {
-        args.insert(1, OsString::from("system"));
-    }
-    args
+        .is_some_and(|invoked| invoked == name)
 }
 
 fn run(cli: Cli) -> Result<ExitCode> {
     match cli.cmd {
+        Cmd::Completions { shell } => {
+            let mut output = Vec::new();
+            clap_complete::generate(shell, &mut Cli::command(), "tilo", &mut output);
+            let mut system = SystemCli::command();
+            clap_complete::generate(shell, &mut system, "system", &mut output);
+            append_app_completions(shell, &mut output)?;
+            if let Err(error) = std::io::stdout().write_all(&output)
+                && error.kind() != std::io::ErrorKind::BrokenPipe
+            {
+                return Err(error).context("writing completions");
+            }
+            Ok(ExitCode::SUCCESS)
+        }
         Cmd::System { cmd } => {
             require_system_provider()?;
             run_system(cmd)
         }
-        Cmd::App { args } | Cmd::Store { args } => run_app(&args),
+        Cmd::App { args } => run_app(&args, "tilo app"),
+        Cmd::Store { args } => run_app(&args, "tilo store"),
         // Read-only, so it never needs to become anything. A person diagnosing a machine should not
         // have to authenticate to be told what is on it.
         Cmd::Status { json } => {
@@ -214,6 +244,87 @@ fn run(cli: Cli) -> Result<ExitCode> {
     }
 }
 
+fn append_app_completions(shell: Shell, output: &mut impl Write) -> Result<()> {
+    let configured = app_binary();
+    let sibling = std::env::current_exe()
+        .ok()
+        .and_then(|path| path.parent().map(|parent| parent.join("app")));
+    let binary = if command_available(&configured) {
+        std::path::PathBuf::from(configured)
+    } else if let Some(path) = sibling.filter(|path| executable_file(path)) {
+        path
+    } else {
+        return Ok(());
+    };
+    let generated = Command::new(binary)
+        .args(["completions", &shell.to_string()])
+        .output()
+        .context("generating app completions")?;
+    let mut app_script = String::from_utf8_lossy(&generated.stdout).into_owned();
+    if shell == Shell::Fish {
+        app_script = app_script.replace(
+            "    set -e cmd[1]\n    argparse",
+            "    set -e cmd[1]\n    if contains -- $cmd[1] app store\n        set -e cmd[1]\n    end\n    argparse",
+        );
+    }
+    if generated.status.success() {
+        output.write_all(app_script.as_bytes())?;
+    }
+    match shell {
+        Shell::Bash => output.write_all(
+            br#"
+_tilo_with_app_completion() {
+    if [[ "${COMP_WORDS[1]}" == "app" || "${COMP_WORDS[1]}" == "store" ]]; then
+        local saved_cword=$COMP_CWORD
+        local -a saved_words=("${COMP_WORDS[@]}")
+        COMP_WORDS=(app "${COMP_WORDS[@]:2}")
+        COMP_CWORD=$((COMP_CWORD - 1))
+        _app app "${COMP_WORDS[COMP_CWORD]}" "${COMP_WORDS[COMP_CWORD-1]}"
+        COMP_WORDS=("${saved_words[@]}")
+        COMP_CWORD=$saved_cword
+    else
+        _tilo
+    fi
+}
+complete -F _tilo_with_app_completion -o bashdefault -o default tilo
+"#,
+        )?,
+        Shell::Fish => {
+            output.write_all(
+                b"\n# Reuse the app/store grammar below `tilo app` and `tilo store`.\n",
+            )?;
+            for line in app_script.lines().filter(|line| {
+                line.starts_with("complete -c app ") || line.starts_with("complete -c store ")
+            }) {
+                let nested = line
+                    .replacen("complete -c app ", "complete -c tilo ", 1)
+                    .replacen("complete -c store ", "complete -c tilo ", 1);
+                writeln!(output, "{nested}")?;
+            }
+        }
+        Shell::Zsh => output.write_all(
+            br#"
+_tilo_with_app_completion() {
+    if (( CURRENT > 2 )) && [[ "${words[2]}" == "app" || "${words[2]}" == "store" ]]; then
+        local -a saved_words=("${words[@]}")
+        local saved_current=$CURRENT
+        words=(app "${words[@]:2}")
+        CURRENT=$((CURRENT - 1))
+        _app
+        words=("${saved_words[@]}")
+        CURRENT=$saved_current
+    else
+        _tilo
+    fi
+}
+compdef _tilo_with_app_completion tilo
+"#,
+        )?,
+        _ => {}
+    }
+    Ok(())
+}
+
 fn run_system(cmd: SystemCmd) -> Result<ExitCode> {
     match cmd {
         SystemCmd::Status { json } => run(Cli {
@@ -238,11 +349,11 @@ fn run_system(cmd: SystemCmd) -> Result<ExitCode> {
     }
 }
 
-fn run_app(args: &[OsString]) -> Result<ExitCode> {
+fn run_app(args: &[OsString], invocation: &str) -> Result<ExitCode> {
     if is_root() && !is_help_request(args) {
         bail!(
             "app management belongs to the signed-in user, not root; \
-             leave the root shell and run `tilo app {}`",
+             leave the root shell and run `{invocation} {}`",
             display_args(args)
         );
     }
@@ -255,6 +366,7 @@ fn run_app(args: &[OsString]) -> Result<ExitCode> {
     }
     let status = Command::new(&binary)
         .args(args)
+        .env("TILO_APP_DISPLAY_NAME", invocation)
         .stdin(Stdio::inherit())
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit())
@@ -336,13 +448,16 @@ fn require_system_provider() -> Result<()> {
 
 fn update_everything(yes: bool) -> Result<ExitCode> {
     let app_provider = app_available() && !is_root();
-    if is_root() && app_available() {
-        eprintln!("tilo: user app updates are skipped while running as root");
-    }
+    let app_skip_reason = if is_root() && app_available() {
+        "user app updates skipped while running as root"
+    } else {
+        "app updates skipped (`app` is not installed or not on PATH)"
+    };
     update_available_providers(
         app_provider,
         system_available(),
-        || run_app(&[OsString::from("update")]),
+        app_skip_reason,
+        || run_app(&[OsString::from("update")], "tilo app"),
         || {
             privileged(
                 &["update"],
@@ -357,6 +472,7 @@ fn update_everything(yes: bool) -> Result<ExitCode> {
 fn update_available_providers(
     app_is_available: bool,
     system_is_available: bool,
+    app_skip_reason: &str,
     mut update_apps: impl FnMut() -> Result<ExitCode>,
     mut update_system: impl FnMut() -> Result<ExitCode>,
 ) -> Result<ExitCode> {
@@ -364,22 +480,32 @@ fn update_available_providers(
     let mut failed = false;
     if app_is_available {
         attempted = true;
+        let started = provider_started("Apps");
         match update_apps() {
-            Ok(status) => failed |= status != ExitCode::SUCCESS,
+            Ok(status) => {
+                provider_finished("Apps", started, status == ExitCode::SUCCESS);
+                failed |= status != ExitCode::SUCCESS;
+            }
             Err(error) => {
                 eprintln!("tilo: app update failed: {error:#}");
+                provider_finished("Apps", started, false);
                 failed = true;
             }
         }
     } else {
-        eprintln!("tilo: app updates skipped (`app` is not installed or not on PATH)");
+        eprintln!("tilo: {app_skip_reason}");
     }
     if system_is_available {
         attempted = true;
+        let started = provider_started("System image");
         match update_system() {
-            Ok(status) => failed |= status != ExitCode::SUCCESS,
+            Ok(status) => {
+                provider_finished("System image", started, status == ExitCode::SUCCESS);
+                failed |= status != ExitCode::SUCCESS;
+            }
             Err(error) => {
                 eprintln!("tilo: system update failed: {error:#}");
+                provider_finished("System image", started, false);
                 failed = true;
             }
         }
@@ -394,6 +520,19 @@ fn update_available_providers(
     } else {
         ExitCode::SUCCESS
     })
+}
+
+fn provider_started(name: &str) -> Instant {
+    eprintln!("\n{name}: checking for updates…");
+    Instant::now()
+}
+
+fn provider_finished(name: &str, started: Instant, succeeded: bool) {
+    eprintln!(
+        "{name}: {} ({})",
+        if succeeded { "done" } else { "failed" },
+        human_duration(started.elapsed())
+    );
 }
 
 fn is_root() -> bool {
@@ -426,7 +565,7 @@ fn privileged(args: &[&str], yes: bool, unit: &str, what: &str) -> Result<ExitCo
         if yes {
             a.push("--yes");
         }
-        return run_helper_directly(&a);
+        return run_helper_with_feedback(&a, what);
     }
 
     // Not root. The caveats belong in front of the confirmation, not behind it, so print them
@@ -446,10 +585,9 @@ fn privileged(args: &[&str], yes: bool, unit: &str, what: &str) -> Result<ExitCo
 
     // polkit authorises exactly this unit for a local active session in wheel; if it doesn't,
     // systemctl says so far more usefully than a guess would.
-    let status = Command::new("systemctl")
-        .args(["start", "--wait", unit])
-        .status()
-        .context("running systemctl start")?;
+    let mut command = Command::new("systemctl");
+    command.args(["start", "--wait", unit]);
+    let status = wait_with_feedback(command, what).context("running systemctl start")?;
     if !status.success() {
         eprintln!(
             "\ntilo: starting {unit} failed. Either this session is not the one at \
@@ -468,6 +606,68 @@ fn privileged(args: &[&str], yes: bool, unit: &str, what: &str) -> Result<ExitCo
         .args(["-u", unit, "-n", "40", "--no-pager", "-o", "cat"])
         .status();
     Ok(ExitCode::SUCCESS)
+}
+
+fn run_helper_with_feedback(args: &[&str], what: &str) -> Result<ExitCode> {
+    let helper = helper();
+    let mut command = Command::new(&helper);
+    command.args(args).stdin(Stdio::inherit());
+    let status = wait_with_feedback(command, what).with_context(|| format!("running {helper}"))?;
+    Ok(exit_code(status.code()))
+}
+
+fn wait_with_feedback(
+    mut command: Command,
+    what: &str,
+) -> std::io::Result<std::process::ExitStatus> {
+    let mut child = command.spawn()?;
+    let started = Instant::now();
+    let terminal = std::io::stderr().is_terminal();
+    let mut spinner = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+        .into_iter()
+        .cycle();
+    let mut last_non_terminal_report = Instant::now();
+    eprintln!("{what}…");
+    loop {
+        if let Some(status) = child.try_wait()? {
+            if terminal {
+                eprint!("\r\x1b[2K");
+            }
+            eprintln!(
+                "{} {} ({})",
+                if status.success() { "✓" } else { "✗" },
+                what,
+                human_duration(started.elapsed())
+            );
+            return Ok(status);
+        }
+        if terminal {
+            let frame = spinner.next().unwrap_or("•");
+            eprint!(
+                "\r\x1b[2K{} {}… ({})",
+                frame,
+                what,
+                human_duration(started.elapsed())
+            );
+            let _ = std::io::stderr().flush();
+        } else if last_non_terminal_report.elapsed() >= Duration::from_secs(15) {
+            eprintln!(
+                "Still working: {what}… ({})",
+                human_duration(started.elapsed())
+            );
+            last_non_terminal_report = Instant::now();
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
+fn human_duration(duration: Duration) -> String {
+    let seconds = duration.as_secs();
+    if seconds < 60 {
+        format!("{seconds}s")
+    } else {
+        format!("{}m {:02}s", seconds / 60, seconds % 60)
+    }
 }
 
 fn exit_code(code: Option<i32>) -> ExitCode {
@@ -510,6 +710,30 @@ mod tests {
     #[test]
     fn the_command_tree_is_well_formed() {
         Cli::command().debug_assert();
+        SystemCli::command().debug_assert();
+    }
+
+    #[test]
+    fn completion_scripts_cover_tilo_and_system() {
+        let mut output = Vec::new();
+        clap_complete::generate(Shell::Bash, &mut Cli::command(), "tilo", &mut output);
+        clap_complete::generate(
+            Shell::Bash,
+            &mut SystemCli::command(),
+            "system",
+            &mut output,
+        );
+        let script = String::from_utf8(output).expect("completion is UTF-8");
+        assert!(script.contains("_tilo()"), "{script}");
+        assert!(script.contains("default tilo"), "{script}");
+        assert!(script.contains("_system()"), "{script}");
+        assert!(script.contains("default system"), "{script}");
+    }
+
+    #[test]
+    fn elapsed_time_is_compact_and_stable() {
+        assert_eq!(human_duration(Duration::from_secs(9)), "9s");
+        assert_eq!(human_duration(Duration::from_secs(125)), "2m 05s");
     }
 
     /// `status` must not require root. A person diagnosing a machine that won't boot properly
@@ -539,18 +763,14 @@ mod tests {
 
     #[test]
     fn system_argv0_is_the_same_system_namespace() {
-        let cli = Cli::try_parse_from(system_alias_args(vec![
+        let args = vec![
             OsString::from("system"),
             OsString::from("update"),
             OsString::from("-y"),
-        ]))
-        .expect("the system alias parses");
-        assert!(matches!(
-            cli.cmd,
-            Cmd::System {
-                cmd: SystemCmd::Update { yes: true }
-            }
-        ));
+        ];
+        assert!(invoked_as(&args, "system"));
+        let cli = SystemCli::try_parse_from(args).expect("the system alias parses");
+        assert!(matches!(cli.cmd, SystemCmd::Update { yes: true }));
     }
 
     #[test]
@@ -592,6 +812,7 @@ mod tests {
         let status = update_available_providers(
             true,
             false,
+            "app unavailable",
             || {
                 app_runs += 1;
                 Ok(ExitCode::SUCCESS)
@@ -608,6 +829,7 @@ mod tests {
         let status = update_available_providers(
             false,
             true,
+            "app unavailable",
             || Ok(ExitCode::SUCCESS),
             || Ok(ExitCode::SUCCESS),
         )
@@ -621,6 +843,7 @@ mod tests {
             update_available_providers(
                 false,
                 false,
+                "app unavailable",
                 || Ok(ExitCode::SUCCESS),
                 || Ok(ExitCode::SUCCESS)
             )
@@ -630,6 +853,7 @@ mod tests {
             update_available_providers(
                 true,
                 true,
+                "app unavailable",
                 || Ok(ExitCode::FAILURE),
                 || Ok(ExitCode::SUCCESS)
             )
@@ -643,6 +867,7 @@ mod tests {
             update_available_providers(
                 true,
                 true,
+                "app unavailable",
                 || {
                     apps += 1;
                     Ok(ExitCode::SUCCESS)

@@ -117,6 +117,14 @@ pub struct Disk {
     pub read_only: bool,
     pub is_system: bool,
     pub partitions: Vec<DiskPartition>,
+    /// Device nodes directly below this disk (or the disk itself) whose
+    /// subtree carries a running-system mount. For a staged (USB-free)
+    /// installation these must be exactly the staging partitions.
+    pub live_system_nodes: Vec<String>,
+    /// Set only on the running-system disk that also holds a verified staged
+    /// installer: the single guided plan that fills the staged target extent.
+    /// Whole-disk erase and prepared partitions are never offered there.
+    pub internal_plan: Option<GuidedAlongsidePlan>,
 }
 
 impl Disk {
@@ -199,7 +207,8 @@ impl Disk {
     }
 
     pub fn can_install_alongside(&self) -> bool {
-        self.identity_ready()
+        self.internal_plan.is_none()
+            && self.identity_ready()
             && !self.read_only
             && self.alongside_root().is_some()
             && self.efi_partition().is_some()
@@ -241,6 +250,9 @@ impl Disk {
     /// ESP plus a >=32 GiB root, in on-disk order. Callers must require an
     /// explicit choice when this returns more than one plan.
     pub fn guided_alongside_plans(&self) -> Vec<GuidedAlongsidePlan> {
+        if let Some(plan) = &self.internal_plan {
+            return vec![plan.clone()];
+        }
         if !self.partition_table.eq_ignore_ascii_case("gpt")
             || self.partition_table_uuid.is_empty()
             || self.logical_sector_size == 0
@@ -299,6 +311,163 @@ impl Disk {
     /// unambiguous. Multiple safe extents are never silently resolved.
     pub fn guided_alongside_plan(&self) -> Option<GuidedAlongsidePlan> {
         exactly_one_owned(self.guided_alongside_plans().into_iter())
+    }
+
+    /// Whether this disk holds the running installer and cannot be a target.
+    /// A verified staged installation is the one exception.
+    pub fn blocks_install(&self) -> bool {
+        self.is_system && self.internal_plan.is_none()
+    }
+
+    /// Whether this is the running-system disk that holds a verified staged
+    /// installer (and therefore also the retained OS).
+    pub fn hosts_staged_installer(&self) -> bool {
+        self.internal_plan.is_some()
+    }
+
+    /// Bind a staged (USB-free) installation to this disk. It applies only to
+    /// the disk the installer is running from, and only when the disk, both
+    /// staging partitions and the free target extent are exactly as staged
+    /// and nothing but the staging partitions carries the running system.
+    /// The privileged backend repeats every check before writing anything.
+    ///
+    /// # Errors
+    ///
+    /// Returns why the handoff does not describe this disk; the disk then
+    /// stays unavailable exactly like any other running-system disk.
+    pub fn apply_internal_handoff(
+        &mut self,
+        handoff: &crate::internal_handoff::Handoff,
+    ) -> Result<(), String> {
+        self.internal_plan = None;
+        let plan = self.internal_plan_for(handoff)?;
+        self.internal_plan = Some(plan);
+        Ok(())
+    }
+
+    fn internal_plan_for(
+        &self,
+        handoff: &crate::internal_handoff::Handoff,
+    ) -> Result<GuidedAlongsidePlan, String> {
+        if !self.is_system {
+            return Err("the staged installer is not on this disk".into());
+        }
+        if !self.partition_table.eq_ignore_ascii_case("gpt")
+            || !self
+                .partition_table_uuid
+                .eq_ignore_ascii_case(&handoff.disk_guid)
+            || self.size_bytes != handoff.disk_size_bytes
+        {
+            return Err("this disk differs from the one Tilo Imager prepared".into());
+        }
+        if self.read_only || !self.identity_ready() {
+            return Err("this disk cannot be bound to a stable identity".into());
+        }
+        if !matches!(self.logical_sector_size, 512 | 4096) {
+            return Err("unsupported logical sector size".into());
+        }
+        let esp = self.staged_partition(&handoff.staging_esp, EFI_SYSTEM_GUID)?;
+        let root = self.staged_partition(&handoff.staging_root, LINUX_FILESYSTEM_GUID)?;
+        if !self
+            .live_system_nodes
+            .iter()
+            .all(|node| *node == esp.name || *node == root.name)
+            || !self.live_system_nodes.contains(&root.name)
+        {
+            return Err("the running system is not exactly the staged installer".into());
+        }
+        if self
+            .partitions
+            .iter()
+            .any(|p| !p.mountpoint.is_empty() && p.name != esp.name && p.name != root.name)
+        {
+            return Err("another partition on this disk is in use".into());
+        }
+        self.staged_target_plan(handoff.target_extent)
+    }
+
+    /// Inclusive LBA range of `partition` in this disk's logical sectors.
+    fn lba_range(&self, partition: &DiskPartition) -> Option<(u64, u64)> {
+        let sector = self.logical_sector_size;
+        if sector == 0
+            || !partition.start_bytes.is_multiple_of(sector)
+            || !partition.size_bytes.is_multiple_of(sector)
+            || partition.size_bytes == 0
+        {
+            return None;
+        }
+        let first = partition.start_bytes.checked_div(sector)?;
+        let last = first
+            .checked_add(partition.size_bytes.checked_div(sector)?)?
+            .checked_sub(1)?;
+        Some((first, last))
+    }
+
+    fn staged_partition(
+        &self,
+        identity: &crate::internal_handoff::StagedIdentity,
+        part_type: &str,
+    ) -> Result<&DiskPartition, String> {
+        let partition = exactly_one(
+            self.partitions
+                .iter()
+                .filter(|p| p.part_uuid.eq_ignore_ascii_case(&identity.partuuid)),
+        )
+        .ok_or_else(|| "a staged installer partition is missing".to_string())?;
+        if !partition.part_type.eq_ignore_ascii_case(part_type)
+            || self.lba_range(partition) != Some((identity.first_lba, identity.last_lba))
+        {
+            return Err("a staged installer partition changed after staging".into());
+        }
+        Ok(partition)
+    }
+
+    /// The guided plan that fills the staged target extent exactly: a 2 GiB
+    /// ESP at its start and a root that ends where the staged installer
+    /// begins, so reclaim can later grow the root in place.
+    fn staged_target_plan(
+        &self,
+        target: crate::internal_handoff::Extent,
+    ) -> Result<GuidedAlongsidePlan, String> {
+        let malformed = || "the staged target space is malformed".to_string();
+        let sector = self.logical_sector_size;
+        let lbas = target
+            .last_lba
+            .checked_sub(target.first_lba)
+            .and_then(|span| span.checked_add(1))
+            .ok_or_else(malformed)?;
+        let free_start_bytes = target.first_lba.checked_mul(sector).ok_or_else(malformed)?;
+        let free_size_bytes = lbas.checked_mul(sector).ok_or_else(malformed)?;
+        let free_end = free_start_bytes
+            .checked_add(free_size_bytes)
+            .ok_or_else(malformed)?;
+        let root_start_bytes = free_start_bytes
+            .checked_add(MIN_ALONGSIDE_ESP_BYTES)
+            .ok_or_else(malformed)?;
+        let root_size_bytes = free_size_bytes
+            .checked_sub(MIN_ALONGSIDE_ESP_BYTES)
+            .ok_or_else(malformed)?;
+        if !free_start_bytes.is_multiple_of(PARTITION_ALIGNMENT_BYTES)
+            || !free_size_bytes.is_multiple_of(PARTITION_ALIGNMENT_BYTES)
+            || root_size_bytes < MIN_ALONGSIDE_BYTES
+            || free_end > self.size_bytes.saturating_sub(PARTITION_ALIGNMENT_BYTES)
+        {
+            return Err("the staged target space cannot hold Tilo".into());
+        }
+        if self.partitions.iter().any(|p| {
+            self.lba_range(p)
+                .is_none_or(|(first, last)| first <= target.last_lba && target.first_lba <= last)
+        }) {
+            return Err("the staged target space is no longer unallocated".into());
+        }
+        Ok(GuidedAlongsidePlan {
+            free_start_bytes,
+            free_size_bytes,
+            efi_start_bytes: free_start_bytes,
+            efi_size_bytes: MIN_ALONGSIDE_ESP_BYTES,
+            root_start_bytes,
+            root_size_bytes,
+        })
     }
 
     /// Minimum identity needed for any destructive handoff. Device number
@@ -415,6 +584,8 @@ pub fn parse_lsblk(output: &str) -> Vec<Disk> {
             read_only: false,
             is_system: false,
             partitions: Vec::new(),
+            live_system_nodes: Vec::new(),
+            internal_plan: None,
         });
     }
     disks
@@ -443,9 +614,21 @@ fn disks_from(devices: &[BlockDevice]) -> Vec<Disk> {
             // holder tree when deciding whether the whole disk is the running
             // system. Otherwise the UI offers a disk that the privileged
             // backend correctly rejects only after the user has reviewed it.
-            let is_system = d
-                .descendants()
-                .any(|device| is_live_system_mount(&mountpoints(device)));
+            let tree_is_live = |device: &BlockDevice| {
+                device
+                    .descendants()
+                    .any(|node| is_live_system_mount(&mountpoints(node)))
+            };
+            let is_system = tree_is_live(d);
+            let mut live_system_nodes: Vec<String> = d
+                .children
+                .iter()
+                .filter(|child| tree_is_live(child))
+                .map(|child| child.name.clone())
+                .collect();
+            if is_live_system_mount(&mountpoints(d)) {
+                live_system_nodes.push(name.clone());
+            }
             Some(Disk {
                 name,
                 size: ui::format::bytes(size_bytes),
@@ -461,6 +644,8 @@ fn disks_from(devices: &[BlockDevice]) -> Vec<Disk> {
                 read_only: d.read_only,
                 is_system,
                 partitions,
+                live_system_nodes,
+                internal_plan: None,
             })
         })
         .collect()
@@ -685,6 +870,8 @@ mod tests {
             removable: false,
             read_only: false,
             is_system: false,
+            live_system_nodes: Vec::new(),
+            internal_plan: None,
             partitions: Vec::new(),
         };
         assert_eq!(with.label(), "/dev/sda  —  238.5G  —  Samsung SSD");
@@ -702,6 +889,8 @@ mod tests {
             removable: false,
             read_only: false,
             is_system: false,
+            live_system_nodes: Vec::new(),
+            internal_plan: None,
             partitions: Vec::new(),
         };
         assert_eq!(without.label(), "/dev/vda  —  64G");
@@ -764,6 +953,8 @@ mod tests {
             removable: false,
             read_only: false,
             is_system: false,
+            live_system_nodes: Vec::new(),
+            internal_plan: None,
             partitions: vec![DiskPartition {
                 name: "/dev/sda1".into(),
                 start_bytes: 1024 * 1024,
@@ -820,6 +1011,8 @@ mod tests {
             removable: false,
             read_only: false,
             is_system: false,
+            live_system_nodes: Vec::new(),
+            internal_plan: None,
             partitions: vec![DiskPartition {
                 name: "/dev/sda1".into(),
                 start_bytes: 1024 * 1024,
@@ -929,6 +1122,8 @@ mod tests {
             removable: false,
             read_only: false,
             is_system: false,
+            live_system_nodes: Vec::new(),
+            internal_plan: None,
             partitions: Vec::new(),
         };
         assert!(
@@ -953,5 +1148,118 @@ mod tests {
             "two eligible gaps must never be silently selected"
         );
         assert!(plans[0].free_start_bytes < plans[1].free_start_bytes);
+    }
+
+    fn staged_disk(mutate: impl FnOnce(&mut serde_json::Value)) -> Disk {
+        let mut json = crate::internal_handoff::tests::lsblk_json();
+        mutate(&mut json);
+        parse_lsblk(&json.to_string()).remove(0)
+    }
+
+    #[test]
+    fn verified_staged_installer_disk_offers_only_the_prepared_guided_plan() {
+        use crate::internal_handoff::tests::{TARGET, handoff};
+        let mut disk = staged_disk(|_| {});
+        assert!(disk.is_system && disk.blocks_install());
+        assert_eq!(disk.live_system_nodes, vec!["/dev/nvme0n1p4".to_string()]);
+        disk.apply_internal_handoff(&handoff()).unwrap();
+        assert!(!disk.blocks_install());
+        assert!(disk.hosts_staged_installer());
+        assert!(
+            !disk.can_install_alongside(),
+            "prepared partitions are never offered here"
+        );
+        let plans = disk.guided_alongside_plans();
+        assert_eq!(plans.len(), 1);
+        let plan = &plans[0];
+        assert_eq!(plan.free_start_bytes, TARGET.0 * 512);
+        assert_eq!(plan.free_size_bytes, (TARGET.1 - TARGET.0 + 1) * 512);
+        assert_eq!(plan.efi_start_bytes, plan.free_start_bytes);
+        assert_eq!(plan.efi_size_bytes, MIN_ALONGSIDE_ESP_BYTES);
+        assert_eq!(
+            plan.root_start_bytes + plan.root_size_bytes,
+            (TARGET.1 + 1) * 512,
+            "the Tilo root must end where the staged installer begins"
+        );
+    }
+
+    #[test]
+    fn staged_handoff_that_does_not_describe_the_disk_keeps_it_unavailable() {
+        use crate::internal_handoff::tests::{TARGET, handoff};
+        type Mutation = Box<dyn Fn(&mut serde_json::Value)>;
+        let cases: Vec<(&str, Mutation)> = vec![
+            (
+                "guid",
+                Box::new(|j| {
+                    j["blockdevices"][0]["ptuuid"] = "99999999-2222-4333-8444-555555555555".into();
+                }),
+            ),
+            (
+                "size",
+                Box::new(|j| {
+                    j["blockdevices"][0]["size"] = (255u64 << 30).into();
+                }),
+            ),
+            (
+                "esp missing",
+                Box::new(|j| {
+                    j["blockdevices"][0]["children"][2]["partuuid"] =
+                        "cccccccc-0000-4000-8000-000000000009".into();
+                }),
+            ),
+            (
+                "root moved",
+                Box::new(|j| {
+                    j["blockdevices"][0]["children"][3]["start"] =
+                        (crate::internal_handoff::tests::STAGING_ROOT.0 + 2048).into();
+                }),
+            ),
+            (
+                "root elsewhere",
+                Box::new(|j| {
+                    j["blockdevices"][0]["children"][3]["mountpoints"] = serde_json::json!([null]);
+                }),
+            ),
+            (
+                "windows mounted",
+                Box::new(|j| {
+                    j["blockdevices"][0]["children"][1]["mountpoints"] =
+                        serde_json::json!(["/mnt/c"]);
+                }),
+            ),
+            (
+                "extent used",
+                Box::new(|j| {
+                    let used = serde_json::json!({"name": "/dev/nvme0n1p5", "type": "part",
+                        "start": TARGET.0 + 2048, "size": 1u64 << 30,
+                        "partuuid": "dddddddd-0000-4000-8000-000000000004",
+                        "parttype": LINUX_FILESYSTEM_GUID, "mountpoints": [null]});
+                    j["blockdevices"][0]["children"]
+                        .as_array_mut()
+                        .unwrap()
+                        .push(used);
+                }),
+            ),
+        ];
+        for (label, mutate) in cases {
+            let mut disk = staged_disk(|j| mutate(j));
+            assert!(
+                disk.apply_internal_handoff(&handoff()).is_err(),
+                "accepted {label}"
+            );
+            assert!(disk.internal_plan.is_none());
+            assert!(
+                disk.blocks_install() || !disk.is_system,
+                "{label} became selectable"
+            );
+        }
+        let mut not_live = staged_disk(|j| {
+            j["blockdevices"][0]["children"][3]["mountpoints"] = serde_json::json!([null]);
+        });
+        assert!(!not_live.is_system);
+        assert!(
+            not_live.apply_internal_handoff(&handoff()).is_err(),
+            "only the running disk qualifies"
+        );
     }
 }

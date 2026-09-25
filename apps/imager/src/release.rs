@@ -47,13 +47,13 @@ enum MediaLayout {
 }
 #[derive(Debug, Deserialize)]
 enum InternalPurpose {
-    #[serde(rename = "qos-internal-installer")]
+    #[serde(rename = "tilo-internal-installer")]
     InternalInstaller,
 }
 #[derive(Debug, Deserialize)]
 enum InternalLayout {
-    #[serde(rename = "internal-bundle-v1")]
-    BundleV1,
+    #[serde(rename = "internal-bundle-v2")]
+    BundleV2,
 }
 
 fn present_tag<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
@@ -202,7 +202,7 @@ impl InternalRelease {
         Self {
             metadata: InternalMetadata {
                 purpose: InternalPurpose::InternalInstaller,
-                layout: InternalLayout::BundleV1,
+                layout: InternalLayout::BundleV2,
                 release_id: "fixture-only".into(),
                 arch: "x86_64".into(),
                 manifest_url: url.into(),
@@ -232,11 +232,11 @@ impl InternalRelease {
             return Err("Internal manifest does not match the embedded catalog bytes.".into());
         }
         let bundle = crate::setup::internal_bundle::validate_internal_bundle(bytes)?;
-        let (InternalPurpose::InternalInstaller, InternalLayout::BundleV1) =
+        let (InternalPurpose::InternalInstaller, InternalLayout::BundleV2) =
             (&expected.purpose, &expected.layout);
         if bundle.release_id() != expected.release_id
             || bundle.architecture() != expected.arch
-            || bundle.purpose() != "qos-internal-installer"
+            || bundle.purpose() != crate::setup::internal_bundle::PURPOSE
         {
             return Err("Internal manifest does not match the selected release.".into());
         }
@@ -404,7 +404,8 @@ fn releases_for_host(
 /// # Errors
 /// Rejects any invalid embedded catalog entry before host filtering.
 pub fn bundled_internal_releases() -> Result<Vec<InternalRelease>, String> {
-    Ok(parse_catalog(BUNDLED_CATALOG)?
+    let catalog = internal_catalog_text()?;
+    Ok(parse_catalog(&catalog)?
         .releases
         .into_iter()
         .filter_map(|entry| match entry {
@@ -414,6 +415,23 @@ pub fn bundled_internal_releases() -> Result<Vec<InternalRelease>, String> {
             _ => None,
         })
         .collect())
+}
+
+/// The catalog internal releases resolve against: the embedded one, or, in
+/// builds that allow staging test overrides (debug, or compiled with
+/// `TILO_IMAGER_STAGING_TEST_OVERRIDES=1`), the file named by
+/// `TILO_STAGING_TEST_CATALOG`. The loop-device harness uses it to name its
+/// synthetic bundle; release builds never read it, and the file passes the
+/// same `parse_catalog` validation as the embedded catalog.
+fn internal_catalog_text() -> Result<std::borrow::Cow<'static, str>, String> {
+    if crate::setup::staging::helper::test_overrides_allowed() {
+        if let Some(path) = std::env::var_os("TILO_STAGING_TEST_CATALOG") {
+            let text = std::fs::read_to_string(&path)
+                .map_err(|e| format!("test catalog {}: {e}", path.to_string_lossy()))?;
+            return Ok(text.into());
+        }
+    }
+    Ok(BUNDLED_CATALOG.into())
 }
 
 fn valid_hardware_profile(profile: &str) -> bool {
@@ -1387,8 +1405,8 @@ mod internal_catalog_tests {
     #[test]
     fn explicit_internal_purpose_never_falls_through_as_media() {
         let mut value = media();
-        value["purpose"] = json!("qos-internal-installer");
-        value["layout"] = json!("internal-bundle-v1");
+        value["purpose"] = json!("tilo-internal-installer");
+        value["layout"] = json!("internal-bundle-v2");
         assert!(parse_catalog(&catalog(value)).is_err());
     }
     #[test]
@@ -1408,11 +1426,27 @@ mod internal_catalog_tests {
         }
     }
     fn internal(manifest: &[u8]) -> Value {
-        json!({"purpose":"qos-internal-installer","layout":"internal-bundle-v1",
+        json!({"purpose":"tilo-internal-installer","layout":"internal-bundle-v2",
             "release_id":"fixture-only","arch":"x86_64",
             "manifest_url":"https://code.podesta.ai/fixture/manifest.json",
             "manifest_sha256":hex::encode(Sha256::digest(manifest)),"manifest_size":manifest.len()})
     }
+    /// The catalog `os/tests/staging_helper_loop.sh` writes for its synthetic
+    /// bundle (via `TILO_STAGING_TEST_CATALOG`) must pass the real parser.
+    #[test]
+    fn loop_harness_catalog_shape_is_a_valid_catalog() {
+        let mut entry = internal(b"{}");
+        entry["release_id"] = json!("loop-test");
+        entry["manifest_url"] = json!("https://code.podesta.ai/qos/loop-test/manifest.json");
+        let text =
+            json!({"schema":1,"tag":"imager-v0.0.0-loop-test","releases":[entry]}).to_string();
+        let parsed = parse_catalog(&text).unwrap();
+        assert!(matches!(
+            parsed.releases.as_slice(),
+            [CatalogRelease::Internal(m)] if m.release_id == "loop-test"
+        ));
+    }
+
     fn selection(value: Value) -> InternalRelease {
         match parse_catalog(&catalog(value))
             .unwrap()
@@ -1446,6 +1480,34 @@ mod internal_catalog_tests {
         assert_eq!(valid.release_id(), release.release_id());
         assert_eq!(valid.architecture(), release.architecture());
         assert!(release.verify_manifest(&changed).is_err());
+    }
+    #[test]
+    fn published_package_entries_parse_as_internal_releases() {
+        // The exact shape build-release-catalog.sh emits for a Forgejo package.
+        let mut value = crate::setup::internal_bundle::tests::fixture();
+        value["release_id"] = json!("imager-v1.2.3");
+        let bytes = crate::setup::internal_bundle::tests::bytes(&value);
+        let mut entry = internal(&bytes);
+        entry["release_id"] = json!("imager-v1.2.3");
+        entry["manifest_url"] = json!(
+            "https://code.podesta.ai/api/packages/qos/generic/tilo-internal-installer/imager-v1.2.3/tilo-internal-installer-x86_64.json"
+        );
+        let raw = json!({"schema":1,"tag":"imager-v1.2.3","releases":[media(), entry]}).to_string();
+        let catalog = parse_catalog(&raw).unwrap();
+        assert_eq!(
+            media_releases(parse_catalog(&raw).unwrap(), "x86_64").len(),
+            1
+        );
+        let release = catalog
+            .releases
+            .into_iter()
+            .find_map(|entry| match entry {
+                CatalogRelease::Internal(metadata) => Some(InternalRelease { metadata }),
+                CatalogRelease::Media(_) => None,
+            })
+            .unwrap();
+        assert_eq!(release.release_id(), "imager-v1.2.3");
+        assert!(release.verify_manifest(&bytes).is_ok());
     }
     #[test]
     fn internal_selection_rejects_release_and_architecture_mismatch() {
@@ -1486,6 +1548,9 @@ mod internal_catalog_tests {
         );
         for (field, bad) in [
             ("layout", json!("whole-disk-image")),
+            // Schema-1 manifests are retired; so are the catalog tags naming them.
+            ("layout", json!("internal-bundle-v1")),
+            ("purpose", json!("qos-internal-installer")),
             ("manifest_size", json!(65537)),
             ("manifest_sha256", json!("A".repeat(64))),
             ("purpose", json!("removable-media")),
