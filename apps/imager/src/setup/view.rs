@@ -3305,7 +3305,8 @@ pub fn app_root() -> Box<dyn Widget> {
     Box::new(SetupApp::new())
 }
 
-#[cfg(test)]
+// View fixtures depend on the Unix installer and cache worker test adapters.
+#[cfg(all(test, unix))]
 mod tests {
     use std::path::PathBuf;
     use std::sync::{
