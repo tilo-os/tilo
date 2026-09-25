@@ -726,6 +726,10 @@ mod content_index_integration {
 
     #[test]
     #[serial]
+    #[expect(
+        clippy::used_underscore_binding,
+        reason = "the test observes the writer thread the index otherwise only keeps alive"
+    )]
     fn complete_incremental_scan_removes_deleted_files() {
         let tmp = tempfile::tempdir().unwrap();
         let home = tmp.path();

@@ -488,7 +488,12 @@ jobs:
         run: ./os/dev/assert-native-arch.sh "${{ matrix.arch }}"
       - name: Restore Cargo downloads
         uses: ./.forgejo/actions/restore-cargo-downloads
+      # A publication signs these tapps, and the collection ships in signed OS
+      # images. Every CI job and agent sandbox can write any object in the
+      # shared compiler cache, so publications compile without it: no wrapper,
+      # and the runner's cache credentials are removed before compiling.
       - name: Prepare compiler cache
+        if: needs.plan.outputs.publish != 'true'
         run: bash tools/ci/sccache.sh prepare
       - name: Build and verify selected tapps once for this architecture
         env:
@@ -498,6 +503,13 @@ jobs:
           TAPP_PUBLISHER_IDENTITY: ${{ needs.plan.outputs.publish == 'true' && secrets.TAPP_PUBLISHER_IDENTITY || '' }}
           RUNTIME_BUNDLE_SIGNING_KEY: ${{ needs.plan.outputs.publish == 'true' && secrets.RUNTIME_BUNDLE_SIGNING_KEY || '' }}
         run: |
+          if [[ '${{ needs.plan.outputs.publish }}' == true ]]; then
+            while IFS= read -r name; do
+              unset "$name"
+            done < <(compgen -e | grep -E '^(AWS_|SCCACHE_)' || true)
+            export RUSTC_WRAPPER=
+            echo '::notice::publication: compiling without the shared compiler cache'
+          fi
           if [[ -n ${TAPP_PUBLISHER_IDENTITY:-} ]]; then
             identity="$RUNNER_TEMP/tilo-app-publisher.json"
             (umask 077; printf '%s' "$TAPP_PUBLISHER_IDENTITY" > "$identity")

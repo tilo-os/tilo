@@ -168,6 +168,12 @@ impl ResumeState {
         self.finish_with_player(authority, accepted.then_some(None));
     }
 
+    /// `accepted_player` is `None` when the launch was declined, otherwise
+    /// the accepted launch and the player it resolved to, if any.
+    #[expect(
+        clippy::option_option,
+        reason = "declined, accepted without a player, and accepted with a player are all distinct"
+    )]
     fn finish_with_player(
         &mut self,
         authority: &ResumeAuthority,

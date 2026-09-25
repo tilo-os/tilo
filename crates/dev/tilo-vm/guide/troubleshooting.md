@@ -90,8 +90,11 @@ the exact `podman login` line. `FORGEJO_TOKEN` does not help here.
 `--image`, the published disk, the VM disk path and free space first, and
 names the missing piece with its fix. A 401/403 on the disk means the forge
 token is missing or lacks package read access. "No dev disk is published"
-means CI has not published one (or that tag): ask a human to dispatch the
-"Release / Dev VM disk" workflow (`.forgejo/workflows/dev-disk.yml`), or
+means CI has not published one (or that tag). "Has no qcow2 disk for
+<arch>" means the tag exists but your architecture's lane has not published
+yet, or failed: each architecture publishes on its own. Wait for the main
+"Release / OS" run, ask a human to dispatch the "Release / Dev VM disk"
+workflow (`.forgejo/workflows/dev-disk.yml`) for an existing image, or
 dispatch it with fgj if you may, or ask a human for a shared VM
 (`tilo-vm vm use <name>`); `tilo-vm guide platforms` has the details. An
 interrupted download resumes when you rerun the command.

@@ -142,6 +142,10 @@ pub fn take_deferred_peer_sync_activation(deferred: &mut bool, onboarding_active
     }
 }
 
+#[expect(
+    clippy::fn_params_excessive_bools,
+    reason = "four independent startup facts combine into one decision"
+)]
 pub fn should_activate_first_use(
     identity_missing: bool,
     progress_pending: bool,
