@@ -25,6 +25,8 @@ host-media-writer = []
 flatpak-media-writer = ["dep:zbus", "block-devices/udisks"]
 
 [dependencies]
+# Advisory locks on ownership, journal and target files.
+advisory-lock = { path = "../../crates/system/advisory-lock" }
 qos-ntfs-protocol = { path = "../../crates/session/qos-ntfs-protocol" }
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 # The Tilo ACTION model: the imager's guided-customization install profile (the

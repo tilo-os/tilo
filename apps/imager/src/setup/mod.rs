@@ -1,5 +1,4 @@
 pub mod actions;
-mod advisory_lock;
 pub mod controller;
 pub mod desktop_catalog;
 mod desktop_continuation;

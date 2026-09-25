@@ -292,28 +292,14 @@ fn persist_checkpoint(
 }
 
 #[cfg(unix)]
-fn checkpoint_lock(path: &std::path::Path) -> Result<std::fs::File, RegistryError> {
-    use std::os::fd::AsRawFd as _;
+fn checkpoint_lock(path: &std::path::Path) -> Result<advisory_lock::FileLock, RegistryError> {
     let lock_path = path.with_extension("lock");
     if let Some(parent) = lock_path.parent() {
         std::fs::create_dir_all(parent)
             .map_err(|error| RegistryError::Checkpoint(error.to_string()))?;
     }
-    let file = std::fs::OpenOptions::new()
-        .create(true)
-        .truncate(false)
-        .read(true)
-        .write(true)
-        .open(lock_path)
-        .map_err(|error| RegistryError::Checkpoint(error.to_string()))?;
-    // SAFETY: `file` owns a live descriptor for the duration of the returned
-    // guard. `flock` neither takes ownership nor dereferences user memory.
-    if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) } != 0 {
-        return Err(RegistryError::Checkpoint(
-            std::io::Error::last_os_error().to_string(),
-        ));
-    }
-    Ok(file)
+    advisory_lock::FileLock::open(&lock_path, advisory_lock::LockMode::Exclusive)
+        .map_err(|error| RegistryError::Checkpoint(error.to_string()))
 }
 
 fn validate_checkpoint(

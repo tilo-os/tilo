@@ -7,7 +7,8 @@
 //! Host-side tooling takes the same lock around guest commands with
 //! `flock <root>/locks/vm.lock <command>`.
 
-use std::fs::{self, File, TryLockError};
+use advisory_lock::{FileLock, LockMode, TryLockError};
+use std::fs::{self, File};
 use std::path::{Path, PathBuf};
 
 use crate::error::DaemonError;
@@ -19,7 +20,7 @@ pub struct Locks {
 /// Held until dropped.
 #[must_use]
 pub struct Guard {
-    _file: File,
+    _lock: FileLock,
 }
 
 impl Locks {
@@ -37,13 +38,13 @@ impl Locks {
             .write(true)
             .open(self.dir.join(name))
             .map_err(DaemonError::io(format!("open lock {name}")))?;
-        let result = if exclusive {
-            file.try_lock()
+        let mode = if exclusive {
+            LockMode::Exclusive
         } else {
-            file.try_lock_shared()
+            LockMode::Shared
         };
-        match result {
-            Ok(()) => Ok(Guard { _file: file }),
+        match FileLock::try_lock(file, mode) {
+            Ok(lock) => Ok(Guard { _lock: lock }),
             Err(TryLockError::WouldBlock) => Err(DaemonError::Busy(what.to_owned())),
             Err(TryLockError::Error(e)) => Err(DaemonError::io(format!("lock {name}"))(e)),
         }

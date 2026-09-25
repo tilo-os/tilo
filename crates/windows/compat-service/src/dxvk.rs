@@ -13,6 +13,7 @@ use std::os::unix::fs::{FileTypeExt, MetadataExt};
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use advisory_lock::{FileLock, LockMode, TryLockError};
 use sha2::{Digest, Sha256};
 
 const PREFIX: &str = "/run/tilo/capsule/prefix";
@@ -69,29 +70,16 @@ impl WineMode {
 }
 
 /// This lease owns the shared inode lock, independently of transient references
-/// to its open-file description. It prevents upgrades during execution.
+/// to its open-file description: dropping it unlocks explicitly, so a
+/// duplicated or briefly inherited descriptor cannot prolong the supervisor's
+/// lease. It prevents upgrades during execution.
 #[derive(Debug)]
 pub(crate) struct PrefixLease {
-    directory: File,
-}
-
-impl Drop for PrefixLease {
-    fn drop(&mut self) {
-        // Explicitly release our own open-file-description lock. A duplicated
-        // or briefly inherited descriptor must not prolong the supervisor's
-        // lease. Other launches hold independently opened descriptions.
-        loop {
-            // SAFETY: our retained directory descriptor remains live.
-            if unsafe { libc::flock(self.directory.as_raw_fd(), libc::LOCK_UN) } == 0 {
-                return;
-            }
-            let error = io::Error::last_os_error();
-            if error.kind() != io::ErrorKind::Interrupted {
-                eprintln!("Could not release Wine prefix lease: {error}");
-                return;
-            }
-        }
-    }
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "held for its lock until the lease drops")
+    )]
+    directory: FileLock,
 }
 
 /// `initialize` must run the matching immutable Wineboot executable and wait
@@ -133,44 +121,39 @@ fn prepare_at(
     build_metadata: &Path,
     initialize: impl FnOnce(PrefixAction) -> io::Result<()>,
 ) -> io::Result<PrefixLease> {
-    let lease = PrefixLease {
-        directory: open_directory(prefix_path)?,
-    };
-    let prefix = &lease.directory;
-    lock(prefix, libc::LOCK_SH | libc::LOCK_NB)?;
+    let mut prefix = FileLock::try_shared(open_directory(prefix_path)?).map_err(busy)?;
     let mut payload = Payload::load(mode, payload_path, build_metadata)?;
-    if !payload.ready(prefix, mode)? {
+    if !payload.ready(&prefix, mode)? {
         // Do not upgrade while another managed launch is reading/running from
         // this prefix. Never wait for arbitrary application lifetimes here.
-        lock(prefix, libc::LOCK_UN)?;
-        lock(prefix, libc::LOCK_EX | libc::LOCK_NB)?;
+        prefix = prefix.try_convert(LockMode::Exclusive).map_err(busy)?;
         // Another preparer could have finished between our two acquisitions.
-        if !payload.ready(prefix, mode)? {
-            payload.remove_linked_destinations(prefix)?;
-            let action = if registry_ready(prefix, mode)? {
+        if !payload.ready(&prefix, mode)? {
+            payload.remove_linked_destinations(&prefix)?;
+            let action = if registry_ready(&prefix, mode)? {
                 PrefixAction::Update
             } else {
                 PrefixAction::Initialize
             };
             initialize(action)?;
-            if !registry_ready(prefix, mode)? {
+            if !registry_ready(&prefix, mode)? {
                 return Err(invalid(
                     "Wine initialization did not create the expected registry",
                 ));
             }
-            payload.install(prefix)?;
-            if !payload.ready(prefix, mode)? {
+            payload.install(&prefix)?;
+            if !payload.ready(&prefix, mode)? {
                 return Err(invalid("DXVK prefix changed during provisioning"));
             }
         }
-        // flock conversion is not promised to be atomic. Revalidate after
-        // acquiring the shared lock before allowing application execution.
-        lock(prefix, libc::LOCK_SH | libc::LOCK_NB)?;
-        if !payload.ready(prefix, mode)? {
+        // Lock conversion is not atomic. Revalidate after acquiring the
+        // shared lock before allowing application execution.
+        prefix = prefix.try_convert(LockMode::Shared).map_err(busy)?;
+        if !payload.ready(&prefix, mode)? {
             return Err(invalid("DXVK prefix changed before launch"));
         }
     }
-    Ok(lease)
+    Ok(PrefixLease { directory: prefix })
 }
 
 struct Dll {
@@ -453,19 +436,14 @@ fn file_from_fd(fd: i32) -> io::Result<File> {
     Ok(unsafe { File::from_raw_fd(fd) })
 }
 
-fn lock(directory: &File, operation: i32) -> io::Result<()> {
-    // SAFETY: flock operates on this live retained directory descriptor.
-    if unsafe { libc::flock(directory.as_raw_fd(), operation) } == 0 {
-        return Ok(());
-    }
-    let error = io::Error::last_os_error();
-    if error.kind() == io::ErrorKind::WouldBlock {
-        return Err(io::Error::new(
+fn busy(error: TryLockError) -> io::Error {
+    match error {
+        TryLockError::WouldBlock => io::Error::new(
             io::ErrorKind::WouldBlock,
             "Wine prefix is busy; retry preparation after its applications exit",
-        ));
+        ),
+        TryLockError::Error(error) => error,
     }
-    Err(error)
 }
 
 fn replace_from(parent: &File, name: &str, source: &mut impl Read) -> io::Result<()> {
@@ -622,15 +600,10 @@ mod tests {
             })
             .unwrap();
         let duplicate = lease.directory.try_clone().unwrap();
-        let contender = open_directory(&fixture.prefix).unwrap();
-        assert_eq!(
-            lock(&contender, libc::LOCK_EX | libc::LOCK_NB)
-                .unwrap_err()
-                .kind(),
-            io::ErrorKind::WouldBlock
-        );
+        let contend = || FileLock::try_exclusive(open_directory(&fixture.prefix).unwrap());
+        assert!(matches!(contend(), Err(TryLockError::WouldBlock)));
         drop(lease);
-        lock(&contender, libc::LOCK_EX | libc::LOCK_NB).unwrap();
+        drop(contend().unwrap());
         assert!(
             duplicate.metadata().unwrap().is_dir(),
             "duplicate remains open after explicit lease release"

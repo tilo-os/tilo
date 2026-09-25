@@ -687,13 +687,10 @@ mod tests {
             );
         }
         let temporary = tempfile::tempdir().unwrap();
-        let prefix = File::open(temporary.path()).unwrap();
-        let competitor = File::open(temporary.path()).unwrap();
-        // SAFETY: the files are live independent descriptors for this test inode.
-        assert_eq!(
-            unsafe { libc::flock(prefix.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) },
-            0
-        );
+        let prefix =
+            advisory_lock::FileLock::try_exclusive(File::open(temporary.path()).unwrap()).unwrap();
+        let competitor =
+            || advisory_lock::FileLock::try_shared(File::open(temporary.path()).unwrap());
         let mut existing = Command::new("/bin/sleep").arg("30").spawn().unwrap();
         // acquire bypasses only the production single-thread check: the reexec
         // harness has an idle main thread and exactly this one test worker.
@@ -747,10 +744,10 @@ mod tests {
             !still_our_child(&grandchild).unwrap(),
             "grandchild initially belongs to the detached parent"
         );
-        assert_eq!(
-            unsafe { libc::flock(competitor.as_raw_fd(), libc::LOCK_SH | libc::LOCK_NB) },
-            -1
-        );
+        assert!(matches!(
+            competitor(),
+            Err(advisory_lock::TryLockError::WouldBlock)
+        ));
         drop(descendants);
         assert!(
             !still_our_child(&detached).unwrap(),
@@ -774,10 +771,10 @@ mod tests {
             existing.try_wait().unwrap().is_none(),
             "preexisting server must survive"
         );
-        assert_eq!(
-            unsafe { libc::flock(competitor.as_raw_fd(), libc::LOCK_SH | libc::LOCK_NB) },
-            -1
-        );
+        assert!(matches!(
+            competitor(),
+            Err(advisory_lock::TryLockError::WouldBlock)
+        ));
         let mut restored = -1;
         assert_eq!(
             unsafe { libc::prctl(libc::PR_GET_CHILD_SUBREAPER, &raw mut restored) },
@@ -787,10 +784,7 @@ mod tests {
         existing.kill().unwrap();
         existing.wait().unwrap();
         drop(prefix);
-        assert_eq!(
-            unsafe { libc::flock(competitor.as_raw_fd(), libc::LOCK_SH | libc::LOCK_NB) },
-            0
-        );
+        drop(competitor().unwrap());
     }
 
     #[test]

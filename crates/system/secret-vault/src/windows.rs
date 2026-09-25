@@ -103,8 +103,8 @@ pub(super) fn load_or_create_key(
     dir: &Path,
 ) -> io::Result<Zeroizing<[u8; KEY_LEN]>> {
     private_fs::directory(dir)?;
-    let lock = private_fs::lock_file(&dir.join("vault-key.lock"))?;
-    lock.lock()?;
+    let _lock =
+        advisory_lock::FileLock::exclusive(private_fs::lock_file(&dir.join("vault-key.lock"))?)?;
     let protected_path = dir.join("vault.key.dpapi");
     match read_private(&protected_path) {
         Ok(bytes) => {

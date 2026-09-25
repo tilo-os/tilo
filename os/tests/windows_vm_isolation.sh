@@ -61,7 +61,7 @@ has "$REAPER_TIMER" 'OnUnitActiveSec=30s' 'egress lease reaper runs periodically
 has "$VM_CONTROL_SOURCE" 'write_lease' 'egress lease is recorded before NIC attachment'
 has "$VM_CONTROL_SOURCE" 'egress-reap' 'controller has a crash-safe lease reaper action'
 has "$VM_CONTROL_SOURCE" 'CONTROLLER_LOCK' 'controller has one exclusive lock for lifecycle and egress mutations'
-has "$VM_CONTROL_SOURCE" 'libc::LOCK_EX' 'controller holds an advisory exclusive mutation lock'
+has "$VM_CONTROL_SOURCE" 'advisory_lock::FileLock::exclusive' 'controller holds an advisory exclusive mutation lock'
 has "$VM_CONTROL_SOURCE" '"graphics-attach"' 'controller lock covers graphics/domain XML mutation'
 has "$VM_CONTROL_SOURCE" '"define"' 'controller lock covers domain definition mutation'
 has "$VM_CONTROL_SOURCE" 'if active_lease()?.is_some()' 'egress open rejects any existing lease before creating a NIC'

@@ -263,26 +263,10 @@ fn target_lock_name(target: &TargetDrive) -> String {
 }
 
 #[cfg(unix)]
-#[derive(Debug)]
-struct TargetWriteLock(std::fs::File);
-
-#[cfg(unix)]
-impl Drop for TargetWriteLock {
-    fn drop(&mut self) {
-        use std::os::fd::AsRawFd;
-        // Closing alone would leave the flock held while a child another
-        // thread is spawning still shares the descriptor; unlocking releases
-        // the open file description's lock at once.
-        // SAFETY: the owned descriptor stays live for this call.
-        unsafe {
-            libc::flock(self.0.as_raw_fd(), libc::LOCK_UN);
-        }
-    }
-}
+type TargetWriteLock = advisory_lock::FileLock;
 
 #[cfg(unix)]
 fn try_lock_file(path: &Path) -> io::Result<TargetWriteLock> {
-    use std::os::fd::AsRawFd;
     use std::os::unix::fs::OpenOptionsExt;
 
     let file = OpenOptions::new()
@@ -292,22 +276,13 @@ fn try_lock_file(path: &Path) -> io::Result<TargetWriteLock> {
         .truncate(false)
         .mode(0o600)
         .open(path)?;
-    let status = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
-    if status != 0 {
-        let error = io::Error::last_os_error();
-        return if error
-            .raw_os_error()
-            .is_some_and(|code| code == libc::EAGAIN || code == libc::EWOULDBLOCK)
-        {
-            Err(io::Error::new(
-                io::ErrorKind::WouldBlock,
-                "another Tilo Imager helper is already using this drive",
-            ))
-        } else {
-            Err(error)
-        };
-    }
-    Ok(TargetWriteLock(file))
+    advisory_lock::FileLock::try_exclusive(file).map_err(|error| match error {
+        advisory_lock::TryLockError::WouldBlock => io::Error::new(
+            io::ErrorKind::WouldBlock,
+            "another Tilo Imager helper is already using this drive",
+        ),
+        advisory_lock::TryLockError::Error(error) => error,
+    })
 }
 
 #[cfg(unix)]
@@ -1898,7 +1873,7 @@ mod tests {
         assert_eq!(contention.kind(), io::ErrorKind::WouldBlock);
 
         drop(first);
-        try_lock_file(&path).expect("kernel releases lock with its owner");
+        let _reacquired = try_lock_file(&path).expect("kernel releases lock with its owner");
     }
 
     #[cfg(target_os = "windows")]

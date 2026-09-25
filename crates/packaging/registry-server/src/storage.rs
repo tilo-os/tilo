@@ -33,9 +33,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 
 #[cfg(unix)]
-use std::fs::{File, OpenOptions};
-#[cfg(unix)]
-use std::os::fd::AsRawFd;
+use std::fs::OpenOptions;
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -797,7 +795,7 @@ pub struct SnapshotLock<'a> {
     storage: &'a Storage,
     _process_mutex: std::sync::MutexGuard<'static, ()>,
     #[cfg(unix)]
-    file: File,
+    _file: advisory_lock::FileLock,
 }
 
 impl<'a> SnapshotLock<'a> {
@@ -818,18 +816,13 @@ impl<'a> SnapshotLock<'a> {
                 .map_err(|error| {
                     StorageError::Io(format!("open snapshot lock {}: {error}", path.display()))
                 })?;
-            let status = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) };
-            if status != 0 {
-                return Err(StorageError::Io(format!(
-                    "lock snapshot writer {}: {}",
-                    path.display(),
-                    std::io::Error::last_os_error()
-                )));
-            }
+            let file = advisory_lock::FileLock::exclusive(file).map_err(|error| {
+                StorageError::Io(format!("lock snapshot writer {}: {error}", path.display()))
+            })?;
             Ok(Self {
                 storage,
                 _process_mutex: process_mutex,
-                file,
+                _file: file,
             })
         }
         #[cfg(not(unix))]
@@ -959,13 +952,6 @@ impl<'a> SnapshotLock<'a> {
             }
         }
         Ok(())
-    }
-}
-
-#[cfg(unix)]
-impl Drop for SnapshotLock<'_> {
-    fn drop(&mut self) {
-        let _result = unsafe { libc::flock(self.file.as_raw_fd(), libc::LOCK_UN) };
     }
 }
 
