@@ -1247,7 +1247,12 @@ impl Widget for DiffMergeApp {
         // Measure the toolbar band first so the views are placed below the
         // height this frame will actually paint.
         let (_, toolbar_h) = Self::measure_toolbar(tr);
-        if toolbar_h != self.toolbar_h {
+        #[expect(
+            clippy::float_cmp,
+            reason = "change detection against the cached measurement: any bit difference means the views must be re-placed"
+        )]
+        let toolbar_changed = toolbar_h != self.toolbar_h;
+        if toolbar_changed {
             self.toolbar_h = toolbar_h;
             self.place_views();
         }
@@ -2053,6 +2058,10 @@ mod tests {
     /// the measured bar, at 1× and at 200% text; the content starts below the
     /// bar that was actually painted.
     #[test]
+    #[expect(
+        clippy::float_cmp,
+        reason = "at 1x the scale literal and the authored toolbar height are reproduced exactly"
+    )]
     fn toolbar_controls_fit_their_measured_labels_at_every_text_scale() {
         let mut widths_at_1x: Vec<f64> = Vec::new();
         for scale in [1.0f32, 2.0] {
