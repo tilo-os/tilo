@@ -226,6 +226,9 @@ pub(super) struct SessionProtocol {
     pub workspace_id: uuid::Uuid,
     /// Peers that announced changes, for the reconciliation loop.
     pub announcements: mpsc::UnboundedSender<iroh_base::PublicKey>,
+    /// This device's sessions: a peer's incoming session is also this
+    /// device's session to that peer.
+    pub pool: std::sync::Weak<SessionPool>,
 }
 
 impl std::fmt::Debug for SessionProtocol {
@@ -262,6 +265,19 @@ impl ProtocolHandler for SessionProtocol {
             }
             Err(_) => return Ok(()),
         };
+        if let Some(pool) = self.pool.upgrade() {
+            pool.adopt(&connection, &peer).await;
+        }
+        self.serve_connection(&connection, &peer).await;
+        Ok(())
+    }
+}
+
+impl SessionProtocol {
+    /// Serves the requests `peer` opens on `connection` until it closes.
+    /// Both ends of a session serve: the device that opened it and the one
+    /// that accepted it each send requests on it.
+    async fn serve_connection(&self, connection: &Connection, peer: &AuthenticatedFsPeer) {
         let slots = Arc::new(tokio::sync::Semaphore::new(MAX_STREAMS_PER_CONNECTION));
         while let Ok((send, recv)) = connection.accept_bi().await {
             let Ok(slot) = Arc::clone(&slots).acquire_owned().await else {
@@ -279,11 +295,8 @@ impl ProtocolHandler for SessionProtocol {
                 drop(slot);
             });
         }
-        Ok(())
     }
-}
 
-impl SessionProtocol {
     async fn serve_stream(
         &self,
         peer: &AuthenticatedFsPeer,
@@ -772,6 +785,8 @@ pub(super) struct SessionPool {
     workspace_id: uuid::Uuid,
     sessions: tokio::sync::Mutex<HashMap<iroh_base::PublicKey, Arc<Session>>>,
     legacy: Mutex<HashMap<iroh_base::PublicKey, Instant>>,
+    /// Serves the requests peers send on sessions this device opened.
+    server: std::sync::OnceLock<SessionProtocol>,
 }
 
 /// Whether a connection attempt failed because the peer does not offer the
@@ -795,7 +810,47 @@ impl SessionPool {
             workspace_id,
             sessions: tokio::sync::Mutex::new(HashMap::new()),
             legacy: Mutex::new(HashMap::new()),
+            server: std::sync::OnceLock::new(),
         }
+    }
+
+    /// Serves peers' requests on the sessions this pool opens, including
+    /// those it opened before (a joining device's first pull). Set once.
+    pub(super) fn serve_with(self: &Arc<Self>, protocol: SessionProtocol) {
+        if self.server.set(protocol.clone()).is_err() {
+            return;
+        }
+        let pool = Arc::clone(self);
+        tokio::spawn(async move {
+            for session in pool.open_sessions().await {
+                let protocol = protocol.clone();
+                tokio::spawn(async move {
+                    protocol
+                        .serve_connection(&session.connection, &session.peer)
+                        .await;
+                });
+            }
+        });
+    }
+
+    /// Takes a peer's incoming, authenticated session as this device's
+    /// session to that peer too. The device that could reach the other is
+    /// then reachable back on it, whether or not the other could dial it:
+    /// behind NAT, or restarted on a new address. It replaces an earlier
+    /// session, which may belong to the peer's previous run and look open
+    /// until it times out; that one still serves whatever the peer sends on
+    /// it.
+    pub(super) async fn adopt(&self, connection: &Connection, peer: &AuthenticatedFsPeer) {
+        let id = connection.remote_id();
+        self.sessions.lock().await.insert(
+            id,
+            Arc::new(Session {
+                connection: connection.clone(),
+                peer: peer.clone(),
+                addr: EndpointAddr::new(id),
+                last_heard: Mutex::new(Instant::now()),
+            }),
+        );
     }
 
     /// The live session to `addr`, opening one if needed. `Ok(None)` means
@@ -858,6 +913,15 @@ impl SessionPool {
                     }
                     _ => {
                         sessions.insert(addr.id, Arc::clone(&session));
+                        if let Some(server) = self.server.get() {
+                            let server = server.clone();
+                            let session = Arc::clone(&session);
+                            tokio::spawn(async move {
+                                server
+                                    .serve_connection(&session.connection, &session.peer)
+                                    .await;
+                            });
+                        }
                         session
                     }
                 };
