@@ -602,15 +602,20 @@ impl App {
         let preserve_failed_external = plan.external_target.is_some() && !stopped_cleanly;
         #[cfg(not(windows))]
         let preserve_failed_external = false;
-        let withheld = scrub_scenario_logs(
+        let scrubbed = scrub_scenario_logs(
             &plan.out,
             &plan.run,
             &[
                 credentials.account.expose(),
                 credentials.unlock_secret().expose(),
             ],
-        )
-        .map_err(CliError::io("scrubbing the artifact directory"))?;
+        );
+        if scrubbed.is_err() && plan.run.is_dir() {
+            let _ = self.runner.output(&plan.vm(&["stop"]));
+            std::fs::remove_dir_all(&plan.run)
+                .map_err(CliError::io("removing unsanitized VM runtime logs"))?;
+        }
+        let withheld = scrubbed.map_err(CliError::io("scrubbing scenario artifacts and logs"))?;
         if !plan.keep && !preserve_failed_external {
             let _ = std::fs::remove_dir_all(&plan.cycle_dir);
             let _ = std::fs::remove_dir_all(&plan.run);
@@ -972,11 +977,38 @@ fn valid_username(name: &str) -> bool {
 /// installer deliberately withholds from scenario artifacts. Scrub it before
 /// retention or cleanup, even when the install failed.
 fn scrub_scenario_logs(out: &Path, run: &Path, secrets: &[&str]) -> std::io::Result<Vec<PathBuf>> {
-    let mut withheld = scrub(out, secrets)?;
-    if run.is_dir() {
-        withheld.extend(scrub(run, secrets)?);
+    scrub_scenario_logs_with(out, run, secrets, scrub)
+}
+
+fn scrub_scenario_logs_with(
+    out: &Path,
+    run: &Path,
+    secrets: &[&str],
+    mut inspect: impl FnMut(&Path, &[&str]) -> std::io::Result<Vec<PathBuf>>,
+) -> std::io::Result<Vec<PathBuf>> {
+    // Both paths are attempted even if the first fails. On any failure, never
+    // retain a runtime directory that may contain raw serial output.
+    let artifacts = inspect(out, secrets);
+    let runtime = if run.is_dir() {
+        inspect(run, secrets)
+    } else {
+        Ok(Vec::new())
+    };
+    match (artifacts, runtime) {
+        (Ok(mut artifacts), Ok(runtime)) => {
+            artifacts.extend(runtime);
+            Ok(artifacts)
+        }
+        (artifacts, runtime) => {
+            if run.is_dir() {
+                std::fs::remove_dir_all(run)?;
+            }
+            Err(artifacts
+                .err()
+                .or_else(|| runtime.err())
+                .expect("one scrub failed"))
+        }
     }
-    Ok(withheld)
 }
 
 /// Poll until the console answers as `app`, returning its first state.
@@ -1066,6 +1098,55 @@ mod tests {
         assert!(std::fs::read(run.join("serial.log")).unwrap().is_empty());
         assert!(std::fs::read(run.join("uart.log")).unwrap().is_empty());
         assert_eq!(std::fs::read(out.join("state.json")).unwrap(), b"ready");
+    }
+
+    #[test]
+    fn scrub_failure_still_checks_runtime_and_removes_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let out = dir.path().join("artifacts");
+        let run = dir.path().join("runtime");
+        std::fs::create_dir(&out).unwrap();
+        std::fs::create_dir(&run).unwrap();
+        std::fs::write(run.join("serial.log"), "typed disksecret456").unwrap();
+        let mut inspected = Vec::new();
+        let error = scrub_scenario_logs_with(&out, &run, &["disksecret456"], |path, secrets| {
+            inspected.push(path.to_path_buf());
+            if path == out {
+                Err(std::io::Error::other("injected artifact read failure"))
+            } else {
+                scrub(path, secrets)
+            }
+        })
+        .unwrap_err();
+        assert_eq!(error.to_string(), "injected artifact read failure");
+        assert_eq!(inspected, [out, run.clone()]);
+        assert!(
+            !run.exists(),
+            "failed scrub must not retain raw serial logs"
+        );
+    }
+
+    #[test]
+    fn runtime_scrub_failure_removes_raw_logs() {
+        let dir = tempfile::tempdir().unwrap();
+        let out = dir.path().join("artifacts");
+        let run = dir.path().join("runtime");
+        std::fs::create_dir(&out).unwrap();
+        std::fs::create_dir(&run).unwrap();
+        std::fs::write(run.join("serial.log"), "typed disksecret456").unwrap();
+        let error = scrub_scenario_logs_with(&out, &run, &["disksecret456"], |path, secrets| {
+            if path == run {
+                Err(std::io::Error::other("injected runtime read failure"))
+            } else {
+                scrub(path, secrets)
+            }
+        })
+        .unwrap_err();
+        assert_eq!(error.to_string(), "injected runtime read failure");
+        assert!(
+            !run.exists(),
+            "failed scrub must not retain raw serial logs"
+        );
     }
 
     #[cfg(unix)]
