@@ -43,12 +43,21 @@ jobs:
         password: ${{ secrets.REGISTRY_TOKEN }}
     env:
       CARGO_HOME: /cargo-home
+      CARGO_INCREMENTAL: "0"
       RUST_BACKTRACE: "1"
+      # Cache availability changes speed, never the fuzzing result.
+      SCCACHE_IGNORE_SERVER_IO_ERROR: "1"
     steps:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           token: ${{ secrets.REGISTRY_TOKEN }}
+
+      # The shared compiler cache serves the pinned nightly as well: the
+      # cargo-fuzz install and the instrumented targets stop recompiling
+      # unchanged crates every night.
+      - name: Prepare Rust build caches
+        uses: ./.forgejo/actions/prepare-rust-build
 
       # cargo-fuzz requires sanitizer instrumentation exposed by nightly. Both
       # tool and compiler are pinned so a moving installer cannot silently
@@ -69,3 +78,8 @@ jobs:
 
       - name: Fuzz sandbox policy parsing
         run: cargo +nightly-2026-08-25 fuzz run sandbox_policy -- -max_total_time=900 -timeout=10
+
+      - name: Report compiler cache effectiveness
+        if: always()
+        continue-on-error: true
+        run: bash tools/ci/sccache.sh report
