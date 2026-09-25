@@ -794,6 +794,7 @@ fn workspace_settings_invite_button_opens_the_signed_composer() {
     let mut tree = minimal_tree();
     tree.adopt_ownerless_workspaces_with(shell::shell::state::local_user_id_for_room);
     let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&tree);
+    host.set_peer_sync_enabled(true);
     {
         let mut st = chrome.borrow_mut();
         st.overlays.ws_settings = true;

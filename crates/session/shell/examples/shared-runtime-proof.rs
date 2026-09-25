@@ -14,6 +14,7 @@ use std::{
     sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
+use tilo_automerge::ApplyIncoming;
 use ui::collaboration::CollabEvent;
 mod edited_handoff_proof;
 #[path = "runtime_benchmark/mod.rs"]
@@ -309,10 +310,10 @@ fn main() -> Result<()> {
             match collab_types::DocumentMutation::decode(&envelope.payload)? {
                 collab_types::DocumentMutation::Snapshot(data) => {
                     let mut snapshot = automerge::AutoCommit::load(&data)?;
-                    document.merge(&mut snapshot)?;
+                    document.merge_incoming(&mut snapshot)?;
                 }
                 collab_types::DocumentMutation::Incremental(data) => {
-                    document.load_incremental(&data)?;
+                    document.load_incoming(&data)?;
                 }
             }
         }

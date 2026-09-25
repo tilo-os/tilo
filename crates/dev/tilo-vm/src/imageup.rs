@@ -442,12 +442,12 @@ pub fn rsync_command(layout: &Path, endpoint: &SshEndpoint, key: Option<&str>) -
     let mut words = vec![sh_quote(&ssh.program)];
     let options = ssh.args.len().saturating_sub(1);
     words.extend(ssh.args.iter().take(options).map(|a| sh_quote(a)));
-    let mut source = layout.display().to_string();
+    let mut source = crate::vmbuild::rsync_source(layout);
     if !source.ends_with('/') {
         source.push('/');
     }
     CommandLine::new(
-        "rsync",
+        &crate::host::rsync_program().unwrap_or_else(|| "rsync".into()),
         &["--archive", "--delete", "--whole-file", "--stats"],
     )
     .arg("--rsh")
@@ -846,6 +846,21 @@ mod tests {
         assert_eq!(
             rsync_sent_bytes("Number of files: 9\nTotal transferred file size: 12,345,678 bytes\n"),
             Some(12_345_678)
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_image_layout_is_a_local_msys2_rsync_operand() {
+        let endpoint = SshEndpoint {
+            user: "root".into(),
+            host: "127.0.0.1".into(),
+            port: 2223,
+        };
+        let line = rsync_command(Path::new(r"C:\tilo-build\image-layout"), &endpoint, None);
+        assert_eq!(
+            line.args[line.args.len() - 2],
+            "/c/tilo-build/image-layout/"
         );
     }
 

@@ -328,6 +328,18 @@ scripts/perf/frame-loop-bench.py --seconds 8 --backend winit --nested
 # Force a non-60 Hz cadence when no such panel is attached.
 scripts/perf/frame-loop-bench.py --seconds 8 --refresh-hz 144
 
+# Acceptance gate for the failure a user actually sees: a 144 Hz desktop is
+# driven with synthetic pointer motion while the native Chat app launches.
+# It fails on a launch/first-frame freeze, <120 painted fps, missing input
+# samples, or input-to-present p99 above 25 ms. Point the three store/tool
+# flags at an existing dev install; no RPM/image rebuild is involved.
+scripts/perf/frame-loop-bench.py --seconds 12 --refresh-hz 144 \
+  --input-hz 30 --launch-app dev.tilo.chat --gate \
+  --shell-bin target/release/shell \
+  --launcher-bin target/release/tilo-launcher \
+  --apps-data-dir "$HOME/.local/share/tilo-apps" \
+  --runtime-bundle-dir "$HOME/.local/share/tilo-runtime"
+
 # Diff two runs, or re-read a recorded trace after changing the warmup.
 scripts/perf/frame-loop-bench.py --compare before.stats.json after.stats.json
 scripts/perf/frame-loop-bench.py --resummarize target/frame-bench/run.csv

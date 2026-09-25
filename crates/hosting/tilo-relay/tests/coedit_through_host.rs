@@ -27,6 +27,7 @@
 )]
 
 use std::time::Duration;
+use tilo_automerge::ApplyIncoming;
 
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjType, ROOT, ReadDoc, Value};
@@ -70,7 +71,7 @@ async fn recv_delta_into(session: &RelayCoeditSession, doc: &mut AutoCommit) {
             .expect("session closed");
         match inbound {
             Inbound::Delta { data, .. } => {
-                doc.load_incremental(&data).expect("apply co-edit delta");
+                doc.load_incoming(&data).expect("apply co-edit delta");
                 return;
             }
             // Ready / presence carry no document bytes — keep draining.
@@ -238,7 +239,7 @@ async fn catch_up_first_connection(
         match inbound {
             Inbound::Delta { data, .. } => {
                 doc_b
-                    .load_incremental(&data)
+                    .load_incoming(&data)
                     .expect("B applies queued co-edit");
                 got_delta = true;
             }

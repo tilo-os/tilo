@@ -1254,6 +1254,7 @@ mod tests {
     use crate::app::{MailApp, avatar_store_offline};
     use crate::model::Folder;
     use crate::state::{CtxAction, MailState};
+    use tilo_automerge::ApplyIncoming;
 
     use tilo_actions::{ActionInput, LocalTransport};
     use ui::widget::Widget;
@@ -1792,7 +1793,7 @@ mod tests {
             .unwrap();
         star_replica.commit();
 
-        read_replica.merge(&mut star_replica).unwrap();
+        read_replica.merge_incoming(&mut star_replica).unwrap();
         assert_eq!(MailDoc::get_read(&read_replica, "m"), Some(true));
         assert_eq!(MailDoc::get_starred(&read_replica, "m"), Some(true));
     }

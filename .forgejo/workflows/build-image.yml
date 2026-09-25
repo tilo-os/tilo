@@ -574,9 +574,21 @@ jobs:
               echo '::error::native board runner needs Podman'; exit 1
             fi
           fi
+          # The importer deliberately clears its subprocess environment. Give
+          # login and import the same explicit authfile instead of relying on
+          # Podman's HOME/XDG_RUNTIME_DIR-dependent default under sudo.
+          firmware_authfile=$(mktemp "${RUNNER_TEMP:-/tmp}/tilo-firmware-auth.XXXXXX")
+          trap 'sudo -n rm -f -- "$firmware_authfile"' EXIT
+          # Podman reads an existing authfile before login; mktemp leaves it
+          # empty, which Podman rejects as invalid JSON.
+          printf '{}\n' > "$firmware_authfile"
           printf '%s' "$REGISTRY_TOKEN" | sudo -n podman login code.podesta.ai \
+            --authfile "$firmware_authfile" \
             --username "${{ github.actor }}" --password-stdin
-          sudo -n python3 os/dev/hardware-firmware-artifact.py import \
+          sudo -n python3 -c 'import json,sys; assert "code.podesta.ai" in json.load(open(sys.argv[1]))["auths"]' \
+            "$firmware_authfile"
+          sudo -n env REGISTRY_AUTH_FILE="$firmware_authfile" \
+            python3 os/dev/hardware-firmware-artifact.py import \
             --reference "$FIRMWARE_CANDIDATE" \
             --manifest-sha256 "$FIRMWARE_MANIFEST_SHA256" \
             --profile lenovo-83ed --architecture aarch64 \
@@ -761,46 +773,25 @@ jobs:
       # Digest pinning prevents substitution after this verification; the
       # repository restriction prevents a valid Tilo signature being replayed
       # from a different artifact namespace.
+      # A publication requires the kernel to name this run's exact RPM snapshot.
+      # An unsigned integration image (tilo-ci and dev disks) also accepts a
+      # kernel bound to an earlier signed snapshot, since the RPM and kernel
+      # pins refresh independently; the kernel's signature, source,
+      # architecture, digest and base binding are verified either way.
       - name: Verify KERNEL_RPMS_REF (tilo-kernel image)
+        env:
+          PUBLISH: ${{ needs.plan.outputs.publish }}
         run: |
           set -euo pipefail
           . os/kernel-snapshot.env
           case "$(uname -m)" in
-            x86_64) ref="$KERNEL_RPMS_X86_64_REF"; expected_arch=amd64 ;;
-            aarch64) ref="$KERNEL_RPMS_AARCH64_REF"; expected_arch=arm64 ;;
+            x86_64) ref="$KERNEL_RPMS_X86_64_REF" ;;
+            aarch64) ref="$KERNEL_RPMS_AARCH64_REF" ;;
             *) printf 'unsupported kernel architecture: %s\n' "$(uname -m)" >&2; exit 1 ;;
           esac
-          [[ "$ref" =~ ^code\.podesta\.ai/qos/tilo-kernel@sha256:[0-9a-f]{64}$ ]] || {
-            printf 'no digest-pinned native Tilo kernel for %s\n' "$(uname -m)" >&2
-            exit 1
-          }
-          cosign verify --key keys/cosign.pub "$ref" >/dev/null
-          digest="${ref##*@}"
-          provenance="$(cosign verify-attestation --key keys/cosign.pub \
-            --type slsaprovenance1 "$ref")"
-          printf '%s' "$provenance" | jq -e \
-            --arg digest "$digest" --arg architecture "$(uname -m)" \
-            --arg base "$BASE_REF" --arg rpms "$RPMS_REF" '
-              [(if type == "array" then .[] else . end) | .payload | @base64d | fromjson | .predicate]
-              | any(
-                  ((.buildDefinition.buildType == "https://tilo.sh/buildtypes/kernel-rpm/v1")
-                    or (.buildDefinition.buildType | endswith("/buildtypes/kernel-rpm/v1")))
-                  and .buildDefinition.externalParameters.architecture == $architecture
-                  and .buildDefinition.internalParameters.expectedReleaseDigest == $digest
-                  and any(.buildDefinition.resolvedDependencies[]?;
-                    .uri | test("^git\\+ssh://code\\.podesta\\.ai/qos/qos@[0-9a-f]{40}$"))
-                  and any(.buildDefinition.resolvedDependencies[]?; .uri == $base)
-                  and any(.buildDefinition.resolvedDependencies[]?; .uri == $rpms)
-                )
-            ' >/dev/null || {
-              printf 'Tilo kernel provenance does not bind its source, architecture, digest, base, and RPM inputs\n' >&2
-              exit 1
-            }
-          actual_arch="$(skopeo inspect "docker://$ref" | jq -er .Architecture)"
-          [[ "$actual_arch" == "$expected_arch" ]] || {
-            printf 'signed Tilo kernel architecture is %s, expected %s\n' "$actual_arch" "$expected_arch" >&2
-            exit 1
-          }
+          binding=exact
+          [[ $PUBLISH != false ]] || binding=signed-snapshot
+          ./os/dev/verify-kernel-provenance.sh "$ref" "$BASE_REF" "$RPMS_REF" "$binding"
           echo "KERNEL_RPMS_REF=$ref" >> "$GITHUB_ENV"
 
       # Deterministic timestamp for reproducible builds: the HEAD commit time.

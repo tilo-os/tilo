@@ -567,8 +567,10 @@ impl FrameHarness {
             return Err(crate::launch::LaunchError::ComponentSetup {
                 source: Box::new(crate::launch::LaunchError::Operation(error.to_string())),
                 record: binding.checkout,
-                records: binding.records,
-                reports: harness.take_component_close_reports(),
+                recovery: crate::launch::LaunchRecovery::new(
+                    Some(binding.records),
+                    harness.take_component_close_reports(),
+                ),
             });
         }
         Ok(harness)
@@ -2673,9 +2675,16 @@ impl FrameHarness {
             .iter()
             .map(|binding| binding.control_id.clone())
             .collect::<HashSet<_>>();
-        let inspection = self.inspection();
-        let has_semantics = inspection_has_semantics(&inspection.root);
-        let semantic_effect_controls = effect_control_ids(&inspection.root);
+        // The contract is the application's: History mode's chrome, which the
+        // host draws around a registered document owner, is toolkit UI and is
+        // audited with the toolkit, not with every app that has a history.
+        let application = if self.history.is_some() {
+            collect_inspection(self.root.as_ref(), "", &mut HashMap::new())
+        } else {
+            self.inspection().root
+        };
+        let has_semantics = inspection_has_semantics(&application);
+        let semantic_effect_controls = effect_control_ids(&application);
         let mut issues = bindings
             .into_iter()
             .filter_map(|binding| match binding.kind {
@@ -3409,6 +3418,16 @@ impl FrameHarness {
         }
     }
 
+    /// Commit text through the production input-method path in one event.
+    ///
+    /// Use this for scenarios whose subject is the resulting document rather
+    /// than physical-key handling. It models a completed input-method
+    /// composition without manufacturing a rendered frame for every character.
+    pub fn commit_text(&mut self, text: &str) {
+        self.pump_component_wakes();
+        self.send(&WindowEvent::Ime(winit::event::Ime::Commit(text.into())));
+    }
+
     /// Set the physical-to-logical input scale; layout and capture remain logical pixels.
     /// # Errors
     /// Rejects a non-finite or non-positive scale.
@@ -3598,7 +3617,7 @@ impl FrameHarness {
                 reason: reason.clone(),
             });
         }
-        let confirmed = match &spec.contract.confirmation {
+        let confirmed = match &spec.confirmation_for_json(arguments) {
             tilo_actions::ConfirmationPolicy::None => false,
             tilo_actions::ConfirmationPolicy::Confirm if confirm => true,
             tilo_actions::ConfirmationPolicy::Phrase { phrase }
@@ -7103,18 +7122,21 @@ mod dispatched_action_driver_tests {
         fn handle_event_ctx(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
             let doc = &mut *ctx.state;
             let handled = &mut *ctx.handled;
-            let WindowEvent::KeyboardInput { event: ke, .. } = event else {
-                return;
-            };
-            if ke.state != ElementState::Pressed {
-                return;
-            }
-            let winit::keyboard::Key::Character(c) = &ke.logical_key else {
-                return;
+            let text = match event {
+                WindowEvent::KeyboardInput { event: ke, .. }
+                    if ke.state == ElementState::Pressed =>
+                {
+                    let winit::keyboard::Key::Character(text) = &ke.logical_key else {
+                        return;
+                    };
+                    text.as_str()
+                }
+                WindowEvent::Ime(winit::event::Ime::Commit(text)) => text.as_str(),
+                _ => return,
             };
             // "2" dispatches two actions within the one event, so a test can
             // prove the host brackets the *event*, not each action.
-            if c.as_str() == "2" {
+            if text == "2" {
                 for text in ["x", "y"] {
                     self.actions.dispatch(
                         doc,
@@ -7129,7 +7151,7 @@ mod dispatched_action_driver_tests {
                     doc,
                     APPEND,
                     &Append {
-                        text: c.as_str().to_string(),
+                        text: text.to_string(),
                     },
                 );
             }
@@ -7280,6 +7302,16 @@ mod dispatched_action_driver_tests {
 
         d.click_named("redo_button").expect("redo became available");
         assert_eq!(body(&mut d), "a", "redo put the action back");
+    }
+
+    #[test]
+    fn committed_text_uses_the_real_ime_path_as_one_edit() {
+        let mut d = action_driver();
+
+        d.commit_text("東京 notes");
+        assert_eq!(body(&mut d), "東京 notes");
+        assert!(d.perform_undo());
+        assert_eq!(body(&mut d), "");
     }
 
     /// The keyboard and the control must reach the same undo — for the action

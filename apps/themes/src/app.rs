@@ -2075,6 +2075,7 @@ impl Widget for ThemesApp {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tilo_automerge::ApplyIncoming;
     use tilo_test_env::ScopedEnv;
 
     /// Point the shared theme store at a throwaway config dir for as long as
@@ -2507,7 +2508,7 @@ mod tests {
             TokenId::Accent,
             [1, 2, 3]
         ));
-        state.doc.merge(&mut peer).unwrap();
+        state.doc.merge_incoming(&mut peer).unwrap();
         let heads_after_peer_edit = state.doc.get_heads();
 
         // Selection, token navigation, and opening the inline name editor are
