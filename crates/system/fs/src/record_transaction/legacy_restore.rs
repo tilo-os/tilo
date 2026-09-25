@@ -1,6 +1,10 @@
 //! Unsigned legacy intent in the existing transaction journal. This preserves
 //! the legacy namespace/history owners; it never fabricates a signed actor key.
-use super::*;
+use super::{
+    Deserialize, MAX_RECORD_TRANSACTION_ENTRIES, MAX_RECORD_TRANSACTION_ENTRY_BYTES, Path,
+    RecordTransactionJournal, RecordTransactionJournalError, RecordTransactionPhase, Serialize,
+    Uuid, entry_path, persist_entry,
+};
 use collab_types::files::{CheckedHistoryRequestV1, FileRestoreReceiptV1};
 use collab_types::{FileProvenance, FileVersionV1};
 
@@ -94,7 +98,9 @@ impl RecordTransactionJournal {
     }
 
     pub(crate) fn retained_count(&self) -> usize {
-        self.entries.len() + self.legacy_restores.len()
+        self.entries
+            .len()
+            .saturating_add(self.legacy_restores.len())
     }
 
     pub(crate) fn checked_request(&self, id: Uuid) -> Option<CheckedHistoryRequestV1> {
@@ -185,16 +191,13 @@ impl RecordTransactionJournal {
         &mut self,
         id: Uuid,
         phase: RecordTransactionPhase,
-        delta: Option<Vec<u8>>,
+        delta: Option<&[u8]>,
     ) -> Result<bool, RecordTransactionJournalError> {
         let current = self
             .legacy_restores
             .get(&id)
             .ok_or(RecordTransactionJournalError::UnknownTransaction(id))?;
-        if delta
-            .as_ref()
-            .is_some_and(|delta| delta != &current.namespace_delta)
-        {
+        if delta.is_some_and(|delta| delta != current.namespace_delta.as_slice()) {
             return Err(RecordTransactionJournalError::InvalidNamespaceDelta);
         }
         if current.phase == phase {
