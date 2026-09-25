@@ -11,7 +11,7 @@ the host. A development image must remain visibly identified as such.
 |---|---|---|
 | OS image | `keys/cosign.pub` is copied by `os/Containerfile` to `/usr/share/tilo/cosign.pub`. `os/etc/containers/policy.json` requires its signature for `code.sandbox.example/qos/tilo`. Release verification also reads the tracked public key. | The development named context supplies independent public trust, signature policy and a bound update origin. Signed disk/VM integration remains required. |
 | PCR authorization | `keys/tpm2-pcr-signing.public.pem` is copied into the image and initramfs. `sign-target-prediction.sh` verifies signatures over the exact UKI and generation-bound PCR11 policy with the image's public key. | Test PCR trust must be injected before initramfs/UKI construction, not merely replaced in the final root filesystem. |
-| EFI/UKI | `TILO_PCR_PREDICTION_SIGNER` exports its certificate; `TILO_EFI_SIGNING_CERT_SHA256` independently pins the SHA-256 of its DER bytes. Returned signatures and the unchanged Authenticode payload are checked. | A test certificate is trusted only in a disposable VM variable store. Its fingerprint alone does not make stock firmware trust it. |
+| EFI/UKI | `TILO_PCR_PREDICTION_SIGNER` exports its certificate; `TILO_EFI_SIGNING_CERT_SHA256` independently pins the SHA-256 of its DER bytes. Returned signatures and the unchanged Authenticode payload are checked. Production uses `keys/efi-signing.crt`, the KMS-held Tilo release certificate owners enroll in firmware `db`. | A test certificate is trusted only in a disposable VM variable store and must never be pinned for publication. |
 | Marketplace registry owner | `TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY`, a nonzero 32-byte Ed25519 public key in hex, becomes `/usr/share/tilo/trust/tilo-main-registry-owner.pub`. | Branch CI can use the explicit RFC 8032 test-vector public key. It is not an independently held production owner identity. |
 | Downloaded installer | Native host code signatures authenticate the embedded release catalog. Linux downloadable media/catalog signatures are checked against `TILO_LINUX_EXPECTED_FINGERPRINT`. | Disposable OpenPGP tests exercise these checks; their keys must never appear in a production catalog or published trust bundle. |
 
@@ -466,27 +466,43 @@ candidate. The development build's container-only stop remains enabled.
 Command/lifecycle tests do not establish runtime compatibility with the packaged
 bootc, sufficient disk capacity, correct installed content or bootability.
 
-## Production provisioning later
+## Production provisioning
 
-1. Choose the KMS/HSM provider and release operator. Provision non-exportable OS
-   image and PCR signing identities with narrowly scoped runner workload
-   authorization. Reconcile their public keys with the tracked trust roots;
-   an existing public key does not prove its private counterpart is held in
-   the new service. Any replacement needs an explicit public-key transition.
-2. Configure `COSIGN_KEY_REF` as the service URI consumed by the OS workflow:
+Production identities live in AWS KMS (account 125650147312, `us-east-1`) and
+are used only through the Forgejo OIDC role `TiloForgejoReleaseSigner`, which
+trusts qos/qos `main` and `v*` tags:
+
+| Identity | KMS alias | Tracked public identity |
+|---|---|---|
+| OS image (Cosign, ECDSA P-256) | `alias/tilo-release-signing` | `keys/cosign.pub` |
+| PCR 11 predictions and target-UKI signatures (RSA-2048) | `alias/tilo-pcr-prediction` | `keys/tpm2-pcr-signing.public.pem` |
+| EFI/UKI Authenticode (RSA-2048) | `alias/tilo-efi-signing` | `keys/efi-signing.crt` |
+
+1. Non-exportable OS image and PCR signing identities are provisioned with
+   narrowly scoped runner workload authorization, and their public keys are the
+   tracked trust roots. An existing public key does not prove its private
+   counterpart is held in the service; any replacement needs an explicit
+   public-key transition.
+2. `COSIGN_KEY_REF` is the service URI consumed by the OS workflow:
    `gcpkms://`, `awskms://`, `azurekms://`, or `hashivault://`. The workflow rejects
-   file-based keys. Verify returned signatures with the independently pinned
-   `keys/cosign.pub` before release promotion.
-3. Arrange the EFI signing path trusted by the intended stock firmware, and
-   validate the actual chain on each supported hardware family. A newly
-   generated self-signed certificate does not meet this requirement. Provision
-   the PCR/EFI wrapper on both native Linux runner images and configure protected
-   `TILO_PCR_PREDICTION_SIGNER` and `TILO_EFI_SIGNING_CERT_SHA256` variables.
+   file-based keys. Returned signatures are verified with the independently
+   pinned `keys/cosign.pub` before release promotion.
+3. The EFI trust anchor is `keys/efi-signing.crt`, a Tilo-owned code-signing
+   certificate self-signed through its KMS key. It is not in any factory `db`:
+   owners enroll it themselves (see the release-certificate section of
+   [security/boot-chain.md](security/boot-chain.md)). This user-enrolled
+   certificate is the supported production path; a factory-trusted chain may
+   replace it later. Validate enrollment and boot on each supported hardware
+   family. The PCR/EFI signer is baked root-owned into the native runner image
+   (`code.sandbox.example/public/runner-image`, `tilo-release-signer/`) at
+   `/usr/local/libexec/tilo-release-signer/tilo-release-signer`, which the
+   protected `TILO_PCR_PREDICTION_SIGNER` variable names;
+   `TILO_EFI_SIGNING_CERT_SHA256` pins the certificate.
 4. Independently verify the EFI certificate fingerprint. Its calculation uses
-   only the public certificate:
+   only the public certificate and must equal `TILO_EFI_SIGNING_CERT_SHA256`:
 
    ```sh
-   tilo-crypto certificate-sha256 release-efi.crt
+   tilo-crypto certificate-sha256 keys/efi-signing.crt
    ```
 
 5. Establish and publish the independently held marketplace owner identity;
