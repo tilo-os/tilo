@@ -2172,7 +2172,7 @@ pub fn reconcile_foreign_tabs(source: &WorkspaceTree, rendered: &mut WorkspaceTr
             && crate::shell::tab_binding::rebind_toplevel_for_app_id(
                 rendered,
                 want.surface_id,
-                want.app_id.clone(),
+                &want.app_id,
                 Some(&want.title),
             )
         {
@@ -3130,7 +3130,7 @@ mod tests {
         assert!(crate::shell::tab_binding::rebind_toplevel_for_app_id(
             &mut source,
             0x501,
-            "org.example.electron".into(),
+            "org.example.electron",
             None,
         ));
         assert!(reconcile_foreign_tabs(&source, &mut rendered));
@@ -3176,7 +3176,7 @@ mod tests {
         assert!(crate::shell::tab_binding::rebind_toplevel_for_app_id(
             &mut source,
             surface,
-            "Chatgpt".into(),
+            "Chatgpt",
             Some("ChatGPT"),
         ));
         assert!(reconcile_foreign_tabs(&source, &mut rendered));
@@ -3861,7 +3861,7 @@ mod tests {
         assert!(reconcile_foreign_tabs(&source, &mut rendered));
         assert_eq!(foreign_tabs(&rendered)[0].app_id, "anon-77");
 
-        crate::shell::tab_binding::rename_tab_for_app_id(&mut source, 77, "io.example.late".into());
+        crate::shell::tab_binding::rename_tab_for_app_id(&mut source, 77, "io.example.late");
         assert!(reconcile_foreign_tabs(&source, &mut rendered));
         let t = &foreign_tabs(&rendered)[0];
         assert_eq!(t.app_id, "io.example.late");

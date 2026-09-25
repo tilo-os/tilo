@@ -182,7 +182,7 @@ fn run_host_thread(
     input_sock_host: &UdpSocket,
     video_addr: std::net::SocketAddr,
     host_input_ts_c: Arc<std::sync::Mutex<Vec<u64>>>,
-    frame_capture_times: Arc<std::sync::Mutex<HashMap<u64, Instant>>>,
+    frame_capture_times: &std::sync::Mutex<HashMap<u64, Instant>>,
 ) {
     let video_send = UdpSocket::bind("127.0.0.1:0").expect("host video-send socket");
     video_send
@@ -249,8 +249,8 @@ fn run_viewer_thread(
     recv_count: &AtomicU32,
     origin: Instant,
     input_addr: std::net::SocketAddr,
-    frame_capture_times: Arc<std::sync::Mutex<HashMap<u64, Instant>>>,
-    input_sent_ns: Arc<std::sync::Mutex<Vec<u64>>>,
+    frame_capture_times: &std::sync::Mutex<HashMap<u64, Instant>>,
+    input_sent_ns: &std::sync::Mutex<Vec<u64>>,
 ) -> (Vec<u64>, u32) {
     video_sock_viewer
         .set_nonblocking(true)
@@ -320,6 +320,10 @@ fn run_viewer_thread(
 /// without privileged netns setup. This runs normally: latency guarantees
 /// are regressions only when the ordinary test suite enforces them.
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "an end-to-end test scenario that reads top to bottom"
+)]
 fn in_process_udp_pipeline_sustains_10_fps_and_bounded_latency() {
     // The kernel picks free ports; host and viewer exchange them via the
     // addresses `local_addr` returns.
@@ -359,7 +363,7 @@ fn in_process_udp_pipeline_sustains_10_fps_and_bounded_latency() {
             &input_sock_host,
             video_addr,
             host_input_ts_c,
-            host_frame_capture_times,
+            &host_frame_capture_times,
         );
     });
 
@@ -368,7 +372,7 @@ fn in_process_udp_pipeline_sustains_10_fps_and_bounded_latency() {
     let viewer_stop = stop.clone();
     let recv_count = received_count.clone();
     let origin = session.origin();
-    let viewer_frame_capture_times = frame_capture_times.clone();
+    let viewer_frame_capture_times = frame_capture_times;
     let viewer_input_sent_ns = input_sent_ns.clone();
     let viewer_thread = thread::spawn(move || {
         run_viewer_thread(
@@ -377,8 +381,8 @@ fn in_process_udp_pipeline_sustains_10_fps_and_bounded_latency() {
             &recv_count,
             origin,
             input_addr,
-            viewer_frame_capture_times,
-            viewer_input_sent_ns,
+            &viewer_frame_capture_times,
+            &viewer_input_sent_ns,
         )
     });
 
