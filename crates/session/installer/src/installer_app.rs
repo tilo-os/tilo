@@ -1206,6 +1206,9 @@ pub struct InstallerApp {
     // privileged installer process and are zeroized when consumed.
     password: Arc<Mutex<String>>,
     password_confirmation: Arc<Mutex<String>>,
+    /// Optional action-supplied disk secret. Empty means the account password
+    /// is also the startup secret, preserving the graphical wizard behavior.
+    disk_password: Arc<Mutex<String>>,
     wifi_password: Arc<Mutex<String>>,
     hostname: String,
     locale: String,
@@ -1399,6 +1402,7 @@ impl InstallerApp {
             full_name: String::new(),
             password: Arc::new(Mutex::new(String::new())),
             password_confirmation: Arc::new(Mutex::new(String::new())),
+            disk_password: Arc::new(Mutex::new(String::new())),
             wifi_password: Arc::new(Mutex::new(String::new())),
             hostname: DEFAULT_HOSTNAME.to_string(),
             locale: "en_US.UTF-8".to_string(),
@@ -1744,13 +1748,22 @@ impl InstallerApp {
         }
     }
 
+    fn startup_secret(&self) -> Zeroizing<String> {
+        let separate = secret_copy(&self.disk_password);
+        if separate.is_empty() {
+            secret_copy(&self.password)
+        } else {
+            separate
+        }
+    }
+
     /// May the install start, as far as encryption is concerned? Native Tilo
     /// always requires both a reproducible recovery factor and a startup
     /// secret. A short PIN is accepted only for a signed, measured target.
     fn encryption_ready(&self) -> bool {
         self.recovery_ack
             && validate_startup_secret_for(
-                &secret_copy(&self.password),
+                &self.startup_secret(),
                 matches!(
                     self.verified_boot_state(),
                     VerifiedBootState::TargetVerified
@@ -1780,7 +1793,7 @@ impl InstallerApp {
         // Recovery is always present; the primary startup factor reflects the
         // same verified-target decision used by validation and the backend.
         let mut factors = vec!["recovery key".to_string()];
-        if !secret_copy(&self.password).trim().is_empty() {
+        if !self.startup_secret().trim().is_empty() {
             factors.push(
                 if matches!(
                     self.verified_boot_state(),
@@ -1861,7 +1874,7 @@ impl InstallerApp {
             timezone: self.timezone.trim().to_string(),
             keymap: layout.xkb_layout.to_string(),
             keyvariant: layout.variant_or_empty().to_string(),
-            pin: secret_copy(&self.password),
+            pin: self.startup_secret(),
             fido2: self.fido2,
             internal_handoff: if guided.is_some() && disk.is_some_and(Disk::hosts_staged_installer)
             {
@@ -1994,8 +2007,12 @@ impl InstallerApp {
                 &secret_copy(&self.password),
                 &secret_copy(&self.password_confirmation),
             )?;
+            let separate = secret_copy(&self.disk_password);
+            if !separate.is_empty() && separate.as_str() == secret_copy(&self.password).as_str() {
+                return Err("Choose a disk secret different from the account password".into());
+            }
             validate_startup_secret_for(
-                &secret_copy(&self.password),
+                &self.startup_secret(),
                 matches!(
                     self.verified_boot_state(),
                     VerifiedBootState::TargetVerified
@@ -2202,6 +2219,10 @@ impl InstallerApp {
     /// Enter the Install step and kick off the backend. Prefers a worker
     /// thread (live streaming via the event-loop proxy); falls back to a
     /// blocking run when no proxy is wired (tests / no event loop).
+    #[expect(
+        clippy::too_many_lines,
+        reason = "installer preflight and worker launch are one ordered operation"
+    )]
     fn begin_install(&mut self, state: &AutoCommit, root: &ObjId) {
         if self.install_launched {
             return;
@@ -2236,7 +2257,7 @@ impl InstallerApp {
             return;
         }
         if let Err(message) = validate_startup_secret_for(
-            &secret_copy(&self.password),
+            &self.startup_secret(),
             matches!(
                 self.verified_boot_state(),
                 VerifiedBootState::TargetVerified
@@ -2252,6 +2273,10 @@ impl InstallerApp {
             self.set_status(&message);
             return;
         }
+        if secret_copy(&self.disk_password).as_str() == password.as_str() {
+            self.set_status("Choose a disk secret different from the account password");
+            return;
+        }
         let opts = self.install_options();
 
         // The worker owns the only remaining password buffer. Remove both UI
@@ -2259,6 +2284,7 @@ impl InstallerApp {
         // secrets sitting in the live session's editable document.
         clear_secret_buffer(&self.password);
         clear_secret_buffer(&self.password_confirmation);
+        clear_secret_buffer(&self.disk_password);
 
         self.step = Step::Install;
         self.reset_viewport();
