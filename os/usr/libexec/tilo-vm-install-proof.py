@@ -67,6 +67,8 @@ def build_proof(args):
 
     booted = json.loads(command("bootc", "status", "--format", "json"))["status"]["booted"]
     booted_digest = booted["image"]["imageDigest"]
+    architecture = booted["image"]["architecture"]
+    require(architecture == "arm64", "VM installer did not boot an ARM64 image")
     require(DIGEST.fullmatch(booted_digest) and booted_digest == installed_digest,
             "installed deployment does not match the booted CI image digest")
     require(booted.get("incompatible") is False,
@@ -92,6 +94,7 @@ def build_proof(args):
     require(len(set(identities.values())) == 3,
             "installed target partition identities overlap")
     return {"schema": "tilo.vm-install-image-proof.v1",
+            "architecture": architecture,
             "booted_image_digest": booted_digest,
             "installed_image_digest": installed_digest,
             "composefs_digest": composefs,
