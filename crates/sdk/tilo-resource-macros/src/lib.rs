@@ -457,7 +457,10 @@ fn is_action_cx(ty: &Type) -> bool {
 /// `ActionRef` views bind controls to and tests apply) and `impl Resource`.
 /// An action method takes `&mut self`, optionally `cx: &mut ActionCx`, then
 /// its parameters, and returns `()` or `Result<(), impl Into<Refusal>>`.
-/// Options: `#[action(label = "...", permission = "comment", destructive)]`;
+/// Options: `#[action(label = "...", permission = "comment", destructive)]`
+/// (`destructive` applies both to the named declaration and to the same
+/// operation reached through the generic `apply` action, so either path asks
+/// for the same confirmation);
 /// `#[resource(search = path, children = path)]` override search entries and
 /// nested resources.
 #[proc_macro_attribute]
@@ -488,6 +491,7 @@ fn expand_resource(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Resul
 
     let mut variants = Vec::new();
     let mut arms = Vec::new();
+    let mut risks = Vec::new();
     let mut consts = Vec::new();
     let mut decls = Vec::new();
 
@@ -608,6 +612,11 @@ fn expand_resource(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Resul
                 record.#method_ident(#cx_arg #(#call_args,)*)
             ),
         });
+        if action.destructive {
+            risks.push(quote! {
+                Self::#variant { .. } => #krate::__private::RiskLevel::Destructive,
+            });
+        }
         let const_ident = format_ident!("{}", method_name.to_uppercase());
         let param_names: Vec<String> = field_idents.iter().map(ToString::to_string).collect();
         let tys: Vec<&Type> = fields.iter().map(|(_, ty, _, _)| ty).collect();
@@ -694,6 +703,19 @@ fn expand_resource(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Resul
     } else {
         quote!(record)
     };
+    let risk = if risks.is_empty() {
+        quote!()
+    } else {
+        quote! {
+            fn risk(&self) -> #krate::__private::RiskLevel {
+                #[allow(unreachable_patterns, reason = "every other operation is low risk")]
+                match self {
+                    #(#risks)*
+                    _ => #krate::__private::RiskLevel::Low,
+                }
+            }
+        }
+    };
     let body = if arms.is_empty() {
         quote!(match *self {})
     } else {
@@ -720,6 +742,7 @@ fn expand_resource(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Resul
             ) -> ::core::result::Result<(), #krate::Refusal> {
                 #body
             }
+            #risk
         }
 
         impl #self_ty {

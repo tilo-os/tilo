@@ -52,6 +52,15 @@ impl<R: Resource> Live<R> {
         self.inner.revision.get()
     }
 
+    /// Ask everything bound to the state to take it again, unchanged. After
+    /// an edit was refused or is waiting for confirmation, a surface that
+    /// previewed it optimistically is re-presented the stored state.
+    pub(crate) fn represent(&self) {
+        self.inner
+            .revision
+            .set(self.inner.revision.get().wrapping_add(1));
+    }
+
     pub(crate) fn replace(&self, state: R::State) {
         *self.inner.state.borrow_mut() = Rc::new(state);
         self.inner
