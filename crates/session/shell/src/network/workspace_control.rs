@@ -5,6 +5,12 @@
 //! authenticated `SurfaceStreamStart` from the exact target opens the input
 //! gate.  Stream end, target/relay departure, revocation, and local close all
 //! shut it again before any subsequent input can be published.
+//!
+//! The frames are relayed to the Remote app, whose decoder takes H.264 only
+//! (the broker's stream events carry no codec). While a session exists this
+//! peer therefore advertises H.264-only decode (see
+//! [`crate::network::media_caps::H264OnlyViewer`]), so the target's share
+//! negotiates H.264; frames of any other codec are not relayed.
 
 use iroh::EndpointId;
 
@@ -58,6 +64,10 @@ pub struct WorkspaceControlSession {
     status: WorkspaceControlStatus,
     granted_surface: Option<SurfaceId>,
     pending_start: Option<(SurfaceId, u32, u32)>,
+    /// Whether the target's current stream is H.264, the only codec the
+    /// Remote app decodes.
+    stream_is_h264: bool,
+    _h264_only: crate::network::media_caps::H264OnlyViewer,
 }
 
 impl WorkspaceControlSession {
@@ -76,6 +86,8 @@ impl WorkspaceControlSession {
             status: WorkspaceControlStatus::WaitingForConsent,
             granted_surface: None,
             pending_start: None,
+            stream_is_h264: true,
+            _h264_only: crate::network::media_caps::H264OnlyViewer::new(),
         }
     }
 
@@ -146,8 +158,10 @@ impl WorkspaceControlSession {
                 source_peer,
                 width,
                 height,
+                codec,
                 ..
             } if transport_peer == Some(self.target) && *source_peer == self.target_peer => {
+                self.stream_is_h264 = codec == "h264";
                 self.pending_start = Some((*surface, *width, *height));
                 if self.granted_surface != Some(*surface) {
                     return None;
@@ -170,6 +184,7 @@ impl WorkspaceControlSession {
                 ts,
             } if transport_peer == Some(self.target)
                 && *source_peer == self.target_peer
+                && self.stream_is_h264
                 && self.active_surface() == Some(*surface) =>
             {
                 Some(WorkspaceControlUpdate::Frame {
