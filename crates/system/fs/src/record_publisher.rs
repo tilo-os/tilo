@@ -719,7 +719,7 @@ impl RecordPublisher {
                 RecordOperationV1::SetMetadata(metadata.clone()),
             ));
         }
-        let applied = self.apply_all(key, pending, &authorizer)?;
+        let applied = self.apply_all(key, &pending, &authorizer)?;
         for (kind, published) in applied {
             match (kind, published) {
                 (Pending::Version, true) => {
@@ -751,7 +751,7 @@ impl RecordPublisher {
     fn apply_all(
         &self,
         key: RecordRepositoryKey,
-        operations: Vec<(Pending, RecordOperationV1)>,
+        operations: &[(Pending, RecordOperationV1)],
         authorizer: &LocalOwnerAuthorizer,
     ) -> Result<Vec<(Pending, bool)>, RecordPublisherError> {
         let mut applied = Vec::with_capacity(operations.len());
