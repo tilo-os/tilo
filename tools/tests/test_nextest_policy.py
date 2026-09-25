@@ -9,6 +9,7 @@ from pathlib import Path
 REPO = Path(__file__).parents[2]
 NEXTEST = REPO / ".config" / "nextest.toml"
 SHELL = REPO / "crates" / "session" / "shell" / "src"
+WORKFLOWS = REPO / ".forgejo" / "workflows"
 
 
 def native_4k_tests() -> set[str]:
@@ -17,6 +18,24 @@ def native_4k_tests() -> set[str]:
     for source in SHELL.rglob("*.rs"):
         names.update(pattern.findall(source.read_text(encoding="utf-8")))
     return names
+
+
+def folded_values(workflow: str, key: str) -> list[str]:
+    """Values of `key: >-` folded scalars, without a YAML dependency."""
+    values = []
+    lines = workflow.splitlines()
+    for index, line in enumerate(lines):
+        match = re.fullmatch(rf"(\s*){key}: >-", line)
+        if match is None:
+            continue
+        indent = len(match.group(1))
+        body = []
+        for following in lines[index + 1:]:
+            if following.strip() and len(following) - len(following.lstrip()) <= indent:
+                break
+            body.append(following.strip())
+        values.append(" ".join(part for part in body if part))
+    return values
 
 
 class NextestPolicyTests(unittest.TestCase):
@@ -42,6 +61,24 @@ class NextestPolicyTests(unittest.TestCase):
                 expected,
                 f"{profile_name} leaves native-4K tests competing with the parallel suite",
             )
+
+    def test_every_golden_selection_names_the_same_tests(self) -> None:
+        # PR shards exclude the goldens, nightly verifies them on an idle
+        # renderer and the refresh workflow renders candidates for them.
+        # Diverging copies would verify or refresh a different set.
+        config = tomllib.loads(NEXTEST.read_text(encoding="utf-8"))
+        filters = {
+            f"nextest {profile}": override["filter"]
+            for profile in ("default", "ci")
+            for override in config["profile"][profile]["overrides"]
+            if override.get("test-group") == "gpu-golden"
+        }
+        for name in ("check.yml", "nightly.yml", "refresh-visual-baselines.yml"):
+            values = folded_values((WORKFLOWS / name).read_text(encoding="utf-8"), "GOLDEN_FILTER")
+            self.assertEqual(len(values), 1, name)
+            filters[name] = values[0]
+        normalised = {name: " ".join(value.split()) for name, value in filters.items()}
+        self.assertEqual(len(set(normalised.values())), 1, normalised)
 
 
 if __name__ == "__main__":

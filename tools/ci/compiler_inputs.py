@@ -156,7 +156,9 @@ def main() -> int:
                    "dirty": bool(command("git", "status", "--porcelain", "--untracked-files=no")),
                    "rustc": command("rustc", "-Vv"), "cargo_args": cargo_args,
                    "configuration": {name: hashlib.sha256(os.environ[name].encode()).hexdigest()
-                                     for name in ("RUSTFLAGS", "CARGO_ENCODED_RUSTFLAGS", "RUSTC_WRAPPER",
+                                     for name in ("RUSTFLAGS", "CARGO_ENCODED_RUSTFLAGS",
+                                                  "CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS",
+                                                  "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS", "RUSTC_WRAPPER",
                                                   "CARGO_BUILD_TARGET", "CARGO_PROFILE_DEV_DEBUG") if name in os.environ},
                    "config_files": [input_record(root / name, root) for name in
                                     ("Cargo.lock", "Cargo.toml", "rust-toolchain.toml", ".cargo/config.toml")]}
