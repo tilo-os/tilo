@@ -282,6 +282,35 @@ RUN mkdir -p /wpe
 # rather than building and discarding it.
 FROM wpe-builder-${TILO_WITH_BROWSER} AS wpe-builder
 
+# ---- The sources the Rust compile reads -------------------------------------
+# Only what the builder stage reads, never the whole context: with
+# `COPY . /build`, a unit, an /etc file or a test script under os/ re-ran the
+# compile and relinked every binary (about twenty minutes in CI), although none
+# of them depends on it. That is the workspace, the few repository files a
+# workspace crate include!s from outside it, the scripts the builder's RUNs
+# call, and the prebuilt payloads CI may stage (empty in a checkout).
+# tools/policy/check_image_builder_inputs.py keeps this list complete. A
+# scratch stage, so these commits are cheap and the builder takes one layer.
+FROM scratch AS builder-sources
+COPY Cargo.toml Cargo.lock rust-toolchain.toml /build/
+COPY .cargo /build/.cargo
+COPY crates /build/crates
+COPY apps /build/apps
+COPY examples /build/examples
+COPY vendor /build/vendor
+COPY dist /build/dist
+COPY tools/ci/rustc-thin-app-wrapper.sh /build/tools/ci/rustc-thin-app-wrapper.sh
+COPY os/usr/share/tilo/installer-locales.txt /build/os/usr/share/tilo/installer-locales.txt
+COPY \
+    os/scripts/cargo-freshness.sh \
+    os/scripts/build-thin-apps.sh \
+    os/scripts/verify-elf-hardening.sh \
+    os/scripts/pack-apps.sh \
+    os/scripts/browser-runtime-launcher.c \
+    /build/os/scripts/
+COPY os/desktop-artifacts /build/os/desktop-artifacts
+COPY os/app-artifacts /build/os/app-artifacts
+COPY os/app-runtime /build/os/app-runtime
 
 # ---- Stage 1: builder ------------------------------------------------------
 # Base pinned by digest against our own mirror (BASE_REF, os/base-snapshot.env):
@@ -432,34 +461,11 @@ COPY --from=wpe-builder /wpe/ /
 
 # Copy the frequently changing workspace only after the large, stable WPE
 # overlay. This keeps source-only iterations from re-importing the browser
-# engine before Cargo can reach its cache mounts.
-#
-# Only what this stage reads, never the whole context: with `COPY . /build`, a
-# unit, an /etc file or a test script under os/ re-ran the compile below and
-# relinked every binary (about twenty minutes in CI), although none of them
-# depends on it. That is the workspace, the few repository files a workspace
-# crate include!s from outside it, the scripts the RUNs below call, and the
-# prebuilt payloads CI may stage (empty in a checkout).
-# tools/policy/check_image_builder_inputs.py keeps this list complete.
-COPY Cargo.toml Cargo.lock rust-toolchain.toml /build/
-COPY .cargo /build/.cargo
-COPY crates /build/crates
-COPY apps /build/apps
-COPY examples /build/examples
-COPY vendor /build/vendor
-COPY dist /build/dist
-COPY tools/ci/rustc-thin-app-wrapper.sh /build/tools/ci/rustc-thin-app-wrapper.sh
-COPY os/usr/share/tilo/installer-locales.txt /build/os/usr/share/tilo/installer-locales.txt
-COPY \
-    os/scripts/cargo-freshness.sh \
-    os/scripts/build-thin-apps.sh \
-    os/scripts/verify-elf-hardening.sh \
-    os/scripts/pack-apps.sh \
-    os/scripts/browser-runtime-launcher.c \
-    /build/os/scripts/
-COPY os/desktop-artifacts /build/os/desktop-artifacts
-COPY os/app-artifacts /build/os/app-artifacts
-COPY os/app-runtime /build/os/app-runtime
+# engine before Cargo can reach its cache mounts. The sources arrive as one
+# layer (the builder-sources stage above): each instruction here commits a
+# layer of this multi-gigabyte stage, and rootless podman commits one by
+# walking the whole tree, minutes apiece.
+COPY --from=builder-sources /build/ /build/
 
 # Compile the binaries the OS images need. Cache mounts persist cargo's
 # registry + git checkouts (CARGO_HOME), the target dir, and the sccache store
