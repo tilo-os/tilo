@@ -36,6 +36,11 @@ use tilo_user_identity::{
 
 const TIMEOUT: Duration = Duration::from_secs(180);
 
+/// The local person who owns each room (as the installer would set it up).
+/// The daemons run as root; everything they materialise must belong to
+/// this account, never to root or to the author's uid.
+const LOCAL_OWNER: (u32, u32) = (4242, 4242);
+
 fn required() -> bool {
     std::env::var("TILO_REQUIRE_FANOTIFY").is_ok_and(|v| v == "1")
 }
@@ -145,10 +150,26 @@ impl Daemon {
         mode: &[&str],
         mount: &Path,
     ) -> Self {
+        Self::spawn_env(name, profile, dir, store, mode, mount, &[])
+    }
+
+    /// [`Self::spawn`] with extra environment; a value may name
+    /// `@profile` for a per-daemon path under `dir`.
+    fn spawn_env(
+        name: &'static str,
+        profile: &str,
+        dir: &Path,
+        store: &Path,
+        mode: &[&str],
+        mount: &Path,
+        env: &[(&str, &str)],
+    ) -> Self {
         let cache = dir.join(format!("{profile}-cache"));
         std::fs::create_dir_all(&cache).unwrap();
         std::fs::create_dir_all(mount).unwrap();
-        let sockets = cache.join("authority-sockets");
+        // Short: socket paths are bounded (SUN_LEN) wherever the temporary
+        // directory is.
+        let sockets = dir.join(format!("{profile}-s"));
         std::fs::create_dir_all(&sockets).unwrap();
         // `TILO_FS_TEST_BINARY` runs another build of the daemon (a release
         // build on a loaded machine) against the same assertions.
@@ -156,6 +177,9 @@ impl Daemon {
             .map_or_else(|| PathBuf::from(env!("CARGO_BIN_EXE_fs")), PathBuf::from);
         let mut command = Command::new(binary);
         command.env("TILO_FS_NATIVE_TRACE", "1");
+        for (key, value) in env {
+            command.env(key, dir.join(value.replace("@profile", profile)));
+        }
         command
             .env(
                 fs::identity::IDENTITY_ROOT_ENV,
@@ -394,8 +418,22 @@ struct Pair {
 }
 
 fn start_pair(store_a: &Path, store_b: &Path, seed: u8) -> Pair {
+    start_pair_with(store_a, store_b, seed, &[], &[])
+}
+
+/// [`start_pair`] with extra arguments for the host (the always-on device)
+/// and extra environment for both.
+fn start_pair_with(
+    store_a: &Path,
+    store_b: &Path,
+    seed: u8,
+    extra: &[&str],
+    env: &[(&str, &str)],
+) -> Pair {
     let temp = tempfile::tempdir().unwrap();
     let dir = temp.path().to_path_buf();
+    // Owner-only, as the daemons require of their control sockets' parent.
+    std::fs::set_permissions(&dir, std::os::unix::fs::PermissionsExt::from_mode(0o700)).unwrap();
     let person = [seed; 32];
     install_identity(
         &dir.join("host-identity"),
@@ -410,23 +448,32 @@ fn start_pair(store_a: &Path, store_b: &Path, seed: u8) -> Pair {
         false,
     );
     full_access_acl(&dir.join("acl.json"), person);
-    let mut host = Daemon::spawn(
+    for mount in ["host-mount", "peer-mount"] {
+        let m = dir.join(mount);
+        std::fs::create_dir_all(&m).unwrap();
+        std::os::unix::fs::chown(&m, Some(LOCAL_OWNER.0), Some(LOCAL_OWNER.1)).unwrap();
+    }
+    let host_args: Vec<&str> = ["serve"].into_iter().chain(extra.iter().copied()).collect();
+    let mut host = Daemon::spawn_env(
         "host",
         "host",
         &dir,
         store_a,
-        &["serve"],
+        &host_args,
         &dir.join("host-mount"),
+        env,
     );
     let ticket = host.wait_ticket();
     host.wait_serving();
-    let mut peer = Daemon::spawn(
+    let peer_args = ["mount", "--ticket", ticket.as_str()];
+    let mut peer = Daemon::spawn_env(
         "peer",
         "peer",
         &dir,
         store_b,
-        &["mount", "--ticket", &ticket],
+        &peer_args,
         &dir.join("peer-mount"),
+        env,
     );
     peer.wait_line("Joined workspace");
     peer.wait_serving();
@@ -447,6 +494,10 @@ fn start_pair(store_a: &Path, store_b: &Path, seed: u8) -> Pair {
 }
 
 #[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one end-to-end scenario whose steps build on each other"
+)]
 fn local_changes_publish_in_journal_order_and_arrive_as_placeholders_and_files() {
     let Some((a, b)) = stores("native_sync") else {
         return;
@@ -488,9 +539,12 @@ fn local_changes_publish_in_journal_order_and_arrive_as_placeholders_and_files()
         "small object on the peer",
     );
 
-    assert_placeholder_hydrates(&m2.join("objects/2"), &m1.join("objects/2"), &big);
+    let placeholder = m2.join("objects/2");
+    assert_placeholder_hydrates(&placeholder, &m1.join("objects/2"), &big);
 
-    // Rename and delete.
+    // Rename and delete. The rename is a move of the record: on the peer
+    // the file is renamed, so its inode and its resident bytes stay.
+    let peer_ino = std::fs::metadata(&placeholder).unwrap().ino();
     std::fs::rename(m1.join("objects/2"), m1.join("objects/3")).unwrap();
     std::fs::remove_file(m1.join("objects/1")).unwrap();
     wait_for(
@@ -503,10 +557,62 @@ fn local_changes_publish_in_journal_order_and_arrive_as_placeholders_and_files()
             .then_some(())
         },
     );
+    assert_eq!(
+        std::fs::metadata(m2.join("objects/3")).unwrap().ino(),
+        peer_ino,
+        "the peer renamed the file rather than writing it again"
+    );
+    assert!(
+        residency_xattr(&m2.join("objects/3")).is_none(),
+        "still resident"
+    );
     assert_same_bytes(
         &std::fs::read(m2.join("objects/3")).unwrap(),
         &big,
         "renamed object on the peer",
+    );
+
+    // A directory rename moves the subtree in one operation, both ways.
+    std::fs::create_dir_all(m1.join("tree/sub")).unwrap();
+    std::fs::write(m1.join("tree/sub/leaf"), b"leaf").unwrap();
+    std::fs::write(m1.join("tree/top"), b"top").unwrap();
+    wait_for(
+        &mut [&mut pair.host, &mut pair.peer],
+        "the tree on the peer",
+        || (std::fs::read(m2.join("tree/sub/leaf")).ok()? == b"leaf").then_some(()),
+    );
+    let tree_ino = std::fs::metadata(m2.join("tree")).unwrap().ino();
+    let leaf_ino = std::fs::metadata(m2.join("tree/sub/leaf")).unwrap().ino();
+    std::fs::rename(m1.join("tree"), m1.join("renamed")).unwrap();
+    wait_for(
+        &mut [&mut pair.host, &mut pair.peer],
+        "the renamed tree on the peer",
+        || (m2.join("renamed/sub/leaf").exists() && !m2.join("tree").exists()).then_some(()),
+    );
+    assert_eq!(
+        std::fs::metadata(m2.join("renamed")).unwrap().ino(),
+        tree_ino
+    );
+    assert_eq!(
+        std::fs::metadata(m2.join("renamed/sub/leaf"))
+            .unwrap()
+            .ino(),
+        leaf_ino
+    );
+    assert_eq!(std::fs::read(m2.join("renamed/top")).unwrap(), b"top");
+    std::fs::rename(m2.join("renamed/sub"), m2.join("moved-back")).unwrap();
+    wait_for(
+        &mut [&mut pair.host, &mut pair.peer],
+        "the peer's move on the host",
+        || {
+            (std::fs::read(m1.join("moved-back/leaf")).ok()? == b"leaf"
+                && !m1.join("renamed/sub").exists())
+            .then_some(())
+        },
+    );
+    assert!(
+        pair.host.log_count("1 move(s)") >= 2,
+        "renames were published as moves"
     );
 
     // The other direction.
@@ -588,6 +694,14 @@ fn assert_records_follow_writer_order(pair: &mut Pair, m1: &Path, m2: &Path) {
         versions.windows(2).all(|w| w[0] <= w[1]),
         "record versions follow the writer's order: {versions:?}"
     );
+    // The renamed file is the record created as objects/2: its history
+    // runs from that creation through the rename.
+    let history = provenance(&pair.dir.join("host-cache"), "objects/3");
+    assert!(
+        history.first() == Some(&collab_types::FileProvenance::Create)
+            && history.contains(&collab_types::FileProvenance::Rename),
+        "history follows the renamed record: {history:?}"
+    );
     assert!(pair.host.log_count("epoch ") >= 1);
     assert!(
         !m1.join("ref").exists(),
@@ -595,15 +709,31 @@ fn assert_records_follow_writer_order(pair: &mut Pair, m1: &Path, m2: &Path) {
     );
 }
 
-/// The time of the first content version of each path, from the host's
-/// persisted namespace and history.
-fn first_versions(cache: &Path, paths: &[&str]) -> Vec<u64> {
+fn persisted_namespace(cache: &Path) -> fs::Namespace {
     let outcome = fs::durable_backup::read_or_recover(&cache.join("namespace.bin"), |bytes| {
         fs::Namespace::from_bytes("reader", bytes).is_ok()
     })
     .unwrap()
     .unwrap();
-    let ns = fs::Namespace::from_bytes("reader", &outcome.bytes).unwrap();
+    fs::Namespace::from_bytes("reader", &outcome.bytes).unwrap()
+}
+
+/// The provenance of every version of the record at `path`, oldest first.
+fn provenance(cache: &Path, path: &str) -> Vec<collab_types::FileProvenance> {
+    let ns = persisted_namespace(cache);
+    let history = fs::FileHistoryStore::open(cache.join("file-history.json")).unwrap();
+    let entry = ns
+        .entry_at(path)
+        .unwrap_or_else(|| panic!("{path} is not a record"));
+    let mut versions = history.snapshot(entry.record_id).unwrap().versions;
+    versions.sort_by_key(|v| v.timestamp_ms);
+    versions.into_iter().map(|v| v.provenance).collect()
+}
+
+/// The time of the first content version of each path, from the host's
+/// persisted namespace and history.
+fn first_versions(cache: &Path, paths: &[&str]) -> Vec<u64> {
+    let ns = persisted_namespace(cache);
     let history = fs::FileHistoryStore::open(cache.join("file-history.json")).unwrap();
     paths
         .iter()
@@ -670,44 +800,62 @@ fn a_git_repository_made_on_one_device_is_clean_and_complete_on_the_other() {
     files.insert("README.md", b"# demo\n".to_vec());
     files.insert("src/lib.rs", b"pub fn f() {}\n".to_vec());
     files.insert("assets/blob.bin", pattern(7, 2 * 1024 * 1024));
+    // An executable and a symbolic link: git compares both.
+    files.insert("tool.sh", b"#!/bin/sh\necho tool\n".to_vec());
+    std::os::unix::fs::symlink("README.md", repo1.join("latest")).unwrap();
     for round in 0..3u8 {
         for (path, data) in &mut files {
             data.extend_from_slice(format!("round {round}\n").as_bytes());
             let p = repo1.join(path);
             std::fs::create_dir_all(p.parent().unwrap()).unwrap();
-            std::fs::write(p, &data).unwrap();
+            std::fs::write(&p, &data).unwrap();
+            if *path == "tool.sh" {
+                set_mode(&p, 0o755);
+            }
         }
+        // Edits and the commit land in different seconds, as when a person
+        // works. An index written in the second its files changed holds
+        // "racily clean" entries that the next `git status` anywhere
+        // rewrites (git's own rule), which is not a sync artifact.
+        std::thread::sleep(Duration::from_millis(1100));
         git(&repo1, &["add", "-A"]).unwrap();
         git(&repo1, &["commit", "-q", "-m", &format!("round {round}")]).unwrap();
     }
     let head = git(&repo1, &["rev-parse", "HEAD"]).unwrap();
     assert_eq!(git(&repo1, &["status", "--porcelain"]).unwrap(), "");
 
+    // A tool keeps running `git status` on the peer while it syncs, as a
+    // shell prompt does. It may write the index whenever what it sees is
+    // not a state the author's disk had; nothing it sees may make it.
     let t = Instant::now();
+    let mut last_status = String::new();
+    let mut polls = 0u32;
     wait_for(
         &mut [&mut pair.host, &mut pair.peer],
         "the host's HEAD on the peer",
         || {
-            std::thread::sleep(Duration::from_millis(250));
-            (git(&repo2, &["rev-parse", "HEAD"]).ok()? == head).then_some(())
-        },
-    );
-    eprintln!("three commits visible on the peer after {:?}", t.elapsed());
-    // Let the tree settle: the index and working files follow the ref.
-    let mut last_status = String::new();
-    wait_for(
-        &mut [&mut pair.host, &mut pair.peer],
-        "a clean status on the peer",
-        || {
-            std::thread::sleep(Duration::from_millis(250));
+            std::thread::sleep(Duration::from_millis(100));
+            polls += 1;
+            let at_head = git(&repo2, &["rev-parse", "HEAD"]).ok()? == head;
             let status = git(&repo2, &["status", "--porcelain"]);
             let shown = format!("{status:?}");
             if shown != last_status {
                 eprintln!("peer git status: {shown}");
-                last_status = shown;
+                last_status.clone_from(&shown);
             }
-            status.ok().filter(String::is_empty)
+            if at_head {
+                assert_eq!(
+                    status.as_deref(),
+                    Ok(""),
+                    "the status is clean as soon as the new HEAD is visible"
+                );
+            }
+            at_head.then_some(())
         },
+    );
+    eprintln!(
+        "three commits visible on the peer after {:?}, clean at once ({polls} status runs while syncing)",
+        t.elapsed()
     );
     let index = repo2.join(".git/index");
     let index_before = std::fs::metadata(&index).unwrap().mtime_nsec();
@@ -722,9 +870,161 @@ fn a_git_repository_made_on_one_device_is_clean_and_complete_on_the_other() {
         index_before,
         "status on the peer did not rewrite the index (no stat ping-pong)"
     );
+    // Give a stray capture on the peer time to show up.
+    std::thread::sleep(Duration::from_secs(3));
+    assert_eq!(
+        pair.peer.log_count(" change(s), "),
+        0,
+        "the peer published nothing: no spurious index or other transient state"
+    );
     for (path, data) in &files {
         assert!(std::fs::read(repo2.join(path)).unwrap() == *data, "{path}");
     }
+    assert_eq!(mode_of(&repo2.join("tool.sh")), 0o755);
+    assert_eq!(
+        std::fs::read_link(repo2.join("latest")).unwrap(),
+        Path::new("README.md")
+    );
+}
+
+fn set_mode(path: &Path, mode: u32) {
+    use std::os::unix::fs::PermissionsExt as _;
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).unwrap();
+}
+
+fn mode_of(path: &Path) -> u32 {
+    std::fs::symlink_metadata(path).unwrap().mode() & 0o7777
+}
+
+/// Every path below `root`, links not followed.
+/// The daemon's own staging entries come and go; they are not part of the
+/// tree.
+fn walk(root: &Path) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            if entry
+                .file_name()
+                .to_string_lossy()
+                .starts_with(".tilo-staging-")
+            {
+                continue;
+            }
+            let Ok(ft) = entry.file_type() else { continue };
+            if ft.is_dir() {
+                stack.push(entry.path());
+            }
+            if std::fs::symlink_metadata(entry.path()).is_ok() {
+                out.push(entry.path());
+            }
+        }
+    }
+    out
+}
+
+#[test]
+fn modes_links_and_ownership_replicate_and_hard_links_stay_consistent() {
+    let Some((a, b)) = stores("native_posix") else {
+        return;
+    };
+    let mut pair = start_pair(&a, &b, 0x71);
+    let m1 = pair.host.mount.clone();
+    let m2 = pair.peer.mount.clone();
+
+    std::fs::create_dir_all(m1.join("bin")).unwrap();
+    std::fs::write(m1.join("bin/run.sh"), b"#!/bin/sh\necho hi\n").unwrap();
+    set_mode(&m1.join("bin/run.sh"), 0o755);
+    std::fs::write(m1.join("secret"), b"s").unwrap();
+    set_mode(&m1.join("secret"), 0o600);
+    std::fs::create_dir(m1.join("shared")).unwrap();
+    set_mode(&m1.join("shared"), 0o2775);
+    std::fs::create_dir(m1.join("private")).unwrap();
+    std::fs::write(m1.join("private/note"), b"n").unwrap();
+    set_mode(&m1.join("private"), 0o700);
+    std::os::unix::fs::symlink("bin/run.sh", m1.join("link-rel")).unwrap();
+    std::os::unix::fs::symlink("/etc/hostname", m1.join("link-abs")).unwrap();
+    std::os::unix::fs::symlink("missing/target", m1.join("link-dangling")).unwrap();
+    std::fs::write(m1.join("a"), b"linked").unwrap();
+    std::fs::hard_link(m1.join("a"), m1.join("b")).unwrap();
+
+    wait_for(
+        &mut [&mut pair.host, &mut pair.peer],
+        "the tree on the peer",
+        || {
+            (std::fs::symlink_metadata(m2.join("link-dangling")).is_ok()
+                && std::fs::read(m2.join("b")).ok()? == b"linked"
+                && std::fs::read(m2.join("private/note")).ok()? == b"n"
+                && mode_of(&m2.join("private")) == 0o700)
+                .then_some(())
+        },
+    );
+    assert_eq!(mode_of(&m2.join("bin/run.sh")), 0o755);
+    assert_eq!(mode_of(&m2.join("secret")), 0o600);
+    assert_eq!(mode_of(&m2.join("shared")), 0o2775);
+    for (link, target) in [
+        ("link-rel", "bin/run.sh"),
+        ("link-abs", "/etc/hostname"),
+        ("link-dangling", "missing/target"),
+    ] {
+        assert_eq!(
+            std::fs::read_link(m2.join(link)).unwrap(),
+            Path::new(target),
+            "{link}"
+        );
+    }
+    let out = Command::new(m2.join("link-rel")).output().unwrap();
+    assert_eq!(out.stdout, b"hi\n", "the replicated script runs");
+    for path in walk(&m2) {
+        let meta = std::fs::symlink_metadata(&path).unwrap();
+        assert_eq!(
+            (meta.uid(), meta.gid()),
+            LOCAL_OWNER,
+            "{} belongs to the local person",
+            path.display()
+        );
+    }
+    // Hard links arrive as separate files with the same bytes; a write
+    // through one link reaches both.
+    assert_eq!(std::fs::read(m2.join("a")).unwrap(), b"linked");
+    std::fs::write(m1.join("b"), b"written through b").unwrap();
+    wait_for(
+        &mut [&mut pair.host, &mut pair.peer],
+        "both links updated on the peer",
+        || {
+            (std::fs::read(m2.join("a")).ok()? == b"written through b"
+                && std::fs::read(m2.join("b")).ok()? == b"written through b")
+                .then_some(())
+        },
+    );
+
+    // Changes of mode and target only, both ways.
+    set_mode(&m1.join("bin/run.sh"), 0o644);
+    std::fs::remove_file(m1.join("link-rel")).unwrap();
+    std::os::unix::fs::symlink("secret", m1.join("link-rel")).unwrap();
+    wait_for(
+        &mut [&mut pair.host, &mut pair.peer],
+        "mode and target changes on the peer",
+        || {
+            (mode_of(&m2.join("bin/run.sh")) == 0o644
+                && std::fs::read_link(m2.join("link-rel")).ok()? == Path::new("secret"))
+            .then_some(())
+        },
+    );
+    set_mode(&m2.join("secret"), 0o640);
+    set_mode(&m2.join("shared"), 0o755);
+    wait_for(
+        &mut [&mut pair.host, &mut pair.peer],
+        "the peer's mode changes on the host",
+        || {
+            (mode_of(&m1.join("secret")) == 0o640 && mode_of(&m1.join("shared")) == 0o755)
+                .then_some(())
+        },
+    );
+    assert_eq!(std::fs::read(m1.join("secret")).unwrap(), b"s");
 }
 
 #[test]
@@ -880,17 +1180,19 @@ fn a_file_modified_in_place_takes_a_lease_and_a_second_writer_gets_ebusy() {
         .wait_line("took the write lease of db.bin (epoch 1)");
     pair.peer.wait_line("db.bin is read-only here");
 
-    // On the peer, a reader reads and a writer gets EBUSY.
+    // On the peer, a reader reads and opening it for writing gets EBUSY.
     let mut head = vec![0u8; 16];
     std::fs::File::open(&db2)
         .unwrap()
         .read_exact_at(&mut head, 0)
         .unwrap();
     assert!(head == original[..16], "readers keep reading a leased file");
-    let peer_writer = std::fs::OpenOptions::new().write(true).open(&db2).unwrap();
-    let err = peer_writer.write_at(b"x", 0).unwrap_err();
+    let err = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(&db2)
+        .unwrap_err();
     assert_eq!(err.raw_os_error(), Some(libc::EBUSY), "{err}");
-    drop(peer_writer);
 
     // The host closes the file: the lease is released, and the peer's next
     // writing session takes it over with a new epoch.
@@ -921,8 +1223,388 @@ fn a_file_modified_in_place_takes_a_lease_and_a_second_writer_gets_ebusy() {
     pair.peer
         .wait_line("took the write lease of db.bin (epoch 2)");
     pair.host.wait_line("db.bin is read-only here");
-    let host_writer = std::fs::OpenOptions::new().write(true).open(&db1).unwrap();
-    let err = host_writer.write_at(b"y", 0).unwrap_err();
+    let err = std::fs::OpenOptions::new()
+        .write(true)
+        .open(&db1)
+        .unwrap_err();
     assert_eq!(err.raw_os_error(), Some(libc::EBUSY), "{err}");
     peer_session.end();
+}
+
+fn sqlite(db: &Path, sql: &str) -> Result<String, String> {
+    let out = Command::new("sqlite3")
+        .arg(db)
+        .arg(sql)
+        .output()
+        .map_err(|e| e.to_string())?;
+    if out.status.success() {
+        Ok(String::from_utf8_lossy(&out.stdout).trim().to_owned())
+    } else {
+        Err(String::from_utf8_lossy(&out.stderr).trim().to_owned())
+    }
+}
+
+/// Rewrites the first 16 bytes of `path` with what they already hold every
+/// 300 ms: a writing session that holds the lease without changing a byte.
+struct SameBytes {
+    stop: Arc<std::sync::atomic::AtomicBool>,
+    thread: Option<std::thread::JoinHandle<()>>,
+}
+
+impl SameBytes {
+    fn start(path: &Path) -> Self {
+        use std::os::unix::fs::FileExt as _;
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(path)
+            .unwrap();
+        let mut head = [0u8; 16];
+        file.read_exact_at(&mut head, 0).unwrap();
+        let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let flag = Arc::clone(&stop);
+        let thread = std::thread::spawn(move || {
+            while !flag.load(std::sync::atomic::Ordering::Relaxed) {
+                file.write_all_at(&head, 0).unwrap();
+                std::thread::sleep(Duration::from_millis(300));
+            }
+        });
+        Self {
+            stop,
+            thread: Some(thread),
+        }
+    }
+
+    fn end(mut self) {
+        self.stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        if let Some(t) = self.thread.take() {
+            t.join().unwrap();
+        }
+    }
+}
+
+#[test]
+fn sqlite_opened_read_write_on_the_device_without_the_lease_reads_and_refuses_writes() {
+    let Some((a, b)) = stores("native_sqlite") else {
+        return;
+    };
+    if Command::new("sqlite3").arg("--version").output().is_err() {
+        assert!(!required(), "sqlite3 is not installed");
+        return;
+    }
+    let mut pair = start_pair(&a, &b, 0x81);
+    let db1 = pair.host.mount.join("app.db");
+    let db2 = pair.peer.mount.join("app.db");
+    sqlite(
+        &db1,
+        "CREATE TABLE t(v INTEGER); INSERT INTO t VALUES (1), (2), (3);",
+    )
+    .unwrap();
+    wait_for(
+        &mut [&mut pair.host, &mut pair.peer],
+        "the database on the peer",
+        || (sqlite(&db2, "SELECT count(*) FROM t").ok()? == "3").then_some(()),
+    );
+    // An update writes pages in place: the database becomes lease-class.
+    sqlite(&db1, "UPDATE t SET v = v + 10;").unwrap();
+    pair.host.wait_line("app.db is modified in place");
+    wait_for(
+        &mut [&mut pair.host, &mut pair.peer],
+        "the update on the peer",
+        || (sqlite(&db2, "SELECT sum(v) FROM t").ok()? == "36").then_some(()),
+    );
+
+    // The host holds the lease.
+    let session = SameBytes::start(&db1);
+    pair.host.wait_line("took the write lease of app.db");
+    pair.peer.wait_line("app.db is read-only here");
+
+    // sqlite3 opens read-write by default. On the peer it reads...
+    for _ in 0..3 {
+        assert_eq!(sqlite(&db2, "SELECT sum(v) FROM t").unwrap(), "36");
+    }
+    // ...and a write fails cleanly, leaving no journal behind.
+    let err = sqlite(&db2, "INSERT INTO t VALUES (99);").unwrap_err();
+    assert!(err.contains("readonly"), "{err}");
+    assert!(
+        !pair.peer.mount.join("app.db-journal").exists(),
+        "a refused write leaves no rollback journal to publish"
+    );
+    assert_eq!(sqlite(&db2, "PRAGMA integrity_check;").unwrap(), "ok");
+
+    // Once the host lets go, the peer writes, and the host sees it.
+    session.end();
+    let t = Instant::now();
+    wait_for(
+        &mut [&mut pair.host, &mut pair.peer],
+        "the peer's write after the handover",
+        || {
+            std::thread::sleep(Duration::from_millis(200));
+            sqlite(&db2, "INSERT INTO t VALUES (100);").ok()
+        },
+    );
+    eprintln!("the peer wrote {:?} after the host let go", t.elapsed());
+    wait_for(
+        &mut [&mut pair.host, &mut pair.peer],
+        "the peer's row on the host",
+        || {
+            std::thread::sleep(Duration::from_millis(200));
+            (sqlite(&db1, "SELECT sum(v) FROM t").ok()? == "136").then_some(())
+        },
+    );
+    assert_eq!(sqlite(&db1, "PRAGMA integrity_check;").unwrap(), "ok");
+    assert!(
+        !pair.host.mount.join("app.db-journal").exists(),
+        "no journal reached the host"
+    );
+}
+
+/// Asks a daemon's transport partition gate to `partition` or `reconnect`.
+fn gate(socket: &Path, command: &str) {
+    use std::io::Write as _;
+    let mut stream = std::os::unix::net::UnixStream::connect(socket).unwrap();
+    stream.write_all(format!("{command}\n").as_bytes()).unwrap();
+    let mut answer = String::new();
+    stream.read_to_string(&mut answer).unwrap();
+    assert!(
+        !answer.is_empty(),
+        "{command}: no answer from {}",
+        socket.display()
+    );
+}
+
+/// Makes `name` lease-class on both devices of `pair`: written once,
+/// modified in place on the host, then held and released by the host.
+fn lease_class_file(pair: &mut Pair, name: &str, content: &[u8]) {
+    use std::os::unix::fs::FileExt as _;
+    let f1 = pair.host.mount.join(name);
+    let f2 = pair.peer.mount.join(name);
+    std::fs::write(&f1, content).unwrap();
+    wait_for(
+        &mut [&mut pair.host, &mut pair.peer],
+        "the file on the peer",
+        || (std::fs::read(&f2).ok()? == content).then_some(()),
+    );
+    std::fs::OpenOptions::new()
+        .write(true)
+        .open(&f1)
+        .unwrap()
+        .write_all_at(&content[..8], 0)
+        .unwrap();
+    pair.host.wait_line(&format!("{name} is modified in place"));
+    // The write gate is placed at the next lease tick; a descriptor opened
+    // before it is not watched by the kernel.
+    std::thread::sleep(Duration::from_millis(1500));
+    let session = SameBytes::start(&f1);
+    pair.host
+        .wait_line(&format!("took the write lease of {name}"));
+    pair.peer.wait_line(&format!("{name} is read-only here"));
+    session.end();
+    // Released: the peer opens it for writing again.
+    wait_for(
+        &mut [&mut pair.host, &mut pair.peer],
+        "the lease released",
+        || {
+            std::thread::sleep(Duration::from_millis(100));
+            std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .open(&f2)
+                .ok()
+                .map(|_| ())
+        },
+    );
+}
+
+/// From a thread that opens `path` read-write and waits at `start`, writes
+/// `bytes` at offset 0 and keeps rewriting them for `hold`.
+fn contend(
+    path: PathBuf,
+    bytes: Vec<u8>,
+    start: Arc<std::sync::Barrier>,
+    hold: Duration,
+) -> std::thread::JoinHandle<Result<(), i32>> {
+    std::thread::spawn(move || {
+        use std::os::unix::fs::FileExt as _;
+        let errno = |e: std::io::Error| e.raw_os_error().unwrap_or(0);
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&path);
+        start.wait();
+        let file = file.map_err(errno)?;
+        file.write_all_at(&bytes, 0).map_err(errno)?;
+        let until = Instant::now() + hold;
+        while Instant::now() < until {
+            std::thread::sleep(Duration::from_millis(200));
+            file.write_all_at(&bytes, 0).map_err(errno)?;
+        }
+        Ok(())
+    })
+}
+
+#[test]
+fn the_lease_authority_gives_a_free_lease_to_one_of_two_devices_asking_at_once() {
+    let Some((a, b)) = stores("native_authority") else {
+        return;
+    };
+    let mut pair = start_pair_with(&a, &b, 0x91, &["--lease-authority"], &[]);
+    assert_eq!(pair.host.log_count("arbitrating write leases"), 1);
+    assert_eq!(pair.peer.log_count("arbitrating write leases"), 0);
+    let content = pattern(9, 64 * 1024);
+    lease_class_file(&mut pair, "shared.db", &content);
+    let f1 = pair.host.mount.join("shared.db");
+    let f2 = pair.peer.mount.join("shared.db");
+    let mut winners = Vec::new();
+    for round in 0..3u8 {
+        let start = Arc::new(std::sync::Barrier::new(2));
+        let host = contend(
+            f1.clone(),
+            vec![b'h', round],
+            Arc::clone(&start),
+            Duration::from_secs(2),
+        );
+        let peer = contend(
+            f2.clone(),
+            vec![b'p', round],
+            Arc::clone(&start),
+            Duration::from_secs(2),
+        );
+        let (host, peer) = (host.join().unwrap(), peer.join().unwrap());
+        eprintln!("round {round}: host {host:?}, peer {peer:?}");
+        assert!(
+            host.is_ok() != peer.is_ok(),
+            "exactly one device writes: host {host:?}, peer {peer:?}"
+        );
+        let loser = if host.is_ok() { peer } else { host };
+        assert_eq!(loser, Err(libc::EBUSY), "the other is refused at once");
+        let winner = if host.is_ok() { b'h' } else { b'p' };
+        winners.push(winner);
+        // Both converge on the winner's bytes.
+        wait_for(
+            &mut [&mut pair.host, &mut pair.peer],
+            "both devices on the winner's version",
+            || {
+                std::thread::sleep(Duration::from_millis(100));
+                let want = [winner, round];
+                (std::fs::read(&f1).ok()?[..2] == want && std::fs::read(&f2).ok()?[..2] == want)
+                    .then_some(())
+            },
+        );
+        // The winner lets go; the next round starts from a free lease.
+        wait_for(
+            &mut [&mut pair.host, &mut pair.peer],
+            "the lease released on both",
+            || {
+                std::thread::sleep(Duration::from_millis(100));
+                (std::fs::OpenOptions::new().write(true).open(&f1).is_ok()
+                    && std::fs::OpenOptions::new().write(true).open(&f2).is_ok())
+                .then_some(())
+            },
+        );
+    }
+    eprintln!("winners: {:?}", String::from_utf8_lossy(&winners));
+    // Alone, the peer asks the authority and is granted the lease.
+    let start = Arc::new(std::sync::Barrier::new(1));
+    let t = Instant::now();
+    let peer = contend(f2, b"pz".to_vec(), start, Duration::ZERO);
+    assert_eq!(peer.join().unwrap(), Ok(()));
+    eprintln!(
+        "the peer's first write waited {:?} for the grant",
+        t.elapsed()
+    );
+    pair.peer.wait_line("granted by the lease authority");
+    assert!(
+        pair.host
+            .log_count("granted the write lease of shared.db to device")
+            >= 1
+    );
+    for daemon in [&pair.host, &pair.peer] {
+        assert_eq!(daemon.log_count("fenced version"), 0, "no conflict");
+        assert_eq!(daemon.log_count("tenancy its author did not hold"), 0);
+    }
+}
+
+#[test]
+fn a_version_from_a_tenancy_its_author_did_not_hold_is_kept_as_a_conflict_and_never_applied() {
+    let Some((a, b)) = stores("native_fencing") else {
+        return;
+    };
+    let mut pair = start_pair_with(
+        &a,
+        &b,
+        0xa1,
+        &["--lease-authority"],
+        &[("TILO_FS_TRANSPORT_GATE_SOCKET", "@profile-gate.sock")],
+    );
+    let host_gate = pair.dir.join("host-gate.sock");
+    let peer_gate = pair.dir.join("peer-gate.sock");
+    let content = pattern(10, 64 * 1024);
+    lease_class_file(&mut pair, "data.db", &content);
+    let f1 = pair.host.mount.join("data.db");
+    let f2 = pair.peer.mount.join("data.db");
+
+    // Cut off from each other, both devices write the free file: the host
+    // is the lease authority and grants itself the lease; the peer cannot
+    // reach it and takes the same epoch optimistically.
+    gate(&host_gate, "partition");
+    gate(&peer_gate, "partition");
+    let start = Arc::new(std::sync::Barrier::new(2));
+    let host_bytes = b"HOST-TENANCY".to_vec();
+    let peer_bytes = b"PEER-OPTIMIS".to_vec();
+    let host = contend(
+        f1.clone(),
+        host_bytes.clone(),
+        Arc::clone(&start),
+        Duration::from_millis(500),
+    );
+    let peer = contend(
+        f2.clone(),
+        peer_bytes.clone(),
+        Arc::clone(&start),
+        Duration::from_millis(500),
+    );
+    assert_eq!(host.join().unwrap(), Ok(()));
+    assert_eq!(peer.join().unwrap(), Ok(()));
+    pair.peer
+        .wait_line("optimistically: the lease authority did not answer");
+    // Each publishes its version while still cut off.
+    std::thread::sleep(Duration::from_secs(8));
+    gate(&host_gate, "reconnect");
+    gate(&peer_gate, "reconnect");
+
+    // The granted tenancy wins. The host never shows the peer's bytes; both
+    // end on the host's version, and the peer's version is kept beside it
+    // as a conflict copy on both devices.
+    let (m1, m2) = (pair.host.mount.clone(), pair.peer.mount.clone());
+    let t = Instant::now();
+    let copy = wait_for(
+        &mut [&mut pair.host, &mut pair.peer],
+        "convergence on the host's version with the peer's kept",
+        || {
+            std::thread::sleep(Duration::from_millis(100));
+            let on_host = std::fs::read(&f1).ok()?;
+            assert!(
+                on_host[..12] != peer_bytes[..],
+                "the host never applies a version from a tenancy its author did not hold"
+            );
+            let on_peer = std::fs::read(&f2).ok()?;
+            if on_host[..12] != host_bytes[..] || on_peer[..12] != host_bytes[..] {
+                return None;
+            }
+            let copy = std::fs::read_dir(&m1)
+                .ok()?
+                .flatten()
+                .map(|e| e.file_name().to_string_lossy().into_owned())
+                .find(|n| n.starts_with("data.db.sync-conflict-"))?;
+            let on_peer_copy = std::fs::read(m2.join(&copy)).ok()?;
+            let on_host_copy = std::fs::read(m1.join(&copy)).ok()?;
+            (on_host_copy[..12] == peer_bytes[..] && on_peer_copy[..12] == peer_bytes[..])
+                .then_some(copy)
+        },
+    );
+    eprintln!(
+        "converged {:?} after reconnecting; conflict copy {copy}",
+        t.elapsed()
+    );
 }

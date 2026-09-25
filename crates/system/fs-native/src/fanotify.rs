@@ -41,6 +41,8 @@ pub const FAN_CLASS_CONTENT: u32 = 0x0000_0004;
 pub const FAN_CLASS_PRE_CONTENT: u32 = 0x0000_0008;
 pub const FAN_UNLIMITED_QUEUE: u32 = 0x0000_0010;
 pub const FAN_UNLIMITED_MARKS: u32 = 0x0000_0020;
+/// Report the accessing thread's id instead of its process id.
+pub const FAN_REPORT_TID: u32 = 0x0000_0100;
 pub const FAN_REPORT_FID: u32 = 0x0000_0200;
 pub const FAN_REPORT_DIR_FID: u32 = 0x0000_0400;
 pub const FAN_REPORT_NAME: u32 = 0x0000_0800;

@@ -36,8 +36,12 @@ const RECORD_ID_MIGRATION_DOMAIN: &[u8] = b"tilo.collaborative-fs.namespace-reco
 
 pub const MAX_LIVE_RECORD_BLOB_SCAN: usize = 100_000;
 
+mod changesets;
 mod leases;
-pub use leases::WriteLease;
+mod posix;
+pub use changesets::ChangesetMark;
+pub use leases::{LeaseRequest, VersionFence, WriteLease};
+pub use posix::{DEFAULT_DIR_MODE, DEFAULT_FILE_MODE, PosixAttrs};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct LiveRecordBlobRoots {
@@ -1917,6 +1921,21 @@ impl Namespace {
         }
         parts.reverse();
         Some(format!("/{}", parts.join("/")))
+    }
+
+    /// Every live node's path with its content manifest and thumbnail, in
+    /// one pass: what a reader of that path may fetch.
+    pub fn live_blob_roots_by_path(&self) -> Vec<(String, Option<Hash>, Option<Hash>)> {
+        self.live_node_ids()
+            .into_iter()
+            .filter_map(|id| {
+                Some((
+                    self.path_for_id(&id)?,
+                    self.node_hash(&id),
+                    self.thumbnail_for_id(&id),
+                ))
+            })
+            .collect()
     }
 
     /// Every live path whose file content or generated thumbnail has `hash`.
