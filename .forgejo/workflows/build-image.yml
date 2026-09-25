@@ -991,6 +991,61 @@ jobs:
             # when an image carrying it becomes reachable.
             type=raw,value=gen${{ env.TILO_GENERATION }},enable=${{ needs.plan.outputs.hardware-profile == 'generic' }}
 
+      # The WPE engine is the longest single compile and changes rarely. Export
+      # it on its own first, so a Rust or later failure in the same run cannot
+      # discard it. Same arguments as the steps below, so they reuse it.
+      - name: Build and cache the browser engine stage
+        uses: docker/build-push-action@ca052bb54ab0790a636c9b5f226502c73d547a25 # v5
+        env:
+          SOURCE_DATE_EPOCH: ${{ env.SOURCE_DATE_EPOCH }}
+        with:
+          context: .
+          build-contexts: |
+            github-assets=os/external-assets/cache
+          file: os/Containerfile
+          target: wpe-builder
+          push: false
+          build-args: |
+            SOURCE_DATE_EPOCH=${{ env.SOURCE_DATE_EPOCH }}
+            BASE_REF=${{ env.BASE_REF }}
+            RPMS_REF=${{ env.RPMS_REF }}
+            KERNEL_RPMS_REF=${{ env.KERNEL_RPMS_REF }}
+            WPE_BUILDROOT_REF=${{ env.WPE_BUILDROOT_REF }}
+            TILO_WINDOWS_ARCH=${{ matrix.arch }}
+            FEX_PAYLOAD_REF=${{ env.FEX_PAYLOAD_REF || 'scratch' }}
+            WINDOWS_GUEST_REF=${{ env.WINDOWS_GUEST_REF || 'scratch' }}
+            TILO_WITH_BROWSER=${{ env.TILO_WITH_BROWSER }}
+            TILO_WITH_WINDOWS=${{ env.TILO_WITH_WINDOWS }}
+            TILO_HARDWARE_PROFILE=${{ needs.plan.outputs.hardware-profile }}
+            TILO_TARGET_IMGREF=${{ needs.plan.outputs.hardware-profile == 'lenovo-83ed' && format('code.sandbox.example/qos/tilo:lenovo-83ed-{0}', github.sha) || '' }}
+            TILO_PREBUILT_APPS=${{ env.TILO_PREBUILT_APPS }}
+            TILO_PREBUILT_DESKTOP=${{ env.TILO_PREBUILT_DESKTOP }}
+            TILO_CARGO_BUILD_JOBS=${{ env.TILO_PREBUILT_DESKTOP == '1' && '4' || '2' }}
+            TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY=${{ env.TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY }}
+            TILO_APP_COLLECTION_PUBLISHER=${{ env.TILO_APP_COLLECTION_PUBLISHER }}
+            TILO_GENERATION=${{ env.TILO_GENERATION }}
+            TILO_CFS_DIGEST=00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+            SCCACHE_BUCKET=${{ steps.compiler-cache.outputs.bucket }}
+            SCCACHE_ENDPOINT=${{ steps.compiler-cache.outputs.endpoint }}
+            SCCACHE_REGION=${{ steps.compiler-cache.outputs.region }}
+            SCCACHE_S3_KEY_PREFIX=tilo/image/v1
+            SCCACHE_S3_USE_SSL=${{ steps.compiler-cache.outputs.use_ssl }}
+            TILO_REQUIRE_COMPILER_CACHE=1
+          # The runner injects this bucket-scoped credential from a
+          # least-privilege Kubernetes Secret. BuildKit exposes them only to
+          # the Rust compile RUN; they never enter an image layer or build arg.
+          secret-envs: |
+            aws_access_key_id=AWS_ACCESS_KEY_ID
+            aws_secret_access_key=AWS_SECRET_ACCESS_KEY
+          # buildkit clamps layer timestamps to SOURCE_DATE_EPOCH for
+          # reproducible image digests.
+          provenance: false
+          cache-from: |
+            type=registry,ref=code.sandbox.example/qos/tilo-buildcache:${{ matrix.arch }}-wpe
+            type=registry,ref=code.sandbox.example/qos/tilo-buildcache:${{ matrix.arch }}-compile
+            type=registry,ref=code.sandbox.example/qos/tilo-buildcache:${{ matrix.arch }}
+          cache-to: type=registry,ref=code.sandbox.example/qos/tilo-buildcache:${{ matrix.arch }}-wpe,mode=max,ignore-error=true
+
       # Build and export the compile stages (WPE engine and the Rust builder)
       # before anything else. A registry cache is only written when its build
       # succeeds, so a later rootfs, UKI or installation failure must not
@@ -1043,6 +1098,7 @@ jobs:
           # reproducible image digests.
           provenance: false
           cache-from: |
+            type=registry,ref=code.sandbox.example/qos/tilo-buildcache:${{ matrix.arch }}-wpe
             type=registry,ref=code.sandbox.example/qos/tilo-buildcache:${{ matrix.arch }}-compile
             type=registry,ref=code.sandbox.example/qos/tilo-buildcache:${{ matrix.arch }}
           cache-to: type=registry,ref=code.sandbox.example/qos/tilo-buildcache:${{ matrix.arch }}-compile,mode=max,ignore-error=true
@@ -1115,6 +1171,7 @@ jobs:
           # The compile stages were already built and exported above, so this
           # reuses them locally and exports the remaining stages.
           cache-from: |
+            type=registry,ref=code.sandbox.example/qos/tilo-buildcache:${{ matrix.arch }}-wpe
             type=registry,ref=code.sandbox.example/qos/tilo-buildcache:${{ matrix.arch }}-compile
             type=registry,ref=code.sandbox.example/qos/tilo-buildcache:${{ matrix.arch }}
           cache-to: type=registry,ref=code.sandbox.example/qos/tilo-buildcache:${{ matrix.arch }},mode=max,ignore-error=true
