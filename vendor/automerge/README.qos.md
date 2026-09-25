@@ -31,4 +31,9 @@ Files outside `src/resource_limits*` changed by this patch (keep exact):
 - `src/patches/patch_log.rs`: crate-private `event_count`.
 - `src/columnar/column_range/{generic,value}.rs`: lint hygiene (no dead
   increments, no unused forwarding method), no behaviour change.
+- `src/automerge.rs`: `load_with` / `load_with_options` record errors at
+  `debug` rather than `error` (`err(level = "debug")`). Callers validate
+  single change chunks by loading them and expect `MissingDeps`; at `error`
+  this emitted about 68,000 log lines per two-minute native host session.
+  The error is still returned unchanged.
 - Lane additions are listed below as they land.
