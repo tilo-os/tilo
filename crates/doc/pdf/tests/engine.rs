@@ -463,6 +463,15 @@ fn export_round_trips_annotations_forms_and_page_operations() {
     );
     let again = doc.export(&edits, &[]).unwrap();
     assert_eq!(out, again, "export is deterministic");
+    // A second engine is another helper process, with its own heap and
+    // address layout: nothing host- or run-dependent reaches the bytes.
+    let other = self::engine().unwrap();
+    let elsewhere = other
+        .open_bytes(&source)
+        .unwrap()
+        .export(&edits, &[])
+        .unwrap();
+    assert_eq!(out, elsewhere, "export is deterministic across processes");
 
     let reloaded = engine.open_bytes(&out).unwrap();
     assert_eq!(reloaded.page_count(), 2);
