@@ -9,9 +9,7 @@ license.workspace = true
 qos-agent-control-protocol = { path = "../control-protocol" }
 qos-peer-state = { path = "../../collab/qos-peer-state" }
 qos-action-broker = { path = "../../collab/qos-action-broker" }
-qos-desktop = { path = "../../session/qos-desktop" }
 collab-types = { path = "../../collab/collab-types" }
-serde.workspace = true
 serde_json.workspace = true
 blake3.workspace = true
 uuid.workspace = true

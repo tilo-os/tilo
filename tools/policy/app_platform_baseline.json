@@ -5,7 +5,7 @@
       "path": "apps/agent/src/wire.rs",
       "line": 8,
       "rule": "native-api",
-      "fingerprint": "source:use std::os::fd::IntoRawFd;",
+      "fingerprint": "source:use std::os::fd::{FromRawFd, IntoRawFd};",
       "count": 1,
       "finding_id": "A03-04",
       "removal_task": "I02",
