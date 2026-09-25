@@ -804,9 +804,16 @@ fn history(doc: &mut AutoCommit, n: usize, ground: bool) -> Vec<Change> {
 
 #[test]
 fn fragment_growth_is_reserved_before_mutation() {
-    const N: usize = 600;
-    // Honest input needs about 3 MiB here and the ground chain about 7 MiB.
-    let limit = 5 * MIB;
+    // Honest input needs about 7.5 MiB here, the ground chain (every change
+    // a level-1 fragment, quadratic fragment deps) about 32 MiB.
+    const N: usize = 2000;
+    let limit = 16 * MIB;
+    let limits = NativeLimits {
+        max_chunks: 1 << 16,
+        max_actors: 1 << 16,
+        max_heads: 1 << 16,
+        ..NativeLimits::default()
+    };
     let mut doc = base();
     let honest = changes_bytes(&history(&mut doc.clone(), N, false));
     let ground = changes_bytes(&history(&mut doc.clone(), N, true));
@@ -814,23 +821,14 @@ fn fragment_growth_is_reserved_before_mutation() {
     let mut honest_doc = doc.clone();
     assert_eq!(
         honest_doc
-            .apply_incoming_checked(
-                &honest,
-                &NativeLimits::default(),
-                &small,
-                NativeDependencyPolicy::RequireComplete
-            )
+            .apply_incoming_checked(&honest, &limits, &small, NativeDependencyPolicy::RequireComplete)
             .unwrap(),
         NativeIncomingOutcome::Applied { changed: true }
     );
     let before = snapshot(&mut doc);
     let small = NativeAllowance::new(limit).unwrap();
-    let result = doc.apply_incoming_checked(
-        &ground,
-        &NativeLimits::default(),
-        &small,
-        NativeDependencyPolicy::RequireComplete,
-    );
+    let result =
+        doc.apply_incoming_checked(&ground, &limits, &small, NativeDependencyPolicy::RequireComplete);
     assert!(
         matches!(result, Err(NativeMutationError::Resource(NativeResourceError::WorkBytes))),
         "{result:?}"
@@ -1357,4 +1355,34 @@ fn fuzz_mutated_document_and_bundle_bytes_never_panic() {
         }
     }
     eprintln!("document fuzz: {accepted} accepted");
+}
+
+#[test]
+fn plain_apply_refuses_non_contiguous_sequences_without_panic() {
+    // Unchecked apply_changes / load_incremental must not panic either:
+    // batch apply refuses before mutating and re-queues the ready changes.
+    let (mut doc, a, _) = forked_sequences();
+    for (name, edit) in [
+        ("sequence gap for a known actor", json!({"seq": 3})),
+        ("unknown actor starting at seq 2", json!({"seq": 2, "actor": "0c".repeat(16)})),
+    ] {
+        let mut value = expanded(&a);
+        for (k, v) in edit.as_object().unwrap() {
+            value[k] = v.clone();
+        }
+        if name.starts_with("sequence gap") {
+            doc.apply_changes([a.clone()]).unwrap();
+        }
+        let change = encode(value);
+        let mut target = doc.clone();
+        let before = target.save();
+        let result = catch_unwind(AssertUnwindSafe(|| target.apply_changes([change.clone()])))
+            .unwrap_or_else(|_| panic!("{name}: apply_changes panicked"));
+        assert!(result.is_err(), "{name}");
+        assert_eq!(target.save(), before, "{name}: document unchanged");
+        let mut loaded = doc.clone();
+        let result = catch_unwind(AssertUnwindSafe(|| loaded.load_incremental(change.raw_bytes())))
+            .unwrap_or_else(|_| panic!("{name}: load_incremental panicked"));
+        assert!(result.is_err(), "{name}");
+    }
 }

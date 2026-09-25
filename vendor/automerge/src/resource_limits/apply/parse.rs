@@ -4,8 +4,9 @@
 //! native decoder below reaches a narrowing panic, and has covered the
 //! retained `Vec<Change>` (and any document/bundle expansion) under its
 //! allowance or inspected limits. Every chunk kind is decoded strictly:
-//! document chunks are always reconstructed, even when their heads are known,
-//! so their columns, actors and canonical changes are validated.
+//! document chunks are always reconstructed (through checked load's
+//! `document_changes`, which also verifies their declared heads), even when
+//! their heads are known.
 use crate::resource_limits::NativeResourceError as Error;
 use crate::storage::{self, parse};
 use crate::{Change, TextEncoding};
@@ -32,9 +33,12 @@ pub(crate) fn changes(bytes: &[u8], capacity: usize) -> Result<Vec<Change>, Erro
         }
         match chunk {
             storage::Chunk::Document(document) => {
-                let reconstructed = document
-                    .reconstruct_changes(TextEncoding::platform_default())
-                    .map_err(|_| Error::Invalid)?;
+                // Shared with checked load: strict reconstruction plus the
+                // declared-heads check.
+                let reconstructed = crate::resource_limits::reconstruct::load::document_changes(
+                    &document,
+                    TextEncoding::platform_default(),
+                )?;
                 for change in reconstructed {
                     push(&mut changes, change)?;
                 }
