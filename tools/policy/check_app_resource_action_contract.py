@@ -47,6 +47,14 @@ TOOLKIT_ACTION_HOST = re.compile(
 TOOLKIT_RESOURCE_VALUE = re.compile(
     r"\bresource_actions\s*::\s*(?:resource|typed_resource)\s*\("
 )
+# A `tilo-app` framework app declares a resource type and hosts it through
+# `ResourceApp`; the framework publishes that resource's actions (named
+# declarations plus the typed `apply` door), builds its runtime Resource value
+# and installs its replay decoder in the component registry.
+FRAMEWORK_APP = re.compile(r"\bimpl\s+(?:[\w:]+::)?ResourceApp\s+for\b")
+FRAMEWORK_RESOURCE = re.compile(
+    r"#\[\s*resource\s*\(|\bimpl\s+(?:[\w:]+::)?Resource\s+for\b"
+)
 LEGACY_ENTRY_POINTS = {
     "legacy room-action override": re.compile(r"\bfn\s+apply_room_action\s*\("),
     "bespoke automation entry point": re.compile(
@@ -704,6 +712,10 @@ def audit(root: Path = ROOT) -> tuple[list[Violation], int]:
                     )
                 )
         else:
+            framework_host = (
+                FRAMEWORK_APP.search(combined) is not None
+                and FRAMEWORK_RESOURCE.search(combined) is not None
+            )
             toolkit_host = TOOLKIT_ACTION_HOST.search(combined) is not None
             toolkit_resource = TOOLKIT_RESOURCE_VALUE.search(combined) is not None
             if toolkit_host and not toolkit_resource:
@@ -714,7 +726,7 @@ def audit(root: Path = ROOT) -> tuple[list[Violation], int]:
                         "toolkit ResourceActionHost has no toolkit resource descriptor",
                     )
                 )
-            if not toolkit_host and not RESOURCE_PROVIDER.search(combined):
+            if not toolkit_host and not framework_host and not RESOURCE_PROVIDER.search(combined):
                 violations.append(
                     Violation(
                         manifest_path,
@@ -722,7 +734,7 @@ def audit(root: Path = ROOT) -> tuple[list[Violation], int]:
                         "app does not implement Widget::resources",
                     )
                 )
-            if not toolkit_host and not ACTION_SPEC.search(combined):
+            if not toolkit_host and not framework_host and not ACTION_SPEC.search(combined):
                 violations.append(
                     Violation(
                         manifest_path,
@@ -730,7 +742,7 @@ def audit(root: Path = ROOT) -> tuple[list[Violation], int]:
                         "app exposes no ActionSpec operations",
                     )
                 )
-            if not toolkit_host and not RESOURCE_VALUE.search(combined):
+            if not toolkit_host and not framework_host and not RESOURCE_VALUE.search(combined):
                 violations.append(
                     Violation(
                         manifest_path,

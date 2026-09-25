@@ -47,6 +47,22 @@ class AppResourceActionContractTests(unittest.TestCase):
         self.assertEqual(violations, [])
         self.assertEqual(apps, 1)
 
+    def test_framework_app_with_a_resource_passes(self):
+        root = self.fixture(
+            "#[derive(Model, Default)] pub struct Note { pub body: String }\n"
+            "#[resource(kind = \"sample.note\", label = \"Note\")]\n"
+            "impl Note { #[action] pub fn edit(&mut self, text: String) { self.body = text; } }\n"
+            "struct Sample;\n"
+            "impl ResourceApp for Sample { type Resource = Note; }\n"
+        )
+        violations, _ = contract.audit(root)
+        self.assertEqual(violations, [])
+
+    def test_framework_app_without_a_resource_type_fails(self):
+        root = self.fixture("struct Sample;\nimpl ResourceApp for Sample {}\n")
+        violations, _ = contract.audit(root)
+        self.assertIn("Widget::resources", "\n".join(item.reason for item in violations))
+
     def test_missing_protocol_and_surface_fail(self):
         root = self.fixture("struct App;\n", dependencies="")
         violations, _ = contract.audit(root)
