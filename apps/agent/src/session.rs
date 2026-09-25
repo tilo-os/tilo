@@ -13,7 +13,7 @@ use ui::collaboration::{
 use ui::permissions::PermissionContext;
 use ui::presence::{PathSegment, PresenceKey};
 use uuid::Uuid;
-use word_processor::actions::{self as wp, RegionKind, WordProcessorAction};
+use word_processor::actions::{self as wp, RegionKind, RichTextAction};
 
 use crate::apply::Editor;
 use crate::model::{Chooser, Route};
@@ -1577,14 +1577,14 @@ impl Session {
     fn instruction_issuer(&mut self) -> Option<String> {
         let editor = self.editor.as_mut()?;
         let mine = editor.actor_hex();
-        qdoc::history::versions(&mut editor.doc)
+        tilo_resource::history::versions(&mut editor.doc)
             .into_iter()
             .rev()
             .find(|version| {
-                !qdoc::history::is_schema_genesis(version)
-                    && !version.actor_hex.eq_ignore_ascii_case(&mine)
+                !qdoc::model::is_schema_genesis(version)
+                    && !version.actor.eq_ignore_ascii_case(&mine)
             })
-            .map(|version| version.actor_hex)
+            .map(|version| version.actor)
     }
 
     fn task_context(&self) -> Option<tilo_actions::ActionContext> {
@@ -1639,7 +1639,7 @@ impl Session {
         )
         .is_some()
         {
-            qdoc::history::commit_stamped(&mut editor.doc);
+            tilo_resource::history::commit_stamped(&mut editor.doc);
             let data = editor.doc.save_incremental();
             if !data.is_empty() {
                 self.link.send(&CollabRequest::document_incremental(data))?;
@@ -2009,7 +2009,7 @@ impl Session {
         clippy::too_many_lines,
         reason = "one action lifecycle keeps invocation, attribution, broadcast, and user-visible reporting in a single auditable transaction"
     )]
-    fn edit(&mut self, focus: &str, action: &WordProcessorAction) -> Result<()> {
+    fn edit(&mut self, focus: &str, action: &RichTextAction) -> Result<()> {
         let before = self.editor.as_mut().and_then(Editor::latest_entry_id);
         let invocation = tilo_actions::InvocationId::new();
         let resource_id = "word-processor.document".to_string();
@@ -2077,7 +2077,7 @@ impl Session {
             .apply(action)?;
         if let Some(data) = delta {
             self.link.send(&CollabRequest::document_incremental(data))?;
-            if let WordProcessorAction::SpliceText { at, ins, .. } = action
+            if let RichTextAction::SpliceText { at, ins, .. } = action
                 && !ins.is_empty()
             {
                 let end = at.saturating_add(ins.chars().count());
@@ -2161,12 +2161,9 @@ fn object_anchor(id: &str) -> tilo_actions::InteractionAnchor {
     }
 }
 
-fn word_action_anchor(
-    action: &WordProcessorAction,
-    _focus: &str,
-) -> tilo_actions::InteractionAnchor {
+fn word_action_anchor(action: &RichTextAction, _focus: &str) -> tilo_actions::InteractionAnchor {
     match action {
-        WordProcessorAction::SpliceText {
+        RichTextAction::SpliceText {
             block,
             at,
             del,
@@ -2181,21 +2178,21 @@ fn word_action_anchor(
                     .unwrap_or(u64::MAX),
             }],
         },
-        WordProcessorAction::ReplaceSelection {
+        RichTextAction::ReplaceSelection {
             start_block,
             start,
             end_block,
             end,
             ..
         }
-        | WordProcessorAction::PasteFragment {
+        | RichTextAction::PasteFragment {
             start_block,
             start,
             end_block,
             end,
             ..
         } => selection_text_anchor(start_block, *start, end_block, *end),
-        WordProcessorAction::SetMark { spans, .. } => tilo_actions::InteractionAnchor::Text {
+        RichTextAction::SetMark { spans, .. } => tilo_actions::InteractionAnchor::Text {
             region: "document".into(),
             ranges: spans
                 .iter()
@@ -2206,46 +2203,42 @@ fn word_action_anchor(
                 })
                 .collect(),
         },
-        WordProcessorAction::SetParagraphStyle { blocks, .. }
-        | WordProcessorAction::ApplyNamedStyle { blocks, .. }
-        | WordProcessorAction::SetBlockAttr { blocks, .. }
-        | WordProcessorAction::RemoveBlocks { blocks } => {
-            tilo_actions::InteractionAnchor::Objects {
-                ids: blocks.clone(),
-            }
-        }
-        WordProcessorAction::SetPageMargins { .. } | WordProcessorAction::GenerateToc { .. } => {
+        RichTextAction::SetParagraphStyle { blocks, .. }
+        | RichTextAction::ApplyNamedStyle { blocks, .. }
+        | RichTextAction::SetBlockAttr { blocks, .. }
+        | RichTextAction::RemoveBlocks { blocks } => tilo_actions::InteractionAnchor::Objects {
+            ids: blocks.clone(),
+        },
+        RichTextAction::SetPageMargins { .. } | RichTextAction::GenerateToc { .. } => {
             tilo_actions::InteractionAnchor::Resource
         }
-        WordProcessorAction::SetStyleProperty { style, .. }
-        | WordProcessorAction::DeleteStyle { style, .. } => object_anchor(style),
-        WordProcessorAction::EditTable { table, .. } => object_anchor(table),
-        WordProcessorAction::InsertParagraph { after, .. }
-        | WordProcessorAction::InsertTable { after, .. } => object_anchor(after),
-        WordProcessorAction::InsertImage { block, .. }
-        | WordProcessorAction::InsertPageBreak { block, .. }
-        | WordProcessorAction::SetImageCrop { block, .. }
-        | WordProcessorAction::SetImageSize { block, .. }
-        | WordProcessorAction::SetImagePlacement { block, .. } => object_anchor(block),
-        WordProcessorAction::SplitBlock { block, at, .. }
-        | WordProcessorAction::InsertField { block, at, .. } => {
-            comment_text_anchor(block, *at, *at)
-        }
-        WordProcessorAction::ReplaceBody { .. } => tilo_actions::InteractionAnchor::Resource,
-        WordProcessorAction::AcceptChanges { id } | WordProcessorAction::RejectChanges { id } => id
+        RichTextAction::SetStyleProperty { style, .. }
+        | RichTextAction::DeleteStyle { style, .. } => object_anchor(style),
+        RichTextAction::EditTable { table, .. } => object_anchor(table),
+        RichTextAction::InsertParagraph { after, .. }
+        | RichTextAction::InsertTable { after, .. } => object_anchor(after),
+        RichTextAction::InsertImage { block, .. }
+        | RichTextAction::InsertPageBreak { block, .. }
+        | RichTextAction::SetImageCrop { block, .. }
+        | RichTextAction::SetImageSize { block, .. }
+        | RichTextAction::SetImagePlacement { block, .. } => object_anchor(block),
+        RichTextAction::SplitBlock { block, at, .. }
+        | RichTextAction::InsertField { block, at, .. } => comment_text_anchor(block, *at, *at),
+        RichTextAction::ReplaceBody { .. } => tilo_actions::InteractionAnchor::Resource,
+        RichTextAction::AcceptChanges { id } | RichTextAction::RejectChanges { id } => id
             .as_ref()
             .map_or(tilo_actions::InteractionAnchor::Resource, |id| {
                 tilo_actions::InteractionAnchor::Objects {
                     ids: vec![id.clone()],
                 }
             }),
-        WordProcessorAction::ResolveComment { id } => tilo_actions::InteractionAnchor::Objects {
+        RichTextAction::ResolveComment { id } => tilo_actions::InteractionAnchor::Objects {
             ids: vec![id.clone()],
         },
-        WordProcessorAction::AddComment {
+        RichTextAction::AddComment {
             block, start, end, ..
         } => comment_text_anchor(block, *start, *end),
-        WordProcessorAction::ReplyToComment { comment, .. } => {
+        RichTextAction::ReplyToComment { comment, .. } => {
             tilo_actions::InteractionAnchor::Objects {
                 ids: vec![comment.clone()],
             }
@@ -2253,17 +2246,17 @@ fn word_action_anchor(
     }
 }
 
-fn describe(action: &WordProcessorAction) -> String {
+fn describe(action: &RichTextAction) -> String {
     match action {
-        WordProcessorAction::SpliceText { ins, del, .. } => {
+        RichTextAction::SpliceText { ins, del, .. } => {
             format!("splice text (+{} -{del})", ins.chars().count())
         }
-        WordProcessorAction::InsertTable { rows, cols, .. } => {
+        RichTextAction::InsertTable { rows, cols, .. } => {
             format!("insert table {rows}x{cols}")
         }
-        WordProcessorAction::InsertParagraph { .. } => "insert paragraph".to_string(),
-        WordProcessorAction::RemoveBlocks { blocks } => format!("remove {} block(s)", blocks.len()),
-        WordProcessorAction::SetParagraphStyle { kind, .. } => format!("set style {kind}"),
+        RichTextAction::InsertParagraph { .. } => "insert paragraph".to_string(),
+        RichTextAction::RemoveBlocks { blocks } => format!("remove {} block(s)", blocks.len()),
+        RichTextAction::SetParagraphStyle { kind, .. } => format!("set style {kind}"),
         other => format!("{other:?}"),
     }
 }
@@ -2279,19 +2272,19 @@ mod tests {
     #[test]
     fn image_layout_actions_anchor_the_exact_document_object() {
         let actions = [
-            WordProcessorAction::SetImageCrop {
+            RichTextAction::SetImageCrop {
                 block: "image-7".into(),
                 left: 250,
                 top: 250,
                 right: 250,
                 bottom: 250,
             },
-            WordProcessorAction::SetImageSize {
+            RichTextAction::SetImageSize {
                 block: "image-7".into(),
                 width: 300,
                 height: 180,
             },
-            WordProcessorAction::SetImagePlacement {
+            RichTextAction::SetImagePlacement {
                 block: "image-7".into(),
                 anchor: "page".into(),
                 wrap: "none".into(),
@@ -2313,7 +2306,7 @@ mod tests {
 
     #[test]
     fn comment_actions_anchor_their_shared_document_objects() {
-        let add = WordProcessorAction::AddComment {
+        let add = RichTextAction::AddComment {
             block: "paragraph-7".into(),
             start: 4,
             end: 11,
@@ -2333,7 +2326,7 @@ mod tests {
             }
         );
 
-        let reply = WordProcessorAction::ReplyToComment {
+        let reply = RichTextAction::ReplyToComment {
             comment: "comment-3".into(),
             author: "Scribe".into(),
             date: "2026-09-08".into(),

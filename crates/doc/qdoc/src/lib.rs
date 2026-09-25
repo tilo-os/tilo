@@ -26,9 +26,8 @@ pub mod export_epub;
 pub mod export_html;
 pub mod export_rtf;
 pub mod format;
-pub mod history;
 pub mod model;
-pub mod order;
+pub mod rich_text;
 pub mod schema;
 pub mod sheet;
 pub mod snapshot;
@@ -46,7 +45,6 @@ pub use diff::{
 pub use document::{DocError, Document, MarkSpan, author_runs};
 pub use export::{ActiveChange, InlineBoundary, InlinePlan, InlinePoint, InlineRun, RangeBoundary};
 pub use format::{CodecError, Confidence, FormatProvider, ProviderTier, Registry};
-pub use history::VersionMeta;
 pub use model::{Containers, DocMut, DocRef, IdGen, NoteKind, Region, ordered_keys_scan_count};
 pub use sheet::{CellInput, CellType, CellView, SheetView, Workbook, WorkbookSnapshot};
 pub use snapshot::{
