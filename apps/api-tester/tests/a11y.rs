@@ -361,10 +361,10 @@ fn composition_params_fit_rows_and_divider_adjusts_with_keyboard() {
     assert_eq!(d.targets()["api.request-divider"], before);
 }
 
-fn click_tab(d: &mut Driver, index: usize) {
+fn click_tab(d: &mut Driver, index: u32) {
     let rect = d.targets()["api.request-tabs"];
     d.click_at(
-        rect.x0 + rect.width() * (index as f64 + 0.5) / 4.0,
+        rect.x0 + rect.width() * (f64::from(index) + 0.5) / 4.0,
         rect.center().y,
     );
 }
@@ -423,6 +423,10 @@ fn assert_sidebar_targets(d: &Driver, height: f64) {
 }
 
 #[test]
+#[expect(
+    clippy::float_cmp,
+    reason = "the divider moves by exactly the dragged whole-pixel distance"
+)]
 fn composition_pointer_drag_body_auth_and_preference_survive_resize() {
     let mut d = driver();
     let divider = d.targets()["api.request-divider"];
@@ -516,12 +520,12 @@ fn composition_narrow_escape_paging_and_open_resize_are_reachable() {
     d.key("Escape");
     assert!(!d.targets().contains_key("api.new-variable"));
     d.click_named("api.next-saved").unwrap();
-    let ids: Vec<_> = d
-        .targets()
-        .into_keys()
-        .filter(|id| id.starts_with("api.nav."))
-        .collect();
-    assert!(!ids.contains(&"api.nav.0".to_string()));
+    assert!(
+        !d.targets()
+            .into_keys()
+            .filter(|id| id.starts_with("api.nav."))
+            .any(|id| id == "api.nav.0")
+    );
     assert!(
         d.focus_access_nodes()
             .iter()
