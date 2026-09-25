@@ -849,6 +849,21 @@ mod tests {
         );
     }
 
+    #[cfg(windows)]
+    #[test]
+    fn windows_image_layout_is_a_local_msys2_rsync_operand() {
+        let endpoint = SshEndpoint {
+            user: "root".into(),
+            host: "127.0.0.1".into(),
+            port: 2223,
+        };
+        let line = rsync_command(Path::new(r"C:\tilo-build\image-layout"), &endpoint, None);
+        assert_eq!(
+            line.args[line.args.len() - 2],
+            "/c/tilo-build/image-layout/"
+        );
+    }
+
     #[test]
     fn pruning_keeps_what_the_tag_reaches() {
         let dir = tempfile::tempdir().unwrap();
