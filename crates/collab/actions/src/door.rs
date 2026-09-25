@@ -250,6 +250,8 @@ impl std::fmt::Display for DoorError {
     }
 }
 
+impl std::error::Error for DoorError {}
+
 /// Walk a resource forest and describe every operation it exports.
 /// Depth-first, parents before children, matching
 /// [`flatten`](crate::resource::flatten)'s order. Borrows the tree,

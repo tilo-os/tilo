@@ -567,8 +567,10 @@ impl FrameHarness {
             return Err(crate::launch::LaunchError::ComponentSetup {
                 source: Box::new(crate::launch::LaunchError::Operation(error.to_string())),
                 record: binding.checkout,
-                records: binding.records,
-                reports: harness.take_component_close_reports(),
+                recovery: crate::launch::LaunchRecovery::new(
+                    Some(binding.records),
+                    harness.take_component_close_reports(),
+                ),
             });
         }
         Ok(harness)
