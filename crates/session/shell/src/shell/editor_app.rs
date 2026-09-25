@@ -548,6 +548,10 @@ impl EditorApp {
         } else {
             "Click to edit"
         };
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "a non-negative on-screen width in logical pixels; f32 holds it with sub-pixel precision"
+        )]
         let hint = tr.elide_to_width(
             hint,
             hint_size,
@@ -634,13 +638,17 @@ impl EditorApp {
                 let range = self.edit.range();
                 (
                     range.start.max(line_start),
-                    range.end.min(line_start + line.len()),
+                    // Byte offsets inside one string: the sum cannot exceed its length.
+                    range.end.min(line_start.saturating_add(line.len())),
                 )
             };
             if sel_start < sel_end {
-                let prefix = line.get(..sel_start - line_start).unwrap_or("");
+                // line_start <= sel_start < sel_end, so neither subtraction saturates.
+                let prefix = line
+                    .get(..sel_start.saturating_sub(line_start))
+                    .unwrap_or("");
                 let selected = line
-                    .get(sel_start - line_start..sel_end - line_start)
+                    .get(sel_start.saturating_sub(line_start)..sel_end.saturating_sub(line_start))
                     .unwrap_or("");
                 let (prefix_w, _) = tr.measure(prefix, TEXT_SIZE, None);
                 let (selected_w, _) = tr.measure(selected, TEXT_SIZE, None);

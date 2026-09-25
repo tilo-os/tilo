@@ -797,17 +797,27 @@ fn page_results(
         && end.saturating_sub(start) < result_limit
         && end.saturating_sub(start) < work_limit
     {
+        #[expect(
+            clippy::indexing_slicing,
+            reason = "the loop condition keeps end below results.len()"
+        )]
         let next_bytes = result_bytes(&results[end]);
         if bytes.saturating_add(next_bytes) > byte_limit {
             break;
         }
         bytes = bytes.saturating_add(next_bytes);
-        end += 1;
+        // end < results.len(), so this cannot saturate.
+        end = end.saturating_add(1);
     }
     let exhausted = end == results.len();
     SearchPage {
         revision: revision.clone(),
-        results: results.into_iter().skip(start).take(end - start).collect(),
+        // end starts at start and only grows, so this cannot saturate.
+        results: results
+            .into_iter()
+            .skip(start)
+            .take(end.saturating_sub(start))
+            .collect(),
         next_cursor: (!exhausted).then(|| SearchCursor {
             revision,
             token: end.to_string(),

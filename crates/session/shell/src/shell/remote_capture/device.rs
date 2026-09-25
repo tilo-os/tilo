@@ -26,6 +26,12 @@ pub const MAX_REMOTE_CAPTURE_DOCUMENT_BYTES: u64 = 64 * 1024 * 1024;
 pub const MAX_REMOTE_CAPTURE_PAGES: u32 = 1_024;
 pub const REMOTE_CAPTURE_GRANT_TTL: Duration = Duration::from_secs(5 * 60);
 
+/// When a capture grant issued or refreshed at `now` lapses. An expiry the
+/// clock cannot represent fails closed and lapses at `now` rather than never.
+pub(crate) fn grant_expiry(now: Instant) -> Instant {
+    now.checked_add(REMOTE_CAPTURE_GRANT_TTL).unwrap_or(now)
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum RemoteCaptureKind {
@@ -302,7 +308,7 @@ impl RemoteCaptureRegistry {
                 grant,
                 phase: RemoteCapturePhase::Granted,
                 last_sequence: None,
-                expires_at: now + REMOTE_CAPTURE_GRANT_TTL,
+                expires_at: grant_expiry(now),
             },
         );
         Ok((session_id, grant))
@@ -343,7 +349,7 @@ impl RemoteCaptureRegistry {
                 grant,
                 phase: RemoteCapturePhase::Granted,
                 last_sequence: None,
-                expires_at: now + REMOTE_CAPTURE_GRANT_TTL,
+                expires_at: grant_expiry(now),
             },
         );
         true
@@ -377,7 +383,7 @@ impl RemoteCaptureRegistry {
         }
         binding.last_sequence = Some(chunk.sequence);
         binding.phase = RemoteCapturePhase::Streaming;
-        binding.expires_at = now + REMOTE_CAPTURE_GRANT_TTL;
+        binding.expires_at = grant_expiry(now);
         true
     }
 
@@ -420,6 +426,16 @@ impl RemoteCaptureRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn grant_expiry_adds_the_ttl() {
+        let now = Instant::now();
+        assert_eq!(
+            Some(grant_expiry(now)),
+            now.checked_add(REMOTE_CAPTURE_GRANT_TTL)
+        );
+        assert!(grant_expiry(now) > now);
+    }
 
     fn device(id: &str) -> DeviceId {
         DeviceId::new(id).expect("valid device")

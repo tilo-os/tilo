@@ -39,6 +39,8 @@ pub const REMOTE_AUDIO_PROTOCOL_VERSION: u16 = 1;
 pub const REMOTE_AUDIO_SAMPLE_RATE_HZ: u32 = 48_000;
 pub const REMOTE_AUDIO_CHANNELS: u8 = 2;
 pub const REMOTE_AUDIO_FRAME_SAMPLES: u16 = 960;
+/// Bytes in one interleaved S16LE sample frame across all channels.
+pub const REMOTE_AUDIO_SAMPLE_FRAME_BYTES: usize = REMOTE_AUDIO_CHANNELS as usize * 2;
 pub const MAX_REMOTE_AUDIO_FRAME_BYTES: usize =
     REMOTE_AUDIO_FRAME_SAMPLES as usize * REMOTE_AUDIO_CHANNELS as usize * 2;
 pub const MAX_REMOTE_AUDIO_SESSIONS: usize = 4;
@@ -783,7 +785,9 @@ impl PersonalFabricActionEnvelope {
                     || *sequence == 0
                     || pcm_s16le.is_empty()
                     || pcm_s16le.len() > MAX_REMOTE_AUDIO_FRAME_BYTES
-                    || pcm_s16le.len() % (usize::from(REMOTE_AUDIO_CHANNELS) * 2) != 0
+                    || !pcm_s16le
+                        .len()
+                        .is_multiple_of(REMOTE_AUDIO_SAMPLE_FRAME_BYTES)
                 {
                     return Err(FabricError::InvalidAction);
                 }
