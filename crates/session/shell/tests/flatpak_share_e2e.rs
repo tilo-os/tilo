@@ -7,7 +7,7 @@
 //! latency/backpressure budget) is orthogonal to the transport.
 //!
 //! Asserts a [`SharedFlatpakSession`] sustains a conservative 10 fps floor
-//! over a 3s window while targeting the openh264 SW encoder's 30 fps ceiling,
+//! over a 3s window while targeting the software encoders' 30 fps ceiling,
 //! with motion-to-photon latency under 60 ms/frame. It also verifies that a
 //! stalled paint side drops video frames without ever dropping input.
 
@@ -99,9 +99,7 @@ fn start_session_and_learn_offset(
     session.add_viewer(VIEWER_PEER, false);
 
     // The sender-side monotonic-ns feeds the receiver's clock-offset handshake.
-    #[allow(unused_assignments)]
-    let mut sender_ns_at_send: u64 = 0;
-    match session.stream_start_msg() {
+    let sender_ns_at_send: u64 = match session.stream_start_msg() {
         NeighbourMsg::SurfaceStreamStart {
             surface,
             source_peer,
@@ -115,18 +113,19 @@ fn start_session_and_learn_offset(
             assert_eq!(source_peer, HOST_PEER);
             assert_eq!(width, w);
             assert_eq!(height, h);
-            assert_eq!(codec, "h264");
+            assert_eq!(codec, session.chosen_codec().wire_label());
             assert!(
                 sender_monotonic_ns_at_send > 0,
                 "sender stamps its monotonic reading into the handshake field"
             );
-            sender_ns_at_send = sender_monotonic_ns_at_send;
+            sender_monotonic_ns_at_send
         }
         other => panic!("expected SurfaceStreamStart, got {other:?}"),
-    }
+    };
 
     let metrics = PeerSurfaceMetrics::default();
-    let view = PeerView::new_with_metrics(SURFACE, VIEWER_PEER, metrics.clone());
+    let mut view = PeerView::new_with_metrics(SURFACE, VIEWER_PEER, metrics.clone());
+    view.restart_stream(session.chosen_codec().wire_label(), Some((w, h)));
 
     // Both sides are in-process and share `origin` (the reference the wire ts
     // is measured from), so the clock-offset handshake is trivially near-zero.
@@ -189,7 +188,7 @@ fn pump_frames_until(
     (sent, received)
 }
 
-/// Headless, no GPU: the encoder is openh264 SW, which runs cleanly in CI.
+/// Headless, no GPU: a software encoder, which runs cleanly in CI.
 #[test]
 fn session_delivers_30_frames_in_3_seconds_at_bounded_latency() {
     const W: u32 = 320;
@@ -210,7 +209,7 @@ fn session_delivers_30_frames_in_3_seconds_at_bounded_latency() {
     assert!(
         received >= 30,
         "receiver drained only {received} frames in 3 s — expected >= 30 \
-         (openh264 SW ceiling); session throttle was at {} fps",
+         (software encoder ceiling); session throttle was at {} fps",
         session.snapshot_config().target_fps,
     );
     assert_eq!(
@@ -259,6 +258,7 @@ fn backpressure_drops_frames_but_input_stream_still_delivers() {
 
     let metrics = PeerSurfaceMetrics::default();
     let mut view = PeerView::new_with_metrics(SURFACE, VIEWER_PEER, metrics.clone());
+    view.restart_stream(session.chosen_codec().wire_label(), Some((W, H)));
     let mut input_sink = EventRecorder::default();
     let frame_bytes = gradient_frame(W, H);
 

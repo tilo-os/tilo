@@ -56,8 +56,8 @@
 
 pub mod actions;
 pub mod app;
-// Live call media (real microphone/Opus audio + camera/screen H.264) — compiled
-// only under `live-media`; the default build carries no GStreamer/openh264/iroh.
+// Live call media (real microphone/Opus audio + camera/screen video) — compiled
+// only under `live-media`; the default build carries no GStreamer/iroh.
 #[cfg(feature = "live-media")]
 pub mod audio;
 pub mod call;

@@ -2,7 +2,9 @@
 //!
 //! Capture is dormant until the Win+P controller starts a connection. Scenes
 //! are rendered at a receiver-friendly size on the compositor thread, while
-//! `OpenH264` encoding and socket I/O happen on a one-frame bounded worker. If
+//! H.264 encoding (the codec projection receivers take: a hardware encoder
+//! first, Cisco's openh264 through the system's `GStreamer` plugin otherwise)
+//! and socket I/O happen on a one-frame bounded worker. If
 //! encoding falls behind, the newest repaint replaces future work rather than
 //! back-pressuring input and animation.
 
@@ -17,8 +19,8 @@ use vello::Scene;
 use vello::kurbo::Affine;
 use vello::peniko::Color;
 
-use crate::collab::encoder::openh264::OpenH264Backend;
-use crate::collab::encoder::{Encoder, EncoderInit, FrameInput};
+use crate::collab::encoder::{Encoder, EncoderInit, FrameInput, build};
+use crate::config::EncoderChoice;
 
 const VIDEO_SOCKET_ENV: &str = "TILO_PROJECTOR_VIDEO_SOCKET";
 
@@ -47,7 +49,8 @@ impl EncoderWorker {
             .name("tilo-projection-encoder".to_owned())
             .spawn(move || {
                 let mut stream: Option<UnixStream> = None;
-                let mut encoder: Option<OpenH264Backend> = None;
+                let mut encoder: Option<Box<dyn Encoder>> = None;
+                let mut reported_unavailable = false;
                 let mut encoder_profile = None;
                 while let Ok(frame) = rx.recv() {
                     if frame.reset_encoder {
@@ -64,14 +67,32 @@ impl EncoderWorker {
                     }
                     let profile = (frame.width, frame.height, frame.fps, frame.bitrate_kbps);
                     if encoder_profile != Some(profile) {
-                        encoder = OpenH264Backend::new(EncoderInit::sdr_h264(
-                            frame.width,
-                            frame.height,
-                            frame.fps,
-                            frame.bitrate_kbps,
-                            1,
-                        ))
-                        .ok();
+                        encoder = match build(
+                            EncoderInit::sdr_h264(
+                                frame.width,
+                                frame.height,
+                                frame.fps,
+                                frame.bitrate_kbps,
+                                1,
+                            ),
+                            EncoderChoice::Auto,
+                        ) {
+                            Ok(built) => Some(built),
+                            Err(error) => {
+                                // A stock image without H.264 hardware encode
+                                // and without Cisco's openh264 has no H.264
+                                // encoder at all; say so once.
+                                if !reported_unavailable {
+                                    tracing::warn!(
+                                        target: "shell::compositor::projection",
+                                        %error,
+                                        "no H.264 encoder for projection; install the additional codecs"
+                                    );
+                                    reported_unavailable = true;
+                                }
+                                None
+                            }
+                        };
                         encoder_profile = encoder.as_ref().map(|_| profile);
                     }
                     let Some(active_encoder) = encoder.as_mut() else {
@@ -356,27 +377,34 @@ mod tests {
         assert_eq!(clamp_profile(ceiling, user_limit), user_limit);
     }
 
+    /// Needs an H.264 encoder: hardware, or Cisco's openh264 plugin. A stock
+    /// image has neither, and says so rather than passing.
     #[test]
     fn encoder_worker_sends_a_real_h264_packet_to_a_fake_broker() {
+        if !media::realtime::local_capabilities().can_encode(media::StreamCodec::H264) {
+            eprintln!("no H.264 encoder on this machine; projection encode not run");
+            return;
+        }
         let dir = tempfile::tempdir().expect("temp runtime dir");
         let socket = dir.path().join("video.sock");
         let listener = UnixListener::bind(&socket).expect("fake broker socket");
         let worker = EncoderWorker::spawn(Some(socket)).expect("encoder worker should start");
+        // Large enough for every hardware encoder's minimum size.
         assert!(worker.submit(RawFrame {
-            width: 64,
-            height: 64,
+            width: 320,
+            height: 240,
             presentation_time_us: 12_345,
-            rgba: vec![0x44; 64 * 64 * 4],
+            rgba: vec![0x44; 320 * 240 * 4],
             fps: 30,
             bitrate_kbps: 2_000,
             reset_encoder: false,
         }));
         let (mut stream, _) = listener.accept().expect("encoder connection");
         stream
-            .set_read_timeout(Some(Duration::from_secs(3)))
+            .set_read_timeout(Some(Duration::from_secs(10)))
             .expect("read timeout");
         let packet = VideoPacket::read_from(&mut stream).expect("encoded video packet");
-        assert_eq!((packet.width, packet.height), (64, 64));
+        assert_eq!((packet.width, packet.height), (320, 240));
         assert_eq!(packet.presentation_time_us, 12_345);
         assert!(packet.keyframe);
         assert!(packet.annex_b.windows(4).any(|bytes| bytes == [0, 0, 0, 1]));

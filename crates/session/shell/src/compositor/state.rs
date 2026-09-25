@@ -1602,6 +1602,56 @@ impl State {
         }
     }
 
+    /// Bring a running share up to date with its current viewer set: grant
+    /// and revoke workspace control, renegotiate the codec and announce the
+    /// stream again when a viewer joined or the codec switched.
+    fn update_reused_share_session(
+        &mut self,
+        session: &SharedFlatpakSession,
+        surface: SurfaceId,
+        recipients: &std::collections::HashSet<MsgPeerId>,
+        receivers: &[media::realtime::CodecCapabilities],
+    ) {
+        let removed = session
+            .viewer_ids()
+            .into_iter()
+            .filter(|peer| !recipients.contains(peer))
+            .collect::<Vec<_>>();
+        let added = recipients
+            .iter()
+            .copied()
+            .filter(|peer| session.viewer_share(*peer).is_none())
+            .collect::<Vec<_>>();
+        if let Some(publish) = &self.legacy_stream_publisher {
+            for peer in &removed {
+                let _ = publish(crate::network::NeighbourMsg::PermissionGrant {
+                    peer: *peer,
+                    capability: format!("workspace-control:{surface}:revoked"),
+                });
+            }
+            for peer in &added {
+                let _ = publish(crate::network::NeighbourMsg::PermissionGrant {
+                    peer: *peer,
+                    capability: format!("workspace-control:{surface}:granted"),
+                });
+            }
+        }
+        // A viewer joining or leaving (or re-advertising) can change which
+        // codec everyone decodes; a switch is announced like a new stream so
+        // receivers rebuild.
+        let switched = session.renegotiate(receivers);
+        if (switched || !added.is_empty())
+            && let Some(publish) = &self.legacy_stream_publisher
+        {
+            let _ = publish(session.stream_start_msg());
+        }
+        session.sync_viewers(recipients);
+        self.sync_share_authority(session);
+        for peer in removed {
+            self.release_remote_focus_for_surface(peer, surface);
+        }
+    }
+
     /// Reconcile encoder lifetimes and viewer permissions with the active
     /// workspace's replicated `shared_surfaces` map. A newly shared static
     /// window is seeded from the compositor's already captured foreign frame,
@@ -1636,51 +1686,26 @@ impl State {
             else {
                 continue;
             };
+            // What each viewer advertised it can decode; a viewer that never
+            // advertised is treated as H.264-only.
+            let receivers = recipients
+                .iter()
+                .map(|peer| crate::network::media_caps::capabilities(*peer))
+                .collect::<Vec<_>>();
             let reusable = self.active_sessions.get(&surface).is_some_and(|session| {
                 session.app_id == *app_id && session.dimensions() == (width, height)
             });
             if reusable {
                 if let Some(session) = self.active_sessions.get(&surface).cloned() {
-                    let removed = session
-                        .viewer_ids()
-                        .into_iter()
-                        .filter(|peer| !recipients.contains(peer))
-                        .collect::<Vec<_>>();
-                    let added = recipients
-                        .iter()
-                        .copied()
-                        .filter(|peer| session.viewer_share(*peer).is_none())
-                        .collect::<Vec<_>>();
-                    if let Some(publish) = &self.legacy_stream_publisher {
-                        for peer in &removed {
-                            let _ = publish(crate::network::NeighbourMsg::PermissionGrant {
-                                peer: *peer,
-                                capability: format!("workspace-control:{surface}:revoked"),
-                            });
-                        }
-                        for peer in &added {
-                            let _ = publish(crate::network::NeighbourMsg::PermissionGrant {
-                                peer: *peer,
-                                capability: format!("workspace-control:{surface}:granted"),
-                            });
-                        }
-                        if !added.is_empty() {
-                            let _ = publish(session.stream_start_msg());
-                        }
-                    }
-                    session.sync_viewers(&recipients);
-                    self.sync_share_authority(&session);
-                    for peer in removed {
-                        self.release_remote_focus_for_surface(peer, surface);
-                    }
+                    self.update_reused_share_session(&session, surface, &recipients, &receivers);
                 }
                 continue;
             }
 
             self.unregister_share_session(surface);
-            let Ok(session) =
-                SharedFlatpakSession::start(host_peer, app_id, surface, width, height, config)
-            else {
+            let Ok(session) = SharedFlatpakSession::start_with_metrics(
+                host_peer, app_id, surface, width, height, config, &receivers, None,
+            ) else {
                 tracing::warn!(
                     surface,
                     app_id,
@@ -4588,7 +4613,7 @@ mod tick_hook_tests {
         FlatpakShareConfig {
             max_bitrate_kbps: 8000,
             target_fps: 30,
-            encoder: EncoderChoice::Openh264,
+            encoder: EncoderChoice::Software,
             hdr: None,
         }
     }

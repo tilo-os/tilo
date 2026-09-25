@@ -12,8 +12,7 @@ set -uo pipefail
 MODULES=(
   xkbcommon libseat libinput libudev libdrm gbm gl egl
   wayland-client libpipewire-0.3 fuse3 dbus-1
-  libavcodec libavformat libavutil libswscale
-  gstreamer-1.0 gstreamer-app-1.0
+  gstreamer-1.0 gstreamer-app-1.0 gstreamer-video-1.0 gstreamer-allocators-1.0
 )
 # Integration tests require bwrap for launcher confinement, rust-analyzer for
 # the code editor's language-server checks, and a software TPM plus LUKS tools
@@ -35,7 +34,9 @@ FONTS=(
 )
 # The NTFS helper's configure needs libgcrypt's m4 macro even with crypto off.
 ACLOCAL_MACROS=(libgcrypt.m4)
-GSTREAMER_ELEMENTS=(h264parse openh264dec)
+# The real-time media tests round-trip through the royalty-free software
+# codecs, which must be present without a GPU or Cisco's openh264 binary.
+GSTREAMER_ELEMENTS=(h264parse vp9enc vp9dec av1enc dav1ddec)
 
 missing=0
 command -v pkg-config >/dev/null 2>&1 || { echo "pkg-config not installed — nothing here can be checked" >&2; exit 2; }
@@ -48,7 +49,7 @@ for m in "${MODULES[@]}"; do
   fi
 done
 
-# PipeWire/FFmpeg bindings load libclang at build time. A clang executable alone
+# PipeWire bindings load libclang at build time. A clang executable alone
 # does not prove the shared library is installed and loadable by bindgen.
 if p=$(python3 -c 'import ctypes, ctypes.util; path = ctypes.util.find_library("clang"); assert path; ctypes.CDLL(path); print(path)' 2>/dev/null); then
   printf '  ok      %-20s %s\n' libclang "$p"
