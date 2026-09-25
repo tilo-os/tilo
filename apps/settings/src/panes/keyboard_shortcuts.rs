@@ -110,6 +110,30 @@ fn entries() -> Vec<(ShortcutAction, &'static str, &'static str, &'static str)> 
             "Move the view to the workspace below",
         ),
         (
+            ShortcutAction::ToggleMaximize,
+            "shortcuts.toggle_maximize",
+            "Maximize or restore window",
+            "Super+Up toggles the focused window group",
+        ),
+        (
+            ShortcutAction::DetachTab,
+            "shortcuts.detach_tab",
+            "Move tab to new group",
+            "Pull the active tab out into its own adjacent window group",
+        ),
+        (
+            ShortcutAction::AttachTabLeft,
+            "shortcuts.attach_tab_left",
+            "Move tab into group on left",
+            "Join the active tab to the adjacent window group",
+        ),
+        (
+            ShortcutAction::AttachTabRight,
+            "shortcuts.attach_tab_right",
+            "Move tab into group on right",
+            "Join the active tab to the adjacent window group",
+        ),
+        (
             ShortcutAction::MoveGroupLeft,
             "shortcuts.move_group_left",
             "Move group left",

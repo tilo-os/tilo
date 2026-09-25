@@ -83,6 +83,9 @@ fn px_f32(v: f64) -> f32 {
 
 /// Pointer band that reveals the floating title/restore/close controls.
 /// Hit-testing is unaffected; only paint is gated.
+// The maximized work area starts immediately below the 48px top bar. Its
+// controls are 6px inset and 22px tall, ending at y=76; keep a small buffer
+// so the whole painted row remains shell-owned while it is visible.
 const MAXIMIZED_CHROME_REVEAL_Y: f64 = 80.0;
 
 // Each bool below is an independent UI flag (resize-hover, maximized,
@@ -151,6 +154,11 @@ pub struct WindowGroup {
     /// tabs or in-flight closing hosts left. `GroupRow` prunes the group
     /// once `close_complete()` is true.
     closing_at: Option<Instant>,
+    /// Last motion policy observed from the active theme. Widget scheduling
+    /// has no `Theme` parameter, so draw latches it here and the next
+    /// `needs_animation_frame` query can avoid waking for transitions that
+    /// must snap to their endpoint.
+    reduce_motion: bool,
 }
 
 /// Height of the floating maximized-chrome chips. Off the 4 px grid, and
@@ -267,6 +275,7 @@ impl WindowGroup {
             held_back: false,
             closing_hosts: HashMap::new(),
             closing_at: None,
+            reduce_motion: false,
             style_dirty: false,
             built_active: Some(active_id),
             pending_maximize_change: None,
@@ -548,6 +557,13 @@ impl WindowGroup {
         self.pending_maximize_change.take()
     }
 
+    /// Keyboard/accessibility twin of the frame maximize button.
+    pub fn toggle_maximized(&mut self) {
+        self.maximized = !self.maximized;
+        self.pending_maximize_change = Some(self.maximized);
+        self.style_dirty = true;
+    }
+
     /// Not gated by `cfg(any(test, debug_assertions))`: `ui`'s `cfg(test)`
     /// only applies when `ui` itself is under test, so the downstream
     /// shell's `--release` test build (`debug_assertions` off) would lose
@@ -626,6 +642,7 @@ impl WindowGroup {
             held_back: false,
             closing_hosts: HashMap::new(),
             closing_at: None,
+            reduce_motion: false,
             style_dirty: false,
             built_active: Some(active_id),
             pending_maximize_change: None,
@@ -691,6 +708,24 @@ impl WindowGroup {
 
     pub fn active_tab_id(&self) -> u64 {
         self.bar.active_id()
+    }
+
+    /// Painted maximize target for the active tab, if that tab currently has
+    /// one. This is immutable presentation geometry used by accessibility and
+    /// optional developer diagnostics.
+    pub fn active_maximize_rect(&self) -> Option<Rect> {
+        let active = self.bar.active_id();
+        self.bar
+            .tabs()
+            .iter()
+            .position(|tab| tab.id == active)
+            .and_then(|index| self.bar.max_rects_internal().get(index).copied())
+    }
+
+    /// Painted restore target for a maximized group. A zero rectangle means
+    /// the control is not currently visible.
+    pub fn restore_rect(&self) -> Rect {
+        self.restore_rect
     }
 
     /// Drain an explicit user selection from the tab bar. Model-driven
@@ -920,6 +955,7 @@ impl WindowGroup {
                     self.pending_close_commit.push(active_id);
                 }
                 self.maximized = false;
+                self.style_dirty = true;
                 self.pending_maximize_change = Some(false);
                 true
             }
@@ -931,6 +967,7 @@ impl WindowGroup {
                 // Handled here (not via bar.pending_max) so the click
                 // never races with a tab selection under the pill's geometry.
                 self.maximized = false;
+                self.style_dirty = true;
                 self.pending_maximize_change = Some(false);
                 true
             }
@@ -1067,6 +1104,9 @@ impl WindowGroup {
     /// `fade_y` is currently always 0, kept in the tuple in case a future
     /// close curve wants a settle.
     fn fade_transform_params(&self) -> (f32, f64, f64, f64) {
+        if self.reduce_motion && self.closing_at.is_none() {
+            return (1.0, 0.0, 0.0, 1.0);
+        }
         if let Some(started) = self.closing_at {
             // No offset: the per-host curve already carries the y-drift.
             // Ratio of two `Duration`s taken via `as_secs_f64` rather than
@@ -1654,6 +1694,7 @@ impl Widget for WindowGroup {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
+        self.reduce_motion = theme.reduce_motion;
         // Tolerance rather than exact float equality: this only gates a
         // no-op-transform fast path, so a value merely close to identity
         // is close enough to skip composing it.
@@ -1669,7 +1710,7 @@ impl Widget for WindowGroup {
         // before the app has drawn — without restarting it here the fade
         // would already have run its course against an invisible group.
         if std::mem::take(&mut self.held_back) {
-            self.spawned_at = Some(crate::time::now());
+            self.spawned_at = (!self.reduce_motion).then(crate::time::now);
         }
         // Close checked first (mutually exclusive with spawn in practice):
         // `opacity 0→1, scale 0.92→1, x -16→0` over `SPAWN_ANIM_MS`
@@ -1914,9 +1955,10 @@ impl Widget for WindowGroup {
     fn needs_animation_frame(&self) -> bool {
         // `WindowGroup::children()` uses the default (empty) impl, so
         // ancestors wouldn't otherwise see the bar's drag/spawn signals.
-        let spawn_in_flight = self
-            .spawned_at
-            .is_some_and(|t| t.elapsed() < Duration::from_millis(SPAWN_ANIM_MS));
+        let spawn_in_flight = !self.reduce_motion
+            && self
+                .spawned_at
+                .is_some_and(|t| t.elapsed() < Duration::from_millis(SPAWN_ANIM_MS));
         // GROUP_CLOSE_FADE_MS mirrors CLOSE_FADE_MS (tabs.rs) as a whole
         // millisecond u64, avoiding an f32->u64 cast at every use site.
         let close_window = Duration::from_millis(GROUP_CLOSE_FADE_MS);
@@ -2403,6 +2445,11 @@ mod tests {
             &mut focus_target,
             group_node,
             &taffy,
+        );
+        assert!(
+            g.bar
+                .hold_hover_intent_at(std::time::Duration::from_secs(1)),
+            "hovering the pill must arm deliberate reveal",
         );
         g.apply_layout(&taffy, group_node, Point::ZERO);
 
@@ -3094,6 +3141,23 @@ mod tests {
     }
 
     #[test]
+    fn reduced_motion_spawn_snaps_without_pumping_frames() {
+        let mut g = make_group();
+        g.reduce_motion = true;
+        g.start_spawn_animation();
+
+        assert_eq!(
+            g.fade_transform_params(),
+            (1.0, 0.0, 0.0, 1.0),
+            "reduced motion must paint a newly opened group at its settled transform",
+        );
+        assert!(
+            !g.needs_animation_frame(),
+            "the settled spawn must not keep a software-rendered compositor awake",
+        );
+    }
+
+    #[test]
     fn spawn_fade_window_clears_after_duration() {
         let mut g = make_group();
         g.spawned_at = Some(instant_ago_ms(SPAWN_ANIM_MS.saturating_add(16)));
@@ -3526,6 +3590,10 @@ mod tests {
         assert!(handled, "press must be consumed by the close arm");
         assert!(!g.maximized, "maximize must drop immediately");
         assert!(
+            g.take_structure_dirty(),
+            "leaving maximize must rebuild the cached tiled layout",
+        );
+        assert!(
             g.has_host(1),
             "host stays in `hosts` for the fade duration — no synchronous removal",
         );
@@ -3574,6 +3642,56 @@ mod tests {
         assert!(
             g.is_closing(),
             "group-level close fade must latch once the last host has swept out",
+        );
+    }
+
+    #[test]
+    fn maximized_restore_rebuilds_the_tiled_layout() {
+        use std::collections::HashMap;
+        use taffy::Style;
+        use taffy::prelude::TaffyMaxContent;
+        use winit::event::{ElementState, MouseButton};
+
+        let mut g = make_group();
+        let mut taffy = TaffyTree::<()>::new();
+        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+        let group_node = g.build_layout(&mut taffy, &Theme::dark(), &mut node_map);
+        let root = taffy.parent_node(Style::default(), &[group_node]);
+        taffy
+            .compute_layout(root, taffy::Size::MAX_CONTENT)
+            .unwrap();
+        g.apply_layout(&taffy, group_node, Point::ZERO);
+        assert!(!g.take_structure_dirty());
+
+        g.maximized = true;
+        g.restore_rect = Rect::new(0.0, 0.0, 80.0, 40.0);
+        g.last_cursor = Point::new(20.0, 20.0);
+        let press = WindowEvent::MouseInput {
+            device_id: unsafe { std::mem::zeroed() },
+            state: ElementState::Pressed,
+            button: MouseButton::Left,
+        };
+        let mut handled = false;
+        let mut focus_target = None;
+        let mut state = automerge::AutoCommit::new();
+        g.handle_event(
+            &press,
+            1.0,
+            &winit::event::Modifiers::default(),
+            &mut state,
+            &automerge::ROOT,
+            &mut handled,
+            &mut focus_target,
+            group_node,
+            &taffy,
+        );
+
+        assert!(handled);
+        assert!(!g.maximized);
+        assert_eq!(g.take_pending_maximize_change(), Some(false));
+        assert!(
+            g.take_structure_dirty(),
+            "restore must invalidate the cached maximized geometry",
         );
     }
 
@@ -3790,6 +3908,7 @@ mod tests {
         assert!(g.should_show_maximized_chrome(Some(40.0)));
         assert!(g.should_show_maximized_chrome(Some(80.0)));
         assert!(!g.should_show_maximized_chrome(Some(81.0)));
+        assert!(!g.should_show_maximized_chrome(Some(120.0)));
         assert!(!g.should_show_maximized_chrome(Some(400.0)));
         // No cursor observed yet is treated as "below the band".
         assert!(!g.should_show_maximized_chrome(None));

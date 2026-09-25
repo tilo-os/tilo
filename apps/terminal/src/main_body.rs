@@ -47,6 +47,62 @@ use crate::graphics::{
 /// waiting for the UI. A terminal must never silently discard process output,
 /// but it also must not let a noisy process allocate without bound.
 const PTY_QUEUE_CHUNKS: usize = 64;
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum PtyReadDisposition {
+    Data(usize),
+    Retry,
+    Closed,
+}
+
+/// Linux PTY masters report `EIO` whenever no slave descriptor is open. For a
+/// hosted `ush` session that happens briefly in the hand-off window, after the
+/// master reaches the app but before the guest opens its slave, and it also
+/// happens for good once the guest exits. `session_open` tells the two apart:
+/// the supervisor keeps the session's lifetime socket open exactly while its
+/// guest runs, so `EIO` retries only while that socket is still open. A local
+/// PTY has no hand-off window, so its `EIO` always means the shell exited.
+/// `EINTR` is never closure. EOF and every other error remain terminal.
+pub(crate) fn classify_pty_read(
+    result: &std::io::Result<usize>,
+    session_open: impl FnOnce() -> bool,
+) -> PtyReadDisposition {
+    match result {
+        Ok(0) => PtyReadDisposition::Closed,
+        Ok(n) => PtyReadDisposition::Data(*n),
+        Err(error) if error.kind() == std::io::ErrorKind::Interrupted => PtyReadDisposition::Retry,
+        Err(error) if error.raw_os_error() == Some(libc::EIO) && session_open() => {
+            PtyReadDisposition::Retry
+        }
+        Err(_) => PtyReadDisposition::Closed,
+    }
+}
+
+/// Whether the peer still holds a hosted session's lifetime socket open. The
+/// probe peeks without blocking and without changing the descriptor's flags,
+/// which it shares with the widget's own handle.
+#[cfg(unix)]
+pub(crate) fn lifetime_socket_open(socket: &std::os::unix::net::UnixStream) -> bool {
+    use std::os::fd::AsRawFd as _;
+    let mut byte = 0u8;
+    // SAFETY: `byte` is valid writable storage for the one byte requested and
+    // the descriptor stays open for the duration of the call.
+    let received = unsafe {
+        libc::recv(
+            socket.as_raw_fd(),
+            (&raw mut byte).cast::<libc::c_void>(),
+            1,
+            libc::MSG_PEEK | libc::MSG_DONTWAIT,
+        )
+    };
+    if received >= 0 {
+        return received > 0;
+    }
+    matches!(
+        std::io::Error::last_os_error().raw_os_error(),
+        Some(libc::EAGAIN | libc::EINTR)
+    )
+}
+
 /// One UI turn may parse at most this much queued PTY output. Anything beyond
 /// it stays in the bounded queue for the following frame, preserving ordering
 /// while keeping pointer input and accessibility responsive during a build
@@ -469,6 +525,8 @@ pub struct TerminalWidget {
     rect: Rect,
     pty_write: Arc<Mutex<Box<dyn Write + Send>>>,
     pty_master: Arc<Mutex<Box<dyn MasterPty + Send>>>,
+    #[cfg(unix)]
+    service_lifetime: Option<std::os::unix::net::UnixStream>,
     output_rx: Receiver<Vec<u8>>,
     /// At most one reader chunk that did not fit the current bounded pump.
     /// Retaining it locally preserves byte ordering without an unbounded
@@ -748,6 +806,8 @@ impl TerminalWidget {
             rect: Rect::ZERO,
             pty_write: writer,
             pty_master: master,
+            #[cfg(unix)]
+            service_lifetime: None,
             output_rx,
             deferred_output: None,
             session_disconnected: Arc::new(AtomicBool::new(false)),
@@ -1805,10 +1865,21 @@ impl TerminalWidget {
         let activity = !batch.is_empty();
         if activity {
             self.feed(state, root, &batch);
+            // `feed` normally latches this itself, but keep the PTY boundary
+            // authoritative: even if CRDT initialisation or a future parser
+            // early-return prevents visible cells from being mirrored in this
+            // frame, bytes were received from a live session and the loading
+            // watermark must never be painted over them.
+            self.ever_nonblank = true;
             // Fresh output snaps the viewport back to the live bottom.
             self.scroll_offset = 0;
         }
         activity
+    }
+
+    #[cfg(test)]
+    pub(crate) fn has_received_pty_output(&self) -> bool {
+        self.ever_nonblank
     }
 
     /// Run `bytes` through the vte parser + performer, mutating the active
@@ -1823,6 +1894,15 @@ impl TerminalWidget {
     /// rejected a `put_object` there is nothing to feed into.
     pub fn feed(&mut self, state: &mut AutoCommit, root: &ObjId, bytes: &[u8]) {
         self.init_crdt(state, root);
+
+        // Any PTY bytes mean the session is live, even when the first batch is
+        // entirely cursor movement, colour setup, or a prompt whose visible
+        // cells have not reached the render mirror yet. Inferring readiness
+        // only from `grid_is_blank()` left the animated first-run watermark
+        // painted over a real prompt and kept needless repaint work alive.
+        if !bytes.is_empty() {
+            self.ever_nonblank = true;
+        }
 
         // Clamp cursors in case of resize.
         self.cursor_x = self.cursor_x.min(self.width.saturating_sub(1));
@@ -6793,6 +6873,8 @@ pub struct TerminalBackend {
     pub reader: Box<dyn Read + Send>,
     pub master: Box<dyn MasterPty + Send>,
     pub shell_name: String,
+    #[cfg(unix)]
+    service_lifetime: Option<std::os::unix::net::UnixStream>,
     #[cfg(windows)]
     pub child: Box<dyn portable_pty::Child + Send + Sync>,
 }
@@ -6904,6 +6986,8 @@ impl TerminalBackend {
             reader,
             master: pair.master,
             shell_name,
+            #[cfg(unix)]
+            service_lifetime: None,
             #[cfg(windows)]
             child,
         })
@@ -7157,6 +7241,7 @@ fn ush_backend_on(
         reader,
         master: Box::new(FdMaster { file: master }),
         shell_name: "ush".into(),
+        service_lifetime: Some(stream.try_clone()?),
     })
 }
 
@@ -7243,7 +7328,11 @@ impl TerminalWidget {
         let master = std::sync::Arc::new(std::sync::Mutex::new(backend.master));
         let (output_tx, output_rx) = bounded(PTY_QUEUE_CHUNKS);
 
-        let widget = TerminalWidget::new(writer, master, output_rx).with_local_session();
+        let mut widget = TerminalWidget::new(writer, master, output_rx).with_local_session();
+        #[cfg(unix)]
+        {
+            widget.service_lifetime = backend.service_lifetime;
+        }
         #[cfg(windows)]
         let widget = {
             let mut widget = widget;
@@ -7283,6 +7372,18 @@ impl TerminalWidget {
         let session_disconnected = widget.session_disconnected.clone();
         let session_status_message = widget.session_status_message.clone();
 
+        // The reader distinguishes a hosted session's start-up `EIO` from its
+        // exit by the lifetime socket the supervisor closes when the guest
+        // ends. A local PTY has none.
+        #[cfg(unix)]
+        let reader_lifetime = widget
+            .service_lifetime
+            .as_ref()
+            .and_then(|socket| socket.try_clone().ok());
+        #[cfg(unix)]
+        let session_open = move || reader_lifetime.as_ref().is_some_and(lifetime_socket_open);
+        #[cfg(not(unix))]
+        let session_open = || false;
         let reader = std::sync::Arc::new(std::sync::Mutex::new(backend.reader));
         let reader_result = std::thread::Builder::new()
             .name("tilo-terminal-pty-reader".to_string())
@@ -7301,8 +7402,14 @@ impl TerminalWidget {
                         request_terminal_wake(&waker, &wake_pending);
                         break;
                     };
-                    match std::io::Read::read(&mut *r, &mut buf) {
-                        Ok(0) | Err(_) => {
+                    let read = std::io::Read::read(&mut *r, &mut buf);
+                    match classify_pty_read(&read, &session_open) {
+                        PtyReadDisposition::Retry => {
+                            // Avoid a hot loop while the guest is between
+                            // opening/closing slave descriptors.
+                            std::thread::sleep(std::time::Duration::from_millis(10));
+                        }
+                        PtyReadDisposition::Closed => {
                             set_terminal_disconnected(
                                 &session_disconnected,
                                 &session_status_message,
@@ -7311,7 +7418,7 @@ impl TerminalWidget {
                             request_terminal_wake(&waker, &wake_pending);
                             break;
                         }
-                        Ok(n) => {
+                        PtyReadDisposition::Data(n) => {
                             let Some(chunk) = buf.get(..n) else { break };
                             if output_tx.send(chunk.to_vec()).is_err() {
                                 break;
