@@ -24,6 +24,7 @@ use automerge::{
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::ops::Bound;
+use std::sync::Arc;
 
 mod bulk;
 #[cfg(test)]
@@ -96,10 +97,11 @@ impl NoteKind {
 
 /// A block's `(order_key, id)` pair, ordered exactly as [`ordered_keys`] orders blocks
 /// (fractional key via [`crate::order::cmp_keys`], then id as a tiebreak). Used as the in-memory order index's key type.
+/// Key and id are shared with the `id → key` map, so the index holds each only once.
 #[derive(Clone, PartialEq, Eq)]
 struct OrderKey {
-    key: Vec<u8>,
-    id: String,
+    key: Arc<[u8]>,
+    id: Arc<str>,
 }
 
 impl Ord for OrderKey {
@@ -118,7 +120,22 @@ impl PartialOrd for OrderKey {
 #[derive(Default)]
 struct ContainerOrder {
     entries: BTreeSet<OrderKey>,
-    by_id: HashMap<String, Vec<u8>>,
+    by_id: HashMap<Arc<str>, Arc<[u8]>>,
+}
+
+impl ContainerOrder {
+    /// Set `id`'s key, replacing any it had.
+    fn insert(&mut self, id: Arc<str>, key: Arc<[u8]>) {
+        self.remove(&id);
+        self.by_id.insert(Arc::clone(&id), Arc::clone(&key));
+        self.entries.insert(OrderKey { key, id });
+    }
+
+    fn remove(&mut self, id: &str) {
+        if let Some((id, key)) = self.by_id.remove_entry(id) {
+            self.entries.remove(&OrderKey { key, id });
+        }
+    }
 }
 
 /// A lazily-built, incrementally-maintained index of every touched block container's order.
@@ -142,6 +159,9 @@ pub struct IdGen {
     bulk: bulk::Bulk,
     /// Bulk writes may commit (see [`Self::allow_commits`]).
     commits_allowed: bool,
+    /// Made by [`Self::new`] rather than seeded from a document: its caller is creating content,
+    /// not editing a document it read ids from. See [`DocMut::bulk`].
+    unseeded: bool,
 }
 
 /// Clone for transactional staging against a cloned document, with a fresh
@@ -161,6 +181,7 @@ impl Clone for IdGen {
             order: OrderIndex::default(),
             bulk: bulk::Bulk::default(),
             commits_allowed: false,
+            unseeded: false,
         }
     }
 }
@@ -184,6 +205,7 @@ impl IdGen {
             order: OrderIndex::default(),
             bulk: bulk::Bulk::default(),
             commits_allowed: false,
+            unseeded: true,
         }
     }
     /// Start the counter at `next` — used to seed past ids that already exist in a loaded/opened
@@ -195,14 +217,16 @@ impl IdGen {
             order: OrderIndex::default(),
             bulk: bulk::Bulk::default(),
             commits_allowed: false,
+            unseeded: false,
         }
     }
 
     /// Declare that the document this generator serves may be committed by bulk writes: a
     /// [`DocMut::bulk`] scope then commits whatever is pending and writes its blocks and marks as
     /// new changes, which is several times faster for mark-heavy imports. [`crate::Document`]
-    /// sets this; a host that doesn't need an import to stay inside its open transaction (say,
-    /// opening a file into a fresh document) can set it too.
+    /// sets this. A document being created — nothing but the schema in it, written through a
+    /// generator from [`Self::new`] — gets the same treatment without it (see [`DocMut::bulk`]),
+    /// so a host opening a file into a fresh document need not set it.
     pub fn allow_commits(&mut self) {
         self.commits_allowed = true;
     }
@@ -286,12 +310,13 @@ pub fn next_counter_for(
         }
     }
     // Comment ids + comment-body block ids draw from the same generator too, for the same reason.
+    let mut replies = comment_replies_by_parent(doc, c);
     for cid in comment_ids(doc, c) {
         bump(&cid);
         for bid in comment_blocks_in_order(doc, c, &cid) {
             bump(&bid);
         }
-        for rid in comment_reply_ids(doc, c, &cid) {
+        for rid in replies.remove(&cid).unwrap_or_default() {
             bump(&rid);
             for bid in comment_reply_blocks_in_order(doc, c, &cid, &rid) {
                 bump(&bid);
@@ -366,6 +391,21 @@ pub fn seeded_id_gen(doc: &AutoCommit, c: &Containers) -> IdGen {
 /// it, and `root.blocks` has one candidate however many participants there are
 /// and whoever imported first.
 const GENESIS_ACTOR: &[u8] = b"qdoc.schema.genesis.v1";
+
+/// Whether `doc` has no committed history beyond the schema [`init`] adopts: nothing written to it
+/// yet that anything could have seen or bracketed an undo step against.
+pub(crate) fn holds_only_schema(doc: &AutoCommit) -> bool {
+    static GENESIS_HEADS: std::sync::OnceLock<Vec<automerge::ChangeHash>> =
+        std::sync::OnceLock::new();
+    let heads = doc.base_heads();
+    heads.is_empty()
+        || heads
+            == *GENESIS_HEADS.get_or_init(|| {
+                AutoCommit::load(genesis())
+                    .map(|mut d| d.get_heads())
+                    .unwrap_or_default()
+            })
+}
 
 /// The canonical schema change, built once per process.
 ///
@@ -807,22 +847,39 @@ pub fn materialize_comment_blocks(doc: &AutoCommit, c: &Containers, id: &str) ->
 
 /// Stable ids of every reply belonging to a comment. Missing thread maps are
 /// treated as empty to keep old documents readable without migration writes.
+///
+/// Replies are records in the shared comments map, so this reads the whole map; to list the
+/// replies of every comment, use [`comment_replies_by_parent`] once instead.
 pub fn comment_reply_ids(doc: &AutoCommit, c: &Containers, comment_id: &str) -> Vec<String> {
-    let Some(replies) = comments_obj(doc, c) else {
-        return Vec::new();
+    comment_replies_by_parent(doc, c)
+        .remove(comment_id)
+        .unwrap_or_default()
+}
+
+/// Every reply id in the comments map, grouped by the comment it answers, each group sorted: the
+/// answer [`comment_reply_ids`] gives for every comment, from one pass over the map.
+pub fn comment_replies_by_parent(doc: &AutoCommit, c: &Containers) -> HashMap<String, Vec<String>> {
+    let mut by_parent: HashMap<String, Vec<String>> = HashMap::new();
+    let Some(comments) = comments_obj(doc, c) else {
+        return by_parent;
     };
-    let mut ids: Vec<String> = doc
-        .keys(&replies)
-        .filter(|id| {
-            matches!(
-                doc.get(&replies, id),
-                Ok(Some((Value::Object(ObjType::Map), reply)))
-                    if matches!(doc.get(&reply, COMMENT_REPLY_PARENT), Ok(Some((parent, _))) if parent.as_str() == Some(comment_id))
-            )
-        })
-        .collect();
-    ids.sort();
-    ids
+    for item in doc.map_range(&comments, ..) {
+        if !matches!(item.value, ValueRef::Object(ObjType::Map)) {
+            continue;
+        }
+        if let Ok(Some((parent, _))) = doc.get(item.id(), COMMENT_REPLY_PARENT)
+            && let Some(parent) = parent.as_str()
+        {
+            by_parent
+                .entry(parent.to_owned())
+                .or_default()
+                .push(item.key.into_owned());
+        }
+    }
+    for ids in by_parent.values_mut() {
+        ids.sort();
+    }
+    by_parent
 }
 
 pub fn comment_reply_author(
@@ -878,7 +935,16 @@ pub fn materialize_comment_replies(
     c: &Containers,
     comment_id: &str,
 ) -> Vec<crate::snapshot::CommentReplyView> {
-    comment_reply_ids(doc, c, comment_id)
+    reply_views(doc, c, comment_id, comment_reply_ids(doc, c, comment_id))
+}
+
+fn reply_views(
+    doc: &AutoCommit,
+    c: &Containers,
+    comment_id: &str,
+    reply_ids: Vec<String>,
+) -> Vec<crate::snapshot::CommentReplyView> {
+    reply_ids
         .into_iter()
         .map(|id| crate::snapshot::CommentReplyView {
             author: comment_reply_author(doc, c, comment_id, &id).unwrap_or_default(),
@@ -919,12 +985,13 @@ fn comments_with_ranges(
     ids: Vec<String>,
     ranges: &AnchorRanges,
 ) -> Vec<crate::snapshot::CommentView> {
+    let mut replies = comment_replies_by_parent(doc, c);
     ids.into_iter()
         .map(|id| crate::snapshot::CommentView {
             author: comment_author(doc, c, &id).unwrap_or_default(),
             date: comment_date(doc, c, &id).unwrap_or_default(),
             blocks: materialize_comment_blocks(doc, c, &id),
-            replies: materialize_comment_replies(doc, c, &id),
+            replies: reply_views(doc, c, &id, replies.remove(&id).unwrap_or_default()),
             range: ranges.get(MARK_COMMENT, &id),
             id,
         })
@@ -1974,22 +2041,22 @@ impl DocMut<'_> {
             .by_container
             .get(container)
             .expect("order cache just built");
-        let (lo, hi): (Option<Vec<u8>>, Option<Vec<u8>>) = match after {
+        let (lo, hi) = match after {
             // Insert at the front: bounded above by the first block's key.
             None => (None, co.entries.iter().next().map(|k| k.key.clone())),
-            Some(id) => match co.by_id.get(id) {
+            Some(id) => match co.by_id.get_key_value(id) {
                 // `after` exists: lo is its key, hi is the next block's key.
-                Some(after_key) => {
+                Some((id, after_key)) => {
                     let probe = OrderKey {
-                        key: after_key.clone(),
-                        id: id.to_string(),
+                        key: Arc::clone(after_key),
+                        id: Arc::clone(id),
                     };
                     let hi = co
                         .entries
                         .range((Bound::Excluded(probe), Bound::Unbounded))
                         .next()
                         .map(|k| k.key.clone());
-                    (Some(after_key.clone()), hi)
+                    (Some(Arc::clone(after_key)), hi)
                 }
                 // `after` unknown → append at the end (mirrors the old `unwrap_or(len)`).
                 None => (co.entries.iter().next_back().map(|k| k.key.clone()), None),
@@ -2010,11 +2077,7 @@ impl DocMut<'_> {
         }
         let mut co = ContainerOrder::default();
         for b in ordered_blocks(self.doc, container) {
-            co.by_id.insert(b.id.clone(), b.order.clone());
-            co.entries.insert(OrderKey {
-                key: b.order,
-                id: b.id,
-            });
+            co.insert(b.id.into(), b.order.into());
         }
         self.ids.order.by_container.insert(container.clone(), co);
     }
@@ -2023,29 +2086,15 @@ impl DocMut<'_> {
     /// document, so the index stays in lock-step with it.
     fn record_order(&mut self, container: &ObjId, id: &str, key: &[u8]) {
         if let Some(co) = self.ids.order.by_container.get_mut(container) {
-            if let Some(old) = co.by_id.insert(id.to_string(), key.to_vec()) {
-                co.entries.remove(&OrderKey {
-                    key: old,
-                    id: id.to_string(),
-                });
-            }
-            co.entries.insert(OrderKey {
-                key: key.to_vec(),
-                id: id.to_string(),
-            });
+            co.insert(id.into(), key.into());
         }
     }
 
     /// Drop a block from the order index (on delete). A no-op if the container's index hasn't been built
     /// yet — it will rebuild from the (already-updated) document on next use.
     fn forget_order(&mut self, container: &ObjId, id: &str) {
-        if let Some(co) = self.ids.order.by_container.get_mut(container)
-            && let Some(old) = co.by_id.remove(id)
-        {
-            co.entries.remove(&OrderKey {
-                key: old,
-                id: id.to_string(),
-            });
+        if let Some(co) = self.ids.order.by_container.get_mut(container) {
+            co.remove(id);
         }
     }
 
@@ -3670,6 +3719,62 @@ mod region_tests {
             "both comments survive (no overwrite): {:?}",
             snap.comments
         );
+    }
+
+    #[test]
+    fn replies_of_every_comment_come_from_one_pass() {
+        let mut doc = AutoCommit::new();
+        let c = init(&mut doc, &ROOT);
+        let mut ids = IdGen::new(doc.get_actor().to_hex_string());
+        let mut comments = Vec::new();
+        {
+            let mut dm = DocMut {
+                doc: &mut doc,
+                c: &c,
+                ids: &mut ids,
+            };
+            let paragraph = dm.insert_block(None, "paragraph");
+            dm.splice_text(&paragraph, 0, 0, "one two three four five");
+            for (i, start) in [0usize, 4, 8, 14].into_iter().enumerate() {
+                let comment = dm.add_comment(&paragraph, start, start + 3, "Ada", "note");
+                // Interleave replies across threads, and leave the last thread without any.
+                for n in 0..(3 - i.min(3)) {
+                    dm.add_comment_reply(&comment, "Bea", "2026-09-07", &format!("reply {n}"))
+                        .expect("parent comment exists");
+                }
+                comments.push(comment);
+            }
+            let first = comments[0].clone();
+            dm.add_comment_reply(&first, "Cy", "2026-09-08", "late reply")
+                .expect("parent comment exists");
+        }
+        let by_parent = comment_replies_by_parent(&doc, &c);
+        let all = materialize_comments(&doc, &c);
+        assert_eq!(all.len(), comments.len());
+        for view in &all {
+            assert_eq!(
+                comment_reply_ids(&doc, &c, &view.id),
+                by_parent.get(&view.id).cloned().unwrap_or_default()
+            );
+            assert_eq!(
+                view.replies,
+                materialize_comment_replies(&doc, &c, &view.id),
+                "a comment's replies read the same alone and in the full list"
+            );
+        }
+        let counts: Vec<usize> = comments
+            .iter()
+            .map(|id| {
+                all.iter()
+                    .find(|v| &v.id == id)
+                    .map_or(0, |v| v.replies.len())
+            })
+            .collect();
+        assert_eq!(counts, vec![4, 2, 1, 0]);
+
+        // A generator seeded from the document mints past every reply and reply-body block.
+        let seeded = try_seeded_id_gen(&doc, &c).expect("seeds");
+        assert_eq!(seeded.next, ids.next);
     }
 
     #[test]

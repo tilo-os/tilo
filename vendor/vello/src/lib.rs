@@ -2348,6 +2348,81 @@ impl Renderer {
         Ok(())
     }
 
+    /// As [`Self::render_to_texture_with_post_render_checked`], returning the
+    /// exact queue submission that contains both Vello and `post_render` work.
+    #[doc(hidden)]
+    pub fn render_to_texture_with_post_render_checked_indexed<F, G>(
+        &mut self,
+        device: &Device,
+        queue: &Queue,
+        scene: &Scene,
+        texture: &TextureView,
+        params: &RenderParams,
+        post_render: F,
+        before_submit: G,
+    ) -> Result<wgpu::SubmissionIndex>
+    where
+        F: FnOnce(&mut wgpu::CommandEncoder),
+        G: FnOnce() -> bool,
+    {
+        self.last_canonical_segment_order_selected = false;
+        self.last_area_ppt8_selected = false;
+        self.last_clip_single_group_selected = false;
+        self.budget.set_viewport(params.width, params.height);
+        let (changed, overflowed) = self.budget.collect(device, &mut self.engine);
+        self.unsettled_bump_overflow.record(overflowed);
+        if changed {
+            self.engine.clear_pool();
+        }
+        let measure = !self.options.use_cpu && self.budget.wants_readback();
+        let canonical_segment_order = self.canonical_segment_order_selected_for(params, measure);
+        let area_ppt8 = self.area_ppt8_selected_for(params);
+        let defer_bump_readback = self.defer_bump_readback_enabled() || canonical_segment_order;
+        let zero_gradient = self
+            .engine
+            .zero_gradient_reuse_enabled()
+            .then(|| self.engine.ensure_zero_gradient(device, queue));
+        let (target, bump_buf, canonical, ppt8, clip_single) = render::render_full(
+            scene,
+            &mut self.resolver,
+            &self.shaders,
+            &mut self.image_atlas,
+            &mut self.recording,
+            &mut self.packed_scene,
+            params,
+            self.budget.budget(),
+            measure,
+            canonical_segment_order,
+            area_ppt8,
+            defer_bump_readback,
+            zero_gradient,
+        );
+        let external_resources = [ExternalResource::Image(
+            *target.as_image().unwrap(),
+            texture,
+        )];
+        let submission = self
+            .engine
+            .run_recording_with_post_render_checked_indexed(
+                device,
+                queue,
+                &self.recording,
+                &external_resources,
+                "render_to_texture",
+                post_render,
+                before_submit,
+                #[cfg(feature = "wgpu-profiler")]
+                &mut self.profiler,
+            )?;
+        if let Some(bump_buf) = bump_buf {
+            self.budget.begin_readback(&self.engine, bump_buf);
+        }
+        self.last_canonical_segment_order_selected = canonical;
+        self.last_area_ppt8_selected = ppt8;
+        self.last_clip_single_group_selected = clip_single;
+        Ok(submission)
+    }
+
     /// Append post-render commands to the same unconditional Vello submission.
     #[doc(hidden)]
     pub fn render_to_texture_with_post_render<F>(

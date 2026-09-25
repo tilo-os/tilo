@@ -30,6 +30,26 @@ def select(root):
     return path, catalog
 
 
+INTERNAL_PURPOSE = "tilo-internal-installer"
+INTERNAL_KEYS = {"purpose", "layout", "release_id", "arch", "manifest_url", "manifest_sha256", "manifest_size"}
+
+
+def internal(entry, tag):
+    """Shape of a CatalogRelease::Internal entry (build-release-catalog.sh binds its bytes)."""
+    if set(entry) != INTERNAL_KEYS or entry["layout"] != "internal-bundle-v2" or entry["release_id"] != tag:
+        raise ValueError("invalid internal installer catalog entry")
+    arch = entry["arch"]
+    owner = os.environ.get("TILO_INTERNAL_BUNDLE_OWNER", "qos")
+    expected = (f"https://code.podesta.ai/api/packages/{owner}/generic/tilo-internal-installer/"
+                f"{tag}/tilo-internal-installer-{arch}.json")
+    if arch not in ("x86_64", "aarch64") or entry["manifest_url"] != expected:
+        raise ValueError("internal installer manifest URL does not match its package origin")
+    if (not isinstance(entry["manifest_sha256"], str)
+            or not re.fullmatch(r"[0-9a-f]{64}", entry["manifest_sha256"])
+            or type(entry["manifest_size"]) is not int or not 0 < entry["manifest_size"] <= 65536):
+        raise ValueError("invalid internal installer manifest digest or size")
+
+
 def media(catalog, root, arch=None):
     if not re.fullmatch(r"imager-v[0-9]+\.[0-9]+\.[0-9]+", catalog.get("tag", "")):
         raise ValueError("installer catalog requires a release tag")
@@ -48,6 +68,11 @@ def media(catalog, root, arch=None):
     identities = set()
     result = []
     for entry in entries:
+        if isinstance(entry, dict) and entry.get("purpose") == INTERNAL_PURPOSE:
+            # Internal installer bundles are not media: they are published as
+            # Forgejo packages, never signed or shipped as release downloads.
+            internal(entry, catalog["tag"])
+            continue
         target = entry.get("arch")
         profile = entry.get("hardware_profile", "generic")
         if target not in ("x86_64", "aarch64") or not isinstance(profile, str) or not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,63}", profile):

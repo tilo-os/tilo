@@ -123,6 +123,34 @@ pub const INHERITED_ENV: &[&str] = &[
     "RUST_LOG",
 ];
 
+/// User-owned type-only accessibility preferences allowed into applications.
+/// Values are parsed and canonicalised before crossing the sandbox boundary;
+/// keeping these out of [`INHERITED_ENV`] prevents arbitrary strings from
+/// becoming app input merely because their variable name is recognised.
+pub const ACCESSIBILITY_TEXT_SCALE_ENV: &[&str] = &["TILO_A11Y_TEXT_SCALE", "TILO_TEXT_SCALE"];
+
+fn push_accessibility_environment(argv: &mut Vec<String>) {
+    for key in ACCESSIBILITY_TEXT_SCALE_ENV {
+        let Some(value) = std::env::var_os(key) else {
+            continue;
+        };
+        let Some(value) = value.to_str() else {
+            continue;
+        };
+        let Ok(scale) = value.trim().parse::<f32>() else {
+            continue;
+        };
+        if !scale.is_finite() || !(0.5..=4.0).contains(&scale) {
+            continue;
+        }
+        argv.extend([
+            "--setenv".to_string(),
+            (*key).to_string(),
+            scale.to_string(),
+        ]);
+    }
+}
+
 /// Empty the environment, then put back what the app is entitled to.
 ///
 /// `bwrap` passes the parent's environment straight through unless
@@ -148,6 +176,7 @@ pub fn push_clean_environment(argv: &mut Vec<String>) {
         argv.push((*key).to_string());
         argv.push(value.to_string_lossy().into_owned());
     }
+    push_accessibility_environment(argv);
 }
 
 /// Env var publishing the compositor's privileged Wayland socket.

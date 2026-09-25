@@ -451,6 +451,14 @@ impl FrameRecorder {
         }
     }
 
+    /// Age of the oldest input that has not yet reached a submitted frame.
+    /// The async presenter attaches this clock to the exact frame serial it
+    /// accepts, rather than mistaking queue hand-off for physical retirement.
+    pub fn pending_input_age(&self, now: Instant) -> Option<Duration> {
+        self.pending_input
+            .map(|at| now.saturating_duration_since(at))
+    }
+
     /// Cumulative phase marks: each takes the duration *of that phase*, not a cumulative offset, so callers can compute them however is cheapest at the call site.
     pub fn mark_input(&mut self, d: Duration) {
         self.cur.input_us = us(d);
@@ -926,6 +934,20 @@ mod tests {
         assert!(
             s[2].present_async,
             "a queued (threaded) submit must be flagged so readers don't mistake it for photons"
+        );
+    }
+
+    #[test]
+    fn pending_input_age_exposes_the_oldest_unpresented_input() {
+        let mut r = FrameRecorder::disabled();
+        r.enabled = true;
+        let base = Instant::now();
+        r.note_input(base);
+        r.note_input(base + Duration::from_millis(4));
+        assert_eq!(
+            r.pending_input_age(base + Duration::from_millis(9)),
+            Some(Duration::from_millis(9)),
+            "a newer input must not hide the oldest outstanding latency"
         );
     }
 

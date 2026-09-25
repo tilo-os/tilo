@@ -1,5 +1,5 @@
 //! Entry point for the format-router daemon. Reads the registry, builds the
-//! router, spins up the inotify watcher + epoch ticker, then enters the
+//! router, spins up the inotify watcher, then enters the
 //! Cap'n Proto accept loop on the Unix socket.
 
 #![cfg_attr(
@@ -18,8 +18,7 @@
 use format_host::{
     default_registry_path,
     router::{Router, load_into},
-    runner::{LoadedComponent, spawn_epoch_ticker},
-    transport,
+    runner, transport,
     watch::spawn_watcher,
 };
 
@@ -45,9 +44,7 @@ fn main() -> anyhow::Result<()> {
         .build()?;
     let local = tokio::task::LocalSet::new();
     local.block_on(&rt, async move {
-        let engine = LoadedComponent::engine()?;
-        spawn_epoch_ticker(engine.clone());
-        let router = Router::new(engine);
+        let router = Router::new(runner::engine());
         // Best-effort initial load; an absent registry just means "no providers
         // loaded" and the host stays up.
         if let Err(e) = load_into(&router, &registry_path) {

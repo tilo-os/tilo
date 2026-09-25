@@ -160,7 +160,7 @@ const DIRECT_RETIREMENT_TIMEOUT: Duration = Duration::from_millis(250);
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[allow(
     clippy::struct_excessive_bools,
-    reason = "each flag is an independent capability fact checked by one rejection rule"
+    reason = "independent facts about one output, reported together when direct scanout is refused"
 )]
 struct DirectEligibility<'a> {
     outputs: usize,
@@ -170,6 +170,22 @@ struct DirectEligibility<'a> {
     event_pageflips: bool,
     renderer_pci: &'a str,
     drm_bus_id: Option<&'a str>,
+}
+
+/// Sparse Vello damage describes the delta from `previous_revision`, but a
+/// direct-scanout swapchain owns multiple independent destination images. A
+/// partial copy is valid only when the selected image contains that exact
+/// predecessor; otherwise both rendering and the destination copy must cross
+/// a dense boundary.
+fn damage_for_direct_target(
+    target_revision: Option<u64>,
+    mut damage: SceneDamage<'_>,
+) -> SceneDamage<'_> {
+    if target_revision != damage.previous_revision {
+        damage.previous_revision = None;
+        damage.regions = None;
+    }
+    damage
 }
 
 fn direct_scanout_rejection(input: DirectEligibility<'_>) -> Option<&'static str> {
@@ -398,7 +414,7 @@ mod phase_window_tests {
 
         let just_before = (started + PHASE_WINDOW_INTERVAL)
             .checked_sub(Duration::from_nanos(1))
-            .expect("an instant two seconds from now has a predecessor");
+            .unwrap();
         assert!(!window.due(just_before));
         assert!(window.due(started + PHASE_WINDOW_INTERVAL));
     }
@@ -517,6 +533,56 @@ mod direct_eligibility_tests {
     }
 }
 
+#[cfg(test)]
+mod direct_damage_history_tests {
+    use super::*;
+
+    const REGION: [vello::FineDamageRect; 1] = [vello::FineDamageRect {
+        x: 1,
+        y: 2,
+        width: 2,
+        height: 2,
+    }];
+
+    fn sparse(previous_revision: Option<u64>) -> SceneDamage<'static> {
+        SceneDamage {
+            revision: 9,
+            previous_revision,
+            regions: Some(&REGION),
+        }
+    }
+
+    #[test]
+    fn matching_scanout_history_preserves_sparse_damage() {
+        let damage = damage_for_direct_target(Some(8), sparse(Some(8)));
+        assert_eq!(damage.previous_revision, Some(8));
+        assert_eq!(damage.regions, Some(REGION.as_slice()));
+    }
+
+    #[test]
+    fn stale_or_missing_scanout_history_forces_a_dense_boundary() {
+        for target_revision in [None, Some(7), Some(9)] {
+            let damage = damage_for_direct_target(target_revision, sparse(Some(8)));
+            assert_eq!(damage.previous_revision, None);
+            assert_eq!(damage.regions, None);
+        }
+    }
+
+    #[test]
+    fn an_already_dense_frame_remains_dense() {
+        let damage = damage_for_direct_target(
+            Some(8),
+            SceneDamage {
+                revision: 9,
+                previous_revision: None,
+                regions: None,
+            },
+        );
+        assert_eq!(damage.previous_revision, None);
+        assert_eq!(damage.regions, None);
+    }
+}
+
 impl DrmPresenter {
     /// Frame-production body, identical to the pre-split `submit_frame`.
     fn render(&mut self, scene: &Scene) {
@@ -573,11 +639,14 @@ impl DrmPresenter {
     /// capacity after this method returns, so no second frame is rendered
     /// while both double-buffered targets remain owned by KMS.
     fn retire_direct_flip(&mut self) {
-        let Some(entry) = self
+        let Some(index) = self
             .scanouts
-            .iter_mut()
-            .find(|entry| entry.direct_targets.is_some())
+            .iter()
+            .position(|entry| entry.direct_targets.is_some())
         else {
+            return;
+        };
+        let Some(entry) = self.scanouts.get_mut(index) else {
             return;
         };
         let (retirement, completions) = entry
@@ -611,8 +680,7 @@ impl DrmPresenter {
         }
         let now = Instant::now();
         if self.phase_window.due(now) {
-            let frames = u128::from(self.phase_window.frames.max(1));
-            let average = |total: u128| total.checked_div(frames).unwrap_or(0);
+            let frames = self.phase_window.frames.max(1);
             let summary = self.phase_window.summary_fields(now);
             tracing::info!(
                 target: "tilo::render_phase_summary",
@@ -621,10 +689,18 @@ impl DrmPresenter {
                 direct_dropped = summary.direct_dropped,
                 flip_completions = summary.flip_completions,
                 window_us = summary.window_us,
-                avg_submit_us = average(self.phase_window.submit_us),
-                avg_gpu_readback_map_us = average(self.phase_window.gpu_readback_map_us),
-                avg_settle_us = average(self.phase_window.settle_us),
-                avg_cpu_swizzle_us = average(self.phase_window.cpu_swizzle_us),
+                avg_submit_us = self.phase_window.submit_us.checked_div(u128::from(frames)).unwrap_or(0),
+                avg_gpu_readback_map_us = self
+                    .phase_window
+                    .gpu_readback_map_us
+                    .checked_div(u128::from(frames))
+                    .unwrap_or(0),
+                avg_settle_us = self.phase_window.settle_us.checked_div(u128::from(frames)).unwrap_or(0),
+                avg_cpu_swizzle_us = self
+                    .phase_window
+                    .cpu_swizzle_us
+                    .checked_div(u128::from(frames))
+                    .unwrap_or(0),
                 readback_bytes = summary.readback_bytes,
                 output_bytes = summary.output_bytes,
                 bridge_us = summary.bridge_us,
@@ -920,11 +996,14 @@ fn paint_scanouts(
                     }
                     if let Some((index, target)) = targets.render_slot() {
                         let revision = damage.map_or(1, |damage| damage.revision.max(1));
-                        let direct_damage = damage.unwrap_or(SceneDamage {
-                            revision,
-                            previous_revision: None,
-                            regions: None,
-                        });
+                        let direct_damage = damage_for_direct_target(
+                            targets.previous_revision_for(index),
+                            damage.unwrap_or(SceneDamage {
+                                revision,
+                                previous_revision: None,
+                                regions: None,
+                            }),
+                        );
                         let deadline = Instant::now()
                             .checked_add(Duration::from_secs(1))
                             .unwrap_or_else(Instant::now);
@@ -934,36 +1013,40 @@ fn paint_scanouts(
                             target,
                             deadline,
                         ) {
-                            Ok(stats) => match entry.scanout.submit_direct_target(targets, index) {
-                                scanout::DirectSubmit::Queued => {
-                                    if let Some(window) = phase_window.as_deref_mut() {
-                                        window.record_direct_submit();
+                            Ok(stats) => {
+                                targets.mark_rendered(index, revision);
+                                match entry.scanout.submit_direct_target(targets, index) {
+                                    scanout::DirectSubmit::Queued => {
+                                        if let Some(window) = phase_window.as_deref_mut() {
+                                            window.record_direct_submit();
+                                        }
+                                        tracing::trace!(
+                                            revision = stats.revision,
+                                            render_attempts = stats.render_attempts,
+                                            framebuffer_copy_bytes = stats.framebuffer_copy_bytes,
+                                            framebuffer_staging_bytes =
+                                                stats.framebuffer_staging_bytes,
+                                            "DRM direct frame submitted"
+                                        );
+                                        return PaintScanoutSample {
+                                            direct_queued: true,
+                                            ..PaintScanoutSample::default()
+                                        };
                                     }
-                                    tracing::trace!(
-                                        revision = stats.revision,
-                                        render_attempts = stats.render_attempts,
-                                        framebuffer_copy_bytes = stats.framebuffer_copy_bytes,
-                                        framebuffer_staging_bytes = stats.framebuffer_staging_bytes,
-                                        "DRM direct frame submitted"
-                                    );
-                                    return PaintScanoutSample {
-                                        direct_queued: true,
-                                        ..PaintScanoutSample::default()
-                                    };
-                                }
-                                scanout::DirectSubmit::Busy => {
-                                    if let Some(window) = phase_window.as_deref_mut() {
-                                        window.record_direct_drop();
+                                    scanout::DirectSubmit::Busy => {
+                                        if let Some(window) = phase_window.as_deref_mut() {
+                                            window.record_direct_drop();
+                                        }
+                                        return PaintScanoutSample::default();
                                     }
-                                    return PaintScanoutSample::default();
+                                    scanout::DirectSubmit::Failed(error) => {
+                                        tracing::warn!(%error, "DRM direct submit failed; disabling direct targets");
+                                        entry.scanout.restore_legacy_front();
+                                        entry.direct_targets = None;
+                                        entry.direct_unavailable = Some(error);
+                                    }
                                 }
-                                scanout::DirectSubmit::Failed(error) => {
-                                    tracing::warn!(%error, "DRM direct submit failed; disabling direct targets");
-                                    entry.scanout.restore_legacy_front();
-                                    entry.direct_targets = None;
-                                    entry.direct_unavailable = Some(error);
-                                }
-                            },
+                            }
                             Err(error) => {
                                 tracing::warn!(%error, "DRM direct frame failed; disabling direct targets");
                                 entry.scanout.restore_legacy_front();
@@ -972,7 +1055,7 @@ fn paint_scanouts(
                             }
                         }
                     } else {
-                        if let Some(window) = phase_window {
+                        if let Some(window) = phase_window.as_mut() {
                             window.record_direct_drop();
                         }
                         return PaintScanoutSample::default();

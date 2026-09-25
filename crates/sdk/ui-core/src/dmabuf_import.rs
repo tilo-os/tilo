@@ -508,13 +508,13 @@ pub fn import(device: &wgpu::Device, image: &DmabufRef<'_>) -> Result<ImportedPl
 /// Import one plane as a `wgpu::Texture`.
 #[allow(
     clippy::too_many_arguments,
-    reason = "the Vulkan device, imported plane, format contract, and plane index are independently required at the unsafe ownership boundary"
+    reason = "the Vulkan import contract is explicit at one ownership-transfer boundary"
 )]
 // Keeping acquisition and cleanup together makes the ownership transfer to
 // Vulkan auditable; splitting this sequence would obscure its early returns.
 #[allow(
     clippy::too_many_lines,
-    reason = "keeping Vulkan acquisition and cleanup in one unsafe block makes every ownership-transfer early return auditable"
+    reason = "keeping acquisition and cleanup together makes every imported-fd early return auditable"
 )]
 unsafe fn import_plane(
     dev: &ash::Device,
@@ -553,7 +553,7 @@ unsafe fn import_plane(
 /// raw image.
 #[allow(
     clippy::too_many_arguments,
-    reason = "the low-level Vulkan/HAL import contract must carry each device, plane, usage, and diagnostic input explicitly"
+    reason = "all Vulkan and wgpu usage inputs must be validated together before ownership transfer"
 )]
 unsafe fn import_plane_with_usage(
     dev: &ash::Device,

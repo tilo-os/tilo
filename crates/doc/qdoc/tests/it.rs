@@ -10,6 +10,10 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
+/// Counts heap per thread, for the tests comparing what documents hold (see `heap`).
+#[global_allocator]
+static HEAP: heap::ThreadCounting = heap::ThreadCounting;
+
 #[path = "blob_reference.rs"]
 mod blob_reference;
 #[path = "blob_state.rs"]
@@ -22,6 +26,10 @@ mod codec_scaling;
 mod convergence;
 #[path = "docx_header_footer.rs"]
 mod docx_header_footer;
+#[path = "support/heap.rs"]
+mod heap;
+#[path = "import_memory.rs"]
+mod import_memory;
 #[path = "independent_documents.rs"]
 mod independent_documents;
 #[path = "office_entities.rs"]
@@ -30,3 +38,5 @@ mod office_entities;
 mod office_roundtrip;
 #[path = "sheet_roundtrip.rs"]
 mod sheet_roundtrip;
+#[path = "support/synth.rs"]
+mod synth;

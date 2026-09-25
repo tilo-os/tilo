@@ -90,13 +90,13 @@ pub struct ClientInput {
     forwarded_keys: HashSet<u32>,
     /// Accumulator for the Alt+Shift wheel group-jump gesture, so a touchpad's small pixel deltas fire one discrete jump per [`JUMP_PX_PER_DETENT`]. See [`WheelJumpAccum`].
     jump_wheel: WheelJumpAccum,
+    /// Whether this module currently owns a content-drop indicator in the
+    /// retained chrome. Prevents cleanup from touching an ordinary tab drag.
+    content_drop_hover_active: bool,
     /// Click/touch focus changes awaiting durable session-state persistence.
     /// Persistence fsyncs both the replacement file and its directory, so it
     /// must run after latency-sensitive Wayland input has been queued/flushed.
     focus_persistence_pending: bool,
-    /// Whether this module currently owns a content-drop indicator in the
-    /// retained chrome. Prevents cleanup from touching an ordinary tab drag.
-    content_drop_hover_active: bool,
 }
 
 impl ClientInput {
@@ -1814,6 +1814,8 @@ mod tests {
             focus_persistence_pending: true,
             ..ClientInput::default()
         };
+        // A second request before the flush coalesces into the first.
+        input.focus_persistence_pending = true;
 
         assert!(input.take_focus_persistence_pending());
         assert!(
