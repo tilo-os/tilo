@@ -506,7 +506,7 @@ impl InstallerApp {
                 gate(
                     typed(
                         "set-passphrase",
-                        "Set startup secret",
+                        "Set account and default startup secret",
                         vec![
                             ActionParam::required_owned("passphrase", ParamType::Secret, secret),
                             ActionParam::required(
@@ -523,7 +523,31 @@ impl InstallerApp {
                     on_step,
                 )
                 .with_description(
-                    "Decrypts the disk at startup and unlocks the account. Held only in installer memory; never written to state, logs or replies.",
+                    "Sets the account password and, unless a separate disk secret is supplied, the startup secret. Held only in installer memory; never written to state, logs or replies.",
+                ),
+            )
+            .with_action(
+                gate(
+                    typed(
+                        "set-disk-passphrase",
+                        "Set a separate disk startup secret",
+                        vec![
+                            ActionParam::required_owned("passphrase", ParamType::Secret, secret),
+                            ActionParam::required(
+                                "confirmation",
+                                ParamType::Secret,
+                                "The same disk secret again",
+                            ),
+                        ],
+                        |args| Operation::SetDiskPassphrase {
+                            passphrase: args.text("passphrase").unwrap_or_default().to_owned(),
+                            confirmation: args.text("confirmation").unwrap_or_default().to_owned(),
+                        },
+                    ),
+                    self.off_step(Step::Account),
+                )
+                .with_description(
+                    "Replaces the disk startup secret without changing the account password. Held only in installer memory; never written to state, logs or replies.",
                 ),
             )
     }
@@ -639,7 +663,7 @@ impl InstallerApp {
                 })
             })
             .or_else(|| {
-                validate_startup_secret_for(&secret_copy(&self.password), self.tpm_pin_policy())
+                validate_startup_secret_for(&self.startup_secret(), self.tpm_pin_policy())
                     .err()
                     .map(|reason| ("startup_secret", reason.to_owned()))
             })
@@ -1044,6 +1068,11 @@ impl InstallerApp {
                 self.require_step(Step::Account)?;
                 let passphrase = Zeroizing::new(passphrase);
                 let confirmation = Zeroizing::new(confirmation);
+                if !secret_copy(&self.disk_password).is_empty()
+                    && passphrase.as_str() == secret_copy(&self.disk_password).as_str()
+                {
+                    return Err("Choose a disk secret different from the account password".into());
+                }
                 for (buffer, value) in [
                     (&self.password, &passphrase),
                     (&self.password_confirmation, &confirmation),
@@ -1055,8 +1084,32 @@ impl InstallerApp {
                 }
                 self.dirty_structure = true;
                 validate_passwords(&passphrase, &confirmation)?;
+                if secret_copy(&self.disk_password).is_empty() {
+                    validate_startup_secret_for(&passphrase, self.tpm_pin_policy())
+                        .map_err(str::to_owned)?;
+                }
+                done()
+            }
+            Operation::SetDiskPassphrase {
+                passphrase,
+                confirmation,
+            } => {
+                self.require_step(Step::Account)?;
+                let passphrase = Zeroizing::new(passphrase);
+                let confirmation = Zeroizing::new(confirmation);
+                if passphrase.as_str() != confirmation.as_str() {
+                    return Err("The disk passphrases do not match".into());
+                }
                 validate_startup_secret_for(&passphrase, self.tpm_pin_policy())
                     .map_err(str::to_owned)?;
+                if passphrase.as_str() == secret_copy(&self.password).as_str() {
+                    return Err("Choose a disk secret different from the account password".into());
+                }
+                clear_secret_buffer(&self.disk_password);
+                if let Ok(mut held) = self.disk_password.lock() {
+                    held.push_str(&passphrase);
+                }
+                self.dirty_structure = true;
                 done()
             }
             Operation::SetFilesystem { filesystem } => {

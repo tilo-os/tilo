@@ -251,6 +251,12 @@ pub struct InstallScenarioArgs {
     /// Existing sparse raw target file for a Windows WHPX guided-alongside cycle. The file is written in place and retained after the run.
     #[arg(long)]
     pub target_disk: Option<PathBuf>,
+    /// Account username for a retained install. Requires --credentials-stdin.
+    #[arg(long, requires = "credentials_stdin")]
+    pub username: Option<String>,
+    /// Read distinct account_password and disk_passphrase from one JSON object on stdin. Requires --username; unavailable for dry runs.
+    #[arg(long, requires = "username", conflicts_with = "dry_run")]
+    pub credentials_stdin: bool,
     /// The target disk before the install: erase (blank disk, used whole), prepared-alongside or guided-alongside (existing systems kept byte-for-byte).
     #[arg(long, value_enum, default_value = "erase")]
     pub layout: crate::scenario::Layout,
@@ -944,6 +950,35 @@ mod tests {
         assert!(
             Cli::try_parse_from(["tilo-vm", "scenario", "install", "--layout", "shrink"]).is_err()
         );
+        let retained = Cli::try_parse_from([
+            "tilo-vm",
+            "scenario",
+            "install",
+            "--username",
+            "xaver",
+            "--credentials-stdin",
+        ])
+        .unwrap();
+        let Some(Command::Scenario(ScenarioCommand::Install(args))) = retained.command else {
+            panic!("not the install scenario");
+        };
+        assert_eq!(args.username.as_deref(), Some("xaver"));
+        assert!(args.credentials_stdin);
+        for invalid in [
+            vec!["tilo-vm", "scenario", "install", "--username", "xaver"],
+            vec!["tilo-vm", "scenario", "install", "--credentials-stdin"],
+            vec![
+                "tilo-vm",
+                "scenario",
+                "install",
+                "--username",
+                "xaver",
+                "--credentials-stdin",
+                "--dry-run",
+            ],
+        ] {
+            assert!(Cli::try_parse_from(invalid).is_err());
+        }
     }
 
     #[test]

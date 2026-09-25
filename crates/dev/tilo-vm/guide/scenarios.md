@@ -114,17 +114,23 @@ through the compositor. A wrong or missing phrase is
 
 ## Secrets
 
-- The unlock secret is fixed and public (`scenario-passphrase-2026`, or the
-  PIN `804927`); it protects a disposable disk. It reaches the guest only as a
-  console argument and on the boot prompt through `vm.sh type -` (stdin), never
-  on a command line.
+- Disposable scenarios use a fixed public unlock secret
+  (`scenario-passphrase-2026`, or the PIN `804927`). For a retained install,
+  pass `--username xaver --credentials-stdin` and pipe exactly one UTF-8 JSON
+  object: `{"account_password":"...","disk_passphrase":"..."}`. Both values
+  must be nonempty, distinct and single-line. `--credentials-stdin` requires
+  `--username` and is refused with `--dry-run`. Supply the JSON from a protected
+  launcher or password store; never place either value in the command line.
+  The supplied disk secret unlocks the installed system; the account secret
+  logs into it. Both reach the guest through its published actions and the disk
+  secret reaches the boot prompt through `vm.sh type -` (stdin).
 - The recovery key never leaves the guest: the installer's console reports
   whether one exists, was copied and was confirmed saved, never the key, and it
   redacts anything key-shaped from the install log it reports.
 - The live installer's serial console is not kept
   (`installer-serial-withheld.txt`).
-- Before the run reports anything, every artifact is searched for the unlock
-  secret, the backend's recovery-key marker and recovery-key-shaped text; a
+- Before the run reports anything, every artifact is searched for both supplied
+  secrets, the backend's recovery-key marker and recovery-key-shaped text; a
   file that matches is emptied and the run fails.
 
 ## When it fails

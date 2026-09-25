@@ -22,7 +22,7 @@ use crate::hypervisor::{CommandLine, Runner};
 use crate::scenario::console::{Console, SocketConsole};
 use crate::scenario::drive::{self, Choices, RealPace};
 use crate::scenario::fixture::{self, Preserved, Tools};
-use crate::scenario::{Layout, Unlock, scrub};
+use crate::scenario::{Credentials, Layout, Unlock, scrub};
 
 /// Where `os/dev/build-custom-installer.sh` writes the medium.
 pub const DEFAULT_MEDIUM: &str = "os/output/installer/qcow2/disk.qcow2";
@@ -42,6 +42,7 @@ struct Plan {
     external_target: Option<PathBuf>,
     layout: Layout,
     unlock: Unlock,
+    username: String,
     graphics: crate::scenario::Graphics,
     cycle: String,
     out: PathBuf,
@@ -152,6 +153,7 @@ impl Plan {
             "medium": self.medium,
             "layout": self.layout.name(),
             "encrypt": self.unlock.name(),
+            "username": self.username,
             "graphics": self.graphics,
             "cycle": self.cycle,
             "artifacts": self.out,
@@ -440,6 +442,14 @@ impl App {
                         .into(),
             });
         }
+        let username = args.username.as_deref().unwrap_or("scenario");
+        if !valid_username(username) {
+            return Err(CliError::Unsupported {
+                what: "scenario account username".into(),
+                alternative:
+                    "use 1–32 lowercase letters, digits, _ or -, starting with a letter or _".into(),
+            });
+        }
         let root = self
             .worktree
             .as_ref()
@@ -516,6 +526,7 @@ impl App {
             external_target,
             layout: args.layout,
             unlock: args.encrypt,
+            username: username.to_owned(),
             graphics: args.graphics,
             cycle_dir: storage.join("vm-cycles").join(&cycle),
             run: runtime.join(format!("tilo-vm-{cycle}")),
@@ -545,6 +556,14 @@ impl App {
             return Ok(Outcome::new(text, json!({ "plan": plan_json }))
                 .next(&["tilo-vm scenario install", "tilo-vm guide scenarios"]));
         }
+        let credentials = if args.credentials_stdin {
+            crate::scenario::credentials_from_stdin().map_err(|message| CliError::Unsupported {
+                what: "scenario credentials stdin".into(),
+                alternative: message.into(),
+            })?
+        } else {
+            Credentials::disposable(plan.unlock)
+        };
         std::fs::create_dir_all(&plan.out)
             .map_err(CliError::io("creating the artifact directory"))?;
         if let Some(target) = &plan.external_target {
@@ -561,8 +580,7 @@ impl App {
         }
         write_json(&plan.out, "scenario.json", &plan.describe())?;
         self.receipt.set("scenario", plan.describe());
-        let secret = plan.unlock.scenario_secret();
-        let result = self.run_install_scenario(&plan, &secret);
+        let result = self.run_install_scenario(&plan, &credentials);
         // Whatever happened, the VM stops and the evidence is scrubbed.
         let stop = self.runner.output(&plan.vm(&["stop"]));
         #[cfg(windows)]
@@ -588,14 +606,20 @@ impl App {
             let _ = std::fs::remove_dir_all(&plan.cycle_dir);
             let _ = std::fs::remove_dir_all(&plan.run);
         }
-        let withheld = scrub(&plan.out, secret.expose())
-            .map_err(CliError::io("scrubbing the artifact directory"))?;
+        let withheld = scrub(
+            &plan.out,
+            &[
+                credentials.account.expose(),
+                credentials.unlock_secret().expose(),
+            ],
+        )
+        .map_err(CliError::io("scrubbing the artifact directory"))?;
         let mut report = result?;
         if !withheld.is_empty() {
             return Err(failed(
                 "artifacts",
                 format!(
-                    "{} artifact(s) contained the unlock secret or recovery material and were emptied: {}",
+                    "{} artifact(s) contained a supplied secret or recovery material and were emptied: {}",
                     withheld.len(),
                     withheld
                         .iter()
@@ -633,7 +657,7 @@ impl App {
     fn run_install_scenario(
         &mut self,
         plan: &Plan,
-        secret: &crate::scenario::Secret,
+        credentials: &Credentials,
     ) -> Result<Value, CliError> {
         say(&format!(
             "install scenario {} ({} layout, {} unlock); artifacts in {}",
@@ -707,10 +731,18 @@ impl App {
         let choices = Choices {
             layout: plan.layout,
             unlock: plan.unlock,
-            username: "scenario".into(),
-            full_name: "Scenario User".into(),
+            username: plan.username.clone(),
+            full_name: if plan.username == "scenario" {
+                "Scenario User".into()
+            } else {
+                plan.username.clone()
+            },
             hostname: "scenario-tilo".into(),
-            secret: crate::scenario::Secret::new(secret.expose()),
+            account_secret: crate::scenario::Secret::new(credentials.account.expose()),
+            disk_secret: credentials
+                .disk
+                .as_ref()
+                .map(|secret| crate::scenario::Secret::new(secret.expose())),
         };
         let installed = drive::install(
             &mut console,
@@ -806,7 +838,7 @@ impl App {
             return Err(failed("boot-target", booted.stderr.trim(), plan));
         }
         say("installed target booting; unlocking at its boot prompt");
-        let greeter = self.unlock_to_greeter(plan, &mut console, secret)?;
+        let greeter = self.unlock_to_greeter(plan, &mut console, credentials.unlock_secret())?;
         let serial = plan.run.join("serial.log");
         if serial.is_file() {
             let _ = std::fs::copy(&serial, plan.out.join("target-serial.log"));
@@ -928,6 +960,13 @@ fn after(limit: Duration) -> Instant {
     now.checked_add(limit).unwrap_or(now)
 }
 
+fn valid_username(name: &str) -> bool {
+    let mut chars = name.chars();
+    matches!(chars.next(), Some('a'..='z' | '_'))
+        && name.len() <= 32
+        && chars.all(|character| matches!(character, 'a'..='z' | '0'..='9' | '_' | '-'))
+}
+
 /// Poll until the console answers as `app`, returning its first state.
 fn wait_for_app(console: &mut SocketConsole, app: &str, limit: Duration) -> Option<Value> {
     let deadline = after(limit);
@@ -980,6 +1019,7 @@ mod tests {
             external_target: None,
             layout,
             unlock: Unlock::Passphrase,
+            username: "scenario".into(),
             graphics: crate::scenario::Graphics::Software,
             cycle: "scenario-install-x".into(),
             out: PathBuf::from("/w/target/tilo-vm-scenarios/scenario-install-x"),
