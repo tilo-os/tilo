@@ -181,6 +181,9 @@ impl<'a> OpEncoderStrategy<'a> {
         mapper.reset();
         match self {
             Self::Ops(mut v) => v.finish(change, mapper),
+            // qOS bounded admission: a duplicated op id fails instead of
+            // producing a change that silently dropped or repeated an op.
+            Self::Enc(e) if e.duplicate => Err(Error::InvalidState),
             Self::Enc(e) => Ok(e.finish(change, mapper)),
             Self::Null => Err(Error::InvalidState),
         }
@@ -208,11 +211,13 @@ impl<'a> OpEncoderStrategy<'a> {
         leb128::write::unsigned(&mut data, change.deps.len() as u64).unwrap();
 
         // FIXME missing value here is changes out of order error
+        // qOS bounded admission: an unresolvable dependency index (a bundle
+        // may reference a later or absent change) is an error, not a panic.
         let deps: Vec<_> = change
             .deps
             .iter()
-            .map(|i| graph.get_hash(*i as usize).unwrap())
-            .collect();
+            .map(|i| graph.get_hash(*i as usize).ok_or(Error::InvalidState))
+            .collect::<Result<_, _>>()?;
 
         for hash in &deps {
             data.write_all(hash.as_bytes()).unwrap();
@@ -274,12 +279,15 @@ impl<'a> OpEncoderStrategy<'a> {
 #[derive(Clone, Debug, Default)]
 pub(crate) struct VecEncoder<'a> {
     data: Vec<Option<OpBuilder<'a>>>,
+    /// qOS bounded admission: set when an op id arrives twice.
+    duplicate: bool,
 }
 
 impl<'a> VecEncoder<'a> {
     fn new(num_ops: u64) -> Self {
         Self {
             data: vec![None; num_ops as usize],
+            duplicate: false,
         }
     }
 
@@ -288,7 +296,10 @@ impl<'a> VecEncoder<'a> {
         let mut data = Vec::new();
         data.try_reserve(num_ops).map_err(|_| OutOfMemory)?;
         data.extend(std::iter::repeat_n(None, num_ops));
-        Ok(Self { data })
+        Ok(Self {
+            data,
+            duplicate: false,
+        })
     }
 
     fn num_ops(&self) -> u64 {
@@ -296,8 +307,12 @@ impl<'a> VecEncoder<'a> {
     }
 
     fn add(&mut self, index: usize, op: OpBuilder<'a>) {
-        assert!(self.data[index].is_none());
-        self.data[index] = Some(op);
+        // qOS bounded admission: hostile storage can repeat an op id (or a
+        // successor id that is also an op); record it instead of asserting.
+        match self.data.get_mut(index) {
+            Some(slot @ None) => *slot = Some(op),
+            _ => self.duplicate = true,
+        }
     }
 
     fn finish(
@@ -305,6 +320,9 @@ impl<'a> VecEncoder<'a> {
         change: &BuildChangeMetadata<'_>,
         mapper: &mut ActorMapper<'_>,
     ) -> Result<ChangeCols, Error> {
+        if self.duplicate {
+            return Err(Error::InvalidState);
+        }
         let start_pos = self.data.iter().position(|op| op.is_some()).unwrap_or(0);
         let ops = &self.data[start_pos..];
         if ops.iter().any(|o| o.is_none()) {
@@ -339,6 +357,8 @@ pub(crate) struct ProgressiveEncoder<'a> {
     pub(crate) len: usize,
     pub(crate) start_op: Option<u64>,
     pub(crate) num_ops: u64,
+    /// qOS bounded admission: set when an op id arrives twice.
+    pub(crate) duplicate: bool,
     actors: Vec<bool>,
     queue: BTreeMap<usize, OpBuilder<'a>>,
     obj_actor: hexane::Encoder<'a, Option<ActorIdx>>,
@@ -384,6 +404,10 @@ impl<'a> ProgressiveEncoder<'a> {
     }
 
     fn add(&mut self, index: usize, op: OpBuilder<'a>) {
+        if index < self.len || self.queue.contains_key(&index) {
+            self.duplicate = true;
+            return;
+        }
         self.process_op(&op);
         if index == self.len {
             self.append(op);
@@ -896,9 +920,9 @@ impl<'a> ChangeCollector<'a> {
             }
 
             let all_deps = BundleDeps::new(num_changes, &changes, deps);
-            let change = self.builders[change.builder]
-                .finish(&change, &all_deps, &mut self.mapper)
-                .unwrap();
+            // qOS bounded admission: hostile bundles fail, not panic.
+            let change =
+                self.builders[change.builder].finish(&change, &all_deps, &mut self.mapper)?;
 
             changes.push(Change::from(change));
         }

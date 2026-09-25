@@ -1,0 +1,15 @@
+[package]
+name = "gen08"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+automerge = { path = "../../align/vendor/automerge" }
+serde_json = { version = "1", features = ["preserve_order"] }
+hex = "0.4"
+
+[patch.crates-io]
+hexane = { path = "../../align/vendor/hexane" }
+
+[workspace]
