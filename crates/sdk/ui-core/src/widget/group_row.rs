@@ -1023,12 +1023,11 @@ impl GroupRow {
         }
     }
 
-    #[cfg(test)]
-    pub(crate) fn set_scroll_x_for_test(&mut self, x: f64) {
+    #[cfg(any(test, debug_assertions))]
+    pub fn set_scroll_x_for_test(&mut self, x: f64) {
         self.scroll_x = x;
     }
 
-    #[cfg(test)]
     #[cfg(test)]
     pub(crate) fn group_left_edges_for_test(&self) -> &[f64] {
         &self.group_left_edges
@@ -1849,7 +1848,8 @@ impl Widget for GroupRow {
         // `-scroll_x` shift in `ShellOverlayHost::apply_layout`. A
         // fullscreen-promoted group drops the leading gutter and any
         // prior pan, pinning it flush at `rect.x0`.
-        let (origin_inset, origin_scroll) = if self.is_fullscreen() {
+        let maximized = self.groups.iter().any(|group| group.maximized);
+        let (origin_inset, origin_scroll) = if self.is_fullscreen() || maximized {
             (0.0, 0.0)
         } else {
             (self.leading_inset, self.scroll_x)
@@ -5643,6 +5643,27 @@ mod tests {
             row.handle_node_ids.len(),
             2,
             "handle nodes must be rebuilt on un-maximize (2 gaps → 2 handles)",
+        );
+    }
+
+    #[test]
+    fn maximized_group_drops_the_strip_pan_for_output_aligned_controls() {
+        let mut row = strip_at(4, 1280.0, 248.0, 667);
+        row.set_scroll_x_for_test(248.0);
+        row.groups[3].maximized = true;
+
+        relayout_strip(&mut row, 1280.0);
+
+        let rect = row.groups[3].get_rect();
+        assert!(
+            (rect.x0 - row.rect.x0).abs() < 0.5,
+            "maximized content and its Restore/Close controls must start at the output edge; group={rect:?} row={:?}",
+            row.rect,
+        );
+        assert!(
+            (rect.x1 - row.rect.x1).abs() < 0.5,
+            "maximized content and its controls must end at the output edge; group={rect:?} row={:?}",
+            row.rect,
         );
     }
 
