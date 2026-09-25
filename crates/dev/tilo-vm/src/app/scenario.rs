@@ -359,9 +359,14 @@ fn parse_install_proof(bytes: &[u8]) -> Result<VmInstallProof, String> {
     if version == 1 {
         if proof.schema != "tilo.vm-install-image-proof.v1"
             || proof.booted_image_digest != proof.installed_image_digest
-            || proof.booted_composefs_digest.is_some()
-            || proof.installed_composefs_digest.is_some()
-            || proof.installed_update_origin.is_some()
+            || proof
+                .booted_composefs_digest
+                .as_ref()
+                .is_some_and(|value| value != &proof.composefs_digest)
+            || proof
+                .installed_composefs_digest
+                .as_ref()
+                .is_some_and(|value| value != &proof.composefs_digest)
             || proof.selected_target.is_some()
         {
             return Err("VM v1 install proof has inconsistent image identities".into());
@@ -1173,6 +1178,14 @@ mod tests {
         let mut changed = source;
         changed["final_partuuids"]["root"] = json!(efi);
         assert!(super::check_install_proof(&proof, &changed, Some(&"b".repeat(128))).is_err());
+        let mut extended = payload;
+        extended["booted_composefs_digest"] = json!("b".repeat(128));
+        extended["installed_composefs_digest"] = json!("b".repeat(128));
+        extended["installed_update_origin"] = json!("ostree-unverified-image:docker://tilo:gen1");
+        assert!(
+            super::parse_install_proof(format!("TILO_VM_INSTALL_PROOF_V1={extended}\n").as_bytes())
+                .is_ok()
+        );
     }
     #[cfg(windows)]
     #[test]
