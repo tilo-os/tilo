@@ -23,6 +23,12 @@ pub enum TrackKind {
     Video,
     /// Screen-share video (portal `ScreenCast` / `PipeWire`).
     Screen,
+    /// Camera video in a codec other than H.264, in the shared stack's
+    /// codec-tagged `SurfaceFrame` framing. H.264 camera video stays on
+    /// [`Self::Video`] as raw access units, which is what peers that predate
+    /// this track understand; a sender uses this track only when every
+    /// member announced it decodes the codec.
+    CameraFramed,
 }
 
 impl TrackKind {
@@ -32,6 +38,7 @@ impl TrackKind {
             TrackKind::Audio => 0,
             TrackKind::Video => 1,
             TrackKind::Screen => 2,
+            TrackKind::CameraFramed => 3,
         }
     }
     fn from_wire_tag(b: u8) -> Option<Self> {
@@ -39,6 +46,7 @@ impl TrackKind {
             0 => Some(TrackKind::Audio),
             1 => Some(TrackKind::Video),
             2 => Some(TrackKind::Screen),
+            3 => Some(TrackKind::CameraFramed),
             _ => None,
         }
     }

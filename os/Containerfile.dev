@@ -79,6 +79,10 @@ RUN test -s /usr/lib/tilo/generation \
 RUN --mount=type=bind,from=dev-inputs,source=/tilo,target=/run/tilo-dev \
     python3 /run/tilo-dev/os/scripts/unseal-rootfs.py /
 
+# tilo-vm hands a dev VM its root SSH key as an SMBIOS credential
+# (ssh.authorized_keys.root), which the sealed image refuses to import.
+RUN rm /usr/lib/bootc/kargs.d/05-credentials.toml
+
 # Fail now, not at the first slot, when this kernel cannot give a slot a seat.
 RUN --mount=type=bind,from=dev-inputs,source=/tilo,target=/run/tilo-dev \
     bash /run/tilo-dev/os/scripts/check-dev-kernel.sh /
@@ -100,6 +104,22 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo \
     && rm -rf /var/log/dnf5.log* /var/cache/libdnf5 /var/lib/dnf/system-repo.lock /run/dnf \
     && rustc --version && cargo --version && sccache --version
 
+# Stage the selective Cargo inputs on scratch first. Copying each input into
+# the multi-gigabyte toolchain would commit that parent after every COPY;
+# scratch keeps those small commits cheap and the toolchain receives one layer.
+# Keep this list in sync with os/tests/test_dev_builder_staging.py.
+FROM scratch AS dev-builder-sources
+COPY Cargo.toml Cargo.lock rust-toolchain.toml /build/
+COPY .cargo /build/.cargo
+COPY crates /build/crates
+COPY apps /build/apps
+COPY examples /build/examples
+COPY vendor /build/vendor
+COPY dist /build/dist
+COPY os/components.toml /build/os/components.toml
+COPY os/scripts/install-components.py os/scripts/verify-elf-hardening.sh os/scripts/cargo-freshness.sh /build/os/scripts/
+COPY os/usr/share/tilo/installer-locales.txt /build/os/usr/share/tilo/installer-locales.txt
+
 # ---- Dev binaries -----------------------------------------------------------
 # Compiled in the dev image's own toolchain, the same one in-VM builds use.
 # Cache mounts follow the production builder: cargo home and sccache under
@@ -117,20 +137,9 @@ ENV CARGO_HOME=/build/.cargo-home \
     CARGO_INCREMENTAL=0 \
     LC_ALL=C.UTF-8 \
     TZ=UTC
-# Only what cargo and the install manifest read, never the whole context: with
-# `COPY . /build`, editing a unit, an /etc file or os/dev-image/ re-ran this
-# stage's compile, although no binary depends on them. The two os/ files are the
-# manifest pair and the one data file a workspace crate includes.
-COPY Cargo.toml Cargo.lock rust-toolchain.toml /build/
-COPY .cargo /build/.cargo
-COPY crates /build/crates
-COPY apps /build/apps
-COPY examples /build/examples
-COPY vendor /build/vendor
-COPY dist /build/dist
-COPY os/components.toml /build/os/components.toml
-COPY os/scripts/install-components.py os/scripts/verify-elf-hardening.sh os/scripts/cargo-freshness.sh /build/os/scripts/
-COPY os/usr/share/tilo/installer-locales.txt /build/os/usr/share/tilo/installer-locales.txt
+# Only what Cargo and the install manifest read enters /build. In particular,
+# editing a unit, /etc file or os/dev-image/ must not invalidate this compile.
+COPY --from=dev-builder-sources /build/ /build/
 ARG TILO_CARGO_BUILD_JOBS=4
 ENV CARGO_BUILD_JOBS=${TILO_CARGO_BUILD_JOBS}
 ARG TILO_CARGO_FRESHNESS=clean
@@ -198,6 +207,7 @@ RUN --mount=type=bind,from=dev-inputs,source=/tilo,target=/run/tilo-dev \
       --base-image "$BASE_IMAGE" --base-digest "$TILO_BASE_DIGEST" \
       --base-created "$TILO_BASE_CREATED" \
       --cargo-lock /run/tilo-dev/Cargo.lock \
+    && systemctl unmask systemd-sysext.service \
     && systemctl enable sshd.service systemd-sysext.service tilo-vm-restore.service \
     && test -x /usr/bin/tilo-control && test -x /usr/libexec/tilo-vmd \
     && /usr/bin/tilo-vmd --version \

@@ -164,6 +164,10 @@ const LARGE_PLAYER_TEXT_GAP: f64 = 18.0;
 /// its measured block plus padding needs more, so 135–400% text is contained
 /// rather than assumed; every block inside is then centred on its band.
 #[derive(Clone, Copy, Debug, PartialEq)]
+#[expect(
+    clippy::struct_field_names,
+    reason = "every field is a height; the `_h` suffix keeps them distinct from the widths and offsets they are combined with"
+)]
 pub(super) struct LargeTextBands {
     pub(super) title_h: f64,
     pub(super) header_h: f64,
@@ -208,6 +212,10 @@ mod large_text_tests {
     /// keeps that authored size at 2× and grows with the measured lines
     /// beyond it — so a 3× title, row or player never leaves its band.
     #[test]
+    #[expect(
+        clippy::float_cmp,
+        reason = "the geometry pins authored whole-pixel constants, which are exact in binary floating point"
+    )]
     fn large_text_bands_keep_their_authored_size_at_2x_and_grow_beyond() {
         let mut tr = TextRenderer::new();
         tr.set_text_scale(2.0);
@@ -2782,7 +2790,7 @@ impl MusicApp {
             t,
             &title,
             header.x0 + CONTENT_GUTTER,
-            header.y0 + (title_band_h - f64::from(title_h)) / 2.0,
+            header.y0 + (title_band_h - title_h) / 2.0,
             18.0,
             c.text,
             TextWeight::Bold,
@@ -2794,7 +2802,7 @@ impl MusicApp {
             header.x1 - CONTENT_GUTTER - 56.0,
             header.y0 + (header_h - 56.0) / 2.0,
             header.x1 - CONTENT_GUTTER,
-            header.y0 + (header_h + 56.0) / 2.0,
+            header.y0 + f64::midpoint(header_h, 56.0),
         );
         if search_screen {
             // Keep the same real TextInput used by the desktop header.  Its

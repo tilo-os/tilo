@@ -296,7 +296,9 @@ fn current_shell_action_authorized(state: &ChromeState, id: &str) -> bool {
         return false;
     };
     let user = state.local_user_for_room(&workspace.room);
-    shell_action_authorized_for(workspace, &workspace.actor_for_person(&user), id)
+    let authorized = shell_action_authorized_for(workspace, &workspace.actor_for_person(&user), id);
+    drop(tree);
+    authorized
 }
 
 pub(crate) fn shell_action_authorized_for(
@@ -493,6 +495,7 @@ fn apply_permission_profile_action(
         }
     }
     tree.flush_to_disk();
+    drop(tree);
     Ok(())
 }
 
@@ -1899,7 +1902,9 @@ impl SearchProvider for ActionsProvider {
                                             .into(),
                                     ));
                                 }
-                                (workspace.id, workspace.room, actor)
+                                let located = (workspace.id, workspace.room, actor);
+                                drop(tree);
+                                located
                             };
                             let request_id = chrome.borrow_mut().push_tracked_record_request(
                                 id.to_string(),
@@ -3450,6 +3455,7 @@ mod tests {
             let workspace = tree.desktop.active_workspace_mut().expect("workspace");
             workspace.owner = None;
             workspace.capabilities.clear();
+            drop(tree);
         }
         let error = (result.on_open)(&mut doc, &automerge::ROOT, &chrome, &ActionArgs::none())
             .expect_err("revocation between discovery and execution must win");
@@ -3949,5 +3955,6 @@ mod tests {
             },
             crate::shell::state::Verb::Read,
         ));
+        drop(tree);
     }
 }

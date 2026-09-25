@@ -3,32 +3,32 @@
 //!
 //! Layers:
 //!   * [`model`]   — pure data + editing math (split / trim / move / ripple /
-//!                   snap / paste, filters + fades), tested.
+//!     snap / paste, filters + fades), tested.
 //!   * [`curve`]   — tone curves, baked to the 256-entry lookup table the
-//!                   compositor reads; the fine half of the colour grade.
+//!     compositor reads; the fine half of the colour grade.
 //!   * [`media`]   — the FUSE-media seam: clips reference workspace paths
-//!                   (`/var/workspace/…`); bytes hydrate on demand.
+//!     (`/var/workspace/…`); bytes hydrate on demand.
 //!   * [`doc`]     — Automerge projection of the project (the collaborative,
-//!                   undoable source of truth) + the demo project seed.
+//!     undoable source of truth) + the demo project seed.
 //!   * [`project_file`] — the versioned `.qvp` file behind Save / Save As /
-//!                   Open: the same Automerge document, framed and stamped,
-//!                   so a project can be copied and handed to someone.
+//!     Open: the same Automerge document, framed and stamped,
+//!     so a project can be copied and handed to someone.
 //!   * [`preview`] — the composited-frame producer: a representative frame
-//!                   from clip metadata, or (behind the `decode` feature) a
-//!                   real decoded frame via `ui::VideoPlayer` / `GStreamer`.
+//!     from clip metadata, or (behind the `decode` feature) a
+//!     real decoded frame via `ui::VideoPlayer` / `GStreamer`.
 //!   * [`timecode`]— wall-clock ↔ frame conversions and formatting.
 //!   * [`gpu`]     — the wgpu compositor both the preview canvas and the
-//!                   export render through, so they cannot disagree.
+//!     export render through, so they cannot disagree.
 //!   * [`audio`]   — which clips are audible at an instant, and the mix.
 //!   * [`export`]  — export presets + the (GStreamer-gated) render pipeline.
 //!   * [`shot`]    — composing a `--shots` frame, and the fingerprint that
-//!                   proves two runs of a scenario describe one picture.
+//!     proves two runs of a scenario describe one picture.
 //!   * [`presence`] — who else is in the edit: the presence keys for the
-//!                   timeline domain, what this editor publishes about
-//!                   where its user is, and how it draws everyone else.
+//!     timeline domain, what this editor publishes about
+//!     where its user is, and how it draws everyone else.
 //!   * [`app`]     — the root [`app::VideoEditorApp`] widget: media bin,
-//!                   preview + transport, multi-track timeline, inspector,
-//!                   export dialog — all drawn into one Vello scene.
+//!     preview + transport, multi-track timeline, inspector,
+//!     export dialog — all drawn into one Vello scene.
 //!
 //! The app runs on the app framework ([`VideoEditor`], [`launch_spec`]):
 //! the live window and every capture mode host the same editor, and a

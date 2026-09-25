@@ -196,6 +196,10 @@ fn main() -> Result<()> {
     );
     let fixture = root.join("source.png");
     let (width, height) = if benchmark { (1280, 720) } else { (48, 32) };
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "both channels are reduced mod 256 before the cast"
+    )]
     image::RgbImage::from_fn(width, height, |x, y| {
         image::Rgb([(x % 256) as u8, (y % 256) as u8, 120])
     })
@@ -234,15 +238,18 @@ fn main() -> Result<()> {
         );
         children.0.push(child);
     }
+    let [photos_launched, writer_launched] = launched.as_slice() else {
+        return Err("expected exactly two launched apps".into());
+    };
     let (photo_surface, photo_action) =
         wait_action(&session, &mut children, PHOTOS, "rotate-right")?;
     emit(
-        json!({"event":"action_surface_ready", "app":PHOTOS, "elapsed_ns":launched[0].elapsed().as_nanos(), "poll_resolution_ms":50}),
+        json!({"event":"action_surface_ready", "app":PHOTOS, "elapsed_ns":photos_launched.elapsed().as_nanos(), "poll_resolution_ms":50}),
     );
     let (writer_surface, writer_action) =
         wait_action(&session, &mut children, WRITER, "place-image")?;
     emit(
-        json!({"event":"action_surface_ready", "app":WRITER, "elapsed_ns":launched[1].elapsed().as_nanos(), "poll_resolution_ms":50, "observed_after_photos":true}),
+        json!({"event":"action_surface_ready", "app":WRITER, "elapsed_ns":writer_launched.elapsed().as_nanos(), "poll_resolution_ms":50, "observed_after_photos":true}),
     );
     if photo_surface.peer_id == writer_surface.peer_id {
         return Err("apps unexpectedly share one connection".into());

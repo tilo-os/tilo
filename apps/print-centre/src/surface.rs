@@ -3883,7 +3883,10 @@ mod tests {
     fn scanned_page(width: u32) -> ScannedPage {
         ScannedPage {
             png: Arc::from(Vec::<u8>::new()),
-            rgba: Arc::from(vec![255; usize::try_from(width).unwrap_or(0) * 4]),
+            rgba: Arc::from(vec![
+                255;
+                usize::try_from(width).unwrap_or(0).saturating_mul(4)
+            ]),
             width,
             height: 1,
             recognized_text: None,
@@ -3974,26 +3977,23 @@ mod tests {
     }
 
     #[test]
-    fn scanned_pages_are_saved_byte_exactly_with_private_permissions()
-    -> Result<(), Box<dyn std::error::Error>> {
-        let directory = tempfile::tempdir()?;
+    fn scanned_pages_are_saved_byte_exactly_with_private_permissions() {
+        let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("receipt.png");
         let bytes = b"deterministic scanned page bytes";
-        save_scanned_page(&path, bytes)?;
-        assert_eq!(std::fs::read(&path)?, bytes);
+        save_scanned_page(&path, bytes).unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), bytes);
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            let mode = std::fs::metadata(&path)?.permissions().mode() & 0o777;
+            let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
             assert_eq!(mode, 0o600);
         }
-        Ok(())
     }
 
     #[test]
-    fn selected_image_produces_real_bounded_preview_pixels()
-    -> Result<(), Box<dyn std::error::Error>> {
-        let directory = tempfile::tempdir()?;
+    fn selected_image_produces_real_bounded_preview_pixels() {
+        let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("boarding-pass.png");
         let mut source =
             image::RgbaImage::from_pixel(1_200, 600, image::Rgba([245, 245, 240, 255]));
@@ -4002,7 +4002,7 @@ mod tests {
                 source.put_pixel(x, y, image::Rgba([24, 92, 170, 255]));
             }
         }
-        source.save(&path)?;
+        source.save(&path).unwrap();
 
         let preview = load_print_preview(&path).expect("a selected PNG has a real preview");
         assert!(preview.is_valid());
@@ -4014,6 +4014,5 @@ mod tests {
                 .any(|pixel| pixel[..3] == [24, 92, 170]),
             "preview pixels come from the selected document"
         );
-        Ok(())
     }
 }

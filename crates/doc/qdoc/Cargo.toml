@@ -6,20 +6,17 @@ version = "0.1.0"
 edition = "2024"
 publish.workspace = true
 license.workspace = true
-description = "CRDT-native canonical document model and format-provider API for Tilo"
+description = "Rich-text and spreadsheet document resources for Tilo"
+
+[features]
+# Hooks for tests that compare the bulk import path with the op-by-op reference.
+bulk-instrumentation = []
 
 [dependencies]
 web-time = { version = "1", features = ["serde"] }
 automerge.workspace = true
 tilo-automerge.workspace = true
-# HTML import and export carry images as `data:…;base64,` URIs.
-base64.workspace = true
 blake3.workspace = true
-# Zip-bomb and XXE defence for every office package codec.
-bounded-zip = { path = "../bounded-zip" }
-pulldown-cmark = { version = "0.12", default-features = false }
-zip.workspace = true
-quick-xml.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
@@ -28,7 +25,6 @@ tracing.workspace = true
 [dev-dependencies]
 proptest.workspace = true
 tempfile.workspace = true
-tilo-automerge = { workspace = true, features = ["heap-probe"] }
 
 [[test]]
 name = "it"

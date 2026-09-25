@@ -164,9 +164,9 @@ fn operation(
     id: &str,
     label: &str,
     kind: OperationKind,
-    value: VideoEditorOperation,
+    value: &VideoEditorOperation,
 ) -> ActionSpec {
-    let spec = ActionSpec::operation(id, label, kind, VIDEO_EDITOR_OPERATION_TYPE, &value)
+    let spec = ActionSpec::operation(id, label, kind, VIDEO_EDITOR_OPERATION_TYPE, value)
         .expect("VideoEditorOperation is always serializable");
     match value {
         VideoEditorOperation::RevealTrack { .. }
@@ -180,6 +180,13 @@ fn operation(
     }
 }
 
+/// Decode a palette operation payload, or `None` when `type_id` is not the
+/// editor's operation type.
+///
+/// # Errors
+///
+/// The deserializer's message when the payload is not a
+/// [`VideoEditorOperation`].
 pub fn decode_operation(
     type_id: &str,
     payload: &[u8],
@@ -322,7 +329,7 @@ impl ClipData {
             out_point: self.out_point,
             opacity: self.opacity,
             volume: self.volume,
-            transition: Transition::from_str(&self.transition),
+            transition: Transition::from_name(&self.transition),
             palette: self.palette,
             filters: Filters {
                 brightness: self.brightness,
@@ -397,7 +404,7 @@ impl TrackData {
         Some(Track {
             id: self.id.parse::<Uuid>().ok()?,
             name: self.name.clone(),
-            kind: TrackKind::from_str(&self.kind),
+            kind: TrackKind::from_name(&self.kind),
             index: self.index,
             muted: self.muted,
             locked: self.locked,
@@ -461,14 +468,14 @@ impl MediaData {
             has_audio: self.has_audio,
             id: self.id.parse::<Uuid>().ok()?,
             name: self.name.clone(),
-            kind: MediaKind::from_str(&self.kind),
+            kind: MediaKind::from_name(&self.kind),
             duration: self.duration,
             width: self.width,
             height: self.height,
             fps: self.fps,
             palette: self.palette,
             path: self.path.clone(),
-            hydration: crate::media::Hydration::from_str(&self.hydration),
+            hydration: crate::media::Hydration::from_name(&self.hydration),
             text: self.text.clone(),
         })
     }
@@ -521,7 +528,7 @@ impl ProjectMeta {
         p.format_explicit = self.format_explicit;
         p.mark_in = self.mark_in;
         p.mark_out = self.mark_out;
-        p.markers = self.markers.clone();
+        p.markers.clone_from(&self.markers);
         p
     }
 }
@@ -534,6 +541,10 @@ impl ProjectMeta {
 /// (`RippleDeleteClip`, `SplitClip`) carry every affected clip so they replay
 /// atomically as a single change.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "an action is built, encoded and applied one at a time; none are stored in bulk"
+)]
 pub enum VideoEditorAction {
     /// Create a newly-authored clip, or explicitly replace one with a complete
     /// externally supplied snapshot. Normal editor interactions use a patch.
@@ -855,6 +866,10 @@ pub enum ClipCompound {
     Markers(Vec<crate::model::Marker>),
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "one comparison per patchable clip field, read top to bottom"
+)]
 pub fn clip_field_patch_action(before: &Clip, after: &Clip) -> VideoEditorAction {
     let mut changes = Vec::new();
     for (field, expected, value) in [
@@ -1208,8 +1223,9 @@ fn validate_patch_set(changes: &[ClipFieldPatch]) -> Result<(), ActionError> {
         ClipFieldPatch::Link { .. } => "link",
     };
     if changes.iter().enumerate().any(|(index, patch)| {
-        changes[..index]
+        changes
             .iter()
+            .take(index)
             .any(|previous| key(previous) == key(patch))
     }) {
         return Err(ActionError::Refused(
@@ -1251,6 +1267,10 @@ impl ProjectData {
 }
 
 impl Action for VideoEditorAction {
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one arm per action variant, each the whole document write for that action"
+    )]
     fn apply(&self, doc: &mut Doc) -> Result<(), ActionError> {
         match self {
             VideoEditorAction::UpsertClip(data) => {
@@ -1293,8 +1313,9 @@ impl Action for VideoEditorAction {
                     validate_patch_set(&patch.changes)?;
                 }
                 if patches.iter().enumerate().any(|(index, patch)| {
-                    patches[..index]
+                    patches
                         .iter()
+                        .take(index)
                         .any(|previous| previous.clip == patch.clip)
                 }) {
                     return Err(ActionError::Refused(
@@ -1425,7 +1446,9 @@ impl Action for VideoEditorAction {
                     let index = clip.effect_index(effect_id).ok_or_else(|| {
                         ActionError::Refused("effect is no longer available".into())
                     })?;
-                    let instance = clip.effects[index];
+                    let instance = clip.effects.get(index).copied().ok_or_else(|| {
+                        ActionError::Refused("effect is no longer available".into())
+                    })?;
                     if instance.kind != *expected_kind
                         || instance.amount.to_bits() != *expected_amount_bits
                     {
@@ -1475,7 +1498,9 @@ impl Action for VideoEditorAction {
                             "effect can no longer move in that direction".into(),
                         ));
                     };
-                    if index != *expected_index || clip.effects[target].id != neighbour_id {
+                    if index != *expected_index
+                        || clip.effects.get(target).map(|e| e.id) != Some(neighbour_id)
+                    {
                         return Err(ActionError::Refused(
                             "effect order changed before this move could apply".into(),
                         ));
@@ -1758,6 +1783,10 @@ pub fn register(registry: &mut ActionRegistry) {
 /// Encode any [`VideoEditorAction`] into the wire form the palette and the
 /// on-screen affordances both dispatch — the single point that turns the
 /// editor's actions into replayable envelopes.
+///
+/// # Panics
+///
+/// Never in practice: every variant is a plain serde-derived value.
 #[allow(
     clippy::expect_used,
     reason = "the serde-derived action is encoded immediately after construction and has no fallible fields"
@@ -1820,7 +1849,7 @@ pub fn delete_clips_action(ids: &[Uuid], moved: &[Clip]) -> VideoEditorAction {
     match (ids, moved) {
         ([one], []) => delete_clip_action(one),
         _ => VideoEditorAction::DeleteClips {
-            ids: ids.iter().map(std::string::ToString::to_string).collect(),
+            ids: ids.iter().map(ToString::to_string).collect(),
             moved: moved.iter().map(ClipData::from_clip).collect(),
         },
     }
@@ -1851,7 +1880,7 @@ pub fn upsert_track_action(t: &Track) -> VideoEditorAction {
 pub fn delete_track_action(id: &Uuid, clips: &[Uuid]) -> VideoEditorAction {
     VideoEditorAction::DeleteTrack {
         id: id.to_string(),
-        clips: clips.iter().map(std::string::ToString::to_string).collect(),
+        clips: clips.iter().map(ToString::to_string).collect(),
     }
 }
 
@@ -1862,7 +1891,7 @@ pub fn upsert_media_action(m: &MediaItem) -> VideoEditorAction {
 pub fn remove_media_action(id: &Uuid, clips: &[Uuid]) -> VideoEditorAction {
     VideoEditorAction::RemoveMedia {
         id: id.to_string(),
-        clips: clips.iter().map(std::string::ToString::to_string).collect(),
+        clips: clips.iter().map(ToString::to_string).collect(),
     }
 }
 
@@ -1930,7 +1959,7 @@ fn annotate_contracts(resource: &mut Resource) {
     }
 }
 
-/// Every spelling `EffectKind::from_str` accepts, in the exact form a caller
+/// Every spelling `EffectKind::from_name` accepts, in the exact form a caller
 /// has to send it.
 ///
 /// The declared set is the *parser's* vocabulary, not the shorter list the old
@@ -1981,9 +2010,9 @@ fn parse_colour(s: &str) -> Option<[f64; 4]> {
     if hex.len() == 6 && hex.chars().all(|c| c.is_ascii_hexdigit()) {
         let v = u32::from_str_radix(hex, 16).ok()?;
         return Some([
-            ((v >> 16) & 0xff) as f64 / 255.0,
-            ((v >> 8) & 0xff) as f64 / 255.0,
-            (v & 0xff) as f64 / 255.0,
+            f64::from((v >> 16) & 0xff) / 255.0,
+            f64::from((v >> 8) & 0xff) / 255.0,
+            f64::from(v & 0xff) / 255.0,
             1.0,
         ]);
     }
@@ -2001,6 +2030,11 @@ fn parse_colour(s: &str) -> Option<[f64; 4]> {
 /// Build the resource tree the editor currently has open: the project, its
 /// tracks (top-to-bottom display order), and the clips on each track — every
 /// document-mutating operation exported as an action.
+///
+/// # Panics
+///
+/// Never in practice: only local serde-derived operations are encoded, and
+/// the one index is taken after proving the candidate list non-empty.
 #[allow(
     clippy::expect_used,
     clippy::indexing_slicing,
@@ -2220,7 +2254,7 @@ pub fn provide_resources(ctx: &VideoResourceCtx) -> Vec<Resource> {
             &set_project_meta_action(&marked),
         ));
         if p.has_marks() {
-            let mut cleared = snap.clone();
+            let mut cleared = snap;
             cleared.clear_marks();
             root = root.with_action(immediate(
                 "clear-marks",
@@ -2397,7 +2431,7 @@ pub fn provide_resources(ctx: &VideoResourceCtx) -> Vec<Resource> {
                 "open",
                 "Reveal marker",
                 OperationKind::View,
-                VideoEditorOperation::RevealMarker {
+                &VideoEditorOperation::RevealMarker {
                     marker: marker.id.to_string(),
                     clip: None,
                 },
@@ -2499,7 +2533,7 @@ pub fn provide_resources(ctx: &VideoResourceCtx) -> Vec<Resource> {
                 "open",
                 "Reveal track",
                 OperationKind::View,
-                VideoEditorOperation::RevealTrack {
+                &VideoEditorOperation::RevealTrack {
                     track: tid.to_string(),
                 },
             ));
@@ -2613,7 +2647,7 @@ pub fn provide_resources(ctx: &VideoResourceCtx) -> Vec<Resource> {
                     "open",
                     "Reveal clip",
                     OperationKind::View,
-                    VideoEditorOperation::RevealClip {
+                    &VideoEditorOperation::RevealClip {
                         clip: cid.to_string(),
                     },
                 ));
@@ -2837,12 +2871,12 @@ pub fn provide_resources(ctx: &VideoResourceCtx) -> Vec<Resource> {
                 ],
                 move |args: &ActionArgs| {
                     let mut next = mask_base.clone();
-                    // `MaskShape::from_str` reads everything it does not know
+                    // `MaskShape::from_name` reads everything it does not know
                     // as `None` — which would silently *remove* a mask — so
                     // the vocabulary is declared and an unbound value leaves
                     // the shape alone.
                     if let Some(name) = args.text("shape") {
-                        next.mask.shape = MaskShape::from_str(name);
+                        next.mask.shape = MaskShape::from_name(name);
                     }
                     encode(&clip_field_patch_action(&mask_base, &next))
                 },
@@ -2952,7 +2986,7 @@ pub fn provide_resources(ctx: &VideoResourceCtx) -> Vec<Resource> {
             // Effects stack — add one by name, or clear them all.
             let add_clip = cid;
             let add_ordinal = clip.effects.len();
-            // The vocabulary is declared, not narrated. `EffectKind::from_str`
+            // The vocabulary is declared, not narrated. `EffectKind::from_name`
             // answers `None` for a name it does not know, which the old
             // prompt turned into "the action ran and added nothing" — a
             // typo that reported success. Binding refuses it by name now.
@@ -2970,18 +3004,22 @@ pub fn provide_resources(ctx: &VideoResourceCtx) -> Vec<Resource> {
                     .with_choices(EFFECT_CHOICES),
                 ],
                 move |args: &ActionArgs| {
-                    // A bound value is one of `EFFECT_CHOICES`, so `from_str`
+                    // A bound value is one of `EFFECT_CHOICES`, so `from_name`
                     // cannot fail here. An unbound builder produces a
                     // deliberately invalid id, which `apply` refuses rather
                     // than quietly inventing a default effect.
-                    let effect = args.text("effect").and_then(EffectKind::from_str).map_or(
-                        crate::model::ClipEffect {
-                            id: Uuid::nil(),
-                            kind: EffectKind::Grayscale,
-                            amount: EffectKind::Grayscale.default_amount(),
-                        },
-                        crate::model::ClipEffect::new,
-                    );
+                    let effect = args
+                        .text("effect")
+                        .and_then(EffectKind::from_name)
+                        .map_or_else(
+                            || crate::model::ClipEffect {
+                                id: Uuid::nil(),
+                                kind: EffectKind::Grayscale,
+                                amount: EffectKind::Grayscale.default_amount(),
+                            },
+                            crate::model::ClipEffect::new,
+                        );
+
                     encode(&VideoEditorAction::AddEffect {
                         clip: add_clip.to_string(),
                         expected_stack: Vec::new(),
@@ -3017,7 +3055,7 @@ pub fn provide_resources(ctx: &VideoResourceCtx) -> Vec<Resource> {
                     "open",
                     "Reveal effect",
                     OperationKind::View,
-                    VideoEditorOperation::RevealEffect {
+                    &VideoEditorOperation::RevealEffect {
                         clip: cid.to_string(),
                         effect: effect_id.to_string(),
                     },
@@ -3177,9 +3215,10 @@ pub fn provide_resources(ctx: &VideoResourceCtx) -> Vec<Resource> {
                     let mut next = p.clone();
                     // The lane it lands on, and the lane the change has to
                     // *make* when the project has no audio track yet.
-                    let (audio_track, fresh) = match next.placement_track(TrackKind::Audio, None) {
-                        Some(t) => (t, Vec::new()),
-                        None => {
+                    let (audio_track, fresh) =
+                        if let Some(t) = next.placement_track(TrackKind::Audio, None) {
+                            (t, Vec::new())
+                        } else {
                             let t = Track {
                                 id: Uuid::new_v4(),
                                 name: "A1".to_string(),
@@ -3194,8 +3233,7 @@ pub fn provide_resources(ctx: &VideoResourceCtx) -> Vec<Resource> {
                             let id = t.id;
                             next.tracks.push(t.clone());
                             (id, vec![t])
-                        }
-                    };
+                        };
                     if let Some(audio_id) = next.add_linked_audio(cid, audio_track) {
                         let written: Vec<Clip> = [cid, audio_id]
                             .iter()
@@ -3473,7 +3511,7 @@ pub fn provide_resources(ctx: &VideoResourceCtx) -> Vec<Resource> {
                         "open",
                         "Reveal marker",
                         OperationKind::View,
-                        VideoEditorOperation::RevealMarker {
+                        &VideoEditorOperation::RevealMarker {
                             marker: marker.id.to_string(),
                             clip: Some(cid.to_string()),
                         },
@@ -3553,7 +3591,7 @@ pub fn provide_resources(ctx: &VideoResourceCtx) -> Vec<Resource> {
                 "open",
                 "Reveal media",
                 OperationKind::View,
-                VideoEditorOperation::RevealMedia {
+                &VideoEditorOperation::RevealMedia {
                     media: mid.to_string(),
                 },
             ));
@@ -3614,17 +3652,19 @@ pub fn provide_resources(ctx: &VideoResourceCtx) -> Vec<Resource> {
                         ParamType::Text,
                         "where the title's lines sit in the frame",
                     )
-                    .with_choices(crate::model::TextAlign::ALL.map(|a| a.as_str())),
+                    .with_choices(
+                        crate::model::TextAlign::ALL.map(crate::model::TextAlign::as_str),
+                    ),
                 ],
                 move |args: &ActionArgs| {
                     let mut next = align_base.clone();
                     let mut t = next.text.clone().unwrap_or_default();
-                    // `TextAlign::from_str` reads *everything* it does not
+                    // `TextAlign::from_name` reads *everything* it does not
                     // recognise as `Center`, so "centre" and "banana" were
                     // both a silent re-centring. The three declared names are
                     // the only ones that can reach it now.
                     if let Some(name) = args.text("align") {
-                        t.align = crate::model::TextAlign::from_str(name);
+                        t.align = crate::model::TextAlign::from_name(name);
                     }
                     next.text = Some(t);
                     encode(&upsert_media_action(&next))
@@ -3878,16 +3918,13 @@ fn parse_transition(s: &str) -> Transition {
         "fade" | "fadein" | "fade in" => Transition::FadeIn,
         "dip" | "diptoblack" | "dip to black" => Transition::DipToBlack,
         "wipe" => Transition::Wipe,
-        other => Transition::from_str(other),
+        other => Transition::from_name(other),
     }
 }
 
 impl ResourceProvider for crate::app::VideoEditorApp {
     fn resources(&self, _doc: &AutoCommit) -> Vec<Resource> {
-        match self.video_resource_ctx() {
-            Some(ctx) => provide_resources(&ctx),
-            None => Vec::new(),
-        }
+        provide_resources(&self.video_resource_ctx())
     }
 }
 
@@ -3920,10 +3957,10 @@ mod tests {
     /// and assert about another.
     fn spec_on(ctx: &VideoResourceCtx, resource: &str, id: &str) -> ActionSpec {
         fn walk(r: &Resource, resource: &str, id: &str, out: &mut Option<ActionSpec>) {
-            if r.id.as_str() == resource {
-                if let Some(a) = r.actions.iter().find(|a| a.id == id) {
-                    *out = Some(a.clone());
-                }
+            if r.id.as_str() == resource
+                && let Some(a) = r.actions.iter().find(|a| a.id == id)
+            {
+                *out = Some(a.clone());
             }
             for c in &r.children {
                 walk(c, resource, id, out);
@@ -4356,7 +4393,9 @@ mod tests {
     fn prompted_encode(spec: &ActionSpec, arg: &str) -> EncodedAction {
         match &spec.input {
             ActionInput::Prompted { build, .. } => build(arg),
-            _ => panic!("expected a prompted action: {}", spec.id),
+            ActionInput::Immediate(_) | ActionInput::Deferred { .. } => {
+                panic!("expected a prompted action: {}", spec.id)
+            }
         }
     }
 
@@ -4365,8 +4404,8 @@ mod tests {
     /// Drives the real resource hook.
     #[test]
     fn ctrl_k_publishes_the_project_track_clip_tree() {
-        let (app, _doc) = seeded();
-        let resources = Widget::resources(&app, &_doc);
+        let (app, doc) = seeded();
+        let resources = Widget::resources(&app, &doc);
         assert_eq!(resources.len(), 1, "one open project");
         let project = &resources[0];
         assert_eq!(project.kind, "video.project");
@@ -4737,7 +4776,7 @@ mod tests {
         assert_eq!(spec.params()[0].ty, ParamType::Number);
 
         let refused = ActionArgs::bind(
-            &spec.params(),
+            spec.params(),
             [("value".to_string(), ArgValue::Text("banana".into()))],
         );
         assert!(
@@ -4746,7 +4785,7 @@ mod tests {
         );
 
         let bound = ActionArgs::bind(
-            &spec.params(),
+            spec.params(),
             [("value".to_string(), ArgValue::Number(0.8))],
         )
         .expect("a number binds");
@@ -4906,7 +4945,7 @@ mod tests {
                 assert_eq!(p.name.as_ref(), *name, "{id} names its argument {i}");
                 assert_eq!(p.ty, *ty, "{id} declares the type of {name}");
                 assert!(p.required, "{id} needs {name}");
-                assert!(!p.description.is_empty(), "{id} says what {name} means",);
+                assert!(!p.description.is_empty(), "{id} says what {name} means");
             }
         }
 
@@ -5123,8 +5162,8 @@ mod tests {
     /// against every one of its neighbours as well as against itself.
     #[test]
     fn the_key_and_mask_knobs_write_the_value_they_are_named_for() {
-        let (ctx, cid) = ctx_fixture();
         type Read = fn(&Clip) -> f64;
+        let (ctx, cid) = ctx_fixture();
         let cases: [(&str, &str, f64, Read); 9] = [
             ("set-key-tolerance", "0.31", 0.31, |c| c.key.tolerance),
             ("set-key-softness", "0.17", 0.17, |c| c.key.softness),
@@ -5332,13 +5371,13 @@ mod tests {
         let effects = &effect.params()[0].choices;
         for c in effects {
             assert!(
-                EffectKind::from_str(c).is_some(),
+                EffectKind::from_name(c).is_some(),
                 "{c:?} is offered, so the parser has to know it",
             );
         }
         for k in EffectKind::ALL {
             assert!(
-                effects.iter().any(|c| EffectKind::from_str(c) == Some(k)),
+                effects.iter().any(|c| EffectKind::from_name(c) == Some(k)),
                 "{} is reachable by name",
                 k.as_str(),
             );

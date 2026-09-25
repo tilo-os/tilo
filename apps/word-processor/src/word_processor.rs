@@ -1617,7 +1617,7 @@ impl WordProcessor {
 
     /// Insert an image block carrying `bytes` at the caret; bytes go in the
     /// content-addressed blob store, referenced via the block's `blob` attr
-    /// (mirroring `qdoc::codecs::odt`). Mid-text, the block splits so the image
+    /// (mirroring `qdoc_codecs::odt`). Mid-text, the block splits so the image
     /// lands between the text before/after the caret; else it inserts after the
     /// caret block. The caret lands in a fresh empty paragraph just after the image.
     ///

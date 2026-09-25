@@ -260,6 +260,7 @@ impl crate::app::ChatApp {
                 audio_only: true,
                 sharing: false,
                 ticket: None,
+                video: None,
             })
             .collect();
         self.voice_members.insert(channel.clone(), streams);

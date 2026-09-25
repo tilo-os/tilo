@@ -80,6 +80,10 @@ pub fn measure_w(tr: &mut TextRenderer, text: &str, size: f32, weight: TextWeigh
     clippy::too_many_arguments,
     reason = "passes the scene, text renderer and transform alongside bounds, alignment and weighted text styling"
 )]
+#[expect(
+    clippy::many_single_char_names,
+    reason = "t/w/h/x/y are the paint convention: transform, measured size and origin"
+)]
 pub fn text_in(
     scene: &mut Scene,
     tr: &mut TextRenderer,

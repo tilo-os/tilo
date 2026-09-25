@@ -461,6 +461,10 @@ fn word_processor_and_photos_permissions() -> ui::permissions::PermissionContext
 /// signal `photo_ready_tx`, and stop once the discovered export returns or the
 /// 15s deadline passes. This explicit seed keeps the proof about cross-app
 /// action dataflow rather than coupling it to late-join presence routing.
+#[expect(
+    clippy::too_many_lines,
+    reason = "one peer event loop answering each protocol message in arrival order"
+)]
 fn drive_photo_peer(
     mut photo_peer: UnixStream,
     mut photo_replica: AutoCommit,

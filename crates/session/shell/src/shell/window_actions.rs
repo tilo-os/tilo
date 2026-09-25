@@ -255,12 +255,14 @@ pub fn active_tab_id(st: &ChromeState) -> Option<TabId> {
         .get(&strip.id)
         .and_then(|g| strip.window_groups.iter().find(|w| w.id == *g))
         .or_else(|| strip.window_groups.first())?;
-    group
+    let tab = group
         .tabs
         .iter()
         .find(|t| t.id == group.active_tab)
         .or_else(|| group.tabs.first())
-        .map(|t| t.id)
+        .map(|t| t.id);
+    drop(tree);
+    tab
 }
 
 /// Close `tab_id`: the replicated tree and document first, the atomic
@@ -355,6 +357,7 @@ pub fn split_tab(
                     })
             })
         });
+        drop(tree);
         located.ok_or(TabActionError::UnknownTab)?
     };
     if only_tab {

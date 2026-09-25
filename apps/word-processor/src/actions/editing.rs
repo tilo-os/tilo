@@ -1400,7 +1400,7 @@ fn clip_blocks(content: &PasteContent) -> Result<Vec<ClipBlock>, EditingError> {
 }
 
 fn markdown_clip_blocks(markdown: &str) -> Result<Vec<ClipBlock>, EditingError> {
-    use qdoc::FormatProvider;
+    use qdoc_codecs::FormatProvider;
     if markdown.chars().count() > MAX_ACTION_TEXT_CHARS {
         return Err(EditingError::Invalid("pasted Markdown is too long".into()));
     }
@@ -1414,7 +1414,7 @@ fn markdown_clip_blocks(markdown: &str) -> Result<Vec<ClipBlock>, EditingError> 
             c: &containers,
             ids: &mut ids,
         };
-        qdoc::MarkdownCodec
+        qdoc_codecs::MarkdownCodec
             .import(markdown.as_bytes(), &mut dm)
             .map_err(|error| EditingError::Invalid(format!("Markdown: {error}")))?;
     }

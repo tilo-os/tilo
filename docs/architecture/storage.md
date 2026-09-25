@@ -586,21 +586,62 @@ bounds.
   publishes as the file's own mtime (so that stat caches match, §17). A
   version written with an older mtime than the record's previous one keeps
   the previous time: signed metadata never goes backwards.
-- *The residual window of §10 is real for git.* One epoch captured `git add`
-  and `git commit` together. The index was rewritten after the ref update, so
-  its only published version sorts after the ref; the peer briefly showed the
-  new `HEAD` with no index, and a `git status` running at that moment wrote an
-  index, which the peer then published. The repository converged, but a tool
-  that writes while syncing can publish a transient state. Next step: order a
-  path created within an epoch by its first journal position rather than its
-  last, and materialise new paths as placeholders before any content in the
-  pass (V3 step 1), so a file that existed before a later change never
-  appears after it.
+- *The residual window of §10 is real for git, and closed by applying
+  changesets whole.* One epoch captured `git add` and `git commit` together.
+  The index was rewritten after the ref update, so its only published version
+  sorts after the ref; the peer briefly showed the new `HEAD` with no index,
+  and a `git status` running then wrote an index, which the peer published.
+  Ordering a path created within an epoch by its first journal position does
+  not help: such a ref carries content written at the end of the epoch and
+  would be shown before the objects it names. What does: each device marks
+  the changeset it publishes (a namespace scalar per device, open before the
+  first operation, closed after the last, naming the span of version times;
+  namespace changes apply causally, so a closed mark means the whole epoch
+  is here). A peer holds its projection while another device's changeset is
+  open, prepares every version of a pass first (small files and links staged
+  at the room's root), then installs them in one quick step, paths new here
+  before changed ones, each in version order; a version not available yet
+  holds back the rest of its changeset (at most 60 s). **Measured:** with
+  `git status` running on the peer every 100 ms throughout the sync (153–211
+  runs), the status was clean the moment the new `HEAD` appeared, the peer
+  published nothing, and three commits arrived in 16–25 s.
+- *Git's racy index is git's, not a sync artifact.* An index written in the
+  same second as its files holds "racily clean" entries that the next
+  `git status` rewrites, on whichever device runs first. The test commits a
+  second after its edits, as a person does.
+- *The blob guard was the bottleneck for placeholders.* It authorised each
+  chunk request by walking the namespace and decoding every readable
+  manifest, serially: ~330 ms per request for a 90-file repository, so a
+  2 MiB file's ~200 chunk requests timed out and git failed with `mmap
+  failed: I/O error`. The guard now keeps, per caller, the readable roots and
+  their chunks keyed by namespace heads and ACL revision (recomputed on any
+  change, so revocation is as immediate as before). It also recognises a
+  caller for requests iroh-blobs reports after the connection's close. The
+  reverse index of §9 replaces both.
 - *Hydration must not move mtime.* Filling a placeholder writes, which moved
   its mtime; the hydrator now restores it after each fill. Without that, `ls
   -l` changed on read and git re-hashed every hydrated file.
-- *Pre-content events do not tell reads from writes* (see §11.2). Writers are
-  recognised from `/proc/<pid>/fdinfo`.
+- *Pre-content events do not tell reads from writes* (see §11.2). The
+  blocked thread's `/proc/<tid>/syscall` does, per access.
+- *Renames are moves.* Capture pairs a removed and an upserted path of one
+  inode into a move (a moved directory's descendants are implied; removals
+  inside it are rewritten to its new place), published through the signed
+  rename, so the record keeps its id, history and access (a replacement
+  transaction when it lands on a record). Peers rename the local file: a
+  resident 3 MiB file kept its inode and bytes, a directory moved with its
+  subtree, both ways.
+- *POSIX attributes.* Mode bits (rwx; setgid on directories; never setuid)
+  and "is a symbolic link" are one namespace scalar per record, published
+  before the content they go with; a link's target is its record's content,
+  so it is signed and versioned. Relative, absolute and dangling links, 0755
+  scripts (executable on the peer), 0600 files, 0700 and 02775 directories,
+  and mode-only changes replicate both ways. Everything materialised belongs
+  to the room's owner (tested with a non-root owner). Hard links are
+  separate records sharing content; a write through one link reaches every
+  link of the inode (the journal names only one), and removing one of two
+  links is a removal, not a move. Link identity does not cross devices (Q9).
+  The attributes are namespace data, like placement and leases; covering them
+  with record signatures needs a metadata schema version.
 - *The record plane, not the data plane, bounds sync.* Publishing costs 30–60
   ms per file on the author (signed envelopes, versions, history). The mesh
   pull opens a connection per record stream (~170 ms each) and re-projected
@@ -614,19 +655,15 @@ bounds.
   with `hash_content = false` and the FastCDC manifests of §7 are unused until
   the file-backed `ChunkStore` (§7.4) replaces the blob copy.
 
-**Not yet representable**
+**Not yet**
 
-- A rename is published as a removal and a creation, so the record's
-  identity and history do not follow the file. Capture already pairs renames
-  by inode; the next step is emitting them as moves.
-- Symlinks stay on the device that has them, and permission bits are not
-  replicated (files materialise as 0644, directories as 0755): the record
-  plane has no field for either yet.
 - Materialised files belong to the room directory's owner (`--native-owner
   UID:GID` overrides). On Tilo OS the store volume (§6.2) is prepared before
   the daemon starts and passes the local person as `--native-owner`; the
   daemon therefore needs `CAP_CHOWN`, `CAP_FOWNER` and `CAP_DAC_OVERRIDE` to
   create, fill and hand over files in a room it does not own.
+- A rename cycle within one epoch (`a`↔`b` swapped) is published as content
+  changes of both paths, not as moves.
 
 ---
 
@@ -1038,19 +1075,50 @@ mmap-written). [R9]
   `Deny(EBUSY)`; a new version of it is gated before it is renamed into place.
   The lease is renewed every 20 s while the journal shows writes, released at
   `CLOSE_WRITE` or after 5 s without writes, and lapses after 60 s offline.
-- **Measured:** pre-content events do not say whether an access reads or
-  writes. The daemon decides from the accessing process's descriptor table
-  (`/proc/<pid>/fdinfo`): a process holding the file `O_WRONLY`/`O_RDWR` is a
-  writer. Consequence: such a process gets `EBUSY` for reads too, so SQLite
-  opened read-write on the non-holding device fails to open the database
-  while a process opening it read-only reads normally.
-- Not yet: there is no authority. Two devices that take a free lease in the
-  same instant both write until the namespace merge picks one holder
-  (Automerge's deterministic register order); the loser is then gated. Versions
-  do not yet carry the lease epoch, so the loser's versions are not fenced
-  into a conflict — the next step is a `lease_epoch` field on
-  `FileVersionV1`/`ContentRevisionV1` checked by the record materializer, and
-  the host's lease authority over the record protocol.
+- **Reads and writes, per access.** Pre-content events do not say whether
+  an access reads or writes, but the accessing thread (`FAN_REPORT_TID`) is
+  blocked inside the call until the daemon answers, and its
+  `/proc/<tid>/syscall` names the call and its arguments: `read`/`pread`/a
+  read-only or private `mmap` is a read; `write`/`pwrite`/`fallocate`/
+  `truncate`/a shared writable `mmap` a write; for `splice`, `sendfile`,
+  `copy_file_range` and `FICLONE` it depends on which descriptor is the
+  gated file. The descriptor table decides only when the call cannot be
+  read. A file another device holds also refuses *opening* it for writing
+  (`FAN_OPEN_PERM`, `EBUSY`), so a program that falls back to a read-only
+  open reads and reports a read-only file before it writes anything.
+  **Measured:** `sqlite3` (read-write by default) on the non-holding device
+  reads, and an `INSERT` fails with "attempt to write a readonly database"
+  leaving no rollback journal to publish; 0.4–1.5 s after the holder lets
+  go, the same command writes. The daemon needs `CAP_SYS_PTRACE` for other
+  users' `/proc/<tid>/syscall`.
+- **Fencing.** Every version of a lease-class file carries its tenancy
+  (epoch and holder), in the same namespace change as its content, and every
+  tenancy is kept. A peer applies such a version only if its author held
+  that epoch and it is not older than what it shows; an unleased version
+  only while nobody holds the lease. A refused version is never applied and
+  never dropped: it stays in history, the holder republishes its content as
+  the head, and its author keeps it beside the holder's as
+  `<name>.sync-conflict-<device>-e<epoch>`. **Measured:** two partitioned
+  devices writing one database, the host's granted tenancy and the peer's
+  optimistic one of the same epoch: the host never showed the peer's bytes,
+  both converged on the host's version 3.3–3.9 s after reconnecting, and the
+  peer's version exists as a conflict copy on both.
+- **Authority.** The room's always-on host runs with `--lease-authority`: a
+  device asks for a free lease through the namespace and the authority
+  grants it to one requester at a time with a new epoch (a peer's first
+  write waited ~0.5 s for its grant); unanswered within 1.5 s, the device
+  takes it optimistically. Concurrent lease values resolve alike everywhere:
+  higher epoch, then granted over optimistic, then the greater holder key.
+  **Measured:** three rounds of the host and the peer writing a free file at
+  the same instant: each time exactly one wrote and the other got `EBUSY`.
+- A lease is not released while versions written under it are
+  unpublished, and the file is gated before the release is visible: the
+  kernel decides at `open` whether a descriptor raises pre-content events,
+  so a descriptor opened while a file is ungated stays unwatched. For the
+  same reason a new version of a gated file is gated before it is renamed
+  into place. Not yet: a descriptor the holder opened during its tenancy
+  stays unwatched after the release, so its later writes are unleased
+  versions (fenced if another device holds the lease by then).
 
 ---
 

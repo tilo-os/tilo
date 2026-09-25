@@ -64,7 +64,7 @@ impl ProductionRemoteCaptureSource {
         let (failure_tx, failure_rx) = mpsc::sync_channel(MAX_REMOTE_CAPTURE_SESSIONS);
         Self {
             availability: RemoteCaptureAvailability {
-                camera: trusted_command("ffmpeg").is_some() && physical_camera().is_some(),
+                camera: trusted_command("gst-launch-1.0").is_some() && physical_camera().is_some(),
                 microphone: trusted_command("pw-record").is_some(),
                 scanner: trusted_command("scanimage").is_some(),
             },
@@ -227,26 +227,21 @@ fn source_command(
         } if available.camera => {
             let device = physical_camera()
                 .ok_or_else(|| "no local physical camera is available".to_string())?;
+            // The camera through the OS media stack: raw NV12 frames of the
+            // requested size and rate on stdout, nothing else (`-q`).
             let mut command = Command::new(
-                trusted_command("ffmpeg").ok_or_else(|| "ffmpeg is unavailable".to_string())?,
+                trusted_command("gst-launch-1.0")
+                    .ok_or_else(|| "gst-launch-1.0 is unavailable".to_string())?,
             );
             command
-                .arg("-nostdin")
-                .arg("-loglevel")
-                .arg("error")
-                .arg("-f")
-                .arg("v4l2")
-                .arg("-framerate")
-                .arg(frames_per_second.to_string())
-                .arg("-i")
-                .arg(device)
-                .arg("-vf")
-                .arg(format!("scale={width}:{height}"))
-                .arg("-pix_fmt")
-                .arg("nv12")
-                .arg("-f")
-                .arg("rawvideo")
-                .arg("pipe:1");
+                .arg("-q")
+                .arg("v4l2src")
+                .arg(format!("device={}", device.display()))
+                .args(["!", "videoconvert", "!", "videoscale", "!", "videorate", "!"])
+                .arg(format!(
+                    "video/x-raw,format=NV12,width={width},height={height},framerate={frames_per_second}/1"
+                ))
+                .args(["!", "fdsink", "fd=1", "sync=false"]);
             Ok(command)
         }
         RemoteCaptureProfile::Microphone {
@@ -368,7 +363,12 @@ fn pump_scanner(
                 return;
             }
         };
-        if spool.write_all(&buffer[..read]).is_err() {
+        #[expect(
+            clippy::indexing_slicing,
+            reason = "Read::read never reports more bytes than the buffer it was given"
+        )]
+        let chunk = &buffer[..read];
+        if spool.write_all(chunk).is_err() {
             let _ = failures.try_send(session_id);
             return;
         }
@@ -388,13 +388,18 @@ fn pump_scanner(
             return;
         }
         let next = offset.saturating_add(u64::try_from(read).unwrap_or(u64::MAX));
+        #[expect(
+            clippy::indexing_slicing,
+            reason = "Read::read never reports more bytes than the buffer it was given"
+        )]
+        let payload = buffer[..read].to_vec();
         let frame = CapturedRemoteChunk {
             session_id,
             offset,
             total_bytes: total,
             page_index: Some(0),
             end_of_unit: next == total,
-            payload: buffer[..read].to_vec(),
+            payload,
         };
         if tx.try_send(frame).is_err() {
             let _ = failures.try_send(session_id);

@@ -14,7 +14,6 @@ exclude = [
     "vendor/libspa-sys",
     "vendor/winit",
     "vendor/wgpu-hal",
-    "vendor/openh264-sys2",
     "vendor/wayland-backend",
     "vendor/web-transport-quinn",
     "vendor/automerge",
@@ -26,6 +25,7 @@ exclude = [
 # the full workspace nightly.
 default-members = [
     "crates/doc/qdoc",
+    "crates/doc/qdoc-codecs",
     "crates/system/fs",
     "crates/session/shell",
     "crates/sdk/ui-core",
@@ -153,6 +153,7 @@ members = [
     "crates/doc/format-provider-abi",
     "crates/doc/pdf",
     "crates/doc/qdoc",
+    "crates/doc/qdoc-codecs",
     "crates/doc/qdoc-pdf",
     "crates/doc/tilo-automerge",
 
@@ -431,7 +432,6 @@ redb = "4.1.0"
 image = { version = "0.25.10", default-features = false }
 qrcode = { version = "0.14", default-features = false }
 rqrr = { version = "0.10", default-features = false }
-openh264 = { version = "0.9", features = ["source"] }
 gstreamer = "0.24"
 gstreamer-app = "0.24"
 gstreamer-video = "0.24"
@@ -563,9 +563,6 @@ web-transport-quinn = { path = "vendor/web-transport-quinn" }
 # One kio: the vendored MoQ copy is a workspace member, so the registry copy
 # web-transport-quinn names would make `-p kio` ambiguous for CI selection.
 kio = { path = "vendor/moq/rs/kio" }
-# Keep native archive inputs independent of registry filesystem enumeration.
-# See vendor/openh264-sys2/TILO-PATCH.md.
-openh264-sys2 = { path = "vendor/openh264-sys2" }
 # libspa-sys 0.10.1 lets bindgen discover newer PipeWire inline functions
 # through transitive headers, but its emitted C wrapper includes only the
 # narrower wrapper.h. Keep the missing direct includes locally until upstream

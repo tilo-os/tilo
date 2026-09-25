@@ -46,6 +46,10 @@ use vello::kurbo::{Affine, Point};
 /// then the host's frame, whose scene [`fingerprint`] reads through
 /// `FrameHarness::scene`); this is the same pass for benchmarks that drive
 /// the widget directly, without a host.
+///
+/// # Errors
+///
+/// When the layout tree cannot be built or laid out at `w`×`h`.
 pub fn compose(
     widget: &mut dyn Widget,
     (w, h): (u32, u32),

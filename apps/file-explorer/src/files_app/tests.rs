@@ -239,7 +239,9 @@ mod command_path_tests {
                 .is_some_and(|wake| wake <= deadline),
             "the root must not schedule later than its scroll fade"
         );
-        widget.next_metadata_refresh = deadline - std::time::Duration::from_millis(1);
+        widget.next_metadata_refresh = deadline
+            .checked_sub(std::time::Duration::from_millis(1))
+            .expect("deadline lies in the future");
         assert!(
             widget
                 .next_wake_deadline()
@@ -313,8 +315,8 @@ mod command_path_tests {
 
     #[test]
     fn shortcut_reference_is_a_keyboard_and_command_reachable_view() {
-        let mut widget = FileExplorerWidget::new();
         use winit::keyboard::{Key, KeyLocation, NamedKey, NativeKeyCode, PhysicalKey};
+        let mut widget = FileExplorerWidget::new();
 
         let mut event: winit::event::KeyEvent = unsafe { std::mem::zeroed() };
         event.logical_key = Key::Named(NamedKey::F1);

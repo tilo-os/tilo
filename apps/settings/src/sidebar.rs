@@ -312,10 +312,10 @@ impl Widget for SidebarRow {
             taffy::AvailableSpace::Definite(w) => Some(w),
             _ => None,
         };
-        let row_w = known
-            .width
-            .or(available_w)
-            .map_or(SIDEBAR_WIDTH - 2.0 * f64::from(row_margin_x()), f64::from);
+        let row_w = known.width.or(available_w).map_or_else(
+            || SIDEBAR_WIDTH - 2.0 * f64::from(row_margin_x()),
+            f64::from,
+        );
         let height = self.measured_height(text_renderer, row_w);
         taffy::Size {
             width: known.width.unwrap_or(0.0),

@@ -302,9 +302,10 @@ mod tests {
         let (user, app_id) = {
             let state = chrome.borrow();
             let tree = state.tree();
-            let workspace = &tree.desktop.workspaces[0];
+            let room = tree.desktop.workspaces[0].room;
+            drop(tree);
             (
-                state.local_user_for_room(&workspace.room),
+                state.local_user_for_room(&room),
                 AppKind::Other("Notes".into()).app_id(),
             )
         };
@@ -324,6 +325,7 @@ mod tests {
                 crate::shell::state::Scope::ResourceInstance(instance),
                 crate::shell::state::Verb::Write,
             ));
+            drop(tree);
         }
 
         insert(
@@ -390,6 +392,7 @@ mod tests {
                     crate::shell::state::Scope::App(granted_app.into()),
                     crate::shell::state::Verb::Write,
                 ));
+                drop(tree);
             }
             let outcome = insert(
                 &chrome,
@@ -542,6 +545,7 @@ mod tests {
                 },
             });
             group.active_tab = OTHER_TAB;
+            drop(tree);
         }
         store.open_record(&crate::shell::tab_documents::scratch_tab_record(OTHER_TAB));
 

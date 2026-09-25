@@ -85,6 +85,10 @@ fn parent_node(taffy: &mut TaffyTree<()>, style: Style, children: &[NodeId]) -> 
     taffy.new_with_children(style, children).unwrap()
 }
 
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "independent view flags of the app root, not a state machine"
+)]
 pub struct ThemesApp {
     catalog: Vec<ThemeSpec>,
     topbar_buttons: Vec<Button>,
@@ -341,7 +345,7 @@ impl ThemesApp {
         let layout = SplitLayout::from_width(width, BREAKPOINT);
         self.last_layout = Some(layout);
         match scenario {
-            "live" => {
+            "live" | "scroll" => {
                 self.gallery_flap.snap(false);
                 self.shot.scroll = true;
             }
@@ -350,10 +354,6 @@ impl ThemesApp {
                 self.gallery_flap.snap(false);
                 self.narrow_view_chosen = true;
                 self.set_narrow_preview(true);
-                self.shot.scroll = true;
-            }
-            "scroll" => {
-                self.gallery_flap.snap(false);
                 self.shot.scroll = true;
             }
             "menu" => {
@@ -890,6 +890,12 @@ impl ThemesApp {
     }
 
     fn set_narrow_preview(&mut self, preview: bool) {
+        fn clear_focus(widget: &mut dyn Widget) {
+            widget.set_focus(false);
+            for child in widget.children_mut() {
+                clear_focus(child);
+            }
+        }
         self.narrow_tabs.set_selected(usize::from(preview));
         if self.narrow_preview == preview {
             return;
@@ -905,12 +911,6 @@ impl ThemesApp {
         } else {
             self.customize_scroll
         };
-        fn clear_focus(widget: &mut dyn Widget) {
-            widget.set_focus(false);
-            for child in widget.children_mut() {
-                clear_focus(child);
-            }
-        }
         if preview {
             clear_focus(&mut self.customizer);
         } else {
@@ -1836,6 +1836,10 @@ impl Widget for ThemesApp {
         clippy::too_many_arguments,
         reason = "Widget event routing forwards the event, scale, modifiers, CRDT state, focus outputs and layout context"
     )]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one event dispatch covering every region of the app, in hit-test order"
+    )]
     fn handle_event(
         &mut self,
         event: &WindowEvent,
@@ -2217,6 +2221,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::float_cmp,
+        reason = "the gutter is an exact token offset, not a computed value"
+    )]
     fn narrow_editor_is_visible_before_full_preview() {
         let (mut app, _, _env) = seeded_demo();
         layout_narrow(&mut app, 480.0);

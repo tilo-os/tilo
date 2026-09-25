@@ -1632,7 +1632,7 @@ fn bold_still_applies_to_the_selection_from_the_toolbar() {
 
 #[test]
 fn draw_renders_headings_and_bold() {
-    use qdoc::{FormatProvider, MarkdownCodec};
+    use qdoc_codecs::{FormatProvider, MarkdownCodec};
     let mut state = ui::State::new();
     let c = qdoc::model::init(&mut state.doc, &state.root);
     let mut ids = qdoc::IdGen::new(state.doc.get_actor().to_hex_string());

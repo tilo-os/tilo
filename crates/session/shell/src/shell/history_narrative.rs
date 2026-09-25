@@ -141,8 +141,9 @@ fn select_installed_model(list: &str, requested: Option<&str>) -> Option<String>
             let columns = line.split_whitespace().collect::<Vec<_>>();
             let name = (*columns.first()?).to_string();
             let size = columns.windows(2).find_map(|pair| {
-                let value = pair[0].replace(',', "").parse::<f64>().ok()?;
-                let multiplier = match pair[1].to_ascii_uppercase().as_str() {
+                let [value, unit] = pair else { return None };
+                let value = value.replace(',', "").parse::<f64>().ok()?;
+                let multiplier = match unit.to_ascii_uppercase().as_str() {
                     "KB" => 1_000_f64,
                     "MB" => 1_000_000_f64,
                     "GB" => 1_000_000_000_f64,

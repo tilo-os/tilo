@@ -96,8 +96,8 @@ impl McpServer {
             .as_ref()
             .is_none_or(|id| id.is_string() || id.as_i64().is_some() || id.as_u64().is_some());
         if !request.is_object()
-            || request["jsonrpc"] != "2.0"
-            || !request["method"].is_string()
+            || request.get("jsonrpc").and_then(Value::as_str) != Some("2.0")
+            || !request.get("method").is_some_and(Value::is_string)
             || !valid_id
         {
             return Some(error(
@@ -113,7 +113,10 @@ impl McpServer {
         let Some(id) = id else {
             return None;
         };
-        let method = request["method"].as_str().unwrap_or_default();
+        let method = request
+            .get("method")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
         let mut params = request.get("params").cloned().unwrap_or_else(|| json!({}));
         if !params.is_object() {
             return Some(error(id, -32602, "params must be an object"));
@@ -139,7 +142,7 @@ impl McpServer {
         }
         let result = match method {
             "initialize" => {
-                let Some(version) = params["protocolVersion"].as_str() else {
+                let Some(version) = params.get("protocolVersion").and_then(Value::as_str) else {
                     return Some(error(id, -32602, "protocolVersion is required"));
                 };
                 let selected = if ["2024-11-05", "2025-03-26", "2025-06-18"].contains(&version) {
@@ -371,10 +374,28 @@ impl McpServer {
                 max_results: None,
             })
             .await?;
-        let resources=apps["apps"].as_array().into_iter().flatten().map(|a|json!({"uri":a["uri"],"name":format!("{} ({})",a["app_id"].as_str().unwrap_or_default(),a["peer_id"]),"mimeType":"application/json"})).collect::<Vec<_>>();
-        let mut result = json!({"resources":resources,"generation":apps["generation"]});
-        if let Some(next) = apps["next_after_peer"].as_u64() {
-            result["nextCursor"] = json!(next.to_string());
+        let resources = apps
+            .get("apps")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .map(|a| {
+                json!({
+                    "uri": a.get("uri"),
+                    "name": format!(
+                        "{} ({})",
+                        a.get("app_id").and_then(Value::as_str).unwrap_or_default(),
+                        a.get("peer_id").unwrap_or(&Value::Null)
+                    ),
+                    "mimeType": "application/json"
+                })
+            })
+            .collect::<Vec<_>>();
+        let mut result = json!({"resources":resources,"generation":apps.get("generation")});
+        if let Some(next) = apps.get("next_after_peer").and_then(Value::as_u64)
+            && let Some(fields) = result.as_object_mut()
+        {
+            fields.insert("nextCursor".to_owned(), json!(next.to_string()));
         }
         Ok(result)
     }

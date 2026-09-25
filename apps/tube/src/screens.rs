@@ -1072,7 +1072,7 @@ pub fn queue(
         clippy::cast_possible_truncation,
         reason = "a desktop viewport width is safely representable as f32"
     )]
-    let content_width = ((available_width - 64.0).max(1.0).min(920.0)) as f32;
+    let content_width = (available_width - 64.0).clamp(1.0, 920.0) as f32;
     let videos: Vec<&Video> = model
         .queue
         .iter()

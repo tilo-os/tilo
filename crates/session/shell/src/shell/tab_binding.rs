@@ -2011,6 +2011,7 @@ mod tests {
                 1,
                 "adoption through the canonical handle must not create a second card"
             );
+            drop(rendered_tree);
         }
         {
             let mut state_tree = canonical.write();

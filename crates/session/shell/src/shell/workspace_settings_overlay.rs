@@ -335,8 +335,8 @@ impl WorkspaceSettingsOverlay {
         // identity card's trailing edge and centred on its centre line — it
         // was pinned 24 px from the panel top, 14 px above that line.
         let identity = Self::identity_rect_for(rect);
-        let target = ui::tokens::Metrics::BASE.min_pointer_target as f64;
-        let inset = ui::tokens::Spacing::BASE.s3 as f64;
+        let target = f64::from(ui::tokens::Metrics::BASE.min_pointer_target);
+        let inset = f64::from(ui::tokens::Spacing::BASE.s3);
         let cy = identity.center().y;
         Rect::new(
             identity.x1 - inset - target,
@@ -2236,6 +2236,10 @@ pub(crate) fn tab_pill_widths(needs: &[f64], nav_width: f64) -> Vec<f64> {
     needs.iter().map(|need| need / total * nav_width).collect()
 }
 
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "navigation item counts are tiny, far below f64's 2^53 exact-integer range"
+)]
 fn usize_to_f64_lossy(value: usize) -> f64 {
     value as f64
 }

@@ -13,7 +13,8 @@
 //!   changed;
 //! - [`chunking`]: the size-scaled FastCDC/BLAKE3 content format;
 //! - [`hydrate`]: placeholder files filled on first access through
-//!   pre-content events.
+//!   pre-content events, and write gates for leased files;
+//! - [`access`]: whether a blocked access reads or writes.
 //!
 //! Nothing here is on the I/O path of a resident file.
 #![allow(
@@ -21,6 +22,7 @@
     reason = "fallible functions return the io::Error of the syscall they wrap"
 )]
 
+pub mod access;
 pub mod btrfs;
 pub mod capture;
 pub mod chunking;

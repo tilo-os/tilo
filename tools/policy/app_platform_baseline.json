@@ -8122,6 +8122,16 @@
       "rationale": "Pre-existing exact site from protected main, attributed to A01-05: TOTP chooses key custody using secret-tool availability (extract backend; high). Remove this exception when K01 closes the contract."
     },
     {
+      "path": "apps/totp/src/storage.rs",
+      "line": 82,
+      "rule": "platform-cfg",
+      "fingerprint": "source:cfg_attr( not(windows), expect( clippy::unnecessary_lazy_evaluations, reason = \" \" ) )",
+      "count": 1,
+      "finding_id": "A01-05",
+      "removal_task": "K01",
+      "rationale": "Pre-existing exact site from protected main, attributed to A01-05: TOTP chooses key custody using secret-tool availability (extract backend; high). Remove this exception when K01 closes the contract."
+    },
+    {
       "path": "apps/tube/Cargo.toml",
       "line": 48,
       "rule": "native-dependency",
