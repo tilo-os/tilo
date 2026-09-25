@@ -15,8 +15,8 @@ fn app_with_doc() -> (MusicApp, AutoCommit) {
 }
 
 /// 2026-09-16 alignment review: the track context menu used a hand-rolled
-/// "nudge to stay in the app rect" that guessed the menu as 220 × (rows·28
-/// + 24) and laid it out against `Theme::dark()`. It now opens through the
+/// "nudge to stay in the app rect" that guessed the menu as
+/// 220 × (rows·28 + 24) and laid it out against `Theme::dark()`. It now opens through the
 /// shared `ContextMenu::open_anchored`, whose geometry is measured with the
 /// frame's renderer and theme and clamped to the viewport — including when
 /// the pointer is in the bottom-right corner.
@@ -2438,7 +2438,7 @@ fn decode_plugins_present() -> bool {
 /// resolve a real `YouTube` track, stage it, and prove what the staged bytes
 /// actually support.
 ///
-/// The Rust-native resolver asks InnerTube for an `ANDROID_VR` URL because that client is
+/// The Rust-native resolver asks `InnerTube` for an `ANDROID_VR` URL because that client is
 /// meant to serve arbitrary byte ranges over the whole file, where
 /// rustypipe's iOS/TV URL is SABR-gated to its first ~1 minute. Whether the
 /// source honours that on the day is the source's decision, and the two

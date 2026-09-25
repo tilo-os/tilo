@@ -6,7 +6,7 @@
 //! the app uses, and asserts that genuine RGBA frames are produced and their
 //! presentation timestamps advance — i.e. the file actually plays.
 //!
-//! These tests require a working GStreamer runtime, `gst-launch-1.0`, and an
+//! These tests require a working `GStreamer` runtime, `gst-launch-1.0`, and an
 //! encoder/muxer from the candidates below. Missing prerequisites fail the test;
 //! synthesized frames or an unobserved decoder cannot establish real playback.
 

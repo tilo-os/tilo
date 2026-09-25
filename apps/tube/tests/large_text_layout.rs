@@ -28,6 +28,15 @@ use vello::kurbo::Rect;
 const VIEWPORT: (f32, f32) = (800.0, 900.0);
 const CARD: &str = "video_card_vid_rust_async";
 
+/// Layout rects are `f64`; the text renderer measures in `f32`.
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "test viewport coordinates are a few thousand pixels, exact in f32"
+)]
+fn px(v: f64) -> f32 {
+    v as f32
+}
+
 fn at(route: Route, scale: f32) -> Harness<TubeApp> {
     let app = TubeApp::new()
         .with_viewport(f64::from(VIEWPORT.0), f64::from(VIEWPORT.1))
@@ -44,10 +53,11 @@ struct Node {
 fn tree(h: &Harness<TubeApp>, id: &str) -> Node {
     fn build(items: &[(usize, Option<String>, Rect)], i: &mut usize, depth: usize) -> Node {
         let rect = items[*i].2;
-        *i += 1;
+        *i = i.saturating_add(1);
+        let child_depth = depth.saturating_add(1);
         let mut children = Vec::new();
-        while *i < items.len() && items[*i].0 == depth + 1 {
-            children.push(build(items, i, depth + 1));
+        while *i < items.len() && items[*i].0 == child_depth {
+            children.push(build(items, i, child_depth));
         }
         Node { rect, children }
     }
@@ -108,11 +118,15 @@ fn card_meta_lines_stack_without_overlap_at_1x() {
 /// assert is that the 2× lines are taller than the 1× ones: they are not
 /// (37/15/16 px at both scales) while the renderer measures the same strings
 /// at 181/31 px, because the shared `NavSplit` places its panes with a fresh
-/// unscaled `TextRenderer::new()` in `apply_layout` (ui/src/widget/nav_split.rs,
+/// unscaled `TextRenderer::new()` in `apply_layout` (`ui/src/widget/nav_split.rs`,
 /// `reapply_children` fallback). That is a framework repair (F1); the probes
 /// below prove the app-local `Flex`, the CSS grid and `Scrollable` all measure
 /// correctly when hosted outside the split.
 #[test]
+#[expect(
+    clippy::float_cmp,
+    reason = "the text scale is stored as given, so it must read back exactly"
+)]
 fn card_meta_rects_stay_stacked_in_order_at_2x_layout_pass() {
     let mut h2 = at(Route::Home, 2.0);
     assert_eq!(h2.text_scale(), 2.0, "the frame really is at 2×");
@@ -120,12 +134,12 @@ fn card_meta_rects_stay_stacked_in_order_at_2x_layout_pass() {
     let title = h2.measure_text(
         "Rewriting a Wayland compositor in Rust: results and benchmarks",
         14.5,
-        Some(rect.width() as f32),
+        Some(px(rect.width())),
     );
-    let channel = h2.measure_text("Low Level Learning", 12.5, Some(rect.width() as f32));
-    let stats = h2.measure_text("842K • 2 days ago", 12.5, Some(rect.width() as f32));
+    let channel = h2.measure_text("Low Level Learning", 12.5, Some(px(rect.width())));
+    let stats = h2.measure_text("842K • 2 days ago", 12.5, Some(px(rect.width())));
     assert!(
-        rect.height() as f32 >= title.1 + channel.1 + stats.1,
+        px(rect.height()) >= title.1 + channel.1 + stats.1,
         "measure-first metadata leaf must reserve all three painted lanes: {rect:?}"
     );
 }
@@ -155,11 +169,11 @@ fn text_in_flex_measures_at_renderer_scale() {
     // A root child is stretched to the viewport, so only its width is a
     // measurement; the Flex child is the real intrinsic case.
     assert!(
-        (alone_rect.width() as f32 - direct.0).abs() < 1.5,
+        (px(alone_rect.width()) - direct.0).abs() < 1.5,
         "Text alone measures {alone_rect:?} but the renderer says {direct:?}"
     );
     assert!(
-        (flex_children[0].height() as f32 - direct.1).abs() < 1.5,
+        (px(flex_children[0].height()) - direct.1).abs() < 1.5,
         "Text in Flex measures {:?} but the renderer says {direct:?}",
         flex_children[0]
     );
@@ -192,11 +206,11 @@ fn text_in_grid_and_scrollable_measures_at_renderer_scale() {
 
     let mut in_grid = Harness::with_text_scale(grid(), (700.0, 900.0), 2.0);
     let grid_lines = in_grid.child_rects("card");
-    let w = grid_lines[0].width() as f32;
+    let w = px(grid_lines[0].width());
     let direct_title = in_grid.measure_text(title, 14.5, Some(w));
     let direct_channel = in_grid.measure_text("Low Level Learning", 12.5, None);
     assert!(
-        (grid_lines[0].height() as f32 - direct_title.1).abs() < 1.5,
+        (px(grid_lines[0].height()) - direct_title.1).abs() < 1.5,
         "grid: title line {:?} vs renderer {direct_title:?}",
         grid_lines[0]
     );
@@ -209,12 +223,12 @@ fn text_in_grid_and_scrollable_measures_at_renderer_scale() {
     let scroll_lines = in_scroll.child_rects("card");
 
     assert!(
-        (grid_lines[1].height() as f32 - direct_channel.1).abs() < 1.5,
+        (px(grid_lines[1].height()) - direct_channel.1).abs() < 1.5,
         "grid: channel line {:?} vs renderer {direct_channel:?}",
         grid_lines[1]
     );
     assert!(
-        (scroll_lines[1].height() as f32 - direct_channel.1).abs() < 1.5,
+        (px(scroll_lines[1].height()) - direct_channel.1).abs() < 1.5,
         "scrollable: channel line {:?} vs renderer {direct_channel:?}",
         scroll_lines[1]
     );
