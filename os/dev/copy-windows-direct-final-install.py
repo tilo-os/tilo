@@ -377,6 +377,7 @@ def run(args):
             args.vm_proof_checked, child_digest, args.ci_image, ci_provenance)
         require(checked["schema"] == provenance.PROOF_SCHEMA_V2,
                 "physical install requires backend-derived signed target proof v2")
+        dual_gate = provenance.dual_ci_medium_gate(args, checked, child_digest)
         guest = checked["guest_proof"]
         require(source_receipt.get("ci_index_digest") == index_digest
                 and source_receipt.get("ci_child_digest") == child_digest
@@ -391,6 +392,9 @@ def run(args):
                 == hashlib.sha256(args.vm_proof_checked.read_bytes()).hexdigest()
                 and source_receipt.get("installed_uki_sha256") == guest["target_uki_sha256"],
                 "VM source receipt does not bind verified CI child and checked guest proof")
+        require(all(source_receipt.get(field) == value
+                    for field, value in dual_gate.items()),
+                "source receipt does not bind paired signed CI media and WHPX proofs")
     disk_number = plan["windows_disk"]["number"]
     current = stage.snapshot(disk_number)
     require(stage.disk_matches(plan, current), "Windows disk identity or state changed")
@@ -462,6 +466,11 @@ def main(argv=None):
         command.add_argument("--ci-index-manifest", type=Path)
         command.add_argument("--ci-child-manifest", type=Path)
         command.add_argument("--vm-proof-checked", type=Path)
+        for field in ("generic-ci-image", "generic-index-manifest",
+                      "generic-child-manifest", "generic-vm-proof-checked",
+                      "generic-medium-identity", "generic-ci-guest-proof",
+                      "board-medium-identity", "board-ci-guest-proof"):
+            command.add_argument("--" + field, type=str if field == "generic-ci-image" else Path)
         command.add_argument("--output", type=Path)
         command.set_defaults(handler=run)
     args = parser.parse_args(argv)
