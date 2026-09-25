@@ -61,7 +61,7 @@ impl DiskRow {
     }
 
     fn disabled(&self) -> bool {
-        self.disk.is_system || self.disk.read_only || !self.disk.identity_ready()
+        self.disk.blocks_install() || self.disk.read_only || !self.disk.identity_ready()
     }
 
     /// The short, spoken identity of this candidate. Keep the hardware model,
@@ -88,7 +88,11 @@ impl DiskRow {
 
     fn accessible_description(&self) -> String {
         let mut sentences = vec![format!("{}.", self.disk.contents_summary())];
-        if self.disk.is_system {
+        if self.disk.hosts_staged_installer() {
+            sentences.push(
+                "This disk also holds the running installer and your existing system. Tilo is added only in the space prepared for it.".to_string(),
+            );
+        } else if self.disk.is_system {
             sentences.push(
                 "Unavailable because this is the disk the live system is running from.".to_string(),
             );
@@ -201,7 +205,9 @@ impl Widget for DiskRow {
             details.push(self.disk.model.clone());
         }
         details.push(self.disk.contents_summary());
-        if self.disk.is_system {
+        if self.disk.hosts_staged_installer() {
+            details.push("prepared by Tilo Imager".to_string());
+        } else if self.disk.is_system {
             details.push("running system disk".to_string());
             details.push("not selectable".to_string());
         }
@@ -384,6 +390,8 @@ mod tests {
             removable: false,
             read_only: false,
             is_system: false,
+            live_system_nodes: Vec::new(),
+            internal_plan: None,
             partitions: Vec::new(),
         }
     }
@@ -507,6 +515,27 @@ mod tests {
         let mut doc = AutoCommit::new();
         assert!(!row.perform_action(&ui::a11y::Action::Activate, &mut doc, &ROOT));
         assert!(doc.get(&ROOT, "select").unwrap().is_none());
+    }
+
+    #[test]
+    fn staged_installer_disk_is_selectable_and_says_what_it_holds() {
+        let mut target = disk();
+        target.is_system = true;
+        target.internal_plan = Some(crate::disks::GuidedAlongsidePlan {
+            free_start_bytes: 1 << 30,
+            free_size_bytes: 34 << 30,
+            efi_start_bytes: 1 << 30,
+            efi_size_bytes: 2 << 30,
+            root_start_bytes: 3 << 30,
+            root_size_bytes: 32 << 30,
+        });
+        let row = DiskRow::new(target, "select", false);
+        let node = row.accessibility().expect("staged disk semantics");
+        assert!(!node.state.disabled);
+        assert!(node.state.focusable);
+        let description = node.description.as_deref().expect("staged description");
+        assert!(description.contains("also holds the running installer"));
+        assert!(!description.contains("Unavailable"));
     }
 
     #[test]
