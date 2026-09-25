@@ -1,11 +1,13 @@
 """Exercise the Settings production launch route without opening a native app."""
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
 import tempfile
 import unittest
 import native_app_capture
+from fixture_host_tools import fixture_path
 
 class SettingsCollectorTests(unittest.TestCase):
     def test_normal_launch_isolated_roots_no_fixture_or_screenshot_flags(self):
@@ -27,7 +29,8 @@ print('normal Settings route',flush=True)
 raise SystemExit(7)
 ''');app.chmod(0o755)
             result=subprocess.run([sys.executable,str(Path(__file__).with_name('collect-settings-native.py')),
-                '--binary',str(app),'--output-root',str(root/'runs')],capture_output=True,text=True)
+                '--binary',str(app),'--output-root',str(root/'runs')],capture_output=True,text=True,
+                env=dict(os.environ,PATH=fixture_path(root)))
             self.assertEqual(result.returncode,1,result.stderr)
             run=next((root/'runs').iterdir())
             self.assertIn('normal Settings route',(run/'app.log').read_text())

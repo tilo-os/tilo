@@ -29,7 +29,7 @@ class RawLayerEpoch(unittest.TestCase):
         self.assertIn('"${layer_epoch_args[@]}"', workflow)
         self.assertIn("fetch-depth: ${{ inputs.assembly_layer_epoch_anchor != '' && '0' || '5' }}", workflow)
         self.assertIn("filter: ${{ inputs.assembly_layer_epoch_anchor != '' && 'blob:none' || '' }}", workflow)
-        self.assertLess(workflow.index('Validate layer timestamp anchor before building tools'), workflow.index('docker build --file'))
+        self.assertLess(workflow.index('Validate layer timestamp anchor before building tools'), workflow.index('python3 os/dev/build-compile-tools.py'))
         guard = textwrap.dedent('          anchor = ' + workflow.split('          anchor = ', 1)[1].split("          s = importlib.util.spec_from_file_location('compile'", 1)[0])
         valid = {'ASSEMBLY_LAYER_EPOCH_ANCHOR':'b'*40, 'COMPILE_MODE':'full-build',
                  'RECONSTRUCTED_NATIVE_RECEIPT':'{}', 'WPE_ADOPTION_RECEIPT':'{}', 'NATIVE_SOURCE_COMPATIBILITY':'{}'}
