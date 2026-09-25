@@ -23,6 +23,7 @@ pub(crate) mod animation_diagnostics;
 pub(crate) mod capture_surface;
 pub mod catalogue;
 pub mod chrome_state;
+pub mod codec_pack_notice;
 pub mod collab_broker;
 pub mod collab_broker_capnp;
 pub mod collab_core;
