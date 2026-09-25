@@ -47,13 +47,14 @@ class GuestAdmission(unittest.TestCase):
 
     def test_supervised_records_observation_but_retains_firmware_guard(self):
         with patch.object(disk,'command') as command, patch.object(disk,'reject_firmware_access') as firmware, \
-                patch.object(disk,'ensure_loop_devices'), \
+                patch.object(disk,'ensure_loop_devices'), patch.object(disk,'ensure_fuse_device'), \
                 patch.object(disk,'_create_verified_disk',return_value={'disk_created':True}):
             result=disk.create_from_supervised_controller(self.args,self.observation)
             self.assertEqual(result['controller_observation'],self.observation)
             command.assert_not_called();firmware.assert_called_once()
         with patch.object(disk,'reject_firmware_access',side_effect=ValueError('TPM exposed')), \
-                patch.object(disk,'ensure_loop_devices'),patch.object(disk,'_create_verified_disk') as create:
+                patch.object(disk,'ensure_loop_devices'),patch.object(disk,'ensure_fuse_device'), \
+                patch.object(disk,'_create_verified_disk') as create:
             with self.assertRaisesRegex(ValueError,'TPM'):disk.create_from_supervised_controller(self.args,self.observation)
             create.assert_not_called()
 
