@@ -67,6 +67,31 @@ The manifest has exactly three fields: `schema_version` (integer `1`),
 basenames to its lowercase SHA-256). Hashes bind the selected local copies;
 they do not prove compatibility or establish a publisher's signature.
 
+### Public firmware gap for Lenovo 83ED
+
+The six-file input above was extracted from this laptop's Windows drivers for
+private development. As checked on 2026-09-25, upstream
+[linux-firmware's 83ED directory](https://gitlab.com/kernel-firmware/linux-firmware/-/tree/main/qcom/x1e80100/LENOVO/83ED)
+and Fedora's
+[qcom-firmware file list](https://packages.fedoraproject.org/pkgs/linux-firmware/qcom-firmware/fedora-44-updates.html)
+contain five of those six names. Neither lists `cdsp_dtbs.elf` for 83ED.
+The five locally extracted files also have different SHA-256 values from the
+same-named upstream 83ED files, so a distro package cannot silently replace
+the reviewed private six-file set. The upstream
+[83ED entries in WHENCE](https://gitlab.com/kernel-firmware/linux-firmware/-/blob/main/WHENCE)
+identify the five published files and their licensing references; that does
+not establish redistribution rights for the separately extracted Windows
+files. The [Linux board device tree](https://github.com/torvalds/linux/blob/master/arch/arm64/boot/dts/qcom/x1e80100-lenovo-yoga-slim7x.dts)
+requests the 83ED `cdsp_dtbs.elf` alongside `qccdsp8380.mbn`.
+
+Do not publish a public 83ED image from the extracted six-file set. Before a
+public release, obtain an authoritative, redistributable 83ED CDSP DTB source
+with its license and notices, confirm the full firmware set against the
+target kernel on the device, and build and sign the image in CI. A profile
+that omits CDSP firmware would need a separately reviewed device tree and
+physical test of the resulting feature loss; this profile still requires all
+six files.
+
 ## Image build integration
 
 Select the profile when building on native aarch64 Linux, after configuring
