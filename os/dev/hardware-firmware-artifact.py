@@ -27,7 +27,17 @@ def command(*arguments):
     result = subprocess.run(['podman', '--remote=false', *arguments], env=environment,
                             stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     if result.returncode:
-        raise ValueError(f'firmware Podman {arguments[0]} failed (exit {result.returncode})')
+        # Podman does not receive the registry token in argv or env. Keep its
+        # last diagnostic line so CI can distinguish auth, network and storage
+        # failures, while removing URL userinfo and auth header values.
+        detail = result.stderr.decode('utf-8', errors='replace').strip().splitlines()
+        detail = detail[-1][:1000] if detail else 'no diagnostic'
+        detail = re.sub(r'(?i)(https?://)[^/@\s]+@', r'\1[redacted]@', detail)
+        detail = re.sub(r'(?i)\b(bearer|basic)\s+[A-Za-z0-9._~+/-]+=*',
+                        r'\1 [redacted]', detail)
+        detail = re.sub(r'(?i)\b(authorization|password|token)(\s*[:=]\s*)\S+',
+                        r'\1\2[redacted]', detail)
+        raise ValueError(f'firmware Podman {arguments[0]} failed (exit {result.returncode}): {detail}')
     return result.stdout.decode('utf-8').strip()
 
 

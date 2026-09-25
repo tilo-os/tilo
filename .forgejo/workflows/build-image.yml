@@ -574,9 +574,16 @@ jobs:
               echo '::error::native board runner needs Podman'; exit 1
             fi
           fi
+          # The importer deliberately clears its subprocess environment. Give
+          # login and import the same explicit authfile instead of relying on
+          # Podman's HOME/XDG_RUNTIME_DIR-dependent default under sudo.
+          firmware_authfile=$(mktemp "${RUNNER_TEMP:-/tmp}/tilo-firmware-auth.XXXXXX")
+          trap 'sudo -n rm -f -- "$firmware_authfile"' EXIT
           printf '%s' "$REGISTRY_TOKEN" | sudo -n podman login code.sandbox.example \
+            --authfile "$firmware_authfile" \
             --username "${{ github.actor }}" --password-stdin
-          sudo -n python3 os/dev/hardware-firmware-artifact.py import \
+          sudo -n env REGISTRY_AUTH_FILE="$firmware_authfile" \
+            python3 os/dev/hardware-firmware-artifact.py import \
             --reference "$FIRMWARE_CANDIDATE" \
             --manifest-sha256 "$FIRMWARE_MANIFEST_SHA256" \
             --profile lenovo-83ed --architecture aarch64 \
