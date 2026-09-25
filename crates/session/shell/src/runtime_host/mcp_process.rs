@@ -171,14 +171,19 @@ pub fn read_frame(reader: &mut impl BufRead) -> io::Result<Frame> {
             };
         }
         let newline = available.iter().position(|byte| *byte == b'\n');
-        let consumed = newline.map_or(available.len(), |position| position + 1);
-        let content_len = newline.unwrap_or(available.len());
+        // `position` indexes into `available`, so `position + 1` is at most its length.
+        let consumed = newline.map_or(available.len(), |position| position.saturating_add(1));
+        // Everything before the first newline, or the whole buffer when there is none.
+        let content = available
+            .split(|byte| *byte == b'\n')
+            .next()
+            .unwrap_or_default();
         if !too_long {
-            if line.len().saturating_add(content_len) > MAX_REQUEST_BYTES {
+            if line.len().saturating_add(content.len()) > MAX_REQUEST_BYTES {
                 too_long = true;
                 line.clear();
             } else {
-                line.extend_from_slice(&available[..content_len]);
+                line.extend_from_slice(content);
             }
         }
         reader.consume(consumed);

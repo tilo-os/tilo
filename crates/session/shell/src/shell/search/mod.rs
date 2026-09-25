@@ -1138,6 +1138,10 @@ impl SearchRegistry {
                     + application_intent
                     + proximity;
                 let key = (r.provider_id.clone(), r.id.clone());
+                #[expect(
+                    clippy::indexing_slicing,
+                    reason = "canonical_rows only stores merged.len() right before the matching push, so every stored index is in bounds"
+                )]
                 if let Some(&index) = canonical_rows.get(&key) {
                     if strength > merged[index].1 {
                         merged[index] = (r, strength);

@@ -156,7 +156,10 @@ impl Caller {
             root.join(format!("request-{}.json", self.sequence)),
         )?;
         let response = root.join(format!("response-{}.json", self.sequence));
-        self.sequence += 1;
+        self.sequence = self
+            .sequence
+            .checked_add(1)
+            .ok_or("request sequence exhausted")?;
         let deadline = Instant::now();
         while !response.exists() {
             children.live()?;
@@ -189,7 +192,11 @@ pub(super) fn run(root: PathBuf, photos: PathBuf, writer: PathBuf) -> Result<()>
         return Err("edited proof requires a fresh isolated profile".into());
     }
     let mut tree = shell::shell::state::WorkspaceTree::bootstrap_default();
-    let workspace = &mut tree.desktop.workspaces[0];
+    let workspace = tree
+        .desktop
+        .workspaces
+        .first_mut()
+        .ok_or("default workspace tree has no workspace")?;
     workspace.grant_capability(shell::shell::state::CapOverride::membership(
         shell::shell::state::Subject::agent(READER),
         workspace.room.to_string(),
@@ -213,6 +220,11 @@ pub(super) fn run(root: PathBuf, photos: PathBuf, writer: PathBuf) -> Result<()>
         }),
     );
     let fixture = root.join("source.png");
+    #[expect(
+        clippy::arithmetic_side_effects,
+        clippy::cast_possible_truncation,
+        reason = "x < 48 and y < 32, so the channel expressions cannot overflow u32; the first two fit in u8 and the third is reduced mod 256"
+    )]
     image::RgbaImage::from_fn(48, 32, |x, y| {
         image::Rgba([
             (x * 5) as u8,
@@ -290,8 +302,9 @@ pub(super) fn run(root: PathBuf, photos: PathBuf, writer: PathBuf) -> Result<()>
     ] {
         let result =
             denied_caller.invoke(&denied_root, &mut children, surface, action, arguments)?;
-        if !result["error"]
-            .as_str()
+        if !result
+            .get("error")
+            .and_then(serde_json::Value::as_str)
             .is_some_and(|error| error.contains("not allowed to invoke"))
         {
             return Err(
@@ -314,7 +327,11 @@ pub(super) fn run(root: PathBuf, photos: PathBuf, writer: PathBuf) -> Result<()>
         &place,
         json!({"value":missing}),
     )?;
-    if (unavailable.get("error").is_none() && unavailable["update"]["state"] != "failed")
+    if (unavailable.get("error").is_none()
+        && unavailable
+            .pointer("/update/state")
+            .and_then(serde_json::Value::as_str)
+            != Some("failed"))
         || !unavailable
             .to_string()
             .contains("not available on this machine")
@@ -339,10 +356,10 @@ pub(super) fn run(root: PathBuf, photos: PathBuf, writer: PathBuf) -> Result<()>
     }
     let live_result = caller.invoke(&root, &mut children, &export_surface, &export, json!({}))?;
     let output = succeeded(&live_result)?;
-    if output.resources.len() != 1 {
+    let [resource] = output.resources.as_slice() else {
         return Err("producer must return exactly one content resource".into());
-    }
-    let hash = tilo_actions::content_hash(&output.resources[0]).ok_or("wrong resource kind")?;
+    };
+    let hash = tilo_actions::content_hash(resource).ok_or("wrong resource kind")?;
     if hash.len() != 64
         || !hash
             .bytes()
@@ -387,18 +404,23 @@ pub(super) fn run(root: PathBuf, photos: PathBuf, writer: PathBuf) -> Result<()>
         .iter()
         .find(|workspace| workspace.room.to_string() == session.room)
         .ok_or("persisted proof workspace missing")?;
-    let producer_update: InvocationUpdate = serde_json::from_value(live_result["update"].clone())?;
+    let producer_update: InvocationUpdate = serde_json::from_value(
+        live_result
+            .get("update")
+            .cloned()
+            .unwrap_or(serde_json::Value::Null),
+    )?;
     let matching: Vec<_> = workspace
         .effect_receipts
         .iter()
         .filter(|receipt| receipt.invocation == producer_update.invocation())
         .collect();
-    if matching.len() != 1 {
+    let [matched] = matching.as_slice() else {
         return Err("expected exactly one persisted producer receipt".into());
-    }
-    let receipt = serde_json::to_value(matching[0])?;
-    if matching[0].status != tilo_actions::EffectReceiptStatus::Succeeded
-        || matching[0].actor != session.actor
+    };
+    let receipt = serde_json::to_value(matched)?;
+    if matched.status != tilo_actions::EffectReceiptStatus::Succeeded
+        || matched.actor != session.actor
         || receipt.to_string().contains(hash)
         || receipt.get("output").is_some()
         || receipt.get("resources").is_some()

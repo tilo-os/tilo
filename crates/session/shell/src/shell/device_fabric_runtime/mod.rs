@@ -154,7 +154,7 @@ impl GamepadAuthorizationState {
     ) -> bool {
         if inbound_exists
             || self.pending.contains_key(&forwarding_id)
-            || inbound_count + self.pending.len() >= MAX_GAMEPAD_FORWARDINGS
+            || inbound_count.saturating_add(self.pending.len()) >= MAX_GAMEPAD_FORWARDINGS
         {
             return false;
         }
@@ -599,7 +599,9 @@ impl NearbyStagingAdmission {
         if total >= MAX_NEARBY_STAGING_JOBS || owned >= MAX_NEARBY_STAGING_JOBS_PER_OWNER {
             return false;
         }
-        self.owners.insert(owner.to_string(), owned + 1);
+        // `owned` is below the per-owner cap here, so this never saturates.
+        self.owners
+            .insert(owner.to_string(), owned.saturating_add(1));
         true
     }
 
@@ -641,10 +643,13 @@ impl NearbyStagingPermit {
             .lock()
             .map_err(|_| "Nearby Send staging admission is unavailable".to_string())?;
         let admitted = admission.acquire(owner);
+        // Read the generation in the same critical section as the admission.
+        let generation = admission.generation;
+        drop(admission);
         admitted
             .then(|| Self {
                 owner: owner.to_string(),
-                generation: admission.generation,
+                generation,
             })
             .ok_or_else(|| {
                 "Nearby Send staging is busy; retry when another transfer finishes".into()
@@ -7358,10 +7363,11 @@ pub fn authorize_typed_gamepad_forwarding(
     approved: bool,
 ) -> Result<(), String> {
     require_continuity(ContinuityCapability::TypedGamepad)?;
-    let mut state = gamepad_authorization_state()
+    let decided = gamepad_authorization_state()
         .lock()
-        .map_err(|_| "typed-gamepad authorization state is unavailable".to_string())?;
-    if !state.decide(forwarding_id, approved) {
+        .map_err(|_| "typed-gamepad authorization state is unavailable".to_string())?
+        .decide(forwarding_id, approved);
+    if !decided {
         return Err("typed-gamepad authorization is unknown or already decided".into());
     }
     Ok(())
@@ -7419,7 +7425,9 @@ pub fn send_typed_gamepad_event(
             .sequence
             .checked_add(1)
             .ok_or_else(|| "typed-gamepad event sequence is exhausted".to_string())?;
-        (session.target.clone(), lease_nonce, sequence)
+        let target = session.target.clone();
+        drop(state);
+        (target, lease_nonce, sequence)
     };
     network.send_personal_fabric_action(
         &target,
@@ -8741,7 +8749,10 @@ mod tests {
             peer: source.clone(),
             outbound: false,
             phase: DisplayMirrorPhase::AwaitingConsent,
-            updated: Instant::now() - DISPLAY_MIRROR_CONSENT_TIMEOUT - Duration::from_secs(1),
+            updated: Instant::now()
+                .checked_sub(DISPLAY_MIRROR_CONSENT_TIMEOUT)
+                .and_then(|stale| stale.checked_sub(Duration::from_secs(1)))
+                .unwrap(),
         };
         assert!(session.matches(&source, false, DisplayMirrorPhase::AwaitingConsent));
         assert!(!session.matches(&other, false, DisplayMirrorPhase::AwaitingConsent));
@@ -8755,7 +8766,10 @@ mod tests {
                 peer: source,
                 outbound: true,
                 phase: DisplayMirrorPhase::Stopped,
-                updated: Instant::now() - DISPLAY_MIRROR_HISTORY_TTL - Duration::from_secs(1),
+                updated: Instant::now()
+                    .checked_sub(DISPLAY_MIRROR_HISTORY_TTL)
+                    .and_then(|stale| stale.checked_sub(Duration::from_secs(1)))
+                    .unwrap(),
             },
         );
         state.prune();
@@ -8820,6 +8834,21 @@ mod tests {
         assert!(state.decide([1; 16], true));
         assert!(!state.decide([1; 16], false));
         assert_eq!(state.decisions, VecDeque::from([([1; 16], true)]));
+    }
+
+    #[test]
+    fn gamepad_queue_rejects_when_forwardings_are_full_even_at_usize_max() {
+        let mut state = GamepadAuthorizationState::default();
+        assert!(!state.queue(
+            [3; 16],
+            pending_gamepad("source"),
+            false,
+            MAX_GAMEPAD_FORWARDINGS
+        ));
+        assert!(!state.queue([3; 16], pending_gamepad("source"), false, usize::MAX));
+        assert!(state.pending.is_empty());
+        assert!(state.queue([3; 16], pending_gamepad("source"), false, 0));
+        assert!(!state.queue([4; 16], pending_gamepad("source"), false, usize::MAX));
     }
 
     #[test]

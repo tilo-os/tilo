@@ -73,6 +73,15 @@ const MAX_NEARBY_TRANSFER_HANDLES: usize = 256;
 const NEARBY_DESTINATION_HANDLE_TTL: Duration = Duration::from_secs(120);
 const FILES_APP_ID: &str = "so.tilo.file-explorer";
 
+/// When a nearby handle issued or refreshed at `now` stops being valid.
+///
+/// An expiry the clock cannot represent fails closed: the handle expires at
+/// `now` instead of never, so an unrepresentable deadline cannot mint an
+/// immortal capability handle.
+fn nearby_handle_expiry(now: Instant, ttl: Duration) -> Instant {
+    now.checked_add(ttl).unwrap_or(now)
+}
+
 #[derive(Clone)]
 struct NearbyTargetBinding {
     peer_id: u64,
@@ -115,7 +124,7 @@ impl NearbyTargetRegistry {
         if let Some((handle, binding)) = self.bindings.iter_mut().find(|(_, binding)| {
             binding.peer_id == peer_id && binding.route == channel && binding.target == target
         }) {
-            binding.expires_at = now + NEARBY_TARGET_HANDLE_TTL;
+            binding.expires_at = nearby_handle_expiry(now, NEARBY_TARGET_HANDLE_TTL);
             return *handle;
         }
         loop {
@@ -129,7 +138,7 @@ impl NearbyTargetRegistry {
                         peer_id,
                         route: route.channel_key(),
                         target,
-                        expires_at: now + NEARBY_TARGET_HANDLE_TTL,
+                        expires_at: nearby_handle_expiry(now, NEARBY_TARGET_HANDLE_TTL),
                     },
                 );
                 return handle;
@@ -202,7 +211,7 @@ impl NearbyDestinationRegistry {
                 && binding.route == route.channel_key()
                 && binding.grant == grant
         }) {
-            binding.expires_at = now + NEARBY_DESTINATION_HANDLE_TTL;
+            binding.expires_at = nearby_handle_expiry(now, NEARBY_DESTINATION_HANDLE_TTL);
             return runtime_collab::NearbyTransferDestination {
                 handle: *handle,
                 label: binding.label.clone(),
@@ -222,7 +231,7 @@ impl NearbyDestinationRegistry {
                         grant,
                         label: label.clone(),
                         remembered: false,
-                        expires_at: now + NEARBY_DESTINATION_HANDLE_TTL,
+                        expires_at: nearby_handle_expiry(now, NEARBY_DESTINATION_HANDLE_TTL),
                     },
                 );
                 return runtime_collab::NearbyTransferDestination {
@@ -248,7 +257,7 @@ impl NearbyDestinationRegistry {
             return None;
         }
         binding.remembered |= remember;
-        binding.expires_at = now + NEARBY_DESTINATION_HANDLE_TTL;
+        binding.expires_at = nearby_handle_expiry(now, NEARBY_DESTINATION_HANDLE_TTL);
         crate::shell::nearby_transfer::SecureNearbyDestination::open_grant(&binding.grant).ok()
     }
 
@@ -293,7 +302,7 @@ impl NearbyTransferRegistry {
             if binding.peer_id != peer_id || binding.route != route.channel_key() {
                 return None;
             }
-            binding.expires_at = now + NEARBY_TRANSFER_HANDLE_TTL;
+            binding.expires_at = nearby_handle_expiry(now, NEARBY_TRANSFER_HANDLE_TTL);
             return Some(*handle);
         }
         if !allow_claim || self.bindings.len() >= MAX_NEARBY_TRANSFER_HANDLES {
@@ -311,7 +320,7 @@ impl NearbyTransferRegistry {
                         route: route.channel_key(),
                         transfer_id,
                         direction,
-                        expires_at: now + NEARBY_TRANSFER_HANDLE_TTL,
+                        expires_at: nearby_handle_expiry(now, NEARBY_TRANSFER_HANDLE_TTL),
                     },
                 );
                 return Some(handle);
@@ -335,7 +344,7 @@ impl NearbyTransferRegistry {
         {
             return None;
         }
-        binding.expires_at = now + NEARBY_TRANSFER_HANDLE_TTL;
+        binding.expires_at = nearby_handle_expiry(now, NEARBY_TRANSFER_HANDLE_TTL);
         Some(binding.transfer_id)
     }
 
@@ -1948,6 +1957,7 @@ impl RealtimeFabricAppBridge {
             });
             return Err(error.to_string());
         }
+        drop(realtime);
         Ok(())
     }
 
@@ -2023,6 +2033,7 @@ impl RealtimeFabricAppBridge {
             {
                 return Err("capture consent is already being applied".into());
             }
+            drop(realtime);
             result
         };
         if !approved {
@@ -2205,6 +2216,10 @@ fn decode_permission_profile_operation(
 
 /// Apply a permission-profile operation as `caller` to one workspace and
 /// mirror it into the room document.
+#[expect(
+    clippy::indexing_slicing,
+    reason = "the caller resolves workspace_index with `position` under the same tree write guard it passes in, and nothing here removes workspaces"
+)]
 fn apply_permission_profile_operation(
     tree: &mut WorkspaceTree,
     workspace_index: usize,
@@ -3223,6 +3238,10 @@ impl CapnpBrokerState {
     /// forward to: the broker already owns the workspace capability authority,
     /// so it validates, mutates, records history, and returns one terminal
     /// lifecycle update atomically under that authority.
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "workspace_index comes from `position` under the tree write guard held for the whole call, so it stays in bounds"
+    )]
     fn invoke_workspace_profile_action(
         &self,
         cluster_id: &str,
@@ -9404,6 +9423,7 @@ pub(crate) mod tests {
             0,
             "stale consent must revoke every minted capability"
         );
+        drop(realtime);
     }
 
     #[test]
@@ -11526,6 +11546,7 @@ pub(crate) mod tests {
             collab_types::Verb::Read,
         ));
         assert_eq!(workspace.effect_receipts.len(), 2);
+        drop(tree);
     }
 
     #[allow(
@@ -12023,5 +12044,16 @@ pub(crate) mod tests {
 
         let reader = test_published_view("read", "reader", true);
         assert!(validate_resource_view_descriptors(&[editor, reader]).is_err());
+    }
+
+    #[test]
+    fn nearby_handle_expiry_adds_ttl_and_fails_closed_on_overflow() {
+        let now = Instant::now();
+        assert_eq!(
+            Some(nearby_handle_expiry(now, NEARBY_TARGET_HANDLE_TTL)),
+            now.checked_add(NEARBY_TARGET_HANDLE_TTL)
+        );
+        assert_eq!(nearby_handle_expiry(now, Duration::ZERO), now);
+        assert_eq!(nearby_handle_expiry(now, Duration::MAX), now);
     }
 }

@@ -1771,6 +1771,7 @@ mod tests {
                     .expect("second foreign group");
             tree.desktop.set_active_group(strip_id, first_group);
             tree.flush_to_disk();
+            drop(tree);
             (strip_id, first_group, second_group)
         };
 
@@ -1841,6 +1842,7 @@ mod tests {
                 insert_foreign_group(&mut tree, 720_002, Some("org.example.second"))
                     .expect("second foreign group");
             tree.desktop.set_active_group(strip_id, first_group);
+            drop(tree);
             (strip_id, first_group, second_group, 720_002)
         };
         let event_loop: EventLoop<'static, crate::compositor::state::State> =

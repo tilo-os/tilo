@@ -2673,6 +2673,7 @@ mod tests {
                 .find(|workspace| workspace.id == destination_id)
                 .expect("destination workspace")
                 .set_owner("somebody-else");
+            drop(tree);
             (source_room, destination_room)
         };
         let mut document = AutoCommit::new();

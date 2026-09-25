@@ -368,7 +368,12 @@ fn pump_scanner(
                 return;
             }
         };
-        if spool.write_all(&buffer[..read]).is_err() {
+        #[expect(
+            clippy::indexing_slicing,
+            reason = "Read::read never reports more bytes than the buffer it was given"
+        )]
+        let chunk = &buffer[..read];
+        if spool.write_all(chunk).is_err() {
             let _ = failures.try_send(session_id);
             return;
         }
@@ -388,13 +393,18 @@ fn pump_scanner(
             return;
         }
         let next = offset.saturating_add(u64::try_from(read).unwrap_or(u64::MAX));
+        #[expect(
+            clippy::indexing_slicing,
+            reason = "Read::read never reports more bytes than the buffer it was given"
+        )]
+        let payload = buffer[..read].to_vec();
         let frame = CapturedRemoteChunk {
             session_id,
             offset,
             total_bytes: total,
             page_index: Some(0),
             end_of_unit: next == total,
-            payload: buffer[..read].to_vec(),
+            payload,
         };
         if tx.try_send(frame).is_err() {
             let _ = failures.try_send(session_id);
