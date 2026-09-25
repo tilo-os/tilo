@@ -11245,6 +11245,7 @@ dependencies = [
  "taffy",
  "tempfile",
  "tilo-actions",
+ "tilo-automerge",
  "tilo-relay",
  "tilo-ui",
  "tilo-user-identity",
@@ -11272,6 +11273,7 @@ dependencies = [
 name = "qos-cloud-host"
 version = "0.1.0"
 dependencies = [
+ "advisory-lock",
  "anyhow",
  "atomic-file",
  "automerge",
@@ -11305,7 +11307,9 @@ dependencies = [
  "tempfile",
  "tilo-actions",
  "tilo-app-package",
+ "tilo-automerge",
  "tilo-model-gateway",
+ "tilo-net",
  "tilo-relay",
  "tilo-ui",
  "tilo-user-identity",
@@ -11337,6 +11341,7 @@ dependencies = [
  "serde_json",
  "taffy",
  "tilo-actions",
+ "tilo-automerge",
  "tilo-ui",
  "tracing",
  "uuid",
@@ -11449,6 +11454,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "tilo-actions",
+ "tilo-automerge",
  "tilo-relay",
  "tilo-ui",
  "tilo-user-identity",
