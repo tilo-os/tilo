@@ -136,7 +136,7 @@ pub(super) fn load_strict(
     Ok(doc)
 }
 
-fn push_changes(chunk: Chunk<'_>, changes: &mut Vec<Change>) -> Result<()> {
+pub(crate) fn push_changes(chunk: Chunk<'_>, changes: &mut Vec<Change>) -> Result<()> {
     match chunk {
         Chunk::Change(change) => changes.push(
             Change::new_from_unverified(change.into_owned(), None).map_err(|_| Error::Invalid)?,
@@ -190,7 +190,7 @@ fn reconstruct_document(
 
 /// `Document::reconstruct_changes` plus the declared-heads check that the
 /// 0.8 bounded path (`reconstruct_changes_bounded`) applied to every chunk.
-fn document_changes(
+pub(crate) fn document_changes(
     document: &storage::Document<'_>,
     encoding: TextEncoding,
 ) -> Result<Vec<Change>> {

@@ -785,20 +785,12 @@ impl ExposeQueue {
 
 /// qOS bounded admission (lane L1): requested heap bytes of this log, read
 /// from capacities without allocating. `None` when the log holds state
-/// this measurement does not walk (completed patches, mark accumulators or
-/// mark sets); callers fail closed on `None`.
+/// this measurement does not walk (grapheme-encoded text in a completed
+/// patch); callers fail closed on `None`.
 impl PatchLog {
     pub(crate) fn native_heap_bytes(&self) -> Option<usize> {
+        use crate::resource_limits::dims::native_scalar_heap as scalar;
         use std::mem::size_of;
-        fn scalar(v: &crate::ScalarValue) -> usize {
-            match v {
-                crate::ScalarValue::Bytes(b) => b.capacity(),
-                // SmolStr spills strings longer than 23 bytes into Arc<str>.
-                crate::ScalarValue::Str(s) if s.len() > 23 => s.len() + 16,
-                crate::ScalarValue::Unknown { bytes, .. } => bytes.capacity(),
-                _ => 0,
-            }
-        }
         fn value(v: &Value) -> usize {
             match v {
                 Value::Scalar(s) => scalar(s),
@@ -809,13 +801,12 @@ impl PatchLog {
                 _ => 256,
             }
         }
-        if !self.completed_patches.is_empty() || self.completed_patches.capacity() != 0 {
-            return None;
-        }
-        let mut n = self
-            .events
-            .capacity()
-            .saturating_mul(size_of::<(ObjId, Event)>());
+        let mut n = patches_heap_bytes(&self.completed_patches)?;
+        n = n.saturating_add(
+            self.events
+                .capacity()
+                .saturating_mul(size_of::<(ObjId, Event)>()),
+        );
         for (_, e) in &self.events {
             let extra = match e {
                 Event::PutMap { key, value: v, .. } => key.capacity() + value(v),
@@ -824,12 +815,14 @@ impl PatchLog {
                 | Event::IncrementMap { key, .. }
                 | Event::FlagConflictMap { key } => key.capacity(),
                 Event::Splice { text, marks, .. } => {
-                    if marks.is_some() {
-                        return None;
-                    }
+                    // A shared `Arc<MarkSet>` is counted once per holder
+                    // (over-counting is safe): ArcInner counts + the set.
                     text.capacity()
+                        + marks.as_ref().map_or(0, |m| {
+                            2 * size_of::<usize>() + size_of::<MarkSet>() + m.native_heap_bytes()
+                        })
                 }
-                Event::Mark { .. } => return None,
+                Event::Mark { marks } => marks.native_heap_bytes(),
                 _ => 0,
             };
             n = n.saturating_add(extra);
@@ -860,4 +853,88 @@ impl PatchLog {
         }
         Some(n)
     }
+}
+
+/// qOS bounded admission (lane L1): requested heap bytes of patches (the
+/// Vec buffer, paths, keys, values, inserted sequences, text and marks),
+/// read without allocating. `None` for grapheme-encoded text, whose
+/// per-grapheme `String`s are not reachable.
+impl PatchLog {
+    pub(crate) fn native_patches_heap_bytes(patches: &Vec<Patch>) -> Option<usize> {
+        patches_heap_bytes(patches)
+    }
+}
+
+fn patches_heap_bytes(patches: &Vec<Patch>) -> Option<usize> {
+    use crate::patches::PatchAction;
+    use crate::resource_limits::dims::{
+        exid_heap, native_scalar_heap, prop_heap, sequence_tree_heap, smol_heap,
+    };
+    use crate::text_value::ConcreteTextValue;
+    use std::mem::size_of;
+    fn value(v: &crate::Value<'static>) -> usize {
+        match v {
+            crate::Value::Scalar(std::borrow::Cow::Owned(s)) => native_scalar_heap(s),
+            _ => 0,
+        }
+    }
+    let mut n = patches.capacity().saturating_mul(size_of::<Patch>());
+    for p in patches {
+        n = n.saturating_add(exid_heap(&p.obj)).saturating_add(
+            p.path
+                .capacity()
+                .saturating_mul(size_of::<(crate::ObjId, Prop)>()),
+        );
+        for (id, prop) in &p.path {
+            n = n
+                .saturating_add(exid_heap(id))
+                .saturating_add(prop_heap(prop));
+        }
+        let extra = match &p.action {
+            PatchAction::PutMap {
+                key,
+                value: (v, id),
+                ..
+            } => key.capacity() + value(v) + exid_heap(id),
+            PatchAction::PutSeq { value: (v, id), .. } => value(v) + exid_heap(id),
+            PatchAction::Insert { values, .. } => {
+                let mut m = sequence_tree_heap(
+                    values.len(),
+                    size_of::<(crate::Value<'static>, crate::ObjId, bool)>(),
+                );
+                for (v, id, _) in values.iter() {
+                    m = m.saturating_add(value(v)).saturating_add(exid_heap(id));
+                }
+                m
+            }
+            PatchAction::SpliceText {
+                value: text, marks, ..
+            } => {
+                let unit = match text {
+                    ConcreteTextValue::Utf8CodeUnit(_) => 1,
+                    ConcreteTextValue::Utf16CodeUnit(_) => 2,
+                    ConcreteTextValue::CodePoint(_) => 4,
+                    ConcreteTextValue::Grapheme(_) => return None,
+                };
+                sequence_tree_heap(text.len(), unit)
+                    + marks.as_ref().map_or(0, MarkSet::native_heap_bytes)
+            }
+            PatchAction::Increment { prop, .. } | PatchAction::Conflict { prop } => prop_heap(prop),
+            PatchAction::DeleteMap { key } => key.capacity(),
+            PatchAction::DeleteSeq { .. } => 0,
+            PatchAction::Mark { marks } => {
+                let mut m = marks
+                    .capacity()
+                    .saturating_mul(size_of::<crate::marks::Mark>());
+                for mark in marks {
+                    m = m
+                        .saturating_add(smol_heap(&mark.name))
+                        .saturating_add(native_scalar_heap(&mark.value));
+                }
+                m
+            }
+        };
+        n = n.saturating_add(extra);
+    }
+    Some(n)
 }

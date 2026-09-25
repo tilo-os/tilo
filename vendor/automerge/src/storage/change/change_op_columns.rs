@@ -619,3 +619,21 @@ mod tests {
         }
     }
 }
+
+/// qOS bounded admission (lane L1): op predecessor reference count, read
+/// by decoding only the pred-count column. Allocation-free; saturates, and
+/// malformed data (never present in a verified change) counts as
+/// `usize::MAX`, so callers fail closed.
+impl ChangeOpsColumns {
+    pub(crate) fn native_pred_count(&self, data: &[u8]) -> usize {
+        let mut n = 0usize;
+        for count in self.pred.group_range().decoder(data) {
+            match count {
+                Ok(Some(k)) => n = n.saturating_add(usize::try_from(k).unwrap_or(usize::MAX)),
+                Ok(None) => {}
+                Err(_) => return usize::MAX,
+            }
+        }
+        n
+    }
+}

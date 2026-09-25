@@ -6,38 +6,27 @@ use super::super::dims::{self, DocDims, IncomingDims};
 use super::super::{NativeResourceError, NativeShape};
 use crate::{AutoCommit, Change};
 
-/// Bounds computed for one document (and optional incoming changes).
-#[doc(hidden)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct NativeBoundProbe {
-    pub retained: usize,
-    pub clone_peak: usize,
-    pub apply_peak: usize,
-    pub superlinear_apply: usize,
-    pub save_output: usize,
-    pub save_peak: usize,
-    pub history_peak: usize,
-    pub incoming_changes: usize,
-}
-
 impl AutoCommit {
+    /// Bounds for this document and `incoming`, in order: retained, clone
+    /// peak, apply peak, super-linear apply, save output, save peak,
+    /// history peak (all changes), parsed `incoming` changes.
     #[doc(hidden)]
     pub fn native_bound_probe(
         &self,
         incoming: &[Change],
-    ) -> Result<NativeBoundProbe, NativeResourceError> {
+    ) -> Result<[usize; 8], NativeResourceError> {
         let doc = DocDims::of(self);
         let inc = IncomingDims::from_changes(incoming)?;
-        Ok(NativeBoundProbe {
-            retained: dims::retained_bound(&doc)?,
-            clone_peak: dims::clone_peak_bound(&doc)?,
-            apply_peak: dims::apply_peak_bound(&doc, &inc)?,
-            superlinear_apply: dims::superlinear_apply_bound(&doc, &inc)?,
-            save_output: dims::save_output_bound(&doc)?,
-            save_peak: dims::save_peak_bound(&doc)?,
-            history_peak: dims::history_peak_bound(&doc, doc.changes)?,
-            incoming_changes: dims::incoming_changes_bound(&inc)?,
-        })
+        Ok([
+            dims::retained_bound(&doc)?,
+            dims::clone_peak_bound(&doc)?,
+            dims::apply_peak_bound(&doc, &inc)?,
+            dims::superlinear_apply_bound(&doc, &inc)?,
+            dims::save_output_bound(&doc)?,
+            dims::save_peak_bound(&doc)?,
+            dims::history_peak_bound(&doc, doc.changes)?,
+            dims::incoming_changes_bound(&inc)?,
+        ])
     }
 }
 

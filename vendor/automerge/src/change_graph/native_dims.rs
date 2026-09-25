@@ -3,7 +3,7 @@
 //! runs).
 use super::{ChangeGraph, Edge, FragmentNode, NodeIdx};
 use crate::clock::SeqClock;
-use crate::resource_limits::dims::{hash_table_bytes, vec_bytes, DocDims, Slabs};
+use crate::resource_limits::dims::{hash_table_bytes, vec_bytes, DocDims};
 use crate::ChangeHash;
 use std::mem::size_of;
 
@@ -14,6 +14,7 @@ impl ChangeGraph {
         d.heads = self.heads.len();
         d.clock_cache_entries = self.clock_cache.len();
         d.fragments = self.fragments.len();
+        d.max_op = u64::from(self.max_op);
 
         let mut exact = 0usize;
         let mut add = |v: usize| exact = exact.saturating_add(v);
@@ -77,30 +78,11 @@ impl ChangeGraph {
         d.cap.fragments = self.fragments.capacity();
         d.cap.extra_raw = (self.extra_bytes_raw.len(), self.extra_bytes_raw.capacity());
 
-        // hexane columns: num_ops (u64), timestamps (delta i64), messages
-        // (Option<String>), extra_bytes_meta (prefix ValueMeta u64).
-        let mut msg = 0usize;
-        for run in self.messages.iter().runs() {
-            if let Some(m) = run.value {
-                msg = msg.saturating_add(m.len()).saturating_add(10);
-            }
-        }
         d.graph_col_bytes = self
             .num_ops
             .heap_bytes()
             .saturating_add(self.timestamps.heap_bytes())
             .saturating_add(self.messages.heap_bytes())
             .saturating_add(self.extra_bytes_meta.heap_bytes());
-        d.graph_slabs = Slabs {
-            columns: 4,
-            u64s: self
-                .num_ops
-                .slab_count()
-                .saturating_add(self.timestamps.slab_count())
-                .saturating_add(self.extra_bytes_meta.slab_count()),
-            strs: self.messages.slab_count(),
-            str_bytes: msg,
-            ..Slabs::default()
-        };
     }
 }

@@ -539,3 +539,46 @@ mod tests {
         );
     }
 }
+
+/// qOS bounded admission (lane L1): requested heap bytes, read without
+/// allocating (BTree nodes bounded by `dims::btree_bytes`).
+impl MarkAccumulator {
+    pub(crate) fn native_heap_bytes(&self) -> usize {
+        use crate::resource_limits::dims::{btree_bytes, native_scalar_heap, smol_heap};
+        let mut n = btree_bytes(
+            self.marks.len(),
+            std::mem::size_of::<(SmolStr, Vec<MarkAccItem>)>(),
+        )
+        .unwrap_or(usize::MAX);
+        for (name, items) in &self.marks {
+            n = n.saturating_add(smol_heap(name)).saturating_add(
+                items
+                    .capacity()
+                    .saturating_mul(std::mem::size_of::<MarkAccItem>()),
+            );
+            for item in items {
+                n = n.saturating_add(native_scalar_heap(&item.value));
+            }
+        }
+        n
+    }
+}
+
+/// qOS bounded admission (lane L1): requested heap bytes, read without
+/// allocating.
+impl MarkSet {
+    pub(crate) fn native_heap_bytes(&self) -> usize {
+        use crate::resource_limits::dims::{btree_bytes, native_scalar_heap, smol_heap};
+        let mut n = btree_bytes(
+            self.marks.len(),
+            std::mem::size_of::<(SmolStr, ScalarValue)>(),
+        )
+        .unwrap_or(usize::MAX);
+        for (name, value) in &self.marks {
+            n = n
+                .saturating_add(smol_heap(name))
+                .saturating_add(native_scalar_heap(value));
+        }
+        n
+    }
+}
