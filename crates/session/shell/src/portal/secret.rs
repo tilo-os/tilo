@@ -22,8 +22,7 @@ use zbus::names::OwnedUniqueName;
 use zbus::zvariant::{ObjectPath, OwnedFd, OwnedValue};
 use zeroize::{Zeroize, Zeroizing};
 
-use chacha20poly1305::aead::Aead;
-use chacha20poly1305::{KeyInit, XChaCha20Poly1305, XNonce};
+use tilo_seal::{Context, Label, SymmetricKey};
 
 #[cfg(target_os = "linux")]
 use super::{PortalContext, auth::authenticate_call};
@@ -32,8 +31,9 @@ const SECRET_BYTES: usize = 32;
 const MAX_APP_ID: usize = 255;
 #[cfg(target_os = "linux")]
 const MAX_TOKEN: usize = 512;
-const NONCE_BYTES: usize = 24;
-const STORE_MAGIC: &[u8; 5] = b"QPSV1";
+const LEGACY_NONCE_BYTES: usize = 24;
+const LEGACY_STORE_MAGIC: &[u8; 5] = b"QPSV1";
+const STORE_RECORD: &[u8] = b"portal-secrets";
 
 #[derive(Clone, Default, Serialize, Deserialize)]
 struct SecretFile {
@@ -165,26 +165,30 @@ fn read_key(path: &std::path::Path) -> std::io::Result<Zeroizing<[u8; SECRET_BYT
     Ok(key)
 }
 
-fn seal_store(key: &[u8; SECRET_BYTES], plaintext: &[u8]) -> Option<Vec<u8>> {
-    let cipher = XChaCha20Poly1305::new_from_slice(key).ok()?;
-    let mut nonce = [0; NONCE_BYTES];
-    UnwrapErr(SysRng).fill_bytes(&mut nonce);
-    let encrypted = cipher.encrypt(<&XNonce>::from(&nonce), plaintext).ok()?;
-    let mut out = Vec::with_capacity(STORE_MAGIC.len() + nonce.len() + encrypted.len());
-    out.extend_from_slice(STORE_MAGIC);
-    out.extend_from_slice(&nonce);
-    out.extend_from_slice(&encrypted);
-    Some(out)
+/// The store's binding: an envelope moved from another purpose or record
+/// does not open here.
+fn store_context() -> Context<'static> {
+    Context::new(Label::PortalSecretStore, STORE_RECORD)
 }
 
+/// Seal the store as a `tilo-seal` at-rest envelope.
+fn seal_store(key: &[u8; SECRET_BYTES], plaintext: &[u8]) -> Option<Vec<u8>> {
+    tilo_seal::envelope::seal(&SymmetricKey::from_bytes(*key), store_context(), plaintext).ok()
+}
+
+/// Open the store in either the current envelope format or the `QPSV1`
+/// layout earlier builds wrote (`magic || nonce || ciphertext`, no
+/// associated data). The next commit rewrites a legacy store in the current
+/// format.
 fn open_store(key: &[u8; SECRET_BYTES], bytes: &[u8]) -> Option<Zeroizing<Vec<u8>>> {
-    let rest = bytes.strip_prefix(STORE_MAGIC)?;
-    let (nonce, ciphertext) = rest.split_at_checked(NONCE_BYTES)?;
-    XChaCha20Poly1305::new_from_slice(key)
-        .ok()?
-        .decrypt(<&XNonce>::try_from(nonce).ok()?, ciphertext)
-        .ok()
-        .map(Zeroizing::new)
+    let key = SymmetricKey::from_bytes(*key);
+    if tilo_seal::envelope::is_envelope(bytes) {
+        return tilo_seal::envelope::open(&key, store_context(), bytes).ok();
+    }
+    let rest = bytes.strip_prefix(LEGACY_STORE_MAGIC)?;
+    let (nonce, ciphertext) = rest.split_at_checked(LEGACY_NONCE_BYTES)?;
+    let nonce: &[u8; LEGACY_NONCE_BYTES] = nonce.try_into().ok()?;
+    tilo_seal::legacy::open_xchacha20poly1305(&key, nonce, b"", ciphertext).ok()
 }
 
 #[cfg(target_os = "linux")]
@@ -271,6 +275,34 @@ mod tests {
         assert_eq!(opened.as_slice(), b"kat-portal-store");
         assert!(open_store(&[0x62; SECRET_BYTES], &sealed).is_none());
     }
+
+    /// A legacy store still opens, and the next seal writes the current
+    /// envelope, which opens only under the portal store's binding.
+    #[test]
+    fn legacy_store_is_rewritten_as_a_bound_envelope() {
+        let legacy = hex::decode(
+            "5150535631fe105a9d3cbaac1fff4a19f97c5828f2f06d7e76faf40fd49a44a4\
+            88a73129fd8ce138dfb14fce0f9c172b78c6e80ceba4e509460d98c901",
+        )
+        .unwrap();
+        let key = [0x61; SECRET_BYTES];
+        let plaintext = open_store(&key, &legacy).unwrap();
+        let resealed = seal_store(&key, &plaintext).unwrap();
+        assert!(tilo_seal::envelope::is_envelope(&resealed));
+        assert!(!resealed.starts_with(LEGACY_STORE_MAGIC));
+        assert_eq!(
+            open_store(&key, &resealed).unwrap().as_slice(),
+            b"kat-portal-store"
+        );
+        assert!(open_store(&[0x62; SECRET_BYTES], &resealed).is_none());
+        let foreign = tilo_seal::envelope::seal(
+            &SymmetricKey::from_bytes(key),
+            Context::new(Label::SecretVault, STORE_RECORD),
+            b"kat-portal-store",
+        )
+        .unwrap();
+        assert!(open_store(&key, &foreign).is_none());
+    }
     #[test]
     fn app_secret_persists_and_is_separate() {
         let dir = tempfile::tempdir().unwrap();
@@ -289,7 +321,7 @@ mod tests {
             0o600
         );
         let disk = fs::read(&p).unwrap();
-        assert!(disk.starts_with(STORE_MAGIC));
+        assert!(tilo_seal::envelope::is_envelope(&disk));
         assert!(!disk.windows(one.len()).any(|window| window == one));
         assert_eq!(
             fs::metadata(key_path(&p)).unwrap().permissions().mode() & 0o777,

@@ -67,6 +67,7 @@ pub mod document_transfer;
 pub mod event;
 pub mod file_invite;
 pub mod files;
+pub mod history;
 pub mod identity;
 pub mod invite;
 pub mod mls_governance;
@@ -140,9 +141,10 @@ pub use mls_governance::{
     MlsGovernanceFrameV1,
 };
 pub use op::{
-    DocumentMutation, DocumentMutationEncodeError, DocumentMutationError, EncryptionMetadata,
-    MAX_DOCUMENT_MUTATION_BYTES, RoutedDocumentPayload, SignedOp, document_artifact_id,
-    document_attestation_id, document_channel_id, validate_document_payload_route,
+    ContentRetention, DocumentMutation, DocumentMutationEncodeError, DocumentMutationError,
+    EncryptionMetadata, EncryptionScheme, MAX_DOCUMENT_MUTATION_BYTES, RoutedDocumentPayload,
+    SignedOp, document_artifact_id, document_attestation_id, document_channel_id,
+    validate_document_payload_route,
 };
 pub use ownership_transfer::{
     OWNERSHIP_TRANSFER_VERSION, OwnershipTransferAcceptanceV1, OwnershipTransferAuditV1,

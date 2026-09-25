@@ -119,12 +119,28 @@ impl GovernanceJournal {
         self.state.encryption_required
     }
 
-    /// Enforce the durable downgrade gate for a document route.
+    /// The MLS epoch after the latest recorded membership change.
+    pub fn head_epoch(&self) -> Option<u64> {
+        self.state.frames.last().map(|frame| frame.epoch)
+    }
+
+    /// Enforce the durable downgrade gate for a document route, and refuse
+    /// new content sealed under a content key older than the latest
+    /// membership change: a removed member still holds those keys, so it
+    /// must not be able to inject content under them, and a lagging member
+    /// must catch up before its content is accepted (otherwise the removed
+    /// member could read it).
     pub fn accepts_document_encryption(
         &self,
         encryption: Option<&EncryptionMetadata>,
         channel: collab_types::ChannelId,
     ) -> bool {
+        if let Some(metadata) = encryption
+            && metadata.retention().is_some()
+            && self.head_epoch().is_some_and(|head| metadata.epoch < head)
+        {
+            return false;
+        }
         !self.state.encryption_required
             || encryption.is_some_and(|metadata| metadata.channel == channel)
     }
@@ -161,11 +177,11 @@ impl GovernanceJournal {
 
         let mut next = self.state.clone();
         match &frame.action {
-            MlsGovernanceAction::Add {
-                recipient,
-                existing_member_commit,
-                ..
-            } => {
+            action @ (MlsGovernanceAction::Add { .. }
+            | MlsGovernanceAction::AddWithKeyHistory { .. }) => {
+                let Some((recipient, _, existing_member_commit, _)) = action.admission() else {
+                    return Err(Error::Governance("malformed admission".into()));
+                };
                 next.deliveries.push(GovernanceDelivery {
                     frame_digest: digest,
                     recipient: *recipient,

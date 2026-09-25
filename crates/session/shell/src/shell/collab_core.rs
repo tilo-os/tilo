@@ -86,7 +86,19 @@ pub struct BrokerChannels {
     /// Production Secret Service provider installed by shell startup. Kept
     /// behind the broker boundary; applications see only opaque receipts.
     pub mls_vault: Option<Arc<super::collab_mls_authority::SecretServiceMlsVault>>,
+    /// Durable history of content-key ciphertext, so members (including
+    /// ones added later) can page back past the in-memory window.
+    pub history: Option<super::collab_history::CollabHistoryStore>,
+    /// History pages this device asked its peers for, by artifact: the
+    /// `before_seq` bound and when the request left. Answers are accepted
+    /// only while a request is outstanding.
+    pub peer_history_requests: HashMap<ArtifactId, (u64, std::time::Instant)>,
 }
+
+/// How long a peer history request stays open for answers.
+const PEER_HISTORY_WINDOW: std::time::Duration = std::time::Duration::from_secs(60);
+/// Minimum spacing between repeats of the same peer history request.
+const PEER_HISTORY_RETRY: std::time::Duration = std::time::Duration::from_secs(5);
 
 impl BrokerChannels {
     pub fn state_for(&mut self, artifact: ArtifactId) -> &mut ChannelState {
@@ -116,6 +128,118 @@ impl BrokerChannels {
         self.governance
             .get(&channel)
             .is_none_or(|journal| journal.accepts_document_encryption(encryption, channel))
+    }
+
+    /// Append a validated op to durable history when it belongs there.
+    /// Failure is logged, never fatal: the op is still delivered live.
+    pub fn record_history(&mut self, op: &SignedOp) {
+        if let Some(history) = self.history.as_mut()
+            && let Err(error) = history.record(op)
+        {
+            tracing::warn!(%error, artifact = ?op.artifact, "collab history: append failed");
+        }
+    }
+
+    /// One scrollback page for `artifact`: the in-memory window merged with
+    /// durable history, newest `max` ops below `before_seq`, ascending, plus
+    /// whether nothing older remains. Redacted ops keep their marker.
+    pub fn scrollback_page(
+        &mut self,
+        artifact: ArtifactId,
+        before_seq: u64,
+        max: u16,
+    ) -> (Vec<SignedOp>, bool) {
+        let (memory, memory_exhausted) = self
+            .state_for(artifact)
+            .scrollback_for(artifact, before_seq, max);
+        let Some(history) = self.history.as_mut() else {
+            return (memory, memory_exhausted);
+        };
+        let (durable, durable_exhausted) = match history.page_before(artifact, before_seq, max) {
+            Ok(page) => page,
+            Err(error) => {
+                tracing::warn!(%error, ?artifact, "collab history: read failed");
+                return (memory, memory_exhausted);
+            }
+        };
+        let mut seen = std::collections::HashSet::new();
+        let union: Vec<SignedOp> = memory
+            .into_iter()
+            .chain(durable)
+            .filter(|op| seen.insert((op.author.0, op.seq)))
+            .collect();
+        let (mut page, union_exhausted) =
+            collab_types::history::page_before(&union, artifact, before_seq, max);
+        if let Some(state) = self.states.get(&artifact)
+            && let Ok(marker) = collab_types::RedactedMarker::v1().canonical()
+        {
+            for op in &mut page {
+                if state.is_redacted(OpId::from_op(op))
+                    && op.op_class != collab_types::OpClass::Redact
+                {
+                    op.payload.clone_from(&marker);
+                }
+            }
+        }
+        (
+            page,
+            union_exhausted && memory_exhausted && durable_exhausted,
+        )
+    }
+
+    /// Whether to ask peers for history of `artifact` below `before_seq`:
+    /// only with durable history to receive it into, and not again while an
+    /// identical request is fresh. Records the request when it says yes.
+    pub fn request_peer_history(&mut self, artifact: ArtifactId, before_seq: u64) -> bool {
+        if self.history.is_none() {
+            return false;
+        }
+        let now = std::time::Instant::now();
+        if let Some((bound, at)) = self.peer_history_requests.get(&artifact)
+            && *bound == before_seq
+            && now.saturating_duration_since(*at) < PEER_HISTORY_RETRY
+        {
+            return false;
+        }
+        self.peer_history_requests
+            .insert(artifact, (before_seq, now));
+        true
+    }
+
+    /// Take history ops a peer sent in answer to an outstanding request into
+    /// durable history. Only signed content-key ciphertext of the requested
+    /// artifact below the requested bound is kept; returns how many ops were
+    /// new. The broker still holds no key: these are opaque to it.
+    pub fn accept_peer_history(&mut self, artifact: ArtifactId, ops: &[SignedOp]) -> usize {
+        let Some((bound, at)) = self.peer_history_requests.get(&artifact).copied() else {
+            return 0;
+        };
+        if std::time::Instant::now().saturating_duration_since(at) > PEER_HISTORY_WINDOW {
+            self.peer_history_requests.remove(&artifact);
+            return 0;
+        }
+        let Some(history) = self.history.as_mut() else {
+            return 0;
+        };
+        let mut accepted: usize = 0;
+        for op in ops {
+            if op.artifact != artifact
+                || op.seq >= bound
+                || !super::collab_history::CollabHistoryStore::retains(op)
+                || collab_types::verify_op(op).is_err()
+            {
+                continue;
+            }
+            match history.record_if_new(op) {
+                Ok(true) => accepted = accepted.saturating_add(1),
+                Ok(false) => {}
+                Err(error) => {
+                    tracing::warn!(%error, ?artifact, "collab history: peer page not stored");
+                    break;
+                }
+            }
+        }
+        accepted
     }
 
     pub fn install_mls_vault(
