@@ -695,6 +695,26 @@ impl App {
         self.document_history.remember_content_target(target, focus);
     }
 
+    /// Omit the automatically added History and Search controls at native
+    /// startup. System surfaces such as a login screen have no document to
+    /// browse. Their own semantic actions and accessibility remain available.
+    /// Ordinary applications retain native document chrome by default.
+    #[must_use]
+    pub fn without_native_document_chrome(mut self) -> Self {
+        self.native_document_chrome = false;
+        self
+    }
+
+    /// Apply the native window's default presentation before the event loop
+    /// starts: standalone roots get the shared History/Search chrome unless
+    /// they opted out or a framework owner already supplies it.
+    #[cfg(any(feature = "native", test))]
+    pub(super) fn prepare_native_presentation(&mut self) {
+        if self.native_document_chrome && self.history.is_none() {
+            self.enable_document_history_chrome();
+        }
+    }
+
     /// Enable shared standalone services presentation without wrapping the app
     /// root. Native windows enable this automatically; embedding remains opt-in.
     pub fn enable_document_history_chrome(&mut self) {
@@ -899,6 +919,53 @@ mod tests {
     fn layout(app: &mut App, width: u32) {
         let root = app.layout.root_node.expect("initialized layout");
         assert!(super::super::run_layout_pass(app, root, width, 700, 1.0, false, None).is_some());
+    }
+
+    #[test]
+    fn native_system_surface_omits_document_chrome_but_keeps_its_controls() {
+        let mut app = App::new_with_controlled_inputs(
+            crate::State::new(),
+            Box::new(crate::widget::Button::new("login", "Log in", None)),
+        )
+        .without_native_document_chrome();
+        // Exercise the same preparation used before the live event loop.
+        app.prepare_native_presentation();
+        app.init_layout();
+        layout(&mut app, 1024);
+        app.refresh_semantic_tree();
+        assert!(app.history_layout.is_none());
+        assert!(!app.history_chrome_enabled);
+        let names: Vec<_> = app
+            .semantic_tree()
+            .iter()
+            .filter_map(|node| node.name.as_deref())
+            .collect();
+        assert!(names.contains(&"Log in"));
+        assert!(!names.contains(&"History"));
+        assert!(!names.contains(&"Search"));
+        let open = tilo_actions::ActionAddress::new(
+            crate::standalone_history_host::HISTORY_RESOURCE,
+            "open",
+        );
+        assert!(app.action_ui_routes(&open).is_empty());
+    }
+
+    #[test]
+    fn native_document_surface_keeps_shared_chrome_by_default() {
+        let mut app = App::new_with_controlled_inputs(
+            crate::State::new(),
+            Box::new(crate::widget::Button::new("document", "Document", None)),
+        );
+        app.prepare_native_presentation();
+        app.init_layout();
+        layout(&mut app, 1024);
+        assert!(app.history_layout.is_some());
+        assert!(app.history_chrome_enabled);
+        let open = tilo_actions::ActionAddress::new(
+            crate::standalone_history_host::HISTORY_RESOURCE,
+            "open",
+        );
+        assert!(!app.action_ui_routes(&open).is_empty());
     }
 
     #[test]

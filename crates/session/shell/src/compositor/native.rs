@@ -177,6 +177,7 @@ struct NativeRedrawReasons {
     capture: bool,
     keepalive: bool,
     lock_clock: bool,
+    lock_animation: bool,
 }
 
 impl NativeRedrawReasons {
@@ -193,7 +194,7 @@ impl NativeRedrawReasons {
                     || self.presentation
                     || self.capture))
             || (!session_locked && self.keepalive)
-            || (session_locked && self.lock_clock)
+            || (session_locked && (self.lock_clock || self.lock_animation))
     }
 }
 
@@ -233,6 +234,14 @@ fn native_loop_park(
             })
             .min(IDLE_BACKEND_POLL),
     )
+}
+
+// A due animation remains dirty until it paints, but is no longer a wake
+// deadline. Keeping an expired deadline here would busy-spin while waiting
+// for display cadence or presenter retirement. Those wake sources already
+// carry the pending frame; future animation deadlines still wake the idle loop.
+fn lock_animation_park_deadline(now: Instant, deadline: Option<Instant>) -> Option<Instant> {
+    deadline.filter(|deadline| *deadline > now)
 }
 
 fn lock_clock_refresh_due(session_locked: bool, now: Instant, last_refresh: &mut Instant) -> bool {
@@ -5551,6 +5560,9 @@ pub fn run() {
     // full-scene keepalive consumed a material fraction of a software-rendered
     // VM core despite no changing pixels; every real producer already carries
     // an explicit redraw/revision/deadline edge.
+    let lock_animation_epoch = Instant::now();
+    let mut last_lock_animation_frame = lock_animation_epoch;
+    let mut lock_has_wallpaper = false;
     let mut last_lock_clock_refresh = Instant::now();
     let mut last_revision = frame_builder.chrome_revision();
     let mut force_first_paint = true;
@@ -7115,6 +7127,13 @@ pub fn run() {
                     .is_some_and(|portal| portal.screencast.has_streams()),
             keepalive: keepalive_due,
             lock_clock: lock_clock_due,
+            lock_animation: lock_screen::animation_deadline(
+                frame_builder.theme(),
+                session.is_locked(),
+                lock_has_wallpaper,
+                last_lock_animation_frame,
+            )
+            .is_some_and(|deadline| iter_t0 >= deadline),
         }
         .content_changed(session.is_locked());
         // May a frame be shown yet? Off-cadence wakeups (protocol traffic,
@@ -7136,7 +7155,8 @@ pub fn run() {
         // If content became dirty off-cadence, keep cadence in the next park;
         // otherwise the event edge has already been consumed and a long idle
         // deadline could strand that frame.
-        let cadence_needed = (content_changed && !cadence_due) || animating;
+        let cadence_needed =
+            (content_changed && !cadence_due) || (!session.is_locked() && animating);
 
         // Diagnostic: `TILO_PAINT_STATS=1` logs every ~2s how many frames painted
         // vs idled and why, confirming the loop actually idles without guessing.
@@ -7300,12 +7320,17 @@ pub fn run() {
                         )
                     })
                 };
-                FramePaint::full(lock_screen::draw_lock_scene_with_wallpaper(
+                lock_has_wallpaper = wallpaper.is_some();
+                last_lock_animation_frame = iter_t0;
+                FramePaint::full(lock_screen::draw_lock_scene_at_time(
                     &lock_outputs,
                     &theme,
                     frame_builder.text_renderer_mut(),
                     &view,
                     wallpaper.as_ref(),
+                    iter_t0
+                        .saturating_duration_since(lock_animation_epoch)
+                        .as_secs_f64(),
                 ))
             } else {
                 let mut frame_paint = if retained_damage_supported {
@@ -7735,7 +7760,15 @@ pub fn run() {
             frame_clock.next_deadline(),
             [
                 frame_builder.next_wake_deadline(),
-                None,
+                lock_animation_park_deadline(
+                    park_now,
+                    lock_screen::animation_deadline(
+                        frame_builder.theme(),
+                        session.is_locked(),
+                        lock_has_wallpaper,
+                        last_lock_animation_frame,
+                    ),
+                ),
                 lock_clock_deadline,
                 run_deadline,
             ],
@@ -7993,7 +8026,7 @@ mod tests {
             Some(IDLE_BACKEND_POLL)
         );
         assert_eq!(
-            native_loop_park(now, false, frame, [Some(now - Duration::from_millis(1))]),
+            native_loop_park(now + Duration::from_millis(1), false, frame, [Some(now)]),
             Some(Duration::ZERO)
         );
     }
@@ -8057,6 +8090,42 @@ mod tests {
         ] {
             assert!(visible_lock_edge.content_changed(true));
         }
+    }
+
+    #[test]
+    fn due_lock_animation_waits_for_cadence_or_presenter_instead_of_spinning() {
+        let due_at = Instant::now();
+        let now = due_at + Duration::from_millis(1);
+        let due = Some(due_at);
+        let frame = now + Duration::from_millis(8);
+        assert_eq!(
+            native_loop_park(now, true, frame, [lock_animation_park_deadline(now, due)]),
+            Some(Duration::from_millis(8))
+        );
+        assert_eq!(
+            native_loop_park(now, false, frame, [lock_animation_park_deadline(now, due)]),
+            Some(IDLE_BACKEND_POLL)
+        );
+        let future = Some(now + Duration::from_millis(42));
+        assert_eq!(
+            native_loop_park(
+                now,
+                false,
+                frame,
+                [lock_animation_park_deadline(now, future)]
+            ),
+            Some(Duration::from_millis(42))
+        );
+    }
+
+    #[test]
+    fn artwork_repaints_only_while_the_lock_is_visible() {
+        let artwork = NativeRedrawReasons {
+            lock_animation: true,
+            ..NativeRedrawReasons::default()
+        };
+        assert!(artwork.content_changed(true));
+        assert!(!artwork.content_changed(false));
     }
 
     #[test]
