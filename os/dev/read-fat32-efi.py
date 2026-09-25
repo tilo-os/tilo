@@ -135,7 +135,8 @@ class Fat32:
         for index, part in enumerate(parts):
             matches = [row for row in self.directory(current)
                        if row[0].casefold() == part.casefold()]
-            require(len(matches) == 1, "FAT32 path is missing or ambiguous")
+            require(matches, "FAT32 path is missing")
+            require(len(matches) == 1, "FAT32 path is ambiguous")
             _, directory, first, size = matches[0]
             if index != len(parts) - 1:
                 require(directory, "FAT32 path component is not a directory")
