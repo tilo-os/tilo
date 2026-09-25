@@ -173,7 +173,7 @@ jobs:
               software_display_device=virtio-gpu-pci
             fi
             sudo -n apt-get install -y --no-install-recommends \
-              clang dosfstools e2fsprogs fdisk imagemagick jq lld mtools ntfs-3g podman fuse-overlayfs \
+              clang dosfstools e2fsprogs fdisk imagemagick lld mtools ntfs-3g podman fuse-overlayfs jq \
               qemu-system-gui qemu-utils skopeo slirp4netns socat tesseract-ocr uidmap zstd $native_packages
           elif command -v dnf >/dev/null; then
             if [ "${{ matrix.arch }}" = x86_64 ]; then
@@ -187,14 +187,14 @@ jobs:
               display_device=virtio-gpu-gl-pci
               software_display_device=virtio-gpu-pci
             fi
-            sudo -n dnf install -y clang dosfstools e2fsprogs ImageMagick jq lld mtools ntfs-3g util-linux podman fuse-overlayfs slirp4netns \
+            sudo -n dnf install -y clang dosfstools e2fsprogs ImageMagick lld mtools ntfs-3g util-linux podman fuse-overlayfs slirp4netns jq \
               qemu-img qemu-ui-egl-headless qemu-ui-opengl skopeo socat tesseract zstd $native_packages
           else
             printf 'unsupported runner OS for installer VM cycle\n' >&2
             exit 1
           fi
           command -v clang debugfs ld.lld mattrib mcopy mdir mmd mkfs.ext4 mkfs.ntfs mkfs.vfat \
-            mtype ntfscp podman qemu-img skopeo jq "$qemu_binary" sfdisk socat tesseract zstd >/dev/null
+            mtype ntfscp podman qemu-img "$qemu_binary" sfdisk socat tesseract skopeo jq zstd >/dev/null
           command -v magick >/dev/null || command -v convert >/dev/null
           if [ "${{ matrix.arch }}" = x86_64 ]; then
             command -v swtpm virt-fw-vars >/dev/null
@@ -369,7 +369,7 @@ jobs:
       - uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
         if: always()
         with:
-          name: tilo-installer-full-cycle-${{ matrix.arch }}
+          name: tilo-installer-full-cycle-${{ matrix.arch }}-${{ matrix.target_profile || 'standard' }}
           path: |
             dist/installer-cycle
             dist/installer-alongside-cycle
@@ -454,7 +454,7 @@ jobs:
           (cd dist/tilo-installer && sha256sum --check "$medium.sha256")
       - uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
         with:
-          name: tilo-installer-medium-${{ matrix.arch }}
+          name: tilo-installer-medium-${{ matrix.arch }}-${{ matrix.target_profile || 'standard' }}
           path: |
             dist/tilo-installer/tilo-installer-linux-${{ matrix.arch }}.img.zst
             dist/tilo-installer/tilo-installer-linux-${{ matrix.arch }}.img.zst.sha256
