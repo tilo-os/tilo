@@ -1193,14 +1193,15 @@ jobs:
         run: |
           set -euo pipefail
           ref="code.podesta.ai/qos/tilo-ci:main-${GITHUB_SHA:0:7}-$ARCH"
-          # Buildx writes one OCI index descriptor per tag. Select the image
-          # descriptor explicitly; an unqualified archive is ambiguous.
+          # Buildx writes a full image name and a bare OCI ref for each tag.
+          # Skopeo selects the latter; verify its descriptor and digest first.
           source_tag="$(printf '%s\n' '${{ steps.meta.outputs.tags }}' | sed -n '1p')"
           test -n "$source_tag"
+          source_ref="$(python3 os/scripts/oci-archive-ref.py /var/tmp/tilo-image.tar "$source_tag" '${{ steps.build.outputs.digest }}')"
           digest_file="$(mktemp /var/tmp/tilo-ci-digest.XXXXXX)"
           TMPDIR=/var/tmp skopeo copy --retry-times 3 --dest-creds "$REGISTRY_CREDS" \
             --digestfile "$digest_file" \
-            "oci-archive:/var/tmp/tilo-image.tar:$source_tag" "docker://$ref"
+            "oci-archive:/var/tmp/tilo-image.tar:$source_ref" "docker://$ref"
           digest="$(tr -d '[:space:]' < "$digest_file")"
           [[ $digest =~ ^sha256:[0-9a-f]{64}$ ]]
           revision="$(skopeo inspect --creds "$REGISTRY_CREDS" "docker://code.podesta.ai/qos/tilo-ci@$digest" \
@@ -1220,6 +1221,7 @@ jobs:
       # and dev disks are never signed or published and skip it.
       - name: Independently rebuild the release candidate
         if: steps.release-mode.outputs.publish == 'true'
+        id: repro
         uses: docker/build-push-action@ca052bb54ab0790a636c9b5f226502c73d547a25 # v5
         env:
           SOURCE_DATE_EPOCH: ${{ env.SOURCE_DATE_EPOCH }}
@@ -1339,15 +1341,16 @@ jobs:
           qemu_binary="qemu-system-${{ matrix.arch }}"
           command -v jq podman qemu-img "$qemu_binary" skopeo sshpass socat systemd-repart >/dev/null
 
-          # Select the exact Buildx descriptor, not the OCI index containing
-          # both gen1 and main-* annotations. Keep the same reference through
-          # reproducibility, import, and archive cleanup below.
+          # Select the Buildx digest's named descriptor and pass its bare OCI
+          # reference to Skopeo, including for the independent rebuild.
           first_tag="$(printf '%s\n' '${{ steps.meta.outputs.tags }}' | sed -n '1p')"
           test -n "$first_tag"
+          first_ref="$(python3 os/scripts/oci-archive-ref.py /var/tmp/tilo-image.tar "$first_tag" '${{ steps.build.outputs.digest }}')"
           repro_image="code.podesta.ai/qos/tilo:repro-${GITHUB_SHA}"
           if [[ $PUBLISH == true ]]; then
-            first_manifest="$(skopeo inspect --raw "oci-archive:/var/tmp/tilo-image.tar:$first_tag" | sha256sum | awk '{print $1}')"
-            second_manifest="$(skopeo inspect --raw "oci-archive:/var/tmp/tilo-image-repro.tar:$repro_image" | sha256sum | awk '{print $1}')"
+            repro_ref="$(python3 os/scripts/oci-archive-ref.py /var/tmp/tilo-image-repro.tar "$repro_image" '${{ steps.repro.outputs.digest }}')"
+            first_manifest="$(skopeo inspect --raw "oci-archive:/var/tmp/tilo-image.tar:$first_ref" | sha256sum | awk '{print $1}')"
+            second_manifest="$(skopeo inspect --raw "oci-archive:/var/tmp/tilo-image-repro.tar:$repro_ref" | sha256sum | awk '{print $1}')"
             test -n "$first_manifest" && test "$first_manifest" = "$second_manifest" || {
               echo "::error::independent OS builds differ: $first_manifest != $second_manifest"
               exit 1
@@ -1357,7 +1360,7 @@ jobs:
 
           printf '%s' "$TILO_REGISTRY_TOKEN" | podman login code.podesta.ai \
             --username "${{ github.actor }}" --password-stdin
-          skopeo copy "oci-archive:/var/tmp/tilo-image.tar:$first_tag" \
+          skopeo copy "oci-archive:/var/tmp/tilo-image.tar:$first_ref" \
             "containers-storage:$first_tag"
           podman tag "$first_tag" "$TILO_IMAGE"
           # The manifest was verified above and the image is now in Podman's
@@ -1379,7 +1382,7 @@ jobs:
           # A publication reproduces that exact final layer on the independent
           # image and gates the artifact to be published, rather than its base.
           if [[ $PUBLISH == true ]]; then
-            skopeo copy "oci-archive:/var/tmp/tilo-image-repro.tar:$repro_image" \
+            skopeo copy "oci-archive:/var/tmp/tilo-image-repro.tar:$repro_ref" \
               "containers-storage:$repro_image"
             rm -f /var/tmp/tilo-image-repro.tar
             if [[ -s "$TILO_RESEALED_DIGEST_FILE" ]]; then
