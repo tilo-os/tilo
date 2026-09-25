@@ -1210,7 +1210,14 @@ impl App {
         } else {
             None
         };
-        let floor = self.registry()?.min_free_bytes();
+        let floor = self
+            .registry()?
+            .min_free_bytes()
+            .max(if choice.adapter == "whpx" {
+                15 << 30
+            } else {
+                0
+            });
         if let Some(published) = &published
             && !disk::cached(&published.dest, &published.disk)
         {
@@ -1219,13 +1226,13 @@ impl App {
             let needed = published.disk.size.saturating_sub(have);
             let dir = published.dest.parent().unwrap_or_else(|| Path::new("."));
             if let Some(free) = host_free(dir)
-                && free < needed
+                && free < needed.saturating_add(floor)
             {
                 return Err(CliError::NoSpace {
                     place: existing_ancestor(dir).display().to_string(),
                     free: human_bytes(free),
                     what: format!("the {} dev disk download", published.tag),
-                    needed: human_bytes(needed),
+                    needed: human_bytes(needed.saturating_add(floor)),
                 });
             }
         }
@@ -1351,6 +1358,9 @@ impl App {
             ssh_port: args.ssh_port,
             template: args.template,
             qemu_img: plan.choice.tool("qemu-img").map(str::to_owned),
+            qemu_system: plan.choice.tool("qemu-system-aarch64").map(str::to_owned),
+            firmware_code: plan.choice.tool("firmware-code").map(str::to_owned),
+            firmware_vars: plan.choice.tool("firmware-vars").map(str::to_owned),
             ..VmEntry::default()
         };
         let adapter = hypervisor::adapter(&entry.hypervisor)?;
@@ -1497,7 +1507,14 @@ impl App {
 
     fn vm_start(&mut self, name: Option<&str>) -> Result<Outcome, CliError> {
         let vm = self.resolve_vm(name)?;
-        let floor = self.registry()?.min_free_bytes();
+        let floor = self
+            .registry()?
+            .min_free_bytes()
+            .max(if vm.entry.hypervisor == "whpx" {
+                15 << 30
+            } else {
+                0
+            });
         if let Some(dir) = vm
             .entry
             .disk
