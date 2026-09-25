@@ -184,6 +184,11 @@ pub(super) fn inspect(
         let kind = reader.take(1)?[0];
         let length = reader.size()?;
         let body = reader.take(length)?;
+        let chunk_start = (
+            scan.shape.normalized_bytes,
+            scan.shape.operations,
+            scan.shape.changes,
+        );
         scan.normalized(9)?;
         let body_start = scan.shape.normalized_bytes;
         match kind {
@@ -207,6 +212,13 @@ pub(super) fn inspect(
             _ => return Err(Error::Invalid),
         }
         scan.normalized(uint_size(scan.shape.normalized_bytes - body_start))?;
+        if chunks == 1 && kind == 0 {
+            // The leading document chunk loads through column reconstruction,
+            // every later op through batch apply; load bounds need the split.
+            scan.shape.leading_document_bytes = scan.shape.normalized_bytes - chunk_start.0;
+            scan.shape.leading_document_operations = scan.shape.operations - chunk_start.1;
+            scan.shape.leading_document_changes = scan.shape.changes - chunk_start.2;
+        }
     }
     Ok(scan.shape)
 }
