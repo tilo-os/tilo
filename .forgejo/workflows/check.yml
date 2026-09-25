@@ -135,32 +135,43 @@ jobs:
         run: python3 tools/policy/check_repository_layout.py
       - name: Select and balance affected packages
         id: plan
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PULL_REQUEST_BASE: ${{ github.event.pull_request.base.sha }}
+          PUSH_BEFORE: ${{ github.event.before }}
         shell: bash
         run: |
           set -euo pipefail
-          base='${{ github.event.pull_request.base.sha }}'
+          base=$PULL_REQUEST_BASE
           selection_args=()
-          if [ '${{ github.event_name }}' = pull_request ]; then
+          if [ "$EVENT_NAME" = pull_request ]; then
             selection_args+=(--allow-security-skip)
-          elif [ '${{ github.event_name }}' = workflow_dispatch ]; then
+          elif [ "$EVENT_NAME" = workflow_dispatch ]; then
             # Dispatch has no pull-request base or push-before SHA. Do not
             # silently reduce an acceptance run to the last commit's changes.
             base=origin/main
             selection_args+=(--full)
-          elif [ '${{ github.ref }}' = 'refs/heads/codex/package-desktop-release' ]; then
+          elif [ "$GITHUB_REF" = 'refs/heads/codex/package-desktop-release' ]; then
             # Every iteration must cover the complete release diff. Comparing
             # only with github.event.before would forget changes from earlier
             # branch pushes and could produce a misleading exact-SHA receipt.
             base=origin/main
             selection_args+=(--full)
           elif [ -z "$base" ] || [ "$base" = "null" ]; then
-            base='${{ github.event.before }}'
+            base=$PUSH_BEFORE
           fi
           if [ -z "$base" ] \
               || [ "$base" = "0000000000000000000000000000000000000000" ]; then
             base=HEAD^
           fi
-          echo "base=$(git rev-parse "$base^{commit}")" >> "$GITHUB_OUTPUT"
+          # Every diff-style gate compares with the common ancestor, as package
+          # selection does. The pull-request base is main's tip when the event
+          # fired; a branch behind it would otherwise be charged with every
+          # Clippy warning main fixed after the branch point. A push to main
+          # extends its previous tip, so there the common ancestor is exactly
+          # github.event.before.
+          base=$(git merge-base "$base" HEAD)
+          echo "base=$base" >> "$GITHUB_OUTPUT"
           python3 tools/ci/affected_packages.py --base "$base" --shards 2 "${selection_args[@]}" \
             --github-output "$GITHUB_OUTPUT" | tee ci-plan.json
           {
@@ -480,8 +491,9 @@ jobs:
           mkdir -p /tmp/tilo-xdg-runtime
           chmod 700 /tmp/tilo-xdg-runtime
 
-      # Pull requests usually compare with a main commit whose workspace-wide
-      # Clippy diagnostics the clippy-base job below already recorded. Bind the
+      # Pull requests compare with their merge-base, a main commit whose
+      # workspace-wide Clippy diagnostics the clippy-base job below normally
+      # recorded when it was main's tip. Bind the
       # record to that exact commit, the builder image, the toolchain and the
       # compiler flags; any miss makes clippy-diff.sh lint a fresh base checkout.
       - name: Resolve the recorded Clippy base key
