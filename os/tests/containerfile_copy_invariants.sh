@@ -68,10 +68,9 @@ instructions="$(containerfile_instructions "$containerfile" | awk '
 # AT-SPI validation adds two narrowly scoped COPY instructions.
 # Firewall-first NetworkManager ordering adds one explicit drop-in COPY.
 # Recording whether the Windows provider is included adds an ARG and a LABEL.
-# Recording the selected provider input class adds one ARG and one LABEL.
-# Keep the current 141-instruction bound exact and reviewed.
-[ "$instructions" -le 141 ] || {
-  echo "rootfs layer budget exceeded: $instructions instructions (maximum 141)" >&2
+# Keep the current 139-instruction bound exact and reviewed.
+[ "$instructions" -le 139 ] || {
+  echo "rootfs layer budget exceeded: $instructions instructions (maximum 139)" >&2
   exit 1
 }
 
