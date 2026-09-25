@@ -207,5 +207,5 @@ impl AutoCommit {
 /// whose dependency lists grow with every earlier fragment, and clock-cache
 /// entries of actor width), computed exactly from the parsed changes.
 fn superlinear_growth(doc: &AutoCommit, changes: &[Change]) -> Result<usize, NativeResourceError> {
-    dims::superlinear_apply_bound(&DocDims::of(doc), changes)
+    dims::superlinear_apply_bound(&DocDims::of(doc), &IncomingDims::from_changes(changes)?)
 }

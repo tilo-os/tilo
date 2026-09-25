@@ -93,7 +93,4 @@ impl<'a> Charge<'a> {
             }
         }
     }
-    pub(crate) fn bytes(&self) -> usize {
-        self.held.as_ref().map_or(0, NativeReservation::bytes)
-    }
 }
