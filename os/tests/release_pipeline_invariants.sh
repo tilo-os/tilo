@@ -98,18 +98,19 @@ else
   bad 'native CI builder or affected-package architecture coverage is missing'
 fi
 
-if grep -Fq 'x86_64) ref="$KERNEL_RPMS_X86_64_REF"; expected_arch=amd64' "$os" \
-   && grep -Fq 'aarch64) ref="$KERNEL_RPMS_AARCH64_REF"; expected_arch=arm64' "$os" \
-   && grep -Fq '[[ "$ref" =~ ^code\.podesta\.ai/qos/tilo-kernel@sha256:[0-9a-f]{64}$ ]]' "$os" \
-   && grep -Fq 'cosign verify --key keys/cosign.pub "$ref"' "$os" \
-   && grep -Fq 'cosign verify-attestation --key keys/cosign.pub' "$os" \
-   && grep -Fq 'https://tilo.sh/buildtypes/kernel-rpm/v1' "$os" \
-   && grep -Fq 'actual_arch="$(skopeo inspect "docker://$ref" | jq -er .Architecture)"' "$os" \
+kernel_verify="$repo/os/dev/verify-kernel-provenance.sh"
+if grep -Fq 'x86_64) ref="$KERNEL_RPMS_X86_64_REF" ;;' "$os" \
+   && grep -Fq 'aarch64) ref="$KERNEL_RPMS_AARCH64_REF" ;;' "$os" \
+   && grep -Fq './os/dev/verify-kernel-provenance.sh "$ref" "$BASE_REF" "$RPMS_REF" "$binding"' "$os" \
+   && grep -Fq '[[ $PUBLISH != false ]] || binding=signed-snapshot' "$os" \
    && grep -Fq 'echo "KERNEL_RPMS_REF=$ref" >> "$GITHUB_ENV"' "$os" \
    && grep -Fq '[[ "$KERNEL_RPMS_REF" =~ ^code\.podesta\.ai/qos/tilo-kernel@sha256:[0-9a-f]{64}$ ]]' "$repo/os/dev/build-image.sh" \
-   && grep -Fq 'cosign verify --key "$TILO_REPO/keys/cosign.pub" "$KERNEL_RPMS_REF"' "$repo/os/dev/build-image.sh" \
-   && grep -Fq 'cosign verify-attestation' "$repo/os/dev/build-image.sh" \
-   && grep -Fq 'https://tilo.sh/buildtypes/kernel-rpm/v1' "$repo/os/dev/build-image.sh"; then
+   && grep -Fq 'dev/verify-kernel-provenance.sh" "$KERNEL_RPMS_REF" "$BASE_REF" "$RPMS_REF"' "$repo/os/dev/build-image.sh" \
+   && grep -Fq '[[ "$ref" =~ ^code\.podesta\.ai/qos/tilo-kernel@sha256:[0-9a-f]{64}$ ]]' "$kernel_verify" \
+   && grep -Fq 'cosign verify --key "$key" "$ref"' "$kernel_verify" \
+   && grep -Fq 'cosign verify-attestation --key "$key" --type slsaprovenance1 "$ref"' "$kernel_verify" \
+   && grep -Fq 'https://tilo.sh/buildtypes/kernel-rpm/v1' "$kernel_verify" \
+   && grep -Fq 'actual_arch="$(skopeo inspect "docker://$ref" | jq -er .Architecture)"' "$kernel_verify"; then
   ok 'CI and local OS builds authenticate kernel digest, architecture, and provenance before consumption'
 else
   bad 'an OS build can consume an unpinned or unauthenticated kernel repository'
