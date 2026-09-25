@@ -81,7 +81,19 @@ fn describe_into(provider: &str, resource: &Resource, words: &[String], out: &mu
                 (false, json!({ "code": code, "reason": reason }))
             }
         };
-        let params: Vec<Value> = projected_params(spec.params(), &spec.contract.confirmation)
+        let mut projected = projected_params(spec.params(), &spec.contract.confirmation);
+        if spec.contract.confirmation == ConfirmationPolicy::None
+            && spec.contract.confirmation_depends_on_arguments()
+        {
+            // Whether this call needs confirming depends on its value (a
+            // generic edit that may delete); the refusal says when it does.
+            projected.push(ActionParam::optional(
+                CONFIRM_ARG,
+                ParamType::Boolean,
+                "Confirm a consequential value, such as a deletion",
+            ));
+        }
+        let params: Vec<Value> = projected
             .iter()
             .map(|param| serde_json::to_value(param).unwrap_or(Value::Null))
             .collect();
@@ -177,7 +189,15 @@ pub fn admit(
         }));
     }
     let mut own = args.clone();
-    let phrase = match &spec.contract.confirmation {
+    // Classify the call's own arguments, without the confirmation evidence.
+    let mut bare = args.clone();
+    bare.remove(CONFIRM_ARG);
+    bare.remove(PHRASE_ARG);
+    let policy = spec.confirmation_for_json(&bare);
+    if policy == ConfirmationPolicy::None && spec.contract.confirmation_depends_on_arguments() {
+        own.remove(CONFIRM_ARG);
+    }
+    let phrase = match &policy {
         ConfirmationPolicy::None => None,
         ConfirmationPolicy::Confirm => {
             if own.remove(CONFIRM_ARG) != Some(Value::Bool(true)) {

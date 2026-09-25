@@ -360,6 +360,7 @@ mod tests {
     use super::*;
     use crate::model::seed_custom;
     use automerge::ROOT;
+    use tilo_automerge::ApplyIncoming;
     #[test]
     fn fields_merge() {
         let mut a = AutoCommit::new();
@@ -373,7 +374,7 @@ mod tests {
             TokenId::Accent,
             [1, 2, 3]
         ));
-        a.merge(&mut b).unwrap();
+        a.merge_incoming(&mut b).unwrap();
         let s = load_catalog(&a, &ROOT)
             .unwrap()
             .into_iter()
@@ -395,7 +396,7 @@ mod tests {
         y.id = "two".into();
         assert!(create_custom_theme(&mut a, &ROOT, &x));
         assert!(create_custom_theme(&mut b, &ROOT, &y));
-        a.merge(&mut b).unwrap();
+        a.merge_incoming(&mut b).unwrap();
         let ids: Vec<_> = load_catalog(&a, &ROOT)
             .unwrap()
             .into_iter()
@@ -410,7 +411,7 @@ mod tests {
         let mut b = AutoCommit::load(&a.save()).unwrap();
         assert!(delete_custom_theme(&mut a, &ROOT, "sunset"));
         assert!(set_name(&mut b, &ROOT, "sunset", "edit"));
-        a.merge(&mut b).unwrap();
+        a.merge_incoming(&mut b).unwrap();
         assert!(
             !load_catalog(&a, &ROOT)
                 .unwrap()
@@ -432,7 +433,7 @@ mod tests {
         other.id = "other".into();
         assert!(create_custom_theme(&mut b, &ROOT, &other));
         migrate_legacy_catalog(&mut b, &ROOT);
-        b.merge(&mut a).unwrap();
+        b.merge_incoming(&mut a).unwrap();
         migrate_legacy_catalog(&mut b, &ROOT);
         let n = b.save().len();
         migrate_legacy_catalog(&mut b, &ROOT);

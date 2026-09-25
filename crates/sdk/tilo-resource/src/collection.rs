@@ -338,6 +338,7 @@ mod tests {
     use super::*;
     use crate::model::write_key;
     use automerge::ROOT;
+    use tilo_automerge::ApplyIncoming;
 
     fn ids(collection: &Collection<String>) -> Vec<String> {
         collection.values().cloned().collect()
@@ -369,7 +370,7 @@ mod tests {
         r.insert(1, Id::from_raw("right"), "R".into());
         r.remove(&Id::from_raw("i1"));
         write_key(&mut right, &ROOT, "items", &r).unwrap();
-        left.merge(&mut right).unwrap();
+        left.merge_incoming(&mut right).unwrap();
         let merged: Collection<String> = read_key(&left, &ROOT, "items").unwrap();
         let merged = ids(&merged);
         assert_eq!(merged.len(), 5);

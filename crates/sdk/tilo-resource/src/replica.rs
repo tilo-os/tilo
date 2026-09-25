@@ -8,6 +8,7 @@
 
 use automerge::ChangeHash;
 use tilo_actions::{ActionContext, ActionEnvelope, ActionError, ActionRegistry};
+use tilo_automerge::ApplyIncoming;
 
 use crate::action::Invoke;
 use crate::history::{self, Version};
@@ -148,8 +149,8 @@ impl<R: Resource> Replica<R> {
     /// # Errors
     /// Returns a document error.
     pub fn sync_with(&mut self, other: &mut Self) -> Result<(), ModelError> {
-        self.doc.merge(&mut other.doc)?;
-        other.doc.merge(&mut self.doc)?;
+        self.doc.merge_incoming(&mut other.doc)?;
+        other.doc.merge_incoming(&mut self.doc)?;
         Ok(())
     }
 

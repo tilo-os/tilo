@@ -30,6 +30,7 @@
 //!
 
 use std::collections::HashMap;
+use tilo_automerge::ApplyIncoming;
 
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, ScalarValue, Value};
@@ -520,7 +521,7 @@ impl WorkspaceDirectory {
             .map_err(|_| DirectoryError::BadSignature)?;
         // All checks pass — merge the automerge delta.
         self.doc
-            .load_incremental(&update.delta)
+            .load_incoming(&update.delta)
             .map_err(|e| DirectoryError::Automerge(e.to_string()))?;
         Ok(())
     }

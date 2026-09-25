@@ -140,6 +140,7 @@ impl MergeDoc {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tilo_automerge::ApplyIncoming;
 
     #[test]
     fn merged_round_trip() {
@@ -201,7 +202,7 @@ mod tests {
         let mut b = AutoCommit::load(&a.save()).unwrap();
         MergeDoc::set_merged(&mut b, "shared\nfrom-b\n");
         let mut b_loaded = AutoCommit::load(&b.save()).unwrap();
-        a.merge(&mut b_loaded).unwrap();
+        a.merge_incoming(&mut b_loaded).unwrap();
         assert!(MergeDoc::merged_text(&a).contains("from-b"));
     }
 

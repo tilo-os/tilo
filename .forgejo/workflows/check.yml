@@ -307,14 +307,8 @@ jobs:
       - name: Prepare Rust build caches
         uses: ./.forgejo/actions/prepare-rust-build
 
-      - name: Prepare headless runtime
-        run: |
-          ./os/dev/assert-native-arch.sh '${{ matrix.arch }}'
-          driver="/usr/share/vulkan/icd.d/lvp_icd.$(uname -m).json"
-          test -r "$driver"
-          echo "VK_DRIVER_FILES=$driver" >> "$GITHUB_ENV"
-          mkdir -p /tmp/tilo-xdg-runtime
-          chmod 700 /tmp/tilo-xdg-runtime
+      - name: Check native architecture
+        run: ./os/dev/assert-native-arch.sh '${{ matrix.arch }}'
 
       # Older/explicitly selected builders may predate the audio fixture.
       # The helper replaces only the conflicting audio daemon; other installed
@@ -363,22 +357,18 @@ jobs:
           bash scripts/ci-run.sh "cargo build (tilo-install test fixture)" --
           cargo build --locked -p install
 
-      - name: Generate native NTFS fixtures
-        if: contains(matrix.test_packages, '-p qos-ntfs-helper')
-        run: |
-          fixtures=$(mktemp -d /tmp/qos-ntfs-fixtures.XXXXXX)
-          rmdir "$fixtures"
-          python3 crates/session/qos-ntfs-helper/tests/build_native_fixtures.py --output "$fixtures"
-          printf 'QOS_NTFS_FIXTURES=%s\n' "$fixtures" >> "$GITHUB_ENV"
-
+      # tools/test-env.sh is the suite's whole runtime environment (private
+      # XDG runtime, lavapipe, NTFS fixtures, headless audio), shared with
+      # nightly and with runs outside CI. The NTFS images are generated only
+      # for shards that test their consumer.
       - name: Test shard ${{ matrix.shard }}
         if: matrix.test_packages != ''
         env:
-          XDG_RUNTIME_DIR: /tmp/tilo-xdg-runtime
+          TILO_TEST_NTFS_FIXTURES: ${{ contains(matrix.test_packages, '-p qos-ntfs-helper') && '1' || '0' }}
         run: >-
           bash tools/ci/measure.sh "test shard ${{ matrix.shard }}" --
           bash scripts/ci-run.sh "cargo nextest (affected shard ${{ matrix.shard }})" --
-          bash tools/with-headless-audio.sh cargo nextest run --locked --profile ci ${{ matrix.test_packages }}
+          bash tools/test-env.sh cargo nextest run --locked --profile ci ${{ matrix.test_packages }}
           -E "not ($GOLDEN_FILTER)"
 
       - name: Report remote compiler-cache effectiveness

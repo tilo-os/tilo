@@ -5,6 +5,11 @@ edition = "2024"
 publish.workspace = true
 license.workspace = true
 
+# The history tests include ui-core's shared conformance suite, which takes
+# merges through tilo-automerge; machete does not follow `include!`.
+[package.metadata.cargo-machete]
+ignored = ["tilo-automerge"]
+
 [lib]
 name = "calculator"
 path = "src/lib.rs"
@@ -26,6 +31,9 @@ serde_json.workspace = true
 vello.workspace = true
 winit.workspace = true
 taffy.workspace = true
+
+[dev-dependencies]
+tilo-automerge.workspace = true
 
 [lints]
 workspace = true

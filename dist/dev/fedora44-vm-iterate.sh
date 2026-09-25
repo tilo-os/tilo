@@ -98,14 +98,16 @@ cmd_bootstrap() {
     require_command distrobox
     if ! podman image exists "$image"; then
         note "preparing persistent Fedora 44 dependency image $image (one-time)"
-        # The Containerfile needs exactly one small helper.  Do not hand podman
-        # the repository root as its build context: even ignored target trees
-        # make context walking expensive and turn this one-time step into a
-        # multi-gigabyte copy.
+        # The Containerfile needs exactly the small files its header lists.  Do
+        # not hand podman the repository root as its build context: even
+        # ignored target trees make context walking expensive and turn this
+        # one-time step into a multi-gigabyte copy.
         local build_context
         build_context=$(mktemp -d "${TMPDIR:-/tmp}/tilo-fedora44-context.XXXXXX")
         trap 'rm -rf "$build_context"' RETURN
         install -m 0755 "$repo_root/dist/ci/install-build-deps.sh" "$build_context/install-build-deps.sh"
+        install -m 0755 "$repo_root/tools/ci/install-pdfium.sh" "$build_context/install-pdfium.sh"
+        install -m 0644 "$repo_root/os/external-assets/github-assets.tsv" "$build_context/github-assets.tsv"
         podman build --tag "$image" --file "$repo_root/dist/dev/Containerfile.fedora44" "$build_context"
     fi
     if ! container_exists; then

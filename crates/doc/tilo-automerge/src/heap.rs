@@ -1,12 +1,14 @@
-//! Heap bytes the current thread holds, for tests that compare what documents keep in memory.
+//! Heap bytes the current thread holds, for tests that pin what a document keeps in memory.
 //!
-//! Counted per thread, so tests running in parallel on other threads don't disturb the figure.
-//! Memory freed on another thread than the one that allocated it is miscounted; automerge and
-//! qdoc do all their work on the caller's thread.
+//! Install [`ThreadCounting`] as the test binary's `#[global_allocator]` and read [`held`]
+//! around the code under test. Counted per thread, so tests running in parallel on other threads
+//! don't disturb the figure; memory freed on another thread than the one that allocated it is
+//! miscounted, and automerge does all its work on the caller's thread.
 
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
 
+/// The system allocator, counting the bytes each thread holds.
 pub struct ThreadCounting;
 
 std::thread_local! {
@@ -53,7 +55,21 @@ unsafe impl GlobalAlloc for ThreadCounting {
     }
 }
 
-/// Bytes allocated and not yet freed by this thread since it started.
-pub fn live() -> isize {
-    LIVE.try_with(Cell::get).unwrap_or(0)
+/// Bytes allocated and not yet freed by this thread since it started (only meaningful with
+/// [`ThreadCounting`] installed).
+#[must_use]
+pub fn held() -> isize {
+    LIVE.with(Cell::get)
+}
+
+/// Bytes `build` leaves allocated on this thread in the value it returns.
+///
+/// The value is dropped after measuring, so the figure is what it held, not what building it
+/// cost at its peak.
+pub fn held_by<T>(build: impl FnOnce() -> T) -> isize {
+    let before = held();
+    let value = build();
+    let bytes = held().wrapping_sub(before);
+    drop(value);
+    bytes
 }

@@ -3,6 +3,7 @@ use automerge::{
     AutoCommit, AutomergeError, ChangeHash, ObjType, ReadDoc, TextEncoding,
     transaction::Transactable,
 };
+use tilo_automerge::ApplyIncoming;
 mod projection;
 mod schema;
 mod selection;
@@ -240,7 +241,7 @@ pub fn prepare_content_restore(
     if target_doc.text_encoding() != doc.text_encoding() {
         let mut encoded = AutoCommit::new_with_encoding(doc.text_encoding());
         encoded
-            .apply_changes(target_doc.get_changes(&[]))
+            .apply_incoming(target_doc.get_changes(&[]))
             .map_err(|error| RestoreError::read("historical target", &error))?;
         target_doc = encoded;
     }
@@ -309,7 +310,7 @@ fn committed_heads(doc: &AutoCommit) -> Result<Vec<ChangeHash>, RestoreError> {
     require_committed(doc)?;
     let mut copy = doc.clone();
     let visible = sorted_heads(&copy.get_heads());
-    copy.integrate();
+    copy.integrate_all();
     if visible != sorted_heads(&copy.get_heads()) {
         return Err(RestoreError::StaleReview);
     }

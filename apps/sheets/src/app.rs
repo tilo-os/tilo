@@ -15,6 +15,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver, SyncSender, TryRecvError};
 use std::time::{Duration, Instant};
+use tilo_automerge::ApplyIncoming;
 
 use automerge::{AutoCommit, ChangeHash, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
@@ -1830,7 +1831,7 @@ impl SheetsApp {
                         // the same atomic canonical import action instead, so
                         // neither workbook silently wins or disappears.
                         if doc.get_heads().is_empty() {
-                            if let Err(error) = doc.merge(&mut saved) {
+                            if let Err(error) = doc.merge_incoming(&mut saved) {
                                 self.status =
                                     format!("Saved workbook could not be merged: {error}");
                                 self.last_persist_failure = Some(Instant::now());
