@@ -8,13 +8,13 @@
 //! replies to anything else — a request written before the guest was
 //! listening, answered after this client gave up on it — are skipped.
 
-#[cfg(unix)]
 use std::io::{BufRead, BufReader, Write};
+#[cfg(windows)]
+use std::net::TcpStream;
 #[cfg(unix)]
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
-#[cfg(unix)]
 use std::time::Instant;
 
 use serde_json::{Map, Value, json};
@@ -110,7 +110,6 @@ fn refusal_or_protocol(reply: &Value) -> ConsoleError {
 /// The console socket of a running scenario VM.
 pub struct SocketConsole {
     path: PathBuf,
-    #[cfg(unix)]
     next: u64,
     /// How long one request may wait for its answer.
     pub timeout: Duration,
@@ -120,7 +119,6 @@ impl SocketConsole {
     pub fn new(path: &Path) -> Self {
         Self {
             path: path.to_path_buf(),
-            #[cfg(unix)]
             next: 0,
             timeout: Duration::from_secs(15),
         }
@@ -133,24 +131,42 @@ impl SocketConsole {
 
 impl Console for SocketConsole {
     #[cfg(windows)]
-    fn request(&mut self, _request: Value) -> Result<Value, ConsoleError> {
-        Err(ConsoleError::Unreachable(
-            "scenario console sockets require a Unix host".into(),
-        ))
+    fn request(&mut self, request: Value) -> Result<Value, ConsoleError> {
+        let endpoint = self.path.to_string_lossy();
+        let address = endpoint.strip_prefix("tcp://").ok_or_else(|| {
+            ConsoleError::Protocol(format!("invalid TCP console endpoint: {endpoint}"))
+        })?;
+        let stream = TcpStream::connect(address)
+            .map_err(|error| ConsoleError::Unreachable(error.to_string()))?;
+        stream
+            .set_read_timeout(Some(self.timeout))
+            .map_err(|error| ConsoleError::Unreachable(error.to_string()))?;
+        self.exchange(stream, request)
     }
 
     #[cfg(unix)]
-    fn request(&mut self, mut request: Value) -> Result<Value, ConsoleError> {
+    fn request(&mut self, request: Value) -> Result<Value, ConsoleError> {
+        let stream = UnixStream::connect(&self.path)
+            .map_err(|error| ConsoleError::Unreachable(error.to_string()))?;
+        stream
+            .set_read_timeout(Some(self.timeout))
+            .map_err(|error| ConsoleError::Unreachable(error.to_string()))?;
+        self.exchange(stream, request)
+    }
+}
+
+impl SocketConsole {
+    fn exchange<S: std::io::Read + std::io::Write>(
+        &mut self,
+        mut stream: S,
+        mut request: Value,
+    ) -> Result<Value, ConsoleError> {
         self.next = self.next.wrapping_add(1);
         let seq = format!("tilo-vm-{}-{}", std::process::id(), self.next);
         if let Value::Object(object) = &mut request {
             object.insert("seq".into(), json!(seq));
         }
         let unreachable = |error: std::io::Error| ConsoleError::Unreachable(error.to_string());
-        let mut stream = UnixStream::connect(&self.path).map_err(unreachable)?;
-        stream
-            .set_read_timeout(Some(self.timeout))
-            .map_err(unreachable)?;
         writeln!(stream, "{request}").map_err(unreachable)?;
         stream.flush().map_err(unreachable)?;
         let now = Instant::now();
@@ -181,6 +197,8 @@ impl Console for SocketConsole {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(windows)]
+    use std::net::TcpListener;
     #[cfg(unix)]
     use std::os::unix::net::UnixListener;
 
@@ -214,6 +232,32 @@ mod tests {
         let mut console = SocketConsole::new(&path);
         let state = console.state().unwrap();
         assert_eq!(state["app"], "installer");
+        server.join().unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn tcp_console_matches_the_request_sequence() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            let mut line = String::new();
+            reader.read_line(&mut line).unwrap();
+            let request: Value = serde_json::from_str(&line).unwrap();
+            let mut writer = stream;
+            writeln!(writer, "{}", json!({"state":{"app":"stale"},"seq":"old"})).unwrap();
+            writeln!(
+                writer,
+                "{}",
+                json!({"state":{"app":"installer"},"seq":request["seq"]})
+            )
+            .unwrap();
+        });
+        let path = PathBuf::from(format!("tcp://{address}"));
+        let mut console = SocketConsole::new(&path);
+        assert_eq!(console.state().unwrap()["app"], "installer");
         server.join().unwrap();
     }
 
