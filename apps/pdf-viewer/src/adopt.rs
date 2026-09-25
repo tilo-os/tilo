@@ -498,7 +498,7 @@ pub fn thread_print(a: &Annotation, thread: Option<&Comment>) -> String {
             s.push_str(&r.body);
         }
     }
-    qdoc::blobstore::hash_bytes(s.as_bytes())
+    tilo_content::hash_bytes(s.as_bytes())
 }
 
 #[cfg(test)]

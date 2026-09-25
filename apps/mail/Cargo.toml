@@ -31,9 +31,9 @@ accounts = { path = "../../crates/system/accounts" }
 # Durable replace-after-portal-write; a failed/crashed export never leaves a
 # partially-written attachment at the destination the user chose.
 atomic-file = { path = "../../crates/system/atomic-file" }
-# Portable content store for draft attachments. Drafts carry only a verified
-# content identity; qdoc offers/fetches the bytes across collaborators.
-qdoc = { path = "../../crates/doc/qdoc" }
+# Content store for draft attachments. Drafts carry only a verified content
+# identity; the bytes live in the app's content store.
+tilo-content = { path = "../../crates/system/content" }
 qdoc-codecs = { path = "../../crates/doc/qdoc-codecs", default-features = false }
 # Calendar invitations are validated as parsed iCalendar content lines.
 pim-lines = { path = "../../crates/text/pim-lines" }

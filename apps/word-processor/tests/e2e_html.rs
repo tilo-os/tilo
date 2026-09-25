@@ -47,7 +47,11 @@ fn render_doc_to_html() -> String {
         dm.add_mark(&p, 13, 19, "link", "https://tilo.so/"); // "a link"
     }
     let snap = qdoc::model::materialize(&state.doc, &c);
-    qdoc_codecs::export_html::render_html(&snap, qdoc_codecs::export_html::HtmlOptions::default())
+    qdoc_codecs::export_html::render_html(
+        &snap,
+        qdoc_codecs::export_html::HtmlOptions::default(),
+        &tilo_content::NoContent,
+    )
 }
 
 #[test]
@@ -57,7 +61,8 @@ fn open_html_recovers_headings_bold_link() {
     let path = temp_path("doc.html");
     std::fs::write(&path, html.as_bytes()).unwrap();
 
-    let (mut state, mut wp, fmt) = open_document(&path).unwrap();
+    let (mut state, mut wp, fmt) =
+        open_document(&path, tilo_content::ContentStore::memory()).unwrap();
     assert_eq!(fmt, WpFormat::Html, "extension picks the HTML format");
     wp.sync(&mut state.doc, &state.root);
 
@@ -102,7 +107,8 @@ fn open_small_handwritten_html_first_heading() {
     let path = temp_path("small.htm");
     std::fs::write(&path, b"<h1>Hello HTML</h1><p>body</p>").unwrap();
 
-    let (mut state, mut wp, fmt) = open_document(&path).unwrap();
+    let (mut state, mut wp, fmt) =
+        open_document(&path, tilo_content::ContentStore::memory()).unwrap();
     assert_eq!(fmt, WpFormat::Html, ".htm also opens as HTML");
     wp.sync(&mut state.doc, &state.root);
 

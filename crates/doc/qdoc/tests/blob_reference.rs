@@ -3,8 +3,8 @@
 //! This is the invariant a 146 kB image broke: stored inline, one change
 //! exceeded the publish ceiling and was dropped, and because automerge holds a
 //! change whose ancestors are missing, every other machine's copy froze at that
-//! point — silently, and for good. The bytes now live in a content-addressed
-//! store beside the document and only the hash and a small descriptor go in it.
+//! point — silently, and for good. The bytes are a binary input the caller keeps
+//! in its content store; only the hash and a small descriptor go in the document.
 //!
 //! Asserted on the *saved* bytes rather than on the in-memory model, because
 //! what replicates is what `save` produces: a test that only checked the model
@@ -21,8 +21,7 @@
 )]
 
 use qdoc::Document;
-
-use crate::blobstore_fixture::serialised;
+use tilo_content::{ContentInputs, ContentStore};
 
 /// A tiny but real PNG: signature, IHDR with a known size, and enough of a body
 /// that a sniffer can size it.
@@ -45,11 +44,15 @@ fn contains(haystack: &[u8], needle: &[u8]) -> bool {
 
 #[test]
 fn a_saved_document_carries_the_reference_and_not_the_bytes() {
-    let _guard = serialised();
     let bytes = png();
     let mut doc = Document::new();
-    let hash = doc.put_blob(&bytes).expect("test image fits blob quota");
-    assert!(!hash.is_empty(), "put_blob returned no hash");
+    let mut inputs = ContentInputs::new();
+    let hash = doc.attach(&bytes, &mut inputs);
+    assert_eq!(
+        inputs.get(&hash),
+        Some(bytes.as_slice()),
+        "the bytes go to the caller"
+    );
 
     let saved = doc.save();
 
@@ -83,7 +86,6 @@ fn a_saved_document_carries_the_reference_and_not_the_bytes() {
 
 #[test]
 fn the_mime_survives_in_a_document_that_also_has_text() {
-    let _guard = serialised();
     // The minimal case is not the case a reader meets: a real document has
     // paragraphs and block structure around the image, and automerge encodes a
     // bigger document differently.
@@ -94,7 +96,10 @@ fn the_mime_survives_in_a_document_that_also_has_text() {
         let b = doc.insert_block(Some(&p), "list_item");
         doc.splice_text(&b, 0, 0, line);
     }
-    let hash = doc.put_blob(&png()).expect("test image fits blob quota");
+    let store = ContentStore::memory();
+    let mut inputs = ContentInputs::new();
+    let hash = doc.attach(&png(), &mut inputs);
+    store.put_inputs(&inputs).unwrap();
     let _img = doc.insert_block(Some(&p), "image");
 
     let saved = doc.save();
@@ -116,8 +121,12 @@ fn the_mime_survives_in_a_document_that_also_has_text() {
         "the image's bytes are in a document with text in it"
     );
     let reopened = Document::load(&saved).expect("a saved document reloads");
+    assert!(
+        reopened.referenced_content().contains(&hash),
+        "the reference is gone once the document has text in it"
+    );
     assert_eq!(
-        reopened.blob(&hash).as_deref(),
+        store.read(&hash).as_deref(),
         Some(png().as_slice()),
         "the reference no longer resolves once the document has text in it"
     );
@@ -125,12 +134,11 @@ fn the_mime_survives_in_a_document_that_also_has_text() {
 
 #[test]
 fn the_descriptor_travels_with_the_reference() {
-    let _guard = serialised();
     // The intrinsic size has to cross too. Without it a peer whose bytes have
     // not arrived guesses a size, and every paragraph below the image moves when
     // they land — on a shared document, while somebody is typing into it.
     let mut doc = Document::new();
-    let hash = doc.put_blob(&png()).expect("test image fits blob quota");
+    let hash = doc.attach(&png(), &mut ContentInputs::new());
     let saved = doc.save();
 
     // The descriptor is written as scalars beside the hash, so the sniffed mime
@@ -142,9 +150,62 @@ fn the_descriptor_travels_with_the_reference() {
     );
 
     let reopened = Document::load(&saved).expect("a saved document reloads");
+    let meta = qdoc::model::blob_meta(reopened.as_ref().doc, reopened.as_ref().c, &hash)
+        .expect("the descriptor survives the save");
+    assert_eq!((meta.mime.as_str(), meta.w, meta.h), ("image/png", 7, 11));
+}
+
+#[test]
+fn every_version_s_inputs_stay_referenced() {
+    // A content store may only collect what no version of any document names, so the document
+    // must still list an image after it was taken out again.
+    let mut doc = Document::new();
+    let mut inputs = ContentInputs::new();
+    let first = doc.attach(&png(), &mut inputs);
+    let img = doc.insert_block(None, "image");
+    doc.remove_block(&img);
+    let second = doc.attach(b"a later, unrelated input", &mut inputs);
+    let referenced = doc.referenced_content();
+    assert!(referenced.contains(&first) && referenced.contains(&second));
+}
+
+#[test]
+fn content_an_older_document_carried_inline_can_move_out() {
+    use automerge::transaction::Transactable;
+    // Documents written before inputs moved out of the document keep the bytes under the hash.
+    let bytes = png();
+    let hash = tilo_content::hash_bytes(&bytes);
+    let mut doc = Document::new();
+    {
+        let dm = doc.as_mut();
+        let blobs =
+            dm.c.blobs
+                .clone()
+                .expect("a new document has its blobs map");
+        dm.doc
+            .put(
+                &blobs,
+                hash.as_str(),
+                automerge::ScalarValue::Bytes(bytes.clone()),
+            )
+            .unwrap();
+    }
+    assert!(
+        qdoc::model::inline_content(doc.as_ref().doc, doc.as_ref().c, &hash)
+            .is_some_and(|inline| inline == bytes)
+    );
+    let store = ContentStore::memory();
+    store
+        .put_inputs(&qdoc::model::inline_contents(
+            doc.as_ref().doc,
+            doc.as_ref().c,
+        ))
+        .unwrap();
+    assert!(store.read(&hash).is_some_and(|read| read == bytes));
+    let meta = qdoc::model::blob_meta(doc.as_ref().doc, doc.as_ref().c, &hash).unwrap();
     assert_eq!(
-        reopened.blob(&hash).as_deref(),
-        Some(png().as_slice()),
-        "the hash no longer addresses the image's bytes"
+        meta.len,
+        bytes.len() as u64,
+        "the legacy form still describes itself"
     );
 }

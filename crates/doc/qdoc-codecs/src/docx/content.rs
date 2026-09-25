@@ -11,6 +11,7 @@ use crate::format::CodecError;
 use qdoc::document::MarkValue;
 use qdoc::model::DocMut;
 use qdoc::schema::{FIELD_PLACEHOLDER, MARK_COMMENT, MARK_NOTE_REF};
+use tilo_content::ContentInputs;
 
 use quick_xml::events::{BytesEnd, BytesRef, BytesStart, BytesText, Event};
 use quick_xml::reader::Reader;
@@ -294,6 +295,7 @@ impl BodyState {
         ev: &Event,
         doc: &mut DocMut,
         image_map: &BTreeMap<String, Vec<u8>>,
+        inputs: &mut ContentInputs,
     ) -> bool {
         if self.drawing.is_none() {
             return false;
@@ -353,9 +355,8 @@ impl BodyState {
                     } else {
                         self.start_block(doc, "image")
                     };
-                    if let Some(hash) = doc.put_blob(bytes) {
-                        doc.set_attr(&id, "blob", hash.as_str());
-                    }
+                    let hash = doc.attach(bytes, inputs);
+                    doc.set_attr(&id, "blob", hash.as_str());
                     let anchor = if !dr.floating {
                         "inline"
                     } else if dr.page_relative {
@@ -707,6 +708,10 @@ impl BodyState {
     }
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the body parser needs every part the other parsers produced, and the content inputs it adds images to"
+)]
 pub(crate) fn parse_body(
     document_xml: &[u8],
     reg: &StyleRegistry,
@@ -715,6 +720,7 @@ pub(crate) fn parse_body(
     comment_map: &BTreeMap<String, String>,
     image_map: &BTreeMap<String, Vec<u8>>,
     doc: &mut DocMut,
+    inputs: &mut ContentInputs,
 ) -> Result<(), CodecError> {
     let s = std::str::from_utf8(document_xml).map_err(|e| CodecError::Parse(e.to_string()))?;
     let mut reader = Reader::from_str(s);
@@ -735,7 +741,7 @@ pub(crate) fn parse_body(
         if st.handle_capture(s, pos_after, &ev, doc) {
             continue;
         }
-        if st.handle_drawing(&ev, doc, image_map) {
+        if st.handle_drawing(&ev, doc, image_map, inputs) {
             continue;
         }
 
@@ -777,7 +783,13 @@ mod tests {
         );
         let docx = minimal_docx(body);
         let mut d = Document::new();
-        DocxCodec.import(&docx, &mut d.as_mut()).unwrap();
+        DocxCodec
+            .import(
+                &docx,
+                &mut d.as_mut(),
+                &mut tilo_content::ContentInputs::new(),
+            )
+            .unwrap();
         let snap = d.materialize();
 
         assert_eq!(snap.blocks[0].kind, "heading");
@@ -797,7 +809,13 @@ mod tests {
         let body = r#"<w:p><w:pPr><w:pStyle w:val="MyTitle"/></w:pPr><w:r><w:t>My Title</w:t></w:r></w:p>"#;
         let docx = minimal_docx_styled(styles, body);
         let mut d = Document::new();
-        DocxCodec.import(&docx, &mut d.as_mut()).unwrap();
+        DocxCodec
+            .import(
+                &docx,
+                &mut d.as_mut(),
+                &mut tilo_content::ContentInputs::new(),
+            )
+            .unwrap();
         let b = &d.materialize().blocks[0];
         assert_eq!(b.kind, "heading", "named paragraph style → heading");
         assert_eq!(b.text, "My Title");
@@ -826,7 +844,13 @@ mod tests {
         );
         let docx = minimal_docx(body);
         let mut d = Document::new();
-        DocxCodec.import(&docx, &mut d.as_mut()).unwrap();
+        DocxCodec
+            .import(
+                &docx,
+                &mut d.as_mut(),
+                &mut tilo_content::ContentInputs::new(),
+            )
+            .unwrap();
         let p = &d.materialize().blocks[0];
         assert_eq!(p.text, "a bold and more");
         assert!(
@@ -870,7 +894,13 @@ mod tests {
         );
         let docx = minimal_docx(body);
         let mut d = Document::new();
-        DocxCodec.import(&docx, &mut d.as_mut()).unwrap();
+        DocxCodec
+            .import(
+                &docx,
+                &mut d.as_mut(),
+                &mut tilo_content::ContentInputs::new(),
+            )
+            .unwrap();
         let b = &d.materialize().blocks[0];
         assert_eq!(b.text, "big");
         assert_eq!(
@@ -906,7 +936,13 @@ mod tests {
         );
         let docx = minimal_docx_styled(styles, body);
         let mut d = Document::new();
-        DocxCodec.import(&docx, &mut d.as_mut()).unwrap();
+        DocxCodec
+            .import(
+                &docx,
+                &mut d.as_mut(),
+                &mut tilo_content::ContentInputs::new(),
+            )
+            .unwrap();
         let snap = d.materialize();
         let p0 = &snap.blocks[0];
         assert_eq!(p0.text, "xy");
@@ -937,7 +973,13 @@ mod tests {
         );
         let docx = minimal_docx_numbered("", numbering, body);
         let mut d = Document::new();
-        DocxCodec.import(&docx, &mut d.as_mut()).unwrap();
+        DocxCodec
+            .import(
+                &docx,
+                &mut d.as_mut(),
+                &mut tilo_content::ContentInputs::new(),
+            )
+            .unwrap();
         let snap = d.materialize();
         let items: Vec<_> = snap
             .blocks
@@ -968,7 +1010,13 @@ mod tests {
         );
         let docx = minimal_docx(body);
         let mut d = Document::new();
-        DocxCodec.import(&docx, &mut d.as_mut()).unwrap();
+        DocxCodec
+            .import(
+                &docx,
+                &mut d.as_mut(),
+                &mut tilo_content::ContentInputs::new(),
+            )
+            .unwrap();
         let snap = d.materialize();
         let cells: Vec<_> = snap.blocks.iter().filter(|b| b.kind == "cell").collect();
         assert_eq!(cells.len(), 4, "2x2 cells: {snap:?}");
@@ -989,7 +1037,13 @@ mod tests {
         );
         let docx = minimal_docx(body);
         let mut d = Document::new();
-        DocxCodec.import(&docx, &mut d.as_mut()).unwrap();
+        DocxCodec
+            .import(
+                &docx,
+                &mut d.as_mut(),
+                &mut tilo_content::ContentInputs::new(),
+            )
+            .unwrap();
         let snap = d.materialize();
         assert_eq!(snap.blocks.len(), 3, "before / fidelity / after: {snap:?}");
         assert_eq!(snap.blocks[0].text, "before");
@@ -1016,7 +1070,13 @@ mod tests {
         let body = r#"<w:p><w:pPr><w:pStyle w:val="Fancy"/></w:pPr><w:r><w:t>hi</w:t></w:r></w:p>"#;
         let docx = minimal_docx_styled(styles, body);
         let mut d = Document::new();
-        DocxCodec.import(&docx, &mut d.as_mut()).unwrap();
+        DocxCodec
+            .import(
+                &docx,
+                &mut d.as_mut(),
+                &mut tilo_content::ContentInputs::new(),
+            )
+            .unwrap();
         let snap = d.materialize();
         let b = &snap.blocks[0];
         assert_eq!(b.kind, "paragraph");
@@ -1087,7 +1147,13 @@ mod tests {
         );
         let docx = minimal_docx(body);
         let mut d = Document::new();
-        DocxCodec.import(&docx, &mut d.as_mut()).unwrap();
+        DocxCodec
+            .import(
+                &docx,
+                &mut d.as_mut(),
+                &mut tilo_content::ContentInputs::new(),
+            )
+            .unwrap();
         let p = &d.materialize().blocks[0];
         assert_eq!(p.text, "a bonjour");
         assert!(
@@ -1110,7 +1176,13 @@ mod tests {
         let body = r"<w:p><w:r><w:t>hi</w:t></w:r></w:p>";
         let docx = minimal_docx_styled(styles, body);
         let mut d = Document::new();
-        DocxCodec.import(&docx, &mut d.as_mut()).unwrap();
+        DocxCodec
+            .import(
+                &docx,
+                &mut d.as_mut(),
+                &mut tilo_content::ContentInputs::new(),
+            )
+            .unwrap();
         assert_eq!(
             d.materialize().language.as_deref(),
             Some("de-DE"),
@@ -1128,9 +1200,17 @@ mod tests {
         d.splice_text(&id, 0, 0, "bonjour monde");
         d.add_mark(&id, 0, 7, "lang", "fr");
 
-        let exported = DocxCodec.export(d.as_ref()).unwrap();
+        let exported = DocxCodec
+            .export(d.as_ref(), &tilo_content::NoContent)
+            .unwrap();
         let mut d2 = Document::new();
-        DocxCodec.import(&exported, &mut d2.as_mut()).unwrap();
+        DocxCodec
+            .import(
+                &exported,
+                &mut d2.as_mut(),
+                &mut tilo_content::ContentInputs::new(),
+            )
+            .unwrap();
         let snap = d2.materialize();
 
         assert_eq!(

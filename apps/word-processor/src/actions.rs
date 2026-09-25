@@ -16,8 +16,8 @@
 //! action with stale or hostile arguments is atomically refused before it can
 //! write, so callers can surface a useful error without leaving a partial edit.
 
+use automerge::AutoCommit;
 use automerge::transaction::Transactable;
-use automerge::{AutoCommit, ObjId, ReadDoc};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 
@@ -323,13 +323,18 @@ pub enum WordProcessorAction {
     },
     /// Mutate one stable table id using an absolute row/column boundary.
     EditTable { table: String, edit: TableEdit },
-    /// Insert an image (blob `bytes`, optional intrinsic `width`/`height`) at
-    /// `(block, at)`: the caret block is split so the tail follows the image in a
-    /// fresh paragraph beneath it.
+    /// Insert an image at `(block, at)`: the caret block is split so the tail follows the image in
+    /// a fresh paragraph beneath it. The image is a binary input referenced by its content address
+    /// (already in the app's content store), described by its media type, length and optional
+    /// intrinsic `width`/`height`; the action never carries the bytes.
     InsertImage {
         block: String,
         at: usize,
-        bytes: Vec<u8>,
+        content: String,
+        #[serde(default)]
+        mime: String,
+        #[serde(default)]
+        len: u64,
         width: Option<i64>,
         height: Option<i64>,
     },
@@ -464,41 +469,15 @@ const MAX_ACTION_BLOB_BYTES: usize = 64 * 1024 * 1024;
 const MAX_TABLE_DIMENSION: usize = 100;
 const MAX_TABLE_CELLS: usize = 10_000;
 
-/// Read only the addressed block while matching qdoc's snapshot membership:
-/// a region block must be a map with a byte-valued order key. Missing or
-/// non-Text text projects to the empty string, just as `materialize_block` does.
+/// Read only the addressed block while matching qdoc's snapshot membership (see
+/// [`qdoc::model::region_block_len`]).
 fn splice_target_len(
     doc: &AutoCommit,
     c: &Containers,
     region: RegionKind,
     id: &str,
 ) -> Option<usize> {
-    use automerge::{ObjType, ScalarValue, Value};
-    use qdoc::schema::{BLOCK_ORDER, BLOCK_TEXT, KEY_FOOTER, KEY_HEADER};
-
-    let optional_region = |cached: &Option<ObjId>, key: &str| {
-        cached.clone().or_else(|| match doc.get(&c.root, key) {
-            Ok(Some((Value::Object(ObjType::Map), obj))) => Some(obj),
-            _ => None,
-        })
-    };
-    let container = match region {
-        RegionKind::Body => c.blocks.clone(),
-        RegionKind::Header => optional_region(&c.header, KEY_HEADER)?,
-        RegionKind::Footer => optional_region(&c.footer, KEY_FOOTER)?,
-    };
-    let Ok(Some((Value::Object(ObjType::Map), block))) = doc.get(&container, id) else {
-        return None;
-    };
-    match doc.get(&block, BLOCK_ORDER) {
-        Ok(Some((Value::Scalar(value), _))) if matches!(value.as_ref(), ScalarValue::Bytes(_)) => {}
-        _ => return None,
-    }
-    let text = match doc.get(&block, BLOCK_TEXT) {
-        Ok(Some((Value::Object(ObjType::Text), text))) => doc.text(&text).unwrap_or_default(),
-        _ => String::new(),
-    };
-    Some(text.chars().count())
+    qdoc::model::region_block_len(doc, c, region.to_region(), id)
 }
 
 /// Validate an action against one immutable point-in-time view of `doc`.
@@ -870,14 +849,16 @@ impl<'a> ActionValidator<'a> {
             WordProcessorAction::InsertImage {
                 block,
                 at,
-                bytes,
+                content,
+                len,
                 width,
                 height,
+                ..
             } => {
                 self.block_len(RegionKind::Body, block)
                     .is_some_and(|len| *at <= len)
-                    && !bytes.is_empty()
-                    && bytes.len() <= MAX_ACTION_BLOB_BYTES
+                    && tilo_content::valid_hash(content)
+                    && usize::try_from(*len).is_ok_and(|len| len <= MAX_ACTION_BLOB_BYTES)
                     && width.is_none_or(|value| (1..=100_000).contains(&value))
                     && height.is_none_or(|value| (1..=100_000).contains(&value))
             }
@@ -1037,29 +1018,6 @@ impl<'a> ActionValidator<'a> {
 // writes marks the same way the live editor does across body / header / footer.
 // ---------------------------------------------------------------------------
 
-fn region_map_obj(doc: &AutoCommit, root: &ObjId, key: &str) -> Option<ObjId> {
-    match doc.get(root, key) {
-        Ok(Some((automerge::Value::Object(automerge::ObjType::Map), oid))) => Some(oid),
-        _ => None,
-    }
-}
-
-fn region_block_obj(doc: &AutoCommit, container: &ObjId, id: &str) -> Option<ObjId> {
-    match doc.get(container, id) {
-        Ok(Some((automerge::Value::Object(automerge::ObjType::Map), oid))) => Some(oid),
-        _ => None,
-    }
-}
-
-/// Resolve a region's block-container map object live from the document root.
-fn region_container_obj(doc: &AutoCommit, c: &Containers, region: Region) -> Option<ObjId> {
-    match region {
-        Region::Body => Some(c.blocks.clone()),
-        Region::Header => region_map_obj(doc, &c.root, qdoc::schema::KEY_HEADER),
-        Region::Footer => region_map_obj(doc, &c.root, qdoc::schema::KEY_FOOTER),
-    }
-}
-
 fn add_mark_region(dm: &mut DocMut, region: Region, span: &Span, name: &str, value: &MarkVal) {
     match region {
         Region::Body => match value {
@@ -1077,27 +1035,8 @@ fn add_mark_region(dm: &mut DocMut, region: Region, span: &Span, name: &str, val
     }
 }
 
-fn remove_mark_region(dm: &mut DocMut, c: &Containers, region: Region, span: &Span, name: &str) {
-    if region == Region::Body {
-        dm.remove_mark(&span.block, span.start, span.end, name);
-        return;
-    }
-    // Header/Footer: no `remove_mark_in` op — clear the mark directly on the
-    // region block's Text object (mirrors the body `remove_mark`'s
-    // `unmark(.., ExpandMark::After)`).
-    if let Some(container) = region_container_obj(dm.doc, c, region)
-        && let Some(obj) = region_block_obj(dm.doc, &container, &span.block)
-        && let Ok(Some((automerge::Value::Object(automerge::ObjType::Text), tid))) =
-            dm.doc.get(&obj, qdoc::schema::BLOCK_TEXT)
-    {
-        let _ = dm.doc.unmark(
-            &tid,
-            name,
-            span.start,
-            span.end,
-            automerge::marks::ExpandMark::After,
-        );
-    }
+fn remove_mark_region(dm: &mut DocMut, region: Region, span: &Span, name: &str) {
+    dm.remove_mark_in(region, &span.block, span.start, span.end, name);
 }
 
 fn set_attr_region(dm: &mut DocMut, region: Region, block: &str, key: &str, value: &AttrVal) {
@@ -1118,13 +1057,7 @@ fn set_attr_region(dm: &mut DocMut, region: Region, block: &str, key: &str, valu
 }
 
 fn set_kind_region(dm: &mut DocMut, region: Region, block: &str, kind: &str) {
-    if region == Region::Body {
-        dm.set_kind(block, kind);
-    } else if let Some(container) = region_container_obj(dm.doc, dm.c, region)
-        && let Some(block_obj) = region_block_obj(dm.doc, &container, block)
-    {
-        let _ = dm.doc.put(&block_obj, qdoc::schema::BLOCK_KIND, kind);
-    }
+    dm.set_kind_in(region, block, kind);
 }
 
 // ---------------------------------------------------------------------------
@@ -1228,7 +1161,6 @@ fn apply_set_mark(
     value: Option<&MarkVal>,
     also_clear: &[String],
 ) {
-    let c = dm.c;
     let mut sorted = spans.to_vec();
     sorted.sort_by(|a, b| {
         (a.block.as_str(), a.start, a.end).cmp(&(b.block.as_str(), b.start, b.end))
@@ -1238,14 +1170,14 @@ fn apply_set_mark(
             continue;
         }
         for sib in also_clear {
-            remove_mark_region(dm, c, region, span, sib);
+            remove_mark_region(dm, region, span, sib);
         }
         match value {
-            None => remove_mark_region(dm, c, region, span, name),
+            None => remove_mark_region(dm, region, span, name),
             Some(v) => {
                 // Replace: drop any prior value of the same mark before
                 // re-adding so values overwrite, not stack.
-                remove_mark_region(dm, c, region, span, name);
+                remove_mark_region(dm, region, span, name);
                 add_mark_region(dm, region, span, name, v);
             }
         }
@@ -1477,23 +1409,28 @@ fn apply_table_edit(dm: &mut DocMut<'_>, table: &str, edit: TableEdit) {
     }
 }
 
-fn apply_insert_image(
-    dm: &mut DocMut,
-    block: &str,
-    at: usize,
-    bytes: &[u8],
-    width: Option<i64>,
-    height: Option<i64>,
-) {
+fn apply_insert_image(dm: &mut DocMut, block: &str, at: usize, image: &ImageInput) {
+    let ImageInput {
+        content: hash,
+        mime,
+        len,
+        width,
+        height,
+    } = image;
+    let (width, height) = (*width, *height);
     let text = qdoc::model::block_text(dm.doc, dm.c, block).unwrap_or_default();
     let char_count = text.chars().count();
     let tail: String = text.chars().skip(at).collect();
-    // Refuse the whole insertion if the bounded blob store cannot retain the
-    // bytes; splitting text and creating a `blob` reference would otherwise
-    // leave a document pointing at content this replica never stored.
-    let Some(hash) = dm.put_blob(bytes) else {
-        return;
-    };
+    let dimension = |v: Option<i64>| v.and_then(|v| u32::try_from(v).ok()).unwrap_or(0);
+    dm.reference_content(
+        hash,
+        &tilo_content::ContentMeta {
+            mime: mime.clone(),
+            len: *len,
+            w: dimension(width),
+            h: dimension(height),
+        },
+    );
     if let Some(tail) = char_count.checked_sub(at).filter(|n| *n > 0) {
         dm.splice_text(block, at, num::isize_of_usize(tail), "");
     }
@@ -1685,7 +1622,11 @@ fn apply_replace_body(dm: &mut DocMut, markdown: &str) {
     }
     // A malformed template can't wedge a replay: the body-clear stays in the
     // pinned change either way.
-    let _ = qdoc_codecs::MarkdownCodec.import(markdown.as_bytes(), dm);
+    let _ = qdoc_codecs::MarkdownCodec.import(
+        markdown.as_bytes(),
+        dm,
+        &mut tilo_content::ContentInputs::new(),
+    );
 }
 
 fn ordered_change_ids(doc: &AutoCommit, c: &Containers) -> Vec<String> {
@@ -1939,10 +1880,23 @@ fn apply_media_action(dm: &mut DocMut<'_>, action: &WordProcessorAction) {
         WordProcessorAction::InsertImage {
             block,
             at,
-            bytes,
+            content,
+            mime,
+            len,
             width,
             height,
-        } => apply_insert_image(dm, block, *at, bytes, *width, *height),
+        } => apply_insert_image(
+            dm,
+            block,
+            *at,
+            &ImageInput {
+                content: content.clone(),
+                mime: mime.clone(),
+                len: *len,
+                width: *width,
+                height: *height,
+            },
+        ),
         _ => {}
     }
 }
@@ -2373,20 +2327,42 @@ pub fn split_block_action(
     }
 }
 
-/// Insert an image at `(block, at)`.
-pub fn insert_image_action(
-    block: &str,
-    at: usize,
-    bytes: Vec<u8>,
-    width: Option<i64>,
-    height: Option<i64>,
-) -> WordProcessorAction {
+/// An image already in the app's content store, as an [`WordProcessorAction::InsertImage`] refers to it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ImageInput {
+    /// Content address of the image's bytes.
+    pub content: String,
+    pub mime: String,
+    pub len: u64,
+    /// Intrinsic pixel size, when the format states one.
+    pub width: Option<i64>,
+    pub height: Option<i64>,
+}
+
+impl ImageInput {
+    /// Describe `bytes` stored under `content`.
+    pub fn of(content: String, bytes: &[u8]) -> Self {
+        let meta = tilo_content::sniff(bytes);
+        Self {
+            content,
+            mime: meta.mime,
+            len: meta.len,
+            width: (meta.w > 0).then(|| i64::from(meta.w)),
+            height: (meta.h > 0).then(|| i64::from(meta.h)),
+        }
+    }
+}
+
+/// Insert the image `image` at `(block, at)`.
+pub fn insert_image_action(block: &str, at: usize, image: ImageInput) -> WordProcessorAction {
     WordProcessorAction::InsertImage {
         block: block.to_string(),
         at,
-        bytes,
-        width,
-        height,
+        content: image.content,
+        mime: image.mime,
+        len: image.len,
+        width: image.width,
+        height: image.height,
     }
 }
 
@@ -2510,6 +2486,8 @@ pub struct WpResourceCtx {
     /// Each carries CRDT block identity + exact character range, never a
     /// renderer index that would drift under a collaborator's edit.
     pub search_hits: Vec<SearchTarget>,
+    /// Where content another action produced (an image to place) is read from.
+    pub content: tilo_content::ContentStore,
 }
 
 /// One non-empty selection expressed as stable block ids and character offsets.
@@ -2879,6 +2857,7 @@ fn add_search_resources(
 fn add_document_edit_actions(root: &mut Resource, ctx: &WpResourceCtx) {
     let image_anchor = ctx.caret_block.clone();
     let image_offset = ctx.caret_offset;
+    let content = ctx.content.clone();
     root.actions.push(
         ActionSpec::prompted_content(
             "place-image",
@@ -2887,20 +2866,17 @@ fn add_document_edit_actions(root: &mut Resource, ctx: &WpResourceCtx) {
             "content hash",
             ExecutionLocus::ClientLocal,
             move |hash| {
-                let Some(bytes) = qdoc::blobstore::get(hash) else {
+                let Some(bytes) = content.read(hash) else {
                     return EncodedAction {
                         type_id: tilo_actions::resource::INVALID_ARGUMENTS_TYPE.into(),
                         payload: format!("content `{hash}` is not available on this machine")
                             .into_bytes(),
                     };
                 };
-                let meta = qdoc::blobstore::sniff(&bytes);
                 encode(&insert_image_action(
                     &image_anchor,
                     image_offset,
-                    bytes,
-                    (meta.w > 0).then(|| i64::from(meta.w)),
-                    (meta.h > 0).then(|| i64::from(meta.h)),
+                    ImageInput::of(hash.to_string(), &bytes),
                 ))
             },
         )
@@ -3388,6 +3364,17 @@ impl ResourceProvider for crate::widget::WordProcessorWidget {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A four-byte stand-in image, described as an [`ImageInput`].
+    fn test_image(width: Option<i64>, height: Option<i64>) -> ImageInput {
+        ImageInput {
+            content: tilo_content::hash_bytes(&[1, 2, 3, 4]),
+            mime: String::new(),
+            len: 4,
+            width,
+            height,
+        }
+    }
     use tilo_actions::LocalTransport;
     use tilo_automerge::ApplyIncoming;
     use ui::testing::action_contract::spec_encoding;
@@ -3425,7 +3412,11 @@ mod tests {
             use qdoc_codecs::FormatProvider;
             let mut dm = ed.edit(&mut state.doc);
             qdoc_codecs::MarkdownCodec
-                .import(markdown.as_bytes(), &mut dm)
+                .import(
+                    markdown.as_bytes(),
+                    &mut dm,
+                    &mut tilo_content::ContentInputs::new(),
+                )
                 .unwrap();
         }
         let ids = qdoc::model::blocks_in_order(&state.doc, &ed.containers);
@@ -3645,6 +3636,7 @@ mod tests {
             }),
             region: RegionKind::Body,
             search_hits: Vec::new(),
+            content: tilo_content::ContentStore::memory(),
         }
     }
 
@@ -3769,6 +3761,7 @@ mod tests {
             caret_offset: 4,
             target_blocks: vec![block.clone()],
             search_hits: Vec::new(),
+            content: tilo_content::ContentStore::memory(),
         };
         let root = provide_resources(&ctx, &state.doc).pop().unwrap();
         let replace = root
@@ -3862,6 +3855,7 @@ mod tests {
             caret_offset: 4,
             target_blocks: vec![ids[0].clone()],
             search_hits: Vec::new(),
+            content: tilo_content::ContentStore::memory(),
         };
         let root = provide_resources(&ctx, &state.doc).pop().unwrap();
         let link = root
@@ -3906,6 +3900,7 @@ mod tests {
             selection: None,
             region: RegionKind::Body,
             search_hits: Vec::new(),
+            content: tilo_content::ContentStore::memory(),
         };
         let resources = provide_resources(&ctx, &state.doc);
         for id in ["open", "save", "save-as"] {
@@ -3938,9 +3933,10 @@ mod tests {
             selection: None,
             region: RegionKind::Body,
             search_hits: Vec::new(),
+            content: tilo_content::ContentStore::memory(),
         };
         let bytes = b"content supplied by a preceding action";
-        let hash = qdoc::blobstore::put(bytes).expect("test fixture fits blob quota");
+        let hash = ctx.content.put(bytes).expect("test fixture fits the store");
         let resources = provide_resources(&ctx, &state.doc);
         let descriptor = tilo_actions::door::survey(&resources)
             .into_iter()
@@ -3977,7 +3973,7 @@ mod tests {
         let para = ids[1].clone();
         dispatch(
             &mut state.doc,
-            &insert_image_action(&para, 0, vec![1, 2, 3, 4], Some(20), Some(10)),
+            &insert_image_action(&para, 0, test_image(Some(20), Some(10))),
         );
         let after_img = qdoc::model::blocks_in_order(
             &state.doc,
@@ -3994,6 +3990,7 @@ mod tests {
             selection: None,
             region: RegionKind::Body,
             search_hits: Vec::new(),
+            content: tilo_content::ContentStore::memory(),
         };
         let resources = provide_resources(&ctx, &state.doc);
         assert_eq!(resources.len(), 1, "one document root");
@@ -4037,7 +4034,7 @@ mod tests {
         let block = ids[0].clone();
         dispatch(
             &mut a.doc,
-            &insert_image_action(&block, 0, vec![1, 2, 3, 4], Some(40), Some(30)),
+            &insert_image_action(&block, 0, test_image(Some(40), Some(30))),
         );
         let image = body_blocks(&a.doc)
             .into_iter()
@@ -4112,6 +4109,7 @@ mod tests {
             selection: None,
             region: RegionKind::Body,
             search_hits: Vec::new(),
+            content: tilo_content::ContentStore::memory(),
         };
         let resources = provide_resources(&ctx, &a.doc);
         let review = resources[0]
@@ -4255,6 +4253,7 @@ mod tests {
                     end: start + 1,
                 })
                 .collect(),
+            content: tilo_content::ContentStore::memory(),
         };
         let resources = provide_resources(&ctx, &state.doc);
         let root = &resources[0];

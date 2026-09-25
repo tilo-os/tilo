@@ -6,24 +6,25 @@
 //! [`ui::Fetcher`]: the transport that turns an attachment's blob key into raw
 //! encoded bytes.
 //!
-//! Chat images are qdoc content-addressed blobs, not peer-local file paths.
-//! The qdoc store asks the collaboration transport on a miss; this fetcher
-//! runs on `ImageStore` worker threads and returns only already-verified bytes.
+//! Chat images are content-addressed bytes in the app's content store, not
+//! peer-local file paths. This fetcher runs on `ImageStore` worker threads with
+//! a clone of the app's store handle and returns only verified bytes.
 //!
 //! The one non-filesystem case is the `tilo-demo://` scheme used only by the
 //! ephemeral `--shots`/demo seed: it synthesises a real PNG in memory so the
 //! offline screenshot drives the exact same decode+cache+paint path as a real
-//! qdoc image, without shipping binary fixtures or touching the network.
+//! stored image, without shipping binary fixtures or touching the network.
 
 use std::io::Cursor;
 use std::sync::Arc;
 
+use tilo_content::ContentStore;
 use ui::Fetcher;
 
 /// URL scheme for the synthesised demo attachment thumbnails. Only the
-/// ephemeral demo seed emits these; live attachments use qdoc hashes.
+/// ephemeral demo seed emits these; live attachments use content hashes.
 pub const DEMO_SCHEME: &str = "tilo-demo://";
-/// Prefix used for qdoc content hashes when they are handed to `ImageStore`.
+/// Prefix used for content hashes when they are handed to `ImageStore`.
 pub const BLOB_SCHEME: &str = "tilo-blob://";
 
 pub fn blob_key(hash: &str) -> String {
@@ -39,16 +40,16 @@ pub const DEMO_CALL_GRID: &str = "tilo-demo://call-grid";
 /// A believable "shared screenshot" attachment for the demo `+` action.
 pub const DEMO_SHARED_SHOT: &str = "tilo-demo://shared-shot";
 
-/// The fetcher injected into the app's [`ui::ImageStore`]. Reads verified qdoc
-/// blob bytes or synthesises a PNG for the demo scheme. Runs on the store's
-/// background worker threads.
-pub fn fetcher() -> Fetcher {
-    Arc::new(|key: &str| {
+/// The fetcher injected into the app's [`ui::ImageStore`]. Reads verified
+/// bytes from `content` or synthesises a PNG for the demo scheme. Runs on the
+/// image store's background worker threads.
+pub fn fetcher(content: ContentStore) -> Fetcher {
+    Arc::new(move |key: &str| {
         if let Some(id) = key.strip_prefix(DEMO_SCHEME) {
             return synth_demo_png(id);
         }
         key.strip_prefix(BLOB_SCHEME)
-            .and_then(qdoc::blobstore::get)
+            .and_then(|hash| content.read(hash))
             .filter(|b| !b.is_empty())
     })
 }
@@ -363,16 +364,16 @@ mod tests {
 
     #[test]
     fn demo_scheme_synthesises_decodable_png() {
-        let bytes = fetcher()(DEMO_CALL_GRID).expect("demo image bytes");
+        let bytes = fetcher(ContentStore::memory())(DEMO_CALL_GRID).expect("demo image bytes");
         // Must be a real PNG the ui ImageStore can decode.
         let img = image::load_from_memory(&bytes).expect("valid png");
         assert!(img.width() > 0 && img.height() > 0);
-        assert!(fetcher()(DEMO_SHARED_SHOT).is_some());
+        assert!(fetcher(ContentStore::memory())(DEMO_SHARED_SHOT).is_some());
     }
 
     #[test]
     fn missing_file_is_none_not_panic() {
-        assert!(fetcher()("/var/workspace/does/not/exist.png").is_none());
-        assert!(fetcher()("tilo-demo://unknown").is_none());
+        assert!(fetcher(ContentStore::memory())("/var/workspace/does/not/exist.png").is_none());
+        assert!(fetcher(ContentStore::memory())("tilo-demo://unknown").is_none());
     }
 }

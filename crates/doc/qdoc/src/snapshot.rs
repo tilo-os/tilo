@@ -18,10 +18,6 @@ pub struct DocSnapshot {
     pub schema: String,
     pub schema_version: i64,
     pub blocks: Vec<BlockView>,
-    /// Content-addressed binary store (blake3 hex → bytes). `image` blocks carry
-    /// their `blob` attr as a key here so a renderer can fetch the pixels.
-    #[serde(default)]
-    pub blobs: BTreeMap<String, Vec<u8>>,
     /// CRDT-native named styles: `style_id → (property → value)`. Built-ins (body/heading1…/quote) plus any user- or import-defined styles.
     #[serde(default)]
     pub styles: BTreeMap<String, BTreeMap<String, AttrVal>>,
@@ -71,6 +67,36 @@ pub struct DocSnapshot {
     pub language: Option<String>,
 }
 
+impl DocSnapshot {
+    /// Every content address an `image` block anywhere in the snapshot (body, header, footer,
+    /// notes, comments and their replies, nested children) names in its `blob` attr: the binary
+    /// content a renderer or exporter has to fetch to draw this version.
+    pub fn image_content(&self) -> std::collections::BTreeSet<String> {
+        fn walk(blocks: &[BlockView], out: &mut std::collections::BTreeSet<String>) {
+            for b in blocks {
+                if let Some(AttrVal::Str(hash)) = b.attrs.get("blob") {
+                    out.insert(hash.clone());
+                }
+                walk(&b.children, out);
+            }
+        }
+        let mut out = std::collections::BTreeSet::new();
+        walk(&self.blocks, &mut out);
+        walk(&self.header, &mut out);
+        walk(&self.footer, &mut out);
+        for n in &self.notes {
+            walk(&n.blocks, &mut out);
+        }
+        for c in &self.comments {
+            walk(&c.blocks, &mut out);
+            for r in &c.replies {
+                walk(&r.blocks, &mut out);
+            }
+        }
+        out
+    }
+}
+
 /// The default column count for a [`DocSnapshot`] — a single column. Used both as the serde
 /// fallback for older snapshots and as the `Default` value.
 fn default_columns() -> u32 {
@@ -84,7 +110,6 @@ impl Default for DocSnapshot {
             schema: String::default(),
             schema_version: i64::default(),
             blocks: Vec::default(),
-            blobs: BTreeMap::default(),
             styles: BTreeMap::default(),
             properties: BTreeMap::default(),
             header: Vec::default(),

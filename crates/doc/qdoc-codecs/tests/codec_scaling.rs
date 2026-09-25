@@ -36,7 +36,13 @@ fn time<T>(f: impl FnOnce() -> T) -> (T, Duration) {
 
 fn import(codec: &dyn FormatProvider, bytes: &[u8]) -> Document {
     let mut doc = Document::new();
-    codec.import(bytes, &mut doc.as_mut()).unwrap();
+    codec
+        .import(
+            bytes,
+            &mut doc.as_mut(),
+            &mut tilo_content::ContentInputs::new(),
+        )
+        .unwrap();
     doc
 }
 
@@ -57,16 +63,30 @@ fn peak_rss() -> Option<u64> {
 fn measure(size: usize) -> Vec<(&'static str, usize, Duration, Duration)> {
     let md = synth::markdown(size);
     let (doc, md_import) = time(|| import(&MarkdownCodec, &md));
-    let (_, md_export) = time(|| MarkdownCodec.export(doc.as_ref()).unwrap());
+    let (_, md_export) = time(|| {
+        MarkdownCodec
+            .export(doc.as_ref(), &tilo_content::NoContent)
+            .unwrap()
+    });
     let mut out = vec![("md", size, md_import, md_export)];
     let office: [(&'static str, &dyn FormatProvider); 2] =
         [("docx", &DocxCodec), ("odt", &OdtCodec)];
     for (name, codec) in office {
-        let (bytes, export) = time(|| codec.export(doc.as_ref()).unwrap());
+        let (bytes, export) = time(|| {
+            codec
+                .export(doc.as_ref(), &tilo_content::NoContent)
+                .unwrap()
+        });
         let (_, import_t) = time(|| import(codec, &bytes));
         out.push((name, size, import_t, export));
     }
-    let (html, export) = time(|| render_html(&doc.materialize(), HtmlOptions::default()));
+    let (html, export) = time(|| {
+        render_html(
+            &doc.materialize(),
+            HtmlOptions::default(),
+            &tilo_content::NoContent,
+        )
+    });
     let (_, import_t) = time(|| import(&HtmlCodec, html.as_bytes()));
     out.push(("html", size, import_t, export));
     let (rtf, export) = time(|| render_rtf(&doc.materialize()));
@@ -84,7 +104,9 @@ fn md_peak_per_byte(size: usize) -> Option<f64> {
     let md = synth::markdown(size);
     reset_peak_rss();
     let doc = import(&MarkdownCodec, &md);
-    let out = MarkdownCodec.export(doc.as_ref()).unwrap();
+    let out = MarkdownCodec
+        .export(doc.as_ref(), &tilo_content::NoContent)
+        .unwrap();
     let peak = peak_rss()?;
     drop((doc, out));
     println!("md {size:>9} bytes: peak RSS {} MiB", peak / (1024 * 1024));

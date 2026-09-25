@@ -78,18 +78,16 @@ fn independently_created_documents_keep_both_sides_blocks() {
 #[test]
 fn an_image_survives_a_merge_with_a_document_that_has_none() {
     const ROUNDS: usize = 64;
-    // The bytes go through the process-wide blob store, which `blob_state.rs`
-    // swaps out from under whatever else is running.
-    let _guard = crate::blobstore_fixture::serialised();
     let mut lost = 0usize;
 
     for _ in 0..ROUNDS {
         let mut mine = Document::new();
         let p = mine.insert_block(None, "paragraph");
         mine.splice_text(&p, 0, 0, "the quarterly figures");
-        let hash = mine
-            .put_blob(&[0xff, 0xd8, 0xff, 0xe0, 1, 2, 3, 4])
-            .expect("test image fits blob quota");
+        let hash = mine.attach(
+            &[0xff, 0xd8, 0xff, 0xe0, 1, 2, 3, 4],
+            &mut tilo_content::ContentInputs::new(),
+        );
         let img = mine.insert_block(Some(&p), "image");
         mine.as_mut().set_attr(&img, "blob", hash.as_str());
 
@@ -106,7 +104,7 @@ fn an_image_survives_a_merge_with_a_document_that_has_none() {
             .filter(|b| b.kind == "image")
             .filter_map(|b| b.attrs.get("blob"))
             .any(|v| match v {
-                qdoc::AttrVal::Str(h) => theirs.blob(h).is_some(),
+                qdoc::AttrVal::Str(h) => theirs.referenced_content().contains(h),
                 _ => false,
             });
         if !(has_image && has_bytes) {

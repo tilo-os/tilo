@@ -537,8 +537,10 @@ mod tests {
     #[test]
     fn draft_round_trips() {
         let mut doc = AutoCommit::new();
-        let attachment = crate::attachment_store::stage_bytes(b"draft blob", "agenda.txt")
-            .expect("portable attachment");
+        let content = tilo_content::ContentStore::memory();
+        let attachment =
+            crate::attachment_store::stage_bytes(&content, b"draft blob", "agenda.txt")
+                .expect("portable attachment");
         let draft = Draft {
             to: "x@y.example".into(),
             subject: "Hi".into(),

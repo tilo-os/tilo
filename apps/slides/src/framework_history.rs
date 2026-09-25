@@ -8,6 +8,7 @@ use std::{
     collections::{BTreeMap, HashSet},
     rc::Rc,
 };
+use tilo_content::ContentStore;
 use ui::history_mode::restore::{HistoryRestoreRoot, HistoryRestoreSchema, RestoreValueType};
 use ui::history_mode::{
     HistoricalAssetRequest, HistoricalAssetResponse, HistoricalAssetSource, HistoryDefinition,
@@ -28,7 +29,7 @@ pub static HISTORY: HistoryDefinition = HistoryDefinition {
         title: "Presentation deck",
         presentation: HistoryPresentation::DomainWithAssets {
             create: preview,
-            assets: || Rc::new(DeckAssets),
+            assets: || Rc::new(DeckAssets::new(ContentStore::for_app())),
         },
         content_schema: Some(&SCHEMA),
     }],
@@ -183,7 +184,16 @@ fn validate(doc: &AutoCommit) -> Result<(), String> {
 }
 
 /// Resolves exact recorded content identities only, outside the renderer.
-struct DeckAssets;
+/// Recorded images come from the app's own content store: the same directory
+/// the running app imports into, resolved the same way.
+pub(crate) struct DeckAssets {
+    content: ContentStore,
+}
+impl DeckAssets {
+    pub(crate) fn new(content: ContentStore) -> Self {
+        Self { content }
+    }
+}
 impl HistoricalAssetSource for DeckAssets {
     fn request(&self, request: HistoricalAssetRequest, response: HistoricalAssetResponse) {
         let result = (|| {
@@ -199,7 +209,7 @@ impl HistoricalAssetSource for DeckAssets {
                     {
                         continue;
                     }
-                    if let Some(bytes) = crate::assets::read_asset(&e.src) {
+                    if let Some(bytes) = crate::assets::read_asset(&self.content, &e.src) {
                         total = total.saturating_add(bytes.len());
                         if total > 128 * 1024 * 1024 {
                             return Err("Recorded images exceed preview byte limit".into());

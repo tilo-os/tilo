@@ -12,6 +12,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+use tilo_content::ContentStore;
+
 use crate::model::{LibraryPhoto, LocationProvenance, OpenImage, PhotoLocation};
 
 /// Conservative limits for one explicit directory import. They prevent a
@@ -123,6 +125,7 @@ pub struct ImportReport {
 /// in [`ImportReport::failures`] instead.
 pub fn index_directory<F>(
     root: &Path,
+    store: &ContentStore,
     options: ImportOptions,
     cancelled: &AtomicBool,
     mut progress: F,
@@ -202,7 +205,7 @@ where
                 skipped: report.failures.len(),
                 current: Some(path.clone()),
             });
-            match index_file(&path, options, cancelled) {
+            match index_file(&path, store, options, cancelled) {
                 Ok(indexed) => report.photos.push(indexed),
                 Err(error) if error == "Import cancelled" => {
                     report.cancelled = true;
@@ -238,6 +241,7 @@ where
 /// bounds, cannot be decoded, has no usable name, or cannot be stored.
 pub fn index_file(
     path: &Path,
+    store: &ContentStore,
     options: ImportOptions,
     cancelled: &AtomicBool,
 ) -> Result<IndexedPhoto, String> {
@@ -260,8 +264,10 @@ pub fn index_file(
     // that the complete payload is a safe image.
     let decoded = crate::pixels::decode(&bytes)
         .ok_or_else(|| "This image cannot be decoded safely".to_owned())?;
-    let content = qdoc::blobstore::put(&bytes)
-        .ok_or_else(|| "Photos could not retain these bytes locally".to_owned())?;
+    let content = store.put(&bytes).map_err(|error| {
+        tracing::warn!(%error, "photos: could not store an imported original");
+        "Photos could not retain these bytes locally".to_owned()
+    })?;
     let name = path
         .file_name()
         .and_then(|name| name.to_str())
@@ -464,6 +470,7 @@ mod tests {
         let mut progress = Vec::new();
         let report = index_directory(
             directory.path(),
+            &ContentStore::memory(),
             ImportOptions {
                 limits: ImportLimits {
                     max_files: 1,
@@ -489,6 +496,7 @@ mod tests {
         let cancelled = AtomicBool::new(true);
         let report = index_directory(
             directory.path(),
+            &ContentStore::memory(),
             ImportOptions::default(),
             &cancelled,
             |_| {},
@@ -505,6 +513,7 @@ mod tests {
         assert_eq!(
             index_directory(
                 Path::new("relative/photos"),
+                &ContentStore::memory(),
                 ImportOptions::default(),
                 &cancelled,
                 |_| {},
@@ -522,8 +531,14 @@ mod tests {
             let linked = parent.path().join("linked");
             symlink(&real, &linked).unwrap();
             assert_eq!(
-                index_directory(&linked, ImportOptions::default(), &cancelled, |_| {},)
-                    .unwrap_err(),
+                index_directory(
+                    &linked,
+                    &ContentStore::memory(),
+                    ImportOptions::default(),
+                    &cancelled,
+                    |_| {},
+                )
+                .unwrap_err(),
                 "Select a real folder, not a symbolic link"
             );
         }
@@ -544,8 +559,14 @@ mod tests {
         let source = jpeg_with_orientation(6);
         fs::write(&path, &source).unwrap();
 
-        let indexed = index_file(&path, ImportOptions::default(), &AtomicBool::new(false))
-            .expect("index oriented JPEG");
+        let store = ContentStore::memory();
+        let indexed = index_file(
+            &path,
+            &store,
+            ImportOptions::default(),
+            &AtomicBool::new(false),
+        )
+        .expect("index oriented JPEG");
 
         assert_eq!(indexed.exif.orientation, Some(6));
         assert_eq!(
@@ -558,10 +579,7 @@ mod tests {
             .content
             .as_deref()
             .expect("portable content address");
-        assert_eq!(
-            qdoc::blobstore::get(hash).as_deref(),
-            Some(source.as_slice())
-        );
+        assert_eq!(store.read(hash).as_deref(), Some(source.as_slice()));
     }
 
     #[cfg(unix)]
@@ -576,6 +594,7 @@ mod tests {
         symlink(&good, directory.path().join("linked.png")).unwrap();
         let report = index_directory(
             directory.path(),
+            &ContentStore::memory(),
             ImportOptions::default(),
             &AtomicBool::new(false),
             |_| {},

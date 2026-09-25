@@ -40,6 +40,7 @@
 use std::collections::HashMap;
 
 use taffy::prelude::*;
+use tilo_content::ContentStore;
 use ui::launch::{LaunchArgs, LaunchError, LaunchSpec};
 use ui::offscreen::OffscreenRenderer;
 use ui::permissions::PermissionContext;
@@ -79,7 +80,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 fn live_root(args: &LaunchArgs) -> Result<Box<dyn Widget>, LaunchError> {
     // Live and headless launches restore the same persistent image content.
     photos::strings::install();
-    let mut app = photos::PhotosApp::new_persistent();
+    let mut app = photos::PhotosApp::new_persistent(ContentStore::for_app());
     if args.value("--import-directory").is_some() || args.has("--library") {
         app.show_library();
     }
@@ -92,14 +93,20 @@ fn requested_path(args: &LaunchArgs) -> Option<&str> {
 }
 
 fn open_state(app_id: &'static str, args: &LaunchArgs) -> (ui::State, ui::persist::DocWriter) {
+    let content = ContentStore::for_app();
     let (mut state, autosave) = ui::persist::open(app_id);
     if let Some(path) = requested_path(args) {
-        let mut opener = photos::PhotosApp::new_persistent();
+        let mut opener = photos::PhotosApp::new_persistent(content.clone());
         photos::strings::install();
         opener.open_path(&mut state.doc, path);
     }
     if let Some(directory) = args.value("--import-directory") {
-        import_directory_at_startup(&mut state.doc, directory, args.has("--analyze-imports"));
+        import_directory_at_startup(
+            &mut state.doc,
+            &content,
+            directory,
+            args.has("--analyze-imports"),
+        );
     }
     (state, autosave)
 }
@@ -109,6 +116,7 @@ fn open_state(app_id: &'static str, args: &LaunchArgs) -> (ui::State, ui::persis
 /// no fixture labels, dates, locations, descriptions, or people are injected.
 fn import_directory_at_startup(
     doc: &mut ui::automerge::AutoCommit,
+    content: &ContentStore,
     directory: &str,
     analyze: bool,
 ) {
@@ -117,6 +125,7 @@ fn import_directory_at_startup(
     let cancelled = AtomicBool::new(false);
     let Ok(report) = photos::import::index_directory(
         std::path::Path::new(directory),
+        content,
         photos::import::ImportOptions::default(),
         &cancelled,
         |_| {},
@@ -133,8 +142,12 @@ fn import_directory_at_startup(
         if analyze {
             let result = capability
                 .as_ref()
-                .and_then(|model| photos::analysis::analyze_image(&indexed.photo.image, model).ok())
-                .or_else(|| photos::analysis::recognize_text(&indexed.photo.image, "eng").ok());
+                .and_then(|model| {
+                    photos::analysis::analyze_image(&indexed.photo.image, model, content).ok()
+                })
+                .or_else(|| {
+                    photos::analysis::recognize_text(&indexed.photo.image, "eng", content).ok()
+                });
             if let Some(mut analysis) = result {
                 "shared".clone_into(&mut analysis.provenance.scope);
                 if let Some(provenance) = &mut analysis.ocr_provenance {

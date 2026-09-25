@@ -1679,9 +1679,10 @@ impl ChatApp {
         });
         self.attachment_status = Some("Preparing attachment…".into());
         let sender = self.attachment_result_tx.clone();
+        let content = self.content.clone();
         let path = path.to_path_buf();
         std::thread::spawn(move || {
-            let result = prepare_attachment_import(token, &path);
+            let result = prepare_attachment_import(&content, token, &path);
             // One worker may be active and the reply channel holds one result,
             // so this can never accumulate unbounded buffers. If the app has
             // gone away, dropping the result is cancellation.
@@ -1691,7 +1692,7 @@ impl ChatApp {
     }
 
     /// Drain at most one bounded worker result and settle it exactly once. A
-    /// stale result, permission downgrade, I/O failure, or qdoc-store failure
+    /// stale result, permission downgrade, I/O failure, or content-store failure
     /// becomes a visible terminal outcome; only `Ready` creates the message.
     pub(crate) fn settle_attachment_import(&mut self, doc: &mut AutoCommit) {
         let Ok(result) = self.attachment_result_rx.try_recv() else {
@@ -1770,7 +1771,11 @@ impl ChatApp {
     }
 }
 
-fn prepare_attachment_import(token: u64, path: &std::path::Path) -> AttachmentImportResult {
+fn prepare_attachment_import(
+    content: &tilo_content::ContentStore,
+    token: u64,
+    path: &std::path::Path,
+) -> AttachmentImportResult {
     let fail = |reason: &str| AttachmentImportResult::Failed {
         token,
         reason: reason.into(),
@@ -1796,11 +1801,15 @@ fn prepare_attachment_import(token: u64, path: &std::path::Path) -> AttachmentIm
     let name = path
         .file_name()
         .map_or_else(|| "file".into(), |name| name.to_string_lossy().into_owned());
-    let meta = qdoc::blobstore::sniff(&bytes);
-    let Some(blob) = qdoc::blobstore::put(&bytes) else {
-        return fail("shared content store refused the attachment");
+    let meta = tilo_content::sniff(&bytes);
+    let blob = match content.put(&bytes) {
+        Ok(blob) => blob,
+        Err(error) => {
+            eprintln!("chat: content store refused an attachment: {error}");
+            return fail("shared content store refused the attachment");
+        }
     };
-    if qdoc::blobstore::get(&blob).as_deref() != Some(bytes.as_slice()) {
+    if content.read(&blob).as_deref() != Some(bytes.as_slice()) {
         return fail("shared byte verification failed");
     }
     AttachmentImportResult::Ready {
@@ -2395,7 +2404,7 @@ mod tests {
 
     #[test]
     fn attach_shares_a_real_file_with_true_dimensions_and_no_caption() {
-        // The picker imports the selected file as a portable qdoc blob, with
+        // The picker imports the selected file into the content store, with
         // true header dimensions and no invented caption.
         let (mut app, mut doc) = app_with_doc();
         let dir = tempfile::tempdir().unwrap();
@@ -2419,8 +2428,8 @@ mod tests {
         assert_eq!(last.text, "", "no invented caption");
         match &last.attachment {
             Some(model::Attachment::Image { blob, w, h, .. }) => {
-                assert_eq!(blob.len(), 64, "posts a qdoc content hash");
-                assert!(ChatDoc::attachment_blob(blob).is_some());
+                assert_eq!(blob.len(), 64, "posts a content hash");
+                assert!(app.content.has(blob));
                 assert_eq!(
                     (*w, *h),
                     (240, 160),
@@ -4468,8 +4477,8 @@ mod tests {
                 name, blob, size, ..
             }) => {
                 assert_eq!(name, "clip.mp4");
-                assert_eq!(blob.len(), 64, "references a qdoc content hash");
-                assert!(ChatDoc::attachment_blob(blob).is_some());
+                assert_eq!(blob.len(), 64, "references a content hash");
+                assert!(app.content.has(blob));
                 assert!(*size > 0, "reads the real file size");
             }
             other => panic!("expected a Video attachment, got {other:?}"),
@@ -4497,7 +4506,7 @@ mod tests {
             Some(model::Attachment::File { name, blob, size }) => {
                 assert_eq!(name, "notes.md");
                 assert_eq!(*size, 30);
-                assert!(ChatDoc::attachment_blob(blob).is_some());
+                assert!(app.content.has(blob));
             }
             other => panic!("expected a generic File attachment, got {other:?}"),
         }

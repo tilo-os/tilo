@@ -351,6 +351,8 @@ pub struct QuickFS {
     pub heuristics: Arc<Heuristics>,
     /// Codecs for recognized rich-text formats (odt/docx/md).
     registry: Arc<qdoc_codecs::Registry>,
+    /// Binary content (images, binary package parts) that documents projected as files refer to.
+    document_content: tilo_content::ContentStore,
     /// Broadcasts local CRDT deltas to peers (None when running standalone).
     sync: Option<Arc<SyncHandle>>,
     /// Per-inode in-flight write buffers (content-addressed on flush/release).
@@ -455,6 +457,7 @@ impl QuickFS {
             hydrator,
             heuristics,
             registry,
+            document_content: tilo_content::ContentStore::memory(),
             sync: None,
             write_buffers: Arc::new(Mutex::new(HashMap::new())),
             buffer_states: Mutex::new(HashMap::new()),
@@ -1118,7 +1121,7 @@ impl QuickFS {
             // leaves the previous content intact and returns false.
             let delta = {
                 let mut ns = self.ns();
-                if ns.import_document(ino, &self.registry, data, now_ms()) {
+                if ns.import_document(ino, &self.registry, data, now_ms(), &self.document_content) {
                     ns.save_incremental()
                 } else {
                     Vec::new()
@@ -1187,7 +1190,7 @@ impl QuickFS {
         }
         let (heads, bytes) = {
             let mut ns = self.ns();
-            let bytes = ns.export_document(ino, &self.registry)?;
+            let bytes = ns.export_document(ino, &self.registry, &self.document_content)?;
             (ns.heads(), bytes)
         };
         self.doc_export_cache().insert(ino, (heads, bytes.clone()));
@@ -1250,6 +1253,13 @@ impl QuickFS {
     #[must_use]
     pub fn with_thumbs(mut self, provider: crate::thumbs::ThumbProvider) -> Self {
         self.thumbs = Some(provider);
+        self
+    }
+
+    /// Keep the binary content of documents projected as files in `content` (in memory unless set).
+    #[must_use]
+    pub fn with_document_content(mut self, content: tilo_content::ContentStore) -> Self {
+        self.document_content = content;
         self
     }
 

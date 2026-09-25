@@ -27,6 +27,7 @@ use std::io::{Cursor, Write};
 use std::path::Path;
 
 use bounded_zip::{BoundedArchive, ZipError, ZipLimits};
+use tilo_content::ContentStore;
 
 use crate::model::{
     Background, Deck, Element, ElementKind, Layout, PaletteKind, SLIDE_H, SLIDE_W, Slide, TextAlign,
@@ -56,14 +57,15 @@ const MAX_IMPORTED_TEXT_CHARS: usize = 100_000;
 // Write
 // ===========================================================================
 
-/// Serialise `deck` to the bytes of a `.odp` package.
+/// Serialise `deck` to the bytes of a `.odp` package, bundling the pictures
+/// `content` holds for its image elements.
 ///
 /// # Errors
 ///
 /// Returns an error if the ZIP writer fails (an I/O error on the underlying
 /// cursor, which does not happen in practice since it writes to memory).
-pub fn write_odp(deck: &Deck) -> std::io::Result<Vec<u8>> {
-    let pictures = collect_pictures(deck);
+pub fn write_odp(deck: &Deck, content: &ContentStore) -> std::io::Result<Vec<u8>> {
+    let pictures = collect_pictures(deck, content);
     let picture_hrefs: HashMap<&str, &str> = pictures
         .iter()
         .map(|picture| (picture.source.as_str(), picture.href.as_str()))
@@ -286,14 +288,14 @@ struct BundledPicture {
 /// Collect verified content-addressed pictures exactly once. Missing blobs are
 /// intentionally omitted from interchange rather than dereferencing a path
 /// supplied by another collaborator.
-fn collect_pictures(deck: &Deck) -> Vec<BundledPicture> {
+fn collect_pictures(deck: &Deck, content: &ContentStore) -> Vec<BundledPicture> {
     let mut pictures = Vec::new();
     let mut seen = std::collections::HashSet::new();
     for element in deck.slides.iter().flat_map(|slide| &slide.elements) {
         if element.kind != ElementKind::Image || !seen.insert(element.src.clone()) {
             continue;
         }
-        let Some(bytes) = crate::assets::read_asset(&element.src) else {
+        let Some(bytes) = crate::assets::read_asset(content, &element.src) else {
             continue;
         };
         let Some((ext, mime)) = picture_format(&bytes) else {
@@ -343,16 +345,17 @@ fn xml_attr(s: &str) -> String {
 // Read
 // ===========================================================================
 
-/// Parse the bytes of a `.odp` package back into a [`Deck`].
+/// Parse the bytes of a `.odp` package back into a [`Deck`], storing its
+/// pictures in `content`.
 ///
 /// # Errors
 ///
 /// Returns an error if `bytes` isn't a readable ZIP archive, if it has no
 /// `content.xml` entry, or if `content.xml` parses to zero slides.
-pub fn read_odp(bytes: &[u8]) -> std::io::Result<Deck> {
+pub fn read_odp(bytes: &[u8], content: &ContentStore) -> std::io::Result<Deck> {
     let mut zip = open_package(bytes)?;
-    let content = read_package_xml(&mut zip, "content.xml")?;
-    let mut deck = parse_content(&content).ok_or_else(|| {
+    let content_xml = read_package_xml(&mut zip, "content.xml")?;
+    let mut deck = parse_content(&content_xml).ok_or_else(|| {
         std::io::Error::new(std::io::ErrorKind::InvalidData, "no slides in content.xml")
     })?;
     validate_imported_deck(&deck)?;
@@ -367,7 +370,7 @@ pub fn read_odp(bytes: &[u8]) -> std::io::Result<Deck> {
             element.src.clone_from(path);
             continue;
         }
-        if let Some(path) = extract_picture(&mut zip, &element.src) {
+        if let Some(path) = extract_picture(&mut zip, &element.src, content) {
             extracted.insert(element.src.clone(), path.clone());
             element.src = path;
         }
@@ -436,26 +439,26 @@ pub(crate) fn validate_imported_deck(deck: &Deck) -> std::io::Result<()> {
     Ok(())
 }
 
-fn extract_picture(zip: &mut Package<'_>, href: &str) -> Option<String> {
+fn extract_picture(zip: &mut Package<'_>, href: &str, content: &ContentStore) -> Option<String> {
     if !href.starts_with("Pictures/")
         || Path::new(href).file_name()?.to_str()? != href.get("Pictures/".len()..)?
     {
         return None;
     }
     let bytes = read_package_picture(zip, href)?;
-    crate::assets::store_asset(&bytes)
+    crate::assets::store_asset(content, &bytes)
 }
 
-/// Persist picture bytes from an imported office package in the same
-/// content-addressed cache used by ODP. PPTX uses this too, so reopening either
-/// format gives the renderer a real local file without leaking the author's
+/// Persist picture bytes from an imported office package in `content`, the
+/// store ODP imports into. PPTX uses this too, so reopening either format
+/// gives the renderer content-addressed bytes without leaking the author's
 /// original path.
-pub(crate) fn cache_imported_picture(bytes: &[u8]) -> Option<String> {
+pub(crate) fn cache_imported_picture(content: &ContentStore, bytes: &[u8]) -> Option<String> {
     if bytes.len() > MAX_IMPORTED_PICTURE_BYTES {
         return None;
     }
     picture_format(bytes)?;
-    crate::assets::store_asset(bytes)
+    crate::assets::store_asset(content, bytes)
 }
 
 use quick_xml::Reader;
@@ -702,16 +705,18 @@ mod tests {
     /// per-element flag, and the deck title + palette).
     #[test]
     fn odp_round_trips_the_model_exactly() {
+        let content = ContentStore::memory();
         let deck = seed_deck();
-        let bytes = write_odp(&deck).expect("write");
-        let back = read_odp(&bytes).expect("read");
+        let bytes = write_odp(&deck, &content).expect("write");
+        let back = read_odp(&bytes, &content).expect("read");
         assert_eq!(deck, back, "model → .odp → model must be identity");
     }
 
     #[test]
     fn odp_starts_with_the_presentation_mimetype() {
+        let content = ContentStore::memory();
         let deck = seed_deck();
-        let bytes = write_odp(&deck).unwrap();
+        let bytes = write_odp(&deck, &content).unwrap();
         // The ODF package's first entry is an uncompressed `mimetype` whose
         // bytes appear verbatim right after the local file header.
         let head = String::from_utf8_lossy(&bytes[..120]);
@@ -720,14 +725,15 @@ mod tests {
 
     #[test]
     fn odp_round_trips_multiline_text_and_alignment() {
+        let content = ContentStore::memory();
         let mut deck = seed_deck();
         // A body with blank lines + an explicit alignment is the tricky case:
         // newlines can't ride in an attribute, so they must survive as text:p.
         let s = deck.slides.get_mut(1).unwrap();
         s.elements[0].text = "Line one\n\nLine three".into();
         s.elements[0].align = TextAlign::Justify;
-        let bytes = write_odp(&deck).unwrap();
-        let back = read_odp(&bytes).unwrap();
+        let bytes = write_odp(&deck, &content).unwrap();
+        let back = read_odp(&bytes, &content).unwrap();
         let el = &back.slides[1].elements[0];
         assert_eq!(el.text, "Line one\n\nLine three");
         assert_eq!(el.align, TextAlign::Justify);
@@ -735,10 +741,11 @@ mod tests {
 
     #[test]
     fn odp_round_trips_a_picked_hex_fill() {
+        let content = ContentStore::memory();
         let mut deck = seed_deck();
         deck.slides[0].elements[0].fill = "#1A2B3C".into();
-        let bytes = write_odp(&deck).unwrap();
-        let back = read_odp(&bytes).unwrap();
+        let bytes = write_odp(&deck, &content).unwrap();
+        let back = read_odp(&bytes, &content).unwrap();
         assert_eq!(back.slides[0].elements[0].fill, "#1A2B3C");
     }
 
@@ -759,9 +766,10 @@ mod tests {
 
     #[test]
     fn odp_preserves_every_element_kind() {
+        let content = ContentStore::memory();
         let deck = seed_deck();
-        let bytes = write_odp(&deck).unwrap();
-        let back = read_odp(&bytes).unwrap();
+        let bytes = write_odp(&deck, &content).unwrap();
+        let back = read_odp(&bytes, &content).unwrap();
         for (a, b) in deck.slides.iter().zip(&back.slides) {
             let ka: Vec<ElementKind> = a.elements.iter().map(|e| e.kind).collect();
             let kb: Vec<ElementKind> = b.elements.iter().map(|e| e.kind).collect();
@@ -771,19 +779,20 @@ mod tests {
 
     #[test]
     fn odp_bundles_local_pictures_and_reopens_them_from_the_package() {
+        let content = ContentStore::memory();
         let source =
             std::env::temp_dir().join(format!("tilo-slides-picture-{}.png", std::process::id()));
         // Packaging only needs the real image signature; rendering/decode is
         // separately covered by ImageStore tests.
         let picture = b"\x89PNG\r\n\x1a\nportable-picture";
         std::fs::write(&source, picture).unwrap();
-        let asset = crate::assets::import_asset_file(&source).unwrap();
+        let asset = crate::assets::import_asset_file(&content, &source).unwrap();
         let mut deck = seed_deck();
         deck.slides[0]
             .elements
             .push(Element::image(&asset, 40.0, 60.0, 320.0, 180.0));
 
-        let bytes = write_odp(&deck).unwrap();
+        let bytes = write_odp(&deck, &content).unwrap();
         let mut zip = zip::ZipArchive::new(Cursor::new(bytes.as_slice())).unwrap();
         let mut bundled = Vec::new();
         zip.by_name("Pictures/picture-1.png")
@@ -799,7 +808,7 @@ mod tests {
         assert!(manifest.contains("Pictures/picture-1.png"));
         drop(zip);
 
-        let reopened = read_odp(&bytes).unwrap();
+        let reopened = read_odp(&bytes, &content).unwrap();
         let image = reopened.slides[0]
             .elements
             .iter()
@@ -807,7 +816,7 @@ mod tests {
             .unwrap();
         assert!(crate::assets::is_asset_id(&image.src));
         assert_eq!(
-            crate::assets::read_asset(&image.src).as_deref(),
+            crate::assets::read_asset(&content, &image.src).as_deref(),
             Some(&picture[..])
         );
 

@@ -35,8 +35,13 @@ mod guest {
 
         fn import_doc(bytes: &[u8]) -> Result<Vec<u8>, CodecError> {
             let mut doc = Document::new();
+            // Markdown embeds no binary content, and the provider ABI carries none.
             MarkdownCodec
-                .import(bytes, &mut doc.as_mut())
+                .import(
+                    bytes,
+                    &mut doc.as_mut(),
+                    &mut tilo_content::ContentInputs::new(),
+                )
                 .map_err(|e| CodecError::parse(e.to_string()))?;
             // Canonical CRDT bytes = Automerge save() of the doc. The host
             // round-trips these opaquely; the editor / FS layer reloads them
@@ -47,7 +52,7 @@ mod guest {
         fn export_doc(canonical: &[u8]) -> Result<Vec<u8>, CodecError> {
             let doc = Document::load(canonical).map_err(|e| CodecError::parse(e.to_string()))?;
             MarkdownCodec
-                .export(doc.as_ref())
+                .export(doc.as_ref(), &tilo_content::NoContent)
                 .map_err(|e| CodecError::export(e.to_string()))
         }
     }

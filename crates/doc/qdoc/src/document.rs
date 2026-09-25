@@ -175,31 +175,26 @@ impl Document {
         self.doc.commit();
     }
 
-    /// Store bytes in the content-addressed blob store; returns the blake3 hex
-    /// hash (used as an `image` block's `blob` attr), or `None` if the store's
-    /// quota rejects them.  A refusal does not add a blob descriptor.
-    pub fn put_blob(&mut self, bytes: &[u8]) -> Option<String> {
-        let hash = self.as_mut().put_blob(bytes);
-        if hash.is_some() {
-            self.doc.commit();
-        }
+    /// Take `bytes` as a binary input of this document (an image to place): they go into `inputs`,
+    /// which the caller persists in its content store, and the document records their descriptor.
+    /// Returns the content address an `image` block's `blob` attr names.
+    pub fn attach(&mut self, bytes: &[u8], inputs: &mut tilo_content::ContentInputs) -> String {
+        let hash = self.as_mut().attach(bytes, inputs);
+        self.doc.commit();
         hash
     }
 
-    pub fn blob(&self, hash: &str) -> Option<Vec<u8>> {
-        crate::model::blob(&self.doc, &self.c, hash)
+    /// Record that the document refers to content the caller already keeps (see
+    /// [`crate::model::DocMut::reference_content`]).
+    pub fn reference_content(&mut self, hash: &str, meta: &tilo_content::ContentMeta) {
+        self.as_mut().reference_content(hash, meta);
+        self.doc.commit();
     }
 
-    /// Where the content behind a reference has got to: here, on its way, or not coming.
-    /// [`Self::blob`] answers "can I draw this now"; this answers "and if not, why not" — a renderer
-    /// needs both, or it draws the same grey box for a transfer in flight and one that failed.
-    pub fn blob_state(&self, hash: &str) -> crate::blobstore::BlobState {
-        // Through `blob` rather than the store directly, so a document still carrying content in the
-        // legacy inline form reports `Resolved` for it instead of claiming it is missing.
-        if crate::model::blob(&self.doc, &self.c, hash).is_some() {
-            return crate::blobstore::BlobState::Resolved;
-        }
-        crate::blobstore::state(hash)
+    /// Every content address the document refers to, in any version; see
+    /// [`crate::model::referenced_content`].
+    pub fn referenced_content(&self) -> std::collections::BTreeSet<String> {
+        crate::model::referenced_content(&self.doc, &self.c)
     }
 
     /// Set a document property (`title`/`author`/`subject`/`keywords`/`created`/`modified`/`generator`). Round-trips through `.odt`/`.docx`.

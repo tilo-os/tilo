@@ -76,7 +76,13 @@ fn peak() -> usize {
 
 fn import(bytes: &[u8]) -> Document {
     let mut doc = Document::new();
-    MarkdownCodec.import(bytes, &mut doc.as_mut()).unwrap();
+    MarkdownCodec
+        .import(
+            bytes,
+            &mut doc.as_mut(),
+            &mut tilo_content::ContentInputs::new(),
+        )
+        .unwrap();
     doc
 }
 
