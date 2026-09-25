@@ -187,6 +187,14 @@ impl App {
         &mut self,
         args: &InstallScenarioArgs,
     ) -> Result<Outcome, CliError> {
+        if cfg!(windows) && !args.dry_run {
+            return Err(CliError::Unsupported {
+                what: "installer scenario on a Windows host".into(),
+                alternative:
+                    "run this Linux vm.sh scenario in WSL; Windows WHPX dev VMs use `tilo-vm vm`"
+                        .into(),
+            });
+        }
         let root = self
             .worktree
             .as_ref()
@@ -337,18 +345,18 @@ impl App {
                 .run(
                     "qemu-img",
                     &[
-                        "convert",
+                        "create",
                         "-f",
-                        "raw",
-                        "-O",
                         "qcow2",
+                        "-F",
+                        "raw",
+                        "-b",
                         &raw.display().to_string(),
                         &target,
                     ],
                     None,
                 )
                 .map_err(|detail| failed("prepare", detail, plan))?;
-            let _ = std::fs::remove_file(&raw);
             write_json(&plan.out, "alongside-before.json", &json!(preserved))?;
         }
         self.receipt
@@ -423,25 +431,13 @@ impl App {
 
         if !preserved.is_empty() {
             let verify = Instant::now();
-            let raw = plan.cycle_dir.join("installed.raw");
-            VmTools { plan }
-                .run(
-                    "qemu-img",
-                    &[
-                        "convert",
-                        "-f",
-                        "qcow2",
-                        "-O",
-                        "raw",
-                        &plan.target().display().to_string(),
-                        &raw.display().to_string(),
-                    ],
-                    None,
-                )
-                .map_err(|detail| failed("verify-alongside", detail, plan))?;
-            let changed = fixture::changed(&raw, &preserved)
-                .map_err(CliError::io("reading the installed target"))?;
-            let _ = std::fs::remove_file(&raw);
+            let changed = fixture::changed_cow(
+                &plan.target(),
+                &plan.cycle_dir.join("verify-extents"),
+                &preserved,
+                &mut VmTools { plan },
+            )
+            .map_err(|detail| failed("verify-alongside", detail, plan))?;
             write_json(
                 &plan.out,
                 "alongside-after.json",
@@ -630,6 +626,7 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
     #[test]
     fn every_vm_call_shares_one_named_cycle_and_the_plan_names_its_console() {
         let plan = plan(Layout::GuidedAlongside);
