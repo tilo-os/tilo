@@ -109,6 +109,7 @@ class InstallerTests(unittest.TestCase):
         manifest = installer.load_manifest(REPO / "os/components.toml")
         for entry in manifest.files():
             if entry.source and not entry.source.startswith("/") and entry.source != "browser":
+                (out / entry.source).parent.mkdir(parents=True, exist_ok=True)
                 (out / entry.source).write_bytes(b"\x7fELF" + entry.source.encode())
                 (out / entry.source).chmod(0o700)
         if browser:
