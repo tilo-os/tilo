@@ -7317,16 +7317,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "kio"
-version = "0.5.9"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3033155c4fffcd86959a9ebdfbcadbed7ec4bfcc2fb545469778f791adf704eb"
-dependencies = [
- "loom",
- "smallvec",
-]
-
-[[package]]
 name = "kqueue"
 version = "1.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -8490,7 +8480,7 @@ dependencies = [
  "criterion",
  "futures",
  "getrandom 0.4.3",
- "kio 0.5.9",
+ "kio",
  "loom",
  "num_enum",
  "rand 0.10.1",
@@ -17817,7 +17807,7 @@ dependencies = [
  "bytes",
  "futures",
  "http",
- "kio 0.5.9 (registry+https://github.com/rust-lang/crates.io-index)",
+ "kio",
  "quinn",
  "rustls",
  "rustls-native-certs",
