@@ -1,0 +1,172 @@
+#!/usr/bin/env python3
+"""Small file-backed checks for the native Windows direct source boundary."""
+import importlib.util
+import json
+from pathlib import Path
+from types import SimpleNamespace
+import tempfile
+import unittest
+from unittest.mock import patch
+import uuid
+
+DEV = Path(__file__).resolve().parents[1] / "dev"
+
+
+def load(name, path):
+    spec = importlib.util.spec_from_file_location(name, path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+prep = load("windows_direct_source", DEV / "prepare-windows-direct-source.py")
+fixture = load("windows_direct_copy_fixture", Path(__file__).with_name(
+    "test_copy_windows_direct_final_install.py"))
+
+
+class SourceTemplateTests(unittest.TestCase):
+    def guided_vm_install(self, raw, plan, final):
+        vm_final = [{**row, "partuuid": str(uuid.UUID(int=90 + i))}
+                    for i, row in enumerate(final)]
+        with raw.open("r+b", buffering=0) as stream:
+            disk_guid, _ = prep.direct.read_gpt(stream, raw.stat().st_size)
+            prep.write_template(stream, plan, rows=plan["preserve_partitions"] + vm_final,
+                                disk_guid=uuid.UUID(disk_guid))
+            for row in final:
+                stream.seek(row["offset_bytes"])
+                stream.write(bytes([row["number"]]) * row["size_bytes"])
+        return vm_final
+
+    def test_template_starts_with_only_synthetic_windows_and_guided_free_extent(self):
+        plan, rows, final, disk_size = fixture.direct_fixture()
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp) / "source.raw"
+            plan_path = Path(tmp) / "plan.json"
+            plan_path.write_text(json.dumps(plan))
+            with patch.object(prep.direct, "GIB", fixture.MIB):
+                prep.create_template(SimpleNamespace(plan=plan_path, output=out))
+            manifest = Path(str(out) + ".manifest.json")
+            self.assertTrue(manifest.is_file())
+            prep.verify_template(SimpleNamespace(manifest=manifest, source_raw=out))
+            self.assertEqual(out.stat().st_size, disk_size)
+            with out.open("rb") as raw:
+                _, actual = prep.direct.read_gpt(raw, disk_size)
+                self.assertTrue(prep.direct.same_gpt_content(
+                    actual, plan["preserve_partitions"]))
+                for row in plan["preserve_partitions"]:
+                    raw.seek(row["offset_bytes"])
+                    self.assertEqual(raw.read(64), bytes(64))
+            self.assertEqual(len(actual), 4)
+
+    def test_finalize_rewrites_only_gpt_metadata_after_guided_vm_install(self):
+        plan, rows, final, disk_size = fixture.direct_fixture()
+        with tempfile.TemporaryDirectory() as tmp:
+            work = Path(tmp)
+            raw = work / "source.raw"
+            plan_path = work / "plan.json"
+            plan_path.write_text(json.dumps(plan))
+            with patch.object(prep.direct, "GIB", fixture.MIB):
+                prep.create_template(SimpleNamespace(plan=plan_path, output=raw))
+                self.guided_vm_install(raw, plan, final)
+                prep.verify_template(SimpleNamespace(
+                    manifest=Path(str(raw) + ".manifest.json"), source_raw=raw))
+                with raw.open("rb") as stream:
+                    before = {row["partuuid"]: prep.direct.hash_range(
+                        stream, row["offset_bytes"], row["size_bytes"]) for row in final}
+                prep.finalize_source(SimpleNamespace(plan=plan_path, source_raw=raw))
+            with raw.open("rb") as stream:
+                _, actual = prep.direct.read_gpt(stream, disk_size)
+                self.assertTrue(prep.direct.same_gpt_content(actual, rows))
+                after = {row["partuuid"]: prep.direct.hash_range(
+                    stream, row["offset_bytes"], row["size_bytes"]) for row in final}
+            self.assertEqual(after, before)
+            prep.verify_template(SimpleNamespace(
+                manifest=Path(str(raw) + ".manifest.json"), source_raw=raw))
+
+    def test_verify_template_detects_synthetic_windows_byte_change(self):
+        plan, _, _, _ = fixture.direct_fixture()
+        with tempfile.TemporaryDirectory() as tmp:
+            work = Path(tmp)
+            raw = work / "source.raw"
+            plan_path = work / "plan.json"
+            plan_path.write_text(json.dumps(plan))
+            with patch.object(prep.direct, "GIB", fixture.MIB):
+                prep.create_template(SimpleNamespace(plan=plan_path, output=raw))
+            with raw.open("r+b") as stream:
+                stream.seek(plan["preserve_partitions"][0]["offset_bytes"])
+                stream.write(b"X")
+            with self.assertRaisesRegex(ValueError, "edge contents changed"):
+                prep.verify_template(SimpleNamespace(
+                    manifest=Path(str(raw) + ".manifest.json"), source_raw=raw))
+
+    def test_finalize_rejects_wrong_vm_geometry_without_rewriting_gpt(self):
+        plan, _, final, disk_size = fixture.direct_fixture()
+        with tempfile.TemporaryDirectory() as tmp:
+            work = Path(tmp)
+            raw = work / "source.raw"
+            plan_path = work / "plan.json"
+            plan_path.write_text(json.dumps(plan))
+            with patch.object(prep.direct, "GIB", fixture.MIB):
+                prep.create_template(SimpleNamespace(plan=plan_path, output=raw))
+                vm_final = self.guided_vm_install(raw, plan, final)
+                vm_final[-1]["size_bytes"] -= fixture.MIB
+                with raw.open("r+b", buffering=0) as stream:
+                    disk_guid, _ = prep.direct.read_gpt(stream, raw.stat().st_size)
+                    prep.write_template(stream, plan,
+                                        rows=plan["preserve_partitions"] + vm_final,
+                                        disk_guid=uuid.UUID(disk_guid))
+                with self.assertRaisesRegex(ValueError, "different final partition layout"):
+                    prep.finalize_source(SimpleNamespace(plan=plan_path, source_raw=raw))
+            with raw.open("rb") as stream:
+                _, after = prep.direct.read_gpt(stream, disk_size)
+            self.assertTrue(prep.direct.same_gpt_content(
+                after, plan["preserve_partitions"] + vm_final))
+
+    def test_receipt_hashes_only_installed_final_extents(self):
+        plan, rows, final, disk_size = fixture.direct_fixture()
+        with tempfile.TemporaryDirectory() as tmp:
+            work = Path(tmp)
+            raw = work / "source.raw"
+            plan_path = work / "plan.json"
+            receipt_path = work / "source.json"
+            plan_path.write_text(json.dumps(plan))
+            with patch.object(prep.direct, "GIB", fixture.MIB):
+                prep.create_template(SimpleNamespace(plan=plan_path, output=raw))
+                self.guided_vm_install(raw, plan, final)
+                prep.finalize_source(SimpleNamespace(plan=plan_path, source_raw=raw))
+                args = SimpleNamespace(plan=plan_path, source_raw=raw,
+                                       ci_image="registry.example/tilo@sha256:" + "a" * 64,
+                                       verify_key=work / "key.pub", output=receipt_path)
+                with patch.object(prep, "verified_ci_image", return_value="b" * 64):
+                    prep.make_receipt(args)
+            receipt = json.loads(receipt_path.read_text())
+            self.assertEqual(receipt["ci_image"], args.ci_image)
+            self.assertEqual(receipt["ci_verification_key_sha256"], "b" * 64)
+            self.assertEqual(set(receipt["final_sha256"]), set(prep.direct.ROLES))
+            self.assertEqual(prep.direct.source_preflight(raw, receipt, rows, final, disk_size),
+                             receipt["final_sha256"])
+
+    def test_ci_verification_requires_digest_signature_and_attestation(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            key = Path(tmp) / "cosign.pub"
+            key.write_bytes(b"test-key")
+            image = "registry.example/tilo@sha256:" + "a" * 64
+            with self.assertRaisesRegex(ValueError, "digest-pinned"):
+                prep.verified_ci_image("registry.example/tilo:latest", key)
+            with patch.object(prep.subprocess, "run", return_value=SimpleNamespace(
+                    returncode=1, stderr="bad signature")):
+                with self.assertRaisesRegex(ValueError, "verification failed"):
+                    prep.verified_ci_image(image, key)
+            calls = []
+            def successful(command, **_kwargs):
+                calls.append(command)
+                return SimpleNamespace(returncode=0, stderr="")
+            with patch.object(prep.subprocess, "run", side_effect=successful):
+                self.assertEqual(prep.verified_ci_image(image, key),
+                                 prep.hashlib.sha256(key.read_bytes()).hexdigest())
+            self.assertEqual(len(calls), 2)
+            self.assertIn("verify-attestation", calls[1])
+
+
+if __name__ == "__main__":
+    unittest.main()
