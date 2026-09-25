@@ -188,10 +188,15 @@ def verify_template(args):
         actual_samples = [preserved_sample(source, row) for row in preserved]
         require(actual_samples == samples,
                 "synthetic Windows partition edge contents changed in VM")
+    final_partuuids = (dict(zip(("efi", "boot", "root"),
+                                (row["partuuid"] for row in additions), strict=True))
+                       if additions else {})
     print(json.dumps({"schema": "tilo.windows-direct-vm-template-check.v1",
-                      "source_raw": str(raw), "preserved_gpt_verified": True,
+                      "source_raw": str(raw), "disk_guid": disk_guid,
+                      "preserved_gpt_verified": True,
                       "preserved_edge_samples_verified": True,
-                      "final_partition_count": len(additions)}, indent=2))
+                      "final_partition_count": len(additions),
+                      "final_partuuids": final_partuuids}, indent=2))
 
 
 def finalize_source(args):
