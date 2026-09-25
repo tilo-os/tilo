@@ -1,5 +1,5 @@
 //! Distinct structural-owner checks; collaborator roles remain unchanged.
-use super::*;
+use super::{DeviceCert, Role, StatePeer, SystemTime};
 
 impl StatePeer {
     pub(super) fn current_membership_role(
@@ -37,6 +37,11 @@ impl StatePeer {
         }
     }
 
+    /// Check a verified membership refresh of the room owner.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the refreshed device is not a current owner device.
     pub fn verify_owner_refresh(
         &self,
         membership: &crate::join::VerifiedMembership,
@@ -48,6 +53,10 @@ impl StatePeer {
 
     /// Rechecks current owner membership for an already committed receipt.
     /// The caller must independently bind the receipt's original scope and proof.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `certificate` is not a current owner device at `now`.
     pub fn verify_current_owner(
         &self,
         certificate: &DeviceCert,

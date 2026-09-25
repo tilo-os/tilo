@@ -1,6 +1,16 @@
 use super::*;
+use crate::InputDisposition;
+use crate::MissingPrerequisite;
+use crate::TransportOrigin;
+use automerge::AutoCommit;
+use automerge::ROOT;
+use tilo_user_identity::RevocationList;
 
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one end-to-end scenario: its setup and assertions stay together"
+)]
 fn local_projection_full_original_queue_repeated_expiry_stays_bounded_and_converges() {
     let (mut governor, mut member, governor_key, key, cert, now) = fixture();
     let originals = (0..64)
@@ -158,7 +168,7 @@ fn local_projection_reserved_floor_survives_restore_and_next_original_cannot_reu
     let later = now + Duration::from_secs(301);
     checkpoint(&mut governor, &mut member, &governor_key, later, false);
     let projection = member
-        .reconcile_local_recovery_projection(&[first.clone()], None, &[], &key, later)
+        .reconcile_local_recovery_projection(std::slice::from_ref(&first), None, &[], &key, later)
         .unwrap();
     let NeighbourMsg::AppDocument {
         envelope: reserved, ..
@@ -232,7 +242,13 @@ fn local_projection_lost_reply_then_durable_governor_ack_retires_before_resignin
     let later = now + Duration::from_secs(301);
     checkpoint(&mut governor, &mut member, &governor_key, later, false);
     let projection = member
-        .reconcile_local_recovery_projection(&[original.clone()], None, &[], &key, later)
+        .reconcile_local_recovery_projection(
+            std::slice::from_ref(&original),
+            None,
+            &[],
+            &key,
+            later,
+        )
         .unwrap();
     governor
         .receive_from_report(
@@ -265,7 +281,13 @@ fn local_projection_historical_validation_rejects_unrelated_real_signed_history_
     let later = now + Duration::from_secs(301);
     checkpoint(&mut governor, &mut member, &governor_key, later, false);
     let first = member
-        .reconcile_local_recovery_projection(&[original.clone()], None, &[], &key, later)
+        .reconcile_local_recovery_projection(
+            std::slice::from_ref(&original),
+            None,
+            &[],
+            &key,
+            later,
+        )
         .unwrap();
     let unrelated = local_edit(&mut member, &key, later, false, "unrelated");
     let unrelated_projection = member
@@ -274,7 +296,7 @@ fn local_projection_historical_validation_rejects_unrelated_real_signed_history_
     assert!(
         member
             .validate_local_recovery_projection(
-                &[original.clone()],
+                std::slice::from_ref(&original),
                 None,
                 &unrelated_projection,
                 key.verifying_key().to_bytes()
@@ -284,9 +306,9 @@ fn local_projection_historical_validation_rejects_unrelated_real_signed_history_
     assert!(
         member
             .validate_local_recovery_projection(
-                &[original.clone()],
+                std::slice::from_ref(&original),
                 None,
-                &[original.clone()],
+                std::slice::from_ref(&original),
                 key.verifying_key().to_bytes()
             )
             .is_err(),
@@ -317,7 +339,7 @@ fn local_projection_historical_validation_rejects_unrelated_real_signed_history_
         assert!(
             member
                 .validate_local_recovery_projection(
-                    &[original.clone()],
+                    std::slice::from_ref(&original),
                     None,
                     &bad,
                     key.verifying_key().to_bytes()
@@ -328,17 +350,27 @@ fn local_projection_historical_validation_rejects_unrelated_real_signed_history_
 }
 
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one end-to-end scenario: its setup and assertions stay together"
+)]
 fn local_projection_current_document_restriction_blocks_sign_and_send_but_preserves_custody() {
     let (mut governor, mut member, governor_key, key, _, now) = fixture();
     let original = local_edit(&mut member, &key, now, false, "policy-bound");
     let later = now + Duration::from_secs(301);
     checkpoint(&mut governor, &mut member, &governor_key, later, false);
     let projection = member
-        .reconcile_local_recovery_projection(&[original.clone()], None, &[], &key, later)
+        .reconcile_local_recovery_projection(
+            std::slice::from_ref(&original),
+            None,
+            &[],
+            &key,
+            later,
+        )
         .unwrap();
     member
         .authorize_local_recovery_projection(
-            &[original.clone()],
+            std::slice::from_ref(&original),
             None,
             &projection,
             key.verifying_key().to_bytes(),
@@ -398,19 +430,23 @@ fn local_projection_current_document_restriction_blocks_sign_and_send_but_preser
     );
     member
         .validate_local_recovery_projection(
-            &[original.clone()],
+            std::slice::from_ref(&original),
             None,
             &projection,
             key.verifying_key().to_bytes(),
         )
         .unwrap();
     member
-        .reserve_local_recovery(&[original.clone()], None, key.verifying_key().to_bytes())
+        .reserve_local_recovery(
+            std::slice::from_ref(&original),
+            None,
+            key.verifying_key().to_bytes(),
+        )
         .unwrap();
     assert!(
         member
             .authorize_local_recovery_projection(
-                &[original.clone()],
+                std::slice::from_ref(&original),
                 None,
                 &projection,
                 key.verifying_key().to_bytes(),
@@ -433,7 +469,13 @@ fn local_projection_revocation_preserves_historical_proof_and_blocks_send_and_re
     let later = now + Duration::from_secs(301);
     checkpoint(&mut governor, &mut member, &governor_key, later, false);
     let projection = member
-        .reconcile_local_recovery_projection(&[original.clone()], None, &[], &key, later)
+        .reconcile_local_recovery_projection(
+            std::slice::from_ref(&original),
+            None,
+            &[],
+            &key,
+            later,
+        )
         .unwrap();
     let mut revocation = tilo_user_identity::RevocationEntry {
         user_public_key: cert.user_public_key,
@@ -457,7 +499,7 @@ fn local_projection_revocation_preserves_historical_proof_and_blocks_send_and_re
     let before = member.durable().unwrap();
     member
         .validate_local_recovery_projection(
-            &[original.clone()],
+            std::slice::from_ref(&original),
             None,
             &projection,
             key.verifying_key().to_bytes(),
@@ -466,7 +508,7 @@ fn local_projection_revocation_preserves_historical_proof_and_blocks_send_and_re
     assert!(
         member
             .authorize_local_recovery_projection(
-                &[original.clone()],
+                std::slice::from_ref(&original),
                 None,
                 &projection,
                 key.verifying_key().to_bytes(),
@@ -594,7 +636,11 @@ fn local_projection_partial_ack_rebuilds_within_reduced_remaining_reservation() 
             .unwrap()
     );
     let reserve = member
-        .reserve_local_recovery(&[small.clone()], None, key.verifying_key().to_bytes())
+        .reserve_local_recovery(
+            std::slice::from_ref(&small),
+            None,
+            key.verifying_key().to_bytes(),
+        )
         .unwrap();
     let replacement = member
         .reconcile_local_recovery_projection(&[small], None, &projection, &key, later)
@@ -611,7 +657,13 @@ fn local_projection_late_previous_and_replacement_converge_in_either_order() {
         let later = now + Duration::from_secs(301);
         checkpoint(&mut governor, &mut member, &governor_key, later, false);
         let old = member
-            .reconcile_local_recovery_projection(&[first.clone()], None, &[], &key, later)
+            .reconcile_local_recovery_projection(
+                std::slice::from_ref(&first),
+                None,
+                &[],
+                &key,
+                later,
+            )
             .unwrap();
         let second = local_edit(&mut member, &key, later, false, "new-effect");
         let current = member

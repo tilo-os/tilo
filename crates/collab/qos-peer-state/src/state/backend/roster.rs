@@ -1,6 +1,6 @@
 //! The restore certificate sequence is shared; native custody is never inferred
 //! from an existing unqualified Arc.
-use super::*;
+use super::{BTreeMap, DeviceCert, NativeReservation, VerifiedCertificate};
 use automerge::resource_limits::{NativeResourceError, NativeWorkTurn};
 use std::borrow::Borrow;
 
@@ -69,7 +69,7 @@ pub(in crate::state) fn restore_legacy(
         stored,
         enrollment.into_iter().chain([authority.clone()]),
         now_ns,
-        |value, now| verify_owned(value, now),
+        verify_owned,
     )
 }
 
@@ -85,6 +85,11 @@ pub(in crate::state) struct BoundedRoster {
     certificates: BTreeMap<[u8; 32], VerifiedCertificate>,
     _retention: NativeReservation,
 }
+// Pinned Rust1.97.1 BTreeMap: internal nodes contain 11 key/value
+// slots, 12 child pointers and a <=256-byte aligned header. Fewer
+// than three nodes per insertion includes split/root transients.
+// This concrete map has key alignment1, value alignment<=16.
+const ROSTER_NODE: usize = (size_of::<[u8; 32]>() + size_of::<VerifiedCertificate>()) * 33 + 768;
 impl BoundedRoster {
     pub(super) fn map(&self) -> &BTreeMap<[u8; 32], VerifiedCertificate> {
         &self.certificates
@@ -115,17 +120,12 @@ impl BoundedRoster {
             .0
             .pad_to_align()
             .size();
-        // Pinned Rust1.97.1 BTreeMap: internal nodes contain 11 key/value
-        // slots, 12 child pointers and a <=256-byte aligned header. Fewer
-        // than three nodes per insertion includes split/root transients.
-        // This concrete map has key alignment1, value alignment<=16.
-        let node = (size_of::<[u8; 32]>() + size_of::<VerifiedCertificate>()) * 33 + 768;
         if align_of::<VerifiedCertificate>() > 16 || align_of::<DeviceCert>() > 16 {
             return Err(RosterError::Resource(NativeResourceError::Unaccounted));
         }
         for value in stored.iter().chain(enrollment).chain([authority]) {
             bytes = bytes
-                .checked_add(node)
+                .checked_add(ROSTER_NODE)
                 .and_then(|n| n.checked_add(arc))
                 .and_then(|n| n.checked_add(value.device_label.len()))
                 .ok_or_else(capacity)?;

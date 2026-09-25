@@ -1,7 +1,11 @@
 use super::*;
 use crate::native_footprint_vendor_tests::assert_precharged;
+use crate::owner_commit::AgentControlPhase;
+use crate::owner_commit::CommitOperation;
+use crate::owner_commit::OwnerCommitRequest;
 use crate::{PeerLimits, PeerRegistry};
 use automerge::resource_limits::NativeAllowance;
+use qos_agent_control_protocol::AgentError;
 const ROOM: &str = "00000000-0000-0000-0000-000000000001";
 #[test]
 fn private_validation_paid_actual_v1_and_complete_v2() {
@@ -39,8 +43,8 @@ fn measured(state: &PrivateAgentState, room: &str, generation: u64) {
     let current_before = current.retained_bytes();
     let actual = assert_precharged(&current, || state.validate_paid(room, generation, &work));
     assert_eq!(
-        actual.as_ref().map(|_| ()).map_err(|e| e.diagnostic()),
-        expected.as_ref().map(|_| ()).map_err(|e| Some(e.as_str()))
+        actual.as_ref().copied().map_err(|e| e.diagnostic()),
+        expected.as_ref().copied().map_err(|e| Some(e.as_str()))
     );
     assert_eq!(initial.retained_bytes(), baseline);
     drop(actual);
@@ -151,7 +155,7 @@ fn private_validation_paid_error_outlives_work_and_registry_and_pressure_is_retr
         version: 2,
         writer_floor: 1,
         legacy_v1: PrivateAgentLedger::default(),
-        facts: Default::default(),
+        facts: std::collections::BTreeMap::new(),
     });
     let mut registry = PeerRegistry::new(NativeAllowance::new(4096).unwrap()).unwrap();
     let current = NativeAllowance::new(8 * 1024 * 1024).unwrap();
@@ -170,7 +174,6 @@ fn private_validation_paid_error_outlives_work_and_registry_and_pressure_is_retr
     let failure = assert_precharged(&current, || state.validate_paid(ROOM, 1, &work)).unwrap_err();
     let reservation_bytes = cost::validation(&state, ROOM).unwrap();
     assert!(current.retained_bytes() >= current_baseline + reservation_bytes);
-    drop(work);
     drop(turn);
     drop(registry);
     assert_eq!(
@@ -209,7 +212,7 @@ fn append(v: &mut PrivateAgentLedgerV2, fact: AgentRuntimeFact) {
         c.mutation.clone(),
         AgentRuntimeFactReceipt {
             binding,
-            generation: c.expected_generation + 1,
+            generation: c.expected_generation.checked_add(1).unwrap(),
             change: c,
         },
     );
@@ -255,7 +258,7 @@ fn private_validation_paid_remaining_fact_variants_and_grant_limits() {
         v.facts.retain(|_, r| r.generation == 2);
         let r = v.facts.values_mut().next().unwrap();
         let AgentRuntimeFact::Admitted { intent, .. } = &mut r.change.fact else {
-            unreachable!()
+            panic!("unexpected fixture shape")
         };
         let grant = intent.grants[0].clone();
         intent.grants = (0..count)

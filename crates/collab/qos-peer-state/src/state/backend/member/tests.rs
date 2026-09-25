@@ -1,7 +1,22 @@
 use super::*;
+use crate::StatePeer;
 use crate::native_footprint_vendor_tests::assert_precharged;
+use crate::state::err;
+use crate::state::now_ns;
+use crate::verified_certificate::VerifiedCertificate;
 use crate::{BoundedStatePeer, PeerLimits, PeerRegistry};
+use automerge::ObjType;
+use automerge::ROOT;
+use automerge::ReadDoc;
 use automerge::resource_limits::NativeAllowance;
+use automerge::transaction::Transactable;
+use collab_types::ArtifactKind;
+use collab_types::Ed25519PublicKey;
+use collab_types::caps::Verb;
+use ed25519_dalek::SigningKey;
+use tilo_automerge::ApplyIncoming;
+use tilo_user_identity::RevocationList;
+use web_time::Duration;
 
 fn fixture() -> (StatePeer, [u8; 32], SystemTime) {
     let (mut peer, _, _, cert, now) = crate::admission_tests::seeded();
@@ -13,7 +28,7 @@ fn fixture() -> (StatePeer, [u8; 32], SystemTime) {
         Scope::Workspace,
         Verb::Write,
     )
-    .with_expiry(now_secs(now) + 1);
+    .with_expiry(now_secs(now).checked_add(1).unwrap());
     room.put(
         &caps,
         "member",
@@ -138,7 +153,7 @@ fn original_role(peer: &StatePeer, source: &[u8; 32], now: SystemTime) -> Result
         person.id(),
         now_secs(now),
     )
-    .ok_or("person has no room membership".into())
+    .ok_or_else(|| "person has no room membership".into())
 }
 
 fn compare_native(peer: &StatePeer, source: [u8; 32], now: SystemTime) {
@@ -246,7 +261,7 @@ fn bounded_current_member_preserves_malformed_container_and_conflict_winner_sema
             .put_object(ROOT, "capabilities", ObjType::List)
             .unwrap();
         invalid.commit();
-        valid.merge(&mut invalid).unwrap();
+        valid.merge_incoming(&mut invalid).unwrap();
         assert_eq!(valid.get_all(ROOT, "capabilities").unwrap().len(), 2);
         peer.core.room_doc = Some(valid.into());
         compare_native(&peer, source, now);
@@ -307,7 +322,7 @@ fn row(peer: &StatePeer, source: &[u8; 32]) -> GovernedIdentity {
         .unwrap()
         .unwrap()
         .0;
-    serde_json::from_slice(raw.to_bytes().unwrap()).unwrap()
+    serde_json::from_slice(raw.as_bytes().unwrap()).unwrap()
 }
 fn replace_row(peer: &mut StatePeer, source: &[u8; 32], bytes: Vec<u8>) {
     let room = peer.core.room_doc.as_mut().unwrap();
@@ -321,6 +336,10 @@ fn replace_row(peer: &mut StatePeer, source: &[u8; 32], bytes: Vec<u8>) {
     room.commit();
 }
 #[test]
+#[expect(
+    clippy::similar_names,
+    reason = "`root` and `room` are the domain's own names"
+)]
 fn shared_current_member_retains_original_certificate_json_and_revocation_error_order() {
     let (base, source, now) = fixture();
     let mut cases = Vec::new();
@@ -372,7 +391,7 @@ fn shared_current_member_retains_original_certificate_json_and_revocation_error_
         );
         cases.push(candidate);
     }
-    let mut missing = base.clone();
+    let mut missing = base;
     missing.core.room_doc = None;
     cases.push(missing);
     for peer in cases {
@@ -456,8 +475,10 @@ fn bounded_current_member_output_capacity_and_sealed_turn_refuse_without_changin
         .unwrap()
     };
     let current = NativeAllowance::new(64 * 1024 * 1024).unwrap();
-    let mut limits = PeerLimits::default();
-    limits.governance_collection_bytes = 1;
+    let limits = PeerLimits {
+        governance_collection_bytes: 1,
+        ..PeerLimits::default()
+    };
     let mut turn = registry.begin_turn(current.clone(), limits).unwrap();
     let work = turn.work().unwrap();
     let read = restored.read(&work).unwrap();
@@ -472,8 +493,6 @@ fn bounded_current_member_output_capacity_and_sealed_turn_refuse_without_changin
         read.member(source, now),
         Err(BoundedPeerError::Resource(NativeResourceError::WorkBytes))
     ));
-    drop(read);
-    drop(work);
     drop(turn);
     let mut later = registry
         .begin_turn(

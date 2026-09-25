@@ -1,9 +1,20 @@
 use super::*;
+use crate::BoundedPeerInvalid;
+use crate::BoundedStatePeer;
+use crate::PeerLimits;
+use crate::PeerRegistry;
+use crate::PeerWork;
+use crate::StatePeer;
 use crate::native_footprint_vendor_tests::assert_precharged;
+use automerge::resource_limits::NativeAllowance;
+use automerge::resource_limits::NativeResourceError;
 use automerge::resource_limits::{NativeScalar, NativeSelection, NativeValue};
 use automerge::{ActorId, AutoCommit, ROOT, ReadDoc, transaction::Transactable};
 use collab_types::Ed25519PublicKey;
 use collab_types::caps::{CapOverride, Scope, Subject, Verb};
+use tilo_automerge::ApplyIncoming;
+use tilo_user_identity::RevocationList;
+use web_time::Duration;
 
 const APP: &str = "test.app";
 const RECORD: &str = "tab:1";
@@ -193,9 +204,7 @@ fn retained_real_orphan_cannot_be_read_as_a_complete_document() {
     history.put(ROOT, "value", "second").unwrap();
     history.commit();
     let mut orphan = AutoCommit::new();
-    orphan
-        .load_incremental(&history.save_after(&first))
-        .unwrap();
+    orphan.load_incoming(&history.save_after(&first)).unwrap();
     assert_eq!(ReadDoc::get_missing_deps(&orphan, &[]).len(), 1);
     *document(&mut source) = orphan;
     with_restored(&source, now, |peer, work, current, _| {
@@ -220,7 +229,7 @@ fn complete_frontier_accepts_sixty_four_and_refuses_sixty_five_without_prefix_or
             branch.set_actor(ActorId::from(vec![actor]));
             branch.put(ROOT, "concurrent", i64::from(actor)).unwrap();
             branch.commit();
-            combined.merge(&mut branch).unwrap();
+            combined.merge_incoming(&mut branch).unwrap();
         }
         let expected = combined.base_heads();
         assert_eq!(expected.len(), usize::from(count));

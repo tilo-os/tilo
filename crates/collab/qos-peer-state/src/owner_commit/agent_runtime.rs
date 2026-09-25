@@ -1,5 +1,9 @@
 //! Versioned private executor state. Recorded data never grants live execution authority.
-use super::*;
+use super::{
+    AgentChange, AgentError, AgentMutation, AgentMutationReceipt, CommitBinding, CommitOperation,
+    GrantAction, MAX_LIVE_PRIVATE_AGENTS, MAX_PRIVATE_AGENT_ADMISSIONS,
+    MAX_PRIVATE_AGENT_LEDGER_BYTES, OwnerCommitRequest, PrivateAgentLedger,
+};
 use serde::{
     Deserialize, Serialize,
     de::{self, MapAccess, SeqAccess, Visitor},
@@ -31,6 +35,11 @@ impl<'de> Deserialize<'de> for PrivateAgentState {
     }
 }
 impl PrivateAgentState {
+    /// Check this private agent state for `room` at `generation`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the state is inconsistent.
     pub fn validate(&self, room: &str, generation: u64) -> Result<(), String> {
         match self {
             Self::V1(v) => v.validate(room, generation),
@@ -53,6 +62,11 @@ pub struct PrivateAgentLedgerV2 {
     pub facts: BTreeMap<String, AgentRuntimeFactReceipt>,
 }
 impl PrivateAgentLedgerV2 {
+    /// Check this ledger's internal consistency for `room` at `generation`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if a record or its receipt history is inconsistent.
     pub fn validate(&self, room: &str, generation: u64) -> Result<(), String> {
         validation::validate(self, room, generation)
     }
@@ -111,6 +125,11 @@ pub struct AgentRuntimeChange {
     pub fact: AgentRuntimeFact,
 }
 impl AgentRuntimeChange {
+    /// Canonical bytes of this change's business content.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the change cannot be encoded.
     pub fn business_bytes(&self) -> Result<Vec<u8>, String> {
         postcard::to_allocvec(&(
             &self.mutation,
@@ -120,6 +139,11 @@ impl AgentRuntimeChange {
         ))
         .map_err(|e| e.to_string())
     }
+    /// Structural validation of this change.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error naming the first malformed field.
     pub fn validate(&self) -> Result<(), String> {
         exact_uuid(&self.invocation)?;
         exact_hash(&self.expected_governance)?;
@@ -227,6 +251,10 @@ pub enum TaskOutcomeV2 {
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "public wire enum: boxing a variant would change every constructor and match"
+)]
 pub enum AgentRuntimeFact {
     Admitted {
         ids: AgentExecutionIdsV2,
@@ -338,13 +366,12 @@ impl AgentRuntimeFact {
     fn receipt_limit(&self) -> usize {
         match self {
             Self::TaskStepBound { .. } => 4 * 1024,
-            Self::TaskStepCommitted { .. } => 128 * 1024,
+            Self::TaskStepCommitted { .. } | Self::TaskFinished { .. } => 128 * 1024,
             Self::Admitted { .. } => 256 * 1024,
             Self::LaunchIntended { .. }
             | Self::ProcessBound { .. }
             | Self::ProcessExited { .. } => 16 * 1024,
             Self::DispatchIntended { .. } => 320 * 1024,
-            Self::TaskFinished { .. } => 128 * 1024,
             _ => 32 * 1024,
         }
     }

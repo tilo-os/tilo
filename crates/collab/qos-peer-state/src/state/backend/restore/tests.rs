@@ -1,7 +1,23 @@
 use super::*;
+use crate::NeighbourMsg;
+use crate::PeerLimits;
+use crate::SeedDocument;
+use crate::SeedState;
+use crate::StatePeer;
+use crate::TransportOrigin;
 use crate::native_footprint_vendor_tests::assert_precharged;
+use crate::seed_room;
+use crate::state::DurableV4;
+use crate::state::DurableV5;
+use crate::state::GovernedIdentity;
 use crate::state::bounded::PeerRegistry;
+use automerge::AutoCommit;
+use automerge::ObjType;
+use automerge::ROOT;
+use automerge::ReadDoc;
 use automerge::resource_limits::{NativeAllocationSet, NativeAllowance};
+use automerge::transaction::Transactable;
+use ed25519_dalek::SigningKey;
 
 #[test]
 fn complete_bounded_restore_preserves_actual_v2_v3_v4_v5_documents_and_metadata() {
@@ -67,7 +83,6 @@ fn complete_bounded_restore_preserves_actual_v2_v3_v4_v5_documents_and_metadata(
         drop(bytes);
         drop(roster);
         drop(expected);
-        drop(work);
         drop(turn);
         assert_eq!(restored.core.room, peer.room());
         assert!(allowance.retained_bytes() > baseline);
@@ -112,6 +127,10 @@ fn complete_bounded_restore_retains_an_actual_empty_enrolled_peer() {
     assert_eq!(restored.core.authority, *peer.authority());
 }
 
+#[expect(
+    clippy::panic_in_result_fn,
+    reason = "test helper: asserts the precharge before returning the restore result"
+)]
 fn checked(
     bytes: &[u8],
     peer: &StatePeer,
@@ -169,10 +188,10 @@ pub(in crate::state) fn media_fixture() -> (StatePeer, SigningKey, SystemTime) {
     chat.put(&voice, "workspace", "home").unwrap();
     peer.install_seed(
         SeedState {
-            room_changes: seed_room(source.room(), &cert, &[cert.clone()]).unwrap(),
+            room_changes: seed_room(source.room(), &cert, std::slice::from_ref(&cert)).unwrap(),
             documents: vec![SeedDocument {
                 app_id: "so.tilo.chat".into(),
-                record_id: "".into(),
+                record_id: String::new(),
                 kind: "chat".into(),
                 bytes: chat.save(),
             }],
@@ -338,6 +357,10 @@ fn complete_bounded_restore_keeps_original_lazy_checkpoint_bytes_and_historical_
     checked(&postcard::to_allocvec(&durable).unwrap(), &peer, now).unwrap();
 }
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one end-to-end scenario: its setup and assertions stay together"
+)]
 fn complete_bounded_restore_one_work_counter_spans_multiple_documents_and_restore_calls() {
     let (peer, _, _, _, now) = crate::admission_tests::seeded();
     let mut durable: DurableV4 = postcard::from_bytes(&peer.durable().unwrap()).unwrap();
@@ -386,8 +409,10 @@ fn complete_bounded_restore_one_work_counter_spans_multiple_documents_and_restor
         .sum::<usize>();
     let mut registry = PeerRegistry::new(NativeAllowance::new(4096).unwrap()).unwrap();
     let baseline = allowance.retained_bytes();
-    let mut limits = PeerLimits::default();
-    limits.normalized_bytes = total - 1;
+    let mut limits = PeerLimits {
+        normalized_bytes: total - 1,
+        ..PeerLimits::default()
+    };
     let mut turn = registry.begin_turn(allowance.clone(), limits).unwrap();
     let mut work = turn.work().unwrap();
     assert!(matches!(
@@ -404,7 +429,6 @@ fn complete_bounded_restore_one_work_counter_spans_multiple_documents_and_restor
             NativeResourceError::NormalizedBytes
         ))
     ));
-    drop(work);
     drop(turn);
     registry.reconcile();
     assert_eq!(allowance.retained_bytes(), baseline);
@@ -441,13 +465,16 @@ fn complete_bounded_restore_one_work_counter_spans_multiple_documents_and_restor
         ))
     ));
     drop(first);
-    drop(work);
     drop(turn);
     registry.reconcile();
     assert_eq!(allowance.retained_bytes(), baseline);
 }
 
 #[test]
+#[expect(
+    clippy::similar_names,
+    reason = "`root` and `room` are the domain's own names"
+)]
 fn complete_bounded_restore_preserves_local_revocation_union_and_rejects_governed_host_revocation()
 {
     let (peer, _, now) = media_fixture();
@@ -489,7 +516,7 @@ fn complete_bounded_restore_preserves_local_revocation_union_and_rejects_governe
     let identities = room.get(ROOT, "peer_identities_v1").unwrap().unwrap().1;
     let id = hex::encode(peer.authority().device_public_key);
     let (value, _) = room.get(&identities, &id).unwrap().unwrap();
-    let mut row: GovernedIdentity = serde_json::from_slice(value.to_bytes().unwrap()).unwrap();
+    let mut row: GovernedIdentity = serde_json::from_slice(value.as_bytes().unwrap()).unwrap();
     entry.revoked_device_public_key = peer.authority().device_public_key;
     tilo_user_identity::sign_revocation_entry(&mut entry, &root).unwrap();
     row.revocations.push(entry);

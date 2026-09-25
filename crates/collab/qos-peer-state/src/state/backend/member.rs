@@ -1,5 +1,9 @@
 //! One current-member algorithm over actual admitted room data.
-use super::*;
+use super::{
+    BoundedNative, CapOverride, CertificateLookupError, GovernedIdentity, LegacyNative, PeerCore,
+    Principal, Role, Scope, Storage, Subject, SystemTime, now_secs, room,
+};
+use crate::room::key_hex::KeyHex;
 use crate::state::bounded::{BoundedPeerError, BoundedPeerInvalid, PeerLimits};
 use automerge::resource_limits::{NativeReservation, NativeResourceError, NativeWorkTurn};
 mod policy;
@@ -50,10 +54,8 @@ trait Policy {
         Ok(room::role_of(self.owner(), self.caps(), person, now))
     }
 }
-fn key_text(key: &[u8; 32]) -> [u8; 64] {
-    let mut text = [0; 64];
-    hex::encode_to_slice(key, &mut text).expect("fixed hex buffer");
-    text
+fn key_text(key: &[u8; 32]) -> KeyHex {
+    KeyHex::new(key)
 }
 fn current<'peer, S: Storage, P: Policy>(
     peer: &'peer PeerCore<S>,
@@ -61,7 +63,7 @@ fn current<'peer, S: Storage, P: Policy>(
     now: SystemTime,
     turn: Option<&NativeWorkTurn>,
     collect: impl FnOnce(&'peer S::Room) -> Result<P, Error>,
-) -> Result<(Role, [u8; 64], P), Error> {
+) -> Result<(Role, KeyHex, P), Error> {
     let cert = peer
         .certificate_typed(source, now)
         .map_err(Error::Certificate)?;
@@ -87,11 +89,7 @@ fn current<'peer, S: Storage, P: Policy>(
     }
     let person = key_text(&cert.user_public_key);
     let role = policy
-        .role(
-            std::str::from_utf8(&person).expect("hex person"),
-            now_secs(now),
-            turn,
-        )?
+        .role(person.as_str(), now_secs(now), turn)?
         .ok_or(Error::NoMembership)?;
     Ok((role, person, policy))
 }
@@ -118,8 +116,7 @@ pub(in crate::state) fn legacy(
     current(peer, source, now, None, |room| {
         let data = room.policy();
         let key = key_text(source);
-        let key = std::str::from_utf8(&key).expect("hex key");
-        let bytes = data.identities.get(key).ok_or(Error::Absent)?;
+        let bytes = data.identities.get(key.as_str()).ok_or(Error::Absent)?;
         let identity = serde_json::from_slice(bytes).map_err(Error::LegacyJson)?;
         Ok(LegacyPolicy { data, identity })
     })
@@ -129,7 +126,7 @@ pub(in crate::state) fn legacy(
 /// Borrowed capabilities must be copied under the caller's own output credit.
 pub struct PeerMember<'peer, 'work> {
     role: Role,
-    person: [u8; 64],
+    person: KeyHex,
     policy: policy::NativePolicy,
     _peer: &'peer PeerCore<BoundedNative>,
     _turn: &'work NativeWorkTurn,
@@ -143,7 +140,7 @@ impl PeerMember<'_, '_> {
         self.role
     }
     pub fn person(&self) -> &str {
-        std::str::from_utf8(&self.person).expect("hex person")
+        self.person.as_str()
     }
     pub fn capabilities(&self) -> &[CapOverride] {
         self.policy.caps()

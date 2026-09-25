@@ -1982,8 +1982,6 @@ name = "chat"
 version = "0.1.0"
 dependencies = [
  "automerge",
- "gstreamer",
- "gstreamer-app",
  "image",
  "iroh",
  "media",
@@ -1997,7 +1995,6 @@ dependencies = [
  "tilo-actions",
  "tilo-app",
  "tilo-automerge",
- "tilo-callstream",
  "tilo-reference",
  "tilo-test-env",
  "tokio",
@@ -11402,6 +11399,7 @@ dependencies = [
  "qos-agent-control-protocol",
  "serde",
  "serde_json",
+ "tilo-automerge",
  "tilo-user-identity",
  "uuid",
  "web-time",

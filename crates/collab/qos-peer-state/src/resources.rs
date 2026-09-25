@@ -10,6 +10,7 @@ pub(crate) mod json;
 pub(crate) mod native;
 pub(crate) mod outer;
 pub use encoding::BoundedSerialized;
+#[cfg(test)]
 pub(crate) use encoding::encode_known;
 
 use automerge::resource_limits::NativeReservation;
@@ -38,6 +39,11 @@ pub struct BoundedPeerMessage {
 impl BoundedPeerMessage {
     /// The allowance must subdivide credit already held by the calling owner.
     /// The full conservative cap remains reserved until this value is dropped.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PeerResourceError::Capacity`] if the allowance or limits are exceeded and
+    /// [`PeerResourceError::Malformed`] if the bytes do not decode.
     pub fn decode(
         bytes: &[u8],
         limits: OuterLimits,

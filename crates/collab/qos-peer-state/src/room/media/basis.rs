@@ -13,6 +13,7 @@ use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet};
 use tilo_user_identity::{DeviceCert, RevocationEntry, RevocationList};
 
+#[derive(Clone, Copy)]
 pub(crate) struct BasisLimits {
     pub(crate) collection_bytes: usize,
     pub(crate) json: JsonLimits,
@@ -103,7 +104,7 @@ pub(super) fn legacy(
             collections: Collections::unqualified(),
         },
     )
-    .map_err(super::read::legacy_error)
+    .map_err(|error| super::read::legacy_error(&error))
 }
 pub(crate) fn bounded<R: RoomRead>(
     room: &R,
@@ -138,6 +139,10 @@ pub(crate) fn bounded_entries<'a, R: RoomRead>(
     )
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "one canonical basis projection, in wire order"
+)]
 fn project<'a, R: RoomRead, C: CopyValue, D: Decode>(
     room: &R,
     copies: &C,
@@ -145,6 +150,21 @@ fn project<'a, R: RoomRead, C: CopyValue, D: Decode>(
     extra: impl IntoIterator<Item = &'a RevocationEntry>,
     work: &mut Work,
 ) -> Result<[u8; 32], Error> {
+    struct Hash<'a>(&'a mut blake3::Hasher);
+    impl postcard::ser_flavors::Flavor for Hash<'_> {
+        type Output = ();
+        fn try_push(&mut self, byte: u8) -> postcard::Result<()> {
+            self.0.update(&[byte]);
+            Ok(())
+        }
+        fn try_extend(&mut self, bytes: &[u8]) -> postcard::Result<()> {
+            self.0.update(bytes);
+            Ok(())
+        }
+        fn finalize(self) -> postcard::Result<()> {
+            Ok(())
+        }
+    }
     let owner = read::strict_string(room, copies, &room.root(), "owner").map_err(strict_error)?;
     let owner_key = super::canonical_key(owner.as_ref()).map_err(policy)?;
     let caps = read::strict_map(room, &room.root(), "capabilities").map_err(strict_error)?;
@@ -264,21 +284,6 @@ fn project<'a, R: RoomRead, C: CopyValue, D: Decode>(
     }
     let mut hasher = blake3::Hasher::new();
     hasher.update(b"tilo-room-media-auth-basis-v1\0");
-    struct Hash<'a>(&'a mut blake3::Hasher);
-    impl postcard::ser_flavors::Flavor for Hash<'_> {
-        type Output = ();
-        fn try_push(&mut self, byte: u8) -> postcard::Result<()> {
-            self.0.update(&[byte]);
-            Ok(())
-        }
-        fn try_extend(&mut self, bytes: &[u8]) -> postcard::Result<()> {
-            self.0.update(bytes);
-            Ok(())
-        }
-        fn finalize(self) -> postcard::Result<()> {
-            Ok(())
-        }
-    }
     postcard::serialize_with_flavor(
         &(owner_key, capabilities, roster, rows, revocations),
         Hash(&mut hasher),
@@ -336,6 +341,7 @@ impl Work {
         Ok(bytes)
     }
     fn revocation_table(&mut self, count: usize) -> Result<(), Error> {
+        type Entry = ([u8; 32], RevocationEntry);
         if count == 0 {
             return Ok(());
         }
@@ -353,12 +359,13 @@ impl Work {
                 .checked_next_power_of_two()
                 .ok_or_else(capacity)?
         };
-        type Entry = ([u8; 32], RevocationEntry);
         let alignment = align_of::<Entry>().max(16);
         let data = size_of::<Entry>()
             .checked_mul(buckets)
             .ok_or_else(capacity)?;
-        let padded = data.checked_add(alignment - 1).ok_or_else(capacity)? & !(alignment - 1);
+        let padded = data
+            .checked_next_multiple_of(alignment)
+            .ok_or_else(capacity)?;
         self.debit(
             padded
                 .checked_add(buckets)

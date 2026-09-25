@@ -108,7 +108,7 @@ pub(crate) fn write_raw(
                 .put_object(ROOT, layout.routes, ObjType::Map)
                 .map_err(|e| e.to_string())?,
         };
-        for (key, bytes) in next.iter() {
+        for (key, bytes) in *next {
             if current.get(key) != Some(bytes) {
                 doc.put(&object, key.as_str(), ScalarValue::Bytes(bytes.clone()))
                     .map_err(|e| e.to_string())?;
@@ -132,7 +132,7 @@ pub(crate) fn write_raw(
 /// Decode `bytes` as exactly one `T` (no trailing bytes).
 pub(crate) fn exact<T: serde::de::DeserializeOwned>(bytes: &[u8]) -> Option<T> {
     match postcard::take_from_bytes::<T>(bytes) {
-        Ok((value, rest)) if rest.is_empty() => Some(value),
+        Ok((value, [])) => Some(value),
         _ => None,
     }
 }

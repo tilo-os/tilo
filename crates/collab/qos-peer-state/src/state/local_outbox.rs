@@ -1,6 +1,11 @@
 //! Local immutable publication custody and current-authorized history recovery.
 //! Nothing here admits remote historical wire data or commits an owner's storage.
-use super::*;
+use super::{
+    AdmissionError, ArtifactKind, BTreeMap, ChannelState, Document, DocumentAdmission,
+    DocumentMutation, DocumentWireVersion, Duration, Ed25519PublicKey, NeighbourMsg, OpClass,
+    ReadDoc, Role, Route, SignedOp, SigningKey, StatePeer, SystemTime, Transactable, err,
+    peer_handle, room,
+};
 
 const MAX_PUBLICATIONS: usize = 64;
 const MAX_PUBLICATION_BYTES: usize = 4 * 1024 * 1024;
@@ -61,6 +66,11 @@ impl StatePeer {
     }
 
     /// Historical exact custody only. This never grants current send/sign permission.
+    ///
+    /// # Errors
+    ///
+    /// Returns an [`AdmissionError`] if the message is not a valid retained document of the
+    /// selected device.
     pub fn lookup_retained_local_document(
         &self,
         message: &NeighbourMsg,
@@ -89,6 +99,10 @@ impl StatePeer {
     }
 
     /// Only actual durable governor acknowledgement may retire retained bytes.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the message is not a retained document of the selected device.
     pub fn retained_local_document_retired(
         &self,
         message: &NeighbourMsg,
@@ -253,7 +267,11 @@ impl StatePeer {
         };
         let mut history = automerge::Automerge::new();
         history.load_incremental(bytes).map_err(err)?;
-        let checkpoint = self.core.documents[&local.route]
+        let checkpoint = self
+            .core
+            .documents
+            .get(&local.route)
+            .ok_or("recovery route is not admitted")?
             .covered_snapshot
             .as_ref()
             .ok_or("recovery checkpoint missing")?
@@ -279,6 +297,11 @@ impl StatePeer {
 
     /// The returned prefix is identical to the input; only authorized successors append.
     /// The outer owner must commit this candidate and the entire queue before send.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if a queued message is not authentic retained custody or a successor
+    /// cannot be signed.
     pub fn reconcile_local_outbox(
         &mut self,
         outbox: &[NeighbourMsg],
@@ -387,6 +410,11 @@ impl StatePeer {
     }
 
     /// Actual retained peer history; missing original signatures are not reconstructed.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `history` does not belong to this room or a publication cannot be
+    /// signed.
     pub fn recover_local_history(
         &mut self,
         history: &StatePeer,
@@ -398,6 +426,11 @@ impl StatePeer {
 
     /// Recover only history not carried by a fresh exact publication in the actual queue.
     /// Returns new publications only; the supplied queue remains immutable custody.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `history` or `outbox` does not belong to this room or a
+    /// publication cannot be signed.
     pub fn recover_local_history_with_outbox(
         &mut self,
         history: &StatePeer,
@@ -475,6 +508,10 @@ impl StatePeer {
     }
 
     /// Compare retained real history with the admitted durable governor checkpoint.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `history` does not belong to this room.
     pub fn retained_local_history_retired(&self, history: &StatePeer) -> Result<bool, String> {
         self.validate_retained_history(history)?;
         for (route, old) in &history.core.documents {
@@ -489,9 +526,6 @@ impl StatePeer {
 // Count the closed wire DTO before cloning the caller's prefix. These are encoded
 // refusal limits, not a native CRDT heap qualification or a durable barrier.
 fn publication_size(messages: &[NeighbourMsg]) -> Result<usize, String> {
-    if messages.len() > MAX_PUBLICATIONS {
-        return Err("local publication count limit".into());
-    }
     struct Count(usize);
     impl postcard::ser_flavors::Flavor for Count {
         type Output = usize;
@@ -509,6 +543,9 @@ fn publication_size(messages: &[NeighbourMsg]) -> Result<usize, String> {
         fn finalize(self) -> postcard::Result<usize> {
             Ok(self.0)
         }
+    }
+    if messages.len() > MAX_PUBLICATIONS {
+        return Err("local publication count limit".into());
     }
     let mut total = 0;
     for message in messages {

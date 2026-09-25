@@ -45,8 +45,13 @@ impl Budget {
             return Err(self.refuse());
         }
         self.charge(Some(size_of::<T>()))?;
-        self.depth += 1;
+        // Below 64 here, so the step is exact.
+        self.depth = self.depth.saturating_add(1);
         Ok(())
+    }
+    /// Pairs with a successful `enter`, so the depth is at least one.
+    fn leave(&mut self) {
+        self.depth = self.depth.saturating_sub(1);
     }
 }
 pub(super) fn decode<T: Schema>(bytes: &[u8], limits: JsonLimits) -> Result<T, GuardError> {
@@ -94,7 +99,8 @@ impl<'de, S: DeserializeSeed<'de>> DeserializeSeed<'de> for Seed<'_, S> {
             if *count == self.budget.entries {
                 return Err(boundary(self.budget.refuse()));
             }
-            *count += 1;
+            // Below `entries` here, so the step is exact.
+            *count = count.saturating_add(1);
         }
         let slots = if self.vector { 4 } else { 1 };
         self.budget
@@ -222,7 +228,7 @@ impl<'de, V: Visitor<'de>> Visitor<'de> for Visit<'_, V> {
             inner: d,
             budget: &mut *self.budget,
         });
-        self.budget.depth -= 1;
+        self.budget.leave();
         result.map_err(boundary)
     }
     fn visit_newtype_struct<D: de::Deserializer<'de>>(self, d: D) -> Result<Self::Value, D::Error> {
@@ -231,7 +237,7 @@ impl<'de, V: Visitor<'de>> Visitor<'de> for Visit<'_, V> {
             inner: d,
             budget: &mut *self.budget,
         });
-        self.budget.depth -= 1;
+        self.budget.leave();
         result.map_err(boundary)
     }
     fn visit_seq<A: SeqAccess<'de>>(self, a: A) -> Result<Self::Value, A::Error> {
@@ -245,7 +251,7 @@ impl<'de, V: Visitor<'de>> Visitor<'de> for Visit<'_, V> {
             budget: &mut *self.budget,
             count: 0,
         });
-        self.budget.depth -= 1;
+        self.budget.leave();
         result.map_err(boundary)
     }
     fn visit_map<A: MapAccess<'de>>(self, a: A) -> Result<Self::Value, A::Error> {
@@ -256,7 +262,7 @@ impl<'de, V: Visitor<'de>> Visitor<'de> for Visit<'_, V> {
             budget: &mut *self.budget,
             count: 0,
         });
-        self.budget.depth -= 1;
+        self.budget.leave();
         result.map_err(boundary)
     }
     fn visit_enum<A: EnumAccess<'de>>(self, a: A) -> Result<Self::Value, A::Error> {
@@ -265,7 +271,7 @@ impl<'de, V: Visitor<'de>> Visitor<'de> for Visit<'_, V> {
             inner: a,
             budget: &mut *self.budget,
         });
-        self.budget.depth -= 1;
+        self.budget.leave();
         result.map_err(boundary)
     }
 }

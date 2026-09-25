@@ -1,5 +1,5 @@
 //! Real dependent-crate reader tests. Measured candidates remain unqualified;
-//! these tests do not claim checked-load or NativeOwned construction readiness.
+//! these tests do not claim checked-load or `NativeOwned` construction readiness.
 //!
 //! The public reader API resolves without constructing a qualified document:
 //! ```
@@ -36,7 +36,7 @@
 //!     owned.read(turn).unwrap().root()
 //! }
 //! ```
-//! There is no dereference or coercion to raw AutoCommit:
+//! There is no dereference or coercion to raw `AutoCommit`:
 //! ```compile_fail,E0308
 //! use automerge::{AutoCommit, resource_limits::*};
 //! fn raw(owned: &NativeOwned<AutoCommit>) -> &AutoCommit { owned }
@@ -47,12 +47,16 @@ use automerge::resource_limits::{
 };
 use automerge::transaction::Transactable;
 use automerge::{ActorId, AutoCommit, ObjType, ROOT};
+use tilo_automerge::ApplyIncoming;
 mod sequence;
 
+// Compiled for doctests too (`any(test, doctest)`); helpers exist only for tests.
+#[cfg(test)]
 fn allowance() -> NativeAllowance {
     NativeAllowance::new(8 * 1024 * 1024).unwrap()
 }
 
+#[cfg(test)]
 fn measured_candidate(
     doc: &AutoCommit,
     allocations: &mut NativeAllocationSet,
@@ -103,10 +107,10 @@ fn native_read_nested_keys_property_and_canonical_identity() {
                             read.visit_property(object, key, NativeSelection::All, |value, _| {
                                 match (key, value) {
                                     ("bytes", NativeValue::Scalar(NativeScalar::Bytes(bytes))) => {
-                                        assert_eq!(bytes, &[1, 2, 3])
+                                        assert_eq!(bytes, &[1, 2, 3]);
                                     }
                                     ("title", NativeValue::Scalar(NativeScalar::Str(text))) => {
-                                        assert_eq!(text, "borrowed title")
+                                        assert_eq!(text, "borrowed title");
                                     }
                                     other => panic!("unexpected borrowed value {other:?}"),
                                 }
@@ -146,8 +150,8 @@ fn native_read_winner_all_deleted_and_visitor_stop() {
     left.put(ROOT, "title", "left").unwrap();
     right.put(ROOT, "title", "right").unwrap();
     left.delete(ROOT, "removed").unwrap();
-    doc.merge(&mut left).unwrap();
-    doc.merge(&mut right).unwrap();
+    doc.merge_incoming(&mut left).unwrap();
+    doc.merge_incoming(&mut right).unwrap();
     let mut allocations = NativeAllocationSet::new(allowance()).unwrap();
     let candidate = measured_candidate(&doc, &mut allocations);
     let turn = allocations.work_turn(allowance()).unwrap();
@@ -245,7 +249,7 @@ fn native_read_current_turn_refuses_before_visit_and_releases_nested_work() {
     let candidate = measured_candidate(&doc, &mut allocations);
     // Residence has ample credit; only the distinct current turn is exhausted.
     let current = NativeAllowance::new(64).unwrap();
-    let turn = allocations.work_turn(current.clone()).unwrap();
+    let turn = allocations.work_turn(current).unwrap();
     let read = candidate.read_unqualified(&turn).unwrap();
     let mut calls = 0;
     assert_eq!(
@@ -356,7 +360,7 @@ fn native_read_scalars_counters_and_isolation_refusal() {
             1
         );
     }
-    doc.isolate(&old_heads);
+    doc.isolate_at(&old_heads);
     let isolated = measured_candidate(&doc, &mut allocations);
     assert!(matches!(
         isolated.read_unqualified(&turn),
@@ -367,13 +371,9 @@ fn native_read_scalars_counters_and_isolation_refusal() {
 #[test]
 fn native_read_large_borrowed_values_and_cursor_allocations_are_precharged() {
     let mut doc = AutoCommit::new().with_actor(ActorId::from(vec![1; 256]));
-    for i in 0..256 {
-        doc.put(
-            ROOT,
-            format!("key-{i:04}-{}", "long-key".repeat(16)),
-            i as u64,
-        )
-        .unwrap();
+    for i in 0..256u64 {
+        doc.put(ROOT, format!("key-{i:04}-{}", "long-key".repeat(16)), i)
+            .unwrap();
     }
     doc.put(
         ROOT,
@@ -399,7 +399,7 @@ fn native_read_large_borrowed_values_and_cursor_allocations_are_precharged() {
                         assert!(bytes.iter().all(|b| *b == 0xa5));
                     }
                     NativeValue::Scalar(NativeScalar::Str(text)) => {
-                        assert_eq!(text.len(), 9 * 16384)
+                        assert_eq!(text.len(), 9 * 16384);
                     }
                     NativeValue::Scalar(NativeScalar::Uint(value)) => assert!(value < 256),
                     value => panic!("unexpected scalar {value:?}"),

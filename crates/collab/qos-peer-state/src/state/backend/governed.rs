@@ -1,5 +1,8 @@
 //! One governed identity import algorithm, with independently retained native outputs.
-use super::*;
+use super::{
+    AutoCommit, BTreeMap, DeviceCert, GovernedIdentity, NativeReservation, RedemptionReceipt,
+    RevocationList, SystemTime, VerifiedCertificate, now_ns, revocations, roster,
+};
 use crate::resources::{
     PeerResourceError,
     json::{JsonHeld, JsonLimits},
@@ -293,20 +296,19 @@ fn apply<I: View<GovernedIdentity>>(
     Ok(changed)
 }
 
+/// Imported certificates and revocations, and whether either changed.
+type LegacyImport = (
+    BTreeMap<[u8; 32], VerifiedCertificate>,
+    RevocationList,
+    bool,
+);
 pub(in crate::state) fn legacy(
     room: &AutoCommit,
     original: &BTreeMap<[u8; 32], VerifiedCertificate>,
     revocations: &RevocationList,
     authority: &DeviceCert,
     now: SystemTime,
-) -> Result<
-    (
-        BTreeMap<[u8; 32], VerifiedCertificate>,
-        RevocationList,
-        bool,
-    ),
-    ImportError,
-> {
+) -> Result<LegacyImport, ImportError> {
     let mut work = Work::legacy();
     let inputs = inputs(&LegacyRead(room), &LegacyCopy, &Legacy, &mut work)?;
     let mut certificates = original.clone();
@@ -325,6 +327,13 @@ pub(in crate::state) fn legacy(
 pub(super) struct Imported {
     pub(super) certificates: roster::BoundedRoster,
     pub(super) revocations: revocations::BoundedRevocations,
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "restore adopts the import unconditionally; tests assert parity with the legacy import"
+        )
+    )]
     pub(super) changed: bool,
 }
 pub(super) fn bounded<R: RoomRead>(
@@ -445,15 +454,11 @@ impl Work {
     }
     fn push<T>(&mut self, values: &mut Vec<T>, value: T) -> Result<(), ImportError> {
         if values.len() == values.capacity() {
-            let next = values
-                .capacity()
-                .checked_mul(2)
-                .unwrap_or(usize::MAX)
-                .max(4);
+            let next = values.capacity().saturating_mul(2).max(4);
             // Cumulative reservations retain old+new allocations during growth.
             self.debit(next.checked_mul(size_of::<T>()))?;
             values
-                .try_reserve_exact(next - values.len())
+                .try_reserve_exact(next.saturating_sub(values.len()))
                 .map_err(|_| ImportError::Resource(NativeResourceError::WorkBytes))?;
             if values.capacity() > next {
                 return Err(ImportError::Resource(NativeResourceError::Unaccounted));

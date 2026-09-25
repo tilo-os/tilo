@@ -25,6 +25,7 @@ pub(crate) struct Metadata<'a, I, J> {
     pub(crate) certificates: I,
     pub(crate) revocations: J,
 }
+#[derive(Clone, Copy)]
 pub(crate) struct Limits {
     pub(crate) collections: usize,
     pub(crate) json: JsonLimits,
@@ -149,7 +150,7 @@ impl Decode for NativeDecode<'_> {
     fn cap(&self, bytes: &[u8]) -> Result<Self::Value, Error> {
         JsonHeld::decode(bytes, self.limits, self.turn).map_err(|e| match e {
             PeerResourceError::Malformed => Error::Unavailable,
-            e => Error::Decode(e),
+            PeerResourceError::Capacity => Error::Decode(PeerResourceError::Capacity),
         })
     }
 }
@@ -173,6 +174,10 @@ fn rows<'a, T: Serialize + 'a>(
     output.sort_unstable();
     Ok(output)
 }
+#[expect(
+    clippy::too_many_lines,
+    reason = "one canonical digest projection, in wire order"
+)]
 fn project<'a, R: RoomRead, D: Decode, I, J>(
     read: &R,
     meta: Metadata<'a, I, J>,

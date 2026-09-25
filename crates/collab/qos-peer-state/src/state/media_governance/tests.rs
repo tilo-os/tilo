@@ -1,11 +1,21 @@
 use super::*;
+use crate::SeedState;
+use crate::seed_room;
+use automerge::AutoCommit;
 use tilo_user_identity::{
     DeviceCapabilities, RevocationEntry, RevocationReason, sign_device_cert, sign_revocation_entry,
 };
+use web_time::Duration;
+#[expect(
+    clippy::similar_names,
+    reason = "`root` and `room` are the domain's own names"
+)]
 fn fixture(revision: u64) -> (StatePeer, SigningKey, SigningKey, SystemTime) {
     let root = SigningKey::from_bytes(&[91; 32]);
     let key = SigningKey::from_bytes(&[92; 32]);
-    let now = SystemTime::UNIX_EPOCH + Duration::from_secs(2000);
+    let now = SystemTime::UNIX_EPOCH
+        .checked_add(Duration::from_secs(2000))
+        .unwrap();
     let mut cert = DeviceCert {
         user_public_key: root.verifying_key().to_bytes(),
         device_public_key: key.verifying_key().to_bytes(),
@@ -148,7 +158,7 @@ fn room_media_exhaustion_preserves_only_sealed_verified_metadata_and_reopens_den
     changed.core.checkpoint_times.insert(
         Route {
             app: "x".into(),
-            record: "".into(),
+            record: String::new(),
         },
         now,
     );
@@ -248,7 +258,7 @@ fn room_media_security_projection_keeps_stored_state_and_binds_stored_proof() {
             .project_verified_security_metadata(&wrong_room)
             .is_err()
     );
-    let mut wrong_authority = observed.clone();
+    let mut wrong_authority = observed;
     wrong_authority.core.authority.device_label = "different".into();
     assert!(
         stored
@@ -259,6 +269,14 @@ fn room_media_security_projection_keeps_stored_state_and_binds_stored_proof() {
 }
 
 #[test]
+#[expect(
+    clippy::similar_names,
+    reason = "`root` and `room` are the domain's own names"
+)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one end-to-end scenario: its setup and assertions stay together"
+)]
 fn room_media_security_proof_survives_signed_multi_author_unsorted_legacy_roundtrip() {
     let (mut peer, root, key, now) = fixture(0);
     peer.select_admission_v5().unwrap();
@@ -316,7 +334,7 @@ fn room_media_security_proof_survives_signed_multi_author_unsorted_legacy_roundt
         9,
         "each real signed author must reach admission"
     );
-    watermarks.sort_by(|a, b| b.0.cmp(&a.0));
+    watermarks.sort_by_key(|entry| std::cmp::Reverse(entry.0));
     assert!(watermarks.windows(2).all(|pair| pair[0].0 > pair[1].0));
     // Old signed owner containers may hold any HashMap iteration order. This
     // deliberately descending historical representation must remain readable.
@@ -364,8 +382,8 @@ fn room_media_security_proof_survives_signed_multi_author_unsorted_legacy_roundt
     proof
         .validate(&independently_restored, &projected)
         .expect("proof must compare semantic watermark maps across stored-state restores");
-    let mut changed = projected.clone();
-    *changed
+    let mut tampered = projected.clone();
+    *tampered
         .core
         .documents
         .values_mut()
@@ -377,15 +395,15 @@ fn room_media_security_proof_survives_signed_multi_author_unsorted_legacy_roundt
         .next()
         .unwrap() += 1;
     assert!(
-        proof.validate(&stored, &changed).is_err(),
+        proof.validate(&stored, &tampered).is_err(),
         "normalization must not discard watermark values"
     );
-    let mut changed = projected.clone();
-    changed
+    let mut tampered = projected;
+    tampered
         .core
         .receipts
         .insert("not-security-metadata".into(), vec![1]);
-    assert!(proof.validate(&stored, &changed).is_err());
+    assert!(proof.validate(&stored, &tampered).is_err());
     assert!(
         StatePeer::restore(
             &literal_old,
@@ -576,7 +594,7 @@ fn room_media_security_no_policy_rejects_wrong_root_and_unrelated_mutations() {
         .channel
         .max_in_memory_ops += 1;
     assert!(proof.validate(&peer, &changed).is_err());
-    let mut changed = candidate.clone();
+    let mut changed = candidate;
     changed.core.revocations = RevocationList::new();
     assert!(proof.validate(&peer, &changed).is_err());
 }

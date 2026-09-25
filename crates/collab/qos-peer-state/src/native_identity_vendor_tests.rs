@@ -23,6 +23,8 @@ use automerge::resource_limits::{
 };
 use automerge::{ActorId, AutoCommit, ObjId, ObjType, ROOT, transaction::Transactable};
 
+// Compiled for doctests too (`any(test, doctest)`); helpers exist only for tests.
+#[cfg(test)]
 fn allowance() -> NativeAllowance {
     NativeAllowance::new(64 * 1024 * 1024).unwrap()
 }
@@ -110,7 +112,7 @@ fn borrowed_binary_and_semantic_identity_match_real_native_objects_without_alloc
                 read.visit_id_parts(id, |parts| {
                     let (counter, actor) = parts.unwrap();
                     let ObjId::Id(expected_counter, expected_actor, _) = &expected else {
-                        unreachable!()
+                        panic!("unexpected fixture shape")
                     };
                     assert_eq!(counter, *expected_counter);
                     assert_eq!(actor, expected_actor.to_bytes());

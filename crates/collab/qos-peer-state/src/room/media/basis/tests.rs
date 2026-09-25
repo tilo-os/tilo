@@ -4,6 +4,7 @@ use crate::resources::native::NativeBatch;
 use automerge::resource_limits::{NativeAllocationSet, NativeAllowance};
 use automerge::{AutoCommit, ObjType, ROOT, ReadDoc, ScalarValue, transaction::Transactable};
 use ed25519_dalek::SigningKey;
+use tilo_automerge::ApplyIncoming;
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationReason};
 fn fixture() -> (AutoCommit, SigningKey, String) {
     let root = SigningKey::from_bytes(&[91; 32]);
@@ -140,7 +141,7 @@ fn media_basis_matches_original_malformed_container_conflict_and_certificate_rej
                 doc.commit();
                 fork.put(ROOT, "owner", "second").unwrap();
                 fork.commit();
-                doc.merge(&mut fork).unwrap();
+                doc.merge_incoming(&mut fork).unwrap();
             }
             _ => {
                 let ids = doc.get(ROOT, "peer_identities_v1").unwrap().unwrap().1;
@@ -182,7 +183,7 @@ fn media_basis_accounts_escaped_labels_duplicate_proofs_and_revocation_map_growt
     row.admission = Some(proof.clone());
     row.admissions = vec![proof.clone(), proof];
     for id in 1..=32 {
-        let mut entry = revocation(&root, id as u64);
+        let mut entry = revocation(&root, u64::from(id));
         entry.revoked_device_public_key = [id; 32];
         tilo_user_identity::sign_revocation_entry(&mut entry, &root).unwrap();
         row.revocations.push(entry);
@@ -241,8 +242,8 @@ fn media_basis_work_and_json_limits_refuse_without_mutating_original_document() 
         });
         assert!(matches!(
             refused,
-            Err(Error::Resource(NativeResourceError::WorkBytes))
-                | Err(Error::Decode(PeerResourceError::Capacity))
+            Err(Error::Resource(NativeResourceError::WorkBytes)
+                | Error::Decode(PeerResourceError::Capacity))
         ));
         assert_eq!(
             allowance.available_bytes(),

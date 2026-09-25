@@ -1,6 +1,8 @@
 use super::*;
 use crate::native_footprint_vendor_tests::assert_precharged;
+use crate::state::now_ns;
 use automerge::resource_limits::{NativeAllocationSet, NativeAllowance};
+use ed25519_dalek::SigningKey;
 use tilo_user_identity::{DeviceCertError, sign_device_cert};
 
 fn context() -> (NativeAllowance, NativeAllocationSet, NativeWorkTurn) {

@@ -1,10 +1,11 @@
 //! Native storage primitives for the private bounded peer backend.
 //! Checked native allocation is separate from certified state admission.
+use automerge::AutoCommit;
 use automerge::resource_limits::{
-    NativeAllocationSet, NativeLimits, NativeOwned, NativeResourceError, NativeSaved,
-    NativeWorkTurn,
+    NativeAllocationSet, NativeLimits, NativeOwned, NativeResourceError, NativeWorkTurn,
 };
-use automerge::{AutoCommit, SaveOptions};
+#[cfg(test)]
+use automerge::{SaveOptions, resource_limits::NativeSaved};
 
 pub(crate) struct NativeBatch<'a> {
     allocations: &'a mut NativeAllocationSet,
@@ -12,18 +13,21 @@ pub(crate) struct NativeBatch<'a> {
     remaining_normalized: NormalizedRemaining<'a>,
 }
 enum NormalizedRemaining<'a> {
+    #[cfg(test)]
     Owned(usize),
     Continuing(&'a mut usize),
 }
 impl NormalizedRemaining<'_> {
     fn get(&mut self) -> &mut usize {
         match self {
+            #[cfg(test)]
             Self::Owned(value) => value,
             Self::Continuing(value) => value,
         }
     }
 }
 impl<'a> NativeBatch<'a> {
+    #[cfg(test)]
     pub(crate) fn new(
         allocations: &'a mut NativeAllocationSet,
         turn: &'a NativeWorkTurn,
@@ -71,7 +75,7 @@ impl<'a> NativeBatch<'a> {
         Ok(NativeDocument { document })
     }
 }
-/// No Clone, Deref, extraction or raw AutoCommit access. Custody is native.
+/// No Clone, Deref, extraction or raw `AutoCommit` access. Custody is native.
 pub(crate) struct NativeDocument {
     document: NativeOwned<AutoCommit>,
 }
@@ -83,12 +87,14 @@ impl NativeDocument {
     {
         self.document.read(turn)
     }
+    #[cfg(test)]
     pub(crate) fn heads(
         &self,
         turn: &NativeWorkTurn,
     ) -> Result<automerge::resource_limits::NativeHashes, NativeResourceError> {
         self.document.base_heads_bounded(turn)
     }
+    #[cfg(test)]
     pub(crate) fn changes_since(
         &self,
         heads: &[automerge::ChangeHash],
@@ -99,6 +105,7 @@ impl NativeDocument {
     pub(crate) fn has_missing_dependencies(&self) -> bool {
         self.document.has_missing_dependencies()
     }
+    #[cfg(test)]
     pub(crate) fn candidate(
         &self,
         allocations: &mut NativeAllocationSet,
@@ -108,6 +115,7 @@ impl NativeDocument {
             document: self.document.clone_bounded(allocations, turn)?,
         })
     }
+    #[cfg(test)]
     pub(crate) fn capture(
         &self,
         maximum_output_bytes: usize,
@@ -125,9 +133,11 @@ impl NativeDocument {
         })
     }
 }
+#[cfg(test)]
 pub(crate) struct NativeCapture {
     saved: NativeSaved,
 }
+#[cfg(test)]
 impl NativeCapture {
     pub(crate) fn bytes(&self) -> &[u8] {
         self.saved.bytes()

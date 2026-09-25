@@ -1,6 +1,8 @@
 use super::*;
 use crate::native_footprint_vendor_tests::assert_precharged;
+use crate::state::now_ns;
 use automerge::resource_limits::{NativeAllocationSet, NativeAllowance};
+use ed25519_dalek::SigningKey;
 use tilo_user_identity::{RevocationReason, sign_revocation_entry};
 
 fn signed(key: [u8; 32], time: u64, root: &SigningKey) -> RevocationEntry {

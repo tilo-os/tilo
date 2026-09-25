@@ -11,7 +11,7 @@ enum Failure {
     Capacity,
     Resource,
 }
-fn failure(e: Error) -> Failure {
+fn failure(e: &Error) -> Failure {
     match e {
         Error::Unavailable => Failure::Unavailable,
         Error::CurrentDenied => Failure::CurrentDenied,
@@ -22,6 +22,10 @@ fn failure(e: Error) -> Failure {
 }
 // Literal historical winner/count/encoded-byte sorting/tuple oracle. Deliberately
 // retains owned allocations here; production new counting/hash helpers are unused.
+#[expect(
+    clippy::too_many_lines,
+    reason = "the reference implementation, kept whole for parity"
+)]
 fn original_with_length(
     doc: &AutoCommit,
     peer: &crate::StatePeer,
@@ -47,7 +51,7 @@ fn original_with_length(
     };
     let governor = match doc.get(ROOT, "owner").map_err(|_| Failure::Unavailable)? {
         Some((Value::Scalar(v), _)) => {
-            let text = v.to_str().ok_or(Failure::Unavailable)?;
+            let text = v.as_str().ok_or(Failure::Unavailable)?;
             add(text.len())?;
             text.to_owned()
         }
@@ -81,14 +85,14 @@ fn original_with_length(
             };
             if bytes.len() > 1024 * 1024 {
                 return Err(Failure::Capacity);
-            };
+            }
             let cap: CapOverride =
                 serde_json::from_slice(bytes).map_err(|_| Failure::Unavailable)?;
             match &cap.scope {
                 Scope::Workspace => (),
                 Scope::Room(room) if room == peer.room() => (),
                 _ => return Err(Failure::UnsupportedPolicy),
-            };
+            }
             if !super::consumer_subject(&cap.subject, &person) {
                 continue;
             }
@@ -112,7 +116,7 @@ fn original_with_length(
     {
         let bytes = encode(postcard::to_allocvec(&cert).unwrap())?;
         add(bytes.len())?;
-        certificates.push(bytes)
+        certificates.push(bytes);
     }
     certificates.sort_unstable();
     let mut revocations = Vec::new();
@@ -123,7 +127,7 @@ fn original_with_length(
     {
         let bytes = encode(postcard::to_allocvec(&entry).unwrap())?;
         add(bytes.len())?;
-        revocations.push(bytes)
+        revocations.push(bytes);
     }
     revocations.sort_unstable();
     if !permit {
@@ -163,6 +167,10 @@ fn original(
 ) -> Result<[u8; 32], Failure> {
     original_with_length(doc, peer, workspace, device, host, permit).map(|v| v.0)
 }
+#[expect(
+    clippy::panic_in_result_fn,
+    reason = "test helper: asserts parity with the original before returning the value"
+)]
 fn compare(
     doc: &AutoCommit,
     peer: &crate::StatePeer,
@@ -189,7 +197,7 @@ fn compare(
             Err(Error::CurrentDenied)
         }
     };
-    let got = legacy(&LegacyRead(doc), meta(), check).map_err(failure);
+    let got = legacy(&LegacyRead(doc), meta(), check).map_err(|error| failure(&error));
     assert_eq!(got, expected);
     let current = NativeAllowance::new(64 * 1024 * 1024).unwrap();
     let mut set = NativeAllocationSet::new(NativeAllowance::new(4096).unwrap()).unwrap();
@@ -212,7 +220,7 @@ fn compare(
             check,
         )
     })
-    .map_err(failure);
+    .map_err(|error| failure(&error));
     assert_eq!(got, expected);
     assert_eq!(
         current.retained_bytes(),
@@ -272,7 +280,7 @@ fn delivery_view_excludes_other_peoples_grants_but_keeps_own_and_role_grants() {
     let mut doc = peer.admitted_room().unwrap().clone();
     let caps = doc.get(ROOT, "capabilities").unwrap().unwrap().1;
     let base = compare(&doc, &peer, peer.authority(), &device, true).unwrap();
-    let mut put = |doc: &mut AutoCommit, key: &str, subject: Subject| {
+    let put = |doc: &mut AutoCommit, key: &str, subject: Subject| {
         let cap = CapOverride::grant(subject, Scope::Room(peer.room().into()), Verb::Read);
         doc.put(
             &caps,

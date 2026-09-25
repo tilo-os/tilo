@@ -9,7 +9,11 @@ pub use media::PeerMediaCall;
 mod delivery_policy;
 pub use delivery_policy::{PeerDeliveryPolicy, PeerDeliveryPolicyError};
 mod private_policy;
-use super::*;
+use super::{
+    BoundedPeerError, BoundedStatePeer, DeviceCert, NativeAllocationSet, NativeBatch,
+    NativeResourceError, NativeWorkTurn, PeerLimits, PeerMember, PeerWork, Route, SystemTime,
+    backend, room,
+};
 use automerge::resource_limits::{NativeAllowance, NativeReservation};
 pub use private_policy::PeerPolicyBasis;
 use std::{
@@ -20,7 +24,7 @@ use std::{
 struct Domain {
     _retention: NativeReservation,
 }
-/// No raw Arc or Weak escape. All strong owners drop through into_inner, so the
+/// No raw Arc or Weak escape. All strong owners drop through `into_inner`, so the
 /// last owner's allocation is deallocated BEFORE its retained credit is freed.
 pub(super) struct DomainRef {
     inner: Option<Arc<Domain>>,
@@ -42,14 +46,15 @@ impl DomainRef {
     }
     pub(super) fn copy(&self) -> Self {
         Self {
-            inner: Some(Arc::clone(self.inner.as_ref().expect("live domain"))),
+            inner: self.inner.clone(),
         }
     }
     fn matches(&self, other: &Self) -> bool {
-        Arc::ptr_eq(
-            self.inner.as_ref().expect("live domain"),
-            other.inner.as_ref().expect("live domain"),
-        )
+        // Both are live outside `drop`; a dropped reference matches nothing.
+        match (&self.inner, &other.inner) {
+            (Some(own), Some(other)) => Arc::ptr_eq(own, other),
+            _ => false,
+        }
     }
 }
 impl Drop for DomainRef {
@@ -82,7 +87,7 @@ pub struct PeerTurn<'registry> {
     limits: PeerLimits,
 }
 /// Borrowed facts from a genuinely restored peer in its original resource domain.
-/// No legacy StatePeer or raw native document can be recovered from this view.
+/// No legacy `StatePeer` or raw native document can be recovered from this view.
 /// ```compile_fail
 /// use qos_peer_state::{BoundedStatePeer, PeerRead, PeerWork};
 /// fn escape<'peer>(peer: &'peer BoundedStatePeer, work: &PeerWork<'_>)
@@ -90,10 +95,15 @@ pub struct PeerTurn<'registry> {
 /// ```
 pub struct PeerRead<'peer, 'work> {
     peer: &'peer BoundedStatePeer,
-    _work: &'work NativeWorkTurn,
+    work: &'work NativeWorkTurn,
     limits: PeerLimits,
 }
 impl PeerRegistry {
+    /// A registry whose retained metadata is paid from `initial`.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`BoundedPeerError`] if `initial` cannot pay the registry metadata.
     pub fn new(initial: NativeAllowance) -> Result<Self, BoundedPeerError> {
         let domain = DomainRef::new(&initial)?;
         let allocations = NativeAllocationSet::new(initial).map_err(BoundedPeerError::Resource)?;
@@ -102,6 +112,11 @@ impl PeerRegistry {
             domain,
         })
     }
+    /// Begin a work turn paid from `current` within `limits`.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`BoundedPeerError`] if `current` cannot pay the turn.
     pub fn begin_turn(
         &mut self,
         current: NativeAllowance,
@@ -129,6 +144,11 @@ impl PeerRegistry {
     }
 }
 impl PeerTurn<'_> {
+    /// Borrow this turn's work budget.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`BoundedPeerError`] if the turn can no longer be used.
     pub fn work(&mut self) -> Result<PeerWork<'_>, BoundedPeerError> {
         // Also refuses sealed turns for a legitimate empty peer with no native
         // document operation that would otherwise check the current ledger.
@@ -153,6 +173,11 @@ impl Drop for PeerTurn<'_> {
     }
 }
 impl BoundedStatePeer {
+    /// Borrow this peer's facts within `work`.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`BoundedPeerError`] if `work` belongs to another resource domain.
     pub fn read<'peer, 'work>(
         &'peer self,
         work: &'work PeerWork<'_>,
@@ -163,18 +188,24 @@ impl BoundedStatePeer {
         work.turn.reserve(0).map_err(BoundedPeerError::Resource)?;
         Ok(PeerRead {
             peer: self,
-            _work: work.turn,
+            work: work.turn,
             limits: work.limits,
         })
     }
 }
 impl PeerRead<'_, '_> {
+    /// The current governed member for the device `source`.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`BoundedPeerError`] if `source` is not a current member or the work budget
+    /// is exhausted.
     pub fn member(
         &self,
         source: [u8; 32],
         now: SystemTime,
     ) -> Result<PeerMember<'_, '_>, BoundedPeerError> {
-        backend::member::bounded(&self.peer.core, source, now, self._work, self.limits)
+        backend::member::bounded(&self.peer.core, source, now, self.work, self.limits)
     }
     pub fn room(&self) -> &str {
         &self.peer.core.room

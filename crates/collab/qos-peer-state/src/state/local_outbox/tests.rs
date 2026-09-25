@@ -1,4 +1,10 @@
 use super::*;
+use crate::InputDisposition;
+use crate::TransportOrigin;
+use automerge::AutoCommit;
+use automerge::ROOT;
+use tilo_user_identity::DeviceCert;
+use tilo_user_identity::RevocationList;
 
 fn fixture() -> (
     StatePeer,
@@ -60,7 +66,8 @@ fn local_edit(
         .get(&author)
         .copied()
         .unwrap_or(0)
-        + 1;
+        .checked_add(1)
+        .unwrap();
     let mut envelope = SignedOp::new_unsigned(
         DocumentMutation::Snapshot(doc.save())
             .encode_for(version)
@@ -102,7 +109,8 @@ fn checkpoint(
             .map(|receipt| receipt.generation)
             .max()
             .unwrap_or(0)
-            + 1;
+            .checked_add(1)
+            .unwrap();
         governor
             .durable_bootstrap_messages(key, now, generation)
             .unwrap()
@@ -143,14 +151,14 @@ fn local_outbox_snapshot_and_expired_incremental_recover_without_rewriting_origi
         );
         assert_eq!(
             member
-                .reconcile_local_outbox(&[original.clone()], &key, later)
+                .reconcile_local_outbox(std::slice::from_ref(&original), &key, later)
                 .unwrap(),
             vec![original.clone()],
             "reopen is not a fresh checkpoint"
         );
         checkpoint(&mut governor, &mut member, &governor_key, later, false);
         let recovered = member
-            .reconcile_local_outbox(&[original.clone()], &key, later)
+            .reconcile_local_outbox(std::slice::from_ref(&original), &key, later)
             .unwrap();
         assert_eq!(recovered.len(), 2);
         assert_eq!(postcard::to_allocvec(&recovered[0]).unwrap(), bytes);
@@ -289,7 +297,7 @@ fn local_outbox_revoked_custody_survives_restore_but_signing_and_current_lookup_
     let before = member.durable().unwrap();
     assert!(
         member
-            .reconcile_local_outbox(&[original.clone()], &key, later)
+            .reconcile_local_outbox(std::slice::from_ref(&original), &key, later)
             .is_err()
     );
     assert!(member.recover_local_history(&history, &key, later).is_err());
@@ -386,7 +394,7 @@ fn local_outbox_structural_lookup_rejects_conflicting_unknown_and_cross_scope_ev
             .retained_local_document_retired(&unrecorded, key.verifying_key().to_bytes())
             .is_err()
     );
-    let mut conflict = original.clone();
+    let mut conflict = original;
     let NeighbourMsg::AppDocument { envelope, .. } = &mut conflict else {
         panic!()
     };
@@ -441,7 +449,7 @@ fn local_outbox_watermark_and_half_checkpoint_never_acknowledge_missing_changes(
             .unwrap()
     );
     assert_eq!(
-        half.reconcile_local_outbox(&[original.clone()], &key, later)
+        half.reconcile_local_outbox(std::slice::from_ref(&original), &key, later)
             .unwrap(),
         vec![original.clone()],
         "governance half is not a fresh matching checkpoint"
@@ -503,7 +511,7 @@ fn local_outbox_late_original_and_distinct_renewal_converge_in_both_delivery_ord
         let later = now + Duration::from_secs(301);
         checkpoint(&mut governor, &mut member, &governor_key, later, false);
         let recovered = member
-            .reconcile_local_outbox(&[original.clone()], &key, later)
+            .reconcile_local_outbox(std::slice::from_ref(&original), &key, later)
             .unwrap();
         assert_eq!(recovered.len(), 2);
         governor

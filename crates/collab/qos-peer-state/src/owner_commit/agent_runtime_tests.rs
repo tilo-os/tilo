@@ -162,7 +162,7 @@ fn append_for(ledger: &mut PrivateAgentLedgerV2, invocation: String, fact: Agent
     let previous = ledger.facts.values().map(|r| r.generation).max().unwrap();
     let mut receipt = AgentRuntimeFactReceipt {
         binding: ledger.facts.values().next().unwrap().binding.clone(),
-        generation: previous + 1,
+        generation: previous.checked_add(1).unwrap(),
         change: AgentRuntimeChange {
             mutation: fact.mutation_key(&invocation),
             invocation,
@@ -180,6 +180,10 @@ fn append_for(ledger: &mut PrivateAgentLedgerV2, invocation: String, fact: Agent
             .is_none()
     );
 }
+#[expect(
+    clippy::too_many_lines,
+    reason = "one fixture, kept whole so every entry stays in wire order"
+)]
 pub(super) fn complete_history() -> PrivateAgentLedgerV2 {
     let mut ledger = runtime_admission();
     let id = |n| uuid::Uuid::from_u128(n).to_string();
@@ -313,7 +317,7 @@ fn agent_runtime_full_retained_history_and_exact_evidence_references() {
         .get_mut(&format!("{invocation}:completed"))
         .unwrap();
     let AgentRuntimeFact::Completed { acceptance, .. } = &mut receipt.change.fact else {
-        unreachable!()
+        panic!("unexpected fixture shape")
     };
     acceptance.channel_lease = uuid::Uuid::from_u128(12).to_string();
     rebind(receipt);
@@ -327,7 +331,7 @@ fn agent_runtime_full_retained_history_and_exact_evidence_references() {
         .get_mut(&format!("{invocation}:admitted"))
         .unwrap();
     let AgentRuntimeFact::Admitted { reservation, .. } = &mut receipt.change.fact else {
-        unreachable!()
+        panic!("unexpected fixture shape")
     };
     reservation.control_bytes = 0;
     rebind(receipt);
@@ -368,7 +372,7 @@ fn agent_runtime_unknown_never_authorizes_an_execution_edge() {
         .change
         .fact
     else {
-        unreachable!()
+        panic!("unexpected fixture shape")
     };
     let mut binding = binding.clone();
     binding.generation = 4;
@@ -419,7 +423,7 @@ pub(super) fn frozen_v1(terminal: AgentControlPhase) -> PrivateAgentLedger {
         ..
     } = &admission.change.fact
     else {
-        unreachable!()
+        panic!("unexpected fixture shape")
     };
     let invocation = admission.change.invocation.clone();
     let ids = AgentIds {
@@ -464,14 +468,14 @@ pub(super) fn frozen_v1(terminal: AgentControlPhase) -> PrivateAgentLedger {
                 changes.push(AgentMutation::Transition { phase, error: None });
             }
         }
-        _ => unreachable!(),
+        _ => panic!("unexpected fixture shape"),
     }
     for (index, mutation) in changes.into_iter().enumerate() {
-        let generation = index as u64 + 2;
+        let generation = u64::try_from(index).unwrap().checked_add(2).unwrap();
         let mut change = AgentChange {
             ids: ids.clone(),
             caller: record.caller.clone(),
-            expected_generation: generation - 1,
+            expected_generation: generation.checked_sub(1).unwrap(),
             expected_governance: "a".repeat(64),
             payload_digest: [0; 32],
             mutation,
@@ -555,6 +559,10 @@ fn agent_runtime_frozen_v1_and_v2_literal_bytes() {
 }
 
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one end-to-end scenario: its setup and assertions stay together"
+)]
 fn agent_runtime_message_binds_original_process_and_exit_fences_late_acceptance() {
     let mut ledger = complete_history();
     let id = |n| uuid::Uuid::from_u128(n).to_string();
@@ -567,7 +575,7 @@ fn agent_runtime_message_binds_original_process_and_exit_fences_late_acceptance(
     let AgentRuntimeFact::Admitted { intent, .. } =
         &ledger.facts[&format!("{}:admitted", id(2))].change.fact
     else {
-        unreachable!()
+        panic!("unexpected fixture shape")
     };
     let mut intent = intent.clone();
     intent.route.action = "message".into();
@@ -651,7 +659,7 @@ fn agent_runtime_message_binds_original_process_and_exit_fences_late_acceptance(
         .get_mut(&format!("{}:completed", id(20)))
         .unwrap();
     let AgentRuntimeFact::Completed { acceptance, .. } = &mut receipt.change.fact else {
-        unreachable!()
+        panic!("unexpected fixture shape")
     };
     acceptance.acceptance_sequence = 3;
     rebind(receipt);
@@ -668,22 +676,22 @@ fn agent_runtime_message_binds_original_process_and_exit_fences_late_acceptance(
         parent_invocation, ..
     } = &mut receipt.change.fact
     else {
-        unreachable!()
+        panic!("unexpected fixture shape")
     };
     *parent_invocation = Some(id(77));
     rebind(receipt);
     assert!(wrong.validate(ROOM, 10).is_err());
 }
 
-fn replace_context(ledger: &mut PrivateAgentLedgerV2, context: serde_json::Value) {
+fn replace_context(ledger: &mut PrivateAgentLedgerV2, context: &serde_json::Value) {
     let key = format!("{}:dispatch_intended", uuid::Uuid::from_u128(2));
     let receipt = ledger.facts.get_mut(&key).unwrap();
     let AgentRuntimeFact::DispatchIntended { envelope, .. } = &mut receipt.change.fact else {
-        unreachable!()
+        panic!("unexpected fixture shape")
     };
     let decoded: serde_json::Value = serde_json::from_str(envelope).unwrap();
     let old = serde_json::to_string(&decoded["task"]["action_context"]).unwrap();
-    let replacement = serde_json::to_string(&context).unwrap();
+    let replacement = serde_json::to_string(context).unwrap();
     *envelope = envelope.replacen(
         &format!("\"action_context\":{old}"),
         &format!("\"action_context\":{replacement}"),
@@ -698,7 +706,7 @@ fn agent_runtime_review_strict_nested_action_context() {
     valid.validate(ROOM, 8).unwrap();
     let key = format!("{}:dispatch_intended", uuid::Uuid::from_u128(2));
     let AgentRuntimeFact::DispatchIntended { envelope, .. } = &valid.facts[&key].change.fact else {
-        unreachable!()
+        panic!("unexpected fixture shape")
     };
     let decoded: serde_json::Value = serde_json::from_str(envelope).unwrap();
     let context = decoded["task"]["action_context"].clone();
@@ -708,7 +716,7 @@ fn agent_runtime_review_strict_nested_action_context() {
     expanded["resource"] = serde_json::json!({"id":"task","kind":"task","label":"Task"});
     expanded["facets"] = serde_json::json!([{"key":"task","value":"opaque-id"}]);
     let mut accepted = valid.clone();
-    replace_context(&mut accepted, expanded);
+    replace_context(&mut accepted, &expanded);
     accepted.validate(ROOM, 8).unwrap();
     for (field, value) in [
         ("facets", serde_json::json!(0)),
@@ -730,7 +738,7 @@ fn agent_runtime_review_strict_nested_action_context() {
         let mut context = context.clone();
         context[field] = value;
         let mut bad = valid.clone();
-        replace_context(&mut bad, context);
+        replace_context(&mut bad, &context);
         assert!(
             bad.validate(ROOM, 8).is_err(),
             "accepted malformed/unknown {field}"
@@ -739,7 +747,7 @@ fn agent_runtime_review_strict_nested_action_context() {
     let mut context = context;
     context["group"]["surprise"] = serde_json::json!(null);
     let mut bad = valid;
-    replace_context(&mut bad, context);
+    replace_context(&mut bad, &context);
     assert!(
         bad.validate(ROOM, 8).is_err(),
         "accepted unknown group field"
@@ -755,7 +763,7 @@ fn agent_runtime_review_first_acceptance_is_one_and_bounded() {
         for receipt in bad.facts.values_mut() {
             match &mut receipt.change.fact {
                 AgentRuntimeFact::Completed { acceptance, .. } => {
-                    acceptance.acceptance_sequence = sequence
+                    acceptance.acceptance_sequence = sequence;
                 }
                 AgentRuntimeFact::TaskFinished {
                     acceptance_sequence,
@@ -870,7 +878,7 @@ fn committed(step: u32, json: &str) -> AgentRuntimeFact {
         step,
         result: hex::encode(*blake3::hash(json.as_bytes()).as_bytes()),
         result_json: json.into(),
-        continuation: hex::encode(format!("next:{}", step + 1)),
+        continuation: hex::encode(format!("next:{}", step.checked_add(1).unwrap())),
     }
 }
 fn finished(outcome: TaskOutcomeV2) -> AgentRuntimeFact {

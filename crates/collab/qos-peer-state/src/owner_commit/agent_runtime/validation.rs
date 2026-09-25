@@ -1,5 +1,13 @@
 //! Pure retained-data validation. No function here issues an execution capability.
-use super::*;
+use super::{
+    AgentExecutionIdsV2, AgentIntentV2, AgentReservationV2, AgentRuntimeFact,
+    AgentRuntimeFactReceipt, BTreeMap, ChannelProcessFactsV2, CommitOperation, Deserialize,
+    MAX_AGENT_RUNTIME_FACTS, MAX_AGENT_STEP_CONTINUATION_BYTES, MAX_AGENT_STEP_RESULT_BYTES,
+    MAX_AGENT_TASK_STEPS, MAX_LIVE_PRIVATE_AGENTS, MAX_PRIVATE_AGENT_ADMISSIONS,
+    MAX_PRIVATE_AGENT_LEDGER_BYTES, ManagedBindingFactsV2, ManagedRuntimeFactsV2,
+    OwnerCommitRequest, PrivateAgentLedgerV2, ProcessIdentityV2, RecipientAcceptanceV2, Serialize,
+    TaskOutcomeV2, Unique, Value, exact_hash, exact_uuid,
+};
 use qos_agent_control_protocol::{AgentRequest, canonical_request, decode_request};
 use std::collections::BTreeSet;
 
@@ -56,6 +64,11 @@ fn opaque(value: &str) -> Result<(), String> {
     Ok(())
 }
 impl AgentIntentV2 {
+    /// Validate this intent for `room`, returning the admitted request.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error naming the first invalid field.
     pub fn validate(&self, room: &str) -> Result<AgentRequest, String> {
         exact_uuid(room)?;
         exact_uuid(&self.scope.host)?;
@@ -118,6 +131,10 @@ enum Phase {
     Failed,
     Unknown,
 }
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "independent lifecycle facts, each checked on its own"
+)]
 pub(super) struct Operation<'a> {
     ids: &'a AgentExecutionIdsV2,
     intent: &'a AgentIntentV2,
@@ -211,6 +228,10 @@ struct Envelope {
 }
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+#[expect(
+    clippy::struct_field_names,
+    reason = "`task_id` is the wire field name of the task JSON"
+)]
 struct Task {
     version: u16,
     task_id: String,
@@ -312,19 +333,22 @@ fn accepts(a: &RecipientAcceptanceV2, e: &Envelope) -> bool {
         && a.channel_lease == e.channel_lease
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "one pass over the runtime fact history; its checks share running state"
+)]
 pub(super) fn validate(
     ledger: &PrivateAgentLedgerV2,
     room: &str,
     generation: u64,
 ) -> Result<(), String> {
+    const MAX_FACTS: usize = MAX_PRIVATE_AGENT_ADMISSIONS
+        * (MAX_AGENT_RUNTIME_FACTS + 2 * MAX_AGENT_TASK_STEPS as usize);
     if ledger.version != 2 || ledger.writer_floor != 2 {
         return Err("unsupported private executor writer floor".into());
     }
     ledger.legacy_v1.validate(room, generation)?;
-    if ledger.facts.len()
-        > MAX_PRIVATE_AGENT_ADMISSIONS
-            * (MAX_AGENT_RUNTIME_FACTS + 2 * MAX_AGENT_TASK_STEPS as usize)
-    {
+    if ledger.facts.len() > MAX_FACTS {
         return Err("private runtime fact count exhausted".into());
     }
     let legacy_last = ledger
@@ -420,7 +444,10 @@ pub(super) fn validate(
                 || !tasks.insert(&ids.task_id)
                 || !runs.insert(&ids.run_id)
                 || !messages.insert(&ids.message_id)
-                || operations.len() + ledger.legacy_v1.records.len() >= MAX_PRIVATE_AGENT_ADMISSIONS
+                || operations
+                    .len()
+                    .saturating_add(ledger.legacy_v1.records.len())
+                    >= MAX_PRIVATE_AGENT_ADMISSIONS
             {
                 return Err("private runtime identity/capacity conflict".into());
             }
@@ -432,12 +459,12 @@ pub(super) fn validate(
                 if parent_invocation.is_some()
                     || !agents.insert(&ids.agent_id)
                     || !launches.insert(&ids.launch_id)
-                    || legacy_seats
-                        + operations
+                    || legacy_seats.saturating_add(
+                        operations
                             .values()
                             .filter(|o| o.spawn() && !o.exited && o.phase != Phase::Failed)
-                            .count()
-                        >= MAX_LIVE_PRIVATE_AGENTS
+                            .count(),
+                    ) >= MAX_LIVE_PRIVATE_AGENTS
                 {
                     return Err("invalid spawn parent/identity or process capacity".into());
                 }
@@ -495,7 +522,7 @@ pub(super) fn validate(
             step_fact(ledger, key, receipt, op, &mut step_children)?;
             continue;
         }
-        op.facts += 1;
+        op.facts = op.facts.saturating_add(1);
         if op.facts > MAX_AGENT_RUNTIME_FACTS {
             return Err("runtime fact slots exhausted".into());
         }
@@ -508,7 +535,11 @@ pub(super) fn validate(
         let charge = encoded_size(&BTreeMap::from([(key, receipt)]))?
             .checked_sub(1)
             .ok_or("invalid map charge")?;
-        op.credit[category] = op.credit[category]
+        let credit = op
+            .credit
+            .get_mut(category)
+            .ok_or("invalid runtime credit category")?;
+        *credit = credit
             .checked_sub(charge)
             .ok_or("reserved runtime credit exhausted")?;
         match &c.fact {
@@ -571,7 +602,7 @@ pub(super) fn validate(
                 }
                 let e = envelope(bytes, op, process)?;
                 let budget = recipient_budget.entry(process_fact).or_default();
-                budget.0 += 1;
+                budget.0 = budget.0.saturating_add(1);
                 budget.1 = budget
                     .1
                     .checked_add(bytes.len())
@@ -723,9 +754,11 @@ pub(super) fn validate(
                 op.exited = true;
                 exited_launches.insert(op.ids.launch_id.as_str());
             }
-            AgentRuntimeFact::Admitted { .. } => unreachable!(),
-            AgentRuntimeFact::TaskStepBound { .. } | AgentRuntimeFact::TaskStepCommitted { .. } => {
-                unreachable!()
+            // Admissions and step facts were routed above; refuse rather than panic.
+            AgentRuntimeFact::Admitted { .. }
+            | AgentRuntimeFact::TaskStepBound { .. }
+            | AgentRuntimeFact::TaskStepCommitted { .. } => {
+                return Err("runtime fact routed to the wrong validator".into());
             }
         }
     }
@@ -757,7 +790,7 @@ pub(super) fn validate(
 }
 
 fn lower_hex(value: &str, bytes: usize) -> Result<Vec<u8>, String> {
-    if value.len() != bytes * 2
+    if Some(value.len()) != bytes.checked_mul(2)
         || !value
             .bytes()
             .all(|v| v.is_ascii_digit() || (b'a'..=b'f').contains(&v))
@@ -808,7 +841,7 @@ fn step_fact<'a>(
                 return Err("task step child ticket invalid or reused".into());
             }
             lower_hex(intent, 32)?;
-            op.steps += 1;
+            op.steps = op.steps.saturating_add(1);
             op.open = true;
         }
         AgentRuntimeFact::TaskStepCommitted {
@@ -843,7 +876,8 @@ fn step_fact<'a>(
             lower_hex(continuation, continuation.len() / 2)?;
             op.open = false;
         }
-        _ => unreachable!(),
+        // Only step facts are routed here; refuse rather than panic.
+        _ => return Err("runtime fact routed to the wrong validator".into()),
     }
     let _ = key;
     Ok(())

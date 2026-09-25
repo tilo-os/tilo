@@ -148,6 +148,12 @@ pub struct JoinChallenge {
 }
 
 impl JoinChallenge {
+    /// Issue a join challenge for a device redeeming `join`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the device certificate does not verify at `now_ns` or the
+    /// challenge has already expired.
     pub fn new(
         join: &VerifiedJoin,
         device_cert: &DeviceCert,
@@ -210,6 +216,12 @@ pub struct MembershipChallenge {
 }
 
 impl MembershipChallenge {
+    /// Issue a membership refresh challenge for a device of `room`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if a certificate does not verify at `now_ns` or the challenge has
+    /// already expired.
     #[allow(
         clippy::too_many_arguments,
         reason = "explicit protocol inputs stay separate parameters"
@@ -374,6 +386,10 @@ pub struct OwnerBootstrapV1 {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "public wire enum: boxing a variant would change every constructor and match"
+)]
 pub enum JoinTransportResponse {
     Inspection(JoinInspection),
     Challenge(JoinChallengeResponse),
@@ -384,6 +400,12 @@ pub enum JoinTransportResponse {
     OwnerMembershipComplete(OwnerBootstrapV1),
 }
 
+/// Sign a delegation of workspace permissions from `authority` to `delegate`.
+///
+/// # Errors
+///
+/// Returns an error if the delegation is malformed or `authority_key` does not match
+/// `authority`.
 #[allow(
     clippy::too_many_arguments,
     reason = "explicit protocol inputs stay separate parameters"
@@ -435,6 +457,12 @@ impl WorkspaceDelegation {
     }
 }
 
+/// Verify a workspace delegation against `authority` and `revocations`.
+///
+/// # Errors
+///
+/// Returns an error if the signature, certificates, expiry or revocation state does not
+/// verify at `now_ns`.
 pub fn verify_workspace_delegation(
     delegation: &WorkspaceDelegation,
     authority: &DeviceCert,
@@ -444,8 +472,7 @@ pub fn verify_workspace_delegation(
     if delegation.version != JOIN_VERSION
         || delegation.authority_device_public_key != authority.device_public_key
         || uuid::Uuid::parse_str(&delegation.room)
-            .map(|room| room.to_string() != delegation.room)
-            .unwrap_or(true)
+            .map_or(true, |room| room.to_string() != delegation.room)
     {
         return Err("workspace delegation binding is invalid".into());
     }
@@ -467,6 +494,11 @@ pub fn verify_workspace_delegation(
     .map_err(|_| "workspace delegation signature did not verify".to_string())
 }
 
+/// Sign an invitation grant, returning its wire bytes.
+///
+/// # Errors
+///
+/// Returns an error if the grant is malformed or `key` does not match its issuer.
 pub fn issue_invitation(
     grant: InviteGrant,
     key: &ed25519_dalek::SigningKey,
@@ -488,6 +520,11 @@ pub fn issue_invitation(
     postcard::to_stdvec(&signed).map_err(|error| error.to_string())
 }
 
+/// Sign an opaque transport hint as `host`.
+///
+/// # Errors
+///
+/// Returns an error if the hint is malformed or `host_key` does not match `host`.
 pub fn sign_transport_hint(
     kind: impl Into<String>,
     opaque_json: impl Into<String>,
@@ -517,6 +554,11 @@ pub fn sign_transport_hint(
     })
 }
 
+/// Verify a transport hint's signature and host certificate.
+///
+/// # Errors
+///
+/// Returns an error if the hint does not verify.
 pub fn verify_transport_hint(hint: &TransportHint) -> Result<(), String> {
     let key = ed25519_dalek::VerifyingKey::from_bytes(&hint.host.device_public_key)
         .map_err(|_| "invalid transport host device key".to_string())?;
@@ -535,6 +577,11 @@ pub fn verify_transport_hint(hint: &TransportHint) -> Result<(), String> {
     .map_err(|_| "transport host did not sign the endpoint service key".to_string())
 }
 
+/// Verify a transport hint at `now_ns` against `revocations`.
+///
+/// # Errors
+///
+/// Returns an error if the hint does not verify, has expired or its host is revoked.
 pub fn verify_transport_hint_at(
     hint: &TransportHint,
     revocations: &RevocationList,
@@ -548,6 +595,12 @@ pub fn encode_invitation_text(signed_invitation: &[u8]) -> String {
     base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(signed_invitation)
 }
 
+/// Decode a textual invitation and verify it.
+///
+/// # Errors
+///
+/// Returns an error if the text is not a valid invitation encoding or verification
+/// fails.
 pub fn decode_and_verify_invitation_text(
     text: &str,
     recipient_user_public_key: Option<[u8; 32]>,
@@ -560,6 +613,12 @@ pub fn decode_and_verify_invitation_text(
     decode_and_verify_invitation(&bytes, recipient_user_public_key, revocations, now_ns)
 }
 
+/// Decode a signed invitation and verify it for the recipient.
+///
+/// # Errors
+///
+/// Returns an error if the invitation is malformed, not for the recipient, expired,
+/// revoked, or its signature does not verify.
 pub fn decode_and_verify_invitation(
     signed_invitation: &[u8],
     recipient_user_public_key: Option<[u8; 32]>,
@@ -607,6 +666,11 @@ pub fn decode_and_verify_invitation(
     })
 }
 
+/// Sign the answer to a join challenge.
+///
+/// # Errors
+///
+/// Returns an error if the challenge cannot be encoded for signing.
 pub fn sign_join_proof(
     challenge: JoinChallenge,
     key: &ed25519_dalek::SigningKey,
@@ -621,6 +685,12 @@ pub fn sign_join_proof(
     })
 }
 
+/// Verify a join proof against the challenge that was issued.
+///
+/// # Errors
+///
+/// Returns an error if the proof does not match the challenge, its signature or device
+/// certificate does not verify, or the device is revoked.
 pub fn verify_join_proof(
     proof: &JoinProof,
     issued_challenge: &JoinChallenge,
@@ -667,6 +737,11 @@ pub fn verify_join_proof(
     })
 }
 
+/// Sign the answer to a membership challenge.
+///
+/// # Errors
+///
+/// Returns an error if the challenge cannot be encoded for signing.
 pub fn sign_membership_proof(
     challenge: MembershipChallenge,
     key: &ed25519_dalek::SigningKey,
@@ -681,6 +756,12 @@ pub fn sign_membership_proof(
     })
 }
 
+/// Verify a membership proof against the challenge that was issued.
+///
+/// # Errors
+///
+/// Returns an error if the proof does not match the challenge, its signature or device
+/// certificate does not verify, or the device is revoked.
 pub fn verify_membership_proof(
     proof: &MembershipProof,
     issued_challenge: &MembershipChallenge,
@@ -763,9 +844,11 @@ fn validate_invitation_delegation(
         };
     };
     verify_workspace_delegation(delegation, &grant.authority, revocations, now_ns)?;
+    // The delegate is the invitation's issuer, not another delegate.
+    let issued_by_delegate = delegation.delegate == grant.issuer;
     if delegation.room != grant.room
         || delegation.workspace_id != grant.workspace_id
-        || delegation.delegate != grant.issuer
+        || !issued_by_delegate
         || !delegation.permissions.issue_invitations
         || !delegation.permissions.admit_invited_members
         || delegation

@@ -3,6 +3,7 @@ mod guard;
 
 use super::PeerResourceError;
 use automerge::resource_limits::{NativeReservation, NativeWorkTurn};
+#[cfg(test)]
 use std::io::Write;
 
 #[derive(Clone, Copy)]
@@ -47,6 +48,7 @@ impl<T: Schema> JsonHeld<T> {
     pub(crate) fn value(&self) -> &T {
         &self.value
     }
+    #[cfg(test)]
     pub(crate) fn encode(
         &self,
         maximum: usize,
@@ -78,10 +80,12 @@ impl<T: Schema> JsonHeld<T> {
         })
     }
 }
+#[cfg(test)]
 pub(crate) struct JsonOutput {
     bytes: Vec<u8>,
     _reservation: NativeReservation,
 }
+#[cfg(test)]
 impl JsonOutput {
     pub(crate) fn as_bytes(&self) -> &[u8] {
         &self.bytes
@@ -90,9 +94,19 @@ impl JsonOutput {
 // Pinned serde_json1.0.151 ErrorImpl contains ErrorCode plus two positions.
 // ErrorCode's largest payload is bounded by its Box<str>/io::Error and word
 // padding/discriminant. fix_position may temporarily overlap two boxes.
+const ERROR_BOXES: usize =
+    2 * (size_of::<Box<str>>() + size_of::<std::io::Error>() + 6 * size_of::<usize>());
 fn error_boxes() -> usize {
-    2 * (size_of::<Box<str>>() + size_of::<std::io::Error>() + 6 * size_of::<usize>())
+    ERROR_BOXES
 }
+// Known cert/revocation/signature visitors format this fixed prefix plus a
+// decimal usize length BEFORE calling Error::custom. Count that allocation.
+const SIGNATURE: usize = 3 * ("expected 64-byte signature, got ".len() + usize::BITS as usize);
+// lexical pow5 n<=149 chooses small multiplication (table5^128<=13
+// 32-bit limbs, initial x<=3, branch sum16<64). Each multiply's shorter
+// operand has exactly ONE limb, below Karatsuba32. Only later pow2 shifts
+// reach55 limbs. Two Vecs, <=8 bytes/limb, old/new growth overlap3.
+const FLOATING: usize = 2 * 3 * 55 * 8;
 fn parser_bytes(n: usize) -> Result<usize, PeerResourceError> {
     let capacity = || PeerResourceError::Capacity;
     // SliceRead escaped scratch requests at most n+4 (WTF8's reserve4).
@@ -113,19 +127,11 @@ fn parser_bytes(n: usize) -> Result<usize, PeerResourceError> {
         .and_then(|n| n.checked_add(128))
         .and_then(|n| n.checked_mul(3))
         .ok_or_else(capacity)?;
-    // Known cert/revocation/signature visitors format this fixed prefix plus a
-    // decimal usize length BEFORE calling Error::custom. Count that allocation.
-    let signature = 3 * ("expected 64-byte signature, got ".len() + usize::BITS as usize);
-    // lexical pow5 n<=149 chooses small multiplication (table5^128<=13
-    // 32-bit limbs, initial x<=3, branch sum16<64). Each multiply's shorter
-    // operand has exactly ONE limb, below Karatsuba32. Only later pow2 shifts
-    // reach55 limbs. Two Vecs, <=8 bytes/limb, old/new growth overlap3.
-    let floating = 2 * 3 * 55 * 8;
     scratch
         .checked_add(numeric)
         .and_then(|n| n.checked_add(diagnostic))
-        .and_then(|n| n.checked_add(signature))
-        .and_then(|n| n.checked_add(floating))
+        .and_then(|n| n.checked_add(SIGNATURE))
+        .and_then(|n| n.checked_add(FLOATING))
         .and_then(|n| n.checked_add(error_boxes()))
         .ok_or_else(capacity)
 }
@@ -134,71 +140,76 @@ fn parser_bytes(n: usize) -> Result<usize, PeerResourceError> {
 // Serde still verifies syntax, Unicode, field types and trailing input. Unknown
 // extension values are scanned too. Quoted strings and signed bytes are intact.
 fn lexical_policy(bytes: &[u8]) -> Result<(), PeerResourceError> {
-    let mut i = 0;
+    // `i` never exceeds `bytes.len()` + 1, so saturating steps are exact.
+    let at = |i: usize| bytes.get(i).copied();
+    let mut i = 0usize;
     let mut depth = 0usize;
-    while i < bytes.len() {
-        match bytes[i] {
+    while let Some(byte) = at(i) {
+        match byte {
             b'"' => {
-                i += 1;
-                while i < bytes.len() {
-                    match bytes[i] {
+                i = i.saturating_add(1);
+                while let Some(byte) = at(i) {
+                    match byte {
                         b'"' => {
-                            i += 1;
+                            i = i.saturating_add(1);
                             break;
                         }
-                        b'\\' => {
-                            i = i.saturating_add(2);
-                        }
-                        _ => i += 1,
+                        b'\\' => i = i.saturating_add(2),
+                        _ => i = i.saturating_add(1),
                     }
                 }
             }
             b'{' | b'[' => {
-                depth += 1;
+                depth = depth.saturating_add(1);
                 if depth > 64 {
                     return Err(PeerResourceError::Capacity);
                 }
-                i += 1;
+                i = i.saturating_add(1);
             }
             b'}' | b']' => {
                 depth = depth.saturating_sub(1);
-                i += 1;
+                i = i.saturating_add(1);
             }
             b'-' | b'0'..=b'9' => {
                 let mut digits = 0usize;
-                while i < bytes.len() && matches!(bytes[i], b'-' | b'.' | b'0'..=b'9') {
-                    if bytes[i].is_ascii_digit() {
-                        digits += 1;
+                while let Some(byte @ (b'-' | b'.' | b'0'..=b'9')) = at(i) {
+                    if byte.is_ascii_digit() {
+                        digits = digits.saturating_add(1);
                         if digits > 20 {
                             return Err(PeerResourceError::Capacity);
                         }
                     }
-                    i += 1;
+                    i = i.saturating_add(1);
                 }
-                if i < bytes.len() && matches!(bytes[i], b'e' | b'E') {
-                    i += 1;
-                    if i < bytes.len() && matches!(bytes[i], b'+' | b'-') {
-                        i += 1;
+                if matches!(at(i), Some(b'e' | b'E')) {
+                    i = i.saturating_add(1);
+                    if matches!(at(i), Some(b'+' | b'-')) {
+                        i = i.saturating_add(1);
                     }
                     let mut exponent = 0u32;
-                    while i < bytes.len() && bytes[i].is_ascii_digit() {
-                        exponent = exponent * 10 + u32::from(bytes[i] - b'0');
+                    while let Some(byte @ b'0'..=b'9') = at(i) {
+                        // At most 64 before this step, so neither operation saturates.
+                        exponent = exponent
+                            .saturating_mul(10)
+                            .saturating_add(u32::from(byte.saturating_sub(b'0')));
                         if exponent > 64 {
                             return Err(PeerResourceError::Capacity);
                         }
-                        i += 1;
+                        i = i.saturating_add(1);
                     }
                 }
             }
-            _ => i += 1,
+            _ => i = i.saturating_add(1),
         }
     }
     Ok(())
 }
+#[cfg(test)]
 struct Count {
     length: usize,
     maximum: usize,
 }
+#[cfg(test)]
 impl Write for Count {
     fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
         self.length = self

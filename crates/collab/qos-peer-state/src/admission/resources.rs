@@ -1,6 +1,9 @@
 //! Retained decoding of the existing exact-admission wire index.
-use super::*;
-use crate::resources::{Held, NativeAllowance, OuterLimits, PeerResourceError};
+use super::{
+    AdmissionError, AdmissionKey, Deserialize, DocumentAdmission, ExactAdmissions,
+    MAX_EXACT_ADMISSION_BYTES, MAX_EXACT_ADMISSIONS, Serialize,
+};
+use crate::resources::{Held, OuterLimits, PeerResourceError};
 
 pub(crate) struct BoundedExactAdmissions {
     held: Held<WireIndex>,
@@ -20,10 +23,11 @@ impl BoundedExactAdmissions {
         }
         Ok(Self { held })
     }
+    #[cfg(test)]
     pub(crate) fn decode(
         bytes: &[u8],
         limits: OuterLimits,
-        allowance: &NativeAllowance,
+        allowance: &crate::resources::NativeAllowance,
     ) -> Result<Self, PeerResourceError> {
         if bytes.len() > MAX_EXACT_ADMISSION_BYTES {
             return Err(PeerResourceError::Capacity);
@@ -37,6 +41,7 @@ impl BoundedExactAdmissions {
     pub(crate) fn iter(&self) -> impl Iterator<Item = (&AdmissionKey, &[u8; 32])> {
         self.held.value.0.iter()
     }
+    #[cfg(test)]
     pub(crate) fn get(&self, key: &AdmissionKey) -> Option<&[u8; 32]> {
         self.held.value.0.get(key)
     }
@@ -74,7 +79,8 @@ impl<'de> Deserialize<'de> for WireIndex {
                     let admission = DocumentAdmission { key, operation_id };
                     let bytes = value.check(&admission).map_err(A::Error::custom)?;
                     value.entries.insert(admission.key, admission.operation_id);
-                    value.entry_bytes += bytes;
+                    // `check` bounded the new total by MAX_EXACT_ADMISSION_BYTES.
+                    value.entry_bytes = value.entry_bytes.saturating_add(bytes);
                 }
                 Ok(WireIndex(value))
             }
@@ -83,7 +89,7 @@ impl<'de> Deserialize<'de> for WireIndex {
     }
 }
 impl crate::resources::outer::EncodeSchema for WireIndex {}
-impl<'de> crate::resources::outer::Schema<'de> for WireIndex {}
+impl crate::resources::outer::Schema<'_> for WireIndex {}
 
 pub(super) fn decode_legacy(bytes: &[u8]) -> Result<ExactAdmissions, AdmissionError> {
     if bytes.len() > MAX_EXACT_ADMISSION_BYTES {

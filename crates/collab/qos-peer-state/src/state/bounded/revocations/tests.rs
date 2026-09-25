@@ -1,6 +1,11 @@
 use super::*;
+use crate::BoundedStatePeer;
+use crate::PeerLimits;
+use crate::PeerRegistry;
 use crate::native_footprint_vendor_tests::assert_precharged;
 use automerge::resource_limits::NativeAllowance;
+use automerge::resource_limits::NativeResourceError;
+use ed25519_dalek::SigningKey;
 use tilo_user_identity::{RevocationReason, sign_revocation_entry};
 fn signed(key: [u8; 32], time: u64, root: &SigningKey) -> RevocationEntry {
     let mut entry = RevocationEntry {
@@ -46,7 +51,6 @@ fn retained_enrollment_revocations_matches_verified_union_and_outlives_inputs_tu
     }
     drop(entries);
     drop(expected);
-    drop(work);
     drop(turn);
     drop(registry);
     assert_eq!(retained.list().len(), 80);

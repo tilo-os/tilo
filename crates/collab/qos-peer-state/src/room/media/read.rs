@@ -59,7 +59,7 @@ impl PolicyDecode for BoundedDecode<'_> {
 // after each guarded key/value seed; bounded_string allocates exactly the
 // visited UTF-8 bytes. Validation and canonical comparison below allocate none.
 impl crate::resources::outer::EncodeSchema for RoomMediaV1 {}
-impl<'de> crate::resources::outer::Schema<'de> for RoomMediaV1 {}
+impl crate::resources::outer::Schema<'_> for RoomMediaV1 {}
 
 fn read_error(error: ReadError<Error>) -> Error {
     match error {
@@ -143,8 +143,8 @@ fn canonical_matches(policy: &RoomMediaV1, bytes: &[u8]) -> bool {
     postcard::serialize_with_flavor(policy, Compare(bytes)).unwrap_or(false)
 }
 
-pub(super) fn legacy_error(error: Error) -> MediaPolicyError {
-    match error {
+pub(super) fn legacy_error(error: &Error) -> MediaPolicyError {
+    match *error {
         Error::Policy(error) => error,
         Error::Resource(_) | Error::Decode(PeerResourceError::Capacity) => {
             MediaPolicyError::Capacity

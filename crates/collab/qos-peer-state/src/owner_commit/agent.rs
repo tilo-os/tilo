@@ -5,7 +5,7 @@ use web_time::SystemTime;
 
 /// Host-local authorization evidence, deliberately not Serde and with no public
 /// fields. `authenticated_device` MUST come from a completed authenticated channel
-/// (e.g. accept_hello + verify_hello_ack2), never request JSON or a device label.
+/// (e.g. `accept_hello` + `verify_hello_ack2`), never request JSON or a device label.
 /// This constructor checks authorization; it does not perform proof of possession.
 /// ```compile_fail
 /// let _: qos_peer_state::owner_commit::VerifiedAgentCaller = serde_json::from_str("{}").unwrap();
@@ -21,6 +21,11 @@ pub struct VerifiedAgentCaller {
     governance: String,
 }
 impl VerifiedAgentCaller {
+    /// Authorize `authenticated_device` as an agent caller of this room.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the device is not a current governed member allowed to run agents.
     pub fn from_authenticated_source(
         peer: &StatePeer,
         owner_scope: [u8; 32],
@@ -74,6 +79,10 @@ impl VerifiedAgentCaller {
         &self.governance
     }
     /// Refresh an existing authenticated channel proof without changing its identity.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the caller is no longer authorized for `scope` and `generation`.
     pub fn refresh(
         &self,
         peer: &StatePeer,
@@ -99,6 +108,11 @@ impl VerifiedAgentCaller {
         }
         Ok(current)
     }
+    /// Re-check this caller's authorization against current governance.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the caller is no longer authorized for `scope` and `generation`.
     pub fn revalidate(
         &self,
         peer: &StatePeer,
@@ -127,11 +141,20 @@ impl VerifiedAgentCaller {
     }
 }
 
+/// The canonical owner of `peer`'s room.
+///
+/// # Errors
+///
+/// Returns an error if room governance is missing or malformed.
 pub fn canonical_owner(peer: &StatePeer) -> Result<String, String> {
     peer.legacy_canonical_owner()
 }
 /// Opaque policy identity. Deliberately excludes aggregate generation, room
 /// heads, document coverage and runtime task/output progress.
+///
+/// # Errors
+///
+/// Returns an error if room governance is missing or malformed.
 pub fn governance_revision(peer: &StatePeer) -> Result<String, String> {
     peer.legacy_governance_revision()
 }
@@ -219,7 +242,7 @@ impl AgentControlPhase {
         matches!(self, Self::Completed | Self::Failed)
     }
     fn permits(self, next: Self) -> bool {
-        use AgentControlPhase::*;
+        use AgentControlPhase::{Admitted, Completed, Failed, Launching, Running, Unknown};
         matches!(
             (self, next),
             (Admitted, Launching | Unknown | Failed)
@@ -254,6 +277,11 @@ pub struct AgentChange {
     pub mutation: AgentMutation,
 }
 impl AgentChange {
+    /// A change authored by `caller`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the change is malformed.
     pub fn new(
         caller: &VerifiedAgentCaller,
         ids: AgentIds,
@@ -271,6 +299,11 @@ impl AgentChange {
         value.validate()?;
         Ok(value)
     }
+    /// Canonical bytes of this change's business content.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the change cannot be encoded.
     pub fn business_bytes(&self) -> Result<Vec<u8>, String> {
         postcard::to_allocvec(&(
             &self.ids,
@@ -280,6 +313,11 @@ impl AgentChange {
         ))
         .map_err(|e| e.to_string())
     }
+    /// Structural validation of this change.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error naming the first malformed field.
     pub fn validate(&self) -> Result<(), String> {
         for id in [
             &self.ids.mutation,
@@ -357,6 +395,11 @@ fn validate_intent(request: &[u8], grants: &[GrantAction]) -> Result<(), String>
 /// Every record a retained grant names must be a current canonical document
 /// of a delegable app. Scope carriers name all their records; the app list
 /// comes from the host-pinned delegation registry, not a hard-coded match.
+///
+/// # Errors
+///
+/// Returns an error if a grant names a record that is not a current canonical document
+/// of a delegable app.
 pub fn grant_records_current(peer: &StatePeer, grants: &[GrantAction]) -> Result<(), String> {
     use qos_agent_control_protocol::{DelegationRegistry, route_record, scopes_from_grants};
     let registry = DelegationRegistry::first_party();
@@ -408,7 +451,7 @@ pub struct AgentMutationReceipt {
     pub invocation: String,
     pub change: AgentChange,
 }
-/// Private owner data. Never serialize this ledger into a StatePeer room or publication.
+/// Private owner data. Never serialize this ledger into a `StatePeer` room or publication.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PrivateAgentLedger {
@@ -426,7 +469,32 @@ impl Default for PrivateAgentLedger {
     }
 }
 impl PrivateAgentLedger {
+    /// Check this ledger's internal consistency for `room` at `generation`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if a record or its receipt history is inconsistent.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one pass over the ledger and its receipt history"
+    )]
     pub fn validate(&self, room: &str, generation: u64) -> Result<(), String> {
+        struct BoundWriter(usize);
+        impl std::io::Write for BoundWriter {
+            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+                self.0 = self
+                    .0
+                    .checked_add(bytes.len())
+                    .ok_or_else(|| std::io::Error::other("private ledger size overflow"))?;
+                if self.0 > MAX_PRIVATE_AGENT_LEDGER_BYTES {
+                    return Err(std::io::Error::other("private agent ledger exceeds budget"));
+                }
+                Ok(bytes.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
         if self.version != PRIVATE_AGENT_LEDGER_VERSION
             || self.records.len() > MAX_PRIVATE_AGENT_ADMISSIONS
             || self.mutations.len() > MAX_PRIVATE_AGENT_ADMISSIONS * MUTATIONS_PER_ADMISSION
@@ -517,13 +585,13 @@ impl PrivateAgentLedger {
                         && grants == &r.grants
                         && c.ids == r.ids =>
                     {
-                        ()
+                        // The exact prepare receipt: nothing to advance.
                     }
                     (AgentMutation::Transition { phase: next, error }, n)
                         if n > 0 && phase.permits(*next) =>
                     {
                         phase = *next;
-                        diagnostic = error.clone();
+                        diagnostic.clone_from(error);
                     }
                     _ => return Err("private mutation history is inconsistent".into()),
                 }
@@ -560,24 +628,13 @@ impl PrivateAgentLedger {
                 return Err("invalid private agent receipt".into());
             }
         }
-        struct BoundWriter(usize);
-        impl std::io::Write for BoundWriter {
-            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-                self.0 = self
-                    .0
-                    .checked_add(bytes.len())
-                    .ok_or_else(|| std::io::Error::other("private ledger size overflow"))?;
-                if self.0 > MAX_PRIVATE_AGENT_LEDGER_BYTES {
-                    return Err(std::io::Error::other("private agent ledger exceeds budget"));
-                }
-                Ok(bytes.len())
-            }
-            fn flush(&mut self) -> std::io::Result<()> {
-                Ok(())
-            }
-        }
         serde_json::to_writer(&mut BoundWriter(0), self).map_err(|e| e.to_string())
     }
+    /// The ledger record of `invocation` for `caller`, if any.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the record exists but belongs to another caller.
     pub fn record_for(
         &self,
         caller: &VerifiedAgentCaller,
@@ -598,11 +655,24 @@ pub struct AgentStateSnapshot {
     pub governance_revision: String,
     pub ledger: PrivateAgentLedger,
 }
+#[expect(
+    clippy::large_enum_variant,
+    reason = "public result enum: boxing a variant would change every constructor and match"
+)]
 pub enum PreparedAgentCommit {
     Replay(AgentMutationReceipt),
     Candidate(PrivateAgentLedger),
 }
 /// Pure private candidate preparation; neither candidate nor receipt grants execution authority.
+///
+/// # Errors
+///
+/// Returns an [`AgentCommitError`] if the caller, request or ledger does not admit the
+/// commit.
+#[expect(
+    clippy::too_many_lines,
+    reason = "one candidate preparation over every request kind"
+)]
 pub fn prepare_agent_commit(
     peer: &StatePeer,
     ledger: &PrivateAgentLedger,
@@ -709,7 +779,7 @@ pub fn prepare_agent_commit(
             }
             record.phase = *phase;
             record.last_generation = next;
-            record.error = error.clone();
+            record.error.clone_from(error);
             record.invocation.clone()
         }
     };
@@ -787,7 +857,7 @@ mod scoped_grant_tests {
             })
             .collect();
         validate_intent(&spawn(), &carriers).unwrap();
-        let mut mixed = carriers.clone();
+        let mut mixed = carriers;
         mixed.push(tuple("word-processor.document".into()));
         assert!(validate_intent(&spawn(), &mixed).is_err());
     }

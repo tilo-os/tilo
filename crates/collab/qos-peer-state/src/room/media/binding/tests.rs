@@ -7,6 +7,7 @@ use automerge::{
     ActorId, AutoCommit, ObjType, ROOT, ReadDoc, ScalarValue, Value, transaction::Transactable,
 };
 use std::collections::BTreeMap;
+use tilo_automerge::ApplyIncoming;
 fn fixture() -> AutoCommit {
     let mut doc = AutoCommit::new();
     doc.set_actor(ActorId::from(vec![17; 32]));
@@ -78,7 +79,7 @@ fn media_binding_matches_original_archival_wrong_type_conflict_and_route_errors(
                 doc.commit();
                 fork.put(&voice, "archived", false).unwrap();
                 fork.commit();
-                doc.merge(&mut fork).unwrap();
+                doc.merge_incoming(&mut fork).unwrap();
             }
             5 => {
                 doc.put(&voice, "archived", false).unwrap();
@@ -175,7 +176,7 @@ fn media_binding_rejects_actual_native_orphan_history_before_channel_lookup() {
     doc.commit();
     let child = doc.get_changes(&before)[0].raw_bytes().to_vec();
     let mut orphan = AutoCommit::new();
-    orphan.load_incremental(&child).unwrap();
+    orphan.load_incoming(&child).unwrap();
     assert!(!orphan.get_missing_deps(&[]).is_empty());
     assert_eq!(
         historical_resolve("so.tilo.chat", "", "voice", &orphan),

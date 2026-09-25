@@ -1,7 +1,19 @@
 use super::*;
+use crate::BoundedPeerInvalid;
+use crate::BoundedStatePeer;
+use crate::NeighbourMsg;
+use crate::PeerLimits;
+use crate::PeerRegistry;
+use crate::PeerWork;
+use crate::StatePeer;
+use crate::TransportOrigin;
 use crate::native_footprint_vendor_tests::assert_precharged;
+use automerge::resource_limits::NativeAllowance;
+use automerge::resource_limits::NativeResourceError;
 use automerge::{ROOT, ReadDoc, ScalarValue, transaction::Transactable};
 use collab_types::caps::{CapOverride, Expiry, Scope, Subject, Verb};
+use tilo_user_identity::RevocationList;
+use web_time::SystemTime;
 fn fixture(nonpersistent: bool) -> (StatePeer, SystemTime) {
     let (mut peer, key, _, _, now) = crate::admission_tests::seeded();
     let mut room = peer.admitted_room().unwrap().clone();
@@ -125,9 +137,7 @@ fn actual_private_basis_rejects_nonpersistent_governed_caps_and_foreign_domain()
     let (peer, now) = fixture(true);
     let current = NativeAllowance::new(64 * 1024 * 1024).unwrap();
     let mut registry = PeerRegistry::new(NativeAllowance::new(4096).unwrap()).unwrap();
-    let mut turn = registry
-        .begin_turn(current.clone(), PeerLimits::default())
-        .unwrap();
+    let mut turn = registry.begin_turn(current, PeerLimits::default()).unwrap();
     let mut work = turn.work().unwrap();
     let native = restore(&peer, now, &mut work);
     let read = native.read(&work).unwrap();

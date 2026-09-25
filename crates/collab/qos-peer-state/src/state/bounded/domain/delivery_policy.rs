@@ -1,10 +1,15 @@
 //! Same-peer current route checks feeding an inline delivery data projection.
-use super::*;
+use super::{BoundedPeerError, DeviceCert, PeerRead, SystemTime, backend};
 pub use backend::delivery_policy::{PeerDeliveryPolicy, PeerDeliveryPolicyError};
-impl<'peer, 'work> PeerRead<'peer, 'work> {
+impl<'peer> PeerRead<'peer, '_> {
     /// Computes the historical delivery digest with every actual route read
     /// check. Parent retains current authenticated host/session, lock and clock.
     /// Arguments are host then device; neither becomes caller authority here.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`PeerDeliveryPolicyError`] if a party is not current or a route read check
+    /// fails.
     pub fn delivery_policy(
         &self,
         workspace: u64,
@@ -14,7 +19,7 @@ impl<'peer, 'work> PeerRead<'peer, 'work> {
     ) -> Result<PeerDeliveryPolicy<'peer>, PeerDeliveryPolicyError> {
         backend::delivery_policy::bounded(
             &self.peer.core,
-            self._work,
+            self.work,
             self.limits,
             workspace,
             host,
@@ -23,7 +28,7 @@ impl<'peer, 'work> PeerRead<'peer, 'work> {
                 use crate::room::delivery_policy::Error;
                 for route in self.peer.core.documents.keys() {
                     #[cfg(test)]
-                    ROUTE_CHECKS.with(|n| n.set(n.get() + 1));
+                    ROUTE_CHECKS.with(|n| n.set(n.get().saturating_add(1)));
                     match self.document_read_allowed(
                         device.device_public_key,
                         &route.app,

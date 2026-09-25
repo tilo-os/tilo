@@ -4,6 +4,7 @@ use super::*;
 use automerge::marks::{ExpandMark, Mark};
 use automerge::resource_limits::{NativeApplyResult, NativeDependencyPolicy, NativeMutationError};
 use automerge::{Change, ChangeHash, ExpandedChange, ObjType, SaveOptions, ScalarValue};
+use tilo_automerge::ApplyIncoming;
 
 fn apply(source: &mut AutoCommit, incoming: &[u8], expected: &[ChangeHash]) -> AutoCommit {
     let bytes = source.save();
@@ -116,27 +117,27 @@ fn incoming_target_validation_preserves_nested_objects_and_list_edits() {
     peer.put(&child, "ready", true).unwrap();
     let incoming = peer.save();
     let mut control = source.clone();
-    control.merge(&mut peer).unwrap();
+    control.merge_incoming(&mut peer).unwrap();
     let restored = apply(&mut source, &incoming, &control.get_heads());
     assert_eq!(
-        restored.get(&map, "value").unwrap().unwrap().0.to_str(),
+        restored.get(&map, "value").unwrap().unwrap().0.as_str(),
         Some("after")
     );
     assert_eq!(
-        restored.get(&map, "local").unwrap().unwrap().0.to_bool(),
+        restored.get(&map, "local").unwrap().unwrap().0.as_bool(),
         Some(true)
     );
     assert_eq!(
-        restored.get(&child, "ready").unwrap().unwrap().0.to_bool(),
+        restored.get(&child, "ready").unwrap().unwrap().0.as_bool(),
         Some(true)
     );
     assert_eq!(restored.length(&list), 2);
     assert_eq!(
-        restored.get(&list, 0).unwrap().unwrap().0.to_str(),
+        restored.get(&list, 0).unwrap().unwrap().0.as_str(),
         Some("updated")
     );
     assert_eq!(
-        restored.get(&list, 1).unwrap().unwrap().0.to_str(),
+        restored.get(&list, 1).unwrap().unwrap().0.as_str(),
         Some("new")
     );
 }
@@ -157,14 +158,14 @@ fn incoming_target_validation_preserves_existing_and_new_counters() {
     peer.increment(ROOT, "new_count", -1).unwrap();
     let incoming = peer.save();
     let mut control = source.clone();
-    control.merge(&mut peer).unwrap();
+    control.merge_incoming(&mut peer).unwrap();
     let restored = apply(&mut source, &incoming, &control.get_heads());
     assert_eq!(
-        restored.get(ROOT, "count").unwrap().unwrap().0.to_i64(),
+        restored.get(ROOT, "count").unwrap().unwrap().0.as_i64(),
         Some(10)
     );
     assert_eq!(
-        restored.get(ROOT, "new_count").unwrap().unwrap().0.to_i64(),
+        restored.get(ROOT, "new_count").unwrap().unwrap().0.as_i64(),
         Some(9)
     );
 }
@@ -179,7 +180,7 @@ fn incoming_target_validation_preserves_increment_over_counter_scalar_conflict()
     source.commit();
     other.put(ROOT, "count", "conflicting value").unwrap();
     other.commit();
-    source.merge(&mut other).unwrap();
+    source.merge_incoming(&mut other).unwrap();
     assert_eq!(source.get_all(ROOT, "count").unwrap().len(), 2);
     let mut peer = source.fork();
     peer.increment(ROOT, "count", 2).unwrap();
@@ -187,7 +188,7 @@ fn incoming_target_validation_preserves_increment_over_counter_scalar_conflict()
     let expected = peer.get_heads();
     let restored = apply(&mut source, &incoming, &expected);
     assert_eq!(
-        restored.get(ROOT, "count").unwrap().unwrap().0.to_i64(),
+        restored.get(ROOT, "count").unwrap().unwrap().0.as_i64(),
         Some(7)
     );
     assert_eq!(restored.get_all(ROOT, "count").unwrap().len(), 1);
@@ -334,12 +335,12 @@ fn incoming_target_validation_preserves_hidden_counter_at_representable_bound() 
     // A later scalar with a larger operation counter conflicts with the counter.
     for index in 0..8 {
         other
-            .put(ROOT, format!("filler_{index}"), index as i64)
+            .put(ROOT, format!("filler_{index}"), i64::from(index))
             .unwrap();
     }
     other.put(ROOT, "count", "later scalar").unwrap();
     other.commit();
-    source.merge(&mut other).unwrap();
+    source.merge_incoming(&mut other).unwrap();
     assert_eq!(source.get_all(ROOT, "count").unwrap().len(), 2);
     let mut peer = source.fork();
     peer.increment(ROOT, "count", 1).unwrap();
@@ -350,7 +351,7 @@ fn incoming_target_validation_preserves_hidden_counter_at_representable_bound() 
     assert!(
         values
             .iter()
-            .any(|(value, _)| value.to_scalar() == Some(&ScalarValue::counter(i64::MAX))),
+            .any(|(value, _)| value.as_scalar() == Some(&ScalarValue::counter(i64::MAX))),
         "the merged counter keeps its representable value: {values:?}"
     );
 }

@@ -1,5 +1,8 @@
 //! Retained current policy copied from the exact native room read.
-use super::*;
+use super::{
+    CapOverride, Error, GovernedIdentity, NativeReservation, NativeResourceError, NativeWorkTurn,
+    PeerLimits, Policy, Principal, Role, Scope, Subject, key_text, room,
+};
 use crate::resources::json::{JsonHeld, JsonLimits};
 use crate::room::{
     policy::{self, Destination},
@@ -31,7 +34,7 @@ impl Policy for NativePolicy {
         // role_of's only owned temporary is hex::encode([u8;32]) for a User
         // subject: one exact 64-byte Vec, reused/freed between rows.
         let _scratch = turn
-            .expect("native policy turn")
+            .ok_or(Error::Resource(NativeResourceError::Unaccounted))?
             .reserve(64)
             .map_err(Error::Resource)?;
         Ok(room::role_of(self.owner(), self.caps(), person, now))
@@ -137,7 +140,7 @@ impl Destination for Collect<'_> {
     fn identity(&mut self, key: &str, bytes: &[u8]) -> Result<(), Error> {
         if key == self.key {
             self.identity =
-                Some(JsonHeld::decode(bytes, self.limits, self.turn).map_err(Error::Decode)?)
+                Some(JsonHeld::decode(bytes, self.limits, self.turn).map_err(Error::Decode)?);
         }
         Ok(())
     }
@@ -193,7 +196,7 @@ pub(super) fn collect<R: RoomRead>(
         return Err(Error::Resource(NativeResourceError::Unaccounted));
     }
     let key = key_text(source);
-    let key = std::str::from_utf8(&key).expect("hex key");
+    let key = key.as_str();
     let mut collect = Collect {
         owner: None,
         caps,

@@ -3,12 +3,18 @@ use crate::join::*;
 use crate::native_footprint_vendor_tests::assert_precharged;
 use tilo_user_identity::RevocationList;
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "one fixture, kept whole so every entry stays in wire order"
+)]
 fn responses() -> Vec<JoinTransportResponse> {
     let (mut peer, governor, member_key, member, now) = crate::admission_tests::seeded();
-    let now_ns = now
+    let now_ns: u64 = now
         .duration_since(web_time::SystemTime::UNIX_EPOCH)
         .unwrap()
-        .as_nanos() as u64;
+        .as_nanos()
+        .try_into()
+        .unwrap();
     let mut revocation = tilo_user_identity::RevocationEntry {
         user_public_key: member.user_public_key,
         revoked_device_public_key: [99; 32],
@@ -46,7 +52,7 @@ fn responses() -> Vec<JoinTransportResponse> {
                     admit_invited_members: true,
                 },
                 [29; 16],
-                Some(now_ns + 10_000),
+                Some(now_ns.checked_add(10_000).unwrap()),
                 &governor,
             )
             .unwrap(),
@@ -55,7 +61,7 @@ fn responses() -> Vec<JoinTransportResponse> {
         nonce: [17; 16],
         recipient_user_public_key: Some(member.user_public_key),
         invitee_name: Some("A real guest 🦀".into()),
-        expires_at_ns: now_ns + 10_000,
+        expires_at_ns: now_ns.checked_add(10_000).unwrap(),
         transport: vec![
             sign_transport_hint(
                 TRANSPORT_QOS_SESSION_JOIN_HTTP_V1,
@@ -80,7 +86,7 @@ fn responses() -> Vec<JoinTransportResponse> {
         &member,
         [18; 32],
         [19; 32],
-        now_ns + 5_000,
+        now_ns.checked_add(5_000).unwrap(),
         now_ns,
     )
     .unwrap();
@@ -91,14 +97,14 @@ fn responses() -> Vec<JoinTransportResponse> {
         &member,
         [20; 32],
         [21; 32],
-        now_ns + 5_000,
+        now_ns.checked_add(5_000).unwrap(),
         now_ns,
     )
     .unwrap();
     let bootstrap = JoinBootstrap {
         version: 1,
         invite_id: verified.invite_id(),
-        device_cert: member.clone(),
+        device_cert: member,
         role: MemberRole::Editor,
         room: peer.room().into(),
         workspace_id: 42,
@@ -293,7 +299,10 @@ fn bounded_join_response_retains_decode_custody_after_allowance_seals() {
 #[test]
 fn owner_bootstrap_wire_preserves_legacy_response_tags_and_role_bytes() {
     for (tag, response) in responses().iter().enumerate() {
-        assert_eq!(postcard::to_allocvec(response).unwrap()[0], tag as u8);
+        assert_eq!(
+            postcard::to_allocvec(response).unwrap()[0],
+            u8::try_from(tag).unwrap()
+        );
     }
     for (role, wire) in [
         (MemberRole::Viewer, vec![0]),

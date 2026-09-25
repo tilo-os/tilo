@@ -8,6 +8,12 @@ pub struct BoundedJoinResponse {
     held: Held<JoinTransportResponse>,
 }
 impl BoundedJoinResponse {
+    /// Decode a join response, keeping its conservative allocation reserved.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PeerResourceError::Capacity`] if the allowance or limits are exceeded and
+    /// [`PeerResourceError::Malformed`] if the bytes do not decode.
     pub fn decode(
         bytes: &[u8],
         limits: OuterLimits,
@@ -45,7 +51,7 @@ impl BoundedJoinResponse {
 // Exactly the seven derived response variants and their audited join/identity
 // fields. This does not expose the generic guard to arbitrary Deserialize code.
 impl super::outer::EncodeSchema for JoinTransportResponse {}
-impl<'de> super::outer::Schema<'de> for JoinTransportResponse {}
+impl super::outer::Schema<'_> for JoinTransportResponse {}
 
 #[cfg(test)]
 mod tests;

@@ -1,5 +1,5 @@
 //! Actual core metadata adapter to the one strict private policy engine.
-use super::*;
+use super::{BoundedNative, PeerCore, StatePeer};
 use crate::state::bounded::{BoundedPeerError, BoundedPeerInvalid, PeerLimits};
 use automerge::resource_limits::NativeWorkTurn;
 pub(in crate::state) fn bounded(
@@ -23,7 +23,7 @@ pub(in crate::state) fn bounded(
                 .certificates
                 .map()
                 .values()
-                .map(|certificate| certificate.as_ref()),
+                .map(std::convert::AsRef::as_ref),
             revocations: core.revocations.iter(),
         },
         turn,
@@ -66,7 +66,7 @@ impl StatePeer {
                     .core
                     .certificates
                     .values()
-                    .map(|certificate| certificate.as_ref()),
+                    .map(std::convert::AsRef::as_ref),
                 revocations: self.core.revocations.iter(),
             },
         )
@@ -101,7 +101,7 @@ impl StatePeer {
                     .core
                     .certificates
                     .values()
-                    .map(|certificate| certificate.as_ref()),
+                    .map(std::convert::AsRef::as_ref),
                 revocations: self.core.revocations.iter(),
             },
         )

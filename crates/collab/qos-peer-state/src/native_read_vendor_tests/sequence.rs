@@ -38,7 +38,10 @@ use automerge::{
     marks::{ExpandMark, Mark},
 };
 use std::ops::ControlFlow;
+use tilo_automerge::ApplyIncoming;
 
+// Compiled for doctests too (`any(test, doctest)`); helpers exist only for tests.
+#[cfg(test)]
 fn object<'doc>(read: &NativeReadSession<'doc, '_>, key: &str) -> NativeObject<'doc> {
     let mut result = None;
     read.visit_property(read.root(), key, NativeSelection::Winner, |value, _| {
@@ -65,7 +68,7 @@ fn sequence_matches_real_list_winners_conflicts_deletes_and_counters() {
     other.put(&list, 0, "right").unwrap();
     doc.delete(&list, 1).unwrap();
     doc.increment(&list, 1, 7).unwrap();
-    doc.merge(&mut other).unwrap();
+    doc.merge_incoming(&mut other).unwrap();
     doc.commit();
     let expected: Vec<_> = doc.list_range(&list, ..).collect();
     assert_eq!(expected.len(), 2);
@@ -205,7 +208,7 @@ fn sequence_and_nested_queries_keep_actual_allocations_precharged() {
                     })
                     .unwrap();
                 }
-                value => panic!("unexpected value {value:?}"),
+                value @ NativeValue::Scalar(_) => panic!("unexpected value {value:?}"),
             }
             seen += 1;
             Ok::<_, ()>(ControlFlow::Continue(()))
@@ -311,12 +314,14 @@ fn sequence_heads_are_complete_capped_before_callbacks_and_never_commit() {
     let mut branches = Vec::new();
     for i in 0..4 {
         let mut branch = doc.fork().with_actor(ActorId::from(vec![i + 1]));
-        branch.put(ROOT, format!("branch{i}"), i as u64).unwrap();
+        branch
+            .put(ROOT, format!("branch{i}"), u64::from(i))
+            .unwrap();
         branch.commit();
         branches.push(branch);
     }
     for branch in &mut branches {
-        doc.merge(branch).unwrap();
+        doc.merge_incoming(branch).unwrap();
     }
     let mut expected = doc.base_heads();
     expected.sort_unstable();
@@ -368,7 +373,6 @@ fn sequence_output_credit_uses_current_ledger_and_survives_turn_sealing() {
         read.reserve_output(1),
         Err(NativeResourceError::WorkBytes)
     ));
-    drop(read);
     drop(turn);
     let retained = current.retained_bytes();
     assert!(retained >= 1024);

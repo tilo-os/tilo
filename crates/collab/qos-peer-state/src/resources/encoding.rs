@@ -1,6 +1,6 @@
 //! Fixed-capacity Postcard output retaining its actual reservation.
 
-use super::*;
+use super::{BoundedPeerMessage, NativeAllowance, NativeReservation, PeerResourceError, outer};
 
 pub struct BoundedSerialized {
     bytes: Vec<u8>,
@@ -14,6 +14,11 @@ impl BoundedSerialized {
 impl BoundedPeerMessage {
     /// Count first, then reserve and write into one fixed-capacity destination.
     /// No signed bytes or wire version are rewritten by resource accounting.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PeerResourceError::Capacity`] if the encoding exceeds `maximum_bytes` or
+    /// the allowance.
     pub fn encode(
         &self,
         maximum_bytes: usize,
@@ -30,19 +35,16 @@ struct Count<'a> {
 }
 impl Count<'_> {
     fn add(&mut self, length: usize) -> postcard::Result<()> {
-        match self
+        if let Some(bytes) = self
             .bytes
             .checked_add(length)
             .filter(|n| *n <= self.maximum)
         {
-            Some(bytes) => {
-                self.bytes = bytes;
-                Ok(())
-            }
-            None => {
-                *self.exceeded = true;
-                Err(postcard::Error::SerializeBufferFull)
-            }
+            self.bytes = bytes;
+            Ok(())
+        } else {
+            *self.exceeded = true;
+            Err(postcard::Error::SerializeBufferFull)
         }
     }
 }
@@ -110,6 +112,7 @@ pub(crate) fn encode_known<T: outer::EncodeSchema>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::resources::OuterLimits;
 
     #[test]
     fn outer_resources_encode_exact_limit_preserves_signed_bytes_and_holds_output() {

@@ -3,7 +3,7 @@ mod domain;
 mod revocations;
 use super::backend::BoundedNative;
 pub use super::backend::member::PeerMember;
-use super::*;
+use super::{DeviceCert, PeerCore, RevocationList, Route, SystemTime, backend, room};
 use crate::resources::{OuterLimits, PeerResourceError, native::NativeBatch};
 use automerge::resource_limits::{NativeAllocationSet, NativeResourceError, NativeWorkTurn};
 pub use domain::{
@@ -68,7 +68,11 @@ impl PeerWork<'_> {
     /// operation's exact current ledger. Retain the reservation until all
     /// covered backing has been deallocated. This lends no native input path,
     /// registry, admission credential or owner/domain authority. The embedding
-    /// owner still validates its actual HostBytes pool and operation scope.
+    /// owner still validates its actual `HostBytes` pool and operation scope.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`BoundedPeerError`] if the current turn cannot pay `bytes`.
     pub fn reserve_output(
         &self,
         bytes: usize,
@@ -129,6 +133,11 @@ impl BoundedStatePeer {
     /// The embedding owner authenticates the original durable bytes and pins
     /// room/authority/enrollment under its actual barrier. This checks the same
     /// durable admission semantics while paying native and metadata storage.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`BoundedPeerError`] if the bytes are refused, the room or authority does
+    /// not match, or the work budget cannot pay for the restored state.
     pub fn restore(
         bytes: &[u8],
         room: &str,

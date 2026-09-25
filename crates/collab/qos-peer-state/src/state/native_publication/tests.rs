@@ -1,4 +1,14 @@
 use super::*;
+use crate::InputDisposition;
+use crate::SeedState;
+use crate::seed_room;
+use crate::state::now_ns;
+use automerge::AutoCommit;
+use automerge::ROOT;
+use automerge::transaction::Transactable;
+use ed25519_dalek::SigningKey;
+use tilo_user_identity::RevocationList;
+use web_time::Duration;
 
 fn native(peer: &StatePeer) -> TransportOrigin {
     TransportOrigin::RetainedNativePublication {
@@ -259,13 +269,9 @@ fn assert_deferred_governor_revalidation(reopen: bool) {
         .publish_incremental("test.app", "tab:1", doc.save_after(&heads), &member, now)
         .unwrap();
     {
-        let mut receiver = baseline.clone();
+        let mut receiver = baseline;
         let origin = native(&receiver);
-        assert!(
-            receiver
-                .receive_from(origin, descendant.clone(), now)
-                .is_err()
-        );
+        assert!(receiver.receive_from(origin, descendant, now).is_err());
         assert_eq!(receiver.pending_count(), 0);
         if reopen {
             receiver = StatePeer::restore(
@@ -292,7 +298,7 @@ fn assert_deferred_governor_revalidation(reopen: bool) {
         receiver
             .receive_from(
                 TransportOrigin::RelayDelta(member_cert.device_public_key),
-                predecessor.clone(),
+                predecessor,
                 now,
             )
             .unwrap();

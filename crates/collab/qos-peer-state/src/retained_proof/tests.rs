@@ -21,7 +21,9 @@ fn fixture() -> (SigningKey, RetentionAuthority, StatePeer, SystemTime) {
         signature: [0; 64],
     };
     sign_device_cert(&mut cert, &root).unwrap();
-    let now = SystemTime::UNIX_EPOCH + Duration::from_secs(2000);
+    let now = SystemTime::UNIX_EPOCH
+        .checked_add(Duration::from_secs(2000))
+        .unwrap();
     let mut peer = StatePeer::new(ROOM, cert.clone(), vec![], RevocationList::new(), now).unwrap();
     let mut doc = AutoCommit::new();
     doc.put(ROOT, "value", "initial").unwrap();
@@ -80,7 +82,12 @@ fn snapshot(room: &VerifiedRoom, msg: &NeighbourMsg) -> VerifiedSnapshot {
     };
     verify_snapshot(room, *envelope.author.as_bytes(), channel, &body).unwrap()
 }
-fn signed(key: &SigningKey, mutation: DocumentMutation, seq: u64, now: SystemTime) -> NeighbourMsg {
+fn signed(
+    key: &SigningKey,
+    mutation: &DocumentMutation,
+    seq: u64,
+    now: SystemTime,
+) -> NeighbourMsg {
     signed_for_version(
         key,
         mutation,
@@ -91,7 +98,7 @@ fn signed(key: &SigningKey, mutation: DocumentMutation, seq: u64, now: SystemTim
 }
 fn signed_for_version(
     key: &SigningKey,
-    mutation: DocumentMutation,
+    mutation: &DocumentMutation,
     seq: u64,
     now: SystemTime,
     version: collab_types::DocumentWireVersion,
@@ -126,7 +133,7 @@ fn retained_snapshot_and_tail_require_one_exact_wire_version() {
     let mutation = DocumentMutation::decode(&envelope.payload).unwrap();
     let legacy_snapshot = signed_for_version(
         &key,
-        mutation,
+        &mutation,
         envelope.seq,
         now,
         collab_types::DocumentWireVersion::QosV1,
@@ -173,7 +180,7 @@ fn retained_snapshot_and_tail_require_one_exact_wire_version() {
         collab_types::DocumentWireVersion::QosV2,
         collab_types::DocumentWireVersion::TiloV2,
     ] {
-        let mismatched = signed_for_version(&key, incremental.clone(), sequence, now, version);
+        let mismatched = signed_for_version(&key, &incremental, sequence, now, version);
         let (channel, body) = encoded(&mismatched);
         assert_eq!(
             proof.classify_tail(authority.governor().device_public_key, channel, &body),
@@ -190,7 +197,7 @@ fn retained_snapshot_and_tail_require_one_exact_wire_version() {
     }
     let matching = signed_for_version(
         &key,
-        incremental,
+        &incremental,
         sequence,
         now,
         collab_types::DocumentWireVersion::QosV1,
@@ -263,7 +270,7 @@ fn mixed_receipt_generations_pair_route_by_route_and_delta_needs_prior() {
     doc.put(ROOT, "value", "edited").unwrap();
     let msg = signed(
         &key,
-        DocumentMutation::Snapshot(doc.save()),
+        &DocumentMutation::Snapshot(doc.save()),
         9_000_000_000_000_000_000,
         now,
     );
@@ -305,7 +312,7 @@ fn signed_route_crypto_and_strict_body_fail_closed() {
     let (channel, body) = encoded(&batch[1]);
     assert!(verify_snapshot(&room, [99; 32], channel, &body).is_err());
     assert!(verify_snapshot(&room, source, [99; 32], &body).is_err());
-    let mut trailing = body.clone();
+    let mut trailing = body;
     trailing.push(0);
     assert!(verify_snapshot(&room, source, channel, &trailing).is_err());
     for case in 0..8 {
@@ -681,7 +688,7 @@ fn causal_tail_coverage_is_distinct_from_floor_safety_and_foreign_retirement() {
     ] {
         let (channel, body) = encoded(&signed(
             &key,
-            DocumentMutation::Incremental(bytes.clone()),
+            &DocumentMutation::Incremental(bytes.clone()),
             seq,
             now,
         ));
@@ -701,7 +708,7 @@ fn causal_tail_coverage_is_distinct_from_floor_safety_and_foreign_retirement() {
         .collect();
     let (channel, body) = encoded(&signed(
         &key,
-        DocumentMutation::Incremental(existing.clone()),
+        &DocumentMutation::Incremental(existing.clone()),
         floor,
         now,
     ));
@@ -715,7 +722,7 @@ fn causal_tail_coverage_is_distinct_from_floor_safety_and_foreign_retirement() {
     let foreign = SigningKey::from_bytes(&[3; 32]);
     let (channel, body) = encoded(&signed(
         &foreign,
-        DocumentMutation::Incremental(existing),
+        &DocumentMutation::Incremental(existing),
         1,
         now,
     ));
@@ -791,7 +798,7 @@ fn historical_room_proof_preserves_effect_receipts_and_exact_governor_roster() {
                     .unwrap();
                 }
             }
-            _ => unreachable!(),
+            _ => panic!("unexpected fixture shape"),
         }
         let (channel, body) = encoded(&room_message(&mut next));
         assert!(
@@ -823,22 +830,17 @@ fn incoming_snapshot_obsolescence_needs_exact_signed_route_integrity_and_selecte
         panic!()
     };
     let mutation = DocumentMutation::decode(&envelope.payload).unwrap();
-    let newer = signed(
-        &key,
-        mutation.clone(),
-        selected.coverage().sequence + 1,
-        now,
-    );
+    let newer = signed(&key, &mutation, selected.coverage().sequence + 1, now);
     assert!(!selected.covers_incoming_snapshot(source, channel, &encoded(&newer).1));
     assert!(!selected.covers_incoming_snapshot([99; 32], channel, &body));
     assert!(!selected.covers_incoming_snapshot(source, [99; 32], &body));
-    let mut bad = body.clone();
+    let mut bad = body;
     *bad.last_mut().unwrap() ^= 1;
     assert!(!selected.covers_incoming_snapshot(source, channel, &bad));
     let DocumentMutation::Snapshot(mut bytes) = mutation else {
         panic!()
     };
     bytes.push(1);
-    let malformed = signed(&key, DocumentMutation::Snapshot(bytes), envelope.seq, now);
+    let malformed = signed(&key, &DocumentMutation::Snapshot(bytes), envelope.seq, now);
     assert!(!selected.covers_incoming_snapshot(source, channel, &encoded(&malformed).1));
 }

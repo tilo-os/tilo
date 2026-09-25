@@ -56,6 +56,7 @@ pub(crate) struct Metadata<'a, I, J> {
     pub(crate) certificates: I,
     pub(crate) revocations: J,
 }
+#[derive(Clone, Copy)]
 pub(crate) struct Limits {
     pub(crate) collections: usize,
     pub(crate) json: JsonLimits,
@@ -168,7 +169,7 @@ impl Decode for NativeDecode<'_> {
     fn capability(&self, bytes: &[u8]) -> Result<Self::Cap, Error> {
         JsonHeld::decode(bytes, self.limits, self.turn).map_err(|error| match error {
             PeerResourceError::Malformed => rule(Rule::CapabilityInvalid),
-            error => Error::Decode(error),
+            PeerResourceError::Capacity => Error::Decode(PeerResourceError::Capacity),
         })
     }
 }
@@ -241,29 +242,28 @@ fn canonical_owner<R: PrivateRead, C: CopyValue>(
     authority: &DeviceCert,
     copies: &C,
 ) -> Result<C::Text, Error> {
-    let mut expected = [0; 64];
-    hex::encode_to_slice(authority.user_public_key, &mut expected).expect("fixed hex root");
+    let expected = crate::room::key_hex::KeyHex::new(&authority.user_public_key);
     let mut is_string = false;
-    let mut matches_root = false;
+    let mut owner_is_root = false;
     let owners = read.all(&read.root(), "owner", |value| {
         if let RoomValue::Str(value) = value {
             is_string = true;
-            matches_root = value.as_bytes() == expected;
+            owner_is_root = value.as_bytes() == expected.as_bytes();
         }
         Ok(())
     })?;
     let mut matches_room = false;
-    let rooms = read.all(&read.root(), "room", |value| {
+    let room_count = read.all(&read.root(), "room", |value| {
         matches_room = matches!(value,RoomValue::Str(value) if value==room);
         Ok(())
     })?;
-    if owners != 1 || rooms != 1 || !matches_room {
+    if owners != 1 || room_count != 1 || !matches_room {
         return Err(rule(Rule::OwnerAmbiguous));
     }
     if !is_string {
         return Err(rule(Rule::OwnerInvalid));
     }
-    if !matches_root {
+    if !owner_is_root {
         return Err(rule(Rule::OwnerRoot));
     }
     let mut owner = None;
@@ -380,10 +380,8 @@ where
         Hash(&mut hash),
     )
     .map_err(Error::Encoding)?;
-    let mut text = [0; 64];
-    hex::encode_to_slice(hash.finalize().as_bytes(), &mut text).expect("fixed digest hex");
-    work.text(std::str::from_utf8(&text).expect("ASCII hex"))
-        .map_err(resource)
+    let text = crate::room::key_hex::KeyHex::new(hash.finalize().as_bytes());
+    work.text(text.as_str()).map_err(resource)
 }
 pub(crate) fn legacy_owner(
     read: &LegacyRead<'_, AutoCommit>,

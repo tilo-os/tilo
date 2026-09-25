@@ -22,13 +22,22 @@ pub enum GovernanceOutcome {
 /// Apply certificate, role and immutable redemption receipt to the caller's
 /// existing canonical room document as one transaction. On error `document`
 /// remains byte-for-byte unchanged.
+///
+/// # Errors
+///
+/// Returns an error if the redemption conflicts with recorded governance or the
+/// document cannot be updated.
+#[expect(
+    clippy::too_many_lines,
+    reason = "one atomic governance transaction; on error the document stays unchanged"
+)]
 pub fn admit_invited_member(
     document: &mut AutoCommit,
     redemption: &crate::join::VerifiedRedemption,
     authority_key: &SigningKey,
     now: SystemTime,
 ) -> Result<AdmissionOutcome, String> {
-    let now_ns = now
+    let now_ns: u64 = now
         .duration_since(SystemTime::UNIX_EPOCH)
         .unwrap_or_default()
         .as_nanos()
@@ -48,7 +57,7 @@ pub fn admit_invited_member(
     let declared_room = document
         .get(ROOT, "room")
         .map_err(|error| error.to_string())?
-        .and_then(|(value, _)| value.to_str().map(ToOwned::to_owned))
+        .and_then(|(value, _)| value.as_str().map(ToOwned::to_owned))
         .ok_or("governed room id is missing")?;
     if declared_room != grant.room {
         return Err("invitation room does not match governed document".into());
@@ -258,6 +267,12 @@ fn member_display_name<'a>(
     preferred.unwrap_or("Guest")
 }
 
+/// Record a verified workspace delegation in the governed room document.
+///
+/// # Errors
+///
+/// Returns an error if the delegation does not verify against `authority` or the
+/// document cannot be updated.
 pub fn install_workspace_delegation(
     document: &mut AutoCommit,
     authority: &tilo_user_identity::DeviceCert,
@@ -266,7 +281,7 @@ pub fn install_workspace_delegation(
     now: SystemTime,
 ) -> Result<GovernanceOutcome, String> {
     validate_authority(document, authority, authority_key)?;
-    let now_ns = now
+    let now_ns: u64 = now
         .duration_since(SystemTime::UNIX_EPOCH)
         .unwrap_or_default()
         .as_nanos()
@@ -293,7 +308,7 @@ pub fn install_workspace_delegation(
                 automerge::ScalarValue::Bytes(bytes) => Some(bytes.clone()),
                 _ => None,
             },
-            _ => None,
+            automerge::Value::Object(_) => None,
         })
         .ok_or("authority identity is absent from governed roster")?;
     let mut identity: GovernedIdentity =
@@ -324,6 +339,12 @@ pub fn install_workspace_delegation(
     finish(document, candidate, &before)
 }
 
+/// Change a governed collaborator's role in the room document.
+///
+/// # Errors
+///
+/// Returns an error if the user is the owner or not a governed member, or the document
+/// cannot be updated.
 pub fn set_member_role(
     document: &mut AutoCommit,
     authority: &tilo_user_identity::DeviceCert,
@@ -358,6 +379,12 @@ pub fn set_member_role(
     finish(document, candidate, &before)
 }
 
+/// Remove a governed collaborator from the room document.
+///
+/// # Errors
+///
+/// Returns an error if the user is the owner or not a governed member, or the document
+/// cannot be updated.
 pub fn remove_member(
     document: &mut AutoCommit,
     authority: &tilo_user_identity::DeviceCert,
@@ -521,7 +548,7 @@ mod display_name_tests {
     fn unbounded_or_control_text_falls_back_and_never_widens_the_bound() {
         let issued = grant(None, Some("Guest Tester"));
         for label in [
-            "".to_owned(),
+            String::new(),
             "   ".to_owned(),
             "x".repeat(81),
             "界".repeat(43),
@@ -547,10 +574,12 @@ mod display_name_tests {
     #[test]
     fn admitted_bearer_guest_is_listed_under_the_chosen_name() {
         let (mut peer, authority_key, _, _, now) = crate::admission_tests::seeded();
-        let now_ns = now
+        let now_ns: u64 = now
             .duration_since(SystemTime::UNIX_EPOCH)
             .unwrap()
-            .as_nanos() as u64;
+            .as_nanos()
+            .try_into()
+            .unwrap();
         let guest_root = SigningKey::from_bytes(&[51; 32]);
         let guest_key = SigningKey::from_bytes(&[52; 32]);
         let mut guest_cert = DeviceCert {

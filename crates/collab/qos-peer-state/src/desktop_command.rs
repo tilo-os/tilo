@@ -153,7 +153,7 @@ impl std::str::FromStr for DesktopCommandId {
             .map_err(|_| "desktop command device")?;
         let invocation = uuid::Uuid::parse_str(invocation).map_err(|e| e.to_string())?;
         if invocation.is_nil()
-            || invocation.to_string() != text[65..]
+            || Some(invocation.to_string().as_str()) != text.get(65..)
             || hex::encode(device) != hex_device
         {
             return Err("desktop command id must be canonical".into());
@@ -165,6 +165,14 @@ impl std::str::FromStr for DesktopCommandId {
 /// u64 desktop ids cross to JavaScript as decimal strings.
 mod decimal {
     use serde::{Deserialize, Deserializer, Serializer};
+    // The lint's size limit is the pointer width, so it only fires on 64-bit.
+    #[cfg_attr(
+        target_pointer_width = "64",
+        expect(
+            clippy::trivially_copy_pass_by_ref,
+            reason = "serde `serialize_with` passes the field by reference"
+        )
+    )]
     pub fn serialize<S: Serializer>(value: &u64, s: S) -> Result<S::Ok, S::Error> {
         s.serialize_str(&value.to_string())
     }
@@ -323,7 +331,7 @@ mod command_id_tests {
     fn a_command_id_round_trips_through_its_text_form() {
         let id = DesktopCommandId {
             device: [0xab; 32],
-            invocation: uuid::Uuid::from_u128(0x1234_5678_9abc_4def_8123_456789abcdef),
+            invocation: uuid::Uuid::from_u128(0x1234_5678_9abc_4def_8123_4567_89ab_cdef),
         };
         let text = id.to_string();
         assert_eq!(text.len(), 64 + 1 + 36);

@@ -30,7 +30,10 @@ fn real_signed_v5_exact_membership_matches_legacy_empty_baseline_without_allocat
     .unwrap();
     let expected = peer.admissions_since(&empty).unwrap();
     assert!(!expected.is_empty());
-    let operations: Vec<_> = expected.iter().map(|v| v.operation_id()).collect();
+    let operations: Vec<_> = expected
+        .iter()
+        .map(crate::admission::DocumentAdmission::operation_id)
+        .collect();
     let mut registry = PeerRegistry::new(NativeAllowance::new(4096).unwrap()).unwrap();
     for (bytes, selected, has_operations) in [
         (v4, false, false),

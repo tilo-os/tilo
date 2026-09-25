@@ -27,7 +27,6 @@ fn owners(value: &Value) -> Result<BTreeMap<u16, String>, String> {
         .collect()
 }
 fn entries(value: &Value) -> Result<BTreeMap<(u64, u8), Value>, String> {
-    let mut out = BTreeMap::new();
     fn visit(
         value: &Value,
         level: u8,
@@ -52,11 +51,12 @@ fn entries(value: &Value) -> Result<BTreeMap<(u64, u8), Value>, String> {
                 return Err("duplicate topology identity".into());
             }
             if let Some(nested) = child.and_then(|key| object.get(key)) {
-                visit(nested, level + 1, id, out)?;
+                visit(nested, level.saturating_add(1), id, out)?;
             }
         }
         Ok(())
     }
+    let mut out = BTreeMap::new();
     if let Some(contents) = value.get("contents") {
         visit(contents, 0, "", &mut out)?;
     }
@@ -65,6 +65,10 @@ fn entries(value: &Value) -> Result<BTreeMap<(u64, u8), Value>, String> {
 /// Registry writes require pinned governance authority. Registered owners alone
 /// may change their entries; a legacy room with no registry remains authority-owned.
 /// Record routes are stable identities: changing a live binding is never a rename.
+///
+/// # Errors
+///
+/// Returns an error if `source` may not make the registry change.
 pub fn validate(
     before: Option<&AutoCommit>,
     after: &AutoCommit,
@@ -96,8 +100,7 @@ pub fn validate(
         let owner = new_owners
             .get(&salt)
             .or_else(|| old_owners.get(&salt))
-            .map(String::as_str)
-            .unwrap_or(authority);
+            .map_or(authority, String::as_str);
         // The pinned room governor republishes accepted multi-owner history in
         // its durable checkpoint, including to governance-first/reconnecting peers.
         let checkpoint = source == authority;
@@ -106,10 +109,9 @@ pub fn validate(
         }
         if id.1 == 2
             && let (Some(a), Some(b)) = (old.get(id), new.get(id))
+            && a.get("record_id") != b.get("record_id")
         {
-            if a.get("record_id") != b.get("record_id") {
-                return Err("canonical record route cannot be rebound".into());
-            }
+            return Err("canonical record route cannot be rebound".into());
         }
     }
     Ok(())

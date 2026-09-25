@@ -13,25 +13,18 @@ impl VerifiedCertificate {
 
     pub(crate) fn new_typed(certificate: DeviceCert, now_ns: u64) -> Result<Self, DeviceCertError> {
         #[cfg(test)]
-        crate::state::CERTIFICATE_VERIFICATIONS.with(|count| count.set(count.get() + 1));
+        crate::state::CERTIFICATE_VERIFICATIONS
+            .with(|count| count.set(count.get().saturating_add(1)));
         verify_device_cert_at(&certificate, now_ns)?;
         Ok(Self(Arc::new(certificate)))
     }
 
-    pub fn historical(certificate: DeviceCert) -> Result<Self, String> {
-        Self::historical_typed(certificate).map_err(|error| error.to_string())
-    }
-
     pub(crate) fn historical_typed(certificate: DeviceCert) -> Result<Self, DeviceCertError> {
         #[cfg(test)]
-        crate::state::CERTIFICATE_VERIFICATIONS.with(|count| count.set(count.get() + 1));
+        crate::state::CERTIFICATE_VERIFICATIONS
+            .with(|count| count.set(count.get().saturating_add(1)));
         verify_device_cert(&certificate)?;
         Ok(Self(Arc::new(certificate)))
-    }
-
-    pub fn current(&self, now_ns: u64) -> Result<&DeviceCert, String> {
-        self.current_typed(now_ns)
-            .map_err(|error| error.to_string())
     }
 
     /// The same live validity checks without allocating an error diagnostic.
@@ -87,24 +80,25 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::redundant_clone,
+        reason = "the clones are the subject: each must re-check validity without re-verifying"
+    )]
     fn immutable_clones_check_the_current_expiry_boundary() {
         let verified = VerifiedCertificate::new(certificate(), 9).unwrap();
         crate::state::CERTIFICATE_VERIFICATIONS.with(|count| count.set(0));
-        assert!(verified.clone().current(9).is_ok());
-        assert!(
-            verified
-                .clone()
-                .current(10)
-                .unwrap_err()
-                .contains("expired")
+        assert!(verified.clone().current_typed(9).is_ok());
+        assert_eq!(
+            verified.clone().current_typed(10).unwrap_err(),
+            DeviceCertError::Expired
         );
-        assert!(verified.current(11).is_err());
+        assert!(verified.current_typed(11).is_err());
         assert!(
-            verified.current(9).is_ok(),
+            verified.current_typed(9).is_ok(),
             "time-dependent validity is never cached"
         );
         assert_eq!(
-            crate::state::CERTIFICATE_VERIFICATIONS.with(|count| count.get()),
+            crate::state::CERTIFICATE_VERIFICATIONS.with(std::cell::Cell::get),
             0
         );
         assert!(VerifiedCertificate::new(certificate(), 10).is_err());
@@ -137,7 +131,7 @@ mod tests {
         bad_label.device_label.push('!');
         let mut bad_expiry = valid.clone();
         bad_expiry.expires_at_ns = None;
-        let mut bad_key = valid.clone();
+        let mut bad_key = valid;
         bad_key.device_public_key[0] ^= 1;
         for forged in [bad_signature, bad_label, bad_expiry, bad_key] {
             assert!(VerifiedCertificate::new(forged, 9).is_err());

@@ -5,6 +5,7 @@ use automerge::{
     ActorId, AutoCommit, ObjType, ROOT, ScalarValue, Value, transaction::Transactable,
 };
 use std::collections::BTreeSet;
+use tilo_automerge::ApplyIncoming;
 
 // Literal prior comparison algorithm, independent of the shared implementation.
 fn old(doc: &AutoCommit) -> super::super::MediaGovernanceValue {
@@ -69,7 +70,7 @@ fn compare(doc: &AutoCommit) {
     let count = assert_precharged(&current, || {
         read.visit_media_fingerprints(|hash| {
             hashes[index] = hash;
-            index += 1;
+            index = index.checked_add(1).unwrap();
             Ok::<_, ()>(())
         })
     })
@@ -133,8 +134,8 @@ fn shared_fingerprint_preserves_actual_conflicts_and_visitor_refusal() {
     b.put_object(ROOT, super::super::FIELD, ObjType::List)
         .unwrap();
     b.commit();
-    doc.merge(&mut a).unwrap();
-    doc.merge(&mut b).unwrap();
+    doc.merge_incoming(&mut a).unwrap();
+    doc.merge_incoming(&mut b).unwrap();
     compare(&doc);
     let current = NativeAllowance::new(64 * 1024 * 1024).unwrap();
     let mut allocations = NativeAllocationSet::new(NativeAllowance::new(4096).unwrap()).unwrap();

@@ -162,10 +162,11 @@ pub(crate) struct ExactAdmissions {
     entry_bytes: usize,
 }
 fn count_bytes(mut count: usize) -> usize {
-    let mut bytes = 1;
+    let mut bytes = 1usize;
     while count >= 128 {
         count >>= 7;
-        bytes += 1;
+        // At most ten iterations for a usize.
+        bytes = bytes.saturating_add(1);
     }
     bytes
 }
@@ -200,7 +201,7 @@ impl ExactAdmissions {
         let total = self
             .entry_bytes
             .saturating_add(bytes)
-            .saturating_add(count_bytes(self.entries.len() + 1));
+            .saturating_add(count_bytes(self.entries.len().saturating_add(1)));
         if total > MAX_EXACT_ADMISSION_BYTES {
             return Err(AdmissionError::ResourceLimit);
         }
@@ -210,7 +211,8 @@ impl ExactAdmissions {
         let bytes = self.check(op)?;
         if bytes != 0 {
             self.entries.insert(op.key.clone(), op.operation_id);
-            self.entry_bytes += bytes;
+            // `check` bounded the new total by MAX_EXACT_ADMISSION_BYTES.
+            self.entry_bytes = self.entry_bytes.saturating_add(bytes);
         }
         Ok(())
     }

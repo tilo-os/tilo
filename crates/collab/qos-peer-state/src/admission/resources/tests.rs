@@ -1,5 +1,6 @@
 use super::*;
 use crate::native_footprint_vendor_tests::assert_precharged;
+use crate::resources::NativeAllowance;
 
 fn actual_index() -> (ExactAdmissions, Vec<DocumentAdmission>) {
     let (mut peer, key, _, _, now) = crate::admission_tests::seeded();
@@ -87,7 +88,7 @@ fn exact_resource_rejects_duplicate_unsorted_trailing_and_announced_count_forms(
             assert_precharged(&allowance, || {
                 BoundedExactAdmissions::decode(&bytes, limits(), &allowance)
             }),
-            Err(PeerResourceError::Malformed) | Err(PeerResourceError::Capacity)
+            Err(PeerResourceError::Malformed | PeerResourceError::Capacity)
         ));
         assert_eq!(allowance.retained_bytes(), before);
     }

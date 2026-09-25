@@ -1,21 +1,22 @@
 //! Outer-state wire schemas accepted by the resource-limited decoder.
 //! Native document reconstruction has a separate admission boundary.
 
-use super::*;
+use super::{Durable, DurableV2, DurableV4, DurableV5};
 use crate::resources::outer::{EncodeSchema, Schema};
 
 impl EncodeSchema for DurableV2 {}
 impl EncodeSchema for Durable {}
 impl EncodeSchema for DurableV4 {}
 impl EncodeSchema for DurableV5<'_> {}
-impl<'de> Schema<'de> for DurableV2 {}
-impl<'de> Schema<'de> for Durable {}
-impl<'de> Schema<'de> for DurableV4 {}
+impl Schema<'_> for DurableV2 {}
+impl Schema<'_> for Durable {}
+impl Schema<'_> for DurableV4 {}
 impl<'de> Schema<'de> for DurableV5<'de> {}
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::NeighbourMsg;
     use crate::resources::outer::{self, Error, Limits};
 
     fn limits() -> Limits {

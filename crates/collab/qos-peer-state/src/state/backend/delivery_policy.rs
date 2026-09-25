@@ -1,5 +1,5 @@
 //! Actual-core adapters to the one delivery policy projection.
-use super::*;
+use super::{BoundedNative, DeviceCert, PeerCore, StatePeer, SystemTime};
 use crate::state::bounded::{BoundedPeerError, PeerLimits};
 use automerge::resource_limits::NativeWorkTurn;
 #[derive(Debug, PartialEq, Eq)]
@@ -90,7 +90,7 @@ pub(in crate::state) fn bounded<'peer>(
                 .certificates
                 .map()
                 .values()
-                .map(|certificate| certificate.as_ref()),
+                .map(std::convert::AsRef::as_ref),
             revocations: core.revocations.iter(),
         },
         turn,
@@ -113,6 +113,11 @@ pub(in crate::state) fn bounded<'peer>(
 impl StatePeer {
     /// Allocating legacy data projection, with no resource/owner qualification.
     /// Host then device are supplied by the parent's authenticated source.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`PeerDeliveryPolicyError`] if a party is not current or a route read check
+    /// fails.
     pub fn delivery_policy_unqualified(
         &self,
         workspace: u64,
@@ -141,7 +146,7 @@ impl StatePeer {
                     .core
                     .certificates
                     .values()
-                    .map(|certificate| certificate.as_ref()),
+                    .map(std::convert::AsRef::as_ref),
                 revocations: self.core.revocations.iter(),
             },
             || {

@@ -61,40 +61,45 @@ trait ObjectIdWrite: RoomRead {
 impl<D: ReadDoc> ObjectIdWrite for LegacyRead<'_, D> {
     fn object_id(&self, object: &ObjId, sink: &mut [u8]) -> Result<Option<usize>, Error> {
         let ObjId::Id(counter, actor, _) = object else {
-            if sink.len() < 5 {
+            let Some(root) = sink.get_mut(..5) else {
                 return Ok(None);
-            }
-            sink[..5].copy_from_slice(b"_root");
+            };
+            root.copy_from_slice(b"_root");
             return Ok(Some(5));
         };
-        let digits = if *counter == 0 {
-            1
-        } else {
-            counter.ilog10() as usize + 1
-        };
+        // A u64 has at most 20 decimal digits, so these steps are exact.
+        let digits = counter
+            .checked_ilog10()
+            .map_or(1, |log| (log as usize).saturating_add(1));
         let Some(length) = actor
             .to_bytes()
             .len()
             .checked_mul(2)
-            .and_then(|n| n.checked_add(digits + 1))
+            .and_then(|n| n.checked_add(digits.saturating_add(1)))
         else {
             return Ok(None);
         };
-        if length > sink.len() {
+        let Some((number, rest)) = sink
+            .get_mut(..length)
+            .and_then(|target| target.split_at_mut_checked(digits))
+        else {
             return Ok(None);
-        }
+        };
+        let Some((at, hex_digits)) = rest.split_first_mut() else {
+            return Ok(None);
+        };
         let mut value = *counter;
-        for index in (0..digits).rev() {
-            sink[index] = b'0' + (value % 10) as u8;
+        for slot in number.iter_mut().rev() {
+            *slot = b'0'.saturating_add((value % 10) as u8);
             value /= 10;
         }
-        sink[digits] = b'@';
-        hex::encode_to_slice(actor.to_bytes(), &mut sink[digits + 1..length])
+        *at = b'@';
+        hex::encode_to_slice(actor.to_bytes(), hex_digits)
             .map_err(|_| policy(MediaPolicyError::Malformed))?;
         Ok(Some(length))
     }
 }
-impl<'doc> ObjectIdWrite for NativeReadSession<'doc, '_> {
+impl ObjectIdWrite for NativeReadSession<'_, '_> {
     fn object_id(&self, object: &Self::Object, sink: &mut [u8]) -> Result<Option<usize>, Error> {
         let id = object.id();
         let length = self.id_len(id).map_err(Error::Resource)?;
@@ -139,7 +144,10 @@ fn resolve<R: ObjectIdWrite, C: CopyValue>(
     let length = room.object_id(&object, &mut buffer)?;
     let object_text = length
         .map(|length| {
-            std::str::from_utf8(&buffer[..length]).map_err(|_| policy(MediaPolicyError::Malformed))
+            buffer
+                .get(..length)
+                .and_then(|text| std::str::from_utf8(text).ok())
+                .ok_or_else(|| policy(MediaPolicyError::Malformed))
         })
         .transpose()?;
     let object_copy = object_text
@@ -173,7 +181,8 @@ pub(super) fn resolve_legacy(
     if !doc.get_missing_deps(&[]).is_empty() {
         return Err(MediaPolicyError::Binding);
     }
-    resolve(app, record, channel, &LegacyRead(doc), &LegacyCopy).map_err(super::read::legacy_error)
+    resolve(app, record, channel, &LegacyRead(doc), &LegacyCopy)
+        .map_err(|error| super::read::legacy_error(&error))
 }
 pub(crate) fn resolve_native(
     app: &str,
@@ -219,7 +228,7 @@ pub(super) fn validate_legacy(
     validate_selected(policy_value, app, record, |channel| {
         resolve_legacy(app, record, channel, doc).map_err(policy)
     })
-    .map_err(super::read::legacy_error)
+    .map_err(|error| super::read::legacy_error(&error))
 }
 pub(crate) fn validate_native(
     policy: &RoomMediaV1,

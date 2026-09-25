@@ -1,5 +1,12 @@
 //! One private peer representation; storage qualification cannot be copied.
-use super::*;
+use super::{
+    AcceptedCheckpoint, Actor, ArtifactKind, AutoCommit, BTreeMap, CachedDocument, CapDecision,
+    CapOverride, ChannelState, DeviceCert, DocumentWireVersion, Durable, DurableDocument,
+    DurableDocumentV2, DurableV2, DurableV4, DurableV5, Ed25519PublicKey, ExactAdmissions,
+    GovernedIdentity, NeighbourMsg, Principal, RedemptionReceipt, ResourceRef, RevocationList,
+    Role, Route, Scope, StatePeer, Subject, SystemTime, VecDeque, Verb, VerifiedCertificate,
+    decide_capability, err, now_ns, now_secs, room,
+};
 use crate::resources::native::NativeDocument;
 use automerge::resource_limits::NativeReservation;
 pub(super) mod access;
@@ -78,9 +85,16 @@ impl Storage for BoundedNative {
 // Historical restore keeps checkpoint bytes lazy. Their original DTO backing
 // is held by CoreRetention, and any future decode must use the current native
 // work turn. No eager load rejects previously accepted opaque checkpoint bytes.
+// The checkpoint's wire version is its document's `PeerDocument::wire_version`.
 pub(super) struct NativeCheckpoint {
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "retained for a future decode under the current work turn; only tests read it today"
+        )
+    )]
     pub(super) original: Vec<u8>,
-    pub(super) wire_version: Option<DocumentWireVersion>,
 }
 
 pub(super) struct PeerDocument<S: Storage> {
@@ -120,7 +134,7 @@ pub(super) struct PeerCore<S: Storage> {
     // Transient native cut context is never part of the durable DTO.
     pub(super) native_cut_publisher: Option<[u8; 32]>,
     // Declared last: owned metadata and native backing drop before its credit.
-    pub(super) retention: S::Retention,
+    pub(super) _retention: S::Retention,
 }
 impl Clone for PeerCore<LegacyNative> {
     fn clone(&self) -> Self {
@@ -138,7 +152,7 @@ impl Clone for PeerCore<LegacyNative> {
             exact_admissions: self.exact_admissions.clone(),
             admission_v5: self.admission_v5,
             native_cut_publisher: self.native_cut_publisher,
-            retention: (),
+            _retention: (),
         }
     }
 }
@@ -178,6 +192,8 @@ impl<S: Storage> PeerCore<S> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::TransportOrigin;
+    use ed25519_dalek::SigningKey;
     #[test]
     fn typed_certificate_lookup_uses_real_current_roster_without_error_allocations() {
         let (mut peer, _, _, member, now) = crate::admission_tests::seeded();

@@ -1,11 +1,16 @@
 //! Local exact retries use the signed author, never an invented carrier origin.
 
-use super::*;
+use super::{AdmissionError, DocumentAdmission, SignedOp, StatePeer, SystemTime};
 
 impl StatePeer {
     /// Look up an already recorded local envelope with current authority,
     /// signature and route validation. The caller must independently require
     /// that its selected local device is exactly `envelope.author`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an [`AdmissionError`] if the envelope fails authority, signature or route
+    /// validation.
     pub fn lookup_exact_local_document(
         &self,
         app: &str,
@@ -27,6 +32,11 @@ impl StatePeer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::NeighbourMsg;
+    use collab_types::Ed25519PublicKey;
+    use ed25519_dalek::SigningKey;
+    use tilo_user_identity::DeviceCert;
+    use web_time::Duration;
 
     fn admitted() -> (StatePeer, SignedOp, SigningKey, DeviceCert, SystemTime) {
         let (mut peer, key, other, certificate, now) = crate::admission_tests::seeded();
@@ -73,7 +83,7 @@ mod tests {
             peer.lookup_exact_local_document("test.app", "tab:2", &envelope, now)
                 .is_err()
         );
-        let mut tampered = envelope.clone();
+        let mut tampered = envelope;
         tampered.author = Ed25519PublicKey::from_bytes(other.device_public_key);
         assert!(
             peer.lookup_exact_local_document("test.app", "tab:1", &tampered, now)

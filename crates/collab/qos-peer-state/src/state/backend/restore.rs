@@ -1,6 +1,10 @@
 //! Closed composition of authenticated durable input into retained peer storage.
-use super::super::bounded::*;
-use super::*;
+use super::super::bounded::{BoundedPeerError, BoundedPeerInvalid, BoundedStatePeer, PeerWork};
+use super::{
+    BTreeMap, BoundedNative, ChannelState, DeviceCert, DurableDocument, DurableDocumentV2,
+    Ed25519PublicKey, NativeCheckpoint, NativeReservation, PeerCore, PeerDocument, RevocationList,
+    Route, SystemTime, VecDeque, durable, governed, now_ns, revocations, roster,
+};
 use crate::coverage::read::{BoundedCoverage, WireVersionError, snapshot_wire_version};
 use crate::resources::json::JsonLimits;
 use crate::room::media::{
@@ -72,6 +76,10 @@ fn governance_error(value: governed::ImportError) -> BoundedPeerError {
         _ => invalid(BoundedPeerInvalid::Governance),
     }
 }
+#[expect(
+    clippy::too_many_lines,
+    reason = "one durable restore whose steps share the work turn"
+)]
 pub(in crate::state) fn restore(
     bytes: &[u8],
     room: &str,
@@ -215,10 +223,9 @@ pub(in crate::state) fn restore(
                 wire_version,
                 encryption_required: document.encryption_required,
                 covered: document.covered,
-                covered_snapshot: document.covered_snapshot.map(|original| NativeCheckpoint {
-                    original,
-                    wire_version,
-                }),
+                covered_snapshot: document
+                    .covered_snapshot
+                    .map(|original| NativeCheckpoint { original }),
             },
         );
     }
@@ -236,7 +243,7 @@ pub(in crate::state) fn restore(
         exact_admissions: exact,
         admission_v5: version == 5,
         native_cut_publisher: None,
-        retention: CoreRetention {
+        _retention: CoreRetention {
             _durable: retention,
             _metadata: metadata
                 .retention
@@ -374,6 +381,7 @@ impl Metadata {
         )
     }
     fn watermarks(&mut self, count: usize) -> Result<(), BoundedPeerError> {
+        type Entry = (Ed25519PublicKey, u64);
         if count == 0 {
             return Ok(());
         }
@@ -392,12 +400,13 @@ impl Metadata {
                 .checked_next_power_of_two()
                 .ok_or_else(capacity)?
         };
-        type Entry = (Ed25519PublicKey, u64);
         let alignment = align_of::<Entry>().max(16);
         let data = size_of::<Entry>()
             .checked_mul(buckets)
             .ok_or_else(capacity)?;
-        let padded = data.checked_add(alignment - 1).ok_or_else(capacity)? & !(alignment - 1);
+        let padded = data
+            .checked_next_multiple_of(alignment)
+            .ok_or_else(capacity)?;
         self.debit(
             padded
                 .checked_add(buckets)

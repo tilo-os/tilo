@@ -29,23 +29,23 @@ fn replacement(original: &NeighbourMsg, candidate: &NeighbourMsg, now: SystemTim
     match (original, candidate) {
         (
             NeighbourMsg::AppDocument {
-                app_id: a,
-                cluster_id: c,
-                record_id: r,
+                app_id: old_app,
+                cluster_id: old_cluster,
+                record_id: old_record,
                 envelope: old,
                 ..
             },
             NeighbourMsg::AppDocument {
-                app_id: b,
-                cluster_id: d,
-                record_id: s,
+                app_id: new_app,
+                cluster_id: new_cluster,
+                record_id: new_record,
                 envelope: new,
                 ..
             },
         ) => {
-            a == b
-                && c == d
-                && r == s
+            old_app == new_app
+                && old_cluster == new_cluster
+                && old_record == new_record
                 && old.author == new.author
                 && old.payload == new.payload
                 && old.encryption == new.encryption
@@ -88,6 +88,12 @@ impl StatePeer {
                 .count(),
         }
     }
+    /// Reconcile a durable outbox with this peer, returning the queue to send.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if a queued message is not authentic or a successor cannot be
+    /// signed.
     pub fn reconcile_outbox(
         &mut self,
         outbox: &[NeighbourMsg],

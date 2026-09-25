@@ -1,6 +1,9 @@
 //! Nonallocating traversal of concrete retained DTO Serialize implementations.
-use super::*;
-use serde::ser::*;
+use super::{Capacity, Result, Serialize, sum};
+use serde::ser::{
+    SerializeMap, SerializeSeq, SerializeStruct, SerializeStructVariant, SerializeTuple,
+    SerializeTupleStruct, SerializeTupleVariant, Serializer,
+};
 #[derive(Default)]
 struct Measure {
     sum: usize,
@@ -16,7 +19,7 @@ pub(super) fn largest<T: Serialize>(v: &T) -> Result<usize> {
     v.serialize(&mut m)?;
     Ok(m.largest)
 }
-impl<'a> Serializer for &'a mut Measure {
+impl Serializer for &mut Measure {
     type Ok = ();
     type Error = Capacity;
     type SerializeSeq = Self;

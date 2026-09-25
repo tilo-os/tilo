@@ -22,6 +22,12 @@ fn expected(text: &str) -> [u8; 32] {
 
 #[test]
 fn borrowed_scalar_writer_matches_literal_debug_shapes_without_allocating() {
+    struct Refuse;
+    impl std::fmt::Write for Refuse {
+        fn write_str(&mut self, _: &str) -> std::fmt::Result {
+            Err(std::fmt::Error)
+        }
+    }
     let bytes = [0, 1, 127, 255];
     let cases = [
         (NativeScalar::Bytes(&bytes), "Bytes([0, 1, 127, 255])"),
@@ -52,12 +58,6 @@ fn borrowed_scalar_writer_matches_literal_debug_shapes_without_allocating() {
         assert_precharged(&current, || value.write_legacy_debug(&mut sink)).unwrap();
         assert_eq!(*sink.0.finalize().as_bytes(), expected(text));
     }
-    struct Refuse;
-    impl std::fmt::Write for Refuse {
-        fn write_str(&mut self, _: &str) -> std::fmt::Result {
-            Err(std::fmt::Error)
-        }
-    }
     assert!(
         NativeScalar::Int(1)
             .write_legacy_debug(&mut Refuse)
@@ -65,6 +65,10 @@ fn borrowed_scalar_writer_matches_literal_debug_shapes_without_allocating() {
     );
 }
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one end-to-end scenario: its setup and assertions stay together"
+)]
 fn actual_malformed_policy_fingerprints_match_legacy_for_all_shapes_and_incremented_counter() {
     let values = vec![
         ScalarValue::Bytes(vec![0x17; 16000]),
@@ -97,7 +101,7 @@ fn actual_malformed_policy_fingerprints_match_legacy_for_all_shapes_and_incremen
         let legacy = doc.get(ROOT, crate::room::media::FIELD).unwrap().unwrap().0;
         if counter {
             assert_eq!(
-                format!("{:?}", legacy.to_scalar().unwrap()),
+                format!("{:?}", legacy.as_scalar().unwrap()),
                 "Counter(Counter { start: 12, current: 12 })"
             );
         }
@@ -124,7 +128,7 @@ fn actual_malformed_policy_fingerprints_match_legacy_for_all_shapes_and_incremen
                             hash.0.update(b"invalid-scalar\0");
                             value.write_legacy_debug(&mut hash).unwrap();
                         }
-                        _ => panic!("scalar fixture"),
+                        NativeValue::Object { .. } => panic!("scalar fixture"),
                     }
                     Ok::<_, ()>(())
                 },

@@ -135,6 +135,11 @@ fn stored_as(key: &str, row: &Coverage, bytes: &[u8]) -> bool {
 pub(crate) fn route_values(doc: &AutoCommit) -> Result<BTreeMap<String, Vec<u8>>, String> {
     Ok(crate::governed_routes::route_bytes(doc, LAYOUT)?.unwrap_or_default())
 }
+/// The coverage rows recorded in `doc`.
+///
+/// # Errors
+///
+/// Returns an error if a row is malformed.
 pub fn entries(doc: &AutoCommit) -> Result<BTreeMap<String, Coverage>, String> {
     let mut rows: BTreeMap<String, Coverage> =
         match crate::governed_routes::legacy_bytes(doc, LAYOUT) {
@@ -180,6 +185,11 @@ pub(crate) fn put_legacy(doc: &mut AutoCommit, rows: &BTreeMap<String, Coverage>
 pub fn route_key(app: &str, record: &str) -> String {
     format!("{app}\0{record}")
 }
+/// Write one coverage row.
+///
+/// # Errors
+///
+/// Returns an error if the row cannot be encoded or written.
 pub fn put(doc: &mut AutoCommit, coverage: Coverage) -> Result<(), String> {
     put_all(doc, vec![coverage])
 }
@@ -203,10 +213,9 @@ pub(crate) fn put_all_with_receipts(
     )?;
     Ok(())
 }
-fn next_rows(
-    doc: &AutoCommit,
-    coverages: Vec<Coverage>,
-) -> Result<(BTreeMap<String, Coverage>, BTreeMap<String, Vec<u8>>), String> {
+/// Decoded coverage rows and their raw encoded values, by route.
+type CoverageRows = (BTreeMap<String, Coverage>, BTreeMap<String, Vec<u8>>);
+fn next_rows(doc: &AutoCommit, coverages: Vec<Coverage>) -> Result<CoverageRows, String> {
     let mut rows = entries(doc)?;
     let mut incoming = BTreeSet::new();
     for coverage in coverages {
@@ -240,6 +249,11 @@ pub(crate) fn put_all(doc: &mut AutoCommit, coverages: Vec<Coverage>) -> Result<
     };
     Ok(())
 }
+/// Check that `after` never regresses a coverage row of `before`.
+///
+/// # Errors
+///
+/// Returns an error if a row is removed or regresses.
 pub fn monotonic(before: Option<&AutoCommit>, after: &AutoCommit) -> Result<(), String> {
     let old = before.map(entries).transpose()?.unwrap_or_default();
     let new = entries(after)?;

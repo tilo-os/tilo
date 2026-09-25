@@ -164,10 +164,10 @@ pub(crate) fn visit_governance_entries<R: RoomRead, E>(
     });
     // Match the existing room projection's ignored native lookup errors.
     // Resource and destination failures are never turned into absent policy.
-    if let Err(error) = owner {
-        if !matches!(error, ReadError::Malformed) {
-            return Err(error);
-        }
+    if let Err(error) = owner
+        && !matches!(error, ReadError::Malformed)
+    {
+        return Err(error);
     }
     for (field, kind) in [("capabilities", 0), ("peers", 1), ("peer_identities_v1", 2)] {
         let values = read
@@ -206,10 +206,10 @@ pub(crate) fn visit_governance_entries<R: RoomRead, E>(
                 Ok::<(), ReadError<E>>(())
             })
             .map_err(ReadError::flatten);
-        if let Err(error) = values {
-            if !matches!(error, ReadError::Malformed) {
-                return Err(error);
-            }
+        if let Err(error) = values
+            && !matches!(error, ReadError::Malformed)
+        {
+            return Err(error);
         }
     }
     Ok(())
@@ -280,10 +280,10 @@ impl<D: ReadDoc> RoomRead for LegacyRead<'_, D> {
         object: &Self::Object,
         mut visitor: impl for<'a> FnMut(&'a str) -> Result<(), E>,
     ) -> Result<usize, ReadError<E>> {
-        let mut count = 0;
+        let mut count = 0usize;
         for key in self.0.keys(object) {
             visitor(&key).map_err(ReadError::Visitor)?;
-            count += 1;
+            count = count.saturating_add(1);
         }
         Ok(count)
     }
@@ -409,12 +409,12 @@ pub(crate) fn strict_bytes<R: RoomRead, C: CopyValue>(
 }
 
 /// Only the legacy facade erases allocation detail into its frozen error enum.
-/// Bounded callers retain ReadError::Resource, including Unaccounted.
+/// Bounded callers retain `ReadError::Resource`, including Unaccounted.
 pub(crate) fn legacy_policy_error(
-    error: ReadError<super::media::MediaPolicyError>,
+    error: &ReadError<super::media::MediaPolicyError>,
 ) -> super::media::MediaPolicyError {
     use super::media::MediaPolicyError;
-    match error {
+    match *error {
         ReadError::Malformed => MediaPolicyError::Malformed,
         ReadError::Resource(_) => MediaPolicyError::Capacity,
         ReadError::Visitor(error) => error,
@@ -426,6 +426,7 @@ mod tests {
     use super::*;
     use crate::room::media::MediaPolicyError;
     use automerge::{AutoCommit, ROOT, transaction::Transactable};
+    use tilo_automerge::ApplyIncoming;
 
     #[test]
     fn room_read_adapter_copied_scalars_keep_current_credit_after_native_drop() {
@@ -448,7 +449,6 @@ mod tests {
         let blob = strict_bytes(&read, &TurnCopy(&turn), &read.root(), "blob").unwrap();
         let retained = title.as_ref().len() + blob.as_ref().len();
         assert_eq!(current.available_bytes(), before - retained);
-        drop(read);
         drop(candidate);
         drop(allocations);
         drop(turn);
@@ -492,7 +492,7 @@ mod tests {
             document.commit();
             remote.put(ROOT, "value", other).unwrap();
             remote.commit();
-            document.merge(&mut remote).unwrap();
+            document.merge_incoming(&mut remote).unwrap();
             assert_eq!(document.get_all(ROOT, "value").unwrap().len(), 2);
             let current = NativeAllowance::new(1024 * 1024).unwrap();
             let mut allocations =
@@ -583,7 +583,7 @@ mod tests {
         document.commit();
         remote.put_object(ROOT, "channels", ObjType::Map).unwrap();
         remote.commit();
-        document.merge(&mut remote).unwrap();
+        document.merge_incoming(&mut remote).unwrap();
         assert_eq!(document.get_all(ROOT, "channels").unwrap().len(), 2);
         let (candidate, turn) = native_candidate(&document);
         let read = candidate.read_unqualified(&turn).unwrap();
@@ -627,7 +627,7 @@ mod tests {
         first.commit();
         second.put_object(ROOT, "channels", ObjType::Map).unwrap();
         second.commit();
-        first.merge(&mut second).unwrap();
+        first.merge_incoming(&mut second).unwrap();
         assert_eq!(first.get_all(ROOT, "channels").unwrap().len(), 2);
         assert_eq!(
             strict_map(&LegacyRead(&first), &ROOT, "channels"),
@@ -644,10 +644,15 @@ mod tests {
         let (peer, _, _, _, _) = crate::admission_tests::seeded();
         let room = peer.admitted_room().unwrap();
         let expected = super::super::governance_of(Some(room));
-        let expected_count = usize::from(expected.0.is_some())
-            + expected.1.len()
-            + expected.2.len()
-            + expected.3.len();
+        let expected_count = [
+            usize::from(expected.0.is_some()),
+            expected.1.len(),
+            expected.2.len(),
+            expected.3.len(),
+        ]
+        .into_iter()
+        .try_fold(0usize, usize::checked_add)
+        .unwrap();
         let mut legacy_count = 0;
         visit_governance_entries(&LegacyRead(room), |_| {
             legacy_count += 1;
@@ -667,20 +672,20 @@ mod tests {
             .load(&bytes)
             .unwrap();
         let read = document.read(&turn).unwrap();
-        let mut count = 0;
+        let mut count = 0usize;
         crate::native_footprint_vendor_tests::assert_precharged(&allowance, || {
             visit_governance_entries(&read, |entry| {
-                count += 1;
+                count = count.checked_add(1).unwrap();
                 match entry {
                     GovernanceEntry::Owner(value) => assert_eq!(Some(value), expected.0.as_deref()),
                     GovernanceEntry::Capability { key, bytes } => {
-                        assert_eq!(expected.1.get(key).map(Vec::as_slice), Some(bytes))
+                        assert_eq!(expected.1.get(key).map(Vec::as_slice), Some(bytes));
                     }
                     GovernanceEntry::Peer { key, name } => {
-                        assert_eq!(expected.2.get(key).map(String::as_str), Some(name))
+                        assert_eq!(expected.2.get(key).map(String::as_str), Some(name));
                     }
                     GovernanceEntry::Identity { key, bytes } => {
-                        assert_eq!(expected.3.get(key).map(Vec::as_slice), Some(bytes))
+                        assert_eq!(expected.3.get(key).map(Vec::as_slice), Some(bytes));
                     }
                 }
                 Ok::<_, ()>(())
@@ -700,10 +705,15 @@ mod tests {
         use crate::resources::native::NativeBatch;
         use automerge::resource_limits::{NativeAllocationSet, NativeAllowance};
         let expected = super::super::governance_of(Some(doc));
-        let expected_count = usize::from(expected.0.is_some())
-            + expected.1.len()
-            + expected.2.len()
-            + expected.3.len();
+        let expected_count = [
+            usize::from(expected.0.is_some()),
+            expected.1.len(),
+            expected.2.len(),
+            expected.3.len(),
+        ]
+        .into_iter()
+        .try_fold(0usize, usize::checked_add)
+        .unwrap();
         let bytes = doc.clone().save_with_options(automerge::SaveOptions {
             deflate: false,
             retain_orphans: true,
@@ -716,20 +726,20 @@ mod tests {
             .load(&bytes)
             .unwrap();
         let read = document.read(&turn).unwrap();
-        let mut count = 0;
+        let mut count = 0usize;
         crate::native_footprint_vendor_tests::assert_precharged(&allowance, || {
             visit_governance_entries(&read, |entry| {
-                count += 1;
+                count = count.checked_add(1).unwrap();
                 match entry {
                     GovernanceEntry::Owner(value) => assert_eq!(Some(value), expected.0.as_deref()),
                     GovernanceEntry::Capability { key, bytes } => {
-                        assert_eq!(expected.1.get(key).map(Vec::as_slice), Some(bytes))
+                        assert_eq!(expected.1.get(key).map(Vec::as_slice), Some(bytes));
                     }
                     GovernanceEntry::Peer { key, name } => {
-                        assert_eq!(expected.2.get(key).map(String::as_str), Some(name))
+                        assert_eq!(expected.2.get(key).map(String::as_str), Some(name));
                     }
                     GovernanceEntry::Identity { key, bytes } => {
-                        assert_eq!(expected.3.get(key).map(Vec::as_slice), Some(bytes))
+                        assert_eq!(expected.3.get(key).map(Vec::as_slice), Some(bytes));
                     }
                 }
                 Ok::<_, ()>(())
@@ -813,7 +823,7 @@ mod tests {
                 .unwrap();
             list.insert(&malformed, 0, "not a capability").unwrap();
             list.commit();
-            map.merge(&mut list).unwrap();
+            map.merge_incoming(&mut list).unwrap();
             assert_eq!(
                 map.get_all(automerge::ROOT, "capabilities").unwrap().len(),
                 2

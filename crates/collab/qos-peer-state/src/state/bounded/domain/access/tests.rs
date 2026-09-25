@@ -1,11 +1,20 @@
 use super::*;
+use crate::BoundedStatePeer;
+use crate::PeerLimits;
+use crate::PeerRegistry;
+use crate::StatePeer;
 use crate::native_footprint_vendor_tests::assert_precharged;
+use automerge::resource_limits::NativeAllowance;
+use automerge::resource_limits::NativeResourceError;
 use automerge::{ROOT, ReadDoc, transaction::Transactable};
+use collab_types::Role;
 use collab_types::caps::{
     Actor, CapDecision, CapOverride, Principal, ResourceRef, Scope, Subject, Verb,
     decide_capability,
 };
 use collab_types::{ArtifactKind, Ed25519PublicKey};
+use tilo_user_identity::RevocationList;
+use web_time::Duration;
 fn fixture(verb: Verb) -> (StatePeer, [u8; 32], SystemTime) {
     let (mut peer, _, _, cert, now) = crate::admission_tests::seeded();
     let room = peer.core.room_doc.as_mut().unwrap();
@@ -20,7 +29,7 @@ fn fixture(verb: Verb) -> (StatePeer, [u8; 32], SystemTime) {
         Scope::Workspace,
         verb,
     )
-    .with_expiry(crate::state::now_secs(now) + 1);
+    .with_expiry(crate::state::now_secs(now).checked_add(1).unwrap());
     room.put(
         &caps,
         "member",

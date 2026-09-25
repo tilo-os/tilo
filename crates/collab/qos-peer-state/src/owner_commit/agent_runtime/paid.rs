@@ -1,5 +1,9 @@
 //! Closed resource custody for the unchanged retained private validator.
-use super::*;
+use super::{
+    AgentChange, AgentMutation, AgentMutationReceipt, AgentRuntimeChange, AgentRuntimeFact,
+    AgentRuntimeFactReceipt, GrantAction, MAX_AGENT_STEP_RESULT_BYTES, PrivateAgentLedger,
+    PrivateAgentLedgerV2, PrivateAgentState,
+};
 mod cost;
 use automerge::resource_limits::NativeReservation;
 
@@ -32,6 +36,10 @@ impl PrivateValidationFailure {
     }
 }
 impl PrivateAgentState {
+    /// # Errors
+    ///
+    /// Returns a [`PrivateValidationFailure`] if the ledger is inconsistent or its
+    /// validation exceeds the work budget.
     pub fn validate_paid(
         &self,
         room: &str,

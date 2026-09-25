@@ -1,5 +1,8 @@
 //! Shared current capability decisions. The legacy adapter is unqualified.
-use super::*;
+use super::{
+    Actor, ArtifactKind, CapDecision, CapOverride, Principal, ResourceRef, Role, SystemTime, Verb,
+    decide_capability, now_secs,
+};
 
 pub(in crate::state) fn document_read(
     role: Role,
@@ -38,10 +41,10 @@ pub(in crate::state) fn room(
 /// Source-derived peak for the exact two decision bodies above. Pinned std Vec
 /// grows Actor's one-element vec to capacity four when adding App/Room; five
 /// Principal slots cover realloc old/new overlap. String copies request their
-/// exact byte lengths. A Subject::User comparison creates one 64-byte person
+/// exact byte lengths. A `Subject::User` comparison creates one 64-byte person
 /// string at a time. Other matching branches for these Room/Artifact resources
 /// allocate nothing: no filesystem or network resource matching is entered.
-/// document_artifact_id streams SHA256 without a concatenation allocation.
+/// `document_artifact_id` streams SHA256 without a concatenation allocation.
 pub(in crate::state) fn temporary_bytes(
     person: &str,
     room: &str,

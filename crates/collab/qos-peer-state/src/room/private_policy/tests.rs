@@ -101,7 +101,6 @@ fn native_private_policy_pays_actual_current_work_and_retains_result() {
         crate::owner_commit::governance_revision(&peer).unwrap()
     );
     assert_eq!(result.next_expiry_after(3), Some(7));
-    drop(read);
     drop(candidate);
     drop(turn);
     allocations.reconcile();

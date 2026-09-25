@@ -1,5 +1,5 @@
 //! Retained exact private policy data, not a caller or current-owner credential.
-use super::*;
+use super::{BoundedPeerError, PeerRead, backend};
 /// Paid revision/expiry output from the actual bounded current peer. No owned
 /// backing can be extracted or cloned away from its original reservation.
 /// ```
@@ -27,9 +27,14 @@ impl PeerRead<'_, '_> {
     /// Retains the same strict persistent capability checks and exact revision
     /// as the legacy private basis. The parent still binds caller, lock, clock,
     /// generation and publication lineage. This does not authorize an action.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`BoundedPeerError`] if a persistent capability is malformed or the work
+    /// budget is exhausted.
     pub fn private_policy_basis(&self) -> Result<PeerPolicyBasis, BoundedPeerError> {
         Ok(PeerPolicyBasis {
-            value: backend::private_policy::bounded(&self.peer.core, self._work, self.limits)?,
+            value: backend::private_policy::bounded(&self.peer.core, self.work, self.limits)?,
         })
     }
 }

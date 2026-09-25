@@ -91,7 +91,7 @@ impl Collections {
             // Exact pinned Global layout, with every previous capacity still
             // included in the cumulative debit during moving reallocation.
             values
-                .try_reserve_exact(capacity - values.len())
+                .try_reserve_exact(capacity.saturating_sub(values.len()))
                 .map_err(|_| NativeResourceError::WorkBytes)?;
             if values.capacity() > capacity {
                 return Err(NativeResourceError::Unaccounted);

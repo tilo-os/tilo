@@ -1,4 +1,8 @@
 use super::*;
+use automerge::ROOT;
+use automerge::ReadDoc;
+use automerge::transaction::Transactable;
+use ed25519_dalek::SigningKey;
 fn original(peer: &StatePeer, policy: &RoomMediaV1, complete: bool) -> Result<(), String> {
     for call in policy
         .calls
@@ -17,7 +21,7 @@ fn original(peer: &StatePeer, policy: &RoomMediaV1, complete: bool) -> Result<()
                     &route.record,
                     &document.doc,
                 )
-                .map_err(err)?
+                .map_err(err)?;
             }
             _ if complete => {
                 return Err("media binding requires exact admitted Chat checkpoint".into());
@@ -57,7 +61,7 @@ fn actual_media_binding_loop_matches_literal_legacy_complete_and_partial_errors(
                     .values_mut()
                     .next()
                     .unwrap()
-                    .encryption_required = true
+                    .encryption_required = true;
             }
             3 => {
                 let doc = &mut candidate.core.documents.values_mut().next().unwrap().doc;

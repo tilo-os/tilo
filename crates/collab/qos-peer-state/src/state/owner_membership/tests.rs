@@ -1,5 +1,9 @@
 use super::*;
 use crate::join::{MembershipChallenge, sign_membership_proof, verify_membership_proof};
+use crate::state::now_ns;
+use ed25519_dalek::SigningKey;
+use tilo_user_identity::RevocationList;
+use web_time::Duration;
 
 fn proof(
     peer: &StatePeer,
@@ -8,7 +12,14 @@ fn proof(
     now: SystemTime,
 ) -> crate::join::VerifiedMembership {
     let challenge = peer
-        .membership_challenge(7, cert, [10; 32], [11; 32], now_ns(now) + 1_000_000, now)
+        .membership_challenge(
+            7,
+            cert,
+            [10; 32],
+            [11; 32],
+            now_ns(now).checked_add(1_000_000).unwrap(),
+            now,
+        )
         .unwrap();
     let proof = sign_membership_proof(challenge.clone(), key).unwrap();
     verify_membership_proof(
@@ -81,7 +92,7 @@ fn owner_bootstrap_proof_scope_and_exact_certificate_cannot_be_substituted() {
         .unwrap();
         assert!(peer.verify_owner_refresh(&verified, now).is_err());
     }
-    let mut changed = cert.clone();
+    let mut changed = cert;
     changed.device_label.push('!');
     tilo_user_identity::sign_device_cert(&mut changed, &SigningKey::from_bytes(&[1; 32])).unwrap();
     assert!(peer.verify_current_owner(&changed, now).is_err());

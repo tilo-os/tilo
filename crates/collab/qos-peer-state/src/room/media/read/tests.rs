@@ -6,6 +6,7 @@ use crate::room::read::{LegacyCopy, LegacyRead, TurnCopy};
 use automerge::resource_limits::{NativeAllocationSet, NativeAllowance};
 use automerge::{ActorId, AutoCommit, ROOT, ScalarValue, transaction::Transactable};
 use std::collections::BTreeMap;
+use tilo_automerge::ApplyIncoming;
 
 fn policy() -> RoomMediaV1 {
     RoomMediaV1 {
@@ -171,7 +172,7 @@ fn media_reader_conflict_precedes_decoding_and_equal_conflicts_remain_valid() {
         )
         .unwrap();
         fork.commit();
-        base.merge(&mut fork).unwrap();
+        base.merge_incoming(&mut fork).unwrap();
         let legacy = historical_parse(&base);
         assert_eq!(
             legacy.as_ref().err(),
@@ -213,7 +214,7 @@ fn media_reader_validation_uses_no_unreserved_binding_or_decimal_allocations() {
             Err(MediaPolicyError::Binding)
         );
     }
-    let mut valid = call.binding.clone();
+    let mut valid = call.binding;
     valid.channel_object = "18446744073709551615@01".into();
     assert_precharged(&allowance, || valid.validate()).unwrap();
     value
@@ -282,7 +283,7 @@ fn media_reader_checks_maximum_maps_and_noncanonical_varints_against_original_pa
         value.calls.insert([id; 32], call);
     }
     let bytes = historical_encode(&value).unwrap();
-    let mut doc = room(Some(bytes.clone()));
+    let mut doc = room(Some(bytes));
     let (allowance, mut registry, turn) = context();
     let native = NativeBatch::new(&mut registry, &turn, 8 * 1024 * 1024)
         .unwrap()

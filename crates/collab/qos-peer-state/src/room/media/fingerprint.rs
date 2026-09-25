@@ -20,6 +20,7 @@ impl std::fmt::Write for Hash {
         Ok(())
     }
 }
+#[derive(Clone, Copy)]
 enum Shape<'a> {
     Bytes(&'a [u8]),
     Str(&'a str),
@@ -45,20 +46,20 @@ fn fingerprint(
         }
         Shape::Object(kind) => {
             hash.0.update(b"invalid-object\0");
-            write!(&mut hash, "{kind:?}").expect("hash sink is infallible");
+            // The hash sink never fails; only a failing Debug impl could.
+            write!(&mut hash, "{kind:?}").map_err(|_| NativeResourceError::Invalid)?;
         }
     }
     extra(&mut hash)?;
     Ok(*hash.0.finalize().as_bytes())
 }
-fn legacy(value: Value<'_>, object: &ObjId) -> [u8; 32] {
+fn legacy(value: Value<'_>, object: &ObjId) -> Result<[u8; 32], NativeResourceError> {
     match value {
         Value::Scalar(value) => match value.as_ref() {
             ScalarValue::Bytes(bytes) => fingerprint(Shape::Bytes(bytes), |_| Ok(())),
             ScalarValue::Str(text) => fingerprint(Shape::Str(text), |_| Ok(())),
             value => fingerprint(Shape::InvalidScalar, |hash| {
-                write!(hash, "{value:?}").expect("hash sink is infallible");
-                Ok(())
+                write!(hash, "{value:?}").map_err(|_| NativeResourceError::Invalid)
             }),
         },
         Value::Object(kind) => fingerprint(Shape::Object(kind), |hash| {
@@ -68,7 +69,6 @@ fn legacy(value: Value<'_>, object: &ObjId) -> [u8; 32] {
             Ok(())
         }),
     }
-    .expect("legacy fingerprint has no fallible resource work")
 }
 impl<D: ReadDoc> FingerprintRead for LegacyRead<'_, D> {
     fn visit_media_fingerprints<E>(
@@ -81,7 +81,8 @@ impl<D: ReadDoc> FingerprintRead for LegacyRead<'_, D> {
             .map_err(|_| ReadError::Malformed)?;
         let count = values.len();
         for (value, object) in values {
-            visitor(legacy(value, &object)).map_err(ReadError::Visitor)?;
+            let fingerprint = legacy(value, &object).map_err(ReadError::Resource)?;
+            visitor(fingerprint).map_err(ReadError::Visitor)?;
         }
         Ok(count)
     }
@@ -106,8 +107,7 @@ impl FingerprintRead for NativeReadSession<'_, '_> {
                     NativeValue::Scalar(value) => fingerprint(Shape::InvalidScalar, |hash| {
                         value
                             .write_legacy_debug(hash)
-                            .expect("hash sink is infallible");
-                        Ok(())
+                            .map_err(|_| NativeResourceError::Invalid)
                     }),
                     NativeValue::Object { kind, .. } => fingerprint(Shape::Object(kind), |hash| {
                         let length = self.id_bytes_len(id)?;

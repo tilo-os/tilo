@@ -1,5 +1,5 @@
 //! Shape inventory only. It never accepts/rejects JSON or replaces serde's error.
-use super::*;
+use super::{Capacity, MAX_AGENT_STEP_RESULT_BYTES, Result, growth, mul, nodes, sum};
 #[derive(Default)]
 struct Shape {
     strings: usize,
@@ -11,24 +11,28 @@ struct Shape {
     longest_number: usize,
 }
 fn scan(bytes: &[u8]) -> Result<Shape> {
+    // `i` never exceeds `bytes.len()` + 1, so saturating steps are exact.
+    let at = |i: usize| bytes.get(i).copied();
     let mut s = Shape::default();
-    let mut i = 0;
-    while i < bytes.len() {
-        match bytes[i] {
+    let mut i = 0usize;
+    while let Some(byte) = at(i) {
+        match byte {
             b'"' => {
-                let start = i + 1;
-                i += 1;
-                while i < bytes.len() {
-                    match bytes[i] {
+                let start = i.saturating_add(1);
+                i = start;
+                while let Some(byte) = at(i) {
+                    match byte {
                         b'"' => {
-                            i += 1;
+                            i = i.saturating_add(1);
                             break;
                         }
                         b'\\' => i = i.saturating_add(2),
-                        _ => i += 1,
+                        _ => i = i.saturating_add(1),
                     }
                 }
-                let n = i.saturating_sub(start).min(bytes.len() - start);
+                let n = i
+                    .saturating_sub(start)
+                    .min(bytes.len().saturating_sub(start));
                 s.strings = sum(&[s.strings, 1])?;
                 s.string_bytes = sum(&[s.string_bytes, n])?;
                 s.longest_string = s.longest_string.max(n);
@@ -37,23 +41,21 @@ fn scan(bytes: &[u8]) -> Result<Shape> {
             b'[' | b'{' => {
                 s.containers = sum(&[s.containers, 1])?;
                 s.cells = sum(&[s.cells, 1])?;
-                i += 1
+                i = i.saturating_add(1);
             }
             b'-' | b'0'..=b'9' => {
                 let start = i;
-                while i < bytes.len()
-                    && matches!(bytes[i], b'-' | b'+' | b'.' | b'e' | b'E' | b'0'..=b'9')
-                {
-                    i += 1
+                while let Some(b'-' | b'+' | b'.' | b'e' | b'E' | b'0'..=b'9') = at(i) {
+                    i = i.saturating_add(1);
                 }
                 s.numbers = sum(&[s.numbers, 1])?;
-                s.longest_number = s.longest_number.max(i - start);
+                s.longest_number = s.longest_number.max(i.saturating_sub(start));
                 s.cells = sum(&[s.cells, 1])?;
             }
-            b' ' | b'\n' | b'\r' | b'\t' | b',' | b':' | b']' | b'}' => i += 1,
+            b' ' | b'\n' | b'\r' | b'\t' | b',' | b':' | b']' | b'}' => i = i.saturating_add(1),
             _ => {
                 s.cells = sum(&[s.cells, 1])?;
-                i += 1
+                i = i.saturating_add(1);
             }
         }
     }
@@ -68,11 +70,15 @@ struct Content {
     discriminant: u64,
     payload: [usize; 3],
 }
+/// Four Vec slots of one owned Content pair, covering geometric growth overlap.
+const CONTENT_SLOTS: usize = 4 * size_of::<(Content, Content)>();
+/// Four Vec slots of one owned Value, covering geometric growth overlap.
+const VALUE_SLOTS: usize = 4 * size_of::<serde_json::Value>();
 fn content(s: &Shape) -> Result<usize> {
     sum(&[
         s.string_bytes,
         growth(s.cells, size_of::<(Content, Content)>())?,
-        mul(s.containers, 4 * size_of::<(Content, Content)>())?,
+        mul(s.containers, CONTENT_SLOTS)?,
     ])
 }
 fn value(s: &Shape) -> Result<usize> {
@@ -80,7 +86,7 @@ fn value(s: &Shape) -> Result<usize> {
         s.string_bytes,
         nodes::<String, serde_json::Value>(s.strings)?,
         growth(s.cells, size_of::<serde_json::Value>())?,
-        mul(s.containers, 4 * size_of::<serde_json::Value>())?,
+        mul(s.containers, VALUE_SLOTS)?,
     ])
 }
 fn parser(s: &Shape) -> Result<usize> {
@@ -88,12 +94,12 @@ fn parser(s: &Shape) -> Result<usize> {
     // -350..309; bhcomp769 digits; conservative277 limbs incl shift/rounding.
     const SPAN: usize = 350 + 769 + 20;
     const LIMBS: usize = (4 * 769 + 3 * SPAN + (1075 + SPAN) + 128).div_ceil(32);
-    let frames = (usize::BITS - (LIMBS - 1).leading_zeros()) as usize + 1;
-    let floating = (8 * frames + 2) * 3 * (2 * LIMBS) * 8;
+    const FRAMES: usize = (usize::BITS - (LIMBS - 1).leading_zeros()) as usize + 1;
+    const FLOATING: usize = (8 * FRAMES + 2) * 3 * (2 * LIMBS) * 8;
     sum(&[
         growth(sum(&[s.longest_string, 4])?, 1)?,
         mul(s.longest_number.checked_add(1).ok_or(Capacity)?.max(16), 3)?,
-        floating,
+        FLOATING,
         diagnostics(s.longest_string.max(s.longest_number))?,
     ])
 }
@@ -103,6 +109,9 @@ pub(super) fn diagnostics(longest: usize) -> Result<usize> {
     // although only one parser error uses one list. Position formatting has two
     // usize decimal fields. Debug escaping expands a single input byte by at
     // most six (`\\u00XX`); this is error spelling, not payload heap sizing.
+    const POSITIONS: usize = 2 * (usize::BITS as usize);
+    const ERROR_BOXES: usize =
+        4 * (size_of::<Box<str>>() + size_of::<std::io::Error>() + 6 * size_of::<usize>());
     const SPELLINGS: &str = concat!(
         "version kind name task grant_set_id agent_id text cursor invocation_id ",
         "agent_capabilities agent_list agent_conversation agent_spawn agent_message agent_status ",
@@ -115,19 +124,11 @@ pub(super) fn diagnostics(longest: usize) -> Result<usize> {
         "canonicalisation failed: postcard serialisation failed: device-cert signature did not verify ",
         "invalid character: expected an optional prefix of `urn:uuid:` followed by [0-9a-fA-F-], found "
     );
-    let text = sum(&[
-        SPELLINGS.len(),
-        mul(longest, 6)?,
-        2 * (usize::BITS as usize),
-        2,
-    ])?;
+    let text = sum(&[SPELLINGS.len(), mul(longest, 6)?, POSITIONS, 2])?;
     // serde boxed error payload + its formatted String; protocol wraps/formats
     // that String once more; final validator map_err formats it again. Growth
     // includes old/new backing overlap for each simultaneously live string.
-    sum(&[
-        mul(growth(text, 1)?, 3)?,
-        4 * (size_of::<Box<str>>() + size_of::<std::io::Error>() + 6 * size_of::<usize>()),
-    ])
+    sum(&[mul(growth(text, 1)?, 3)?, ERROR_BOXES])
 }
 pub(super) fn string_bytes(bytes: &[u8]) -> Result<usize> {
     Ok(scan(bytes)?.string_bytes)
@@ -165,6 +166,8 @@ pub(super) fn step_result(bytes: &[u8]) -> Result<usize> {
     sum(&[parser(&s)?, value(&s)?])
 }
 pub(super) fn envelope(bytes: &[u8]) -> Result<usize> {
+    // Facets are the only typed sequence: each possible cell pays two Strings.
+    const FACET_CELL: usize = 2 * size_of::<String>();
     if bytes.len() > 128 * 1024 {
         return diagnostics(0);
     }
@@ -174,7 +177,7 @@ pub(super) fn envelope(bytes: &[u8]) -> Result<usize> {
     // by ActionContext, and reconstructed serde_json::to_value tree. Retaining
     // all four is conservative for the actual partially overlapping lifetimes.
     // Facets are the only typed sequence: each possible cell pays two Strings.
-    let typed = sum(&[s.string_bytes, mul(s.cells, 2 * size_of::<String>())?])?;
+    let typed = sum(&[s.string_bytes, mul(s.cells, FACET_CELL)?])?;
     let output = growth(
         sum(&[
             bytes.len(),

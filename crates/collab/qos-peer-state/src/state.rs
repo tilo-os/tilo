@@ -39,6 +39,10 @@ pub use native_publication::NativePublicationCut;
 mod resources;
 pub use media_governance::VerifiedSecurityMetadataOnly;
 
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "a `map_err` adapter, which hands over the error by value"
+)]
 fn err(error: impl ToString) -> String {
     error.to_string()
 }
@@ -55,8 +59,8 @@ fn now_secs(now: SystemTime) -> u64 {
         .as_secs()
 }
 pub fn peer_handle(key: &[u8; 32]) -> u64 {
-    key.iter().fold(0xcbf29ce484222325, |h, b| {
-        (h ^ u64::from(*b)).wrapping_mul(0x100000001b3)
+    key.iter().fold(0xcbf2_9ce4_8422_2325, |h, b| {
+        (h ^ u64::from(*b)).wrapping_mul(0x0100_0000_01b3)
     })
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -91,6 +95,10 @@ pub struct GovernedMember {
     pub removed: bool,
 }
 #[derive(Clone, Debug, Default)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "public outcome record: each flag reports an independent fact"
+)]
 pub struct ReceiveOutcome {
     pub changed: bool,
     pub deferred: bool,
@@ -150,7 +158,7 @@ impl AcceptedCheckpoint {
     }
     fn decode(&self) -> Result<std::sync::Arc<DecodedCheckpoint>, String> {
         #[cfg(test)]
-        CHECKPOINT_DECODES.with(|count| count.set(count.get() + 1));
+        CHECKPOINT_DECODES.with(|count| count.set(count.get().saturating_add(1)));
         let doc = automerge::Automerge::load(&self.0.bytes).map_err(err)?;
         let heads = doc.get_heads().iter().map(ToString::to_string).collect();
         let version = self
@@ -256,6 +264,12 @@ fn governed_snapshot_wire_version(
 }
 
 impl StatePeer {
+    /// Build a replica for `room` pinned to `authority` and its certified roster.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `room` is not a UUID, a certificate fails verification at `now`,
+    /// or a certificate is revoked.
     pub fn new(
         room: &str,
         authority: DeviceCert,
@@ -287,18 +301,28 @@ impl StatePeer {
                 exact_admissions: ExactAdmissions::default(),
                 admission_v5: false,
                 native_cut_publisher: None,
-                retention: (),
+                _retention: (),
             },
         })
     }
     /// Add a root-certified viewer to existing governed history. Only the pinned
     /// room authority may issue this local governance mutation.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `key` is not the governance writer, the certificate is invalid,
+    /// revoked or conflicts with a recorded one, or governance cannot be updated.
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "public API: callers hand over the certificate"
+    )]
     pub fn admit_certificate(
         &mut self,
         cert: DeviceCert,
         key: &SigningKey,
         now: SystemTime,
     ) -> Result<bool, String> {
+        use automerge::ReadDoc;
         if key.verifying_key().to_bytes() != self.core.authority.device_public_key {
             return Err("governance writer is not pinned authority".into());
         }
@@ -310,10 +334,10 @@ impl StatePeer {
         if self.core.revocations.is_revoked(&cert.device_public_key) {
             return Err("device revoked".into());
         }
-        if let Some(old) = self.core.certificates.get(&cert.device_public_key) {
-            if old.as_ref() != &cert {
-                return Err("certificate conflict".into());
-            }
+        if let Some(old) = self.core.certificates.get(&cert.device_public_key)
+            && old.as_ref() != &cert
+        {
+            return Err("certificate conflict".into());
         }
         let mut doc = self
             .core
@@ -337,7 +361,6 @@ impl StatePeer {
         {
             return Ok(false);
         }
-        use automerge::ReadDoc;
         let identities = doc
             .get(ROOT, "peer_identities_v1")
             .map_err(err)?
@@ -376,6 +399,11 @@ impl StatePeer {
     }
     /// Publish same-root, root-signed revocations into pinned governance.
     /// Independent collaborator roots retain their own signed revocation scope.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `key` is not the governance writer, an entry is not signed by
+    /// the authority root, or governance cannot be updated.
     pub fn publish_governed_revocations(
         &mut self,
         entries: &[tilo_user_identity::RevocationEntry],
@@ -439,6 +467,12 @@ impl StatePeer {
         }
         Ok(())
     }
+    /// Record a verified workspace delegation in pinned governance.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `key` is not the governance writer, the delegation does not
+    /// verify, its service is absent from the governed roster, or governance is missing.
     pub fn install_workspace_delegation(
         &mut self,
         delegation: crate::join::WorkspaceDelegation,
@@ -484,6 +518,11 @@ impl StatePeer {
     }
     /// Atomically records a verified single-use invitation redemption, its
     /// independent root-certified device, and its room role.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `key` is not the governance writer, the redemption conflicts
+    /// with recorded governance, or governance cannot be updated.
     pub fn admit_invited_member(
         &mut self,
         redemption: &crate::join::VerifiedRedemption,
@@ -533,6 +572,12 @@ impl StatePeer {
         }
     }
 
+    /// Change a governed collaborator's room role.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `key` is not the governance writer, the user is the owner or
+    /// absent from governed admission history, or governance cannot be updated.
     pub fn set_member_role(
         &mut self,
         user_public_key: [u8; 32],
@@ -578,6 +623,12 @@ impl StatePeer {
         Ok(changed && before_role != Some(member_role(role)))
     }
 
+    /// Remove a governed collaborator and revoke their devices.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `key` is not the governance writer, the user is the structural
+    /// owner or not a member, or governance cannot be updated.
     pub fn remove_member(
         &mut self,
         user_public_key: [u8; 32],
@@ -632,6 +683,11 @@ impl StatePeer {
         self.apply_governance_doc(doc, &before, key, now)
     }
 
+    /// Current governed access derived from the admitted room document.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if room governance is missing or malformed.
     pub fn governed_access(&self, now: SystemTime) -> Result<GovernedAccess, String> {
         let policy = self
             .core
@@ -674,6 +730,10 @@ impl StatePeer {
 
     /// Authority-authored collaborator projection. The structural owner is
     /// exposed separately by [`StatePeer::owner_user_public_key`].
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if room governance is missing or malformed.
     pub fn governed_members(&self, now: SystemTime) -> Result<Vec<GovernedMember>, String> {
         let doc = self
             .core
@@ -734,6 +794,12 @@ impl StatePeer {
         self.core.authority.user_public_key
     }
 
+    /// Issue a membership refresh challenge for a governed device.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the device is not a current governed member at `now` or the
+    /// challenge cannot be signed.
     #[allow(
         clippy::too_many_arguments,
         reason = "Keep the membership challenge's authenticated protocol fields explicit"
@@ -782,6 +848,11 @@ impl StatePeer {
         )
     }
 
+    /// Check a verified membership refresh against current governance.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the refreshed device is no longer a governed member.
     pub fn verify_member_refresh(
         &self,
         membership: &crate::join::VerifiedMembership,
@@ -789,7 +860,7 @@ impl StatePeer {
     ) -> Result<crate::join::MemberRole, String> {
         let role = self.current_membership_role(membership, now)?;
         member_role_from_role(role)
-            .ok_or("structural owner does not use collaborator refresh".into())
+            .ok_or_else(|| "structural owner does not use collaborator refresh".into())
     }
 
     fn has_governed_admission(&self, cert: &DeviceCert) -> bool {
@@ -905,6 +976,12 @@ impl StatePeer {
     pub fn room(&self) -> &str {
         &self.core.room
     }
+    /// The room role, capability overrides and owner of the device `source`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `source` has no current certified identity or governance is
+    /// missing.
     pub fn permissions(
         &self,
         source: [u8; 32],
@@ -930,6 +1007,10 @@ impl StatePeer {
 
     /// Read permission for an exact canonical record using the same governed
     /// actor/resource vocabulary as document mutation admission.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `device` may not read the record under current governance.
     pub fn check_document_read(
         &self,
         device: [u8; 32],
@@ -953,6 +1034,10 @@ impl StatePeer {
     /// Validated data from this exact snapshot, not an authorization credential.
     /// Missing exact Chat prerequisites and unpromoted local revocations fail
     /// closed. Current device permissions/time still require separate checks.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the room media policy fails validation against this snapshot.
     pub fn validated_media_policy(&self) -> Result<Option<room::media::RoomMediaV1>, String> {
         let policy = self.validate_present_media_policy()?;
         if let Some(policy) = &policy {
@@ -997,7 +1082,7 @@ impl StatePeer {
         self.core.pending.len()
     }
     /// This only authorizes recovery of an overtaken sequence. It is not
-    /// acknowledgement: covers() additionally requires causal change inclusion.
+    /// acknowledgement: `covers()` additionally requires causal change inclusion.
     pub(crate) fn checkpoint_sequence_covers(&self, message: &NeighbourMsg) -> bool {
         let NeighbourMsg::AppDocument {
             app_id,
@@ -1172,6 +1257,10 @@ impl StatePeer {
 
     /// Select native schema v5 only as part of an outer owner's reviewed rollout.
     /// This selects candidate serialization; it does not commit any bytes.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the current exact admission index does not fit schema v5.
     pub fn select_admission_v5(&mut self) -> Result<(), AdmissionError> {
         self.core.exact_admissions.encode()?;
         self.core.admission_v5 = true;
@@ -1182,6 +1271,10 @@ impl StatePeer {
     }
 
     /// Exact observations from the real admission path, not a durability receipt.
+    ///
+    /// # Errors
+    ///
+    /// Returns an [`AdmissionError`] when the message is refused.
     pub fn receive_from_report(
         &mut self,
         origin: TransportOrigin,
@@ -1203,6 +1296,11 @@ impl StatePeer {
 
     /// A read-only exact retry lookup. Current authority and signature/route still
     /// apply; only a recorded envelope bypasses new-write timestamp freshness.
+    ///
+    /// # Errors
+    ///
+    /// Returns an [`AdmissionError`] if the message is not a valid document envelope for
+    /// this room or its author is not currently authorized.
     pub fn lookup_exact_document(
         &self,
         origin: TransportOrigin,
@@ -1251,6 +1349,11 @@ impl StatePeer {
 
     /// Exact new candidate admissions for local multi-record owner commits.
     /// Also refuses replacement that discards prior exact evidence.
+    ///
+    /// # Errors
+    ///
+    /// Returns an [`AdmissionError`] if this candidate discards exact evidence that
+    /// `before` recorded.
     pub fn admissions_since(
         &self,
         before: &StatePeer,
@@ -1280,6 +1383,11 @@ impl StatePeer {
             .collect())
     }
 
+    /// Admit a message from `origin`, queuing it while prerequisites are missing.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the message is refused.
     pub fn receive_from(
         &mut self,
         origin: TransportOrigin,
@@ -1310,6 +1418,10 @@ impl StatePeer {
             .map(|report| report.summary)
             .map_err(err)
     }
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the single admission dispatch over every neighbour message kind"
+    )]
     fn receive_with_context(
         &mut self,
         source: [u8; 32],
@@ -1462,21 +1574,21 @@ impl StatePeer {
                 let pending = std::mem::take(&mut self.core.pending);
                 self.core.pending_bytes = 0;
                 let mut applied = changed;
-                let mut rejected = 0;
+                let mut rejected = 0usize;
                 let mut settled = Vec::new();
                 for (author, message, replayed) in pending {
                     match self.receive_with_context(author, message, now, replayed, strict_report) {
                         Ok(outcome) => {
                             applied |= outcome.changed;
                             metadata_changed |= outcome.metadata_changed;
-                            rejected += outcome.rejected;
+                            rejected = rejected.saturating_add(outcome.rejected);
                             settled.extend(outcome.settled);
                         }
                         Err(error) => {
                             if self.core.native_cut_publisher.is_some() {
                                 return Err(error);
                             }
-                            rejected += 1;
+                            rejected = rejected.saturating_add(1);
                         }
                     }
                 }
@@ -1561,12 +1673,15 @@ impl StatePeer {
                 },
             ));
         }
-        if self.core.pending.len() >= 64
-            || bytes.len() > 4 * 1024 * 1024usize - self.core.pending_bytes
-        {
+        let pending_bytes = self
+            .core
+            .pending_bytes
+            .checked_add(bytes.len())
+            .filter(|total| *total <= 4 * 1024 * 1024);
+        let Some(pending_bytes) = pending_bytes.filter(|_| self.core.pending.len() < 64) else {
             return Err("app prerequisite queue full; fresh checkpoint required".into());
-        }
-        self.core.pending_bytes += bytes.len();
+        };
+        self.core.pending_bytes = pending_bytes;
         self.core
             .pending
             .push_back((source, message, retained_replay));
@@ -1598,14 +1713,14 @@ impl StatePeer {
                 Ok(applied) => {
                     outcome.changed |= applied.changed;
                     outcome.metadata_changed |= applied.metadata_changed;
-                    outcome.rejected += applied.rejected;
+                    outcome.rejected = outcome.rejected.saturating_add(applied.rejected);
                     outcome.settled.extend(applied.settled);
                 }
                 Err(error) => {
                     if self.core.native_cut_publisher.is_some() {
                         return Err(error);
                     }
-                    outcome.rejected += 1;
+                    outcome.rejected = outcome.rejected.saturating_add(1);
                 }
             }
         }
@@ -1616,6 +1731,11 @@ impl StatePeer {
     /// No wire message can select this door. Unlike a retained checkpoint, an
     /// SDK snapshot is an authored mutation of an already-owned exact record.
     /// Certificate, current policy, signature, replay and route checks are shared.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the envelope fails certificate, policy, signature, replay or
+    /// route checks.
     pub fn admit_local_app_document(
         &mut self,
         app: &str,
@@ -1645,6 +1765,10 @@ impl StatePeer {
         .map_err(err)
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the single document admission path; each check builds on the previous"
+    )]
     fn admit_document(
         &mut self,
         source: [u8; 32],
@@ -1670,23 +1794,23 @@ impl StatePeer {
         {
             return Err("transport author or document room mismatch".into());
         }
-        if strict_report {
-            if let Some(admitted) = self.lookup_exact_document_parts(
+        if strict_report
+            && let Some(admitted) = self.lookup_exact_document_parts(
                 source,
                 &app_id,
                 &cluster_id,
                 &record_id,
                 &envelope,
                 now,
-            )? {
-                return Ok(AdmissionReport::new(
-                    InputDisposition::Duplicate(admitted),
-                    ReceiveOutcome {
-                        duplicate: true,
-                        ..Default::default()
-                    },
-                ));
-            }
+            )?
+        {
+            return Ok(AdmissionReport::new(
+                InputDisposition::Duplicate(admitted),
+                ReceiveOutcome {
+                    duplicate: true,
+                    ..Default::default()
+                },
+            ));
         }
         // Only legacy retained replay may validate a first admission historically.
         // Strict exact retries returned above; an index miss is a live new write,
@@ -1730,7 +1854,7 @@ impl StatePeer {
         candidate
             .channel
             .artifact_apps
-            .insert(envelope.artifact, app_id.clone());
+            .insert(envelope.artifact, app_id);
         let mut validated_channel = candidate.channel.clone();
         match collab_types::validate_admitted_inbound_op(
             &envelope,
@@ -1784,7 +1908,7 @@ impl StatePeer {
                 self.core.documents.insert(route,candidate);
                 return Ok(AdmissionReport::new(InputDisposition::RetryLater(MissingPrerequisite::PersistedMls), ReceiveOutcome{metadata_changed:true,incomplete:self.incomplete_reason(),..Default::default()}));
             },
-            _=>return Err("incomplete: authenticated persisted MLS group required; plaintext downgrade forbidden".into()),
+            collab_types::VersionedRoutedDocumentPayload::Cleartext(_)=>return Err("incomplete: authenticated persisted MLS group required; plaintext downgrade forbidden".into()),
         };
         candidate.channel = validated_channel;
         if let DocumentMutation::Snapshot(bytes) = &mutation
@@ -1924,16 +2048,16 @@ impl StatePeer {
         if local_app && !candidate.doc.get_missing_deps(&[]).is_empty() {
             return Err("local publication has unresolved document dependencies".into());
         }
-        if let Some(room) = self.core.room_doc.as_deref() {
-            if let Some(policy) = room::media::parse(room).map_err(err)? {
-                room::media::validate_bound_chat_change(
-                    &policy,
-                    &route.app,
-                    &route.record,
-                    &candidate.doc,
-                )
-                .map_err(err)?;
-            }
+        if let Some(room) = self.core.room_doc.as_deref()
+            && let Some(policy) = room::media::parse(room).map_err(err)?
+        {
+            room::media::validate_bound_chat_change(
+                &policy,
+                &route.app,
+                &route.record,
+                &candidate.doc,
+            )
+            .map_err(err)?;
         }
         let primary = if self.core.admission_v5 {
             let admitted =
@@ -1975,6 +2099,11 @@ impl StatePeer {
             room: self.core.room.clone(),
         }
     }
+    /// Install the governed seed room and documents as the authority.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `key` is not the room authority or the seed is invalid.
     pub fn install_seed(
         &mut self,
         seed: SeedState,
@@ -2003,6 +2132,11 @@ impl StatePeer {
         }
         Ok(())
     }
+    /// Sign and admit a snapshot of `record`, returning the message to publish.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the local device may not write the record or admission fails.
     pub fn publish_document(
         &mut self,
         app: &str,
@@ -2013,6 +2147,11 @@ impl StatePeer {
     ) -> Result<NeighbourMsg, String> {
         self.signed_mutation(app, record, DocumentMutation::Snapshot(bytes), key, now)
     }
+    /// Sign and admit incremental changes to `record`, returning the message to publish.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the local device may not write the record or admission fails.
     pub fn publish_incremental(
         &mut self,
         app: &str,
@@ -2023,6 +2162,11 @@ impl StatePeer {
     ) -> Result<NeighbourMsg, String> {
         self.signed_mutation(app, record, DocumentMutation::Incremental(bytes), key, now)
     }
+    /// Sign and admit `mutation` of `record`, returning the message to publish.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the local device may not write the record or admission fails.
     pub fn signed_mutation(
         &mut self,
         app: &str,
@@ -2048,7 +2192,7 @@ impl StatePeer {
         let (message, coverage) = self.prepare_signed_mutation(app, record, mutation, key, now)?;
         if self.core.admission_v5 {
             let NeighbourMsg::AppDocument { envelope, .. } = &message else {
-                unreachable!()
+                return Err("prepared mutation is not an app document".into());
             };
             let admitted =
                 DocumentAdmission::from_op(&self.core.room, app, record, envelope).map_err(err)?;
@@ -2067,6 +2211,10 @@ impl StatePeer {
         self.receive(key.verifying_key().to_bytes(), message.clone(), now)?;
         Ok(message)
     }
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "callers hand over freshly built mutations, as `signed_mutation` takes ownership"
+    )]
     fn prepare_signed_mutation(
         &self,
         app: &str,
@@ -2142,7 +2290,7 @@ impl StatePeer {
                 .unwrap_or_default();
             watermarks.insert(hex::encode(author.as_bytes()), seq);
             let NeighbourMsg::AppDocument { envelope, .. } = &message else {
-                unreachable!()
+                return Err("prepared mutation is not an app document".into());
             };
             Some(crate::coverage::Coverage {
                 room: self.core.room.clone(),
@@ -2180,19 +2328,15 @@ impl StatePeer {
         receipts_at: Option<u64>,
     ) -> Result<Vec<NeighbourMsg>, String> {
         self.validate_present_media_policy()?;
-        let documents = self
+        let prepared = self
             .core
             .documents
             .iter()
-            .map(|(route, entry)| (route.clone(), entry.doc.clone().save()))
-            .collect::<Vec<_>>();
-        let prepared = documents
-            .into_iter()
-            .map(|(route, bytes)| {
+            .map(|(route, entry)| {
                 self.prepare_signed_mutation(
                     &route.app,
                     &route.record,
-                    DocumentMutation::Snapshot(bytes),
+                    DocumentMutation::Snapshot(entry.doc.clone().save()),
                     key,
                     now,
                 )
@@ -2224,6 +2368,11 @@ impl StatePeer {
         }
         Ok(messages)
     }
+    /// Signed snapshots of every admitted document.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if a snapshot cannot be signed or encoded.
     pub fn signed_snapshots(
         &mut self,
         key: &SigningKey,
@@ -2235,6 +2384,10 @@ impl StatePeer {
         Ok(messages)
     }
     /// The governor publishes one consistent room coverage/checkpoint pair.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `key` is not the governor or a checkpoint cannot be produced.
     pub fn bootstrap_messages(
         &mut self,
         key: &SigningKey,
@@ -2249,6 +2402,10 @@ impl StatePeer {
     }
     /// Prepare, but do not publish, a candidate bound to the next native commit.
     /// The caller must commit this entire state and outgoing batch before exposing it.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `key` is not the governor or a checkpoint cannot be produced.
     pub fn durable_bootstrap_messages(
         &mut self,
         key: &SigningKey,
@@ -2294,7 +2451,7 @@ impl StatePeer {
             )?;
             if self.core.admission_v5 {
                 let NeighbourMsg::AppDocument { envelope, .. } = &message else {
-                    unreachable!()
+                    return Err("prepared mutation is not an app document".into());
                 };
                 let admitted = DocumentAdmission::from_op(
                     &self.core.room,
@@ -2333,9 +2490,19 @@ impl StatePeer {
         Ok(messages)
     }
     /// Prepare route-selective publication against the last committed peer.
-    /// SyncResp here contains only room changes since `before` and MUST be retained
+    /// `SyncResp` here contains only room changes since `before` and MUST be retained
     /// as a delta. Application messages remain exact covered snapshots. The caller
     /// must durably commit the candidate and its baseline plus this tail before send.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if this candidate discards evidence `before` recorded, the
+    /// local device lacks the pinned authority or permission, or encryption state is
+    /// incomplete.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one candidate publication built against a single committed baseline"
+    )]
     pub fn durable_mutation_messages(
         &mut self,
         before: &StatePeer,
@@ -2452,6 +2619,10 @@ impl StatePeer {
         Ok(messages)
     }
     /// A governed assertion alone is insufficient: bind it to the accepted exact checkpoint.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the governed coverage does not match the accepted checkpoint.
     pub fn durable_coverage(
         &self,
         app: &str,
@@ -2519,6 +2690,10 @@ impl StatePeer {
     }
     /// Validate the receipt and current-head coverage against one decoded checkpoint.
     /// All authority, route, payload and watermark checks remain fresh per query.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the receipt or checkpoint fails validation.
     pub fn durable_coverage_with_current(
         &self,
         app: &str,
@@ -2542,11 +2717,21 @@ impl StatePeer {
             .all(|head| accepted.doc.get_change_by_hash(head).is_some());
         Ok(Some((receipt, current)))
     }
+    /// Whether the durable receipt for the record covers its current heads.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the receipt or checkpoint fails validation.
     pub fn durable_covers_current(&self, app: &str, record: &str) -> Result<bool, String> {
         Ok(self
             .durable_coverage_with_current(app, record)?
             .is_some_and(|(_, current)| current))
     }
+    /// Encode this peer's durable state.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the state cannot be encoded within its limits.
     pub fn durable(&self) -> Result<Vec<u8>, String> {
         let documents = self
             .core
@@ -2662,6 +2847,20 @@ impl StatePeer {
         postcard::to_allocvec(&durable).map_err(err)
     }
 
+    /// Restore a peer from durable state produced by [`StatePeer::durable`].
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the bytes are malformed, the room or authority does not match,
+    /// or restored state fails admission.
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "public API: callers hand over the pinned revocation list"
+    )]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one durable restore across every stored schema version"
+    )]
     pub fn restore(
         bytes: &[u8],
         room: &str,
@@ -2742,7 +2941,7 @@ impl StatePeer {
                 exact_admissions,
                 admission_v5: version == 5,
                 native_cut_publisher: None,
-                retention: (),
+                _retention: (),
             },
         };
         backend::validate_pending(&peer.core.pending, peer.core.pending_bytes).map_err(err)?;
@@ -2779,12 +2978,14 @@ impl StatePeer {
                 ));
             }
             let wire_version = document.wire_version.or(governed_version);
-            let mut channel = ChannelState::default();
-            channel.last_seq_per_author = document
-                .watermarks
-                .into_iter()
-                .map(|(key, seq)| (Ed25519PublicKey::from_bytes(key), seq))
-                .collect();
+            let channel = ChannelState {
+                last_seq_per_author: document
+                    .watermarks
+                    .into_iter()
+                    .map(|(key, seq)| (Ed25519PublicKey::from_bytes(key), seq))
+                    .collect(),
+                ..ChannelState::default()
+            };
             peer.core.documents.insert(
                 document.route,
                 Document {
@@ -2946,7 +3147,11 @@ fn subject_is_person(subject: &Subject, root: [u8; 32], canonical: &str) -> bool
         _ => false,
     }
 }
-/// The same native room CRDT keys projected by WorkspaceTree::sync_room_doc.
+/// The same native room CRDT keys projected by `WorkspaceTree::sync_room_doc`.
+///
+/// # Errors
+///
+/// Returns an error if `room` is not a UUID or the room document cannot be built.
 pub fn seed_room(
     room: &str,
     authority: &DeviceCert,
@@ -3042,7 +3247,7 @@ mod delivery_admission_resource_tests {
         let origin = TransportOrigin::RelayDelta(key.verifying_key().to_bytes());
         receiver.select_admission_v5().unwrap();
         let pending = receiver
-            .receive_from_report(origin, snapshot.clone(), later)
+            .receive_from_report(origin, snapshot, later)
             .unwrap();
         assert_eq!(
             pending.primary(),

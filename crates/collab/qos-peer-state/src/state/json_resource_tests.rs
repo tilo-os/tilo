@@ -3,6 +3,10 @@
 
 use super::*;
 
+#[expect(
+    clippy::similar_names,
+    reason = "`root` and `room` are the domain's own names"
+)]
 pub(crate) fn identity_fixture() -> (GovernedIdentity, SystemTime) {
     let (peer, owner_key, _, delegate, now) = crate::admission_tests::seeded();
     let room = peer.admitted_room().unwrap();

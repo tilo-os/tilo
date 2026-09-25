@@ -13,6 +13,11 @@ pub enum MergeOutcome {
     MissingDependencies,
 }
 
+/// Merge a committed mutation into `doc` through checked admission.
+///
+/// # Errors
+///
+/// Returns a [`MergeError`] if the document is busy or the mutation is refused.
 pub fn merge_committed(
     doc: &mut AutoCommit,
     mutation: &DocumentMutation,
@@ -29,7 +34,7 @@ pub fn incoming_document_limits() -> automerge::resource_limits::NativeLimits {
     automerge::resource_limits::NativeLimits {
         max_normalized_bytes: 48 * 1024 * 1024,
         max_operations: 4 * 1024 * 1024,
-        max_operation_counter: u32::MAX as u64,
+        max_operation_counter: u64::from(u32::MAX),
         max_changes: 1024 * 1024,
         max_edges: 16 * 1024 * 1024,
         max_actors: 65_536,

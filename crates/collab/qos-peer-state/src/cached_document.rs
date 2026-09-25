@@ -49,7 +49,7 @@ impl CachedDocument {
         self.serialized
             .get_or_init(|| {
                 #[cfg(test)]
-                SERIALIZATIONS.with(|count| count.set(count.get() + 1));
+                SERIALIZATIONS.with(|count| count.set(count.get().saturating_add(1)));
                 self.doc.clone().save()
             })
             .clone()
@@ -61,6 +61,7 @@ thread_local! { static SERIALIZATIONS: std::cell::Cell<usize> = const { std::cel
 mod tests {
     use super::*;
     use automerge::{ROOT, ReadDoc, transaction::Transactable};
+    use tilo_automerge::ApplyIncoming;
     #[test]
     fn policy_is_shared_until_mutation_and_does_not_commit_pending_changes() {
         let mut doc = AutoCommit::new();
@@ -108,7 +109,7 @@ mod tests {
         for _ in 0..100 {
             assert_eq!(cached.clone().saved(), initial);
         }
-        assert_eq!(SERIALIZATIONS.with(|count| count.get()), 1);
+        assert_eq!(SERIALIZATIONS.with(std::cell::Cell::get), 1);
         let old = cached.clone();
         cached.put(ROOT, "value", 2).unwrap();
         let pending = cached.pending_ops();
@@ -122,7 +123,7 @@ mod tests {
         );
         assert_eq!(old.saved(), initial);
         assert_eq!(cached.saved(), changed);
-        assert_eq!(SERIALIZATIONS.with(|count| count.get()), 2);
+        assert_eq!(SERIALIZATIONS.with(std::cell::Cell::get), 2);
         assert_eq!(
             AutoCommit::load(&changed)
                 .unwrap()
@@ -130,7 +131,7 @@ mod tests {
                 .unwrap()
                 .unwrap()
                 .0
-                .to_i64(),
+                .as_i64(),
             Some(2)
         );
     }
@@ -149,7 +150,7 @@ mod tests {
         let mut cached = CachedDocument::from(seed);
         let before = cached.saved();
         let heads = cached.base_heads();
-        cached.load_incremental(&orphan).unwrap();
+        cached.load_incoming(&orphan).unwrap();
         assert_eq!(cached.base_heads(), heads);
         assert!(!cached.get_missing_deps(&[]).is_empty());
         let after = cached.saved();
@@ -159,9 +160,7 @@ mod tests {
         );
         assert_eq!(after, cached.doc.clone().save());
         let mut restored = AutoCommit::load(&after).unwrap();
-        restored
-            .load_incremental(&remote.save_after(&heads))
-            .unwrap();
+        restored.load_incoming(&remote.save_after(&heads)).unwrap();
         assert_eq!(restored.get_heads(), remote.get_heads());
     }
 }

@@ -106,7 +106,7 @@ fn bounded_native_storage_candidate_uses_same_domain_and_current_turn_credit() {
             .unwrap()
             .unwrap()
             .0
-            .to_str(),
+            .as_str(),
         Some("immutable source")
     );
 }
@@ -152,7 +152,6 @@ fn bounded_native_storage_read_and_exports_keep_actual_document_custody() {
     );
     let heads = assert_precharged(&allowance, || document.heads(&turn)).unwrap();
     let changes = assert_precharged(&allowance, || document.changes_since(&[], &turn)).unwrap();
-    drop(read);
     drop(document);
     assert_eq!(heads.as_slice(), expected_heads);
     assert_eq!(changes.len(), expected_changes.len());

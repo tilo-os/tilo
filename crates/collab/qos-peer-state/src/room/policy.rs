@@ -27,7 +27,7 @@ impl Destination for PolicyData {
     }
     fn capability(&mut self, bytes: &[u8]) -> Result<(), Self::Error> {
         if let Ok(cap) = serde_json::from_slice(bytes) {
-            self.caps.push(cap)
+            self.caps.push(cap);
         }
         Ok(())
     }
@@ -38,7 +38,7 @@ impl Destination for PolicyData {
 }
 pub(crate) fn legacy(document: &automerge::AutoCommit) -> PolicyData {
     #[cfg(test)]
-    super::POLICY_READS.with(|count| count.set(count.get() + 1));
+    super::POLICY_READS.with(|count| count.set(count.get().saturating_add(1)));
     let mut value = PolicyData {
         owner: None,
         caps: Vec::new(),

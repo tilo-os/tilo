@@ -7,6 +7,10 @@ pub struct PrivatePolicyBasis {
 impl PrivatePolicyBasis {
     /// Preserves the historical strict capability/expiry checks and revision.
     /// This legacy output carries no allocation, owner, caller or clock witness.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if room governance is missing or malformed.
     pub fn from_peer(peer: &crate::StatePeer) -> Result<Self, String> {
         let basis = peer.legacy_private_policy_basis()?;
         Ok(Self {

@@ -1,4 +1,5 @@
 //! Public bounded operation tests using the shared actual allocation meter.
+use tilo_automerge::ApplyIncoming;
 mod target_validation;
 
 use crate::native_footprint_vendor_tests::assert_precharged;
@@ -47,7 +48,7 @@ fn normalize_input_charges_current_turn_and_preserves_document() {
     let mut restored = AutoCommit::load(normalized.bytes()).unwrap();
     assert_eq!(restored.get_heads(), heads);
     assert_eq!(
-        restored.get(ROOT, "revision").unwrap().unwrap().0.to_i64(),
+        restored.get(ROOT, "revision").unwrap().unwrap().0.as_i64(),
         Some(7)
     );
     drop(restored);
@@ -65,7 +66,7 @@ fn normalize_input_charges_current_turn_and_preserves_document() {
 fn normalize_input_respects_current_turn_seal() {
     let (bytes, _) = normal_document();
     let residence = NativeAllowance::new(1024 * 1024).unwrap();
-    let registry = NativeAllocationSet::new(residence.clone()).unwrap();
+    let registry = NativeAllocationSet::new(residence).unwrap();
     let work = NativeAllowance::new(4 * 1024 * 1024).unwrap();
     let turn = registry.work_turn(work.clone()).unwrap();
     work.finish_turn();
@@ -114,7 +115,7 @@ fn concurrent_document() -> AutoCommit {
     let mut other = source.fork();
     source.put(ROOT, "left", "one").unwrap();
     other.put(ROOT, "right", "two").unwrap();
-    source.merge(&mut other).unwrap();
+    source.merge_incoming(&mut other).unwrap();
     assert_eq!(source.get_heads().len(), 2);
     source
 }
@@ -172,7 +173,7 @@ fn history_metadata_missing_dependencies_tracks_real_queued_changes() {
     let queued = peer.get_last_local_change().unwrap();
     for expected in [false, true, false] {
         if expected {
-            source.apply_changes([queued.clone()]).unwrap();
+            source.apply_incoming([queued.clone()]).unwrap();
         }
         let allowance = NativeAllowance::new(4 * 1024 * 1024).unwrap();
         let (document, _, _) = retained_document(&mut source, &allowance);
@@ -181,7 +182,7 @@ fn history_metadata_missing_dependencies_tracks_real_queued_changes() {
             expected,
         );
         if expected {
-            source.apply_changes([missing.clone()]).unwrap();
+            source.apply_incoming([missing.clone()]).unwrap();
         }
     }
 }
@@ -203,7 +204,7 @@ fn ordinary_history() -> (AutoCommit, Vec<automerge::ChangeHash>) {
     let mut peer = document.fork();
     for index in 0..256 {
         document
-            .put(ROOT, format!("entry_{index}"), index as i64)
+            .put(ROOT, format!("entry_{index}"), i64::from(index))
             .unwrap();
     }
     document
@@ -218,7 +219,7 @@ fn ordinary_history() -> (AutoCommit, Vec<automerge::ChangeHash>) {
     )
     .unwrap();
     peer.commit();
-    document.merge(&mut peer).unwrap();
+    document.merge_incoming(&mut peer).unwrap();
     document.delete(ROOT, "entry_0").unwrap();
     document.commit();
     (document, before)
@@ -321,6 +322,10 @@ fn canonical_export_duplicate_and_unknown_heads_keep_native_selection() {
 }
 
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one end-to-end scenario: its setup and assertions stay together"
+)]
 fn incoming_apply_unions_concurrent_history_and_keeps_original_view() {
     use automerge::marks::{ExpandMark, Mark};
     use automerge::resource_limits::{
@@ -348,7 +353,7 @@ fn incoming_apply_unions_concurrent_history_and_keeps_original_view() {
     let original_heads = source.get_heads();
     let source_bytes = source.save();
     let mut expected = source.clone();
-    expected.merge(&mut incoming).unwrap();
+    expected.merge_incoming(&mut incoming).unwrap();
     let expected_heads = expected.get_heads();
     let allowance = NativeAllowance::new(64 * 1024 * 1024).unwrap();
     // Every disposable native allocation is born in this measurement, so a
@@ -420,7 +425,7 @@ fn incoming_apply_unions_concurrent_history_and_keeps_original_view() {
             .unwrap()
             .unwrap()
             .0
-            .to_str(),
+            .as_str(),
         Some("retained")
     );
     assert_eq!(
@@ -429,7 +434,7 @@ fn incoming_apply_unions_concurrent_history_and_keeps_original_view() {
             .unwrap()
             .unwrap()
             .0
-            .to_str(),
+            .as_str(),
         Some("merged")
     );
 }
@@ -596,7 +601,7 @@ fn generous_limits() -> NativeLimits {
     NativeLimits {
         max_normalized_bytes: 64 * 1024 * 1024,
         max_operations: 4 * 1024 * 1024,
-        max_operation_counter: u32::MAX as u64,
+        max_operation_counter: u64::from(u32::MAX),
         max_changes: 1024 * 1024,
         max_edges: 16 * 1024 * 1024,
         max_actors: 65_536,

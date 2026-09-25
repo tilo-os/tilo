@@ -1,5 +1,9 @@
 use super::*;
+use crate::NeighbourMsg;
+use crate::TransportOrigin;
 use crate::native_footprint_vendor_tests::assert_precharged;
+use automerge::AutoCommit;
+use automerge::ROOT;
 use automerge::resource_limits::{NativeAllocationSet, NativeAllowance};
 
 fn context() -> (NativeAllowance, NativeAllocationSet, NativeWorkTurn) {

@@ -1,5 +1,6 @@
 //! Native room-policy leaves shared by the shell and certified browser peer.
 pub(crate) mod delivery_policy;
+pub(crate) mod key_hex;
 pub mod media;
 pub(crate) mod policy;
 pub(crate) mod private_policy;
@@ -90,7 +91,7 @@ pub(crate) fn invitation_receipts(
                         ScalarValue::Bytes(bytes) => Ok(bytes.clone()),
                         _ => Err("governed invitation receipt is not bytes".to_string()),
                     },
-                    _ => Err("governed invitation receipt is not bytes".to_string()),
+                    Value::Object(_) => Err("governed invitation receipt is not bytes".to_string()),
                 })
                 .collect::<Result<Vec<_>, _>>()?;
             receipts.entry(key).or_default().extend(values);
@@ -101,9 +102,9 @@ pub(crate) fn invitation_receipts(
 pub fn extract_governed_fields(
     candidate: &AutoCommit,
 ) -> (Option<String>, Option<String>, Vec<CapOverride>) {
-    #[cfg(test)]
-    POLICY_READS.with(|count| count.set(count.get() + 1));
     use automerge::{ROOT, ReadDoc, ScalarValue, Value};
+    #[cfg(test)]
+    POLICY_READS.with(|count| count.set(count.get().saturating_add(1)));
     let name = match candidate.get(&ROOT, "name").ok().flatten() {
         Some((Value::Scalar(s), _)) => match s.as_ref() {
             ScalarValue::Str(v) => Some(v.to_string()),
@@ -134,6 +135,10 @@ pub fn extract_governed_fields(
 }
 /// Parse the complete batch and apply to a disposable candidate, never the owner.
 /// Changes with absent dependencies remain queued, as with `apply_changes`.
+///
+/// # Errors
+///
+/// Returns an error if a change is malformed or refused by checked admission.
 pub fn candidate(before: Option<&AutoCommit>, changes: &[Vec<u8>]) -> Result<AutoCommit, String> {
     use automerge::resource_limits::{NativeAllowance, NativeDependencyPolicy};
     // Each entry is one complete change chunk; their concatenation is ordinary
@@ -205,7 +210,7 @@ pub fn role_of(owner: Option<&str>, caps: &[CapOverride], user: &str, now: u64) 
                 best = Some(match best {
                     Some(prev) if prev.implies(cap.verb) => prev,
                     _ => cap.verb,
-                })
+                });
             }
             Effect::Restrict if !cap.verb.implies(Verb::Read) => blocked = true,
             Effect::Restrict => {}

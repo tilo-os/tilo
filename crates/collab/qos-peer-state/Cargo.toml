@@ -23,5 +23,9 @@ collab-types = { path = "../collab-types" }
 neighbour-wire = { path = "../neighbour-wire" }
 tilo-user-identity = { path = "../tilo-user-identity" }
 
+[dev-dependencies]
+# The sanctioned patch-log-free way to take changes into an AutoCommit (clippy.toml).
+tilo-automerge.workspace = true
+
 [lints]
 workspace = true

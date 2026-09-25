@@ -1,5 +1,7 @@
-//! Explicit carrier attribution; all actual admission rules stay in StatePeer.
-use super::*;
+//! Explicit carrier attribution; all actual admission rules stay in `StatePeer`.
+use super::{
+    AdmissionError, AdmissionReport, NeighbourMsg, ReadDoc, StatePeer, SystemTime, TransportOrigin,
+};
 
 /// A streaming admission transaction for one authenticated native publication cut.
 ///
@@ -12,6 +14,11 @@ pub struct NativePublicationCut {
     prior_pending_len: usize,
 }
 impl NativePublicationCut {
+    /// Admit one publication into this cut.
+    ///
+    /// # Errors
+    ///
+    /// Returns an [`AdmissionError`] if the message is refused.
     pub fn push(self, message: NeighbourMsg, now: SystemTime) -> Result<Self, AdmissionError> {
         self.push_report(message, now, false).map(|(cut, _)| cut)
     }
@@ -41,6 +48,11 @@ impl NativePublicationCut {
         Ok((self, report))
     }
 
+    /// Finish the cut, returning the candidate peer.
+    ///
+    /// # Errors
+    ///
+    /// Returns an [`AdmissionError`] if the cut is incomplete.
     pub fn finish(mut self, now: SystemTime) -> Result<StatePeer, AdmissionError> {
         let publisher = self
             .candidate
@@ -65,14 +77,18 @@ impl NativePublicationCut {
         let mut matched = [false; 64];
         for pending in &self.candidate.core.pending {
             let stamp = pending_stamp(pending)?;
-            let Some(index) = self.prior_pending[..self.prior_pending_len]
+            let prior = self
+                .prior_pending
+                .get(..self.prior_pending_len)
+                .unwrap_or_default();
+            let Some(slot) = prior
                 .iter()
-                .enumerate()
-                .position(|(index, prior)| !matched[index] && prior == &stamp)
+                .zip(matched.iter_mut())
+                .find_map(|(prior, matched)| (!*matched && prior == &stamp).then_some(matched))
             else {
                 return Err("native publication cut has unresolved input".into());
             };
-            matched[index] = true;
+            *slot = true;
         }
         self.candidate.core.native_cut_publisher = None;
         Ok(self.candidate)
@@ -102,6 +118,11 @@ fn pending_stamp(pending: &([u8; 32], NeighbourMsg, bool)) -> Result<[u8; 32], A
 }
 
 impl StatePeer {
+    /// Begin a native publication cut for `publisher`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an [`AdmissionError`] if `publisher` may not publish at `now`.
     pub fn begin_native_publication_cut(
         &self,
         publisher: [u8; 32],

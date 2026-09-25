@@ -1,5 +1,9 @@
 //! Native governance transactions. Public policy data is never an authority proof.
-use super::*;
+use super::{
+    Actor, BTreeMap, CapDecision, DeviceCert, DurableV4, DurableV5, GovernedIdentity, NeighbourMsg,
+    ROOT, ReadDoc, ResourceRef, RevocationList, Role, Route, SigningKey, StatePeer, SystemTime,
+    Transactable, TransportOrigin, Verb, decide_capability, err, now_ns, now_secs, room,
+};
 use room::media::{self, RoomMediaV1};
 
 /// Proof of one exact monotone, signature-verified security metadata delta.
@@ -10,6 +14,11 @@ pub struct VerifiedSecurityMetadataOnly {
     after: [u8; 32],
 }
 impl VerifiedSecurityMetadataOnly {
+    /// Check that `after` differs from `before` only in verified security metadata.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if any other state changed.
     pub fn validate(&self, before: &StatePeer, after: &StatePeer) -> Result<(), String> {
         let checked = before.verify_security_metadata_only(after)?;
         if checked.before != self.before || checked.after != self.after {
@@ -45,6 +54,10 @@ impl StatePeer {
     /// baseline. Volatile deferred input and every other observed field remain
     /// outside the durable metadata turn. The caller must separately validate
     /// the live receive delta before using this projection.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the observed revocations cannot be projected onto this baseline.
     pub fn project_verified_security_metadata(
         &self,
         observed: &Self,
@@ -68,6 +81,10 @@ impl StatePeer {
     }
 
     /// Data publication allows room-first missing Chat; media readiness does not.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the room media governance is invalid.
     pub fn validate_media_governance_for_publication(&self) -> Result<(), String> {
         if let Some(policy) = self.validate_present_media_policy()? {
             self.validate_media_bindings(&policy, false)?;
@@ -87,6 +104,10 @@ impl StatePeer {
 
     /// Verify an exact metadata-only delta. No document, receipt, pending input,
     /// coverage, admission, certificate or checkpoint scheduling change is allowed.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `candidate` changes anything other than security metadata.
     pub fn verify_security_metadata_only(
         &self,
         candidate: &Self,
@@ -163,6 +184,11 @@ impl StatePeer {
 
     /// Promote verified revocations to an identity row of the same admitted root,
     /// then refresh the existing basis exactly once. Never initializes a policy.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `key` is not the governance writer or the policy cannot be
+    /// refreshed.
     pub fn reconcile_media_governance(
         &mut self,
         key: &SigningKey,
@@ -177,10 +203,10 @@ impl StatePeer {
         if policy.is_none() && self.core.revocations.iter().next().is_none() {
             return Ok(false);
         }
-        let bases = media::security_basis(original, &self.revocations()).and_then(|basis| {
+        let computed = media::security_basis(original, &self.revocations()).and_then(|basis| {
             media::security_basis(original, &[]).map(|governed| (basis, governed))
         });
-        let (basis, governed_basis) = match bases {
+        let (basis, governed_basis) = match computed {
             Ok(values) => values,
             Err(_) if policy.is_none() => return Ok(false),
             Err(error) => return Err(err(error)),
@@ -275,6 +301,11 @@ impl StatePeer {
         Ok(())
     }
 
+    /// Resolve the exact admitted Chat binding of a call channel.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the route or channel does not resolve.
     pub fn resolve_media_binding(
         &self,
         app: &str,
@@ -295,6 +326,12 @@ impl StatePeer {
         media::resolve_chat_binding(app, record, channel, &document.doc).map_err(err)
     }
 
+    /// Author a room media policy as the governance writer.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `key` is not the governance writer or the policy is invalid for
+    /// the current room.
     pub fn author_media_policy(
         &mut self,
         policy: &RoomMediaV1,
@@ -338,6 +375,15 @@ impl StatePeer {
     }
 
     /// Host enrollment and its invitation-only delegation share one basis change.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `key` is not the governance writer or the certificate or
+    /// delegation is refused.
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "public API: callers hand over the certificate"
+    )]
     pub fn admit_certificate_with_workspace_delegation(
         &mut self,
         cert: DeviceCert,

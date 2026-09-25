@@ -11,7 +11,7 @@ struct Held {
 fn actual_map_and_vector_growth_precharge_and_retain_output_after_turn() {
     let current = NativeAllowance::new(64 * 1024 * 1024).unwrap();
     let baseline = current.retained_bytes();
-    let mut registry = NativeAllocationSet::new(NativeAllowance::new(4096).unwrap()).unwrap();
+    let registry = NativeAllocationSet::new(NativeAllowance::new(4096).unwrap()).unwrap();
     let turn = registry.work_turn(current.clone()).unwrap();
     let held = assert_precharged(&current, || {
         let mut budget = Collections::native(&turn, 1024 * 1024).unwrap();
@@ -45,7 +45,7 @@ fn actual_map_and_vector_growth_precharge_and_retain_output_after_turn() {
 #[test]
 fn source_budget_refuses_before_copy_growth_or_overflow() {
     let current = NativeAllowance::new(64 * 1024 * 1024).unwrap();
-    let mut registry = NativeAllocationSet::new(NativeAllowance::new(4096).unwrap()).unwrap();
+    let registry = NativeAllocationSet::new(NativeAllowance::new(4096).unwrap()).unwrap();
     let turn = registry.work_turn(current.clone()).unwrap();
     assert_precharged(&current, || {
         let mut budget = Collections::native(&turn, 3).unwrap();

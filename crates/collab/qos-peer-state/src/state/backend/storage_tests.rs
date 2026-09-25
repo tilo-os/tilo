@@ -1,6 +1,7 @@
 use super::*;
 use crate::native_footprint_vendor_tests::assert_precharged;
 use automerge::resource_limits::{NativeAllocationSet, NativeAllowance};
+use ed25519_dalek::SigningKey;
 
 #[test]
 fn sealed_metadata_storage_lends_actual_verified_roster_and_revocation_union_without_copy() {

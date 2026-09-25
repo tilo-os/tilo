@@ -21,6 +21,11 @@ pub struct DurableReceipt {
     pub receipt_id: String,
 }
 impl DurableReceipt {
+    /// A durable receipt for `coverage` committed at `generation`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the coverage or generation is invalid.
     pub fn new(coverage: Coverage, generation: u64) -> Result<Self, String> {
         let mut receipt = Self {
             version: 1,
@@ -65,7 +70,7 @@ pub fn governed_bytes(doc: &AutoCommit) -> Option<Vec<u8>> {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 enum RouteValue {
     Current { generation: u64 },
-    Full(DurableReceipt),
+    Full(Box<DurableReceipt>),
 }
 fn encode_route(
     key: &str,
@@ -82,7 +87,7 @@ fn encode_route(
             generation: receipt.generation,
         }
     } else {
-        RouteValue::Full(receipt.clone())
+        RouteValue::Full(Box::new(receipt.clone()))
     };
     postcard::to_allocvec(&value).map_err(|e| e.to_string())
 }
@@ -96,7 +101,7 @@ fn decode_route(
     let value = match crate::governed_routes::exact::<RouteValue>(bytes) {
         Some(value) => value,
         None => match crate::governed_routes::exact::<DurableReceipt>(bytes) {
-            Some(receipt) => RouteValue::Full(receipt),
+            Some(receipt) => RouteValue::Full(Box::new(receipt)),
             None => {
                 return Err(format!(
                     "invalid durable receipts: {}",
@@ -108,7 +113,7 @@ fn decode_route(
         },
     };
     match value {
-        RouteValue::Full(receipt) => Ok(receipt),
+        RouteValue::Full(receipt) => Ok(*receipt),
         RouteValue::Current { generation } => DurableReceipt::new(
             coverage
                 .get(key)
@@ -158,6 +163,11 @@ pub fn canonical(doc: &AutoCommit) -> bool {
         })
     })
 }
+/// The durable receipts recorded in `doc`.
+///
+/// # Errors
+///
+/// Returns an error if a receipt row is malformed.
 pub fn entries(doc: &AutoCommit) -> Result<BTreeMap<String, DurableReceipt>, String> {
     let rows = rows(doc)?;
     for (key, receipt) in &rows {
@@ -179,6 +189,14 @@ pub(crate) fn encode_all(
         .collect()
 }
 /// Replace the receipt set with `receipts`, writing only changed routes.
+///
+/// # Errors
+///
+/// Returns an error if a receipt cannot be encoded or written.
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "public API: callers hand over the complete replacement receipt set"
+)]
 pub fn put(doc: &mut AutoCommit, receipts: BTreeMap<String, DurableReceipt>) -> Result<(), String> {
     let next = encode_all(&receipts, &crate::coverage::entries(doc)?)?;
     crate::governed_routes::write_raw(doc, &[(LAYOUT, &next)])?;
@@ -208,7 +226,8 @@ pub(crate) fn pin_before_coverage_change(
             let receipt = decode_route(&key, &bytes, &old_coverage)?;
             next.insert(
                 key,
-                postcard::to_allocvec(&RouteValue::Full(receipt)).map_err(|e| e.to_string())?,
+                postcard::to_allocvec(&RouteValue::Full(Box::new(receipt)))
+                    .map_err(|e| e.to_string())?,
             );
             changed = true;
         } else {
@@ -217,6 +236,11 @@ pub(crate) fn pin_before_coverage_change(
     }
     Ok(changed.then_some(next))
 }
+/// Check that `after` never regresses a receipt of `before`.
+///
+/// # Errors
+///
+/// Returns an error if a receipt is removed or regresses.
 pub fn monotonic(before: Option<&AutoCommit>, after: &AutoCommit) -> Result<(), String> {
     let old = before.map(entries).transpose()?.unwrap_or_default();
     let new = entries(after)?;
@@ -345,7 +369,7 @@ mod tests {
         assert_eq!(crate::coverage::entries(&doc).unwrap()[&key], coverage);
         assert_eq!(
             entries(&doc).unwrap()[&key],
-            DurableReceipt::new(coverage.clone(), 7).unwrap()
+            DurableReceipt::new(coverage, 7).unwrap()
         );
         // Compact coverage and a generation-only receipt.
         assert!(raw(&doc, crate::coverage::LAYOUT).len() < 200);
@@ -392,10 +416,8 @@ mod tests {
         crate::coverage::put_legacy(&mut doc, &BTreeMap::from([(key.clone(), coverage.clone())]));
         {
             use automerge::{ROOT, ScalarValue, transaction::Transactable};
-            let receipts = BTreeMap::from([(
-                key.clone(),
-                DurableReceipt::new(coverage.clone(), 3).unwrap(),
-            )]);
+            let receipts =
+                BTreeMap::from([(key.clone(), DurableReceipt::new(coverage, 3).unwrap())]);
             doc.put(
                 ROOT,
                 FIELD,

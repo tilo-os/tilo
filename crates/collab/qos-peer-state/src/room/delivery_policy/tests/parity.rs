@@ -1,5 +1,10 @@
 use super::*;
+use tilo_automerge::ApplyIncoming;
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one end-to-end scenario: its setup and assertions stay together"
+)]
 fn delivery_projection_preserves_winner_shapes_scopes_and_ignored_fields() {
     let (peer, _, _, device, _) = crate::admission_tests::seeded();
     let base = peer.admitted_room().unwrap();
@@ -87,7 +92,7 @@ fn delivery_projection_preserves_winner_shapes_scopes_and_ignored_fields() {
     right.put(ROOT, "owner", "right owner").unwrap();
     left.commit();
     right.commit();
-    left.merge(&mut right).unwrap();
+    left.merge_incoming(&mut right).unwrap();
     assert!(left.get_all(ROOT, "owner").unwrap().len() > 1);
     assert!(compare(&left, &peer, peer.authority(), &device, true).is_ok());
     let mut left = base.clone();
@@ -110,7 +115,7 @@ fn delivery_projection_preserves_winner_shapes_scopes_and_ignored_fields() {
         .unwrap();
     left.commit();
     right.commit();
-    left.merge(&mut right).unwrap();
+    left.merge_incoming(&mut right).unwrap();
     assert!(left.get_all(ROOT, "capabilities").unwrap().len() > 1);
     assert!(compare(&left, &peer, peer.authority(), &device, true).is_ok());
 }
@@ -123,7 +128,7 @@ fn delivery_projection_preserves_exact_final_quota_and_quota_denial_order() {
         .unwrap()
         .unwrap()
         .0
-        .to_str()
+        .as_str()
         .unwrap()
         .len();
     let size = original_with_length(&doc, &peer, 37, &device, peer.authority(), true)

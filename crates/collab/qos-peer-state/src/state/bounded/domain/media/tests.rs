@@ -1,8 +1,21 @@
 use super::*;
+use crate::BoundedStatePeer;
+use crate::NeighbourMsg;
+use crate::PeerLimits;
+use crate::PeerRegistry;
+use crate::PeerWork;
+use crate::SeedDocument;
+use crate::SeedState;
+use crate::StatePeer;
+use crate::TransportOrigin;
 use crate::native_footprint_vendor_tests::assert_precharged;
 use crate::room::media::{self as policy, read::PolicyValue};
-use automerge::{ROOT, ReadDoc, transaction::Transactable};
+use automerge::resource_limits::NativeAllowance;
+use automerge::resource_limits::NativeResourceError;
+use automerge::{ROOT, transaction::Transactable};
 use ed25519_dalek::SigningKey;
+use tilo_user_identity::RevocationList;
+use web_time::Duration;
 fn fixture() -> (StatePeer, SystemTime) {
     let (peer, _, now) = backend::restore::tests::media_fixture();
     (peer, now)
@@ -153,7 +166,7 @@ fn cache_preserves_disabled_missing_encrypted_and_independent_revocation_cases()
                     .values_mut()
                     .next()
                     .unwrap()
-                    .encryption_required = true
+                    .encryption_required = true;
             }
             _ => {
                 let mut entry = tilo_user_identity::RevocationEntry {
@@ -284,10 +297,14 @@ fn cache_basis_resource_failure_is_not_downgraded_to_unavailable() {
     ));
 }
 
+#[expect(
+    clippy::similar_names,
+    reason = "`root` and `room` are the domain's own names"
+)]
 fn expiring_fixture(host_expires: bool) -> (StatePeer, [u8; 32], SystemTime) {
     let (old, key, now) = backend::restore::tests::media_fixture();
     let root = SigningKey::from_bytes(&[1; 32]);
-    let expires = crate::state::now_ns(now + Duration::from_secs(1));
+    let expires = crate::state::now_ns(now.checked_add(Duration::from_secs(1)).unwrap());
     let mut host = old.authority().clone();
     if host_expires {
         host.expires_at_ns = Some(expires);
@@ -311,7 +328,7 @@ fn expiring_fixture(host_expires: bool) -> (StatePeer, [u8; 32], SystemTime) {
                 .unwrap(),
             documents: vec![SeedDocument {
                 app_id: "so.tilo.chat".into(),
-                record_id: "".into(),
+                record_id: String::new(),
                 kind: "chat".into(),
                 bytes: old.document("so.tilo.chat", "").unwrap(),
             }],

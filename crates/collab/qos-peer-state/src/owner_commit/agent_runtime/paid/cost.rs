@@ -1,6 +1,10 @@
 //! Concrete allocation model for the unchanged validators. All arithmetic is
 //! checked; this module never invokes a decoder, clones data, or allocates.
-use super::*;
+use super::{
+    AgentChange, AgentMutation, AgentMutationReceipt, AgentRuntimeChange, AgentRuntimeFact,
+    AgentRuntimeFactReceipt, GrantAction, MAX_AGENT_STEP_RESULT_BYTES, PrivateAgentLedger,
+    PrivateAgentLedgerV2, PrivateAgentState,
+};
 use serde::Serialize;
 #[path = "json.rs"]
 mod json;
@@ -148,7 +152,7 @@ fn v1(v: &PrivateAgentLedger, room: &str) -> Result<usize> {
             .filter(|m| m.invocation == r.invocation)
             .filter_map(|m| match &m.change.mutation {
                 AgentMutation::Transition { error, .. } => error.as_ref(),
-                _ => None,
+                AgentMutation::Prepare { .. } => None,
             })
             .map(|e| e.message.len())
             .max()
@@ -166,7 +170,7 @@ fn v1(v: &PrivateAgentLedger, room: &str) -> Result<usize> {
             AgentMutation::Prepare {
                 request, grants, ..
             } => intent(request, grants.len())?,
-            _ => 0,
+            AgentMutation::Transition { .. } => 0,
         };
         peak = peak.max(sum(&[
             room.len(),
@@ -178,18 +182,22 @@ fn v1(v: &PrivateAgentLedger, room: &str) -> Result<usize> {
     }
     sum(&[retained, peak])
 }
-fn v2(v: &PrivateAgentLedgerV2, room: &str) -> Result<usize> {
-    let n = v.facts.len();
-    let legacy = v.legacy_v1.records.len();
-    let a = v
+#[expect(
+    clippy::too_many_lines,
+    reason = "one inventory of every validation table the ledger retains"
+)]
+fn v2(ledger: &PrivateAgentLedgerV2, room: &str) -> Result<usize> {
+    let fact_count = ledger.facts.len();
+    let legacy = ledger.legacy_v1.records.len();
+    let admitted = ledger
         .facts
         .values()
-        .filter(|r| matches!(r.change.fact, AgentRuntimeFact::Admitted { .. }))
+        .filter(|receipt| matches!(receipt.change.fact, AgentRuntimeFact::Admitted { .. }))
         .count();
-    let union = legacy.checked_add(a).ok_or(Capacity)?;
+    let union = legacy.checked_add(admitted).ok_or(Capacity)?;
     // Every persistent validation table is named explicitly. References are
     // borrowed except task lease strings and acceptance map channel strings.
-    let ordered = growth(n, size_of::<(&String, &AgentRuntimeFactReceipt)>())?;
+    let ordered = growth(fact_count, size_of::<(&String, &AgentRuntimeFactReceipt)>())?;
     let collected = mul(
         sum(&[
             growth(legacy, size_of::<&str>())?,
@@ -198,8 +206,8 @@ fn v2(v: &PrivateAgentLedgerV2, room: &str) -> Result<usize> {
         3,
     )?;
     let mut owned = 0usize;
-    for r in v.facts.values() {
-        match &r.change.fact {
+    for receipt in ledger.facts.values() {
+        match &receipt.change.fact {
             AgentRuntimeFact::DispatchIntended { envelope, .. } => {
                 owned = sum(&[owned, json::string_bytes(envelope.as_bytes())?])?;
             }
@@ -212,34 +220,40 @@ fn v2(v: &PrivateAgentLedgerV2, room: &str) -> Result<usize> {
     let retained = sum(&[
         ordered,
         collected,
-        nodes::<&str, super::super::validation::Operation<'_>>(a)?,
+        nodes::<&str, super::super::validation::Operation<'_>>(admitted)?,
         mul(nodes::<&str, ()>(union)?, 3)?,
-        mul(nodes::<&String, ()>(n)?, 3)?,
-        nodes::<&str, ()>(n)?,
-        nodes::<&str, (usize, usize)>(n)?,
-        nodes::<(&String, u64), ()>(n)?,
-        nodes::<(&String, String), ()>(n)?,
-        nodes::<String, u64>(n)?,
+        mul(nodes::<&String, ()>(fact_count)?, 3)?,
+        nodes::<&str, ()>(fact_count)?,
+        nodes::<&str, (usize, usize)>(fact_count)?,
+        nodes::<(&String, u64), ()>(fact_count)?,
+        nodes::<(&String, String), ()>(fact_count)?,
+        nodes::<String, u64>(fact_count)?,
         // Step child ticket uniqueness set (borrowed keys).
-        nodes::<&str, ()>(n)?,
+        nodes::<&str, ()>(fact_count)?,
         owned,
     ])?;
-    let mut peak = mul(n, size_of::<(&String, &AgentRuntimeFactReceipt)>())?;
-    let max_request = v
+    let mut peak = mul(fact_count, size_of::<(&String, &AgentRuntimeFactReceipt)>())?;
+    let max_request = ledger
         .facts
         .values()
-        .filter_map(|r| match &r.change.fact {
+        .filter_map(|receipt| match &receipt.change.fact {
             AgentRuntimeFact::Admitted { intent, .. } => Some(intent.request.as_bytes()),
             _ => None,
         })
         .map(json::request)
-        .try_fold(0usize, |a, n| Ok(a.max(n?)))?;
-    for r in v.facts.values() {
-        let c = &r.change;
-        let b = business_v2(c)?;
-        let extra = match &c.fact {
-            AgentRuntimeFact::Admitted { intent: i, .. } => sum(&[
-                intent(i.request.as_bytes(), i.grants.len())?,
+        .try_fold(0usize, |largest, next| Ok(largest.max(next?)))?;
+    for receipt in ledger.facts.values() {
+        let change = &receipt.change;
+        let business = business_v2(change)?;
+        let extra = match &change.fact {
+            AgentRuntimeFact::Admitted {
+                intent: admitted_intent,
+                ..
+            } => sum(&[
+                intent(
+                    admitted_intent.request.as_bytes(),
+                    admitted_intent.grants.len(),
+                )?,
                 growth(sum(&["workspace:".len(), room.len(), ":agents".len()])?, 1)?,
                 20,
                 36,
@@ -250,22 +264,26 @@ fn v2(v: &PrivateAgentLedgerV2, room: &str) -> Result<usize> {
             // Completion reparses an earlier dispatch. Conservatively choose the
             // largest real retained envelope, not total bytes across all dispatches.
             AgentRuntimeFact::Completed { .. } => sum(&[
-                v.facts
+                ledger
+                    .facts
                     .values()
-                    .filter_map(|r| match &r.change.fact {
+                    .filter_map(|receipt| match &receipt.change.fact {
                         AgentRuntimeFact::DispatchIntended { envelope, .. } => Some(envelope),
                         _ => None,
                     })
-                    .map(|e| json::envelope(e.as_bytes()))
-                    .try_fold(0usize, |a, n| Ok(a.max(n?)))?,
+                    .map(|envelope_text| json::envelope(envelope_text.as_bytes()))
+                    .try_fold(0usize, |largest, next| Ok(largest.max(next?)))?,
                 max_request,
             ])?,
             AgentRuntimeFact::ProcessExited { .. } => {
-                growth(sum(&[c.invocation.len(), ":process_bound".len()])?, 1)?
+                growth(sum(&[change.invocation.len(), ":process_bound".len()])?, 1)?
             }
             // Referenced key string plus decoded child and intent bytes.
             AgentRuntimeFact::TaskStepBound { .. } => sum(&[
-                growth(sum(&[c.invocation.len(), ":dispatch_intended".len()])?, 1)?,
+                growth(
+                    sum(&[change.invocation.len(), ":dispatch_intended".len()])?,
+                    1,
+                )?,
                 growth(48, 1)?,
                 growth(32, 1)?,
             ])?,
@@ -276,7 +294,7 @@ fn v2(v: &PrivateAgentLedgerV2, room: &str) -> Result<usize> {
                 ..
             } => sum(&[
                 growth(
-                    sum(&[c.invocation.len(), ":task_step_bound:".len(), 10])?,
+                    sum(&[change.invocation.len(), ":task_step_bound:".len(), 10])?,
                     1,
                 )?,
                 growth(32, 1)?,
@@ -291,16 +309,19 @@ fn v2(v: &PrivateAgentLedgerV2, room: &str) -> Result<usize> {
             | AgentRuntimeFact::TaskFinished { .. } => 0,
         };
         peak = peak.max(sum(&[
-            clone_v2(c)?,
+            clone_v2(change)?,
             room.len(),
-            binding(room, &c.mutation, b)?,
+            binding(room, &change.mutation, business)?,
             // mutation_key: invocation, ':', kind and, for steps, ':' + index.
-            growth(sum(&[c.invocation.len(), 1, c.fact.kind().len(), 11])?, 1)?,
+            growth(
+                sum(&[change.invocation.len(), 1, change.fact.kind().len(), 11])?,
+                1,
+            )?,
             extra,
             nodes::<&String, &AgentRuntimeFactReceipt>(1)?,
         ])?);
     }
-    Ok(v1(&v.legacy_v1, room)?.max(sum(&[retained, peak])?))
+    Ok(v1(&ledger.legacy_v1, room)?.max(sum(&[retained, peak])?))
 }
 pub(super) fn validation(v: &PrivateAgentState, room: &str) -> Result<usize> {
     let body = match v {

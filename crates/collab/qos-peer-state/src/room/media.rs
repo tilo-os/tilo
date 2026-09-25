@@ -103,6 +103,11 @@ pub enum TransitionMode {
 /// Canonical security consistency digest, never an authority credential. Only
 /// governed security fields participate; presentation labels and media itself do not.
 /// Extra revocations are verified and intersect local knowledge before publication.
+///
+/// # Errors
+///
+/// Returns a [`MediaPolicyError`] if governed security fields are malformed or an extra
+/// revocation fails verification.
 pub fn security_basis(
     doc: &AutoCommit,
     extra_revocations: &[tilo_user_identity::RevocationEntry],
@@ -112,6 +117,11 @@ pub fn security_basis(
 
 /// Strict governed-document validation. Missing policy remains disabled. This
 /// checks consistency only; callers must independently authenticate the writer.
+///
+/// # Errors
+///
+/// Returns a [`MediaPolicyError`] if either document's policy is malformed or the
+/// transition is not permitted in `mode`.
 pub fn validate_transition(
     before: Option<&AutoCommit>,
     after: &AutoCommit,
@@ -143,9 +153,9 @@ pub fn validate_transition(
 
 // An observed root revocation is irreversible, even when a pinned checkpoint
 // supplies a higher media revision and a self-consistent replacement digest.
-fn revocation_floors(
-    doc: &AutoCommit,
-) -> Result<BTreeMap<([u8; 32], [u8; 32]), u64>, MediaPolicyError> {
+/// Observed revocation sequence floors by (user root, revoked device).
+type RevocationFloors = BTreeMap<([u8; 32], [u8; 32]), u64>;
+fn revocation_floors(doc: &AutoCommit) -> Result<RevocationFloors, MediaPolicyError> {
     // A joined peer can project its room before its first governed snapshot.
     // Absence carries no observed floor; present evidence remains strictly
     // decoded, including legacy documents that have no media policy yet.
@@ -179,6 +189,11 @@ fn revocation_floors(
 
 /// Reconcile an already enabled policy within a verified governance transaction.
 /// Does not initialize media or authorize the transaction's caller.
+///
+/// # Errors
+///
+/// Returns a [`MediaPolicyError`] if either policy is malformed or cannot be
+/// reconciled.
 pub fn refresh_authorization(
     before: &AutoCommit,
     after: &mut AutoCommit,
@@ -207,6 +222,11 @@ pub fn refresh_authorization(
 
 /// Validate every active binding selecting this exact admitted app/record route.
 /// Unrelated routes and ended tombstones carry no Chat mutation restriction.
+///
+/// # Errors
+///
+/// Returns a [`MediaPolicyError`] if a binding for this route no longer resolves in
+/// `candidate`.
 pub fn validate_bound_chat_change(
     policy: &RoomMediaV1,
     app: &str,
@@ -216,6 +236,11 @@ pub fn validate_bound_chat_change(
     binding::validate_legacy(policy, app, record, candidate)
 }
 /// Resolve one exact admitted Chat object, never a synthesized/default channel.
+///
+/// # Errors
+///
+/// Returns a [`MediaPolicyError`] if the route or channel does not resolve to one exact
+/// admitted Chat object.
 pub fn resolve_chat_binding(
     app: &str,
     record: &str,
@@ -234,8 +259,9 @@ fn strict_map(
     key: &str,
 ) -> Result<automerge::ObjId, MediaPolicyError> {
     super::read::strict_map(&super::read::LegacyRead(doc), parent, key)
-        .map_err(super::read::legacy_policy_error)
+        .map_err(|error| super::read::legacy_policy_error(&error))
 }
+#[cfg(test)]
 fn strict_string(
     doc: &impl ReadDoc,
     parent: &automerge::ObjId,
@@ -247,7 +273,7 @@ fn strict_string(
         parent,
         key,
     )
-    .map_err(super::read::legacy_policy_error)
+    .map_err(|error| super::read::legacy_policy_error(&error))
 }
 fn strict_bytes(
     doc: &impl ReadDoc,
@@ -260,9 +286,14 @@ fn strict_bytes(
         parent,
         key,
     )
-    .map_err(super::read::legacy_policy_error)
+    .map_err(|error| super::read::legacy_policy_error(&error))
 }
 
+/// Canonical encoding of a validated room media policy.
+///
+/// # Errors
+///
+/// Returns a [`MediaPolicyError`] if the policy is invalid or cannot be encoded.
 pub fn encode(value: &RoomMediaV1) -> Result<Vec<u8>, MediaPolicyError> {
     validate(value)?;
     let bytes = canonical_bytes(value).map_err(|_| MediaPolicyError::Malformed)?;
@@ -272,15 +303,24 @@ pub fn encode(value: &RoomMediaV1) -> Result<Vec<u8>, MediaPolicyError> {
     Ok(bytes)
 }
 /// Strict data parsing only: the caller still verifies writer, security basis and current authority.
+///
+/// # Errors
+///
+/// Returns a [`MediaPolicyError`] if a present policy is malformed or invalid.
 pub fn parse(doc: &AutoCommit) -> Result<Option<RoomMediaV1>, MediaPolicyError> {
     read::parse(
         &super::read::LegacyRead(doc),
         &super::read::LegacyCopy,
         &read::LegacyPolicy,
     )
-    .map_err(read::legacy_error)
+    .map_err(|error| read::legacy_error(&error))
 }
 
+/// Structural validation of a room media policy.
+///
+/// # Errors
+///
+/// Returns a [`MediaPolicyError`] naming the first invalid field.
 pub fn validate(value: &RoomMediaV1) -> Result<(), MediaPolicyError> {
     if value.version != 1 {
         return Err(MediaPolicyError::UnsupportedVersion);
@@ -330,6 +370,11 @@ pub fn validate(value: &RoomMediaV1) -> Result<(), MediaPolicyError> {
 }
 
 impl ChatCallBindingV1 {
+    /// Structural validation of a Chat call binding.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`MediaPolicyError`] if a field is not canonical.
     pub fn validate(&self) -> Result<(), MediaPolicyError> {
         binding::validate_fields(
             &self.app_id,
@@ -352,6 +397,11 @@ fn lower_hex(value: &str) -> bool {
 
 /// Structural fences only. In particular, the basis digest must independently be derived from
 /// the current committed security inputs; accepting two matching claims is not that derivation.
+///
+/// # Errors
+///
+/// Returns a [`MediaPolicyError`] if the transition breaks a structural fence for
+/// `mode`.
 pub fn validate_policy_transition(
     before: Option<&RoomMediaV1>,
     after: Option<&RoomMediaV1>,
@@ -423,12 +473,23 @@ fn counter_transition(
     }
     Ok(())
 }
+/// The counter after `value`.
+///
+/// # Errors
+///
+/// Returns [`MediaPolicyError::Counter`] for zero and [`MediaPolicyError::Exhausted`] at
+/// `u64::MAX`.
 pub fn next_counter(value: u64) -> Result<u64, MediaPolicyError> {
     if value == 0 {
         return Err(MediaPolicyError::Counter);
     }
     value.checked_add(1).ok_or(MediaPolicyError::Exhausted)
 }
+/// Parse a canonical lowercase-hex, nonzero 32-byte call id.
+///
+/// # Errors
+///
+/// Returns [`MediaPolicyError::Binding`] if `value` is not canonical.
 pub fn parse_call_id(value: &str) -> Result<[u8; 32], MediaPolicyError> {
     if value.len() != 64 || !lower_hex(value) {
         return Err(MediaPolicyError::Binding);
@@ -442,6 +503,10 @@ pub fn parse_call_id(value: &str) -> Result<[u8; 32], MediaPolicyError> {
 }
 impl MediaCallResultV1 {
     /// Aggregate restore must call this when deserializing a nested receipt directly.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`MediaPolicyError`] if the receipt is malformed.
     pub fn validate(&self) -> Result<(), MediaPolicyError> {
         if self.version != 1 {
             return Err(MediaPolicyError::UnsupportedVersion);
@@ -454,10 +519,20 @@ impl MediaCallResultV1 {
         }
         self.binding.validate()
     }
+    /// Canonical encoding of a validated call result.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`MediaPolicyError`] if the result is invalid or cannot be encoded.
     pub fn encode(&self) -> Result<Vec<u8>, MediaPolicyError> {
         self.validate()?;
         canonical_bytes(self).map_err(|_| MediaPolicyError::Malformed)
     }
+    /// Decode and validate a canonical call result.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`MediaPolicyError`] if the bytes are malformed or not canonical.
     pub fn decode(bytes: &[u8]) -> Result<Self, MediaPolicyError> {
         if bytes.len() > MAX_RESULT_BYTES {
             return Err(MediaPolicyError::Capacity);
@@ -675,6 +750,7 @@ impl std::error::Error for MediaPolicyError {}
 mod room_media_tests {
     use super::*;
     use automerge::{ActorId, ObjType, ROOT, transaction::Transactable};
+    use tilo_automerge::ApplyIncoming;
 
     fn policy() -> RoomMediaV1 {
         RoomMediaV1 {
@@ -794,13 +870,13 @@ mod room_media_tests {
         right
             .put_object(ROOT, "peer_identities_v1", ObjType::Map)
             .unwrap();
-        left.merge(&mut right).unwrap();
+        left.merge_incoming(&mut right).unwrap();
         assert_eq!(left.get_all(ROOT, "peer_identities_v1").unwrap().len(), 2);
         let (mut row, _, device) = governed_legacy_room();
         let identities = row.get(ROOT, "peer_identities_v1").unwrap().unwrap().1;
         row.put(&identities, device, "not identity bytes").unwrap();
-        for before in [scalar, list, left, row] {
-            assert!(validate_transition(Some(&before), &after, TransitionMode::Admission).is_err());
+        for before in [&scalar, &list, &left, &row] {
+            assert!(validate_transition(Some(before), &after, TransitionMode::Admission).is_err());
         }
     }
 
@@ -873,7 +949,7 @@ mod room_media_tests {
         let mut doc = room();
         doc.put(ROOT, FIELD, ScalarValue::Bytes(encode(&value).unwrap()))
             .unwrap();
-        assert_eq!(parse(&doc), Ok(Some(value.clone())));
+        assert_eq!(parse(&doc), Ok(Some(value)));
         for changed in [
             edited(|v| v.calls.get_mut(&[7; 32]).unwrap().binding.app_id = "so.tilo.notes".into()),
             edited(|v| v.room = [2; 16]),
@@ -938,7 +1014,7 @@ mod room_media_tests {
         right.set_actor(ActorId::from(vec![2]));
         raw(&mut left, &policy());
         raw(&mut right, &edited(|v| v.authorization_revision = 2));
-        left.merge(&mut right).unwrap();
+        left.merge_incoming(&mut right).unwrap();
         assert_eq!(parse(&left), Err(MediaPolicyError::Conflict));
     }
 
@@ -950,7 +1026,7 @@ mod room_media_tests {
         right.set_actor(ActorId::from(vec![2]));
         raw(&mut left, &policy());
         raw(&mut right, &policy());
-        left.merge(&mut right).unwrap();
+        left.merge_incoming(&mut right).unwrap();
         assert_eq!(parse(&left), Ok(Some(policy())));
     }
 

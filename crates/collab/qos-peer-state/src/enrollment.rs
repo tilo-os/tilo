@@ -38,9 +38,19 @@ fn bytes(value: &EnrollmentChallenge) -> Result<Vec<u8>, String> {
     }
     postcard::to_allocvec(value).map_err(|e| e.to_string())
 }
+/// Text encoding of an enrollment challenge.
+///
+/// # Errors
+///
+/// Returns an error if the challenge cannot be serialized.
 pub fn encode(value: &EnrollmentChallenge) -> Result<String, String> {
     Ok(hex::encode(bytes(value)?))
 }
+/// Decode a textual enrollment challenge.
+///
+/// # Errors
+///
+/// Returns an error if the text is not a valid challenge encoding.
 pub fn decode(encoded: &str) -> Result<EnrollmentChallenge, String> {
     if encoded.len() > 2048 {
         return Err("enrollment challenge too large".into());
@@ -57,6 +67,11 @@ fn preimage(value: &EnrollmentChallenge) -> Result<Vec<u8>, String> {
     out.extend(bytes(value)?);
     Ok(out)
 }
+/// Sign an enrollment challenge.
+///
+/// # Errors
+///
+/// Returns an error if the challenge cannot be encoded for signing.
 pub fn sign(value: &EnrollmentChallenge, key: &SigningKey) -> Result<CompleteRequest, String> {
     if key.verifying_key().to_bytes() != value.device_public_key {
         return Err("enrollment key mismatch".into());
@@ -67,9 +82,14 @@ pub fn sign(value: &EnrollmentChallenge, key: &SigningKey) -> Result<CompleteReq
         signature: hex::encode(key.sign(&preimage(value)?).to_bytes()),
     })
 }
+/// Verify a completed enrollment for `root`, `room` and `workspace`.
+///
+/// # Errors
+///
+/// Returns an error if the signature, binding or expiry does not verify at `now_ns`.
 pub fn verify(
     request: &CompleteRequest,
-    root: [u8; 32],
+    owner_root: [u8; 32],
     room: &str,
     workspace: u64,
     now_ns: u64,
@@ -78,7 +98,8 @@ pub fn verify(
         return Err("unsupported enrollment proof version".into());
     }
     let value = decode(&request.challenge)?;
-    if value.root_public_key != root || value.room != room || value.workspace_id != workspace {
+    if value.root_public_key != owner_root || value.room != room || value.workspace_id != workspace
+    {
         return Err("enrollment scope mismatch".into());
     }
     if now_ns >= value.expires_at_ns {

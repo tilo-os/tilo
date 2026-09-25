@@ -1,5 +1,5 @@
 //! Signature-verified enrollment union with retained backing, not authority.
-use super::*;
+use super::{BoundedPeerError, BoundedPeerInvalid, PeerWork, RevocationList, backend};
 use tilo_user_identity::RevocationEntry;
 
 /// Retains the verified enrollment union's allocation credit. This does not bind
@@ -18,6 +18,11 @@ impl PeerWork<'_> {
     /// Verify every original signature and form the earliest-entry union using
     /// this exact turn. Input rows remain caller-owned; output credit stays with
     /// the returned holder. No roster filter, authority or domain is inferred.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`BoundedPeerError`] if a signature does not verify or the turn cannot pay
+    /// the union.
     pub fn verified_revocations(
         &self,
         entries: &[RevocationEntry],

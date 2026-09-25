@@ -1,9 +1,18 @@
 use super::*;
 use automerge::{ActorId, ObjType, Value};
 use std::collections::{BTreeMap, BTreeSet};
+use tilo_automerge::ApplyIncoming;
 
 // Literal pre-extraction private checks and governance tuple, independent of
 // the shared engine and its new borrowed certificate/streaming-hash adapters.
+#[expect(
+    clippy::similar_names,
+    reason = "`root` and `room` are the domain's own names"
+)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "the reference implementation, kept whole for parity"
+)]
 fn original(doc: &AutoCommit, peer: &crate::StatePeer) -> Result<(String, Vec<u64>), String> {
     let mut expiries = Vec::new();
     let roots = doc
@@ -37,7 +46,7 @@ fn original(doc: &AutoCommit, peer: &crate::StatePeer) -> Result<(String, Vec<u6
                 return Err("nonpersistent governed private policy capability".into());
             }
             if let Expiry::AtUnix(at) = cap.expiry {
-                expiries.push(at)
+                expiries.push(at);
             }
         }
     }
@@ -45,10 +54,10 @@ fn original(doc: &AutoCommit, peer: &crate::StatePeer) -> Result<(String, Vec<u6
     expiries.dedup();
     let owners = doc.get_all(ROOT, "owner").map_err(|e| e.to_string())?;
     let rooms = doc.get_all(ROOT, "room").map_err(|e| e.to_string())?;
-    if owners.len() != 1 || rooms.len() != 1 || rooms[0].0.to_str() != Some(peer.room()) {
+    if owners.len() != 1 || rooms.len() != 1 || rooms[0].0.as_str() != Some(peer.room()) {
         return Err("ambiguous canonical room/owner".into());
     }
-    let owner = owners[0].0.to_str().ok_or("invalid canonical owner")?;
+    let owner = owners[0].0.as_str().ok_or("invalid canonical owner")?;
     let expected = collab_types::caps::Principal::person_from_key(
         collab_types::Ed25519PublicKey::from_bytes(peer.authority().user_public_key),
     );
@@ -128,6 +137,10 @@ fn original(doc: &AutoCommit, peer: &crate::StatePeer) -> Result<(String, Vec<u6
         .to_string();
     Ok((revision, expiries))
 }
+#[expect(
+    clippy::panic_in_result_fn,
+    reason = "test helper: asserts parity with the original before returning the value"
+)]
 fn compare(doc: &AutoCommit, peer: &crate::StatePeer) -> Result<(String, Vec<u64>), String> {
     let expected = original(doc, peer);
     let certificates = peer.certificates();
@@ -169,7 +182,7 @@ fn compare(doc: &AutoCommit, peer: &crate::StatePeer) -> Result<(String, Vec<u64
         )
     });
     let got = result
-        .map(|value| (value.revision.clone(), value.expiries.clone()))
+        .map(|value| (value.revision.clone(), value.expiries))
         .map_err(Error::legacy);
     assert_eq!(got, expected);
     expected
@@ -243,12 +256,12 @@ fn shared_private_policy_preserves_literal_malformed_and_error_precedence_matrix
         doc.commit();
         let result = compare(&doc, &peer);
         if mode == 0 {
-            assert!(result.is_ok())
+            assert!(result.is_ok());
         } else {
-            assert!(result.is_err())
+            assert!(result.is_err());
         }
         if mode == 13 {
-            assert_eq!(result.unwrap_err(), "invalid private policy capabilities")
+            assert_eq!(result.unwrap_err(), "invalid private policy capabilities");
         }
     }
 }
@@ -311,7 +324,7 @@ fn shared_private_policy_preserves_real_capability_and_owner_conflicts() {
         }
         a.commit();
         b.commit();
-        a.merge(&mut b).unwrap();
+        a.merge_incoming(&mut b).unwrap();
         a.put(ROOT, "owner", false).unwrap();
         a.commit();
         assert_eq!(
@@ -329,7 +342,7 @@ fn shared_private_policy_preserves_real_capability_and_owner_conflicts() {
     b.put(ROOT, "owner", "two").unwrap();
     a.commit();
     b.commit();
-    a.merge(&mut b).unwrap();
+    a.merge_incoming(&mut b).unwrap();
     assert_eq!(
         compare(&a, &peer).unwrap_err(),
         "ambiguous canonical room/owner"

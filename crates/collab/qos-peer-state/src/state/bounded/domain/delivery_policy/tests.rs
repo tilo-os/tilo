@@ -1,6 +1,20 @@
 use super::*;
+use crate::BoundedStatePeer;
+use crate::NeighbourMsg;
+use crate::PeerLimits;
+use crate::PeerRegistry;
+use crate::PeerWork;
+use crate::SeedDocument;
+use crate::SeedState;
+use crate::StatePeer;
+use crate::TransportOrigin;
 use crate::native_footprint_vendor_tests::assert_precharged;
+use crate::seed_room;
+use automerge::resource_limits::NativeAllowance;
+use automerge::resource_limits::NativeResourceError;
 use automerge::{AutoCommit, ROOT, ReadDoc, transaction::Transactable};
+use tilo_user_identity::RevocationList;
+use web_time::Duration;
 fn restore(peer: &StatePeer, now: SystemTime, work: &mut PeerWork<'_>) -> BoundedStatePeer {
     BoundedStatePeer::restore(
         &peer.durable().unwrap(),
@@ -82,7 +96,7 @@ fn actual_delivery_holder_preserves_distinct_host_device_and_checks_every_real_r
     assert_eq!(got.digest(), digest);
     assert_eq!(got.room(), peer.room());
     assert_eq!(got.authority_root(), peer.authority().user_public_key);
-    assert_eq!(ROUTE_CHECKS.with(|n| n.get()), 2);
+    assert_eq!(ROUTE_CHECKS.with(std::cell::Cell::get), 2);
     assert_eq!(current.retained_bytes(), before);
     assert_ne!(
         got.digest(),
@@ -144,7 +158,11 @@ fn actual_delivery_holder_pays_current_turn_and_keeps_only_borrowed_inline_data(
 
 fn seed_with_expiring_member() -> (StatePeer, DeviceCert, SystemTime) {
     let (base, key, _, mut device, now) = crate::admission_tests::seeded();
-    device.expires_at_ns = Some(crate::state::now_ns(now) + 1_000_000_000);
+    device.expires_at_ns = Some(
+        crate::state::now_ns(now)
+            .checked_add(1_000_000_000)
+            .unwrap(),
+    );
     tilo_user_identity::sign_device_cert(
         &mut device,
         &ed25519_dalek::SigningKey::from_bytes(&[1; 32]),
@@ -231,6 +249,10 @@ fn actual_delivery_holder_denies_current_expired_and_revoked_members() {
     }
 }
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one end-to-end scenario: its setup and assertions stay together"
+)]
 fn actual_delivery_holder_preserves_empty_room_semantics_and_resource_refusals() {
     let (source, key, _, device, now) = crate::admission_tests::seeded();
     let mut empty = StatePeer::new(
@@ -284,7 +306,7 @@ fn actual_delivery_holder_preserves_empty_room_semantics_and_resource_refusals()
             read.delivery_policy(37, empty.authority(), &unknown, now)
                 .is_ok()
         );
-        assert_eq!(ROUTE_CHECKS.with(|n| n.get()), 0);
+        assert_eq!(ROUTE_CHECKS.with(std::cell::Cell::get), 0);
         let absent = missing.read(&work).unwrap();
         assert!(matches!(
             absent.delivery_policy(37, empty.authority(), &device, now),
@@ -329,14 +351,14 @@ fn actual_delivery_holder_preserves_empty_room_semantics_and_resource_refusals()
             assert!(matches!(
                 result,
                 Err(PeerDeliveryPolicyError::Peer(BoundedPeerError::Decode(_)))
-            ))
+            ));
         } else {
             assert!(matches!(
                 result,
                 Err(PeerDeliveryPolicyError::Peer(BoundedPeerError::Resource(
                     NativeResourceError::WorkBytes
                 )))
-            ))
+            ));
         }
         assert_eq!(current.retained_bytes(), before);
     }
@@ -370,7 +392,7 @@ fn actual_delivery_holder_uses_verified_metadata_and_ignores_document_heads() {
         let mut entry = RevocationEntry {
             user_public_key: root.verifying_key().to_bytes(),
             revoked_device_public_key: [byte + 2; 32],
-            revoked_at_ns: byte as u64,
+            revoked_at_ns: u64::from(byte),
             reason: RevocationReason::Compromised,
             signature: [0; 64],
         };
@@ -476,6 +498,6 @@ fn actual_delivery_holder_preserves_policy_errors_before_current_route_denial() 
             read.delivery_policy(37, peer.authority(), &device, now)
         });
         assert_eq!(result.err().unwrap(), legacy);
-        assert_eq!(ROUTE_CHECKS.with(|n| n.get()), 0);
+        assert_eq!(ROUTE_CHECKS.with(std::cell::Cell::get), 0);
     }
 }

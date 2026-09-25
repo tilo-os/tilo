@@ -203,10 +203,10 @@ fn compressed_change_with_body(original: &[u8], body: &[u8]) -> Vec<u8> {
     let mut output = original[..9].to_vec();
     let mut len = body.len();
     while len >= 128 {
-        output.push((len as u8 & 127) | 128);
+        output.push(u8::try_from(len & 127).unwrap() | 128);
         len >>= 7;
     }
-    output.push(len as u8);
+    output.push(u8::try_from(len).unwrap());
     output.extend(body);
     output
 }
@@ -331,7 +331,7 @@ fn bounded_bundle_inspection_and_normalization_remain_compatible() {
     let hashes = doc
         .get_changes(&[])
         .iter()
-        .map(|change| change.hash())
+        .map(automerge::Change::hash)
         .collect::<Vec<_>>();
     let bundle = doc.bundle(hashes).unwrap();
     assert_eq!(bundle.bytes()[8], 3);

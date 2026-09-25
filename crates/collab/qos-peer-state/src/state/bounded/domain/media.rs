@@ -1,5 +1,5 @@
 //! Inline current call facts, not a caller or publication credential.
-use super::*;
+use super::{BoundedPeerError, PeerRead, SystemTime, backend, room};
 pub struct PeerMediaCall {
     epoch: u64,
     authorization_revision: u64,
@@ -24,6 +24,11 @@ impl PeerRead<'_, '_> {
     /// Uses retained media readiness, then rechecks actual authority and member
     /// at the supplied time. The parent binds its authenticated source, request
     /// room, original clock and publication guard. No policy DTO is exported.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`BoundedPeerError`] if the device is not a current member or the call
+    /// binding cannot be read within the work budget.
     pub fn media_call(
         &self,
         device: [u8; 32],
@@ -31,7 +36,7 @@ impl PeerRead<'_, '_> {
         now: SystemTime,
     ) -> Result<Option<PeerMediaCall>, BoundedPeerError> {
         use crate::room::media::read::PolicyValue;
-        self._work.reserve(0).map_err(BoundedPeerError::Resource)?;
+        self.work.reserve(0).map_err(BoundedPeerError::Resource)?;
         let backend::media::Cache::Ready(policy) = &self.peer.media else {
             return Ok(None);
         };

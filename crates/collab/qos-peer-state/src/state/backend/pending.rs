@@ -1,5 +1,5 @@
 //! Shared validation of the existing durable deferred-message queue.
-use super::*;
+use super::{NeighbourMsg, VecDeque};
 
 #[derive(Debug, PartialEq, Eq)]
 pub(in crate::state) enum PendingError {

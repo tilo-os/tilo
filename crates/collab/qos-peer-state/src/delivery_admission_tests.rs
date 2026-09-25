@@ -51,7 +51,7 @@ fn delivery_admission_selection_is_explicit_and_exact_retry_survives_restore() {
         panic!("not accepted: {:?}", report.primary())
     };
     let first = first.clone();
-    assert_eq!(report.settled(), &[first.clone()]);
+    assert_eq!(report.settled(), std::slice::from_ref(&first));
     let encoded = receiver.durable().unwrap();
     assert_eq!(encoded[0], 5);
     let rows = receiver.rows();
@@ -330,7 +330,10 @@ fn delivery_admission_local_candidate_delta_includes_all_routes_and_refuses_evid
     let delta = candidate.admissions_since(&base).unwrap();
     assert_eq!(delta.len(), 2);
     assert_eq!(
-        delta.iter().map(|entry| entry.record()).collect::<Vec<_>>(),
+        delta
+            .iter()
+            .map(super::super::admission::DocumentAdmission::record)
+            .collect::<Vec<_>>(),
         ["tab:1", "tab:2"]
     );
     assert!(base.admissions_since(&candidate).is_err());
@@ -339,6 +342,10 @@ fn delivery_admission_local_candidate_delta_includes_all_routes_and_refuses_evid
 }
 
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one end-to-end scenario: its setup and assertions stay together"
+)]
 fn delivery_admission_literal_signed_bytes_and_v4_v5_migration_remain_exact() {
     const V4: &[u8] = include_bytes!("../tests/fixtures/delivery-admission/native-v4.postcard");
     const V5: &[u8] = include_bytes!("../tests/fixtures/delivery-admission/native-v5.postcard");
@@ -391,7 +398,7 @@ fn delivery_admission_literal_signed_bytes_and_v4_v5_migration_remain_exact() {
     let item: NeighbourMsg = collab_types::canonical::from_canonical_bytes(ITEM).unwrap();
     assert_eq!(postcard::to_allocvec(&item).unwrap(), ITEM);
     let NeighbourMsg::AppDocument { envelope, .. } = &item else {
-        unreachable!()
+        panic!("unexpected fixture shape")
     };
     assert_eq!(
         collab_types::canonical_bytes(envelope.as_ref()).unwrap(),

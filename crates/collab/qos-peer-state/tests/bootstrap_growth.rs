@@ -1,3 +1,13 @@
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::string_slice,
+    clippy::panic,
+    clippy::unreachable,
+    clippy::arithmetic_side_effects,
+    reason = "in a test these are the assertion, not a hazard"
+)]
 use automerge::{AutoCommit, ROOT, transaction::Transactable};
 use ed25519_dalek::SigningKey;
 use qos_peer_state::{
@@ -208,7 +218,7 @@ fn durable_bootstrap_batches_exact_snapshots_coverage_receipts_and_replay() {
         })
         .collect::<BTreeMap<_, _>>();
 
-    let mut batched = baseline.clone();
+    let mut batched = baseline;
     let messages = batched.durable_bootstrap_messages(&key, now, 7).unwrap();
     assert_eq!(&messages[1..], expected_messages);
     let batched_room = room_document(&messages[0]);
@@ -317,7 +327,7 @@ fn durable_generation_growth(documents: usize, generations: u64) -> (usize, usiz
         })
         .collect::<Vec<_>>();
     for generation in 2..generations + 2 {
-        let index = (generation as usize) % documents;
+        let index = usize::try_from(generation).unwrap() % documents;
         let before = peer.clone();
         let doc = &mut actors[index];
         let heads = doc.get_heads();
@@ -367,9 +377,8 @@ fn durable_generation_growth(documents: usize, generations: u64) -> (usize, usiz
         "documents={documents}: {} room changes over {generations} generations",
         end.changes - start.changes
     );
-    let room = room_document(&peer.room_message());
+    let mut room = room_document(&peer.room_message());
     let mut changes = room
-        .clone()
         .get_changes(&[])
         .into_iter()
         .rev()
@@ -387,8 +396,8 @@ fn durable_generation_room_growth_is_small_per_generation() {
     let mut report = Vec::new();
     for documents in [2usize, 8] {
         let (bytes, legacy, saved) = durable_generation_growth(documents, generations);
-        let per = bytes / generations as usize;
-        let legacy_per = legacy / generations as usize;
+        let per = bytes / usize::try_from(generations).unwrap();
+        let legacy_per = legacy / usize::try_from(generations).unwrap();
         report.push(format!(
             "documents={documents} generations={generations} room_bytes_per_generation={per} legacy_v1_bytes_per_generation={legacy_per} room_history_bytes={bytes} saved_room_bytes={saved}"
         ));

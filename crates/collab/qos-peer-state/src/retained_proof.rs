@@ -34,6 +34,11 @@ impl TryFrom<AuthorityFields> for RetentionAuthority {
     }
 }
 impl RetentionAuthority {
+    /// Pin the retention authority of `room` to `governor`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `room` is not a canonical UUID or `governor` does not verify.
     pub fn new(room: &str, governor: DeviceCert) -> Result<Self, String> {
         if uuid::Uuid::parse_str(room)
             .map_err(|e| e.to_string())?
@@ -57,11 +62,15 @@ impl RetentionAuthority {
 
     /// Derive the locally pinned retention authority from an existing governed
     /// room document without creating or replacing room state.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the room id is missing or `governor` is not the governed owner.
     pub fn from_governance(document: &AutoCommit, governor: DeviceCert) -> Result<Self, String> {
         let room = document
             .get(ROOT, "room")
             .map_err(|error| error.to_string())?
-            .and_then(|(value, _)| value.to_str().map(ToOwned::to_owned))
+            .and_then(|(value, _)| value.as_str().map(ToOwned::to_owned))
             .ok_or("governed room id is missing")?;
         let authority = Self::new(&room, governor)?;
         if crate::room::governance_of(Some(document)).0.as_deref()
@@ -326,6 +335,11 @@ fn identities(
 /// verified dependency basis. A checkpoint is loaded independently even when
 /// `prior` is present; it cannot borrow missing dependencies from the old basis.
 /// `prior` additionally checks immutable governance and monotonic metadata.
+///
+/// # Errors
+///
+/// Returns a [`ProofError`] if the body does not verify against the authority or
+/// `prior`.
 pub fn verify_room(
     authority: &RetentionAuthority,
     source: [u8; 32],
@@ -372,13 +386,12 @@ pub fn verify_room(
     let receipts = effect_receipts(&doc)?;
     // StatePeer preserves omitted receipts separately. A standalone replay
     // proof has no such side table, so it must retain their exact visible values.
-    if let Some(before) = before {
-        if effect_receipts(before)?
+    if let Some(before) = before
+        && effect_receipts(before)?
             .iter()
             .any(|(key, value)| receipts.get(key) != Some(value))
-        {
-            return Err(ProofError::Unknown);
-        }
+    {
+        return Err(ProofError::Unknown);
     }
     if !crate::room::governance_change_allowed(before, &doc, false, Some(&pinned), &pinned)
         || !crate::room::immutable_receipts(before, &doc)
@@ -470,6 +483,12 @@ fn signed_document(
     ))
 }
 
+/// Verify a document snapshot against a verified room.
+///
+/// # Errors
+///
+/// Returns a [`ProofError`] if the snapshot is not covered by the room or fails
+/// verification.
 pub fn verify_snapshot(
     room: &VerifiedRoom,
     source: [u8; 32],
@@ -536,6 +555,10 @@ impl VerifiedRoom {
         self.prior_heads.as_deref()
     }
     /// Current canonical route metadata, not a historical proof cache.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`ProofError`] if the room coverage rows are malformed.
     pub fn coverages(&self) -> Result<BTreeMap<String, Coverage>, ProofError> {
         crate::coverage::entries(&self.doc).map_err(|_| ProofError::Unknown)
     }

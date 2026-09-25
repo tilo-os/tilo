@@ -1,8 +1,12 @@
 use super::*;
+use crate::StatePeer;
 use crate::native_footprint_vendor_tests::assert_precharged;
 use crate::resources::native::NativeBatch;
+use crate::room;
+use crate::state::err;
 use automerge::resource_limits::{NativeAllocationSet, NativeAllowance};
 use automerge::{ReadDoc, transaction::Transactable};
+use ed25519_dalek::SigningKey;
 
 fn limits() -> ImportLimits {
     ImportLimits {
@@ -99,7 +103,6 @@ fn bounded_governed_import_matches_real_legacy_import_and_retains_fresh_certific
             .device_label
             .as_ptr()
     );
-    drop(read);
     drop(native);
     drop(certificates);
     drop(revocations);
@@ -245,6 +248,10 @@ fn original_import(
     Ok(changed)
 }
 
+#[expect(
+    clippy::panic_in_result_fn,
+    reason = "test helper: asserts parity with the original before returning the value"
+)]
 fn compare_case(
     peer: &StatePeer,
     room: &AutoCommit,
@@ -449,7 +456,7 @@ fn governed_import_preserves_all_receipt_shapes_and_error_order() {
     )
     .unwrap();
     let mut identity = row(member.clone());
-    let mut conflict = receipt.clone();
+    let mut conflict = receipt;
     conflict.request_id[0] ^= 1;
     identity.admissions.push(conflict);
     set_identity(&mut room, &hex::encode(member.device_public_key), &identity);
@@ -475,6 +482,10 @@ fn governed_import_preserves_all_receipt_shapes_and_error_order() {
 }
 
 #[test]
+#[expect(
+    clippy::similar_names,
+    reason = "`root` and `room` are the domain's own names"
+)]
 fn governed_import_keeps_verified_earliest_revocations_and_refuses_bad_root_or_signature() {
     let (peer, _, _, member, now) = crate::admission_tests::seeded();
     let mut identity = row(member.clone());

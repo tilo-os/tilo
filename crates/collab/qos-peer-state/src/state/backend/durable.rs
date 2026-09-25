@@ -1,5 +1,5 @@
 //! Guarded original durable DTO storage, before semantic peer restoration.
-use super::*;
+use super::{Durable, DurableV2, DurableV4, DurableV5, NativeReservation};
 use crate::admission::BoundedExactAdmissions;
 use crate::resources::{OuterLimits, PeerResourceError};
 use automerge::resource_limits::NativeWorkTurn;
@@ -76,7 +76,7 @@ impl DecodedDurable {
                     .map_err(DurableDecodeError::Resource)?;
                 (DurableWire::V4(value.base), Some(exact))
             }
-            _ => unreachable!(),
+            _ => return Err(DurableDecodeError::UnsupportedVersion),
         };
         match &wire {
             DurableWire::V2(value) if value.version != 2 => {

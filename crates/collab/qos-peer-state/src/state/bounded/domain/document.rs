@@ -1,5 +1,5 @@
 //! Exact admitted document data borrowed from one current native work turn.
-use super::*;
+use super::{BoundedPeerError, PeerRead, Route, SystemTime};
 use automerge::ChangeHash;
 use automerge::resource_limits::{NativeObject, NativeReadSession};
 
@@ -78,7 +78,8 @@ impl<'peer, 'work> PeerDocumentRead<'peer, 'work> {
         self.read.root()
     }
     pub fn heads(&self) -> &[ChangeHash] {
-        &self.heads[..self.heads_len]
+        // `heads_len` never exceeds the array, so the fallback is never taken.
+        self.heads.get(..self.heads_len).unwrap_or_default()
     }
     pub fn app(&self) -> &str {
         &self.route.app
@@ -91,6 +92,11 @@ impl<'peer, 'work> PeerRead<'peer, 'work> {
     /// Rechecks membership and document access before looking up the exact
     /// admitted plaintext, causally complete route. The embedding owner still
     /// binds the authenticated caller, actual lock/generation and fresh clock.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`PeerDocumentReadError`] if access is denied or the route is not an exact,
+    /// plaintext, causally complete admitted document.
     pub fn document_read(
         &self,
         device: [u8; 32],
@@ -116,18 +122,21 @@ impl<'peer, 'work> PeerRead<'peer, 'work> {
         }
         let read = document
             .doc
-            .read(self._work)
+            .read(self.work)
             .map_err(|error| PeerDocumentReadError::Peer(BoundedPeerError::Resource(error)))?;
         if document.doc.has_missing_dependencies() || read.pending_ops() != 0 {
             return Err(PeerDocumentReadError::Incomplete);
         }
         let mut heads = [ChangeHash([0; 32]); 64];
-        let mut heads_len = 0;
-        // The native visitor counts the WHOLE frontier before any callback.
-        // The document is immutable throughout this check and copy.
+        let mut heads_len = 0usize;
+        // The native visitor counts the WHOLE frontier before any callback and
+        // refuses more than `heads.len()`. The document is immutable throughout
+        // this check and copy.
         read.visit_heads(heads.len(), |hash| {
-            heads[heads_len] = hash;
-            heads_len += 1;
+            if let Some(slot) = heads.get_mut(heads_len) {
+                *slot = hash;
+                heads_len = heads_len.saturating_add(1);
+            }
         })
         .map_err(|error| PeerDocumentReadError::Peer(BoundedPeerError::Resource(error)))?;
         Ok(PeerDocumentRead {

@@ -43,10 +43,10 @@ fn double_publish() -> DoublePublish {
     let (mut receiver, key, _, _, now) = crate::admission_tests::seeded();
     receiver.select_admission_v5().unwrap();
     let mut author = receiver.clone();
-    let later = now + Duration::from_secs(301);
+    let later = now.checked_add(Duration::from_secs(301)).unwrap();
     let older = snapshot(&mut author, &key, later, "N");
     let newer = snapshot(&mut author, &key, later, "N+1");
-    assert_eq!(seq(&newer), seq(&older) + 1);
+    assert_eq!(seq(&newer), seq(&older).checked_add(1).unwrap());
     let room = author.room_message();
     let origin = TransportOrigin::RelayDelta(key.verifying_key().to_bytes());
 
@@ -97,7 +97,7 @@ fn superseded_checkpoint_skip_directly_after_governance_does_not_apply() {
     let (mut receiver, key, _, _, now) = crate::admission_tests::seeded();
     receiver.select_admission_v5().unwrap();
     let mut author = receiver.clone();
-    let later = now + Duration::from_secs(301);
+    let later = now.checked_add(Duration::from_secs(301)).unwrap();
     let older = snapshot(&mut author, &key, later, "N");
     let newer = snapshot(&mut author, &key, later, "N+1");
     let origin = TransportOrigin::RelayDelta(key.verifying_key().to_bytes());
@@ -126,7 +126,7 @@ fn superseded_checkpoint_lower_coverage_is_never_skipped() {
     let (mut receiver, key, _, _, now) = crate::admission_tests::seeded();
     receiver.select_admission_v5().unwrap();
     let mut author = receiver.clone();
-    let later = now + Duration::from_secs(301);
+    let later = now.checked_add(Duration::from_secs(301)).unwrap();
     let covered = snapshot(&mut author, &key, later, "N");
     let room = author.room_message();
     let ahead = snapshot(&mut author, &key, later, "N+1");
@@ -170,17 +170,21 @@ fn superseded_checkpoint_same_sequence_different_digest_stays_an_error() {
     receiver.select_admission_v5().unwrap();
     let mut author = receiver.clone();
     let mut forger = receiver.clone();
-    let later = now + Duration::from_secs(301);
+    let later = now.checked_add(Duration::from_secs(301)).unwrap();
     let genuine = snapshot(&mut author, &key, later, "genuine");
-    let forged = snapshot(&mut forger, &key, later, "forged");
-    assert_eq!(seq(&genuine), seq(&forged));
+    let counterfeit = snapshot(&mut forger, &key, later, "forged");
+    assert_eq!(seq(&genuine), seq(&counterfeit));
     let origin = TransportOrigin::RelayDelta(key.verifying_key().to_bytes());
     receiver
         .receive_from_report(origin, author.room_message(), later)
         .unwrap();
     let rows = receiver.rows();
     let durable = receiver.durable().unwrap();
-    assert!(receiver.receive_from_report(origin, forged, later).is_err());
+    assert!(
+        receiver
+            .receive_from_report(origin, counterfeit, later)
+            .is_err()
+    );
     assert_eq!(receiver.rows(), rows);
     assert_eq!(receiver.durable().unwrap(), durable);
     let admitted = receiver

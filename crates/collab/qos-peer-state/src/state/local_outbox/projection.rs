@@ -1,5 +1,10 @@
 //! Bounded replaceable recovery material; immutable obligations remain elsewhere.
-use super::*;
+use super::{
+    ArtifactKind, BTreeMap, ChannelState, DocumentMutation, DocumentWireVersion, Duration,
+    Ed25519PublicKey, LocalDocument, MAX_PUBLICATION_BYTES, MAX_PUBLICATIONS, NeighbourMsg,
+    OpClass, ReadDoc, Role, Route, SignedOp, SigningKey, StatePeer, SystemTime, err, peer_handle,
+    publication_size, room,
+};
 
 /// A historical byte/count estimate, never signing or document authority.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -103,6 +108,12 @@ impl StatePeer {
         Ok(routes)
     }
 
+    /// Reserve capacity for recovering `originals` as the selected device.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the originals are not authentic retained custody or exceed the
+    /// recovery budget.
     pub fn reserve_local_recovery(
         &self,
         originals: &[NeighbourMsg],
@@ -164,25 +175,34 @@ impl StatePeer {
                 .ok_or("projection reservation byte limit")?;
             // DurableDocument serializes only Vec<([u8;32],u64)> watermarks
             // from ChannelState. Reserve the exact maximum delta of that field.
-            let floors = &self.core.documents[route].channel.last_seq_per_author;
+            let floors = &self
+                .core
+                .documents
+                .get(route)
+                .ok_or("projection route is not admitted")?
+                .channel
+                .last_seq_per_author;
+            // Varint widths are at most 10 and their decimal spellings at most 28
+            // bytes, so the saturating steps below are exact.
             let (growth, decimal_growth) =
                 if let Some(sequence) = floors.get(&Ed25519PublicKey::from_bytes(selected)) {
                     (
-                        10 - varint_width(*sequence),
-                        28 - varint_decimal_digits(*sequence),
+                        10usize.saturating_sub(varint_width(*sequence)),
+                        28usize.saturating_sub(varint_decimal_digits(*sequence)),
                     )
                 } else {
                     let old_count = floors.len() as u64;
-                    let new_count = old_count + 1;
+                    let new_count = old_count.saturating_add(1);
                     (
-                        32 + 10 + varint_width(new_count) - varint_width(old_count),
+                        (32usize + 10)
+                            .saturating_add(varint_width(new_count))
+                            .saturating_sub(varint_width(old_count)),
                         selected
                             .iter()
                             .map(|byte| decimal_digits(*byte))
-                            .sum::<usize>()
-                            + 28
-                            + varint_decimal_digits(new_count)
-                            - varint_decimal_digits(old_count),
+                            .fold(28usize, usize::saturating_add)
+                            .saturating_add(varint_decimal_digits(new_count))
+                            .saturating_sub(varint_decimal_digits(old_count)),
                     )
                 };
             peer_growth = peer_growth
@@ -208,7 +228,7 @@ impl StatePeer {
     ) -> Result<LocalDocument, String> {
         let local = self.local_document_parts(message, selected).map_err(err)?;
         let NeighbourMsg::AppDocument { envelope, .. } = message else {
-            unreachable!()
+            return Err("recovery projection is not an app document".into());
         };
         if envelope.op_class != OpClass::Splice
             || !matches!(local.mutation, DocumentMutation::Incremental(_))
@@ -223,7 +243,11 @@ impl StatePeer {
                 "recovery projection must be a reserved transmission, not a local admission".into(),
             );
         }
-        let floor = self.core.documents[&local.route]
+        let floor = self
+            .core
+            .documents
+            .get(&local.route)
+            .ok_or("recovery route is not admitted")?
             .channel
             .last_seq_per_author
             .get(&Ed25519PublicKey::from_bytes(selected))
@@ -265,6 +289,11 @@ impl StatePeer {
         Ok(())
     }
 
+    /// Check that `projection` exactly recovers `originals`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the projection adds, drops or alters a recovered publication.
     pub fn validate_local_recovery_projection(
         &self,
         originals: &[NeighbourMsg],
@@ -314,7 +343,13 @@ impl StatePeer {
         now: SystemTime,
         reserved: bool,
     ) -> Result<ChannelState, String> {
-        let mut channel = self.core.documents[route].channel.clone();
+        let mut channel = self
+            .core
+            .documents
+            .get(route)
+            .ok_or("recovery route is not admitted")?
+            .channel
+            .clone();
         channel
             .artifacts
             .insert(envelope.artifact, ArtifactKind::Note);
@@ -338,6 +373,12 @@ impl StatePeer {
         Ok(channel)
     }
 
+    /// Check that the selected device may publish `projection` at `now`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the projection is invalid or its author is not currently
+    /// authorized.
     pub fn authorize_local_recovery_projection(
         &self,
         originals: &[NeighbourMsg],
@@ -353,7 +394,7 @@ impl StatePeer {
                 return Err("recovery projection is not currently fresh".into());
             }
             let NeighbourMsg::AppDocument { envelope, .. } = message else {
-                unreachable!()
+                return Err("recovery projection is not an app document".into());
             };
             let role = self.recovery_current_role(&local.route, envelope, now)?;
             self.recovery_validated_channel(&local.route, envelope, role, now, true)?;
@@ -361,6 +402,15 @@ impl StatePeer {
         Ok(())
     }
 
+    /// Sign the recovery projection's successors, returning them.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the projection is invalid or cannot be signed.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one reconciliation pass over the recovery projection"
+    )]
     pub fn reconcile_local_recovery_projection(
         &mut self,
         originals: &[NeighbourMsg],
@@ -400,7 +450,7 @@ impl StatePeer {
                         .all(|head| carried.get_change_by_hash(head).is_some())
                 {
                     let NeighbourMsg::AppDocument { envelope, .. } = message else {
-                        unreachable!()
+                        return Err("recovery projection is not an app document".into());
                     };
                     let role = candidate.recovery_current_role(route, envelope, now)?;
                     candidate.recovery_validated_channel(route, envelope, role, now, true)?;
@@ -412,7 +462,11 @@ impl StatePeer {
                 message
             } else {
                 let author = Ed25519PublicKey::from_bytes(selected);
-                let sequence = candidate.core.documents[route]
+                let sequence = candidate
+                    .core
+                    .documents
+                    .get(route)
+                    .ok_or("recovery route is not admitted")?
                     .channel
                     .last_seq_per_author
                     .get(&author)
@@ -503,10 +557,11 @@ fn add_history(
 }
 
 fn varint_width(mut value: u64) -> usize {
-    let mut bytes = 1;
+    let mut bytes = 1usize;
     while value >= 128 {
         value >>= 7;
-        bytes += 1;
+        // At most ten iterations for a u64.
+        bytes = bytes.saturating_add(1);
     }
     bytes
 }
@@ -521,10 +576,12 @@ fn decimal_digits(value: u8) -> usize {
     }
 }
 fn varint_decimal_digits(mut value: u64) -> usize {
-    let mut digits = 0;
+    // At most ten varint bytes of at most three digits each.
+    let mut digits = 0usize;
     while value >= 128 {
-        digits += decimal_digits(((value & 127) as u8) | 128);
+        digits = digits.saturating_add(decimal_digits(((value & 127) as u8) | 128));
         value >>= 7;
     }
-    digits + decimal_digits(value as u8)
+    // Below 128 after the loop.
+    digits.saturating_add(decimal_digits(u8::try_from(value).unwrap_or(u8::MAX)))
 }

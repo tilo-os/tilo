@@ -5,7 +5,9 @@ use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, sign_de
 use web_time::{Duration, SystemTime};
 fn fixtures() -> (SigningKey, DeviceCert, SigningKey, DeviceCert, SystemTime) {
     let root = SigningKey::from_bytes(&[1; 32]);
-    let now = SystemTime::UNIX_EPOCH + Duration::from_secs(2000);
+    let now = SystemTime::UNIX_EPOCH
+        .checked_add(Duration::from_secs(2000))
+        .unwrap();
     let make = |n: u8| {
         let key = SigningKey::from_bytes(&[n; 32]);
         let mut cert = DeviceCert {
@@ -42,7 +44,7 @@ fn unchanged_permission_queries_share_policy_data_across_peer_clones() {
         assert_eq!(actual.2, expected.2);
     }
     assert!(
-        crate::room::POLICY_READS.with(|count| count.get()) <= 1,
+        crate::room::POLICY_READS.with(std::cell::Cell::get) <= 1,
         "unchanged policy data is decoded at most once"
     );
 }
@@ -64,7 +66,7 @@ fn admitted_immutable_certificate_does_not_repeat_signature_checks_per_permissio
         assert_eq!(actual.2, expected.2);
     }
     assert_eq!(
-        crate::state::CERTIFICATE_VERIFICATIONS.with(|count| count.get()),
+        crate::state::CERTIFICATE_VERIFICATIONS.with(std::cell::Cell::get),
         0,
         "immutable signatures were already verified when the certificate entered the roster"
     );
@@ -333,17 +335,25 @@ pub(crate) fn seeded() -> (StatePeer, SigningKey, SigningKey, DeviceCert, System
 }
 
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one end-to-end scenario: its setup and assertions stay together"
+)]
 fn independent_invite_redemption_is_durable_single_use_and_removal_closes_access() {
     use crate::join::{
         InviteGrant, JoinChallenge, MemberRole, issue_invitation, sign_join_proof,
         verify_join_proof,
     };
+    use automerge::ReadDoc;
+    use collab_types::caps::{CapOverride, Scope, Subject, Verb};
 
     let (mut peer, authority_key, other_owner_device, _, now) = seeded();
-    let now_ns = now
+    let now_ns: u64 = now
         .duration_since(SystemTime::UNIX_EPOCH)
         .unwrap()
-        .as_nanos() as u64;
+        .as_nanos()
+        .try_into()
+        .unwrap();
     let guest_root = SigningKey::from_bytes(&[41; 32]);
     let guest_key = SigningKey::from_bytes(&[42; 32]);
     let mut guest_cert = DeviceCert {
@@ -541,13 +551,10 @@ fn independent_invite_redemption_is_durable_single_use_and_removal_closes_access
             .contains("already redeemed"),
         "invite A remains spent after invite B updates the same original device"
     );
-
-    use collab_types::caps::{CapOverride, Scope, Subject, Verb};
     let NeighbourMsg::SyncResp { changes, room } = restored.room_message() else {
-        unreachable!()
+        panic!("unexpected fixture shape")
     };
     let mut room_doc = crate::room::candidate(None, &changes).unwrap();
-    use automerge::ReadDoc;
     let capabilities = room_doc.get(ROOT, "capabilities").unwrap().unwrap().1;
     let before = room_doc.get_heads();
     room_doc.set_actor(automerge::ActorId::from(
@@ -672,10 +679,12 @@ fn host_without_device_enrollment_power_needs_explicit_room_delegation() {
         verify_join_proof,
     };
     let (mut peer, authority_key, host_key, _, now) = seeded();
-    let now_ns = now
+    let now_ns: u64 = now
         .duration_since(SystemTime::UNIX_EPOCH)
         .unwrap()
-        .as_nanos() as u64;
+        .as_nanos()
+        .try_into()
+        .unwrap();
     let host = peer
         .certificates()
         .into_iter()
@@ -718,7 +727,7 @@ fn host_without_device_enrollment_power_needs_explicit_room_delegation() {
             workspace_id: 9,
             room: peer.room().into(),
             authority: peer.authority().clone(),
-            issuer: host.clone(),
+            issuer: host,
             delegation: Some(delegation),
             role: MemberRole::Commenter,
             nonce: [64; 16],
@@ -766,10 +775,12 @@ fn concurrent_redeemers_cannot_merge_two_receipts_for_one_invitation() {
         sign_join_proof, verify_join_proof,
     };
     let (base, authority_key, _, _, now) = seeded();
-    let now_ns = now
+    let now_ns: u64 = now
         .duration_since(SystemTime::UNIX_EPOCH)
         .unwrap()
-        .as_nanos() as u64;
+        .as_nanos()
+        .try_into()
+        .unwrap();
     let signed = issue_invitation(
         InviteGrant {
             workspace_id: 10,
@@ -858,6 +869,10 @@ fn concurrent_redeemers_cannot_merge_two_receipts_for_one_invitation() {
 }
 
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one end-to-end scenario: its setup and assertions stay together"
+)]
 fn concurrent_distinct_invites_for_one_device_preserve_both_spends_after_restore() {
     use crate::join::{
         InviteGrant, JoinChallenge, MemberRole, WorkspaceDelegationPermissions,
@@ -866,7 +881,7 @@ fn concurrent_distinct_invites_for_one_device_preserve_both_spends_after_restore
     };
     let (mut base, authority_key, delegate_key, _, now) = seeded();
     let NeighbourMsg::SyncResp { changes, room } = base.room_message() else {
-        unreachable!()
+        panic!("unexpected fixture shape")
     };
     let mut legacy = crate::room::candidate(None, &changes).unwrap();
     let before = legacy.get_heads();
@@ -888,10 +903,12 @@ fn concurrent_distinct_invites_for_one_device_preserve_both_spends_after_restore
         now,
     )
     .unwrap();
-    let now_ns = now
+    let now_ns: u64 = now
         .duration_since(SystemTime::UNIX_EPOCH)
         .unwrap()
-        .as_nanos() as u64;
+        .as_nanos()
+        .try_into()
+        .unwrap();
     let delegate = base
         .certificates()
         .into_iter()
@@ -941,8 +958,7 @@ fn concurrent_distinct_invites_for_one_device_preserve_both_spends_after_restore
     };
     let signed_a =
         issue_invitation(grant(83, base.authority().clone(), None), &authority_key).unwrap();
-    let signed_b =
-        issue_invitation(grant(84, delegate.clone(), Some(delegation)), &delegate_key).unwrap();
+    let signed_b = issue_invitation(grant(84, delegate, Some(delegation)), &delegate_key).unwrap();
     let redeem = |signed: &[u8], request: u8, nonce: u8, cert: &DeviceCert, key: &SigningKey| {
         let join = decode_and_verify_invitation(
             signed,
@@ -1020,7 +1036,7 @@ fn concurrent_distinct_invites_for_one_device_preserve_both_spends_after_restore
 fn conflicting_crdt_values_for_one_invite_fail_closed() {
     let (base, authority_key, _, _, now) = seeded();
     let NeighbourMsg::SyncResp { changes, room } = base.room_message() else {
-        unreachable!()
+        panic!("unexpected fixture shape")
     };
     let mut document = crate::room::candidate(None, &changes).unwrap();
     let base_heads = document.get_heads();
@@ -1288,7 +1304,7 @@ fn legacy_checkpoint_without_coverage_remains_deferred_and_metadata_cannot_regre
     let (mut native, a, _, bc, now) = seeded();
     let messages = native.bootstrap_messages(&a, now).unwrap();
     let NeighbourMsg::SyncResp { changes, room } = messages[0].clone() else {
-        unreachable!()
+        panic!("unexpected fixture shape")
     };
     let mut doc = room::candidate(None, &changes).unwrap();
     doc.delete(ROOT, coverage::FIELD_V2).unwrap();
@@ -1534,6 +1550,10 @@ fn aged_retained_checkpoint_rejects_without_poisoning_fresh_sync_or_durable_read
 }
 
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one end-to-end scenario: its setup and assertions stay together"
+)]
 fn learned_revocation_and_governed_identity_survive_stale_enrollment_restore() {
     use tilo_user_identity::{RevocationEntry, RevocationReason, sign_revocation_entry};
     let (mut native, a, b, bc, now) = seeded();
@@ -1641,6 +1661,10 @@ fn learned_revocation_and_governed_identity_survive_stale_enrollment_restore() {
 }
 
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one end-to-end scenario: its setup and assertions stay together"
+)]
 fn deferred_encryption_obligation_is_journaled_on_fresh_and_unchanged_governance() {
     for existing in [false, true] {
         let (mut native, a, b, bc, now) = seeded();
@@ -1696,13 +1720,11 @@ fn deferred_encryption_obligation_is_journaled_on_fresh_and_unchanged_governance
         } else {
             a.verifying_key().to_bytes()
         };
-        if existing {
-            if let NeighbourMsg::AppDocument { peer, envelope, .. } = &mut encrypted {
-                *peer = peer_handle(&author);
-                envelope.author = collab_types::Ed25519PublicKey::from_bytes(author);
-                envelope.seq = 1;
-                collab_types::sign_op(envelope, &b).unwrap();
-            }
+        if existing && let NeighbourMsg::AppDocument { peer, envelope, .. } = &mut encrypted {
+            *peer = peer_handle(&author);
+            envelope.author = collab_types::Ed25519PublicKey::from_bytes(author);
+            envelope.seq = 1;
+            collab_types::sign_op(envelope, &b).unwrap();
         }
         let encrypted_outcome = receiver
             .receive_from(TransportOrigin::RelayDelta(author), encrypted, now)
@@ -1763,7 +1785,12 @@ fn deferred_encryption_obligation_is_journaled_on_fresh_and_unchanged_governance
 }
 
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one end-to-end scenario: its setup and assertions stay together"
+)]
 fn expired_durable_outbox_reconciles_against_fresh_governor_without_duplicate_changes() {
+    use automerge::ReadDoc;
     for delivered in [false, true] {
         let (mut governor, a, b, bc, now) = seeded();
         let mut client = StatePeer::new(
@@ -1887,7 +1914,6 @@ fn expired_durable_outbox_reconciles_against_fresh_governor_without_duplicate_ch
         }
         assert_eq!(client.rows(), governor.rows());
         let final_doc = AutoCommit::load(&governor.document("test.app", "tab:1").unwrap()).unwrap();
-        use automerge::ReadDoc;
         let (_, text) = final_doc.get(ROOT, "text").unwrap().unwrap();
         assert_eq!(final_doc.text(text).unwrap(), "saved once");
         assert_eq!(client.outbox_status(&outbox, later).pending, 0);
@@ -1917,6 +1943,7 @@ fn legacy_durable_identity_metadata_is_not_silently_assumed_empty() {
 
 #[test]
 fn higher_governor_floor_without_causal_changes_does_not_acknowledge_outbox() {
+    use automerge::ReadDoc;
     let (mut governor, a, b, bc, now) = seeded();
     let mut client = StatePeer::new(
         governor.room(),
@@ -2009,7 +2036,6 @@ fn higher_governor_floor_without_causal_changes_does_not_acknowledge_outbox() {
             .is_empty()
     );
     assert_eq!(client.rows(), governor.rows());
-    use automerge::ReadDoc;
     let final_doc = AutoCommit::load(&governor.document("test.app", "tab:1").unwrap()).unwrap();
     let (_, text) = final_doc.get(ROOT, "text").unwrap().unwrap();
     assert_eq!(final_doc.text(text).unwrap(), "one two");
@@ -2056,7 +2082,7 @@ fn reordered_incrementals_are_pending_durable_and_drain_after_predecessor() {
     )
     .unwrap();
     assert_eq!(receiver.pending_count(), 1);
-    receiver.receive_from(origin, first.clone(), now).unwrap();
+    receiver.receive_from(origin, first, now).unwrap();
     assert_eq!(receiver.pending_count(), 0);
     assert_eq!(
         receiver.document_heads(app, record),
@@ -2066,6 +2092,7 @@ fn reordered_incrementals_are_pending_durable_and_drain_after_predecessor() {
 
 #[test]
 fn expired_predecessor_and_fresh_dependent_converge_without_waiting_for_expiry() {
+    use automerge::ReadDoc;
     let (mut governor, a, b, bc, now) = seeded();
     let origin = TransportOrigin::RelayDelta(a.verifying_key().to_bytes());
     let browser_origin = TransportOrigin::RelayDelta(b.verifying_key().to_bytes());
@@ -2152,7 +2179,6 @@ fn expired_predecessor_and_fresh_dependent_converge_without_waiting_for_expiry()
     );
     assert_eq!(delivered_sequences, vec![2, 3, 4]);
     assert_eq!(client.rows(), governor.rows());
-    use automerge::ReadDoc;
     let final_doc = AutoCommit::load(&governor.document("test.app", "tab:1").unwrap()).unwrap();
     let (_, text) = final_doc.get(ROOT, "text").unwrap().unwrap();
     assert_eq!(final_doc.text(text).unwrap(), "one two");
@@ -2239,7 +2265,9 @@ fn expired_known_identity_does_not_block_governed_join() {
         (now + Duration::from_secs(1))
             .duration_since(SystemTime::UNIX_EPOCH)
             .unwrap()
-            .as_nanos() as u64,
+            .as_nanos()
+            .try_into()
+            .unwrap(),
     );
     sign_device_cert(&mut cert, &root).unwrap();
     governor.admit_certificate(cert.clone(), &a, now).unwrap();
@@ -2305,10 +2333,12 @@ fn expired_known_identity_does_not_block_governed_join() {
 #[test]
 fn restore_validates_fresh_roster_not_before_and_interval_while_retaining_history() {
     let (peer, _, _, _, now) = seeded();
-    let now_ns = now
+    let now_ns: u64 = now
         .duration_since(SystemTime::UNIX_EPOCH)
         .unwrap()
-        .as_nanos() as u64;
+        .as_nanos()
+        .try_into()
+        .unwrap();
     let root = SigningKey::from_bytes(&[94; 32]);
     let make = |device_seed: u8, issued_at_ns: u64, expires_at_ns: Option<u64>| {
         let device = SigningKey::from_bytes(&[device_seed; 32]);
@@ -2357,6 +2387,10 @@ fn restore_validates_fresh_roster_not_before_and_interval_while_retaining_histor
 }
 
 #[test]
+#[expect(
+    clippy::similar_names,
+    reason = "`root` and `room` are the domain's own names"
+)]
 fn expired_pinned_authority_restores_as_history_but_cannot_authorize() {
     let now = SystemTime::UNIX_EPOCH + Duration::from_secs(4_000);
     let later = now + Duration::from_secs(2);
@@ -2372,7 +2406,9 @@ fn expired_pinned_authority_restores_as_history_but_cannot_authorize() {
             (now + Duration::from_secs(1))
                 .duration_since(SystemTime::UNIX_EPOCH)
                 .unwrap()
-                .as_nanos() as u64,
+                .as_nanos()
+                .try_into()
+                .unwrap(),
         ),
         signature: [0; 64],
     };
@@ -2415,6 +2451,7 @@ fn expired_pinned_authority_restores_as_history_but_cannot_authorize() {
 }
 #[test]
 fn governed_import_is_atomic_even_for_direct_admission() {
+    use automerge::ReadDoc;
     let root = SigningKey::from_bytes(&[1; 32]);
     let (mut source, a, _, _, now) = seeded();
     let mut receiver = source.clone();
@@ -2423,10 +2460,9 @@ fn governed_import_is_atomic_even_for_direct_admission() {
     sign_device_cert(&mut valid, &root).unwrap();
     source.admit_certificate(valid, &a, now).unwrap();
     let NeighbourMsg::SyncResp { changes, room } = source.room_message() else {
-        unreachable!()
+        panic!("unexpected fixture shape")
     };
     let mut candidate = room::candidate(None, &changes).unwrap();
-    use automerge::ReadDoc;
     let (_, identities) = candidate.get(ROOT, "peer_identities_v1").unwrap().unwrap();
     candidate
         .put(
@@ -2459,6 +2495,10 @@ fn governed_import_is_atomic_even_for_direct_admission() {
 }
 
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one end-to-end scenario: its setup and assertions stay together"
+)]
 fn durability_receipt_is_distinct_from_acceptance_and_survives_restore() {
     let (a, ac, b, bc, now) = fixtures();
     let room = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
@@ -2553,7 +2593,7 @@ fn durability_receipt_is_distinct_from_acceptance_and_survives_restore() {
         );
     }
     assert_eq!(
-        crate::state::CHECKPOINT_DECODES.with(|count| count.get()),
+        crate::state::CHECKPOINT_DECODES.with(std::cell::Cell::get),
         1,
         "peer clones must share immutable checkpoint decoding"
     );
@@ -2613,6 +2653,10 @@ fn durability_receipt_is_distinct_from_acceptance_and_survives_restore() {
 }
 
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one end-to-end scenario: its setup and assertions stay together"
+)]
 fn legacy_v2_journal_restores_coverage_and_reemits_the_authenticated_wire_version() {
     let (authority_key, authority, member_key, member, now) = fixtures();
     let room = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
@@ -2824,7 +2868,7 @@ fn legacy_v2_journal_restores_coverage_and_reemits_the_authenticated_wire_versio
     assert_eq!(renewal_client.durable().unwrap(), unchanged);
 
     let renewed = renewal_client
-        .reconcile_outbox(&[emitted.clone(), second.clone()], &member_key, reconnect)
+        .reconcile_outbox(&[emitted.clone(), second], &member_key, reconnect)
         .unwrap();
     assert_eq!(renewed.len(), 4);
     for message in &renewed[2..] {
@@ -2901,10 +2945,15 @@ fn legacy_v2_journal_restores_coverage_and_reemits_the_authenticated_wire_versio
         restored.covers(&emitted),
         "the authenticated legacy checkpoint causally covers its legacy incremental"
     );
-    assert_eq!(restored.outbox_status(&[emitted.clone()], now).pending, 0);
+    assert_eq!(
+        restored
+            .outbox_status(std::slice::from_ref(&emitted), now)
+            .pending,
+        0
+    );
     assert!(
         restored
-            .reconcile_outbox(&[emitted.clone()], &member_key, now)
+            .reconcile_outbox(std::slice::from_ref(&emitted), &member_key, now)
             .unwrap()
             .is_empty(),
         "covered legacy evidence must retire without current-namespace renewal"
@@ -2916,8 +2965,8 @@ fn legacy_v2_journal_restores_coverage_and_reemits_the_authenticated_wire_versio
     let mut unresolved = StatePeer::restore(
         &unresolved_journal,
         room,
-        authority.clone(),
-        vec![member.clone()],
+        authority,
+        vec![member],
         RevocationList::new(),
         now,
     )
@@ -3006,6 +3055,10 @@ fn nonowner_topology_and_record_route_changes_are_rejected_before_admission() {
 }
 
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one end-to-end scenario: its setup and assertions stay together"
+)]
 fn selective_publication_covers_foreign_metadata_only_admission_and_new_records() {
     let (mut governor, a, b, bc, now) = seeded();
     let app = "test.app";
@@ -3044,7 +3097,7 @@ fn selective_publication_covers_foreign_metadata_only_admission_and_new_records(
         panic!("room delta first")
     };
     let NeighbourMsg::SyncResp { changes: all, .. } = governor.room_message() else {
-        unreachable!()
+        panic!("unexpected fixture shape")
     };
     assert!(
         changes.len() < all.len(),

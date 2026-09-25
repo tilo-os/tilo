@@ -1,5 +1,5 @@
 //! Shared signed revocation restore, with separately retained bounded storage.
-use super::*;
+use super::{BTreeMap, NativeReservation, RevocationList, VerifiedCertificate};
 use automerge::resource_limits::{NativeResourceError, NativeWorkTurn};
 use tilo_user_identity::{RevocationEntry, RevocationError};
 
@@ -142,6 +142,7 @@ impl BoundedRevocations {
 }
 
 pub(in crate::state) fn insertion_bytes(count: usize) -> Result<usize, RestoreRevocationsError> {
+    type Entry = ([u8; 32], RevocationEntry);
     let capacity = || RestoreRevocationsError::Resource(NativeResourceError::WorkBytes);
     if count == 0 {
         return Ok(0);
@@ -160,7 +161,6 @@ pub(in crate::state) fn insertion_bytes(count: usize) -> Result<usize, RestoreRe
             .checked_next_power_of_two()
             .ok_or_else(capacity)?
     };
-    type Entry = ([u8; 32], RevocationEntry);
     // TableLayout rounds data to max(entry alignment, control width), then
     // stores one control byte per bucket plus one complete trailing group.
     //16 bounds pinned aarch64/x86/wasm groups; actual aarch64 width is8.
@@ -168,7 +168,9 @@ pub(in crate::state) fn insertion_bytes(count: usize) -> Result<usize, RestoreRe
     let data = size_of::<Entry>()
         .checked_mul(buckets)
         .ok_or_else(capacity)?;
-    let padded = data.checked_add(alignment - 1).ok_or_else(capacity)? & !(alignment - 1);
+    let padded = data
+        .checked_next_multiple_of(alignment)
+        .ok_or_else(capacity)?;
     let table = padded
         .checked_add(buckets)
         .and_then(|n| n.checked_add(16))

@@ -1,7 +1,15 @@
 use super::*;
+use crate::StatePeer;
+use crate::TransportOrigin;
 use crate::native_footprint_vendor_tests::assert_precharged;
 use crate::resources::NativeAllowance;
+use crate::state::DurableV4;
+use automerge::AutoCommit;
+use automerge::ROOT;
+use automerge::ReadDoc;
 use automerge::transaction::Transactable;
+use tilo_user_identity::RevocationList;
+use web_time::SystemTime;
 
 fn deferred() -> (StatePeer, NeighbourMsg, SystemTime) {
     let (mut source, _, member, cert, now) = crate::admission_tests::seeded();
@@ -37,7 +45,7 @@ fn bounded_pending_counts_actual_signed_deferred_message_without_allocating() {
     let durable: DurableV4 = postcard::from_bytes(&bytes).unwrap();
     let allowance = NativeAllowance::new(4096).unwrap();
     assert_precharged(&allowance, || {
-        validate(&durable.pending, durable.pending_bytes).unwrap()
+        validate(&durable.pending, durable.pending_bytes).unwrap();
     });
     let mut restored = StatePeer::restore(
         &bytes,
@@ -51,7 +59,7 @@ fn bounded_pending_counts_actual_signed_deferred_message_without_allocating() {
     assert_eq!(restored.pending_count(), 1);
     let source = match &predecessor {
         NeighbourMsg::AppDocument { envelope, .. } => *envelope.author.as_bytes(),
-        _ => unreachable!(),
+        _ => panic!("unexpected fixture shape"),
     };
     restored
         .receive_from(TransportOrigin::RelayDelta(source), predecessor, now)

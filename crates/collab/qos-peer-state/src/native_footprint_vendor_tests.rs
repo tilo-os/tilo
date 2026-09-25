@@ -1,6 +1,7 @@
-//! Real AutoCommit allocation/custody checks through the workspace dependency.
+//! Real `AutoCommit` allocation/custody checks through the workspace dependency.
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::{Cell, RefCell};
+use tilo_automerge::ApplyIncoming;
 
 use automerge::marks::{ExpandMark, Mark};
 use automerge::resource_limits::{NativeAllocationSet, NativeAllowance, NativeResourceError};
@@ -32,7 +33,7 @@ fn allocated(bytes: usize) {
                 .try_with(|watch| watch.get() == Some(bytes))
                 .unwrap_or(false)
             {
-                state.watched_requests += 1;
+                state.watched_requests = state.watched_requests.saturating_add(1);
             }
             state.live = state
                 .live
@@ -229,7 +230,7 @@ fn native_save_output_limit_checks_exact_chosen_representation_before_destinatio
     unrelated.commit();
     let queued = unrelated.get_changes(&[])[1].clone();
     let queued_raw = queued.raw_bytes().to_vec();
-    source.apply_changes([queued]).unwrap();
+    source.apply_incoming([queued]).unwrap();
     let heads = source.get_heads();
     let credit = allowance();
     let mut registry = NativeAllocationSet::new(credit.clone()).unwrap();
@@ -318,7 +319,7 @@ fn native_bounded_save_refuses_open_transactions_and_small_turns() {
     let (mut source, _) = populated_document();
     let credit = allowance();
     let mut registry = NativeAllocationSet::new(credit.clone()).unwrap();
-    let turn = registry.work_turn(credit.clone()).unwrap();
+    let turn = registry.work_turn(credit).unwrap();
     let pending = source.clone_bounded(&mut registry, &turn).unwrap();
     assert!(matches!(
         pending.save_bounded(&turn, SaveOptions::default()),
@@ -356,7 +357,7 @@ fn native_bounded_save_covers_empty_branches_counters_and_queued_changes() {
         .put(ROOT, "concurrent", "a different actor's retained value")
         .unwrap();
     other.commit();
-    branches.merge(&mut other).unwrap();
+    branches.merge_incoming(&mut other).unwrap();
 
     let mut complete = AutoCommit::new();
     complete.put(ROOT, "first", 1).unwrap();
@@ -366,7 +367,7 @@ fn native_bounded_save_covers_empty_branches_counters_and_queued_changes() {
     let changes = complete.get_changes(&[]);
     let orphan_raw = changes[1].raw_bytes().to_vec();
     let mut queued = AutoCommit::new();
-    queued.apply_changes([changes[1].clone()]).unwrap();
+    queued.apply_incoming([changes[1].clone()]).unwrap();
 
     for (mut source, orphan) in [
         (AutoCommit::new(), None),
@@ -443,7 +444,9 @@ fn full_native_footprint_covers_actual_nonempty_retained_allocations() {
     );
     assert!(allocations.live > 32_768);
     assert!(footprint.owned_bytes() > 0);
-    assert!(footprint.shared_bytes() > 0);
+    // automerge 0.12 / hexane 1.0 slabs are uniquely owned: no shared backing.
+    assert_eq!(footprint.shared_bytes(), 0);
+    assert_eq!(footprint.owned_bytes(), footprint.total_bytes());
     assert!(
         footprint.total_bytes() >= allocations.live,
         "declared {} below actual retained {}",
@@ -514,7 +517,7 @@ fn bounded_native_clone_accounts_fresh_object_patch_events() {
 }
 
 #[test]
-fn native_shared_custody_deduplicates_and_outlives_the_registry() {
+fn native_owned_custody_charges_each_clone_and_outlives_the_registry() {
     let (doc, _) = populated_document();
     let allowance = allowance();
     let mut allocations = NativeAllocationSet::new(allowance.clone()).unwrap();
@@ -525,9 +528,12 @@ fn native_shared_custody_deduplicates_and_outlives_the_registry() {
     let after_first = allowance.available_bytes();
     let second = first.clone_bounded(&mut allocations, &turn).unwrap();
     let second_charge = after_first - allowance.available_bytes();
+    // automerge 0.12 slabs are uniquely owned, so a clone of a clone holds
+    // its own full footprint rather than sharing the first clone's backing.
+    assert!(first_charge > 0);
     assert!(
-        second_charge < first_charge,
-        "second document must share already charged backing"
+        second_charge > 0,
+        "second document must reserve its own backing"
     );
     drop(first);
     allocations.reconcile();
@@ -556,8 +562,11 @@ fn native_reconciliation_releases_dropped_documents_without_a_cycle() {
     let initial = allowance.available_bytes();
     for _ in 0..3 {
         let cloned = doc.clone_bounded(&mut allocations, &turn).unwrap();
-        drop(cloned);
         assert!(allowance.available_bytes() < initial);
+        // Uniquely owned slabs: the document releases its credit on drop, and
+        // reconcile has no shared leases left to retire.
+        drop(cloned);
+        assert_eq!(allowance.available_bytes(), initial);
         allocations.reconcile();
         assert_eq!(allowance.available_bytes(), initial);
     }
@@ -581,7 +590,7 @@ fn native_footprint_accounts_queued_compressed_change_storage() {
     let _ = change.bytes(); // retain both original and compressed change storage
     let build = || {
         let mut doc = AutoCommit::new();
-        doc.apply_changes([change.clone()]).unwrap();
+        doc.apply_incoming([change.clone()]).unwrap();
         assert_eq!(doc.get_missing_deps(&[]).len(), 1);
         doc
     };

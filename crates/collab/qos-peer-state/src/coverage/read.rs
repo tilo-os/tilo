@@ -64,16 +64,16 @@ impl CoverageDecode for LegacyCoverage {
 #[serde(transparent)]
 struct CoverageRows(BTreeMap<String, Coverage>);
 impl outer::EncodeSchema for CoverageRows {}
-impl<'de> outer::Schema<'de> for CoverageRows {}
-impl<'de> outer::PrefixSchema<'de> for CoverageRows {}
+impl outer::Schema<'_> for CoverageRows {}
+impl outer::PrefixSchema<'_> for CoverageRows {}
 impl outer::EncodeSchema for super::RouteValue {}
-impl<'de> outer::Schema<'de> for super::RouteValue {}
+impl outer::Schema<'_> for super::RouteValue {}
 /// The interim bare-`Coverage` route value (see `super::decode_value`).
 #[derive(Serialize, Deserialize)]
 #[serde(transparent)]
-struct BareCoverage(Coverage);
+pub(crate) struct BareCoverage(Coverage);
 impl outer::EncodeSchema for BareCoverage {}
-impl<'de> outer::Schema<'de> for BareCoverage {}
+impl outer::Schema<'_> for BareCoverage {}
 pub(crate) enum BoundedCoverageRow {
     Route(Held<super::RouteValue>),
     Bare(Held<BareCoverage>),

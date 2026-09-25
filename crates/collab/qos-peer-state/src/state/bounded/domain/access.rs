@@ -1,5 +1,5 @@
 //! Borrowed current access facts; never an owner or caller credential.
-use super::*;
+use super::{BoundedPeerError, PeerRead, SystemTime, backend};
 /// Data from actual current membership and the unchanged capability evaluator.
 /// The embedding owner still binds its authenticated caller, route and time.
 pub struct PeerRoomAccess {
@@ -21,6 +21,10 @@ impl PeerRoomAccess {
 impl PeerRead<'_, '_> {
     /// Rechecks actual current membership, then the same canonical record
     /// capability decision. This is data, not a durable receipt or caller proof.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`BoundedPeerError`] if membership cannot be read within the work budget.
     pub fn document_read_allowed(
         &self,
         device: [u8; 32],
@@ -32,7 +36,7 @@ impl PeerRead<'_, '_> {
         let bytes = backend::access::temporary_bytes(member.person(), self.room(), Some(app))
             .map_err(BoundedPeerError::Resource)?;
         let _scratch = self
-            ._work
+            .work
             .reserve(bytes)
             .map_err(BoundedPeerError::Resource)?;
         Ok(backend::access::document_read(
@@ -47,6 +51,10 @@ impl PeerRead<'_, '_> {
     }
     /// Current room read/write facts from the same retained membership data.
     /// The parent still pins the authenticated channel, actual owner and clock.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`BoundedPeerError`] if membership cannot be read within the work budget.
     pub fn room_access(
         &self,
         device: [u8; 32],
@@ -56,7 +64,7 @@ impl PeerRead<'_, '_> {
         let bytes = backend::access::temporary_bytes(member.person(), self.room(), None)
             .map_err(BoundedPeerError::Resource)?;
         let _scratch = self
-            ._work
+            .work
             .reserve(bytes)
             .map_err(BoundedPeerError::Resource)?;
         let (read, write) = backend::access::room(

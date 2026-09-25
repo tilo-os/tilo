@@ -1,5 +1,7 @@
 use super::*;
+use crate::StatePeer;
 use crate::native_footprint_vendor_tests::assert_precharged;
+use tilo_user_identity::RevocationList;
 fn restore(
     registry: &mut PeerRegistry,
     current: NativeAllowance,
@@ -35,7 +37,7 @@ fn peer_domain_rejects_foreign_empty_and_nonempty_peer_reads_and_accepts_later_o
     let mut registry = assert_precharged(&initial, || PeerRegistry::new(initial.clone())).unwrap();
     initial.finish_turn();
     let current = NativeAllowance::new(64 * 1024 * 1024).unwrap();
-    let peer = restore(&mut registry, current.clone(), &source, now);
+    let peer = restore(&mut registry, current, &source, now);
     let empty_peer = restore(
         &mut registry,
         NativeAllowance::new(64 * 1024 * 1024).unwrap(),
@@ -86,7 +88,7 @@ fn peer_domain_retains_original_brand_credit_after_registry_drop_until_empty_pee
     let mut registry = assert_precharged(&initial, || PeerRegistry::new(initial.clone())).unwrap();
     initial.finish_turn();
     let current = NativeAllowance::new(64 * 1024 * 1024).unwrap();
-    let peer = restore(&mut registry, current.clone(), &empty, now);
+    let peer = restore(&mut registry, current, &empty, now);
     drop(registry);
     assert!(
         initial.retained_bytes() > baseline,
@@ -120,8 +122,10 @@ fn peer_domain_repeated_work_calls_share_one_normalized_counter() {
     }
     let mut registry = PeerRegistry::new(NativeAllowance::new(4096).unwrap()).unwrap();
     let current = NativeAllowance::new(64 * 1024 * 1024).unwrap();
-    let mut limits = PeerLimits::default();
-    limits.normalized_bytes = total * 2 - 1;
+    let limits = PeerLimits {
+        normalized_bytes: total * 2 - 1,
+        ..PeerLimits::default()
+    };
     let mut turn = registry.begin_turn(current.clone(), limits).unwrap();
     let first = {
         let mut work = turn.work().unwrap();
@@ -213,7 +217,6 @@ fn peer_domain_sealed_empty_read_and_work_fail_and_turn_drop_seals_current_credi
         peer.read(&work),
         Err(BoundedPeerError::Resource(NativeResourceError::WorkBytes))
     ));
-    drop(work);
     assert!(matches!(
         turn.work(),
         Err(BoundedPeerError::Resource(NativeResourceError::WorkBytes))
@@ -258,7 +261,6 @@ fn peer_domain_outer_output_spends_current_turn_and_keeps_credit_after_turn_and_
     ));
     assert_eq!(initial.retained_bytes(), initial_before);
     assert_eq!(current.available_bytes(), 0);
-    drop(work);
     drop(turn);
     drop(registry);
     assert!(current.reserve(0).is_err());

@@ -1,5 +1,5 @@
 //! One ordering of current media prerequisites; no authority constructor.
-use super::*;
+use super::{BoundedNative, PeerCore, Route, StatePeer, err, room};
 use crate::room::media::RoomMediaV1;
 use crate::room::media::read::{BoundedPolicy, PolicyValue};
 use crate::state::bounded::{BoundedPeerError, PeerWork};
@@ -18,7 +18,7 @@ pub(in crate::state) fn native_binding(
     turn: &automerge::resource_limits::NativeWorkTurn,
 ) -> Result<bool, room::media::read::Error> {
     #[cfg(test)]
-    BINDINGS.with(|count| count.set(count.get() + 1));
+    BINDINGS.with(|count| count.set(count.get().saturating_add(1)));
     match core
         .documents
         .iter()

@@ -16,7 +16,7 @@ pub(crate) enum Error {
 /// Native documents and arbitrary user Deserialize code cannot enter here.
 pub(crate) trait EncodeSchema: serde::Serialize {}
 pub(crate) trait Schema<'de>: serde::Deserialize<'de> + EncodeSchema {}
-/// The single historical CoverageRows field uses postcard::from_bytes and
+/// The single historical `CoverageRows` field uses `postcard::from_bytes` and
 /// deliberately tolerates a trailing suffix. No other schema implements this.
 pub(crate) trait PrefixSchema<'de>: Schema<'de> {}
 pub(crate) fn decode_prefix<'de, T: PrefixSchema<'de>>(
@@ -27,7 +27,7 @@ pub(crate) fn decode_prefix<'de, T: PrefixSchema<'de>>(
 }
 
 impl EncodeSchema for crate::NeighbourMsg {}
-impl<'de> Schema<'de> for crate::NeighbourMsg {}
+impl Schema<'_> for crate::NeighbourMsg {}
 
 struct Budget {
     limits: Limits,
@@ -63,8 +63,13 @@ impl Budget {
         // Include the concrete visited value's layout. This also covers Box<T>
         // wrappers whose serde implementation boxes the visited T afterward.
         self.charge(Some(size_of::<T>()))?;
-        self.depth += 1;
+        // Below 64 here, so the step is exact.
+        self.depth = self.depth.saturating_add(1);
         Ok(())
+    }
+    /// Pairs with a successful `enter`, so the depth is at least one.
+    fn leave(&mut self) {
+        self.depth = self.depth.saturating_sub(1);
     }
     fn map_slot<T, E: de::Error>(&mut self) -> Result<(), E> {
         // The admitted schemas use fresh BTreeMaps. Rust 1.97.1 alloc btree
@@ -247,7 +252,7 @@ impl<'de, V: Visitor<'de>> Visitor<'de> for Visit<'_, V> {
             inner: d,
             budget: &mut *self.budget,
         });
-        self.budget.depth -= 1;
+        self.budget.leave();
         result
     }
     fn visit_newtype_struct<D: de::Deserializer<'de>>(self, d: D) -> Result<Self::Value, D::Error> {
@@ -256,7 +261,7 @@ impl<'de, V: Visitor<'de>> Visitor<'de> for Visit<'_, V> {
             inner: d,
             budget: &mut *self.budget,
         });
-        self.budget.depth -= 1;
+        self.budget.leave();
         result
     }
     fn visit_seq<A: SeqAccess<'de>>(self, a: A) -> Result<Self::Value, A::Error> {
@@ -272,7 +277,7 @@ impl<'de, V: Visitor<'de>> Visitor<'de> for Visit<'_, V> {
             budget: &mut *self.budget,
             count: 0,
         });
-        self.budget.depth -= 1;
+        self.budget.leave();
         result
     }
     fn visit_map<A: MapAccess<'de>>(self, a: A) -> Result<Self::Value, A::Error> {
@@ -283,7 +288,7 @@ impl<'de, V: Visitor<'de>> Visitor<'de> for Visit<'_, V> {
             budget: &mut *self.budget,
             count: 0,
         });
-        self.budget.depth -= 1;
+        self.budget.leave();
         result
     }
     fn visit_enum<A: EnumAccess<'de>>(self, a: A) -> Result<Self::Value, A::Error> {
@@ -292,7 +297,7 @@ impl<'de, V: Visitor<'de>> Visitor<'de> for Visit<'_, V> {
             inner: a,
             budget: &mut *self.budget,
         });
-        self.budget.depth -= 1;
+        self.budget.leave();
         result
     }
 }

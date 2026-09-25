@@ -20,13 +20,17 @@ pub struct OwnerCommitRequest {
     pub operation: CommitOperation,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "public wire enum: boxing a variant would change every constructor and match"
+)]
 pub enum CommitOperation {
     Document {
         app: String,
         record: String,
         envelope: Box<collab_types::SignedOp>,
     },
-    /// Only the broker's redacted WorkspaceEffectReceipt encoding belongs here.
+    /// Only the broker's redacted `WorkspaceEffectReceipt` encoding belongs here.
     /// Private arguments, results and error messages never cross this boundary.
     EffectReceipt {
         invocation: uuid::Uuid,
@@ -67,6 +71,15 @@ pub struct OwnerCommitReceipt {
     pub aggregate_hash: [u8; 32],
 }
 impl OwnerCommitRequest {
+    /// The commit binding this request must be receipted against.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the request's state cannot be encoded.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one canonical binding over every commit operation"
+    )]
     pub fn binding(&self) -> Result<CommitBinding, String> {
         if uuid::Uuid::parse_str(&self.room)
             .map_err(|e| e.to_string())?
@@ -176,6 +189,11 @@ impl OwnerCommitRequest {
     }
 }
 impl OwnerCommitReceipt {
+    /// Check that this receipt answers `request` exactly.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the receipt's binding, generation or scope does not match.
     pub fn validate_for(&self, request: &OwnerCommitRequest) -> Result<(), String> {
         if self.binding != request.binding()?
             || self.generation == 0
@@ -197,6 +215,11 @@ pub trait OwnerCommitService: Send + Sync {
         true
     }
     fn commit(&self, request: OwnerCommitRequest) -> CommitFuture;
+    /// Whether the owner can currently accept commits.
+    ///
+    /// # Errors
+    ///
+    /// Returns a diagnostic when the owner is unavailable.
     fn health(&self) -> Result<(), String>;
     /// Caller proof stays host-local. Existing owners reject agent work by default.
     fn commit_agent(
