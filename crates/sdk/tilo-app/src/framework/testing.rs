@@ -16,9 +16,13 @@ use ui_core::bound_dispatch::BoundActionAddress;
 use ui_core::headless::FrameHarness;
 use ui_core::launch::LaunchError;
 use ui_core::permissions::{Actor, PermissionContext, Role, UserId};
+
+const AUTHOR: &str = "test-author";
 use ui_core::record::{RecordCheckout, RecordStore};
 
-use super::app::{DATA_DIR_INSTANCE, ResourceApp, data_dir_host, default_record, definition};
+use super::app::{
+    DATA_DIR_INSTANCE, ResourceApp, data_dir_host, default_record, definition, role_permissions,
+};
 
 const INSTANCE: u64 = 7;
 
@@ -38,6 +42,9 @@ pub struct HeadlessApp<A: ResourceApp> {
     instance: u64,
     profile: Profile,
     role: Role,
+    /// Shared with the host: changing it is a role change the running app
+    /// sees, as when the record's owner changes someone's access.
+    permissions: Rc<RefCell<PermissionContext>>,
     marker: std::marker::PhantomData<A>,
 }
 
@@ -77,7 +84,8 @@ impl<A: ResourceApp> HeadlessApp<A> {
     }
 
     fn open(profile: Profile, role: Role) -> Result<Self, LaunchError> {
-        let author = UserId("test-author".into());
+        let author = UserId(AUTHOR.into());
+        let permissions = role_permissions(AUTHOR, role);
         let (mut host, instance) = match &profile {
             Profile::Temporary(directory) => (
                 ApplicationHost::new_with_profile_lifetime(
@@ -85,18 +93,16 @@ impl<A: ResourceApp> HeadlessApp<A> {
                     "test-device".into(),
                     "test-workspace",
                     author.clone(),
-                    Rc::new(RefCell::new(PermissionContext::from_capabilities(
-                        Actor::person(Some(role), &author.0),
-                        vec![],
-                    ))),
+                    Rc::clone(&permissions),
                     tilo_actions::ActionContext::default(),
                     directory.clone(),
                 )?,
                 INSTANCE,
             ),
-            Profile::DataDir(directory) => {
-                (data_dir_host(directory, &author, role)?, DATA_DIR_INSTANCE)
-            }
+            Profile::DataDir(directory) => (
+                data_dir_host(directory, &author, Rc::clone(&permissions))?,
+                DATA_DIR_INSTANCE,
+            ),
         };
         let definition = definition::<A>();
         let records = host.records_for(definition)?;
@@ -119,8 +125,19 @@ impl<A: ResourceApp> HeadlessApp<A> {
             instance,
             profile,
             role,
+            permissions,
             marker: std::marker::PhantomData,
         })
+    }
+
+    /// Change the participant's role while the app runs, as the record's
+    /// owner changing their access does. Takes effect on the next frame,
+    /// which this runs.
+    pub fn set_role(&mut self, role: Role) {
+        *self.permissions.borrow_mut() =
+            PermissionContext::from_capabilities(Actor::person(Some(role), AUTHOR), vec![]);
+        self.role = role;
+        self.harness().relayout();
     }
 
     /// Close the app (flushing its record) and open it again on the same
