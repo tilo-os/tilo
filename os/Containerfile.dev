@@ -207,6 +207,7 @@ RUN --mount=type=bind,from=dev-inputs,source=/tilo,target=/run/tilo-dev \
       --base-image "$BASE_IMAGE" --base-digest "$TILO_BASE_DIGEST" \
       --base-created "$TILO_BASE_CREATED" \
       --cargo-lock /run/tilo-dev/Cargo.lock \
+    && systemctl unmask systemd-sysext.service \
     && systemctl enable sshd.service systemd-sysext.service tilo-vm-restore.service \
     && test -x /usr/bin/tilo-control && test -x /usr/libexec/tilo-vmd \
     && /usr/bin/tilo-vmd --version \
