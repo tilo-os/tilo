@@ -1,6 +1,6 @@
 //! Presentation order is independent of the list owning each collaborative Text.
 use automerge::{AutoCommit, ObjId, ObjType, ReadDoc, ScalarValue, Value};
-use ui::tilo_resource::order::bytes::{between as key_between, cmp as cmp_keys};
+use ui::doc::fractional_order::{cmp_keys, key_between};
 use uuid::Uuid;
 
 pub(crate) const FIELD: &str = "notes_order";

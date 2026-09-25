@@ -523,7 +523,7 @@ impl UndoLog {
     ) -> (Vec<ChangeHash>, Vec<ChangeHash>) {
         let inverse_before = doc.get_heads();
         write_revert_patches(doc, &entry.after, &entry.before);
-        let _ = tilo_resource::history::commit_stamped(doc);
+        let _ = qdoc::history::commit_stamped(doc);
         let inverse_after = doc.get_heads();
         self.last_heads.clone_from(&inverse_after);
         (inverse_before, inverse_after)

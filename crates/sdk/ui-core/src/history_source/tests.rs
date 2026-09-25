@@ -135,7 +135,7 @@ fn qdoc_doc(handle: &str) -> (AutoCommit, qdoc::Containers, qdoc::IdGen) {
     doc.set_actor(ActorId::from(handle.as_bytes()));
     let c = qdoc::model::init(&mut doc, &ROOT);
     let ids = qdoc::IdGen::new(doc.get_actor().to_hex_string());
-    tilo_resource::history::commit_stamped_at(&mut doc, T0);
+    qdoc::history::commit_stamped_at(&mut doc, T0);
     (doc, c, ids)
 }
 
@@ -155,7 +155,7 @@ fn two_identity_document() -> (AutoCommit, String) {
         dm.splice_text(&id, 0, 0, "hello");
         id
     };
-    tilo_resource::history::commit_stamped_at(&mut alice, T0 + HOUR);
+    qdoc::history::commit_stamped_at(&mut alice, T0 + HOUR);
 
     // Bob forks from Alice's state, as a synced peer would.
     let mut bob = alice.fork();
@@ -169,7 +169,7 @@ fn two_identity_document() -> (AutoCommit, String) {
         };
         dm.splice_text(&block, 5, 0, " world");
     }
-    tilo_resource::history::commit_stamped_at(&mut bob, T0 + 2 * HOUR);
+    qdoc::history::commit_stamped_at(&mut bob, T0 + 2 * HOUR);
 
     alice.merge(&mut bob).expect("peers merge");
 
@@ -181,7 +181,7 @@ fn two_identity_document() -> (AutoCommit, String) {
         };
         dm.splice_text(&block, 11, 0, "!");
     }
-    tilo_resource::history::commit_stamped_at(&mut alice, T0 + 3 * HOUR);
+    qdoc::history::commit_stamped_at(&mut alice, T0 + 3 * HOUR);
 
     (alice, block)
 }
@@ -270,7 +270,7 @@ fn deletions_are_counted_and_a_removed_block_is_a_tombstone() {
         dm.splice_text(&b, 0, 0, "doomed");
         (a, b)
     };
-    tilo_resource::history::commit_stamped_at(&mut doc, T0 + HOUR);
+    qdoc::history::commit_stamped_at(&mut doc, T0 + HOUR);
 
     {
         let mut dm = qdoc::DocMut {
@@ -280,7 +280,7 @@ fn deletions_are_counted_and_a_removed_block_is_a_tombstone() {
         };
         dm.splice_text(&a, 4, 5, "");
     }
-    tilo_resource::history::commit_stamped_at(&mut doc, T0 + 2 * HOUR);
+    qdoc::history::commit_stamped_at(&mut doc, T0 + 2 * HOUR);
 
     {
         let mut dm = qdoc::DocMut {
@@ -290,7 +290,7 @@ fn deletions_are_counted_and_a_removed_block_is_a_tombstone() {
         };
         dm.remove_block(&b);
     }
-    tilo_resource::history::commit_stamped_at(&mut doc, T0 + 3 * HOUR);
+    qdoc::history::commit_stamped_at(&mut doc, T0 + 3 * HOUR);
 
     let entries = source().entries(&mut doc);
     let rows = content_rows(&entries);
@@ -317,11 +317,11 @@ fn a_plain_automerge_document_falls_back_to_patch_summaries() {
     doc.set_actor(ActorId::from("alice".as_bytes()));
     let body = doc.put_object(&ROOT, "body", ObjType::Text).unwrap();
     doc.splice_text(&body, 0, 0, "Hello").unwrap();
-    tilo_resource::history::commit_stamped_at(&mut doc, T0);
+    qdoc::history::commit_stamped_at(&mut doc, T0);
     doc.splice_text(&body, 5, 0, " world").unwrap();
-    tilo_resource::history::commit_stamped_at(&mut doc, T0 + HOUR);
+    qdoc::history::commit_stamped_at(&mut doc, T0 + HOUR);
     doc.put(&ROOT, "title", "Notes").unwrap();
-    tilo_resource::history::commit_stamped_at(&mut doc, T0 + 2 * HOUR);
+    qdoc::history::commit_stamped_at(&mut doc, T0 + 2 * HOUR);
 
     let entries = source().entries(&mut doc);
     assert_eq!(entries.len(), 3, "three commits, three rows");
@@ -574,7 +574,7 @@ fn an_unregistered_actor_is_named_honestly_in_a_produced_row() {
     doc.set_actor(ActorId::from(stranger.as_slice()));
     let body = doc.put_object(&ROOT, "body", ObjType::Text).unwrap();
     doc.splice_text(&body, 0, 0, "who wrote this").unwrap();
-    tilo_resource::history::commit_stamped_at(&mut doc, T0);
+    qdoc::history::commit_stamped_at(&mut doc, T0);
 
     let entries = HistorySource::new().entries(&mut doc);
     assert_eq!(entries.len(), 1);
@@ -607,7 +607,7 @@ fn the_entry_cap_keeps_the_most_recent_versions() {
         };
         dm.insert_block(None, "paragraph")
     };
-    tilo_resource::history::commit_stamped_at(&mut doc, T0);
+    qdoc::history::commit_stamped_at(&mut doc, T0);
     for i in 0..6 {
         {
             let mut dm = qdoc::DocMut {
@@ -618,7 +618,7 @@ fn the_entry_cap_keeps_the_most_recent_versions() {
             dm.splice_text(&p, i, 0, "x");
         }
         let i = i64::try_from(i).unwrap_or(i64::MAX);
-        tilo_resource::history::commit_stamped_at(&mut doc, T0 + (i + 1) * HOUR);
+        qdoc::history::commit_stamped_at(&mut doc, T0 + (i + 1) * HOUR);
     }
     let all = source().entries(&mut doc);
     let capped = source().with_max_entries(3).entries(&mut doc);
@@ -700,12 +700,12 @@ fn heads_address_a_merged_history_correctly() {
 
     for (row, expected) in rows.iter().zip(["hello", "hello world", "hello world!"]) {
         let idx = version_index_for_entry(&mut doc, &row.id).expect("row addresses a version");
-        let snap = qdoc::snapshot::at(&mut doc, idx).expect("version materialises");
+        let snap = qdoc::history::materialize_at(&mut doc, idx).expect("version materialises");
         assert_eq!(
             snap.blocks[0].text, expected,
             "version {idx} should read {expected:?}"
         );
-        let heads = tilo_resource::history::prefix_heads(&mut doc, idx);
+        let heads = qdoc::history::prefix_heads(&mut doc, idx);
         assert!(!heads.is_empty(), "every version has at least one head");
     }
 }

@@ -7,8 +7,8 @@ license.workspace = true
 
 # The resource layer: typed resource state stored in a CRDT, typed replayable
 # actions over it, deterministic ids and order, history and replay. It knows
-# nothing about rendering, widgets or windows. The UI toolkit uses its
-# document-generic history; `tilo-app` binds resources to views.
+# nothing about rendering, widgets or windows; the UI toolkit knows nothing
+# about it. `tilo-app` binds the two.
 
 [dependencies]
 automerge.workspace = true

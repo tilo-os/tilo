@@ -50,7 +50,7 @@ fn now() -> std::time::SystemTime {
         .unwrap_or(std::time::UNIX_EPOCH)
 }
 
-/// `NOW_SECS` as a signed offset, for `tilo_resource::history::commit_stamped_at`
+/// `NOW_SECS` as a signed offset, for `qdoc::history::commit_stamped_at`
 /// (which timestamps in signed seconds-since-epoch). `NOW_SECS` is a small
 /// fixed constant, always well inside `i64`'s range.
 fn now_i64() -> i64 {
@@ -71,7 +71,7 @@ fn three_session_doc() -> AutoCommit {
     let c = qdoc::model::init(&mut doc, &root);
     let mut ids = qdoc::IdGen::new(doc.get_actor().to_hex_string());
     let base = now_i64().saturating_sub(6 * 3600);
-    tilo_resource::history::commit_stamped_at(&mut doc, base);
+    qdoc::history::commit_stamped_at(&mut doc, base);
 
     let para = {
         let mut dm = qdoc::DocMut {
@@ -83,7 +83,7 @@ fn three_session_doc() -> AutoCommit {
         dm.splice_text(&id, 0, 0, "Quarterly report");
         id
     };
-    tilo_resource::history::commit_stamped_at(&mut doc, base.saturating_add(20));
+    qdoc::history::commit_stamped_at(&mut doc, base.saturating_add(20));
 
     // Session one: six edits about twenty seconds apart.
     for i in 0..6i64 {
@@ -95,7 +95,7 @@ fn three_session_doc() -> AutoCommit {
         };
         dm.splice_text(&para, at, 0, " Revenue held steady.");
         let stamp = base.saturating_add(40).saturating_add(i.saturating_mul(20));
-        tilo_resource::history::commit_stamped_at(&mut doc, stamp);
+        qdoc::history::commit_stamped_at(&mut doc, stamp);
     }
 
     // Session two, an hour later, by a peer: forked, edited under its own actor,
@@ -117,7 +117,7 @@ fn three_session_doc() -> AutoCommit {
         let stamp = base
             .saturating_add(3600)
             .saturating_add(i.saturating_mul(30));
-        tilo_resource::history::commit_stamped_at(&mut peer, stamp);
+        qdoc::history::commit_stamped_at(&mut peer, stamp);
     }
     #[allow(
         clippy::expect_used,
@@ -141,7 +141,7 @@ fn three_session_doc() -> AutoCommit {
         let stamp = base
             .saturating_add(4 * 3600)
             .saturating_add(i.saturating_mul(25));
-        tilo_resource::history::commit_stamped_at(&mut doc, stamp);
+        qdoc::history::commit_stamped_at(&mut doc, stamp);
     }
     doc
 }
@@ -169,7 +169,7 @@ fn singleton_bands_doc() -> AutoCommit {
     let root = automerge::ROOT;
     let c = qdoc::model::init(&mut doc, &root);
     let mut ids = qdoc::IdGen::new(doc.get_actor().to_hex_string());
-    tilo_resource::history::commit_stamped_at(&mut doc, now_i64().saturating_sub(900));
+    qdoc::history::commit_stamped_at(&mut doc, now_i64().saturating_sub(900));
     let para = {
         let mut dm = qdoc::DocMut {
             doc: &mut doc,
@@ -180,7 +180,7 @@ fn singleton_bands_doc() -> AutoCommit {
         dm.splice_text(&id, 0, 0, "Alice starts.");
         id
     };
-    tilo_resource::history::commit_stamped_at(&mut doc, now_i64().saturating_sub(800));
+    qdoc::history::commit_stamped_at(&mut doc, now_i64().saturating_sub(800));
 
     for (who, text, ago) in [
         ("Ada Lovelace", " Ada adds a line.", 700i64),
@@ -200,7 +200,7 @@ fn singleton_bands_doc() -> AutoCommit {
             ids: &mut pids,
         };
         dm.splice_text(&para, at, 0, text);
-        tilo_resource::history::commit_stamped_at(&mut peer, now_i64().saturating_sub(ago));
+        qdoc::history::commit_stamped_at(&mut peer, now_i64().saturating_sub(ago));
         #[allow(
             clippy::expect_used,
             reason = "peer forked from this same doc moments ago with no divergent schema; a \
@@ -385,7 +385,7 @@ fn shoot_main_bands(
     {
         tilo_ui::history_groups::name_range(&mut peer, &start.id, Some(&end.id), "Costs section");
     }
-    tilo_resource::history::commit_stamped_at(&mut peer, now_i64().saturating_sub(2 * 3600));
+    qdoc::history::commit_stamped_at(&mut peer, now_i64().saturating_sub(2 * 3600));
     #[allow(
         clippy::expect_used,
         reason = "peer forked from this same doc moments ago with no divergent schema; a merge \
@@ -399,7 +399,7 @@ fn shoot_main_bands(
     {
         tilo_ui::history_groups::name_range(doc, &start.id, Some(&end.id), "Headcount pass");
     }
-    tilo_resource::history::commit_stamped_at(doc, now_i64().saturating_sub(600));
+    qdoc::history::commit_stamped_at(doc, now_i64().saturating_sub(600));
 
     let entries = rows(doc);
     let named = tilo_ui::history_groups::read_named_ranges(doc, &author_dir());
@@ -450,7 +450,7 @@ fn shoot_open_band(
     if let Some(start) = entries.get(12) {
         tilo_ui::history_groups::name_range(&mut open_doc, &start.id, None, "Rework the intro");
     }
-    tilo_resource::history::commit_stamped_at(&mut open_doc, now_i64().saturating_sub(300));
+    qdoc::history::commit_stamped_at(&mut open_doc, now_i64().saturating_sub(300));
     let open_entries = rows(&mut open_doc);
     let open_named = tilo_ui::history_groups::read_named_ranges(&open_doc, &author_dir());
     let mut t = timeline(520.0, 640.0, open_entries.clone(), open_named.clone());
@@ -471,7 +471,7 @@ fn shoot_long_and_nested(shot: &mut Shot, doc: &AutoCommit, entries: &[HistoryEn
     {
         tilo_ui::history_groups::name_range(&mut long_doc, &start.id, Some(&end.id), long);
     }
-    tilo_resource::history::commit_stamped_at(&mut long_doc, now_i64().saturating_sub(500));
+    qdoc::history::commit_stamped_at(&mut long_doc, now_i64().saturating_sub(500));
     let long_entries = rows(&mut long_doc);
     let long_named = tilo_ui::history_groups::read_named_ranges(&long_doc, &author_dir());
     let mut t = timeline(520.0, 640.0, long_entries.clone(), long_named.clone());
@@ -495,7 +495,7 @@ fn shoot_long_and_nested(shot: &mut Shot, doc: &AutoCommit, entries: &[HistoryEn
             "Q3 release",
         );
     }
-    tilo_resource::history::commit_stamped_at(&mut nested_doc, now_i64().saturating_sub(400));
+    qdoc::history::commit_stamped_at(&mut nested_doc, now_i64().saturating_sub(400));
     let nested_entries = rows(&mut nested_doc);
     let nested_named = tilo_ui::history_groups::read_named_ranges(&nested_doc, &author_dir());
     let mut t = timeline(520.0, 700.0, nested_entries, nested_named);
