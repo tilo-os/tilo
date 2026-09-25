@@ -38,3 +38,9 @@ block-editor-code-keyboard-hint = Ctrl+Enter: darunter schreiben · Ctrl+Shift+E
 widget-block-indent = Block mit Unterelementen einrücken
 widget-block-text = Blocktext
 widget-block-outdent = Block mit Unterelementen ausrücken
+
+# Authentication surfaces share the system theme and catalog.
+greeter-welcome-back = Willkommen zurück bei Tilo
+greeter-sign-in = Zum Fortfahren anmelden
+greeter-passcode-intro = Gib deinen Code ein, um deinen Desktop zu öffnen.
+lock-welcome-back = Willkommen zurück

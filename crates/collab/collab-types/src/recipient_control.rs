@@ -12,6 +12,10 @@ use crate::{FilePermission, FileRecordId};
 
 pub const RECIPIENT_CONTROL_VERSION: u16 = 1;
 pub const MAX_RECIPIENT_CONTROL_FRAME_BYTES: usize = 128 * 1024;
+/// Each request and response on the socket: a big-endian `u32` length, then
+/// the canonical encoding. Empty frames are invalid.
+pub const RECIPIENT_CONTROL_FRAMING: wire_frame::Framing =
+    wire_frame::Framing::big_endian(MAX_RECIPIENT_CONTROL_FRAME_BYTES).reject_empty();
 pub const MAX_RECIPIENT_CONTROL_CONNECTIONS: usize = 32;
 pub const MAX_RECIPIENT_CONTROL_REQUESTS_PER_CONNECTION: usize = 256;
 pub const MAX_RECIPIENT_MOUNT_PATH_BYTES: usize = 4096;
@@ -132,6 +136,33 @@ pub enum RecipientControlErrorCode {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The recipient-control socket frames: a big-endian `u32` length, at most
+    /// 128 KiB, never empty. Files, the launcher and the filesystem daemon
+    /// are built separately and must agree.
+    #[test]
+    fn recipient_control_framing_is_pinned() {
+        assert_eq!(
+            RECIPIENT_CONTROL_FRAMING.encode(b"ab").unwrap(),
+            [0, 0, 0, 2, b'a', b'b']
+        );
+        assert!(RECIPIENT_CONTROL_FRAMING.encode(&[]).is_err());
+        assert!(
+            RECIPIENT_CONTROL_FRAMING
+                .encode(&vec![0; 128 * 1024])
+                .is_ok()
+        );
+        assert!(
+            RECIPIENT_CONTROL_FRAMING
+                .encode(&vec![0; 128 * 1024 + 1])
+                .is_err()
+        );
+        assert!(
+            RECIPIENT_CONTROL_FRAMING
+                .read(&mut &[0_u8, 0, 0, 0][..])
+                .is_err()
+        );
+    }
 
     #[test]
     fn admission_debug_redacts_the_only_secret_bearing_field() {
