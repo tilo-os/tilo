@@ -31,6 +31,10 @@ pub trait ColumnIndex<W>: Sealed + Default {
     /// Number of slabs indexed.
     fn len(&self) -> usize;
 
+    /// Requested heap bytes of this index (buffer capacities), without
+    /// allocating. qOS local modification (see `PROVENANCE.md`).
+    fn heap_bytes(&self) -> usize;
+
     /// `true` if no slabs are indexed.
     fn is_empty(&self) -> bool {
         self.len() == 0
@@ -87,6 +91,13 @@ impl<W: SlabWeight> ColumnIndex<W> for BitIndex<W> {
         Self { weights, bit }
     }
 
+    fn heap_bytes(&self) -> usize {
+        self.weights
+            .capacity()
+            .saturating_add(self.bit.capacity())
+            .saturating_mul(std::mem::size_of::<W>())
+    }
+
     fn len(&self) -> usize {
         self.weights.len()
     }
@@ -126,6 +137,10 @@ impl<A: SlabAggregate> Sealed for SlabBTree<A> {}
 impl<A: SlabAggregate> ColumnIndex<A> for SlabBTree<A> {
     fn from_weights<I: IntoIterator<Item = A>>(iter: I) -> Self {
         SlabBTree::from_iter(iter)
+    }
+
+    fn heap_bytes(&self) -> usize {
+        SlabBTree::heap_bytes(self)
     }
 
     fn len(&self) -> usize {

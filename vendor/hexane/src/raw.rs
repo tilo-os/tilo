@@ -71,6 +71,25 @@ impl RawColumn {
     }
 
     #[inline]
+    /// Requested heap bytes: the slab table, every slab's buffer and the
+    /// Fenwick tree, from capacities; O(slabs) and allocation-free. qOS
+    /// local modification (see `PROVENANCE.md`).
+    pub fn heap_bytes(&self) -> usize {
+        let mut n = self
+            .slabs
+            .capacity()
+            .saturating_mul(std::mem::size_of::<RawSlab>())
+            .saturating_add(
+                self.bit
+                    .capacity()
+                    .saturating_mul(std::mem::size_of::<usize>()),
+            );
+        for slab in &self.slabs {
+            n = n.saturating_add(slab.data.capacity());
+        }
+        n
+    }
+
     pub fn len(&self) -> usize {
         self.total_len
     }

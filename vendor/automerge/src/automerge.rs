@@ -2342,8 +2342,11 @@ impl Automerge {
         self.queue.native_dims(d);
         let mut exact = hash_table_bytes(self.deps.capacity(), size_of::<ChangeHash>());
         // Authors: `authors: Vec<Author>` (capacity ≤ 2× len, owned bytes
-        // ≤ 2× len) and `actor_to_author: Vec<Option<AuthorIdx>>` (one per
-        // actor, ≤ 2× capacity, ≤ 16 bytes each).
+        // ≤ 2× len) and `actor_to_author: Vec<Option<AuthorIdx>>` (16 bytes
+        // each). The load path sizes the latter by the number of *changes*
+        // (`Authors::with_actors(change_cols.len())` in
+        // storage/document.rs), then `insert_actor` grows it per actor, so it
+        // is bounded by actors + changes entries, ×2 for Vec doubling.
         let authors = self.authors.get_authors();
         exact = exact.saturating_add(
             authors
@@ -2353,7 +2356,13 @@ impl Automerge {
         for a in authors {
             exact = exact.saturating_add(a.as_bytes().len().saturating_mul(2));
         }
-        exact = exact.saturating_add(self.ops.actors.len().saturating_mul(2 * 16));
+        exact = exact.saturating_add(
+            self.ops
+                .actors
+                .len()
+                .saturating_add(self.change_graph.len())
+                .saturating_mul(2 * 16),
+        );
         if let Actor::Unused(actor) = &self.actor {
             exact = exact.saturating_add(actor_heap_bytes(actor.to_bytes().len()));
         }

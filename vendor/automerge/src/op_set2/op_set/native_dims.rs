@@ -28,7 +28,8 @@ impl OpSet {
             self.obj_info.0.capacity(),
             size_of::<(OpId, ObjInfo)>(),
         ));
-        let (marks, mark_cap, mark_table, mark_owned, mark_slabs) = c.index.mark.native_dims();
+        let (marks, mark_cap, mark_table, mark_owned, mark_slabs, mark_heap) =
+            c.index.mark.native_dims();
         d.marks = marks;
         add(mark_table);
         add(mark_owned);
@@ -50,6 +51,31 @@ impl OpSet {
             }
         }
         let sum = |xs: &[usize]| xs.iter().fold(0usize, |a, b| a.saturating_add(*b));
+        // Measured heap of every op column (hexane `heap_bytes`: slab
+        // tables, slab buffers and indexes, from capacities).
+        d.op_col_bytes = sum(&[
+            c.id_actor.heap_bytes(),
+            c.id_ctr.heap_bytes(),
+            c.obj_actor.heap_bytes(),
+            c.obj_ctr.heap_bytes(),
+            c.key_actor.heap_bytes(),
+            c.key_ctr.heap_bytes(),
+            c.key_str.heap_bytes(),
+            c.succ_count.heap_bytes(),
+            c.succ_actor.heap_bytes(),
+            c.succ_ctr.heap_bytes(),
+            c.insert.heap_bytes(),
+            c.action.heap_bytes(),
+            c.value_meta.heap_bytes(),
+            c.value.heap_bytes(),
+            c.mark_name.heap_bytes(),
+            c.expand.heap_bytes(),
+            c.index.text.heap_bytes(),
+            c.index.top.heap_bytes(),
+            c.index.visible.heap_bytes(),
+            c.index.inc.heap_bytes(),
+            mark_heap,
+        ]);
         d.op_slabs = Slabs {
             // 16 op columns + text, top, visible, inc and mark index columns
             // (the raw value column is bounded separately).

@@ -479,6 +479,12 @@ impl<T: PrefixValue, C: Codec> PrefixColumn<T, C> {
         self.col.slab_count()
     }
 
+    /// Requested heap bytes (see [`Column::heap_bytes`]). qOS local
+    /// modification (see `PROVENANCE.md`).
+    pub fn heap_bytes(&self) -> usize {
+        self.col.heap_bytes()
+    }
+
     // ── Mutations ───────────────────────────────────────────────────────
 
     pub fn insert(&mut self, index: usize, value: impl crate::AsColumnRef<T>) {
