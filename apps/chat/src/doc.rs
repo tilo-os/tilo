@@ -45,6 +45,7 @@
 //! given peer's overlay layout is local.
 
 use std::collections::HashMap;
+use ui::doc::{read_bool, read_i64_coerced, read_str, read_text};
 
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, ScalarValue, Value};
@@ -159,37 +160,6 @@ type DemoChannelSeed = (
 // ---------------------------------------------------------------------------
 // Low-level scalar/object accessors
 // ---------------------------------------------------------------------------
-
-fn get_str(doc: &AutoCommit, obj: &ObjId, key: &str) -> String {
-    match doc.get(obj, key) {
-        Ok(Some((Value::Scalar(v), _))) => match v.as_ref() {
-            ScalarValue::Str(s) => s.to_string(),
-            _ => String::new(),
-        },
-        _ => String::new(),
-    }
-}
-
-fn get_i64(doc: &AutoCommit, obj: &ObjId, key: &str) -> i64 {
-    match doc.get(obj, key) {
-        Ok(Some((Value::Scalar(v), _))) => v.to_i64().unwrap_or(0),
-        _ => 0,
-    }
-}
-
-fn get_bool(doc: &AutoCommit, obj: &ObjId, key: &str) -> bool {
-    match doc.get(obj, key) {
-        Ok(Some((Value::Scalar(v), _))) => matches!(v.as_ref(), ScalarValue::Boolean(true)),
-        _ => false,
-    }
-}
-
-fn get_text(doc: &AutoCommit, obj: &ObjId, key: &str) -> String {
-    match doc.get(obj, key) {
-        Ok(Some((Value::Object(ObjType::Text), t))) => doc.text(&t).unwrap_or_default(),
-        _ => String::new(),
-    }
-}
 
 fn map_at(doc: &AutoCommit, obj: &ObjId, key: &str) -> Option<ObjId> {
     match doc.get(obj, key) {
@@ -358,7 +328,7 @@ impl ChatDoc {
         }
     }
     pub fn is_seeded(doc: &AutoCommit) -> bool {
-        get_bool(doc, &ROOT, "seeded")
+        read_bool(doc, &ROOT, "seeded").unwrap_or(false)
     }
 
     /// First-run scaffolding for a **real** install: just the local person and
@@ -1249,7 +1219,7 @@ impl ChatDoc {
         doc.keys(&channels).any(|channel| {
             list_at(doc, &channels, &channel).is_some_and(|list| {
                 (0..doc.length(&list)).any(|index| {
-                    matches!(doc.get(&list, index), Ok(Some((Value::Object(ObjType::Map), row))) if get_str(doc, &row, "id") == id)
+                    matches!(doc.get(&list, index), Ok(Some((Value::Object(ObjType::Map), row))) if read_str(doc, &row, "id").unwrap_or_default() == id)
                 })
             })
         })
@@ -1279,7 +1249,7 @@ impl ChatDoc {
             return true;
         };
         Self::find_message_obj(doc, channel, parent)
-            .is_none_or(|row| get_str(doc, &row, "parent").is_empty())
+            .is_none_or(|row| read_str(doc, &row, "parent").unwrap_or_default().is_empty())
     }
 
     fn valid_attachment(attachment: Option<&Attachment>) -> bool {
@@ -1333,7 +1303,7 @@ impl ChatDoc {
         let list = list_at(doc, &root_map, channel)?;
         for i in 0..doc.length(&list) {
             if let Ok(Some((Value::Object(ObjType::Map), m))) = doc.get(&list, i)
-                && get_str(doc, &m, "id") == msg_id
+                && read_str(doc, &m, "id").unwrap_or_default() == msg_id
             {
                 return Some(m);
             }
@@ -1367,8 +1337,8 @@ impl ChatDoc {
         let mut found: Option<usize> = None;
         for i in 0..doc.length(&list) {
             if let Ok(Some((Value::Object(ObjType::Map), e))) = doc.get(&list, i)
-                && get_str(doc, &e, "emoji") == emoji
-                && get_str(doc, &e, "user") == user
+                && read_str(doc, &e, "emoji").unwrap_or_default() == emoji
+                && read_str(doc, &e, "user").unwrap_or_default() == user
             {
                 found = Some(i);
                 break;
@@ -1390,8 +1360,8 @@ impl ChatDoc {
     fn reaction_index(doc: &AutoCommit, list: &ObjId, emoji: &str, user: &str) -> Option<usize> {
         for i in 0..doc.length(list) {
             if let Ok(Some((Value::Object(ObjType::Map), e))) = doc.get(list, i)
-                && get_str(doc, &e, "emoji") == emoji
-                && get_str(doc, &e, "user") == user
+                && read_str(doc, &e, "emoji").unwrap_or_default() == emoji
+                && read_str(doc, &e, "user").unwrap_or_default() == user
             {
                 return Some(i);
             }
@@ -1463,7 +1433,7 @@ impl ChatDoc {
         };
         for i in 0..doc.length(&list) {
             if let Ok(Some((Value::Object(ObjType::Map), m))) = doc.get(&list, i)
-                && get_str(doc, &m, "id") == msg_id
+                && read_str(doc, &m, "id").unwrap_or_default() == msg_id
             {
                 let _ = doc.delete(&list, i);
                 return;
@@ -1477,7 +1447,7 @@ impl ChatDoc {
         let Some(block) = Self::find_message_obj(doc, channel, msg_id) else {
             return;
         };
-        if get_bool(doc, &block, "pinned") != pinned {
+        if read_bool(doc, &block, "pinned").unwrap_or(false) != pinned {
             let _ = doc.put(&block, "pinned", pinned);
         }
     }
@@ -1502,7 +1472,7 @@ impl ChatDoc {
         let Some(block) = Self::find_message_obj(doc, channel, msg_id) else {
             return;
         };
-        let old = get_text(doc, &block, "text");
+        let old = read_text(doc, &block, "text").unwrap_or_default();
         if old == new_text {
             return;
         }
@@ -1526,7 +1496,7 @@ impl ChatDoc {
 
     pub fn draft_text(doc: &AutoCommit, channel: &str) -> String {
         match map_at(doc, &ROOT, "drafts") {
-            Some(drafts) => get_text(doc, &drafts, channel),
+            Some(drafts) => read_text(doc, &drafts, channel).unwrap_or_default(),
             None => String::new(),
         }
     }
@@ -1579,19 +1549,19 @@ impl ChatDoc {
         let users = get_or_map(doc, &ROOT, "users");
         let u = get_or_map(doc, &users, id);
         let mut wrote = false;
-        if get_str(doc, &u, "name") != name {
+        if read_str(doc, &u, "name").unwrap_or_default() != name {
             let _ = doc.put(&u, "name", name);
             wrote = true;
         }
-        if get_str(doc, &u, "initials") != initials {
+        if read_str(doc, &u, "initials").unwrap_or_default() != initials {
             let _ = doc.put(&u, "initials", initials);
             wrote = true;
         }
-        if get_i64(doc, &u, "color_idx") != color as i64 {
+        if read_i64_coerced(doc, &u, "color_idx").unwrap_or(0) != color as i64 {
             let _ = doc.put(&u, "color_idx", color as i64);
             wrote = true;
         }
-        if get_str(doc, &u, "status") != status.as_str() {
+        if read_str(doc, &u, "status").unwrap_or_default() != status.as_str() {
             let _ = doc.put(&u, "status", status.as_str());
             wrote = true;
         }
@@ -1609,7 +1579,7 @@ impl ChatDoc {
     /// A peer's read watermark for `channel` (0 if never opened).
     pub fn read_watermark(doc: &AutoCommit, channel: &str, user: &str) -> i64 {
         match map_at(doc, &ROOT, "read").and_then(|r| map_at(doc, &r, user)) {
-            Some(m) => get_i64(doc, &m, channel),
+            Some(m) => read_i64_coerced(doc, &m, channel).unwrap_or(0),
             None => 0,
         }
     }
@@ -1635,7 +1605,7 @@ impl ChatDoc {
     /// state. Guarded so a redundant write doesn't churn the document.
     pub fn set_read_watermark(doc: &mut AutoCommit, channel: &str, user: &str, count: i64) {
         let m = Self::read_map(doc, user);
-        if get_i64(doc, &m, channel) != count {
+        if read_i64_coerced(doc, &m, channel).unwrap_or(0) != count {
             let _ = doc.put(&m, channel, count);
         }
     }
@@ -1740,7 +1710,7 @@ impl ChatDoc {
     /// churn the document.
     pub fn set_channel_archived(doc: &mut AutoCommit, id: &str, archived: bool) {
         if let Some(c) = map_at(doc, &map_at(doc, &ROOT, "channels").unwrap_or(ROOT), id)
-            && get_bool(doc, &c, "archived") != archived
+            && read_bool(doc, &c, "archived").unwrap_or(false) != archived
         {
             let _ = doc.put(&c, "archived", archived);
         }
@@ -1922,7 +1892,7 @@ impl ChatDoc {
     pub fn voice_set_sharing(doc: &mut AutoCommit, channel: &str, user: &str, sharing: bool) {
         let ch = Self::voice_channel_map(doc, channel);
         let m = get_or_map(doc, &ch, user);
-        if get_bool(doc, &m, "sharing") != sharing {
+        if read_bool(doc, &m, "sharing").unwrap_or(false) != sharing {
             let _ = doc.put(&m, "sharing", sharing);
         }
     }
@@ -1934,7 +1904,7 @@ impl ChatDoc {
     pub fn voice_set_ticket(doc: &mut AutoCommit, channel: &str, user: &str, ticket: &str) {
         let ch = Self::voice_channel_map(doc, channel);
         let m = get_or_map(doc, &ch, user);
-        if get_str(doc, &m, "ticket") != ticket {
+        if read_str(doc, &m, "ticket").unwrap_or_default() != ticket {
             let _ = doc.put(&m, "ticket", ticket);
         }
     }
@@ -1953,10 +1923,10 @@ impl ChatDoc {
                 let cat = map_at(doc, &cats, &id)?;
                 Some(Category {
                     id,
-                    workspace: get_str(doc, &cat, "workspace"),
-                    name: get_str(doc, &cat, "name"),
-                    order: get_i64(doc, &cat, "order") as u32,
-                    collapsed: get_bool(doc, &cat, "collapsed"),
+                    workspace: read_str(doc, &cat, "workspace").unwrap_or_default(),
+                    name: read_str(doc, &cat, "name").unwrap_or_default(),
+                    order: read_i64_coerced(doc, &cat, "order").unwrap_or(0) as u32,
+                    collapsed: read_bool(doc, &cat, "collapsed").unwrap_or(false),
                 })
             })
             .collect();
@@ -1976,14 +1946,14 @@ impl ChatDoc {
             .keys(&ch)
             .filter_map(|user| {
                 let m = map_at(doc, &ch, &user)?;
-                let ticket = get_str(doc, &m, "ticket");
+                let ticket = read_str(doc, &m, "ticket").unwrap_or_default();
                 Some(VoiceMember {
                     user,
-                    talking: get_bool(doc, &m, "talking"),
-                    muted: get_bool(doc, &m, "muted"),
-                    deafened: get_bool(doc, &m, "deafened"),
-                    audio_only: get_bool(doc, &m, "audio_only"),
-                    sharing: get_bool(doc, &m, "sharing"),
+                    talking: read_bool(doc, &m, "talking").unwrap_or(false),
+                    muted: read_bool(doc, &m, "muted").unwrap_or(false),
+                    deafened: read_bool(doc, &m, "deafened").unwrap_or(false),
+                    audio_only: read_bool(doc, &m, "audio_only").unwrap_or(false),
+                    sharing: read_bool(doc, &m, "sharing").unwrap_or(false),
                     ticket: if ticket.is_empty() {
                         None
                     } else {
@@ -2010,10 +1980,10 @@ impl ChatDoc {
                 let w = map_at(doc, &wss, &id)?;
                 Some(Workspace {
                     id,
-                    name: get_str(doc, &w, "name"),
-                    glyph: get_str(doc, &w, "glyph"),
-                    color_idx: get_i64(doc, &w, "color_idx") as usize,
-                    order: get_i64(doc, &w, "order") as u32,
+                    name: read_str(doc, &w, "name").unwrap_or_default(),
+                    glyph: read_str(doc, &w, "glyph").unwrap_or_default(),
+                    color_idx: read_i64_coerced(doc, &w, "color_idx").unwrap_or(0) as usize,
+                    order: read_i64_coerced(doc, &w, "order").unwrap_or(0) as u32,
                 })
             })
             .collect();
@@ -2030,13 +2000,14 @@ impl ChatDoc {
                 let u = map_at(doc, &us, &id)?;
                 Some(User {
                     id,
-                    name: get_str(doc, &u, "name"),
-                    initials: get_str(doc, &u, "initials"),
-                    color_idx: get_i64(doc, &u, "color_idx") as usize,
-                    status: get_str(doc, &u, "status")
+                    name: read_str(doc, &u, "name").unwrap_or_default(),
+                    initials: read_str(doc, &u, "initials").unwrap_or_default(),
+                    color_idx: read_i64_coerced(doc, &u, "color_idx").unwrap_or(0) as usize,
+                    status: read_str(doc, &u, "status")
+                        .unwrap_or_default()
                         .parse()
                         .unwrap_or(Presence::Online),
-                    is_agent: get_bool(doc, &u, "agent"),
+                    is_agent: read_bool(doc, &u, "agent").unwrap_or(false),
                 })
             })
             .collect()
@@ -2052,18 +2023,19 @@ impl ChatDoc {
                 let c = map_at(doc, &chans, &id)?;
                 Some(Channel {
                     id,
-                    workspace: get_str(doc, &c, "workspace"),
-                    category: get_str(doc, &c, "category"),
-                    name: get_str(doc, &c, "name"),
-                    topic: get_str(doc, &c, "topic"),
-                    kind: get_str(doc, &c, "kind")
+                    workspace: read_str(doc, &c, "workspace").unwrap_or_default(),
+                    category: read_str(doc, &c, "category").unwrap_or_default(),
+                    name: read_str(doc, &c, "name").unwrap_or_default(),
+                    topic: read_str(doc, &c, "topic").unwrap_or_default(),
+                    kind: read_str(doc, &c, "kind")
+                        .unwrap_or_default()
                         .parse()
                         .unwrap_or(ChannelKind::Text),
-                    order: get_i64(doc, &c, "order") as u32,
+                    order: read_i64_coerced(doc, &c, "order").unwrap_or(0) as u32,
                     // Derived per-peer in `ChatApp::reload` from the read
                     // watermark; not stored in the shared document.
                     unread: 0,
-                    archived: get_bool(doc, &c, "archived"),
+                    archived: read_bool(doc, &c, "archived").unwrap_or(false),
                 })
             })
             .collect();
@@ -2083,14 +2055,14 @@ impl ChatDoc {
             let Ok(Some((Value::Object(ObjType::Map), m))) = doc.get(&list, i) else {
                 continue;
             };
-            let parent = get_str(doc, &m, "parent");
+            let parent = read_str(doc, &m, "parent").unwrap_or_default();
             out.push(Message {
-                id: get_str(doc, &m, "id"),
+                id: read_str(doc, &m, "id").unwrap_or_default(),
                 channel: channel.to_string(),
-                author: get_str(doc, &m, "author"),
-                ts: get_i64(doc, &m, "ts"),
-                text: get_text(doc, &m, "text"),
-                edited: get_bool(doc, &m, "edited"),
+                author: read_str(doc, &m, "author").unwrap_or_default(),
+                ts: read_i64_coerced(doc, &m, "ts").unwrap_or(0),
+                text: read_text(doc, &m, "text").unwrap_or_default(),
+                edited: read_bool(doc, &m, "edited").unwrap_or(false),
                 history: Self::read_history(doc, &m),
                 parent: if parent.is_empty() {
                     None
@@ -2102,7 +2074,7 @@ impl ChatDoc {
                 reference: Self::read_reference(doc, &m),
                 attachment: Self::read_attachment(doc, &m),
                 work: Self::read_work(doc, &m),
-                pinned: get_bool(doc, &m, "pinned"),
+                pinned: read_bool(doc, &m, "pinned").unwrap_or(false),
             });
         }
         out
@@ -2118,15 +2090,15 @@ impl ChatDoc {
             let Ok(Some((Value::Object(ObjType::Map), e))) = doc.get(&list, i) else {
                 continue;
             };
-            let user = get_str(doc, &e, "user");
+            let user = read_str(doc, &e, "user").unwrap_or_default();
             if user.is_empty() {
                 continue;
             }
             out.push(crate::mention::Mention {
                 user,
-                start: get_i64(doc, &e, "start").max(0) as usize,
-                len: get_i64(doc, &e, "len").max(0) as usize,
-                is_agent: get_bool(doc, &e, "agent"),
+                start: read_i64_coerced(doc, &e, "start").unwrap_or(0).max(0) as usize,
+                len: read_i64_coerced(doc, &e, "len").unwrap_or(0).max(0) as usize,
+                is_agent: read_bool(doc, &e, "agent").unwrap_or(false),
             });
         }
         out
@@ -2144,8 +2116,8 @@ impl ChatDoc {
             let Ok(Some((Value::Object(ObjType::Map), e))) = doc.get(&list, i) else {
                 continue;
             };
-            let emoji = get_str(doc, &e, "emoji");
-            let user = get_str(doc, &e, "user");
+            let emoji = read_str(doc, &e, "emoji").unwrap_or_default();
+            let user = read_str(doc, &e, "user").unwrap_or_default();
             if emoji.is_empty() {
                 continue;
             }
@@ -2185,8 +2157,8 @@ impl ChatDoc {
         for i in 0..doc.length(&h) {
             if let Ok(Some((Value::Object(ObjType::Map), rec))) = doc.get(&h, i) {
                 out.push(EditRecord {
-                    ts: get_i64(doc, &rec, "ts"),
-                    text: get_str(doc, &rec, "text"),
+                    ts: read_i64_coerced(doc, &rec, "ts").unwrap_or(0),
+                    text: read_str(doc, &rec, "text").unwrap_or_default(),
                 });
             }
         }
@@ -2200,31 +2172,31 @@ impl ChatDoc {
         // read it here or write it back as a blob: only an explicit local
         // re-share enters the bounded importer and collaborative document.
         let blob = {
-            let current = get_str(doc, &a, "blob");
+            let current = read_str(doc, &a, "blob").unwrap_or_default();
             if current.is_empty() {
-                get_str(doc, &a, "path")
+                read_str(doc, &a, "path").unwrap_or_default()
             } else {
                 current
             }
         };
-        match get_str(doc, &a, "kind").as_str() {
+        match read_str(doc, &a, "kind").unwrap_or_default().as_str() {
             "image" => Some(Attachment::Image {
-                name: get_str(doc, &a, "name"),
+                name: read_str(doc, &a, "name").unwrap_or_default(),
                 blob,
-                w: get_i64(doc, &a, "w") as u32,
-                h: get_i64(doc, &a, "h") as u32,
+                w: read_i64_coerced(doc, &a, "w").unwrap_or(0) as u32,
+                h: read_i64_coerced(doc, &a, "h").unwrap_or(0) as u32,
             }),
             "video" => Some(Attachment::Video {
-                name: get_str(doc, &a, "name"),
+                name: read_str(doc, &a, "name").unwrap_or_default(),
                 blob,
-                w: get_i64(doc, &a, "w") as u32,
-                h: get_i64(doc, &a, "h") as u32,
-                size: get_i64(doc, &a, "size") as u64,
+                w: read_i64_coerced(doc, &a, "w").unwrap_or(0) as u32,
+                h: read_i64_coerced(doc, &a, "h").unwrap_or(0) as u32,
+                size: read_i64_coerced(doc, &a, "size").unwrap_or(0) as u64,
             }),
             "file" => Some(Attachment::File {
-                name: get_str(doc, &a, "name"),
+                name: read_str(doc, &a, "name").unwrap_or_default(),
                 blob,
-                size: get_i64(doc, &a, "size") as u64,
+                size: read_i64_coerced(doc, &a, "size").unwrap_or(0) as u64,
             }),
             _ => None,
         }
@@ -2235,7 +2207,7 @@ impl ChatDoc {
     /// is deliberately not the same as a nearby address that does. A
     /// reference that cannot be read is no reference at all.
     fn read_reference(doc: &AutoCommit, msg: &ObjId) -> Option<tilo_reference::ResourceRef> {
-        let raw = get_str(doc, msg, "reference");
+        let raw = read_str(doc, msg, "reference").unwrap_or_default();
         if raw.is_empty() {
             return None;
         }
@@ -2250,7 +2222,7 @@ impl ChatDoc {
         if let Some(record) = map_at(doc, msg, "work") {
             return Self::read_native_work(doc, &record);
         }
-        let raw = get_str(doc, msg, "work");
+        let raw = read_str(doc, msg, "work").unwrap_or_default();
         if raw.is_empty() {
             return None;
         }
@@ -2262,55 +2234,58 @@ impl ChatDoc {
         reason = "one compatibility reader keeps the native and two legacy AgentWork schemas adjacent"
     )]
     fn read_native_work(doc: &AutoCommit, record: &ObjId) -> Option<crate::model::AgentWork> {
-        let transition =
-            serde_json::from_str::<StoredAgentTransition>(&get_str(doc, record, "transition")).ok();
+        let transition = serde_json::from_str::<StoredAgentTransition>(
+            &read_str(doc, record, "transition").unwrap_or_default(),
+        )
+        .ok();
         let (state, since) = if let Some(transition) = transition {
             (transition.state, transition.since)
         } else {
             // Compatibility with the initial native-map rollout. Its next
             // update writes `transition` and thereafter ignores these fields.
             let state = map_at(doc, record, "state")?;
-            let state = match get_str(doc, &state, "kind").as_str() {
+            let state = match read_str(doc, &state, "kind").unwrap_or_default().as_str() {
                 "taken" => crate::model::AgentWorkState::Taken,
                 "waiting" => crate::model::AgentWorkState::Waiting {
-                    app: get_str(doc, &state, "app"),
+                    app: read_str(doc, &state, "app").unwrap_or_default(),
                 },
                 "doing" => crate::model::AgentWorkState::Doing {
-                    did: get_str(doc, &state, "did"),
-                    about: get_str(doc, &state, "about"),
+                    did: read_str(doc, &state, "did").unwrap_or_default(),
+                    about: read_str(doc, &state, "about").unwrap_or_default(),
                 },
                 "done" => crate::model::AgentWorkState::Done {
-                    did: get_str(doc, &state, "did"),
+                    did: read_str(doc, &state, "did").unwrap_or_default(),
                 },
                 "refused" => crate::model::AgentWorkState::Refused,
                 _ => return None,
             };
-            (state, get_i64(doc, record, "since"))
+            (state, read_i64_coerced(doc, record, "since").unwrap_or(0))
         };
         // Reasoning is one atomic scalar because route and explanation are one
         // authored claim. Support the previous native map only while reading
         // old documents; the next write replaces it with this scalar.
         let reasoning = if map_at(doc, record, "reasoning").is_some() {
             map_at(doc, record, "reasoning").and_then(|reasoning| {
-                if !get_bool(doc, &reasoning, "present") {
+                if !read_bool(doc, &reasoning, "present").unwrap_or(false) {
                     return None;
                 }
-                let route = match get_str(doc, &reasoning, "route").as_str() {
+                let route = match read_str(doc, &reasoning, "route")
+                    .unwrap_or_default()
+                    .as_str()
+                {
                     "model" => crate::model::AgentRoute::Model,
                     "floor" => crate::model::AgentRoute::Floor,
                     _ => return None,
                 };
                 Some(crate::model::AgentReasoning {
                     route,
-                    why: get_str(doc, &reasoning, "why"),
+                    why: read_str(doc, &reasoning, "why").unwrap_or_default(),
                 })
             })
         } else {
-            serde_json::from_str::<Option<crate::model::AgentReasoning>>(&get_str(
-                doc,
-                record,
-                "reasoning",
-            ))
+            serde_json::from_str::<Option<crate::model::AgentReasoning>>(
+                &read_str(doc, record, "reasoning").unwrap_or_default(),
+            )
             .ok()
             .flatten()
         };
@@ -2320,21 +2295,21 @@ impl ChatDoc {
                 let Some(row) = map_at(doc, &rows, &key) else {
                     continue;
                 };
-                if !get_bool(doc, &row, "present") {
+                if !read_bool(doc, &row, "present").unwrap_or(false) {
                     continue;
                 }
-                let outcome = if let Ok(outcome) = serde_json::from_str::<
-                    crate::model::AgentStepOutcome,
-                >(&get_str(doc, &row, "outcome"))
-                {
+                let outcome = if let Ok(outcome) =
+                    serde_json::from_str::<crate::model::AgentStepOutcome>(
+                        &read_str(doc, &row, "outcome").unwrap_or_default(),
+                    ) {
                     outcome
                 } else {
-                    match get_str(doc, &row, "outcome").as_str() {
+                    match read_str(doc, &row, "outcome").unwrap_or_default().as_str() {
                         "asked" => crate::model::AgentStepOutcome::Asked,
                         "applied" => crate::model::AgentStepOutcome::Applied,
                         "no_change" => crate::model::AgentStepOutcome::NoChange,
                         "refused" => crate::model::AgentStepOutcome::Refused {
-                            why: get_str(doc, &row, "why"),
+                            why: read_str(doc, &row, "why").unwrap_or_default(),
                         },
                         _ => continue,
                     }
@@ -2344,15 +2319,15 @@ impl ChatDoc {
                 } else {
                     key.clone()
                 };
-                let sequence = get_i64(doc, &row, "sequence").max(0) as u64;
+                let sequence = read_i64_coerced(doc, &row, "sequence").unwrap_or(0).max(0) as u64;
                 trace_with_order.push((
                     sequence,
                     id.clone(),
                     crate::model::AgentStep {
                         id,
                         sequence,
-                        resource: get_str(doc, &row, "resource"),
-                        label: get_str(doc, &row, "label"),
+                        resource: read_str(doc, &row, "resource").unwrap_or_default(),
+                        label: read_str(doc, &row, "label").unwrap_or_default(),
                         outcome,
                     },
                 ));
@@ -3076,7 +3051,7 @@ mod tests {
             .unwrap();
         assert_eq!(row.attachment.unwrap().blob(), "/old-machine/old-local.pdf");
         assert_eq!(
-            get_str(&doc, &attachment, "path"),
+            read_str(&doc, &attachment, "path").unwrap_or_default(),
             "/old-machine/old-local.pdf",
             "sync neither reads nor rewrites a peer-local path"
         );
@@ -3113,7 +3088,8 @@ mod tests {
                 let id = format!("m_legacy_budget_{n}");
                 let message = ChatDoc::find_message_obj(&doc, "c_crit", &id).unwrap();
                 let attachment = map_at(&doc, &message, "attachment").unwrap();
-                get_str(&doc, &attachment, "blob") == crate::images::DEMO_CALL_GRID
+                read_str(&doc, &attachment, "blob").unwrap_or_default()
+                    == crate::images::DEMO_CALL_GRID
             })
             .count();
         assert!(migrated <= LEGACY_MIGRATION_WRITE_BUDGET);
@@ -3122,7 +3098,9 @@ mod tests {
                 let message =
                     ChatDoc::find_message_obj(&doc, "c_crit", "m_legacy_budget_256").unwrap();
                 let attachment = map_at(&doc, &message, "attachment").unwrap();
-                get_str(&doc, &attachment, "blob").is_empty()
+                read_str(&doc, &attachment, "blob")
+                    .unwrap_or_default()
+                    .is_empty()
             },
             "the bounded one-shot migration leaves rows beyond its visit budget untouched"
         );
@@ -3227,8 +3205,10 @@ mod tests {
             "route and explanation must not be independently mergeable fields"
         );
         assert_eq!(
-            serde_json::from_str::<Option<AgentReasoning>>(&get_str(&a, &record, "reasoning"))
-                .unwrap(),
+            serde_json::from_str::<Option<AgentReasoning>>(
+                &read_str(&a, &record, "reasoning").unwrap_or_default()
+            )
+            .unwrap(),
             explained.reasoning,
             "reasoning is one explicitly atomic authored record"
         );
@@ -3446,7 +3426,8 @@ mod tests {
 
         let trace = map_at(&doc, &work, "trace").unwrap();
         assert!(
-            !get_bool(&doc, &map_at(&doc, &trace, "00000000").unwrap(), "present"),
+            !read_bool(&doc, &map_at(&doc, &trace, "00000000").unwrap(), "present")
+                .unwrap_or(false),
             "the old positional row is a tombstone"
         );
         assert!(

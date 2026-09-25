@@ -20,7 +20,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use taffy::prelude::*;
-use ui::clipboard::{ClipboardBackend, ClipboardTarget, install_clipboard_backend};
+use ui::clipboard::{ClipboardBackend, ClipboardTarget};
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
@@ -566,14 +566,11 @@ impl ClipboardBackend for RecordingClipboard {
 /// looking at, not the file that was opened — and must refuse when there is
 /// nothing open.
 ///
-/// Both halves live in one test deliberately: the clipboard backend is
-/// process-global and the harness runs tests in parallel threads, so two tests
-/// each installing their own recorder would race over which one the copy path
-/// resolves to.
 #[test]
 fn copy_puts_the_edited_pixels_on_the_clipboard() {
     let recorder = Arc::new(RecordingClipboard::default());
-    install_clipboard_backend(recorder.clone());
+    let services = ui::host::HostServices::null().with_clipboard(recorder.clone());
+    let _host = ui::host::enter(&services);
 
     // Nothing open: the copy is refused and nothing is offered.
     {

@@ -9,17 +9,262 @@
 
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
-use vello::peniko::Color;
 
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
+use ui::widget::ButtonFace;
 
 use crate::draw;
 use crate::model::{ChangeArea, FileChange, RepoModel};
 
+/// 1× band heights. The painted bands are [`Metrics`]: these values while the
+/// text fits, the measured line plus its padding once the text scale outgrows
+/// them, so every value here is both the floor and the exact 1× result.
 const ROW_H: f64 = 30.0;
 const SECTION_H: f64 = 30.0;
 const COMMIT_BOX_H: f64 = 150.0;
+/// Height of the "— nothing here —" band an empty section paints.
+const EMPTY_HINT_H: f64 = 22.0;
+/// Left/right inset of section titles and bulk actions.
+const GUTTER: f64 = 14.0;
+/// Chevron button: square-ish, inset from the row's right edge.
+const CHEVRON_W: f64 = 20.0;
+const CHEVRON_INSET: f64 = 8.0;
+/// Gap between the +/- counts and the chevron button.
+const COUNTS_GAP: f64 = 8.0;
+/// Fractional text sizes painted in the column (whole-number sizes stay inline
+/// at their call sites: 12 px titles/hints/commit label, 11 px bulk action,
+/// 10 px count badge).
+const NAME_FONT: f32 = 12.5;
+const AUTHOR_FONT: f32 = 11.5;
+
+/// Band metrics measured from the renderer the column paints with.
+///
+/// Refreshed at the top of every draw; rows, section headers, the empty hint,
+/// the commit box and every hit rect read this one snapshot, so a text scale
+/// that grows the glyphs grows the bands with them. `Default` is the 1×
+/// column as it has always been laid out: 30 px rows and section bands, a
+/// 22 px empty hint, and a 150 px commit box of 12 pad + 22 author row + 10 +
+/// 54 input + 10 + 30 button (138 wide) + 12.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct Metrics {
+    /// File row height.
+    pub row_h: f64,
+    /// Gap between neighbouring rows and under a section header (`s1`):
+    /// HIG §7 — nothing touches, even in a dense list.
+    pub row_gap: f64,
+    /// Section header band.
+    pub section_h: f64,
+    /// "— nothing here —" band.
+    pub empty_hint_h: f64,
+    /// Author identity row inside the commit box.
+    pub author_row_h: f64,
+    /// Commit-message input height.
+    pub input_h: f64,
+    /// Commit button height and minimum width.
+    pub button_h: f64,
+    pub button_w: f64,
+    /// Whole commit box pinned to the column's bottom.
+    pub commit_box_h: f64,
+    /// Outer padding of the commit box and the gap between its rows.
+    pub commit_pad: f64,
+    pub commit_gap: f64,
+}
+
+impl Default for Metrics {
+    fn default() -> Self {
+        Self {
+            row_h: ROW_H,
+            row_gap: 4.0,
+            section_h: SECTION_H,
+            empty_hint_h: EMPTY_HINT_H,
+            author_row_h: 22.0,
+            input_h: 54.0,
+            button_h: 30.0,
+            button_w: 138.0,
+            commit_box_h: COMMIT_BOX_H,
+            commit_pad: 12.0,
+            commit_gap: 10.0,
+        }
+    }
+}
+
+impl Metrics {
+    pub(crate) fn measure(tr: &mut TextRenderer, theme: &Theme) -> Self {
+        let one = Self::default();
+        let line = |tr: &mut TextRenderer, size: f32, weight: TextWeight| {
+            f64::from(tr.measure_weighted("Ag", size, None, weight).1)
+        };
+        let name_h = line(tr, NAME_FONT, TextWeight::Medium);
+        let title_h = line(tr, 12.0, TextWeight::Semibold);
+        let hint_h = line(tr, 12.0, TextWeight::Regular);
+        let author_h = line(tr, AUTHOR_FONT, TextWeight::Regular);
+        let button_label_h = line(tr, 12.0, TextWeight::Semibold);
+        // 6 px of leading either side of a name / title (1×: 15.6 + 12 ≤ 30);
+        // an off-grid value the column has always used, so it stays local.
+        let pad_y = 6.0;
+        let row_h = (name_h + 2.0 * pad_y).max(one.row_h);
+        let section_h = (title_h + 2.0 * pad_y).max(one.section_h);
+        let empty_hint_h = (hint_h + pad_y).max(one.empty_hint_h);
+        let author_row_h = author_h.max(one.author_row_h);
+        // Two lines of the shared TextInput's 13 px body text plus its 21 px
+        // frame (1×: 2 × 16.25 + 21 = 53.5 ≤ the 54 px floor).
+        let input_h = (2.0 * line(tr, 13.0, TextWeight::Regular) + 21.0).max(one.input_h);
+        let button_h = (button_label_h + 2.0 * pad_y).max(one.button_h);
+        let commit_pad = f64::from(theme.tokens.spacing.s3);
+        let row_gap = f64::from(theme.tokens.spacing.s1);
+        let commit_box_h = (commit_pad
+            + author_row_h
+            + one.commit_gap
+            + input_h
+            + one.commit_gap
+            + button_h
+            + commit_pad)
+            .max(one.commit_box_h);
+        Self {
+            row_h,
+            row_gap,
+            section_h,
+            empty_hint_h,
+            author_row_h,
+            input_h,
+            button_h,
+            commit_box_h,
+            commit_pad,
+            ..one
+        }
+    }
+}
+
+/// Measured horizontal layout of one file row. Draw and any test consume the
+/// same numbers, so the painted glyphs and the reserved widths agree.
+pub(crate) struct RowLayout {
+    pub badge: &'static str,
+    pub badge_x: f64,
+    pub name_x: f64,
+    /// Width the file name may use before the dir / counts / chevron start.
+    pub name_max_w: f64,
+    pub dir_x: f64,
+    /// Width left for the directory hint (0 when nothing fits).
+    pub dir_max_w: f64,
+    /// `+adds -dels`, absent when the file has no line counts.
+    pub counts: Option<String>,
+    pub counts_x: f64,
+    pub chevron: &'static str,
+    pub chevron_rect: Rect,
+}
+
+impl RowLayout {
+    pub(crate) fn measure(
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        area: Rect,
+        y: f64,
+        row_h: f64,
+        f: &FileChange,
+        is_staged: bool,
+    ) -> Self {
+        let badge = f.kind.badge();
+        let badge_x = area.x0 + GUTTER;
+        let name_x = area.x0 + 32.0;
+        // The chevron keeps its 1× insets (one spacing step above and below)
+        // and widens in proportion to the row.
+        let inset_y = f64::from(theme.tokens.spacing.s1);
+        let chevron_w = CHEVRON_W * row_h / ROW_H;
+        let chevron_rect = Rect::new(
+            area.x1 - CHEVRON_INSET - chevron_w,
+            y + inset_y,
+            area.x1 - CHEVRON_INSET,
+            y + row_h - inset_y,
+        );
+        let counts = (f.additions > 0 || f.deletions > 0)
+            .then(|| format!("+{} -{}", f.additions, f.deletions));
+        let counts_w = counts
+            .as_deref()
+            .map_or(0.0, |s| f64::from(draw::mono_width(tr, s, 11.0)));
+        let counts_x = chevron_rect.x0 - COUNTS_GAP - counts_w;
+        // Text must end before the counts (or the chevron when there are none).
+        let text_right = if counts.is_some() {
+            counts_x - COUNTS_GAP
+        } else {
+            chevron_rect.x0 - COUNTS_GAP
+        };
+        let name_w = f64::from(
+            tr.measure_weighted(f.name(), 12.5, None, TextWeight::Medium)
+                .0,
+        );
+        let name_max_w = (text_right - name_x).max(0.0);
+        let dir_x = name_x + name_w.min(name_max_w) + 6.0;
+        let dir_max_w = (text_right - dir_x).max(0.0);
+        Self {
+            badge,
+            badge_x,
+            name_x,
+            name_max_w,
+            dir_x,
+            dir_max_w,
+            counts,
+            counts_x,
+            chevron: if is_staged { "−" } else { "+" },
+            chevron_rect,
+        }
+    }
+}
+
+/// Measured horizontal layout of a section header: the (elided) title, its
+/// count badge and the right-anchored bulk action. The action is placed
+/// first so the title knows how much of the band it may use; at 2× "Staged
+/// Changes 3 Unstage all" used to paint the badge over the action. Title,
+/// badge and action are separated by one spacing step (`s2`).
+pub(crate) struct HeaderLayout {
+    pub title: String,
+    pub title_x: f64,
+    pub count: String,
+    pub badge_x: f64,
+    pub badge_h: f64,
+    /// Left edge of the bulk action label, when the section has one.
+    pub action_x: Option<f64>,
+}
+
+impl HeaderLayout {
+    /// The header paints a 12 px Semibold title, a 10 px count badge (a 16 px
+    /// pill at 1×) and an 11 px Medium bulk action; every measurement here
+    /// uses those same sizes.
+    pub(crate) fn measure(
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        area: Rect,
+        title: &str,
+        count: usize,
+        action_label: Option<&str>,
+    ) -> Self {
+        let gap = f64::from(theme.tokens.spacing.s2);
+        let action_x = action_label.map(|label| {
+            let lw = f64::from(tr.measure_weighted(label, 11.0, None, TextWeight::Medium).0);
+            area.x1 - lw - GUTTER
+        });
+        let count = count.to_string();
+        let badge_w = draw::pill_width(tr, &count, 10.0);
+        let badge_h = draw::pill_height(tr, 10.0);
+        let title_x = area.x0 + GUTTER;
+        let title_right = action_x.map_or(area.x1 - GUTTER, |lx| lx - gap);
+        let title_max =
+            (title_right - gap - badge_w - title_x).max(f64::from(theme.tokens.spacing.s6));
+        let title = tr.elide_to_width_weighted(title, 12.0, title_max as f32, TextWeight::Semibold);
+        let title_w = f64::from(
+            tr.measure_weighted(&title, 12.0, None, TextWeight::Semibold)
+                .0,
+        );
+        Self {
+            title,
+            title_x,
+            count,
+            badge_x: title_x + title_w + gap,
+            badge_h,
+            action_x,
+        }
+    }
+}
 
 /// What the user clicked in the changes column.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -44,17 +289,6 @@ struct HitRegion {
     hit: ChangesHit,
 }
 
-/// Resources and stable geometry shared by every step of one column paint.
-struct ChangesPaintCtx<'a> {
-    scene: &'a mut Scene,
-    text: &'a mut TextRenderer,
-    transform: Affine,
-    theme: &'a Theme,
-    area: Rect,
-    selected: Option<(ChangeArea, usize)>,
-    regions: &'a mut Vec<HitRegion>,
-}
-
 /// What a [`ChangesColumn::draw`] pass produced: the click regions plus the
 /// rect where the owner should position and draw the commit-message
 /// [`ui::widget::TextInput`] (the toolkit input draws its own chrome + caret,
@@ -74,8 +308,14 @@ impl ChangesColumn {
     /// (area + index). `message` is the live commit message; `caret` shows
     /// a blinking caret when the box is focused. Returns hit regions for
     /// click routing.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "changes painting combines render context, repository data, viewport, selection, scroll and commit message"
+    )]
     pub fn draw(
-        paint: &mut draw::PaintCtx<'_>,
+        scene: &mut Scene,
+        tr: &mut TextRenderer,
+        t: Affine,
         theme: &Theme,
         area: Rect,
         model: &RepoModel,
@@ -83,12 +323,19 @@ impl ChangesColumn {
         scroll: f64,
         message: &str,
     ) -> ChangesDraw {
-        let (scene, tr, t) = paint.parts();
         let c = &theme.tokens.colors;
         draw::fill_rect(scene, t, area, c.surfaces.raised);
-        draw::vline(scene, t, area.x1, area.y0, area.y1, c.border_standard);
+        draw::vline(
+            scene,
+            t,
+            area.x1,
+            area.y0,
+            area.y1,
+            draw::edge(c.surfaces.raised),
+        );
 
-        let list_area = Rect::new(area.x0, area.y0, area.x1, area.y1 - COMMIT_BOX_H);
+        let m = Metrics::measure(tr, theme);
+        let list_area = Rect::new(area.x0, area.y0, area.x1, area.y1 - m.commit_box_h);
         let mut regions: Vec<HitRegion> = Vec::new();
 
         // Clip the scrollable list.
@@ -100,48 +347,59 @@ impl ChangesColumn {
             &list_area,
         );
 
-        let mut ctx = ChangesPaintCtx {
-            scene,
-            text: tr,
-            transform: t,
-            theme,
-            area: list_area,
-            selected,
-            regions: &mut regions,
-        };
-
         let mut y = list_area.y0 - scroll;
         y = Self::section(
-            &mut ctx,
+            scene,
+            tr,
+            t,
+            theme,
+            list_area,
             "Staged Changes",
             &model.staged,
             ChangeArea::Staged,
+            selected,
             y,
             true,
+            &m,
+            &mut regions,
         );
         y = Self::section(
-            &mut ctx,
+            scene,
+            tr,
+            t,
+            theme,
+            list_area,
             "Unstaged Changes",
             &model.unstaged,
             ChangeArea::Unstaged,
+            selected,
             y,
             false,
+            &m,
+            &mut regions,
         );
         let _ = Self::section(
-            &mut ctx,
+            scene,
+            tr,
+            t,
+            theme,
+            list_area,
             "Untracked Files",
             &model.untracked,
             ChangeArea::Untracked,
+            selected,
             y,
             false,
+            &m,
+            &mut regions,
         );
 
-        ctx.scene.pop_layer();
+        scene.pop_layer();
 
         // Commit box pinned to the bottom. Returns the rect the owner uses to
         // position the commit-message TextInput.
-        ctx.area = area;
-        let commit_input = Self::commit_box(&mut ctx, model, message);
+        let commit_input =
+            Self::commit_box(scene, tr, t, theme, area, model, message, &m, &mut regions);
 
         // Build closures that resolve a click to a hit. Returned as a
         // boxed list so the app can route without knowing geometry.
@@ -168,98 +426,146 @@ impl ChangesColumn {
         }
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "change-section painting shares render context, file and staging data, row metrics and accumulated hit regions"
+    )]
     fn section(
-        ctx: &mut ChangesPaintCtx<'_>,
+        scene: &mut Scene,
+        tr: &mut TextRenderer,
+        t: Affine,
+        theme: &Theme,
+        area: Rect,
         title: &str,
         files: &[FileChange],
         change_area: ChangeArea,
+        selected: Option<(ChangeArea, usize)>,
         y: f64,
         is_staged: bool,
+        m: &Metrics,
+        regions: &mut Vec<HitRegion>,
     ) -> f64 {
-        let mut y = Self::section_header(ctx, title, files, change_area, y, is_staged);
+        let mut y = Self::section_header(
+            scene,
+            tr,
+            t,
+            theme,
+            area,
+            title,
+            files,
+            change_area,
+            y,
+            is_staged,
+            m,
+            regions,
+        ) + m.row_gap;
 
         if files.is_empty() {
-            let c = &ctx.theme.tokens.colors;
+            let c = &theme.tokens.colors;
+            let hint = "— nothing here —";
+            let ty_1 = draw::centered_top(tr, hint, 12.0, TextWeight::Regular, y, m.empty_hint_h);
             draw::text(
-                ctx.scene,
-                ctx.text,
-                ctx.transform,
-                "— nothing here —",
+                scene,
+                tr,
+                t,
+                hint,
                 12.0,
                 c.text_dim,
-                ctx.area.x0 + 20.0,
-                y + 2.0,
+                area.x0 + 20.0,
+                ty_1,
                 None,
             );
-            return y + 22.0;
+            return y + m.empty_hint_h;
         }
 
         for (i, f) in files.iter().enumerate() {
-            Self::section_row(ctx, change_area, y, is_staged, f, i);
-            y += ROW_H;
+            // Rows scrolled out of the list viewport are neither painted nor
+            // exposed as hit / semantic regions: the paint layer clips them,
+            // and a region under the pinned commit box would otherwise
+            // overlap the commit controls.
+            if y + m.row_h > area.y0 && y < area.y1 {
+                Self::section_row(
+                    scene,
+                    tr,
+                    t,
+                    theme,
+                    area,
+                    change_area,
+                    selected,
+                    y,
+                    is_staged,
+                    f,
+                    i,
+                    m,
+                    regions,
+                );
+            }
+            y += m.row_h + m.row_gap;
         }
-        y + 8.0
+        y + 8.0 - m.row_gap
     }
 
     /// The section header: title, count badge, and (when non-empty) the
     /// bulk stage/unstage-all action (part of [`Self::section`]). Returns
     /// the `y` the file rows should start at.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "internal draw-step split of an over-length function"
+    )]
     fn section_header(
-        ctx: &mut ChangesPaintCtx<'_>,
+        scene: &mut Scene,
+        tr: &mut TextRenderer,
+        t: Affine,
+        theme: &Theme,
+        area: Rect,
         title: &str,
         files: &[FileChange],
         change_area: ChangeArea,
         y: f64,
         is_staged: bool,
+        m: &Metrics,
+        regions: &mut Vec<HitRegion>,
     ) -> f64 {
-        let scene = &mut *ctx.scene;
-        let tr = &mut *ctx.text;
-        let t = ctx.transform;
-        let theme = ctx.theme;
-        let area = ctx.area;
         let c = &theme.tokens.colors;
+        let section_h = m.section_h;
+        let action_label = (!files.is_empty()).then_some(if is_staged {
+            "Unstage all"
+        } else {
+            "Stage all"
+        });
+        let h = HeaderLayout::measure(tr, theme, area, title, files.len(), action_label);
+        // Title, count badge and bulk action all centre on the header band:
+        // each is placed from its own measured line height rather than a
+        // per-element nudge, so they read as one row.
+        let ty_2 = draw::centered_top(tr, &h.title, 12.0, TextWeight::Semibold, y, section_h);
         draw::text_weighted(
             scene,
             tr,
             t,
-            title,
+            &h.title,
             12.0,
             c.text_dim,
-            area.x0 + 14.0,
-            y + 8.0,
+            h.title_x,
+            ty_2,
             None,
             TextWeight::Semibold,
         );
         // Count badge.
-        let count = files.len().to_string();
-        let cx = area.x0
-            + 14.0
-            + f64::from(
-                tr.measure_weighted(title, 12.0, None, TextWeight::Semibold)
-                    .0,
-            )
-            + 8.0;
         draw::pill(
             scene,
             tr,
             t,
-            cx,
-            y + 6.0,
-            16.0,
-            &count,
+            h.badge_x,
+            y + (section_h - h.badge_h) / 2.0,
+            10.0,
+            &h.count,
             c.text_primary,
             c.lift(0.72),
-            None,
+            draw::PillEdge::Derived,
         );
 
-        if !files.is_empty() {
-            let label = if is_staged {
-                "Unstage all"
-            } else {
-                "Stage all"
-            };
-            let lw = f64::from(tr.measure_weighted(label, 11.0, None, TextWeight::Medium).0);
-            let lx = area.x1 - lw - 14.0;
+        if let Some((label, lx)) = action_label.zip(h.action_x) {
+            let ty_3 = draw::centered_top(tr, label, 11.0, TextWeight::Medium, y, section_h);
             draw::text_weighted(
                 scene,
                 tr,
@@ -268,12 +574,12 @@ impl ChangesColumn {
                 11.0,
                 theme.accent_primary,
                 lx,
-                y + 9.0,
+                ty_3,
                 None,
                 TextWeight::Medium,
             );
-            ctx.regions.push(HitRegion {
-                rect: Rect::new(lx - 4.0, y, area.x1, y + SECTION_H),
+            regions.push(HitRegion {
+                rect: Rect::new(lx - 4.0, y, area.x1, y + section_h),
                 hit: if is_staged {
                     ChangesHit::UnstageAll(change_area)
                 } else {
@@ -281,31 +587,38 @@ impl ChangesColumn {
                 },
             });
         }
-        y + SECTION_H
+        y + section_h
     }
 
     /// One file row: selection tint, status badge, name/dir, +/- counts,
     /// and the stage/unstage chevron button (part of [`Self::section`]).
     #[allow(
+        clippy::too_many_arguments,
+        reason = "internal draw-step split of an over-length function"
+    )]
+    #[allow(
         clippy::many_single_char_names,
         reason = "t/y/c follow this file's graphics convention (transform, position, colour tokens); f/i are the iterated FileChange and its index"
     )]
     fn section_row(
-        ctx: &mut ChangesPaintCtx<'_>,
+        scene: &mut Scene,
+        tr: &mut TextRenderer,
+        t: Affine,
+        theme: &Theme,
+        area: Rect,
         change_area: ChangeArea,
+        selected: Option<(ChangeArea, usize)>,
         y: f64,
         is_staged: bool,
         f: &FileChange,
         i: usize,
+        m: &Metrics,
+        regions: &mut Vec<HitRegion>,
     ) {
-        let scene = &mut *ctx.scene;
-        let tr = &mut *ctx.text;
-        let t = ctx.transform;
-        let theme = ctx.theme;
-        let area = ctx.area;
         let c = &theme.tokens.colors;
-        let rrect = Rect::new(area.x0, y, area.x1, y + ROW_H);
-        let is_sel = ctx.selected == Some((change_area, i));
+        let row_h = m.row_h;
+        let rrect = Rect::new(area.x0, y, area.x1, y + row_h);
+        let is_sel = selected == Some((change_area, i));
         if is_sel {
             // A quiet surface wash keeps selection discoverable without
             // turning a whole row into a saturated accent block. The accent
@@ -314,66 +627,94 @@ impl ChangesColumn {
             draw::fill_rect(
                 scene,
                 t,
-                Rect::new(area.x0, y, area.x0 + 3.0, y + ROW_H),
+                Rect::new(area.x0, y, area.x0 + 3.0, y + row_h),
                 theme.accent_primary,
             );
         }
 
-        // Status badge.
-        let badge = f.kind.badge();
-        let bcolor = draw::kind_color(theme, f.kind);
-        draw::mono(scene, tr, t, badge, 12.0, bcolor, area.x0 + 14.0, y + 8.0);
+        // Everything in a row sits on one centre line. The +/- counts used to
+        // be a second text line at `y + 18` inside the 30px row, which ran
+        // into the row below; they now sit right-aligned beside the chevron.
+        let layout = RowLayout::measure(tr, theme, area, y, row_h, f, is_staged);
 
-        // Name (bold) + dir (dim).
-        let name = f.name();
+        // Status badge.
+        let bcolor = draw::kind_color(theme, f.kind);
+        let ty_4 = draw::mono_centered_top(tr, layout.badge, 12.0, y, row_h);
+        draw::mono(
+            scene,
+            tr,
+            t,
+            layout.badge,
+            12.0,
+            bcolor,
+            layout.badge_x,
+            ty_4,
+        );
+
+        // Name (bold) + dir (dim). Elide to the allocation: a wrap width
+        // would break a long name onto a second line inside the 30px row.
+        let name = tr.elide_to_width_weighted(
+            f.name(),
+            12.5,
+            layout.name_max_w as f32,
+            TextWeight::Medium,
+        );
+        let name_y = draw::centered_top(tr, &name, 12.5, TextWeight::Medium, y, row_h);
         draw::text_weighted(
             scene,
             tr,
             t,
-            name,
+            &name,
             12.5,
             c.text_primary,
-            area.x0 + 32.0,
-            y + 7.0,
+            layout.name_x,
+            name_y,
             None,
             TextWeight::Medium,
         );
-        let nw = f64::from(tr.measure_weighted(name, 12.5, None, TextWeight::Medium).0);
+        // A dir hint needs room for more than a lone ellipsis (about three
+        // glyphs, one `s6` step); below that it only crowds the counts, so
+        // the row shows the name alone.
         let dir = f.dir();
-        if !dir.is_empty() {
+        if !dir.is_empty() && layout.dir_max_w >= f64::from(theme.tokens.spacing.s6) {
+            let dir = tr.elide_to_width(dir, 11.0, layout.dir_max_w as f32);
+            let ty_6 = draw::centered_top(tr, &dir, 11.0, TextWeight::Regular, y, row_h);
             draw::text(
                 scene,
                 tr,
                 t,
-                dir,
+                &dir,
                 11.0,
                 c.text_dim,
-                area.x0 + 36.0 + nw,
-                y + 8.0,
-                Some((area.width() - 130.0 - nw) as f32),
+                layout.dir_x,
+                ty_6,
+                None,
             );
         }
 
-        // +/- counts.
-        if f.additions > 0 || f.deletions > 0 {
-            let counts = format!("+{} -{}", f.additions, f.deletions);
+        // +/- counts, right-aligned against the chevron.
+        if let Some(counts) = &layout.counts {
+            let ty_7 = draw::mono_centered_top(tr, counts, 11.0, y, row_h);
             draw::mono(
                 scene,
                 tr,
                 t,
-                &counts,
+                counts,
                 11.0,
                 c.text_dim,
-                area.x0 + 36.0 + nw,
-                y + 18.0,
+                layout.counts_x,
+                ty_7,
             );
         }
 
-        // Stage / unstage chevron button on the right.
-        let chev = if is_staged { "−" } else { "+" };
-        let brect = Rect::new(area.x1 - 28.0, y + 4.0, area.x1 - 8.0, y + ROW_H - 4.0);
-        draw::fill_round(scene, t, brect, 4.0, c.lift(0.72));
+        // Stage / unstage chevron button on the right: a quiet face with its
+        // derived rest edge, the +/- glyph centred on its measured line in
+        // the semantic add/delete hue.
+        let chev = layout.chevron;
+        let brect = layout.chevron_rect;
+        draw::card(scene, t, brect, 4.0, c.lift(0.72));
         let chw = f64::from(draw::mono_width(tr, chev, 14.0));
+        let chev_y = draw::mono_centered_top(tr, chev, 14.0, brect.y0, brect.height());
         draw::mono(
             scene,
             tr,
@@ -386,28 +727,46 @@ impl ChangesColumn {
                 draw::add_fg(theme)
             },
             brect.x0 + (brect.width() - chw) / 2.0,
-            brect.y0 + 1.0,
+            chev_y,
         );
-        ctx.regions.push(HitRegion {
-            rect: brect,
+        // Regions are clamped to the list viewport: a row straddling the
+        // bottom edge must not reach under the pinned commit box.
+        regions.push(HitRegion {
+            rect: brect.intersect(area),
             hit: ChangesHit::ToggleStage(change_area, i),
         });
 
-        // Row select region (everything left of the chevron).
-        ctx.regions.push(HitRegion {
-            rect: Rect::new(area.x0, y, area.x1 - 30.0, y + ROW_H),
+        // Row select region (everything left of the chevron, an `s1` clear of
+        // it so the two targets never share pixels).
+        regions.push(HitRegion {
+            rect: Rect::new(
+                area.x0,
+                y,
+                brect.x0 - f64::from(theme.tokens.spacing.s1),
+                y + row_h,
+            )
+            .intersect(area),
             hit: ChangesHit::SelectFile(change_area, i),
         });
     }
 
-    fn commit_box(ctx: &mut ChangesPaintCtx<'_>, model: &RepoModel, message: &str) -> Rect {
-        let scene = &mut *ctx.scene;
-        let tr = &mut *ctx.text;
-        let t = ctx.transform;
-        let theme = ctx.theme;
-        let area = ctx.area;
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "commit-box painting combines render context and repository data with the message, layout metrics and hit regions"
+    )]
+    fn commit_box(
+        scene: &mut Scene,
+        tr: &mut TextRenderer,
+        t: Affine,
+        theme: &Theme,
+        area: Rect,
+        model: &RepoModel,
+        message: &str,
+        m: &Metrics,
+        regions: &mut Vec<HitRegion>,
+    ) -> Rect {
         let c = &theme.tokens.colors;
-        let box_rect = Rect::new(area.x0, area.y1 - COMMIT_BOX_H, area.x1, area.y1);
+        let box_rect = Rect::new(area.x0, area.y1 - m.commit_box_h, area.x1, area.y1);
         draw::fill_rect(scene, t, box_rect, c.surfaces.base);
         draw::hline(
             scene,
@@ -415,34 +774,42 @@ impl ChangesColumn {
             box_rect.y0,
             box_rect.x0,
             box_rect.x1,
-            c.border_standard,
+            draw::edge(c.surfaces.raised),
         );
 
-        let ay = box_rect.y0 + 12.0;
-        Self::commit_box_author(scene, tr, t, theme, box_rect, model, ay);
+        let ay = box_rect.y0 + m.commit_pad;
+        Self::commit_box_author(scene, tr, t, theme, box_rect, model, ay, m);
 
         // Message input area. The owning app positions + draws a toolkit
         // TextInput here (it paints its own frame, text and caret), and a
         // click in this rect focuses it — so we only reserve the rect and its
-        // focus region here.
+        // focus region here. It takes whatever the box has left between the
+        // author row and the button row, so the parts never overlap.
+        let input_top = ay + m.author_row_h + m.commit_gap;
+        let button_top = box_rect.y1 - m.commit_pad - m.button_h;
         let input = Rect::new(
-            box_rect.x0 + 12.0,
-            ay + 32.0,
-            box_rect.x1 - 12.0,
-            box_rect.y1 - 52.0,
+            box_rect.x0 + m.commit_pad,
+            input_top,
+            box_rect.x1 - m.commit_pad,
+            button_top - m.commit_gap,
         );
-        ctx.regions.push(HitRegion {
+        regions.push(HitRegion {
             rect: input,
             hit: ChangesHit::FocusMessage,
         });
 
-        Self::commit_box_button(ctx, box_rect, model, message);
+        Self::commit_box_button(scene, tr, t, theme, box_rect, model, message, m, regions);
 
         input
     }
 
     /// The author identity row (avatar + name/email) (part of
-    /// [`Self::commit_box`]).
+    /// [`Self::commit_box`]). The avatar is as tall as the row; the name is
+    /// centred on it from its measured line height.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "internal draw-step split of an over-length function"
+    )]
     fn commit_box_author(
         scene: &mut Scene,
         tr: &mut TextRenderer,
@@ -451,9 +818,13 @@ impl ChangesColumn {
         box_rect: Rect,
         model: &RepoModel,
         ay: f64,
+        m: &Metrics,
     ) {
         let c = &theme.tokens.colors;
-        let ax = box_rect.x0 + 12.0;
+        let row_h = m.author_row_h;
+        let pad = m.commit_pad;
+        let gap = f64::from(theme.tokens.spacing.s2);
+        let ax = box_rect.x0 + pad;
         draw::avatar(
             scene,
             tr,
@@ -461,7 +832,7 @@ impl ChangesColumn {
             theme,
             ax,
             ay,
-            22.0,
+            row_h,
             &model.author_name,
             draw::author_color(theme, &model.author_email),
         );
@@ -470,46 +841,42 @@ impl ChangesColumn {
         } else {
             format!("{} <{}>", model.author_name, model.author_email)
         };
+        let who_max = (box_rect.width() - row_h - 3.0 * pad - gap)
+            .max(f64::from(theme.tokens.spacing.s6)) as f32;
+        let who = tr.elide_to_width(&who, AUTHOR_FONT, who_max);
+        let wy = draw::centered_top(tr, &who, AUTHOR_FONT, TextWeight::Regular, ay, row_h);
         draw::text(
             scene,
             tr,
             t,
             &who,
-            11.5,
+            AUTHOR_FONT,
             c.text_dim,
-            ax + 30.0,
-            ay + 4.0,
-            Some((box_rect.width() - 60.0) as f32),
+            ax + row_h + gap,
+            wy,
+            None,
         );
     }
 
     /// The commit button and the branch indicator beside it (part of
     /// [`Self::commit_box`]).
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "internal draw-step split of an over-length function"
+    )]
     fn commit_box_button(
-        ctx: &mut ChangesPaintCtx<'_>,
+        scene: &mut Scene,
+        tr: &mut TextRenderer,
+        t: Affine,
+        theme: &Theme,
         box_rect: Rect,
         model: &RepoModel,
         message: &str,
+        m: &Metrics,
+        regions: &mut Vec<HitRegion>,
     ) {
-        let scene = &mut *ctx.scene;
-        let tr = &mut *ctx.text;
-        let t = ctx.transform;
-        let theme = ctx.theme;
         let c = &theme.tokens.colors;
         let enabled = !model.staged.is_empty() && !message.trim().is_empty();
-        let brect = Rect::new(
-            box_rect.x1 - 150.0,
-            box_rect.y1 - 42.0,
-            box_rect.x1 - 12.0,
-            box_rect.y1 - 12.0,
-        );
-        let bg = if enabled {
-            theme.accent_primary
-        } else {
-            c.lift(0.72)
-        };
-        let fg = if enabled { Color::WHITE } else { c.neutral[5] };
-        draw::fill_round(scene, t, brect, 6.0, bg);
         let staged_n = model.staged.len();
         let label = if staged_n == 0 {
             "Commit".to_string()
@@ -519,40 +886,229 @@ impl ChangesColumn {
                 if staged_n == 1 { "" } else { "s" }
             )
         };
-        let lw = f64::from(
-            tr.measure_weighted(&label, 12.0, None, TextWeight::Semibold)
-                .0,
+        // 12 px Semibold label; the button keeps its 1× width unless the
+        // label needs more.
+        let (lw, _) = tr.measure_weighted(&label, 12.0, None, TextWeight::Semibold);
+        let pad = m.commit_pad;
+        let bw = m.button_w.max(f64::from(lw) + 2.0 * pad);
+        let brect = Rect::new(
+            box_rect.x1 - pad - bw,
+            box_rect.y1 - pad - m.button_h,
+            box_rect.x1 - pad,
+            box_rect.y1 - pad,
         );
-        draw::text_weighted(
+        // The shared face resolves the primary fill and the one opaque
+        // disabled look (rest edge included) instead of a hand-mixed pair.
+        draw::button(
             scene,
             tr,
             t,
-            &label,
-            12.0,
-            fg,
-            brect.x0 + (brect.width() - lw) / 2.0,
-            brect.y0 + 7.0,
-            None,
-            TextWeight::Semibold,
+            theme,
+            &ButtonFace::new(brect, &label)
+                .primary()
+                .radius(6.0)
+                .text_size(12.0)
+                .weight(TextWeight::Semibold)
+                .disabled(!enabled),
         );
         if enabled {
-            ctx.regions.push(HitRegion {
+            regions.push(HitRegion {
                 rect: brect,
                 hit: ChangesHit::Commit,
             });
         }
 
-        // Branch indicator on the left of the button row.
+        // Branch indicator on the left of the button row, on the button's
+        // centre line and elided before it.
+        let on = format!("on {}", model.head);
+        let on_max = (brect.x0 - m.commit_gap - box_rect.x0 - pad)
+            .max(f64::from(theme.tokens.spacing.s6)) as f32;
+        let on = tr.elide_to_width(&on, AUTHOR_FONT, on_max);
+        let oy = draw::centered_top(
+            tr,
+            &on,
+            AUTHOR_FONT,
+            TextWeight::Regular,
+            brect.y0,
+            brect.height(),
+        );
         draw::text(
             scene,
             tr,
             t,
-            &format!("on {}", model.head),
-            11.5,
+            &on,
+            AUTHOR_FONT,
             c.text_dim,
-            box_rect.x0 + 12.0,
-            box_rect.y1 - 34.0,
+            box_rect.x0 + pad,
+            oy,
             None,
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::ChangeKind;
+
+    fn change(path: &str, additions: u32, deletions: u32) -> FileChange {
+        FileChange {
+            path: path.to_string(),
+            old_path: None,
+            area: ChangeArea::Unstaged,
+            kind: ChangeKind::Modified,
+            additions,
+            deletions,
+        }
+    }
+
+    #[test]
+    fn row_layout_keeps_name_dir_counts_and_chevron_in_one_line() {
+        let theme = Theme::dark();
+        let mut tr = TextRenderer::new();
+        let area = Rect::new(0.0, 0.0, 320.0, 800.0);
+        let y = 86.0;
+        let file = change("src/render/a-fairly-long-file-name.rs", 124, 6);
+        let layout = RowLayout::measure(&mut tr, &theme, area, y, ROW_H, &file, false);
+        let row = Rect::new(area.x0, y, area.x1, y + ROW_H);
+
+        assert!(row.contains(layout.chevron_rect.center()));
+        assert!(layout.chevron_rect.y0 >= row.y0 && layout.chevron_rect.y1 <= row.y1);
+        assert!(layout.chevron_rect.x1 <= area.x1 - CHEVRON_INSET + 0.01);
+
+        let counts = layout.counts.as_deref().expect("changed file has counts");
+        let counts_w = f64::from(draw::mono_width(&mut tr, counts, 11.0));
+        assert!(
+            layout.counts_x + counts_w <= layout.chevron_rect.x0 - COUNTS_GAP + 0.01,
+            "counts end at {} but the chevron starts at {}",
+            layout.counts_x + counts_w,
+            layout.chevron_rect.x0
+        );
+        assert!(
+            layout.dir_x + layout.dir_max_w <= layout.counts_x - COUNTS_GAP + 0.01,
+            "dir hint may not run into the counts"
+        );
+        assert!(layout.name_x + layout.name_max_w <= layout.counts_x - COUNTS_GAP + 0.01);
+        assert!(layout.dir_x > layout.name_x);
+    }
+
+    #[test]
+    fn row_layout_without_counts_gives_the_text_the_whole_row() {
+        let mut tr = TextRenderer::new();
+        let area = Rect::new(0.0, 0.0, 320.0, 800.0);
+        let file = FileChange {
+            path: "docs/rendering.md".to_string(),
+            old_path: None,
+            area: ChangeArea::Untracked,
+            kind: ChangeKind::Untracked,
+            additions: 0,
+            deletions: 0,
+        };
+        let layout = RowLayout::measure(&mut tr, &Theme::dark(), area, 0.0, ROW_H, &file, false);
+        assert!(layout.counts.is_none());
+        assert!(
+            (layout.name_x + layout.name_max_w - (layout.chevron_rect.x0 - COUNTS_GAP)).abs()
+                < 0.01,
+            "text runs up to the chevron gap when there are no counts"
+        );
+    }
+
+    /// The measured bands reproduce the 1× constants exactly — a user who has
+    /// not enlarged text sees the same column — and grow with the glyphs at 2×
+    /// so 25 px names no longer sit in 30 px rows with no leading.
+    #[test]
+    fn metrics_match_the_constants_at_1x_and_grow_with_the_text_scale() {
+        let theme = Theme::dark();
+        let mut tr = TextRenderer::new();
+        assert_eq!(Metrics::measure(&mut tr, &theme), Metrics::default());
+
+        tr.set_text_scale(2.0);
+        let two = Metrics::measure(&mut tr, &theme);
+        let (_, name_h) = tr.measure_weighted("Ag", NAME_FONT, None, TextWeight::Medium);
+        assert!(
+            two.row_h >= f64::from(name_h) + 12.0,
+            "2× rows hold the name plus leading"
+        );
+        assert!(two.section_h > SECTION_H && two.commit_box_h > COMMIT_BOX_H);
+        assert!(
+            two.commit_box_h
+                >= 2.0 * two.commit_pad
+                    + two.author_row_h
+                    + two.input_h
+                    + two.button_h
+                    + 2.0 * two.commit_gap
+                    - 0.01,
+            "the commit box holds its three rows without overlap"
+        );
+        // The chevron button stays a real pointer target inside the row.
+        let file = change("src/a.rs", 1, 1);
+        let area = Rect::new(0.0, 0.0, 320.0, 800.0);
+        let layout = RowLayout::measure(&mut tr, &theme, area, 0.0, two.row_h, &file, false);
+        let inset = f64::from(theme.tokens.spacing.s1);
+        assert!(layout.chevron_rect.y1 <= two.row_h - inset + 0.01);
+        assert!(layout.chevron_rect.width() > CHEVRON_W);
+    }
+
+    /// HIG §7 "nothing touches": neighbouring file rows, and the first row
+    /// under its section header, keep an `s1` gap on every preset — the
+    /// list pitch is the row plus that gap, never the bare row.
+    #[test]
+    fn file_rows_keep_a_token_gap_on_every_preset() {
+        for theme in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
+            let mut tr = TextRenderer::new();
+            let m = Metrics::measure(&mut tr, &theme);
+            let s1 = f64::from(theme.tokens.spacing.s1);
+            assert!(
+                m.row_gap >= s1 && s1 >= 4.0,
+                "{}: row gap {}",
+                theme.name,
+                m.row_gap
+            );
+            // Two rows laid out at the section pitch never share a pixel row.
+            let first = Rect::new(0.0, 0.0, 320.0, m.row_h);
+            let second_top = m.row_h + m.row_gap;
+            assert!(second_top - first.y1 >= s1, "{}: rows touch", theme.name);
+        }
+    }
+
+    /// Title, badge and bulk action share a 320 px header band without
+    /// touching at 1× and at 2×: the title elides before the badge and the
+    /// badge ends before the action starts.
+    #[test]
+    fn section_header_title_badge_and_action_never_collide() {
+        let theme = Theme::dark();
+        let gap = f64::from(theme.tokens.spacing.s2);
+        let area = Rect::new(0.0, 0.0, 320.0, 800.0);
+        for scale in [1.0_f32, 2.0] {
+            let mut tr = TextRenderer::new();
+            tr.set_text_scale(scale);
+            let h = HeaderLayout::measure(
+                &mut tr,
+                &theme,
+                area,
+                "Unstaged Changes",
+                12,
+                Some("Unstage all"),
+            );
+            let action_x = h.action_x.expect("non-empty section has a bulk action");
+            // The badge is painted at the header's 10 px label size; its
+            // width comes from the same helper the paint uses.
+            let badge_end = h.badge_x + draw::pill_width(&mut tr, &h.count, 10.0);
+            assert!(
+                badge_end <= action_x - gap + 0.01,
+                "{scale}×: badge ends at {badge_end} but the action starts at {action_x}"
+            );
+            let title_w = f64::from(
+                tr.measure_weighted(&h.title, 12.0, None, TextWeight::Semibold)
+                    .0,
+            );
+            assert!((h.badge_x - (h.title_x + title_w + gap)).abs() < 0.01);
+            if scale == 1.0 {
+                assert_eq!(h.title, "Unstaged Changes", "1× keeps the full title");
+                assert_eq!(h.badge_h, 16.0, "1× badge is the historical 16 px pill");
+            } else {
+                assert!(h.badge_h > 16.0, "2× badge grows with its label");
+            }
+        }
     }
 }

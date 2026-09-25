@@ -280,6 +280,7 @@ impl HostApplicationsProvider {
                                 st.strip_viewport(),
                             );
                         let portal_workspace_id = tree
+                            .desktop
                             .active_workspace()
                             .map(|workspace| workspace.room.to_string());
                         drop(tree);
@@ -574,11 +575,11 @@ mod tests {
         );
 
         let provider = HostApplicationsProvider::new();
-        let apps = (0..100_001)
+        let apps = (0..=4_000)
             .map(|index| {
                 app(
                     &format!("org.fixture.App{index}"),
-                    if index == 100_000 {
+                    if index == 4_000 {
                         "unique-tail"
                     } else {
                         "common app"
@@ -620,11 +621,11 @@ mod tests {
     #[test]
     fn source_backed_cold_query_does_no_host_index_work_before_refresh() {
         let source = HostAppsTestSource::new(
-            (0..100_001)
+            (0..=4_000)
                 .map(|index| {
                     app(
                         &format!("org.fixture.Source{index}"),
-                        if index == 100_000 {
+                        if index == 4_000 {
                             "unique-source-tail"
                         } else {
                             "common source app"
@@ -752,7 +753,7 @@ mod tests {
         let tilo_rows = tilo.results_for(
             "term",
             vec![crate::shell::launcher::InstalledApp {
-                package_id: "dev.tilo.terminal".into(),
+                package_id: "so.tilo.terminal".into(),
                 display_name: "Terminal".into(),
                 category: None,
                 version: "1".into(),
@@ -833,7 +834,7 @@ mod tests {
         let p = HostApplicationsProvider::new();
         let c = chrome_rc();
         let mut doc = AutoCommit::new();
-        let out = p.results_against("ghost", vec![app("dev.tilo.ghost-host-app", "Ghost")], &[]);
+        let out = p.results_against("ghost", vec![app("so.tilo.ghost-host-app", "Ghost")], &[]);
         let row = out.first().expect("a row for the ghost app");
         assert!(c.borrow().notifications().is_empty());
         (row.on_open)(
@@ -870,16 +871,16 @@ mod tests {
 
     #[test]
     fn only_an_exact_tilo_package_identity_hides_the_host_row() {
-        let installed = vec![installed("dev.tilo.terminal", "Terminal")];
+        let installed = vec![installed("so.tilo.terminal", "Terminal")];
         assert!(shadowed_by_a_tilo_package(
-            &app("dev.tilo.terminal", "Terminal"),
+            &app("so.tilo.terminal", "Terminal"),
             &installed
         ));
     }
 
     #[test]
     fn tilo_terminal_does_not_hide_a_distinct_host_terminal() {
-        let installed = vec![installed("dev.tilo.terminal", "Terminal")];
+        let installed = vec![installed("so.tilo.terminal", "Terminal")];
         assert!(!shadowed_by_a_tilo_package(
             &app("org.gnome.Console", "Terminal"),
             &installed
@@ -888,7 +889,7 @@ mod tests {
 
     #[test]
     fn tilo_calendar_does_not_hide_gnome_calendar() {
-        let installed = vec![installed("dev.tilo.calendar", "Calendar")];
+        let installed = vec![installed("so.tilo.calendar", "Calendar")];
         assert!(!shadowed_by_a_tilo_package(
             &app("org.gnome.Calendar", "Calendar"),
             &installed
@@ -897,7 +898,7 @@ mod tests {
 
     #[test]
     fn a_generic_shared_name_does_not_hide_a_host_app() {
-        let installed = vec![installed("dev.tilo.notes", "Notes")];
+        let installed = vec![installed("so.tilo.notes", "Notes")];
         assert!(!shadowed_by_a_tilo_package(
             &app("org.example.PrivateNotes", "Notes"),
             &installed

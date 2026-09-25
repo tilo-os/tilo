@@ -58,7 +58,7 @@ from reaper import die_with_parent
 REPO = pathlib.Path(__file__).resolve().parents[2]
 SHELL = REPO / "target" / "debug" / "shell"
 WORD_PROCESSOR = REPO / "target" / "debug" / "word-processor"
-APP_ID = "dev.tilo.word-processor"
+APP_ID = "so.tilo.word-processor"
 ACTIONS = "actions"
 
 # What ada calls bob when he invites him. The whole point of the

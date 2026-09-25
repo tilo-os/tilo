@@ -14,7 +14,7 @@ use ui::theme::Theme;
 use ui::widget::{ColorPicker, Widget};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
-use vello::peniko::{Color, Fill};
+use vello::peniko::Color;
 use winit::event::{ElementState, KeyEvent, Modifiers, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
@@ -103,14 +103,7 @@ impl StyleColorPicker {
         picker.apply_layout(&taffy, node, Self::anchor(host, panel));
     }
 
-    pub(super) fn draw(
-        &mut self,
-        args: DrawArgs,
-        host: Rect,
-        panel: Rect,
-        surface: Color,
-        border: Color,
-    ) {
+    pub(super) fn draw(&mut self, args: DrawArgs, host: Rect, panel: Rect) {
         if !self.is_open() {
             return;
         }
@@ -125,32 +118,14 @@ impl StyleColorPicker {
             theme,
             presence,
         } = args;
+        // A floating panel (HIG §9.1 Panel role): the picker sits `s3` inside
+        // a panel-ground card with the panel border and elevation, instead of
+        // a bar-toned card with a declared border and a literal black shadow.
+        let inset = f64::from(theme.tokens.spacing.s3);
+        let radius = f64::from(theme.tokens.radii.md);
         let rect = picker.get_rect();
-        let card = Rect::new(
-            rect.x0 - 10.0,
-            rect.y0 - 10.0,
-            rect.x1 + 10.0,
-            rect.y1 + 10.0,
-        );
-        let shape = vello::kurbo::RoundedRect::from_rect(card, 8.0);
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            Color::from_rgba8(Color::BLACK.r(), Color::BLACK.g(), Color::BLACK.b(), 0x30),
-            None,
-            &vello::kurbo::RoundedRect::from_rect(
-                Rect::new(card.x0, card.y0 + 3.0, card.x1, card.y1 + 3.0),
-                8.0,
-            ),
-        );
-        scene.fill(Fill::NonZero, transform, surface, None, &shape);
-        scene.stroke(
-            &vello::kurbo::Stroke::new(1.0),
-            transform,
-            border,
-            None,
-            &shape,
-        );
+        let card = rect.inflate(inset, inset);
+        crate::widget::paint_panel(scene, transform, theme, card, radius);
         picker.draw(scene, transform, text_renderer, theme, presence);
     }
 

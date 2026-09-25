@@ -5,14 +5,14 @@
 
 use vello::Scene;
 use vello::kurbo::{Affine, Ellipse, Line, Point, Rect, RoundedRect, Stroke};
-use vello::peniko::{BlendMode, Color, Fill, ImageBrush};
+use vello::peniko::{BlendMode, Fill, ImageBrush};
 
-use ui::ColorCompat;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
 
-use crate::assets::{ImageState, ImageStore};
+use crate::assets::{ImageLookup, ImageState};
 use crate::model::{Element, ElementKind, Palette, SLIDE_W, Slide, TextAlign};
+pub use ui::paint::with_alpha;
 
 /// Map a point from slide space to destination pixels.
 #[inline]
@@ -47,7 +47,7 @@ pub fn draw_slide(
     slide: &Slide,
     dest: Rect,
     corner: f64,
-    images: &ImageStore,
+    images: &dyn ImageLookup,
 ) {
     let s = dest.width() / SLIDE_W;
     let bg = palette.slide_bg(slide.background);
@@ -105,7 +105,7 @@ fn draw_element(
     e: &Element,
     dest: Rect,
     s: f64,
-    images: &ImageStore,
+    images: &dyn ImageLookup,
 ) {
     let er = element_dest(dest, s, e);
     match e.kind {
@@ -180,7 +180,7 @@ fn draw_image_element(
     e: &Element,
     er: Rect,
     s: f64,
-    images: &ImageStore,
+    images: &dyn ImageLookup,
 ) {
     let radius = (e.radius.max(4.0) * s).max(2.0);
     let frame = RoundedRect::from_rect(er, radius);
@@ -342,8 +342,4 @@ fn draw_text_element(
         }
         y += *r as f64 * line_h;
     }
-}
-
-pub fn with_alpha(c: Color, a: u8) -> Color {
-    Color::from_rgba8(c.r(), c.g(), c.b(), a)
 }

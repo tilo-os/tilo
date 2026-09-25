@@ -11,11 +11,13 @@ use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 
+use crate::text_metrics::renderer_type_size;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::tokens::colors::ACCENT_PRIMARY_IDX;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
+use crate::widget::text::centered_text_top;
 
 /// ASCII `>` so it always falls back to the system font even when no
 /// fancy chevron face is loaded.
@@ -148,7 +150,7 @@ impl Breadcrumb {
 
         // Lay the labels out left-to-right; the chevron between segments is
         // painted by `draw` but never needs its own rect (never clickable).
-        let size = theme.tokens.typography.scale.sm;
+        let size = renderer_type_size(tr, theme.tokens.typography.scale.sm);
         let sep_pad = f64::from(theme.tokens.spacing.s2);
         let (sep_w, _sep_h) = tr.measure(SEPARATOR_GLYPH, size, None);
         let sep_w = f64::from(sep_w);
@@ -186,7 +188,7 @@ impl Breadcrumb {
 /// [`Breadcrumb::visible_segments`] to decide whether the full path
 /// fits. A free function (not a method) since it touches no `self` field.
 fn measure_total_width(labels: &[String], theme: &Theme, tr: &mut TextRenderer) -> f64 {
-    let size = theme.tokens.typography.scale.sm;
+    let size = renderer_type_size(tr, theme.tokens.typography.scale.sm);
     let sep_pad = f64::from(theme.tokens.spacing.s2);
     let (sep_w, _) = tr.measure(SEPARATOR_GLYPH, size, None);
     let sep_block = f64::from(sep_w) + sep_pad * 2.0;
@@ -265,10 +267,14 @@ impl Widget for Breadcrumb {
         // available width retriggers truncation on the next paint.
         self.rebuild_rects(theme, text_renderer);
 
-        let size = theme.tokens.typography.scale.sm;
+        let size = renderer_type_size(text_renderer, theme.tokens.typography.scale.sm);
         let sep_pad = f64::from(theme.tokens.spacing.s2);
-        let (sep_w, _sep_h) = text_renderer.measure(SEPARATOR_GLYPH, size, None);
-        let sep_w = f64::from(sep_w);
+        // One measured line height serves every segment and chevron: all are
+        // single lines at one size, so cosmic-text gives each the same line
+        // box. Centre that, not the font size — the latter sat the whole
+        // trail 1.5 px below the row's centre.
+        let (_, line_h) = text_renderer.measure(SEPARATOR_GLYPH, size, None);
+        let text_y = centered_text_top(self.rect.y0, self.rect.height(), f64::from(line_h));
 
         let active_origin = self.segments.len().saturating_sub(1);
         let text_primary = theme.tokens.colors.text_primary;
@@ -294,7 +300,6 @@ impl Widget for Breadcrumb {
                 Some(_) if Some(i) == self.hover_idx => accent,
                 _ => text_dim,
             };
-            let text_y = r.y0 + (r.height() - f64::from(size)) / 2.0;
             text_renderer.draw_text(
                 scene,
                 label,
@@ -306,16 +311,14 @@ impl Widget for Breadcrumb {
             // Always dim — the chevron is chrome, not content.
             if i.saturating_add(1) < n {
                 let sep_x = r.x1 + sep_pad;
-                let sep_y = text_y;
                 text_renderer.draw_text(
                     scene,
                     SEPARATOR_GLYPH,
                     size,
                     text_dim,
-                    translated(transform, sep_x, sep_y),
+                    translated(transform, sep_x, text_y),
                     None,
                 );
-                let _ = sep_w; // measured for layout symmetry; not used here
             }
         }
     }
@@ -460,6 +463,46 @@ mod tests {
             "one-segment breadcrumb must report zero separators"
         );
         assert_eq!(bc.cached_visible, vec!["home".to_string()]);
+    }
+
+    /// Labels and chevrons are centred on the line the renderer measured,
+    /// not on the font size — the latter sat every segment 1.5 px below the
+    /// row's centre (12 px type lays out as a 15 px line).
+    #[test]
+    fn breadcrumb_labels_and_chevrons_centre_their_measured_line() {
+        let mut bc = Breadcrumb::new(vec!["home".to_string(), "docs".to_string()]);
+        let mut tr = TextRenderer::new();
+        let theme = Theme::dark();
+        // An 18 px band, as `build_layout` gives a small-type trail.
+        let rect = Rect::new(10.0, 40.0, 500.0, 58.0);
+        bc.rect = rect;
+        bc.apply_layout_helper(&theme, &mut tr);
+        let mut scene = Scene::new();
+        bc.draw(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut tr,
+            &theme,
+            &crate::presence::PresenceCtx::default(),
+        );
+        assert_eq!(
+            scene.encoding().resources.glyph_runs.len(),
+            3,
+            "home, chevron, docs"
+        );
+        let size = theme.tokens.typography.scale.sm;
+        for (index, text) in ["home", SEPARATOR_GLYPH, "docs"].into_iter().enumerate() {
+            crate::widget::text::assert_glyph_run_centred_in_band(
+                &scene,
+                index,
+                text,
+                size,
+                rect.y0,
+                rect.height(),
+                &mut tr,
+                theme.text_primary,
+            );
+        }
     }
 
     #[test]

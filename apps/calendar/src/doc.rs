@@ -39,6 +39,7 @@
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, Value};
 use chrono::{NaiveDate, NaiveDateTime, NaiveTime};
+use ui::doc::{read_bool, read_i64_coerced, read_str};
 use ui::widget::{BlockEditOp, legacy_block_id};
 
 use crate::model::{
@@ -63,7 +64,7 @@ impl CalDoc {
         else {
             return false;
         };
-        get_bool(doc, &tombstones, &Self::tombstone_key(kind, id))
+        read_bool(doc, &tombstones, Self::tombstone_key(kind, id)).unwrap_or(false)
     }
 
     fn tombstone(doc: &mut AutoCommit, kind: &str, id: Id) {
@@ -346,8 +347,12 @@ impl CalDoc {
         if let Some(value) = &patch.title {
             let _ = doc.put(&item, "title", value.as_str());
         }
-        let current_start = NaiveDateTime::parse_from_str(&get_str(doc, &item, "start"), DT_FMT);
-        let current_end = NaiveDateTime::parse_from_str(&get_str(doc, &item, "end"), DT_FMT);
+        let current_start = NaiveDateTime::parse_from_str(
+            &read_str(doc, &item, "start").unwrap_or_default(),
+            DT_FMT,
+        );
+        let current_end =
+            NaiveDateTime::parse_from_str(&read_str(doc, &item, "end").unwrap_or_default(), DT_FMT);
         let start = patch
             .start
             .as_deref()
@@ -442,7 +447,7 @@ impl CalDoc {
         };
         let attendees = Self::ensure_child(doc, &event, "attendees");
         let tombstones = Self::ensure_child(doc, &event, "attendee_tombstones");
-        if get_bool(doc, &tombstones, &attendee.id.to_string()) {
+        if read_bool(doc, &tombstones, attendee.id.to_string()).unwrap_or(false) {
             return;
         }
         let item = Self::ensure_child(doc, &attendees, &attendee.id.to_string());
@@ -491,7 +496,7 @@ impl CalDoc {
         let _ = doc.delete(&attendees, attendee_id.to_string().as_str());
         let tombstones = Self::ensure_child(doc, &event, "attendee_tombstones");
         let _ = doc.put(&tombstones, attendee_id.to_string(), true);
-        if get_str(doc, &event, "organizer") == attendee_id.to_string() {
+        if read_str(doc, &event, "organizer").unwrap_or_default() == attendee_id.to_string() {
             let _ = doc.put(&event, "organizer", "");
         }
     }
@@ -665,12 +670,12 @@ impl CalDoc {
         else {
             return None;
         };
-        let cal = get_str(doc, &item, "cal");
-        let href = get_str(doc, &item, "href");
+        let cal = read_str(doc, &item, "cal").unwrap_or_default();
+        let href = read_str(doc, &item, "href").unwrap_or_default();
         if cal.is_empty() || href.is_empty() {
             return None;
         }
-        let etag = get_str(doc, &item, "etag");
+        let etag = read_str(doc, &item, "etag").unwrap_or_default();
         Some((cal, href, (!etag.is_empty()).then_some(etag)))
     }
 
@@ -684,8 +689,11 @@ impl CalDoc {
             else {
                 continue;
             };
-            if get_str(doc, &item, "cal") == calendar_id
-                && crate::caldav::hrefs_equal(&get_str(doc, &item, "href"), href)
+            if read_str(doc, &item, "cal").unwrap_or_default() == calendar_id
+                && crate::caldav::hrefs_equal(
+                    &read_str(doc, &item, "href").unwrap_or_default(),
+                    href,
+                )
                 && let Ok(id) = key.parse::<Id>()
             {
                 return Some(id);
@@ -705,10 +713,10 @@ impl CalDoc {
             else {
                 continue;
             };
-            if get_str(doc, &item, "cal") == calendar_id
+            if read_str(doc, &item, "cal").unwrap_or_default() == calendar_id
                 && let Ok(id) = key.parse::<Id>()
             {
-                result.push((id, get_str(doc, &item, "href")));
+                result.push((id, read_str(doc, &item, "href").unwrap_or_default()));
             }
         }
         result
@@ -731,7 +739,7 @@ impl CalDoc {
         };
         doc.keys(&tokens)
             .filter_map(|calendar| {
-                let value = get_str(doc, &tokens, &calendar);
+                let value = read_str(doc, &tokens, &calendar).unwrap_or_default();
                 (!value.is_empty()).then_some((calendar, value))
             })
             .collect()
@@ -931,9 +939,7 @@ impl CalDoc {
         let list = Self::outbox_list(doc);
         let target = id.to_string();
         for i in 0..doc.length(&list) {
-            if let Ok(Some((Value::Scalar(v), _))) = doc.get(&list, i)
-                && matches!(v.as_ref(), automerge::ScalarValue::Str(s) if s.as_str() == target)
-            {
+            if read_str(doc, &list, i).as_deref() == Some(target.as_str()) {
                 return;
             }
         }
@@ -948,11 +954,7 @@ impl CalDoc {
         let target = id.to_string();
         let mut i = 0;
         while i < doc.length(&list) {
-            let hit = matches!(
-                doc.get(&list, i),
-                Ok(Some((Value::Scalar(v), _)))
-                    if matches!(v.as_ref(), automerge::ScalarValue::Str(s) if s.as_str() == target)
-            );
+            let hit = read_str(doc, &list, i).as_deref() == Some(target.as_str());
             if hit {
                 let _ = doc.delete(&list, i);
             } else {
@@ -968,10 +970,7 @@ impl CalDoc {
         };
         let mut out = Vec::new();
         for i in 0..doc.length(&list) {
-            if let Ok(Some((Value::Scalar(v), _))) = doc.get(&list, i)
-                && let automerge::ScalarValue::Str(s) = v.as_ref()
-                && let Ok(id) = s.as_str().parse::<Id>()
-            {
+            if let Some(Ok(id)) = read_str(doc, &list, i).map(|s| s.parse::<Id>()) {
                 out.push(id);
             }
         }
@@ -1007,10 +1006,7 @@ impl CalDoc {
         let list = Self::del_outbox_list(doc);
         let uid = id.to_string();
         for i in 0..doc.length(&list) {
-            if let Ok(Some((Value::Scalar(v), _))) = doc.get(&list, i)
-                && let automerge::ScalarValue::Str(s) = v.as_ref()
-                && s.as_str().split('\t').nth(1) == Some(uid.as_str())
-            {
+            if read_str(doc, &list, i).is_some_and(|s| s.split('\t').nth(1) == Some(uid.as_str())) {
                 return;
             }
         }
@@ -1026,12 +1022,8 @@ impl CalDoc {
         let uid = id.to_string();
         let mut i = 0;
         while i < doc.length(&list) {
-            let hit = matches!(
-                doc.get(&list, i),
-                Ok(Some((Value::Scalar(v), _)))
-                    if matches!(v.as_ref(),
-                        automerge::ScalarValue::Str(s) if s.as_str().split('\t').nth(1) == Some(uid.as_str()))
-            );
+            let hit =
+                read_str(doc, &list, i).is_some_and(|s| s.split('\t').nth(1) == Some(uid.as_str()));
             if hit {
                 let _ = doc.delete(&list, i);
             } else {
@@ -1047,10 +1039,8 @@ impl CalDoc {
         };
         let mut out = Vec::new();
         for i in 0..doc.length(&list) {
-            if let Ok(Some((Value::Scalar(v), _))) = doc.get(&list, i)
-                && let automerge::ScalarValue::Str(s) = v.as_ref()
-            {
-                let mut parts = s.as_str().splitn(2, '\t');
+            if let Some(s) = read_str(doc, &list, i) {
+                let mut parts = s.splitn(2, '\t');
                 if let (Some(cal), Some(uid)) = (parts.next(), parts.next())
                     && let Ok(id) = uid.parse::<Id>()
                 {
@@ -1065,7 +1055,14 @@ impl CalDoc {
     /// adopt a shared calendar (and exercised by the round-trip test).
     pub fn read_model(doc: &AutoCommit) -> Model {
         let mut model = Model::default();
+        Self::read_projects_into(doc, &mut model);
+        Self::read_events_into(doc, &mut model);
+        Self::read_tasks_into(doc, &mut model);
+        model
+    }
 
+    /// Append the live (non-tombstoned) projects, in display order.
+    fn read_projects_into(doc: &AutoCommit, model: &mut Model) {
         if let Ok(Some((Value::Object(ObjType::Map), projects))) = doc.get(&ROOT, "projects") {
             for key in doc.keys(&projects) {
                 let Ok(id) = key.parse::<Id>() else { continue };
@@ -1078,14 +1075,20 @@ impl CalDoc {
                 };
                 model.projects.push(Project {
                     id,
-                    name: get_str(doc, &m, "name"),
-                    color: Palette::from_index(get_int(doc, &m, "color") as usize),
-                    order: get_int(doc, &m, "order") as u32,
+                    name: read_str(doc, &m, "name").unwrap_or_default(),
+                    color: Palette::from_index(
+                        read_i64_coerced(doc, &m, "color").unwrap_or(0) as usize
+                    ),
+                    order: read_i64_coerced(doc, &m, "order").unwrap_or(0) as u32,
                 });
             }
             model.projects.sort_by_key(|p| p.order);
         }
+    }
 
+    /// Append the live events in start order; each event only keeps a project
+    /// that `model` already holds, so projects must be read first.
+    fn read_events_into(doc: &AutoCommit, model: &mut Model) {
         if let Ok(Some((Value::Object(ObjType::Map), events))) = doc.get(&ROOT, "events") {
             for key in doc.keys(&events) {
                 let Ok(id) = key.parse::<Id>() else { continue };
@@ -1096,52 +1099,63 @@ impl CalDoc {
                 else {
                     continue;
                 };
-                let start = parse_dt(&get_str(doc, &m, "start"));
-                let end = parse_dt(&get_str(doc, &m, "end"));
-                let reminder = get_int(doc, &m, "reminder");
+                let start = parse_dt(&read_str(doc, &m, "start").unwrap_or_default());
+                let end = parse_dt(&read_str(doc, &m, "end").unwrap_or_default());
+                let reminder = read_i64_coerced(doc, &m, "reminder").unwrap_or(0);
                 let attendees = read_attendees(doc, &m);
                 let recurrence_exdates = read_exdates(doc, &m);
                 let occurrence_overrides = read_occurrence_overrides(doc, &m);
-                let organizer = parse_opt_id(&get_str(doc, &m, "organizer"))
+                let organizer = parse_opt_id(&read_str(doc, &m, "organizer").unwrap_or_default())
                     .filter(|id| attendees.iter().any(|attendee| attendee.id == *id));
                 model.events.push(Event {
                     id,
-                    title: get_str(doc, &m, "title"),
+                    title: read_str(doc, &m, "title").unwrap_or_default(),
                     start,
                     end,
-                    all_day: get_bool(doc, &m, "all_day"),
-                    location: get_str(doc, &m, "location"),
-                    color: Palette::from_index(get_int(doc, &m, "color") as usize),
-                    recurrence: Recurrence::from_rrule(&get_str(doc, &m, "rrule")),
-                    recurrence_interval: u32::try_from(get_int(doc, &m, "rrule_interval"))
-                        .unwrap_or(1)
-                        .max(1),
+                    all_day: read_bool(doc, &m, "all_day").unwrap_or(false),
+                    location: read_str(doc, &m, "location").unwrap_or_default(),
+                    color: Palette::from_index(
+                        read_i64_coerced(doc, &m, "color").unwrap_or(0) as usize
+                    ),
+                    recurrence: Recurrence::from_rrule(
+                        &read_str(doc, &m, "rrule").unwrap_or_default(),
+                    ),
+                    recurrence_interval: u32::try_from(
+                        read_i64_coerced(doc, &m, "rrule_interval").unwrap_or(0),
+                    )
+                    .unwrap_or(1)
+                    .max(1),
                     recurrence_until: NaiveDate::parse_from_str(
-                        &get_str(doc, &m, "rrule_until"),
+                        &read_str(doc, &m, "rrule_until").unwrap_or_default(),
                         "%Y-%m-%d",
                     )
                     .ok(),
-                    recurrence_count: u32::try_from(get_int(doc, &m, "rrule_count"))
-                        .ok()
-                        .filter(|count| *count > 0),
+                    recurrence_count: u32::try_from(
+                        read_i64_coerced(doc, &m, "rrule_count").unwrap_or(0),
+                    )
+                    .ok()
+                    .filter(|count| *count > 0),
                     recurrence_exdates,
                     occurrence_overrides,
-                    timezone: nonempty(get_str(doc, &m, "timezone"))
+                    timezone: nonempty(read_str(doc, &m, "timezone").unwrap_or_default())
                         .unwrap_or_else(|| "floating".into()),
                     organizer,
                     attendees,
                     reminder_min: if reminder < 0 { None } else { Some(reminder) },
-                    project: parse_opt_id(&get_str(doc, &m, "project"))
+                    project: parse_opt_id(&read_str(doc, &m, "project").unwrap_or_default())
                         .filter(|project| model.project(*project).is_some()),
                     calendar_id: {
-                        let cal = get_str(doc, &m, "cal");
+                        let cal = read_str(doc, &m, "cal").unwrap_or_default();
                         if cal.is_empty() { None } else { Some(cal) }
                     },
                 });
             }
             model.events.sort_by_key(|e| e.start);
         }
+    }
 
+    /// Append the live tasks; like events, a task keeps only a known project.
+    fn read_tasks_into(doc: &AutoCommit, model: &mut Model) {
         if let Ok(Some((Value::Object(ObjType::Map), tasks))) = doc.get(&ROOT, "tasks") {
             for key in doc.keys(&tasks) {
                 let Ok(id) = key.parse::<Id>() else { continue };
@@ -1152,21 +1166,21 @@ impl CalDoc {
                 else {
                     continue;
                 };
-                let due_s = get_str(doc, &m, "due");
+                let due_s = read_str(doc, &m, "due").unwrap_or_default();
                 model.tasks.push(Task {
                     id,
-                    title: get_str(doc, &m, "title"),
-                    done: get_bool(doc, &m, "done"),
+                    title: read_str(doc, &m, "title").unwrap_or_default(),
+                    done: read_bool(doc, &m, "done").unwrap_or(false),
                     due: chrono::NaiveDate::parse_from_str(&due_s, "%Y-%m-%d").ok(),
-                    priority: Priority::from_rank(get_int(doc, &m, "priority") as u8),
-                    project: parse_opt_id(&get_str(doc, &m, "project"))
+                    priority: Priority::from_rank(
+                        read_i64_coerced(doc, &m, "priority").unwrap_or(0) as u8,
+                    ),
+                    project: parse_opt_id(&read_str(doc, &m, "project").unwrap_or_default())
                         .filter(|project| model.project(*project).is_some()),
-                    parent: parse_opt_id(&get_str(doc, &m, "parent")),
+                    parent: parse_opt_id(&read_str(doc, &m, "parent").unwrap_or_default()),
                 });
             }
         }
-
-        model
     }
 }
 
@@ -1175,7 +1189,7 @@ fn note_block_index(doc: &AutoCommit, list: &ObjId, id: &str) -> Option<usize> {
         let Ok(Some((Value::Object(ObjType::Map), block))) = doc.get(list, *index) else {
             return false;
         };
-        get_str(doc, &block, "id") == id
+        read_str(doc, &block, "id").unwrap_or_default() == id
     })
 }
 
@@ -1184,10 +1198,10 @@ fn ensure_note_block_ids(doc: &mut AutoCommit, list: &ObjId) -> Result<(), Strin
         let Ok(Some((Value::Object(ObjType::Map), block))) = doc.get(list, index) else {
             return Err("note block no longer exists".into());
         };
-        if uuid::Uuid::parse_str(&get_str(doc, &block, "id")).is_ok() {
+        if uuid::Uuid::parse_str(&read_str(doc, &block, "id").unwrap_or_default()).is_ok() {
             continue;
         }
-        let kind = get_str(doc, &block, "kind");
+        let kind = read_str(doc, &block, "kind").unwrap_or_default();
         let text = match doc.get(&block, "text") {
             Ok(Some((Value::Object(ObjType::Text), text))) => doc.text(&text).unwrap_or_default(),
             _ => return Err("note text no longer exists".into()),
@@ -1256,6 +1270,10 @@ fn insert_note_block(
     Ok(())
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "all note edit variants share one atomic CRDT mutation boundary"
+)]
 fn apply_note_op(doc: &mut AutoCommit, list: &ObjId, op: &BlockEditOp) -> Result<(), String> {
     match op {
         BlockEditOp::Insert {
@@ -1287,13 +1305,62 @@ fn apply_note_op(doc: &mut AutoCommit, list: &ObjId, op: &BlockEditOp) -> Result
             }
             let (_, block) = note_block_map(doc, list, block_id)
                 .ok_or_else(|| "note block no longer exists".to_string())?;
+            if kind.starts_with("bullet:")
+                || kind.starts_with("numbered:")
+                || kind.starts_with("checklist:")
+            {
+                doc.delete(&block, "nesting").map_err(|e| e.to_string())?;
+            }
+            if !kind.starts_with("code:") {
+                doc.delete(&block, "code_group")
+                    .map_err(|e| e.to_string())?;
+            }
             doc.put(&block, "kind", kind.as_str())
                 .map_err(|_| "note document no longer exists".into())
+        }
+        BlockEditOp::SetNesting { block_id, depth } => {
+            if *depth > 5 {
+                return Err("note nesting is too deep".into());
+            }
+            let (_, block) =
+                note_block_map(doc, list, block_id).ok_or("note block no longer exists")?;
+            let kind = read_str(doc, &block, "kind").unwrap_or_default();
+            if *depth > 0
+                && (kind.starts_with("bullet:")
+                    || kind.starts_with("numbered:")
+                    || kind.starts_with("checklist:"))
+            {
+                return Err("list depth belongs to its kind".into());
+            }
+            if *depth == 0 {
+                doc.delete(&block, "nesting").map_err(|e| e.to_string())
+            } else {
+                doc.put(&block, "nesting", u64::from(*depth))
+                    .map_err(|e| e.to_string())
+            }
+        }
+        BlockEditOp::SetCodeGroup { block_id, group_id } => {
+            let (_, block) =
+                note_block_map(doc, list, block_id).ok_or("note block no longer exists")?;
+            if let Some(group) = group_id {
+                let id = uuid::Uuid::parse_str(group).map_err(|_| "invalid code group UUID")?;
+                if id.is_nil()
+                    || !read_str(doc, &block, "kind")
+                        .unwrap_or_default()
+                        .starts_with("code:")
+                {
+                    return Err("invalid code group".into());
+                }
+                doc.put(&block, "code_group", group.as_str())
+                    .map_err(|e| e.to_string())
+            } else {
+                doc.delete(&block, "code_group").map_err(|e| e.to_string())
+            }
         }
         BlockEditOp::SetChecklist { block_id, done } => {
             let (_, block) = note_block_map(doc, list, block_id)
                 .ok_or_else(|| "note block no longer exists".to_string())?;
-            let old = get_str(doc, &block, "kind");
+            let old = read_str(doc, &block, "kind").unwrap_or_default();
             let Some((prefix, _)) = old.rsplit_once(':') else {
                 return Err("note block is not a checklist".into());
             };
@@ -1335,7 +1402,14 @@ fn apply_note_op(doc: &mut AutoCommit, list: &ObjId, op: &BlockEditOp) -> Result
             }
             let (old_index, block) = note_block_map(doc, list, block_id)
                 .ok_or_else(|| "note block no longer exists".to_string())?;
-            let kind = get_str(doc, &block, "kind");
+            let kind = read_str(doc, &block, "kind").unwrap_or_default();
+            let group = read_str(doc, &block, "code_group").unwrap_or_default();
+            let nesting = doc
+                .get(&block, "nesting")
+                .ok()
+                .flatten()
+                .and_then(|(v, _)| v.as_u64())
+                .unwrap_or(0) as u8;
             let text = match doc.get(&block, "text") {
                 Ok(Some((Value::Object(ObjType::Text), text))) => {
                     doc.text(&text).unwrap_or_default()
@@ -1350,34 +1424,29 @@ fn apply_note_op(doc: &mut AutoCommit, list: &ObjId, op: &BlockEditOp) -> Result
                     .ok_or_else(|| "note predecessor no longer exists".to_string())?,
                 None => 0,
             };
-            insert_note_block(doc, list, index, block_id, &kind, &text)
+            insert_note_block(doc, list, index, block_id, &kind, &text)?;
+            if nesting > 0 {
+                apply_note_op(
+                    doc,
+                    list,
+                    &BlockEditOp::SetNesting {
+                        block_id: block_id.clone(),
+                        depth: nesting,
+                    },
+                )?;
+            }
+            if !group.is_empty() {
+                apply_note_op(
+                    doc,
+                    list,
+                    &BlockEditOp::SetCodeGroup {
+                        block_id: block_id.clone(),
+                        group_id: Some(group),
+                    },
+                )?;
+            }
+            Ok(())
         }
-    }
-}
-
-fn get_str(doc: &AutoCommit, obj: &ObjId, key: &str) -> String {
-    match doc.get(obj, key) {
-        Ok(Some((Value::Scalar(v), _))) => match v.as_ref() {
-            automerge::ScalarValue::Str(s) => s.to_string(),
-            _ => String::new(),
-        },
-        _ => String::new(),
-    }
-}
-
-fn get_int(doc: &AutoCommit, obj: &ObjId, key: &str) -> i64 {
-    match doc.get(obj, key) {
-        Ok(Some((Value::Scalar(v), _))) => v.to_i64().unwrap_or(0),
-        _ => 0,
-    }
-}
-
-fn get_bool(doc: &AutoCommit, obj: &ObjId, key: &str) -> bool {
-    match doc.get(obj, key) {
-        Ok(Some((Value::Scalar(v), _))) => {
-            matches!(v.as_ref(), automerge::ScalarValue::Boolean(true))
-        }
-        _ => false,
     }
 }
 
@@ -1410,7 +1479,7 @@ fn read_attendees(doc: &AutoCommit, event: &ObjId) -> Vec<Attendee> {
             let id = key.parse::<Id>().ok()?;
             if tombstones
                 .as_ref()
-                .is_some_and(|map| get_bool(doc, map, &key))
+                .is_some_and(|map| read_bool(doc, map, &key).unwrap_or(false))
             {
                 return None;
             }
@@ -1418,12 +1487,14 @@ fn read_attendees(doc: &AutoCommit, event: &ObjId) -> Vec<Attendee> {
             else {
                 return None;
             };
-            let email = get_str(doc, &item, "email");
+            let email = read_str(doc, &item, "email").unwrap_or_default();
             (!email.is_empty()).then_some(Attendee {
                 id,
-                name: get_str(doc, &item, "name"),
+                name: read_str(doc, &item, "name").unwrap_or_default(),
                 email,
-                status: InviteStatus::from_ical(&get_str(doc, &item, "status")),
+                status: InviteStatus::from_ical(
+                    &read_str(doc, &item, "status").unwrap_or_default(),
+                ),
             })
         })
         .collect()
@@ -1434,7 +1505,7 @@ fn read_exdates(doc: &AutoCommit, event: &ObjId) -> Vec<NaiveDate> {
         return Vec::new();
     };
     doc.keys(&values)
-        .filter(|date| get_bool(doc, &values, date))
+        .filter(|date| read_bool(doc, &values, date).unwrap_or(false))
         .filter_map(|date| NaiveDate::parse_from_str(&date, "%Y-%m-%d").ok())
         .collect()
 }
@@ -1452,13 +1523,13 @@ fn read_occurrence_overrides(doc: &AutoCommit, event: &ObjId) -> Vec<OccurrenceO
             };
             Some(OccurrenceOverride {
                 original_date,
-                original_time: nonempty(get_str(doc, &item, "original_time"))
+                original_time: nonempty(read_str(doc, &item, "original_time").unwrap_or_default())
                     .and_then(|value| NaiveTime::parse_from_str(&value, "%H:%M:%S").ok()),
-                cancelled: get_bool(doc, &item, "cancelled"),
-                start: parse_optional_dt(&get_str(doc, &item, "start"))?,
-                end: parse_optional_dt(&get_str(doc, &item, "end"))?,
-                title: nonempty(get_str(doc, &item, "title")),
-                location: nonempty(get_str(doc, &item, "location")),
+                cancelled: read_bool(doc, &item, "cancelled").unwrap_or(false),
+                start: parse_optional_dt(&read_str(doc, &item, "start").unwrap_or_default())?,
+                end: parse_optional_dt(&read_str(doc, &item, "end").unwrap_or_default())?,
+                title: nonempty(read_str(doc, &item, "title").unwrap_or_default()),
+                location: nonempty(read_str(doc, &item, "location").unwrap_or_default()),
             })
         })
         .collect()

@@ -587,8 +587,11 @@ pub enum ModerationApiError {
 mod tests {
     use super::*;
     use ed25519_dalek::SigningKey;
-    use rand::rngs::OsRng;
-    use registry_types::{RegistryEntry, sign_entry, sign_moderation_mutation};
+    use getrandom::{SysRng, rand_core::UnwrapErr};
+    use registry_types::{
+        RegistryEntry, RegistryTarget, RegistryVersion, TILO_OS_PLATFORM, sign_entry,
+        sign_moderation_mutation,
+    };
 
     fn setup() -> (
         tempfile::TempDir,
@@ -599,18 +602,36 @@ mod tests {
     ) {
         let directory = tempfile::tempdir().unwrap();
         let storage = Storage::open(directory.path()).unwrap();
-        let publisher = SigningKey::generate(&mut OsRng);
-        let reviewer = SigningKey::generate(&mut OsRng);
+        let publisher = SigningKey::generate(&mut UnwrapErr(SysRng));
+        let reviewer = SigningKey::generate(&mut UnwrapErr(SysRng));
         let mut entry = RegistryEntry {
-            package_id: "dev.tilo.notes".into(),
+            package_id: "so.tilo.notes".into(),
             name: "Notes".into(),
-            description: String::new(),
+            description: "Native notes app".into(),
+            tagline: "Write together".into(),
+            images: registry_types::LocalizedImages::english_icon(
+                "https://apps.tilo.so/images/test-icon.svg",
+                "Test icon",
+            ),
+            supported_languages: vec!["en".into()],
             categories: vec![],
-            icon_url: None,
             source_url: None,
             homepage: None,
             publisher_pubkey_hex: hex::encode(publisher.verifying_key().to_bytes()),
-            versions: vec![],
+            versions: vec![RegistryVersion {
+                version: "1.0.0".into(),
+                tapp_url: "https://apps.tilo.so/artifacts/notes/notes.tapp".into(),
+                tapp_root_hash_hex: "ab".repeat(32),
+                tapp_size_bytes: 1,
+                released_at_unix: 1,
+                tapp_blake3_hex: "cd".repeat(32),
+                target: RegistryTarget {
+                    platform: TILO_OS_PLATFORM.into(),
+                    architecture: "x86_64".into(),
+                    isa: "x86_64-v3".into(),
+                    runtime: None,
+                },
+            }],
             updated_at_unix: 1,
             signature_hex: String::new(),
         };
@@ -639,7 +660,7 @@ mod tests {
             200,
             ModerationActorRole::Reporter,
             ModerationMutation::FileReport {
-                package_id: "dev.tilo.notes".into(),
+                package_id: "so.tilo.notes".into(),
                 category: "security".into(),
                 summary: "Unexpected network connection".into(),
                 evidence_digest_hex: "aa".repeat(32),
@@ -652,7 +673,7 @@ mod tests {
     #[test]
     fn report_is_signed_idempotent_and_publicly_verifiable() {
         let (directory, service, _publisher, _reviewer, allowlist) = setup();
-        let reporter = SigningKey::generate(&mut OsRng);
+        let reporter = SigningKey::generate(&mut UnwrapErr(SysRng));
         let request = report(&reporter, "request-one");
         let first = service.apply(&request, 110, &allowlist).unwrap();
         assert_eq!(service.apply(&request, 111, &allowlist).unwrap(), first);
@@ -689,7 +710,7 @@ mod tests {
     #[test]
     fn request_id_reuse_and_expiry_are_rejected() {
         let (_directory, service, _publisher, _reviewer, allowlist) = setup();
-        let reporter = SigningKey::generate(&mut OsRng);
+        let reporter = SigningKey::generate(&mut UnwrapErr(SysRng));
         service
             .apply(&report(&reporter, "same"), 110, &allowlist)
             .unwrap();
@@ -699,7 +720,7 @@ mod tests {
             200,
             ModerationActorRole::Reporter,
             ModerationMutation::FileReport {
-                package_id: "dev.tilo.notes".into(),
+                package_id: "so.tilo.notes".into(),
                 category: "quality".into(),
                 summary: "A different signed report".into(),
                 evidence_digest_hex: "bb".repeat(32),
@@ -720,11 +741,11 @@ mod tests {
     #[test]
     fn only_package_publisher_can_reply_or_appeal() {
         let (_directory, service, publisher, _reviewer, allowlist) = setup();
-        let reporter = SigningKey::generate(&mut OsRng);
+        let reporter = SigningKey::generate(&mut UnwrapErr(SysRng));
         let case = service
             .apply(&report(&reporter, "file"), 110, &allowlist)
             .unwrap();
-        let attacker = SigningKey::generate(&mut OsRng);
+        let attacker = SigningKey::generate(&mut UnwrapErr(SysRng));
         let make = |key: &SigningKey, id: &str| {
             sign_moderation_mutation(
                 id.into(),
@@ -753,7 +774,7 @@ mod tests {
     #[test]
     fn only_registry_owner_can_make_reviewer_decision() {
         let (_directory, service, _publisher, reviewer, allowlist) = setup();
-        let reporter = SigningKey::generate(&mut OsRng);
+        let reporter = SigningKey::generate(&mut UnwrapErr(SysRng));
         let case = service
             .apply(&report(&reporter, "file"), 110, &allowlist)
             .unwrap();
@@ -788,7 +809,7 @@ mod tests {
     #[test]
     fn restore_recovers_when_catalogue_effect_was_durable_before_public_event() {
         let (_directory, service, _publisher, reviewer, allowlist) = setup();
-        let reporter = SigningKey::generate(&mut OsRng);
+        let reporter = SigningKey::generate(&mut UnwrapErr(SysRng));
         let case = service
             .apply(&report(&reporter, "file-for-recovery"), 110, &allowlist)
             .unwrap();
@@ -811,7 +832,7 @@ mod tests {
         // the API can append its public event.
         service
             .moderation
-            .restore_quarantined("dev.tilo.notes", "owner", "fixed", 113, &allowlist)
+            .restore_quarantined("so.tilo.notes", "owner", "fixed", 113, &allowlist)
             .unwrap();
         let restore = sign_moderation_mutation(
             "restore-after-crash".into(),

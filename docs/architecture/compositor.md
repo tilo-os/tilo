@@ -216,7 +216,7 @@ Backend events (`BackendEvent::Pointer / Key / …`) flow into `smithay::input::
 
 ### Test-control input (`TILO_TEST_CONTROL`)
 
-When the env var is set, the compositor binds an additional unix socket alongside the wayland one. Newline-delimited JSON commands dispatch on the calloop main thread via `calloop::ping::Ping`, so seat injection stays single-threaded. Inputs go through `smithay::input::Seat::input` — same focus rules as physical input.
+When the env var is set, the compositor binds an additional unix socket alongside the wayland one. The socket drives the shell as the user, so it is published 0600 (bound in a 0700 staging directory, then renamed into place) and a missing parent is created 0700; anything other than a stale socket at the path is refused. The conventional path, and `tilo-control`'s default, is `$XDG_RUNTIME_DIR/tilo-session/test-control.sock` — never `/tmp`. Newline-delimited JSON commands dispatch on the calloop main thread via `calloop::ping::Ping`, so seat injection stays single-threaded. Inputs go through `smithay::input::Seat::input` — same focus rules as physical input.
 
 `crates/session/shell/src/compositor/test_control.rs` implements semantic target listing and activation, pointer and keyboard input, state inspection, and snapshots. `tilo-control` exposes the protocol as a CLI, and `crates/session/shell/tests/control_socket_test.rs` covers the live socket.
 
@@ -237,13 +237,25 @@ When the env var is set, the compositor binds an additional unix socket alongsid
 
 `OutputManagerState` advertises outputs to clients, and `compositor::output_globals` keeps one `wl_output` global per backend output in step with it — created on plug, **updated in place** on a mode or scale change (so a client sees a re-mode rather than a monitor disappearing and a different one appearing), withdrawn on unplug. Matching is by `OutputId`, which the DRM registry mints per `(device, connector)` and keeps stable across re-enumeration.
 
-The winit backend exposes a single output sized to the winit window. The drm backend enumerates DRM connectors via udev, configures their preferred mode, and drives every connected connector on the primary card from one card fd.
+The winit backend exposes a single output sized to the winit window. The DRM
+backend enumerates every seat GPU and connector via udev, configures the saved
+or preferred mode, and drives every enabled connector across all retained
+cards.
 
-**Hotplug.** Every udev edge re-probes the connectors and reconciles against what is live (`backend::drm::hotplug`): new connectors are modeset, gone ones torn down, re-moded ones rebuilt keeping their id. Outputs are re-packed side by side so an unplugged monitor leaves no hole in the combined coordinate space, and the pointer is clamped back into what remains. Windows are *not* pinned to an output — the shell places groups across whatever displays it is told about — so re-pushing the display geometry re-homes whatever was on the display that went away. The card is held open on the loop thread for the whole session because libseat refuses a second `open` of a node.
+**Hotplug.** Every udev edge re-probes the connectors and reconciles against what is live (`backend::drm::hotplug`): new connectors are modeset, gone ones torn down, re-moded ones rebuilt keeping their id. Configured `x/y`, rotation and mirror topology is reapplied after every change; connectors without saved placement fall back to a gap-free side-by-side layout. The pointer is projected back onto the nearest live output rectangle, never merely into the arrangement's bounding box. Windows are *not* pinned to an output — the shell places groups across whatever displays it is told about — so re-pushing the display geometry re-homes whatever was on the display that went away. Each card is held open on the loop thread for the whole session because libseat refuses a second `open` of the same node.
 
 **Per-output scale.** Each output's factor is derived from the panel's physical size against its resolution (`backend::drm::scale`), snapped to quarter steps and clamped to 100–200 %, with the `display.scale` setting as an override. Each surface is told the scale of the output it is actually on as its preferred `wp_fractional_scale` — a laptop docked to an external monitor has two right answers.
 
-Multi-monitor support is feature-complete for the single-workspace case; multi-workspace-per-output and per-output workspace pinning are tracked in the foundation spec §4 follow-up. Connectors on *secondary* GPUs need a second card fd plus cross-GPU buffer handling and remain a follow-up.
+Multi-monitor support is feature-complete for the shared-workspace-plane model.
+Every usable seat GPU is retained once through libseat; its connector scanouts
+receive duplicate fds and consume the same combined scene, so hybrid-GPU docks
+participate in topology, input routing, hotplug, VT resume and presentation.
+The cursor is confined to the union of live output rectangles rather than the
+combined bounding box, which keeps L-shaped and vertically offset layouts from
+creating invisible dead regions. Tilo deliberately does not implement
+multi-workspace-per-output or workspace pinning: displays are private viewports
+onto one collaborative workspace plane (see
+[`displays-and-infinite-workspaces.md`](displays-and-infinite-workspaces.md)).
 
 ## Sessions and seat acquisition (DRM mode)
 
@@ -271,7 +283,7 @@ Fallback if bare DRM init fails: relaunch under `cage` as a single-window Waylan
 - **Peer sync, foreign-surface streaming, remote input replay** — `docs/architecture/collaboration.md`.
 - **xdg-desktop-portal backend** — `docs/architecture/security.md` and `crates/session/shell/src/portal/`.
 - **WorkspaceTree CRDT shape** — `docs/architecture/overview.md` plus `docs/superpowers/specs/2026-05-04-workspace-tree-automerge-design.md`.
-- **Future**: vello → DMA-BUF direct interop, libei input emulation in addition to the control socket, multi-monitor workspace pinning.
+- **Future**: vello → DMA-BUF direct interop and libei input emulation in addition to the control socket.
 
 ## Where to read first
 

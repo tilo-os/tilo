@@ -253,6 +253,7 @@ pub(crate) unsafe fn record_dispatched_action_bound(
     nodes: &std::collections::HashMap<taffy::NodeId, *mut dyn crate::widget::Widget>,
     bindings: &crate::bound_dispatch::BoundNodeMap,
     author: &crate::permissions::UserId,
+    authority: &crate::permissions::PermissionContext,
 ) -> bool {
     let mut brackets = Vec::new();
     {
@@ -281,6 +282,14 @@ pub(crate) unsafe fn record_dispatched_action_bound(
                 })
             });
             bound_changed |= matches!(drained, Ok(Ok(Ok(true))));
+        } else if bindings.legacy_for(node).is_some() {
+            // SAFETY: the exact live map has exclusive ownership for this sweep.
+            bound_changed |= unsafe {
+                crate::bound_dispatch::drain_legacy_node_action(
+                    bindings, nodes, node, authority, author,
+                )
+            }
+            .unwrap_or(false);
         } else {
             // SAFETY: each unique live node is visited only once this sweep.
             if let Ok(Some(before)) = unsafe {
@@ -333,11 +342,11 @@ fn earliest_bracket(
 /// Embed it and wire the two `Widget` methods:
 ///
 /// ```ignore
-/// struct MyToolbar { undo: ui::UndoAccess, /* … */ }
+/// struct MyToolbar { undo: tilo_ui::UndoAccess, /* … */ }
 ///
 /// impl Widget for MyToolbar {
-///     fn set_undo_status(&mut self, s: &ui::UndoStatus) { self.undo.publish(s); }
-///     fn take_undo_request(&mut self) -> Option<ui::UndoRequest> { self.undo.take_request() }
+///     fn set_undo_status(&mut self, s: &mut dyn FnMut() -> tilo_ui::UndoStatus) { self.undo.publish(&s()); }
+///     fn take_undo_request(&mut self) -> Option<tilo_ui::UndoRequest> { self.undo.take_request() }
 /// }
 /// ```
 ///
@@ -403,6 +412,30 @@ impl UndoAccess {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unused_undo_status_is_not_evaluated() {
+        use crate::widget::Widget;
+        let mut spacer = crate::widget::Spacer::new();
+        spacer.set_undo_status(&mut || panic!("default widget must not request a summary"));
+    }
+
+    #[test]
+    fn undo_button_requests_and_publishes_status() {
+        use crate::widget::Widget;
+        let mut button = crate::widget::UndoButton::undo();
+        let mut calls = 0;
+        button.set_undo_status(&mut || {
+            calls += 1;
+            status(true, false)
+        });
+        assert_eq!(calls, 1);
+        assert!(button.is_enabled());
+        assert_eq!(
+            button.accessibility().unwrap().description.as_deref(),
+            Some("Undo: +5 -0 chars")
+        );
+    }
 
     fn status(can_undo: bool, can_redo: bool) -> UndoStatus {
         UndoStatus {
@@ -481,5 +514,29 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(s.description(UndoRequest::Undo), "Undo");
+    }
+}
+
+/// Label derivation for a displayed owner must not finalize its live edit.
+/// Summary decoding may advance `AutoCommit`'s read cursor, so use a snapshot.
+pub(crate) fn status_snapshot(
+    doc: &automerge::AutoCommit,
+    history: &crate::state::UndoLog,
+    author: Option<&crate::permissions::UserId>,
+) -> UndoStatus {
+    let undo = history
+        .next_undo_as(author)
+        .map(|entry| (entry.before.clone(), entry.after.clone()));
+    let redo = history
+        .next_redo_as(author)
+        .map(|entry| (entry.after.clone(), entry.before.clone()));
+    let mut snapshot = doc.clone();
+    UndoStatus {
+        can_undo: undo.is_some(),
+        can_redo: redo.is_some(),
+        undo_summary: undo
+            .map(|(from, to)| crate::history_source::change_summary(&mut snapshot, &from, &to)),
+        redo_summary: redo
+            .map(|(from, to)| crate::history_source::change_summary(&mut snapshot, &from, &to)),
     }
 }

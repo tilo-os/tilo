@@ -44,3 +44,261 @@ fn scrollable_momentum_decays() {
     assert!(after > before);
     assert!(s.momentum_speed() < 10.0);
 }
+
+use tilo_ui::State;
+use tilo_ui::headless::Driver;
+use tilo_ui::local_state::LocalState;
+use tilo_ui::theme::Theme;
+use tilo_ui::widget::{Button, Column, Container, Text, TextInput};
+
+fn editor_driver(text: &LocalState<String>, fill: bool, scale: f32) -> Driver {
+    let mut scroll = Scrollable::new_vertical().fill_parent_height();
+    if fill {
+        scroll = scroll.with_content_min_viewport_height();
+    }
+    let root = Column::new()
+        .with_no_padding()
+        .with_gap(0.0)
+        .push(Box::new(
+            scroll.with_child(Box::new(
+                TextInput::from_state(text)
+                    .multiline(true)
+                    .with_id("editor"),
+            )),
+        ))
+        .push(Box::new(Button::new("footer", "Save", None)));
+    let theme = Theme::dark().with_text_scale(scale);
+    Driver::new_with_theme(State::new(), Box::new(root), (600, 400), theme)
+}
+
+#[test]
+fn empty_writing_surface_fills_viewport_and_accepts_lower_click() {
+    for scale in [1.0, 2.0] {
+        let text = LocalState::new(String::new());
+        let mut driver = editor_driver(&text, true, scale);
+        let targets = driver.targets();
+        let editor = *targets.get("editor").unwrap();
+        let footer = *targets.get("footer").unwrap();
+        assert!(
+            (editor.y1 - footer.y0).abs() < 1.0,
+            "editor {editor:?}, footer {footer:?}"
+        );
+        assert!(editor.height() > 250.0);
+        driver.click_at(editor.x0 + 30.0, editor.y1 - 30.0);
+        driver.type_text("lower click");
+        assert_eq!(text.get(), "lower click");
+        driver.click_at(editor.x1 - 30.0, editor.y1 - 30.0);
+        driver.type_text(" at end");
+        assert_eq!(text.get(), "lower click at end");
+        assert!(driver.targets().get("footer").unwrap().y1 <= 400.0);
+    }
+}
+
+#[test]
+fn default_short_multiline_remains_content_sized() {
+    let text = LocalState::new(String::new());
+    let driver = editor_driver(&text, false, 1.0);
+    let targets = driver.targets();
+    assert!(targets.get("editor").unwrap().height() < 60.0);
+    assert!(targets.get("footer").unwrap().y0 > 300.0);
+}
+
+#[test]
+fn long_writing_surface_retains_overflow_and_footer() {
+    let text = LocalState::new("A line of the document.\n".repeat(80));
+    let mut driver = editor_driver(&text, true, 1.0);
+    let initial = *driver.targets().get("editor").unwrap();
+    let footer = *driver.targets().get("footer").unwrap();
+    assert!(initial.height() > 1000.0, "{initial:?}");
+    driver.click_at(30.0, 100.0);
+    driver.scroll(0.0, -800.0);
+    let moved = *driver.targets().get("editor").unwrap();
+    assert!(
+        moved.y0 < initial.y0 - 100.0,
+        "before {initial:?}, after {moved:?}"
+    );
+    assert_eq!(*driver.targets().get("footer").unwrap(), footer);
+    assert!(footer.y1 <= 400.0);
+}
+
+#[test]
+fn writing_surface_settles_resize_and_short_long_short_changes() {
+    let text = LocalState::new(String::new());
+    let mut driver = editor_driver(&text, true, 1.0);
+    for width in [280, 760, 280, 760] {
+        driver.resize((width, 400)).unwrap();
+        for body in [
+            String::new(),
+            "Wrapping document text with some words. ".repeat(100),
+            String::new(),
+        ] {
+            let long = !body.is_empty();
+            text.set(body);
+            driver.relayout();
+            let targets = driver.targets();
+            let editor = targets.get("editor").unwrap();
+            let footer = targets.get("footer").unwrap();
+            assert!(
+                (editor.width() - f64::from(width)).abs() < 1.0,
+                "{editor:?}"
+            );
+            if long {
+                assert!(editor.height() > 400.0, "{editor:?}");
+            } else {
+                assert!(
+                    (editor.y1 - footer.y0).abs() < 1.0,
+                    "editor {editor:?}, footer {footer:?}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn writing_surface_preserves_explicit_child_height() {
+    // The explicit Container remains 72px even though its wrapper fills 300px.
+    let root = Scrollable::new_vertical()
+        .with_height(300.0)
+        .with_content_min_viewport_height()
+        .with_child(Box::new(
+            Container::new()
+                .with_no_padding()
+                .with_height(72.0)
+                .with_child(Box::new(Text::new("Fixed content").with_id("fixed"))),
+        ));
+    let driver = Driver::new(State::new(), Box::new(root), (500, 300));
+    assert!((driver.targets().get("fixed").unwrap().height() - 72.0).abs() < 1.0);
+}
+
+#[test]
+fn writing_surface_retained_tree_settles_without_changing_child_style() {
+    use std::collections::HashMap;
+    use taffy::{AvailableSpace, Dimension, Size, TaffyTree};
+    use tilo_ui::bound_dispatch::BoundNodeMap;
+    use tilo_ui::text_render::TextRenderer;
+    use tilo_ui::widget::{Widget, compute_widget_layout};
+    use vello::kurbo::Point;
+
+    let text = LocalState::new(String::new());
+    // Also exercise child-before-opt-in builder ordering and repeated opt-in.
+    let mut scroll = Scrollable::new_vertical()
+        .with_child(Box::new(TextInput::from_state(&text).multiline(true)))
+        .with_content_min_viewport_height()
+        .with_content_min_viewport_height();
+    let mut tree = TaffyTree::new();
+    let mut nodes = HashMap::new();
+    let root = scroll.build_layout(&mut tree, &Theme::dark(), &mut nodes);
+    let wrapper = *tree.children(root).unwrap().first().unwrap();
+    let editor = *tree.children(wrapper).unwrap().first().unwrap();
+    let child_style = tree.style(editor).unwrap().clone();
+    let mut bindings = BoundNodeMap::new();
+    // SAFETY: one stable tree, exclusively owned throughout the test.
+    unsafe {
+        bindings.rebuild(&scroll, &tree, root, &nodes);
+    }
+    let mut renderer = TextRenderer::new();
+    let mut doc = automerge::AutoCommit::new();
+    for (width, height) in [(280.0, 180.0), (760.0, 420.0), (280.0, 300.0)] {
+        let mut style = tree.style(root).unwrap().clone();
+        style.size.height = Dimension::length(height);
+        tree.set_style(root, style).unwrap();
+        for body in [
+            String::new(),
+            "A document line.\n".repeat(80),
+            String::new(),
+        ] {
+            let long = !body.is_empty();
+            text.set(body);
+            scroll.sync(&mut doc, &automerge::ROOT);
+            tree.mark_dirty(editor).unwrap();
+            // SAFETY: no widgets move or change topology during settlement.
+            unsafe {
+                compute_widget_layout(
+                    &mut tree,
+                    root,
+                    Size {
+                        width: AvailableSpace::Definite(width),
+                        height: AvailableSpace::Definite(height),
+                    },
+                    &nodes,
+                    &bindings,
+                    &mut renderer,
+                )
+            }
+            .unwrap();
+            scroll.apply_layout(&tree, root, Point::ZERO);
+            assert_eq!(tree.style(editor).unwrap(), &child_style);
+            let editor_height = tree.layout(editor).unwrap().size.height;
+            if long {
+                assert!(editor_height > 1000.0);
+                assert!(scroll.max_offset_y() > 500.0);
+            } else {
+                assert!((editor_height - height).abs() < 1.0);
+                assert_eq!(scroll.max_offset_y(), 0.0);
+            }
+        }
+    }
+}
+
+#[test]
+fn fractional_height_editor_routes_first_wheel_to_outer_scrollable() {
+    // 47 nonempty rows at 22.625px plus padding end in .375px; rounding
+    // down must not create an inner scroll range in a fully laid-out input.
+    let root = Scrollable::new_vertical()
+        .with_height(300.0)
+        .with_content_min_viewport_height()
+        .with_child(Box::new(
+            TextInput::local()
+                .with_id("fractional-editor")
+                .multiline(true)
+                .with_font_size(18.1)
+                .with_initial_value(&("A line of text.\n".repeat(46) + "Final line")),
+        ));
+    let mut driver = Driver::new(State::new(), Box::new(root), (416, 300));
+    driver.click_at(30.0, 30.0);
+    let before = *driver.targets().get("fractional-editor").unwrap();
+    driver.scroll(0.0, -3.0);
+    let after = *driver.targets().get("fractional-editor").unwrap();
+    assert!(
+        after.y0 < before.y0 - 100.0,
+        "first wheel must move outer content: before {before:?}, after {after:?}"
+    );
+}
+
+#[test]
+fn repeated_click_keeps_default_scrollable_editor_focused() {
+    let text = LocalState::new(String::new());
+    let mut driver = editor_driver(&text, false, 1.0);
+    let editor = *driver.targets().get("editor").unwrap();
+    driver.click_at(editor.x0 + 25.0, editor.center().y);
+    driver.type_text("first");
+    driver.click_at(editor.x1 - 25.0, editor.center().y);
+    driver.type_text(" again");
+    assert_eq!(text.get(), "first again");
+}
+
+#[test]
+fn pane_background_and_scrollbar_press_still_focus_the_scrollable() {
+    for x in [250.0, 394.0] {
+        let root = Scrollable::new_vertical()
+            .with_height(300.0)
+            .with_child(Box::new(
+                Container::new()
+                    .with_no_padding()
+                    .with_size(100.0, 900.0)
+                    .with_child(Box::new(
+                        Text::new("Tall narrow content").with_id("content"),
+                    )),
+            ));
+        let mut driver = Driver::new(State::new(), Box::new(root), (400, 300));
+        // x=250 hits empty pane background; x=394 hits the scrollbar thumb.
+        driver.click_at(x, 20.0);
+        assert_eq!(
+            driver.focused_access_node().unwrap().role,
+            tilo_ui::a11y::Role::Group
+        );
+        let before = driver.targets().get("content").unwrap().y0;
+        driver.key("ArrowDown");
+        assert!(driver.targets().get("content").unwrap().y0 < before);
+    }
+}

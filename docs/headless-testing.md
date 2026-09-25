@@ -42,8 +42,10 @@ Best for: ad-hoc interactive testing from a script or an AI agent, exploratory "
 ### Enable the socket
 
 ```bash
-# Pick a socket path (must be writable; typically under /run/user/$UID/ or /tmp/):
-export TILO_TEST_CONTROL=/tmp/tilo-test-control.sock
+# Pick a socket path in your private runtime directory. Not /tmp: another
+# account could bind a shared name first and receive every command you send.
+# The compositor creates a missing parent 0700 and makes the socket 0600.
+export TILO_TEST_CONTROL=$XDG_RUNTIME_DIR/tilo-session/test-control.sock
 
 # Spawn the compositor. The env var enables the socket; nothing else changes.
 cargo run --bin shell -- --backend headless &
@@ -96,7 +98,7 @@ qc state-dump --pretty                      # live WorkspaceTree + Chrome as JSO
 qc raw '{"op":"list_targets"}'              # escape hatch for unwrapped commands
 ```
 
-Default socket: `$TILO_TEST_CONTROL` env var, else `/tmp/tilo.sock`. Override with `--socket /path`. Errors from the compositor surface as non-zero exit + structured `code: message` on stderr.
+Default socket: `$TILO_TEST_CONTROL` env var, else `$XDG_RUNTIME_DIR/tilo-session/test-control.sock` (an error, not a `/tmp` fallback, when `XDG_RUNTIME_DIR` is unset). Override with `--socket /path`. Errors from the compositor surface as non-zero exit + structured `code: message` on stderr.
 
 ### Wire protocol (when you can't use the CLI)
 
@@ -197,12 +199,12 @@ Best for: running the full compositor in CI, on a remote shell, or in distrobox 
 ```bash
 # Spawn headless. Note: no DISPLAY or WAYLAND_DISPLAY needed.
 env -u DISPLAY -u WAYLAND_DISPLAY \
-    TILO_TEST_CONTROL=/tmp/control.sock \
+    TILO_TEST_CONTROL=$XDG_RUNTIME_DIR/tilo-session/control.sock \
     cargo run --bin shell --quiet -- --backend headless &
 
 # Click + snapshot:
-echo '{"op":"click_named","name":"add_workspace"}' | nc -U /tmp/control.sock
-echo '{"op":"snapshot","path":"/tmp/after-add-workspace.png"}' | nc -U /tmp/control.sock
+echo '{"op":"click_named","name":"add_workspace"}' | nc -U $XDG_RUNTIME_DIR/tilo-session/control.sock
+echo '{"op":"snapshot","path":"/tmp/after-add-workspace.png"}' | nc -U $XDG_RUNTIME_DIR/tilo-session/control.sock
 
 # Kill when done:
 kill %1
@@ -245,7 +247,7 @@ If you want to do it by hand without Python, use `socat` (Ncat doesn't have `-q`
 
 ```bash
 # 1. Start the compositor (no display required):
-export TILO_TEST_CONTROL=/tmp/tilo-e2e.sock
+export TILO_TEST_CONTROL=$XDG_RUNTIME_DIR/tilo-session/e2e.sock
 env -u DISPLAY -u WAYLAND_DISPLAY \
     cargo run --bin shell --quiet -- --backend headless &
 COMP_PID=$!
@@ -361,10 +363,31 @@ window and no GPU.
 ```
 
 Actions: `click_named`, `click_at` (`[x, y]`), `key` (a named key or one
-character), `type`, `modifiers`. Optional `viewport` (`[w, h]`), `dump` and
-`targets` paths. Exit codes: `0` all actions ran, `1` an action failed (the
-reason is on stderr — a missing target is an error, not a silent no-op), `3`
-persistence was unavailable.
+character), `type`, `modifiers`, and `invoke`. Optional `viewport` (`[w, h]`),
+`dump` and `targets` paths. Exit codes: `0` all actions ran, `1` an action
+failed (the reason is on stderr — a missing target is an error, not a silent
+no-op), `3` persistence was unavailable.
+
+`invoke` performs one action the app publishes, by address — no coordinates —
+through the same resolution, availability, confirmation and strict argument
+binding the live host applies:
+
+```json
+{"invoke": {"resource": "installer.review", "action": "begin",
+            "confirmation_phrase": "/dev/vdb"}}
+{"invoke": {"resource": "installer", "action": "next",
+            "expect_error": "action_unavailable"}}
+```
+
+`args` is the typed argument object; `confirm: true` satisfies a `Confirm`
+contract and `confirmation_phrase` a `Phrase` one. `expect_error` makes the
+step pass only when the door refuses with that code (`unknown_action`,
+`invalid_arguments`, `action_unavailable`, `action_confirmation_required`,
+`action_failed`), so a scenario can prove a refusal as well as a success.
+From Rust, `Driver::invoke_action` is the same call, and
+`Driver::deliver_external` delivers a `UserEvent::External` payload the way
+the live host does. `crates/session/installer/tests/headless_wizard.rs` runs
+the whole installer wizard this way against a recording install backend.
 
 The run persists through the app's real store (`ui::persist`), so pointing
 `XDG_DATA_HOME` and `TILO_PACKAGE_ID` at a scratch directory gives a complete
@@ -421,13 +444,13 @@ registries offer, pressing Enter, and getting a tab.
 
 ```bash
 cargo build -p shell -p sheets -p install -p launcher
-cargo build -p app-catalogue --bins --examples
+cargo build -p app-cli --bins --examples
 
 scripts/demo/install-on-open.py --out target/install-on-open
 scripts/demo/install-on-open.py --backend winit --stage-only   # drive it yourself
 ```
 
-It packs the real Sheets binary into a signed `.qpkg`, serves it from a
+It packs the real Sheets binary into a signed `.tapp`, serves it from a
 loopback registry, points a headless compositor at an empty install
 root, and then checks four things off the compositor's own state: that
 the app is offered and absent, that its palette row is worded

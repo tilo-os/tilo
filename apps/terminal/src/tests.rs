@@ -1492,7 +1492,7 @@ fn confirmed_menu_clear_checks_live_component_permissions_and_writes_exact_bytes
         ApplicationDefinition, ComponentRunnerInputs, HostContext, LaunchTarget, RestoreInput,
     };
     use ui::permissions::{Actor, PermissionContext, Role, UserId};
-    const APP_ID: &str = "dev.tilo.terminal";
+    const APP_ID: &str = "so.tilo.terminal";
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path().join("state");
     let mut owners = ui::record::RecordOwners::new(root.clone());
@@ -1624,7 +1624,7 @@ fn confirmed_paste_shortcut_rechecks_live_role_before_writing_to_the_pty() {
     use ui::permissions::{Actor, PermissionContext, Role, UserId};
     use winit::keyboard::{Key, SmolStr};
 
-    const APP_ID: &str = "dev.tilo.terminal";
+    const APP_ID: &str = "so.tilo.terminal";
     ui::clipboard_copy("admitted shortcut paste");
     assert_eq!(
         ui::clipboard_paste().as_deref(),
@@ -2392,7 +2392,7 @@ fn terminal_resources_are_bounded_remote_resolvable_and_title_aware() {
     widget.feed(
         &mut doc,
         &ROOT,
-        b"\x1b]2;build session\x07\x1b]8;;https://tilo.example/docs\x1b\\docs\x1b]8;;\x1b\\",
+        b"\x1b]2;build session\x07\x1b]8;;https://example.test/docs\x1b\\docs\x1b]8;;\x1b\\",
     );
     widget.sync(&mut doc, &ROOT);
 
@@ -2411,12 +2411,12 @@ fn terminal_resources_are_bounded_remote_resolvable_and_title_aware() {
         .iter()
         .find(|resource| resource.kind == "terminal.link")
         .expect("visible OSC link child");
-    assert_eq!(link.label, "https://tilo.example/docs");
+    assert_eq!(link.label, "https://example.test/docs");
     assert!(Widget::resource(&widget, &doc, link.id.as_str()).is_some());
     let semantics = Widget::accessibility(&widget).expect("terminal semantics");
     assert!(semantics.children.iter().any(|child| {
         child.role == ui::a11y::Role::Link
-            && child.name.as_deref() == Some("https://tilo.example/docs")
+            && child.name.as_deref() == Some("https://example.test/docs")
             && child.action_target.as_deref() == Some(link.id.as_str())
             && child.state.focusable
     }));
@@ -2426,7 +2426,7 @@ fn terminal_resources_are_bounded_remote_resolvable_and_title_aware() {
     let mut link_burst = Vec::new();
     for index in 0..40 {
         link_burst.extend_from_slice(
-            format!("\x1b]8;;https://tilo.example/{index}\x1b\\x\x1b]8;;\x1b\\").as_bytes(),
+            format!("\x1b]8;;https://example.test/{index}\x1b\\x\x1b]8;;\x1b\\").as_bytes(),
         );
     }
     widget.feed(&mut doc, &ROOT, &link_burst);
@@ -3733,19 +3733,19 @@ fn osc_8_hyperlink_marks_cells_and_resolves_url() {
     w.feed(
         &mut doc,
         &automerge::ROOT,
-        b"\x1b[H\x1b]8;;https://tilo.example/docs\x1b\\link\x1b]8;;\x1b\\",
+        b"\x1b[H\x1b]8;;https://example.test/docs\x1b\\link\x1b]8;;\x1b\\",
     );
     w.sync(&mut doc, &automerge::ROOT);
 
     assert_eq!(w.grid_row(0).trim_end(), "link", "the link text is printed");
     assert_eq!(
         w.hyperlink_at(0, 0),
-        Some("https://tilo.example/docs"),
+        Some("https://example.test/docs"),
         "first link cell resolves to the URL"
     );
     assert_eq!(
         w.hyperlink_at(0, 3),
-        Some("https://tilo.example/docs"),
+        Some("https://example.test/docs"),
         "last link cell resolves to the URL"
     );
     assert_eq!(
@@ -3761,7 +3761,7 @@ fn osc_8_hyperlink_marks_cells_and_resolves_url() {
     peer.sync(&mut peer_doc, &automerge::ROOT);
     assert_eq!(
         peer.hyperlink_at(0, 1),
-        Some("https://tilo.example/docs"),
+        Some("https://example.test/docs"),
         "a collaborator resolves the same OSC 8 hyperlink"
     );
 }
@@ -4297,27 +4297,27 @@ fn service_fd_is_detected_only_when_the_descriptor_is_actually_open() {
     let rc = unsafe { libc::socketpair(libc::AF_UNIX, libc::SOCK_STREAM, 0, fds.as_mut_ptr()) };
     assert_eq!(rc, 0, "socketpair for a live test fd");
 
-    // SAFETY (env): serialised via `#[serial]`; no other thread reads this
-    // var concurrently. `set_var`/`remove_var` are `unsafe` in edition 2024.
-    unsafe { std::env::set_var("TILO_SVC_USH_FD", fds[0].to_string()) };
+    let mut env = tilo_test_env::ScopedEnv::new();
+    env.set("TILO_SVC_USH_FD", fds[0].to_string());
     assert_eq!(
         ush_service_fd(),
         Some(fds[0]),
         "an open descriptor is the service"
     );
 
-    unsafe { std::env::set_var("TILO_SVC_USH_FD", "999999") };
+    env.set("TILO_SVC_USH_FD", "999999");
     assert_eq!(
         ush_service_fd(),
         None,
         "a closed descriptor is not the service"
     );
 
-    unsafe { std::env::set_var("TILO_SVC_USH_FD", "not-a-number") };
+    env.set("TILO_SVC_USH_FD", "not-a-number");
     assert_eq!(ush_service_fd(), None, "garbage is not the service");
 
-    unsafe { std::env::remove_var("TILO_SVC_USH_FD") };
+    env.remove("TILO_SVC_USH_FD");
     assert_eq!(ush_service_fd(), None, "unset is not the service");
+    drop(env);
 
     // SAFETY: closing the two fds we own.
     unsafe {
@@ -4623,17 +4623,11 @@ fn native_terminal_action_runs_a_command_and_child_observes_resize() {
 #[test]
 #[serial_test::serial]
 fn windows_claimed_hosted_service_never_starts_an_unconfined_shell() {
-    let previous = std::env::var_os(crate::inner::USH_SERVICE_FD_ENV);
-    // SAFETY: run environment-mutating terminal tests serially.
-    unsafe { std::env::set_var(crate::inner::USH_SERVICE_FD_ENV, "3") };
+    let mut env = tilo_test_env::ScopedEnv::new();
+    env.set(crate::inner::USH_SERVICE_FD_ENV, "3");
     let result = TerminalWidget::spawn_default();
     // Restore before asserting, including when the result is unexpected.
-    unsafe {
-        match previous {
-            Some(value) => std::env::set_var(crate::inner::USH_SERVICE_FD_ENV, value),
-            None => std::env::remove_var(crate::inner::USH_SERVICE_FD_ENV),
-        }
-    }
+    drop(env);
     assert!(
         result.is_err(),
         "a hosted grant must never fall back to COMSPEC"

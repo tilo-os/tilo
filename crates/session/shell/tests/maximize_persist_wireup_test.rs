@@ -19,6 +19,7 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
+use shell::shell::state::FreshId as _;
 use std::collections::HashMap;
 
 use shell::shell::build_tilo_overlay_host_with_chrome;
@@ -125,7 +126,7 @@ fn single_group_tree() -> (WorkspaceTree, StripId, GroupId) {
         strips: vec![strip],
         // Everything else comes from the builder, so a field added to
         // `Workspace` does not break this fixture.
-        ..Workspace::test_default(ws_id, "Test")
+        ..Workspace::new(ws_id, "Test")
     };
 
     let mut active_strip = HashMap::new();
@@ -134,11 +135,14 @@ fn single_group_tree() -> (WorkspaceTree, StripId, GroupId) {
     active_group.insert(strip_id, group_id);
 
     let tree = WorkspaceTree {
-        workspaces: vec![ws],
-        active: ws_id,
-        active_strip,
-        active_group,
-        collaborators: vec![],
+        desktop: shell::shell::state::DesktopTree {
+            workspaces: vec![ws],
+            active: ws_id,
+            active_strip,
+            active_group,
+            collaborators: vec![],
+            ..Default::default()
+        },
         ..Default::default()
     };
 
@@ -163,7 +167,7 @@ fn shell_tick_writes_maximize_click_through_to_persisted_state() {
     // harvest.
     {
         let st = chrome.borrow();
-        let g = &st.tree().workspaces[0].strips[0].window_groups[0];
+        let g = &st.tree().desktop.workspaces[0].strips[0].window_groups[0];
         assert_eq!(g.id, group_id);
         assert!(!g.maximized, "seed group must start un-maximized");
     }
@@ -200,7 +204,7 @@ fn shell_tick_writes_maximize_click_through_to_persisted_state() {
     // false forever.
     {
         let st = chrome.borrow();
-        let g = &st.tree().workspaces[0].strips[0].window_groups[0];
+        let g = &st.tree().desktop.workspaces[0].strips[0].window_groups[0];
         assert!(
             !g.maximized,
             "before the harvest tick the persisted state lags the widget",
@@ -212,7 +216,7 @@ fn shell_tick_writes_maximize_click_through_to_persisted_state() {
 
     {
         let st = chrome.borrow();
-        let g = &st.tree().workspaces[0].strips[0].window_groups[0];
+        let g = &st.tree().desktop.workspaces[0].strips[0].window_groups[0];
         assert!(
             g.maximized,
             "harvest tick must mirror the widget's maximize flip into \
@@ -222,7 +226,7 @@ fn shell_tick_writes_maximize_click_through_to_persisted_state() {
     let restarted = shell::shell::persist::load_tree_from(&state_path)
         .expect("maximize-on writeback creates valid durable state");
     assert!(
-        restarted.workspaces[0].strips[0].window_groups[0].maximized,
+        restarted.desktop.workspaces[0].strips[0].window_groups[0].maximized,
         "maximize-on must survive an immediate restart"
     );
 
@@ -244,7 +248,7 @@ fn shell_tick_writes_maximize_click_through_to_persisted_state() {
     host.tick_pending_maximize_harvest_for_tests();
     {
         let st = chrome.borrow();
-        let g = &st.tree().workspaces[0].strips[0].window_groups[0];
+        let g = &st.tree().desktop.workspaces[0].strips[0].window_groups[0];
         assert!(
             !g.maximized,
             "harvest must mirror the inverse flip, not just the rising edge",
@@ -253,7 +257,7 @@ fn shell_tick_writes_maximize_click_through_to_persisted_state() {
     let restarted = shell::shell::persist::load_tree_from(&state_path)
         .expect("maximize-off writeback creates valid durable state");
     assert!(
-        !restarted.workspaces[0].strips[0].window_groups[0].maximized,
+        !restarted.desktop.workspaces[0].strips[0].window_groups[0].maximized,
         "maximize-off must survive an immediate restart"
     );
 }
@@ -268,7 +272,7 @@ fn shell_tick_leaves_persisted_maximize_alone_when_no_click_fired() {
     // `with_maximized(true)` runs at build time so the widget mirrors disk;
     // the harvest must then not overwrite the persisted true with a stale
     // false.
-    tree.workspaces[0].strips[0].window_groups[0].maximized = true;
+    tree.desktop.workspaces[0].strips[0].window_groups[0].maximized = true;
 
     let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&tree);
 
@@ -287,7 +291,7 @@ fn shell_tick_leaves_persisted_maximize_alone_when_no_click_fired() {
     host.tick_pending_maximize_harvest_for_tests();
 
     let st = chrome.borrow();
-    let g = &st.tree().workspaces[0].strips[0].window_groups[0];
+    let g = &st.tree().desktop.workspaces[0].strips[0].window_groups[0];
     assert!(
         g.maximized,
         "harvest with no pending change must not overwrite persisted true \

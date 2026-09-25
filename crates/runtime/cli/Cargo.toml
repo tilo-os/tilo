@@ -23,6 +23,7 @@ path = "src/lib.rs"
 # Unix service clients and identity store into native host applications which
 # merely reuse `standalone_state_dir`.
 runtime-portal   = { path = "../runtime-portal" }
+xdg-paths        = { path = "../../system/xdg-paths" }
 
 anyhow.workspace = true
 
@@ -33,7 +34,7 @@ runtime-fs       = { path = "../runtime-fs" }
 
 [dev-dependencies]
 tempfile.workspace = true
-serial_test.workspace = true
+tilo-test-env = { path = "../../dev/test-env" }
 
 [lints]
 workspace = true

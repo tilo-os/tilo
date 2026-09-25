@@ -1,0 +1,25 @@
+[package]
+name = "block-devices"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+description = "Linux block-device inventory: lsblk JSON as a typed device tree, plus the UDisks2 object paths and calls shared by the disk tools"
+
+[lib]
+name = "block_devices"
+path = "src/lib.rs"
+
+[features]
+# The UDisks2 D-Bus calls. Off by default: parsing and the object-path
+# mapping need no bus, and callers only reach UDisks2 on an explicit action.
+udisks = ["dep:zbus"]
+
+[dependencies]
+bounded-command = { path = "../bounded-command" }
+serde_json.workspace = true
+# Matches the zbus the disk tools already resolve, so one copy stays in the lock.
+zbus = { workspace = true, optional = true, features = ["tokio", "blocking-api"] }
+
+[lints]
+workspace = true

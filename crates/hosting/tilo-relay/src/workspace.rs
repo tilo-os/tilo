@@ -432,6 +432,21 @@ impl WorkspaceRuntime {
         }
         delivered
     }
+
+    /// Deliver a directed envelope to the live subscriber `target` only.
+    /// Never queued: a directed request is live traffic. Returns whether it
+    /// was handed to that subscriber's connection.
+    pub fn route_directed(&mut self, target: &[u8; 32], envelope: Envelope) -> bool {
+        let Some(sub) = self.subscribers.get(target) else {
+            return false;
+        };
+        if sub.tx.try_send(envelope).is_ok() {
+            return true;
+        }
+        let _ = sub.disconnect.try_send(());
+        self.subscribers.remove(target);
+        false
+    }
 }
 
 /// Shorthand: a workspace runtime held under an async mutex.

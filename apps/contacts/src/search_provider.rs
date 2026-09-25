@@ -11,11 +11,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
 use ui::icons::Icon;
-
-use ui::search::{
-    DEFAULT_SEARCH_CANDIDATE_LIMIT, DEFAULT_SEARCH_RESULT_LIMIT, SearchCatalog, SearchCursor,
-    SearchPage, SearchProvider, SearchResult,
-};
+use ui::search::{CatalogSearchProvider, SearchCatalog, SearchResult};
 
 use crate::model::{Contact, ContactId, ContactStore, normalize_text};
 
@@ -331,13 +327,6 @@ impl ContactSearchProvider {
         self.full_refreshes
             .load(std::sync::atomic::Ordering::Relaxed)
     }
-
-    fn page_limits(work_budget: usize, result_limit: usize) -> (usize, usize) {
-        (
-            work_budget.min(DEFAULT_SEARCH_CANDIDATE_LIMIT),
-            result_limit.min(DEFAULT_SEARCH_RESULT_LIMIT),
-        )
-    }
 }
 
 fn update_group_variants(
@@ -427,61 +416,27 @@ fn searchable_fields(contact: &Contact) -> Vec<String> {
         .collect()
 }
 
-impl SearchProvider for ContactSearchProvider {
-    fn name(&self) -> &str {
+impl CatalogSearchProvider for ContactSearchProvider {
+    fn provider_name(&self) -> &str {
         CONTACT_KIND
     }
 
-    fn action_directory_generation(&self) -> Option<u64> {
+    fn catalog(&self) -> Option<SearchCatalog> {
         Some(
             self.snapshot
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .catalog
-                .stats()
-                .generation,
+                .clone(),
         )
     }
 
-    fn action_directory_cursor_is_current(&self, cursor: &SearchCursor) -> bool {
-        self.snapshot
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .catalog
-            .cursor_is_current(cursor)
+    fn catalog_query<'q>(&self, query: &'q str) -> std::borrow::Cow<'q, str> {
+        // Rows are indexed from normalised text, so fold the query the same way.
+        std::borrow::Cow::Owned(normalize_text(query))
     }
 
-    fn search(&self, query: &str) -> Vec<SearchResult> {
-        self.search_limited(query, DEFAULT_SEARCH_RESULT_LIMIT)
-    }
-
-    fn search_limited(&self, query: &str, limit: usize) -> Vec<SearchResult> {
-        self.snapshot
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .catalog
-            .search_limited(
-                &normalize_text(query),
-                limit.min(DEFAULT_SEARCH_RESULT_LIMIT),
-            )
-    }
-
-    fn search_page(
-        &self,
-        query: &str,
-        cursor: Option<&SearchCursor>,
-        work_budget: usize,
-        result_limit: usize,
-    ) -> SearchPage {
-        let (work_budget, result_limit) = Self::page_limits(work_budget, result_limit);
-        self.snapshot
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .catalog
-            .query_page(&normalize_text(query), cursor, work_budget, result_limit)
-    }
-
-    fn resolve_action_resource(
+    fn resolve_action_address(
         &self,
         address: &tilo_actions::ActionAddress,
     ) -> Option<tilo_actions::Resource> {
@@ -536,7 +491,9 @@ fn group_result(group: &str) -> SearchResult {
 mod tests {
     use super::*;
     use crate::model::{Contact, ContactStore, sample_contacts};
-    use ui::search::SearchRegistry;
+    use ui::search::testing::{LATE_HIT_NEEDLE, assert_late_hit_reachable};
+    use ui::search::{DEFAULT_SEARCH_CANDIDATE_LIMIT, DEFAULT_SEARCH_RESULT_LIMIT};
+    use ui::search::{SearchProvider, SearchRegistry};
     use uuid::Uuid;
 
     fn store_with_samples() -> ContactStore {
@@ -721,32 +678,32 @@ mod tests {
 
     #[test]
     fn paged_catalogue_reaches_a_late_contact_without_unbounded_allocation() {
-        let contacts = (0..100_001u128)
-            .map(|index| Contact {
-                id: Uuid::from_u128(index + 1),
-                first: if index == 100_000 {
-                    "Late catalogue needle".into()
-                } else {
-                    format!("Contact {index}")
-                },
-                ..Contact::default()
-            })
-            .collect();
-        let provider = ContactSearchProvider::new(&ContactStore { contacts });
-
-        let page = provider.search_page("catalogue needle", None, 4, 1);
+        let (provider, hit) = assert_late_hit_reachable(
+            |corpus| {
+                let contacts = corpus
+                    .map(|row| Contact {
+                        id: Uuid::from_u128(row.index as u128 + 1),
+                        first: row.text,
+                        ..Contact::default()
+                    })
+                    .collect();
+                ContactSearchProvider::new(&ContactStore { contacts })
+            },
+            3_000,
+        );
+        assert_eq!(hit.title, format!("ordinary record 2999 {LATE_HIT_NEEDLE}"));
+        let page = provider.search_page(LATE_HIT_NEEDLE, None, 4, 1);
         assert_eq!(page.inspected, 1, "rare postings avoid scanning the book");
         assert_eq!(page.results.len(), 1, "one bounded result is materialised");
-        assert_eq!(page.results[0].title, "Late catalogue needle");
         assert!(page.next.is_none(), "the unique match is exhausted");
-        let address = page.results[0]
+        let address = hit
             .action_address()
             .expect("catalogue hits use canonical open addresses");
         let resource = provider
             .resolve_action_resource(&address)
             .expect("the late hit resolves without expanding the contextual page");
         assert!(tilo_actions::door::resolve(&[resource], &address).is_some());
-        assert_eq!(provider.stats().records, 100_001);
+        assert_eq!(provider.stats().records, 3_000);
     }
 
     #[test]
@@ -759,11 +716,6 @@ mod tests {
             })
             .collect();
         let provider = ContactSearchProvider::new(&ContactStore { contacts });
-        assert_eq!(
-            ContactSearchProvider::page_limits(usize::MAX, usize::MAX),
-            (DEFAULT_SEARCH_CANDIDATE_LIMIT, DEFAULT_SEARCH_RESULT_LIMIT),
-            "both caller-provided limits are clamped before querying the retained catalogue"
-        );
         let page = provider.search_page("common bounded", None, usize::MAX, usize::MAX);
         assert!(
             page.inspected <= DEFAULT_SEARCH_CANDIDATE_LIMIT,

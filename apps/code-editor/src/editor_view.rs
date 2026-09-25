@@ -36,7 +36,7 @@ use winit::event::{ElementState, KeyEvent, MouseButton, MouseScrollDelta, Window
 use winit::keyboard::{Key, NamedKey};
 
 use crate::bottom_panel::Severity;
-use crate::highlight::{Highlighter, Span};
+use crate::highlight::{IncrementalHighlights, Span};
 use crate::lsp::{CompletionItem, LspDiagnostic, severity_from_lsp};
 use crate::model::Language;
 
@@ -90,9 +90,15 @@ struct InlineDiag {
 /// Monospace cell metrics. The editor advances a fixed cell width per column;
 /// for the bundled monospace font at this size that tracks the glyph advance
 /// closely enough for crisp caret placement.
-const BASE_FONT_SIZE: f32 = 14.0;
-const BASE_LINE_HEIGHT: f64 = 20.0;
-/// Approximate monospace advance for `self.font_size()`. Measured lazily against the
+const FONT_SIZE: f32 = 14.0;
+/// 1× row pitch; the painted pitch is `EditorView::line_h` (see `line_pitch`).
+const LINE_HEIGHT: f64 = 20.0;
+/// Leading kept above and below a code line once the measured line outgrows
+/// `LINE_HEIGHT`; also the glyph top offset inside a 1× row before the first
+/// measurement lands.
+const LINE_LEADING: f64 = 1.25;
+const FALLBACK_TEXT_DY: f64 = LINE_LEADING;
+/// Approximate monospace advance for `FONT_SIZE`. Measured lazily against the
 /// real font on first layout and cached, so it stays correct if the system
 /// monospace face changes.
 const FALLBACK_CELL_W: f64 = 8.4;
@@ -135,6 +141,7 @@ pub struct EditorView {
     lines: Vec<String>,
     /// Highlight spans per line, recomputed when the buffer changes.
     spans: Vec<Vec<Span>>,
+    highlight_cache: IncrementalHighlights,
     /// The Automerge Text object this view edits. `None` until bound.
     text_obj: Option<ObjId>,
     /// Active language → grammar for highlighting.
@@ -147,6 +154,15 @@ pub struct EditorView {
     scroll_x: f64,
     /// Measured monospace cell width, resolved on first draw.
     cell_w: f64,
+    /// Line pitch: `LINE_HEIGHT` at 1×, the measured `FONT_SIZE` line plus
+    /// leading once the text scale outgrows it. Every row, hit test, caret,
+    /// selection, diagnostic underline and scroll step reads this one value,
+    /// so 28 px glyphs never overprint 20 px rows at 200 % text.
+    line_h: f64,
+    /// Top offset that centres a measured `FONT_SIZE` line inside `line_h`
+    /// (1.25 px at 1×) — rows, gutter numbers and completion rows share it
+    /// instead of per-site `+ 2` / `+ 3` nudges.
+    text_dy: f64,
     /// The visual type scale most recently supplied by the host theme. This
     /// custom document surface owns its row/gutter geometry, so it cannot rely
     /// on the shared renderer alone: every hit target and painted baseline
@@ -218,12 +234,15 @@ impl EditorView {
             rect: Rect::ZERO,
             lines: vec![String::new()],
             spans: vec![Vec::new()],
+            highlight_cache: IncrementalHighlights::default(),
             text_obj: None,
             language: Language::PlainText,
             carets: vec![Caret::at(0, 0)],
             scroll_y: 0.0,
             scroll_x: 0.0,
             cell_w: FALLBACK_CELL_W,
+            line_h: LINE_HEIGHT,
+            text_dy: FALLBACK_TEXT_DY,
             text_scale: 1.0,
             is_focused: true,
             dirty: true,
@@ -319,9 +338,15 @@ impl EditorView {
         self.text_obj = None;
         self.lines = vec![String::new()];
         self.spans = vec![Vec::new()];
+        self.highlight_cache = IncrementalHighlights::default();
         self.carets = vec![Caret::at(0, 0)];
         self.cached_text.clear();
         self.dirty = true;
+    }
+
+    /// Read-only native diagnostic offsets: horizontal pixels, vertical lines.
+    pub(crate) fn native_scroll_offsets(&self) -> (f64, f64) {
+        (self.scroll_x, self.scroll_y)
     }
 
     pub fn is_bound(&self) -> bool {
@@ -372,7 +397,7 @@ impl EditorView {
     /// Rebuild the line + highlight caches from the buffer text.
     fn rebuild(&mut self, text: &str) {
         self.cached_text = text.to_string();
-        self.lines = if text.is_empty() {
+        let lines = if text.is_empty() {
             vec![String::new()]
         } else {
             text.split('\n')
@@ -381,26 +406,11 @@ impl EditorView {
         };
         // split('\n') on "a\n" yields ["a", ""]; that trailing empty line is
         // the editable line after the final newline, which is what we want.
-        self.recompute_highlight();
+        self.highlight_cache
+            .update(self.language, &self.lines, &lines, &mut self.spans);
+        self.lines = lines;
         self.clamp_carets();
         self.dirty = true;
-    }
-
-    /// Recompute highlight spans for every line. Multi-line constructs (block
-    /// comments, multi-line strings) carry state across lines via the
-    /// highlighter's `LineState`.
-    fn recompute_highlight(&mut self) {
-        let hl = Highlighter::for_language(self.language);
-        let mut state = hl.fresh_state();
-        self.spans = Vec::with_capacity(self.lines.len());
-        for line in &self.lines {
-            // The highlighter wants the trailing newline so anchored rules
-            // (line comments, etc.) terminate correctly.
-            let mut with_nl = line.clone();
-            with_nl.push('\n');
-            let spans = hl.highlight_line(&with_nl, &mut state);
-            self.spans.push(spans);
-        }
     }
 
     fn clamp_carets(&mut self) {
@@ -703,11 +713,11 @@ impl EditorView {
     }
 
     fn font_size(&self) -> f32 {
-        BASE_FONT_SIZE * self.text_scale as f32
+        FONT_SIZE
     }
 
     fn line_height(&self) -> f64 {
-        BASE_LINE_HEIGHT * self.text_scale
+        self.line_h
     }
 
     fn gutter_pad(&self) -> f64 {
@@ -726,14 +736,14 @@ impl EditorView {
 
     /// Visible-line capacity of the viewport.
     fn visible_lines(&self) -> usize {
-        (self.rect.height() / self.line_height()).ceil() as usize + 1
+        (self.rect.height() / self.line_h).ceil() as usize + 1
     }
 
     /// Scroll so the primary caret is visible.
     fn scroll_to_caret(&mut self) {
         let (line, col) = self.primary_caret();
         let top = self.scroll_y;
-        let rows = (self.rect.height() / self.line_height()).floor().max(1.0);
+        let rows = (self.rect.height() / self.line_h).floor().max(1.0);
         let bottom = top + rows - 1.0;
         if (line as f64) < top {
             self.scroll_y = line as f64;
@@ -1353,17 +1363,22 @@ impl EditorView {
     /// caching it on `self` (the fallback stays in place until the first
     /// successful measurement).
     fn measure_cell_width(&mut self, text_renderer: &mut TextRenderer) {
-        let (mw, _) = text_renderer.measure_styled(
-            "M",
-            self.font_size(),
-            None,
-            TextWeight::Regular,
-            false,
-            true,
-        );
+        let (mw, mh) =
+            text_renderer.measure_styled("M", FONT_SIZE, None, TextWeight::Regular, false, true);
         if mw > 0.0 {
             self.cell_w = f64::from(mw);
         }
+        if mh > 0.0 {
+            self.line_h = Self::line_pitch(f64::from(mh));
+            self.text_dy = (self.line_h - f64::from(mh)) / 2.0;
+        }
+    }
+
+    /// Row pitch for a measured `FONT_SIZE` line: the 1× constant while the
+    /// line fits (a 14 px mono line measures 17.5 px, leaving 1.25 px either
+    /// side of 20), otherwise the line plus that same leading.
+    fn line_pitch(line_h: f64) -> f64 {
+        (line_h + 2.0 * LINE_LEADING).max(LINE_HEIGHT)
     }
 
     /// The geometry a draw pass threads through: gutter width, the code
@@ -1424,19 +1439,14 @@ impl EditorView {
             let Some(line) = self.lines.get(line_idx) else {
                 break;
             };
-            let y = self.rect.y0 + (vi as f64 - frac) * self.line_height();
+            let y = self.rect.y0 + (vi as f64 - frac) * self.line_h;
             if y > self.rect.y1 {
                 break;
             }
 
             // Active-line highlight across the code area.
             if line_idx == primary_line && self.carets.len() == 1 {
-                let hl = Rect::new(
-                    self.rect.x0 + gutter_w,
-                    y,
-                    self.rect.x1,
-                    y + self.line_height(),
-                );
+                let hl = Rect::new(self.rect.x0 + gutter_w, y, self.rect.x1, y + self.line_h);
                 scene.fill(Fill::NonZero, transform, c.lift(0.35), None, &hl);
             }
 
@@ -1452,7 +1462,7 @@ impl EditorView {
                     mx0.max(self.rect.x0 + gutter_w),
                     y + 1.0,
                     mx1,
-                    y + self.line_height() - 1.0,
+                    y + self.line_h - 1.0,
                 );
                 if band.width() <= 0.0 {
                     continue;
@@ -1500,12 +1510,7 @@ impl EditorView {
                     };
                     let sx0 = code_x0 + start_col as f64 * self.cell_w - self.scroll_x;
                     let sx1 = code_x0 + end_col as f64 * self.cell_w - self.scroll_x;
-                    let sel = Rect::new(
-                        sx0.max(self.rect.x0 + gutter_w),
-                        y,
-                        sx1,
-                        y + self.line_height(),
-                    );
+                    let sel = Rect::new(sx0.max(self.rect.x0 + gutter_w), y, sx1, y + self.line_h);
                     // Translucent accent for the selection band; alpha is read
                     // from the theme accent so a theme swap recolours it.
                     let sel_color = c.accent[5].multiply_alpha(0.35);
@@ -1551,7 +1556,7 @@ impl EditorView {
             let Some(line) = self.lines.get(line_idx) else {
                 break;
             };
-            let y = self.rect.y0 + (vi as f64 - frac) * self.line_height();
+            let y = self.rect.y0 + (vi as f64 - frac) * self.line_h;
             if y > self.rect.y1 {
                 break;
             }
@@ -1570,7 +1575,7 @@ impl EditorView {
                 &num,
                 self.font_size(),
                 num_color,
-                transform * Affine::translate((num_x, y + 2.0)),
+                transform * Affine::translate((num_x, y + self.text_dy)),
                 None,
                 TextWeight::Regular,
                 false,
@@ -1596,7 +1601,7 @@ impl EditorView {
                     line,
                     self.font_size(),
                     c.text_primary,
-                    transform * Affine::translate((base_x, y + 2.0)),
+                    transform * Affine::translate((base_x, y + self.text_dy)),
                     None,
                     TextWeight::Regular,
                     false,
@@ -1607,10 +1612,12 @@ impl EditorView {
                     // Byte offsets → char offset for x positioning.
                     let prefix = line
                         .as_bytes()
-                        .get(..span.start.min(line.len()))
+                        .get(..span.range.start.min(line.len()))
                         .unwrap_or(&[]);
                     let char_col = std::str::from_utf8(prefix).map_or(0, |s| s.chars().count());
-                    let seg = line.get(span.start..span.end.min(line.len())).unwrap_or("");
+                    let seg = line
+                        .get(span.range.start..span.range.end.min(line.len()))
+                        .unwrap_or("");
                     if seg.is_empty() {
                         continue;
                     }
@@ -1619,8 +1626,8 @@ impl EditorView {
                     if x + seg.chars().count() as f64 * self.cell_w < self.rect.x0 + gutter_w {
                         continue;
                     }
-                    let color = span.role.color(theme);
-                    let weight = if matches!(span.role, crate::highlight::TokenRole::Keyword) {
+                    let color = crate::highlight::token_color(span.kind, theme);
+                    let weight = if span.kind == ui::widget::code_editor::TokenKind::Keyword {
                         TextWeight::Semibold
                     } else {
                         TextWeight::Regular
@@ -1630,7 +1637,7 @@ impl EditorView {
                         seg,
                         self.font_size(),
                         color,
-                        transform * Affine::translate((x, y + 2.0)),
+                        transform * Affine::translate((x, y + self.text_dy)),
                         None,
                         weight,
                         false,
@@ -1663,7 +1670,7 @@ impl EditorView {
             if d.line < first_line || d.line >= first_line + n_visible {
                 continue;
             }
-            let y = self.rect.y0 + (d.line as f64 - self.scroll_y) * self.line_height();
+            let y = self.rect.y0 + (d.line as f64 - self.scroll_y) * self.line_h;
             if y > self.rect.y1 {
                 continue;
             }
@@ -1681,7 +1688,7 @@ impl EditorView {
             if x_right <= x_left {
                 continue;
             }
-            let sy = y + self.line_height() - 3.0;
+            let sy = y + self.line_h - 3.0;
             let color = match d.severity {
                 Severity::Error => c.semantic.danger,
                 Severity::Warning => c.semantic.warning,
@@ -1730,15 +1737,13 @@ impl EditorView {
             if caret.line < first_line || caret.line >= first_line + n_visible {
                 continue;
             }
-            let y = self.rect.y0 + (caret.line as f64 - self.scroll_y) * self.line_height();
+            let y = self.rect.y0 + (caret.line as f64 - self.scroll_y) * self.line_h;
             let x = code_x0 + caret.col as f64 * self.cell_w - self.scroll_x;
             if x < self.rect.x0 + gutter_w {
                 continue;
             }
-            let caret_line = Line::new(
-                Point::new(x, y + 2.0),
-                Point::new(x, y + self.line_height() - 2.0),
-            );
+            let caret_line =
+                Line::new(Point::new(x, y + 2.0), Point::new(x, y + self.line_h - 2.0));
             scene.stroke(
                 &Stroke::new(2.0),
                 transform,
@@ -1768,7 +1773,7 @@ impl EditorView {
         caret_x: f64,
         caret_top: f64,
     ) {
-        let row_h = 20.0 * self.text_scale;
+        let row_h = self.line_h;
         if !self.completion_active() {
             return;
         }
@@ -1792,13 +1797,14 @@ impl EditorView {
             .max(self.rect.y0);
         let popup = Rect::new(px, py, px + width, py + height);
         let shape = RoundedRect::from_rect(popup, 6.0);
+        // A floating popup is a Panel: the shell's derived panel border.
         scene.fill(Fill::NonZero, transform, c.surfaces.overlay, None, &shape);
         scene.stroke(
             &Stroke::new(1.0),
             transform,
-            c.border_standard,
+            ui::chrome::panel_border(theme),
             None,
-            &shape,
+            &ui::surface::edge_outline(popup, 6.0),
         );
 
         for row in 0..shown {
@@ -1829,8 +1835,7 @@ impl EditorView {
                 glyph,
                 self.font_size(),
                 c.accent[6],
-                transform
-                    * Affine::translate((px + 8.0 * self.text_scale, ry + 3.0 * self.text_scale)),
+                transform * Affine::translate((px + 8.0, ry + self.text_dy)),
                 None,
                 TextWeight::Regular,
                 false,
@@ -1841,8 +1846,7 @@ impl EditorView {
                 &item.label,
                 self.font_size(),
                 c.text_primary,
-                transform
-                    * Affine::translate((px + 26.0 * self.text_scale, ry + 3.0 * self.text_scale)),
+                transform * Affine::translate((px + 26.0, ry + self.text_dy)),
                 None,
                 TextWeight::Regular,
                 false,
@@ -1863,19 +1867,25 @@ impl EditorView {
                     false,
                     true,
                 );
-                let available = width - 40.0 * self.text_scale - f64::from(lw);
+                let available = width - 40.0 - f64::from(lw);
                 let detail =
                     fit_completion_detail(text_renderer, detail, available, self.font_size() - 1.0);
+                // The smaller detail shares the label's centre line.
+                let (_, dh) = text_renderer.measure_styled(
+                    &detail,
+                    FONT_SIZE - 1.0,
+                    None,
+                    TextWeight::Regular,
+                    false,
+                    true,
+                );
+                let detail_dy = (row_h - f64::from(dh)) / 2.0;
                 text_renderer.draw_text_styled(
                     scene,
                     &detail,
                     self.font_size() - 1.0,
                     c.text_dim,
-                    transform
-                        * Affine::translate((
-                            px + 34.0 * self.text_scale + f64::from(lw),
-                            ry + 3.5 * self.text_scale,
-                        )),
+                    transform * Affine::translate((px + 34.0 + f64::from(lw), ry + detail_dy)),
                     None,
                     TextWeight::Regular,
                     false,
@@ -1910,7 +1920,11 @@ impl EditorView {
         let (tw, _) = text_renderer.measure(&first, self.font_size(), None);
         let width = (f64::from(tw) + 20.0).min(self.rect.width() - (gutter_w + 20.0));
         let lines = first.lines().count().max(1);
-        let height = lines as f64 * (f64::from(self.font_size()) + 4.0) + 12.0;
+        // Line pitch from the measured line: 18 px at 1× (a 14 px line
+        // measures 17.5), the line plus the same leading at larger scales.
+        let (_, lh) = text_renderer.measure("Ag", FONT_SIZE, None);
+        let pitch = (f64::from(lh) + 0.5).max(f64::from(FONT_SIZE) + 4.0);
+        let height = lines as f64 * pitch + 12.0;
         let px = caret_x
             .min(self.rect.x1 - width - 8.0)
             .max(self.rect.x0 + gutter_w + 2.0);
@@ -1918,7 +1932,7 @@ impl EditorView {
         let py = if caret_top - height - 4.0 >= self.rect.y0 {
             caret_top - height - 4.0
         } else {
-            caret_top + self.line_height() + 2.0
+            caret_top + self.line_h + 2.0
         };
         let box_rect = Rect::new(px, py, px + width, py + height);
         let shape = RoundedRect::from_rect(box_rect, 6.0);
@@ -1926,9 +1940,9 @@ impl EditorView {
         scene.stroke(
             &Stroke::new(1.0),
             transform,
-            c.border_standard,
+            ui::chrome::panel_border(theme),
             None,
-            &shape,
+            &ui::surface::edge_outline(box_rect, 6.0),
         );
         for (i, line) in first.lines().enumerate() {
             text_renderer.draw_text(
@@ -1936,11 +1950,7 @@ impl EditorView {
                 line,
                 self.font_size(),
                 c.text_primary,
-                transform
-                    * Affine::translate((
-                        px + 10.0,
-                        py + 6.0 + i as f64 * (f64::from(self.font_size()) + 4.0),
-                    )),
+                transform * Affine::translate((px + 10.0, py + 6.0 + i as f64 * pitch)),
                 Some((width - 20.0) as f32),
             );
         }
@@ -2065,7 +2075,7 @@ impl EditorView {
         }
         let dy = match delta {
             MouseScrollDelta::LineDelta(_, y) => f64::from(y) * 3.0,
-            MouseScrollDelta::PixelDelta(p) => p.y / self.line_height(),
+            MouseScrollDelta::PixelDelta(p) => p.y / self.line_h,
         };
         let max = (self.lines.len() as f64 - 1.0).max(0.0);
         self.scroll_y = (self.scroll_y - dy).clamp(0.0, max);
@@ -2236,11 +2246,11 @@ impl EditorView {
             Key::Named(NamedKey::Home) => self.move_home(shift),
             Key::Named(NamedKey::End) => self.move_end(shift),
             Key::Named(NamedKey::PageUp) => {
-                let rows = (self.rect.height() / self.line_height()).floor() as isize;
+                let rows = (self.rect.height() / self.line_h).floor() as isize;
                 self.move_caret(0, -rows, shift);
             }
             Key::Named(NamedKey::PageDown) => {
-                let rows = (self.rect.height() / self.line_height()).floor() as isize;
+                let rows = (self.rect.height() / self.line_h).floor() as isize;
                 self.move_caret(0, rows, shift);
             }
             _ => return false,
@@ -2359,12 +2369,13 @@ impl EditorView {
             (code_x0 + 122.0).min(self.rect.x1 - 4.0),
             self.rect.y1 - 5.0,
         );
-        scene.fill(
-            Fill::NonZero,
+        // The status chip is a raised card with its derived rest edge.
+        ui::surface::card(
+            scene,
             transform,
+            rect,
+            5.0,
             theme.tokens.colors.surfaces.raised,
-            None,
-            &RoundedRect::from_rect(rect, 5.0),
         );
         text_renderer.draw_text_styled(
             scene,
@@ -2502,7 +2513,8 @@ impl Widget for EditorView {
         );
         self.draw_horizontal_scroll_recovery(scene, transform, text_renderer, theme, code_x0);
 
-        // Right border separating from any side panel.
+        // Border separating the editor from the raised side panel: derived
+        // against that panel, which is the surface the rule sits on.
         let border = Line::new(
             Point::new(self.rect.x0, self.rect.y0),
             Point::new(self.rect.x0, self.rect.y1),
@@ -2510,7 +2522,7 @@ impl Widget for EditorView {
         scene.stroke(
             &Stroke::new(1.0),
             transform,
-            c.border_standard,
+            ui::surface::edge_on(c.surfaces.raised),
             None,
             &border,
         );
@@ -2518,7 +2530,7 @@ impl Widget for EditorView {
         // Caret pixel, reused by the completion popup + hover tooltip.
         let (caret_line, caret_col) = self.primary_caret();
         let caret_x = code_x0 + caret_col as f64 * self.cell_w - self.scroll_x;
-        let caret_top = self.rect.y0 + (caret_line as f64 - self.scroll_y) * self.line_height();
+        let caret_top = self.rect.y0 + (caret_line as f64 - self.scroll_y) * self.line_h;
 
         self.draw_completion_popup(
             scene,
@@ -2762,6 +2774,44 @@ mod tests {
         let root = automerge::ROOT;
         ev.sync(&mut doc, &root);
         (ev, doc)
+    }
+
+    /// The row pitch is the historical 20 px at 1× and grows with the glyphs
+    /// at 2×; pointer hit-testing maps a click on the third row back to line
+    /// 2 at both scales, so paint and hits share one pitch.
+    #[test]
+    fn line_pitch_matches_the_constant_at_1x_and_follows_the_text_scale() {
+        let (mut ev, _doc) = bound_editor("a\nb\nc\nd");
+        ev.rect = Rect::new(0.0, 0.0, 400.0, 300.0);
+        let mut tr = TextRenderer::new();
+        ev.measure_cell_width(&mut tr);
+        assert_eq!(ev.line_h, LINE_HEIGHT);
+        let (_, mh) = tr.measure_styled("M", FONT_SIZE, None, TextWeight::Regular, false, true);
+        assert!(
+            (ev.text_dy - (LINE_HEIGHT - f64::from(mh)) / 2.0).abs() < 1e-9,
+            "glyphs centre on the measured line inside the row"
+        );
+        let third_row_1x = Point::new(
+            ev.rect.x0 + ev.gutter_width() + ev.code_pad_left(),
+            2.5 * ev.line_h,
+        );
+        assert_eq!(ev.point_to_caret(third_row_1x).0, 2);
+
+        tr.set_text_scale(2.0);
+        ev.measure_cell_width(&mut tr);
+        let (_, mh2) = tr.measure_styled("M", FONT_SIZE, None, TextWeight::Regular, false, true);
+        assert!(ev.line_h >= f64::from(mh2) + 2.0 * LINE_LEADING && ev.line_h > LINE_HEIGHT);
+        assert!(
+            ev.cell_w > FALLBACK_CELL_W,
+            "the cell width scaled with the glyphs"
+        );
+        let third_row_2x = Point::new(
+            ev.rect.x0 + ev.gutter_width() + ev.code_pad_left(),
+            2.5 * ev.line_h,
+        );
+        assert_eq!(ev.point_to_caret(third_row_2x).0, 2);
+        // The 1× third-row point now lands on the taller second row.
+        assert_eq!(ev.point_to_caret(third_row_1x).0, 1);
     }
 
     #[test]
@@ -3147,5 +3197,28 @@ mod tests {
         ev.set_caret_for_test(0, 11);
         key(&mut ev, &mut doc, Key::Character("v".into()), true, false);
         assert_eq!(ev.text_for_test(), "hello worldhello");
+    }
+}
+
+#[cfg(test)]
+mod incremental_regression {
+    use super::*;
+
+    #[test]
+    fn rebuild_reuses_unchanged_highlight_suffix() {
+        let source = (0..2000)
+            .map(|i| format!("let value_{i} = {i};"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let mut editor = EditorView::new();
+        editor.language = Language::Rust;
+        editor.rebuild(&source);
+        crate::highlight::take_parsed_line_count();
+        editor.rebuild(&source.replacen("value_0", "changed_0", 1));
+        let parsed = crate::highlight::take_parsed_line_count();
+        assert_eq!(
+            parsed, 1,
+            "a local edit with identical parser state must not reparse the other1999 lines"
+        );
     }
 }

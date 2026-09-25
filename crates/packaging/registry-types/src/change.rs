@@ -57,10 +57,12 @@ pub struct EntryChangeRequest {
 struct ChangeSigningPayload<'a> {
     action: EntryAction,
     package_id: &'a str,
-    name: &'a str,
-    description: &'a str,
+    name: &'a crate::entry::LocalizedText,
+    description: &'a crate::entry::LocalizedText,
+    tagline: &'a crate::entry::LocalizedText,
+    images: &'a crate::entry::LocalizedImages,
+    supported_languages: &'a [String],
     categories: &'a [String],
-    icon_url: &'a Option<String>,
     source_url: &'a Option<String>,
     homepage: &'a Option<String>,
     publisher_pubkey_hex: &'a str,
@@ -98,8 +100,10 @@ pub fn change_signing_message(action: EntryAction, entry: &RegistryEntry) -> [u8
         package_id: &entry.package_id,
         name: &entry.name,
         description: &entry.description,
+        tagline: &entry.tagline,
+        images: &entry.images,
+        supported_languages: &entry.supported_languages,
         categories: &entry.categories,
-        icon_url: &entry.icon_url,
         source_url: &entry.source_url,
         homepage: &entry.homepage,
         publisher_pubkey_hex: &entry.publisher_pubkey_hex,
@@ -137,26 +141,36 @@ mod tests {
     use super::*;
     use crate::entry::{RegistryVersion, sign_entry};
     use ed25519_dalek::SigningKey;
-    use rand::rngs::OsRng;
+    use getrandom::{SysRng, rand_core::UnwrapErr};
 
     fn sample_entry() -> RegistryEntry {
         RegistryEntry {
-            package_id: "dev.tilo.editor".into(),
+            package_id: "so.tilo.editor".into(),
             name: "Editor".into(),
             description: "CRDT-native text editor".into(),
+            tagline: "Edit together".into(),
+            images: crate::LocalizedImages::english_icon(
+                "https://apps.tilo.so/images/test-icon.svg",
+                "Test icon",
+            ),
+            supported_languages: vec!["en".into()],
             categories: vec!["Productivity".into()],
-            icon_url: None,
             source_url: None,
             homepage: None,
             publisher_pubkey_hex: "aa".repeat(32),
             versions: vec![RegistryVersion {
                 version: "2026.06".into(),
-                qpkg_url: "https://apps.tilo.dev/editor/2026.06.qpkg".into(),
-                qpkg_root_hash_hex: "cd".repeat(32),
-                qpkg_size_bytes: 1024,
+                tapp_url: "https://apps.tilo.so/editor/2026.06.tapp".into(),
+                tapp_root_hash_hex: "cd".repeat(32),
+                tapp_size_bytes: 1024,
                 released_at_unix: 100,
-                qpkg_blake3_hex: None,
-                target: None,
+                tapp_blake3_hex: "ef".repeat(32),
+                target: crate::entry::RegistryTarget {
+                    platform: crate::entry::TILO_OS_PLATFORM.into(),
+                    architecture: "x86_64".into(),
+                    isa: "x86_64-v3".into(),
+                    runtime: None,
+                },
             }],
             updated_at_unix: 200,
             signature_hex: String::new(),
@@ -190,7 +204,7 @@ mod tests {
 
     #[test]
     fn change_request_json_roundtrip() {
-        let key = SigningKey::generate(&mut OsRng);
+        let key = SigningKey::generate(&mut UnwrapErr(SysRng));
         let req = sign_change_request(EntryAction::Add, sample_entry(), &key);
         let s = serde_json::to_string(&req).unwrap();
         let back: EntryChangeRequest = serde_json::from_str(&s).unwrap();
@@ -199,7 +213,7 @@ mod tests {
 
     #[test]
     fn sign_change_request_also_signs_entry() {
-        let key = SigningKey::generate(&mut OsRng);
+        let key = SigningKey::generate(&mut UnwrapErr(SysRng));
         let mut entry = sample_entry();
         // Real workflow: publisher pubkey on the entry matches
         // the signing key; otherwise verify_entry_signature
@@ -223,7 +237,7 @@ mod tests {
         assert_eq!(m1, m2);
         // But the entry sig hex used to be an assertion tool — resign
         // it with a fresh key and prove that too.
-        let key = SigningKey::generate(&mut OsRng);
+        let key = SigningKey::generate(&mut UnwrapErr(SysRng));
         sign_entry(&mut e, &key);
         let m3 = change_signing_message(EntryAction::Update, &e);
         assert_eq!(m1, m3);

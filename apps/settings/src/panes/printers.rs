@@ -566,11 +566,7 @@ fn discovered_row(p: &DiscoveredPrinter) -> El {
 fn job_row(job: &PrintJob) -> El {
     let cancel = format!("settings.printers.job.cancel.{}", slug(&job.id));
     let retry = format!("settings.printers.job.retry.{}", slug(&job.id));
-    let size = if job.size_bytes >= 1_048_576 {
-        format!("{:.1} MB", job.size_bytes as f64 / 1_048_576.0)
-    } else {
-        format!("{} KB", job.size_bytes.div_ceil(1024))
-    };
+    let size = ui::format::bytes_si(job.size_bytes);
     let state = job.state.map_or("State not reported", job_state_label);
     let progress = match (job.impressions_completed, job.impressions_total) {
         (Some(done), Some(total)) if total > 0 => format!(

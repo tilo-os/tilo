@@ -203,7 +203,7 @@ d="$OS/usr/libexec/tilo-deployment"
 if sed -n '/^cmd_rollback()/,/^}/p' "$d" | grep -q 'print_rollback_caveats'; then
   ok "rollback prints what it does and does not undo before changing anything"
 else
-  bad "cmd_rollback no longer prints the /var and .qpkg caveats. Discovering them
+  bad "cmd_rollback no longer prints the /var and .tapp caveats. Discovering them
       afterwards is the failure this exists to prevent."
 fi
 for phrase in '/var does NOT' 'packages do NOT'; do

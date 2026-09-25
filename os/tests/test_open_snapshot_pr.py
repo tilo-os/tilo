@@ -1,0 +1,219 @@
+#!/usr/bin/env python3
+"""Tests for protected-branch snapshot pin promotion."""
+
+from __future__ import annotations
+
+import contextlib
+import hashlib
+import importlib.util
+import io
+import os
+from pathlib import Path
+import sys
+import unittest
+from unittest import mock
+
+
+SCRIPT = Path(__file__).parents[1] / "dev" / "open-snapshot-pr.py"
+SPEC = importlib.util.spec_from_file_location("open_snapshot_pr", SCRIPT)
+MODULE = importlib.util.module_from_spec(SPEC)
+assert SPEC.loader is not None
+SPEC.loader.exec_module(MODULE)
+
+REPO = Path(__file__).parents[2]
+
+
+def run_main(argv, created=None):
+    created = created or {"number": 8, "html_url": "https://forge.invalid/qos/qos/pulls/8"}
+    with mock.patch.dict(os.environ, {"FORGEJO_TOKEN": "secret"}), \
+            mock.patch.object(sys, "argv", argv), \
+            mock.patch.object(MODULE, "find_open", return_value=None), \
+            mock.patch.object(MODULE, "request", return_value=created) as request:
+        result = MODULE.main()
+    return result, request
+
+
+class KernelSnapshotPullRequestTests(unittest.TestCase):
+    x86_ref = "code.sandbox.example/qos/tilo-kernel@sha256:" + "a" * 64
+    arm_ref = "code.sandbox.example/qos/tilo-kernel@sha256:" + "b" * 64
+
+    def setUp(self):
+        contents = MODULE.kernel_contents(self.x86_ref, self.arm_ref)
+        self.digest = hashlib.sha256(contents.encode()).hexdigest()
+        self.branch = "automation/kernel-snapshot-" + self.digest[:16]
+
+    def argv(self, **overrides):
+        values = {
+            "branch": self.branch,
+            "digest": self.digest,
+            "x86": self.x86_ref,
+            "arm": self.arm_ref,
+        }
+        values.update(overrides)
+        return [
+            str(SCRIPT), "--server", "https://forge.invalid",
+            "--repository", "qos/qos", "--branch", values["branch"],
+            "--snapshot-digest", values["digest"], "kernel",
+            "--x86-ref", values["x86"], "--arm-ref", values["arm"],
+        ]
+
+    def test_finds_existing_open_pull_from_same_repository(self):
+        pulls = [{
+            "number": 7,
+            "html_url": "https://forge.invalid/qos/qos/pulls/7",
+            "head": {"ref": self.branch, "repo": {"full_name": "qos/qos"}},
+            "base": {"ref": "main"},
+        }]
+        with mock.patch.object(MODULE, "request", return_value=pulls):
+            self.assertEqual(
+                MODULE.find_open("https://forge.invalid", "qos/qos", "secret", self.branch),
+                pulls[0],
+            )
+
+    def test_main_creates_digest_bound_pull(self):
+        result, request = run_main(self.argv())
+        self.assertEqual(result, 0)
+        payload = request.call_args.args[5]
+        self.assertEqual(payload["base"], "main")
+        self.assertEqual(payload["head"], self.branch)
+        self.assertEqual(payload["title"], "build(os): refresh native kernel snapshots")
+        self.assertIn(self.digest, payload["body"])
+
+    def test_ignores_same_named_branch_from_fork(self):
+        pulls = [{
+            "number": 9,
+            "html_url": "https://forge.invalid/qos/qos/pulls/9",
+            "head": {"ref": self.branch, "repo": {"full_name": "attacker/qos"}},
+            "base": {"ref": "main"},
+        }]
+        with mock.patch.object(MODULE, "request", return_value=pulls):
+            self.assertIsNone(
+                MODULE.find_open("https://forge.invalid", "qos/qos", "secret", self.branch)
+            )
+
+    def test_rejects_branch_not_bound_to_snapshot(self):
+        for branch in ("automation/kernel-snapshot-wrong",
+                       "automation/rpm-snapshot-" + self.digest[:16]):
+            with self.subTest(branch=branch), self.assertRaises(SystemExit):
+                run_main(self.argv(branch=branch))
+
+    def test_rejects_snapshot_digest_not_bound_to_both_refs(self):
+        with self.assertRaises(SystemExit):
+            run_main(self.argv(digest="c" * 64))
+
+    def test_rejects_shared_or_mutable_native_ref(self):
+        cases = (
+            {"arm": self.x86_ref},
+            {"arm": "code.sandbox.example/qos/tilo-kernel:latest"},
+        )
+        for overrides in cases:
+            with self.subTest(overrides=overrides), self.assertRaises(SystemExit):
+                run_main(self.argv(**overrides))
+
+
+class TokenFailureReportingTests(unittest.TestCase):
+    rpms_ref = "code.sandbox.example/qos/rpms@sha256:" + "d" * 64
+
+    def argv(self):
+        digest = hashlib.sha256(MODULE.rpms_contents(self.rpms_ref).encode()).hexdigest()
+        return [
+            str(SCRIPT), "--server", "https://forge.invalid", "--repository", "qos/qos",
+            "--branch", "automation/rpm-snapshot-" + digest[:16],
+            "--snapshot-digest", digest, "rpms", "--rpms-ref", self.rpms_ref,
+        ]
+
+    @staticmethod
+    def http_error(code):
+        return MODULE.urllib.error.HTTPError("https://forge.invalid", code, "denied", {}, None)
+
+    def run_with_listing_error(self, code):
+        stderr = io.StringIO()
+        with mock.patch.dict(os.environ, {"FORGEJO_TOKEN": "secret"}), \
+                mock.patch.object(sys, "argv", self.argv()), \
+                mock.patch.object(MODULE, "request", side_effect=self.http_error(code)), \
+                contextlib.redirect_stderr(stderr):
+            result = MODULE.main()
+        return result, stderr.getvalue()
+
+    def test_unreadable_pull_requests_name_the_token_to_set(self):
+        # Forgejo reports repositories the token cannot see as 404.
+        for code in (401, 403, 404):
+            with self.subTest(code=code):
+                result, stderr = self.run_with_listing_error(code)
+                self.assertEqual(result, 1)
+                self.assertIn("token cannot read pull requests on qos/qos", stderr)
+                self.assertIn("RELEASE_TOKEN", stderr)
+                self.assertNotIn("Traceback", stderr)
+
+    def test_server_error_is_not_blamed_on_the_token(self):
+        result, stderr = self.run_with_listing_error(502)
+        self.assertEqual(result, 1)
+        self.assertIn("HTTP 502", stderr)
+        self.assertNotIn("RELEASE_TOKEN", stderr)
+
+    def test_refused_creation_names_the_token_to_set(self):
+        stderr = io.StringIO()
+        with mock.patch.dict(os.environ, {"FORGEJO_TOKEN": "secret"}), \
+                mock.patch.object(sys, "argv", self.argv()), \
+                mock.patch.object(MODULE, "find_open", return_value=None), \
+                mock.patch.object(MODULE, "request", side_effect=self.http_error(403)), \
+                contextlib.redirect_stderr(stderr):
+            self.assertEqual(MODULE.main(), 1)
+        self.assertIn("refused rpms snapshot pull-request creation (HTTP 403)", stderr.getvalue())
+        self.assertIn("RELEASE_TOKEN", stderr.getvalue())
+
+    def test_missing_token_names_the_secret(self):
+        stderr = io.StringIO()
+        with mock.patch.dict(os.environ, {"FORGEJO_TOKEN": ""}), \
+                mock.patch.object(sys, "argv", self.argv()), \
+                contextlib.redirect_stderr(stderr), self.assertRaises(SystemExit):
+            MODULE.main()
+        self.assertIn("RELEASE_TOKEN", stderr.getvalue())
+
+
+class RpmSnapshotPullRequestTests(unittest.TestCase):
+    rpms_ref = "code.sandbox.example/qos/rpms@sha256:" + "d" * 64
+
+    def setUp(self):
+        contents = MODULE.rpms_contents(self.rpms_ref)
+        self.digest = hashlib.sha256(contents.encode()).hexdigest()
+        self.branch = "automation/rpm-snapshot-" + self.digest[:16]
+
+    def argv(self, **overrides):
+        values = {"branch": self.branch, "digest": self.digest, "ref": self.rpms_ref}
+        values.update(overrides)
+        return [
+            str(SCRIPT), "--server", "https://forge.invalid",
+            "--repository", "qos/qos", "--branch", values["branch"],
+            "--snapshot-digest", values["digest"], "rpms", "--rpms-ref", values["ref"],
+        ]
+
+    def test_main_creates_digest_bound_pull(self):
+        result, request = run_main(self.argv())
+        self.assertEqual(result, 0)
+        payload = request.call_args.args[5]
+        self.assertEqual(payload["head"], self.branch)
+        self.assertEqual(payload["title"], "build(os): refresh native RPM snapshot index")
+        self.assertIn(self.digest, payload["body"])
+
+    def test_canonical_contents_match_the_committed_pin_shape(self):
+        committed = (REPO / "os/rpms-snapshot.env").read_text()
+        ref = next(line.split("=", 1)[1] for line in committed.splitlines()
+                   if line.startswith("RPMS_REF="))
+        self.assertEqual(MODULE.rpms_contents(ref), committed)
+
+    def test_rejects_mutable_or_foreign_ref(self):
+        for ref in ("code.sandbox.example/qos/rpms:latest",
+                    "code.sandbox.example/qos/tilo-kernel@sha256:" + "d" * 64):
+            with self.subTest(ref=ref), self.assertRaises(SystemExit):
+                run_main(self.argv(ref=ref))
+
+    def test_rejects_digest_or_branch_not_bound_to_ref(self):
+        for overrides in ({"digest": "e" * 64},
+                          {"branch": "automation/kernel-snapshot-" + self.digest[:16]}):
+            with self.subTest(overrides=overrides), self.assertRaises(SystemExit):
+                run_main(self.argv(**overrides))
+
+
+if __name__ == "__main__":
+    unittest.main()

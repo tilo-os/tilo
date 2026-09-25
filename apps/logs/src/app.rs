@@ -39,16 +39,15 @@ use std::time::{Duration, Instant};
 use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
-use vello::kurbo::{Affine, Circle, Line, Point, Rect, RoundedRect, Stroke};
+use vello::kurbo::{Affine, Circle, Line, Point, Rect, Stroke};
 use vello::peniko::{BlendMode, Color, Fill};
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
-use ui::ColorCompat;
 use ui::a11y::{AccessNode, AccessState, Action as AccessAction, Politeness, Role};
 use ui::portal::{FileFilter, PickRequest, PortalChannel, PortalOutcome};
 use ui::presence::PresenceCtx;
-use ui::text_render::{TextRenderer, TextWeight};
+use ui::text_render::{TextRenderer, TextStyle, TextWeight};
 use ui::theme::Theme;
 use ui::tilo_actions::{ActionAddress, ControlInvocation, OperationKind, Resource};
 use ui::widget::{TextInput, Widget};
@@ -56,8 +55,9 @@ use ui::widget::{TextInput, Widget};
 use crate::actions::{self, LogsOperation};
 use crate::doc::LogsDoc;
 use crate::model::{Filter, LogEntry, Priority};
-use crate::responsive::{Pane, PushNav};
 use crate::theme_ext::{ThemeColors, tint};
+use ui::paint::{fill_rect, fill_round, stroke_round};
+use ui::widget::{PushNav, PushPane};
 
 const PAD: f64 = 16.0;
 const HEADER_H: f64 = 60.0;
@@ -187,6 +187,8 @@ pub struct LogsApp {
     /// shot factory.
     shot_filter: Option<Filter>,
     dirty: bool,
+    /// Text-derived band pitches for this frame (see [`Metrics`]).
+    m: Metrics,
 
     // ---- responsiveness (master-detail push on narrow windows) ----
     /// Drives the single-pane list↔detail push slide below the width
@@ -232,6 +234,7 @@ impl LogsApp {
             pending_control_invocation: None,
             shot_filter: None,
             dirty: true,
+            m: Metrics::ONE,
             push: PushNav::default(),
             allow_live,
             last_poll: Instant::now(),
@@ -258,7 +261,7 @@ impl LogsApp {
     /// eased slide so a headless frame captures a settled pane. A no-op
     /// effect on wide windows, where both panes are docked anyway.
     pub fn shots_show_detail(&mut self) {
-        self.push.snap(Pane::Detail);
+        self.push.snap(PushPane::Detail);
         self.dirty = true;
     }
 
@@ -381,7 +384,7 @@ impl LogsApp {
     }
 
     fn content_h(&self) -> f64 {
-        self.filtered.len() as f64 * ROW_H
+        self.filtered.len() as f64 * self.m.row_h
     }
 
     fn clamp_scroll(&mut self) {
@@ -392,8 +395,8 @@ impl LogsApp {
     /// Scroll so the filtered position `pos` is fully visible.
     fn scroll_into_view(&mut self, pos: usize) {
         let body_h = self.list_viewport_h();
-        let top = pos as f64 * ROW_H;
-        let bottom = top + ROW_H;
+        let top = pos as f64 * self.m.row_h;
+        let bottom = top + self.m.row_h;
         if (top as f32) < self.scroll {
             self.scroll = top as f32;
         } else if bottom as f32 > self.scroll + body_h as f32 {
@@ -490,17 +493,15 @@ impl LogsApp {
         if entries.is_empty() {
             return Err("there are no filtered entries to export".into());
         }
+        let request = PickRequest::save("Export filtered logs", "Export", "journal-filtered.jsonl")
+            .thread_name("logs-portal-export")
+            .filter(
+                FileFilter::new("JSON Lines")
+                    .mimetype("application/x-ndjson")
+                    .glob("*.jsonl"),
+            );
         self.pending_export = Some(entries);
-        self.export_rx = Some(
-            PickRequest::save("Export filtered logs", "Export", "journal-filtered.jsonl")
-                .thread_name("logs-portal-export")
-                .filter(
-                    FileFilter::new("JSON Lines")
-                        .mimetype("application/x-ndjson")
-                        .glob("*.jsonl"),
-                )
-                .send(),
-        );
+        self.export_rx = Some(request.send());
         Ok(())
     }
 
@@ -594,12 +595,12 @@ impl LogsApp {
         // The compact header remains present on phone widths even in offline
         // shots: it owns the discoverable Actions menu (Refresh, Follow /
         // Pause, Export), which must not disappear with desktop chrome.
-        let header_h = HEADER_H;
+        let header_h = self.m.header_h;
         let header = Rect::new(x0, y0, x0 + w, y0 + header_h);
-        let filter_h = if Self::filters_wrap(w) {
-            128.0
+        let filter_h = if Self::filters_wrap(w / self.m.k) {
+            self.m.filter_wrap_h()
         } else {
-            FILTER_H
+            self.m.filter_h()
         };
         let filter = Rect::new(x0, header.y1, x0 + w, header.y1 + filter_h);
         let content_top = filter.y1;
@@ -607,7 +608,7 @@ impl LogsApp {
         // there is no standing legend strip to reserve room for.
         let content_bottom = y0 + h;
 
-        let (search, unit_trigger, boot_trigger, chips) = Self::filter_bar_regions(x0, w, filter);
+        let (search, unit_trigger, boot_trigger, chips) = self.filter_bar_regions(x0, w, filter);
         let (live_pill, refresh_btn, overflow_trigger, clear_btn) =
             self.header_controls(x0, w, header);
 
@@ -620,7 +621,20 @@ impl LogsApp {
 
         let (list_header, list_body, detail, back_btn, narrow) =
             self.content_split(w, cx0, cy0, cx1, cy1, gap);
-        let dropdown = self.dropdown_regions(unit_trigger, boot_trigger, overflow_trigger);
+        // The Actions menu is opened from the compact header's overflow
+        // trigger; if the window has since grown past the breakpoint (or a
+        // capture requests the menu in a wide window) that trigger no longer
+        // exists, so the sheet anchors where the trigger would sit — under the
+        // header's trailing controls — instead of at the window origin.
+        let overflow_anchor = if overflow_trigger.width() > 0.0 {
+            overflow_trigger
+        } else {
+            let k = self.m.k;
+            let ctl_h = 30.0 + (self.m.header_h - HEADER_H);
+            let hy = header.y0 + (self.m.header_h - ctl_h) / 2.0;
+            Rect::new(x0 + w - PAD - 178.0 * k, hy, x0 + w - PAD, hy + ctl_h)
+        };
+        let dropdown = self.dropdown_regions(unit_trigger, boot_trigger, overflow_anchor);
 
         Regions {
             header,
@@ -644,50 +658,69 @@ impl LogsApp {
 
     /// `regions()`'s filter-bar controls: search box, unit/boot dropdown
     /// triggers, and the right-aligned severity chips.
-    fn filter_bar_regions(x0: f64, w: f64, filter: Rect) -> (Rect, Rect, Rect, Vec<Rect>) {
-        if Self::filters_wrap(w) {
+    fn filter_bar_regions(&self, x0: f64, w: f64, filter: Rect) -> (Rect, Rect, Rect, Vec<Rect>) {
+        if Self::filters_wrap(w / self.m.k) {
             let search_y = filter.y0 + 8.0;
-            let search = Rect::new(x0 + PAD, search_y, x0 + w - PAD, search_y + CONTROL_H);
+            let search = Rect::new(
+                x0 + PAD,
+                search_y,
+                x0 + w - PAD,
+                search_y + self.m.control_h,
+            );
             let facet_y = search.y1 + 6.0;
             let facet_w = ((w - PAD * 2.0 - 10.0) / 2.0).max(72.0);
-            let unit_trigger =
-                Rect::new(x0 + PAD, facet_y, x0 + PAD + facet_w, facet_y + CONTROL_H);
+            let unit_trigger = Rect::new(
+                x0 + PAD,
+                facet_y,
+                x0 + PAD + facet_w,
+                facet_y + self.m.control_h,
+            );
             let boot_trigger = Rect::new(
                 unit_trigger.x1 + 10.0,
                 facet_y,
                 x0 + w - PAD,
-                facet_y + CONTROL_H,
+                facet_y + self.m.control_h,
             );
-            let chip_y = facet_y + CONTROL_H + 6.0;
+            let chip_y = facet_y + self.m.control_h + 6.0;
             let chip_w = ((w - PAD * 2.0 - 7.0 * 4.0) / 8.0).max(20.0);
             let chips = (0..8)
                 .map(|i| {
                     let x = x0 + PAD + f64::from(i) * (chip_w + 4.0);
-                    Rect::new(x, chip_y, x + chip_w, chip_y + CONTROL_H)
+                    Rect::new(x, chip_y, x + chip_w, chip_y + self.m.control_h)
                 })
                 .collect();
             return (search, unit_trigger, boot_trigger, chips);
         }
-        let fy = filter.y0 + (FILTER_H - CONTROL_H) / 2.0;
+        // The single-row bar: label-budgeted widths designed at 1× scale with
+        // the text scale (the bar itself wraps at the 1×-space breakpoint).
+        let k = self.m.k;
+        let fy = filter.y0 + (self.m.filter_h() - self.m.control_h) / 2.0;
         let mut fx = x0 + PAD;
-        let search = Rect::new(fx, fy, fx + 320.0, fy + CONTROL_H);
+        let search = Rect::new(fx, fy, fx + 320.0 * k, fy + self.m.control_h);
         fx = search.x1 + 10.0;
-        let unit_trigger = Rect::new(fx, fy, fx + 188.0, fy + CONTROL_H);
+        let unit_trigger = Rect::new(fx, fy, fx + 188.0 * k, fy + self.m.control_h);
         fx = unit_trigger.x1 + 10.0;
-        let boot_trigger = Rect::new(fx, fy, fx + 196.0, fy + CONTROL_H);
+        let boot_trigger = Rect::new(fx, fy, fx + 196.0 * k, fy + self.m.control_h);
 
         // Severity chips, right-aligned in the filter bar.
-        let chip_w = 46.0;
+        let chip_w = 46.0 * k;
         let chip_gap = 4.0;
         let chips_total = chip_w * 8.0 + chip_gap * 7.0;
         let chips_x0 = (x0 + w - PAD - chips_total).max(boot_trigger.x1 + 16.0);
         let chips: Vec<Rect> = (0..8)
             .map(|i| {
                 let cx = chips_x0 + f64::from(i) * (chip_w + chip_gap);
-                Rect::new(cx, fy, cx + chip_w, fy + CONTROL_H)
+                Rect::new(cx, fy, cx + chip_w, fy + self.m.control_h)
             })
             .collect();
         (search, unit_trigger, boot_trigger, chips)
+    }
+
+    /// The master-detail push breakpoint, judged in 1× space: a window holds
+    /// as much 2× text as a half-width 1× window. One predicate for layout,
+    /// paint and the event path, so they never disagree about the pane mode.
+    fn narrow_at(&self, w: f64) -> bool {
+        crate::responsive::is_narrow(w / self.m.k.max(f64::from(f32::EPSILON)))
     }
 
     /// The filters need more width than the docked journal split. Keep this
@@ -703,22 +736,34 @@ impl LogsApp {
     /// just left of it and is only laid out (non-zero) while a filter is
     /// active.
     fn header_controls(&self, x0: f64, w: f64, header: Rect) -> (Rect, Rect, Rect, Rect) {
-        if PushNav::is_narrow(w) {
-            let hy = header.y0 + (HEADER_H - 30.0) / 2.0;
+        // Controls are 30 px (26 px for the clear chip) at 1× and grow by the
+        // header's measured line growth; their label-budgeted widths scale
+        // with the text scale, and the narrow breakpoint is judged in 1× space.
+        let k = self.m.k;
+        let grow = self.m.header_h - HEADER_H;
+        let ctl_h = 30.0 + grow;
+        if self.narrow_at(w) {
+            let hy = header.y0 + (self.m.header_h - ctl_h) / 2.0;
             // Keep the menu at least as wide as its three action labels, so
             // the overlay remains inside a 390px phone viewport.
-            let overflow = Rect::new(x0 + w - PAD - 178.0, hy, x0 + w - PAD, hy + 30.0);
+            let overflow = Rect::new(x0 + w - PAD - 178.0 * k, hy, x0 + w - PAD, hy + ctl_h);
             return (Rect::ZERO, Rect::ZERO, overflow, Rect::ZERO);
         }
-        let hy = header.y0 + (HEADER_H - 30.0) / 2.0;
-        let live_pill = Rect::new(x0 + w - PAD - 124.0, hy, x0 + w - PAD, hy + 30.0);
-        let refresh_btn = Rect::new(live_pill.x0 - 40.0, hy, live_pill.x0 - 6.0, hy + 30.0);
+        let hy = header.y0 + (self.m.header_h - ctl_h) / 2.0;
+        let live_pill = Rect::new(x0 + w - PAD - 124.0 * k, hy, x0 + w - PAD, hy + ctl_h);
+        let refresh_btn = Rect::new(
+            live_pill.x0 - 6.0 - 34.0 * k,
+            hy,
+            live_pill.x0 - 6.0,
+            hy + ctl_h,
+        );
         let clear_btn = if self.filter.is_clear() {
             Rect::ZERO
         } else {
-            let cy = header.y0 + (HEADER_H - 26.0) / 2.0;
+            let clear_h = 26.0 + grow;
+            let cy = header.y0 + (self.m.header_h - clear_h) / 2.0;
             let x1 = refresh_btn.x0 - 12.0;
-            Rect::new(x1 - 104.0, cy, x1, cy + 26.0)
+            Rect::new(x1 - 104.0 * k, cy, x1, cy + clear_h)
         };
         (live_pill, refresh_btn, Rect::ZERO, clear_btn)
     }
@@ -741,7 +786,7 @@ impl LogsApp {
         cy1: f64,
         gap: f64,
     ) -> (Rect, Rect, Rect, Rect, bool) {
-        let narrow = PushNav::is_narrow(w);
+        let narrow = self.narrow_at(w);
         let (list_header, list_body, detail, back_btn) = if narrow {
             // Single-pane push: the list and detail each fill the whole
             // content width and slide horizontally as one swaps for the
@@ -750,7 +795,7 @@ impl LogsApp {
             let slide = self.push.slide();
             let list_x = cx0 - pane_w * slide; // slides off to the left
             let detail_x = cx0 + pane_w * (1.0 - slide); // slides in from the right
-            let lh = Rect::new(list_x, cy0, list_x + pane_w, cy0 + LIST_HEADER_H);
+            let lh = Rect::new(list_x, cy0, list_x + pane_w, cy0 + self.m.list_header_h);
             let lb = Rect::new(list_x, lh.y1, list_x + pane_w, cy1);
             // Reserve a Back affordance strip at the top of the detail pane.
             let detail_rect = Rect::new(detail_x, cy0, detail_x + pane_w, cy1);
@@ -764,7 +809,7 @@ impl LogsApp {
         } else {
             // Wide: the classic list (left) + detail (right) split.
             let list_w = ((cx1 - cx0) - gap) * 0.58;
-            let lh = Rect::new(cx0, cy0, cx0 + list_w, cy0 + LIST_HEADER_H);
+            let lh = Rect::new(cx0, cy0, cx0 + list_w, cy0 + self.m.list_header_h);
             let lb = Rect::new(cx0, lh.y1, cx0 + list_w, cy1);
             let detail_rect = Rect::new(cx0 + list_w + gap, cy0, cx1, cy1);
             (lh, lb, detail_rect, Rect::ZERO)
@@ -820,8 +865,8 @@ impl LogsApp {
             items.truncate(14);
             let dw = (trigger.width()).max(180.0);
             for (i, (val, label)) in items.into_iter().enumerate() {
-                let iy = trigger.y1 + 4.0 + i as f64 * DROPDOWN_ITEM_H;
-                let irect = Rect::new(trigger.x0, iy, trigger.x0 + dw, iy + DROPDOWN_ITEM_H);
+                let iy = trigger.y1 + 4.0 + i as f64 * self.m.item_h;
+                let irect = Rect::new(trigger.x0, iy, trigger.x0 + dw, iy + self.m.item_h);
                 dropdown.push((irect, val, label));
             }
         }
@@ -832,28 +877,6 @@ impl LogsApp {
 // ===================================================================
 // Drawing helpers (free functions so borrows stay simple)
 // ===================================================================
-
-fn fill_rect(scene: &mut Scene, t: Affine, r: Rect, c: Color) {
-    scene.fill(Fill::NonZero, t, c, None, &r);
-}
-fn fill_round(scene: &mut Scene, t: Affine, r: Rect, radius: impl Into<f64>, c: Color) {
-    scene.fill(
-        Fill::NonZero,
-        t,
-        c,
-        None,
-        &RoundedRect::from_rect(r, radius.into()),
-    );
-}
-fn stroke_round(scene: &mut Scene, t: Affine, r: Rect, radius: impl Into<f64>, c: Color, w: f64) {
-    scene.stroke(
-        &Stroke::new(w),
-        t,
-        c,
-        None,
-        &RoundedRect::from_rect(r, radius.into()),
-    );
-}
 fn fill_circle(scene: &mut Scene, t: Affine, center: Point, radius: f64, c: Color) {
     scene.fill(Fill::NonZero, t, c, None, &Circle::new(center, radius));
 }
@@ -870,7 +893,10 @@ fn leaf_node(taffy: &mut TaffyTree<()>, style: Style) -> NodeId {
 }
 
 /// Baseline-free top-left text at `(x,y)`, no wrapping.
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Log text painting needs scene/transform, content, font size/weight/family, color, and top-left coordinates."
+)]
 fn text_at(
     tr: &mut TextRenderer,
     scene: &mut Scene,
@@ -896,39 +922,101 @@ fn text_at(
     );
 }
 
-/// Vertically-centred Y for a single line of `size` inside `rect`.
-fn vcenter(rect: Rect, size: f32) -> f64 {
-    rect.y0 + (rect.height() - f64::from(size) * 1.25) / 2.0
+/// Theme type sizes (`theme.tokens.typography.scale.*`) already carry the
+/// accessibility text scale, and the size-based renderer APIs (`measure`,
+/// `draw_text_styled`) apply that scale once more. Every token this app paints
+/// goes through here so the multiplier lands exactly once — 2× glyphs at
+/// 200 %, not 4×. Identity at 1×.
+fn ts(tr: &TextRenderer, resolved: f32) -> f32 {
+    tr.renderer_input_style(&TextStyle::new(resolved)).size
 }
 
-/// Trim `s` with a trailing ellipsis until it fits `max_w` px at `size`.
-fn elide(tr: &mut TextRenderer, s: &str, size: f32, max_w: f64, mono: bool) -> String {
-    if s.is_empty() {
-        return String::new();
-    }
-    let measure = |tr: &mut TextRenderer, t: &str| {
-        if mono {
-            tr.measure_styled(t, size, None, TextWeight::Regular, false, true)
-                .0
-        } else {
-            tr.measure(t, size, None).0
-        }
+/// Vertical pitches of every text-bearing band, derived once per frame from
+/// the measured line growth of the type sizes each band stacks. The `*_H`
+/// constants above are the 1× design; each band grows by exactly the extra
+/// height its lines gain at the current accessibility scale, so `regions()`
+/// (layout + hit-testing) and the painters read one pitch. Glyph-budgeted
+/// widths are laid out at 1× and scaled by `k`. At 1× this is
+/// [`Metrics::ONE`].
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Metrics {
+    /// The renderer's accessibility text scale.
+    k: f64,
+    /// Journal row (`sm` message line).
+    row_h: f64,
+    /// Table header row (`xs` labels).
+    list_header_h: f64,
+    /// Filter controls: the dropdown trigger stacks an `xs` caption over an
+    /// `sm` value; the search field and the severity chips share the height.
+    control_h: f64,
+    /// Header band (one `sm` line of controls).
+    header_h: f64,
+    /// Dropdown row (`sm` label).
+    item_h: f64,
+    /// Painted line height per renderer-relative pixel of font size (1.25 at
+    /// 1×, 2.5 at 200 %) — what `vcenter` centres on and stacked lines step by.
+    line_per_px: f64,
+}
+
+impl Metrics {
+    const ONE: Self = Self {
+        k: 1.0,
+        row_h: ROW_H,
+        list_header_h: LIST_HEADER_H,
+        control_h: CONTROL_H,
+        header_h: HEADER_H,
+        item_h: DROPDOWN_ITEM_H,
+        line_per_px: 1.25,
     };
-    if f64::from(measure(tr, s)) <= max_w {
-        return s.to_string();
+
+    /// Measure with the renderer that will paint. Needs no theme: in the
+    /// renderer's input space the type ramp is the 1× ramp (the renderer
+    /// applies the accessibility scale on top), so `Widget::measure` can set
+    /// this before the first paint and the event path never sees 1× bands
+    /// under a 2× frame.
+    fn measure(tr: &mut TextRenderer) -> Self {
+        let k = f64::from(tr.text_scale()).max(f64::from(f32::EPSILON));
+        let ramp = ui::tokens::TypeScale::default();
+        let line = |tr: &mut TextRenderer, size: f32| f64::from(tr.measure("0", size, None).1);
+        let grow = |line: f64| (line - line / k).max(0.0);
+        let sm_line = line(tr, ramp.sm);
+        let xs = grow(line(tr, ramp.xs));
+        let sm = grow(sm_line);
+        let line_per_px = if sm_line > 0.0 {
+            sm_line / f64::from(ramp.sm)
+        } else {
+            1.25
+        };
+        Self {
+            k,
+            row_h: ROW_H + sm,
+            list_header_h: LIST_HEADER_H + xs,
+            control_h: CONTROL_H + xs + sm,
+            header_h: HEADER_H + sm,
+            item_h: DROPDOWN_ITEM_H + sm,
+            line_per_px,
+        }
     }
-    let chars: Vec<char> = s.chars().collect();
-    let full = f64::from(measure(tr, s));
-    let mut keep = (((max_w / full) * chars.len() as f64) as usize).min(chars.len());
-    loop {
-        if keep == 0 {
-            return "…".to_string();
-        }
-        let cand: String = chars.get(..keep).unwrap_or(&[]).iter().collect::<String>() + "…";
-        if f64::from(measure(tr, &cand)) <= max_w {
-            return cand;
-        }
-        keep -= 1;
+
+    /// Height one line of renderer-relative `size` paints at this frame.
+    fn line_h(self, size: f32) -> f64 {
+        f64::from(size) * self.line_per_px
+    }
+
+    /// Vertically-centred Y for a single line of `size` inside `rect`, on the
+    /// measured line box rather than the bare font size.
+    fn vcenter(self, rect: Rect, size: f32) -> f64 {
+        rect.y0 + (rect.height() - self.line_h(size)) / 2.0
+    }
+
+    /// Single-row filter bar height (`FILTER_H` at 1×).
+    fn filter_h(self) -> f64 {
+        FILTER_H + (self.control_h - CONTROL_H)
+    }
+
+    /// Wrapped (three-row) filter bar height (128 px at 1×).
+    fn filter_wrap_h(self) -> f64 {
+        128.0 + 3.0 * (self.control_h - CONTROL_H)
     }
 }
 
@@ -951,7 +1039,7 @@ impl LogsApp {
             reg.header.y1,
             reg.header.x1,
             reg.header.y1,
-            c.border_standard,
+            ui::chrome::chrome_hairline(theme),
             1.0,
         );
 
@@ -981,18 +1069,18 @@ impl LogsApp {
                 scene,
                 t,
                 reg.clear_btn,
-                theme.tokens.radii.md,
+                f64::from(theme.tokens.radii.md),
                 tint(theme.accent_primary, 40),
             );
             stroke_round(
                 scene,
                 t,
                 reg.clear_btn,
-                theme.tokens.radii.md,
+                f64::from(theme.tokens.radii.md),
                 theme.accent_primary,
                 1.0,
             );
-            let bsz = theme.tokens.typography.scale.sm;
+            let bsz = ts(tr, theme.tokens.typography.scale.sm);
             let label = "Clear filters";
             let (bw, _) = tr.measure_weighted(label, bsz, None, TextWeight::Semibold);
             text_at(
@@ -1003,7 +1091,7 @@ impl LogsApp {
                 bsz,
                 theme.accent_primary,
                 reg.clear_btn.center().x - f64::from(bw) / 2.0,
-                vcenter(reg.clear_btn, bsz),
+                self.m.vcenter(reg.clear_btn, bsz),
                 TextWeight::Semibold,
                 false,
             );
@@ -1025,17 +1113,18 @@ impl LogsApp {
             self.filtered.len(),
             self.entries.len()
         );
-        let (cw, _) = tr.measure(&counts, theme.tokens.typography.scale.sm, None);
+        let (cw, _) = tr.measure(&counts, ts(tr, theme.tokens.typography.scale.sm), None);
         if reg.overflow_trigger.width() > 0.0 {
             text_at(
                 tr,
                 scene,
                 t,
                 &counts,
-                theme.tokens.typography.scale.sm,
+                ts(tr, theme.tokens.typography.scale.sm),
                 theme.text_dim,
                 reg.header.x0 + PAD,
-                vcenter(reg.header, theme.tokens.typography.scale.sm),
+                self.m
+                    .vcenter(reg.header, ts(tr, theme.tokens.typography.scale.sm)),
                 TextWeight::Medium,
                 false,
             );
@@ -1051,10 +1140,11 @@ impl LogsApp {
             scene,
             t,
             &counts,
-            theme.tokens.typography.scale.sm,
+            ts(tr, theme.tokens.typography.scale.sm),
             theme.text_dim,
             counts_anchor - 14.0 - f64::from(cw),
-            vcenter(reg.header, theme.tokens.typography.scale.sm),
+            self.m
+                .vcenter(reg.header, ts(tr, theme.tokens.typography.scale.sm)),
             TextWeight::Medium,
             false,
         );
@@ -1076,23 +1166,15 @@ impl LogsApp {
         }
         let c = &theme.tokens.colors;
         let hovered = reg.refresh_btn.contains(self.cursor);
-        fill_round(
+        ui::surface::card(
             scene,
             t,
             reg.refresh_btn,
-            theme.tokens.radii.full,
+            f64::from(theme.tokens.radii.full),
             if hovered { c.lift(0.72) } else { c.lift(0.35) },
         );
-        stroke_round(
-            scene,
-            t,
-            reg.refresh_btn,
-            theme.tokens.radii.full,
-            c.border_standard,
-            1.0,
-        );
         let label = "↻";
-        let sz = theme.tokens.typography.scale.base;
+        let sz = ts(tr, theme.tokens.typography.scale.base);
         let (w, _) = tr.measure_weighted(label, sz, None, TextWeight::Semibold);
         text_at(
             tr,
@@ -1102,7 +1184,7 @@ impl LogsApp {
             sz,
             theme.text_primary,
             reg.refresh_btn.center().x - f64::from(w) / 2.0,
-            vcenter(reg.refresh_btn, sz) - 1.0,
+            self.m.vcenter(reg.refresh_btn, sz) - 1.0,
             TextWeight::Semibold,
             false,
         );
@@ -1127,18 +1209,25 @@ impl LogsApp {
         } else {
             c.lift(0.35)
         };
-        fill_round(scene, t, reg.live_pill, theme.tokens.radii.full, pill_bg);
-        if !on {
-            stroke_round(
+        if on {
+            fill_round(
                 scene,
                 t,
                 reg.live_pill,
-                theme.tokens.radii.full,
-                c.border_standard,
-                1.0,
+                f64::from(theme.tokens.radii.full),
+                pill_bg,
+            );
+        } else {
+            ui::surface::card(
+                scene,
+                t,
+                reg.live_pill,
+                f64::from(theme.tokens.radii.full),
+                pill_bg,
             );
         }
-        let dot_c = if on { Color::WHITE } else { theme.text_dim };
+        let on_accent = c.on_accent(ui::tokens::colors::ON_FILL_MIN_CONTRAST);
+        let dot_c = if on { on_accent } else { theme.text_dim };
         fill_circle(
             scene,
             t,
@@ -1147,16 +1236,17 @@ impl LogsApp {
             dot_c,
         );
         let label = "Live tail";
-        let lc = if on { Color::WHITE } else { theme.text_dim };
+        let lc = if on { on_accent } else { theme.text_dim };
         text_at(
             tr,
             scene,
             t,
             label,
-            theme.tokens.typography.scale.sm,
+            ts(tr, theme.tokens.typography.scale.sm),
             lc,
             reg.live_pill.x0 + 28.0,
-            vcenter(reg.live_pill, theme.tokens.typography.scale.sm),
+            self.m
+                .vcenter(reg.live_pill, ts(tr, theme.tokens.typography.scale.sm)),
             TextWeight::Semibold,
             false,
         );
@@ -1178,31 +1268,30 @@ impl LogsApp {
         }
         let c = &theme.tokens.colors;
         let open = self.popup == Some(Popup::Actions);
-        fill_round(
+        let trigger_bg = if open || reg.overflow_trigger.contains(self.cursor) {
+            c.lift(0.72)
+        } else {
+            c.lift(0.35)
+        };
+        ui::surface::card(
             scene,
             t,
             reg.overflow_trigger,
-            theme.tokens.radii.full,
-            if open || reg.overflow_trigger.contains(self.cursor) {
-                c.lift(0.72)
-            } else {
-                c.lift(0.35)
-            },
+            f64::from(theme.tokens.radii.full),
+            trigger_bg,
         );
-        stroke_round(
-            scene,
-            t,
-            reg.overflow_trigger,
-            theme.tokens.radii.full,
-            if open {
-                c.border_focus
-            } else {
-                c.border_standard
-            },
-            if open { 1.5 } else { 1.0 },
-        );
+        if open {
+            stroke_round(
+                scene,
+                t,
+                reg.overflow_trigger,
+                f64::from(theme.tokens.radii.full),
+                c.border_focus,
+                1.5,
+            );
+        }
         let label = "Actions";
-        let sz = theme.tokens.typography.scale.sm;
+        let sz = ts(tr, theme.tokens.typography.scale.sm);
         text_at(
             tr,
             scene,
@@ -1211,7 +1300,7 @@ impl LogsApp {
             sz,
             theme.text_primary,
             reg.overflow_trigger.x0 + 12.0,
-            vcenter(reg.overflow_trigger, sz),
+            self.m.vcenter(reg.overflow_trigger, sz),
             TextWeight::Semibold,
             false,
         );
@@ -1256,7 +1345,7 @@ impl LogsApp {
             reg.filter.y1,
             reg.filter.x1,
             reg.filter.y1,
-            c.border_standard,
+            ui::surface::edge_on(c.surfaces.base),
             1.0,
         );
         self.draw_filter_search_box(scene, t, tr, theme, reg);
@@ -1276,26 +1365,23 @@ impl LogsApp {
     ) {
         let c = &theme.tokens.colors;
         let focused = self.search_input.is_focused();
-        fill_round(
+        ui::surface::card(
             scene,
             t,
             reg.search,
-            theme.tokens.radii.md,
+            f64::from(theme.tokens.radii.md),
             c.surfaces.raised,
         );
-        let border = if focused {
-            c.border_focus
-        } else {
-            c.border_standard
-        };
-        stroke_round(
-            scene,
-            t,
-            reg.search,
-            theme.tokens.radii.md,
-            border,
-            if focused { 1.5 } else { 1.0 },
-        );
+        if focused {
+            stroke_round(
+                scene,
+                t,
+                reg.search,
+                f64::from(theme.tokens.radii.md),
+                c.border_focus,
+                1.5,
+            );
+        }
         // search glyph
         let gy = reg.search.center().y;
         fill_circle(
@@ -1352,6 +1438,7 @@ impl LogsApp {
             t,
             tr,
             theme,
+            self.m,
             reg.unit_trigger,
             "Unit",
             &unit_label,
@@ -1375,6 +1462,7 @@ impl LogsApp {
             t,
             tr,
             theme,
+            self.m,
             reg.boot_trigger,
             "Boot",
             &boot_label,
@@ -1401,18 +1489,39 @@ impl LogsApp {
             let active = p.level() <= self.filter.min_priority;
             let col = p.color(&tc);
             if active {
-                fill_round(scene, t, *chip, theme.tokens.radii.md, tint(col, 235));
+                fill_round(
+                    scene,
+                    t,
+                    *chip,
+                    f64::from(theme.tokens.radii.md),
+                    tint(col, 235),
+                );
             } else {
-                fill_round(scene, t, *chip, theme.tokens.radii.md, c.lift(0.35));
-                stroke_round(scene, t, *chip, theme.tokens.radii.md, tint(col, 90), 1.0);
+                fill_round(
+                    scene,
+                    t,
+                    *chip,
+                    f64::from(theme.tokens.radii.md),
+                    c.lift(0.35),
+                );
+                stroke_round(
+                    scene,
+                    t,
+                    *chip,
+                    f64::from(theme.tokens.radii.md),
+                    tint(col, 90),
+                    1.0,
+                );
             }
             let tag = p.tag();
             let label_c = if active {
-                contrast_on(col)
+                // Ink measured against the severity fill with the toolkit's
+                // on-fill floor: near-black on amber, white on the dark reds.
+                theme.tokens.colors.on_surface(col).ink
             } else {
                 theme.text_dim
             };
-            let sz = theme.tokens.typography.scale.xs;
+            let sz = ts(tr, theme.tokens.typography.scale.xs);
             let (lw, _) = tr.measure_weighted(tag, sz, None, TextWeight::Bold);
             text_at(
                 tr,
@@ -1422,19 +1531,23 @@ impl LogsApp {
                 sz,
                 label_c,
                 chip.center().x - f64::from(lw) / 2.0,
-                vcenter(*chip, sz),
+                self.m.vcenter(*chip, sz),
                 TextWeight::Bold,
                 false,
             );
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Filter trigger painting combines render context, measured text metrics, bounds, caption/value, and open/active states."
+    )]
     fn draw_dropdown_trigger(
         scene: &mut Scene,
         t: Affine,
         tr: &mut TextRenderer,
         theme: &Theme,
+        m: Metrics,
         rect: Rect,
         kind: &str,
         label: &str,
@@ -1442,37 +1555,44 @@ impl LogsApp {
         active: bool,
     ) {
         let c = &theme.tokens.colors;
-        fill_round(scene, t, rect, theme.tokens.radii.md, c.surfaces.raised);
-        let border = if open {
-            c.border_focus
-        } else if active {
-            theme.accent_primary
-        } else {
-            c.border_standard
-        };
-        stroke_round(
+        ui::surface::card(
             scene,
             t,
             rect,
-            theme.tokens.radii.md,
-            border,
-            if open || active { 1.5 } else { 1.0 },
+            f64::from(theme.tokens.radii.md),
+            c.surfaces.raised,
         );
-        let sz = theme.tokens.typography.scale.sm;
+        if open || active {
+            stroke_round(
+                scene,
+                t,
+                rect,
+                f64::from(theme.tokens.radii.md),
+                if open {
+                    c.border_focus
+                } else {
+                    theme.accent_primary
+                },
+                1.5,
+            );
+        }
+        let sz = ts(tr, theme.tokens.typography.scale.sm);
         // kind caption
         text_at(
             tr,
             scene,
             t,
             kind,
-            theme.tokens.typography.scale.xs,
+            ts(tr, theme.tokens.typography.scale.xs),
             theme.text_dim,
             rect.x0 + 12.0,
             rect.y0 + 4.0,
             TextWeight::Semibold,
             false,
         );
-        let val = elide(tr, label, sz, rect.width() - 38.0, false);
+        // The value stacks on the caption's measured line (16 px at 1×).
+        let value_top = rect.y0 + 4.0 + m.line_h(ts(tr, theme.tokens.typography.scale.xs)) - 0.5;
+        let val = tr.elide_to_width(label, sz, ui::num::f32_of_f64(rect.width() - 38.0));
         text_at(
             tr,
             scene,
@@ -1481,7 +1601,7 @@ impl LogsApp {
             sz,
             theme.text_primary,
             rect.x0 + 12.0,
-            rect.y0 + 16.0,
+            value_top,
             TextWeight::Medium,
             false,
         );
@@ -1518,12 +1638,12 @@ impl LogsApp {
         theme: &Theme,
         reg: &Regions,
     ) {
-        Self::draw_list_frame_and_header(scene, t, tr, theme, reg);
+        Self::draw_list_frame_and_header(scene, t, tr, theme, self.m, reg);
         if self.draw_list_empty(scene, t, tr, theme, reg) {
             return;
         }
         self.draw_list_rows(scene, t, tr, theme, reg);
-        self.draw_list_scrollbar(scene, t, reg);
+        self.draw_list_scrollbar(scene, t, theme, reg);
     }
 
     /// The list card background plus the TIME/LEVEL/UNIT/MESSAGE column
@@ -1533,6 +1653,7 @@ impl LogsApp {
         t: Affine,
         tr: &mut TextRenderer,
         theme: &Theme,
+        m: Metrics,
         reg: &Regions,
     ) {
         let c = &theme.tokens.colors;
@@ -1544,14 +1665,12 @@ impl LogsApp {
             reg.list_header.x1,
             reg.list_body.y1,
         );
-        fill_round(scene, t, card, theme.tokens.radii.lg, c.surfaces.raised);
-        stroke_round(
+        ui::surface::card(
             scene,
             t,
             card,
-            theme.tokens.radii.lg,
-            c.border_standard,
-            1.0,
+            f64::from(theme.tokens.radii.lg),
+            c.surfaces.raised,
         );
 
         // Column header.
@@ -1567,9 +1686,9 @@ impl LogsApp {
             0.0,
             c.surfaces.base,
         );
-        let cols = column_x(reg.list_header);
-        let hsz = theme.tokens.typography.scale.xs;
-        let hy = vcenter(reg.list_header, hsz);
+        let cols = column_x(reg.list_header, m.k);
+        let hsz = ts(tr, theme.tokens.typography.scale.xs);
+        let hy = m.vcenter(reg.list_header, hsz);
         text_at(
             tr,
             scene,
@@ -1627,7 +1746,7 @@ impl LogsApp {
             reg.list_header.y1,
             reg.list_header.x1 - 8.0,
             reg.list_header.y1,
-            c.border_standard,
+            ui::surface::edge_on(c.surfaces.raised),
             1.0,
         );
     }
@@ -1671,7 +1790,14 @@ impl LogsApp {
                     "Run where journald is available to view live system logs.",
                 )
             };
-            let tsz = theme.tokens.typography.scale.lg;
+            // The three lines stack on their measured boxes around `cy`: title
+            // above (ending 4 px over centre), subtitle 2 px below, retry 9 px
+            // under the subtitle — the 1× offsets (−24 / +2 / +26), scale-proof.
+            let tsz = ts(tr, theme.tokens.typography.scale.lg);
+            let ssz = ts(tr, theme.tokens.typography.scale.sm);
+            let title_top = cy - 4.0 - self.m.line_h(tsz);
+            let sub_top = cy + 2.0;
+            let retry_top = sub_top + self.m.line_h(ssz) + 9.0;
             let (tw, _) = tr.measure(title, tsz, None);
             text_at(
                 tr,
@@ -1681,11 +1807,10 @@ impl LogsApp {
                 tsz,
                 c.text_primary,
                 cx - f64::from(tw) / 2.0,
-                cy - 24.0,
+                title_top,
                 TextWeight::Semibold,
                 false,
             );
-            let ssz = theme.tokens.typography.scale.sm;
             let (sw, _) = tr.measure(subtitle, ssz, None);
             text_at(
                 tr,
@@ -1695,7 +1820,7 @@ impl LogsApp {
                 ssz,
                 theme.text_dim,
                 cx - f64::from(sw) / 2.0,
-                cy + 2.0,
+                sub_top,
                 TextWeight::Regular,
                 false,
             );
@@ -1710,14 +1835,14 @@ impl LogsApp {
                     ssz,
                     theme.accent_primary,
                     cx - f64::from(rw) / 2.0,
-                    cy + 26.0,
+                    retry_top,
                     TextWeight::Medium,
                     false,
                 );
             }
         } else {
             let msg = "No entries match the current filters.";
-            let sz = theme.tokens.typography.scale.base;
+            let sz = ts(tr, theme.tokens.typography.scale.base);
             let (mw, _) = tr.measure(msg, sz, None);
             text_at(
                 tr,
@@ -1727,7 +1852,7 @@ impl LogsApp {
                 sz,
                 theme.text_dim,
                 cx - f64::from(mw) / 2.0,
-                cy - 10.0,
+                cy - self.m.line_h(sz) / 2.0 - 1.25,
                 TextWeight::Regular,
                 false,
             );
@@ -1754,8 +1879,8 @@ impl LogsApp {
 
         scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, t, &reg.list_body);
         let body = reg.list_body;
-        let first = (f64::from(self.scroll) / ROW_H).floor().max(0.0) as usize;
-        let visible = (body.height() / ROW_H).ceil() as usize + 2;
+        let first = (f64::from(self.scroll) / self.m.row_h).floor().max(0.0) as usize;
+        let visible = (body.height() / self.m.row_h).ceil() as usize + 2;
         for pos in first..(first + visible).min(self.filtered.len()) {
             let Some(&abs) = self.filtered.get(pos) else {
                 continue;
@@ -1763,33 +1888,43 @@ impl LogsApp {
             let Some(e) = self.entries.get(abs) else {
                 continue;
             };
-            let row_y0 = body.y0 + pos as f64 * ROW_H - f64::from(self.scroll);
-            let row = Rect::new(body.x0, row_y0, body.x1, row_y0 + ROW_H);
+            let row_y0 = body.y0 + pos as f64 * self.m.row_h - f64::from(self.scroll);
+            let row = Rect::new(body.x0, row_y0, body.x1, row_y0 + self.m.row_h);
             if row.y1 < body.y0 || row.y0 > body.y1 {
                 continue;
             }
             let is_sel = sel == Some(abs);
             let is_hover = self.hover_row == Some(abs);
             let col = e.priority.color(&tc);
+            // The painted band sits inside the row pitch, half an `s1` above
+            // and below, so neighbouring rows keep a token-step gap (HIG §7)
+            // while the pitch stays the paging and hit unit.
+            let g = f64::from(theme.tokens.spacing.s1) / 2.0;
+            let band = Rect::new(row.x0, row.y0 + g, row.x1, row.y1 - g);
             if is_sel {
-                fill_rect(scene, t, row, tint(theme.accent_primary, 46));
+                fill_rect(scene, t, band, tint(theme.accent_primary, 46));
                 fill_rect(
                     scene,
                     t,
-                    Rect::new(row.x0, row.y0, row.x0 + 3.0, row.y1),
+                    Rect::new(band.x0, band.y0, band.x0 + 3.0, band.y1),
                     theme.accent_primary,
                 );
             } else if is_hover {
-                fill_rect(scene, t, row, c.lift(0.35));
+                fill_rect(scene, t, band, c.lift(0.35));
             } else if pos % 2 == 1 {
-                fill_rect(scene, t, row, tint(Color::WHITE, 6));
+                fill_rect(
+                    scene,
+                    t,
+                    band,
+                    ui::tokens::Colors::hairline_on(c.surfaces.raised, 6),
+                );
             }
 
-            let cols = column_x(row);
+            let cols = column_x(row, self.m.k);
             // severity dot
             fill_circle(scene, t, Point::new(cols.dot_cx, row.center().y), 4.5, col);
             // time (mono, dim)
-            let tsz = theme.tokens.typography.scale.sm;
+            let tsz = ts(tr, theme.tokens.typography.scale.sm);
             let timestamp = if cols.compact {
                 e.time_hms()
             } else {
@@ -1803,7 +1938,7 @@ impl LogsApp {
                 tsz,
                 theme.text_dim,
                 cols.time_x,
-                vcenter(row, tsz),
+                self.m.vcenter(row, tsz),
                 TextWeight::Regular,
                 true,
             );
@@ -1813,17 +1948,19 @@ impl LogsApp {
                 scene,
                 t,
                 e.priority.tag(),
-                theme.tokens.typography.scale.xs,
+                ts(tr, theme.tokens.typography.scale.xs),
                 col,
                 cols.tag_x,
-                vcenter(row, theme.tokens.typography.scale.xs),
+                self.m
+                    .vcenter(row, ts(tr, theme.tokens.typography.scale.xs)),
                 TextWeight::Bold,
                 true,
             );
             if !cols.compact {
                 // Unit is promoted on desktop; compact rows reserve that
                 // width for the message and expose the unit in detail/a11y.
-                let unit_shown = elide(tr, e.unit_short(), tsz, cols.unit_w - 6.0, false);
+                let unit_shown =
+                    tr.elide_to_width(e.unit_short(), tsz, ui::num::f32_of_f64(cols.unit_w - 6.0));
                 text_at(
                     tr,
                     scene,
@@ -1832,13 +1969,13 @@ impl LogsApp {
                     tsz,
                     theme.text_primary,
                     cols.unit_x,
-                    vcenter(row, tsz),
+                    self.m.vcenter(row, tsz),
                     TextWeight::Medium,
                     false,
                 );
             }
             // message
-            let msg_shown = elide(tr, &e.message, tsz, cols.msg_w, false);
+            let msg_shown = tr.elide_to_width(&e.message, tsz, ui::num::f32_of_f64(cols.msg_w));
             let msg_c = if is_sel {
                 theme.text_primary
             } else {
@@ -1852,7 +1989,7 @@ impl LogsApp {
                 tsz,
                 msg_c,
                 cols.msg_x,
-                vcenter(row, tsz),
+                self.m.vcenter(row, tsz),
                 TextWeight::Regular,
                 false,
             );
@@ -1861,7 +1998,7 @@ impl LogsApp {
     }
 
     /// The list body's vertical scrollbar thumb, when the content overflows.
-    fn draw_list_scrollbar(&self, scene: &mut Scene, t: Affine, reg: &Regions) {
+    fn draw_list_scrollbar(&self, scene: &mut Scene, t: Affine, theme: &Theme, reg: &Regions) {
         let body = reg.list_body;
         let content = self.content_h();
         if content > body.height() {
@@ -1875,7 +2012,7 @@ impl LogsApp {
                 t,
                 Rect::new(track_x, ty0, track_x + 3.0, ty0 + thumb_h),
                 1.5,
-                tint(Color::WHITE, 70),
+                ui::tokens::Colors::hairline_on(theme.tokens.colors.surfaces.raised, 70),
             );
         }
     }
@@ -1890,8 +2027,13 @@ impl LogsApp {
     ) {
         let c = &theme.tokens.colors;
         let d = reg.detail;
-        fill_round(scene, t, d, theme.tokens.radii.lg, c.surfaces.raised);
-        stroke_round(scene, t, d, theme.tokens.radii.lg, c.border_standard, 1.0);
+        ui::surface::card(
+            scene,
+            t,
+            d,
+            f64::from(theme.tokens.radii.lg),
+            c.surfaces.raised,
+        );
 
         scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, t, &d);
         let mut layout = DetailLayout {
@@ -1910,7 +2052,7 @@ impl LogsApp {
 
         let Some(abs) = self.effective_selected() else {
             let msg = "Select an entry to inspect its fields.";
-            let sz = theme.tokens.typography.scale.base;
+            let sz = ts(tr, theme.tokens.typography.scale.base);
             text_at(
                 tr,
                 scene,
@@ -1931,8 +2073,8 @@ impl LogsApp {
             return;
         };
 
-        Self::draw_detail_header(scene, t, tr, theme, &mut layout, e);
-        Self::draw_detail_fields(scene, t, tr, theme, &mut layout, e);
+        Self::draw_detail_header(scene, t, tr, theme, self.m, &mut layout, e);
+        Self::draw_detail_fields(scene, t, tr, theme, self.m, &mut layout, e);
 
         scene.pop_layer();
     }
@@ -1944,6 +2086,7 @@ impl LogsApp {
         t: Affine,
         tr: &mut TextRenderer,
         theme: &Theme,
+        m: Metrics,
         layout: &mut DetailLayout,
         e: &LogEntry,
     ) {
@@ -1955,7 +2098,7 @@ impl LogsApp {
 
         // Priority badge pill.
         let badge_label = e.priority.long().to_uppercase();
-        let bsz = theme.tokens.typography.scale.xs;
+        let bsz = ts(tr, theme.tokens.typography.scale.xs);
         let (blw, _) = tr.measure_weighted(&badge_label, bsz, None, TextWeight::Bold);
         let badge = Rect::new(
             inner_x,
@@ -1963,16 +2106,22 @@ impl LogsApp {
             inner_x + f64::from(blw) + 24.0,
             layout.y + 22.0,
         );
-        fill_round(scene, t, badge, theme.tokens.radii.full, tint(col, 235));
+        fill_round(
+            scene,
+            t,
+            badge,
+            f64::from(theme.tokens.radii.full),
+            tint(col, 235),
+        );
         text_at(
             tr,
             scene,
             t,
             &badge_label,
             bsz,
-            contrast_on(col),
+            theme.tokens.colors.on_surface(col).ink,
             badge.x0 + 12.0,
-            vcenter(badge, bsz),
+            m.vcenter(badge, bsz),
             TextWeight::Bold,
             false,
         );
@@ -1986,7 +2135,7 @@ impl LogsApp {
                 bsz,
                 theme.text_dim,
                 badge.x1 + 10.0,
-                vcenter(badge, bsz),
+                m.vcenter(badge, bsz),
                 TextWeight::Medium,
                 true,
             );
@@ -1994,8 +2143,8 @@ impl LogsApp {
         layout.y = badge.y1 + 14.0;
 
         // Unit title.
-        let title_sz = theme.tokens.typography.scale.lg;
-        let title = elide(tr, &e.unit, title_sz, inner_w, false);
+        let title_sz = ts(tr, theme.tokens.typography.scale.lg);
+        let title = tr.elide_to_width(&e.unit, title_sz, ui::num::f32_of_f64(inner_w));
         text_at(
             tr,
             scene,
@@ -2008,10 +2157,10 @@ impl LogsApp {
             TextWeight::Semibold,
             false,
         );
-        layout.y += f64::from(title_sz) * 1.5;
+        layout.y += m.line_h(title_sz) * 1.2;
 
         // Timestamp.
-        let tssz = theme.tokens.typography.scale.sm;
+        let tssz = ts(tr, theme.tokens.typography.scale.sm);
         text_at(
             tr,
             scene,
@@ -2024,10 +2173,10 @@ impl LogsApp {
             TextWeight::Regular,
             true,
         );
-        layout.y += f64::from(tssz) * 1.6 + 6.0;
+        layout.y += m.line_h(tssz) * 1.28 + 6.0;
 
         // Message (wrapped).
-        let msz = theme.tokens.typography.scale.base;
+        let msz = ts(tr, theme.tokens.typography.scale.base);
         let (_, mh) = tr.measure(&e.message, msz, Some(inner_w as f32));
         tr.draw_text(
             scene,
@@ -2047,7 +2196,7 @@ impl LogsApp {
             layout.y,
             inner_x + inner_w,
             layout.y,
-            c.border_standard,
+            ui::surface::edge_on(c.surfaces.raised),
             1.0,
         );
         layout.y += 12.0;
@@ -2060,6 +2209,7 @@ impl LogsApp {
         t: Affine,
         tr: &mut TextRenderer,
         theme: &Theme,
+        m: Metrics,
         layout: &mut DetailLayout,
         e: &LogEntry,
     ) {
@@ -2085,9 +2235,11 @@ impl LogsApp {
             fields.push((k.clone(), v.clone()));
         }
 
-        let key_w = 118.0_f64;
-        let ksz = theme.tokens.typography.scale.xs;
-        let vsz = theme.tokens.typography.scale.sm;
+        // The key column is a glyph budget (118 px at 1×) scaled with the text,
+        // but never more than 45 % of the pane so the values keep their room.
+        let key_w = (118.0_f64 * m.k).min(inner_w * 0.45);
+        let ksz = ts(tr, theme.tokens.typography.scale.xs);
+        let vsz = ts(tr, theme.tokens.typography.scale.sm);
         for (k, v) in fields {
             if layout.y > layout.bottom - 14.0 {
                 break;
@@ -2107,7 +2259,7 @@ impl LogsApp {
                 TextWeight::Semibold,
                 true,
             );
-            let val = elide(tr, &v, vsz, inner_w - key_w - 8.0, false);
+            let val = tr.elide_to_width(&v, vsz, ui::num::f32_of_f64(inner_w - key_w - 8.0));
             text_at(
                 tr,
                 scene,
@@ -2120,7 +2272,8 @@ impl LogsApp {
                 TextWeight::Regular,
                 false,
             );
-            layout.y += 22.0;
+            // Rows step by the value line's measured box (22 px at 1×).
+            layout.y += m.line_h(vsz) + 7.0;
         }
     }
 
@@ -2138,15 +2291,7 @@ impl LogsApp {
         let c = &theme.tokens.colors;
         let hovered = rect.contains(self.cursor);
         let bg = if hovered { c.lift(0.72) } else { c.lift(0.35) };
-        fill_round(scene, t, rect, theme.tokens.radii.full, bg);
-        stroke_round(
-            scene,
-            t,
-            rect,
-            theme.tokens.radii.full,
-            c.border_standard,
-            1.0,
-        );
+        ui::surface::card(scene, t, rect, f64::from(theme.tokens.radii.full), bg);
         // Left chevron.
         let cyp = rect.center().y;
         let cxp = rect.x0 + 18.0;
@@ -2170,7 +2315,7 @@ impl LogsApp {
             theme.text_primary,
             1.6,
         );
-        let sz = theme.tokens.typography.scale.sm;
+        let sz = ts(tr, theme.tokens.typography.scale.sm);
         text_at(
             tr,
             scene,
@@ -2179,7 +2324,7 @@ impl LogsApp {
             sz,
             theme.text_primary,
             rect.x0 + 30.0,
-            vcenter(rect, sz),
+            self.m.vcenter(rect, sz),
             TextWeight::Semibold,
             false,
         );
@@ -2309,17 +2454,17 @@ impl LogsApp {
             );
         }
         let mut rows = Vec::new();
-        let first = (f64::from(self.scroll) / ROW_H).floor().max(0.0) as usize;
-        let count = (reg.list_body.height() / ROW_H).ceil().max(1.0) as usize + 1;
+        let first = (f64::from(self.scroll) / self.m.row_h).floor().max(0.0) as usize;
+        let count = (reg.list_body.height() / self.m.row_h).ceil().max(1.0) as usize + 1;
         for (offset, abs) in self.filtered.iter().skip(first).take(count).enumerate() {
             let Some(entry) = self.entries.get(*abs) else {
                 continue;
             };
             let rect = Rect::new(
                 reg.list_body.x0,
-                reg.list_body.y0 + offset as f64 * ROW_H,
+                reg.list_body.y0 + offset as f64 * self.m.row_h,
                 reg.list_body.x1,
-                reg.list_body.y0 + (offset + 1) as f64 * ROW_H,
+                reg.list_body.y0 + (offset + 1) as f64 * self.m.row_h,
             );
             let id = actions::entry_resource_id(entry);
             rows.push(
@@ -2346,7 +2491,7 @@ impl LogsApp {
                 .with_hashed_key("logs.entries")
                 .with_children(rows),
         );
-        if reg.narrow && reg.back_btn.width() > 0.0 && self.push.pane() == Pane::Detail {
+        if reg.narrow && reg.back_btn.width() > 0.0 && self.push.pane() == PushPane::Detail {
             children.push(
                 AccessNode::new(Role::Button)
                     .with_name("Back to entries")
@@ -2382,7 +2527,12 @@ struct Cols {
     msg_x: f64,
     msg_w: f64,
 }
-fn column_x(row: Rect) -> Cols {
+/// Column edges of one journal row. The time / level / unit widths are glyph
+/// budgets designed at 1×, so they scale with the text scale `k`, and the
+/// compact breakpoint is judged in 1× space — a 200 % row folds exactly like
+/// a half-width 1× row. Header and cells share this, so they always agree.
+fn column_x(row: Rect, k: f64) -> Cols {
+    let k = k.max(f64::from(f32::EPSILON));
     let rpad = 12.0;
     let mut cur = row.x0 + rpad;
     let dot_cx = cur + 4.0;
@@ -2391,11 +2541,11 @@ fn column_x(row: Rect) -> Cols {
     // Preserve chronology + severity and give the message the remaining
     // space; the selected entry's unit remains immediately available in the
     // pushed detail pane and in each row's accessible name.
-    if row.width() < 480.0 {
+    if row.width() / k < 480.0 {
         let time_x = cur;
-        cur += 62.0;
+        cur += 62.0 * k;
         let tag_x = cur;
-        cur += 42.0;
+        cur += 42.0 * k;
         let msg_x = cur;
         return Cols {
             compact: true,
@@ -2409,11 +2559,11 @@ fn column_x(row: Rect) -> Cols {
         };
     }
     let time_x = cur;
-    cur += 138.0 + 8.0;
+    cur += 138.0 * k + 8.0;
     let tag_x = cur;
-    cur += 50.0 + 8.0;
+    cur += 50.0 * k + 8.0;
     let unit_x = cur;
-    let unit_w = 132.0;
+    let unit_w = 132.0 * k;
     cur += unit_w + 10.0;
     let msg_x = cur;
     let msg_w = (row.x1 - rpad - msg_x).max(40.0);
@@ -2429,7 +2579,10 @@ fn column_x(row: Rect) -> Cols {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Line painting passes the scene transform, both endpoint coordinates, stroke color, and stroke width."
+)]
 fn line(scene: &mut Scene, t: Affine, x0: f64, y0: f64, x1: f64, y1: f64, c: Color, w: f64) {
     scene.stroke(
         &Stroke::new(w),
@@ -2440,22 +2593,28 @@ fn line(scene: &mut Scene, t: Affine, x0: f64, y0: f64, x1: f64, y1: f64, c: Col
     );
 }
 
-/// Pick a readable foreground for text sitting on a saturated severity
-/// fill: white over the dark dangers, near-black over amber.
-fn contrast_on(bg: Color) -> Color {
-    let lum = 0.299 * f64::from(bg.r()) + 0.587 * f64::from(bg.g()) + 0.114 * f64::from(bg.b());
-    if lum > 150.0 {
-        Color::from_rgb8(20, 20, 25)
-    } else {
-        Color::WHITE
-    }
-}
-
 // ===================================================================
 // Widget impl
 // ===================================================================
 
 impl Widget for LogsApp {
+    fn document_history_definition(&self) -> Option<&'static ui::history_mode::HistoryDefinition> {
+        Some(&crate::framework_history::HISTORY)
+    }
+
+    fn measure(
+        &mut self,
+        _known: taffy::Size<Option<f32>>,
+        _available: taffy::Size<taffy::AvailableSpace>,
+        text_renderer: &mut TextRenderer,
+    ) -> taffy::Size<f32> {
+        // The band pitches follow the renderer that will paint; measuring
+        // here means the event path (`regions()`, hit-testing) never sees 1×
+        // bands under a frame that will paint at 200 %.
+        self.m = Metrics::measure(text_renderer);
+        taffy::Size::ZERO
+    }
+
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[actions::LOGS_OPERATION_TYPE]
     }
@@ -2492,7 +2651,7 @@ impl Widget for LogsApp {
         // invocation just as a pointer selection does on a narrow viewport.
         let reveals_entry = matches!(operation, LogsOperation::SelectEntry { .. });
         self.perform_effect(operation)?;
-        if reveals_entry && PushNav::is_narrow(self.rect.width()) {
+        if reveals_entry && self.narrow_at(self.rect.width()) {
             self.push.show_detail();
             self.dirty = true;
         }
@@ -2574,9 +2733,9 @@ impl Widget for LogsApp {
             // and nothing has been interacted with yet).
             if self.scroll == 0.0 {
                 let body_h = self.list_viewport_h();
-                let top = pos as f64 * ROW_H;
-                if top + ROW_H > body_h {
-                    self.scroll = ((top + ROW_H) - body_h) as f32 + 4.0;
+                let top = pos as f64 * self.m.row_h;
+                if top + self.m.row_h > body_h {
+                    self.scroll = ((top + self.m.row_h) - body_h) as f32 + 4.0;
                     self.clamp_scroll();
                 }
             }
@@ -2598,9 +2757,13 @@ impl Widget for LogsApp {
         // The host deliberately stops animation pumping for a reduced-motion
         // theme. Snap here as well so the first redraw after a navigation
         // lands on its final pane rather than leaving a half-open slab.
+        // Every text-bearing band takes its pitch from this frame's measured
+        // lines; `regions()` (layout and hit-testing) reads the same values.
+        self.m = Metrics::measure(tr);
+
         if theme.reduce_motion {
             self.push.snap(self.push.pane());
-        } else if self.push.tick() {
+        } else if self.push.tick(false) {
             self.dirty = true;
         }
 
@@ -2799,7 +2962,7 @@ impl Widget for LogsApp {
             return true;
         }
         if target == "logs.back" && activate {
-            self.push.show_list();
+            self.push.show_master();
             self.dirty = true;
             return true;
         }
@@ -2853,7 +3016,7 @@ impl Widget for LogsApp {
                 .position(|entry| actions::entry_resource_id(entry) == id)
         {
             self.select_abs(abs);
-            if PushNav::is_narrow(self.rect.width()) {
+            if self.narrow_at(self.rect.width()) {
                 self.push.show_detail();
             }
             return true;
@@ -3024,29 +3187,28 @@ impl LogsApp {
 
     /// The dropdown panel's shadow, fill and border.
     fn draw_overlay_panel_bg(scene: &mut Scene, transform: Affine, theme: &Theme, panel: Rect) {
-        let c = &theme.tokens.colors;
-        // soft shadow
-        fill_round(
+        // Panel role (HIG §9.5): the shared floating-panel shadow, ground and
+        // derived border, so the list matches every other menu on the desktop.
+        ui::surface::shadow(
             scene,
             transform,
-            panel.inflate(2.0, 2.0),
-            theme.tokens.radii.md,
-            tint(Color::BLACK, 80),
+            panel,
+            f64::from(theme.tokens.radii.md),
+            &theme.tokens.elevation.e3,
         );
         fill_round(
             scene,
             transform,
             panel,
-            theme.tokens.radii.md,
-            c.surfaces.overlay,
+            f64::from(theme.tokens.radii.md),
+            ui::chrome::panel_ground(theme),
         );
-        stroke_round(
-            scene,
+        scene.stroke(
+            &Stroke::new(1.0),
             transform,
-            panel,
-            theme.tokens.radii.md,
-            c.border_standard,
-            1.0,
+            ui::chrome::panel_border(theme),
+            None,
+            &ui::surface::edge_outline(panel, f64::from(theme.tokens.radii.md)),
         );
     }
 
@@ -3066,7 +3228,7 @@ impl LogsApp {
             Some(Popup::Boot) => self.filter.boot.clone(),
             Some(Popup::Actions) | None => String::new(),
         };
-        let sz = theme.tokens.typography.scale.sm;
+        let sz = ts(tr, theme.tokens.typography.scale.sm);
         for (irect, val, label) in &reg.dropdown {
             let is_hover = irect.contains(self.cursor);
             let is_active = &active_val == val;
@@ -3080,7 +3242,7 @@ impl LogsApp {
             } else {
                 theme.text_primary
             };
-            let shown = elide(tr, label, sz, irect.width() - 30.0, false);
+            let shown = tr.elide_to_width(label, sz, ui::num::f32_of_f64(irect.width() - 30.0));
             text_at(
                 tr,
                 scene,
@@ -3089,7 +3251,7 @@ impl LogsApp {
                 sz,
                 lc,
                 irect.x0 + 12.0,
-                vcenter(*irect, sz),
+                self.m.vcenter(*irect, sz),
                 if is_active {
                     TextWeight::Semibold
                 } else {
@@ -3133,7 +3295,7 @@ impl LogsApp {
             return None;
         }
         let rel = pt.y - reg.list_body.y0 + f64::from(self.scroll);
-        let pos = (rel / ROW_H).floor();
+        let pos = (rel / self.m.row_h).floor();
         if pos < 0.0 {
             return None;
         }
@@ -3190,7 +3352,7 @@ impl LogsApp {
         // Narrow-window Back affordance: when the detail pane is pushed in,
         // tapping Back slides the list back.
         if reg.narrow && reg.back_btn.width() > 0.0 && reg.back_btn.contains(pt) {
-            self.push.show_list();
+            self.push.show_master();
             self.dirty = true;
             *handled = true;
             return;
@@ -3320,12 +3482,12 @@ impl LogsApp {
             }
             Key::Named(NamedKey::Escape) => {
                 let narrow_in_detail =
-                    PushNav::is_narrow(self.rect.width()) && self.push.pane() == Pane::Detail;
+                    self.narrow_at(self.rect.width()) && self.push.pane() == PushPane::Detail;
                 if self.popup.is_some() {
                     self.popup = None;
                 } else if narrow_in_detail {
                     // Back out of the pushed detail pane to the list.
-                    self.push.show_list();
+                    self.push.show_master();
                 } else if !self.filter.search.is_empty() {
                     self.apply_view_operation(LogsOperation::SetSearch {
                         value: String::new(),
@@ -3540,7 +3702,7 @@ mod tests {
     #[test]
     fn phone_rows_prioritize_time_level_and_message() {
         let row = Rect::new(0.0, 0.0, 358.0, ROW_H);
-        let cols = column_x(row);
+        let cols = column_x(row, 1.0);
         assert!(cols.compact, "phone rows use compact column geometry");
         assert!(
             cols.unit_w.abs() < f64::EPSILON,
@@ -3589,17 +3751,24 @@ mod tests {
 
     #[test]
     fn portal_export_writes_the_snapshot_selected_before_the_picker() {
-        let mut app = LogsApp::new(sample_entries(), true);
+        let mut app = LogsApp::new(sample_entries().into_iter().take(2).collect(), true);
         let path = std::env::temp_dir().join(format!(
             "tilo-logs-portal-export-{}-{}.jsonl",
             std::process::id(),
             app.entries[0].realtime_us
         ));
         let _ = std::fs::remove_file(&path);
-        app.pending_export = Some(app.entries.iter().take(2).cloned().collect());
-        app.export_rx = Some(ui::portal::inject_for_test(PortalOutcome::Opened(
-            path.clone(),
-        )));
+        let (services, recorder) = ui::host::HostServices::recording();
+        recorder.respond_to_pick(PortalOutcome::Opened(path.clone()));
+        ui::host::scoped(&services, || {
+            app.perform_effect(LogsOperation::ExportFiltered).unwrap();
+        });
+        assert_eq!(
+            recorder.pick_requests()[0].suggested_name(),
+            Some("journal-filtered.jsonl")
+        );
+        // Entries arriving after the picker opened are not part of the export.
+        app.entries.extend(sample_entries().into_iter().skip(2));
         app.drain_export_portal();
         assert_eq!(std::fs::read_to_string(&path).unwrap().lines().count(), 2);
         assert_eq!(
@@ -3611,11 +3780,12 @@ mod tests {
 
     #[test]
     fn portal_export_write_failure_is_announced_without_path_details() {
-        let mut app = LogsApp::new(sample_entries(), true);
-        app.pending_export = Some(app.entries.iter().take(1).cloned().collect());
-        app.export_rx = Some(ui::portal::inject_for_test(PortalOutcome::Opened(
-            std::env::temp_dir(),
-        )));
+        let mut app = LogsApp::new(sample_entries().into_iter().take(1).collect(), true);
+        let (services, recorder) = ui::host::HostServices::recording();
+        recorder.respond_to_pick(PortalOutcome::Opened(std::env::temp_dir()));
+        ui::host::scoped(&services, || {
+            app.perform_effect(LogsOperation::ExportFiltered).unwrap();
+        });
         app.drain_export_portal();
         assert_eq!(app.export_status.as_deref(), Some("Export failed."));
         let tree = app.accessibility_tree();

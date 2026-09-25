@@ -212,7 +212,7 @@ class BuilderCandidates(unittest.TestCase):
         self.assertIn('name: builder-index-${{ github.sha }}', BUILD)
         # Native acceptance consumers must honor the resolved builder override.
         # Selection only reads Cargo metadata and uses the qualified lean image.
-        security_job = CHECK.split('  security:\n', 1)[1].split('\n  affected:\n', 1)[0]
+        security_job = CHECK.split('  security:\n', 1)[1].split('\n  native-dependencies:\n', 1)[0]
         select_job = CHECK.split('  select:\n', 1)[1].split('\n  security:\n', 1)[0]
         self.assertIn('image: ${{ needs.builder.outputs.image }}', security_job)
         self.assertRegex(select_job, r'image: code\.podesta\.ai/qos/ci-fast@sha256:[0-9a-f]{64}\n')
@@ -229,17 +229,23 @@ class BuilderCandidates(unittest.TestCase):
         self.assertIn("if: needs.select.outputs.security_required == 'true'", security_job)
         self.assertIn('needs: [builder, select]', security_job)
         self.assertNotIn('needs.builder.outputs.image', select_job)
-        affected_job = CHECK.split('  affected:\n', 1)[1].split('\n  checks:\n', 1)[0]
-        self.assertIn('    needs: [builder, select]', affected_job)
-        self.assertIn('image: ${{ needs.builder.outputs.image }}', affected_job)
-        self.assertIn('      - name: Checkout exact change', affected_job)
-        self.assertIn('          fetch-depth: 1', affected_job)
-        self.assertNotIn('          fetch-depth: 0', affected_job)
-        self.assertIn('CLIPPY_BASE: ${{ needs.select.outputs.base }}', affected_job)
-        self.assertIn('test "$head" = "$GITHUB_SHA"', affected_job)
-        self.assertIn('git fetch --no-tags --no-write-fetch-head --depth=1 origin', affected_job)
-        self.assertIn('"+$CLIPPY_BASE:refs/ci/clippy-base"', affected_job)
-        self.assertIn('test "$(git rev-parse "$CLIPPY_BASE^{commit}")" = "$CLIPPY_BASE"', affected_job)
+        shard_jobs = {}
+        for name, following in (('test', 'check'), ('check', 'clippy'), ('clippy', 'clippy-base')):
+            self.assertEqual(CHECK.count(f'\n  {name}:\n'), 1)
+            shard_jobs[name] = CHECK.split(f'\n  {name}:\n', 1)[1].split(f'\n  {following}:\n', 1)[0]
+        for name, job in shard_jobs.items():
+            with self.subTest(job=name):
+                self.assertIn('    needs: [builder, select]', job)
+                self.assertIn('image: ${{ needs.builder.outputs.image }}', job)
+                self.assertIn('      - name: Checkout exact change', job)
+                self.assertIn('          fetch-depth: 1', job)
+                self.assertNotIn('          fetch-depth: 0', job)
+        clippy_job = shard_jobs['clippy']
+        self.assertIn('CLIPPY_BASE: ${{ needs.select.outputs.base }}', clippy_job)
+        self.assertIn('test "$head" = "$GITHUB_SHA"', clippy_job)
+        self.assertIn('git fetch --no-tags --no-write-fetch-head --depth=1 origin', clippy_job)
+        self.assertIn('"+$CLIPPY_BASE:refs/ci/clippy-base"', clippy_job)
+        self.assertIn('test "$(git rev-parse "$CLIPPY_BASE^{commit}")" = "$CLIPPY_BASE"', clippy_job)
         builder_job = CHECK.split('  builder:\n', 1)[1].split('  select:\n', 1)[0]
         self.assertIn('image: code.sandbox.example/qos/ci-control@sha256:', builder_job)
         self.assertNotIn('needs.builder.outputs.image', builder_job)
@@ -353,7 +359,7 @@ class CanaryIdentity(unittest.TestCase):
         self.assertIn("if: github.ref == 'refs/heads/main'", replication)
         self.assertIn('replicate-builder-index.py', replication)
         self.assertIn('125650147312.dkr.ecr.us-west-2.amazonaws.com/qos/tilo-builder', replication)
-        self.assertIn('burst-us-qos-builder-replication', replication)
+        self.assertIn('burst-us-tilo-builder-replication', replication)
 
     def test_main_promotion_installs_pinned_aws_cli_without_distro_package(self):
         tools = step_block(BUILD, 'Install publication tools')

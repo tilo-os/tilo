@@ -66,7 +66,7 @@ use tilo_actions::{
 use crate::doc::SlidesDoc;
 use crate::model::{
     Background, Element, ElementKind, FILL_ROLES, Layout, PaletteKind, SLIDE_H, SLIDE_W,
-    STROKE_ROLES, Slide, TextAlign, new_id, parse_hex,
+    STROKE_ROLES, Slide, TextAlign, new_id,
 };
 
 /// Registry `type_id` for every Slides action.
@@ -537,7 +537,7 @@ fn exact_paint(value: &str, allow_none: bool) -> bool {
             value,
             "accent-deep" | "surface-dim" | "text" | "text-dim" | "on-accent" | "white"
         )
-        || (value.starts_with('#') && parse_hex(value).is_some())
+        || (value.starts_with('#') && ui::color::parse_hex(value).is_some())
 }
 
 fn valid_id(value: &str) -> bool {

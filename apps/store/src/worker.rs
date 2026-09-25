@@ -11,6 +11,8 @@ use std::sync::{
 };
 use std::time::Duration;
 
+use getrandom::{SysRng, rand_core::TryRng as _};
+
 use crate::app::ReportEnvelope;
 use crate::config::{RegistryConfig, load_registries};
 use crate::flathub_client::{Remote, installed_flatpaks};
@@ -165,7 +167,7 @@ fn run(
     opened_ref: Option<FlatpakRef>,
     search_index: StoreSearchIndex,
 ) {
-    let staging = crate::actions::qpkg_staging_dir()
+    let staging = crate::actions::tapp_staging_dir()
         .unwrap_or_else(|| std::env::temp_dir().join("tilo-store-staged"));
     let _ = std::fs::create_dir_all(&staging);
     let mut state = State {
@@ -379,7 +381,7 @@ fn handle(
                     .unwrap_or_default()
                     .as_secs();
                 let mut nonce = [0_u8; 16];
-                getrandom::getrandom(&mut nonce).map_err(|error| {
+                SysRng.try_fill_bytes(&mut nonce).map_err(|error| {
                     crate::moderation_client::ModerationClientError::Identity(error.to_string())
                 })?;
                 let request = crate::moderation_client::sign_with_runtime_identity(
@@ -536,7 +538,7 @@ fn submit_report(
     let envelope_bytes = serde_json::to_vec(envelope)
         .map_err(|_| crate::moderation_client::ModerationClientError::InvalidResponse)?;
     let mut nonce = [0_u8; 16];
-    getrandom::getrandom(&mut nonce).map_err(|error| {
+    SysRng.try_fill_bytes(&mut nonce).map_err(|error| {
         crate::moderation_client::ModerationClientError::Identity(error.to_string())
     })?;
     let request = crate::moderation_client::sign_with_runtime_identity(
@@ -804,6 +806,8 @@ mod tests {
             id: id.into(),
             name: name.into(),
             description: format!("{name} Store test row"),
+            tagline: String::new(),
+            supported_languages: Vec::new(),
             categories: vec!["Utilities".into()],
             icon_url: None,
             screenshot_urls: Vec::new(),

@@ -12,7 +12,7 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
 BUILD_INTERCEPTED = 73
-KERNEL_PIN = "code.sandbox.example/qos/qos-kernel@sha256:" + "1" * 64
+KERNEL_PIN = "code.sandbox.example/qos/tilo-kernel@sha256:" + "1" * 64
 RPMS_PIN = "code.sandbox.example/qos/rpms@sha256:" + "2" * 64
 TARGET_REF = "code.sandbox.example/qos/tilo:board-fixture"
 
@@ -46,6 +46,7 @@ TILO_INSTALLER_OUTPUT="$TILO_OUTPUT/installer"
 TILO_INSTALLER_DISK="$TILO_INSTALLER_OUTPUT/qcow2/disk.qcow2"
 msg() { printf '%s\\n' "$*" >&2; }
 die() { printf '%s\\n' "$*" >&2; exit 1; }
+warn_slow_podman_storage() { :; }
 """)
         # These external checks are unrelated to forwarding inputs. A failing
         # podman stub ensures execution never reaches any disk-image operation.
@@ -457,7 +458,7 @@ print('sha256:' + '6' * 64)
                         self.run_builder(**{key: value}), "Windows provider inputs are incomplete")
 
     def test_explicit_unpublished_refs_survive_loading_the_snapshot_pins(self):
-        kernel = "code.sandbox.example/qos/qos-kernel@sha256:" + "5" * 64
+        kernel = "code.sandbox.example/qos/tilo-kernel@sha256:" + "5" * 64
         rpms = "code.sandbox.example/qos/rpms@sha256:" + "6" * 64
         arguments = self.build_arguments(self.run_builder(KERNEL_RPMS_REF=kernel, RPMS_REF=rpms))
         self.assertEqual(arguments["KERNEL_RPMS_REF"], kernel)

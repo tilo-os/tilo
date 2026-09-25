@@ -45,7 +45,7 @@ mod lsp_workflow;
 mod tests;
 use automerge::{AutoCommit, ChangeHash, ObjId};
 use taffy::style_helpers::length;
-use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+use taffy::{Dimension, LengthPercentageAuto, NodeId, Size, Style, TaffyTree};
 use ui::color_compat::ColorCompat;
 use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
@@ -53,7 +53,8 @@ use ui::search::SearchCatalog;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::{
-    FlapState, ModalAction, ModalFrame, ModalSpec, SplitLayout, TabBar, TabDescriptor, Widget,
+    Button, FlapState, ModalAction, ModalFrame, ModalSpec, SplitLayout, TabBar, TabDescriptor,
+    Widget,
 };
 use uuid::Uuid;
 use vello::Scene;
@@ -88,6 +89,299 @@ const SIDEBAR_BREAKPOINT: f64 = 820.0;
 /// Hamburger toggle geometry, shown in the tab bar when the sidebar is an
 /// overlay (narrow window). Square button hugging the bar's left edge.
 const HAMBURGER_W: f64 = 40.0;
+
+/// The bottom-panel trigger occupies the trailing end of the existing 44px tab
+/// chrome. Keeping this width equal to the overlay hamburger gives both
+/// pointer targets a compact, familiar square without adding another row.
+const PANEL_TOGGLE_W: f32 = 40.0;
+const EDITOR_CHROME_H: f32 = 44.0;
+
+/// Retained toggle wrapper for the bottom dock. [`Button`] owns pointer,
+/// keyboard, focus, painting, and the canonical action emitter; this thin
+/// wrapper adds the disclosure state that a generic momentary button cannot
+/// infer for accessibility.
+struct BottomPanelToggle {
+    button: Button,
+    expanded: bool,
+    dirty: bool,
+}
+
+impl BottomPanelToggle {
+    const ID: &'static str = "code.bottom-panel-toggle";
+
+    fn new(binding: tilo_actions::ActionBinding<()>) -> Self {
+        Self {
+            button: Button::new(Self::ID, "", None)
+                .tooltip("Show bottom panel")
+                .with_size(PANEL_TOGGLE_W, EDITOR_CHROME_H)
+                .ghost()
+                .on_action(binding),
+            expanded: false,
+            dirty: true,
+        }
+    }
+
+    fn set_expanded(&mut self, expanded: bool) {
+        if self.expanded != expanded {
+            self.dirty = true;
+        }
+        self.expanded = expanded;
+        self.button.set_tooltip(Some(if expanded {
+            "Hide bottom panel".to_string()
+        } else {
+            "Show bottom panel".to_string()
+        }));
+    }
+}
+
+impl Widget for BottomPanelToggle {
+    fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
+        self.button.sync(state, path);
+    }
+
+    fn build_layout(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        theme: &Theme,
+        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
+    ) -> NodeId {
+        // Centred in the chrome bar an `s1` clear of its top and of the
+        // editor below (HIG §7: nothing touches), instead of a full-height
+        // slab whose bottom edge shared pixels with the content.
+        let inset = theme.tokens.spacing.s1;
+        #[allow(
+            clippy::unwrap_used,
+            reason = "inserting one fixed leaf into the app-owned layout tree is infallible unless the taffy arena is already corrupted"
+        )]
+        let node = taffy
+            .new_leaf(Style {
+                size: Size {
+                    width: Dimension::length(PANEL_TOGGLE_W),
+                    height: Dimension::length(EDITOR_CHROME_H - 2.0 * inset),
+                },
+                margin: taffy::Rect {
+                    left: LengthPercentageAuto::length(0.0),
+                    right: LengthPercentageAuto::length(0.0),
+                    top: LengthPercentageAuto::length(inset),
+                    bottom: LengthPercentageAuto::length(inset),
+                },
+                flex_shrink: 0.0,
+                ..Default::default()
+            })
+            .unwrap();
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
+        node
+    }
+
+    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
+        let layout = taffy.layout(node).copied().unwrap_or_default();
+        self.button.apply_layout_external(Rect::new(
+            origin.x + f64::from(layout.location.x),
+            origin.y + f64::from(layout.location.y),
+            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
+            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
+        ));
+    }
+
+    fn draw(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+    ) {
+        self.button
+            .draw(scene, transform, text_renderer, theme, presence);
+        let rect = self.button.get_rect();
+        let icon_size = (rect.height() - 14.0).clamp(12.0, 22.0);
+        let icon_rect = Rect::new(
+            rect.center().x - icon_size / 2.0,
+            rect.center().y - icon_size / 2.0,
+            rect.center().x + icon_size / 2.0,
+            rect.center().y + icon_size / 2.0,
+        );
+        let icon = if self.expanded {
+            ui::icons::Icon::ChevronDown
+        } else {
+            ui::icons::Icon::ChevronUp
+        };
+        icon.draw(scene, transform, icon_rect, theme.text_primary);
+    }
+
+    fn handle_event(
+        &mut self,
+        event: &WindowEvent,
+        scale_factor: f64,
+        modifiers: &winit::event::Modifiers,
+        state: &mut AutoCommit,
+        path: &ObjId,
+        handled: &mut bool,
+        focus_target: &mut Option<NodeId>,
+        node_id: NodeId,
+        taffy: &TaffyTree<()>,
+    ) {
+        if self.is_focused()
+            && matches!(
+                event,
+                WindowEvent::KeyboardInput {
+                    event: KeyEvent {
+                        logical_key: Key::Named(
+                            winit::keyboard::NamedKey::Enter | winit::keyboard::NamedKey::Space
+                        ),
+                        state: ElementState::Pressed,
+                        ..
+                    },
+                    ..
+                }
+            )
+            && self
+                .button
+                .perform_action(&ui::a11y::Action::Activate, state, path)
+        {
+            *handled = true;
+            return;
+        }
+        self.button.handle_event(
+            event,
+            scale_factor,
+            modifiers,
+            state,
+            path,
+            handled,
+            focus_target,
+            node_id,
+            taffy,
+        );
+    }
+
+    fn name(&self) -> &'static str {
+        "BottomPanelToggle"
+    }
+
+    fn test_id(&self) -> Option<&str> {
+        Some(Self::ID)
+    }
+
+    fn get_rect(&self) -> Rect {
+        self.button.get_rect()
+    }
+
+    fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {
+        self.button.cursor_shape(point)
+    }
+
+    fn tooltip(&self) -> Option<&str> {
+        <Button as Widget>::tooltip(&self.button)
+    }
+
+    fn is_focusable(&self) -> bool {
+        self.button.is_focusable()
+    }
+
+    fn set_focus(&mut self, focused: bool) {
+        self.button.set_focus(focused);
+    }
+
+    fn is_focused(&self) -> bool {
+        self.button.is_focused()
+    }
+
+    fn is_enabled(&self) -> bool {
+        self.button.is_enabled()
+    }
+
+    fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
+        use ui::a11y::{AccessNode, AccessState, Role};
+
+        Some(
+            AccessNode::new(Role::ToggleButton)
+                .with_semantic_key(Self::ID)
+                .with_name(if self.expanded {
+                    "Hide bottom panel"
+                } else {
+                    "Show bottom panel"
+                })
+                .with_description("Problems, Search, and Terminal dock")
+                .with_state(AccessState {
+                    focusable: self.is_focusable(),
+                    focused: self.is_focused(),
+                    disabled: !self.is_enabled(),
+                    checked: Some(self.expanded),
+                    selected: self.expanded,
+                    expanded: Some(self.expanded),
+                    ..Default::default()
+                }),
+        )
+    }
+
+    fn perform_action(
+        &mut self,
+        action: &ui::a11y::Action,
+        state: &mut AutoCommit,
+        path: &ObjId,
+    ) -> bool {
+        self.button.perform_action(action, state, path)
+    }
+
+    fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
+        self.button.take_control_invocation()
+    }
+
+    fn control_action_bindings(&self) -> Vec<ui::widget::ControlBindingMetadata> {
+        self.button.control_action_bindings()
+    }
+
+    fn refresh_control_action_availability(
+        &mut self,
+        allowed: &HashSet<tilo_actions::ActionAddress>,
+    ) {
+        self.button.refresh_control_action_availability(allowed);
+    }
+
+    fn set_interaction_environment(
+        &mut self,
+        environment: ui::interaction::InteractionEnvironment,
+    ) {
+        self.button.set_interaction_environment(environment);
+    }
+
+    fn needs_redraw(&self) -> bool {
+        self.dirty || self.button.needs_redraw()
+    }
+
+    fn mark_drawn(&mut self) {
+        self.dirty = false;
+        self.button.mark_drawn();
+    }
+}
+
+#[allow(
+    clippy::expect_used,
+    reason = "the binding is built from the command action on the resource returned by the same catalogue function"
+)]
+fn bottom_panel_toggle_binding(
+    project_name: &str,
+    project_id: &str,
+    next_file_id: &str,
+    next_folder_id: &str,
+    entry_count: usize,
+) -> tilo_actions::ActionBinding<()> {
+    let resource = actions::project_root(&actions::CodeEditorResourceCtx {
+        project_name: project_name.to_string(),
+        project_id: project_id.to_string(),
+        next_file_id: next_file_id.to_string(),
+        next_file_name: format!("untitled-{entry_count}.txt"),
+        next_folder_id: next_folder_id.to_string(),
+        next_folder_name: format!("untitled-folder-{entry_count}"),
+        open_files: Vec::new(),
+        folders: Vec::new(),
+        symbols: Vec::new(),
+        search_results: Vec::new(),
+    });
+    tilo_actions::ActionBinding::unit_for(&resource, "command-toggle-bottom-panel")
+        .expect("Toggle bottom panel is part of the Code command catalogue")
+}
 
 /// Width assumed before the window has been measured (first `build_layout`,
 /// before any `apply_layout`). Wide enough to dock — a fresh desktop window
@@ -143,6 +437,19 @@ fn language_from_label(label: &str) -> Option<Language> {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+struct DiagnosticsRevision {
+    heads: Vec<ChangeHash>,
+    buffer: String,
+    language: Language,
+    scope: lint::Scope,
+}
+
+struct DiagnosticsCache {
+    revision: DiagnosticsRevision,
+    local: Vec<crate::bottom_panel::Diagnostic>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 struct SearchProjectionRevision {
     /// Collaborative text and durable file metadata are authoritative in the
     /// CRDT, so its heads cheaply cover every remote/local document edit.
@@ -190,6 +497,7 @@ pub struct CodeApp {
     /// `--shots` forces the bubble fully visible so a still frame captures it.
     shots_status: bool,
     panel: BottomPanel,
+    panel_toggle: BottomPanelToggle,
     palette: CommandPalette,
 
     /// Framework-owned action dispatch (the Tilo resource + action model). The
@@ -238,6 +546,8 @@ pub struct CodeApp {
     rect: Rect,
     sidebar_node: Option<NodeId>,
     tabs_node: Option<NodeId>,
+    editor_header_node: Option<NodeId>,
+    panel_toggle_node: Option<NodeId>,
     editor_node: Option<NodeId>,
     panel_node: Option<NodeId>,
     content_node: Option<NodeId>,
@@ -283,6 +593,9 @@ pub struct CodeApp {
     /// The buffer text last sent to the LSP server (as `didChange`), so we only
     /// notify on an actual change.
     lsp_sent_text: String,
+    diagnostics_cache: Option<DiagnosticsCache>,
+    #[cfg(test)]
+    diagnostics_buffer_reads: usize,
     /// What the server is currently busy with, if anything. Shown in the status
     /// bar so a multi-minute rust-analyzer index reads as "working", not
     /// "broken".
@@ -580,6 +893,17 @@ impl CodeApp {
         // and then does nothing is worse than no chip.
         tabs.set_show_maximize(false);
 
+        let project_id = Uuid::new_v4().to_string();
+        let next_new_file_id = Uuid::new_v4().to_string();
+        let next_new_folder_id = Uuid::new_v4().to_string();
+        let panel_toggle = BottomPanelToggle::new(bottom_panel_toggle_binding(
+            &session.project.name,
+            &project_id,
+            &next_new_file_id,
+            &next_new_folder_id,
+            session.project.nodes.len(),
+        ));
+
         CodeApp {
             session,
             sidebar,
@@ -590,12 +914,13 @@ impl CodeApp {
             status_bubble: ui::StatusBubble::new(),
             shots_status: false,
             panel: BottomPanel::new(),
+            panel_toggle,
             palette: CommandPalette::new(),
             actions: ui::ActionHost::new(),
             pending_resource_command: None,
-            project_id: Uuid::new_v4().to_string(),
-            next_new_file_id: Uuid::new_v4().to_string(),
-            next_new_folder_id: Uuid::new_v4().to_string(),
+            project_id,
+            next_new_file_id,
+            next_new_folder_id,
             flap: FlapState::open_when_docked(),
             flap_tick: Instant::now(),
             // Seed wide so the first frame of a desktop window (and `--shots`,
@@ -606,11 +931,13 @@ impl CodeApp {
             scrim_rect: Rect::ZERO,
             hamburger_rect: Rect::ZERO,
             last_cursor: Point::ZERO,
-            panel_visible: true,
+            panel_visible: false,
             theme_index: None,
             rect: Rect::ZERO,
             sidebar_node: None,
             tabs_node: None,
+            editor_header_node: None,
+            panel_toggle_node: None,
             editor_node: None,
             panel_node: None,
             content_node: None,
@@ -625,6 +952,9 @@ impl CodeApp {
             lsp_version: 0,
             lsp_diagnostics: std::collections::HashMap::new(),
             lsp_sent_text: String::new(),
+            diagnostics_cache: None,
+            #[cfg(test)]
+            diagnostics_buffer_reads: 0,
             lsp_status: LspStatus::None,
             lsp_failed: std::collections::HashSet::new(),
             find: FindBar::new(),
@@ -778,11 +1108,12 @@ impl CodeApp {
             c.surfaces.raised
         };
         scene.fill(Fill::NonZero, transform, bg, None, &rect);
-        // Right divider, matching the tab bar's seams.
+        // Right divider, matching the tab bar's seams; derived against the
+        // face it closes so it stays visible on the dark preset.
         scene.stroke(
             &Stroke::new(1.0),
             transform,
-            c.border_standard,
+            ui::surface::edge_on(bg),
             None,
             &Line::new(
                 Point::new(rect.x1, rect.y0 + 6.0),
@@ -797,7 +1128,7 @@ impl CodeApp {
         let line_color = if self.sidebar_open() {
             c.text_primary
         } else {
-            c.neutral[8]
+            c.text_dim
         };
         let stroke = Stroke::new(1.6);
         for dy in [-5.0, 0.0, 5.0] {
@@ -1168,6 +1499,17 @@ impl CodeApp {
     /// information cannot usefully disagree with a compiler, and when it does
     /// the user is the one who has to work out which to believe.
     fn refresh_diagnostics(&mut self, doc: &AutoCommit) {
+        use automerge::transaction::Transactable;
+        // Heads identify committed CRDT content, including remote/history changes.
+        // Even zero pending operations may hide an open empty transaction.
+        // Obtain the witness on a clone: get_heads must never close the caller's
+        // transaction or change its patch/history cursors. Pending edits bypass
+        // caching; an equal pending-operation count is not a content version.
+        let heads = (doc.pending_ops() == 0).then(|| doc.clone().get_heads());
+        self.refresh_diagnostics_at(doc, heads);
+    }
+
+    fn refresh_diagnostics_at(&mut self, doc: &AutoCommit, heads: Option<Vec<ChangeHash>>) {
         let lsp_for_buffer = self
             .lsp_uri
             .as_ref()
@@ -1181,13 +1523,45 @@ impl CodeApp {
             lint::Scope::Full
         };
 
-        let mut diagnostics = match self.session.active_buffer() {
-            Some(buf) => {
-                let text =
-                    EditorDoc::read_buffer_key(doc, &self.buffer_key(buf.node)).unwrap_or_default();
-                lint::lint(&text, buf.language, scope)
-            }
-            None => Vec::new(),
+        let active = self
+            .session
+            .active_buffer()
+            .map(|buf| (self.buffer_key(buf.node), buf.language));
+        let revision = heads.and_then(|heads| {
+            active
+                .as_ref()
+                .map(|(buffer, language)| DiagnosticsRevision {
+                    heads,
+                    buffer: buffer.clone(),
+                    language: *language,
+                    scope,
+                })
+        });
+        let cached = revision.as_ref().and_then(|revision| {
+            self.diagnostics_cache
+                .as_ref()
+                .filter(|cache| &cache.revision == revision)
+        });
+        let mut diagnostics = if let Some(cache) = cached {
+            cache.local.clone()
+        } else {
+            let local = match active {
+                Some((key, language)) => {
+                    #[cfg(test)]
+                    {
+                        self.diagnostics_buffer_reads += 1;
+                    }
+                    // The editor's optimistic text is not authoritative here.
+                    let text = EditorDoc::read_buffer_key(doc, &key).unwrap_or_default();
+                    lint::lint(&text, language, scope)
+                }
+                None => Vec::new(),
+            };
+            self.diagnostics_cache = revision.map(|revision| DiagnosticsCache {
+                revision,
+                local: local.clone(),
+            });
+            local
         };
         if let Some(lsp) = lsp_for_buffer {
             diagnostics.extend(lsp.iter().map(super::lsp::LspDiagnostic::to_panel));
@@ -1892,7 +2266,11 @@ impl CodeApp {
                 }
             }
             Command::ToggleBottomPanel => {
-                self.panel_visible = !self.panel_visible;
+                if self.panel_visible {
+                    self.close_bottom_panel();
+                } else {
+                    self.panel_visible = true;
+                }
             }
             Command::ToggleSidebar => {
                 self.toggle_sidebar();
@@ -1911,7 +2289,17 @@ impl CodeApp {
                 self.ensure_terminal();
             }
         }
+        self.panel_toggle.set_expanded(self.panel_visible);
         self.dispatch_editor_text_edits(doc);
+    }
+
+    /// Close the retained dock without destroying its selected tab or live
+    /// Terminal. Every close route uses this transition so hidden Terminal
+    /// content cannot retain keyboard ownership.
+    fn close_bottom_panel(&mut self) {
+        self.panel_visible = false;
+        self.terminal_focused = false;
+        self.panel_toggle.set_expanded(false);
     }
 
     /// Drain everything the child widgets emitted this frame. `doc` is threaded
@@ -2445,7 +2833,7 @@ impl CodeApp {
             self.editor.set_diagnostics(&diags);
             self.lsp_diagnostics.insert(uri, diags);
         }
-        self.refresh_diagnostics(doc);
+        self.refresh_diagnostics_at(doc, None);
 
         // Canned completion response fed through the real parser.
         let completion_json = serde_json::json!({
@@ -2526,7 +2914,45 @@ impl CodeApp {
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         let tabs_node = self.tabs.build_layout(taffy, theme, node_map);
+        if let Ok(existing) = taffy.style(tabs_node).cloned() {
+            let _ = taffy.set_style(
+                tabs_node,
+                Style {
+                    size: Size {
+                        width: Dimension::auto(),
+                        height: Dimension::length(EDITOR_CHROME_H),
+                    },
+                    flex_grow: 1.0,
+                    flex_basis: Dimension::length(0.0),
+                    ..existing
+                },
+            );
+        }
         self.tabs_node = Some(tabs_node);
+
+        self.panel_toggle.set_expanded(self.panel_visible);
+        let panel_toggle_node = self.panel_toggle.build_layout(taffy, theme, node_map);
+        self.panel_toggle_node = Some(panel_toggle_node);
+        #[allow(
+            clippy::unwrap_used,
+            reason = "the editor header inserts two freshly-created children into the same app-owned taffy arena"
+        )]
+        let editor_header_node = taffy
+            .new_with_children(
+                Style {
+                    display: taffy::Display::Flex,
+                    flex_direction: taffy::FlexDirection::Row,
+                    size: Size {
+                        width: Dimension::percent(1.0),
+                        height: Dimension::length(EDITOR_CHROME_H),
+                    },
+                    flex_shrink: 0.0,
+                    ..Default::default()
+                },
+                &[tabs_node, panel_toggle_node],
+            )
+            .unwrap();
+        self.editor_header_node = Some(editor_header_node);
 
         let editor_node = self.editor.build_layout(taffy, theme, node_map);
         if let Ok(existing) = taffy.style(editor_node).cloned() {
@@ -2550,7 +2976,7 @@ impl CodeApp {
         let find_node = self.find.build_layout(taffy, theme, node_map);
         self.find_node = Some(find_node);
 
-        let mut editor_col_children = vec![tabs_node, find_node, editor_node];
+        let mut editor_col_children = vec![editor_header_node, find_node, editor_node];
         if self.panel_visible {
             let panel_node = self.panel.build_layout(taffy, theme, node_map);
             self.panel_node = Some(panel_node);
@@ -2731,6 +3157,7 @@ impl CodeApp {
         modifiers: winit::event::Modifiers,
         state: &mut AutoCommit,
         handled: &mut bool,
+        focus_target: &mut Option<NodeId>,
     ) -> bool {
         let WindowEvent::KeyboardInput {
             event:
@@ -2776,7 +3203,11 @@ impl CodeApp {
             _ => None,
         };
         if let Some(command) = command {
+            let closes_bottom_panel = command == Command::ToggleBottomPanel && self.panel_visible;
             self.apply_command(command, state);
+            if closes_bottom_panel {
+                *focus_target = self.panel_toggle_node;
+            }
             *handled = true;
             return true;
         }
@@ -2938,7 +3369,20 @@ impl CodeApp {
             *handled = true;
         }
 
-        if let Some(n) = self.tabs_node {
+        if let Some(n) = self.panel_toggle_node {
+            self.panel_toggle.handle_event(
+                event,
+                scale_factor,
+                &modifiers,
+                state,
+                path,
+                handled,
+                focus_target,
+                n,
+                taffy,
+            );
+        }
+        if !*handled && let Some(n) = self.tabs_node {
             self.tabs.handle_event(
                 event,
                 scale_factor,
@@ -3045,6 +3489,43 @@ fn find_char_span(text: &str, needle: &str) -> Option<(usize, usize, usize)> {
 }
 
 impl Widget for CodeApp {
+    fn native_input_snapshot(&self, doc: &AutoCommit, _path: &ObjId) -> Option<serde_json::Value> {
+        fn rect(rect: Rect) -> [f64; 4] {
+            [rect.x0, rect.y0, rect.x1, rect.y1]
+        }
+        // Read authoritative text, never the editor's optimistic render cache.
+        // Only the opt-in native input observer invokes this O(buffer length) read.
+        let buffer_id = self.active_file_node().map(|node| self.buffer_key(node));
+        let body = buffer_id
+            .as_ref()
+            .and_then(|key| EditorDoc::read_buffer_key(doc, key));
+        let editor_rect = self.editor.get_rect();
+        let (offset_x, offset_y) = self.editor.native_scroll_offsets();
+        let (caret_line, caret_column) = self.editor.primary_caret();
+        Some(serde_json::json!({
+            "app": "so.tilo.code-editor",
+            "editor_id": "editor_view",
+            "hash_algorithm": "sha256",
+            "buffer_id": buffer_id,
+            "body_hash": body.as_ref().map(|text| crate::native_fixture::hash(text.as_bytes())),
+            "body_bytes": body.as_ref().map(String::len),
+            "editor_focused": self.editor.is_focused(),
+            "caret_line": caret_line,
+            "caret_column": caret_column,
+            "caret_count": self.editor.caret_count(),
+            "selection_chars": self.editor.selection_len(),
+            "offset_x": offset_x,
+            "offset_y": offset_y,
+            "offset_x_unit": "pixels",
+            "offset_y_unit": "lines",
+            "root_rect": rect(self.rect),
+            "editor_rect": rect(editor_rect),
+            "ready": body.is_some() && self.editor.is_bound()
+                && self.rect.width() > 0.0 && self.rect.height() > 0.0
+                && editor_rect.width() > 0.0 && editor_rect.height() > 0.0,
+        }))
+    }
+
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[crate::actions::CODE_EDITOR_OPERATION_TYPE]
     }
@@ -3285,12 +3766,22 @@ impl Widget for CodeApp {
                     content_origin.x + f64::from(col_layout.location.x),
                     content_origin.y + f64::from(col_layout.location.y),
                 );
-                if let Some(n) = self.tabs_node {
-                    self.tabs.apply_layout(taffy, n, col_origin);
-                    // Reserve the bar's left edge for the overlay hamburger so
-                    // the first tab isn't drawn beneath it.
-                    if self.sidebar_layout() == SplitLayout::Overlay {
-                        self.tabs.inset_left(HAMBURGER_W);
+                if let Some(header_node) = self.editor_header_node {
+                    let header_layout = taffy.layout(header_node).unwrap();
+                    let header_origin = Point::new(
+                        col_origin.x + f64::from(header_layout.location.x),
+                        col_origin.y + f64::from(header_layout.location.y),
+                    );
+                    if let Some(n) = self.tabs_node {
+                        self.tabs.apply_layout(taffy, n, header_origin);
+                        // Reserve the bar's left edge for the overlay hamburger so
+                        // the first tab isn't drawn beneath it.
+                        if self.sidebar_layout() == SplitLayout::Overlay {
+                            self.tabs.inset_left(HAMBURGER_W);
+                        }
+                    }
+                    if let Some(n) = self.panel_toggle_node {
+                        self.panel_toggle.apply_layout(taffy, n, header_origin);
                     }
                 }
                 if let Some(n) = self.find_node {
@@ -3350,6 +3841,8 @@ impl Widget for CodeApp {
                 }
                 self.tabs
                     .draw(scene, transform, text_renderer, theme, presence);
+                self.panel_toggle
+                    .draw(scene, transform, text_renderer, theme, presence);
                 self.find
                     .draw(scene, transform, text_renderer, theme, presence);
                 self.editor
@@ -3363,6 +3856,8 @@ impl Widget for CodeApp {
                 // Content spans the full width and is drawn first; the sidebar
                 // slides in over it behind a scrim.
                 self.tabs
+                    .draw(scene, transform, text_renderer, theme, presence);
+                self.panel_toggle
                     .draw(scene, transform, text_renderer, theme, presence);
                 self.find
                     .draw(scene, transform, text_renderer, theme, presence);
@@ -3475,7 +3970,7 @@ impl Widget for CodeApp {
             return;
         }
 
-        if self.handle_global_shortcuts(event, *modifiers, state, handled) {
+        if self.handle_global_shortcuts(event, *modifiers, state, handled, focus_target) {
             return;
         }
 
@@ -3499,6 +3994,28 @@ impl Widget for CodeApp {
             focus_target,
             taffy,
         ) {
+            return;
+        }
+
+        // The bottom dock is a retained disclosure. Escape dismisses it after
+        // higher-priority modal/find surfaces have had their own Escape, then
+        // returns keyboard focus to the visible trigger that can reopen it.
+        if self.panel_visible
+            && matches!(
+                event,
+                WindowEvent::KeyboardInput {
+                    event: KeyEvent {
+                        logical_key: Key::Named(winit::keyboard::NamedKey::Escape),
+                        state: ElementState::Pressed,
+                        ..
+                    },
+                    ..
+                }
+            )
+        {
+            self.close_bottom_panel();
+            *focus_target = self.panel_toggle_node;
+            *handled = true;
             return;
         }
 
@@ -3628,7 +4145,7 @@ impl Widget for CodeApp {
     /// this the whole editor is one opaque rect and `--headless-drive` can only
     /// click at raw coordinates.
     fn children(&self) -> Vec<&dyn Widget> {
-        let mut out: Vec<&dyn Widget> = vec![&self.sidebar, &self.tabs];
+        let mut out: Vec<&dyn Widget> = vec![&self.sidebar, &self.tabs, &self.panel_toggle];
         if self.find.is_visible() {
             out.push(&self.find);
         }
@@ -3640,7 +4157,8 @@ impl Widget for CodeApp {
     }
 
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
-        let mut out: Vec<&mut (dyn Widget + '_)> = vec![&mut self.sidebar, &mut self.tabs];
+        let mut out: Vec<&mut (dyn Widget + '_)> =
+            vec![&mut self.sidebar, &mut self.tabs, &mut self.panel_toggle];
         if self.find.is_visible() {
             out.push(&mut self.find);
         }
@@ -3912,6 +4430,7 @@ impl Widget for CodeApp {
     fn needs_redraw(&self) -> bool {
         self.sidebar.needs_redraw()
             || self.tabs.needs_redraw()
+            || self.panel_toggle.needs_redraw()
             || self.editor.needs_redraw()
             || self.panel.needs_redraw()
             || self.find.needs_redraw()
@@ -3956,8 +4475,17 @@ impl Widget for CodeApp {
     fn mark_drawn(&mut self) {
         self.sidebar.mark_drawn();
         self.tabs.mark_drawn();
+        self.panel_toggle.mark_drawn();
         self.editor.mark_drawn();
         self.panel.mark_drawn();
         self.find.mark_drawn();
     }
 }
+
+#[cfg(test)]
+#[path = "native_proof_tests.rs"]
+mod native_proof_tests;
+
+#[cfg(test)]
+#[path = "diagnostics_cache_tests.rs"]
+mod diagnostics_cache_tests;

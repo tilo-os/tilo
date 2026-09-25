@@ -294,8 +294,13 @@ pub fn verify_device_cert(cert: &DeviceCert) -> Result<(), DeviceCertError> {
         .map_err(|_| DeviceCertError::InvalidUserPublicKey)?;
     let digest = signing_digest(DEVCERT_PREIMAGE_TAG, &cert.view())?;
     let sig = ed25519_dalek::Signature::from_bytes(&cert.signature);
-    vk.verify(&digest, &sig)
-        .map_err(|_| DeviceCertError::BadSignature)?;
+    if vk.verify(&digest, &sig).is_err() {
+        // The product rename must not revoke certificates already issued with
+        // the original, otherwise identical v1 signed payload.
+        let legacy_digest = signing_digest(b"qos-devcert-v1\0", &cert.view())?;
+        vk.verify(&legacy_digest, &sig)
+            .map_err(|_| DeviceCertError::BadSignature)?;
+    }
     Ok(())
 }
 
@@ -375,6 +380,23 @@ mod tests {
         };
         sign_device_cert(&mut cert, &root_sk).unwrap();
         (root_sk, cert)
+    }
+
+    #[test]
+    fn legacy_certificate_retains_signature_and_validity_checks() {
+        let (root, mut cert) = fresh_cert(DeviceCapabilities::primary());
+        let digest = signing_digest(b"qos-devcert-v1\0", &cert.view()).unwrap();
+        cert.signature = root.sign(&digest).to_bytes();
+        verify_device_cert_at(&cert, cert.issued_at_ns).unwrap();
+        assert_eq!(
+            verify_device_cert_at(&cert, cert.issued_at_ns - 1),
+            Err(DeviceCertError::NotYetValid)
+        );
+        cert.device_label.push('!');
+        assert_eq!(
+            verify_device_cert(&cert),
+            Err(DeviceCertError::BadSignature)
+        );
     }
 
     #[test]
@@ -511,7 +533,7 @@ mod tests {
         use ed25519_dalek::SigningKey;
 
         // Fixed-seed keypair for the vector. This is the ONLY test
-        // that uses a fixed seed; production always uses OsRng.
+        // that uses a fixed seed; production always uses UnwrapErr(SysRng).
         let seed = [1u8; 32];
         let root_sk = SigningKey::from_bytes(&seed);
         let root_pk = root_sk.verifying_key().to_bytes();

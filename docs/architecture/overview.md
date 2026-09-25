@@ -63,7 +63,7 @@ Tilo (codename **tilo**) is a collaborative Linux OS built on Fedora Bootc. See 
 ### 3. Collaboration + Sandbox Layer
 - **Collaboration:** Iroh gossip carries direct workspace traffic; the authenticated Iroh workspace host persists and store-and-forwards durable changes. CRDT changes ride on top via `automerge`'s incremental change protocol.
 - **Surface streaming:** owners encode foreign-client surfaces to H.264 (openh264 software path) and publish them on the workspace topic. Peers decode in a `peer_view` widget; their input events are serialised and replayed into the owner's smithay seat.
-- **Sandbox:** every workspace pins a per-workspace `SandboxProfile` rendered into `bwrap` argv, with a seccomp-bpf blocklist, a private DBus session bus, and a per-workspace Wayland bridge socket. The portal D-Bus backend (`org.freedesktop.impl.portal.*`) gates capability requests through the compositor's prompt UI.
+- **Sandbox:** the compositor execs `tilo-launcher`, which builds each app's `bwrap` argv from its manifest and the workspace's grants, with a seccomp-bpf blocklist, Landlock, a private DBus session bus, and a per-workspace Wayland bridge socket. The portal D-Bus backend (`org.freedesktop.impl.portal.*`) gates capability requests through the compositor's prompt UI.
 - See `docs/architecture/collaboration.md`, `docs/architecture/security.md`.
 
 ## Data flow

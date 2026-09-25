@@ -767,14 +767,7 @@ pub fn draw_markers(
             // would be sliced at the drawer/panel edge into an unreadable
             // fragment. The pin still shows; the drawer already names the place.
             if rect.x0 >= clip.x0 && rect.x1 <= clip.x1 {
-                draw::card(
-                    scene,
-                    t,
-                    rect,
-                    6.0,
-                    theme.tokens.colors.surfaces.raised,
-                    theme.tokens.colors.border_standard,
-                );
+                draw::card(scene, t, rect, 6.0, theme.tokens.colors.surfaces.raised);
                 draw::text_w(
                     scene,
                     tr,
@@ -801,7 +794,10 @@ pub fn draw_markers(
 /// a larger disc bearing a white category pictogram and (past the label
 /// threshold) a name plate. The selected POI is enlarged with an accent halo and
 /// always labelled.
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "POI painting combines render context, map projection, visible records, selection, palette and clipping bounds"
+)]
 pub fn draw_pois(
     scene: &mut Scene,
     t: Affine,
@@ -859,7 +855,10 @@ pub fn draw_pois(
     scene.pop_layer();
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "POI marker painting needs render context, projected position, record, palette, display flags and clipping bounds"
+)]
 fn draw_poi_dot(
     scene: &mut Scene,
     t: Affine,
@@ -919,7 +918,7 @@ fn draw_poi_dot(
         // sliced at the drawer / screen edge into an unreadable fragment. The
         // marker still shows; the info card / list already carries the name.
         if plate.x0 >= clip.x0 && plate.x1 <= clip.x1 && plate.y0 >= clip.y0 {
-            draw::fill_rrect(
+            draw::fill_round(
                 scene,
                 t,
                 plate,
@@ -967,14 +966,14 @@ pub fn draw_category_icon(
     };
     match cat {
         Category::Hospital => {
-            draw::fill_rrect(
+            draw::fill_round(
                 scene,
                 t,
                 Rect::new(c.x - s, c.y - s * 0.32, c.x + s, c.y + s * 0.32),
                 1.5,
                 fg,
             );
-            draw::fill_rrect(
+            draw::fill_round(
                 scene,
                 t,
                 Rect::new(c.x - s * 0.32, c.y - s, c.x + s * 0.32, c.y + s),
@@ -996,7 +995,7 @@ pub fn draw_category_icon(
             draw::fill_circle(scene, t, Point::new(c.x, c.y - s * 0.2), s * 0.62, fg);
         }
         Category::Cafe => {
-            draw::fill_rrect(
+            draw::fill_round(
                 scene,
                 t,
                 Rect::new(
@@ -1099,7 +1098,7 @@ pub fn draw_category_icon(
             );
         }
         Category::Transit => {
-            draw::fill_rrect(
+            draw::fill_round(
                 scene,
                 t,
                 Rect::new(c.x - s * 0.6, c.y - s * 0.72, c.x + s * 0.6, c.y + s * 0.5),
@@ -1107,7 +1106,7 @@ pub fn draw_category_icon(
                 fg,
             );
             // Two windows cut out of the body (disc colour).
-            draw::fill_rrect(
+            draw::fill_round(
                 scene,
                 t,
                 Rect::new(
@@ -1119,7 +1118,7 @@ pub fn draw_category_icon(
                 1.5,
                 bg,
             );
-            draw::fill_rrect(
+            draw::fill_round(
                 scene,
                 t,
                 Rect::new(
@@ -1155,7 +1154,7 @@ pub fn draw_category_icon(
                 c.y + s * 0.5,
                 lw * 1.4,
             );
-            draw::fill_rrect(
+            draw::fill_round(
                 scene,
                 t,
                 Rect::new(
@@ -1167,7 +1166,7 @@ pub fn draw_category_icon(
                 2.0,
                 fg,
             );
-            draw::fill_rrect(
+            draw::fill_round(
                 scene,
                 t,
                 Rect::new(c.x - s * 0.5, c.y - s * 0.2, c.x - s * 0.08, c.y + s * 0.12),
@@ -1177,7 +1176,7 @@ pub fn draw_category_icon(
         }
         Category::Shop => {
             draw::stroke_circle(scene, t, Point::new(c.x, c.y - s * 0.22), s * 0.32, lw, fg);
-            draw::fill_rrect(
+            draw::fill_round(
                 scene,
                 t,
                 Rect::new(c.x - s * 0.6, c.y - s * 0.18, c.x + s * 0.6, c.y + s * 0.72),
@@ -1284,7 +1283,7 @@ pub fn draw_scale_bar(
     let x1 = right_x;
     let x0 = x1 - px;
     let bar_bg = draw::alpha(theme.tokens.colors.surfaces.base, 0.7);
-    draw::fill_rrect(
+    draw::fill_round(
         scene,
         t,
         Rect::new(x0 - 8.0, y - 4.0, x1 + 8.0, y + 14.0),

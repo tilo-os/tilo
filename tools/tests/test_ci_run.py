@@ -94,7 +94,7 @@ class CiRunSummaryTests(unittest.TestCase):
     def test_clippy_diff_failure_keeps_lint_location_and_name(self):
         diagnostic = """introduced 1 Clippy diagnostic site(s):
 warning: item in documentation is missing backticks
- --> crates/packaging/pkg/src/version.rs:2:38
+ --> crates/packaging/tilo-app-package/src/version.rs:2:38
   |
   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#doc_markdown
   = note: `-D clippy::doc-markdown` implied by `-D clippy::pedantic`
@@ -131,11 +131,11 @@ warning: item in documentation is missing backticks
             self.assertEqual(result.returncode, 1, result.stdout)
             self.assertIn("First diagnostics", result.stdout)
             self.assertNotIn("No recognised diagnostic matched", result.stdout)
-            self.assertIn("crates/packaging/pkg/src/version.rs:2:38", result.stdout)
+            self.assertIn("crates/packaging/tilo-app-package/src/version.rs:2:38", result.stdout)
             self.assertIn("clippy::doc-markdown", result.stdout)
             self.assertIn("::error::Clippy diagnostic diff: warning:", result.stdout)
             rendered_summary = summary.read_text(encoding="utf-8")
-            self.assertIn("crates/packaging/pkg/src/version.rs:2:38", rendered_summary)
+            self.assertIn("crates/packaging/tilo-app-package/src/version.rs:2:38", rendered_summary)
             self.assertIn("clippy::doc-markdown", rendered_summary)
 
 

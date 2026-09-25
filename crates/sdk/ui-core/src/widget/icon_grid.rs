@@ -24,6 +24,7 @@ use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
+use crate::widget::data_table::{renderer_type_size, text_band, type_line_height};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct IconGridItem {
@@ -51,6 +52,9 @@ pub struct IconGrid {
     /// Both axes.
     gap: f64,
     icon_px: f64,
+    /// Set by [`Self::with_cell_size`]: an authored cell stays exact; the
+    /// default cell follows the theme's label type in `build_layout`.
+    cell_authored: bool,
 
     rect: Rect,
     /// Resolved at the last layout, cached for hit-testing + keyboard
@@ -61,22 +65,38 @@ pub struct IconGrid {
     is_focused: bool,
     hover: Option<usize>,
     last_cursor: Point,
-    last_click: Option<(usize, std::time::Instant)>,
+    last_click: Option<(usize, crate::time::Instant)>,
 
     on_item_click: Option<ItemClick>,
     on_activate: Option<Box<dyn FnMut(usize)>>,
 }
 
+/// Default cell at the default text scale, tuned for a file-manager icon
+/// view; `build_layout` grows it with the label type.
+const DEFAULT_CELL_W: f64 = 96.0;
+const DEFAULT_CELL_H: f64 = 88.0;
+/// The default cell is this many ems of `sm` label wide (8 × 12 = 96).
+const DEFAULT_CELL_LABEL_EMS: f64 = 8.0;
+/// Gap between cells before a theme is seen: the sibling step, unscaled.
+/// `build_layout` reads the live `spacing.s3` on every pass.
+#[allow(
+    clippy::cast_lossless,
+    reason = "const context: f64::from is not const; f32 -> f64 is exact"
+)]
+const DEFAULT_CELL_GAP: f64 = crate::tokens::Spacing::BASE.s3 as f64;
+
 impl IconGrid {
-    /// Default cell metrics (96×88 px cells, 12 px gap, 40 px glyphs)
-    /// are tuned for a file-manager icon view.
+    /// Default cell metrics (96×88 px cells, `s3` gap, 40 px glyphs) are
+    /// tuned for a file-manager icon view; the cell follows the theme's
+    /// label type unless [`Self::with_cell_size`] authors it.
     pub fn new(items: Vec<IconGridItem>) -> Self {
         Self {
             items,
-            cell_w: 96.0,
-            cell_h: 88.0,
-            gap: 12.0,
+            cell_w: DEFAULT_CELL_W,
+            cell_h: DEFAULT_CELL_H,
+            gap: DEFAULT_CELL_GAP,
             icon_px: 40.0,
+            cell_authored: false,
             rect: Rect::ZERO,
             columns: 1,
             selection: SelectionModel::new(),
@@ -93,6 +113,7 @@ impl IconGrid {
     pub fn with_cell_size(mut self, w: f64, h: f64) -> Self {
         self.cell_w = w.max(8.0);
         self.cell_h = h.max(8.0);
+        self.cell_authored = true;
         self
     }
 
@@ -256,9 +277,26 @@ impl Widget for IconGrid {
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
-        _theme: &Theme,
+        theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
+        let tokens = &theme.tokens;
+        // The gap between cells is the sibling step (12 px at 1×).
+        self.gap = f64::from(tokens.spacing.s3);
+        if !self.cell_authored {
+            // The default cell follows the label type: eight ems of `sm`
+            // label across (96 px at 1×) and the glyph, its label gap and one
+            // label line plus a section inset above and below (88 px at 1×).
+            // An authored `with_cell_size` is left exactly as written.
+            let label_size = f64::from(tokens.typography.scale.sm);
+            let label_line = type_line_height(tokens.typography.scale.sm);
+            self.cell_w = text_band(DEFAULT_CELL_W, label_size * DEFAULT_CELL_LABEL_EMS, 0.0);
+            self.cell_h = text_band(
+                DEFAULT_CELL_H,
+                self.icon_px + f64::from(tokens.spacing.s2) + label_line,
+                2.0 * f64::from(tokens.spacing.s3),
+            );
+        }
         let node = taffy.leaf_node(Style::default());
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
@@ -310,7 +348,9 @@ impl Widget for IconGrid {
         presence: &PresenceCtx,
     ) {
         let tokens = &theme.tokens;
-        let label_size = tokens.typography.scale.sm;
+        let label_size = renderer_type_size(text_renderer, tokens.typography.scale.sm);
+        let label_gap = f64::from(tokens.spacing.s2);
+        let label_inset = f64::from(tokens.spacing.s2);
         for (i, item) in self.items.iter().enumerate() {
             let cell = self.cell_rect(i);
             if presence.should_cull(cell) {
@@ -328,8 +368,17 @@ impl Widget for IconGrid {
                 scene.fill(vello::peniko::Fill::NonZero, transform, bg, None, &shape);
             }
 
+            let label = text_renderer.elide_to_width(
+                &item.label,
+                label_size,
+                crate::num::f32_of_f64(self.cell_w - label_inset),
+            );
+            let (tw, th) = text_renderer.measure(&label, label_size, None);
+            // The glyph + label block is centred in the cell so the margins
+            // above and below match; the label is centred under the glyph.
+            let block_h = self.icon_px + label_gap + f64::from(th);
             let icon_x = cell.x0 + (self.cell_w - self.icon_px) / 2.0;
-            let icon_y = cell.y0 + 10.0;
+            let icon_y = cell.y0 + ((self.cell_h - block_h) / 2.0).max(0.0);
             let icon_rect = Rect::new(icon_x, icon_y, icon_x + self.icon_px, icon_y + self.icon_px);
             let glyph_color = if selected {
                 tokens
@@ -347,11 +396,8 @@ impl Widget for IconGrid {
                 LUCIDE_DEFAULT_STROKE_PX,
             );
 
-            let label =
-                truncate_to_width(text_renderer, &item.label, label_size, self.cell_w - 8.0);
-            let (tw, _) = text_renderer.measure(&label, label_size, None);
             let tx = cell.x0 + (self.cell_w - f64::from(tw)) / 2.0;
-            let ty = icon_y + self.icon_px + 8.0;
+            let ty = icon_y + self.icon_px + label_gap;
             let label_color = if selected {
                 tokens
                     .colors
@@ -423,7 +469,7 @@ impl Widget for IconGrid {
                     if let Some(cb) = &mut self.on_item_click {
                         cb(i, ctrl, shift);
                     }
-                    let now = std::time::Instant::now();
+                    let now = crate::time::now();
                     let is_double = matches!(
                         self.last_click,
                         Some((pi, t)) if pi == i && now.duration_since(t) < crate::gesture::multi_click_interval()
@@ -533,28 +579,6 @@ impl Widget for IconGrid {
         }
         Some(node)
     }
-}
-
-/// Trim `text` (adding an ellipsis) until it measures within `max_w`.
-fn truncate_to_width(tr: &mut TextRenderer, text: &str, size: f32, max_w: f64) -> String {
-    if max_w <= 0.0 {
-        return String::new();
-    }
-    let (w, _) = tr.measure(text, size, None);
-    if f64::from(w) <= max_w {
-        return text.to_string();
-    }
-    let chars: Vec<char> = text.chars().collect();
-    let mut keep = chars.len();
-    while keep > 0 {
-        keep = keep.saturating_sub(1);
-        let candidate: String = chars.get(..keep).unwrap_or(&[]).iter().collect::<String>() + "…";
-        let (cw, _) = tr.measure(&candidate, size, None);
-        if f64::from(cw) <= max_w {
-            return candidate;
-        }
-    }
-    "…".to_string()
 }
 
 #[cfg(test)]

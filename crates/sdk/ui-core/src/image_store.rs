@@ -1,19 +1,22 @@
 //! Async image loading, decode and cache — keyed by URL. Displaying remote
-//! thumbnails on the UI thread would jank every frame, so this store owns a
-//! background thread pool that fetches (via a caller-supplied [`Fetcher`])
-//! and decodes off-thread, caching the decoded [`peniko::ImageData`] and
-//! handing it back on a later frame; until then the caller paints a
-//! placeholder.
+//! thumbnails on the UI thread would jank every frame, so loads run off the
+//! UI thread — fetched through a caller-supplied [`Fetcher`] and decoded as
+//! [`crate::background::Background`] jobs, or fetched by the host through a
+//! [`HostImageLoader`] — and the decoded [`peniko::ImageData`] is cached and
+//! handed back on a later frame; until then the caller paints a placeholder.
 //!
 //! No networking here — the toolkit stays HTTP-free, and a no-op fetcher
 //! keeps tests and hermetic offline builds deterministic. Decoding uses the
 //! `image` crate; cloning a returned `ImageData` only bumps an `Arc`.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::{Receiver, SyncSender, TrySendError};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+
+use crate::background::Background;
+use crate::time::Duration;
+use crate::wake::WakeHandle;
 
 use vello::Scene;
 use vello::kurbo::{Affine, Rect, RoundedRect};
@@ -22,8 +25,8 @@ use vello::peniko::{
     ImageFormat as Format,
 };
 
-/// Fetches the raw encoded bytes for a URL, or `None` on failure. Invoked on a
-/// background worker thread, so it may block on I/O.
+/// Fetches the raw encoded bytes for a URL, or `None` on failure. Invoked as
+/// background work, so it may block on I/O.
 pub type Fetcher = Arc<dyn Fn(&str) -> Option<Vec<u8>> + Send + Sync>;
 
 /// Cache state for one URL.
@@ -84,6 +87,9 @@ const MAX_IMAGE_WORKERS: usize = 4;
 const IMAGE_JOB_QUEUE_LIMIT: usize = 64;
 const IMAGE_CACHE_ENTRY_LIMIT: usize = 64;
 const IMAGE_CACHE_BYTE_LIMIT: u64 = 64 * 1024 * 1024;
+const THUMBNAIL_MAX_DIMENSION: u32 = 600;
+// A single RGBA image must fit within the existing 64 MiB cache ceiling.
+const IMAGE_MAX_DIMENSION: u32 = 4096;
 
 fn slot_bytes(slot: &Slot) -> u64 {
     match slot {
@@ -130,11 +136,159 @@ struct Shared {
     pending: AtomicUsize,
 }
 
-/// A cheap-to-clone handle to a shared, background image loader/cache.
+impl Shared {
+    fn new() -> Arc<Self> {
+        Arc::new(Self {
+            slots: Mutex::new(CacheState::default()),
+            pending: AtomicUsize::new(0),
+        })
+    }
+}
+
+/// A cheap-to-clone handle to a shared image cache whose loads run off the
+/// UI thread — on the toolkit's [`Background`] for [`ImageStore::new`], or
+/// in the host for [`ImageStore::host_driven`].
 #[derive(Clone)]
 pub struct ImageStore {
     shared: Arc<Shared>,
     tx: SyncSender<String>,
+    /// Starts background loads for newly queued requests; `None` when a
+    /// [`HostImageLoader`] owns loading.
+    native: Option<Arc<NativeLoader>>,
+    background: Background,
+}
+
+/// The loading half of a host-driven [`ImageStore`].
+///
+/// The host drains requested URLs with [`take_requests`](Self::take_requests),
+/// fetches them however it can (asynchronously, from its own cache, over its
+/// own transport) and hands the bytes back through
+/// [`complete`](Self::complete), which decodes them under the same size and
+/// cache limits as the native loader and wakes the component that owns the
+/// store. Dropping the loader settles every unfinished request as failed.
+pub struct HostImageLoader {
+    shared: Arc<Shared>,
+    requests: Receiver<String>,
+    in_flight: HashSet<String>,
+    wake: WakeHandle,
+    max_dimension: u32,
+}
+
+impl HostImageLoader {
+    /// Every URL requested since the last call. Each must eventually be
+    /// passed to [`complete`](Self::complete).
+    pub fn take_requests(&mut self) -> Vec<String> {
+        std::iter::from_fn(|| self.next_request()).collect()
+    }
+
+    /// The next requested URL, if any.
+    pub fn next_request(&mut self) -> Option<String> {
+        let url = self.requests.try_recv().ok()?;
+        self.in_flight.insert(url.clone());
+        Some(url)
+    }
+
+    /// Settle a request taken from this loader with its fetched bytes, or
+    /// `None` when the fetch failed. Decoding runs on the calling thread.
+    /// Returns `false` for a URL this loader has not handed out or has
+    /// already settled.
+    pub fn complete(&mut self, url: &str, bytes: Option<&[u8]>) -> bool {
+        if !self.in_flight.contains(url) {
+            return false;
+        }
+        let slot = decoded_slot(bytes, self.max_dimension);
+        self.settle(url, slot)
+    }
+
+    fn settle(&mut self, url: &str, slot: Slot) -> bool {
+        if !self.in_flight.remove(url) {
+            return false;
+        }
+        if let Ok(mut slots) = self.shared.slots.lock() {
+            // Replace this request's Loading marker, then reclaim settled
+            // entries until both the count and decoded-pixel ceilings fit.
+            insert_settled(&mut slots, url.to_owned(), slot);
+        }
+        self.shared.pending.fetch_sub(1, Ordering::SeqCst);
+        self.wake.wake();
+        true
+    }
+}
+
+impl Drop for HostImageLoader {
+    fn drop(&mut self) {
+        let mut unfinished = std::mem::take(&mut self.in_flight);
+        unfinished.extend(self.requests.try_iter());
+        if unfinished.is_empty() {
+            return;
+        }
+        if let Ok(mut slots) = self.shared.slots.lock() {
+            for url in &unfinished {
+                insert_settled(&mut slots, url.clone(), Slot::Failed);
+            }
+        }
+        self.shared
+            .pending
+            .fetch_sub(unfinished.len(), Ordering::SeqCst);
+        self.wake.wake();
+    }
+}
+
+/// Pairs a [`HostImageLoader`] with a [`Fetcher`] on a [`Background`]: at
+/// most `workers` loads run at once, one background job per URL.
+struct NativeLoader {
+    state: Mutex<NativeState>,
+    fetch: Fetcher,
+    background: Background,
+    workers: usize,
+}
+
+struct NativeState {
+    loader: HostImageLoader,
+    running: usize,
+}
+
+impl NativeLoader {
+    fn state(&self) -> std::sync::MutexGuard<'_, NativeState> {
+        self.state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// Start a job for each queued request while a worker slot is free.
+    fn start_queued(self: &Arc<Self>) {
+        loop {
+            let (url, max_dimension) = {
+                let mut state = self.state();
+                if state.running >= self.workers {
+                    return;
+                }
+                let Some(url) = state.loader.next_request() else {
+                    return;
+                };
+                state.running = state.running.saturating_add(1);
+                (url, state.loader.max_dimension)
+            };
+            let this = Arc::clone(self);
+            let job_url = url.clone();
+            let spawned = self.background.spawn("ui-image", move || {
+                let slot = decoded_slot((this.fetch)(&job_url).as_deref(), max_dimension);
+                {
+                    let mut state = this.state();
+                    state.loader.settle(&job_url, slot);
+                    state.running = state.running.saturating_sub(1);
+                }
+                this.start_queued();
+            });
+            if spawned.is_err() {
+                // This host runs no background work: settle instead of
+                // leaving the request loading forever.
+                let mut state = self.state();
+                state.loader.settle(&url, Slot::Failed);
+                state.running = state.running.saturating_sub(1);
+            }
+        }
+    }
 }
 
 impl ImageStore {
@@ -143,24 +297,56 @@ impl ImageStore {
         Self::with_workers(fetch, DEFAULT_IMAGE_WORKERS)
     }
 
-    /// Build a store with `workers` background fetch/decode threads, clamped
-    /// to 1..=4 so each store has a predictable stack/scheduler footprint.
+    /// Build a store that runs at most `workers` fetch/decode jobs at once,
+    /// clamped to 1..=4 so one store cannot monopolise the background pool.
     pub fn with_workers(fetch: &Fetcher, workers: usize) -> Self {
-        let (tx, rx) = std::sync::mpsc::sync_channel::<String>(IMAGE_JOB_QUEUE_LIMIT);
-        let shared = Arc::new(Shared {
-            slots: Mutex::new(CacheState::default()),
-            pending: AtomicUsize::new(0),
-        });
-        let rx: Arc<Mutex<Receiver<String>>> = Arc::new(Mutex::new(rx));
-        for i in 0..workers.clamp(1, MAX_IMAGE_WORKERS) {
-            let rx = rx.clone();
-            let shared = shared.clone();
-            let fetch = fetch.clone();
-            let _ = std::thread::Builder::new()
-                .name(format!("ui-image-{i}"))
-                .spawn(move || worker_loop(&rx, &shared, &fetch));
-        }
-        Self { shared, tx }
+        Self::with_decode_options(fetch, workers, THUMBNAIL_MAX_DIMENSION)
+    }
+
+    /// Build a store for document images instead of small thumbnails.
+    ///
+    /// Decoded dimensions are bounded to 1..=4096; the worker, queue and
+    /// total cache memory limits remain the same as for the thumbnail store.
+    pub fn with_max_dimension(fetch: &Fetcher, max_dimension: u32) -> Self {
+        Self::with_decode_options(fetch, DEFAULT_IMAGE_WORKERS, max_dimension)
+    }
+
+    /// A thumbnail store whose loading the host drives through the returned
+    /// [`HostImageLoader`]; no background work is spawned.
+    pub fn host_driven() -> (Self, HostImageLoader) {
+        Self::host_driven_with_max_dimension(THUMBNAIL_MAX_DIMENSION)
+    }
+
+    /// A host-driven store with a bounded document-image decode dimension
+    /// (clamped to 1..=4096).
+    pub fn host_driven_with_max_dimension(max_dimension: u32) -> (Self, HostImageLoader) {
+        let (tx, requests) = std::sync::mpsc::sync_channel(IMAGE_JOB_QUEUE_LIMIT);
+        let shared = Shared::new();
+        let loader = HostImageLoader {
+            shared: Arc::clone(&shared),
+            requests,
+            in_flight: HashSet::new(),
+            wake: WakeHandle::new(),
+            max_dimension: max_dimension.clamp(1, IMAGE_MAX_DIMENSION),
+        };
+        let store = Self {
+            shared,
+            tx,
+            native: None,
+            background: Background::current(),
+        };
+        (store, loader)
+    }
+
+    fn with_decode_options(fetch: &Fetcher, workers: usize, max_dimension: u32) -> Self {
+        let (mut store, loader) = Self::host_driven_with_max_dimension(max_dimension);
+        store.native = Some(Arc::new(NativeLoader {
+            state: Mutex::new(NativeState { loader, running: 0 }),
+            fetch: fetch.clone(),
+            background: store.background.clone(),
+            workers: workers.clamp(1, MAX_IMAGE_WORKERS),
+        }));
+        store
     }
 
     /// Decoded image for `url`, kicking off an async load the first time a URL
@@ -199,15 +385,27 @@ impl ImageStore {
         drop(slots);
         self.shared.pending.fetch_add(1, Ordering::SeqCst);
         // Never block the UI thread behind image I/O. A full queue removes the
-        // provisional Loading slot so a later frame can retry.
-        if let Err(error) = self.tx.try_send(url.to_string()) {
-            let failed_url = match error {
-                TrySendError::Full(url) | TrySendError::Disconnected(url) => url,
-            };
-            if let Ok(mut slots) = self.shared.slots.lock() {
-                slots.slots.remove(&failed_url);
+        // provisional Loading slot so a later frame can retry; a loader that
+        // is gone will never answer, so the request settles as failed.
+        match self.tx.try_send(url.to_string()) {
+            Ok(()) => {
+                if let Some(native) = &self.native {
+                    native.start_queued();
+                }
             }
-            self.shared.pending.fetch_sub(1, Ordering::SeqCst);
+            Err(error) => {
+                if let Ok(mut slots) = self.shared.slots.lock() {
+                    match error {
+                        TrySendError::Full(url) => {
+                            slots.slots.remove(&url);
+                        }
+                        TrySendError::Disconnected(url) => {
+                            insert_settled(&mut slots, url, Slot::Failed);
+                        }
+                    }
+                }
+                self.shared.pending.fetch_sub(1, Ordering::SeqCst);
+            }
         }
         None
     }
@@ -231,58 +429,52 @@ impl ImageStore {
         self.pending() == 0
     }
 
-    /// Block until all in-flight loads settle or `timeout` elapses. For the
-    /// synchronous `--shots` pre-warm only — never call this on a live app's UI
-    /// thread.
+    /// Block until all in-flight loads settle or `timeout` elapses on the
+    /// store's executor clock. For the synchronous `--shots` pre-warm and
+    /// tests only — never call this on a live app's UI thread. A host-driven
+    /// store settles only when its host completes requests.
     pub fn block_until_idle(&self, timeout: Duration) {
-        let start = Instant::now();
-        while self.pending() > 0 && start.elapsed() < timeout {
-            std::thread::sleep(Duration::from_millis(10));
+        let start = self.background.now();
+        let deadline = start.checked_add(timeout).unwrap_or(start);
+        loop {
+            let now = self.background.now();
+            if self.is_idle() || now >= deadline {
+                return;
+            }
+            // Loads also settle outside the executor's view (a host loader
+            // on another thread), so re-check at least this often.
+            let slice = now
+                .checked_add(Duration::from_millis(10))
+                .unwrap_or(deadline);
+            self.background.park(slice.min(deadline));
         }
     }
 }
 
-fn worker_loop(rx: &Arc<Mutex<Receiver<String>>>, shared: &Arc<Shared>, fetch: &Fetcher) {
-    loop {
-        // Hold the receiver lock only long enough to pull one job.
-        let url = {
-            let Ok(guard) = rx.lock() else { break };
-            match guard.recv() {
-                Ok(u) => u,
-                Err(_) => break, // sender dropped: store gone
-            }
-        };
-        let decoded = fetch(&url).and_then(|bytes| decode_rgba(&bytes));
-        let slot = match decoded {
-            Some((rgba, w, h)) => {
-                let blob = Blob::new(Arc::new(rgba));
-                Slot::Ready(PenikoImage {
-                    data: blob,
-                    format: Format::Rgba8,
-                    alpha_type: ImageAlphaType::Alpha,
-                    width: w,
-                    height: h,
-                })
-            }
-            None => Slot::Failed,
-        };
-        if let Ok(mut slots) = shared.slots.lock() {
-            // Replace this request's Loading marker, then reclaim settled
-            // entries until both the count and decoded-pixel ceilings fit.
-            insert_settled(&mut slots, url, slot);
-        }
-        shared.pending.fetch_sub(1, Ordering::SeqCst);
+fn decoded_slot(bytes: Option<&[u8]>, max_dimension: u32) -> Slot {
+    match bytes.and_then(|bytes| decode_rgba(bytes, max_dimension)) {
+        Some((rgba, width, height)) => Slot::Ready(PenikoImage {
+            data: Blob::new(Arc::new(rgba)),
+            format: Format::Rgba8,
+            alpha_type: ImageAlphaType::Alpha,
+            width,
+            height,
+        }),
+        None => Slot::Failed,
     }
 }
 
 /// Decode encoded image bytes (JPEG/PNG/WebP) into 8-bit RGBA + dimensions.
-/// Oversized sources are downscaled to 600px so texture memory stays bounded
-/// — album art never needs more.
-fn decode_rgba(bytes: &[u8]) -> Option<(Vec<u8>, u32, u32)> {
-    const MAX: u32 = 600;
+/// Oversized sources are downscaled to the store's bounded decode size.
+fn decode_rgba(bytes: &[u8], max_dimension: u32) -> Option<(Vec<u8>, u32, u32)> {
+    let max_dimension = max_dimension.clamp(1, IMAGE_MAX_DIMENSION);
     let img = image::load_from_memory(bytes).ok()?;
-    let img = if img.width().max(img.height()) > MAX {
-        img.resize(MAX, MAX, image::imageops::FilterType::Triangle)
+    let img = if img.width().max(img.height()) > max_dimension {
+        img.resize(
+            max_dimension,
+            max_dimension,
+            image::imageops::FilterType::Triangle,
+        )
     } else {
         img
     };
@@ -344,6 +536,12 @@ pub fn paint_image_cover(
 mod tests {
     use super::*;
 
+    /// Upper bound for waiting on background decodes. `block_until_idle`
+    /// returns as soon as the queue drains, so this only matters when a
+    /// decode never finishes; a debug build decoding two 2100 px scans on a
+    /// loaded machine has taken longer than the old 10 s.
+    const DECODE_HANG_GUARD: Duration = Duration::from_secs(60);
+
     fn logical_image(width: u32, height: u32) -> PenikoImage {
         PenikoImage {
             data: Blob::new(Arc::new(vec![0, 0, 0, 0])),
@@ -362,15 +560,7 @@ mod tests {
         for _ in 0..pixels {
             rgba.extend_from_slice(&[rgb[0], rgb[1], rgb[2], 255]);
         }
-        let mut out = Vec::new();
-        {
-            let mut enc = png::Encoder::new(&mut out, w, h);
-            enc.set_color(png::ColorType::Rgba);
-            enc.set_depth(png::BitDepth::Eight);
-            let mut writer = enc.write_header().unwrap();
-            writer.write_image_data(&rgba).unwrap();
-        }
-        out
+        crate::png::encode_rgba8(w, h, &rgba).unwrap()
     }
 
     #[test]
@@ -390,7 +580,7 @@ mod tests {
         // First look: not cached → placeholder (None) + a load is scheduled.
         assert!(store.get("http://example.test/cover.png").is_none());
 
-        store.block_until_idle(Duration::from_secs(5));
+        store.block_until_idle(DECODE_HANG_GUARD);
         assert!(store.is_idle(), "load settled");
         assert_eq!(
             fetches.load(Ordering::SeqCst),
@@ -415,11 +605,72 @@ mod tests {
     }
 
     #[test]
+    fn host_driven_store_loads_only_what_the_host_completes() {
+        let (store, mut loader) = ImageStore::host_driven();
+        assert!(store.get("a.png").is_none());
+        assert!(store.get("b.png").is_none());
+        assert_eq!(store.pending(), 2);
+        assert_eq!(loader.take_requests(), ["a.png", "b.png"]);
+        assert!(loader.take_requests().is_empty());
+        assert!(loader.complete("a.png", Some(&png_bytes(3, 2, [1, 2, 3]))));
+        assert!(!loader.complete("a.png", None), "a request settles once");
+        assert!(!loader.complete("never-requested.png", None));
+        let image = store.get("a.png").expect("completed image is cached");
+        assert_eq!((image.width, image.height), (3, 2));
+        assert_eq!(store.pending(), 1);
+        drop(loader);
+        assert!(store.is_idle(), "dropping the loader settles what it left");
+        assert!(store.get("b.png").is_none());
+        assert!(store.is_known("b.png"));
+        assert!(store.get("c.png").is_none());
+        assert!(
+            store.is_idle(),
+            "a store without a loader fails new requests"
+        );
+    }
+
+    #[test]
+    fn pumped_background_runs_native_loads_one_job_per_image() {
+        let pumped = crate::background::Pumped::new();
+        let bytes = png_bytes(4, 4, [9, 9, 9]);
+        let fetch: Fetcher = Arc::new(move |_| Some(bytes.clone()));
+        let store = {
+            let _background = pumped.background().enter();
+            ImageStore::with_workers(&fetch, 1)
+        };
+        let urls = ["one.png", "two.png", "three.png"];
+        for url in urls {
+            assert!(store.get(url).is_none());
+        }
+        assert_eq!(store.pending(), 3);
+        assert_eq!(pumped.run_pending(), 3);
+        assert!(store.is_idle());
+        for url in urls {
+            assert!(store.get(url).is_some(), "{url} decoded");
+        }
+        assert!(store.get("four.png").is_none());
+        store.block_until_idle(Duration::from_secs(5));
+        assert!(store.get("four.png").is_some(), "parking pumps the queue");
+    }
+
+    #[test]
+    fn a_host_without_background_work_settles_loads_as_failed() {
+        let fetch: Fetcher = Arc::new(|_| Some(png_bytes(2, 2, [0, 0, 0])));
+        let store = {
+            let _background = Background::new(crate::background::NoBackground).enter();
+            ImageStore::new(&fetch)
+        };
+        assert!(store.get("x.png").is_none());
+        assert!(store.is_idle());
+        assert!(store.is_known("x.png"));
+    }
+
+    #[test]
     fn failed_fetch_settles_as_failed_not_pending() {
         let fetch: Fetcher = Arc::new(|_url: &str| None);
         let store = ImageStore::new(&fetch);
         assert!(store.get("http://example.test/missing.jpg").is_none());
-        store.block_until_idle(Duration::from_secs(5));
+        store.block_until_idle(DECODE_HANG_GUARD);
         assert!(store.is_idle(), "a failed fetch still settles");
         // Still None, and no repeated scheduling (already known/Failed).
         assert!(store.get("http://example.test/missing.jpg").is_none());
@@ -512,7 +763,56 @@ mod tests {
     #[test]
     fn decode_downscales_oversized_sources_before_caching() {
         let bytes = png_bytes(700, 2, [20, 40, 60]);
-        let (_, width, height) = decode_rgba(&bytes).expect("valid PNG decodes");
+        let (_, width, height) =
+            decode_rgba(&bytes, THUMBNAIL_MAX_DIMENSION).expect("valid PNG decodes");
         assert!(width <= 600 && height <= 600);
+    }
+
+    #[test]
+    fn document_store_preserves_scan_resolution_without_changing_thumbnail_defaults() {
+        let bytes = png_bytes(1200, 760, [20, 40, 60]);
+        let fetch: Fetcher = Arc::new(move |_| Some(bytes.clone()));
+        for (store, expected) in [
+            (ImageStore::new(&fetch), (600, 380)),
+            (ImageStore::with_max_dimension(&fetch, 4096), (1200, 760)),
+        ] {
+            assert!(store.get("scan.png").is_none());
+            store.block_until_idle(DECODE_HANG_GUARD);
+            let image = store.get("scan.png").expect("scan must finish decoding");
+            assert_eq!((image.width, image.height), expected);
+            assert!(cache_bytes(&store.shared.slots.lock().unwrap()) <= IMAGE_CACHE_BYTE_LIMIT);
+        }
+    }
+
+    #[test]
+    fn document_decode_limit_cannot_exceed_the_cache_budget() {
+        let bytes = png_bytes(5000, 2, [20, 40, 60]);
+        let (_, width, height) = decode_rgba(&bytes, u32::MAX).unwrap();
+        assert_eq!(width, IMAGE_MAX_DIMENSION);
+        assert!(u64::from(width) * u64::from(height) * 4 <= IMAGE_CACHE_BYTE_LIMIT);
+    }
+
+    #[test]
+    fn document_images_can_remain_resident_together_without_redecoding() {
+        let bytes = png_bytes(2100, 2100, [20, 40, 60]);
+        let fetches = Arc::new(AtomicUsize::new(0));
+        let counter = fetches.clone();
+        let fetch: Fetcher = Arc::new(move |_| {
+            counter.fetch_add(1, Ordering::SeqCst);
+            Some(bytes.clone())
+        });
+        let store = ImageStore::with_max_dimension(&fetch, 2048);
+        assert!(store.get("first-scan.png").is_none());
+        assert!(store.get("second-scan.png").is_none());
+        store.block_until_idle(DECODE_HANG_GUARD);
+        for _ in 0..3 {
+            for url in ["first-scan.png", "second-scan.png"] {
+                let image = store.get(url).expect("both scans stay resident");
+                assert_eq!((image.width, image.height), (2048, 2048));
+            }
+        }
+        assert!(store.is_idle());
+        assert_eq!(fetches.load(Ordering::SeqCst), 2);
+        assert!(cache_bytes(&store.shared.slots.lock().unwrap()) <= IMAGE_CACHE_BYTE_LIMIT);
     }
 }

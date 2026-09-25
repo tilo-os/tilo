@@ -23,8 +23,9 @@ use ui::{
 extern crate runtime_dylib;
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     ui::launch::run(
-        &LaunchSpec::new("dev.tilo.image-editor", image_editor::app_root)
+        &LaunchSpec::new("so.tilo.image-editor", image_editor::app_root)
             .open_state_with_args(open_state)
+            .max_positionals(1)
             .shot_handler(render_shot)
             .allowed_options(&["--size"])
             .allowed_live_options(&["--open"])
@@ -151,7 +152,7 @@ fn shot_theme(args: &LaunchArgs) -> Theme {
         .with_text_scale(args.text_scale.unwrap_or(1.0))
         .with_reduce_motion(reduce_motion)
 }
-fn open_state(id: &'static str, args: &LaunchArgs) -> (ui::State, ui::persist::Autosave) {
+fn open_state(id: &'static str, args: &LaunchArgs) -> (ui::State, ui::persist::DocWriter) {
     let (mut state, save) = ui::persist::open(id);
     image_editor::doc::ProjectDoc::seed(&mut state.doc);
     if let Some(path) = args

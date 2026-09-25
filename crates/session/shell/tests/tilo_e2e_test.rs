@@ -35,7 +35,7 @@ fn bootstrap_demo_seeds_four_demo_tabs_in_order() {
     // A first boot starts empty, so `bootstrap_demo` is the fixture with a tab
     // to act on.
     let tree = WorkspaceTree::bootstrap_demo();
-    let ws = tree.active_workspace().expect("active workspace");
+    let ws = tree.desktop.active_workspace().expect("active workspace");
     let strip = ws.strips.first().expect("at least one strip");
     let group = strip.window_groups.first().expect("at least one group");
     let titles: Vec<&str> = group.tabs.iter().map(|t| t.title.as_str()).collect();
@@ -121,7 +121,10 @@ fn commit_workspace_name_applies_buffer_to_active_workspace() {
     chrome.borrow_mut().commit_workspace_name();
     let st = chrome.borrow();
     assert_eq!(st.editing_workspace_name, None);
-    assert_eq!(st.tree().active_workspace().unwrap().name, "Research");
+    assert_eq!(
+        st.tree().desktop.active_workspace().unwrap().name,
+        "Research"
+    );
 
     // An empty/whitespace buffer must *not* overwrite the name.
     drop(st);
@@ -131,7 +134,13 @@ fn commit_workspace_name_applies_buffer_to_active_workspace() {
     }
     chrome.borrow_mut().commit_workspace_name();
     assert_eq!(
-        chrome.borrow().tree().active_workspace().unwrap().name,
+        chrome
+            .borrow()
+            .tree()
+            .desktop
+            .active_workspace()
+            .unwrap()
+            .name,
         "Research"
     );
 }
@@ -144,6 +153,7 @@ fn guest_cannot_commit_a_workspace_rename() {
     let original = chrome
         .borrow()
         .tree()
+        .desktop
         .active_workspace()
         .unwrap()
         .name
@@ -158,7 +168,7 @@ fn guest_cannot_commit_a_workspace_rename() {
 
     let st = chrome.borrow();
     assert_eq!(st.editing_workspace_name, None);
-    assert_eq!(st.tree().active_workspace().unwrap().name, original);
+    assert_eq!(st.tree().desktop.active_workspace().unwrap().name, original);
 }
 
 #[test]
@@ -184,8 +194,9 @@ fn topbar_renders_up_to_three_avatars_then_overflow_chip() {
     // The top bar reads the active workspace's roster first (tree-level
     // fallback only when it is empty), so seed onto the active workspace.
     let mut tree = WorkspaceTree::bootstrap_default();
-    let active_id = tree.active;
+    let active_id = tree.desktop.active;
     let active_ws = tree
+        .desktop
         .workspaces
         .iter_mut()
         .find(|w| w.id == active_id)
@@ -199,6 +210,7 @@ fn topbar_renders_up_to_three_avatars_then_overflow_chip() {
 
     // 5 peers → first 3 initials drawn + "+2" chip.
     let active_ws = tree
+        .desktop
         .workspaces
         .iter_mut()
         .find(|w| w.id == active_id)
@@ -220,14 +232,15 @@ fn topbar_does_not_leak_tree_collaborators_into_an_empty_workspace() {
     // The active workspace roster is authoritative. A tree-level roster may
     // describe people elsewhere, but must not create phantom room presence.
     let mut tree = WorkspaceTree::bootstrap_default();
-    let active_id = tree.active;
+    let active_id = tree.desktop.active;
     let active_ws = tree
+        .desktop
         .workspaces
         .iter_mut()
         .find(|w| w.id == active_id)
         .expect("active workspace");
     active_ws.collaborators.clear();
-    tree.collaborators = vec![Collaborator::new("a", "Ada")];
+    tree.desktop.collaborators = vec![Collaborator::new("a", "Ada")];
 
     let top = TopBarChrome::from_tree(&tree);
     assert!(top.collaborator_initials().is_empty());
@@ -382,7 +395,7 @@ fn sync_tab_presence_seeds_per_tab_peer_registrations() {
 
     let mut tree = WorkspaceTree::bootstrap_demo();
     // A real tab id from the tree, so the actual id formatting is exercised.
-    let ws = tree.active_workspace().expect("active workspace");
+    let ws = tree.desktop.active_workspace().expect("active workspace");
     let strip = ws.strips.first().expect("strip");
     let grp = strip.window_groups.first().expect("group");
     let tab_a = grp.tabs[0].id;
@@ -390,9 +403,10 @@ fn sync_tab_presence_seeds_per_tab_peer_registrations() {
 
     // Attribute Ada to tab_a, Ben to tab_b, Cae to no tab at all.
     let ws_mut = tree
+        .desktop
         .workspaces
         .iter_mut()
-        .find(|w| w.id == tree.active)
+        .find(|w| w.id == tree.desktop.active)
         .expect("active ws mut");
     ws_mut.collaborators = vec![
         Collaborator::with_active_tab("a", "Ada", tab_a),
@@ -431,9 +445,10 @@ fn sync_tab_presence_seeds_per_user_color_overrides_from_collaborators() {
 
     let mut tree = WorkspaceTree::bootstrap_default();
     let ws_mut = tree
+        .desktop
         .workspaces
         .iter_mut()
-        .find(|w| w.id == tree.active)
+        .find(|w| w.id == tree.desktop.active)
         .expect("active ws mut");
     // Ada has an override, Ben does not; Cae is on the tree-level roster, and
     // her override must be seeded too.
@@ -441,7 +456,7 @@ fn sync_tab_presence_seeds_per_user_color_overrides_from_collaborators() {
         Collaborator::new("a", "Ada").with_cursor_color("#abcdef"),
         Collaborator::new("b", "Ben"),
     ];
-    tree.collaborators = vec![Collaborator::new("c", "Cae").with_cursor_color("#112233")];
+    tree.desktop.collaborators = vec![Collaborator::new("c", "Cae").with_cursor_color("#112233")];
 
     let mut ctx = PresenceCtx::empty();
     sync_tab_presence_from_tree(&tree, &mut ctx);
@@ -475,7 +490,7 @@ fn an_editor_body_has_no_peer_caret_without_peers() {
 
     let mut tree = WorkspaceTree::bootstrap_demo();
     let editor_tab = {
-        let group = &mut tree.workspaces[0].strips[0].window_groups[0];
+        let group = &mut tree.desktop.workspaces[0].strips[0].window_groups[0];
         let id = group.tabs[0].id ^ 0xed;
         group.tabs.push(shell::shell::state::Tab {
             id,
@@ -515,7 +530,7 @@ fn chrome_file_drop_appends_tab_and_bumps_revision() {
     let tree = WorkspaceTree::bootstrap_demo();
     let chrome = ChromeState::new(tree);
     let before_rev = chrome.borrow().revision;
-    let before_tab_count = chrome.borrow().tree().workspaces[0].strips[0].window_groups[0]
+    let before_tab_count = chrome.borrow().tree().desktop.workspaces[0].strips[0].window_groups[0]
         .tabs
         .len();
 
@@ -529,7 +544,7 @@ fn chrome_file_drop_appends_tab_and_bumps_revision() {
         st.revision > before_rev,
         "handle_file_drop should bump the chrome revision so widgets re-sync"
     );
-    let group = &st.tree().workspaces[0].strips[0].window_groups[0];
+    let group = &st.tree().desktop.workspaces[0].strips[0].window_groups[0];
     assert_eq!(group.active_tab, tab_id);
     assert_eq!(group.tabs.len(), before_tab_count + 1);
     assert_eq!(group.tabs.last().unwrap().title, "main.ts");
@@ -614,6 +629,58 @@ fn overview_button_click_toggles_overview_overlay() {
         !chrome.borrow().overlays.overview,
         "second click should close the overview overlay again"
     );
+}
+
+/// The painted tray remains inset, but the physical top-right screen corner
+/// is part of its interaction target so a fast edge throw opens Quick Settings.
+#[test]
+fn top_right_corner_click_opens_quick_settings() {
+    use automerge::AutoCommit;
+    use taffy::NodeId;
+    use winit::dpi::PhysicalPosition;
+    use winit::event::{ElementState, MouseButton, WindowEvent};
+
+    let (mut bar, chrome, taffy, node, _) = topbar_with_overview_btn_hit();
+    let mut state = AutoCommit::new();
+    let root = automerge::ROOT.clone();
+    let mut focus: Option<NodeId> = None;
+    let modifiers = winit::event::Modifiers::default();
+    let mut handled = false;
+    bar.handle_event(
+        &WindowEvent::CursorMoved {
+            device_id: unsafe { std::mem::zeroed() },
+            position: PhysicalPosition::new(1599.0, 1.0),
+        },
+        1.0,
+        &modifiers,
+        &mut state,
+        &root,
+        &mut handled,
+        &mut focus,
+        node,
+        &taffy,
+    );
+    bar.handle_event(
+        &WindowEvent::MouseInput {
+            device_id: unsafe { std::mem::zeroed() },
+            state: ElementState::Pressed,
+            button: MouseButton::Left,
+        },
+        1.0,
+        &modifiers,
+        &mut state,
+        &root,
+        &mut handled,
+        &mut focus,
+        node,
+        &taffy,
+    );
+
+    assert!(
+        handled,
+        "the top-right corner must be an active tray target"
+    );
+    assert!(chrome.borrow().overlays.quick_settings);
 }
 
 /// Builds a `TopBarChrome` over a fresh bootstrap tree, lays it out at a

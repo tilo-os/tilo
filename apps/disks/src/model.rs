@@ -506,27 +506,6 @@ fn attr(id: u16, name: &str, value: &str, severity: AttrSeverity) -> SmartAttr {
     }
 }
 
-/// Format a byte count as a short decimal-SI string (drive vendors use
-/// powers of 1000), e.g. `931.5 GB`, `512 MB`, `16.0 GB`.
-pub fn fmt_size(bytes: u64) -> String {
-    const KB: f64 = 1_000.0;
-    const MB: f64 = 1_000_000.0;
-    const GB: f64 = 1_000_000_000.0;
-    const TB: f64 = 1_000_000_000_000.0;
-    let b = bytes as f64;
-    if b >= TB {
-        format!("{:.2} TB", b / TB)
-    } else if b >= GB {
-        format!("{:.1} GB", b / GB)
-    } else if b >= MB {
-        format!("{:.0} MB", b / MB)
-    } else if b >= KB {
-        format!("{:.0} kB", b / KB)
-    } else {
-        format!("{bytes} B")
-    }
-}
-
 /// Compact duration: hours → "X yr Y d" / "Y d Z h" / "Z h".
 pub fn fmt_hours(hours: i64) -> String {
     if hours <= 0 {
@@ -577,13 +556,6 @@ mod tests {
         let nvme = &t.drives[0];
         assert!(nvme.free_tail() > 0, "sample NVMe leaves unallocated tail");
         assert_eq!(nvme.allocated() + nvme.free_tail(), nvme.size);
-    }
-
-    #[test]
-    fn fmt_size_picks_sane_units() {
-        assert_eq!(fmt_size(512), "512 B");
-        assert_eq!(fmt_size(1_000_000_000_000), "1.00 TB");
-        assert!(fmt_size(536_870_912).ends_with("MB"));
     }
 
     #[test]

@@ -52,6 +52,8 @@ path = "src/home_peer_control.rs"
 [dependencies]
 # Crash-safe file replacement (temp + fsync + rename + dir fsync).
 atomic-file = { path = "../../../crates/system/atomic-file" }
+# Exclusive, owner-only publication of the relay's node secret.
+private-fs = { path = "../../system/private-fs" }
 bounded-command = { path = "../../system/bounded-command" }
 launcher = { path = "../../packaging/launcher" }
 install = { path = "../../packaging/install" }
@@ -72,6 +74,9 @@ iroh-base.workspace = true
 # Identity + workspace directory + cert-chain verification.
 tilo-user-identity = { path = "../../collab/tilo-user-identity" }
 runtime-identity = { path = "../../runtime/runtime-identity" }
+# Remote-action vocabulary: the relay routes these frames between devices and,
+# only when an app-serving plane is supplied, answers them through ActionHost.
+tilo-actions = { path = "../../collab/actions" }
 
 # Workspace CRDT (same version as identity + shell).
 automerge.workspace = true
@@ -85,9 +90,10 @@ serde_json.workspace = true
 postcard = { workspace = true, features = ["use-std"] }
 
 # Signing / hashing — reused for the connection-level nonce challenge.
+getrandom.workspace = true
 ed25519-dalek = { workspace = true, features = ["serde", "rand_core"] }
 rand.workspace = true
-x25519-dalek = { version = "2", features = ["static_secrets"] }
+x25519-dalek = { version = "3", features = ["static_secrets"] }
 chacha20poly1305.workspace = true
 blake3.workspace = true
 hex.workspace = true
@@ -112,7 +118,7 @@ sd-notify.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
-pkg = { path = "../../packaging/pkg" }
+tilo-app-package = { path = "../../packaging/tilo-app-package" }
 ed25519-dalek = { workspace = true, features = ["rand_core"] }
 
 [[test]]

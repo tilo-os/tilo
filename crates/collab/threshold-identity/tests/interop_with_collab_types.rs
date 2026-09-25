@@ -26,8 +26,8 @@ use threshold_identity::{
     signing::SigningRound2Partial,
 };
 
-use rand::SeedableRng;
 use rand_chacha::ChaCha20Rng;
+use rand_core::SeedableRng;
 
 // `_a`/`_b` names two independent DKG devices — the clearest available
 // convention for a 2-device protocol test, used the same way across

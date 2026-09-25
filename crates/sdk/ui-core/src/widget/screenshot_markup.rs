@@ -16,11 +16,9 @@
     reason = "raster coordinates and fixed-size color/point buffers are locally bounded"
 )]
 
-use std::{
-    collections::HashMap,
-    sync::Arc,
-    time::{Duration, Instant},
-};
+use std::{collections::HashMap, sync::Arc};
+
+use crate::time::{Duration, Instant};
 
 use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Position, Size, Style, TaffyTree};
@@ -34,6 +32,7 @@ use winit::{
     keyboard::{Key, NamedKey},
 };
 
+use crate::text_metrics::renderer_type_size;
 use crate::{
     ColorCompat,
     icons::{self, Icon},
@@ -92,6 +91,9 @@ pub struct ScreenshotMarkup {
     cursor: Point,
     tool: MarkupTool,
     tool_picker_open: bool,
+    /// The colour palette disclosure, used only when the toolbar is too
+    /// narrow to show every swatch inline.
+    color_picker_open: bool,
     color: [u8; 4],
     strokes: Vec<MarkupStroke>,
     redo: Vec<MarkupStroke>,
@@ -106,6 +108,38 @@ pub struct ScreenshotMarkup {
 }
 
 const MARKUP_ENTER: Duration = Duration::from_millis(280);
+/// Gutter between the surface edge and the canvas, and the header's left
+/// and right insets — one gutter for the whole editor. Equals `spacing.s6`.
+const CANVAS_INSET: f64 = 24.0;
+/// The header band above the canvas; the title, caption and zoom hint are
+/// centred on its middle.
+const HEADER_BAND_H: f64 = 54.0;
+/// Gap between the title and its caption. Equals `spacing.s2`.
+const HEADER_GAP: f64 = 8.0;
+/// Minimum pointer target for a toolbar control (HIG §9.6).
+const MIN_TARGET: f64 = 32.0;
+/// Gap between neighbouring toolbar controls. Equals `spacing.s1`.
+const CONTROL_GAP: f64 = 4.0;
+/// Inset from the toolbar's rounded ends to its first and last control.
+/// Equals `spacing.s2`.
+const TOOLBAR_INSET: f64 = 8.0;
+
+/// The toolbar's geometry, computed once per query by
+/// [`ScreenshotMarkup::toolbar_layout`] and read by paint, hit-testing and
+/// the accessibility rects alike.
+struct ToolbarLayout {
+    /// `(id, rect)` for every visible control; the rect is both the painted
+    /// footprint and the pointer target.
+    controls: Vec<(&'static str, Rect)>,
+    /// Where the "Opaque" badge stands while the redact tool is active;
+    /// `Rect::ZERO` when the toolbar has no room for it.
+    redact_badge: Rect,
+    /// The tool picker pill, anchored above the tool button.
+    tool_picker: Rect,
+    /// The colour palette pill, anchored above the `colors` button — only
+    /// present when the swatches did not fit inline and the picker is open.
+    color_picker: Option<Rect>,
+}
 
 const SWATCHES: [[u8; 4]; 5] = [
     [244, 84, 92, 255],
@@ -113,6 +147,15 @@ const SWATCHES: [[u8; 4]; 5] = [
     [82, 160, 255, 255],
     [111, 221, 166, 255],
     [245, 245, 247, 255],
+];
+/// Control ids for [`SWATCHES`], index for index — the same ids whether a
+/// swatch sits inline in the toolbar or in the colour palette pill.
+const SWATCH_IDS: [&str; 5] = [
+    "color-red",
+    "color-yellow",
+    "color-blue",
+    "color-green",
+    "color-white",
 ];
 
 impl ScreenshotMarkup {
@@ -133,6 +176,7 @@ impl ScreenshotMarkup {
             cursor: Point::ZERO,
             tool: MarkupTool::Pen,
             tool_picker_open: false,
+            color_picker_open: false,
             color: SWATCHES[0],
             strokes: Vec::new(),
             redo: Vec::new(),
@@ -141,7 +185,7 @@ impl ScreenshotMarkup {
             pan: Vec2::ZERO,
             panning: None,
             pending: Vec::new(),
-            opened_at: Instant::now(),
+            opened_at: crate::time::now(),
             spawn_from: None,
             entrance_progress_override: None,
         }
@@ -210,9 +254,9 @@ impl ScreenshotMarkup {
 
     fn layout_parts(&mut self) {
         let available = Rect::new(
-            self.rect.x0 + 24.0,
-            self.rect.y0 + 54.0,
-            self.rect.x1 - 24.0,
+            self.rect.x0 + CANVAS_INSET,
+            self.rect.y0 + HEADER_BAND_H,
+            self.rect.x1 - CANVAS_INSET,
             self.rect.y1 - 96.0,
         );
         let source_width = f64::from(self.width.max(1));
@@ -298,10 +342,33 @@ impl ScreenshotMarkup {
         }
     }
 
-    fn controls(&self) -> Vec<(&'static str, Rect)> {
+    /// One geometry description for the toolbar. Every control rect, the
+    /// redact badge and the tool picker come out of the same left-to-right
+    /// placement, so paint, hit-testing and the accessibility rects cannot
+    /// disagree, and nothing re-derives a position from a literal sum of
+    /// its neighbours' widths.
+    ///
+    /// The action cluster is placed first, from the right end; the colour
+    /// swatches then take only the room left between the tool group and
+    /// the actions. On a surface too narrow for all five, swatches drop
+    /// from the right rather than sliding under the action buttons — a
+    /// control half under another control is worse than one not offered.
+    fn toolbar_layout(&self) -> ToolbarLayout {
         let y = self.toolbar.center().y;
-        let mut x = self.toolbar.x0 + 8.0;
-        let mut out = Vec::new();
+        let control = |cx: f64, w: f64| Rect::from_center_size(Point::new(cx, y), (w, 36.0));
+        let mut controls: Vec<(&'static str, Rect)> = Vec::new();
+
+        let save = Rect::new(
+            self.toolbar.x1 - 82.0,
+            y - 18.0,
+            self.toolbar.x1 - TOOLBAR_INSET,
+            y + 18.0,
+        );
+        let copy = Rect::new(save.x0 - 40.0, y - 18.0, save.x0 - CONTROL_GAP, y + 18.0);
+        let open = Rect::new(copy.x0 - 40.0, y - 18.0, copy.x0 - CONTROL_GAP, y + 18.0);
+
+        let mut x = self.toolbar.x0 + TOOLBAR_INSET;
+        let mut tool_center_x = x;
         for (id, width) in [
             ("cancel", 36.0),
             ("undo", 36.0),
@@ -309,38 +376,84 @@ impl ScreenshotMarkup {
             ("tool", 40.0),
             ("fit", 36.0),
         ] {
-            out.push((
-                id,
-                Rect::from_center_size(Point::new(x + width / 2.0, y), (width, 36.0)),
-            ));
-            x += width + 4.0;
+            let r = control(x + width / 2.0, width);
+            if id == "tool" {
+                tool_center_x = r.center().x;
+            }
+            controls.push((id, r));
+            x += width + CONTROL_GAP;
         }
+        let group_end = x;
+        // Everything between the tool group and the action cluster has to
+        // fit before `limit`; nothing may run under the actions.
+        let limit = open.x0 - CONTROL_GAP;
+
+        // A 216 px palette pill with five 36 px choices on a 42 px stride,
+        // anchored above `anchor` and kept inside the surface.
+        let palette_above = |anchor: Rect| {
+            let mut pill = Rect::from_center_size(
+                Point::new(anchor.center().x + 84.0, self.toolbar.y0 - 30.0),
+                (216.0, 44.0),
+            );
+            let overshoot = (pill.x1 - (self.rect.x1 - TOOLBAR_INSET)).max(0.0);
+            let undershoot = ((self.rect.x0 + TOOLBAR_INSET) - pill.x0).max(0.0);
+            pill = pill + Vec2::new(undershoot - overshoot, 0.0);
+            pill
+        };
+        let choice_in = |pill: Rect, index: usize| {
+            Rect::from_center_size(
+                Point::new(pill.x0 + 24.0 + index as f64 * 42.0, pill.center().y),
+                (36.0, 36.0),
+            )
+        };
+
+        let mut color_picker = None;
         if self.tool != MarkupTool::Redact {
-            for index in 0..SWATCHES.len() {
-                out.push((
-                    match index {
-                        0 => "color-red",
-                        1 => "color-yellow",
-                        2 => "color-blue",
-                        3 => "color-green",
-                        _ => "color-white",
-                    },
-                    Rect::from_center_size(Point::new(x + 15.0, y), (30.0, 36.0)),
-                ));
-                x += 30.0;
+            let swatch_run = MIN_TARGET * SWATCHES.len() as f64;
+            if x + swatch_run <= limit {
+                // Room for every swatch inline, each a full minimum pointer
+                // target; the dot itself stays small, the target does not.
+                for index in 0..SWATCHES.len() {
+                    controls.push((SWATCH_IDS[index], control(x + MIN_TARGET / 2.0, MIN_TARGET)));
+                    x += MIN_TARGET;
+                }
+            } else {
+                // Too narrow for five targets side by side: one `colors`
+                // button showing the current colour opens the palette above
+                // the toolbar, the way the tool button does — every colour
+                // stays reachable by pointer and by its `markup.color-*`
+                // target instead of vanishing with the width.
+                let r = control(x + 20.0, 40.0);
+                if r.x1 <= limit {
+                    controls.push(("colors", r));
+                    if self.color_picker_open {
+                        let pill = palette_above(r);
+                        for index in 0..SWATCHES.len() {
+                            controls.push((SWATCH_IDS[index], choice_in(pill, index)));
+                        }
+                        color_picker = Some(pill);
+                    }
+                }
             }
         }
-        let save = Rect::new(
-            self.toolbar.x1 - 82.0,
-            y - 18.0,
-            self.toolbar.x1 - 8.0,
-            y + 18.0,
+        controls.extend([("open", open), ("copy", copy), ("save", save)]);
+
+        // The badge stands where the swatches would, immediately after the
+        // tool group, and shrinks to the room left before the actions rather
+        // than running under them; below a legible width it is not shown.
+        let badge_w = (limit - group_end).min(96.0);
+        let redact_badge = if badge_w >= 44.0 {
+            Rect::new(group_end, y - 16.0, group_end + badge_w, y + 16.0)
+        } else {
+            Rect::ZERO
+        };
+        // Keep the first choice directly above the invoking tool button;
+        // each additional 42px choice grows the pill to the right.
+        let tool_picker = Rect::from_center_size(
+            Point::new(tool_center_x + 84.0, self.toolbar.y0 - 30.0),
+            (216.0, 44.0),
         );
-        let copy = Rect::new(save.x0 - 40.0, y - 18.0, save.x0 - 4.0, y + 18.0);
-        let open = Rect::new(copy.x0 - 40.0, y - 18.0, copy.x0 - 4.0, y + 18.0);
-        out.extend([("open", open), ("copy", copy), ("save", save)]);
         if self.tool_picker_open {
-            let palette = self.tool_picker_rect();
             for (index, id) in [
                 "tool-pen",
                 "tool-highlighter",
@@ -351,38 +464,31 @@ impl ScreenshotMarkup {
             .into_iter()
             .enumerate()
             {
-                out.push((
-                    id,
-                    Rect::from_center_size(
-                        Point::new(palette.x0 + 24.0 + index as f64 * 42.0, palette.center().y),
-                        (36.0, 36.0),
-                    ),
-                ));
+                controls.push((id, choice_in(tool_picker, index)));
             }
         }
-        out
+        ToolbarLayout {
+            controls,
+            redact_badge,
+            tool_picker,
+            color_picker,
+        }
+    }
+
+    fn color_picker_rect(&self) -> Option<Rect> {
+        self.toolbar_layout().color_picker
+    }
+
+    fn controls(&self) -> Vec<(&'static str, Rect)> {
+        self.toolbar_layout().controls
     }
 
     fn redact_badge_rect(&self) -> Rect {
-        Rect::from_center_size(
-            Point::new(
-                self.toolbar.x0 + 8.0 + 204.0 + 48.0,
-                self.toolbar.center().y,
-            ),
-            (96.0, 32.0),
-        )
+        self.toolbar_layout().redact_badge
     }
 
     fn tool_picker_rect(&self) -> Rect {
-        // Three 36px history controls plus their 4px gaps precede the
-        // 40px tool button in the permanent toolbar.
-        let tool_center_x = self.toolbar.x0 + 8.0 + 3.0 * 40.0 + 20.0;
-        Rect::from_center_size(
-            // Keep the first choice directly above the invoking tool button;
-            // each additional 42px choice grows the pill to the right.
-            Point::new(tool_center_x + 84.0, self.toolbar.y0 - 30.0),
-            (216.0, 44.0),
-        )
+        self.toolbar_layout().tool_picker
     }
 
     fn image_point(&self, p: Point) -> Point {
@@ -407,7 +513,14 @@ impl ScreenshotMarkup {
                     self.strokes.push(stroke);
                 }
             }
-            "tool" => self.tool_picker_open = !self.tool_picker_open,
+            "tool" => {
+                self.tool_picker_open = !self.tool_picker_open;
+                self.color_picker_open = false;
+            }
+            "colors" => {
+                self.color_picker_open = !self.color_picker_open;
+                self.tool_picker_open = false;
+            }
             "tool-pen" => {
                 self.tool = MarkupTool::Pen;
                 self.tool_picker_open = false;
@@ -437,18 +550,11 @@ impl ScreenshotMarkup {
                 .pending
                 .push(ScreenshotMarkupCommand::Save(self.flattened())),
             id if id.starts_with("color-") => {
-                if let Some(index) = [
-                    "color-red",
-                    "color-yellow",
-                    "color-blue",
-                    "color-green",
-                    "color-white",
-                ]
-                .iter()
-                .position(|candidate| *candidate == id)
-                {
+                if let Some(index) = SWATCH_IDS.iter().position(|candidate| *candidate == id) {
                     self.color = SWATCHES[index];
                 }
+                // Picking from the palette is a choice; the pill closes.
+                self.color_picker_open = false;
             }
             _ => {}
         }
@@ -586,44 +692,65 @@ impl Widget for ScreenshotMarkup {
             None,
             &self.rect,
         );
+        // Header: title, its caption and the zoom hint share one measured
+        // centre line. The caption follows the measured title rather than a
+        // fixed offset, so a larger type scale cannot run the two together.
+        let title = "Markup";
+        let title_size = renderer_type_size(tr, theme.tokens.typography.scale.base);
+        let caption_size = renderer_type_size(tr, theme.tokens.typography.scale.xs);
+        let (title_w, title_h) = tr.measure_weighted(title, title_size, None, TextWeight::Semibold);
+        let (_, caption_h) = tr.measure_weighted("Ag", caption_size, None, TextWeight::Regular);
+        let header_cy = self.rect.y0 + HEADER_BAND_H / 2.0;
+        let title_x = self.rect.x0 + CANVAS_INSET;
         tr.draw_text_weighted(
             scene,
-            "Markup",
-            theme.tokens.typography.scale.base,
+            title,
+            title_size,
             c.text_primary.with_alpha_factor(enter as f32),
-            transform.pre_translate((self.rect.x0 + 24.0, self.rect.y0 + 18.0).into()),
+            transform.pre_translate((title_x, header_cy - f64::from(title_h) / 2.0).into()),
             None,
             TextWeight::Semibold,
         );
+        let caption_y = header_cy - f64::from(caption_h) / 2.0;
+        let hint = format!(
+            "{:.0}% · wheel zoom · middle-drag",
+            self.display_scale() * 100.0
+        );
+        let (hint_w, _) = tr.measure_weighted(&hint, caption_size, None, TextWeight::Regular);
+        let hint_x = self.rect.x1 - CANVAS_INSET - f64::from(hint_w);
+        let caption_x = title_x + f64::from(title_w) + HEADER_GAP;
+        // Elided to the room left before the hint, never wrapped: a wrap
+        // width would fold the caption into a column under the header.
+        let caption = tr.elide_to_width_weighted(
+            &format!("{} × {} · original pixels", self.width, self.height),
+            caption_size,
+            (hint_x - HEADER_GAP - caption_x).max(0.0) as f32,
+            TextWeight::Regular,
+        );
         tr.draw_text_weighted(
             scene,
-            &format!("{} × {} · original pixels", self.width, self.height),
-            theme.tokens.typography.scale.xs,
+            &caption,
+            caption_size,
             c.text_dim.with_alpha_factor(enter as f32),
-            transform.pre_translate((self.rect.x0 + 92.0, self.rect.y0 + 21.0).into()),
+            transform.pre_translate((caption_x, caption_y).into()),
             None,
             TextWeight::Regular,
         );
         tr.draw_text_weighted(
             scene,
-            &format!(
-                "{:.0}% · wheel zoom · middle-drag",
-                self.display_scale() * 100.0
-            ),
-            theme.tokens.typography.scale.xs,
+            &hint,
+            caption_size,
             c.text_dim.with_alpha_factor(enter as f32),
-            transform.pre_translate((self.rect.x1 - 210.0, self.rect.y0 + 21.0).into()),
-            Some(190.0),
+            transform.pre_translate((hint_x, caption_y).into()),
+            None,
             TextWeight::Regular,
         );
-        surface::soft_shadow(
+        surface::shadow(
             scene,
             transform,
             canvas_frame,
-            c.neutral[0],
-            22.0,
-            10.0,
-            0.48,
+            8.0,
+            &theme.tokens.elevation.e3,
         );
         scene.push_layer(
             Fill::NonZero,
@@ -632,7 +759,7 @@ impl Widget for ScreenshotMarkup {
             transform,
             &RoundedRect::from_rect(canvas_frame, 8.0),
         );
-        self.image.paint_at(scene, transform, self.canvas);
+        self.image.paint_at_on(scene, transform, self.canvas, theme);
         for stroke in &self.strokes {
             self.draw_stroke(scene, transform, stroke);
         }
@@ -655,14 +782,12 @@ impl Widget for ScreenshotMarkup {
             transform,
             &self.rect,
         );
-        surface::soft_shadow(
+        surface::shadow(
             scene,
             transform,
             self.toolbar,
-            c.neutral[0],
-            18.0,
-            8.0,
-            0.42,
+            26.0,
+            &theme.tokens.elevation.e3,
         );
         scene.fill(
             Fill::NonZero,
@@ -680,7 +805,7 @@ impl Widget for ScreenshotMarkup {
         );
         if self.tool_picker_open {
             let palette = self.tool_picker_rect();
-            surface::soft_shadow(scene, transform, palette, c.neutral[0], 16.0, 7.0, 0.44);
+            surface::shadow(scene, transform, palette, 22.0, &theme.tokens.elevation.e2);
             scene.fill(
                 Fill::NonZero,
                 transform,
@@ -696,8 +821,25 @@ impl Widget for ScreenshotMarkup {
                 &RoundedRect::from_rect(palette.inflate(-0.5, -0.5), 21.5),
             );
         }
-        if self.tool == MarkupTool::Redact {
-            let badge = self.redact_badge_rect();
+        if let Some(palette) = self.color_picker_rect() {
+            surface::shadow(scene, transform, palette, 22.0, &theme.tokens.elevation.e2);
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                c.surfaces.raised,
+                None,
+                &RoundedRect::from_rect(palette, 22.0),
+            );
+            scene.stroke(
+                &Stroke::new(1.0),
+                transform,
+                crate::tokens::colors::Colors::hairline_on(c.surfaces.raised, 26),
+                None,
+                &RoundedRect::from_rect(palette.inflate(-0.5, -0.5), 21.5),
+            );
+        }
+        let badge = self.redact_badge_rect();
+        if self.tool == MarkupTool::Redact && badge.width() > 0.0 {
             scene.fill(
                 Fill::NonZero,
                 transform,
@@ -713,18 +855,38 @@ impl Widget for ScreenshotMarkup {
                 c.text_dim,
                 1.4,
             );
+            let (_, opaque_h) = tr.measure_weighted(
+                "Opaque",
+                renderer_type_size(tr, theme.tokens.typography.scale.xs),
+                None,
+                TextWeight::Medium,
+            );
+            // Elided to the badge, which may have shrunk to the room left.
+            let opaque = tr.elide_to_width_weighted(
+                "Opaque",
+                renderer_type_size(tr, theme.tokens.typography.scale.xs),
+                (badge.width() - 29.0 - 8.0).max(0.0) as f32,
+                TextWeight::Medium,
+            );
             tr.draw_text_weighted(
                 scene,
-                "Opaque",
-                theme.tokens.typography.scale.xs,
+                &opaque,
+                renderer_type_size(tr, theme.tokens.typography.scale.xs),
                 c.text_dim,
-                transform.pre_translate((badge.x0 + 29.0, badge.center().y - 6.0).into()),
+                transform.pre_translate(
+                    (
+                        badge.x0 + 29.0,
+                        badge.center().y - f64::from(opaque_h) / 2.0,
+                    )
+                        .into(),
+                ),
                 None,
                 TextWeight::Medium,
             );
         }
         for (id, r) in self.controls() {
             let selected = (id == "tool" && self.tool_picker_open)
+                || (id == "colors" && self.color_picker_open)
                 || (id == "tool-pen" && self.tool == MarkupTool::Pen)
                 || (id == "tool-highlighter" && self.tool == MarkupTool::Highlighter)
                 || (id == "tool-arrow" && self.tool == MarkupTool::Arrow)
@@ -778,6 +940,17 @@ impl Widget for ScreenshotMarkup {
                 );
                 continue;
             }
+            if id == "colors" {
+                // The disclosure shows the colour it will paint with.
+                scene.fill(
+                    Fill::NonZero,
+                    transform,
+                    Color::from_rgba8(self.color[0], self.color[1], self.color[2], 255),
+                    None,
+                    &vello::kurbo::Circle::new(r.center(), 8.0),
+                );
+                continue;
+            }
             let icon = match id {
                 "cancel" => Icon::X,
                 "undo" => Icon::ArrowLeft,
@@ -817,12 +990,20 @@ impl Widget for ScreenshotMarkup {
                 1.5,
             );
             if id == "save" {
+                let (_, save_h) = tr.measure_weighted(
+                    "Save",
+                    renderer_type_size(tr, theme.tokens.typography.scale.xs),
+                    None,
+                    TextWeight::Semibold,
+                );
                 tr.draw_text_weighted(
                     scene,
                     "Save",
-                    theme.tokens.typography.scale.xs,
+                    renderer_type_size(tr, theme.tokens.typography.scale.xs),
                     c.on_accent(4.5),
-                    transform.pre_translate((r.x0 + 30.0, r.center().y - 6.0).into()),
+                    transform.pre_translate(
+                        (r.x0 + 30.0, r.center().y - f64::from(save_h) / 2.0).into(),
+                    ),
                     None,
                     TextWeight::Semibold,
                 );
@@ -832,7 +1013,10 @@ impl Widget for ScreenshotMarkup {
             .controls()
             .into_iter()
             .find(|(_, rect)| rect.contains(self.cursor))
-            .filter(|(id, _)| !(*id == "tool" && self.tool_picker_open))
+            .filter(|(id, _)| {
+                !(*id == "tool" && self.tool_picker_open
+                    || *id == "colors" && self.color_picker_open)
+            })
             && let Some(label) = match id {
                 "cancel" => Some("Close"),
                 "undo" => Some("Undo"),
@@ -850,13 +1034,18 @@ impl Widget for ScreenshotMarkup {
                 "tool-rectangle" => Some("Rectangle"),
                 "tool-redact" => Some("Redact"),
                 "fit" => Some("Fit image"),
+                "colors" => Some("Colours"),
                 "open" => Some("Open in app"),
                 "copy" => Some("Copy"),
                 "save" => Some("Save copy"),
                 _ => None,
             }
         {
-            let width = (label.chars().count() as f64 * 7.0 + 18.0).max(48.0);
+            // Measured, not estimated from a character count: the estimate
+            // both clipped wide labels and over-padded narrow ones.
+            let tip_size = renderer_type_size(tr, theme.tokens.typography.scale.xs);
+            let (label_w, label_h) = tr.measure_weighted(label, tip_size, None, TextWeight::Medium);
+            let width = (f64::from(label_w) + 18.0).max(48.0);
             let tooltip_y = if anchor.y0 < self.toolbar.y0 {
                 anchor.y0 - 17.0
             } else {
@@ -881,9 +1070,15 @@ impl Widget for ScreenshotMarkup {
             tr.draw_text_weighted(
                 scene,
                 label,
-                theme.tokens.typography.scale.xs,
+                tip_size,
                 c.text_primary,
-                transform.pre_translate((tooltip.x0 + 9.0, tooltip.center().y - 6.0).into()),
+                transform.pre_translate(
+                    (
+                        tooltip.x0 + 9.0,
+                        tooltip.center().y - f64::from(label_h) / 2.0,
+                    )
+                        .into(),
+                ),
                 None,
                 TextWeight::Medium,
             );
@@ -943,8 +1138,9 @@ impl Widget for ScreenshotMarkup {
                 {
                     self.activate(id);
                     *handled = true;
-                } else if self.tool_picker_open {
+                } else if self.tool_picker_open || self.color_picker_open {
                     self.tool_picker_open = false;
+                    self.color_picker_open = false;
                     *handled = true;
                 } else if self.viewport.contains(self.cursor) && self.canvas.contains(self.cursor) {
                     let (width_px, alpha) = match self.tool {
@@ -992,8 +1188,9 @@ impl Widget for ScreenshotMarkup {
                 let command = modifiers.state().control_key() || modifiers.state().super_key();
                 match &event.logical_key {
                     Key::Named(NamedKey::Escape) => {
-                        if self.tool_picker_open {
+                        if self.tool_picker_open || self.color_picker_open {
                             self.tool_picker_open = false;
+                            self.color_picker_open = false;
                         } else {
                             self.pending.push(ScreenshotMarkupCommand::Cancel);
                         }
@@ -1377,6 +1574,196 @@ mod tests {
         assert_eq!(
             &export.rgba[outside..outside + 4],
             &original[outside..outside + 4]
+        );
+    }
+
+    fn markup_at(width: f64) -> ScreenshotMarkup {
+        let rgba: Arc<[u8]> = Arc::from(vec![20_u8; 64 * 64 * 4]);
+        let mut markup = ScreenshotMarkup::new(rgba, 64, 64);
+        markup.rect = Rect::new(0.0, 0.0, width, 700.0);
+        markup.layout_parts();
+        markup
+    }
+
+    fn assert_no_two_controls_overlap(controls: &[(&'static str, Rect)]) {
+        for (i, (a_id, a)) in controls.iter().enumerate() {
+            for (b_id, b) in controls.iter().skip(i + 1) {
+                let overlap = a.intersect(*b);
+                assert!(
+                    overlap.is_zero_area(),
+                    "{a_id} {a:?} and {b_id} {b:?} claim the same pixels: {overlap:?}"
+                );
+            }
+        }
+    }
+
+    /// Every toolbar control is at least the minimum pointer target and no
+    /// two of them share a pixel — the swatches used to be 30 px targets.
+    #[test]
+    fn toolbar_controls_meet_the_minimum_target_and_never_overlap() {
+        let markup = markup_at(1200.0);
+        let controls = markup.controls();
+        for (id, r) in &controls {
+            assert!(
+                r.width() >= MIN_TARGET - 1e-6 && r.height() >= MIN_TARGET - 1e-6,
+                "{id} {r:?} is under the {MIN_TARGET}px minimum target"
+            );
+        }
+        assert_eq!(
+            controls
+                .iter()
+                .filter(|(id, _)| id.starts_with("color-"))
+                .count(),
+            SWATCHES.len(),
+            "every swatch fits on a wide toolbar"
+        );
+        assert_no_two_controls_overlap(&controls);
+    }
+
+    /// On a surface too narrow for the whole strip the swatches drop from
+    /// the right instead of sliding under the action buttons; the actions
+    /// and the tool group are always offered.
+    #[test]
+    fn narrow_toolbar_collapses_swatches_behind_a_colours_button() {
+        let mut markup = markup_at(440.0);
+        let controls = markup.controls();
+        assert_no_two_controls_overlap(&controls);
+        for required in [
+            "cancel", "undo", "redo", "tool", "fit", "colors", "open", "copy", "save",
+        ] {
+            assert!(
+                controls.iter().any(|(id, _)| *id == required),
+                "{required} must survive a narrow toolbar"
+            );
+        }
+        assert!(
+            !controls.iter().any(|(id, _)| id.starts_with("color-")),
+            "a 420px toolbar cannot hold five swatch targets; they collapse behind `colors`"
+        );
+        let open = controls
+            .iter()
+            .find(|(id, _)| *id == "open")
+            .map(|(_, r)| *r)
+            .expect("open is offered");
+        for (id, r) in &controls {
+            if *id == "colors" {
+                assert!(
+                    r.width() >= MIN_TARGET && r.x1 <= open.x0,
+                    "{id} {r:?} is a full target and stays clear of open {open:?}"
+                );
+            }
+        }
+
+        // Opening the disclosure makes every colour reachable again — by
+        // pointer and by its `markup.color-*` target — without any control
+        // overlapping another.
+        markup.activate("colors");
+        let opened = markup.controls();
+        assert_no_two_controls_overlap(&opened);
+        for id in SWATCH_IDS {
+            let r = opened
+                .iter()
+                .find(|(candidate, _)| *candidate == id)
+                .map(|(_, r)| *r)
+                .unwrap_or_else(|| panic!("{id} is reachable from the open palette"));
+            assert!(
+                r.width() >= MIN_TARGET && r.height() >= MIN_TARGET,
+                "{id} {r:?} is under the minimum target"
+            );
+            assert!(
+                markup.rect.x0 <= r.x0 && r.x1 <= markup.rect.x1,
+                "{id} {r:?} leaves the surface {:?}",
+                markup.rect
+            );
+        }
+        markup.activate("color-green");
+        assert_eq!(markup.color, SWATCHES[3], "the palette choice is applied");
+        assert!(
+            !markup.color_picker_open,
+            "choosing a colour closes the palette"
+        );
+    }
+
+    /// With the redact tool active on a narrow toolbar the "Opaque" badge
+    /// shrinks to the room before the actions instead of running under them.
+    #[test]
+    fn narrow_redact_badge_stays_clear_of_the_actions() {
+        let mut markup = markup_at(440.0);
+        markup.tool = MarkupTool::Redact;
+        let controls = markup.controls();
+        let open = controls
+            .iter()
+            .find(|(id, _)| *id == "open")
+            .map(|(_, r)| *r)
+            .expect("open is offered");
+        let badge = markup.redact_badge_rect();
+        assert!(
+            badge.width() == 0.0 || badge.x1 <= open.x0 - CONTROL_GAP + 1e-6,
+            "badge {badge:?} runs under open {open:?}"
+        );
+        for (id, r) in &controls {
+            let overlap = badge.intersect(*r);
+            assert!(
+                overlap.is_zero_area(),
+                "badge {badge:?} and {id} {r:?} claim the same pixels"
+            );
+        }
+    }
+
+    /// The layout constants stand in for tokens because the toolbar is
+    /// laid out before `draw` sees a theme; pin them so a token retune
+    /// surfaces here rather than drifting silently.
+    #[test]
+    fn layout_constants_equal_the_spacing_tokens() {
+        let spacing = crate::tokens::Spacing::default();
+        assert!(
+            (CANVAS_INSET - f64::from(spacing.s6)).abs() < 1e-9,
+            "CANVAS_INSET is s6"
+        );
+        assert!(
+            (HEADER_GAP - f64::from(spacing.s2)).abs() < 1e-9,
+            "HEADER_GAP is s2"
+        );
+        assert!(
+            (CONTROL_GAP - f64::from(spacing.s1)).abs() < 1e-9,
+            "CONTROL_GAP is s1"
+        );
+        assert!(
+            (TOOLBAR_INSET - f64::from(spacing.s2)).abs() < 1e-9,
+            "TOOLBAR_INSET is s2"
+        );
+    }
+
+    /// The redact badge and the tool picker are derived from the placed
+    /// controls, not from a literal sum of their neighbours' widths.
+    #[test]
+    fn badge_and_picker_follow_the_placed_tool_group() {
+        let mut markup = markup_at(1200.0);
+        markup.tool = MarkupTool::Redact;
+        let controls = markup.controls();
+        let fit = controls
+            .iter()
+            .find(|(id, _)| *id == "fit")
+            .map(|(_, r)| *r)
+            .expect("fit is offered");
+        let tool = controls
+            .iter()
+            .find(|(id, _)| *id == "tool")
+            .map(|(_, r)| *r)
+            .expect("tool is offered");
+        let badge = markup.redact_badge_rect();
+        assert!(
+            (badge.x0 - (fit.x1 + CONTROL_GAP)).abs() < 1e-6,
+            "badge {badge:?} does not start one gap after fit {fit:?}"
+        );
+        assert!(
+            (badge.center().y - fit.center().y).abs() < 1e-6,
+            "badge shares the toolbar's centre line"
+        );
+        let picker = markup.tool_picker_rect();
+        assert!(
+            (picker.x0 + 24.0 - tool.center().x).abs() < 1e-6,
+            "the first picker choice sits above the tool button"
         );
     }
 }

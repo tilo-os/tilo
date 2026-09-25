@@ -30,10 +30,19 @@ run 'Cargo shim tests' bash tools/tests/cargo_shim.sh
 run 'CI receipt tests' bash tools/tests/test_ci_receipt.sh
 run 'Builder candidate workflow tests' python3 os/tests/test_builder_candidate_workflow.py
 run 'Codex hook manifest' bash -c 'python3 -m json.tool .codex/hooks.json >/dev/null'
-run 'Codex CI watcher tests' python3 .codex/hooks/test_watch_ci.py
+run 'Codex CI watcher tests' python3 -m unittest discover -s .codex/hooks -p 'test_*.py'
 run 'Application text-stack contract' python3 tools/policy/check_app_text_contract.py
 run 'Application resource/action contract' \
   python3 tools/policy/check_app_resource_action_contract.py
 run 'AT-SPI endpoint contract' python3 tools/policy/check_atspi_endpoint_contract.py
+run 'OS component manifest' python3 tools/policy/check_component_manifest.py
+run 'Dev image stays out of production' python3 tools/policy/check_dev_image_contract.py
+run 'Dev kernel build follows the release build' python3 tools/policy/check_kernel_dev_build.py
+run 'Dev-override features stay out of production images' \
+  python3 tools/policy/check_dev_overrides_contract.py
+run 'UI host-inputs contract' python3 tools/policy/check_ui_host_inputs_contract.py
+run 'UI clock contract' python3 tools/policy/check_ui_clock_contract.py
+run 'Desktop model dependency boundary' \
+  python3 tools/policy/check_desktop_model_dependencies.py
 
 printf '\nRepository policy suite OK\n'

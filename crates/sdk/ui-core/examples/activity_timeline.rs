@@ -4,7 +4,12 @@
 //! ```bash
 //! cargo run -p ui --example ui-lab -- activity_timeline                  # interactive
 //! cargo run -p ui --example ui-lab -- activity_timeline --shots o.png    # headless frame
+//! QOS_SHOTS_THEME=light cargo run -p ui --example ui-lab -- activity_timeline --shots o.png
 //! ```
+//!
+//! `--shots` honours `QOS_SHOTS_THEME` (`dark` by default) and composites the
+//! frame on the theme's own base surface, so the PNG is what the pane looks
+//! like inside an app rather than over a hard-coded backdrop.
 //!
 //! Nothing here is hand-authored feed data. The example builds a document that
 //! two identities edit — one forks, edits under its own actor and merges back,
@@ -26,7 +31,6 @@ use tilo_ui::{
 };
 use vello::Scene;
 use vello::kurbo::{Affine, Point};
-use vello::peniko::Color;
 
 /// Edit a document as two people and hand back the resulting change graph.
 ///
@@ -190,7 +194,10 @@ pub fn run(args: &[String]) {
 fn render_shot(mut widget: Box<dyn Widget>, viewport: (u32, u32), out: &Path) {
     let (w, h) = viewport;
     let mut state = State::new();
-    let theme = Theme::dark();
+    let theme = std::env::var("QOS_SHOTS_THEME")
+        .ok()
+        .and_then(|name| Theme::named(&name))
+        .unwrap_or_else(Theme::dark);
     let presence = PresenceCtx::empty();
     let permission = PermissionContext::permissive();
     let mut tr = TextRenderer::new();
@@ -251,6 +258,10 @@ fn render_shot(mut widget: Box<dyn Widget>, viewport: (u32, u32), out: &Path) {
     if let Some(parent) = out.parent() {
         std::fs::create_dir_all(parent).ok();
     }
-    OffscreenRenderer::new(w, h).render_png(&scene, Color::from_rgb8(0x14, 0x16, 0x1c), out);
-    println!("activity_timeline: wrote shot to {}", out.display());
+    OffscreenRenderer::new(w, h).render_png(&scene, theme.tokens.colors.surfaces.base, out);
+    println!(
+        "activity_timeline: wrote {} shot to {}",
+        theme.name,
+        out.display()
+    );
 }

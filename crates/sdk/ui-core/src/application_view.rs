@@ -1,6 +1,8 @@
 //! Versioned, device/workspace-local presentation. Never contains document bytes.
 use crate::view::{ThawError, View};
-use std::path::{Path, PathBuf};
+use durable_store::{DurableStore, StorageKey, StoreError, WriteOp};
+use std::path::PathBuf;
+use std::rc::Rc;
 
 /// Opaque application-owned local presentation; never document bytes.
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
@@ -124,10 +126,14 @@ fn decode_envelope(bytes: &[u8]) -> Result<SavedInstanceView, ThawError> {
 
 /// Exact explicit namespace retained across construction, close and save retry.
 pub struct InstanceViewStore {
-    profile_state_root: PathBuf,
-    directory: PathBuf,
+    store: Rc<dyn DurableStore>,
     device_id: String,
     workspace_id: String,
+    #[allow(
+        dead_code,
+        reason = "ownership of the profile resource, rather than access to it, keeps it alive"
+    )]
+    profile_lifetime: Option<std::rc::Rc<dyn std::any::Any>>,
 }
 
 pub(crate) fn validate_identity(identity: &str) -> Result<(), ThawError> {
@@ -136,16 +142,12 @@ pub(crate) fn validate_identity(identity: &str) -> Result<(), ThawError> {
     }
     Ok(())
 }
-fn hex_segment(value: &str) -> String {
-    use std::fmt::Write;
-    let mut output = String::new();
-    for byte in value.as_bytes() {
-        // String writes cannot fail.
-        let _ = write!(output, "{byte:02x}");
-    }
-    output
+fn storage_error(error: StoreError) -> ThawError {
+    ThawError::Io(std::io::Error::other(error))
 }
 impl InstanceViewStore {
+    /// Views stored under a local profile directory.
+    ///
     /// # Errors
     /// Rejects a relative profile root or empty/control-character identities.
     pub fn new(
@@ -158,29 +160,47 @@ impl InstanceViewStore {
                 "profile root must be absolute".into(),
             ));
         }
+        Self::with_store(
+            Rc::new(app_state::FsStore::new(profile_state_root)),
+            device_id,
+            workspace_id,
+        )
+    }
+    /// Views stored through a host-provided store.
+    ///
+    /// # Errors
+    /// Rejects empty/control-character identities.
+    pub fn with_store(
+        store: Rc<dyn DurableStore>,
+        device_id: &str,
+        workspace_id: &str,
+    ) -> Result<Self, ThawError> {
         validate_identity(device_id)?;
         validate_identity(workspace_id)?;
-        let directory = profile_state_root
-            .join("instance-views")
-            .join(hex_segment(device_id))
-            .join(hex_segment(workspace_id));
         Ok(Self {
-            profile_state_root,
-            directory,
+            store,
             device_id: device_id.into(),
             workspace_id: workspace_id.into(),
+            profile_lifetime: None,
         })
     }
-    pub(crate) fn matches_namespace(&self, root: &Path, device: &str, workspace: &str) -> bool {
-        self.profile_state_root == root
+    pub(crate) fn with_profile_lifetime(
+        mut self,
+        lifetime: std::rc::Rc<dyn std::any::Any>,
+    ) -> Self {
+        self.profile_lifetime = Some(lifetime);
+        self
+    }
+    pub(crate) fn matches_namespace(&self, namespace: &str, device: &str, workspace: &str) -> bool {
+        self.store.namespace() == namespace
             && self.device_id == device
             && self.workspace_id == workspace
     }
     pub(crate) fn workspace_id(&self) -> &str {
         &self.workspace_id
     }
-    fn path(&self, instance: u64) -> PathBuf {
-        self.directory.join(format!("{instance}.postcard"))
+    fn key(&self, instance: u64) -> StorageKey {
+        StorageKey::view(&self.device_id, &self.workspace_id, instance)
     }
     fn validate(&self, instance: &SavedInstanceView, key: u64) -> Result<(), ThawError> {
         instance.validate()?;
@@ -196,21 +216,64 @@ impl InstanceViewStore {
     /// Reports I/O, malformed/versioned envelopes, invalid geometry and foreign bindings.
     /// Invalid source bytes are never repaired or replaced.
     pub fn load(&self, instance_id: u64) -> Result<Option<SavedInstanceView>, ThawError> {
-        let bytes = match std::fs::read(self.path(instance_id)) {
-            Ok(bytes) => bytes,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-            Err(error) => return Err(ThawError::Io(error)),
+        let Some(stored) = self
+            .store
+            .read(&self.key(instance_id))
+            .map_err(storage_error)?
+        else {
+            return Ok(None);
         };
+        let bytes = stored.bytes;
         let instance = decode_envelope(&bytes)?;
         self.validate(&instance, instance_id)?;
         Ok(Some(instance))
     }
     /// # Errors
-    /// Refuses invalid/foreign envelopes before atomically replacing the local View file.
+    /// Refuses invalid/foreign envelopes before replacing the stored View,
+    /// and reports a replacement the store failed to commit. A store waiting
+    /// on its host to commit is not a failure.
     pub fn save(&self, instance: &SavedInstanceView) -> Result<(), ThawError> {
         self.validate(instance, instance.instance_id)?;
         let bytes = postcard::to_stdvec(instance).map_err(ThawError::Envelope)?;
-        std::fs::create_dir_all(&self.directory).map_err(ThawError::Io)?;
-        atomic_file::write(&self.path(instance.instance_id), &bytes).map_err(ThawError::Io)
+        let key = self.key(instance.instance_id);
+        self.store
+            .write(&key, WriteOp::Replace(bytes), None)
+            .map_err(storage_error)?;
+        match self.store.flush(Some(&key)) {
+            Ok(()) | Err(StoreError::Pending(_)) => Ok(()),
+            Err(error) => Err(storage_error(error)),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn saved(instance_id: u64) -> SavedInstanceView {
+        SavedInstanceView {
+            version: 2,
+            app_id: "so.tilo.test".into(),
+            device_id: "D".into(),
+            workspace_id: "A".into(),
+            instance_id,
+            record_id: "uuid:record".into(),
+            record_kind: "note".into(),
+            view: View::default(),
+            application: None,
+        }
+    }
+
+    #[test]
+    fn views_round_trip_through_any_store_and_refuse_foreign_bindings() {
+        let store: Rc<dyn DurableStore> = Rc::new(durable_store::MemoryStore::new());
+        let views = InstanceViewStore::with_store(Rc::clone(&store), "D", "A").unwrap();
+        assert!(views.load(7).unwrap().is_none());
+        views.save(&saved(7)).unwrap();
+        assert_eq!(views.load(7).unwrap().unwrap().record_id, "uuid:record");
+        assert!(views.matches_namespace(store.namespace(), "D", "A"));
+        let other = InstanceViewStore::with_store(store, "D", "B").unwrap();
+        assert!(other.load(7).unwrap().is_none());
+        assert!(other.save(&saved(7)).is_err());
     }
 }

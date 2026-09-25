@@ -36,13 +36,13 @@ use shell::shell::state::{
     Capability, FsMode, GRANT_SESSION, Workspace, WorkspaceId, WorkspaceTree,
 };
 
-const APP: &str = "dev.tilo.editor";
+const APP: &str = "so.tilo.editor";
 
 /// A workspace owned by the local user, plus a grant store over it.
 fn store() -> (GrantStoreHandle, WorkspaceId) {
     let mut tree = WorkspaceTree::default();
     let id = WorkspaceId::from(1);
-    tree.workspaces.push(Workspace::new(id, "demo"));
+    tree.desktop.workspaces.push(Workspace::new(id, "demo"));
     tree.set_active(id);
     let handle = tree.shared();
     {
@@ -61,6 +61,7 @@ fn plan_for(store: &GrantStoreHandle, ws: WorkspaceId, app: &str) -> CapabilityP
         let tree = store.tree_handle();
         let guard = tree.read();
         guard
+            .desktop
             .workspaces
             .iter()
             .find(|w| w.id == ws)
@@ -236,7 +237,7 @@ fn a_grant_is_scoped_to_the_app_that_asked() {
         },
     );
 
-    let other = plan_for(&store, ws, "dev.tilo.other");
+    let other = plan_for(&store, ws, "so.tilo.other");
     assert!(
         !other.ro_paths.contains(&picked),
         "an app that did not open the dialog must not receive the grant; \

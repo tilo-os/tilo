@@ -28,6 +28,31 @@ use crate::keypad::{CalcScreen, MEM_KEYS};
 use crate::model::{self, CalcModel, Mode, PlotFn};
 
 const TOPBAR_H: f64 = 60.0;
+/// Gap between the segments of the mode switch and of the RAD/DEG toggle:
+/// one `s1`, so no two segments touch inside their shared track (HIG §7).
+const SEG_GAP: f64 = ui::tokens::spacing::Spacing::BASE.s1 as f64;
+
+/// Painted widths of the topbar's widest labels (see
+/// `CalculatorApp::measure_topbar_labels`). Zero before the first draw, where
+/// `relayout` falls back to the control's ordinary minimum widths.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+struct TopbarLabels {
+    /// Widest full mode label ("Calculator").
+    full: f64,
+    /// Widest condensed mode label ("Calc").
+    short: f64,
+    /// Wider of "RAD" / "DEG".
+    toggle: f64,
+}
+
+impl TopbarLabels {
+    /// Base font sizes the topbar paints its labels at (scaled at paint time).
+    const SEG_FONT: f32 = 14.0;
+    const TOGGLE_FONT: f32 = 13.0;
+    /// Horizontal breathing room either side of a label inside its control.
+    const SEG_PAD_X: f64 = 16.0;
+    const TOGGLE_PAD_X: f64 = 10.0;
+}
 
 #[allow(
     clippy::struct_excessive_bools,
@@ -51,6 +76,11 @@ pub struct CalculatorApp {
     /// Whether the mode segments are too narrow for full labels and must use
     /// the short forms ("Calc" / "2D" / "3D"). Re-derived every `relayout`.
     seg_short: bool,
+    /// Widest topbar labels as the renderer actually paints them, refreshed
+    /// each draw. `relayout` sizes the mode segments and the RAD/DEG halves
+    /// from these so enlarged type widens its control instead of overrunning
+    /// a fixed-width neighbour.
+    topbar_labels: TopbarLabels,
 
     mouse: Point,
     dragging: bool,
@@ -121,6 +151,7 @@ impl CalculatorApp {
             rad_rect: Rect::ZERO,
             deg_rect: Rect::ZERO,
             seg_short: false,
+            topbar_labels: TopbarLabels::default(),
             mouse: Point::ZERO,
             dragging: false,
             drag_last: Point::ZERO,
@@ -163,30 +194,65 @@ impl CalculatorApp {
         // small left margin, then hands the rest to the functional controls.
         let brand_right = self.area.x0 + 12.0;
 
-        // RAD/DEG anchored to the right edge; compact form when tight.
+        // RAD/DEG anchored to the right edge; compact form when tight. Each
+        // half must seat its measured label, so enlarged type widens the
+        // toggle rather than spilling out of it.
         let compact_toggle = w < 620.0;
-        let toggle_w = if compact_toggle { 100.0 } else { 124.0 };
+        let toggle_min =
+            2.0 * (self.topbar_labels.toggle + 2.0 * TopbarLabels::TOGGLE_PAD_X) + SEG_GAP;
+        let toggle_base: f64 = if compact_toggle { 100.0 } else { 124.0 };
+        let toggle_w = toggle_base.max(toggle_min);
         let right_margin = if compact_toggle { 12.0 } else { 24.0 };
         let ax1 = self.area.x1 - right_margin;
         let ax0 = ax1 - toggle_w;
-        let half = toggle_w / 2.0;
+        let half = (toggle_w - SEG_GAP) / 2.0;
         self.rad_rect = Rect::new(ax0, y0, ax0 + half, y0 + seg_h);
-        self.deg_rect = Rect::new(ax0 + half, y0, ax1, y0 + seg_h);
+        self.deg_rect = Rect::new(ax0 + half + SEG_GAP, y0, ax1, y0 + seg_h);
 
         // The mode switcher fills the gap between the brand and the toggle,
-        // centred, with each segment clamped to a tappable width.
+        // centred, with each segment clamped to a tappable width. The clamps
+        // grow with the measured labels: a segment is never narrower than its
+        // short label and may widen to seat the full one; the switch to short
+        // labels happens where the full label would no longer fit.
+        let full_w = self.topbar_labels.full + 2.0 * TopbarLabels::SEG_PAD_X;
+        let short_w = self.topbar_labels.short + 2.0 * TopbarLabels::SEG_PAD_X;
+        let seg_min = 46.0_f64.max(short_w);
+        let seg_max = 128.0_f64.max(full_w);
         let seg_area_left = brand_right + 12.0;
         let seg_area_right = ax0 - 12.0;
-        let avail = (seg_area_right - seg_area_left).max(3.0 * 46.0);
-        let seg_w = (avail / 3.0).clamp(46.0, 128.0);
-        self.seg_short = seg_w < 104.0;
-        let seg_total = seg_w * 3.0;
+        let avail = (seg_area_right - seg_area_left).max(3.0 * seg_min + 2.0 * SEG_GAP);
+        let seg_w = ((avail - 2.0 * SEG_GAP) / 3.0).clamp(seg_min, seg_max);
+        self.seg_short = seg_w < 104.0_f64.max(full_w);
+        let seg_total = seg_w * 3.0 + 2.0 * SEG_GAP;
         let seg_start =
             seg_area_left + ((seg_area_right - seg_area_left) - seg_total).max(0.0) / 2.0;
         for (i, rect) in self.seg_rects.iter_mut().enumerate() {
-            let sx = seg_start + i as f64 * seg_w;
+            let sx = seg_start + i as f64 * (seg_w + SEG_GAP);
             *rect = Rect::new(sx, y0, sx + seg_w, y0 + seg_h);
         }
+    }
+
+    /// Measure the topbar's labels at the size they are about to be painted.
+    /// Returns `true` when a width changed (first frame, a text-scale change),
+    /// so the caller re-runs `relayout` before painting this frame.
+    fn measure_topbar_labels(&mut self, tr: &mut TextRenderer) -> bool {
+        let widest = |tr: &mut TextRenderer, labels: &[&str], size: f32| {
+            labels
+                .iter()
+                .map(|label| draw::measure_w(tr, label, size, TextWeight::Semibold))
+                .fold(0.0_f64, f64::max)
+        };
+        let modes = Mode::all();
+        let full: Vec<&str> = modes.iter().map(|m| m.label()).collect();
+        let short: Vec<&str> = modes.iter().map(|m| m.short_label()).collect();
+        let measured = TopbarLabels {
+            full: widest(tr, &full, TopbarLabels::SEG_FONT),
+            short: widest(tr, &short, TopbarLabels::SEG_FONT),
+            toggle: widest(tr, &["RAD", "DEG"], TopbarLabels::TOGGLE_FONT),
+        };
+        let changed = measured != self.topbar_labels;
+        self.topbar_labels = measured;
+        changed
     }
 
     fn layout_active(&mut self) {
@@ -329,7 +395,7 @@ impl CalculatorApp {
             t,
             Point::new(self.topbar.x0, self.topbar.y1),
             Point::new(self.topbar.x1, self.topbar.y1),
-            c.border_standard,
+            ui::chrome::chrome_hairline(theme),
             1.0,
         );
 
@@ -343,13 +409,14 @@ impl CalculatorApp {
             self.seg_rects[2].x1 + 4.0,
             self.seg_rects[2].y1 + 4.0,
         );
-        draw::fill_rrect(scene, t, outer, 10.0, c.neutral[2]);
+        ui::surface::card(scene, t, outer, 10.0, c.neutral[2]);
         let sel = self.model.mode.index();
+        let on_accent = c.on_accent(ui::tokens::colors::ON_FILL_MIN_CONTRAST);
         for (i, (m, &r)) in Mode::all().iter().zip(self.seg_rects.iter()).enumerate() {
             if i == sel {
-                draw::fill_rrect(scene, t, r, 8.0, c.accent[5]);
+                draw::fill_round(scene, t, r, 8.0, c.accent[5]);
             }
-            let col = if i == sel { Color::WHITE } else { c.text_dim };
+            let col = if i == sel { on_accent } else { c.text_dim };
             let label = if self.seg_short {
                 m.short_label()
             } else {
@@ -361,7 +428,7 @@ impl CalculatorApp {
                 t,
                 r,
                 label,
-                14.0,
+                TopbarLabels::SEG_FONT,
                 col,
                 Align::Center,
                 TextWeight::Semibold,
@@ -375,19 +442,19 @@ impl CalculatorApp {
             self.deg_rect.x1 + 4.0,
             self.deg_rect.y1 + 4.0,
         );
-        draw::fill_rrect(scene, t, outer2, 10.0, c.neutral[2]);
+        ui::surface::card(scene, t, outer2, 10.0, c.neutral[2]);
         if self.model.deg {
-            draw::fill_rrect(scene, t, self.deg_rect, 8.0, c.accent[5]);
+            draw::fill_round(scene, t, self.deg_rect, 8.0, c.accent[5]);
         } else {
-            draw::fill_rrect(scene, t, self.rad_rect, 8.0, c.accent[5]);
+            draw::fill_round(scene, t, self.rad_rect, 8.0, c.accent[5]);
         }
         let rad_col = if self.model.deg {
             c.text_dim
         } else {
-            Color::WHITE
+            on_accent
         };
         let deg_col = if self.model.deg {
-            Color::WHITE
+            on_accent
         } else {
             c.text_dim
         };
@@ -397,7 +464,7 @@ impl CalculatorApp {
             t,
             self.rad_rect,
             "RAD",
-            13.0,
+            TopbarLabels::TOGGLE_FONT,
             rad_col,
             Align::Center,
             TextWeight::Semibold,
@@ -408,7 +475,7 @@ impl CalculatorApp {
             t,
             self.deg_rect,
             "DEG",
-            13.0,
+            TopbarLabels::TOGGLE_FONT,
             deg_col,
             Align::Center,
             TextWeight::Semibold,
@@ -1038,6 +1105,10 @@ fn key_accessible_name(key: &model::Key) -> String {
 }
 
 impl Widget for CalculatorApp {
+    fn document_history_definition(&self) -> Option<&'static ui::history_mode::HistoryDefinition> {
+        Some(&crate::framework_history::HISTORY)
+    }
+
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[actions::CALCULATOR_OPERATION_TYPE]
     }
@@ -1160,6 +1231,12 @@ impl Widget for CalculatorApp {
     ) {
         let c = &theme.tokens.colors;
         draw::fill_rect(scene, t, self.area, c.surfaces.base);
+        // Size the topbar controls from the labels as this frame paints them
+        // (the screens below set the same paint scale before their own text).
+        draw::set_text_scale(draw::paint_scale(tr, theme));
+        if self.measure_topbar_labels(tr) {
+            self.relayout();
+        }
         let body = self.body;
         match self.model.mode {
             Mode::Calc => self.calc.draw(scene, t, tr, theme, &self.model, body),
@@ -2207,6 +2284,76 @@ mod tests {
                 "RAD/DEG toggle clipped the window edge at w={w}"
             );
         }
+    }
+
+    /// At an accessibility text scale the topbar's segments and RAD/DEG halves
+    /// widen to seat the labels the renderer actually paints — measured on the
+    /// production draw path — instead of keeping their 1× widths and letting
+    /// the labels run into each other.
+    #[test]
+    fn topbar_controls_seat_their_measured_labels_at_large_text() {
+        let mut app = CalculatorApp::seeded();
+        app.area = Rect::new(0.0, 0.0, 1280.0, 720.0);
+        app.relayout();
+        let theme = Theme::dark().with_text_scale(2.0);
+        let mut tr = TextRenderer::new();
+        tr.set_text_scale(2.0);
+        let mut scene = Scene::new();
+        app.draw(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut tr,
+            &theme,
+            &PresenceCtx::empty(),
+        );
+        let labels = app.topbar_labels;
+        assert!(
+            labels.full > 0.0 && labels.toggle > 0.0,
+            "labels measured: {labels:?}"
+        );
+        let seg_label = if app.seg_short {
+            labels.short
+        } else {
+            labels.full
+        };
+        for (i, r) in app.seg_rects.iter().enumerate() {
+            assert!(
+                r.width() + 0.5 >= seg_label + 2.0 * TopbarLabels::SEG_PAD_X,
+                "segment {i} {r:?} must seat its label ({seg_label}px) with padding"
+            );
+        }
+        for (name, r) in [("RAD", app.rad_rect), ("DEG", app.deg_rect)] {
+            assert!(
+                r.width() + 0.5 >= labels.toggle + 2.0 * TopbarLabels::TOGGLE_PAD_X,
+                "{name} half {r:?} must seat its label ({}px)",
+                labels.toggle
+            );
+        }
+        assert!(
+            app.seg_rects[2].x1 <= app.rad_rect.x0 + 0.5,
+            "the widened switcher still clears the toggle: {} vs {}",
+            app.seg_rects[2].x1,
+            app.rad_rect.x0
+        );
+        // 1× keeps its authored geometry: the measured labels fit the ordinary
+        // clamps, so nothing widens.
+        let mut base = CalculatorApp::seeded();
+        base.area = Rect::new(0.0, 0.0, 1280.0, 720.0);
+        base.relayout();
+        let before = (base.seg_rects, base.rad_rect, base.deg_rect);
+        let mut tr1 = TextRenderer::new();
+        base.draw(
+            &mut Scene::new(),
+            Affine::IDENTITY,
+            &mut tr1,
+            &Theme::dark(),
+            &PresenceCtx::empty(),
+        );
+        assert_eq!(
+            (base.seg_rects, base.rad_rect, base.deg_rect),
+            before,
+            "1× topbar geometry is unchanged by measurement"
+        );
     }
 
     #[test]

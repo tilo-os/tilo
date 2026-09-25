@@ -338,13 +338,24 @@ That same card is also a committed visual regression corpus. The integration
 suite compares light and dark reference PNGs at 1×, fractional 1.25× display
 scale, and combined 1.5× display/1.25× text scale. Comparisons tolerate only
 the renderer's measured one-channel antialiasing wobble; a real mismatch writes
-the actual frame and a high-contrast pixel diff under
-`/tmp/typography-visual-regression`. After visually approving an intentional
-change, regenerate the references through the repository build container with:
+the actual frame and a high-contrast pixel diff under the test target's
+`CARGO_TARGET_TMPDIR`, in `typography-visual-regression/`. The references are
+Mesa llvmpipe renders, and the comparison refuses other adapters.
+`typography_baseline_geometry` checks the same layouts against the references'
+dimensions without a GPU, so a card that changed size fails every test run.
+
+After visually approving an intentional change, regenerate the references with
+the "Render visual baseline candidates" workflow
+(`.forgejo/workflows/refresh-visual-baselines.yml`), which pins the builder
+image and llvmpipe, and review its candidates. Inside that image the
+equivalent command is:
 
 ```sh
-UPDATE_TYPOGRAPHY_BASELINES=1 cargo test -p ui --test it \
-  typography_visual_regression::multilingual_gallery_matches_scale_matrix
+UPDATE_TYPOGRAPHY_BASELINES=1 \
+VK_DRIVER_FILES=/usr/share/vulkan/icd.d/lvp_icd.x86_64.json \
+WGPU_ADAPTER_NAME=llvmpipe WGPU_BACKEND=vulkan \
+  cargo test --locked -p tilo-ui --test it \
+  typography_visual_regression::multilingual_gallery_matches_scale_matrix -- --exact
 ```
 
 ## Multi-paragraph editing

@@ -1,5 +1,6 @@
 pub mod colors;
 pub mod elevation;
+pub mod metrics;
 pub mod motion;
 pub mod radii;
 pub mod spacing;
@@ -11,9 +12,10 @@ pub use colors::{
     SemanticColors, Surfaces, dark_overlays, light_overlays,
 };
 pub use elevation::{Elevation, Shadow};
+pub use metrics::Metrics;
 pub use motion::{Durations, Gesture, Motion, SpringParams, SpringPresets, rubber_band};
 pub use radii::Radii;
-pub use spacing::Spacing;
+pub use spacing::{Spacing, SpacingStep};
 pub use terminal_palette::TerminalPalette;
 pub use typography::{FontFamily, TextRole, TypeScale, Typography, WeightScale};
 
@@ -22,6 +24,8 @@ pub struct Tokens {
     pub colors: Colors,
     pub typography: Typography,
     pub spacing: Spacing,
+    /// Control heights, hit targets, panel widths and icon sizes (HIG §9.6).
+    pub metrics: Metrics,
     pub radii: Radii,
     pub elevation: Elevation,
     pub motion: Motion,
@@ -44,6 +48,7 @@ impl Tokens {
             colors: Colors::dark(),
             typography,
             spacing: Spacing::default(),
+            metrics: Metrics::default(),
             radii: Radii::default(),
             elevation: Elevation::default(),
             motion: Motion::default(),
@@ -60,6 +65,7 @@ impl Tokens {
             colors: Colors::light(),
             typography,
             spacing: Spacing::default(),
+            metrics: Metrics::default(),
             radii: Radii::default(),
             elevation: Elevation::light(),
             motion: Motion::default(),

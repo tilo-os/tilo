@@ -133,6 +133,37 @@ class AppResourceActionContractTests(unittest.TestCase):
         violations, _ = contract.audit(root)
         self.assertTrue(any("calls unbounded search" in item.reason for item in violations))
 
+    def test_catalog_backed_provider_passes_search_gate(self):
+        root = self.fixture(
+            "use tilo_actions::ActionSpec;\n"
+            "fn resources(&self) {}\n"
+            "impl ui::search::CatalogSearchProvider for Corpus {\n"
+            " fn provider_name(&self) -> &str { \"Corpus\" }\n"
+            " fn catalog(&self) -> Option<SearchCatalog> { Some(self.catalog.clone()) }\n"
+            "}\n"
+        )
+        violations, _ = contract.audit(root)
+        reasons = "\n".join(item.reason for item in violations)
+        self.assertNotIn("search_limited", reasons)
+        self.assertNotIn("search_page", reasons)
+        self.assertNotIn("catalogue per query", reasons)
+
+    def test_catalog_backed_provider_cannot_rebuild_its_catalogue_per_query(self):
+        root = self.fixture(
+            "use tilo_actions::ActionSpec;\n"
+            "fn resources(&self) {}\n"
+            "impl CatalogSearchProvider for Corpus {\n"
+            " fn provider_name(&self) -> &str { \"Corpus\" }\n"
+            " fn catalog(&self) -> Option<SearchCatalog> {\n"
+            "   let catalog = SearchCatalog::new(\"Corpus\");\n"
+            "   let _ = catalog.replace_all(self.rows());\n"
+            "   Some(catalog)\n"
+            " }\n"
+            "}\n"
+        )
+        violations, _ = contract.audit(root)
+        self.assertTrue(any("catalogue per query" in item.reason for item in violations))
+
     def test_durable_provider_cannot_truncate_index_before_query(self):
         root = self.fixture(
             "use tilo_actions::ActionSpec;\n"
@@ -216,8 +247,9 @@ class AppResourceActionContractTests(unittest.TestCase):
     def test_generic_broker_agent_passes(self):
         root = self.fixture(
             "fn resources() {}\n"
-            "struct ActionDescriptor; struct BrokerActionSurface;\n"
-            "enum CollabRequest { InvokePublishedAction, PublishedInvocationStatus }\n",
+            "struct ActionDescriptor;\n"
+            "RemoteActionMessage::CatalogueRequest; RemoteActionMessage::Invoke(request);\n"
+            "RemoteActionMessage::Observe;\n",
             app_name="agent",
         )
         violations, _ = contract.audit(root)
@@ -225,8 +257,9 @@ class AppResourceActionContractTests(unittest.TestCase):
 
     def test_direct_ui_core_dependency_fails_even_when_renamed(self):
         root = self.fixture(
-            "fn resources() {}\nstruct ActionDescriptor; struct BrokerActionSurface;\n"
-            "enum CollabRequest { InvokePublishedAction, PublishedInvocationStatus }\n",
+            "fn resources() {}\nstruct ActionDescriptor;\n"
+            "RemoteActionMessage::CatalogueRequest; RemoteActionMessage::Invoke(request);\n"
+            "RemoteActionMessage::Observe;\n",
             dependencies=(
                 'ui={package="tilo-app",path="../../crates/sdk/tilo-app"}\n'
                 'ui_core={package="ui",path="../../crates/sdk/ui-core"}\n'
@@ -238,8 +271,9 @@ class AppResourceActionContractTests(unittest.TestCase):
 
     def test_direct_ui_core_path_fails_without_explicit_package_name(self):
         root = self.fixture(
-            "fn resources() {}\nstruct ActionDescriptor; struct BrokerActionSurface;\n"
-            "enum CollabRequest { InvokePublishedAction, PublishedInvocationStatus }\n",
+            "fn resources() {}\nstruct ActionDescriptor;\n"
+            "RemoteActionMessage::CatalogueRequest; RemoteActionMessage::Invoke(request);\n"
+            "RemoteActionMessage::Observe;\n",
             dependencies=(
                 'ui={package="tilo-app",path="../../crates/sdk/tilo-app"}\n'
                 'rendering={path="../../crates/sdk/ui-core"}\n'
@@ -251,8 +285,9 @@ class AppResourceActionContractTests(unittest.TestCase):
 
     def test_target_specific_facades_are_checked(self):
         root = self.fixture(
-            "fn resources() {}\nstruct ActionDescriptor; struct BrokerActionSurface;\n"
-            "enum CollabRequest { InvokePublishedAction, PublishedInvocationStatus }\n",
+            "fn resources() {}\nstruct ActionDescriptor;\n"
+            "RemoteActionMessage::CatalogueRequest; RemoteActionMessage::Invoke(request);\n"
+            "RemoteActionMessage::Observe;\n",
             dependencies="",
             app_name="agent",
         )
@@ -497,6 +532,62 @@ class AppResourceActionContractTests(unittest.TestCase):
                     self.assertEqual(violations, [])
                 else:
                     self.assertTrue(any("production app launch" in v.reason for v in violations))
+
+    def test_component_factory_installs_the_registered_registry(self):
+        source = (
+            "use tilo_actions::{ActionRegistry, ActionSpec};\n"
+            "pub fn register(_: &mut ActionRegistry) {}\n"
+            "impl Widget for App { fn resources(&self, _: &Doc) -> Vec<Resource> {\n"
+            " vec![Resource::new(\"app\", \"app\", \"App\").with_action(\n"
+            " ActionSpec::immediate(\"go\", \"Go\", \"app.go\", &()).unwrap())] } }\n"
+            "static DEFINITION: LazyLock<ApplicationDefinition> = LazyLock::new(|| "
+            "ApplicationDefinition { create: |context, target, restore| "
+            "create_component(context, target, restore) });\n"
+            "fn create_component(context: HostContext, target: &LaunchTarget, "
+            "restore: &RestoreInput) -> Result<AppComponent, Error> {\n"
+            " let mut registry = ActionRegistry::new();\n"
+            " actions::register(&mut registry);\n"
+            " Ok(AppComponent::new(context, Box::new(App), registry))\n"
+            "}\n"
+        )
+        root = self.fixture(source)
+        main = root / "apps" / "sample" / "src" / "main.rs"
+        main.write_text(
+            "fn main() { run(&LaunchSpec::from_definition(definition())"
+            ".component_host(prepare_component)); }\n",
+            encoding="utf-8",
+        )
+        violations, _ = contract.audit(root)
+        self.assertFalse(any("production app launch" in item.reason for item in violations))
+
+    def test_disconnected_component_registry_does_not_satisfy_live_contract(self):
+        source = (
+            "use tilo_actions::{ActionRegistry, ActionSpec};\n"
+            "pub fn register(_: &mut ActionRegistry) {}\n"
+            "impl Widget for App { fn resources(&self, _: &Doc) -> Vec<Resource> {\n"
+            " vec![Resource::new(\"app\", \"app\", \"App\").with_action(\n"
+            " ActionSpec::immediate(\"go\", \"Go\", \"app.go\", &()).unwrap())] } }\n"
+            "static DEFINITION: LazyLock<ApplicationDefinition> = LazyLock::new(|| "
+            "ApplicationDefinition { create: |context, target, restore| "
+            "create_component(context, target, restore) });\n"
+            "fn create_component(context: HostContext, target: &LaunchTarget, "
+            "restore: &RestoreInput) -> Result<AppComponent, Error> {\n"
+            " Ok(AppComponent::new(context, Box::new(App), ActionRegistry::new()))\n"
+            "}\n"
+            "fn test_only(context: HostContext) -> AppComponent {\n"
+            " let mut registry = ActionRegistry::new(); actions::register(&mut registry);\n"
+            " AppComponent::new(context, Box::new(App), registry)\n"
+            "}\n"
+        )
+        root = self.fixture(source)
+        main = root / "apps" / "sample" / "src" / "main.rs"
+        main.write_text(
+            "fn main() { run(&LaunchSpec::from_definition(definition())"
+            ".component_host(prepare_component)); }\n",
+            encoding="utf-8",
+        )
+        violations, _ = contract.audit(root)
+        self.assertTrue(any("production app launch" in item.reason for item in violations))
 
     def test_new_opaque_search_activation_is_rejected(self):
         root = self.fixture(

@@ -15,16 +15,17 @@ path = "src/main.rs"
 
 [features]
 thin = ["dep:runtime-dylib"]
-# Host downloads opt into the narrowly elevated raw-media writer. The qpkg
+# Host downloads opt into the narrowly elevated raw-media writer. The tapp
 # deliberately omits this feature because its sandbox has no raw-device portal.
 host-media-writer = []
 # Flatpak cannot safely elevate a binary from inside its mutable mount
 # namespace.  This backend asks the host's root-owned UDisks2 service for one
 # polkit-authorized, exclusive file descriptor to the reviewed removable
 # drive.  No /dev access or host-command escape is granted to the sandbox.
-flatpak-media-writer = ["dep:zbus"]
+flatpak-media-writer = ["dep:zbus", "block-devices/udisks"]
 
 [dependencies]
+qos-ntfs-protocol = { path = "../../crates/session/qos-ntfs-protocol" }
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 # The Tilo ACTION model: the imager's guided-customization install profile (the
 # only user-authored config in the shared document) is exported as replayable
@@ -32,17 +33,24 @@ runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 # toggles and fields dispatch.
 tilo-actions = { path = "../../crates/collab/actions" }
 automerge.workspace = true
+cap-fs-ext = "3.4.6"
+cap-primitives = "3.4.6"
+cap-std = "3.4.6"
+dirs.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+hex.workspace = true
 sha2.workspace = true
-reqwest = { workspace = true, features = ["blocking", "rustls-tls"] }
+reqwest = { workspace = true, features = ["blocking"] }
+tilo-net = { path = "../../crates/system/tilo-net", features = ["blocking"] }
 zstd.workspace = true
 vello.workspace = true
 winit.workspace = true
 taffy.workspace = true
 tempfile.workspace = true
+block-devices = { path = "../../crates/system/block-devices" }
 bounded-command = { path = "../../crates/system/bounded-command" }
-zbus = { workspace = true, optional = true, default-features = true }
+zbus = { workspace = true, optional = true, features = ["tokio", "blocking-api"] }
 
 [target.'cfg(unix)'.dependencies]
 libc.workspace = true
@@ -52,6 +60,12 @@ ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["po
 
 [target.'cfg(not(target_os = "linux"))'.dependencies]
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61.2", features = ["Wdk_Foundation", "Wdk_Storage_FileSystem", "Win32_System_Memory", "Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_Storage_FileSystem", "Win32_System_Threading", "Win32_System_IO", "Win32_System_Ioctl"] }
+
+[dev-dependencies]
+tilo-test-env = { path = "../../crates/dev/test-env" }
 
 [lints]
 workspace = true

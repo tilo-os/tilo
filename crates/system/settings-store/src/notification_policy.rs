@@ -254,13 +254,13 @@ mod tests {
             ..NotificationPolicy::default()
         };
         p.per_app.insert(
-            "dev.tilo.chat".into(),
+            "so.tilo.chat".into(),
             AppNotificationRule {
                 priority: true,
                 ..AppNotificationRule::default()
             },
         );
-        assert!(!p.effective_for(Some("dev.tilo.chat"), 0, 500, 0).quiet);
+        assert!(!p.effective_for(Some("so.tilo.chat"), 0, 500, 0).quiet);
         assert!(p.effective_for(Some("spoofed name"), 0, 500, 0).quiet);
     }
 
@@ -268,14 +268,14 @@ mod tests {
     fn temporary_mute_expires_without_a_cleanup_write() {
         let mut p = NotificationPolicy::default();
         p.per_app.insert(
-            "dev.tilo.mail".into(),
+            "so.tilo.mail".into(),
             AppNotificationRule {
                 muted_until: Some(200),
                 ..AppNotificationRule::default()
             },
         );
-        assert!(p.effective_for(Some("dev.tilo.mail"), 199, 0, 0).quiet);
-        assert!(!p.effective_for(Some("dev.tilo.mail"), 200, 0, 0).quiet);
+        assert!(p.effective_for(Some("so.tilo.mail"), 199, 0, 0).quiet);
+        assert!(!p.effective_for(Some("so.tilo.mail"), 200, 0, 0).quiet);
     }
 
     #[test]
@@ -290,22 +290,22 @@ mod tests {
             ..NotificationPolicy::default()
         };
         p.per_app.insert(
-            "dev.tilo.mail".into(),
+            "so.tilo.mail".into(),
             AppNotificationRule {
                 priority_contacts: true,
                 ..AppNotificationRule::default()
             },
         );
         assert!(
-            !p.effective_for_context(Some("dev.tilo.mail"), true, 0, 500, 0)
+            !p.effective_for_context(Some("so.tilo.mail"), true, 0, 500, 0)
                 .quiet
         );
         assert!(
-            p.effective_for_context(Some("dev.tilo.mail"), false, 0, 500, 0)
+            p.effective_for_context(Some("so.tilo.mail"), false, 0, 500, 0)
                 .quiet
         );
         assert!(
-            p.effective_for_context(Some("dev.tilo.other"), true, 0, 500, 0)
+            p.effective_for_context(Some("so.tilo.other"), true, 0, 500, 0)
                 .quiet
         );
     }
@@ -315,13 +315,13 @@ mod tests {
         let mut policy = NotificationPolicy::default();
         assert!(
             policy
-                .effective_for(Some("dev.tilo.mail"), 0, 0, 0)
+                .effective_for(Some("so.tilo.mail"), 0, 0, 0)
                 .cross_device
         );
         assert!(!policy.effective_for(None, 0, 0, 0).cross_device);
 
         policy.per_app.insert(
-            "dev.tilo.mail".into(),
+            "so.tilo.mail".into(),
             AppNotificationRule {
                 cross_device: Some(false),
                 ..AppNotificationRule::default()
@@ -329,7 +329,7 @@ mod tests {
         );
         assert!(
             !policy
-                .effective_for(Some("dev.tilo.mail"), 0, 0, 0)
+                .effective_for(Some("so.tilo.mail"), 0, 0, 0)
                 .cross_device
         );
     }

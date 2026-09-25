@@ -81,7 +81,7 @@ impl IdentityRegistry {
         let record = runtime_identity::load_from_path(record_path.to_path_buf())
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error.to_string()))?;
         let public_key = record.group_public_key();
-        let id = hex_encode(&public_key);
+        let id = hex::encode(public_key);
         let display_name = if record.display_name().trim().is_empty() {
             format!("Identity {}", short_fingerprint(&id))
         } else {
@@ -116,7 +116,7 @@ impl IdentityRegistry {
         let bytes = read_import_record(source)?;
         let record = runtime_identity::load_from_bytes(&bytes)
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error.to_string()))?;
-        let id = hex_encode(&record.group_public_key());
+        let id = hex::encode(record.group_public_key());
         // Runtime store ids are capped at 64 characters and must begin with a
         // letter. Keep 220 fingerprint bits; the full key remains the registry
         // id and is rechecked before accepting an existing destination.
@@ -307,7 +307,7 @@ impl IdentityRegistryStore {
         set_private_dir_mode(&self.identity_dir)?;
         let mut changed = false;
         for summary in runtime_identity::list_identities(&self.identity_dir)? {
-            let id = hex_encode(&summary.public_key);
+            let id = hex::encode(summary.public_key);
             let path = self.identity_dir.join(format!("{}.json", summary.id));
             let profile = IdentityProfile {
                 id: id.clone(),
@@ -364,7 +364,7 @@ impl IdentityRegistryStore {
     /// or registry persistence fails.
     pub fn import_portable(&self, source: &Path, passphrase: &[u8]) -> io::Result<IdentityProfile> {
         let info = runtime_identity::verify_portable_backup(source, passphrase)?;
-        let id = hex_encode(&info.group_public_key);
+        let id = hex::encode(info.group_public_key);
         let mut registry = self.migrate_legacy_primary()?;
         if let Some(existing) = registry.identities.get(&id) {
             return Ok(existing.clone());
@@ -472,23 +472,7 @@ pub fn cycle_workspace_identity(room: &str) -> io::Result<Option<IdentityProfile
 ///
 /// Returns an error if neither `XDG_CONFIG_HOME` nor `HOME` is set.
 fn resolve_identity_dir() -> io::Result<PathBuf> {
-    if let Some(xdg) = std::env::var_os("XDG_CONFIG_HOME")
-        && !xdg.is_empty()
-    {
-        return Ok(PathBuf::from(xdg).join("tilo").join("identity"));
-    }
-    if let Some(home) = std::env::var_os("HOME")
-        && !home.is_empty()
-    {
-        return Ok(PathBuf::from(home)
-            .join(".config")
-            .join("tilo")
-            .join("identity"));
-    }
-    Err(io::Error::new(
-        io::ErrorKind::NotFound,
-        "neither XDG_CONFIG_HOME nor HOME is set",
-    ))
+    runtime_identity::identity_dir_from_env()
 }
 
 /// Convert a relative path to absolute, or return unchanged if already absolute.
@@ -516,15 +500,6 @@ fn set_private_dir_mode(path: &Path) -> io::Result<()> {
 
 fn short_fingerprint(hex: &str) -> String {
     hex.get(..8).unwrap_or(hex).to_string()
-}
-
-fn hex_encode(bytes: &[u8]) -> String {
-    let mut out = String::with_capacity(bytes.len().saturating_mul(2));
-    for byte in bytes {
-        out.push(char::from_digit(u32::from(byte >> 4), 16).unwrap_or('0'));
-        out.push(char::from_digit(u32::from(byte & 0x0f), 16).unwrap_or('0'));
-    }
-    out
 }
 
 #[cfg(test)]

@@ -20,9 +20,9 @@ fn location_action_reports_the_real_portal_terminal_result() {
 
     let invocation = InvocationId::default();
     app.location_invocation = Some(invocation);
-    app.location_rx = Some(crate::location::inject_for_test(
-        LocationOutcome::Unavailable("permission denied".into()),
-    ));
+    app.location_rx = Some(host_location(LocationOutcome::Unavailable(
+        "permission denied".into(),
+    )));
     app.drain_location();
     assert!(matches!(
         app.poll_resource_operation(invocation, false, &state.doc, &state.root),
@@ -242,7 +242,7 @@ fn overflow_menu_opens_and_routes_to_its_options() {
     assert_eq!(a.info_sheet.current(), Some(MapInfo::Licenses));
     a.info_sheet.close();
     a.overflow_select(3);
-    let request = Widget::take_floating_surface_request(&mut a)
+    let request = ui::widget::FloatingSurfaceWidgetExt::take_floating_surface_request(&mut a)
         .expect("sample route produces a live navigation float");
     assert_eq!(request.role, ui::floating_surface::FloatingRole::Navigation);
 
@@ -1454,7 +1454,7 @@ fn route_reply_folds_from_a_worker_thread() {
 
 // --- Location services -------------------------------------------------
 
-/// The "use my location" success path: a mocked portal fix becomes the route
+/// The "use my location" success path: a host-provided fix becomes the route
 /// origin and the journey re-plans from it. The real coordinates depend on
 /// the host location service + user permission (unverifiable headlessly);
 /// this proves the result *handling* around the portal.
@@ -1465,7 +1465,7 @@ fn use_my_location_success_sets_origin_from_fix() {
     a.enter_directions();
 
     a.locating = true;
-    a.location_rx = Some(location::inject_for_test(LocationOutcome::Located {
+    a.location_rx = Some(host_location(LocationOutcome::Located {
         lat: 48.11,
         lon: 11.53,
         accuracy_m: 8.0,
@@ -1500,7 +1500,7 @@ fn location_unavailable_is_honest_and_fabricates_nothing() {
     let mut a = app_at(1280.0, 800.0);
     let before = a.model.origin;
     a.locating = true;
-    a.location_rx = Some(location::inject_for_test(LocationOutcome::Unavailable(
+    a.location_rx = Some(host_location(LocationOutcome::Unavailable(
         "permission denied".into(),
     )));
     a.drain_location();
@@ -1648,7 +1648,10 @@ fn live_navigation_drags_across_shell_ownership_without_a_jump() {
     let theme = Theme::dark();
     let mut tr = TextRenderer::new();
     let mut a = app_at(1280.0, 720.0);
-    Widget::set_floating_surface_bounds(&mut a, Rect::new(0.0, 0.0, 1680.0, 900.0));
+    ui::widget::FloatingSurfaceWidgetExt::set_floating_surface_bounds(
+        &mut a,
+        Rect::new(0.0, 0.0, 1680.0, 900.0),
+    );
     assert!(
         a.model.route.is_some(),
         "offline fixture has an active route"
@@ -1672,10 +1675,10 @@ fn live_navigation_drags_across_shell_ownership_without_a_jump() {
         before + (outside - origin),
         "navigation's transfer frame preserves exact geometry"
     );
-    let request = Widget::take_floating_surface_request(&mut a)
+    let request = ui::widget::FloatingSurfaceWidgetExt::take_floating_surface_request(&mut a)
         .expect("navigation publishes one native-surface handoff");
     let prepared_content = a.navigation_rect();
-    Widget::on_floating_surface_host_message(
+    ui::widget::FloatingSurfaceWidgetExt::on_floating_surface_host_message(
         &mut a,
         &ui::floating_surface::FloatingSurfaceHostMessage::PrepareSurface {
             id: request.id.clone(),
@@ -1687,7 +1690,7 @@ fn live_navigation_drags_across_shell_ownership_without_a_jump() {
         },
     );
     assert!(!a.navigation_placement.is_desktop_adopted());
-    Widget::on_floating_surface_host_message(
+    ui::widget::FloatingSurfaceWidgetExt::on_floating_surface_host_message(
         &mut a,
         &ui::floating_surface::FloatingSurfaceHostMessage::Adopted {
             id: request.id,
@@ -1700,11 +1703,11 @@ fn live_navigation_drags_across_shell_ownership_without_a_jump() {
     assert!(move_to(&mut a, returned_pointer.x, returned_pointer.y));
     assert!(a.navigation_placement.is_return_pending());
     let final_shell_rect = a.navigation_rect();
-    let presentations = Widget::floating_surface_presentations(&a);
+    let presentations = ui::widget::FloatingSurfaceWidgetExt::floating_surface_presentations(&a);
     assert_eq!(presentations.len(), 1);
     assert!(presentations[0].returning_to_app);
     let request_id = a.active_navigation_request().unwrap().id;
-    Widget::on_floating_surface_host_message(
+    ui::widget::FloatingSurfaceWidgetExt::on_floating_surface_host_message(
         &mut a,
         &ui::floating_surface::FloatingSurfaceHostMessage::Suspended { id: request_id },
     );
@@ -1779,7 +1782,7 @@ fn rerouting_preserves_the_positioned_navigation_surface_identity() {
             ref app_id,
             ref element_id,
             ..
-        } if app_id == "dev.tilo.maps" && element_id == "active-navigation"
+        } if app_id == "so.tilo.maps" && element_id == "active-navigation"
     ));
 }
 
@@ -2986,4 +2989,327 @@ fn eager_and_lazy_resources_share_unique_live_operations() {
         Widget::resource(&a, &doc, "maps.place:lazy-saved").expect("exact saved-place resolver");
     assert!(lazy.actions.iter().any(|action| action.id == "open"));
     assert!(lazy.actions.iter().any(|action| action.id == "directions"));
+}
+
+/// Authored rows and the navigation card are the 1× design exactly and
+/// grow to whole pixels that hold their scaled lines.
+#[test]
+fn authored_rows_and_navigation_card_are_exact_at_one_x_and_whole_at_two_x() {
+    assert_eq!(
+        authored_h(28.0, &[13.0], 1.0),
+        28.0,
+        "not 16.25 + 12 = 28.25"
+    );
+    assert_eq!(authored_h(46.0, &[13.0, 11.0], 1.0), 46.0);
+    for (authored, sizes) in [(30.0, &[13.0][..]), (40.0, &[12.0]), (36.0, &[18.0])] {
+        assert_eq!(authored_h(authored, sizes, 1.0), authored);
+        let two = authored_h(authored, sizes, 2.0);
+        assert_eq!(two.fract(), 0.0);
+        assert!(two >= sizes.iter().map(|&s| line_h(s, 2.0)).sum::<f64>());
+    }
+    let mx = Metrics::BASE;
+    let one = navigation_card_size(&mx, 1.0);
+    assert_eq!(
+        (one.width, one.height),
+        (f64::from(mx.panel_width_list), NAV_CARD_H)
+    );
+    let two = navigation_card_size(&mx, 2.0);
+    assert_eq!(two.height.fract(), 0.0);
+    assert!(two.height > one.height && two.width > one.width);
+    // The stack the card paints (title, instruction, distance, summary)
+    // fits inside the scaled card with the design's own padding.
+    let stack: f64 = [text_sm(), NAV_INSTR_TEXT, text_sm(), text_lg()]
+        .iter()
+        .map(|&s| line_h(s, 2.0))
+        .sum();
+    assert!(two.height >= stack);
+}
+
+/// The rows of the Explore panel pitch at `ROW_H` with an `s2` between
+/// neighbouring hit rects, so no two rows share an edge.
+#[test]
+fn explore_rows_keep_a_related_row_gap() {
+    let theme = Theme::dark();
+    let mut tr = TextRenderer::new();
+    let mut a = app_at(1280.0, 800.0);
+    a.set_active_panel(Panel::Explore);
+    let mut scene = Scene::new();
+    a.draw_app(&mut scene, Affine::IDENTITY, &mut tr, &theme);
+    let mut rows: Vec<Rect> = a
+        .click_targets
+        .iter()
+        .filter(|(_, hit)| matches!(hit, Hit::SelectPlace(_) | Hit::SelectPoi(_)))
+        .map(|(rect, _)| *rect)
+        .collect();
+    assert!(rows.len() >= 2, "the offline demo lists several places");
+    rows.sort_by(|a, b| a.y0.total_cmp(&b.y0));
+    for pair in rows.windows(2) {
+        let gap = pair[1].y0 - pair[0].y1;
+        assert!(
+            gap >= f64::from(theme.tokens.spacing.s2) - 1e-6,
+            "rows {:?} and {:?} are only {gap}px apart",
+            pair[0],
+            pair[1]
+        );
+    }
+}
+
+/// One rhythm for the floating chrome (HIG §7b): the search bar, the
+/// panel beneath it and the ⋯ overflow button all keep the theme's `s3`
+/// from their neighbours and the `s4` window margin — nothing touches.
+#[test]
+fn floating_chrome_keeps_one_sibling_gap() {
+    let theme = Theme::dark();
+    let mut tr = TextRenderer::new();
+    let mut a = app_at(1280.0, 800.0);
+    let mut scene = Scene::new();
+    a.draw_app(&mut scene, Affine::IDENTITY, &mut tr, &theme);
+    let sp = theme.tokens.spacing;
+    assert_eq!(GAP, f64::from(sp.s3));
+    let search = a.search_rect();
+    let panel = a.panel_rect();
+    assert_eq!(
+        panel.y0 - search.y1,
+        GAP,
+        "panel sits an s3 under the search bar"
+    );
+    assert_eq!(
+        search.y0,
+        f64::from(sp.s4),
+        "search bar keeps the window margin"
+    );
+    assert_eq!(search.x0, f64::from(sp.s4));
+    let overflow = a.overflow_rect();
+    assert_eq!(a.rect.x1 - overflow.x1, f64::from(sp.s4));
+    assert_eq!(a.rect.y1 - overflow.y1, f64::from(sp.s4));
+    assert!(
+        overflow.y0 - panel.y1 >= 0.0 || overflow.x0 - panel.x1 >= GAP,
+        "the overflow button clears the panel by a sibling gap"
+    );
+}
+
+/// The floating zoom / locate / traffic cluster shares the top-right
+/// corner with the navigation card. While the card is showing, the
+/// cluster must start beneath it — and the painted rects are the hit
+/// rects, so pointer and accessibility geometry move with it.
+#[test]
+fn map_controls_clear_a_visible_navigation_card() {
+    let theme = Theme::dark();
+    let mut tr = TextRenderer::new();
+    let mut a = app_at(1280.0, 800.0);
+    let mut scene = Scene::new();
+    a.draw_app(&mut scene, Affine::IDENTITY, &mut tr, &theme);
+    assert!(
+        a.navigation_surface_visible_in_app(),
+        "the offline demo starts with an active route and its card"
+    );
+    let nav = a.navigation_rect();
+    let zoom_in = a.map_controls.rect(MapControlAction::ZoomIn);
+    let traffic = a.map_controls.rect(MapControlAction::ToggleTraffic);
+    assert!(
+        zoom_in.y0 >= nav.y1,
+        "zoom-in {zoom_in:?} must start below the navigation card {nav:?}"
+    );
+    for action in [
+        MapControlAction::ZoomIn,
+        MapControlAction::ZoomOut,
+        MapControlAction::Locate,
+        MapControlAction::ToggleTraffic,
+    ] {
+        let rect = a.map_controls.rect(action);
+        assert!(
+            rect.intersect(nav).area() <= 0.0,
+            "{action:?} {rect:?} overlaps the navigation card {nav:?}"
+        );
+        assert_eq!(
+            a.map_controls.hit_test(rect.center()),
+            Some(action),
+            "hit rect must equal the painted rect"
+        );
+    }
+    assert!(traffic.y1 <= a.rect.y1, "the whole cluster stays on screen");
+
+    // Without a card the cluster returns to the window's top margin.
+    let mut plain = MapsApp::offline_empty();
+    plain.rect = a.rect;
+    plain.draw_app(&mut scene, Affine::IDENTITY, &mut tr, &theme);
+    assert!(!plain.navigation_surface_visible_in_app());
+    assert!(
+        plain.map_controls.rect(MapControlAction::ZoomIn).y0 < nav.y1,
+        "with no card the cluster sits at the top-right corner"
+    );
+}
+
+/// In a short window the lowered cluster would run off the bottom and
+/// under the ⋯ overflow button; it moves beside the card instead, and
+/// every control stays on screen, clear of both, with hit == paint.
+#[test]
+fn map_controls_fit_a_short_window_beside_the_navigation_card() {
+    let theme = Theme::dark();
+    let mut tr = TextRenderer::new();
+    let mut a = app_at(1280.0, 360.0);
+    let mut scene = Scene::new();
+    a.draw_app(&mut scene, Affine::IDENTITY, &mut tr, &theme);
+    assert!(a.navigation_surface_visible_in_app());
+    let nav = a.navigation_rect();
+    let overflow = a.overflow_rect();
+    for action in [
+        MapControlAction::ZoomIn,
+        MapControlAction::ZoomOut,
+        MapControlAction::Locate,
+        MapControlAction::ToggleTraffic,
+    ] {
+        let rect = a.map_controls.rect(action);
+        assert!(
+            rect.y0 >= a.rect.y0 && rect.y1 <= a.rect.y1 && rect.x0 >= a.rect.x0,
+            "{action:?} {rect:?} must stay inside the window {:?}",
+            a.rect
+        );
+        assert!(
+            rect.intersect(nav).area() <= 0.0,
+            "{action:?} {rect:?} overlaps the navigation card {nav:?}"
+        );
+        assert!(
+            rect.intersect(overflow).area() <= 0.0,
+            "{action:?} {rect:?} overlaps the overflow button {overflow:?}"
+        );
+        assert_eq!(a.map_controls.hit_test(rect.center()), Some(action));
+    }
+    assert!(
+        a.map_controls.rect(MapControlAction::ZoomIn).x1 <= nav.x0,
+        "the cluster sits beside the card when it cannot fit beneath it"
+    );
+}
+
+/// When the cluster fits neither beneath the card nor beside it — a
+/// short docked window whose panel reaches the card, or a tiny overlay
+/// window — the corner keeps HEAD's placement (the card covers it) and
+/// the controls never land under the docked panel, off the bottom, or
+/// under the overflow button.
+#[test]
+fn map_controls_never_land_under_the_panel_or_off_screen() {
+    let theme = Theme::dark();
+    let mut tr = TextRenderer::new();
+    let controls = [
+        MapControlAction::ZoomIn,
+        MapControlAction::ZoomOut,
+        MapControlAction::Locate,
+        MapControlAction::ToggleTraffic,
+    ];
+
+    // Docked, 720×400: beside would overlap the panel, below would run
+    // past the overflow button.
+    let mut docked = app_at(720.0, 400.0);
+    let mut scene = Scene::new();
+    docked.draw_app(&mut scene, Affine::IDENTITY, &mut tr, &theme);
+    assert!(docked.navigation_surface_visible_in_app() && !docked.overlay_mode());
+    let panel = docked.panel_rect();
+    let overflow = docked.overflow_rect();
+    for action in controls {
+        let rect = docked.map_controls.rect(action);
+        assert!(
+            rect.intersect(panel).area() <= 0.0,
+            "{action:?} {rect:?} must not cover the docked panel {panel:?}"
+        );
+        assert!(
+            rect.intersect(overflow).area() <= 0.0,
+            "{action:?} {rect:?} must not cover the overflow button {overflow:?}"
+        );
+        assert!(rect.x0 >= docked.rect.x0 && rect.x1 <= docked.rect.x1);
+    }
+    assert_eq!(
+        docked.map_controls_viewport(),
+        docked.rect,
+        "with no fitting placement the corner keeps HEAD's layout"
+    );
+
+    // Overlay, 380×330, drawer closed so the card shows: neither fits.
+    let mut tiny = app_at(380.0, 330.0);
+    tiny.nav_open = false;
+    tiny.draw_app(&mut scene, Affine::IDENTITY, &mut tr, &theme);
+    assert!(tiny.overlay_mode());
+    if tiny.navigation_surface_visible_in_app() {
+        let overflow = tiny.overflow_rect();
+        for action in controls {
+            let rect = tiny.map_controls.rect(action);
+            assert!(rect.y0 >= tiny.rect.y0 && rect.x1 <= tiny.rect.x1);
+            assert!(
+                rect.intersect(overflow).area() <= 0.0,
+                "{action:?} {rect:?} must not cover the overflow button {overflow:?}"
+            );
+        }
+        assert_eq!(tiny.map_controls_viewport(), tiny.rect);
+    }
+}
+
+/// The panel's authored width bounds scale with the text (never below
+/// 1×) so a 2× panel keeps its 1× character budget; the breakpoint is the
+/// theme's compact breakpoint and is not scaled by the app; and the 1×
+/// drawer is exactly what it was — only a scaled drawer's extra width
+/// stops short of the trailing controls column.
+#[test]
+fn panel_width_follows_the_text_scale_and_the_drawer_keeps_its_one_x_width() {
+    let mut a = app_at(1600.0, 900.0);
+    a.text_scale = 1.0;
+    assert!(!a.overlay_mode());
+    assert_eq!(
+        a.panel_w(),
+        PANEL_MAX_W,
+        "1600 × 0.42 clamps to the authored 384"
+    );
+    a.text_scale = 2.0;
+    assert!(!a.overlay_mode(), "the breakpoint is the theme's, unscaled");
+    let two = a.panel_w();
+    assert!(two > PANEL_MAX_W, "a 2× panel is wider than the 1× column");
+    assert!(
+        two <= 1600.0 * 0.6,
+        "the map keeps at least 40 % of a docked window"
+    );
+    assert_eq!(
+        two,
+        (1600.0_f64 * 0.42)
+            .max(PANEL_MIN_W * 2.0)
+            .min(PANEL_MAX_W * 2.0)
+    );
+
+    // The breakpoint is the theme token at every scale.
+    let mut mid = app_at(800.0, 900.0);
+    mid.text_scale = 2.0;
+    assert!(!mid.overlay_mode());
+    assert_eq!(f64::from(mid.metrics.compact_breakpoint), 720.0);
+
+    // A 400px drawer at 1× is the authored 368 (window − 2·s4), under the
+    // controls column exactly as before; at 2× it does not shrink below
+    // that, and a drawer that *would* grow past the controls stops short
+    // of them.
+    let mut narrow = app_at(400.0, 800.0);
+    narrow.text_scale = 1.0;
+    assert!(narrow.overlay_mode());
+    let one_x = 400.0 - 2.0 * narrow.margin();
+    assert_eq!(narrow.panel_w(), one_x);
+    narrow.text_scale = 2.0;
+    assert_eq!(narrow.panel_w(), one_x, "the 1× drawer width is the floor");
+    let mut wide_drawer = app_at(700.0, 800.0);
+    wide_drawer.text_scale = 2.0;
+    assert!(wide_drawer.overlay_mode());
+    assert_eq!(
+        wide_drawer.panel_w(),
+        700.0 - 2.0 * wide_drawer.margin() - CTRL_SIZE - GAP,
+        "a scaled drawer stops short of the controls column"
+    );
+    assert!(wide_drawer.panel_w() >= (700.0 - 2.0 * wide_drawer.margin()).min(PANEL_MAX_W));
+
+    // A degenerate rect never panics the docked bounds.
+    let mut degenerate = app_at(0.0, 0.0);
+    degenerate.text_scale = 1.0;
+    let _ = degenerate.panel_w();
+}
+
+#[test]
+fn text_vmid_centres_the_scaled_line() {
+    // At 1× a 12pt line (15px) centred in a 40px band starts at 12.5.
+    assert!((text_vmid(0.0, 40.0, 12.0, 1.0) - 12.5).abs() < 1e-9);
+    // At 2× the same line is 30px tall, so it starts at 5 — not at 12.5,
+    // which would push half the glyphs out of the band.
+    assert!((text_vmid(0.0, 40.0, 12.0, 2.0) - 5.0).abs() < 1e-9);
 }

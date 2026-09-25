@@ -22,12 +22,15 @@ use vello::kurbo::{Affine, BezPath, Circle, Line, Point, Rect, Stroke};
 use vello::peniko::{Color, Fill};
 use winit::event::WindowEvent;
 
-use crate::color_compat::ColorCompat;
+use crate::paint::with_alpha;
 use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
+use crate::widget::data_table::{
+    centered_text_top, renderer_type_size, text_band, type_line_height,
+};
 
 /// Alpha (0–255) of the translucent area fill under a series line. Matches
 /// the concept's `bg-<color>/18` area treatment.
@@ -35,8 +38,6 @@ const AREA_FILL_ALPHA: u8 = 46;
 /// Alpha of the sparkline area fill — a touch heavier since sparklines are
 /// small and benefit from a more legible fill.
 const SPARK_FILL_ALPHA: u8 = 54;
-/// Alpha of the grid lines against the border colour.
-const GRID_ALPHA: u8 = 90;
 /// Number of horizontal grid divisions (so `DIVISIONS + 1` rules).
 const GRID_DIVISIONS: usize = 4;
 /// Stroke width of a series line.
@@ -45,14 +46,6 @@ const LINE_WIDTH: f64 = 1.8;
 const SPARK_LINE_WIDTH: f64 = 1.5;
 /// Height reserved at the top of the plot for the title / legend strip.
 const HEADER_H: f64 = 22.0;
-
-/// Replace a colour's alpha channel with `a` (0–255), keeping RGB. The
-/// toolkit's stand-in for a vertical gradient fade — a flat translucent
-/// tint reads cleanly against the dark surfaces and avoids a gradient
-/// resource per frame.
-fn with_alpha(c: Color, a: u8) -> Color {
-    Color::from_rgba8(c.r(), c.g(), c.b(), a)
-}
 
 /// Widens a sample index/count to `f64` for plot math, through `u32` (exact
 /// in `f64`) with a saturating fallback rather than an `as` cast — a series
@@ -225,10 +218,45 @@ impl Chart {
         self.max.unwrap_or(derived).max(1e-3)
     }
 
+    fn draw_series(
+        scene: &mut Scene,
+        transform: Affine,
+        plot: Rect,
+        series: &[Series],
+        ceil: f32,
+        area: bool,
+    ) {
+        // Series: area fill (optional) then top line.
+        for s in series {
+            if s.data.len() < 2 {
+                continue;
+            }
+            if area {
+                scene.fill(
+                    Fill::NonZero,
+                    transform,
+                    with_alpha(s.color, AREA_FILL_ALPHA),
+                    None,
+                    &area_path(plot, &s.data, ceil),
+                );
+            }
+            scene.stroke(
+                &Stroke::new(LINE_WIDTH),
+                transform,
+                s.color,
+                None,
+                &line_path(plot, &s.data, ceil),
+            );
+        }
+    }
+
     /// Immediate-mode draw: render a full chart into `scene` at `rect`,
     /// reading colours from `theme`. Lets a host that lays out its own
     /// dashboard cards paint a chart at a known rect without a widget.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Chart painting combines render context and bounds with series, scale maximum, area mode, title, and axis labels."
+    )]
     pub fn draw_at(
         scene: &mut Scene,
         transform: Affine,
@@ -242,53 +270,68 @@ impl Chart {
         axis_hi: &str,
         axis_lo: &str,
     ) {
-        if rect.width() <= 0.0 || rect.height() <= HEADER_H {
+        let tokens = &theme.tokens;
+        // The header band holds the title's line plus the smallest step, so
+        // at 2× the title no longer clips and the legend clears the top axis
+        // label; `HEADER_H` at the default text scale.
+        let header_h = text_band(
+            HEADER_H,
+            type_line_height(tokens.typography.scale.sm),
+            f64::from(tokens.spacing.s1),
+        );
+        if rect.width() <= 0.0 || rect.height() <= header_h {
             return;
         }
-        let tokens = &theme.tokens;
-        let plot = Rect::new(rect.x0, rect.y0 + HEADER_H, rect.x1, rect.y1);
+        let plot = Rect::new(rect.x0, rect.y0 + header_h, rect.x1, rect.y1);
         let ceil = max.max(1e-3);
 
-        // Title (top-left of header).
+        // Title, legend labels and legend dots share the header band's centre
+        // line, each placed by its measured line box.
+        let title_size = renderer_type_size(text_renderer, tokens.typography.scale.sm);
         if !title.is_empty() {
+            let (_, title_h) = text_renderer.measure(title, title_size, None);
             text_renderer.draw_text(
                 scene,
                 title,
-                tokens.typography.scale.sm,
+                title_size,
                 tokens.colors.text_primary,
-                translated(transform, rect.x0, rect.y0 + 2.0),
+                translated(
+                    transform,
+                    rect.x0,
+                    centered_text_top(rect.y0, header_h, title_h),
+                ),
                 None,
             );
         }
 
         // Legend (right-aligned, painted right-to-left).
-        let legend_size = tokens.typography.scale.xs;
+        let legend_size = renderer_type_size(text_renderer, tokens.typography.scale.xs);
+        let dot_gap = f64::from(tokens.spacing.s2);
+        let entry_gap = f64::from(tokens.spacing.s3);
         let mut lx = rect.x1;
         for s in series.iter().rev() {
             if s.legend.is_empty() {
                 continue;
             }
-            let (tw, _) = text_renderer.measure(&s.legend, legend_size, None);
+            let (tw, th) = text_renderer.measure(&s.legend, legend_size, None);
             lx -= f64::from(tw);
             text_renderer.draw_text(
                 scene,
                 &s.legend,
                 legend_size,
                 tokens.colors.text_dim,
-                translated(transform, lx, rect.y0 + 4.0),
+                translated(transform, lx, centered_text_top(rect.y0, header_h, th)),
                 None,
             );
-            lx -= 8.0;
-            let dot = Circle::new(
-                Point::new(lx, rect.y0 + 4.0 + f64::from(legend_size) / 2.0),
-                3.0,
-            );
+            lx -= dot_gap;
+            let dot = Circle::new(Point::new(lx, rect.y0 + header_h / 2.0), 3.0);
             scene.fill(Fill::NonZero, transform, s.color, None, &dot);
-            lx -= 12.0;
+            lx -= entry_gap;
         }
 
         // Horizontal grid rules.
-        let grid = with_alpha(tokens.colors.border_standard, GRID_ALPHA);
+        // Grid rules derive from the surface the chart sits on (HIG §9.5).
+        let grid = crate::surface::edge_on(tokens.colors.surfaces.raised);
         for i in 0..=GRID_DIVISIONS {
             let y = plot.y0 + plot.height() * (count_f64(i) / count_f64(GRID_DIVISIONS));
             scene.stroke(
@@ -313,39 +356,19 @@ impl Chart {
             );
         }
         if !axis_lo.is_empty() {
-            let (tw, _) = text_renderer.measure(axis_lo, legend_size, None);
+            // Bottom-aligned inside the plot by its measured line box.
+            let (tw, th) = text_renderer.measure(axis_lo, legend_size, None);
             text_renderer.draw_text(
                 scene,
                 axis_lo,
                 legend_size,
                 tokens.colors.text_dim,
-                translated(transform, plot.x1 - f64::from(tw), plot.y1 - 12.0),
+                translated(transform, plot.x1 - f64::from(tw), plot.y1 - f64::from(th)),
                 None,
             );
         }
 
-        // Series: area fill (optional) then top line.
-        for s in series {
-            if s.data.len() < 2 {
-                continue;
-            }
-            if area {
-                scene.fill(
-                    Fill::NonZero,
-                    transform,
-                    with_alpha(s.color, AREA_FILL_ALPHA),
-                    None,
-                    &area_path(plot, &s.data, ceil),
-                );
-            }
-            scene.stroke(
-                &Stroke::new(LINE_WIDTH),
-                transform,
-                s.color,
-                None,
-                &line_path(plot, &s.data, ceil),
-            );
-        }
+        Self::draw_series(scene, transform, plot, series, ceil, area);
     }
 }
 

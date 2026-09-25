@@ -115,7 +115,7 @@ impl TileStyle {
     }
 }
 
-const USER_AGENT: &str = "Tilo-Maps/0.1 (https://tilo.example; native maps app)";
+const USER_AGENT: &str = "Tilo-Maps/0.1 (https://example.test; native maps app)";
 
 /// A tile coordinate in the slippy-map scheme.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -784,10 +784,7 @@ fn lonlat_to_tile(lat: f64, lon: f64, z: u8) -> (u32, u32) {
 /// Background worker: services fetch + download jobs entirely off the UI
 /// thread. Disk cache first, then network; decode happens here too.
 fn worker(rx: &Receiver<Job>, tx: &Sender<Done>, cache_dir: &std::path::Path, base_url: &str) {
-    // Make sure the rustls provider is installed before the first handshake —
-    // otherwise every tile fetch fails silently (see `net::ensure_crypto_provider`).
-    crate::net::ensure_crypto_provider();
-    let client = match reqwest::blocking::Client::builder()
+    let client = match tilo_net::http::blocking_client()
         .user_agent(USER_AGENT)
         .timeout(std::time::Duration::from_secs(15))
         .build()
@@ -894,69 +891,19 @@ fn make_image(rgba: Vec<u8>, w: u32, h: u32) -> Option<PenikoImage> {
 }
 
 /// Decode a PNG to RGBA8. Errors are stringly-typed; the caller only cares
-/// success vs. failure.
+/// success vs. failure. OSM's standard tiles are 8-bit *palette* (indexed)
+/// PNGs; palette, `tRNS`, sub-8-bit and 16-bit sources all normalise to RGBA8.
 fn decode_png(bytes: &[u8]) -> Result<(Vec<u8>, u32, u32), String> {
-    let mut decoder = png::Decoder::new(std::io::Cursor::new(bytes));
-    // OSM's standard tiles are 8-bit *palette* (indexed) PNGs. Expand palette
-    // indices — plus any sub-8-bit grayscale and `tRNS` transparency — to
-    // straight RGB(A), and reduce 16-bit channels to 8-bit, so every tile
-    // normalises to a channel layout we can hand to the GPU. Without this,
-    // indexed tiles decoded to `Err` and every OSM tile silently failed, which
-    // read on screen as "Map imagery unavailable".
-    decoder.set_transformations(png::Transformations::normalize_to_color8());
-    let mut reader = decoder.read_info().map_err(|e| e.to_string())?;
-    // png 0.18: output_buffer_size returns Option<usize>.
-    let buf_size = reader
-        .output_buffer_size()
-        .ok_or_else(|| "png output buffer size unavailable".to_string())?;
-    let mut buf = vec![0u8; buf_size];
-    let info = reader.next_frame(&mut buf).map_err(|e| e.to_string())?;
-    let (width, height) = (info.width, info.height);
-    buf.truncate(info.buffer_size());
-    let rgba = match info.color_type {
-        png::ColorType::Rgba => buf,
-        png::ColorType::Rgb => {
-            let mut out = Vec::with_capacity((width * height * 4) as usize);
-            for px in buf.chunks_exact(3) {
-                let [r, g, b] = px else { continue };
-                out.extend_from_slice(&[*r, *g, *b, 255]);
-            }
-            out
-        }
-        png::ColorType::Grayscale => {
-            let mut out = Vec::with_capacity((width * height * 4) as usize);
-            for &g in &buf {
-                out.extend_from_slice(&[g, g, g, 255]);
-            }
-            out
-        }
-        png::ColorType::GrayscaleAlpha => {
-            let mut out = Vec::with_capacity((width * height * 4) as usize);
-            for px in buf.chunks_exact(2) {
-                let [luma, alpha] = px else { continue };
-                out.extend_from_slice(&[*luma, *luma, *luma, *alpha]);
-            }
-            out
-        }
-        png::ColorType::Indexed => return Err("indexed PNG unsupported".into()),
-    };
-    Ok((rgba, width, height))
+    let decoded = ui::png::decode_rgba8(bytes).map_err(|e| e.to_string())?;
+    Ok((decoded.rgba, decoded.width, decoded.height))
 }
 
 /// Default on-disk cache root. Honours `XDG_CACHE_HOME`, falling back to the
 /// bootc-friendly `/var/cache/tilo-maps` location and finally a temp dir.
 fn default_cache_dir() -> PathBuf {
-    if let Ok(xdg) = std::env::var("XDG_CACHE_HOME")
-        && !xdg.is_empty()
-    {
-        return PathBuf::from(xdg).join("tilo-maps/tiles");
-    }
-    if let Ok(home) = std::env::var("HOME")
-        && !home.is_empty()
-    {
-        return PathBuf::from(home).join(".cache/tilo-maps/tiles");
-    }
-    std::env::temp_dir().join("tilo-maps/tiles")
+    xdg_paths::xdg::cache_home()
+        .unwrap_or_else(std::env::temp_dir)
+        .join("tilo-maps/tiles")
 }
 
 /// Recursively sum file sizes under `dir` (bytes). Cheap enough for the
@@ -1163,45 +1110,28 @@ mod tests {
     /// Encode a solid-colour RGBA tile to PNG bytes (so a test can seed the
     /// on-disk cache without any network).
     fn solid_png(w: u32, h: u32, rgba: [u8; 4]) -> Vec<u8> {
-        let mut out = Vec::new();
-        {
-            let mut enc = png::Encoder::new(&mut out, w, h);
-            enc.set_color(png::ColorType::Rgba);
-            enc.set_depth(png::BitDepth::Eight);
-            let mut writer = enc.write_header().unwrap();
-            let mut data = Vec::with_capacity((w * h * 4) as usize);
-            for _ in 0..(w * h) {
-                data.extend_from_slice(&rgba);
-            }
-            writer.write_image_data(&data).unwrap();
-        }
-        out
+        ui::png::encode_rgba8(w, h, &rgba.repeat((w * h) as usize)).unwrap()
     }
 
-    /// Encode a small indexed-colour (palette) PNG — the format the OSM tile
-    /// server actually serves — so the decode path can be checked hermetically.
-    fn indexed_png(w: u32, h: u32) -> Vec<u8> {
-        let mut out = Vec::new();
-        {
-            let mut enc = png::Encoder::new(&mut out, w, h);
-            enc.set_color(png::ColorType::Indexed);
-            enc.set_depth(png::BitDepth::Eight);
-            // Two-entry palette: index 0 = red, index 1 = green.
-            enc.set_palette(vec![255u8, 0, 0, 0, 255, 0]);
-            let mut writer = enc.write_header().unwrap();
-            let data: Vec<u8> = (0..(w * h)).map(|i| (i % 2) as u8).collect();
-            writer.write_image_data(&data).unwrap();
-        }
-        out
-    }
+    /// A 2×2 indexed-colour (palette) PNG — the format the OSM tile server
+    /// actually serves — so the decode path can be checked hermetically.
+    /// Palette: index 0 = red, index 1 = green; each row is `[0, 1]`.
+    const INDEXED_PNG_2X2: [u8; 89] = [
+        0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44,
+        0x52, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x02, 0x08, 0x03, 0x00, 0x00, 0x00, 0x45,
+        0x68, 0xfd, 0x16, 0x00, 0x00, 0x00, 0x06, 0x50, 0x4c, 0x54, 0x45, 0xff, 0x00, 0x00, 0x00,
+        0xff, 0x00, 0xd2, 0x87, 0xef, 0x71, 0x00, 0x00, 0x00, 0x0e, 0x49, 0x44, 0x41, 0x54, 0x78,
+        0xda, 0x63, 0x60, 0x60, 0x64, 0x60, 0x60, 0x04, 0x00, 0x00, 0x0b, 0x00, 0x03, 0x4f, 0x41,
+        0x36, 0xf9, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82,
+    ];
 
     /// Indexed PNGs must decode to RGBA rather than erroring — the hermetic
     /// guard for the bug where every (indexed) OSM tile silently failed to
     /// decode and the map read as "imagery unavailable".
     #[test]
     fn decode_png_expands_indexed_palette() {
-        let bytes = indexed_png(2, 2);
-        let (rgba, w, h) = decode_png(&bytes).expect("indexed PNG must decode, not error");
+        let (rgba, w, h) =
+            decode_png(&INDEXED_PNG_2X2).expect("indexed PNG must decode, not error");
         assert_eq!((w, h), (2, 2));
         assert_eq!(rgba.len(), 2 * 2 * 4, "expanded to RGBA8");
         // Index 0 → red, fully opaque.

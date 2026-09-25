@@ -1081,7 +1081,7 @@ async fn replica(config_path: PathBuf) -> Result<()> {
 
 #[allow(
     clippy::too_many_lines,
-    reason = "one workspace replica keeps its connected services and shutdown order explicit"
+    reason = "The home-peer lifecycle keeps authority setup, record reconciliation, hydration, durable checkpointing, and readiness publication in order."
 )]
 async fn replica_workspace(
     bundle: HomePeerBundle,
@@ -1302,8 +1302,8 @@ fn replica_namespace_fingerprint(namespace: &Arc<Mutex<Namespace>>) -> [u8; 32] 
 
 #[allow(
     clippy::too_many_lines,
-    reason = "linear CLI assembly keeps resource lifetimes explicit"
-)]
+    reason = "Serving assembles certified transport, ACLs, durable record services, namespace recovery, and mount task lifetimes in one ordered lifecycle."
+)] // Linear CLI assembly keeps resource lifetimes explicit.
 async fn serve(
     mount_point: PathBuf,
     cache_dir: Option<PathBuf>,
@@ -1329,6 +1329,13 @@ async fn serve(
     let share_authority = open_share_authority(cache_dir.as_deref())?;
     let mut record_services = open_record_services(cache_dir.as_deref(), share_authority.clone())?;
     if let Some(records) = record_services.as_mut() {
+        if let Some((journal, _)) = &replacement_transactions {
+            records.repository.restore_admission_fences(
+                &*journal
+                    .lock()
+                    .map_err(|_| anyhow::anyhow!("transaction journal poisoned"))?,
+            )?;
+        }
         records.availability.clone_from(&availability);
     }
     let history = open_history(cache_dir.as_deref())?;
@@ -1712,6 +1719,7 @@ async fn serve(
         .map(|s| spawn_control(&s, namespace.clone(), workspace.sync.clone(), acl.clone()));
     let persist = np.clone().map(|p| spawn_persist(namespace.clone(), p));
     let mount_outcome = run_mount(
+        workspace_id,
         mount_point,
         namespace.clone(),
         hydrator,
@@ -1789,8 +1797,8 @@ fn initialize_owner_record_authority(
 
 #[allow(
     clippy::too_many_lines,
-    reason = "linear CLI assembly keeps resource lifetimes explicit"
-)]
+    reason = "Joining a workspace keeps ticket validation, certified transport, record recovery, synchronization, mounting, and final persistence in order."
+)] // Linear CLI assembly keeps resource lifetimes explicit.
 async fn mount(
     mount_point: PathBuf,
     ticket: String,
@@ -1822,6 +1830,13 @@ async fn mount(
     let share_authority = open_share_authority(cache_dir.as_deref())?;
     let mut record_services = open_record_services(cache_dir.as_deref(), share_authority.clone())?;
     if let Some(records) = record_services.as_mut() {
+        if let Some((journal, _)) = &replacement_transactions {
+            records.repository.restore_admission_fences(
+                &*journal
+                    .lock()
+                    .map_err(|_| anyhow::anyhow!("transaction journal poisoned"))?,
+            )?;
+        }
         records.availability.clone_from(&availability);
     }
     let history = open_history(cache_dir.as_deref())?;
@@ -1936,6 +1951,7 @@ async fn mount(
         .map(|s| spawn_control(&s, namespace.clone(), workspace.sync.clone(), acl.clone()));
     let persist = np.clone().map(|p| spawn_persist(namespace.clone(), p));
     run_mount(
+        workspace_id,
         mount_point,
         namespace.clone(),
         hydrator,
@@ -1996,8 +2012,8 @@ impl SharedCredential {
 
 #[allow(
     clippy::too_many_lines,
-    reason = "shared-mount bootstrap is one ordered trust sequence"
-)]
+    reason = "Exact-record mounting keeps credential checks, snapshot validation, scoped namespace projection, refresh tasks, and mount cleanup in one trust sequence."
+)] // Shared-mount bootstrap is one ordered trust sequence.
 async fn mount_share(
     mount_point: PathBuf,
     credential: SharedCredential,
@@ -2217,6 +2233,7 @@ async fn mount_share(
     let mut recipient_acl = fs::WorkspaceAcl::new();
     recipient_acl.grant_read(recipient_identity, "/");
     run_mount(
+        credential.invite().workspace_id,
         mount_point,
         Arc::clone(&namespace),
         hydrator,
@@ -2325,6 +2342,14 @@ async fn recipient_service(
     Ok(())
 }
 
+#[allow(
+    clippy::disallowed_methods,
+    reason = "systemd socket activation: LISTEN_* must not leak to supervised mount \
+              children; cleared right after fd 3 is taken, at the start of the \
+              recipient service before it spawns any task or child, while the \
+              runtime's worker threads are still idle and nothing else reads the \
+              environment"
+)]
 fn recipient_service_listener(socket: &Path) -> Result<tokio::net::UnixListener> {
     const SYSTEMD_LISTEN_FD: libc::c_int = 3;
     let pid_matches = std::env::var("LISTEN_PID")
@@ -2489,8 +2514,8 @@ impl SharedFetchError {
 
 #[allow(
     clippy::significant_drop_tightening,
-    reason = "registry update and persistence are one mutation"
-)]
+    reason = "The availability guard spans reading the prior version, clearing stale replica evidence, and persisting the replacement record."
+)] // Registry update and persistence are one mutation.
 fn track_shared_revision(
     availability: Option<&Arc<Mutex<fs::AvailabilityRegistry>>>,
     revision: collab_types::ContentRevisionV1,
@@ -2550,8 +2575,8 @@ async fn refresh_host_replica_observation(
 
 #[allow(
     clippy::significant_drop_tightening,
-    reason = "the complete projection is namespace-atomic"
-)]
+    reason = "The namespace guard covers record creation, signed revision and thumbnail projection, incremental save, and exact-share scope validation."
+)] // The complete projection is namespace-atomic.
 fn apply_shared_snapshot(
     namespace: &Arc<Mutex<Namespace>>,
     history: &FileHistoryStore,
@@ -2799,7 +2824,7 @@ fn persist_now(namespace: &Arc<Mutex<Namespace>>, path: &Path) {
 /// ready NAS can always reopen the same namespace after a power loss.
 #[allow(
     clippy::significant_drop_tightening,
-    reason = "the namespace lock must cover snapshot encoding and durable replacement"
+    reason = "The namespace lock must cover durable replacement so concurrent writers cannot reuse the process-scoped atomic-file temporary path."
 )]
 fn persist_namespace_generation(
     namespace: &Arc<Mutex<Namespace>>,
@@ -2890,13 +2915,28 @@ async fn open_namespace_mount(
     }
 }
 
+/// FUSE worker threads: `TILO_FS_FUSE_THREADS` when set, else one per CPU
+/// between 2 and 16.
+fn fuse_worker_threads() -> usize {
+    std::env::var("TILO_FS_FUSE_THREADS")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .filter(|threads| *threads > 0)
+        .unwrap_or_else(|| {
+            std::thread::available_parallelism()
+                .map_or(4, std::num::NonZeroUsize::get)
+                .clamp(2, 16)
+        })
+}
+
 /// Mount the FUSE filesystem and run until interrupted (or the mount exits).
 #[allow(
     clippy::too_many_arguments,
     clippy::too_many_lines,
-    reason = "CLI assembly mirrors independent mount options and their ordered service lifetimes"
-)]
+    reason = "Mount setup wires independent sync, ACL, storage, history, sharing, recovery, and readiness services before supervising FUSE shutdown."
+)] // CLI assembly mirrors independent mount options.
 async fn run_mount(
+    checked_history_workspace: uuid::Uuid,
     mount_point: PathBuf,
     namespace: Arc<Mutex<Namespace>>,
     hydrator: Arc<Hydrator>,
@@ -2923,13 +2963,14 @@ async fn run_mount(
 
     let heuristics = Arc::new(Heuristics::new(hydrator.clone()));
     let predictive_policy_task =
-        fs::smart_monitor::start(Arc::clone(&heuristics), predictive_cache_root).await;
+        fs::smart_monitor::start(Arc::clone(&heuristics), predictive_cache_root.clone()).await;
     // Settings' socket receives these same durable services below; it must
     // never fall back to Hydrator-only proof or direct blob deletion.
     let storage_availability = availability.clone();
     let storage_eviction_queue = eviction_queue.clone();
     let storage_history = history.as_ref().map(|(history, _)| Arc::clone(history));
-    let fs = QuickFS::new(namespace, hydrator, heuristics);
+    let fs = QuickFS::new(namespace, hydrator, heuristics)
+        .with_checked_history_workspace(checked_history_workspace);
     let fs = if allow_legacy_record_migration {
         fs
     } else {
@@ -2992,6 +3033,35 @@ async fn run_mount(
         None => fs,
     };
     fs.resume_pending_evictions();
+    // Bytes accepted by fsync, or whose commit failed, are staged per
+    // workspace so they survive a crash or unmount and are replayed here.
+    let unsaved_dir = predictive_cache_root
+        .as_ref()
+        .filter(|_| !read_only)
+        .map(|root| {
+            root.join("unsaved-writes")
+                .join(checked_history_workspace.to_string())
+        });
+    let fs = match unsaved_dir {
+        Some(dir) => match fs::unsaved::UnsavedStore::open(&dir) {
+            Ok(store) => {
+                let fs = fs.with_unsaved_store(store);
+                let placed = fs.recover_unsaved_writes();
+                if placed > 0 {
+                    println!("Recovered {placed} staged unsaved file(s)");
+                }
+                fs
+            }
+            Err(error) => {
+                eprintln!(
+                    "unsaved-write staging unavailable at {} ({error}); fsync commits directly",
+                    dir.display()
+                );
+                fs
+            }
+        },
+        None => fs,
+    };
 
     let storage_authority = storage_sock.as_ref().map(|_| {
         fs::storage::StorageAuthority::new(
@@ -3023,8 +3093,23 @@ async fn run_mount(
             }
         });
 
+    // Kernel passthrough for fully local read-only opens is opt-in while the
+    // backing files are a per-open materialisation of the chunk store.
+    let fs = match predictive_cache_root
+        .as_ref()
+        .filter(|_| std::env::var_os("TILO_FS_PASSTHROUGH").is_some())
+    {
+        Some(root) => fs.with_passthrough(root.join("passthrough")),
+        None => fs,
+    };
+
     let mut config = Config::default();
     config.mount_options = vec![MountOption::FSName("quickfs".to_string())];
+    // Several workers, each with its own /dev/fuse descriptor, so one slow
+    // request (a first write seeding a large file, a commit) does not stall
+    // every other process using the mount.
+    config.n_threads = Some(fuse_worker_threads());
+    config.clone_fd = true;
     if read_only {
         config.mount_options.push(MountOption::RO);
     }

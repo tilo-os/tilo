@@ -16,9 +16,9 @@ use crate::canonical::{CanonicalError, signing_digest};
 use crate::{DeviceCert, verify_device_cert_at};
 
 /// Frozen domain tag for request signatures.
-pub const APPROVAL_REQUEST_TAG: &[u8] = b"qos-device-approval-request-v1\0";
+pub const APPROVAL_REQUEST_TAG: &[u8] = b"tilo-device-approval-request-v1\0";
 /// Frozen domain tag for response signatures.
-pub const APPROVAL_RESPONSE_TAG: &[u8] = b"qos-device-approval-response-v1\0";
+pub const APPROVAL_RESPONSE_TAG: &[u8] = b"tilo-device-approval-response-v1\0";
 /// Wire schema understood by this build.
 pub const APPROVAL_SCHEMA_VERSION: u16 = 1;
 /// Longest approval lifetime accepted by either peer.
@@ -405,6 +405,7 @@ mod serde_bytes_64 {
 mod tests {
     use super::*;
     use crate::{DeviceCapabilities, DeviceCert, sign_device_cert};
+    use getrandom::{SysRng, rand_core::UnwrapErr};
 
     fn cert(root: &ed25519_dalek::SigningKey, device: &ed25519_dalek::SigningKey) -> DeviceCert {
         let mut cert = DeviceCert {
@@ -445,7 +446,7 @@ mod tests {
 
     #[test]
     fn exact_certified_devices_approve_once() {
-        let mut rng = rand::rngs::OsRng;
+        let mut rng = UnwrapErr(SysRng);
         let root = ed25519_dalek::SigningKey::generate(&mut rng);
         let requester = ed25519_dalek::SigningKey::generate(&mut rng);
         let approver = ed25519_dalek::SigningKey::generate(&mut rng);
@@ -468,7 +469,7 @@ mod tests {
 
     #[test]
     fn wrong_target_expiry_denial_and_mutation_fail_closed() {
-        let mut rng = rand::rngs::OsRng;
+        let mut rng = UnwrapErr(SysRng);
         let root = ed25519_dalek::SigningKey::generate(&mut rng);
         let requester = ed25519_dalek::SigningKey::generate(&mut rng);
         let approver = ed25519_dalek::SigningKey::generate(&mut rng);
@@ -512,7 +513,7 @@ mod tests {
 
     #[test]
     fn foreign_identity_and_future_decision_fail_closed() {
-        let mut rng = rand::rngs::OsRng;
+        let mut rng = UnwrapErr(SysRng);
         let requester_root = ed25519_dalek::SigningKey::generate(&mut rng);
         let approver_root = ed25519_dalek::SigningKey::generate(&mut rng);
         let requester = ed25519_dalek::SigningKey::generate(&mut rng);

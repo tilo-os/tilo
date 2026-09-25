@@ -18,7 +18,6 @@ filesystem = [
     "dep:qdoc",
     "dep:collab-types",
     "dep:ed25519-dalek",
-    "dep:getrandom",
     "dep:thumbnail",
     "dep:tilo-user-identity",
     "dep:tilo-power-mgmt",
@@ -33,6 +32,7 @@ filesystem = [
     "dep:blake3",
     "dep:futures-util",
     "dep:rand",
+    "dep:getrandom",
     "dep:fuser",
 ]
 
@@ -79,8 +79,8 @@ iroh-gossip = { workspace = true, optional = true }
 automerge = { workspace = true, optional = true }
 qdoc = { path = "../../doc/qdoc", optional = true }
 collab-types = { path = "../../collab/collab-types", optional = true }
-ed25519-dalek = { workspace = true, optional = true }
 getrandom = { workspace = true, optional = true }
+ed25519-dalek = { workspace = true, optional = true }
 # The shared thumbnail generator + content-addressed cache. Default features
 # only (raster images + EPUB covers — pure Rust, no native deps): the OS
 # filesystem daemon host-generates the light preview types and never pulls
@@ -94,7 +94,7 @@ tilo-user-identity = { path = "../../collab/tilo-user-identity", optional = true
 tilo-power-mgmt = { path = "../power", default-features = false, optional = true }
 runtime-fs = { path = "../../runtime/runtime-fs", optional = true }
 libc = { workspace = true, optional = true }
-moka = { version = "0.12.15", features = ["sync"] }
+moka.workspace = true
 serde.workspace = true
 serde_bytes = { workspace = true, optional = true }
 serde_json = { workspace = true, optional = true }

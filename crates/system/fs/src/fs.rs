@@ -28,12 +28,12 @@
 //! reasoning covers `rmdir` on a directory whose only remaining children
 //! are hidden: `EROFS`, not `ENOTEMPTY`.
 use fuser::{
-    BsdFileFlags, Errno, FileHandle, FileType, Filesystem, FopenFlags, Generation, INodeNo,
-    KernelConfig, LockOwner, OpenAccMode, OpenFlags, RenameFlags, ReplyAttr, ReplyCreate,
-    ReplyData, ReplyDirectory, ReplyEmpty, ReplyEntry, ReplyOpen, ReplyWrite, ReplyXattr, Request,
-    TimeOrNow, WriteFlags,
+    BackingId, BsdFileFlags, Errno, FileHandle, FileType, Filesystem, FopenFlags, Generation,
+    INodeNo, InitFlags, KernelConfig, LockOwner, OpenAccMode, OpenFlags, RenameFlags, ReplyAttr,
+    ReplyCreate, ReplyData, ReplyDirectory, ReplyDirectoryPlus, ReplyEmpty, ReplyEntry, ReplyOpen,
+    ReplyWrite, ReplyXattr, Request, TimeOrNow, WriteFlags,
 };
-use libc::{EBUSY, EEXIST, EINVAL, EIO, EISDIR, ENOENT, ENOTDIR, ENOTEMPTY, EROFS};
+use libc::{EBUSY, EDQUOT, EEXIST, EFBIG, EINVAL, EIO, EISDIR, ENOENT, ENOTDIR, ENOTEMPTY, EROFS};
 use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::future::Future;
@@ -177,6 +177,111 @@ struct ReplacementTransactionRuntime {
     namespace_path: std::path::PathBuf,
 }
 
+/// Commit bookkeeping for one in-memory write buffer. `generation` counts
+/// mutations of the buffer; a buffer whose latest generation is committed is
+/// clean and may be dropped when its last handle closes.
+#[derive(Clone, Copy, Debug, Default)]
+struct BufferState {
+    generation: u64,
+    committed: Option<u64>,
+    /// Latest generation made durable in the unsaved store by `fsync`.
+    staged: Option<u64>,
+    /// Committed content the buffer was seeded from (or last committed as).
+    base_hash: Option<Hash>,
+    /// Errno of the most recent failed commit, cleared by a successful one.
+    failure: Option<i32>,
+}
+
+impl BufferState {
+    const fn is_committed(&self) -> bool {
+        matches!(self.committed, Some(generation) if generation == self.generation)
+    }
+
+    const fn is_durable(&self) -> bool {
+        self.is_committed()
+            || matches!(self.staged, Some(generation) if generation == self.generation)
+    }
+}
+
+/// Kernel passthrough for read-only opens of fully local files: the kernel
+/// reads a real backing file directly and the daemon only answers `open`.
+///
+/// Backing files are materialised once per content hash under `dir` (never
+/// on this FUSE mount) and registered per open; the kernel keeps using them
+/// until `release`. Access is decided at `open` like on a native file system:
+/// reads through a passthrough handle are not re-checked against the ACL.
+/// Registering a backing file needs `CAP_SYS_ADMIN` in the initial user
+/// namespace; the first refusal disables passthrough for the mount.
+struct Passthrough {
+    dir: std::path::PathBuf,
+    kernel_ready: std::sync::atomic::AtomicBool,
+    disabled: std::sync::atomic::AtomicBool,
+    backing: Mutex<HashMap<u64, (BackingId, std::fs::File)>>,
+}
+
+impl Passthrough {
+    fn usable(&self) -> bool {
+        self.kernel_ready.load(Ordering::Acquire) && !self.disabled.load(Ordering::Acquire)
+    }
+
+    fn hold(&self, handle: u64, id: BackingId, file: std::fs::File) {
+        self.backing
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(handle, (id, file));
+    }
+
+    fn release(&self, handle: u64) {
+        self.backing
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&handle);
+    }
+
+    fn disable(&self, error: &io::Error) {
+        if !self.disabled.swap(true, Ordering::AcqRel) {
+            eprintln!("FUSE passthrough unavailable ({error}); serving reads through the daemon");
+        }
+    }
+}
+
+/// What a caller of [`QuickFS::persist_buffer`] needs from it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PersistIntent {
+    /// `close`/`flush`: commit the bytes as the file's next version.
+    Close,
+    /// `fsync`: make the bytes durable; the version follows at close.
+    Sync,
+}
+
+/// Commit failures that retrying the same bytes into the same record cannot
+/// fix. A buffer that ends in one of these is kept as a separate copy when
+/// its last handle closes instead of being held for a retry.
+const fn is_permanent_commit_failure(errno: i32) -> bool {
+    matches!(errno, EDQUOT | EFBIG | EINVAL)
+}
+
+fn commit_errno(error: &io::Error) -> i32 {
+    error.raw_os_error().unwrap_or(EIO)
+}
+
+/// Name of the sibling that preserves bytes which could not be committed to
+/// their own record, derived from the bytes so a retry finds the same copy.
+fn unsaved_copy_name(name: &[u8], bytes: &[u8]) -> Vec<u8> {
+    let hex = blake3::hash(bytes).to_hex();
+    let suffix = [
+        b".unsaved-".as_slice(),
+        hex.as_bytes().get(..16).unwrap_or_default(),
+    ]
+    .concat();
+    let prefix_len = name
+        .len()
+        .min(collab_types::MAX_FILE_NAME_BYTES.saturating_sub(suffix.len()));
+    let mut out = name.get(..prefix_len).unwrap_or(name).to_vec();
+    out.extend_from_slice(&suffix);
+    out
+}
+
 #[derive(Clone, Debug)]
 struct OpenFileHandleState {
     ino: u64,
@@ -233,6 +338,11 @@ struct AclVisibleRecordIndex {
     by_id: HashMap<collab_types::FileRecordId, crate::syncstate::RecordIndexEntryV1>,
 }
 
+#[path = "checked_restore.rs"]
+mod checked_restore;
+#[path = "history_read.rs"]
+mod history_read;
+
 pub struct QuickFS {
     pub namespace: Arc<Mutex<Namespace>>,
     pub hydrator: Arc<Hydrator>,
@@ -243,6 +353,20 @@ pub struct QuickFS {
     sync: Option<Arc<SyncHandle>>,
     /// Per-inode in-flight write buffers (content-addressed on flush/release).
     write_buffers: Arc<Mutex<HashMap<u64, Vec<u8>>>>,
+    /// Commit bookkeeping for `write_buffers`. Lock order: `write_buffers`
+    /// before `buffer_states`.
+    buffer_states: Mutex<HashMap<u64, BufferState>>,
+    /// Serialises persistence of one inode's buffer so concurrent FUSE workers
+    /// never commit the same buffer twice or interleave stage and commit.
+    commit_locks: Mutex<HashMap<u64, Arc<Mutex<()>>>>,
+    /// Durable staging for `fsync`ed and not-yet-committed bytes. `None`
+    /// (tests, memory stores) makes `fsync` commit a version directly.
+    unsaved: Option<Arc<crate::unsaved::UnsavedStore>>,
+    /// The content each inode's kernel page cache was filled from, so an
+    /// `open` of unchanged content keeps the cache (`FOPEN_KEEP_CACHE`) and
+    /// an open after any change drops it.
+    kernel_cached: Mutex<HashMap<u64, Option<Hash>>>,
+    passthrough: Option<Passthrough>,
     open_file_handles: Mutex<HashMap<u64, OpenFileHandleState>>,
     next_file_handle: AtomicU64,
     /// Cached serialized form of each document inode, keyed by the doc's heads,
@@ -290,11 +414,16 @@ pub struct QuickFS {
     /// Signed exact-record projection used by partial-share network sessions.
     record_publisher: Option<Arc<crate::record_publisher::RecordPublisher>>,
     replacement_transactions: Option<ReplacementTransactionRuntime>,
+    checked_history_workspace: Option<uuid::Uuid>,
+    mount_lifetime: uuid::Uuid,
     /// Explicit one-time owner migration permission. Joining peers disable
     /// this so unsigned legacy namespace bytes are never automatically
     /// blessed into their certified actor's signed history.
     allow_legacy_record_migration: bool,
     share_control_path: Option<std::path::PathBuf>,
+    /// Test-only: make content commits of one inode fail with an errno.
+    #[cfg(test)]
+    commit_fault: Mutex<Option<(u64, i32)>>,
 }
 
 impl QuickFS {
@@ -324,6 +453,11 @@ impl QuickFS {
             registry,
             sync: None,
             write_buffers: Arc::new(Mutex::new(HashMap::new())),
+            buffer_states: Mutex::new(HashMap::new()),
+            commit_locks: Mutex::new(HashMap::new()),
+            unsaved: None,
+            kernel_cached: Mutex::new(HashMap::new()),
+            passthrough: None,
             open_file_handles: Mutex::new(HashMap::new()),
             next_file_handle: AtomicU64::new(1),
             doc_exports: Mutex::new(HashMap::new()),
@@ -340,8 +474,12 @@ impl QuickFS {
             history: None,
             record_publisher: None,
             replacement_transactions: None,
+            checked_history_workspace: None,
+            mount_lifetime: uuid::Uuid::new_v4(),
             allow_legacy_record_migration: true,
             share_control_path: None,
+            #[cfg(test)]
+            commit_fault: Mutex::new(None),
         }
     }
 
@@ -366,6 +504,530 @@ impl QuickFS {
         self.write_buffers
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    fn buffer_states(&self) -> std::sync::MutexGuard<'_, HashMap<u64, BufferState>> {
+        self.buffer_states
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    fn commit_lock_for(&self, ino: u64) -> Arc<Mutex<()>> {
+        Arc::clone(
+            self.commit_locks
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .entry(ino)
+                .or_default(),
+        )
+    }
+
+    /// Stage unsaved bytes durably in `store` (see [`crate::unsaved`]):
+    /// bytes whose commit failed are persisted there so an unmount or crash
+    /// cannot lose them, and `fsync` persists there instead of minting a
+    /// version per call.
+    #[must_use]
+    pub fn with_unsaved_store(mut self, store: crate::unsaved::UnsavedStore) -> Self {
+        self.unsaved = Some(Arc::new(store));
+        self
+    }
+
+    fn unsaved_key(&self, ino: u64) -> (String, Option<collab_types::FileRecordId>) {
+        let record_id = self.ns().record_id_for(ino);
+        let key = record_id.map_or_else(|| format!("ino-{ino}"), |id| id.0.to_string());
+        (key, record_id)
+    }
+
+    fn stage_unsaved(
+        &self,
+        store: &crate::unsaved::UnsavedStore,
+        ino: u64,
+        data: &[u8],
+        base_hash: Option<Hash>,
+        error: Option<String>,
+    ) -> io::Result<()> {
+        let (key, record_id) = self.unsaved_key(ino);
+        let path = self.ns().path_for(ino);
+        let entry = crate::unsaved::UnsavedEntry::describe(
+            key,
+            record_id,
+            path,
+            base_hash,
+            data,
+            now_ms(),
+            error,
+        );
+        store.stage(&entry, data)
+    }
+
+    fn clear_unsaved(&self, ino: u64) {
+        if let Some(store) = &self.unsaved {
+            let (key, _) = self.unsaved_key(ino);
+            if store.contains(&key)
+                && let Err(error) = store.remove(&key)
+            {
+                eprintln!("could not clear staged bytes for inode {ino}: {error}");
+            }
+        }
+    }
+
+    fn drop_buffer(&self, ino: u64) {
+        self.buffers().remove(&ino);
+        self.buffer_states().remove(&ino);
+        self.commit_locks
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&ino);
+    }
+
+    /// Record a mutation of `ino`'s buffer. `seeded` marks a buffer that was
+    /// just created from the committed content `base`.
+    fn note_buffer_mutation(&self, ino: u64, seeded: bool, base: Option<Hash>) {
+        let mut states = self.buffer_states();
+        let state = states.entry(ino).or_default();
+        if seeded {
+            state.base_hash = base;
+        }
+        state.generation = state.generation.wrapping_add(1);
+        drop(states);
+    }
+
+    /// Persist the in-memory buffer of `ino`, if it has unpersisted bytes.
+    ///
+    /// [`PersistIntent::Close`] commits the bytes as a version. On failure
+    /// the errno is returned, the buffer stays in memory (reads keep seeing
+    /// it) and the bytes are staged in the unsaved store; the next flush,
+    /// fsync or close retries.
+    ///
+    /// [`PersistIntent::Sync`] only guarantees durability: with an unsaved
+    /// store the bytes are staged there, so a database that syncs every
+    /// transaction produces one version per close instead of one per sync.
+    /// Without a store it commits like `Close`.
+    #[allow(
+        clippy::significant_drop_tightening,
+        reason = "the buffer bytes and their generation are read under one buffer lock so they describe the same state"
+    )]
+    fn persist_buffer(&self, ino: u64, intent: PersistIntent) -> Result<(), i32> {
+        let lock = self.commit_lock_for(ino);
+        let _serialised = lock
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let (data, state) = {
+            let buffers = self.buffers();
+            let Some(data) = buffers.get(&ino) else {
+                return Ok(());
+            };
+            let state = self.buffer_states().get(&ino).copied().unwrap_or_default();
+            let settled = match intent {
+                PersistIntent::Close => state.is_committed(),
+                PersistIntent::Sync => state.is_durable(),
+            };
+            if settled {
+                return Ok(());
+            }
+            (data.clone(), state)
+        };
+        // An unlinked inode's bytes belong to no file any more.
+        if self.ns().getattr(ino).is_none() {
+            return Ok(());
+        }
+        if intent == PersistIntent::Sync
+            && let Some(store) = &self.unsaved
+        {
+            return match self.stage_unsaved(store, ino, &data, state.base_hash, None) {
+                Ok(()) => {
+                    if let Some(current) = self.buffer_states().get_mut(&ino) {
+                        current.staged = Some(state.generation);
+                    }
+                    Ok(())
+                }
+                Err(error) => {
+                    eprintln!("fsync of inode {ino} could not stage its bytes: {error}");
+                    Err(commit_errno(&error))
+                }
+            };
+        }
+        match self.commit_buffer(ino, &data) {
+            Ok(()) => {
+                let committed_hash = self.ns().hash_for(ino);
+                if let Some(current) = self.buffer_states().get_mut(&ino) {
+                    current.committed = Some(state.generation);
+                    current.staged = None;
+                    current.failure = None;
+                    current.base_hash = committed_hash;
+                }
+                self.clear_unsaved(ino);
+                Ok(())
+            }
+            Err(errno) => {
+                self.buffer_states().entry(ino).or_default().failure = Some(errno);
+                let detail = io::Error::from_raw_os_error(errno).to_string();
+                match &self.unsaved {
+                    Some(store) => match self.stage_unsaved(
+                        store,
+                        ino,
+                        &data,
+                        state.base_hash,
+                        Some(detail.clone()),
+                    ) {
+                        Ok(()) => eprintln!(
+                            "commit of inode {ino} failed ({detail}); bytes kept in memory and staged in {}",
+                            store.dir().display()
+                        ),
+                        Err(error) => eprintln!(
+                            "commit of inode {ino} failed ({detail}); bytes kept in memory only, staging failed: {error}"
+                        ),
+                    },
+                    None => {
+                        eprintln!("commit of inode {ino} failed ({detail}); bytes kept in memory");
+                    }
+                }
+                Err(errno)
+            }
+        }
+    }
+
+    /// Keep `data` as a new sibling of `ino` because it cannot be committed
+    /// to `ino`'s own record. Returns the copy's workspace path.
+    fn preserve_as_sibling(&self, ino: u64, data: &[u8]) -> Result<String, i32> {
+        let (parent, name) = {
+            let mut ns = self.ns();
+            let name = ns.file_name_for(ino).ok_or(ENOENT)?;
+            (ns.parent_ino(ino).ok_or(ENOENT)?, name)
+        };
+        self.create_preserved_copy(parent, name.as_bytes(), data)
+    }
+
+    fn create_preserved_copy(&self, parent: u64, name: &[u8], data: &[u8]) -> Result<String, i32> {
+        let copy_name = unsaved_copy_name(name, data);
+        self.check_new_name(parent, &copy_name)?;
+        let existing = self.ns().lookup(parent, &copy_name).map(|attr| attr.ino.0);
+        let ino = if let Some(ino) = existing {
+            // The name is derived from the bytes: an earlier attempt that got
+            // as far as creating it is finished by committing into it.
+            ino
+        } else {
+            let (ino, delta) = self.create_empty_file(parent, &copy_name)?;
+            self.publish(delta);
+            ino
+        };
+        self.commit_content(ino, data)
+            .map_err(|error| commit_errno(&error))?;
+        self.ns().path_for(ino).ok_or(EIO)
+    }
+
+    /// Handle the last close of `ino`: a clean buffer is dropped; bytes that
+    /// can never be committed to this record are preserved as a sibling
+    /// copy; anything else stays in memory (and staged) for a later retry.
+    fn settle_last_close(&self, ino: u64, live: bool) {
+        if !self.buffers().contains_key(&ino) {
+            self.drop_buffer(ino);
+            return;
+        }
+        if !live {
+            self.clear_unsaved(ino);
+            self.drop_buffer(ino);
+            return;
+        }
+        let state = self.buffer_states().get(&ino).copied().unwrap_or_default();
+        if state.is_committed() {
+            self.drop_buffer(ino);
+            return;
+        }
+        let Some(errno) = state
+            .failure
+            .filter(|errno| is_permanent_commit_failure(*errno))
+        else {
+            eprintln!(
+                "inode {ino} closed with uncommitted bytes; they stay readable and are retried on the next flush"
+            );
+            return;
+        };
+        let Some(data) = self.buffers().get(&ino).cloned() else {
+            return;
+        };
+        match self.preserve_as_sibling(ino, &data) {
+            Ok(path) => {
+                eprintln!(
+                    "inode {ino} could not take another version ({}); its bytes were kept as {path}",
+                    io::Error::from_raw_os_error(errno)
+                );
+                self.clear_unsaved(ino);
+                self.drop_buffer(ino);
+            }
+            Err(copy_errno) => eprintln!(
+                "inode {ino} could not take another version and no copy could be created ({}); bytes stay in memory and staged",
+                io::Error::from_raw_os_error(copy_errno)
+            ),
+        }
+    }
+
+    /// Commit every dirty buffer, e.g. before unmount. Failures stay staged.
+    pub fn persist_all_buffers(&self) {
+        let inos: Vec<u64> = self.buffers().keys().copied().collect();
+        for ino in inos {
+            let _ = self.persist_buffer(ino, PersistIntent::Close);
+        }
+    }
+
+    /// Replay bytes staged by an earlier run (an `fsync` before a crash, or
+    /// a commit that never succeeded). Bytes go back into their own record
+    /// only while it still holds the content they were derived from;
+    /// otherwise, or when that commit is refused permanently, they become a
+    /// sibling copy. Nothing is discarded: entries that cannot be placed stay
+    /// staged and are reported. Returns how many entries were placed.
+    pub fn recover_unsaved_writes(&self) -> usize {
+        let Some(store) = self.unsaved.clone() else {
+            return 0;
+        };
+        let (loaded, damaged) = store.load_all();
+        for (path, error) in damaged {
+            eprintln!(
+                "staged unsaved bytes at {} are unreadable and were left in place: {error}",
+                path.display()
+            );
+        }
+        let mut placed = 0_usize;
+        for item in loaded {
+            let entry = &item.entry;
+            let label = entry.path.as_deref().unwrap_or(&entry.key);
+            let target = {
+                let ns = self.ns();
+                entry
+                    .record_id
+                    .and_then(|record_id| ns.ino_for_record_id(record_id))
+                    .filter(|ino| ns.getattr(*ino).is_some())
+            };
+            if let Some(ino) = target
+                && self.ns().hash_for(ino) == entry.base()
+                && self.check_access(ino, Access::Write).is_ok()
+            {
+                match self.commit_content(ino, &item.bytes) {
+                    Ok(()) => {
+                        let _ = store.remove(&entry.key);
+                        placed = placed.saturating_add(1);
+                        continue;
+                    }
+                    Err(error) if !is_permanent_commit_failure(commit_errno(&error)) => {
+                        eprintln!(
+                            "staged bytes for {label} could not be committed yet ({error}); kept in {}",
+                            store.dir().display()
+                        );
+                        continue;
+                    }
+                    Err(_) => {}
+                }
+            }
+            let location = if let Some(ino) = target {
+                let mut ns = self.ns();
+                let name = ns.file_name_for(ino).map(|name| name.as_bytes().to_vec());
+                ns.parent_ino(ino).zip(name)
+            } else {
+                entry.path.as_deref().and_then(|path| {
+                    let (dir, name) = path.rsplit_once('/')?;
+                    let dir = if dir.is_empty() { "/" } else { dir };
+                    let parent = self.ns().resolve_path_ino(dir)?;
+                    Some((parent, name.as_bytes().to_vec()))
+                })
+            };
+            let (parent, name) = location
+                .unwrap_or_else(|| (crate::namespace::ROOT_INO, entry.key.clone().into_bytes()));
+            match self.create_preserved_copy(parent, &name, &item.bytes) {
+                Ok(path) => {
+                    eprintln!("staged bytes for {label} were restored as {path}");
+                    let _ = store.remove(&entry.key);
+                    placed = placed.saturating_add(1);
+                }
+                Err(errno) => eprintln!(
+                    "staged bytes for {label} could not be restored ({}); kept in {}",
+                    io::Error::from_raw_os_error(errno),
+                    store.dir().display()
+                ),
+            }
+        }
+        placed
+    }
+
+    /// `write` after its access check: apply `data` at `offset` to the
+    /// inode's in-memory buffer.
+    #[allow(
+        clippy::significant_drop_tightening,
+        reason = "the lock is already scoped to its own block, after the blocking hydration \
+                  read and offset validation happen outside it; what remains inside is the \
+                  buffer lookup/resize/write itself, which needs the lock held throughout"
+    )]
+    fn write_buffer(&self, ino: u64, offset: u64, data: &[u8]) -> Result<u32, i32> {
+        // Seed the buffer with current content if this is the first write,
+        // outside the buffer lock (may do blocking I/O) — a hydration
+        // failure must fail the write, never seed-from-empty and truncate.
+        let absent = self.buffers().get(&ino).is_none();
+        let seed = if absent {
+            // Seed from current content (export for documents, hydrated bytes
+            // for opaque files) so a partial/append write modifies it correctly.
+            let base = self.ns().hash_for(ino);
+            let bytes = self.read_full_blocking(ino).map_err(|_| EIO)?;
+            Some((bytes, base))
+        } else {
+            None
+        };
+        // `offset` crosses the FUSE boundary as an untrusted request value.
+        let start = usize::try_from(offset).map_err(|_| EINVAL)?;
+        let end = start.checked_add(data.len()).ok_or(EINVAL)?;
+        {
+            let mut bufs = self.buffers();
+            let created = !bufs.contains_key(&ino);
+            // or_insert keeps any buffer a racing op already created.
+            let (buf, seeded_from) = match seed {
+                Some((bytes, base)) => (bufs.entry(ino).or_insert(bytes), Some(base)),
+                None => (bufs.entry(ino).or_default(), None),
+            };
+            if end > buf.len() {
+                buf.resize(end, 0);
+            }
+            buf.get_mut(start..end).ok_or(EINVAL)?.copy_from_slice(data);
+            self.note_buffer_mutation(ino, created && seeded_from.is_some(), seeded_from.flatten());
+        }
+        Ok(u32::try_from(data.len()).unwrap_or(u32::MAX))
+    }
+
+    /// `flush` (every `close` of a descriptor): commit the buffer.
+    fn flush_inode(&self, ino: u64) -> Result<(), i32> {
+        self.persist_buffer(ino, PersistIntent::Close)
+    }
+
+    /// `fsync`: make the buffer durable.
+    fn fsync_inode(&self, ino: u64) -> Result<(), i32> {
+        self.persist_buffer(ino, PersistIntent::Sync)
+    }
+
+    /// `release` of kernel handle `fh`: commit a writable handle's bytes if
+    /// `flush` did not already, then settle the buffer on the last close.
+    fn release_handle(&self, ino: u64, fh: u64) -> Result<(), i32> {
+        let (last_handle, released_writable) = {
+            let mut handles = self
+                .open_file_handles
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let released_writable = handles
+                .remove(&fh)
+                .is_some_and(|handle| handle.ino == ino && handle.writable);
+            (
+                !handles.values().any(|handle| handle.ino == ino),
+                released_writable,
+            )
+        };
+        let live = self.ns().getattr(ino).is_some();
+        let result = if live && released_writable {
+            self.persist_buffer(ino, PersistIntent::Close)
+        } else {
+            Ok(())
+        };
+        if last_handle {
+            self.settle_last_close(ino, live);
+        }
+        result
+    }
+
+    /// Offer kernel passthrough for read-only opens of fully local files,
+    /// with backing files materialised under `dir`. Takes effect only when
+    /// the kernel negotiates it at `init`.
+    #[must_use]
+    pub fn with_passthrough(mut self, dir: std::path::PathBuf) -> Self {
+        self.passthrough = Some(Passthrough {
+            dir,
+            kernel_ready: std::sync::atomic::AtomicBool::new(false),
+            disabled: std::sync::atomic::AtomicBool::new(false),
+            backing: Mutex::new(HashMap::new()),
+        });
+        self
+    }
+
+    /// The attributes `lookup`/`getattr` report for a live inode: in-flight
+    /// buffer or document export size, and the view-filtered link count.
+    fn presented_attr(&self, ino: u64) -> Option<(fuser::FileAttr, Duration)> {
+        let buf_len = self.buffers().get(&ino).map(|b| b.len() as u64);
+        let is_doc = self.is_document(ino);
+        let doc_len = if buf_len.is_none() && is_doc {
+            self.document_export(ino).map(|b| b.len() as u64)
+        } else {
+            None
+        };
+        let mut attr = self.ns().getattr(ino)?;
+        if let Some(len) = buf_len.or(doc_len) {
+            attr.size = len;
+            attr.blocks = len.div_ceil(512);
+        }
+        if attr.kind == FileType::Directory {
+            attr.nlink = self.visible_dir_nlink(ino);
+        }
+        Some((attr, Self::ttl_for(is_doc)))
+    }
+
+    /// Whether the availability registry records `ino`'s payload as not
+    /// fully resident (never fetched, partially fetched, or evicted).
+    fn payload_not_resident(&self, ino: u64) -> bool {
+        let Some(registry) = &self.availability else {
+            return false;
+        };
+        let Some(record_id) = self.ns().record_id_for(ino) else {
+            return false;
+        };
+        registry
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(record_id)
+            .is_some_and(|record| !matches!(record.residency, Residency::Resident { .. }))
+    }
+
+    /// `FOPEN_KEEP_CACHE` when the kernel's page cache for `ino` was filled
+    /// from the content the file still has; otherwise no flag, which makes
+    /// the kernel drop the cache. Buffered and document inodes never keep it,
+    /// and neither do files whose payload is not (or no longer) resident, so
+    /// "Free Local Space" also frees the kernel's copy.
+    fn open_cache_flags(&self, ino: u64) -> FopenFlags {
+        let volatile = self.payload_not_resident(ino)
+            || self.buffers().contains_key(&ino)
+            || self.is_document(ino);
+        let hash = self.ns().hash_for(ino);
+        let mut cached = self
+            .kernel_cached
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if volatile {
+            cached.remove(&ino);
+            return FopenFlags::empty();
+        }
+        match cached.insert(ino, hash) {
+            Some(previous) if previous == hash => FopenFlags::FOPEN_KEEP_CACHE,
+            _ => FopenFlags::empty(),
+        }
+    }
+
+    /// A read-only backing file holding exactly the current content of
+    /// `ino`, when passthrough is usable and every chunk is local.
+    fn passthrough_backing(&self, ino: u64) -> Option<std::fs::File> {
+        let passthrough = self.passthrough.as_ref().filter(|p| p.usable())?;
+        if self.payload_not_resident(ino)
+            || self.buffers().contains_key(&ino)
+            || self.is_document(ino)
+        {
+            return None;
+        }
+        let hash = self.ns().hash_for(ino)?;
+        let path = passthrough.dir.join(hash.to_hex());
+        if !path.exists() {
+            let hydrator = Arc::clone(&self.hydrator);
+            let rt = hydrator.runtime_handle.clone();
+            match tokio::task::block_in_place(|| rt.block_on(hydrator.export_local(hash, &path))) {
+                Ok(true) => {}
+                Ok(false) => return None,
+                Err(error) => {
+                    eprintln!("could not materialise a passthrough file for {hash}: {error:#}");
+                    return None;
+                }
+            }
+        }
+        std::fs::File::open(&path).ok()
     }
 
     fn doc_export_cache(&self) -> std::sync::MutexGuard<'_, DocExports> {
@@ -435,8 +1097,9 @@ impl QuickFS {
     }
 
     /// Commit an in-flight write buffer: import it as a document, or ingest it
-    /// as opaque chunked content.
-    fn commit_buffer(&self, ino: u64, data: &[u8]) {
+    /// as opaque chunked content. Returns the errno the writer should see
+    /// when the bytes did not become the file's committed content.
+    fn commit_buffer(&self, ino: u64, data: &[u8]) -> Result<(), i32> {
         self.remember_rich_metadata(ino, data);
         let is_doc = self.is_document(ino);
         if is_doc {
@@ -444,7 +1107,7 @@ impl QuickFS {
                 .document_export(ino)
                 .is_some_and(|current| current == data)
             {
-                return;
+                return Ok(());
             }
             // import_document validates before replacing; an invalid input
             // leaves the previous content intact and returns false.
@@ -459,16 +1122,31 @@ impl QuickFS {
             self.doc_export_cache().remove(&ino);
             if delta.is_empty() {
                 eprintln!("document import rejected (invalid format); previous content kept");
-            } else {
-                self.publish(delta);
-                self.record_version(
-                    ino,
-                    collab_types::FileProvenance::Edit,
-                    Some(collab_types::ContentHash(*blake3::hash(data).as_bytes())),
-                );
+                return Err(EINVAL);
             }
-        } else if let Err(e) = self.commit_content(ino, data) {
-            eprintln!("commit failed (content preserved): {e}");
+            self.publish(delta);
+            self.record_version(
+                ino,
+                collab_types::FileProvenance::Edit,
+                Some(collab_types::ContentHash(*blake3::hash(data).as_bytes())),
+            );
+            return Ok(());
+        }
+        // `EBUSY` means the committed revision moved under this commit (a
+        // remote replay or a concurrent local commit); the bytes still have
+        // to land, so try again against the new revision.
+        let mut attempts = 0_u8;
+        loop {
+            match self.commit_content(ino, data) {
+                Ok(()) => return Ok(()),
+                Err(error) if commit_errno(&error) == EBUSY && attempts < 3 => {
+                    attempts = attempts.saturating_add(1);
+                }
+                Err(error) => {
+                    eprintln!("commit of inode {ino} failed: {error}");
+                    return Err(commit_errno(&error));
+                }
+            }
         }
     }
 
@@ -689,6 +1367,11 @@ impl QuickFS {
         namespace_path: std::path::PathBuf,
     ) -> Result<Self, crate::record_publisher::RecordPublisherError> {
         if let (Some(publisher), Some((history, _))) = (&self.record_publisher, &self.history) {
+            publisher
+                .repository()
+                .restore_admission_fences(&*journal.lock().map_err(|_| {
+                    crate::record_publisher::RecordPublisherError::PublicationUnavailable
+                })?)?;
             let sync = self.sync.clone();
             publisher.recover_replacement_transactions(
                 &mut journal
@@ -705,6 +1388,12 @@ impl QuickFS {
                 },
             )?;
         }
+        self.recover_legacy_restores(
+            &mut *journal.lock().map_err(|_| {
+                crate::record_publisher::RecordPublisherError::PublicationUnavailable
+            })?,
+            &namespace_path,
+        )?;
         self.replacement_transactions = Some(ReplacementTransactionRuntime {
             journal,
             namespace_path,
@@ -1040,22 +1729,23 @@ impl QuickFS {
             provenance,
         };
         if let Some(publisher) = &self.record_publisher {
-            if snapshot.kind == FileType::Directory {
-                publisher
-                    .publish_structural_version(&version)
-                    .map_err(|error| {
-                        crate::history::HistoryError::Publication(error.to_string())
-                    })?;
+            let published = if snapshot.kind == FileType::Directory {
+                publisher.publish_structural_version(&version).map(|_| ())
             } else {
                 publisher
                     .publish(
                         &self.record_metadata(&snapshot, timestamp_ms, *actor),
                         std::slice::from_ref(&version),
                     )
-                    .map_err(|error| {
-                        crate::history::HistoryError::Publication(error.to_string())
-                    })?;
-            }
+                    .map(|_| ())
+            };
+            published.map_err(|error| {
+                if error.is_capacity_exhausted() {
+                    crate::history::HistoryError::CapacityExhausted(error.to_string())
+                } else {
+                    crate::history::HistoryError::Publication(error.to_string())
+                }
+            })?;
         }
         history.append(version)?;
         if let Some(registry) = &self.availability {
@@ -1469,7 +2159,7 @@ impl QuickFS {
         {
             return Err(EBUSY);
         }
-        if self.is_document(ino) {
+        if self.restore_codec(&self.ns(), ino).is_err() {
             // Document restoration needs codec-aware CRDT checkout rather
             // than replacing its exported bytes as if it were a plain file.
             return Err(libc::ENOTSUP);
@@ -1498,6 +2188,22 @@ impl QuickFS {
             }
             None => Vec::new(),
         };
+        if qdoc::Document::load(&data).is_ok() {
+            return Err(libc::ENOTSUP);
+        }
+        let current_hash = self.ns().hash_for(ino);
+        if let Some(hash) = current_hash.filter(|hash| {
+            Some(collab_types::ContentHash(*hash.as_bytes())) != version.content_hash
+        }) {
+            let hydrator = self.hydrator.clone();
+            let runtime = hydrator.runtime_handle.clone();
+            let current =
+                tokio::task::block_in_place(|| runtime.block_on(hydrator.read(hash, 0, u64::MAX)))
+                    .map_err(|_| EIO)?;
+            if qdoc::Document::load(&current).is_ok() {
+                return Err(libc::ENOTSUP);
+            }
+        }
         let restored_hash = self.write_content_blocking(&data).map_err(|_| EIO)?;
         if restored_hash.map(|hash| *hash.as_bytes()) != version.content_hash.map(|hash| hash.0) {
             return Err(EIO);
@@ -2053,9 +2759,9 @@ impl QuickFS {
             metadata_hash: snapshot.metadata_hash,
             provenance: collab_types::FileProvenance::ConflictResolution,
         };
-        let mut participant = collab_types::FileMutationParticipantV1 {
+        let mut participant = collab_types::FileMutationParticipant {
             record_id,
-            role: collab_types::FileMutationParticipantRoleV1::MergeSource,
+            role: collab_types::FileMutationParticipantRole::MergeSource,
             expected_version: current_revision.version_id,
             proposed_binding: collab_types::FileBindingV1 {
                 schema_version: collab_types::FILE_BINDING_VERSION,
@@ -2087,7 +2793,7 @@ impl QuickFS {
                 collab_types::ConflictMergeCodecV1::PlainUtf8ThreeWayV1
             }
         };
-        let manifest = collab_types::FileMutationTransactionManifestV1 {
+        let manifest = collab_types::FileMutationTransactionManifest {
             schema_version: collab_types::files::FILE_MUTATION_TRANSACTION_VERSION_V2,
             transaction_id: merge_uuid(
                 b"transaction",
@@ -2100,7 +2806,7 @@ impl QuickFS {
             workspace_id: publisher.workspace_id(),
             actor: *actor,
             timestamp_ms,
-            operation: collab_types::FileMutationOperationV1::MergeContentConflict {
+            operation: collab_types::FileMutationOperation::MergeContentConflict {
                 source_record: record_id,
                 parent_record,
                 source_name,
@@ -2293,9 +2999,9 @@ impl QuickFS {
             metadata_hash: target_metadata_hash,
             provenance: collab_types::FileProvenance::Create,
         };
-        let mut source_participant = collab_types::FileMutationParticipantV1 {
+        let mut source_participant = collab_types::FileMutationParticipant {
             record_id: source_record,
-            role: collab_types::FileMutationParticipantRoleV1::KeepBothSource,
+            role: collab_types::FileMutationParticipantRole::KeepBothSource,
             expected_version: current_revision.version_id,
             proposed_binding: collab_types::FileBindingV1 {
                 schema_version: collab_types::FILE_BINDING_VERSION,
@@ -2321,9 +3027,9 @@ impl QuickFS {
         source_participant.projection_hash = source_participant
             .computed_projection_hash()
             .map_err(|_| EIO)?;
-        let mut sibling_participant = collab_types::FileMutationParticipantV1 {
+        let mut sibling_participant = collab_types::FileMutationParticipant {
             record_id: target_record,
-            role: collab_types::FileMutationParticipantRoleV1::KeepBothSibling,
+            role: collab_types::FileMutationParticipantRole::KeepBothSibling,
             expected_version: selected_version,
             proposed_binding: collab_types::FileBindingV1 {
                 schema_version: collab_types::FILE_BINDING_VERSION,
@@ -2351,13 +3057,13 @@ impl QuickFS {
             .map_err(|_| EIO)?;
         let mut participants = vec![source_participant, sibling_participant];
         participants.sort_by_key(|participant| participant.record_id);
-        let manifest = collab_types::FileMutationTransactionManifestV1 {
+        let manifest = collab_types::FileMutationTransactionManifest {
             schema_version: collab_types::files::FILE_MUTATION_TRANSACTION_VERSION_V2,
             transaction_id,
             workspace_id: publisher.workspace_id(),
             actor: *actor,
             timestamp_ms,
-            operation: collab_types::FileMutationOperationV1::KeepBothContentConflict {
+            operation: collab_types::FileMutationOperation::KeepBothContentConflict {
                 source_record,
                 sibling_record: target_record,
                 parent_record,
@@ -3205,6 +3911,15 @@ impl QuickFS {
         reason = "content publication and namespace replacement must preserve the previous committed revision on failure"
     )]
     fn commit_content(&self, ino: u64, data: &[u8]) -> io::Result<()> {
+        #[cfg(test)]
+        if let Some((fault_ino, errno)) = *self
+            .commit_fault
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            && fault_ino == ino
+        {
+            return Err(io::Error::from_raw_os_error(errno));
+        }
         let hash = self.write_content_blocking(data)?;
         let byte_len = data.len() as u64;
         let (expected_hash, expected_len) = {
@@ -3223,7 +3938,13 @@ impl QuickFS {
             .replacement_snapshot(ino, hash, byte_len)
             .ok_or_else(|| io::Error::from_raw_os_error(ENOENT))?;
         self.append_version(snapshot, collab_types::FileProvenance::Edit, now_ms())
-            .map_err(|error| io::Error::other(error.to_string()))?;
+            .map_err(|error| match error {
+                crate::history::HistoryError::CapacityExhausted(detail) => {
+                    eprintln!("inode {ino}: {detail}");
+                    io::Error::from_raw_os_error(EDQUOT)
+                }
+                error => io::Error::other(error.to_string()),
+            })?;
         let revision = match &self.record_publisher {
             Some(publisher) => publisher
                 .snapshot(snapshot.record_id)
@@ -3643,7 +4364,7 @@ impl QuickFS {
         let participant = |snapshot: VersionSnapshot,
                            binding: collab_types::FileBindingV1,
                            expected: collab_types::FileVersionId,
-                           role: collab_types::FileMutationParticipantRoleV1,
+                           role: collab_types::FileMutationParticipantRole,
                            provenance: collab_types::FileProvenance| {
             let version = collab_types::FileVersionV1 {
                 id: collab_types::FileVersionId::new(),
@@ -3665,7 +4386,7 @@ impl QuickFS {
                     metadata_hash: snapshot.metadata_hash,
                 },
             );
-            let mut value = collab_types::FileMutationParticipantV1 {
+            let mut value = collab_types::FileMutationParticipant {
                 record_id: snapshot.record_id,
                 role,
                 expected_version: expected,
@@ -3682,7 +4403,7 @@ impl QuickFS {
                 source_proposed,
                 source_binding,
                 *source_expected,
-                collab_types::FileMutationParticipantRoleV1::Source,
+                collab_types::FileMutationParticipantRole::Source,
                 if parent == new_parent {
                     collab_types::FileProvenance::Rename
                 } else {
@@ -3693,18 +4414,18 @@ impl QuickFS {
                 victim_proposed,
                 victim_binding,
                 *victim_expected,
-                collab_types::FileMutationParticipantRoleV1::Replaced,
+                collab_types::FileMutationParticipantRole::Replaced,
                 collab_types::FileProvenance::Delete,
             )?,
         ];
         participants.sort_by_key(|value| value.record_id);
-        let manifest = collab_types::FileMutationTransactionManifestV1 {
+        let manifest = collab_types::FileMutationTransactionManifest {
             schema_version: collab_types::FILE_MUTATION_TRANSACTION_VERSION,
             transaction_id: uuid::Uuid::new_v4(),
             workspace_id: publisher.workspace_id(),
             actor: *actor,
             timestamp_ms,
-            operation: collab_types::FileMutationOperationV1::ReplacementRename {
+            operation: collab_types::FileMutationOperation::ReplacementRename {
                 source_parent: source_parent_record,
                 source_name: name.to_vec().into(),
                 destination_parent: destination_parent_record,
@@ -4336,6 +5057,26 @@ fn required_accesses(mode: OpenAccMode) -> &'static [Access] {
 impl Filesystem for QuickFS {
     fn init(&mut self, _req: &Request, config: &mut KernelConfig) -> Result<(), io::Error> {
         let _ = config.set_max_readahead(1024 * 1024);
+        // Every directory operation takes the namespace lock, so the kernel
+        // need not serialise lookups/creates per directory for us.
+        let _ = config.add_capabilities(InitFlags::FUSE_PARALLEL_DIROPS);
+        // `readdirplus` answers a listing and its attributes in one round
+        // trip (`ls -l`, file managers); the kernel picks it adaptively.
+        let _ = config
+            .add_capabilities(InitFlags::FUSE_DO_READDIRPLUS | InitFlags::FUSE_READDIRPLUS_AUTO);
+        // Writeback caching stays off: with it the kernel owns `i_size` and
+        // mtime and ignores the sizes this daemon reports, so a remote edit
+        // that changes a file's length would not become visible without
+        // explicit invalidation.
+        if let Some(passthrough) = &self.passthrough {
+            match (
+                config.add_capabilities(InitFlags::FUSE_PASSTHROUGH),
+                config.set_max_stack_depth(1),
+            ) {
+                (Ok(()), Ok(_)) => passthrough.kernel_ready.store(true, Ordering::Release),
+                _ => eprintln!("FUSE passthrough is not offered by this kernel; serving reads"),
+            }
+        }
         Ok(())
     }
 
@@ -4457,6 +5198,45 @@ impl Filesystem for QuickFS {
         self.heuristics.on_readdir(ino.0);
     }
 
+    /// `readdir` plus each entry's attributes, exactly as `lookup` would
+    /// report them, for the same filtered view.
+    fn readdirplus(
+        &self,
+        _req: &Request,
+        ino: INodeNo,
+        _fh: FileHandle,
+        offset: u64,
+        mut reply: ReplyDirectoryPlus,
+    ) {
+        if !self.ino_in_view(ino.0) {
+            reply.error(to_errno(ENOENT));
+            return;
+        }
+        let Some(entries) = self.visible_entries(ino.0) else {
+            reply.error(to_errno(ENOTDIR));
+            return;
+        };
+        let skip = usize::try_from(offset).unwrap_or(usize::MAX);
+        for (i, (e_ino, _, name)) in entries.into_iter().enumerate().skip(skip) {
+            let Some((attr, ttl)) = self.presented_attr(e_ino) else {
+                continue;
+            };
+            let next_offset = u64::try_from(i).unwrap_or(u64::MAX).saturating_add(1);
+            if reply.add(
+                INodeNo(e_ino),
+                next_offset,
+                OsStr::from_bytes(name.as_bytes()),
+                &ttl,
+                &attr,
+                Generation(0),
+            ) {
+                break;
+            }
+        }
+        reply.ok();
+        self.heuristics.on_readdir(ino.0);
+    }
+
     fn open(&self, _req: &Request, ino: INodeNo, flags: OpenFlags, reply: ReplyOpen) {
         let opened_path = {
             let ns = self.ns();
@@ -4490,7 +5270,28 @@ impl Filesystem for QuickFS {
                     ),
                 },
             );
-        reply.opened(FileHandle(handle), FopenFlags::empty());
+        let cache = self.open_cache_flags(ino.0);
+        if flags.acc_mode() == OpenAccMode::O_RDONLY
+            && let Some(backing) = self.passthrough_backing(ino.0)
+        {
+            match reply.open_backing(&backing) {
+                Ok(id) => {
+                    reply.opened_passthrough(FileHandle(handle), cache, &id);
+                    if let Some(passthrough) = &self.passthrough {
+                        passthrough.hold(handle, id, backing);
+                    }
+                    let candidates = self.predictive_candidates(ino.0);
+                    self.heuristics.on_open(ino.0, candidates);
+                    return;
+                }
+                Err(error) => {
+                    if let Some(passthrough) = &self.passthrough {
+                        passthrough.disable(&error);
+                    }
+                }
+            }
+        }
+        reply.opened(FileHandle(handle), cache);
         let candidates = self.predictive_candidates(ino.0);
         self.heuristics.on_open(ino.0, candidates);
     }
@@ -4502,7 +5303,7 @@ impl Filesystem for QuickFS {
         fh: FileHandle,
         offset: u64,
         size: u32,
-        _flags: OpenFlags,
+        flags: OpenFlags,
         _lock_owner: Option<LockOwner>,
         reply: ReplyData,
     ) {
@@ -4568,16 +5369,39 @@ impl Filesystem for QuickFS {
 
         let hydrator = self.hydrator.clone();
         let rt = hydrator.runtime_handle.clone();
-        let res = tokio::task::block_in_place(|| {
-            rt.block_on(async move { hydrator.read(hash, offset, u64::from(size)).await })
-        });
-        match res {
-            Ok(data) => reply.data(&data),
-            Err(error) => {
-                eprintln!("content hydration failed for {hash}: {error:#}");
-                reply.error(to_errno(EIO));
-            }
+        let size = u64::from(size);
+        // Local bytes are answered inline. Bytes that must come from a peer
+        // are hydrated on the runtime and answered from there: the read
+        // still blocks its caller as POSIX expects, but no FUSE worker waits
+        // on the network, so a slow peer stalls only the readers of that file.
+        let local = {
+            let hydrator = Arc::clone(&hydrator);
+            tokio::task::block_in_place(|| rt.block_on(hydrator.read_local(hash, offset, size)))
+        };
+        if let Some(data) = local {
+            reply.data(&data);
+            return;
         }
+        if flags.0 & libc::O_NONBLOCK != 0 {
+            // A non-blocking reader gets EAGAIN at once; the range keeps
+            // hydrating so a retry finds it local.
+            rt.spawn(async move {
+                if let Err(error) = hydrator.read(hash, offset, size).await {
+                    eprintln!("content hydration failed for {hash}: {error:#}");
+                }
+            });
+            reply.error(to_errno(libc::EAGAIN));
+            return;
+        }
+        rt.spawn(async move {
+            match hydrator.read(hash, offset, size).await {
+                Ok(data) => reply.data(&data),
+                Err(error) => {
+                    eprintln!("content hydration failed for {hash}: {error:#}");
+                    reply.error(to_errno(EIO));
+                }
+            }
+        });
     }
 
     #[allow(
@@ -4624,8 +5448,19 @@ impl Filesystem for QuickFS {
             reply.error(to_errno(EIO));
             return;
         };
-        // Start a fresh empty buffer so subsequent writes accumulate.
-        self.buffers().insert(attr.ino.0, Vec::new());
+        // Start a fresh empty buffer so subsequent writes accumulate. The
+        // empty file was committed by the create itself.
+        {
+            let mut buffers = self.buffers();
+            buffers.insert(attr.ino.0, Vec::new());
+            self.buffer_states().insert(
+                attr.ino.0,
+                BufferState {
+                    committed: Some(0),
+                    ..BufferState::default()
+                },
+            );
+        }
         self.publish(delta);
         if !signed {
             self.record_version(attr.ino.0, collab_types::FileProvenance::Create, None);
@@ -4654,12 +5489,6 @@ impl Filesystem for QuickFS {
         );
     }
 
-    #[allow(
-        clippy::significant_drop_tightening,
-        reason = "the lock is already scoped to its own block, after the blocking hydration \
-                  read and offset validation happen outside it; what remains inside is the \
-                  buffer lookup/resize/write itself, which needs the lock held throughout"
-    )]
     fn write(
         &self,
         _req: &Request,
@@ -4677,49 +5506,10 @@ impl Filesystem for QuickFS {
             reply.error(to_errno(e));
             return;
         }
-        // Seed the buffer with current content if this is the first write,
-        // outside the buffer lock (may do blocking I/O) — a hydration
-        // failure must fail the write, never seed-from-empty and truncate.
-        let absent = self.buffers().get(&ino.0).is_none();
-        let seed = if absent {
-            // Seed from current content (export for documents, hydrated bytes
-            // for opaque files) so a partial/append write modifies it correctly.
-            if let Ok(d) = self.read_full_blocking(ino.0) {
-                Some(d)
-            } else {
-                reply.error(to_errno(EIO));
-                return;
-            }
-        } else {
-            None
-        };
-
-        // `offset` crosses the FUSE boundary as an untrusted request value.
-        let Ok(start) = usize::try_from(offset) else {
-            reply.error(to_errno(EINVAL));
-            return;
-        };
-        let Some(end) = start.checked_add(data.len()) else {
-            reply.error(to_errno(EINVAL));
-            return;
-        };
-        {
-            let mut bufs = self.buffers();
-            // or_insert keeps any buffer a racing op already created.
-            let buf = match seed {
-                Some(d) => bufs.entry(ino.0).or_insert(d),
-                None => bufs.entry(ino.0).or_default(),
-            };
-            if end > buf.len() {
-                buf.resize(end, 0);
-            }
-            let Some(dest) = buf.get_mut(start..end) else {
-                reply.error(to_errno(EINVAL));
-                return;
-            };
-            dest.copy_from_slice(data);
+        match self.write_buffer(ino.0, offset, data) {
+            Ok(written) => reply.written(written),
+            Err(errno) => reply.error(to_errno(errno)),
         }
-        reply.written(u32::try_from(data.len()).unwrap_or(u32::MAX));
     }
 
     fn flush(
@@ -4730,17 +5520,10 @@ impl Filesystem for QuickFS {
         _lock_owner: LockOwner,
         reply: ReplyEmpty,
     ) {
-        let buffered = self
-            .write_buffers
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .get(&ino.0)
-            .cloned();
-        let live = self.ns().getattr(ino.0).is_some();
-        if live && let Some(data) = buffered {
-            self.commit_buffer(ino.0, &data);
+        match self.flush_inode(ino.0) {
+            Ok(()) => reply.ok(),
+            Err(errno) => reply.error(to_errno(errno)),
         }
-        reply.ok();
     }
 
     fn fsync(
@@ -4751,17 +5534,10 @@ impl Filesystem for QuickFS {
         _datasync: bool,
         reply: ReplyEmpty,
     ) {
-        let buffered = self
-            .write_buffers
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .get(&ino.0)
-            .cloned();
-        let live = self.ns().getattr(ino.0).is_some();
-        if live && let Some(data) = buffered {
-            self.commit_buffer(ino.0, &data);
+        match self.fsync_inode(ino.0) {
+            Ok(()) => reply.ok(),
+            Err(errno) => reply.error(to_errno(errno)),
         }
-        reply.ok();
     }
 
     fn release(
@@ -4774,39 +5550,19 @@ impl Filesystem for QuickFS {
         _flush: bool,
         reply: ReplyEmpty,
     ) {
-        let (last_handle, released_writable) = {
-            let mut handles = self
-                .open_file_handles
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            let released_writable = handles
-                .remove(&fh.0)
-                .is_some_and(|handle| handle.ino == ino.0 && handle.writable);
-            (
-                !handles.values().any(|handle| handle.ino == ino.0),
-                released_writable,
-            )
-        };
-        let buffered = self
-            .write_buffers
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .get(&ino.0)
-            .cloned();
-        let live = self.ns().getattr(ino.0).is_some();
-        if live
-            && released_writable
-            && let Some(data) = buffered
-        {
-            self.commit_buffer(ino.0, &data);
+        if let Some(passthrough) = &self.passthrough {
+            passthrough.release(fh.0);
         }
-        if last_handle {
-            self.write_buffers
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .remove(&ino.0);
+        // The kernel ignores release errors (close already returned flush's
+        // result); the error is still reported for tracing.
+        match self.release_handle(ino.0, fh.0) {
+            Ok(()) => reply.ok(),
+            Err(errno) => reply.error(to_errno(errno)),
         }
-        reply.ok();
+    }
+
+    fn destroy(&mut self) {
+        self.persist_all_buffers();
     }
 
     fn setattr(
@@ -4853,9 +5609,11 @@ impl Filesystem for QuickFS {
             // Documents always stage in the buffer (imported as a whole on
             // release); opaque files commit immediately when not open.
             if open || is_doc {
-                self.buffers().insert(ino.0, data);
-            } else if let Err(_e) = self.commit_content(ino.0, &data) {
-                reply.error(to_errno(EIO));
+                let base = self.ns().hash_for(ino.0);
+                let created = self.buffers().insert(ino.0, data).is_none();
+                self.note_buffer_mutation(ino.0, created, base);
+            } else if let Err(error) = self.commit_content(ino.0, &data) {
+                reply.error(to_errno(commit_errno(&error)));
                 return;
             }
         }
@@ -4980,6 +5738,13 @@ impl Filesystem for QuickFS {
             reply.error(to_errno(EINVAL));
             return;
         }
+        if name.to_str() == Some(collab_types::files::CHECKED_HISTORY_RESTORE_XATTR) {
+            match self.checked_restore_xattr(ino.0, value) {
+                Ok(()) => reply.ok(),
+                Err(errno) => reply.error(to_errno(errno)),
+            }
+            return;
+        }
         if name.to_str() == Some(crate::syncstate::AVAILABILITY_CONTROL_XATTR) {
             let result = match value {
                 b"retry" => self.retry_transfer(ino.0),
@@ -5062,6 +5827,69 @@ impl Filesystem for QuickFS {
         // attribute name, so the sync state never reports on a hidden file.
         if !self.ino_in_view(ino.0) {
             reply.error(to_errno(ENOENT));
+            return;
+        }
+        if let Some(name) = name
+            .to_str()
+            .filter(|name| name.starts_with(collab_types::files::HISTORY_READ_XATTR))
+        {
+            use collab_types::files::{FileHistoryReadQueryV1 as Query, FileHistoryReadResponseV1};
+            let query = match Query::parse_xattr(name) {
+                Ok(query) => query,
+                Err(error) => {
+                    reply.error(to_errno(history_read::errno(error)));
+                    return;
+                }
+            };
+            if let Query::Preview {
+                frontier,
+                version_id,
+            } = query
+            {
+                match self.read_file_history_preview_at_frontier(ino.0, frontier, version_id) {
+                    Ok(bytes) => reply_xattr_bytes(reply, &bytes, size),
+                    Err(error) => reply.error(to_errno(history_read::errno(error))),
+                }
+            } else {
+                let response = FileHistoryReadResponseV1 {
+                    schema_version: 1,
+                    result: self.read_file_history(ino.0, query),
+                };
+                match serde_json::to_vec(&response) {
+                    Ok(bytes) if bytes.len() <= collab_types::files::MAX_HISTORY_READ_BYTES => {
+                        reply_xattr_bytes(reply, &bytes, size)
+                    }
+                    _ => reply.error(to_errno(EIO)),
+                }
+            }
+            return;
+        }
+        if name.to_str() == Some(collab_types::files::CHECKED_HISTORY_REVIEW_XATTR) {
+            let projection = collab_types::files::CheckedHistoryReviewResponseV1 {
+                schema_version: 1,
+                result: self.checked_history_review(ino.0),
+            };
+            match serde_json::to_vec(&projection) {
+                Ok(bytes) => reply_xattr_bytes(reply, &bytes, size),
+                Err(_) => reply.error(to_errno(EIO)),
+            }
+            return;
+        }
+        if let Some(id) = name.to_str().and_then(|name| {
+            name.strip_prefix(collab_types::files::CHECKED_HISTORY_RESULT_XATTR_PREFIX)
+        }) {
+            let Ok(id) = uuid::Uuid::parse_str(id) else {
+                reply.error(to_errno(EINVAL));
+                return;
+            };
+            let projection = collab_types::files::CheckedHistoryResponseV1 {
+                schema_version: 1,
+                outcome: self.checked_history_result(ino.0, id),
+            };
+            match serde_json::to_vec(&projection) {
+                Ok(bytes) => reply_xattr_bytes(reply, &bytes, size),
+                Err(_) => reply.error(to_errno(EIO)),
+            }
             return;
         }
         if let Some(version) = name
@@ -5354,6 +6182,14 @@ impl Filesystem for QuickFS {
             buf.push(0);
             buf.extend_from_slice(crate::history::HISTORY_CONTROL_XATTR.as_bytes());
             buf.push(0);
+            if self.replacement_transactions.is_some() {
+                buf.extend_from_slice(collab_types::files::CHECKED_HISTORY_REVIEW_XATTR.as_bytes());
+                buf.push(0);
+                buf.extend_from_slice(
+                    collab_types::files::CHECKED_HISTORY_RESTORE_XATTR.as_bytes(),
+                );
+                buf.push(0);
+            }
         }
         if ino.0 == crate::namespace::ROOT_INO && self.share_control_path.is_some() {
             buf.extend_from_slice(crate::syncstate::SHARE_CONTROL_XATTR.as_bytes());
@@ -5371,3 +6207,6 @@ impl Filesystem for QuickFS {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod durability_tests;

@@ -4,8 +4,9 @@
 //! and drains [`FilePicker::take_outcome`].
 //!
 //! Top to bottom: title + breadcrumb + up button, a scrollable list of
-//! [`FilePickerEntry`]s (directory click navigates, file click selects,
-//! double-click opens, Ctrl/Shift multi-select in Open mode), a filename
+//! [`FilePickerEntry`]s (directory click navigates in file modes and selects
+//! in directory mode; double-click navigates; Ctrl/Shift multi-select when
+//! enabled), a filename
 //! field in Save mode, an optional filter chip, and Cancel/Open(Save)
 //! buttons. Keyboard: Up/Down move the selection, Enter opens/enters,
 //! Backspace goes to the parent, Escape cancels; printable keys type-ahead
@@ -30,14 +31,76 @@ use winit::event::{ElementState, MouseButton, WindowEvent};
 use crate::icons::{Icon, LUCIDE_DEFAULT_STROKE_PX, draw_icon, icon_for_path};
 use crate::presence::PresenceCtx;
 use crate::selection::SelectionModel;
+use crate::text_metrics::renderer_type_size;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
+use crate::tokens::{Metrics, Spacing};
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 
 pub const FOOTER_HEIGHT: f64 = 56.0;
 pub const HEADER_HEIGHT: f64 = 64.0;
 pub const ROW_HEIGHT: f64 = 28.0;
+/// The breadcrumb row sits one title line (`scale.base` at 1×, ~20 px)
+/// under the header inset.
+const CRUMB_ROW_OFFSET: f64 = 20.0;
+/// Height of a breadcrumb hit rect.
+const CRUMB_ROW_H: f64 = 18.0;
+/// Per-glyph width guess for a crumb that has not been measured yet (before
+/// the first paint); `measure_crumbs` records the real widths.
+const CRUMB_GLYPH_ESTIMATE: f64 = 7.5;
+
+/// Token-derived insets the picker lays out with. Resolved from the theme in
+/// `build_layout` and refreshed at paint, cached because
+/// `apply_layout_helper` runs from event handlers and `set_rect` with no
+/// theme in hand; the draw path reads the same values, so layout and paint
+/// agree at every `ui_scale`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct PickerMetrics {
+    /// From the top edge to the title line and the up button (`s2`).
+    header_inset_y: f64,
+    /// Vertical inset of the Save-mode filename field inside its band (`s1`).
+    field_inset_y: f64,
+    /// Horizontal inset of text inside the filename field and filter chip,
+    /// and from a row's edge to its leading icon and on to the name (`s2`).
+    inset_x: f64,
+    /// The up button: a bar control wide (`bar_control_height`) and a large
+    /// glyph tall (`icon_lg`). Recorded (F4 r2): below the 32 px minimum
+    /// pointer target.
+    up_w: f64,
+    up_h: f64,
+    /// From a crumb's left edge to its first glyph (`s1`).
+    crumb_label_inset: f64,
+    /// Room a crumb reserves after its label for the chevron separator (`s3`).
+    crumb_separator_w: f64,
+}
+
+impl PickerMetrics {
+    fn from_theme(theme: &Theme) -> Self {
+        let t = &theme.tokens;
+        Self::from_parts(&t.spacing, &t.metrics)
+    }
+
+    fn from_parts(spacing: &Spacing, metrics: &Metrics) -> Self {
+        Self {
+            header_inset_y: f64::from(spacing.s2),
+            field_inset_y: f64::from(spacing.s1),
+            inset_x: f64::from(spacing.s2),
+            up_w: f64::from(metrics.bar_control_height),
+            up_h: f64::from(metrics.icon_lg),
+            crumb_label_inset: f64::from(spacing.s1),
+            crumb_separator_w: f64::from(spacing.s3),
+        }
+    }
+}
+
+impl Default for PickerMetrics {
+    /// The unscaled reference values, for a picker laid out before it has
+    /// seen a theme.
+    fn default() -> Self {
+        Self::from_parts(&Spacing::BASE, &Metrics::BASE)
+    }
+}
 /// 0 in Open mode.
 const FILENAME_HEIGHT: f64 = 36.0;
 const PADDING: f64 = 12.0;
@@ -138,24 +201,27 @@ pub enum FilePickerOutcome {
     Cancelled,
 }
 
-/// Open picks existing files (multi-select); Save adds a filename field
-/// whose contents resolve to `current_dir/<name>`.
+/// Open picks existing files; Save adds a filename field whose contents
+/// resolve to `current_dir/<name>`; Directory picks existing folders.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Default)]
 pub enum FilePickerMode {
     #[default]
     Open,
     Save,
+    Directory,
 }
 
 pub struct FilePicker {
     rect: Rect,
     title: String,
     mode: FilePickerMode,
+    multiple: bool,
+    accept_label: Option<String>,
 
     current_dir: PathBuf,
     /// Filtered for `current_dir`.
     entries: Vec<FilePickerEntry>,
-    /// File indices only; dirs navigate rather than select.
+    /// File indices in Open/Save mode; directory indices in Directory mode.
     selection: SelectionModel,
 
     /// Paths the host has marked as accessible. Navigation outside every
@@ -181,15 +247,24 @@ pub struct FilePicker {
     entry_rows: Vec<(usize, Rect)>,
     /// `(ancestor_path, rect)` for each clickable breadcrumb segment.
     crumb_rects: Vec<(PathBuf, Rect)>,
+    /// Breadcrumb label widths measured at paint with the frame's renderer.
+    /// `compute_crumb_rects` (which has no renderer, and also runs from the
+    /// event path) prefers these to its per-glyph estimate, so a hit rect
+    /// matches the painted glyphs from the first paint on.
+    crumb_widths: HashMap<String, f64>,
+    /// Token-derived insets from the theme of the latest layout build, so
+    /// the renderer-less layout pass and the draw pass read the same
+    /// `ui_scale`d values. `PickerMetrics::default()` until a theme is seen.
+    metrics: PickerMetrics,
 
     /// `MouseInput` carries no position payload, so this tracks the cursor
     /// for click resolution.
     last_cursor: Point,
-    /// Last entry pressed + when, for double-click open detection.
-    last_click: Option<(usize, std::time::Instant)>,
+    /// Last entry pressed + when, for double-click open/navigation detection.
+    last_click: Option<(usize, crate::time::Instant)>,
 
     hover_entry: Option<usize>,
-    /// `0` = Cancel, `1` = Open.
+    /// `0` = Cancel, `1` = the mode-specific confirmation action.
     hover_button: Option<u8>,
     /// The active control inside this immediate-mode modal.  It is reflected
     /// in both paint and accessibility semantics.
@@ -215,6 +290,10 @@ impl FilePicker {
             rect: Rect::ZERO,
             title: title.into(),
             mode: FilePickerMode::default(),
+            // Preserve the historical direct-widget Open behavior. Portal
+            // callers explicitly hand their single/multiple intent through.
+            multiple: true,
+            accept_label: None,
             current_dir: initial,
             entries: Vec::new(),
             selection: SelectionModel::new(),
@@ -231,6 +310,8 @@ impl FilePicker {
             filename_rect: Rect::ZERO,
             entry_rows: Vec::new(),
             crumb_rects: Vec::new(),
+            crumb_widths: HashMap::new(),
+            metrics: PickerMetrics::default(),
             last_cursor: Point::ZERO,
             last_click: None,
             hover_entry: None,
@@ -245,10 +326,28 @@ impl FilePicker {
     #[must_use]
     pub fn with_mode(mut self, mode: FilePickerMode) -> Self {
         self.mode = mode;
+        self.selection.clear();
+        self.first_visible = 0;
+        self.refresh_entries();
         // Construction begins in Open mode so a later `.with_mode(Save)` must
         // reset the initial target from the listbox to Filename.
         self.focus = None;
         self.ensure_valid_focus();
+        self
+    }
+
+    #[must_use]
+    pub fn with_multiple(mut self, multiple: bool) -> Self {
+        self.multiple = multiple;
+        if !multiple && let Some(primary) = self.selection.primary() {
+            self.selection.select_only(primary);
+        }
+        self
+    }
+
+    #[must_use]
+    pub fn with_accept_label(mut self, label: Option<String>) -> Self {
+        self.accept_label = label.filter(|label| !label.trim().is_empty());
         self
     }
 
@@ -304,6 +403,14 @@ impl FilePicker {
 
     pub fn filename(&self) -> &str {
         &self.filename
+    }
+
+    pub fn confirm_label(&self) -> &str {
+        self.accept_label.as_deref().unwrap_or(match self.mode {
+            FilePickerMode::Open => "Open",
+            FilePickerMode::Save => "Save",
+            FilePickerMode::Directory => "Choose folder",
+        })
     }
 
     /// Set the selection without a click, for tests/hosts.
@@ -425,8 +532,9 @@ impl FilePicker {
             for entry in read.flatten() {
                 let path = entry.path();
                 let is_dir = entry.file_type().is_ok_and(|t| t.is_dir());
-                // Directories are always shown; files honour the filter.
-                if !is_dir && !filter.matches(&path) {
+                // Directory selection exposes folders only. File modes keep
+                // directories for navigation and filter ordinary files.
+                if !is_dir && (self.mode == FilePickerMode::Directory || !filter.matches(&path)) {
                     continue;
                 }
                 let name = entry.file_name().to_string_lossy().into_owned();
@@ -499,18 +607,19 @@ impl FilePicker {
             self.rect.x0 + PADDING + 160.0,
             by1,
         );
+        let m = self.metrics;
         let filename_top = self.rect.y1 - FOOTER_HEIGHT - FILENAME_HEIGHT;
         self.filename_rect = Rect::new(
             self.rect.x0 + PADDING,
-            filename_top + 4.0,
+            filename_top + m.field_inset_y,
             self.rect.x1 - PADDING,
-            filename_top + FILENAME_HEIGHT - 4.0,
+            filename_top + FILENAME_HEIGHT - m.field_inset_y,
         );
 
         let up_x1 = self.rect.x1 - PADDING;
-        let up_x0 = up_x1 - 28.0;
-        let up_top = self.rect.y0 + 8.0;
-        self.up_rect = Rect::new(up_x0, up_top, up_x1, up_top + 24.0);
+        let up_x0 = up_x1 - m.up_w;
+        let up_top = self.rect.y0 + m.header_inset_y;
+        self.up_rect = Rect::new(up_x0, up_top, up_x1, up_top + m.up_h);
 
         self.crumb_rects = self.compute_crumb_rects();
 
@@ -551,7 +660,7 @@ impl FilePicker {
         if !self.entries.is_empty() {
             targets.push(PickerFocus::List);
         }
-        if self.filters.len() > 1 {
+        if self.mode != FilePickerMode::Directory && self.filters.len() > 1 {
             targets.push(PickerFocus::Filter);
         }
         if self.mode == FilePickerMode::Save {
@@ -613,12 +722,13 @@ impl FilePicker {
 
     fn can_commit_open(&self) -> bool {
         match self.mode {
-            FilePickerMode::Open => self.first_selected_file().is_some(),
+            FilePickerMode::Open => self.validated_selected_files().is_some(),
             FilePickerMode::Save => {
                 (!self.filename.trim().is_empty()
                     && self.safe_save_target(self.filename.trim()).is_some())
                     || self.first_selected_file().is_some()
             }
+            FilePickerMode::Directory => self.validated_directory_choice().is_some(),
         }
     }
 
@@ -633,7 +743,7 @@ impl FilePicker {
         if !self.entries.is_empty() {
             controls.push(PickerFocus::List);
         }
-        if self.filters.len() > 1 {
+        if self.mode != FilePickerMode::Directory && self.filters.len() > 1 {
             controls.push(PickerFocus::Filter);
         }
         if self.mode == FilePickerMode::Save {
@@ -697,10 +807,11 @@ impl FilePicker {
                 segments.push((label, acc.clone()));
             }
         }
-        // No TextRenderer here, so approximate segment widths from label
-        // length — good enough for hit-testing; draw refines x using the
-        // real measure but reuses these rects.
-        let y0 = self.rect.y0 + 8.0 + 20.0;
+        // No TextRenderer here: a segment measured at a previous paint uses
+        // its recorded width, anything else the per-glyph estimate until the
+        // first paint measures it.
+        let m = self.metrics;
+        let y0 = self.rect.y0 + m.header_inset_y + CRUMB_ROW_OFFSET;
         let mut x = self.rect.x0 + PADDING;
         let mut out = Vec::new();
         for (label, target) in segments {
@@ -711,15 +822,52 @@ impl FilePicker {
                 reason = "label is a single path component's display text"
             )]
             let char_count = label.chars().count() as f64;
-            let w = 8.0 + char_count * 7.5 + 12.0; // text + " / "
-            out.push((target, Rect::new(x, y0, x + w, y0 + 18.0)));
+            let text_w = self
+                .crumb_widths
+                .get(&label)
+                .copied()
+                .unwrap_or(char_count * CRUMB_GLYPH_ESTIMATE);
+            let w = m.crumb_label_inset + text_w + m.crumb_separator_w;
+            out.push((target, Rect::new(x, y0, x + w, y0 + CRUMB_ROW_H)));
             x += w;
         }
         out
     }
 
-    /// Resolve "Open"/"Save": stage the selection (or the typed Save
-    /// filename), else cancel.
+    /// Measure every breadcrumb label with the renderer the frame draws with
+    /// and rebuild the crumb rects from those widths, so the hit rects match
+    /// the painted glyphs — and stay matched when an event handler rebuilds
+    /// the layout without a renderer. Runs once per paint.
+    fn measure_crumbs(&mut self, text_renderer: &mut TextRenderer, theme: &Theme) {
+        let size = theme.tokens.typography.scale.sm;
+        let labels: Vec<String> = (0..self.crumb_rects.len())
+            .filter_map(|idx| self.crumb_label_for(idx))
+            .collect();
+        let mut changed = false;
+        for label in labels {
+            let (tw, _) = text_renderer.measure(&label, size, None);
+            let measured = f64::from(tw);
+            if self.crumb_widths.get(&label) != Some(&measured) {
+                self.crumb_widths.insert(label, measured);
+                changed = true;
+            }
+        }
+        if changed {
+            self.crumb_rects = self.compute_crumb_rects();
+        }
+    }
+
+    /// Adopt `theme`'s insets; re-lay the picker out when they moved.
+    fn adopt_theme(&mut self, theme: &Theme) {
+        let metrics = PickerMetrics::from_theme(theme);
+        if metrics != self.metrics {
+            self.metrics = metrics;
+            self.apply_layout_helper();
+        }
+    }
+
+    /// Resolve the mode-specific confirmation action after revalidating the
+    /// selected paths (or the typed Save filename).
     fn commit_open(&mut self) {
         match self.mode {
             FilePickerMode::Save => {
@@ -736,17 +884,12 @@ impl FilePicker {
                 }
             }
             FilePickerMode::Open => {
-                let paths: Vec<PathBuf> = self
-                    .selection
-                    .selected()
-                    .into_iter()
-                    .filter_map(|i| self.entries.get(i))
-                    .filter(|e| !e.is_dir)
-                    .map(|e| e.path.clone())
-                    .collect();
-                if paths.is_empty() {
-                    self.pending_outcome = Some(FilePickerOutcome::Cancelled);
-                } else {
+                if let Some(paths) = self.validated_selected_files() {
+                    self.pending_outcome = Some(FilePickerOutcome::Selected(paths));
+                }
+            }
+            FilePickerMode::Directory => {
+                if let Some(paths) = self.validated_directory_choice() {
                     self.pending_outcome = Some(FilePickerOutcome::Selected(paths));
                 }
             }
@@ -764,9 +907,7 @@ impl FilePicker {
             return None;
         }
         let current = fs::canonicalize(&self.current_dir).ok()?;
-        let inside_root = self.accessible_roots.iter().any(|root| {
-            fs::canonicalize(root).is_ok_and(|canonical_root| current.starts_with(canonical_root))
-        });
+        let inside_root = current.is_dir() && self.canonical_path_is_inside_roots(&current);
         inside_root.then(|| self.current_dir.join(name))
     }
 
@@ -776,30 +917,96 @@ impl FilePicker {
             .into_iter()
             .filter_map(|i| self.entries.get(i))
             .find(|e| !e.is_dir)
-            .map(|e| e.path.clone())
+            .and_then(|e| self.safe_existing_file(&e.path))
     }
 
-    /// Resolve a click on entry `i`: dirs navigate, files (multi-)select,
-    /// and a second click on the same file opens it.
+    fn validated_selected_files(&self) -> Option<Vec<PathBuf>> {
+        let entries = self
+            .selection
+            .selected()
+            .into_iter()
+            .map(|index| self.entries.get(index))
+            .collect::<Option<Vec<_>>>()?;
+        if entries.is_empty() {
+            return None;
+        }
+        entries
+            .into_iter()
+            .map(|entry| {
+                (!entry.is_dir)
+                    .then(|| self.safe_existing_file(&entry.path))
+                    .flatten()
+            })
+            .collect()
+    }
+
+    fn validated_directory_choice(&self) -> Option<Vec<PathBuf>> {
+        let selected = self.selection.selected();
+        if selected.is_empty() {
+            return self
+                .safe_existing_directory(&self.current_dir)
+                .map(|path| vec![path]);
+        }
+        selected
+            .into_iter()
+            .map(|index| {
+                let entry = self.entries.get(index)?;
+                entry
+                    .is_dir
+                    .then(|| self.safe_existing_directory(&entry.path))
+                    .flatten()
+            })
+            .collect()
+    }
+
+    fn safe_existing_file(&self, candidate: &Path) -> Option<PathBuf> {
+        let canonical = fs::canonicalize(candidate).ok()?;
+        (canonical.is_file() && self.canonical_path_is_inside_roots(&canonical))
+            .then(|| candidate.to_path_buf())
+    }
+
+    fn safe_existing_directory(&self, candidate: &Path) -> Option<PathBuf> {
+        let canonical = fs::canonicalize(candidate).ok()?;
+        (canonical.is_dir() && self.canonical_path_is_inside_roots(&canonical))
+            .then(|| candidate.to_path_buf())
+    }
+
+    fn canonical_path_is_inside_roots(&self, canonical: &Path) -> bool {
+        self.accessible_roots.iter().any(|root| {
+            fs::canonicalize(root).is_ok_and(|canonical_root| {
+                canonical_root.is_dir() && canonical.starts_with(canonical_root)
+            })
+        })
+    }
+
+    /// Resolve a click on entry `i`: file modes navigate through directories;
+    /// directory mode selects on one click and navigates on a double click.
     fn activate_entry(&mut self, i: usize, ctrl: bool, shift: bool) {
         let Some(entry) = self.entries.get(i).cloned() else {
             return;
         };
-        if entry.is_dir {
+        if entry.is_dir && self.mode != FilePickerMode::Directory {
             self.navigate_to(&entry.path);
             return;
         }
-        let now = std::time::Instant::now();
+        let now = crate::time::now();
         let is_double = matches!(
             self.last_click,
             Some((pi, t)) if pi == i && now.duration_since(t) < crate::gesture::multi_click_interval()
         );
-        self.selection.apply_click(i, ctrl, shift);
+        if self.multiple {
+            self.selection.apply_click(i, ctrl, shift);
+        } else {
+            self.selection.select_only(i);
+        }
         // In Save mode, clicking a file copies its name into the field.
         if self.mode == FilePickerMode::Save {
             entry.name.clone_into(&mut self.filename);
         }
-        if is_double {
+        if is_double && self.mode == FilePickerMode::Directory {
+            self.last_click = None;
+            self.navigate_to(&entry.path);
+        } else if is_double {
             self.last_click = None;
             self.commit_open();
         } else {
@@ -825,7 +1032,7 @@ impl FilePicker {
             reason = "next is clamped into 0..=max_index immediately above, so it is never negative"
         )]
         let next = next as usize;
-        self.selection.move_to(next, shift);
+        self.selection.move_to(next, shift && self.multiple);
         self.scroll_to(next);
     }
 
@@ -858,9 +1065,10 @@ impl Widget for FilePicker {
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
-        _theme: &Theme,
+        theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
+        self.adopt_theme(theme);
         let node = taffy.leaf_node(Style {
             size: Size {
                 width: Dimension::percent(1.0),
@@ -892,23 +1100,28 @@ impl Widget for FilePicker {
         theme: &Theme,
         _presence: &PresenceCtx,
     ) {
+        self.adopt_theme(theme);
         self.apply_layout_helper();
+        self.measure_crumbs(text_renderer, theme);
         let tokens = &theme.tokens;
         let radius = f64::from(tokens.radii.md);
         let frame = RoundedRect::from_rect(self.rect, radius);
+        // Panel role (HIG §9.1): panel ground + the derived panel edge as
+        // a crisp 1 px inset stroke; the declared `border_standard` sat
+        // within rounding distance of `raised` on the dark preset.
         scene.fill(
             Fill::NonZero,
             transform,
-            tokens.colors.surfaces.raised,
+            crate::chrome::panel_ground(theme),
             None,
             &frame,
         );
         scene.stroke(
             &Stroke::new(1.0),
             transform,
-            tokens.colors.border_standard,
+            crate::chrome::panel_border(theme),
             None,
-            &frame,
+            &crate::surface::edge_outline(self.rect, radius),
         );
 
         self.draw_header_and_breadcrumbs(scene, transform, text_renderer, theme);
@@ -1003,7 +1216,11 @@ impl Widget for FilePicker {
                         })
                         .collect();
                     AccessNode::new(Role::List)
-                        .with_name("Files")
+                        .with_name(if self.mode == FilePickerMode::Directory {
+                            "Folders"
+                        } else {
+                            "Files"
+                        })
                         .with_key(control.id())
                         .with_bounds(self.list_rect())
                         .with_state(AccessState {
@@ -1039,15 +1256,7 @@ impl Widget for FilePicker {
                     let (label, rect, enabled) = if control == PickerFocus::Cancel {
                         ("Cancel", self.cancel_rect, true)
                     } else {
-                        (
-                            if self.mode == FilePickerMode::Save {
-                                "Save"
-                            } else {
-                                "Open"
-                            },
-                            self.open_rect,
-                            self.can_commit_open(),
-                        )
+                        (self.confirm_label(), self.open_rect, self.can_commit_open())
                     };
                     AccessNode::new(Role::Button)
                         .with_name(label)
@@ -1211,13 +1420,16 @@ impl FilePicker {
         theme: &Theme,
     ) {
         let tokens = &theme.tokens;
-        let title_size = tokens.typography.scale.base;
+        let title_size = renderer_type_size(text_renderer, tokens.typography.scale.base);
         text_renderer.draw_text(
             scene,
             &self.title,
             title_size,
             tokens.colors.text_primary,
-            transform.pre_translate(Vec2::new(self.rect.x0 + PADDING, self.rect.y0 + 8.0)),
+            transform.pre_translate(Vec2::new(
+                self.rect.x0 + PADDING,
+                self.rect.y0 + self.metrics.header_inset_y,
+            )),
             None,
         );
         if self.can_go_up() {
@@ -1248,7 +1460,7 @@ impl FilePicker {
                 LUCIDE_DEFAULT_STROKE_PX,
             );
         }
-        let crumb_size = tokens.typography.scale.sm;
+        let crumb_size = renderer_type_size(text_renderer, tokens.typography.scale.sm);
         let crumb_count = self.crumb_rects.len();
         for (idx, (_target, r)) in self.crumb_rects.iter().enumerate() {
             let label = self.crumb_label_for(idx).unwrap_or_default();
@@ -1263,11 +1475,17 @@ impl FilePicker {
                 &label,
                 crumb_size,
                 color,
-                transform.pre_translate(Vec2::new(r.x0 + 4.0, r.y0 + 2.0)),
+                transform
+                    .pre_translate(Vec2::new(r.x0 + self.metrics.crumb_label_inset, r.y0 + 2.0)),
                 None,
             );
             if idx.saturating_add(1) < crumb_count {
-                let sep_rect = Rect::new(r.x1 - 12.0, r.y0, r.x1, r.y0 + 16.0);
+                let sep_rect = Rect::new(
+                    r.x1 - self.metrics.crumb_separator_w,
+                    r.y0,
+                    r.x1,
+                    r.y0 + ROW_ICON_PX,
+                );
                 draw_icon(
                     scene,
                     transform,
@@ -1290,20 +1508,32 @@ impl FilePicker {
         theme: &Theme,
     ) {
         let tokens = &theme.tokens;
-        let row_size = tokens.typography.scale.sm;
+        let row_size = renderer_type_size(text_renderer, tokens.typography.scale.sm);
         for (i, rect) in &self.entry_rows {
             let i = *i;
             let is_selected = self.selection.is_selected(i);
             let is_hover = self.hover_entry == Some(i) && !is_selected;
+            // HIG §9.3: an idle row is transparent and hover is a lift; only
+            // the selected row carries a fill. The lift is a hairline wash
+            // measured against the panel ground the row sits on (a
+            // base-relative `Colors::lift` lands below `panel_ground` on the
+            // dark preset and would darken the hovered row). A `raised` idle
+            // fill was invisible on the old `raised` panel and read as a
+            // stack of bands once the panel took its own ground.
             let bg = if is_selected {
-                tokens.colors.accent.stops[crate::tokens::colors::ACCENT_PRIMARY_IDX]
+                Some(tokens.colors.accent.stops[crate::tokens::colors::ACCENT_PRIMARY_IDX])
             } else if is_hover {
-                theme.bg_hover
+                Some(crate::tokens::Colors::hairline_on(
+                    crate::chrome::panel_ground(theme),
+                    crate::chrome::HAIRLINE_ALPHA,
+                ))
             } else {
-                tokens.colors.surfaces.raised
+                None
             };
             let row_shape = RoundedRect::from_rect(*rect, f64::from(tokens.radii.sm));
-            scene.fill(Fill::NonZero, transform, bg, None, &row_shape);
+            if let Some(bg) = bg {
+                scene.fill(Fill::NonZero, transform, bg, None, &row_shape);
+            }
             let list_cursor = self
                 .selection
                 .primary()
@@ -1329,11 +1559,12 @@ impl FilePicker {
                 } else {
                     tokens.colors.text_primary
                 };
+                let inset_x = self.metrics.inset_x;
                 let icon_y = rect.y0 + (ROW_HEIGHT - ROW_ICON_PX) / 2.0;
                 let icon_rect = Rect::new(
-                    rect.x0 + 8.0,
+                    rect.x0 + inset_x,
                     icon_y,
-                    rect.x0 + 8.0 + ROW_ICON_PX,
+                    rect.x0 + inset_x + ROW_ICON_PX,
                     icon_y + ROW_ICON_PX,
                 );
                 draw_icon(
@@ -1344,14 +1575,17 @@ impl FilePicker {
                     fg,
                     LUCIDE_DEFAULT_STROKE_PX,
                 );
+                // Centre on the measured line, not the font size, so the
+                // name shares the icon's vertical centre.
+                let (_, name_h) = text_renderer.measure(&entry.name, row_size, None);
                 text_renderer.draw_text(
                     scene,
                     &entry.name,
                     row_size,
                     fg,
                     transform.pre_translate(Vec2::new(
-                        rect.x0 + 8.0 + ROW_ICON_PX + 8.0,
-                        rect.y0 + (ROW_HEIGHT - f64::from(row_size)) / 2.0,
+                        rect.x0 + inset_x + ROW_ICON_PX + inset_x,
+                        rect.y0 + (ROW_HEIGHT - f64::from(name_h)) / 2.0,
                     )),
                     None,
                 );
@@ -1369,11 +1603,11 @@ impl FilePicker {
         theme: &Theme,
     ) {
         let tokens = &theme.tokens;
-        let row_size = tokens.typography.scale.sm;
+        let row_size = renderer_type_size(text_renderer, tokens.typography.scale.sm);
         if self.mode == FilePickerMode::Save {
             self.draw_filename_field(scene, transform, text_renderer, theme, row_size);
         }
-        if self.filters.len() > 1 {
+        if self.mode != FilePickerMode::Directory && self.filters.len() > 1 {
             self.draw_filter_chip(scene, transform, text_renderer, theme, row_size);
         }
 
@@ -1389,17 +1623,13 @@ impl FilePicker {
             self.has_keyboard_focus && self.focus == Some(PickerFocus::Cancel),
             false,
         );
-        let open_label = match self.mode {
-            FilePickerMode::Open => "Open",
-            FilePickerMode::Save => "Save",
-        };
         draw_button(
             scene,
             transform,
             text_renderer,
             theme,
             self.open_rect,
-            open_label,
+            self.confirm_label(),
             self.hover_button == Some(1),
             true,
             self.has_keyboard_focus && self.focus == Some(PickerFocus::Confirm),
@@ -1427,13 +1657,15 @@ impl FilePicker {
             None,
             &s,
         );
+        // Rest edge derived from the field fill (HIG §9.5); focus keeps
+        // `border_focus`.
         scene.stroke(
             &Stroke::new(1.0),
             transform,
             if self.has_keyboard_focus && self.focus == Some(PickerFocus::Filename) {
                 tokens.colors.border_focus
             } else {
-                tokens.colors.border_standard
+                crate::surface::edge_on(tokens.colors.surfaces.base)
             },
             None,
             &s,
@@ -1457,14 +1689,16 @@ impl FilePicker {
         } else {
             tokens.colors.text_primary
         };
+        // Centre on the measured line, not the font size.
+        let (_, shown_h) = text_renderer.measure(shown, row_size, None);
         text_renderer.draw_text(
             scene,
             shown,
             row_size,
             color,
             transform.pre_translate(Vec2::new(
-                field.x0 + 8.0,
-                field.y0 + (field.height() - f64::from(row_size)) / 2.0,
+                field.x0 + self.metrics.inset_x,
+                field.y0 + (field.height() - f64::from(shown_h)) / 2.0,
             )),
             None,
         );
@@ -1484,21 +1718,17 @@ impl FilePicker {
         let tokens = &theme.tokens;
         let hovered = self.filter_rect.contains(self.last_cursor);
         let s = RoundedRect::from_rect(self.filter_rect, f64::from(tokens.radii.sm));
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            if hovered {
-                theme.bg_hover
-            } else {
-                tokens.colors.surfaces.base
-            },
-            None,
-            &s,
-        );
+        let fill = if hovered {
+            theme.bg_hover
+        } else {
+            tokens.colors.surfaces.base
+        };
+        scene.fill(Fill::NonZero, transform, fill, None, &s);
+        // Rest edge derived from the face actually painted (HIG §9.5).
         scene.stroke(
             &Stroke::new(1.0),
             transform,
-            tokens.colors.border_standard,
+            crate::surface::edge_on(fill),
             None,
             &s,
         );
@@ -1511,14 +1741,16 @@ impl FilePicker {
                 &s,
             );
         }
+        // Centre on the measured line, not the font size.
+        let (_, filter_h) = text_renderer.measure(self.active_filter_label(), row_size, None);
         text_renderer.draw_text(
             scene,
             self.active_filter_label(),
             row_size,
             tokens.colors.text_primary,
             transform.pre_translate(Vec2::new(
-                self.filter_rect.x0 + 8.0,
-                self.filter_rect.y0 + (self.filter_rect.height() - f64::from(row_size)) / 2.0,
+                self.filter_rect.x0 + self.metrics.inset_x,
+                self.filter_rect.y0 + (self.filter_rect.height() - f64::from(filter_h)) / 2.0,
             )),
             None,
         );
@@ -1615,7 +1847,10 @@ impl FilePicker {
             *handled = true;
             return;
         }
-        if self.filters.len() > 1 && self.filter_rect.contains(p) {
+        if self.mode != FilePickerMode::Directory
+            && self.filters.len() > 1
+            && self.filter_rect.contains(p)
+        {
             self.focus_control(PickerFocus::Filter);
             self.cycle_filter();
             *handled = true;
@@ -1765,7 +2000,10 @@ fn draw_button(
     // stays visually locked to the retained widget and every converted app.
     let face = crate::widget::ButtonFace::new(rect, label)
         .radius(f64::from(theme.tokens.radii.md))
-        .text_size(theme.tokens.typography.scale.sm)
+        .text_size(renderer_type_size(
+            text_renderer,
+            theme.tokens.typography.scale.sm,
+        ))
         .weight(crate::text_render::TextWeight::Regular)
         .hovered(is_hover)
         .focused(is_focused)
@@ -1894,6 +2132,321 @@ mod tests {
             .expect("Open action");
         assert!(open.state.disabled);
         assert!(!open.state.focusable);
+    }
+
+    #[test]
+    fn directory_mode_can_choose_the_current_empty_folder() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path().to_path_buf();
+        let mut picker = FilePicker::new("Choose folder", &root, vec![root.clone()])
+            .with_mode(FilePickerMode::Directory);
+
+        picker.click_open();
+
+        assert_eq!(
+            picker.take_outcome(),
+            Some(FilePickerOutcome::Selected(vec![root]))
+        );
+    }
+
+    #[test]
+    fn directory_mode_lists_only_folders_and_chooses_a_selected_child() {
+        let (_guard, root) = temp_tree();
+        let child = root.join("nested");
+        let mut picker = FilePicker::new("Choose folder", &root, vec![root.clone()])
+            .with_mode(FilePickerMode::Directory);
+
+        assert_eq!(picker.entries().len(), 1);
+        assert_eq!(picker.entries()[0].path, child);
+        assert!(picker.entries()[0].is_dir);
+        assert!(!picker.select_by_path(&root.join("alpha.txt")));
+        assert!(picker.select_by_path(&child));
+        picker.click_open();
+
+        assert_eq!(
+            picker.take_outcome(),
+            Some(FilePickerOutcome::Selected(vec![child]))
+        );
+    }
+
+    #[test]
+    fn directory_mode_single_and_multiple_selection_are_enforced_in_the_widget() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path().to_path_buf();
+        let first = root.join("a");
+        let second = root.join("b");
+        fs::create_dir(&first).unwrap();
+        fs::create_dir(&second).unwrap();
+
+        let mut single = FilePicker::new("Choose", &root, vec![root.clone()])
+            .with_mode(FilePickerMode::Directory)
+            .with_multiple(false);
+        single.set_rect(Rect::new(0.0, 0.0, 400.0, 400.0));
+        for index in [0, 1] {
+            let center = single.entry_rect(index).unwrap().center();
+            dispatch(&mut single, &cursor_at(center));
+            dispatch_mods(&mut single, &left_press(), ctrl());
+        }
+        assert_eq!(single.selected_indices(), vec![1]);
+
+        let mut multiple = FilePicker::new("Choose", &root, vec![root.clone()])
+            .with_mode(FilePickerMode::Directory)
+            .with_multiple(true);
+        multiple.set_rect(Rect::new(0.0, 0.0, 400.0, 400.0));
+        for index in [0, 1] {
+            let center = multiple.entry_rect(index).unwrap().center();
+            dispatch(&mut multiple, &cursor_at(center));
+            dispatch_mods(&mut multiple, &left_press(), ctrl());
+        }
+        assert_eq!(multiple.selected_indices(), vec![0, 1]);
+
+        let mut keyboard_single = FilePicker::new("Choose", &root, vec![root.clone()])
+            .with_mode(FilePickerMode::Directory)
+            .with_multiple(false);
+        keyboard_single.set_rect(Rect::new(0.0, 0.0, 400.0, 400.0));
+        dispatch(
+            &mut keyboard_single,
+            &key_named(winit::keyboard::NamedKey::ArrowDown),
+        );
+        dispatch_mods(
+            &mut keyboard_single,
+            &key_named(winit::keyboard::NamedKey::ArrowDown),
+            shift(),
+        );
+        assert_eq!(keyboard_single.selected_indices(), vec![1]);
+    }
+
+    #[test]
+    fn directory_mode_click_selects_and_double_click_navigates() {
+        let (_guard, root) = temp_tree();
+        let child = root.join("nested");
+        let mut picker = FilePicker::new("Choose", &root, vec![root.clone()])
+            .with_mode(FilePickerMode::Directory);
+        picker.set_rect(Rect::new(0.0, 0.0, 400.0, 400.0));
+        let center = picker.entry_rect(0).unwrap().center();
+        dispatch(&mut picker, &cursor_at(center));
+
+        dispatch(&mut picker, &left_press());
+        assert_eq!(picker.current_dir(), root.as_path());
+        assert_eq!(picker.selection(), Some(0));
+
+        dispatch(&mut picker, &left_press());
+        assert_eq!(picker.current_dir(), child.as_path());
+    }
+
+    #[test]
+    fn directory_mode_mouse_selects_and_footer_confirms_a_child() {
+        let (_guard, root) = temp_tree();
+        let child = root.join("nested");
+        let mut picker = FilePicker::new("Choose", &root, vec![root.clone()])
+            .with_mode(FilePickerMode::Directory);
+        picker.set_rect(Rect::new(0.0, 0.0, 400.0, 400.0));
+
+        let row = picker.entry_rect(0).unwrap().center();
+        dispatch(&mut picker, &cursor_at(row));
+        dispatch(&mut picker, &left_press());
+        let confirm = picker.open_rect().center();
+        dispatch(&mut picker, &cursor_at(confirm));
+        dispatch(&mut picker, &left_press());
+
+        assert_eq!(
+            picker.take_outcome(),
+            Some(FilePickerOutcome::Selected(vec![child]))
+        );
+    }
+
+    #[test]
+    fn directory_mode_keyboard_can_navigate_and_confirm() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path().to_path_buf();
+        let apple = root.join("apple");
+        let cherry = root.join("cherry");
+        fs::create_dir(&apple).unwrap();
+        fs::create_dir(&cherry).unwrap();
+        let mut picker = FilePicker::new("Choose", &root, vec![root.clone()])
+            .with_mode(FilePickerMode::Directory);
+        picker.set_rect(Rect::new(0.0, 0.0, 400.0, 400.0));
+
+        dispatch(&mut picker, &key_char("c"));
+        assert_eq!(picker.selection(), Some(1));
+        dispatch(&mut picker, &key_named(winit::keyboard::NamedKey::Tab));
+        dispatch(&mut picker, &key_named(winit::keyboard::NamedKey::Tab));
+        assert_eq!(picker.focus, Some(PickerFocus::Confirm));
+        dispatch(&mut picker, &key_named(winit::keyboard::NamedKey::Enter));
+
+        assert_eq!(
+            picker.take_outcome(),
+            Some(FilePickerOutcome::Selected(vec![cherry]))
+        );
+
+        let mut navigate = FilePicker::new("Choose", &root, vec![root.clone()])
+            .with_mode(FilePickerMode::Directory);
+        navigate.set_rect(Rect::new(0.0, 0.0, 400.0, 400.0));
+        dispatch(
+            &mut navigate,
+            &key_named(winit::keyboard::NamedKey::ArrowDown),
+        );
+        dispatch(&mut navigate, &key_named(winit::keyboard::NamedKey::Enter));
+        assert_eq!(navigate.current_dir(), apple.as_path());
+    }
+
+    #[test]
+    fn directory_mode_empty_folder_keyboard_confirmation_and_cancel_remain_usable() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path().to_path_buf();
+        let mut picker = FilePicker::new("Choose", &root, vec![root.clone()])
+            .with_mode(FilePickerMode::Directory);
+
+        dispatch(&mut picker, &key_named(winit::keyboard::NamedKey::Tab));
+        assert_eq!(picker.focus, Some(PickerFocus::Confirm));
+        dispatch(&mut picker, &key_named(winit::keyboard::NamedKey::Enter));
+        assert_eq!(
+            picker.take_outcome(),
+            Some(FilePickerOutcome::Selected(vec![root.clone()]))
+        );
+
+        let mut cancelled = FilePicker::new("Choose", &root, vec![root.clone()])
+            .with_mode(FilePickerMode::Directory);
+        dispatch(
+            &mut cancelled,
+            &key_named(winit::keyboard::NamedKey::Escape),
+        );
+        assert_eq!(cancelled.take_outcome(), Some(FilePickerOutcome::Cancelled));
+    }
+
+    #[test]
+    fn directory_mode_uses_custom_and_default_labels_with_folder_semantics() {
+        use crate::a11y::Role;
+
+        let (_guard, root) = temp_tree();
+        let mut picker = FilePicker::new("Choose", &root, vec![root.clone()])
+            .with_mode(FilePickerMode::Directory)
+            .with_filters(vec![FileFilter::new("Images", &["png"]), FileFilter::all()])
+            .with_accept_label(Some("Attach folder".into()));
+        picker.set_rect(Rect::new(0.0, 0.0, 400.0, 400.0));
+        let node = Widget::accessibility(&picker).expect("dialog semantics");
+        assert!(
+            node.children.iter().any(|child| {
+                child.role == Role::List && child.name.as_deref() == Some("Folders")
+            })
+        );
+        assert!(node.children.iter().any(|child| {
+            child.role == Role::Button && child.name.as_deref() == Some("Attach folder")
+        }));
+        assert!(
+            !node
+                .children
+                .iter()
+                .any(|child| { matches!(child.role, Role::TextInput | Role::ComboBox) })
+        );
+
+        let default = FilePicker::new("Choose", &root, vec![root.clone()])
+            .with_mode(FilePickerMode::Directory)
+            .with_accept_label(Some("   ".into()));
+        let node = Widget::accessibility(&default).expect("dialog semantics");
+        assert!(node.children.iter().any(|child| {
+            child.role == Role::Button && child.name.as_deref() == Some("Choose folder")
+        }));
+    }
+
+    #[test]
+    fn single_open_mode_constrains_selection_without_changing_the_default() {
+        let (_guard, root) = temp_tree();
+        let mut single = FilePicker::new("Open", &root, vec![root.clone()]).with_multiple(false);
+        single.set_rect(Rect::new(0.0, 0.0, 400.0, 400.0));
+        for index in [1, 2] {
+            let center = single.entry_rect(index).unwrap().center();
+            dispatch(&mut single, &cursor_at(center));
+            dispatch_mods(&mut single, &left_press(), ctrl());
+        }
+        assert_eq!(single.selected_indices(), vec![2]);
+
+        let mut default_multiple = FilePicker::new("Open", &root, vec![root.clone()]);
+        default_multiple.set_rect(Rect::new(0.0, 0.0, 400.0, 400.0));
+        for index in [1, 2] {
+            let center = default_multiple.entry_rect(index).unwrap().center();
+            dispatch(&mut default_multiple, &cursor_at(center));
+            dispatch_mods(&mut default_multiple, &left_press(), ctrl());
+        }
+        assert_eq!(default_multiple.selected_indices(), vec![1, 2]);
+    }
+
+    #[test]
+    fn directory_confirmation_refuses_a_vanished_or_replaced_selection() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path().to_path_buf();
+        let child = root.join("child");
+        fs::create_dir(&child).unwrap();
+        let mut picker = FilePicker::new("Choose", &root, vec![root.clone()])
+            .with_mode(FilePickerMode::Directory);
+        assert!(picker.select_by_path(&child));
+
+        fs::remove_dir(&child).unwrap();
+        fs::write(&child, b"now a file").unwrap();
+        picker.click_open();
+
+        assert!(picker.take_outcome().is_none());
+        picker.click_cancel();
+        assert_eq!(picker.take_outcome(), Some(FilePickerOutcome::Cancelled));
+    }
+
+    #[test]
+    fn directory_confirmation_rechecks_the_current_directory() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path().to_path_buf();
+        let current = root.join("current");
+        fs::create_dir(&current).unwrap();
+        let mut picker = FilePicker::new("Choose", &current, vec![root.clone()])
+            .with_mode(FilePickerMode::Directory);
+
+        fs::remove_dir(&current).unwrap();
+        fs::write(&current, b"now a file").unwrap();
+        picker.click_open();
+
+        assert!(picker.take_outcome().is_none());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn directory_confirmation_refuses_a_selection_changed_to_an_escape_symlink() {
+        use std::os::unix::fs::symlink;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let outside = tempfile::tempdir().expect("outside");
+        let root = dir.path().to_path_buf();
+        let child = root.join("child");
+        fs::create_dir(&child).unwrap();
+        let mut picker = FilePicker::new("Choose", &root, vec![root.clone()])
+            .with_mode(FilePickerMode::Directory);
+        assert!(picker.select_by_path(&child));
+
+        fs::remove_dir(&child).unwrap();
+        symlink(outside.path(), &child).unwrap();
+        picker.click_open();
+
+        assert!(picker.take_outcome().is_none());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn directory_selection_preserves_non_utf8_native_paths() {
+        use std::ffi::OsStr;
+        use std::os::unix::ffi::OsStrExt as _;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path().to_path_buf();
+        let child = root.join(OsStr::from_bytes(b"folder-\xff"));
+        fs::create_dir(&child).unwrap();
+        let mut picker = FilePicker::new("Choose", &root, vec![root.clone()])
+            .with_mode(FilePickerMode::Directory);
+        assert!(picker.select_by_path(&child));
+
+        picker.click_open();
+
+        assert_eq!(
+            picker.take_outcome(),
+            Some(FilePickerOutcome::Selected(vec![child]))
+        );
     }
 
     #[test]

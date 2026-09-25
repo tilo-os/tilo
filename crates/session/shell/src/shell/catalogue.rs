@@ -1,7 +1,7 @@
 //! Apps the machine can open but has not installed yet — the other
 //! list, complementing [`crate::shell::launcher`]'s enumeration of
 //! what's *here*. Listing and installing both shell out to
-//! `tilo-catalogue`: network round-trips, signature verification and
+//! `app`: network round-trips, signature verification and
 //! archive extraction don't belong in the process that owns every
 //! window on the machine.
 //!
@@ -43,7 +43,7 @@ fn safe_diagnostic(bytes: &[u8]) -> String {
         .to_owned()
 }
 
-/// **Wire contract.** These field names are what `tilo-catalogue list
+/// **Wire contract.** These field names are what `app list
 /// --json` prints; the crate that prints them pins the same names in
 /// its own test, so changing one without the other fails loudly
 /// instead of silently producing an empty catalogue.
@@ -62,7 +62,7 @@ pub struct CatalogueApp {
     pub trust: String,
 }
 
-/// The envelope `tilo-catalogue list --json` prints.
+/// The envelope `app list --json` prints.
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct CatalogueListing {
     #[serde(default)]
@@ -108,21 +108,38 @@ fn lock_pending_notices() -> std::sync::MutexGuard<'static, Vec<(String, u64)>> 
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
-/// The same search the launcher does for `tilo-launcher`.
+/// The same search the launcher does for `tilo-launcher`, including its
+/// rule that only a developer build lets the environment name the binary
+/// (`TILO_APP_BIN`): the catalogue binary runs unconfined and decides what
+/// gets offered and installed.
 fn catalogue_bin_candidates() -> Vec<PathBuf> {
+    let current_exe = std::env::current_exe().ok();
+    catalogue_bin_candidates_from(
+        crate::compositor::dev_env::DEV_ENV_OVERRIDES,
+        std::env::var_os("TILO_APP_BIN"),
+        current_exe.as_deref(),
+    )
+}
+
+/// [`catalogue_bin_candidates`] as a pure function of its inputs, so the
+/// shipped ordering is assertable from a debug test run.
+fn catalogue_bin_candidates_from(
+    dev_overrides: bool,
+    explicit: Option<std::ffi::OsString>,
+    current_exe: Option<&std::path::Path>,
+) -> Vec<PathBuf> {
     let mut out = Vec::new();
-    if let Some(explicit) = std::env::var_os("TILO_CATALOGUE_BIN")
+    if dev_overrides
+        && let Some(explicit) = explicit
         && !explicit.is_empty()
     {
         out.push(PathBuf::from(explicit));
     }
-    if let Ok(exe) = std::env::current_exe()
-        && let Some(dir) = exe.parent()
-    {
-        out.push(dir.join("tilo-catalogue"));
+    if let Some(dir) = current_exe.and_then(std::path::Path::parent) {
+        out.push(dir.join("app"));
     }
-    out.push(PathBuf::from("/usr/libexec/tilo-catalogue"));
-    out.push(PathBuf::from("/usr/bin/tilo-catalogue"));
+    out.push(PathBuf::from("/usr/libexec/app"));
+    out.push(PathBuf::from("/usr/bin/app"));
     out
 }
 
@@ -144,7 +161,7 @@ pub fn parse_listing(stdout: &str) -> Result<CatalogueListing, String> {
 }
 
 fn listing_cache_path() -> Option<PathBuf> {
-    if let Some(path) = std::env::var_os("TILO_CATALOGUE_CACHE_FILE") {
+    if let Some(path) = std::env::var_os("TILO_APP_CACHE_FILE") {
         return Some(PathBuf::from(path));
     }
     dirs::cache_dir().map(|dir| dir.join("tilo-store/catalogue.json"))
@@ -231,7 +248,7 @@ fn schedule_refresh() {
         return;
     };
     let spawned = std::thread::Builder::new()
-        .name("tilo-catalogue-refresh".to_string())
+        .name("app-refresh".to_string())
         .spawn(move || {
             let mut command = std::process::Command::new(&bin);
             command.args(["list", "--json"]);
@@ -342,11 +359,11 @@ pub fn install_and_launch(
         push_failure(
             &package_id,
             &display_name,
-            "this system has no app catalogue (tilo-catalogue is missing)".to_string(),
+            "this system has no app catalogue (app is missing)".to_string(),
         );
         return;
     };
-    let builder = std::thread::Builder::new().name("tilo-catalogue-install".to_string());
+    let builder = std::thread::Builder::new().name("app-install".to_string());
     let identity = (package_id.clone(), display_name.clone());
     let spawn_result = builder.spawn(move || {
         let mut command = std::process::Command::new(&bin);
@@ -411,18 +428,18 @@ fn push_failure(package_id: &str, display_name: &str, detail: String) {
 mod tests {
     use super::*;
 
-    /// Pinned against the exact JSON `tilo-catalogue` prints;
-    /// `app-catalogue`'s own test pins the other half.
+    /// Pinned against the exact JSON `app` prints;
+    /// `app-cli`'s own test pins the other half.
     #[test]
     fn the_listing_envelope_parses_the_binarys_field_names() {
-        let json = r#"{"apps":[{"package_id":"dev.tilo.sheets","display_name":"Sheets",
+        let json = r#"{"apps":[{"package_id":"so.tilo.sheets","display_name":"Sheets",
             "description":"a spreadsheet","category":"Office","version":"2.0.0",
-            "registry":"main","download_url":"https://x/y.qpkg","trust":"verified"}],
+            "registry":"main","download_url":"https://x/y.tapp","trust":"verified"}],
             "unreachable":[{"name":"mirror","detail":"connection refused"}]}"#;
         let listing = parse_listing(json).expect("the envelope must parse");
         assert_eq!(listing.apps.len(), 1);
         let app = &listing.apps[0];
-        assert_eq!(app.package_id, "dev.tilo.sheets");
+        assert_eq!(app.package_id, "so.tilo.sheets");
         assert_eq!(app.display_name, "Sheets");
         assert_eq!(app.category.as_deref(), Some("Office"));
         assert_eq!(app.version, "2.0.0");
@@ -456,12 +473,12 @@ mod tests {
         let path = tmp.path().join("catalogue.json");
         std::fs::write(
             &path,
-            r#"{"apps":[{"package_id":"dev.tilo.remote","display_name":"Remote",
+            r#"{"apps":[{"package_id":"so.tilo.remote","display_name":"Remote",
                 "version":"1.0.0","registry":"team","trust":"verified"}]}"#,
         )
         .unwrap();
         let listing = read_cached_listing(&path).expect("cached listing should parse");
-        assert_eq!(listing.apps[0].package_id, "dev.tilo.remote");
+        assert_eq!(listing.apps[0].package_id, "so.tilo.remote");
     }
 
     /// A pending notice belongs to exactly one open, and taking it
@@ -469,23 +486,23 @@ mod tests {
     /// a notification that no longer exists.
     #[test]
     fn a_pending_notice_is_taken_once() {
-        note_pending_notice("dev.tilo.noticefixture", 42);
-        assert_eq!(take_pending_notice("dev.tilo.noticefixture"), Some(42));
-        assert_eq!(take_pending_notice("dev.tilo.noticefixture"), None);
+        note_pending_notice("so.tilo.noticefixture", 42);
+        assert_eq!(take_pending_notice("so.tilo.noticefixture"), Some(42));
+        assert_eq!(take_pending_notice("so.tilo.noticefixture"), None);
     }
 
     #[test]
     fn a_newer_open_replaces_the_notice_for_the_same_package() {
-        note_pending_notice("dev.tilo.replacefixture", 1);
-        assert_eq!(pending_notice("dev.tilo.replacefixture"), Some(1));
-        note_pending_notice("dev.tilo.replacefixture", 2);
-        assert_eq!(pending_notice("dev.tilo.replacefixture"), Some(2));
+        note_pending_notice("so.tilo.replacefixture", 1);
+        assert_eq!(pending_notice("so.tilo.replacefixture"), Some(1));
+        note_pending_notice("so.tilo.replacefixture", 2);
+        assert_eq!(pending_notice("so.tilo.replacefixture"), Some(2));
         assert_eq!(
-            take_pending_notice("dev.tilo.replacefixture"),
+            take_pending_notice("so.tilo.replacefixture"),
             Some(2),
             "the live open's notification is the one to retire"
         );
-        assert_eq!(take_pending_notice("dev.tilo.replacefixture"), None);
+        assert_eq!(take_pending_notice("so.tilo.replacefixture"), None);
     }
 
     /// How a test, or the headless harness, points at a specific build.
@@ -493,13 +510,26 @@ mod tests {
     #[serial_test::serial(process_env)]
     fn an_explicit_binary_override_is_searched_first() {
         let tmp = tempfile::tempdir().unwrap();
-        let fake = tmp.path().join("tilo-catalogue");
+        let fake = tmp.path().join("app");
         std::fs::write(&fake, b"#!/bin/true\n").unwrap();
-        // SAFETY: guarded by the `process_env` serial group.
-        unsafe { std::env::set_var("TILO_CATALOGUE_BIN", &fake) };
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("TILO_APP_BIN", &fake);
         let resolved = resolve_catalogue_bin();
-        unsafe { std::env::remove_var("TILO_CATALOGUE_BIN") };
+        env.remove("TILO_APP_BIN");
         assert_eq!(resolved.as_deref(), Some(fake.as_path()));
+    }
+
+    #[test]
+    fn a_release_build_ignores_the_catalogue_binary_override() {
+        let exe = std::path::Path::new("/usr/bin/shell");
+        let shipped = catalogue_bin_candidates_from(false, Some("/tmp/evil-app".into()), Some(exe));
+        assert!(
+            !shipped.contains(&PathBuf::from("/tmp/evil-app")),
+            "a release compositor must not run a catalogue binary named by the environment: {shipped:?}",
+        );
+        assert_eq!(shipped.first(), Some(&PathBuf::from("/usr/bin/app")));
+        let developer = catalogue_bin_candidates_from(true, Some("/dev/app".into()), Some(exe));
+        assert_eq!(developer.first(), Some(&PathBuf::from("/dev/app")));
     }
 
     #[test]
@@ -507,10 +537,10 @@ mod tests {
     fn a_missing_override_falls_through_rather_than_resolving_to_it() {
         let tmp = tempfile::tempdir().unwrap();
         let absent = tmp.path().join("not-here");
-        // SAFETY: guarded by the `process_env` serial group.
-        unsafe { std::env::set_var("TILO_CATALOGUE_BIN", &absent) };
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("TILO_APP_BIN", &absent);
         let resolved = resolve_catalogue_bin();
-        unsafe { std::env::remove_var("TILO_CATALOGUE_BIN") };
+        env.remove("TILO_APP_BIN");
         assert_ne!(
             resolved.as_deref(),
             Some(absent.as_path()),

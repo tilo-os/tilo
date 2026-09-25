@@ -139,7 +139,7 @@ pub enum Update {
               detached thread body and a #[test] fn, neither of which can propagate a Result"
 )]
 fn client() -> reqwest::blocking::Client {
-    reqwest::blocking::Client::builder()
+    tilo_net::http::blocking_client()
         .user_agent("tube/0.1 (+tilo)")
         .timeout(Duration::from_secs(8))
         .build()

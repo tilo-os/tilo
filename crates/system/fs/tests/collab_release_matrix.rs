@@ -17,8 +17,8 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use ed25519_dalek::SigningKey;
 use fs::{Namespace, ROOT_INO};
+use getrandom::{SysRng, rand_core::UnwrapErr};
 use iroh_blobs::Hash;
-use rand::rngs::OsRng;
 use tilo_user_identity::{
     DeviceCapabilities, DeviceCert, IdentityPaths, adopt_device_key,
     persist::{write_device_cert, write_public_key, write_signing_key},
@@ -178,7 +178,10 @@ fn capture(child: &mut Child) -> (Receiver<String>, Arc<Mutex<Vec<String>>>) {
 
 // Each path is a distinct externally observable daemon boundary in this
 // end-to-end fixture; bundling them would make call-site mixups less visible.
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "each path is a distinct daemon boundary; bundling them hides call-site mixups"
+)]
 fn spawn_fs(
     binary: &Path,
     identity: &Path,
@@ -667,7 +670,10 @@ fn forced_partition_offline_edits_restart_and_converge_as_a_conflict() {
 
 // This mandatory release scenario intentionally keeps every process barrier,
 // restart, ACL check, and convergence assertion visible in one linear trace.
-#[allow(clippy::too_many_lines)]
+#[allow(
+    clippy::too_many_lines,
+    reason = "the release scenario keeps every barrier, restart and assertion in one linear trace"
+)]
 #[test]
 fn shipped_daemons_partition_restart_and_converge_through_real_fuse() {
     if !real_fuse_available("partition/restart convergence") {
@@ -1245,7 +1251,10 @@ fn nas_replica_survives_owner_loss_restart_delete_and_denies_ungranted_reader() 
 }
 
 // The skew matrix spells out receipt and grant behavior at every clock edge.
-#[allow(clippy::too_many_lines)]
+#[allow(
+    clippy::too_many_lines,
+    reason = "the skew matrix spells out receipt and grant behaviour at every clock edge"
+)]
 #[test]
 fn skewed_clocks_fail_closed_for_receipts_and_grant_expiry() {
     use collab_types::{
@@ -1261,8 +1270,8 @@ fn skewed_clocks_fail_closed_for_receipts_and_grant_expiry() {
     };
     use tilo_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert};
 
-    let root = ed25519_dalek::SigningKey::generate(&mut OsRng);
-    let device = ed25519_dalek::SigningKey::generate(&mut OsRng);
+    let root = ed25519_dalek::SigningKey::generate(&mut UnwrapErr(SysRng));
+    let device = ed25519_dalek::SigningKey::generate(&mut UnwrapErr(SysRng));
     let capabilities = DeviceCapabilities::member();
     let mut cert = DeviceCert {
         user_public_key: root.verifying_key().to_bytes(),

@@ -252,7 +252,7 @@ fn render_image(out: &mut String, block: &BlockView, indent_level: i64) {
 fn render_table(out: &mut String, block: &BlockView, colors: &ColorTable) {
     // Rows are child blocks, each row's children its cells. Tolerates
     // the flat shape (cells directly under the table with a `cols`
-    // attr), matching qdoc-html's handling.
+    // attr), matching export_html's handling.
     let plan = TablePlan::new(block);
 
     if plan.is_empty() {
@@ -504,3 +504,6 @@ fn push_escaped(out: &mut String, text: &str) {
         }
     }
 }
+
+#[cfg(test)]
+mod tests;

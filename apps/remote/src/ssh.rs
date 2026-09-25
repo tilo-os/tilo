@@ -138,9 +138,7 @@ pub fn default_known_hosts_path() -> Result<PathBuf, String> {
         validate_private_store_path(&path)?;
         return Ok(path);
     }
-    let state = std::env::var_os("XDG_STATE_HOME")
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".local/state")))
+    let state = xdg_paths::xdg::state_home()
         .ok_or_else(|| "no private state directory is available for SSH host trust".to_string())?;
     let directory = state.join("tilo").join("remote");
     ensure_private_directory(&directory)?;

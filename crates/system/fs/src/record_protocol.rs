@@ -135,7 +135,10 @@ impl From<RecordAccessBinding> for RecordProtocolSessionV1 {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-#[allow(clippy::large_enum_variant)] // Boxing would change the versioned wire schema.
+#[allow(
+    clippy::large_enum_variant,
+    reason = "Snapshots and replica receipts stay inline so response construction does not require an additional box allocation."
+)]
 pub enum RecordProtocolResponseV1 {
     Snapshot {
         session: RecordProtocolSessionV1,
@@ -173,6 +176,7 @@ pub trait RecordMutationSink: Send + Sync {
     /// Returns an error when projection is rejected or unavailable.
     fn record_mutation(
         &self,
+        _repository: &RecordRepository,
         scope: RecordAccessBinding,
         envelope: &RecordEnvelopeV1,
         snapshot: &RecordSnapshot,
@@ -207,6 +211,7 @@ struct NoopRecordMutationSink;
 impl RecordMutationSink for NoopRecordMutationSink {
     fn record_mutation(
         &self,
+        _repository: &RecordRepository,
         _scope: RecordAccessBinding,
         _envelope: &RecordEnvelopeV1,
         _snapshot: &RecordSnapshot,
@@ -247,7 +252,10 @@ impl RecordProtocol {
     /// # Errors
     ///
     /// Returns an error when the endpoint does not match the certified device.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Protocol construction binds endpoint identity, credentials/revocations, workspace and share authority, live certification, access registry, and repository."
+    )]
     pub fn new(
         endpoint: Endpoint,
         credentials: PeerCredentials,
@@ -346,7 +354,10 @@ impl RecordProtocol {
         Ok(())
     }
 
-    #[allow(clippy::too_many_lines)]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "Credential admission and the read, write, and replica-receipt branches share one exact-record session scope and visible denial policy."
+    )]
     async fn handle_request(
         &self,
         peer: crate::peer_auth::AuthenticatedFsPeer,
@@ -445,10 +456,12 @@ impl RecordProtocol {
                     crate::record_replication::RecordOperationV1::PrepareTransaction(_)
                         | crate::record_replication::RecordOperationV1::CommitTransaction { .. }
                 );
-                match self
-                    .mutation_sink
-                    .record_mutation(binding, &envelope, &snapshot)
-                {
+                match self.mutation_sink.record_mutation(
+                    &self.repository,
+                    binding,
+                    &envelope,
+                    &snapshot,
+                ) {
                     Ok(()) => {
                         if cross_record
                             && self
@@ -1083,6 +1096,7 @@ mod tests {
     impl RecordMutationSink for RecordingMutationSink {
         fn record_mutation(
             &self,
+            _repository: &RecordRepository,
             scope: RecordAccessBinding,
             envelope: &RecordEnvelopeV1,
             _snapshot: &RecordSnapshot,
@@ -1097,7 +1111,10 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-    #[allow(clippy::too_many_lines)] // Full authenticated protocol lifecycle scenario.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "The authenticated lifecycle checks named edits, read-only bearer access, projection retry, cross-record denial, and durable host replica receipts."
+    )] // Full authenticated protocol lifecycle scenario.
     async fn authenticated_read_only_share_gets_persisted_exact_host_receipt_without_write_or_sibling_scope()
      {
         let server = party().await;

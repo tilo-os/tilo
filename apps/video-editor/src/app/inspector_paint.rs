@@ -21,8 +21,7 @@ impl VideoEditorApp {
         let c = &theme.tokens.colors;
         let ch = self.curve_channel;
         let spline = clip.curves.spline(ch);
-        fill_rrect(scene, tf, c.lift(0.35), canvas, 8.0);
-        stroke_rrect(scene, tf, c.border_standard, canvas, 8.0, 1.0);
+        well(scene, tf, theme, canvas, 8.0);
 
         // Quarter grid. Faint, because it is a reading aid and the curve is
         // the content.
@@ -169,7 +168,7 @@ impl VideoEditorApp {
                 tr,
                 tf,
                 "Rate",
-                11.5,
+                INSPECTOR_LABEL_SIZE,
                 c.text_dim,
                 x0,
                 l.project_rate_y,
@@ -225,9 +224,14 @@ impl VideoEditorApp {
         for (m, row) in &l.marker_rows {
             let (name_rect, note_btn, rename, del) = marker_row_parts(*row);
             let hovered = row.contains(self.last_mouse);
-            if hovered {
-                fill_rrect(scene, tf, c.lift(0.35), *row, 6.0);
-            }
+            selection_row(
+                scene,
+                tf,
+                theme,
+                *row,
+                6.0,
+                ui::chrome::SelectionState::new(false, hovered, false),
+            );
             let Some((_, mk, _)) = self
                 .project
                 .all_markers()
@@ -302,9 +306,18 @@ impl VideoEditorApp {
                     (rename, ui::icons::Icon::Pencil, c.text_primary),
                     (del, ui::icons::Icon::X, c.semantic.danger),
                 ] {
-                    if rect.contains(self.last_mouse) {
-                        fill_rrect(scene, tf, with_alpha(tint, 0.18), rect, 4.0);
-                    }
+                    selection_row(
+                        scene,
+                        tf,
+                        theme,
+                        rect,
+                        4.0,
+                        ui::chrome::SelectionState::new(
+                            false,
+                            rect.contains(self.last_mouse),
+                            false,
+                        ),
+                    );
                     let g = 11.0;
                     let box_ = Rect::new(
                         rect.center().x - g / 2.0,
@@ -330,7 +343,7 @@ impl VideoEditorApp {
                     tr,
                     tf,
                     "Nothing marked yet",
-                    11.5,
+                    INSPECTOR_LABEL_SIZE,
                     c.text_dim,
                     x0,
                     rect.y0 - 16.0 * inspector_scale,
@@ -358,14 +371,14 @@ impl VideoEditorApp {
         r: &Regions,
     ) {
         let c = &theme.tokens.colors;
-        fill_rect(scene, tf, c.surfaces.raised, r.inspector);
+        fill_rect(scene, tf, r.inspector, c.surfaces.raised);
         stroke_line(
             scene,
             tf,
-            c.border_standard,
-            r.inspector.x0,
+            pane_hairline(theme),
+            r.inspector.x0 + 0.5,
             r.inspector.y0,
-            r.inspector.x0,
+            r.inspector.x0 + 0.5,
             r.inspector.y1,
             1.0,
         );
@@ -417,7 +430,7 @@ impl VideoEditorApp {
                 r.inspector.x1,
                 r.inspector.y1,
             );
-            fill_rect(scene, tf, with_alpha(c.surfaces.raised, 0.6), veil);
+            fill_rect(scene, tf, veil, with_alpha(c.surfaces.raised, 0.6));
         }
         // The keyboard cursor, drawn over the lock veil rather than under it:
         // where the keyboard *is* stays legible even where the controls are
@@ -448,8 +461,8 @@ impl VideoEditorApp {
                 fill_rect(
                     scene,
                     tf,
-                    with_alpha(c.surfaces.raised, 0.10 + 0.9 * f),
                     band,
+                    with_alpha(c.surfaces.raised, 0.10 + 0.9 * f),
                 );
             }
         };
@@ -487,7 +500,7 @@ impl VideoEditorApp {
             r.inspector.x1,
             header_bottom,
         );
-        fill_rect(scene, tf, c.surfaces.raised, header);
+        fill_rect(scene, tf, header, c.surfaces.raised);
         let x0 = r.inspector.x0 + PAD * s;
         let x1 = r.inspector.x1 - PAD * s;
         let top = r.inspector.y0;
@@ -511,7 +524,7 @@ impl VideoEditorApp {
                 x1,
                 top + 24.0 * s,
             );
-            fill_rrect(scene, tf, with_alpha(c.accent[5], 0.22), pillr, 10.0 * s);
+            fill_round(scene, tf, pillr, 10.0 * s, with_alpha(c.accent[5], 0.22));
             text_w(
                 scene,
                 tr,
@@ -528,7 +541,7 @@ impl VideoEditorApp {
             return;
         };
         let tag = Rect::new(x0, top + 36.0 * s, x0 + 6.0 * s, top + 68.0 * s);
-        fill_rrect(scene, tf, clip_color(theme, clip.palette), tag, 3.0 * s);
+        fill_round(scene, tf, tag, 3.0 * s, clip_color(theme, clip.palette));
         let name = self
             .project
             .media(clip.media)
@@ -620,6 +633,20 @@ impl VideoEditorApp {
         // The whole body scrolls together by `inspector_scroll` (clamped to 0
         // when nothing is selected, so the empty state stays put).
         let top = r.inspector.y0;
+        // One size for every control label and caption in the panel. The rows
+        // used to mix 12, 11.5 and 11: the fade and transition-length labels
+        // read as a different, smaller kind of row from the opacity and grade
+        // labels directly above them.
+        let label_size = INSPECTOR_LABEL_SIZE;
+        // The heading row shares the media bin's band and centre line, so the
+        // two panes' headings — and the chips beside them — line up.
+        let heading = Rect::new(
+            x0,
+            top + PANE_HEADING_Y0,
+            x1,
+            top + PANE_HEADING_Y0 + PANE_HEADING_H,
+        );
+        let heading_y = text_baseline(heading, 11.0, tr);
         text_w(
             scene,
             tr,
@@ -628,7 +655,7 @@ impl VideoEditorApp {
             11.0,
             c.text_dim,
             x0,
-            top + 14.0,
+            heading_y,
             TextWeight::Semibold,
         );
         // With more than one clip selected, say so where the count matters —
@@ -636,8 +663,11 @@ impl VideoEditorApp {
         if self.selection.len() > 1 {
             let label = format!("{} clips selected", self.selection.len());
             let (lw, _) = tr.measure_weighted(&label, 10.5, None, TextWeight::Medium);
-            let pillr = Rect::new(x1 - lw as f64 - 14.0, top + 4.0, x1, top + 22.0);
-            fill_rrect(scene, tf, with_alpha(c.accent[5], 0.22), pillr, 9.0);
+            let pillr = Rect::new(x1 - lw as f64 - 14.0, heading.y0, x1, heading.y1);
+            // A quiet capsule with its derived edge; the count keeps the
+            // accent in its words, not as a wash under them.
+            well(scene, tf, theme, pillr, PANE_HEADING_H / 2.0);
+            let pill_y = text_baseline(pillr, 10.5, tr);
             text_w(
                 scene,
                 tr,
@@ -646,7 +676,7 @@ impl VideoEditorApp {
                 10.5,
                 c.accent[5],
                 pillr.x0 + 7.0,
-                top + 8.0,
+                pill_y,
                 TextWeight::Medium,
             );
         }
@@ -707,7 +737,7 @@ impl VideoEditorApp {
 
         // Header card with color tag + name (scrolls with the body).
         let tag = Rect::new(x0, top + 36.0, x0 + 6.0, top + 64.0);
-        fill_rrect(scene, tf, clip_color(theme, clip.palette), tag, 3.0);
+        fill_round(scene, tf, tag, 3.0, clip_color(theme, clip.palette));
         let name = media
             .as_ref()
             .map(|m| m.name.clone())
@@ -827,7 +857,7 @@ impl VideoEditorApp {
             "Opacity",
             format!("{:.0}%", opacity * 100.0),
             opacity,
-            12.0,
+            label_size,
             dragging(self.drag, Drag::Opacity),
             Some(animated(Param::Opacity)),
         );
@@ -839,7 +869,7 @@ impl VideoEditorApp {
             "Volume",
             format!("{:.0}%", volume * 100.0),
             volume,
-            12.0,
+            label_size,
             dragging(self.drag, Drag::Volume),
             Some(animated(Param::Volume)),
         );
@@ -868,7 +898,7 @@ impl VideoEditorApp {
                 label,
                 format!("{:.2}×", Filters::gain(v)),
                 v,
-                12.0,
+                label_size,
                 dragging(self.drag, d),
                 Some(animated(p)),
             );
@@ -884,7 +914,7 @@ impl VideoEditorApp {
             "Fade In",
             format!("{:.1}s", clip.fade_in),
             (clip.fade_in / cd).clamp(0.0, 1.0),
-            11.0,
+            label_size,
             dragging(self.drag, Drag::FadeIn),
             None,
         );
@@ -895,7 +925,7 @@ impl VideoEditorApp {
             "Fade Out",
             format!("{:.1}s", clip.fade_out),
             (clip.fade_out / cd).clamp(0.0, 1.0),
-            11.0,
+            label_size,
             dragging(self.drag, Drag::FadeOut),
             None,
         );
@@ -906,7 +936,7 @@ impl VideoEditorApp {
                 tr,
                 tf,
                 "Transition",
-                12.0,
+                label_size,
                 c.text_dim,
                 x0,
                 l.transition_y - 20.0,
@@ -930,7 +960,7 @@ impl VideoEditorApp {
                 "Transition length",
                 format!("{:.2}s", clip.transition_len()),
                 (clip.transition_len() / max).clamp(0.0, 1.0),
-                11.0,
+                label_size,
                 self.drag == Some(Drag::TransitionLen),
                 None,
             );
@@ -942,22 +972,22 @@ impl VideoEditorApp {
                 tr,
                 tf,
                 "Label",
-                12.0,
+                label_size,
                 c.text_dim,
                 x0,
                 l.colors_y - 20.0,
             );
             for (pal, rect) in &l.colors {
                 let sw = clip_color(theme, *pal);
-                fill_rrect(scene, tf, sw, *rect, 6.0);
+                ui::surface::card(scene, tf, *rect, 6.0, sw);
                 if rect.contains(self.last_mouse) && clip.palette != *pal {
-                    stroke_rrect(scene, tf, with_alpha(c.text_primary, 0.5), *rect, 6.0, 1.5);
+                    stroke_round(scene, tf, *rect, 6.0, with_alpha(c.text_primary, 0.5), 1.5);
                 }
                 if clip.palette == *pal {
                     // The selection ring has to read against whichever colour
                     // it rings, so it comes from the focus token rather than
                     // a hardcoded white that vanishes on the pale swatches.
-                    stroke_rrect(scene, tf, c.border_focus, rect.inset(1.5), 7.0, 2.0);
+                    stroke_round(scene, tf, rect.inset(1.5), 7.0, c.border_focus, 2.0);
                 }
             }
         }
@@ -1015,19 +1045,19 @@ impl VideoEditorApp {
                 tr,
                 tf,
                 f.label(),
-                11.5,
+                label_size,
                 label_col,
                 lx,
                 track.y0 - 20.0,
             );
             let readout = f.readout(v);
-            let (pw, _) = tr.measure(&readout, 11.5, None);
+            let (pw, _) = tr.measure(&readout, label_size, None);
             text(
                 scene,
                 tr,
                 tf,
                 &readout,
-                11.5,
+                label_size,
                 c.text_primary,
                 track.x1 - pw as f64,
                 track.y0 - 20.0,
@@ -1051,7 +1081,7 @@ impl VideoEditorApp {
                 tr,
                 tf,
                 "Picture in picture",
-                11.5,
+                label_size,
                 c.text_dim,
                 x0,
                 top.y0 - 16.0 * inspector_scale,
@@ -1063,18 +1093,18 @@ impl VideoEditorApp {
                     && (clip.transform.pos_x.signum() - corner.0).abs() < 1e-6
                     && (clip.transform.pos_y.signum() - corner.1).abs() < 1e-6;
                 let hovered = rect.contains(self.last_mouse);
-                let bg = if on {
-                    c.accent[5]
-                } else if hovered {
-                    c.lift(0.72)
-                } else {
-                    c.neutral[3]
-                };
-                fill_rrect(scene, tf, bg, *rect, 6.0);
-                stroke_rrect(scene, tf, c.border_standard, *rect, 6.0, 1.0);
+                // The shared button face — Primary for the preset in force —
+                // with the corner glyph painted over it in the face's ink.
+                let mut face = ui::widget::ButtonFace::new(*rect, "")
+                    .radius(6.0)
+                    .hovered(hovered);
+                if on {
+                    face = face.primary();
+                }
+                ui::widget::Button::paint(scene, tf, tr, theme, &face);
                 // A miniature frame with the inset drawn in the named corner.
                 let fg = if on {
-                    on_fill(theme, bg).1
+                    on_fill(theme, theme.accent_primary).1
                 } else {
                     c.text_primary
                 };
@@ -1084,7 +1114,7 @@ impl VideoEditorApp {
                     rect.center().x + 11.0,
                     rect.center().y + 7.0,
                 );
-                stroke_rrect(scene, tf, with_alpha(fg, 0.5), g, 2.0, 1.0);
+                stroke_round(scene, tf, g, 2.0, with_alpha(fg, 0.5), 1.0);
                 let iw = g.width() * 0.42;
                 let ih = g.height() * 0.42;
                 let ix = if corner.0 < 0.0 {
@@ -1097,11 +1127,20 @@ impl VideoEditorApp {
                 } else {
                     g.y1 - 2.0 - ih
                 };
-                fill_rrect(scene, tf, fg, Rect::new(ix, iy, ix + iw, iy + ih), 1.5);
+                fill_round(scene, tf, Rect::new(ix, iy, ix + iw, iy + ih), 1.5, fg);
             }
         }
         if l.crop_label_y > 0.0 {
-            text(scene, tr, tf, "Crop", 11.5, c.text_dim, x0, l.crop_label_y);
+            text(
+                scene,
+                tr,
+                tf,
+                "Crop",
+                label_size,
+                c.text_dim,
+                x0,
+                l.crop_label_y,
+            );
         }
         if l.anchor_label_y > 0.0 {
             text(
@@ -1109,7 +1148,7 @@ impl VideoEditorApp {
                 tr,
                 tf,
                 "Anchor",
-                11.5,
+                label_size,
                 c.text_dim,
                 x0,
                 l.anchor_label_y,
@@ -1205,8 +1244,17 @@ impl VideoEditorApp {
                     1 => format!("{} — this lane, 1 other clip", t.name),
                     n => format!("{} — this lane, {n} other clips", t.name),
                 };
-                let words = elide_at(&words, (x1 - x0) as f32, 11.0, tr);
-                text(scene, tr, tf, &words, 11.0, c.text_dim, x0, l.mix_track_y);
+                let words = elide_at(&words, (x1 - x0) as f32, label_size, tr);
+                text(
+                    scene,
+                    tr,
+                    tf,
+                    &words,
+                    label_size,
+                    c.text_dim,
+                    x0,
+                    l.mix_track_y,
+                );
             }
             if let Some(meter) = l.mix_meter {
                 draw_level_meter(
@@ -1285,7 +1333,7 @@ impl VideoEditorApp {
                 tr,
                 tf,
                 "Key colour",
-                11.5,
+                label_size,
                 c.text_dim,
                 x0,
                 l.key_color_y,
@@ -1299,13 +1347,13 @@ impl VideoEditorApp {
                 .zip(col)
                 .all(|(a, b)| (a - b).abs() < 1e-6);
             let swatch = Color::new([col[0] as f32, col[1] as f32, col[2] as f32, 1.0]);
-            fill_rrect(scene, tf, swatch, *rect, 5.0);
+            ui::surface::card(scene, tf, *rect, 5.0, swatch);
             // The chosen swatch takes a ring rather than a tick, so the
             // colour it names is never covered by the mark that selects it.
             if on {
-                stroke_rrect(scene, tf, c.text_primary, rect.inflate(2.0, 2.0), 7.0, 2.0);
+                stroke_round(scene, tf, rect.inflate(2.0, 2.0), 7.0, c.text_primary, 2.0);
             } else if rect.contains(self.last_mouse) {
-                stroke_rrect(scene, tf, c.border_focus, rect.inflate(1.0, 1.0), 6.0, 1.0);
+                stroke_round(scene, tf, rect.inflate(1.0, 1.0), 6.0, c.border_focus, 1.0);
             }
         }
         if let Some(rect) = l.key_pick {
@@ -1376,7 +1424,7 @@ impl VideoEditorApp {
                 tr,
                 tf,
                 "Words",
-                11.5,
+                label_size,
                 c.text_dim,
                 rect.x0,
                 rect.y0 - 16.0,
@@ -1385,19 +1433,12 @@ impl VideoEditorApp {
                 .title_edit
                 .as_ref()
                 .map(|(m, _)| Some(*m) == media.as_ref().map(|m| m.id));
-            fill_rrect(scene, tf, c.lift(0.35), rect, 6.0);
-            stroke_rrect(
-                scene,
-                tf,
-                if editing == Some(true) {
-                    c.border_focus
-                } else {
-                    c.border_standard
-                },
-                rect,
-                6.0,
-                1.0,
-            );
+            // A field: the well with its derived rest edge, and the focus
+            // ring over it while the inline editor owns the words.
+            well(scene, tf, theme, rect, 6.0);
+            if editing == Some(true) {
+                stroke_round(scene, tf, rect, 6.0, c.border_focus, FOCUS_RING_W);
+            }
             // While the inline editor owns this box it draws the words itself
             // (with a caret); otherwise show them, or say plainly that there
             // are none rather than leaving an empty box that looks broken.
@@ -1486,7 +1527,7 @@ impl VideoEditorApp {
                 tr,
                 tf,
                 "Font",
-                11.5,
+                label_size,
                 c.text_dim,
                 rect.x0,
                 rect.y0 - 16.0,
@@ -1525,7 +1566,7 @@ impl VideoEditorApp {
                 tr,
                 tf,
                 "Colour",
-                11.5,
+                label_size,
                 c.text_dim,
                 x0,
                 l.title_colors[0].1.y0 - 16.0,
@@ -1536,17 +1577,20 @@ impl VideoEditorApp {
                 // drawn on a chequer-free plate with a border: without one the
                 // white swatch vanishes on a light theme and the dark one on a
                 // dark theme.
-                fill_rrect(scene, tf, c.neutral[3], *rect, 6.0);
-                fill_rrect(scene, tf, sw, *rect, 6.0);
-                stroke_rrect(scene, tf, with_alpha(c.text_primary, 0.25), *rect, 6.0, 1.0);
+                // A plate under a swatch that may be translucent, then the
+                // swatch with an edge derived against its own colour — so the
+                // white swatch shows on a light pane and the black one on a
+                // dark pane without a theme-blind ink wash.
+                fill_round(scene, tf, *rect, 6.0, c.lift(0.35));
+                ui::surface::card(scene, tf, *rect, 6.0, sw);
                 if col
                     .iter()
                     .zip(cur.iter())
                     .all(|(a, b)| (a - b).abs() < 1e-6)
                 {
-                    stroke_rrect(scene, tf, c.border_focus, rect.inset(1.5), 7.0, 2.0);
+                    stroke_round(scene, tf, rect.inset(1.5), 7.0, c.border_focus, 2.0);
                 } else if rect.contains(self.last_mouse) {
-                    stroke_rrect(scene, tf, with_alpha(c.text_primary, 0.6), *rect, 6.0, 1.5);
+                    stroke_round(scene, tf, *rect, 6.0, with_alpha(c.text_primary, 0.6), 1.5);
                 }
             }
         }
@@ -1603,7 +1647,7 @@ impl VideoEditorApp {
                     continue;
                 };
                 let (_key, up, down, slider, remove) = Self::effect_row_parts(*row);
-                fill_rrect(scene, tf, c.lift(0.35), *row, 6.0);
+                well(scene, tf, theme, *row, 6.0);
                 // Reorder / remove: real icons on hover-lit hit targets, sized to
                 // the pointer rather than to the glyph. These were raw Unicode
                 // arrows in 16x18px boxes with no hover state at all.
@@ -1612,9 +1656,18 @@ impl VideoEditorApp {
                     (up, ui::icons::Icon::ChevronUp, i > 0),
                     (down, ui::icons::Icon::ChevronDown, !last),
                 ] {
-                    if enabled && rect.contains(self.last_mouse) {
-                        fill_rrect(scene, tf, c.overlay_medium, rect, 4.0);
-                    }
+                    selection_row(
+                        scene,
+                        tf,
+                        theme,
+                        rect,
+                        4.0,
+                        ui::chrome::SelectionState::new(
+                            false,
+                            enabled && rect.contains(self.last_mouse),
+                            false,
+                        ),
+                    );
                     let col = if enabled {
                         c.text_primary
                     } else {
@@ -1660,9 +1713,14 @@ impl VideoEditorApp {
                     matches!(self.drag, Some(Drag::EffectAmount { idx, .. }) if idx == i),
                 );
                 // Remove.
-                if remove.contains(self.last_mouse) {
-                    fill_rrect(scene, tf, with_alpha(c.semantic.danger, 0.18), remove, 4.0);
-                }
+                selection_row(
+                    scene,
+                    tf,
+                    theme,
+                    remove,
+                    4.0,
+                    ui::chrome::SelectionState::new(false, remove.contains(self.last_mouse), false),
+                );
                 let g = 12.0;
                 let xbox = Rect::new(
                     remove.center().x - g / 2.0,
@@ -1679,29 +1737,19 @@ impl VideoEditorApp {
                     ui::icons::LUCIDE_DEFAULT_STROKE_PX,
                 );
             }
-            // Add-effect button.
-            let add_hover = l.add_effect.contains(self.last_mouse);
-            fill_rrect(
+            // Add-effect button, through the shared face like every other
+            // button in the panel. It was a local fill-and-stroke with its
+            // label pinned to a font-size offset, and read as a different
+            // control from the "+ Marker at playhead" button two rows down.
+            draw_button(
                 scene,
                 tf,
-                if add_hover {
-                    c.lift(0.72)
-                } else {
-                    c.neutral[3]
-                },
-                l.add_effect,
-                6.0,
-            );
-            stroke_rrect(scene, tf, c.border_standard, l.add_effect, 6.0, 1.0);
-            text(
-                scene,
                 tr,
-                tf,
+                theme,
+                l.add_effect,
                 "+ Add effect",
-                12.0,
-                c.text_primary,
-                l.add_effect.x0 + 12.0,
-                l.add_effect.center().y - 8.0,
+                false,
+                l.add_effect.contains(self.last_mouse),
             );
         }
 
@@ -1748,9 +1796,14 @@ impl VideoEditorApp {
     ) {
         let c = &theme.tokens.colors;
         let open = !self.collapsed.contains(&section);
-        if rect.contains(self.last_mouse) {
-            fill_rrect(scene, tf, c.lift(0.35), rect, 5.0);
-        }
+        selection_row(
+            scene,
+            tf,
+            theme,
+            rect,
+            5.0,
+            ui::chrome::SelectionState::new(false, rect.contains(self.last_mouse), false),
+        );
         let g = 11.0;
         let arrow = Rect::new(
             rect.x0 + 1.0,
