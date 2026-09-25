@@ -245,6 +245,18 @@ runs the graphical installer (`installer/`, binary `tilo-installer`) under `cage
 and **self-installs the booted image** onto a target disk — offline, no network
 pull.
 
+A CI install medium can instead carry a separately signed generic or Lenovo
+ARM64 target in
+`/var/lib/tilo-installer/target-oci/`. Before changing a disk, the guest
+checks its exact OCI manifest digest, offline Cosign signature, and CI SLSA
+provenance with the immutable Tilo public key. It imports only that target
+from the local OCI layout, checks the target image's bound update origin, and
+installs from the imported image ID. An invalid or partial target stops the
+install; it never falls back to copying the live medium. VM proof v2 records
+the booted medium and installed target identities separately. The existing
+self-install path remains the development default when no offline target is
+present.
+
 How it works:
 
 - `Containerfile.installer` bakes the kernel arg **`tilo.install`**. That single

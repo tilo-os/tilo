@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Bind a completed VM install to the booted image and installed deployment.
+"""Bind a completed VM install to its booted medium and installed deployment.
 
 The caller writes the result to /run before closing the encrypted target and
 emits it only after the install backend finishes successfully. The record is
@@ -64,18 +64,34 @@ def build_proof(args):
     installed_digest = parser.get("image", "manifest_digest")
     require(DIGEST.fullmatch(installed_digest),
             "installed deployment has no OCI manifest digest")
+    installed_origin = parser.get("origin", "container-image-reference")
 
     booted = json.loads(command("bootc", "status", "--format", "json"))["status"]["booted"]
     booted_digest = booted["image"]["imageDigest"]
     architecture = booted["image"]["architecture"]
     require(architecture == "arm64", "VM installer did not boot an ARM64 image")
-    require(DIGEST.fullmatch(booted_digest) and booted_digest == installed_digest,
-            "installed deployment does not match the booted CI image digest")
+    require(DIGEST.fullmatch(booted_digest), "booted image digest is malformed")
     require(booted.get("incompatible") is False,
             "booted installer image is incompatible")
     booted_composefs = booted["composefs"]["verity"]
-    require(booted_composefs == composefs and COMPOSEFS.fullmatch(composefs),
-            "installed composefs digest differs from booted image")
+    require(COMPOSEFS.fullmatch(booted_composefs) and COMPOSEFS.fullmatch(composefs),
+            "booted or installed composefs digest is malformed")
+    receipt_path = getattr(args, "offline_target_receipt",
+                           Path("/run/tilo-installer/offline-target.json"))
+    selected = None
+    if receipt_path.exists() or receipt_path.is_symlink():
+        require(receipt_path.is_file() and not receipt_path.is_symlink()
+                and receipt_path.stat().st_size <= 8192,
+                "offline target verification receipt is unsafe")
+        selected = json.loads(receipt_path.read_text(encoding="utf-8"))
+        require(selected.get("schema") == "tilo.installer-offline-target.v1"
+                and selected.get("target_digest") == installed_digest
+                and selected.get("target_ref") == "code.sandbox.example/qos/tilo@" + installed_digest
+                and installed_origin == "ostree-unverified-image:docker://" + selected.get("update_origin", ""),
+                "installed deployment differs from the independently signed offline target")
+    else:
+        require(booted_digest == installed_digest and booted_composefs == composefs,
+                "installed deployment does not match the booted CI image")
     require(not args.target_uki.is_symlink(),
             "installed target UKI is a symlink")
     uki = args.target_uki.resolve(strict=True)
@@ -95,13 +111,20 @@ def build_proof(args):
         identities[role] = partuuid.lower()
     require(len(set(identities.values())) == 3,
             "installed target partition identities overlap")
-    return {"schema": "tilo.vm-install-image-proof.v1",
+    result = {"schema": "tilo.vm-install-image-proof.v2" if selected else
+            "tilo.vm-install-image-proof.v1",
             "architecture": architecture,
             "booted_image_digest": booted_digest,
             "installed_image_digest": installed_digest,
             "composefs_digest": composefs,
+            "booted_composefs_digest": booted_composefs,
+            "installed_composefs_digest": composefs,
+            "installed_update_origin": installed_origin,
             "target_uki_sha256": hash_file(uki),
             "disk_guid": disk_guid.lower(), "partuuids": identities}
+    if selected:
+        result["selected_target"] = selected
+    return result
 
 
 def main():
@@ -109,6 +132,8 @@ def main():
     for name in ("target-root", "deploy-etc", "efi-root", "target-uki", "disk",
                  "efi-partition", "boot-partition", "root-partition", "output"):
         parser.add_argument("--" + name, type=Path, required=True)
+    parser.add_argument("--offline-target-receipt", type=Path,
+                        default=Path("/run/tilo-installer/offline-target.json"))
     args = parser.parse_args()
     result = build_proof(args)
     destination = args.output
