@@ -1883,7 +1883,6 @@ fn newly_available(
 mod tests {
     use super::*;
     use crate::model::{Chooser, TurnRequest, TurnTransport};
-    use crate::plan::Block;
     use crate::session::Config;
     use std::sync::{Arc, Mutex};
     use std::{cell::RefCell, rc::Rc};
