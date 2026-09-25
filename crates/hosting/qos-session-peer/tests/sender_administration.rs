@@ -31,8 +31,14 @@ fn admitted_temp_dir() -> tempfile::TempDir {
             // The session Store also refuses to commit below its free-space
             // floor (a twentieth of the filesystem, at least 1 GiB).
             let fragment = u64::try_from(stat.f_frsize).unwrap_or(0);
-            let total = u64::try_from(stat.f_blocks).unwrap_or(0) * fragment;
-            let available = u64::try_from(stat.f_bavail).unwrap_or(0) * fragment;
+            #[allow(
+                clippy::useless_conversion,
+                reason = "fsblkcnt_t is u64 on 64-bit Linux but narrower on other targets"
+            )]
+            let (total, available) = (
+                u64::try_from(stat.f_blocks).unwrap_or(0) * fragment,
+                u64::try_from(stat.f_bavail).unwrap_or(0) * fragment,
+            );
             u64::try_from(stat.f_type).is_ok_and(|magic| {
                 matches!(magic, 0xef53 | 0x9123_683e | 0x5846_5342 | 0x0102_1994)
             }) && available > (total / 20).max(1 << 30) + (64 << 20)

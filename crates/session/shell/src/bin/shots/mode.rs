@@ -466,6 +466,7 @@ mod tests {
         let mut driver = ShellDriver::new((128, 96));
         let summary =
             recording::run_scenario(&mut driver, &scenario, &tmp, 30, 1.0).expect("run_scenario");
+        drop(driver);
 
         let bytes = fs::read(&tmp).expect("read recorded file");
         assert!(bytes.len() > 8, "recording mode produced an empty file");

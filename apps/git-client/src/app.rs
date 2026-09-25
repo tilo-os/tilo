@@ -1167,12 +1167,8 @@ impl GitClientApp {
             );
             let row2 = Rect::new(bar.x0, row1.y1, bar.x1, row1.y1 + m.tab_row_h);
             let tx_start = bar.x0 + APPBAR_GUTTER + 6.0;
-            let available = (bar.x1 - APPBAR_GUTTER - 6.0 - tx_start).max(0.0);
-            let (wrapped_widths, wrapped_total) = Self::fit_appbar_tabs(
-                &widths,
-                available,
-                f64::from(theme.tokens.metrics.min_pointer_target),
-            );
+            let (wrapped_widths, wrapped_total) =
+                Self::fit_wrapped_appbar_tabs(&widths, bar.x1, tx_start, theme);
             self.draw_appbar_tab_group(
                 scene,
                 tr,
@@ -1239,6 +1235,22 @@ impl GitClientApp {
             .collect();
         let total = widths.iter().sum::<f64>() + (TABS.len() as f64 - 1.0) * 6.0;
         (widths, total)
+    }
+
+    /// Fit the wrapped (second-row) tab group between `tx_start` and the
+    /// bar's right gutter at the theme's minimum pointer width.
+    fn fit_wrapped_appbar_tabs(
+        widths: &[f64],
+        bar_x1: f64,
+        tx_start: f64,
+        theme: &Theme,
+    ) -> (Vec<f64>, f64) {
+        let available = (bar_x1 - APPBAR_GUTTER - 6.0 - tx_start).max(0.0);
+        Self::fit_appbar_tabs(
+            widths,
+            available,
+            f64::from(theme.tokens.metrics.min_pointer_target),
+        )
     }
 
     /// Compress only the padding/slack of a wrapped tab row. Every semantic

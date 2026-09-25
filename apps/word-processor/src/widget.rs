@@ -1480,7 +1480,7 @@ impl WordProcessorWidget {
         let mut widget = Self::new();
         widget.inner = WordProcessor::from_document(state)?;
         widget.canonical = true;
-        widget.refresh_blocks(&mut state.clone());
+        widget.refresh_blocks(state);
         widget.sheet = widget.inner.stylesheet(state);
         Ok(widget)
     }

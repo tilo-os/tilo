@@ -4236,7 +4236,7 @@ mod tests {
                     break offers;
                 }
             };
-            let step = |action: &str, arguments| {
+            let bound_step = |action: &str, arguments| {
                 let offer = offers
                     .iter()
                     .find(|offer| offer.address().action == action)
@@ -4250,11 +4250,11 @@ mod tests {
                     &offers,
                 )
             };
-            let producer = step(PRODUCE, serde_json::Map::new());
+            let producer = bound_step(PRODUCE, serde_json::Map::new());
             let mut steps = vec![producer.clone()];
             match between {
                 Between::Nothing => {}
-                Between::BrokerView => steps.push(step("view", serde_json::Map::new())),
+                Between::BrokerView => steps.push(bound_step("view", serde_json::Map::new())),
                 Between::Duplicate => steps.push(producer),
                 Between::LocalRotate => steps.push(plan::Step::own(Instruction::Perform {
                     id: surface::encode_address(&tilo_actions::ActionAddress::new(
@@ -4265,7 +4265,7 @@ mod tests {
                     confirmation: ConfirmationEvidence::None,
                 })),
             }
-            steps.push(step(
+            steps.push(bound_step(
                 "place-image",
                 serde_json::Map::from_iter([(
                     tilo_actions::PROMPTED_PARAM.into(),

@@ -2338,82 +2338,7 @@ impl Widget for ContainersApp {
         // Seed a representative selection on the very first sync of a demo /
         // shots session so the detail view is populated out of the box.
         if self.seed_demo && !self.seeded {
-            self.seeded = true;
-            // An optional env hook selects a demo scene for screenshots
-            // (`containers` / `images` / `volumes` / `distrobox` / `stats` /
-            // `inspect` / `create` / `combo` / `pull` / `collapsed`).
-            let scene = std::env::var("TILO_CONTAINERS_DEMO").unwrap_or_default();
-            match scene.as_str() {
-                "images" => ViewDoc::set_section(doc, Section::Images),
-                "volumes" => ViewDoc::set_section(doc, Section::Volumes),
-                "distrobox" => ViewDoc::set_section(doc, Section::Distrobox),
-                "create" | "combo" => {
-                    self.create_open = true;
-                    self.create_focus = CreateField::Image;
-                    ViewDoc::set_create_field(doc, CreateField::Name, "web-frontend");
-                    ViewDoc::set_create_field(doc, CreateField::Image, "nginx");
-                    ViewDoc::set_create_field(doc, CreateField::Ports, "8080:80, 8443:443");
-                    ViewDoc::set_create_field(doc, CreateField::Env, "TZ=UTC");
-                    ViewDoc::set_create_field(
-                        doc,
-                        CreateField::Volumes,
-                        "site:/usr/share/nginx/html",
-                    );
-                    if scene == "combo" {
-                        // Open the image suggestion dropdown for the shot.
-                        self.combo.open = true;
-                    }
-                }
-                "pull" => {
-                    ViewDoc::set_section(doc, Section::Images);
-                    self.pull = Some(PullProgress {
-                        reference: "docker.io/library/alpine:3.20".into(),
-                        lines: vec![
-                            "Trying to pull docker.io/library/alpine:3.20...".into(),
-                            "Getting image source signatures".into(),
-                            "Copying blob sha256:9fa9226be034 [===========>     ] 2.1MiB / 3.4MiB"
-                                .into(),
-                            "Copying config sha256:1a2b3c4d5e6f done".into(),
-                        ],
-                        done: false,
-                        failed: None,
-                    });
-                }
-                "collapsed" => self.sidebar_flap.snap(false),
-                // Capture the honest "no engine" zero-state (what the live app
-                // shows when rootless podman is not reachable).
-                "empty" => {
-                    self.engine = Engine {
-                        connection: "No container engine — is podman installed?".into(),
-                        live: false,
-                        ..Engine::default()
-                    };
-                    self.search_index.sync(&self.engine);
-                }
-                // Open the shared Ctrl+K palette (seeded with the sample
-                // containers) so `--shots` can capture the search surface.
-                "palette" => self.open_container_palette(),
-                _ => {}
-            }
-            let tab = match scene.as_str() {
-                "stats" => DetailTab::Stats,
-                "inspect" => DetailTab::Inspect,
-                "terminal" => DetailTab::Terminal,
-                _ => DetailTab::Logs,
-            };
-            let list_scene = matches!(scene.as_str(), "images" | "volumes" | "distrobox" | "pull");
-            if !list_scene
-                && ViewDoc::selected(doc).is_none()
-                && let Some(first) = self
-                    .engine
-                    .containers
-                    .iter()
-                    .find(|c| c.status.is_running())
-                    .or_else(|| self.engine.containers.first())
-            {
-                ViewDoc::set_selected(doc, Some(&first.id));
-                ViewDoc::set_tab(doc, tab);
-            }
+            self.seed_demo_scene(doc);
         }
         // Periodically re-probe the engine for fresh stats / state.
         if self.live && self.last_refresh.elapsed() >= podman::REFRESH_INTERVAL {
@@ -3224,6 +3149,83 @@ fn pull_progress_node(pull: &PullProgress) -> AccessNode {
 }
 
 impl ContainersApp {
+    /// Seeds a representative demo scene on the first sync of a demo or
+    /// screenshot session so the detail view is populated out of the box.
+    fn seed_demo_scene(&mut self, doc: &mut AutoCommit) {
+        self.seeded = true;
+        // An optional env hook selects a demo scene for screenshots
+        // (`containers` / `images` / `volumes` / `distrobox` / `stats` /
+        // `inspect` / `create` / `combo` / `pull` / `collapsed`).
+        let scene = std::env::var("TILO_CONTAINERS_DEMO").unwrap_or_default();
+        match scene.as_str() {
+            "images" => ViewDoc::set_section(doc, Section::Images),
+            "volumes" => ViewDoc::set_section(doc, Section::Volumes),
+            "distrobox" => ViewDoc::set_section(doc, Section::Distrobox),
+            "create" | "combo" => {
+                self.create_open = true;
+                self.create_focus = CreateField::Image;
+                ViewDoc::set_create_field(doc, CreateField::Name, "web-frontend");
+                ViewDoc::set_create_field(doc, CreateField::Image, "nginx");
+                ViewDoc::set_create_field(doc, CreateField::Ports, "8080:80, 8443:443");
+                ViewDoc::set_create_field(doc, CreateField::Env, "TZ=UTC");
+                ViewDoc::set_create_field(doc, CreateField::Volumes, "site:/usr/share/nginx/html");
+                if scene == "combo" {
+                    // Open the image suggestion dropdown for the shot.
+                    self.combo.open = true;
+                }
+            }
+            "pull" => {
+                ViewDoc::set_section(doc, Section::Images);
+                self.pull = Some(PullProgress {
+                    reference: "docker.io/library/alpine:3.20".into(),
+                    lines: vec![
+                        "Trying to pull docker.io/library/alpine:3.20...".into(),
+                        "Getting image source signatures".into(),
+                        "Copying blob sha256:9fa9226be034 [===========>     ] 2.1MiB / 3.4MiB"
+                            .into(),
+                        "Copying config sha256:1a2b3c4d5e6f done".into(),
+                    ],
+                    done: false,
+                    failed: None,
+                });
+            }
+            "collapsed" => self.sidebar_flap.snap(false),
+            // Capture the honest "no engine" zero-state (what the live app
+            // shows when rootless podman is not reachable).
+            "empty" => {
+                self.engine = Engine {
+                    connection: "No container engine — is podman installed?".into(),
+                    live: false,
+                    ..Engine::default()
+                };
+                self.search_index.sync(&self.engine);
+            }
+            // Open the shared Ctrl+K palette (seeded with the sample
+            // containers) so `--shots` can capture the search surface.
+            "palette" => self.open_container_palette(),
+            _ => {}
+        }
+        let tab = match scene.as_str() {
+            "stats" => DetailTab::Stats,
+            "inspect" => DetailTab::Inspect,
+            "terminal" => DetailTab::Terminal,
+            _ => DetailTab::Logs,
+        };
+        let list_scene = matches!(scene.as_str(), "images" | "volumes" | "distrobox" | "pull");
+        if !list_scene
+            && ViewDoc::selected(doc).is_none()
+            && let Some(first) = self
+                .engine
+                .containers
+                .iter()
+                .find(|c| c.status.is_running())
+                .or_else(|| self.engine.containers.first())
+        {
+            ViewDoc::set_selected(doc, Some(&first.id));
+            ViewDoc::set_tab(doc, tab);
+        }
+    }
+
     #[allow(
         clippy::expect_used,
         reason = "CreateField::COUNT and CreateField::ALL define the fixed six-slot form together"
