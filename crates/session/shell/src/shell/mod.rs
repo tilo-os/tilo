@@ -1288,7 +1288,7 @@ fn open_legacy_document_from_files(
 
 /// Admit an exact native document record before publishing its tab/input pair.
 /// This is called only by the owning Files open route after its record loan has
-/// ended, so TileHost can retain its existing-only record-follow contract.
+/// ended, so `TileHost` can retain its existing-only record-follow contract.
 pub(crate) fn open_document_from_files(
     chrome: &chrome_state::Chrome,
     path: &std::path::Path,

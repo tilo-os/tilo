@@ -1,3 +1,4 @@
+use super::super::{Key, NamedKey, State, key_event};
 use super::*;
 use crate::search::system::SearchScope;
 

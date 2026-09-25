@@ -100,33 +100,30 @@ impl Builder {
         let draft = needs_draft
             .then(|| action.continuation_identity(ContinuationQuery::Draft))
             .flatten();
-        match fixed {
-            Some(encoded) => {
-                self.tag(0);
-                self.encoded(encoded);
-                if action.has_continuation_identity() {
-                    self.tag(1);
-                    let exact = action.continuation_identity(ContinuationQuery::Exact(
-                        ContinuationArguments::Immediate,
-                    ));
-                    self.evidence(exact.as_ref());
-                } else {
-                    // The actual bound registry / explicit owner domain supplies
-                    // handler stability. Absence is not an indirect-target claim.
-                    self.tag(0);
-                }
-            }
-            None => {
+        if let Some(encoded) = fixed {
+            self.tag(0);
+            self.encoded(encoded);
+            if action.has_continuation_identity() {
                 self.tag(1);
-                match action.deferred_invocation_type() {
-                    Some(type_id) => {
-                        self.tag(1);
-                        self.bytes(type_id.as_bytes());
-                    }
-                    None => self.tag(0),
-                }
-                self.evidence(draft.as_ref());
+                let exact = action.continuation_identity(ContinuationQuery::Exact(
+                    ContinuationArguments::Immediate,
+                ));
+                self.evidence(exact.as_ref());
+            } else {
+                // The actual bound registry / explicit owner domain supplies
+                // handler stability. Absence is not an indirect-target claim.
+                self.tag(0);
             }
+        } else {
+            self.tag(1);
+            match action.deferred_invocation_type() {
+                Some(type_id) => {
+                    self.tag(1);
+                    self.bytes(type_id.as_bytes());
+                }
+                None => self.tag(0),
+            }
+            self.evidence(draft.as_ref());
         }
 
         // Legacy door::encode uses this public lane directly. Do not assume it

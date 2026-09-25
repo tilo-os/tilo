@@ -221,11 +221,11 @@ impl AdministrativeFailure {
     }
 }
 impl Operation {
-    fn root(&self) -> &OwnerDirectory {
-        self.root.as_ref().expect("admitted phase")
+    fn root(&self) -> Result<&OwnerDirectory, OpenError> {
+        self.root.as_ref().ok_or_else(Self::invalid)
     }
-    fn child(&self) -> &OwnerDirectory {
-        self.child.as_ref().expect("child phase")
+    fn child(&self) -> Result<&OwnerDirectory, OpenError> {
+        self.child.as_ref().ok_or_else(Self::invalid)
     }
     fn invalid() -> OpenError {
         io::ErrorKind::InvalidData.into()
@@ -255,16 +255,16 @@ impl Operation {
             }
         }
         if let Some(identity) = &self.child_identity {
-            self.child().validate()?;
+            self.child()?.validate()?;
             let named = root
                 .open_directory_child(OsStr::new(CHILD_NAME))
                 .map_err(OpenError::Child)?;
-            if &self.child().identity()? != identity || &named.identity()? != identity {
+            if &self.child()?.identity()? != identity || &named.identity()? != identity {
                 return Err(Self::invalid());
             }
         }
         if let Some(identity) = &self.input_identity {
-            let named = self.child().open_read(OsStr::new(FILE_NAME))?;
+            let named = self.child()?.open_read(OsStr::new(FILE_NAME))?;
             if &FileIdentity::of(&named)? != identity
                 || self
                     .input
@@ -364,11 +364,15 @@ impl Operation {
         }
         loop {
             if self.step == Step::Final {
-                let facts = self.facts.as_ref().expect("validated file phase");
+                let Some(facts) = self.facts.as_ref() else {
+                    return Err(self.failed(Self::invalid().into()));
+                };
                 if let Err(error) = self.check_current(facts) {
                     return Err(self.failed(error.into()));
                 }
-                let facts = self.facts.take().expect("validated file phase");
+                let Some(facts) = self.facts.take() else {
+                    return Err(self.failed(Self::invalid().into()));
+                };
                 return Ok(AdministrativeFile {
                     operation: self,
                     facts,
@@ -384,14 +388,14 @@ impl Operation {
         match self.step {
             Step::Admit => {
                 if self.root.is_none() {
-                    let root = OwnerDirectory::admit(self.original.take().expect("original root"))
-                        .map_err(OpenError::Admission)?;
+                    let original = self.original.take().ok_or_else(Self::invalid)?;
+                    let root = OwnerDirectory::admit(original).map_err(OpenError::Admission)?;
                     self.root = Some(root);
                 }
-                self.root_identity = Some(self.root().identity()?);
+                self.root_identity = Some(self.root()?.identity()?);
                 self.step = Step::OpenSentinel;
             }
-            Step::OpenSentinel => match self.root().open_lease_existing(OsStr::new(LOCK_NAME)) {
+            Step::OpenSentinel => match self.root()?.open_lease_existing(OsStr::new(LOCK_NAME)) {
                 Ok(file) => {
                     let identity = FileIdentity::of(&file)?;
                     if self
@@ -416,16 +420,13 @@ impl Operation {
             },
             Step::PublishSentinel => {
                 match self
-                    .root()
+                    .root()?
                     .publish(OsStr::new(LOCK_NAME), &[], PublishMode::IfAbsent)
                 {
                     Ok(()) => (),
                     Err(e)
                         if e.state() == PublicationState::NotPublished
-                            && e.io_error().kind() == io::ErrorKind::AlreadyExists =>
-                    {
-                        ()
-                    }
+                            && e.io_error().kind() == io::ErrorKind::AlreadyExists => {}
                     Err(e) => return Err(e.into()),
                 }
                 self.step = Step::OpenSentinel;
@@ -433,7 +434,7 @@ impl Operation {
             Step::Acquire => {
                 self.step = Step::OpenSentinel; // Busy retry must reopen/check the same inode.
                 match FileLease::try_acquire(
-                    self.sentinel.take().expect("opened sentinel"),
+                    self.sentinel.take().ok_or_else(Self::invalid)?,
                     LeaseMode::Exclusive,
                 ) {
                     Ok(lease) => self.lease = Some(lease),
@@ -443,14 +444,14 @@ impl Operation {
                 self.step = Step::SentinelBarrier;
             }
             Step::SentinelBarrier => {
-                self.root().commit_existing(
+                self.root()?.commit_existing(
                     OsStr::new(LOCK_NAME),
-                    self.sentinel_identity.as_ref().expect("held sentinel"),
+                    self.sentinel_identity.as_ref().ok_or_else(Self::invalid)?,
                 )?;
                 self.step = Step::OpenChild;
             }
             Step::OpenChild => {
-                match self.root().open_directory_child(OsStr::new(CHILD_NAME)) {
+                match self.root()?.open_directory_child(OsStr::new(CHILD_NAME)) {
                     Ok(child) => {
                         self.child = Some(child);
                         self.fresh_child = false;
@@ -459,7 +460,7 @@ impl Operation {
                         if matches!(&error, atomic_file::bounded::ChildOpenError::Open(e) if e.kind() == io::ErrorKind::NotFound)
                             && self.expectation == AdministrativeExpectation::Prepared =>
                     {
-                        let fresh = self.root().create_fresh_child(OsStr::new(CHILD_NAME))?;
+                        let fresh = self.root()?.create_fresh_child(OsStr::new(CHILD_NAME))?;
                         self.child = Some(fresh.normalize_and_commit()?);
                         self.fresh_child = true;
                     }
@@ -468,7 +469,7 @@ impl Operation {
                 self.step = Step::BindChild;
             }
             Step::BindChild => {
-                self.child_identity = Some(self.child().identity()?);
+                self.child_identity = Some(self.child()?.identity()?);
                 self.bindings()?;
                 self.step = if self.fresh_child {
                     Step::PublishFile
@@ -489,7 +490,7 @@ impl Operation {
                         NativeSenderOutboxV1::empty_bytes(),
                     )?;
                 }
-                self.child().publish(
+                self.child()?.publish(
                     OsStr::new(FILE_NAME),
                     &self.initial,
                     PublishMode::IfAbsent,
@@ -498,9 +499,11 @@ impl Operation {
             }
             Step::Read => {
                 if self.input.is_none() {
-                    self.input = Some(self.child().open_read(OsStr::new(FILE_NAME))?);
+                    self.input = Some(self.child()?.open_read(OsStr::new(FILE_NAME))?);
                 }
-                let input = self.input.as_mut().expect("opened input");
+                let Some(input) = self.input.as_mut() else {
+                    return Err(Self::invalid().into());
+                };
                 self.input_identity = Some(FileIdentity::of(input)?);
                 input.seek(SeekFrom::Start(0))?;
                 if self.bytes.capacity() < codec::MAX_FILE + 1 {
@@ -514,7 +517,7 @@ impl Operation {
                     match input.read(&mut self.bytes[length..]) {
                         Ok(0) => break,
                         Ok(n) => length += n,
-                        Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+                        Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
                         Err(e) => return Err(e.into()),
                     }
                 }
@@ -548,19 +551,20 @@ impl Operation {
                 self.step = Step::FileBarrier;
             }
             Step::FileBarrier => {
-                self.child().commit_existing(
+                self.child()?.commit_existing(
                     OsStr::new(FILE_NAME),
-                    self.input_identity.as_ref().expect("held file"),
+                    self.input_identity.as_ref().ok_or_else(Self::invalid)?,
                 )?;
                 self.step = Step::Final;
             }
-            Step::Final => unreachable!("handled by run"),
+            // `run` finishes the final step before it would advance again.
+            Step::Final => {}
         }
         Ok(())
     }
     fn check_current(&self, facts: &AdministrativeFacts) -> Result<(), OpenError> {
         self.bindings()?;
-        let mut input = self.child().open_read(OsStr::new(FILE_NAME))?;
+        let mut input = self.child()?.open_read(OsStr::new(FILE_NAME))?;
         if self.input_identity.as_ref() != Some(&FileIdentity::of(&input)?) {
             return Err(Self::invalid());
         }

@@ -1,5 +1,8 @@
 //! Closed media intent operations; callers cannot supply a signing digest.
-use super::*;
+use super::{
+    BTreeMap, CurrentView, NativeControl, OwnerView, Pending, PreparedRequest, Signer, Step, fail,
+    http_proof, media_wire, time,
+};
 use media_wire::{
     ChallengeTranscript, ControlCommand, ControlReply, ControlResult, GrantOperation, GrantRequest,
     MediaContext, MediaDirections, SignedChallenge, SignedGrant,
@@ -26,7 +29,7 @@ pub(super) enum ControlStage {
     GrantComplete(GrantOperation),
     RelayChallenge,
     RefreshChallenge(u32),
-    RefreshComplete(u32, media_wire::RefreshChallenge),
+    RefreshComplete(u32, Box<media_wire::RefreshChallenge>),
     Close(u32),
 }
 /// Safe operational projection. Grant bytes remain inside Rust custody.
@@ -221,7 +224,7 @@ impl NativeControl {
         self.participation
             .as_ref()
             .filter(|p| p.id == handle && !p.leaving)
-            .ok_or("stale media intent".into())
+            .ok_or_else(|| "stale media intent".into())
     }
     pub fn renew(&mut self, view: &OwnerView<'_>, handle: u32) -> Result<PreparedRequest, String> {
         let request = self.part(handle)?.request.clone();
@@ -321,7 +324,7 @@ impl NativeControl {
     }
     /// Fence publication immediately; only the exact retained Leave proof can continue.
     pub fn leave(&mut self, view: &OwnerView<'_>, handle: u32) -> Result<Step, String> {
-        if !self.participation.as_ref().is_some_and(|p| p.id == handle) {
+        if self.participation.as_ref().is_none_or(|p| p.id != handle) {
             return Ok(Step::Left);
         }
         // Older cleanup may expire remotely, but it cannot consume another live intent.
@@ -331,7 +334,7 @@ impl NativeControl {
         }
         self.pending
             .retain(|_, p| !matches!(p,Pending::Control{intent,..} if *intent==handle));
-        let part = self.participation.as_mut().unwrap();
+        let part = self.participation.as_mut().ok_or("stale media intent")?;
         part.leaving = true;
         if part.request.generation == 0 {
             self.participation = None;
@@ -429,15 +432,14 @@ impl NativeControl {
         {
             return Err("media inventory exceeds exact remote call scope".into());
         }
-        if let Some(previous) = &part.context {
-            if context.media_boot != previous.media_boot
+        if let Some(previous) = &part.context
+            && (context.media_boot != previous.media_boot
                 || context.epoch != previous.epoch
                 || context.inventory.revision < previous.inventory.revision
                 || (context.inventory.revision == previous.inventory.revision
-                    && context.inventory != previous.inventory)
-            {
-                return Err("media boot or inventory continuity changed".into());
-            }
+                    && context.inventory != previous.inventory))
+        {
+            return Err("media boot or inventory continuity changed".into());
         }
         Ok(())
     }
@@ -504,6 +506,15 @@ impl NativeControl {
                 .clone(),
         })
     }
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one closed dispatcher over every (stage, reply) pair of the media control protocol"
+    )]
+    #[allow(
+        clippy::suspicious_operation_groupings,
+        reason = "a refresh authorizes with the relay's current nonce; comparing \
+                  `refresh.authorization` to `relay.nonce` is the protocol binding"
+    )]
     pub(super) fn advance_control(
         &mut self,
         view: &OwnerView<'_>,
@@ -544,7 +555,10 @@ impl NativeControl {
                         .sign(&challenge.transcript.signing_digest().map_err(fail)?)
                         .to_bytes(),
                 );
-                let part = self.participation.as_mut().unwrap();
+                let part = self
+                    .participation
+                    .as_mut()
+                    .ok_or("stale media completion")?;
                 part.request = native.request.clone();
                 part.context = Some(challenge.context.clone());
                 self.control_request(
@@ -566,7 +580,10 @@ impl NativeControl {
                     grant.signing_digest().map_err(fail)?,
                     grant.signature,
                 )?;
-                let part = self.participation.as_ref().unwrap();
+                let part = self
+                    .participation
+                    .as_ref()
+                    .ok_or("stale media completion")?;
                 let c = part
                     .context
                     .as_ref()
@@ -612,7 +629,10 @@ impl NativeControl {
                 if m.namespace != (media_wire::MediaNamespace { call, publisher }) {
                     return Err("media namespace derivation mismatch".into());
                 }
-                let part = self.participation.as_mut().unwrap();
+                let part = self
+                    .participation
+                    .as_mut()
+                    .ok_or("stale media completion")?;
                 if operation == GrantOperation::Join {
                     part.presence_expires_at_ns = m
                         .issued_at_ns
@@ -633,7 +653,10 @@ impl NativeControl {
                 let ChallengeTranscript::Relay(relay) = &challenge.transcript else {
                     return Err("wrong relay proof purpose".into());
                 };
-                let part = self.participation.as_ref().unwrap();
+                let part = self
+                    .participation
+                    .as_ref()
+                    .ok_or("stale media completion")?;
                 let grant = part
                     .grant
                     .as_ref()
@@ -673,7 +696,10 @@ impl NativeControl {
                     inventory: challenge.context.inventory.clone(),
                 };
                 let expiry = grant.metadata.expires_at_ns;
-                let part = self.participation.as_mut().unwrap();
+                let part = self
+                    .participation
+                    .as_mut()
+                    .ok_or("stale media completion")?;
                 part.context = Some(challenge.context);
                 part.relay_expires.insert(carrier, expiry);
                 part.relays.insert(carrier, relay.clone());
@@ -684,7 +710,10 @@ impl NativeControl {
                 let ChallengeTranscript::Refresh(refresh) = &challenge.transcript else {
                     return Err("wrong refresh purpose".into());
                 };
-                let part = self.participation.as_ref().unwrap();
+                let part = self
+                    .participation
+                    .as_ref()
+                    .ok_or("stale media completion")?;
                 let relay = part.relays.get(&carrier).ok_or("stale media carrier")?;
                 let grant = part
                     .grant
@@ -703,7 +732,10 @@ impl NativeControl {
                         .sign(&challenge.transcript.signing_digest().map_err(fail)?)
                         .to_bytes(),
                 );
-                self.participation.as_mut().unwrap().context = Some(challenge.context);
+                self.participation
+                    .as_mut()
+                    .ok_or("stale media completion")?
+                    .context = Some(challenge.context);
                 self.control_request(
                     view,
                     ControlCommand::RefreshComplete {
@@ -711,7 +743,7 @@ impl NativeControl {
                         nonce: refresh.nonce,
                         signature,
                     },
-                    ControlStage::RefreshComplete(carrier, refresh.clone()),
+                    ControlStage::RefreshComplete(carrier, Box::new(refresh.clone())),
                 )
                 .map(Step::Request)
             }
@@ -722,7 +754,10 @@ impl NativeControl {
                     expires_at_ns,
                 },
             ) => {
-                let part = self.participation.as_mut().unwrap();
+                let part = self
+                    .participation
+                    .as_mut()
+                    .ok_or("stale media completion")?;
                 if session_id != refresh.session_id
                     || expires_at_ns
                         != part
@@ -751,7 +786,10 @@ impl NativeControl {
                     presence.signature,
                 )?;
                 self.context(view, &presence.context, false)?;
-                let part = self.participation.as_mut().unwrap();
+                let part = self
+                    .participation
+                    .as_mut()
+                    .ok_or("stale media completion")?;
                 if presence.context.expires_at_ns
                     > part
                         .grant
@@ -765,12 +803,17 @@ impl NativeControl {
                 part.presence_expires_at_ns = presence.context.expires_at_ns;
                 let result = PresenceView {
                     // Bounded by the signed lease, even when the host clock leads.
-                    expires_in_ns: (presence.context.expires_at_ns - view.now_ns).min(
-                        presence
-                            .context
-                            .expires_at_ns
-                            .saturating_sub(presence.context.issued_at_ns),
-                    ),
+                    // `context` above rejects a lease that already expired.
+                    expires_in_ns: presence
+                        .context
+                        .expires_at_ns
+                        .saturating_sub(view.now_ns)
+                        .min(
+                            presence
+                                .context
+                                .expires_at_ns
+                                .saturating_sub(presence.context.issued_at_ns),
+                        ),
                     inventory: presence.context.inventory.clone(),
                 };
                 part.context = Some(presence.context);

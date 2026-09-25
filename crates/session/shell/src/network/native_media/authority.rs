@@ -1,7 +1,13 @@
-use super::*;
+use super::{
+    ConnectionScope, Instant, Ordering, Phase, State, Ticket, namespace, now_ns, protocol, registry,
+};
 use qos_moq::{client::ClientAuthority, relay::Direction};
 
 impl Ticket {
+    #[allow(
+        clippy::significant_drop_tightening,
+        reason = "`read` is handed the state guard at the tail; there is no earlier point to drop it"
+    )]
     pub(super) fn inspect_current<T>(
         &self,
         read: impl FnOnce(&State, &protocol::GrantView) -> Result<T, String>,
@@ -47,9 +53,8 @@ impl Ticket {
                 return Err("native capture authority expired".into());
             }
             self.capture_until.store(
-                end.saturating_duration_since(self.base)
-                    .as_nanos()
-                    .min(u64::MAX as u128) as u64,
+                u64::try_from(end.saturating_duration_since(self.base).as_nanos())
+                    .unwrap_or(u64::MAX),
                 Ordering::Release,
             );
             read(&state, &actual)

@@ -1,5 +1,5 @@
 //! Closed native media protocol. Production views borrow the actual native
-//! owner and HostIdentity; callers cannot supply a signing preimage.
+//! owner and `HostIdentity`; callers cannot supply a signing preimage.
 use ed25519_dalek::{Signer, SigningKey};
 use qos_peer_state::StatePeer;
 use std::collections::BTreeMap;
@@ -107,9 +107,17 @@ impl auth::Authority for OwnerView<'_> {
         Ok(())
     }
 }
+#[allow(
+    clippy::arithmetic_side_effects,
+    reason = "u64 nanoseconds span under 585 years, always representable after the Unix epoch"
+)]
 fn time(ns: u64) -> SystemTime {
     SystemTime::UNIX_EPOCH + Duration::from_nanos(ns)
 }
+#[allow(
+    clippy::needless_pass_by_value,
+    reason = "a `map_err` adapter: it receives each error by value"
+)]
 fn fail(message: impl ToString) -> String {
     message.to_string()
 }
@@ -188,7 +196,7 @@ enum Pending {
         nonce: [u8; 32],
     },
     Ready {
-        proof: auth::ServerProof,
+        proof: Box<auth::ServerProof>,
         nonce: [u8; 32],
         digest: [u8; 32],
     },
@@ -393,7 +401,7 @@ impl NativeControl {
                     body,
                     None,
                     Pending::Ready {
-                        proof,
+                        proof: Box::new(proof),
                         nonce,
                         digest,
                     },
@@ -418,7 +426,7 @@ impl NativeControl {
                     return Err(fail("media HTTP ready binding mismatch"));
                 }
                 self.session = Some(HttpSession {
-                    proof,
+                    proof: *proof,
                     nonce,
                     digest,
                 });

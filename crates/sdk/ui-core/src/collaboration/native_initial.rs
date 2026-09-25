@@ -7,7 +7,12 @@
         reason = "construction custody is driven by the native launcher; portable hosts use only the initial-read bridge"
     )
 )]
-use super::*;
+#[cfg(feature = "broker-transport")]
+use super::{
+    Backend, BridgeState, BrokerTransport, QueuedSdkCommand, SdkCommand, enqueue_sdk_command,
+    tokio_mpsc,
+};
+use super::{CollaborationManager, CommittedDocument, RouteSpec};
 use std::cell::{Cell, RefCell};
 use std::rc::{Rc, Weak};
 thread_local! {static CONSTRUCTION:RefCell<Option<Weak<Construction>>> = const {RefCell::new(None)};}
@@ -68,6 +73,10 @@ impl NativeConstruction {
         let previous = CONSTRUCTION.with(|slot| slot.replace(Some(Rc::downgrade(&state))));
         Ok(Self { state, previous })
     }
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "native component admission briefly waits on the broker worker's owner recheck, as the broker transport module does"
+    )]
     pub(crate) fn bind_component(
         &self,
         binding: &crate::bound_dispatch::CallbackBinding,
@@ -279,7 +288,7 @@ impl InitialReadBridge {
             .clone();
         if !channel.state.document_reads.required(&route.channel_id()) {
             return Ok(None);
-        };
+        }
         Ok(Some(Self {
             route,
             commands: channel.outbound_tx.downgrade(),

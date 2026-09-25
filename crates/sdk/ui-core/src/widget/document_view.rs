@@ -81,8 +81,10 @@ where
     ) -> Self {
         let mut view = Self::from_document(project, |_| Box::new(Text::new("")));
         view.control_domain = Some(domain.clone());
-        view.build =
-            Box::new(move |key, domain| build(key, domain.expect("explicit ModelView custody")));
+        // A view with an installed domain always builds under its child domain;
+        // the installed owner is only the fallback for that invariant.
+        let installed = domain.clone();
+        view.build = Box::new(move |key, domain| build(key, domain.unwrap_or(&installed)));
         view
     }
     /// Focus the first focusable descendant after a projection changes.

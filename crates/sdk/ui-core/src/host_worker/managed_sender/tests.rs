@@ -127,16 +127,16 @@ fn managed_sender_codec_paid_insert_preserves_original_rows_and_credit() {
     let view = NativeSenderOutboxV1::decode(&original).unwrap();
     let input = NativeSenderOutboxV1::decode(&incoming).unwrap();
     let row = input.find(&[8; 16]).unwrap().unwrap();
-    let needed = view.insertion_bytes(row).unwrap();
+    let needed = view.insertion_bytes(&row).unwrap();
     let allowance = NativeAllowance::new(1024 * 1024).unwrap();
     let baseline = allowance.available_bytes();
     assert!(
-        view.insert(row, allowance.reserve(needed - 1).unwrap())
+        view.insert(&row, allowance.reserve(needed - 1).unwrap())
             .is_err()
     );
     assert_eq!(allowance.available_bytes(), baseline);
     let encoded = view
-        .insert(row, allowance.reserve(needed).unwrap())
+        .insert(&row, allowance.reserve(needed).unwrap())
         .unwrap();
     assert_eq!(
         encoded.bytes(),
@@ -150,7 +150,7 @@ fn managed_sender_codec_paid_insert_preserves_original_rows_and_credit() {
     assert!(
         NativeSenderOutboxV1::decode(encoded.bytes())
             .unwrap()
-            .insertion_bytes(row)
+            .insertion_bytes(&row)
             .is_err()
     );
     let (bytes, credit) = encoded.into_parts();
@@ -174,7 +174,7 @@ fn managed_sender_codec_reserves_future_terminal_bytes_before_admission() {
     let incoming = pending_payload(&[pending_row(16, None)]);
     let input = NativeSenderOutboxV1::decode(&incoming).unwrap();
     assert!(matches!(
-        view.insertion_bytes(input.find(&[16; 16]).unwrap().unwrap()),
+        view.insertion_bytes(&input.find(&[16; 16]).unwrap().unwrap()),
         Err(OutboxFailure::Capacity)
     ));
     rows.push(pending_row(16, None));
@@ -280,14 +280,14 @@ fn managed_sender_codec_preserves_opaque_runtime_revision_grammar() {
     let row = view.find(&[8; 16]).unwrap().unwrap();
     assert_eq!(row.revision, "\nevision-original");
     let empty = NativeSenderOutboxV1::decode(NativeSenderOutboxV1::empty_bytes()).unwrap();
-    let needed = empty.insertion_bytes(row).unwrap();
-    let encoded = empty.insert(row, work.reserve(needed).unwrap()).unwrap();
+    let needed = empty.insertion_bytes(&row).unwrap();
+    let encoded = empty.insert(&row, work.reserve(needed).unwrap()).unwrap();
     assert_eq!(encoded.bytes(), original);
     let mut invalid = row;
     invalid.revision = "opaque\0revision";
-    assert!(empty.insertion_bytes(invalid).is_err());
+    assert!(empty.insertion_bytes(&invalid).is_err());
     invalid.revision = "";
-    assert!(empty.insertion_bytes(invalid).is_err());
+    assert!(empty.insertion_bytes(&invalid).is_err());
     original[offset] = 0;
     assert!(NativeSenderOutboxV1::decode(&original).is_err());
 }

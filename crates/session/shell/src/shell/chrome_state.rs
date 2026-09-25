@@ -1201,6 +1201,10 @@ impl ChromeState {
     /// Private presentation requests share the portable descriptor contract.
     /// The descriptor names workspaces by their raw id; the shell resolves it
     /// against its own desktop model.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the named workspace or requested view is unavailable.
     pub fn request_workspace_view(
         &mut self,
         request: qos_desktop::activity::WorkspaceViewRequest,

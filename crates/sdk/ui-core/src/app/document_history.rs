@@ -427,14 +427,10 @@ impl App {
             );
             self.layout.root_node = Some(root);
             let mut roots: Vec<(&dyn Widget, taffy::NodeId)> = vec![(history.as_ref(), root)];
-            if let Some(node) = palette_node {
-                roots.push((
-                    self.actions
-                        .action_palette
-                        .as_ref()
-                        .expect("palette was just built"),
-                    node,
-                ));
+            if let (Some(node), Some(palette)) =
+                (palette_node, self.actions.action_palette.as_ref())
+            {
+                roots.push((palette, node));
             }
             // SAFETY: App owns this settled forest and its retained live root.
             unsafe {
@@ -457,14 +453,10 @@ impl App {
             self.layout.root_node = Some(app);
             let mut roots: Vec<(&dyn Widget, taffy::NodeId)> =
                 vec![(self.root_widget.as_ref(), app)];
-            if let Some(node) = palette_node {
-                roots.push((
-                    self.actions
-                        .action_palette
-                        .as_ref()
-                        .expect("palette was just built"),
-                    node,
-                ));
+            if let (Some(node), Some(palette)) =
+                (palette_node, self.actions.action_palette.as_ref())
+            {
+                roots.push((palette, node));
             }
             // SAFETY: every disjoint presentation root belongs to this App.
             unsafe {
@@ -508,14 +500,8 @@ impl App {
                     .chain(layout.pane),
             ),
         );
-        if let Some(node) = palette_node {
-            roots.push((
-                self.actions
-                    .action_palette
-                    .as_ref()
-                    .expect("palette was just built"),
-                node,
-            ));
+        if let (Some(node), Some(palette)) = (palette_node, self.actions.action_palette.as_ref()) {
+            roots.push((palette, node));
         }
         // SAFETY: every root and node belongs to this same freshly built arena;
         // chrome is admitted separately and does not inherit app authority.

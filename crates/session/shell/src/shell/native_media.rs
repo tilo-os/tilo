@@ -55,7 +55,7 @@ pub(crate) trait MediaSession: Send {
     /// Stops this exact capture generation without locking the outer backend.
     fn capture_stop(&self) -> Option<Arc<dyn Fn() + Send + Sync>>;
     /// Stop device delivery for transport recovery. A later start with the same
-    /// source and fence must remain covered by the existing capture_stop handle.
+    /// source and fence must remain covered by the existing `capture_stop` handle.
     fn pause_capture(&mut self);
     fn stop_capture(&mut self);
     fn close(&mut self);
@@ -133,6 +133,7 @@ struct Consent {
     grants: GrantStoreHandle,
     prompts: PromptQueueHandle,
 }
+type PrivacyListener = Arc<dyn Fn(&crate::portal::lockdown::LockdownPolicy) + Send + Sync>;
 struct Shared {
     lifecycle: LocalSessionLifecycle,
     target: super::personal_continuity::DeviceId,
@@ -141,7 +142,7 @@ struct Shared {
     factory: OnceLock<Arc<dyn MediaFactory>>,
     calls: Mutex<Calls>,
     listener: OnceLock<Arc<dyn Fn() + Send + Sync>>,
-    privacy_listener: OnceLock<Arc<dyn Fn(&crate::portal::lockdown::LockdownPolicy) + Send + Sync>>,
+    privacy_listener: OnceLock<PrivacyListener>,
     output_disabled: AtomicBool,
 }
 #[derive(Clone)]
@@ -202,6 +203,14 @@ impl NativeMediaService {
         Arc::clone(&self.0.capture)
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one ordered dispatcher: intent floor, local stops, then the per-command paths"
+    )]
+    #[allow(
+        clippy::significant_drop_tightening,
+        reason = "each block's `entry` borrows from the calls guard up to its return; there is no earlier point to drop it"
+    )]
     fn command_for(&self, caller: Caller, request: Request) -> Result<Snapshot, String> {
         if !request.dispatch_valid() {
             return Err("invalid native media intent".into());
@@ -308,10 +317,16 @@ impl NativeMediaService {
                         .snapshot(calls.entries.get(&key).ok_or("no local call")?))
                 }
             }
-            Command::Leave | Command::SetMuted { muted: true } => unreachable!(),
+            Command::Leave | Command::SetMuted { muted: true } => {
+                Err("native media intent already handled".into())
+            }
         }
     }
 
+    #[allow(
+        clippy::significant_drop_tightening,
+        reason = "the calls guard covers the floor check through worker installation, which must be atomic"
+    )]
     fn join(&self, caller: Caller, channel: String, intent: u64) -> Result<Snapshot, String> {
         let permit = self
             .0
@@ -380,7 +395,7 @@ impl NativeMediaService {
         let weak = Arc::downgrade(&self.0);
         let task_key = key.clone();
         let worker = tokio::spawn(async move {
-            run_call(weak, task_key, generation, intent, factory.prepare(target)).await
+            run_call(weak, task_key, generation, intent, factory.prepare(target)).await;
         });
         if let Some(entry) = calls.entries.get_mut(&key) {
             entry.worker = Some(worker.abort_handle());
@@ -388,6 +403,10 @@ impl NativeMediaService {
         Ok(snapshot)
     }
 
+    #[allow(
+        clippy::significant_drop_tightening,
+        reason = "`entry` borrows from the calls guard until the returned snapshot"
+    )]
     fn request_capture(&self, key: &Key, intent: u64) -> Result<Snapshot, String> {
         let consent = self.0.consent.get().ok_or("native consent unavailable")?;
         let mut calls = self
@@ -441,7 +460,7 @@ impl NativeMediaService {
                 .await
                 .ok()
                 .and_then(Result::ok)
-                .is_some_and(|outcome| outcome.is_allowed());
+                .is_some_and(crate::portal::PromptOutcome::is_allowed);
             if let Some(shared) = weak.upgrade() {
                 shared.finish_consent(&task_key, generation, intent, &task_token, approved);
             }
@@ -521,7 +540,7 @@ impl Shared {
                     .chars()
                     .filter(|c| !c.is_control())
                     .scan(0usize, |bytes, c| {
-                        *bytes += c.len_utf8();
+                        *bytes = bytes.saturating_add(c.len_utf8());
                         (*bytes <= 256).then_some(c)
                     })
                     .collect::<String>();
@@ -625,6 +644,14 @@ impl Shared {
         }
         calls.entries.clear();
     }
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one consent completion: authorize, acquire, start and fence under one lifecycle guard"
+    )]
+    #[allow(
+        clippy::significant_drop_tightening,
+        reason = "the broker guard backs the resolved capture handle and must cover lease release on every failure path"
+    )]
     fn finish_consent(&self, key: &Key, generation: u64, intent: u64, token: &str, approved: bool) {
         let Ok(mut calls) = self.calls.lock() else {
             return;
@@ -662,6 +689,9 @@ impl Shared {
         let result = permit
             .while_current(|| -> Result<Capture, Issue> {
                 let now = Instant::now();
+                let deadline = now
+                    .checked_add(crate::portal::capture_broker::CAPTURE_LEASE_TTL)
+                    .ok_or(Issue::Unavailable)?;
                 let mut broker = self.capture.lock().map_err(|_| Issue::Unavailable)?;
                 let auth = broker
                     .authorize(&entry.binding, &source, CaptureKind::Microphone, now)
@@ -671,7 +701,6 @@ impl Shared {
                     .map_err(|_| Issue::PermissionDenied)?;
                 let current = Arc::new(AtomicBool::new(true));
                 let checked = Arc::clone(&current);
-                let deadline = now + crate::portal::capture_broker::CAPTURE_LEASE_TTL;
                 let fence: Arc<dyn Fn() -> bool + Send + Sync> =
                     Arc::new(move || checked.load(Ordering::Acquire) && Instant::now() < deadline);
                 let result = match broker.resolve(lease, &entry.binding, now) {
@@ -735,7 +764,7 @@ impl Shared {
             }
         }
     }
-    fn pause_capture(&self, entry: &mut Entry) {
+    fn pause_capture(entry: &mut Entry) {
         let Some(capture) = &mut entry.capture else {
             return;
         };
@@ -750,6 +779,10 @@ impl Shared {
         }
         entry.snapshot.capture_active = false;
     }
+    #[allow(
+        clippy::significant_drop_tightening,
+        reason = "the resolved capture handle borrows from the broker guard until the backend installs it"
+    )]
     fn resume_capture(&self, entry: &mut Entry) {
         let Some(capture) = entry.capture.as_ref().filter(|capture| capture.paused) else {
             return;
@@ -856,7 +889,7 @@ impl Shared {
         match result {
             Ok(state) => {
                 match state {
-                    State::Reconnecting => self.pause_capture(entry),
+                    State::Reconnecting => Self::pause_capture(entry),
                     State::Live => self.resume_capture(entry),
                     _ => self.stop_capture(entry),
                 }

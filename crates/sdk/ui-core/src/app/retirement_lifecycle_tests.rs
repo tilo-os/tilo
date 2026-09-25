@@ -43,9 +43,7 @@ thread_local! {
 }
 fn stage(name: &'static str) {
     STAGES.with_borrow_mut(|events| events.push(name));
-    if PANIC_STAGE.get() == name {
-        panic!("constructor probe: {name}");
-    }
+    assert!(PANIC_STAGE.get() != name, "constructor probe: {name}");
 }
 fn paid() -> (
     NativeAllowance,
@@ -106,9 +104,10 @@ impl Widget for Root {
     ) {
         let index = self.observed.installs.get();
         self.observed.installs.set(index + 1);
-        if self.observed.panic_install.get() == Some(index) {
-            panic!("control installation probe");
-        }
+        assert!(
+            self.observed.panic_install.get() != Some(index),
+            "control installation probe"
+        );
         self.inner.install_control_custody(domain, attachment);
     }
 
@@ -195,9 +194,10 @@ impl AppWidget for Root {
                 started.send(()).unwrap();
                 resume.recv().unwrap();
             }
-            if self.observed.panic_capture.replace(false) {
-                panic!("real capture probe");
-            }
+            assert!(
+                !self.observed.panic_capture.replace(false),
+                "real capture probe"
+            );
         }
         Ok(None)
     }

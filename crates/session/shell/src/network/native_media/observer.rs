@@ -1,6 +1,6 @@
-//! One-shot PipeWire registry custody. The same observed connection is handed
-//! to GStreamer; no path reconnect or display-row authority substitutes for it.
-use super::*;
+//! One-shot `PipeWire` registry custody. The same observed connection is handed
+//! to `GStreamer`; no path reconnect or display-row authority substitutes for it.
+use super::{AtomicU64, BTreeMap, Duration, Instant, Ordering};
 use media::AudioGraph;
 use std::os::fd::OwnedFd;
 
@@ -12,7 +12,7 @@ impl Permit {
     fn acquire() -> Result<Self, String> {
         OBSERVERS
             .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |count| {
-                (count < 8).then_some(count + 1)
+                (count < 8).then_some(count.saturating_add(1))
             })
             .map(|_| Self)
             .map_err(|_| "native PipeWire observer capacity".into())
@@ -46,6 +46,10 @@ pub(super) fn observe() -> Result<Observed, String> {
     Err("native PipeWire observation requires Linux".into())
 }
 #[cfg(target_os = "linux")]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one blocking PipeWire registry round trip whose callbacks share local state"
+)]
 pub(super) fn observe() -> Result<Observed, String> {
     use pipewire as pw;
     use pw::types::ObjectType;
@@ -55,7 +59,10 @@ pub(super) fn observe() -> Result<Observed, String> {
         rc::Rc,
     };
     let _permit = Permit::acquire()?;
-    let end = Instant::now() + Duration::from_secs(1);
+    let started = Instant::now();
+    let end = started
+        .checked_add(Duration::from_secs(1))
+        .ok_or("PipeWire deadline overflow")?;
     let mainloop = pw::main_loop::MainLoopRc::new(None).map_err(|_| "PipeWire loop unavailable")?;
     let context =
         pw::context::ContextRc::new(&mainloop, None).map_err(|_| "PipeWire context unavailable")?;

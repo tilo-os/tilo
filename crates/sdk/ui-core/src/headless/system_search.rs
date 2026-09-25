@@ -1,6 +1,9 @@
 //! Portable system search. Hosts supply admitted identities and resolve inert selections.
 
-use super::*;
+use super::{
+    Affine, ElementState, FrameHarness, HashMap, InspectionNode, MouseButton, NodeId, Point,
+    PresenceCtx, Rect, TaffyTree, Theme, Widget, WindowEvent,
+};
 use crate::CommandPalette;
 use crate::search::system::filters::{FilterAction, SearchFilters};
 use crate::search::system::{
@@ -96,7 +99,7 @@ impl Provider<(), Row> for SnapshotProvider {
     }
     fn query_page(
         &self,
-        _: &(),
+        (): &(),
         query: &Query<'_>,
         _: Option<&SearchCursor>,
         budget: SearchBudget,
@@ -117,7 +120,7 @@ impl Provider<(), Row> for SnapshotProvider {
             .collect();
         SearchPage::exhausted("query-snapshot", rows)
     }
-    fn resolve(&self, _: &(), id: &str, query: &Query<'_>) -> Option<Row> {
+    fn resolve(&self, (): &(), id: &str, query: &Query<'_>) -> Option<Row> {
         self.rows
             .iter()
             .find(|r| r.identity == id && query.wanted_kinds.contains(&r.kind))
@@ -613,7 +616,9 @@ impl FrameHarness {
         {
             scopes.insert(0, (SearchScope::ActiveApp, format!("Only {}", tab.title)));
         }
-        let overlay = self.system_search.overlay.as_mut().unwrap();
+        let Some(overlay) = self.system_search.overlay.as_mut() else {
+            return;
+        };
         overlay
             .filters
             .configure(registry.registered_kinds(), wanted, scopes, scope);
@@ -642,8 +647,9 @@ impl FrameHarness {
             }
             self.system_search.rows.insert(entry.id.clone(), row);
         }
-        let overlay = self.system_search.overlay.as_mut().unwrap();
-        overlay.palette.set_entries(entries);
+        if let Some(overlay) = self.system_search.overlay.as_mut() {
+            overlay.palette.set_entries(entries);
+        }
     }
     pub(super) fn finish_system_search(&mut self) {
         let Some(overlay) = self.system_search.overlay.as_mut() else {
@@ -655,8 +661,14 @@ impl FrameHarness {
             if let Some(row) = self.system_search.rows.get(&outcome.id).cloned() {
                 // Re-query current bound providers, so a closed/replaced component,
                 // removed content hit or revoked command cannot reuse a painted row.
-                let overlay = self.system_search.overlay.as_ref().unwrap();
-                let current = self.system_search_providers(overlay.palette.query(), overlay.scope);
+                let current = self
+                    .system_search
+                    .overlay
+                    .as_ref()
+                    .map(|overlay| {
+                        self.system_search_providers(overlay.palette.query(), overlay.scope)
+                    })
+                    .unwrap_or_default();
                 if current
                     .iter()
                     .flat_map(|p| &p.rows)
@@ -740,7 +752,9 @@ impl FrameHarness {
             WindowEvent::CursorLeft { .. } => None,
             _ => self.system_search_pointer_position(),
         };
-        let overlay = self.system_search.overlay.as_mut().unwrap();
+        let Some(overlay) = self.system_search.overlay.as_mut() else {
+            return false;
+        };
         if matches!(
             event,
             WindowEvent::CursorMoved { .. } | WindowEvent::CursorLeft { .. }
@@ -891,8 +905,10 @@ impl FrameHarness {
                     ) {
                         return false;
                     }
-                    if matches!(action, crate::a11y::Action::Activate) {
-                        self.apply_system_filter(overlay.filters.action_for_path(&[i, j]).unwrap());
+                    if matches!(action, crate::a11y::Action::Activate)
+                        && let Some(filter) = overlay.filters.action_for_path(&[i, j])
+                    {
+                        self.apply_system_filter(filter);
                     }
                     return true;
                 }
@@ -904,21 +920,20 @@ impl FrameHarness {
             if !system::query_input_is_bounded(value) {
                 return false;
             }
-            self.system_search
-                .overlay
-                .as_mut()
-                .unwrap()
-                .palette
-                .set_query(value);
+            if let Some(overlay) = self.system_search.overlay.as_mut() {
+                overlay.palette.set_query(value);
+            }
             self.refresh_system_search();
             return true;
         }
-        self.system_search
-            .overlay
-            .as_mut()
-            .unwrap()
-            .palette
-            .perform_semantic_action(target, action, &mut self.state.doc, &self.state.root)
+        self.system_search.overlay.as_mut().is_some_and(|overlay| {
+            overlay.palette.perform_semantic_action(
+                target,
+                action,
+                &mut self.state.doc,
+                &self.state.root,
+            )
+        })
     }
     // The overlay has its own semantic owner outside the retained document's
     // Taffy arena. This disjoint owner is used only by the pure AccessKit bridge;

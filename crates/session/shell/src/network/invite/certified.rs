@@ -42,12 +42,24 @@ impl VerifiedNativeEnrollmentIntent {
     pub(crate) fn local_device(&self) -> &DeviceCert {
         &self.record.local_device
     }
+    #[allow(
+        clippy::indexing_slicing,
+        reason = "`validate` rejects an out-of-range `hint_index` before an intent exists"
+    )]
     pub(crate) fn transport_hint(&self) -> &TransportHint {
         &self.join.grant().transport[self.record.hint_index as usize]
     }
+    #[allow(
+        clippy::arithmetic_side_effects,
+        reason = "u64 nanoseconds span under 585 years, always representable after the Unix epoch"
+    )]
     pub(crate) fn prepared_at(&self) -> SystemTime {
         SystemTime::UNIX_EPOCH + Duration::from_nanos(self.record.prepared_at_ns)
     }
+    #[allow(
+        clippy::expect_used,
+        reason = "`validate` rejects a noncanonical grant room before an intent exists"
+    )]
     pub(crate) fn room(&self) -> RoomId {
         RoomId::parse(&self.join.grant().room).expect("checked canonical room")
     }
@@ -145,6 +157,10 @@ impl VerifiedNativeEnrollmentIntent {
             delivery_locator,
         })
     }
+    #[allow(
+        clippy::needless_pass_by_value,
+        reason = "the exchange hands over the proof inputs it produced; none outlive the intent"
+    )]
     fn from_proof(
         join: VerifiedJoin,
         complete: JoinCompleteRequest,
@@ -266,6 +282,10 @@ impl VerifiedNativeEnrollment {
     pub(crate) fn transport_hint(&self) -> &TransportHint {
         self.intent.transport_hint()
     }
+    #[allow(
+        clippy::unused_self,
+        reason = "an accessor on the enrolled value; native enrollment carries no separate delivery hint"
+    )]
     pub(crate) fn delivery_hint(&self) -> Option<&TransportHint> {
         None
     }
@@ -275,6 +295,10 @@ impl VerifiedNativeEnrollment {
     pub(crate) fn pending_id(&self) -> &PendingEnrollmentId {
         &self.pending_id
     }
+    #[allow(
+        clippy::suspicious_operation_groupings,
+        reason = "a pending id's `digest` is the intent's proof digest"
+    )]
     fn finalize(
         intent: VerifiedNativeEnrollmentIntent,
         pending_id: PendingEnrollmentId,

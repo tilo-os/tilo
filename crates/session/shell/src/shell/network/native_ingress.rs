@@ -76,7 +76,7 @@ impl ShellNetwork {
             .iter()
             .any(|slot| room_topic_id(slot.room) == ws && tree.requires_native_owner(slot.room))
     }
-    pub(super) fn dispatch_native_input(&self, input: native_ingress::Input) {
+    pub(super) fn dispatch_native_input(&self, input: &native_ingress::Input) {
         let Some(identity) = self.host_identity.as_ref() else {
             return;
         };

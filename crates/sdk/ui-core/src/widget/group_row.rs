@@ -1866,20 +1866,20 @@ impl Widget for GroupRow {
         &mut self,
         request: &mut crate::bound_dispatch::ComponentRequest<'_>,
     ) -> Result<(), crate::bound_dispatch::BoundDispatchError> {
-        for child in self.groups.iter_mut() {
+        for child in &mut self.groups {
             child.visit_components(request)?;
         }
         Ok(())
     }
     fn close_components(&mut self) -> Vec<crate::application::ComponentCloseReport> {
-        for child in self.groups.iter_mut() {
+        for child in &mut self.groups {
             self.close_reports.extend(child.close_components());
         }
         self.take_component_close_reports()
     }
     fn take_component_close_reports(&mut self) -> Vec<crate::application::ComponentCloseReport> {
         let mut reports = std::mem::take(&mut self.close_reports);
-        for child in self.groups.iter_mut() {
+        for child in &mut self.groups {
             reports.extend(child.take_component_close_reports());
         }
         reports

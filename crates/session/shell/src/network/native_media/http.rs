@@ -22,7 +22,7 @@ impl Http {
         Ok(Self { client })
     }
     fn builder() -> reqwest::ClientBuilder {
-        reqwest::Client::builder()
+        tilo_net::http::client()
             .https_only(true)
             .no_proxy()
             .redirect(reqwest::redirect::Policy::none())
@@ -63,7 +63,7 @@ impl Http {
             // reserving beyond the wire limit for an unknown-length response.
             let mut result = Vec::with_capacity(maximum);
             while let Some(chunk) = response.chunk().await.map_err(|_| Error::Unavailable)? {
-                if chunk.len() > maximum - result.len() {
+                if chunk.len() > maximum.saturating_sub(result.len()) {
                     return Err(Error::Capacity);
                 }
                 result.extend_from_slice(&chunk);

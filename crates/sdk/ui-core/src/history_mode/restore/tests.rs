@@ -1190,7 +1190,7 @@ fn deep_writer_fixture() -> (
 }
 
 fn assert_deep_writer_snapshot(
-    doc: &mut AutoCommit,
+    doc: &AutoCommit,
     before: &[u8],
     heads: &[ChangeHash],
     actor: &automerge::ActorId,
@@ -1270,7 +1270,7 @@ fn depth_boundary_writer_and_postcondition_failures_roll_back_exact_state_inner(
         Err(RestoreError::Automerge(_))
     ));
     assert_deep_writer_snapshot(
-        &mut writer,
+        &writer,
         &before,
         &before_heads,
         &before_actor,
@@ -1307,7 +1307,7 @@ fn depth_boundary_writer_and_postcondition_failures_roll_back_exact_state_inner(
         RestoreError::ContentPostconditionMismatch
     );
     assert_deep_writer_snapshot(
-        &mut postcondition,
+        &postcondition,
         &before,
         &before_heads,
         &before_actor,

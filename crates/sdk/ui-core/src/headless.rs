@@ -1645,9 +1645,9 @@ impl FrameHarness {
         let frame = self.frame_schedule();
         if !frame.needs_redraw
             && !frame.needs_animation_frame
-            && !frame
+            && frame
                 .next_wake_deadline
-                .is_some_and(|deadline| deadline <= crate::time::now())
+                .is_none_or(|deadline| deadline > crate::time::now())
         {
             return Ok(false);
         }
@@ -2018,9 +2018,7 @@ impl FrameHarness {
                     self.build_history_frame(palette_node)
                 } else {
                     if let Some(node) = palette_node {
-                        self.taffy
-                            .add_child(self.child_node, node)
-                            .expect("palette belongs to current tree");
+                        self.taffy.add_child(self.child_node, node)?;
                     }
                     // SAFETY: exclusive runner owns this exact fresh topology.
                     unsafe {
@@ -3945,7 +3943,7 @@ impl FrameHarness {
                             code: "stale-action-binding".into(),
                             message: format!(
                                 "bound action {}/{} is absent from the live resource tree",
-                                &address.resource, address.action
+                                address.resource, address.action
                             ),
                         })
                 }
@@ -5828,7 +5826,9 @@ impl FrameHarness {
         if self.retained_geometry_check_every == 0
             || self.verifying_geometry
             || self.last_relayout.rebuilt
-            || self.retained_frames % u64::from(self.retained_geometry_check_every) != 0
+            || !self
+                .retained_frames
+                .is_multiple_of(u64::from(self.retained_geometry_check_every))
         {
             return;
         }
@@ -7222,27 +7222,25 @@ mod tests {
     fn controlled_managed_root_rejects_mismatched_owner() {
         let (ordinary_root, _) = controlled_owned_root(920);
         let (_ordinary_registration_owner, ordinary_registration) = controlled_owned_root(921);
-        let expected = match Driver::from_managed_root(
+        let Err(expected) = Driver::from_managed_root(
             State::new(),
             crate::history_mode::ManagedRoot::new(ordinary_root, ordinary_registration),
             (900, 650),
-        ) {
-            Ok(_) => panic!("ordinary managed construction accepted a mismatched owner"),
-            Err(error) => error,
+        ) else {
+            panic!("ordinary managed construction accepted a mismatched owner")
         };
 
         let (controlled_root, _) = controlled_owned_root(922);
         let (_controlled_registration_owner, controlled_registration) = controlled_owned_root(923);
-        let actual = match Driver::from_managed_root_with_controlled_inputs(
+        let Err(actual) = Driver::from_managed_root_with_controlled_inputs(
             State::new(),
             crate::history_mode::ManagedRoot::new(controlled_root, controlled_registration),
             (900, 650),
             Theme::dark(),
             crate::font_catalog::fixture_renderer(),
             crate::permissions::UserId("controlled-mismatch-author".into()),
-        ) {
-            Ok(_) => panic!("controlled managed construction accepted a mismatched owner"),
-            Err(error) => error,
+        ) else {
+            panic!("controlled managed construction accepted a mismatched owner")
         };
 
         assert_eq!(
@@ -11188,9 +11186,11 @@ pub(crate) mod legacy_control_feedback_tests {
             vec![&mut self.descendants]
         }
         fn resources(&self, _: &automerge::AutoCommit) -> Vec<tilo_actions::Resource> {
-            let mut contract = tilo_actions::ActionContract::default();
-            contract.execution = tilo_actions::ExecutionMode::Background { cancellable: false };
-            contract.result = tilo_actions::ResultSpec::Job;
+            let contract = tilo_actions::ActionContract {
+                execution: tilo_actions::ExecutionMode::Background { cancellable: false },
+                result: tilo_actions::ResultSpec::Job,
+                ..tilo_actions::ActionContract::default()
+            };
             let begin = tilo_actions::ActionSpec::operation(
                 "begin",
                 "Begin",

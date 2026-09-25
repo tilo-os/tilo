@@ -49,6 +49,7 @@
 use crate::time::Duration;
 use std::path::Path;
 use std::rc::Rc;
+use tilo_automerge::ApplyIncoming;
 
 use durable_store::{DurableStore, StorageKey};
 
@@ -226,7 +227,7 @@ pub(crate) fn finish_canonical_initial(
     let mut doc = if let Some(mut existing) = loaded {
         validate(&existing)?;
         existing
-            .merge(&mut incoming)
+            .merge_incoming(&mut incoming)
             .map_err(|error| error.to_string())?;
         existing
     } else {
@@ -294,7 +295,7 @@ fn finish_initial(
             return Err("native initial snapshot missing".to_string());
         };
         let mut actual = automerge::AutoCommit::load(bytes).map_err(|e| e.to_string())?;
-        doc.merge(&mut actual).map_err(|e| e.to_string())?;
+        doc.merge_incoming(&mut actual).map_err(|e| e.to_string())?;
         Ok::<_, String>(())
     })??;
     writer.request(&mut doc);

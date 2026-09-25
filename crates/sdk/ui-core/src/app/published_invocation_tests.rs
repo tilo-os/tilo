@@ -504,7 +504,7 @@ fn directory_permission_original_revision_checked_before_actual_handler() {
         deliver_remote(&mut app, &request);
         assert_eq!(
             owned_count(&store, &checkout),
-            if stale { 0 } else { 1 },
+            i64::from(!stale),
             "stale original revision must refuse before mutation; identical control must still run"
         );
     }

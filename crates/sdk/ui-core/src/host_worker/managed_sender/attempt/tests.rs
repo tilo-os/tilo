@@ -19,9 +19,9 @@ fn managed_sender_attempt_single_claim_result_and_last_clone_keep_credit() {
     let row = view.find(&[8; 16]).unwrap().unwrap();
     let allowance = NativeAllowance::new(2 * 1024 * 1024).unwrap();
     let baseline = allowance.available_bytes();
-    let needed = AttemptOwner::required_bytes(row, "{}").unwrap();
+    let needed = AttemptOwner::required_bytes(&row, "{}").unwrap();
     let (owner, attempt) = AttemptOwner::new(
-        row,
+        &row,
         [9; 16],
         route().cluster_id,
         Operation::Invoke,
@@ -75,10 +75,10 @@ fn managed_sender_attempt_wrong_route_retirement_and_underfunding_refuse() {
         .unwrap()
         .unwrap();
     let allowance = NativeAllowance::new(2 * 1024 * 1024).unwrap();
-    let needed = AttemptOwner::required_bytes(row, "").unwrap();
+    let needed = AttemptOwner::required_bytes(&row, "").unwrap();
     assert!(
         AttemptOwner::new(
-            row,
+            &row,
             [9; 16],
             route().cluster_id,
             Operation::Observe,
@@ -89,7 +89,7 @@ fn managed_sender_attempt_wrong_route_retirement_and_underfunding_refuse() {
         .is_err()
     );
     let (owner, attempt) = AttemptOwner::new(
-        row,
+        &row,
         [9; 16],
         route().cluster_id,
         Operation::Observe,
@@ -109,7 +109,7 @@ fn managed_sender_attempt_wrong_route_retirement_and_underfunding_refuse() {
     drop(result);
     drop(owner);
     let (owner, attempt) = AttemptOwner::new(
-        row,
+        &row,
         [9; 16],
         route().cluster_id,
         Operation::Cancel,
@@ -136,11 +136,11 @@ fn managed_sender_attempt_all_backings_remain_paid_until_last_result_drop() {
         .unwrap();
     let selected_route = route();
     let allowance = NativeAllowance::new(2 * 1024 * 1024).unwrap();
-    let needed = AttemptOwner::required_bytes(row, "{}").unwrap();
-    let (_, allocations) = measure_test_allocations(&allowance, || {
+    let needed = AttemptOwner::required_bytes(&row, "{}").unwrap();
+    let ((), allocations) = measure_test_allocations(&allowance, || {
         let credit = allowance.reserve(needed).unwrap();
         let (owner, attempt) = AttemptOwner::new(
-            row,
+            &row,
             [9; 16],
             selected_route.cluster_id,
             Operation::Invoke,
@@ -171,10 +171,10 @@ fn managed_sender_attempt_all_backings_remain_paid_until_last_result_drop() {
     assert!(allocations.allocations > 0);
     assert!(!allocations.underfunded, "{allocations:?}");
     assert_eq!(allocations.live, 0);
-    let (_, allocations) = measure_test_allocations(&allowance, || {
+    let ((), allocations) = measure_test_allocations(&allowance, || {
         assert!(
             AttemptOwner::new(
-                row,
+                &row,
                 [9; 16],
                 selected_route.cluster_id,
                 Operation::Invoke,

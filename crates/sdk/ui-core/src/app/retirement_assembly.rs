@@ -1,5 +1,12 @@
 //! Inner ownership during callback-bearing App assembly. No gate is held here.
-use super::*;
+#[cfg(all(windows, feature = "native"))]
+use super::native_runner;
+use super::{
+    AccessibilityRuntime, ActionRuntime, App, AppConstructionInputs, Cell, CollaborationManager,
+    CollaborationRuntime, ContinuationRuntime, FloatingRuntime, HistoryRuntime, InputRuntime,
+    Instant, LayoutRuntime, NodeId, PaletteSource, PermissionContext, PersistenceRuntime,
+    PresenceCtx, PresenceRuntime, State, TextRenderer, Theme, Widget, WindowRuntime,
+};
 use crate::semantic_document_read::retirement::RootRetirementPrelude;
 
 pub(super) struct ComponentAssemblyCustody {
@@ -23,6 +30,10 @@ pub(super) struct AppAssemblyCustody {
     pub control: Option<crate::ControlDomain>,
     pub inputs: Option<AppConstructionInputs>,
     pub configured_theme: Option<Theme>,
+    #[expect(
+        clippy::option_option,
+        reason = "the outer Option is the custody slot; the inner one is the host's optional screen reader"
+    )]
     pub screen_reader: Option<Option<crate::screen_reader::ScreenReader>>,
     pub values: AppAssemblyValues,
 }
@@ -41,6 +52,12 @@ impl Drop for AppAssemblyCustody {
 
 // Each evaluated value enters this owned staging area immediately. A later
 // initializer panic cannot drop these values before AppAssemblyCustody::drop.
+// Every field is an empty-or-staged slot for the App field of the same name,
+// so an optional App field is staged as `Option<Option<T>>`.
+#[expect(
+    clippy::option_option,
+    reason = "each outer Option is a staging slot for an App field that is itself optional"
+)]
 #[derive(Default)]
 pub(super) struct AppAssemblyValues {
     #[cfg(all(windows, feature = "native"))]
@@ -120,41 +137,30 @@ impl Drop for ValidationRetirement<'_> {
     }
 }
 
-pub(super) fn assemble(mut assembly: retirement_assembly::AppAssemblyCustody) -> App {
+#[expect(
+    clippy::unreachable,
+    reason = "both callers stage the root, state and inputs before assembly; a missing slot is a construction bug that retires first"
+)]
+pub(super) fn assemble(mut assembly: AppAssemblyCustody) -> App {
     let _entry = assembly.wake.as_ref().map_or_else(
         crate::wake::WakeScope::enter_detached,
         crate::wake::WakeScope::enter,
     );
-    assembly.configured_theme = Some(
-        assembly
-            .inputs
-            .as_mut()
-            .expect("assembly inputs")
-            .configured_theme
-            .resolve_in_place(),
-    );
-    assembly.control = Some(
-        assembly
-            .inputs
-            .as_ref()
-            .expect("assembly inputs")
+    let (Some(inputs), Some(root)) = (assembly.inputs.as_mut(), assembly.root.as_mut()) else {
+        assembly.retire();
+        unreachable!("App assembly owns its root and inputs");
+    };
+    let configured_theme = assembly
+        .configured_theme
+        .insert(inputs.configured_theme.resolve_in_place());
+    let control = assembly.control.insert(
+        inputs
             .control_domain
             .clone()
             .unwrap_or_else(crate::control_custody::ControlDomain::outer),
     );
-    assembly
-        .root
-        .as_mut()
-        .expect("assembly root")
-        .install_control_custody(
-            assembly.control.as_ref().expect("assembly control"),
-            crate::control_custody::CustodyAttachment::Initial,
-        );
-    assembly
-        .control
-        .as_ref()
-        .expect("assembly control")
-        .finish_initial_installation();
+    root.install_control_custody(control, crate::control_custody::CustodyAttachment::Initial);
+    control.finish_initial_installation();
     #[cfg(all(windows, feature = "native"))]
     {
         assembly.values.startup_renderer = Some(None);
@@ -167,98 +173,46 @@ pub(super) fn assemble(mut assembly: retirement_assembly::AppAssemblyCustody) ->
     assembly.values.framework_input = Some(std::rc::Rc::new(Cell::new(false)));
     assembly.values.history_key_release = Some(false);
     assembly.values.history_focus = Some(None);
-    assembly.values.text_renderer = Some(
-        assembly
-            .inputs
-            .as_mut()
-            .expect("assembly inputs")
-            .text_renderer
-            .resolve_in_place(),
-    );
-    assembly.values.palette_source = Some(
-        assembly
-            .inputs
-            .as_ref()
-            .expect("assembly inputs")
-            .palette_source,
-    );
-    assembly.values.watch_system_settings = Some(
-        assembly
-            .inputs
-            .as_ref()
-            .expect("assembly inputs")
-            .watch_system_settings,
-    );
+    assembly.values.text_renderer = Some(inputs.text_renderer.resolve_in_place());
+    assembly.values.palette_source = Some(inputs.palette_source);
+    assembly.values.watch_system_settings = Some(inputs.watch_system_settings);
     assembly.values.layout = Some(LayoutRuntime::new());
     assembly.values.bindings = Some(crate::bound_dispatch::BoundNodeMap::new());
     assembly.values.component_close_reports = Some(vec![]);
     assembly.values.close_admission = Some(crate::close_admission::Admission::default());
     assembly.values.needs_sync = Some(true);
-    assembly.values.theme = Some(
-        assembly
-            .configured_theme
-            .as_ref()
-            .expect("assembly theme")
-            .clone(),
-    );
-    assembly.values.debug_mode = Some((assembly
-        .inputs
-        .as_ref()
-        .expect("assembly inputs")
-        .debug_mode)());
+    assembly.values.theme = Some(configured_theme.clone());
+    assembly.values.debug_mode = Some((inputs.debug_mode)());
     assembly.values.focused_node = Some(None);
     assembly.values.focusable_order = Some(Vec::new());
     assembly.values.autofocus_first = Some(false);
     assembly.values.autofocus_on_structure_change = Some(false);
     assembly.values.appearance_reconcile = Some(false);
-    assembly.values.theme_store_stamp = Some((assembly
-        .inputs
-        .as_ref()
-        .expect("assembly inputs")
-        .theme_store_stamp)());
+    assembly.values.theme_store_stamp = Some((inputs.theme_store_stamp)());
     assembly.values.last_theme_store_check = Some(crate::time::now());
     assembly.values.input = Some(InputRuntime::new());
     assembly.values.focus_history = Some(HistoryRuntime::new());
-    let local_author = assembly
-        .inputs
-        .as_mut()
-        .expect("assembly inputs")
-        .local_author
-        .resolve_in_place();
+    let local_author = inputs.local_author.resolve_in_place();
     assembly.values.collaboration = Some(CollaborationRuntime::new(
-        std::mem::replace(
-            &mut assembly
-                .inputs
-                .as_mut()
-                .expect("assembly inputs")
-                .collab_manager,
-            CollaborationManager::disabled(),
-        ),
+        std::mem::replace(&mut inputs.collab_manager, CollaborationManager::disabled()),
         local_author,
     ));
     assembly.values.native_room_route = Some(None);
     assembly.values.action_publication_failure = Some(None);
-    assembly.values.presence_ctx = Some(
-        assembly
-            .inputs
-            .as_mut()
-            .expect("assembly inputs")
-            .presence_ctx
-            .resolve_in_place(),
-    );
+    assembly.values.presence_ctx = Some(inputs.presence_ctx.resolve_in_place());
     assembly.values.permission_ctx = Some(PermissionContext::permissive());
     assembly.values.presence = Some(PresenceRuntime::new());
-    assembly.screen_reader = Some((assembly
-        .inputs
-        .as_ref()
-        .expect("assembly inputs")
-        .screen_reader)());
+    assembly.screen_reader = Some((inputs.screen_reader)());
+    let (Some(accessibility_theme), Some(screen_reader)) = (
+        assembly.configured_theme.take(),
+        assembly.screen_reader.take(),
+    ) else {
+        assembly.retire();
+        unreachable!("the theme and screen reader were staged above");
+    };
     assembly.values.accessibility = Some(AccessibilityRuntime::new(
-        assembly.configured_theme.take().expect("assembly theme"),
-        assembly
-            .screen_reader
-            .take()
-            .expect("assembly screen reader"),
+        accessibility_theme,
+        screen_reader,
     ));
     assembly.values.window = Some(WindowRuntime::new());
     assembly.values.document_routes =
@@ -278,26 +232,19 @@ pub(super) fn assemble(mut assembly: retirement_assembly::AppAssemblyCustody) ->
     assembly.values.history_focus_pending = Some(false);
     assembly.values.last_published_playback = Some(None);
     assembly.values.last_playback_publish = Some(None);
-    assembly.values.continuation = Some(ContinuationRuntime::new((assembly
-        .inputs
-        .as_ref()
-        .expect("assembly inputs")
+    let Some(inputs) = assembly.inputs.as_ref() else {
+        assembly.retire();
+        unreachable!("App assembly owns its inputs");
+    };
+    assembly.values.continuation = Some(ContinuationRuntime::new((inputs
         .pending_continuation_restore)(
     )));
-    assembly.values.profiler = Some((assembly
-        .inputs
-        .as_ref()
-        .expect("assembly inputs")
-        .profiler)());
+    assembly.values.profiler = Some((inputs.profiler)());
     assembly.values.native_input_probe = Some(None);
-    assembly.values.floating = Some(FloatingRuntime::new((assembly
-        .inputs
-        .as_ref()
-        .expect("assembly inputs")
-        .floating_surface_client)()));
+    assembly.values.floating = Some(FloatingRuntime::new((inputs.floating_surface_client)()));
     // No callbacks or allocation remain in the transfer. Missing internal
     // slots retire before any extracted value can be dropped.
-    let retirement_assembly::AppAssemblyValues {
+    let AppAssemblyValues {
         #[cfg(all(windows, feature = "native"))]
             startup_renderer: Some(startup_renderer),
         history: Some(history),
@@ -402,17 +349,16 @@ pub(super) fn assemble(mut assembly: retirement_assembly::AppAssemblyCustody) ->
         focus_history,
         collaboration,
         native_room_route,
-        action_publication_failure,
         presence_ctx,
         permission_ctx,
         presence,
         accessibility,
         window,
-        document_routes,
         committed_documents,
         legacy_persistence,
         persistence,
         autosave_generation,
+        document_routes,
         actions,
         document_history,
         history_chrome_enabled,
@@ -420,9 +366,10 @@ pub(super) fn assemble(mut assembly: retirement_assembly::AppAssemblyCustody) ->
         history_layout,
         history_viewport_width,
         history_focus_pending,
+        continuation,
+        action_publication_failure,
         last_published_playback,
         last_playback_publish,
-        continuation,
         profiler,
         native_input_probe,
         floating,

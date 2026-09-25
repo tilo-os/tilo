@@ -1,6 +1,7 @@
 //! Concrete test fixture over the real private file and cache phases.
 use super::*;
 use crate::collaboration::RouteSpec;
+use crate::host_worker::private_actions::committed_test_fixture;
 use crate::portable_storage::PortableStorage;
 use std::time::Duration;
 

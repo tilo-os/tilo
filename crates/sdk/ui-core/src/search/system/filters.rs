@@ -869,10 +869,7 @@ pub fn share_row(natural: &[f64], available: f64, gap: f64) -> Vec<f64> {
 
 /// One pill in the search card's filter band, shared by the kind chips
 /// and the "All" reset chip.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "A chip is painted from one consistent geometry, selection, text and theme context."
-)]
+///
 /// One filter chip: a Selector (HIG §9.1) whose body is its selection tier
 /// (§9.3 — idle transparent, hover `lift(0.5)`, chosen `lift(1.0)` with a
 /// hairline and inner glow) and whose label is ink chosen against whatever

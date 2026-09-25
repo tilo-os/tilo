@@ -4,7 +4,12 @@ use super::desktop_bridge::{native_room, native_task_status, native_workspace, p
 use super::state::WorkspaceAuthority as _;
 use super::state::WorkspaceTreeHandle;
 mod committed_document;
-use qos_action_broker::services::*;
+use qos_action_broker::services::{
+    ContinuationServices, HostServices, LaunchableApplication, LauncherServices,
+    LegacyWorkspaceProjection, NativeDocumentRead, NativeDocumentReadContext, NativeDocumentReads,
+    WorkspaceAuthority, WorkspaceControlServices, WorkspaceGovernanceRequest,
+    WorkspaceGovernanceServices,
+};
 use std::sync::Arc;
 
 /// The same state.json owner used by canonical enrollment and ingress. Network
@@ -100,6 +105,7 @@ impl LegacyWorkspaceProjection for NativeWorkspaceAuthority {
             .ok_or("effect workspace no longer hosted")?;
         // Preserve native projection semantics; this void flush is not OwnerCommitService.
         let _ = tree.append_workspace_effect_receipt(id, invocation, actor, context, status);
+        drop(tree);
         Ok(())
     }
     fn record_task_update(
@@ -125,6 +131,7 @@ impl LegacyWorkspaceProjection for NativeWorkspaceAuthority {
             let _ = tree.set_workspace_task_status(id, task, native_task_status(status), actor);
         }
         let _ = tree.append_workspace_task_audit(id, task, actor, summary);
+        drop(tree);
         Ok(())
     }
 }
@@ -293,16 +300,23 @@ impl WorkspaceGovernanceServices for NativeWorkspaceGovernance {
             .iter()
             .position(|workspace| workspace.room.to_string() == request.room)
             .ok_or_else(|| "the application workspace is no longer hosted".to_string())?;
+        let workspace = tree
+            .desktop
+            .workspaces
+            .get(workspace_index)
+            .ok_or_else(|| "the application workspace is no longer hosted".to_string())?;
         let caller = if actor.is_agent() {
-            tree.desktop.workspaces[workspace_index]
-                .actor_for_agent(actor.id().strip_prefix("agent:").unwrap_or(actor.id()))
+            workspace.actor_for_agent(
+                actor
+                    .id()
+                    .strip_prefix("agent:")
+                    .unwrap_or_else(|| actor.id()),
+            )
         } else {
-            tree.desktop.workspaces[workspace_index].actor_for_person(&actor.id().to_string())
+            workspace.actor_for_person(&actor.id().to_string())
         };
-        let surface = super::workspace_settings::permission_profile_resource_with_access(
-            &tree.desktop.workspaces[workspace_index],
-            true,
-        );
+        let surface =
+            super::workspace_settings::permission_profile_resource_with_access(workspace, true);
         let resource = find_resource(&surface, request.resource)
             .ok_or_else(|| "unknown workspace governance resource".to_string())?;
         let spec = resource
@@ -318,7 +332,7 @@ impl WorkspaceGovernanceServices for NativeWorkspaceGovernance {
         {
             return Err("explicit confirmation is required".into());
         }
-        if tree.desktop.workspaces[workspace_index].decide(
+        if workspace.decide(
             &caller,
             &super::state::ResourceRef::Action {
                 app: super::state::WORKSPACE_GOVERNANCE_APP_ID.into(),
@@ -330,7 +344,7 @@ impl WorkspaceGovernanceServices for NativeWorkspaceGovernance {
             return Err("the caller is not allowed to manage permission profiles".into());
         }
         let operation = decode_permission_profile_operation(spec, request.argument)?;
-        let workspace_id = tree.desktop.workspaces[workspace_index].id;
+        let workspace_id = workspace.id;
         apply_permission_profile_operation(
             &mut tree,
             workspace_index,
@@ -357,6 +371,7 @@ impl WorkspaceGovernanceServices for NativeWorkspaceGovernance {
         );
         tree.desktop.external_revision = tree.desktop.external_revision.wrapping_add(1);
         tree.flush_to_disk();
+        drop(tree);
         Ok(())
     }
 }
@@ -422,7 +437,10 @@ fn apply_permission_profile_operation(
                 description,
                 rules,
             };
-            tree.desktop.workspaces[workspace_index]
+            tree.desktop
+                .workspaces
+                .get_mut(workspace_index)
+                .ok_or("the application workspace is no longer hosted")?
                 .save_permission_profile_as_actor(caller, profile.clone())
                 .map_err(|error| error.to_string())?;
             tree.doc_upsert_permission_profile(workspace_id, &profile);
@@ -442,10 +460,15 @@ fn apply_permission_profile_operation(
             let expiry = (expires_unix > 0)
                 .then_some(expires_unix)
                 .map_or(collab_types::Expiry::Never, collab_types::Expiry::AtUnix);
-            let ids = tree.desktop.workspaces[workspace_index]
+            let workspace = tree
+                .desktop
+                .workspaces
+                .get_mut(workspace_index)
+                .ok_or("the application workspace is no longer hosted")?;
+            let ids = workspace
                 .assign_permission_profile_as_actor(caller, &profile, &subject, expiry)
                 .map_err(|error| error.to_string())?;
-            let capabilities = tree.desktop.workspaces[workspace_index]
+            let capabilities = workspace
                 .capabilities
                 .iter()
                 .filter(|capability| ids.contains(&capability.id))
@@ -599,8 +622,8 @@ impl WorkspaceControlServices for NativeWorkspaceControl {
         revalidate()?;
         let target = iroh::EndpointId::from_bytes(&target)
             .map_err(|_| capnp::Error::failed("invalid target device identity".into()))?;
-        let network = self.0.clone();
-        let session = network
+        let session = self
+            .0
             .open_workspace_control(super::network::room_topic_id(native_room(room)), target)
             .map_err(capnp::Error::failed)?;
         let initial_route = match session.route() {
@@ -615,9 +638,9 @@ impl WorkspaceControlServices for NativeWorkspaceControl {
         };
         Ok(capnp_rpc::new_client(CapnpWorkspaceControlHandle {
             revalidate,
-            network: network.clone(),
+            network: self.0.clone(),
             session: Rc::new(AsyncMutex::new(session)),
-            inbound: Rc::new(AsyncMutex::new(network.subscribe_workspace_control())),
+            inbound: Rc::new(AsyncMutex::new(self.0.subscribe_workspace_control())),
             initial: Rc::new(AsyncMutex::new(Some(
                 runtime_collab::WorkspaceControlEvent::WaitingForConsent {
                     route: initial_route,

@@ -113,7 +113,7 @@ impl super::App {
     }
 
     pub(super) fn check_published_continuation(
-        &mut self,
+        &self,
         lease: Option<&ResourceInvocationScope>,
     ) -> Result<(), String> {
         let result = self

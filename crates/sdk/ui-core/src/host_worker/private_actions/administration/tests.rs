@@ -426,7 +426,7 @@ fn private_actions_admin_real_allocations_and_backing_drop_stay_paid() {
     let original = StorageDirectory::open(root.path()).unwrap();
     let budget = NativeAllowance::new(32 * 1024 * 1024).unwrap();
     let baseline = budget.retained_bytes();
-    let (_, stats) =
+    let ((), stats) =
         crate::semantic_document_read::retirement::measure_test_allocations(&budget, || {
             let credit = budget
                 .reserve(AdministrativeFile::required_bytes(&scope()).unwrap())
@@ -469,7 +469,7 @@ fn private_actions_admin_bounded_corrupt_read_preserves_file_and_credit() {
     std::fs::write(&path, &malformed).unwrap();
     let original = StorageDirectory::open(root.path()).unwrap();
     let baseline = budget.retained_bytes();
-    let (_, stats) =
+    let ((), stats) =
         crate::semantic_document_read::retirement::measure_test_allocations(&budget, || {
             let credit = budget
                 .reserve(AdministrativeFile::required_bytes(&scope()).unwrap())
@@ -542,7 +542,7 @@ fn private_actions_admin_active_nonempty_observation_parser_overlap_is_paid() {
         rewrite(root.path(), [4; 16], 27, 3, &payload);
         let original_bytes = std::fs::read(root.path().join(CHILD_NAME).join(FILE_NAME)).unwrap();
         let original = StorageDirectory::open(root.path()).unwrap();
-        let (_, stats) =
+        let ((), stats) =
             crate::semantic_document_read::retirement::measure_test_allocations(&budget, || {
                 let credit = budget
                     .reserve(AdministrativeFile::required_bytes(&scope()).unwrap())

@@ -1,4 +1,4 @@
-//! Private native control actor. Only the actor's actual HostIdentity signs;
+//! Private native control actor. Only the actor's actual `HostIdentity` signs;
 //! asynchronous workers carry exact prepared bytes and opaque local tickets.
 mod authority;
 mod devices;
@@ -89,8 +89,8 @@ struct Work {
 }
 enum Phase {
     Discover { origin: String },
-    Bootstrap(NativeBootstrap),
-    Control(protocol::NativeControl),
+    Bootstrap(Box<NativeBootstrap>),
+    Control(Box<protocol::NativeControl>),
     Transition,
 }
 struct TimedGrant {
@@ -169,7 +169,7 @@ impl Ticket {
         self.alive
             .load(Ordering::SeqCst)
             .then_some(())
-            .ok_or("native media intent ended".into())
+            .ok_or_else(|| "native media intent ended".into())
     }
     fn completion_live(&self) -> Result<(), String> {
         if self.leaving.load(Ordering::SeqCst) {
@@ -202,5 +202,5 @@ fn namespace(value: media_wire::MediaNamespace) -> String {
 }
 fn deadline(now: Instant, ns: u64) -> Result<Instant, String> {
     now.checked_add(Duration::from_nanos(ns))
-        .ok_or("native media deadline overflow".into())
+        .ok_or_else(|| "native media deadline overflow".into())
 }

@@ -869,9 +869,11 @@ impl App {
         if len == 0 {
             return false;
         }
-        let next_idx =
+        let Some(next_idx) =
             crate::focus_navigation::tab_index(&self.focusable_order, self.focused_node, shift)
-                .unwrap();
+        else {
+            return false;
+        };
         if let Some(&id) = self.focusable_order.get(next_idx) {
             self.set_focused_node(Some(id));
         }

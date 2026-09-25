@@ -26,8 +26,20 @@ fn primary_owner_is_shared_and_keeps_recordless_wire_identity() {
         doc.put(ROOT, "message", "two").unwrap();
     })
     .unwrap();
-    let heads = a.read(&checkout.id, |doc| doc.base_heads()).unwrap();
-    assert_eq!(b.read(&checkout.id, |doc| doc.base_heads()).unwrap(), heads);
+    let heads = a
+        .read(
+            &checkout.id,
+            automerge::transaction::Transactable::base_heads,
+        )
+        .unwrap();
+    assert_eq!(
+        b.read(
+            &checkout.id,
+            automerge::transaction::Transactable::base_heads
+        )
+        .unwrap(),
+        heads
+    );
     assert!(
         a.read(&checkout.id, tilo_ui::record::identity)
             .unwrap()
@@ -46,9 +58,9 @@ fn primary_owner_is_shared_and_keeps_recordless_wire_identity() {
 fn native_primary_directory_matches_existing_room_document() {
     let root = tempfile::tempdir().unwrap();
     let package = "dev.qos.chat";
-    let room = "room-a";
-    let path = app_state::DocStore::room_primary_dir_at(root.path(), package, room).unwrap();
-    assert_eq!(path, root.path().join(package).join("rooms").join(room));
+    let room_id = "room-a";
+    let path = app_state::DocStore::room_primary_dir_at(root.path(), package, room_id).unwrap();
+    assert_eq!(path, root.path().join(package).join("rooms").join(room_id));
     let mut owner = app_state::DocStore::open_canonical_at(package, &path).unwrap();
     let mut doc = owner.new_document();
     doc.put(ROOT, "message", "native").unwrap();
@@ -58,7 +70,7 @@ fn native_primary_directory_matches_existing_room_document() {
     let bytes = doc.save();
     drop(owner);
     let store = RecordOwners::new(root.path().into())
-        .open(package, room)
+        .open(package, room_id)
         .unwrap();
     let checkout = RecordCheckout::package_primary(RecordKind::new("chat.workspace"));
     store.try_open_record(&checkout).unwrap();
@@ -68,7 +80,12 @@ fn native_primary_directory_matches_existing_room_document() {
         actor
     );
     assert_eq!(
-        store.read(&checkout.id, |d| d.base_heads()).unwrap(),
+        store
+            .read(
+                &checkout.id,
+                automerge::transaction::Transactable::base_heads
+            )
+            .unwrap(),
         original.base_heads()
     );
 }

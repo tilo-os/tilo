@@ -1103,6 +1103,10 @@ impl Widget for Scrollable {
             metrics: self.v_metrics(),
         })
     }
+    #[expect(
+        clippy::float_cmp,
+        reason = "an offset that resolves to exactly the current one is a no-op scroll"
+    )]
     fn apply_primary_vertical_scroll(
         &mut self,
         action: crate::widget::PrimaryScrollAction,
@@ -1118,7 +1122,10 @@ impl Widget for Scrollable {
             return PrimaryScrollResult::Unchanged(region);
         }
         self.set_offset_y(next as f32);
-        PrimaryScrollResult::Changed(self.primary_vertical_scroll().unwrap())
+        self.primary_vertical_scroll().map_or(
+            PrimaryScrollResult::Unsupported,
+            PrimaryScrollResult::Changed,
+        )
     }
 
     fn has_action_control_bindings(&self) -> bool {

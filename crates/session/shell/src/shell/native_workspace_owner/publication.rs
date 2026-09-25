@@ -1,4 +1,8 @@
 //! Same-barrier native outgoing custody; relay queue acceptance is never an ACK.
+#[allow(
+    clippy::wildcard_imports,
+    reason = "the `reservation` and `tests` submodules resolve owner items through this namespace"
+)]
 use super::*;
 use ed25519_dalek::SigningKey;
 use qos_peer_state::{
@@ -35,7 +39,7 @@ impl Default for StoredPublication {
             next_ordinal: 1,
             entries: Vec::new(),
             projection: Vec::new(),
-            reservation: Default::default(),
+            reservation: reservation::StoredReservation::default(),
             legacy: None,
         }
     }
@@ -79,7 +83,7 @@ impl<'a> NativeOutgoing<'a> {
             .iter()
             .chain(self.state.projection.iter())
             .enumerate()
-            .filter(move |(index, _)| allowed[*index])
+            .filter(move |(index, _)| allowed.get(*index).copied().unwrap_or(false))
             .map(|(_, entry)| NativeOutgoingEntry(entry))
     }
 }
@@ -96,6 +100,10 @@ impl<'a> NativeOutgoingEntry<'a> {
     pub(crate) fn channel(&self) -> [u8; 32] {
         self.0.channel
     }
+    #[allow(
+        clippy::unused_self,
+        reason = "a per-entry accessor; every native outgoing entry is currently a delta"
+    )]
     pub(crate) fn retention(&self) -> Retention {
         Retention::Delta
     }
@@ -178,7 +186,11 @@ fn read_history_bytes<'de, D: serde::Deserializer<'de>>(input: D) -> Result<Vec<
     read_bytes(input, store::MAX_AUTHORITY_BYTES)
 }
 fn fresh(entry: &StoredOutgoing, now: SystemTime) -> bool {
-    let timestamp = SystemTime::UNIX_EPOCH + std::time::Duration::from_nanos(entry.timestamp_ns);
+    let Some(timestamp) =
+        SystemTime::UNIX_EPOCH.checked_add(std::time::Duration::from_nanos(entry.timestamp_ns))
+    else {
+        return false;
+    };
     let skew = std::time::Duration::from_secs(300);
     timestamp >= now.checked_sub(skew).unwrap_or(SystemTime::UNIX_EPOCH)
         && timestamp <= now.checked_add(skew).unwrap_or(now)
@@ -192,10 +204,14 @@ fn state(view: &NativeCommittedView) -> Result<&StoredPublication, String> {
 fn status(view: &NativeCommittedView, now: SystemTime) -> Result<NativeOutgoingStatus, String> {
     let publication = state(view)?;
     let allowed = allowed(view, now)?;
+    // `bounds` caps both lists, so neither sum nor difference can wrap.
+    let total = publication
+        .entries
+        .len()
+        .saturating_add(publication.projection.len());
     Ok(NativeOutgoingStatus {
-        pending: publication.entries.len() + publication.projection.len(),
-        blocked: publication.entries.len() + publication.projection.len()
-            - allowed.iter().filter(|allowed| **allowed).count(),
+        pending: total,
+        blocked: total.saturating_sub(allowed.iter().filter(|allowed| **allowed).count()),
         legacy_history: publication.legacy.is_some(),
     })
 }
@@ -221,13 +237,15 @@ fn allowed(
         else {
             return Err("invalid native outgoing document".into());
         };
-        allowed[index] = envelope.author.as_bytes() == &view.device().device_public_key
-            && view
-                .peer
-                .lookup_exact_local_document(&app_id, &record_id, &envelope, now)
-                .ok()
-                .flatten()
-                .is_some();
+        if let Some(slot) = allowed.get_mut(index) {
+            *slot = envelope.author.as_bytes() == &view.device().device_public_key
+                && view
+                    .peer
+                    .lookup_exact_local_document(&app_id, &record_id, &envelope, now)
+                    .ok()
+                    .flatten()
+                    .is_some();
+        }
     }
     if !publication.projection.is_empty() {
         let originals = decode_entries(&publication.entries)?;
@@ -249,7 +267,14 @@ fn allowed(
             .is_ok()
         {
             for (index, entry) in publication.projection.iter().enumerate() {
-                allowed[publication.entries.len() + index] = entry.incremental && fresh(entry, now);
+                if let Some(slot) = publication
+                    .entries
+                    .len()
+                    .checked_add(index)
+                    .and_then(|slot| allowed.get_mut(slot))
+                {
+                    *slot = entry.incremental && fresh(entry, now);
+                }
             }
         }
     }
@@ -261,7 +286,7 @@ pub(crate) fn validate_file_layout(
 ) -> Result<(), String> {
     for room in storage.rooms.values() {
         match (version, room.version, room.publication.is_some()) {
-            (2, 1, false) | (3, 1, false) | (3, 2, true) => {}
+            (2 | 3, 1, false) | (3, 2, true) => {}
             _ => return Err("native publication record/file layout mismatch".into()),
         }
         if let Some(publication) = &room.publication {
@@ -555,7 +580,7 @@ pub(super) fn validate(view: &NativeCommittedView, now: SystemTime) -> Result<()
     for entries in [&publication.entries, &publication.projection] {
         if entries
             .windows(2)
-            .any(|pair| pair[0].ordinal >= pair[1].ordinal)
+            .any(|pair| matches!(pair, [first, second] if first.ordinal >= second.ordinal))
         {
             return Err("native publication ordinal order mismatch".into());
         }
@@ -615,15 +640,11 @@ pub(super) fn retire(view: &mut NativeCommittedView, now: SystemTime) -> Result<
             remove.insert(entry.id);
         }
     }
-    let remove_history = publication
-        .legacy
-        .as_ref()
-        .map(|stored| {
-            history(view, stored, now)
-                .and_then(|history| history_retired(&view.peer, &history))
-                .unwrap_or(false)
-        })
-        .unwrap_or(false);
+    let remove_history = publication.legacy.as_ref().is_some_and(|stored| {
+        history(view, stored, now)
+            .and_then(|history| history_retired(&view.peer, &history))
+            .unwrap_or(false)
+    });
     // A projection has no user receipt/exact index. Empty obligations prove its
     // whole history is in the actual durable governor receipt, independently of
     // whether this retransmission sequence itself was observed by the governor.

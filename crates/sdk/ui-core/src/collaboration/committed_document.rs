@@ -1,5 +1,8 @@
 //! Native committed reads stay closed until the real document owner applies them.
-use super::*;
+use super::{
+    Arc, AtomicBool, ByteBudget, ByteReservation, CollabEvent, Duration, InboundBridge, Ordering,
+    RouteSpec,
+};
 use runtime_collab::committed_document::{MAX_DOCUMENT_BYTES, Reply, Request};
 use std::collections::BTreeMap;
 #[derive(Clone, Default)]
@@ -155,10 +158,9 @@ impl CommittedDocument {
             .map_err(|_| "committed history capture poisoned")?;
         let mutation = collab_types::DocumentMutation::Snapshot(std::mem::take(&mut *bytes));
         let result = apply(&mutation);
-        let collab_types::DocumentMutation::Snapshot(restored) = mutation else {
-            unreachable!()
-        };
-        *bytes = restored;
+        if let collab_types::DocumentMutation::Snapshot(restored) = mutation {
+            *bytes = restored;
+        }
         Ok(result)
     }
     pub(crate) fn is_current(&self) -> bool {
@@ -343,6 +345,10 @@ fn capture_budget() -> &'static ByteBudget {
     static BUDGET: std::sync::OnceLock<ByteBudget> = std::sync::OnceLock::new();
     BUDGET.get_or_init(ByteBudget::new)
 }
+#[allow(
+    clippy::future_not_send,
+    reason = "capnp-rpc channel futures are !Send by design; driven only on the shovel LocalSet"
+)]
 async fn read_capture(
     channel: &runtime_collab::ChannelHandle,
     first: Reply,
@@ -440,6 +446,10 @@ async fn read_capture_using(
 }
 /// Resolve mode before the route can produce any document. Initial history is
 /// queued without waiting for the UI owner (which awaits PrimaryReady itself).
+#[allow(
+    clippy::future_not_send,
+    reason = "capnp-rpc channel futures are !Send by design; driven only on the shovel LocalSet"
+)]
 pub(super) async fn install(
     channel: &runtime_collab::ChannelHandle,
     spec: &RouteSpec,

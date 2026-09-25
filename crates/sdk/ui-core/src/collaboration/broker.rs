@@ -1660,7 +1660,7 @@ impl std::fmt::Debug for CertifiedEndpointIdentity {
                 &format_args!("{} bytes", self.presentation.len()),
             )
             .field("device_key", &"<redacted>")
-            .finish()
+            .finish_non_exhaustive()
     }
 }
 
@@ -3393,6 +3393,10 @@ fn next_certified_document_seq(now: crate::time::SystemTime) -> u64 {
 /// Keep the accepted request and its queue byte reservation on the worker
 /// stack while hydration catches up. No later barrier or command can overtake
 /// it. Hydration runs independently on this same LocalSet.
+#[allow(
+    clippy::future_not_send,
+    reason = "the route contains a capnp-rpc handle and runs only on the shovel LocalSet"
+)]
 async fn wait_for_document_publication(
     route: &SdkRoute,
     state: &BridgeState,
@@ -3551,8 +3555,14 @@ async fn send_document_frame(
     };
     let now = crate::time::wall();
     let author = match signer {
+        // Host-signed documents commit through the host owner before this
+        // frame path; an inherited host signer cannot sign a frame here.
         LocalSdkDocumentSigner::Inherited(SdkDocumentSigner::Host(_)) => {
-            unreachable!("host commits above")
+            return Err(state.publication_failed(
+                "document signing or encoding",
+                "inherited host signer cannot sign a document frame",
+                true,
+            ));
         }
         LocalSdkDocumentSigner::Inherited(SdkDocumentSigner::Certified(identity)) => {
             identity.signing_public_key()
@@ -3596,8 +3606,14 @@ async fn send_document_frame(
         }
     };
     let signature = match signer {
+        // Host-signed documents commit through the host owner before this
+        // frame path; an inherited host signer cannot sign a frame here.
         LocalSdkDocumentSigner::Inherited(SdkDocumentSigner::Host(_)) => {
-            unreachable!("host commits above")
+            return Err(state.publication_failed(
+                "document signing or encoding",
+                "inherited host signer cannot sign a document frame",
+                true,
+            ));
         }
         LocalSdkDocumentSigner::Inherited(SdkDocumentSigner::Certified(identity)) => match identity
             .sign_collaboration_op(&workspace_id, &route.spec.app_id, record_id, &unsigned_op)
@@ -7001,9 +7017,11 @@ mod tests {
         history: Vec<u8>,
         gate: Option<tokio::sync::oneshot::Receiver<()>>,
     ) -> (CollaborationManager, Box<dyn Fn() -> usize>) {
-        let mut initial = Captures::default();
-        initial.committed_history_fixture = Some(history);
-        initial.committed_recheck_gate = gate;
+        let initial = Captures {
+            committed_history_fixture: Some(history),
+            committed_recheck_gate: gate,
+            ..Captures::default()
+        };
         let broker = FakeBroker {
             captures: Arc::new(std::sync::Mutex::new(initial)),
             op_backlog: vec![],
@@ -7725,8 +7743,10 @@ mod tests {
             .unwrap();
         original.doc.commit();
         let heads = original.doc.get_heads();
-        let mut captures = Captures::default();
-        captures.committed_history_fixture = Some(original.doc.save());
+        let captures = Captures {
+            committed_history_fixture: Some(original.doc.save()),
+            ..Captures::default()
+        };
         let broker = FakeBroker {
             captures: Arc::new(std::sync::Mutex::new(captures)),
             op_backlog: vec![],

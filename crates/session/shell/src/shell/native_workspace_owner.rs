@@ -152,6 +152,14 @@ impl SharedOwner {
     }
 }
 impl NativeWorkspaceOwner {
+    #[allow(
+        clippy::needless_pass_by_value,
+        reason = "callers hand over their tree handle; the owner retains a clone of it"
+    )]
+    #[allow(
+        clippy::significant_drop_tightening,
+        reason = "the state writer stays locked from owner lookup through installation and export"
+    )]
     pub(crate) fn open(tree: WorkspaceTreeHandle) -> Result<Self, String> {
         let mut native = tree.write();
         if let Some(owner) = native.installed_native_owner() {
@@ -271,6 +279,10 @@ impl NativeWorkspaceOwner {
             _observer: observer,
         }
     }
+    #[allow(
+        clippy::significant_drop_tightening,
+        reason = "fence observers are notified in order under the continuity write lock"
+    )]
     pub(crate) fn invalidate_identity(&self, room: RoomId) {
         let mut current = self.0.current.write();
         if !current.denied.insert(room) {
@@ -310,6 +322,10 @@ impl NativeWorkspaceOwner {
         Ok(report)
     }
     /// Caller holds the serialized turn, but readers keep the preceding committed view during I/O.
+    #[allow(
+        clippy::significant_drop_tightening,
+        reason = "the state writer stays locked from the enrollment check through publication and export"
+    )]
     fn publish_room(
         &self,
         room: RoomId,
@@ -343,8 +359,8 @@ impl NativeWorkspaceOwner {
         }
         let mut tree = self.0.tree.write();
         store::preflight(&*tree, store::MAX_STATE_BYTES).map_err(|e| e.to_string())?;
-        if let Some(pending) = enrollment {
-            if tree.room_of(pending.target.workspace) != Some(pending.target.prior_room)
+        if let Some(pending) = enrollment
+            && (tree.room_of(pending.target.workspace) != Some(pending.target.prior_room)
                 || tree
                     .native_authority
                     .pending
@@ -352,12 +368,9 @@ impl NativeWorkspaceOwner {
                     .is_none_or(|current| {
                         current.id != pending.id
                             || current.status != PendingEnrollmentStatus::Active
-                    })
-            {
-                return Err(
-                    "enrollment target or pending generation changed before completion".into(),
-                );
-            }
+                    }))
+        {
+            return Err("enrollment target or pending generation changed before completion".into());
         }
         let mut next = tree.clone();
         if let Some(pending) = enrollment {

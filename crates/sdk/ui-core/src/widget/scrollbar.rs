@@ -608,6 +608,7 @@ pub enum PrimaryScrollResult {
     Changed(PrimaryScrollRegion),
 }
 impl PrimaryScrollResult {
+    #[must_use]
     pub fn stamp(self, generation: uuid::Uuid) -> Self {
         match self {
             Self::Unsupported => self,

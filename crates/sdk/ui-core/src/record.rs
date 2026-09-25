@@ -1467,7 +1467,7 @@ impl RecordSet {
             if doc.pending_ops() != 0 {
                 return false;
             }
-            if doc.merge(&mut incoming).is_err() {
+            if doc.merge_incoming(&mut incoming).is_err() {
                 return false;
             }
         } else {
@@ -1567,10 +1567,7 @@ impl RecordSet {
             }
         }
 
-        let incoming = if let Some(slot) = self.open.get_mut(&want.id) {
-            slot.doc.take().unwrap_or_else(AutoCommit::new)
-        } else {
-            let (mut doc, autosave) = prepared.expect("unopened record was prepared");
+        let incoming = if let Some((mut doc, autosave)) = prepared {
             let history = crate::state::UndoLog::new(&mut doc);
             self.open.insert(
                 want.id.clone(),
@@ -1583,6 +1580,11 @@ impl RecordSet {
                 },
             );
             doc
+        } else {
+            self.open
+                .get_mut(&want.id)
+                .and_then(|slot| slot.doc.take())
+                .unwrap_or_default()
         };
 
         state.adopt_doc(incoming);
@@ -5045,7 +5047,7 @@ mod portable_tests {
         let workspace = "legacy-room";
         let checkout = RecordCheckout::new(RecordId::for_tab(9), RecordKind::new("notes.notebook"));
         let mut frozen = qos_record(&checkout.id, &checkout.kind, workspace, Some(workspace));
-        let original_heads = frozen.base_heads().to_vec();
+        let original_heads = frozen.base_heads();
         let actor = frozen.get_actor().to_bytes().to_vec();
         cache
             .hydrate(

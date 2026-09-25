@@ -1,6 +1,6 @@
 //! Client adapters use the existing bounded collaboration lane. They carry
 //! inert directory inputs; only the real broker admits an invocation.
-use super::*;
+use super::{ByteMeter, Duration, SdkRoute};
 
 const DIRECTORY_RPC_TIMEOUT: Duration = Duration::from_secs(2);
 
@@ -75,6 +75,10 @@ pub(super) fn resolution_bytes(
     }
 }
 
+#[allow(
+    clippy::future_not_send,
+    reason = "capnp-rpc channel futures are !Send by design; driven only on the shovel LocalSet"
+)]
 pub(super) async fn query(
     route: &SdkRoute,
     query: &runtime_collab::ActionDirectoryQuery,
@@ -87,6 +91,10 @@ pub(super) async fn query(
     .map_err(|_| "action directory query timed out".to_string())?
     .map_err(|error| error.to_string())
 }
+#[allow(
+    clippy::future_not_send,
+    reason = "capnp-rpc channel futures are !Send by design; driven only on the shovel LocalSet"
+)]
 pub(super) async fn resolve(
     route: &SdkRoute,
     peer_id: u64,
@@ -104,6 +112,10 @@ pub(super) async fn resolve(
     .map_err(|_| "action directory resolution timed out".to_string())?
     .map_err(|error| error.to_string())
 }
+#[allow(
+    clippy::future_not_send,
+    reason = "capnp-rpc channel futures are !Send by design; driven only on the shovel LocalSet"
+)]
 pub(super) async fn invoke(
     route: &SdkRoute,
     peer_id: u64,

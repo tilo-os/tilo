@@ -321,11 +321,14 @@ where
 {
     let runtime = tilo_rt::try_app().map_err(io::Error::other)?;
     let session = Session::start(profile)?;
-    let broker = session
-        .broker
-        .app_action_broker()
-        .ok_or_else(|| io::Error::other("runtime action broker is unavailable"))?;
-    let mut server = McpServer::new(broker, session.room.clone(), session.actor.clone());
+    let mut server = McpServer::new(
+        session
+            .broker
+            .app_action_broker()
+            .ok_or_else(|| io::Error::other("runtime action broker is unavailable"))?,
+        session.room.clone(),
+        session.actor.clone(),
+    );
     let mut children = launch_apps(&session, profile, manifest)?;
     let input = spawn_reader(reader)?;
     loop {

@@ -471,6 +471,7 @@ impl RealtimeFabricAppBridge {
             });
             return Err(error.to_string());
         }
+        drop(realtime);
         Ok(())
     }
 
@@ -489,6 +490,10 @@ impl RealtimeFabricAppBridge {
         })
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one consent resolution: policy fence, capability mint, broker transition and rollback"
+    )]
     fn resolve_consent_with_policy(
         &self,
         session: &str,
@@ -542,6 +547,7 @@ impl RealtimeFabricAppBridge {
             {
                 return Err("capture consent is already being applied".into());
             }
+            drop(realtime);
             result
         };
         if !approved {
@@ -616,12 +622,9 @@ impl RealtimeFabricAppBridge {
         };
         #[cfg(test)]
         pause_realtime_consent_after_mint();
-        let mut realtime = match self.state.realtime.lock() {
-            Ok(realtime) => realtime,
-            Err(_) => {
-                revoke_realtime_capture_authorizations(&capture, &authorizations);
-                return Err("realtime broker is unavailable".into());
-            }
+        let Ok(mut realtime) = self.state.realtime.lock() else {
+            revoke_realtime_capture_authorizations(&capture, &authorizations);
+            return Err("realtime broker is unavailable".into());
         };
         let live_binding = realtime.sessions.get(session).is_some_and(|binding| {
             binding.imported
@@ -963,6 +966,10 @@ impl NativeRealtimeState {
             .map_err(|error| error.to_string())
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one peer teardown across sessions, captures, offers and fabric routes"
+    )]
     fn disconnect(&self, peer_id: u64) {
         let Ok(mut realtime) = self.realtime.lock() else {
             return;
@@ -1122,6 +1129,10 @@ impl NativeRealtimeServices {
         Some((service, bridge))
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one closed dispatcher over every realtime continuity command"
+    )]
     fn command_inner(
         &self,
         peer_id: u64,

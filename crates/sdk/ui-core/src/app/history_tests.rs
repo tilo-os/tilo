@@ -3362,7 +3362,7 @@ fn component_control_root(
                 confirmation: confirmation.clone(),
                 starts,
                 payloads,
-                text: crate::widget::Text::new(*id),
+                text: crate::widget::Text::new(id),
             },
             registry: tilo_actions::ActionRegistry::new(),
             _scope: scope,
@@ -5455,7 +5455,7 @@ fn round4_partial_capture_seals_reachable_and_unvisited_queues_at_entry() {
             .binding
             .queued_controls
             .borrow_mut()
-            .push_back(nested_control(id, "original", i as i64));
+            .push_back(nested_control(id, "original", i64::try_from(i).unwrap()));
     }
     failed.set(true);
     let mut app = app();
@@ -5469,7 +5469,11 @@ fn round4_partial_capture_seals_reachable_and_unvisited_queues_at_entry() {
             .binding
             .queued_controls
             .borrow_mut()
-            .push_back(nested_control(id, "post-entry", 10 + i as i64));
+            .push_back(nested_control(
+                id,
+                "post-entry",
+                10 + i64::try_from(i).unwrap(),
+            ));
     }
     failed.set(false);
     layout(&mut app);
@@ -5510,7 +5514,7 @@ fn round5_partial_capture_failed_through_return_never_automatically_dispatches_o
             .binding
             .queued_controls
             .borrow_mut()
-            .push_back(nested_control(id, "original", i as i64));
+            .push_back(nested_control(id, "original", i64::try_from(i).unwrap()));
     }
     failed.set(true);
     let mut app = app();
@@ -5525,7 +5529,11 @@ fn round5_partial_capture_failed_through_return_never_automatically_dispatches_o
             .binding
             .queued_controls
             .borrow_mut()
-            .push_back(nested_control(id, "suspended", 10 + i as i64));
+            .push_back(nested_control(
+                id,
+                "suspended",
+                10 + i64::try_from(i).unwrap(),
+            ));
     }
     let named_action_target = named(&mut app, "History");
     app.dispatch_a11y_action(named_action_target, &crate::a11y::Action::Activate);
@@ -5544,7 +5552,7 @@ fn round5_partial_capture_failed_through_return_never_automatically_dispatches_o
     for (i, id) in ["sealed-a", "sealed-b"].iter().enumerate() {
         assert_eq!(
             saved[i].invocation,
-            nested_control(id, "original", i as i64)
+            nested_control(id, "original", i64::try_from(i).unwrap())
         );
     }
     assert!(
@@ -5574,7 +5582,7 @@ fn round5_partial_capture_failed_through_return_never_automatically_dispatches_o
             .binding
             .queued_controls
             .borrow_mut()
-            .push_back(nested_control(id, "fresh", 20 + i as i64));
+            .push_back(nested_control(id, "fresh", 20 + i64::try_from(i).unwrap()));
     }
     app.dispatch_control_invocations();
     for handle in &handles {
@@ -6302,7 +6310,7 @@ fn control_custody_core_driver_seals_and_discards_through_unreachable_private_ro
         for (i, item) in saved.iter().enumerate() {
             assert_eq!(
                 item.invocation,
-                nested_control("actual-bridge", "entry", i as i64)
+                nested_control("actual-bridge", "entry", i64::try_from(i).unwrap())
             );
         }
         emitter
@@ -6735,7 +6743,7 @@ fn custody_matrix_activate(app: &mut App, kind: &str, second: bool) -> serde_jso
         ),
         "ToggleGroup" | "ToggleGroupView" => (
             Action::Activate,
-            serde_json::json!({"value":if kind=="ToggleGroupView" && second {0} else {1}}),
+            serde_json::json!({"value": i32::from(!(kind == "ToggleGroupView" && second))}),
         ),
         _ => (Action::Activate, serde_json::json!({})),
     };
@@ -7277,7 +7285,9 @@ fn control_custody_core_actual_nested_surfaces_finish_in_both_orders() {
             Ok(crate::control_custody::LocalEmission::Suppressed),
             "one covering surface still owns custody"
         );
-        if !outer_first {
+        if outer_first {
+            custody_embedded_click(&mut app, "history-open");
+        } else {
             custody_embedded_click(&mut app, "history-pending-1");
             app.service_pending_history_commands();
             assert!(
@@ -7285,8 +7295,6 @@ fn control_custody_core_actual_nested_surfaces_finish_in_both_orders() {
                 "saved Continue cannot bypass covering outer lease"
             );
             custody_outer_history(&mut app);
-        } else {
-            custody_embedded_click(&mut app, "history-open");
         }
         assert!(ledger.borrow().is_empty());
         custody_embedded_click(&mut app, "history-pending-1");

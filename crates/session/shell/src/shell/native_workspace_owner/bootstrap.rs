@@ -1,4 +1,7 @@
-use super::*;
+use super::{
+    Arc, NativeCommittedView, NativeWorkspaceOwner, RoomId, SharedOwner, SystemTime, Weak,
+    enrollment, record,
+};
 use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
 use qos_peer_state::join::TransportHint;
 use tilo_relay::delivery_v3::{
@@ -83,7 +86,7 @@ impl NativeWorkspaceOwner {
                 key.sign(&request.signing_digest().map_err(|e| e.to_string())?)
                     .to_bytes(),
             );
-            let mut buffer = [0; descriptor::MAX_HINT_BYTES];
+            let mut buffer = vec![0_u8; descriptor::MAX_HINT_BYTES];
             let hint_bytes = postcard::to_slice(candidate, &mut buffer)
                 .map_err(|e| e.to_string())?
                 .to_vec();

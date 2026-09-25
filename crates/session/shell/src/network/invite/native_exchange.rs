@@ -1,4 +1,8 @@
 //! Typed canonical exchange. The actor supplies its real endpoint and custody.
+#[allow(
+    clippy::wildcard_imports,
+    reason = "the `tests` submodule resolves invite items through this namespace"
+)]
 use super::*;
 use crate::{
     network::actor::HostIdentity,
@@ -35,6 +39,10 @@ fn active(
 }
 /// Returns closed response evidence only. The owner still rechecks the target
 /// slot and crosses its single installation barrier before any Joined result.
+#[allow(
+    clippy::too_many_lines,
+    reason = "one ordered exchange: prepare, persist, send, verify and hand back closed evidence"
+)]
 pub(crate) async fn prepare_and_complete(
     client: WorkspaceJoinClient,
     identity: HostIdentity,

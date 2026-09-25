@@ -4315,7 +4315,7 @@ mod tests {
         let mut _env_override = tilo_test_env::ScopedEnv::new();
         _env_override.set("TILO_WORKSPACE_ID", room.to_string());
         let want = crate::record::RecordCheckout::new(
-            crate::record::RecordId::for_file(&environment._directory.path().join("selected.md")),
+            crate::record::RecordId::for_file(environment._directory.path().join("selected.md")),
             crate::record::RecordKind::new("document"),
         );
         let mut history = automerge::AutoCommit::new();
@@ -4385,7 +4385,7 @@ mod tests {
     fn native_initial_launch_file_record_local_mode_is_explicit() {
         let environment = LaunchFixtureEnv::new();
         let want = crate::record::RecordCheckout::new(
-            crate::record::RecordId::for_file(&environment._directory.path().join("local.md")),
+            crate::record::RecordId::for_file(environment._directory.path().join("local.md")),
             crate::record::RecordKind::new("document"),
         );
         let records = crate::record::RecordSet::for_local_files("so.tilo.launch-fixture").unwrap();
@@ -4573,8 +4573,13 @@ mod tests {
             )
             .unwrap();
         let (installed, root) = app.controlled_history_definitions_for_test();
-        assert!(installed.is_some_and(|definition| std::ptr::eq(definition, &CHECKED_HISTORY)));
-        assert!(root.is_some_and(|definition| std::ptr::eq(definition, &CHECKED_HISTORY)));
+        assert!(
+            installed
+                .is_some_and(|definition| std::ptr::eq(definition, &raw const CHECKED_HISTORY))
+        );
+        assert!(
+            root.is_some_and(|definition| std::ptr::eq(definition, &raw const CHECKED_HISTORY))
+        );
         drop(app);
 
         let rejected = LaunchSpec::new(CHECKED_HISTORY.app_id, poisoned_prepared_root)

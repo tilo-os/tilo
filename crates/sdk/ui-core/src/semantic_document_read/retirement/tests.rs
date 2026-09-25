@@ -193,7 +193,7 @@ fn retirement_and_drop_allocate_nothing_after_eager_mutex_initialization() {
         let handle = handle(&owner, &budget);
         (domain, owner, handle)
     };
-    let (_, stats) = allocations::allocations_only(|| {
+    let ((), stats) = allocations::allocations_only(|| {
         handle.request_retirement();
         handle.finish_retirement();
         drop(owner);

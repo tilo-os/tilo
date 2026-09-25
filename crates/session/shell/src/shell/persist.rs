@@ -170,7 +170,7 @@ pub fn load_tree_from(path: &Path) -> std::io::Result<WorkspaceTree> {
     use std::io::Read;
     let file = std::fs::File::open(path)?;
     let mut s = String::new();
-    file.take(super::native_workspace_owner::store::MAX_STATE_BYTES as u64 + 1)
+    file.take((super::native_workspace_owner::store::MAX_STATE_BYTES as u64).saturating_add(1))
         .read_to_string(&mut s)?;
     if s.len() > super::native_workspace_owner::store::MAX_STATE_BYTES {
         return Err(std::io::Error::other(

@@ -56,6 +56,7 @@ pub(super) struct PeerTransportAdapter {
 // dropped), so no non-atomic state inside it is shared across threads.
 #[allow(
     unsafe_code,
+    clippy::non_send_fields_in_send_ty,
     reason = "the collaboration seam's documented runtime-checked Send wrapper for thread-bound transports"
 )]
 unsafe impl Send for PeerTransportAdapter {}

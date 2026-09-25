@@ -1,6 +1,6 @@
 //! Correlates live traversal with inert layout registrations. Raw pointers are
 //! compared only; even an unavailable public-map entry is never dereferenced.
-use super::*;
+use super::{HashMap, TaffyNodeId, Widget};
 
 #[derive(Default)]
 pub(crate) struct AdmittedNodeNames {

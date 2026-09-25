@@ -679,12 +679,11 @@ fn preferred_network_env_string(
     qos_name: &'static str,
 ) -> Option<(&'static str, String)> {
     let (name, value) = preferred_network_env(tilo_name, qos_name)?;
-    match value.into_string() {
-        Ok(value) => Some((name, value)),
-        Err(_) => {
-            tracing::warn!(config = name, "network configuration must be valid UTF-8");
-            None
-        }
+    if let Ok(value) = value.into_string() {
+        Some((name, value))
+    } else {
+        tracing::warn!(config = name, "network configuration must be valid UTF-8");
+        None
     }
 }
 
@@ -1578,7 +1577,7 @@ impl ShellNetwork {
             pending_identity_admissions: Mutex::new(pending_identity_admissions),
             pending_invitations_path: Some(pending_invitations_path),
             pending_redemptions: Mutex::new(std::collections::HashMap::new()),
-            native_enrollment: Default::default(),
+            native_enrollment: native_enrollment::State::default(),
             inbound_presence: Arc::new(Mutex::new(Vec::new())),
             inbound_documents: Arc::new(Mutex::new(Vec::new())),
             wire_records: Mutex::new(crate::network::wire_record::WireRecordIds::default()),
@@ -4221,7 +4220,7 @@ impl ShellNetwork {
     /// `event_rx` lock.
     fn dispatch_net_event(&self, event: NetEvent) {
         match event {
-            NetEvent::NativeInput(input) => self.dispatch_native_input(input),
+            NetEvent::NativeInput(input) => self.dispatch_native_input(&input),
             NetEvent::HostReady { ws, peer } => {
                 if let Ok(mut relays) = self.workspace_control_relays.lock() {
                     relays.insert((ws, peer));

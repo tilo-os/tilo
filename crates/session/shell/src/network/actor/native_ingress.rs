@@ -1,5 +1,8 @@
 //! Closed relay provenance for rooms installed by the native durable owner.
-use super::*;
+use super::{
+    ActorState, Arc, DeviceCert, Duration, HashMap, HostIdentity, HostRuntime, InternalEvent,
+    Mutex, RelayClient, RelayCoeditSession, RevocationList, spawn_host_pump,
+};
 use crate::shell::{native_workspace_owner::NativeWorkspaceOwner, state::RoomId};
 use qos_peer_state::{NeighbourMsg, TransportOrigin, join::TransportHint};
 use tilo_relay::workspace_join::{IrohWorkspaceHostHintV1, WorkspaceHostTrust};
@@ -107,7 +110,7 @@ impl Scope {
     }
 }
 /// Only the authenticated relay pump can construct this. Generic gossip messages
-/// cannot become RelayDelta evidence through the shell event dispatcher.
+/// cannot become `RelayDelta` evidence through the shell event dispatcher.
 #[derive(Clone)]
 pub(crate) struct Input {
     scope: Arc<Scope>,
@@ -133,6 +136,10 @@ impl Input {
     pub(crate) fn message(&self) -> &NeighbourMsg {
         &self.msg
     }
+    #[allow(
+        clippy::significant_drop_tightening,
+        reason = "the live flag stays locked through admission so a close cannot interleave"
+    )]
     pub(crate) fn admit(
         &self,
         identity: &HostIdentity,
@@ -175,6 +182,11 @@ impl Input {
 impl ActorState {
     /// A refresh only asks the original subscribed host to run its own genuine
     /// checkpoint barrier. It grants no local admission and retires no outbox.
+    #[allow(
+        clippy::significant_drop_tightening,
+        reason = "the live flag and refresh cadence stay locked through the request so a close \
+                  or a concurrent refresh cannot interleave"
+    )]
     pub(super) fn request_native_refresh(&self, ws: u64) {
         let Some(identity) = self.host_identity.as_ref() else {
             return;
@@ -235,7 +247,11 @@ impl ActorState {
             }
         }
     }
-    pub(super) fn drive_native_publication(&mut self, ws: u64) {
+    #[allow(
+        clippy::significant_drop_tightening,
+        reason = "the live flag and cursor stay locked through publication so a close cannot interleave"
+    )]
+    pub(super) fn drive_native_publication(&self, ws: u64) {
         let Some(identity) = self.host_identity.as_ref() else {
             return;
         };
@@ -375,7 +391,9 @@ impl ActorState {
             {
                 continue;
             }
-            let (hint, cert, revocations, continuity) = material.expect("checked native material");
+            let Ok((hint, cert, revocations, continuity)) = material else {
+                continue;
+            };
             let expected_device = cert.clone();
             let endpoint = self.endpoint.clone();
             let key = identity.device_signing_key.clone();
@@ -431,7 +449,7 @@ impl ActorState {
                     .send(InternalEvent::NativeHostConnected {
                         ws,
                         serial,
-                        hint,
+                        hint: Box::new(hint),
                         certificate: expected_device,
                         continuity,
                         result: Box::new(result),

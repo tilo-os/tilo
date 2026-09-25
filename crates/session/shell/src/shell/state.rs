@@ -883,8 +883,8 @@ impl Default for WorkspaceTree {
     fn default() -> Self {
         Self {
             desktop: DesktopTree::default(),
-            native_authority: Default::default(),
-            native_runtime: Default::default(),
+            native_authority: super::native_workspace_owner::NativeAuthorityStorage::default(),
+            native_runtime: super::native_workspace_owner::NativeStateRuntime::default(),
             doc: AutoCommit::new(),
             room_docs: HashMap::new(),
             room_authority: HashMap::new(),
@@ -1588,11 +1588,12 @@ impl WorkspaceTree {
         reason = "room-document projection keeps all capability map updates in one Automerge transaction"
     )]
     fn try_sync_room_doc(&mut self, room: RoomId) -> bool {
+        use automerge::{ObjType, ROOT, ReadDoc, ScalarValue, Value, transaction::Transactable};
+        use qos_peer_state::room::media;
+
         if self.requires_native_owner(room) {
             return false;
         }
-        use automerge::{ObjType, ROOT, ReadDoc, ScalarValue, Value, transaction::Transactable};
-        use qos_peer_state::room::media;
 
         let Some(ws) = self.workspace_in_room(room) else {
             return false;
@@ -2062,12 +2063,11 @@ impl WorkspaceTree {
                 );
                 true
             }
-            RoomAuthority::Peer(_) => false,
-            // Joined without an invite naming an administrator — the
-            // first peer to supply governance becomes it. Legacy TOFU is
+            // `Unpinned`: joined without an invite naming an administrator —
+            // the first peer to supply governance becomes it. Legacy TOFU is
             // installed by `apply_room_changes` only after every candidate
             // check passes, so a refused batch never pins its sender.
-            RoomAuthority::Unpinned => false,
+            RoomAuthority::Peer(_) | RoomAuthority::Unpinned => false,
         }
     }
 
@@ -2105,14 +2105,13 @@ impl WorkspaceTree {
         else {
             return false;
         };
-        let admitted = match before
+        let Ok(admitted) = before
             .3
             .get(endpoint)
             .map(|bytes| serde_json::from_slice::<GovernedPeerIdentity>(bytes))
             .transpose()
-        {
-            Ok(admitted) => admitted,
-            Err(_) => return false,
+        else {
+            return false;
         };
         // A first snapshot must arrive from the preexisting invite-pinned
         // endpoint. An existing certificate cannot be replaced by the snapshot.
@@ -2265,6 +2264,10 @@ impl WorkspaceTree {
     /// Returns the underlying `automerge::AutomergeError` if any blob in
     /// `changes` fails to decode, or if applying them to the room's
     /// document fails.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one candidate-then-commit admission: every governance check runs before the batch installs"
+    )]
     pub fn apply_room_changes(
         &mut self,
         room: RoomId,

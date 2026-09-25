@@ -1,6 +1,9 @@
 //! Caller-only palette presentation. Submission transfers inert intent to the
 //! host; it never installs a worker route or executes an application effect.
-use super::*;
+use super::{
+    Affine, ElementState, FrameHarness, HashMap, InspectionNode, Key, Point, WindowEvent,
+    collect_inspection,
+};
 use crate::action_palette::{ActionPalette, PendingOperation};
 
 #[derive(Default)]
@@ -94,11 +97,13 @@ impl FrameHarness {
             self.relayout();
             return true;
         }
-        let palette = self.caller_palette.palette.as_mut().unwrap();
+        let Some(palette) = self.caller_palette.palette.as_mut() else {
+            return false;
+        };
         let consumed = palette.handle_host_event(
             event,
             self.input_scale,
-            &self.modifiers,
+            self.modifiers,
             &mut self.state.doc,
             &self.state.root,
         );
@@ -165,17 +170,16 @@ impl FrameHarness {
         let Some(results_owner) = semantic_owner(&snapshot, name, target) else {
             return false;
         };
-        self.caller_palette
-            .palette
-            .as_mut()
-            .unwrap()
-            .perform_host_semantic(
-                results_owner,
-                target,
-                action,
-                &mut self.state.doc,
-                &self.state.root,
-            )
+        let Some(palette) = self.caller_palette.palette.as_mut() else {
+            return false;
+        };
+        palette.perform_host_semantic(
+            results_owner,
+            target,
+            action,
+            &mut self.state.doc,
+            &self.state.root,
+        )
     }
 
     pub(super) fn draw_caller_palette(&mut self) {
@@ -259,6 +263,7 @@ fn semantic_owner(snapshot: &InspectionNode, name: &str, target: Option<&str>) -
 
 #[cfg(test)]
 mod tests {
+    use super::super::{MouseButton, NamedKey, State, Theme, key_event};
     use super::*;
     fn frame() -> FrameHarness {
         let mut frame = FrameHarness::new_with_controlled_inputs(

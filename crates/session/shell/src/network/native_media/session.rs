@@ -1,4 +1,7 @@
-use super::*;
+use super::{
+    Action, Arc, AtomicBool, AtomicU64, CallTarget, Client, Command, Duration, Instant, Mutex,
+    NativeWorkspaceOwner, Operation, Ordering, Reply, Ticket, Weak, devices, http, observer,
+};
 use crate::{
     network::NetCmd,
     portal::{CaptureBroker, capture_broker::BorrowedCaptureHandle},
@@ -37,6 +40,11 @@ impl Factory {
     }
 }
 impl MediaFactory for Factory {
+    #[allow(
+        clippy::significant_drop_tightening,
+        reason = "`runtime` is moved into the returned session after the maintenance task and \
+                  its abort handle are wired up; there is no earlier point to drop it"
+    )]
     fn prepare(&self, target: CallTarget) -> Prepare {
         let commands = self.commands.clone();
         let owner = self.owner.clone();
@@ -91,7 +99,7 @@ impl MediaFactory for Factory {
                     if !controller.cancelled.load(Ordering::Acquire) {
                         controller.ticket.stop();
                         *controller.state.lock() = result
-                            .map(|_| CallState::Ended)
+                            .map(|()| CallState::Ended)
                             .map_err(|_| Issue::TransportFailed);
                     }
                 });
@@ -129,7 +137,8 @@ struct Running {
 impl Running {
     fn retire(&self) {
         self.ticket.pause();
-        if let Some(client) = self.client.lock().take() {
+        let client = self.client.lock().take();
+        if let Some(client) = client {
             client.close();
         }
         *self.state.lock() = Ok(CallState::Reconnecting);
@@ -162,19 +171,16 @@ async fn drive(
             return Ok(reply);
         };
         ticket.completion_live()?;
-        let bytes = match http.send(&work.request).await {
-            Ok(bytes) => bytes,
-            Err(_) => {
-                let _ = command(
-                    commands,
-                    Operation::Act {
-                        ticket: ticket.clone(),
-                        action: Action::Abandon,
-                    },
-                )
-                .await;
-                return Err("native media HTTP unavailable".into());
-            }
+        let Ok(bytes) = http.send(&work.request).await else {
+            let _ = command(
+                commands,
+                Operation::Act {
+                    ticket: ticket.clone(),
+                    action: Action::Abandon,
+                },
+            )
+            .await;
+            return Err("native media HTTP unavailable".into());
         };
         reply = command(
             commands,
@@ -215,12 +221,16 @@ async fn install_carrier(
     running: &Arc<Running>,
 ) -> Result<bool, String> {
     let ticket = &running.ticket;
-    let has_route = {
-        let state = ticket.state.lock();
-        let grant = state.grant.as_ref().ok_or("native grant missing")?;
-        grant.view.directions.publish
-            || (grant.view.directions.subscribe && !grant.view.inventory.namespaces.is_empty())
-    };
+    let has_route = ticket
+        .state
+        .lock()
+        .grant
+        .as_ref()
+        .map(|grant| {
+            grant.view.directions.publish
+                || (grant.view.directions.subscribe && !grant.view.inventory.namespaces.is_empty())
+        })
+        .ok_or("native grant missing")?;
     if !has_route {
         return Ok(false);
     }
@@ -241,14 +251,19 @@ async fn install_carrier(
     *running.client.lock() = Some(client);
     Ok(true)
 }
+/// `Instant::now()` plus `delay`, saturating at now for an unrepresentable deadline.
+fn later(delay: Duration) -> Instant {
+    let now = Instant::now();
+    now.checked_add(delay).unwrap_or(now)
+}
 async fn maintain(
     commands: &mpsc::Sender<NetCmd>,
     http: &http::Http,
     running: &Arc<Running>,
 ) -> Result<(), String> {
     let ticket = &running.ticket;
-    let mut heartbeat = Instant::now() + Duration::from_secs(5);
-    let mut renew = Instant::now() + Duration::from_secs(20);
+    let mut heartbeat = later(Duration::from_secs(5));
+    let mut renew = later(Duration::from_secs(20));
     let mut failures = 0_u32;
     let mut live_since = None;
     let mut retry = Instant::now();
@@ -272,24 +287,24 @@ async fn maintain(
             Some(Status::Failed | Status::Denied | Status::Closed) => {
                 live_since = None;
                 running.retire();
-                failures += 1;
+                failures = failures.saturating_add(1);
                 if failures >= 3 {
                     return Err("native carrier retry budget exhausted".into());
                 }
                 action(commands, http, ticket, Action::RetireCarrier).await?;
-                retry = now + Duration::from_millis(200);
+                retry = now.checked_add(Duration::from_millis(200)).unwrap_or(now);
             }
-            None if now >= retry => match install_carrier(commands, http, running).await {
-                Ok(_) => {}
-                Err(_) => {
-                    failures += 1;
+            None if now >= retry => {
+                let installed = install_carrier(commands, http, running).await;
+                if installed.is_err() {
+                    failures = failures.saturating_add(1);
                     if failures >= 3 {
                         return Err("native carrier retry budget exhausted".into());
                     }
                     action(commands, http, ticket, Action::RetireCarrier).await?;
-                    retry = Instant::now() + Duration::from_millis(200 << failures);
+                    retry = later(Duration::from_millis(200 << failures));
                 }
-            },
+            }
             None => {}
         }
         let bootstrap = { ticket.state.lock().bootstrap_at };
@@ -299,8 +314,8 @@ async fn maintain(
             if !matches!(result, Reply::Grant) {
                 return Err("native bootstrap renewal failed".into());
             }
-            heartbeat = Instant::now() + Duration::from_secs(5);
-            renew = Instant::now() + Duration::from_secs(20);
+            heartbeat = later(Duration::from_secs(5));
+            renew = later(Duration::from_secs(20));
             retry = Instant::now();
         } else if now >= renew {
             if !matches!(
@@ -312,11 +327,11 @@ async fn maintain(
             if running.client.lock().is_some() {
                 action(commands, http, ticket, Action::Refresh).await?;
             }
-            renew = Instant::now() + Duration::from_secs(20);
-            heartbeat = Instant::now() + Duration::from_secs(5);
+            renew = later(Duration::from_secs(20));
+            heartbeat = later(Duration::from_secs(5));
         } else if now >= heartbeat {
             action(commands, http, ticket, Action::Heartbeat).await?;
-            heartbeat = Instant::now() + Duration::from_secs(5);
+            heartbeat = later(Duration::from_secs(5));
         }
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
@@ -351,8 +366,8 @@ impl StopSlot {
             .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |value| {
                 value.checked_add(1)
             })
-            .map(|value| value + 1)
             .map_err(|_| Issue::CaptureFailed)
+            .and_then(|value| value.checked_add(1).ok_or(Issue::CaptureFailed))
     }
     fn pause(&self) {
         let mut generation = self.generation.lock();
@@ -473,7 +488,7 @@ impl Session {
                 && ticket.alive.load(Ordering::SeqCst)
                 && !ticket.leaving.load(Ordering::SeqCst)
                 && ticket.base.elapsed().as_nanos()
-                    < ticket.capture_until.load(Ordering::Acquire) as u128
+                    < u128::from(ticket.capture_until.load(Ordering::Acquire))
         });
         // Fresh owner reads precede the independent slot lock. Owner fences
         // may hold their publication gate while synchronously stopping a slot.
@@ -511,6 +526,7 @@ impl Session {
             return Err(Issue::CaptureFailed);
         };
         *installing = Some((stop, Arc::downgrade(client)));
+        drop(installing);
         intent.prepared = None;
         Ok(())
     }
@@ -522,6 +538,11 @@ impl Session {
     }
 }
 impl MediaSession for Session {
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one call tick: carrier status, decoder generation, capture install, bounded \
+                  send and receive; splitting it scatters the ordering the comments rely on"
+    )]
     fn tick(&mut self, now: Instant) -> Result<CallState, Issue> {
         if !self.output.current() {
             self.stop_capture();
@@ -570,14 +591,13 @@ impl MediaSession for Session {
             }
             self.decoded_generation = generation;
         }
-        if let Some(intent) = &self.capture {
-            if !intent.slot.current.load(Ordering::SeqCst)
+        if let Some(intent) = &self.capture
+            && (!intent.slot.current.load(Ordering::SeqCst)
                 || !(intent.allowed)()
-                || !intent.source.current()
-            {
-                self.stop_capture();
-                return Err(Issue::PermissionDenied);
-            }
+                || !intent.source.current())
+        {
+            self.stop_capture();
+            return Err(Issue::PermissionDenied);
         }
         self.install_prepared_capture(&client)?;
         if let Some(intent) = &self.capture {
@@ -683,19 +703,19 @@ impl MediaSession for Session {
                 && intent.slot.current.load(Ordering::SeqCst)
         });
         if !reuse {
+            // Leaves `self.capture` empty, so the intent below is always fresh.
             self.stop_capture();
-            self.capture = Some(CaptureIntent {
-                source_id: source_id.into(),
-                source: source.clone(),
-                allowed: allowed.clone(),
-                slot: Arc::new(StopSlot::new()),
-                startup: 0,
-                pending: None,
-                prepared: None,
-                watchdog: None,
-            });
         }
-        let intent = self.capture.as_mut().unwrap();
+        let intent = self.capture.get_or_insert_with(|| CaptureIntent {
+            source_id: source_id.into(),
+            source,
+            allowed: allowed.clone(),
+            slot: Arc::new(StopSlot::new()),
+            startup: 0,
+            pending: None,
+            prepared: None,
+            watchdog: None,
+        });
         if intent.pending.is_some()
             || intent.prepared.is_some()
             || intent.slot.generation.lock().is_some()
@@ -725,7 +745,10 @@ impl MediaSession for Session {
             receive,
             task: preparing.abort_handle(),
         });
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+        let started = tokio::time::Instant::now();
+        let deadline = started
+            .checked_add(Duration::from_secs(2))
+            .unwrap_or(started);
         let watchdog = self.runtime.executor.spawn(async move {
             tokio::time::sleep_until(deadline).await;
             slot.expire(startup);
@@ -764,10 +787,12 @@ impl MediaSession for Session {
         self.stop_capture();
         let first = !self.runtime.cancelled.swap(true, Ordering::SeqCst);
         self.runtime.ticket.stop();
-        if let Some(task) = self.runtime.task.lock().take() {
+        let task = self.runtime.task.lock().take();
+        if let Some(task) = task {
             task.abort();
         }
-        if let Some(client) = self.runtime.client.lock().take() {
+        let client = self.runtime.client.lock().take();
+        if let Some(client) = client {
             client.close();
         }
         self.audio.close();

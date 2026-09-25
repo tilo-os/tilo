@@ -292,45 +292,42 @@ impl PrivateActionsFile {
         };
         #[cfg(any(target_os = "macos", target_os = "linux"))]
         {
-            match OwnerDirectory::admit(held.original.take().expect("original input")) {
-                Ok(root) => held.root = Some(root),
-                Err(e) => {
+            let admitted = match held.original.take().map(OwnerDirectory::admit) {
+                Some(Ok(root)) => root,
+                Some(Err(e)) => {
                     held.error = Some(OpenError::Admission(e));
                     held.code = SenderStorageCode::Io;
                     return Err(held);
                 }
-            }
+                None => {
+                    held.code = SenderStorageCode::Io;
+                    return Err(held);
+                }
+            };
+            let root = held.root.insert(admitted);
             let opened = (|| -> Result<_, OpenError> {
-                let root = held.root.as_ref().expect("admitted root");
                 let sentinel = root
                     .open_lease_existing(OsStr::new(LOCK_NAME))
                     .map_err(OpenError::Io)?;
-                match FileLease::try_acquire(sentinel, atomic_file::lease::LeaseMode::Exclusive) {
-                    Ok(lease) => held.lease = Some(lease),
+                let lease = match FileLease::try_acquire(
+                    sentinel,
+                    atomic_file::lease::LeaseMode::Exclusive,
+                ) {
+                    Ok(lease) => held.lease.insert(lease),
                     Err(atomic_file::lease::AcquireError::Busy) => return Ok(None),
                     Err(atomic_file::lease::AcquireError::Io(e)) => return Err(OpenError::Io(e)),
-                }
+                };
                 let child = root
                     .open_directory_child(OsStr::new(CHILD_NAME))
                     .map_err(OpenError::Child)?;
-                held.child = Some(child);
+                let child = held.child.insert(child);
                 let root_identity = root.identity().map_err(OpenError::Io)?;
-                let child_identity = held
-                    .child
-                    .as_ref()
-                    .expect("admitted child")
-                    .identity()
-                    .map_err(OpenError::Io)?;
+                let child_identity = child.identity().map_err(OpenError::Io)?;
                 let named = root
                     .open_lease_existing(OsStr::new(LOCK_NAME))
                     .map_err(OpenError::Io)?;
                 if atomic_file::FileIdentity::of(&named).map_err(OpenError::Io)?
-                    != held
-                        .lease
-                        .as_ref()
-                        .expect("exclusive lease")
-                        .identity()
-                        .map_err(OpenError::Io)?
+                    != lease.identity().map_err(OpenError::Io)?
                 {
                     return Err(OpenError::Io(io::ErrorKind::InvalidData.into()));
                 }
@@ -352,12 +349,18 @@ impl PrivateActionsFile {
             uuid::Uuid::from_bytes(held.scope.room)
                 .hyphenated()
                 .encode_lower(&mut workspace);
-            return Ok(Self {
-                root: held.root.take().expect("root"),
-                directory: held.child.take().expect("child"),
+            let (Some(root), Some(directory), Some(lease)) =
+                (held.root.take(), held.child.take(), held.lease.take())
+            else {
+                held.code = SenderStorageCode::Io;
+                return Err(held);
+            };
+            Ok(Self {
+                root,
+                directory,
                 root_identity,
                 child_identity,
-                lease: held.lease.take().expect("lease"),
+                lease,
                 cache: held.cache,
                 workspace,
                 scope: held.scope,
@@ -365,7 +368,7 @@ impl PrivateActionsFile {
                 cursor: None,
                 cursor_identity: None,
                 _credit: held._credit,
-            });
+            })
         }
         #[cfg(not(any(target_os = "macos", target_os = "linux")))]
         {
@@ -375,6 +378,15 @@ impl PrivateActionsFile {
     pub fn cache(&self) -> &PortableStorage {
         &self.cache
     }
+    /// The room's canonical hyphenated UUID.
+    ///
+    /// # Panics
+    ///
+    /// Never: the workspace is always a lowercase ASCII UUID encoding.
+    #[expect(
+        clippy::expect_used,
+        reason = "the workspace buffer is filled by Uuid::encode_lower and is always ASCII"
+    )]
     pub fn workspace(&self) -> &str {
         std::str::from_utf8(&self.workspace).expect("canonical UUID")
     }
@@ -490,7 +502,7 @@ impl PrivateActionsFile {
                 match input.read(&mut phase.bytes[length..]) {
                     Ok(0) => break,
                     Ok(n) => length += n,
-                    Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+                    Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
                     Err(e) => {
                         phase.error = Some(OpenError::Io(e));
                         return Err(SenderStorageCode::Io);
@@ -553,14 +565,14 @@ impl PrivateActionsFile {
         payload: &[u8],
         envelope_revision: u64,
         cache_revision: u64,
-    ) -> PrivateCommitStamp {
-        PrivateCommitStamp {
-            cursor: self.cursor.expect("actual committed file"),
+    ) -> Option<PrivateCommitStamp> {
+        Some(PrivateCommitStamp {
+            cursor: self.cursor?,
             envelope_revision,
             cache_revision,
             payload_length: payload.len(),
             payload_digest: *blake3::hash(payload).as_bytes(),
-        }
+        })
     }
     pub fn prepare_required_bytes(
         &self,
@@ -712,10 +724,17 @@ impl CommittedPrivateWrite {
         };
         self.prepared.file.cursor_identity = Some(identity);
         let revision = self.prepared.capture.revision();
-        let stamp = self
-            .prepared
-            .file
-            .stamp(self.prepared.capture.bytes(), revision, revision);
+        let Some(stamp) =
+            self.prepared
+                .file
+                .stamp(self.prepared.capture.bytes(), revision, revision)
+        else {
+            return Err(FinishRefusal {
+                error: None,
+                committed: self,
+                code: SenderStorageCode::Io,
+            });
+        };
         match self.prepared.capture.finish_physical(Some(stamp)) {
             Ok(revision) => Ok(CurrentPrivateState {
                 file: self.prepared.file,
@@ -731,11 +750,29 @@ impl CommittedPrivateWrite {
     }
 }
 impl CommittedPrivateRead {
+    /// The validated payload.
+    ///
+    /// # Panics
+    ///
+    /// Never: a committed read holds bytes that already decoded for its scope.
+    #[expect(
+        clippy::expect_used,
+        reason = "a CommittedPrivateRead is only built from bytes that decoded for its scope"
+    )]
     pub fn payload(&self) -> &[u8] {
         codec::decode(&self.file.scope, &self.bytes)
             .expect("private validated read")
             .payload
     }
+    /// The committed file's sequence.
+    ///
+    /// # Panics
+    ///
+    /// Never: a committed read always carries its validated cursor.
+    #[expect(
+        clippy::expect_used,
+        reason = "a CommittedPrivateRead is only built after its cursor is validated"
+    )]
     pub fn sequence(&self) -> u64 {
         self.file.cursor.expect("private validated cursor").sequence
     }
@@ -765,8 +802,13 @@ impl FailedPrivateRead {
             self.code = SenderStorageCode::Io;
             return PrivateReadOutcome::Failed(self);
         }
+        let Some(input) = self.input.take() else {
+            self.error = Some(OpenError::Io(io::ErrorKind::InvalidData.into()));
+            self.code = SenderStorageCode::Io;
+            return PrivateReadOutcome::Failed(self);
+        };
         PrivateReadOutcome::Committed(CommittedPrivateRead {
-            input: self.input.take().expect("verified input"),
+            input,
             bytes: self.bytes,
             file: self.file,
             _credit: Some(self._credit),
@@ -862,6 +904,15 @@ impl QueueRefusal {
     pub fn code(&self) -> SenderStorageCode {
         self.code
     }
+    /// Returns the state, payload and pending credit the refused queue kept.
+    ///
+    /// # Panics
+    ///
+    /// Never: a refused queue retains its credit; only an accepted one spends it.
+    #[expect(
+        clippy::expect_used,
+        reason = "the cache spends the credit only when it accepts the queue, never on refusal"
+    )]
     pub fn into_parts(self) -> (CurrentPrivateState, Vec<u8>, NativeReservation) {
         (
             self.state,
@@ -882,6 +933,15 @@ impl HydrateRefusal {
     }
 }
 impl CommittedPrivateRead {
+    /// The committed file's instance.
+    ///
+    /// # Panics
+    ///
+    /// Never: a committed read always carries its validated cursor.
+    #[expect(
+        clippy::expect_used,
+        reason = "a CommittedPrivateRead is only built after its cursor is validated"
+    )]
     pub fn instance(&self) -> &[u8; 16] {
         &self
             .file
@@ -923,8 +983,11 @@ impl CommittedPrivateRead {
                 return Err(phase);
             }
         };
-        let stamp = phase.read.file.stamp(parsed.payload, parsed.revision, 0);
         let end = codec::HEADER + parsed.payload.len();
+        let Some(stamp) = phase.read.file.stamp(parsed.payload, parsed.revision, 0) else {
+            phase.code = SenderStorageCode::Io;
+            return Err(phase);
+        };
         let result = phase.read.file.cache.private_hydrate(
             phase.read.file.workspace(),
             &mut phase.read.bytes,

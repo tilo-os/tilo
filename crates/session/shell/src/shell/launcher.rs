@@ -1912,6 +1912,10 @@ fn selected_execution_program() -> Result<PathBuf, LaunchError> {
     }
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "one launch request's independent optional handoffs; bundling them adds no invariant"
+)]
 fn execute_installed(
     app: InstalledApp,
     launch_app_id: &str,

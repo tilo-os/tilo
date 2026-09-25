@@ -32,10 +32,10 @@ impl ShellNetwork {
         *retained = Some(owner.clone());
         drop(retained);
         for room in rooms {
-            if owner.with_current(room, |_| Ok(())).is_ok() {
-                if let Err(error) = self.connect_native_room(owner.clone(), room) {
-                    tracing::warn!(%error, "native owner restored while data transport is unavailable");
-                }
+            if owner.with_current(room, |_| Ok(())).is_ok()
+                && let Err(error) = self.connect_native_room(owner.clone(), room)
+            {
+                tracing::warn!(%error, "native owner restored while data transport is unavailable");
             }
         }
         Ok(owner)
@@ -44,8 +44,15 @@ impl ShellNetwork {
         self.runtime
             .as_ref()
             .map(|runtime| runtime.handle().clone())
-            .ok_or("native runtime unavailable".into())
+            .ok_or_else(|| "native runtime unavailable".into())
     }
+    /// Redeem a peer invitation into the local workspace `local`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the replica, device custody or native owner is
+    /// unavailable, the target workspace disappeared, or the enrollment cannot
+    /// be queued.
     pub fn accept_peer_invitation(
         &self,
         local: WorkspaceId,
@@ -75,20 +82,19 @@ impl ShellNetwork {
                 .map(|room| PeerSyncResponse::Message(room.to_string()));
         }
         let owner = self.native_owner()?;
-        let (room, topic) = {
-            let replica = self
-                .replica
-                .lock()
-                .map_err(|_| "native replica unavailable")?;
-            let tree = replica.tree.read();
-            let workspace = tree
-                .desktop
-                .workspaces
-                .iter()
-                .find(|workspace| workspace.id == local)
-                .ok_or("target workspace disappeared")?;
-            (workspace.room, room_topic_id(workspace.room))
-        };
+        let room = self
+            .replica
+            .lock()
+            .map_err(|_| "native replica unavailable")?
+            .tree
+            .read()
+            .desktop
+            .workspaces
+            .iter()
+            .find(|workspace| workspace.id == local)
+            .map(|workspace| workspace.room)
+            .ok_or("target workspace disappeared")?;
+        let topic = room_topic_id(room);
         let certificate = self
             .host_identity
             .as_ref()
@@ -122,8 +128,15 @@ impl ShellNetwork {
             .try_send(NetCmd::NativeEnrollment(command))
             .map_err(|_| "native enrollment command queue unavailable")?;
         attempts.insert(id, attempt);
+        drop(attempts);
         Ok(PeerSyncResponse::EnrollmentPending { id })
     }
+    /// Finish the pending enrollment `id` once its remote exchange completed.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the attempt is no longer active, or if installing the
+    /// enrolled room fails.
     pub fn poll_enrollment(&self, id: u64) -> Result<PeerSyncResponse, String> {
         let attempt = self
             .native_enrollment
@@ -178,6 +191,11 @@ impl ShellNetwork {
             room: room.to_string(),
         })
     }
+    /// Cancel the pending enrollment `id`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the attempt is no longer active or cannot be cancelled.
     pub fn cancel_enrollment(&self, id: u64) -> Result<PeerSyncResponse, String> {
         let attempt = self
             .native_enrollment

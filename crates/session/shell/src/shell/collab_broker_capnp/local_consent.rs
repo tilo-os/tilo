@@ -10,7 +10,7 @@ pub(crate) enum LocalSessionLiveness {
 }
 
 struct LocalSessionState {
-    _epoch: Uuid,
+    epoch: Uuid,
     generation: u64,
     liveness: LocalSessionLiveness,
     locked: Option<bool>,
@@ -41,7 +41,7 @@ impl LocalSessionPermit {
     pub(crate) fn while_current<T>(&self, action: impl FnOnce() -> T) -> Option<T> {
         let state = self.state.upgrade()?;
         let state = state.lock().ok()?;
-        (state._epoch == self.epoch
+        (state.epoch == self.epoch
             && state.generation == self.generation
             && state.liveness == LocalSessionLiveness::Active)
             .then(action)
@@ -72,7 +72,7 @@ impl LocalSessionAuthority {
     pub(crate) fn new() -> Self {
         Self {
             state: Arc::new(Mutex::new(LocalSessionState {
-                _epoch: Uuid::new_v4(),
+                epoch: Uuid::new_v4(),
                 generation: 0,
                 liveness: LocalSessionLiveness::Inactive,
                 locked: None,
@@ -92,7 +92,7 @@ impl LocalSessionAuthority {
     pub(super) fn active_session(&self) -> Option<LiveLocalSession> {
         let state = self.state.lock().ok()?;
         (state.liveness == LocalSessionLiveness::Active).then_some(LiveLocalSession {
-            epoch: state._epoch,
+            epoch: state.epoch,
             generation: state.generation,
         })
     }
@@ -110,7 +110,7 @@ impl LocalSessionLifecycle {
         let state = state.lock().ok()?;
         (state.liveness == LocalSessionLiveness::Active).then(|| LocalSessionPermit {
             state: self.state.clone(),
-            epoch: state._epoch,
+            epoch: state.epoch,
             generation: state.generation,
         })
     }
@@ -176,7 +176,7 @@ impl LocalSessionLifecycle {
         let state = self.state.upgrade()?;
         let state = state.lock().ok()?;
         Some(LocalSessionSnapshot {
-            epoch: state._epoch,
+            epoch: state.epoch,
             generation: state.generation,
             liveness: state.liveness,
             locked: state.locked,

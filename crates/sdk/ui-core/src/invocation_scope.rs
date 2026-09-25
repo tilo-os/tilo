@@ -470,7 +470,9 @@ impl InvocationProvenance {
             .map(|change| change.hash())
             .collect();
         self.record(changed, &lease)?;
-        self.mutations.last_mut().expect("active span").cursor = heads;
+        if let Some(span) = self.mutations.last_mut() {
+            span.cursor = heads;
+        }
         Ok(())
     }
 
@@ -488,7 +490,7 @@ impl InvocationProvenance {
         // Collapse only after every post-baseline change is known and no
         // original uncommitted contributor or active span remains.
         if self.contributions.is_empty() && self.mutations.is_empty() {
-            self.baseline = cursor.clone();
+            self.baseline.clone_from(&cursor);
             self.observed.clear();
         }
         self.mutations.push(MutationSpan {

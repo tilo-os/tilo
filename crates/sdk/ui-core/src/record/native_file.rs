@@ -1,5 +1,5 @@
 //! File-owned records consume native history without opening another writer.
-use super::*;
+use super::{AutoCommit, RecordCheckout, RecordSet, validate_identity};
 
 /// One original SDK capture awaiting consumption by the file record owner.
 /// This value carries data and the capture acknowledgement, not authority.

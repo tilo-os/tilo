@@ -1037,6 +1037,10 @@ impl CollaborationManager {
     /// Without the broker transport there is no native document route to
     /// switch; callers keep their current record.
     #[cfg(not(feature = "broker-transport"))]
+    #[expect(
+        clippy::needless_pass_by_ref_mut,
+        reason = "keeps the broker-transport signature, which switches the live route"
+    )]
     pub(crate) fn switch_native_record(
         &mut self,
         _record: &crate::record::RecordId,

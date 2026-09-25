@@ -434,14 +434,15 @@ pub enum StorageKey {
 impl StorageKey {
     fn validate(&self) -> Result<(), String> {
         let ids = match self {
-            Self::Admission { workspace } | Self::PrivateActions { workspace } => vec![workspace],
+            Self::Admission { workspace }
+            | Self::PrivateActions { workspace }
+            | Self::View { workspace, .. } => vec![workspace],
             Self::Primary { package, workspace } => vec![package, workspace],
             Self::Record {
                 package,
                 workspace,
                 record,
             } => vec![package, workspace, record],
-            Self::View { workspace, .. } => vec![workspace],
         };
         for id in ids {
             validate(id)?;
@@ -595,6 +596,10 @@ struct Entry {
     committed: Option<CommittedValue>,
 }
 impl Entry {
+    #[expect(
+        clippy::expect_used,
+        reason = "an entry is only marked Committed together with its committed alias"
+    )]
     fn current(&self) -> &CachedBytes {
         match &self.value {
             CurrentValue::Owned { value, .. } => value,
@@ -854,11 +859,9 @@ impl PortableStorage {
         // `put` synchronously installs these exact bytes. Retain the heads from
         // their canonical owner instead of decoding our own serialization.
         let mut cache = self.cache.borrow_mut();
-        let entry = cache
-            .entries
-            .get_mut(&key)
-            .expect("successful put installs the document");
-        if entry.document_heads.is_none() {
+        if let Some(entry) = cache.entries.get_mut(&key)
+            && entry.document_heads.is_none()
+        {
             entry.document_heads = Some(DocumentHeads::new(&entry.current().bytes, Ok(heads)));
         }
         Ok(())
@@ -922,7 +925,8 @@ impl PortableStorage {
             if write.value.actor != entry.current().actor {
                 return Err("acknowledgement actor differs from persistent custody".into());
             }
-            if write.revision == entry.revision && write.value.bytes != entry.current().bytes {
+            let same_revision = write.revision == entry.revision;
+            if same_revision && write.value.bytes != entry.current().bytes {
                 return Err("acknowledgement bytes differ from the queued write".into());
             }
             entry.committed = Some(CommittedValue {
@@ -1377,13 +1381,10 @@ impl PortableStorage {
         if !Self::private_matches(entry, revision, stamp) {
             return Err(Code::StaleCapture);
         }
-        let committed = std::cell::Ref::map(cache, |cache| {
-            Self::private_entry(cache, workspace)
-                .expect("checked entry")
-                .committed
-                .as_ref()
-                .expect("checked committed")
-        });
+        let committed = std::cell::Ref::filter_map(cache, |cache| {
+            Self::private_entry(cache, workspace).and_then(|entry| entry.committed.as_ref())
+        })
+        .map_err(|_| Code::StaleCapture)?;
         Ok(PrivateCurrentBorrow { committed })
     }
     fn private_metadata_cost(cache: &Cache, workspace: &str) -> Option<usize> {
@@ -1465,6 +1466,9 @@ impl PortableStorage {
                     .ok_or(Code::Capacity)?,
             )
             .map_err(|_| Code::Capacity)?;
+        let Some(guard) = credit.take() else {
+            return Err(Code::Capacity);
+        };
         // No fallible semantic operation after this point. Move the original paid backing.
         let length = payload.len();
         bytes.copy_within(payload, 0);
@@ -1491,9 +1495,9 @@ impl PortableStorage {
             },
         );
         let mut old = std::mem::take(&mut cache.private_metadata.credits);
-        tracking.extend(old.drain(..));
+        tracking.append(&mut old);
         drop(old); // Previous tracking allocation freed while its guards remain in tracking.
-        tracking.push(credit.take().expect("checked metadata guard"));
+        tracking.push(guard);
         cache.private_metadata.credits = tracking;
         Ok(())
     }
@@ -1529,7 +1533,7 @@ impl PortableStorage {
                 matches!(key,StorageKey::PrivateActions{workspace:w} if w==workspace)
                     .then_some(entry)
             })
-            .expect("checked entry");
+            .ok_or(Code::StaleCapture)?;
         entry.value = CurrentValue::Owned {
             value: CachedBytes {
                 bytes: std::mem::take(payload),

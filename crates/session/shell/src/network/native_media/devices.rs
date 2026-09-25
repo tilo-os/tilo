@@ -1,6 +1,8 @@
 //! One independently refreshed observation table. No device enumeration runs
 //! while the shell holds a capture lease or service installation lock.
-use super::*;
+use super::{
+    Arc, AtomicBool, AtomicU64, BTreeMap, Duration, Instant, Mutex, Ordering, media_wire, observer,
+};
 use crate::portal::{CaptureBroker, CaptureKind, capture_broker::LocalCaptureHandle};
 use media::AudioGraph;
 
@@ -26,17 +28,19 @@ impl Observation {
     }
     fn refresh(&self) {
         self.deadline.store(
-            self.base
-                .elapsed()
-                .as_nanos()
-                .saturating_add(FRESH.as_nanos())
-                .min(u64::MAX as u128) as u64,
+            u64::try_from(
+                self.base
+                    .elapsed()
+                    .as_nanos()
+                    .saturating_add(FRESH.as_nanos()),
+            )
+            .unwrap_or(u64::MAX),
             Ordering::Release,
         );
     }
     pub fn current(&self) -> bool {
         self.alive.load(Ordering::Acquire)
-            && self.base.elapsed().as_nanos() < self.deadline.load(Ordering::Acquire) as u128
+            && self.base.elapsed().as_nanos() < u128::from(self.deadline.load(Ordering::Acquire))
     }
 }
 #[derive(Default)]
@@ -108,9 +112,14 @@ impl Devices {
             .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |next| {
                 next.checked_add(1)
             })
-            .map(|prior| prior + 1)
-            .map_err(|_| "native observation sequence exhausted".into())
+            .ok()
+            .and_then(|prior| prior.checked_add(1))
+            .ok_or_else(|| "native observation sequence exhausted".into())
     }
+    #[allow(
+        clippy::suspicious_operation_groupings,
+        reason = "an observation's `node` is the PipeWire object `id` of the graph entry"
+    )]
     fn update(&self, sequence: u64, observed: Option<(u32, &AudioGraph)>) {
         let Ok(mut broker) = self.broker.lock() else {
             self.invalidate();
@@ -142,7 +151,7 @@ impl Devices {
             }
             present
         });
-        if let Some(observed) = observed {
+        if let (Some(observed), Some(cookie)) = (observed, cookie) {
             for source in &observed.sources {
                 if graph
                     .sources
@@ -178,7 +187,7 @@ impl Devices {
                     let entry = Arc::new(Observation::new(
                         source.id,
                         source.serial,
-                        cookie.unwrap(),
+                        cookie,
                         self.base,
                     ));
                     entry.refresh();
@@ -194,13 +203,9 @@ impl Devices {
             if let Some(old) = graph.output.take() {
                 old.alive.store(false, Ordering::Release);
             }
-            graph.output = output.map(|new| {
-                Arc::new(Observation::new(
-                    new.id,
-                    new.serial,
-                    cookie.unwrap(),
-                    self.base,
-                ))
+            // An output exists only for an observed graph, which carries its cookie.
+            graph.output = output.zip(cookie).map(|(new, cookie)| {
+                Arc::new(Observation::new(new.id, new.serial, cookie, self.base))
             });
         }
         if let Some(output) = &graph.output {
@@ -248,7 +253,8 @@ impl Devices {
 impl Drop for Devices {
     fn drop(&mut self) {
         self.stopped.store(true, Ordering::Release);
-        if let Some(task) = self.task.lock().take() {
+        let task = self.task.lock().take();
+        if let Some(task) = task {
             task.abort();
         }
         self.update(u64::MAX, None);

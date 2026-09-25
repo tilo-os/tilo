@@ -241,15 +241,14 @@ pub fn spawn_native(
     peer_sync: &Option<Arc<ShellNetwork>>,
     membership: crate::shell::state::WorkspaceTreeHandle,
 ) -> std::io::Result<BrokerHandle> {
-    let owner = Arc::new(super::broker_services::NativeOwnerCommitService::new(
-        membership.clone(),
-        peer_sync.clone(),
-    ));
     let publisher = PeerPublisher::with_optional_owner_commit(
         peer_sync
             .clone()
             .map(|network| network as Arc<dyn crate::shell::collab_outbound::PeerPublishSink>),
-        owner,
+        Arc::new(super::broker_services::NativeOwnerCommitService::new(
+            membership.clone(),
+            peer_sync.clone(),
+        )),
     );
     spawn_inner(
         capnp_socket_path,
@@ -287,11 +286,16 @@ pub fn spawn_native_harness(
 /// No global identity registry, Secret Service store or desktop network actor
 /// is opened. The explicit authority, journal and real signed-document publisher
 /// remain owned by the calling application's session.
+///
+/// # Errors
+///
+/// Returns an error if `publisher` has no attached signed-document sink, or if
+/// the Cap'n Proto socket at `capnp_socket_path` cannot be bound.
 pub fn spawn_native_peer(
     capnp_socket_path: PathBuf,
     membership: crate::shell::state::WorkspaceTreeHandle,
-    publisher: Arc<PeerPublisher>,
-    config: crate::shell::peer_actions::NativePeerBrokerConfig,
+    publisher: &Arc<PeerPublisher>,
+    config: &crate::shell::peer_actions::NativePeerBrokerConfig,
 ) -> std::io::Result<BrokerHandle> {
     if !publisher.is_wired() {
         return Err(std::io::Error::other(
@@ -301,10 +305,10 @@ pub fn spawn_native_peer(
     spawn_inner(
         capnp_socket_path,
         None,
-        &publisher,
+        publisher,
         Some(membership),
         CertificateProvisioning::Production,
-        Some(&config),
+        Some(config),
     )
 }
 
@@ -449,39 +453,40 @@ impl DrainQueues {
             let artifact = envelope.artifact;
             let route = CrdtRoute::record(&entry.app_id, &entry.cluster_id, &entry.record_id);
             let payload = validate_document_route(&route, &envelope);
-            let validation = if let Ok(payload) = &payload {
-                let Ok(mut ch) = self.channels.lock() else {
-                    return false;
-                };
-                let channel = match payload {
-                    collab_types::VersionedRoutedDocumentPayload::Cleartext(decoded) => {
-                        collab_types::document_channel_id_for_version(
-                            decoded.version,
-                            &entry.app_id,
-                            &entry.cluster_id,
-                            &entry.record_id,
+            let validation = match &payload {
+                Ok(payload) => {
+                    let Ok(mut ch) = self.channels.lock() else {
+                        return false;
+                    };
+                    let channel = match payload {
+                        collab_types::VersionedRoutedDocumentPayload::Cleartext(decoded) => {
+                            collab_types::document_channel_id_for_version(
+                                decoded.version,
+                                &entry.app_id,
+                                &entry.cluster_id,
+                                &entry.record_id,
+                            )
+                        }
+                        collab_types::VersionedRoutedDocumentPayload::Encrypted {
+                            channel, ..
+                        } => *channel,
+                    };
+                    if ch.document_encryption_allowed(channel, envelope.encryption.as_ref()) {
+                        let state = ch.state_for(artifact);
+                        state.artifacts.insert(artifact, ArtifactKind::Note);
+                        state.artifact_apps.insert(artifact, entry.app_id.clone());
+                        validate_admitted_inbound_op(
+                            &envelope,
+                            entry.role,
+                            state,
+                            std::time::SystemTime::now(),
+                            Duration::from_secs(300),
                         )
+                    } else {
+                        Err(ValidationError::DocumentRouteMismatch)
                     }
-                    collab_types::VersionedRoutedDocumentPayload::Encrypted { channel, .. } => {
-                        *channel
-                    }
-                };
-                if ch.document_encryption_allowed(channel, envelope.encryption.as_ref()) {
-                    let state = ch.state_for(artifact);
-                    state.artifacts.insert(artifact, ArtifactKind::Note);
-                    state.artifact_apps.insert(artifact, entry.app_id.clone());
-                    validate_admitted_inbound_op(
-                        &envelope,
-                        entry.role,
-                        state,
-                        std::time::SystemTime::now(),
-                        Duration::from_secs(300),
-                    )
-                } else {
-                    Err(ValidationError::DocumentRouteMismatch)
                 }
-            } else {
-                Err(payload.as_ref().expect_err("checked error").clone())
+                Err(error) => Err(error.clone()),
             };
             match (payload, validation) {
                 (Ok(_), Ok(())) => {
@@ -675,6 +680,14 @@ fn validate_document_route(
     .map_err(|_| ValidationError::DocumentRouteMismatch)
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "one ordered broker assembly: vaults, services, media, authority, then network attachment"
+)]
+#[allow(
+    clippy::needless_pass_by_value,
+    reason = "the test-support provisioning variant moves its device set into the broker"
+)]
 fn spawn_inner(
     capnp_socket_path: PathBuf,
     peer_sync: Option<&Arc<ShellNetwork>>,
@@ -802,7 +815,7 @@ fn spawn_inner(
                     service.install_factory(Arc::new(factory));
                 }
                 Err(error) => {
-                    tracing::warn!(%error, "native media factory prerequisites unavailable")
+                    tracing::warn!(%error, "native media factory prerequisites unavailable");
                 }
             }
         }
@@ -841,22 +854,19 @@ fn spawn_inner(
     };
     if let (Some(network), Some(tree), Some(broker)) =
         (peer_sync, membership, inner.app_action_broker())
+        && let Ok((queue, host)) = broker.peer_action_attachment()
     {
-        if let Ok((queue, host)) = broker.peer_action_attachment() {
-            let rooms = tree
-                .read()
-                .desktop
-                .workspaces
-                .iter()
-                .filter_map(|w| uuid::Uuid::parse_str(&w.room.to_string()).ok())
-                .collect();
-            network
-                .cmd_tx
-                .try_send(crate::network::actor::NetCmd::AttachActionBroker { queue, host, rooms })
-                .map_err(|_| {
-                    std::io::Error::other("action broker network attachment unavailable")
-                })?;
-        }
+        let rooms = tree
+            .read()
+            .desktop
+            .workspaces
+            .iter()
+            .filter_map(|w| uuid::Uuid::parse_str(&w.room.to_string()).ok())
+            .collect();
+        network
+            .cmd_tx
+            .try_send(crate::network::actor::NetCmd::AttachActionBroker { queue, host, rooms })
+            .map_err(|_| std::io::Error::other("action broker network attachment unavailable"))?;
     }
     Ok(BrokerHandle {
         inner,

@@ -112,6 +112,10 @@ pub(crate) fn order(
     (order, false)
 }
 /// None means keep focus; Some(None) means blur all controls.
+#[expect(
+    clippy::option_option,
+    reason = "the outer Option is whether focus changes; the inner one is the new, possibly empty, focus"
+)]
 pub(crate) fn reconcile_trap(
     active: &mut bool,
     before: &mut Option<NodeId>,

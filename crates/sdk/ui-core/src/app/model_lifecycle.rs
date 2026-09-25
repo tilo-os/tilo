@@ -164,15 +164,14 @@ impl super::App {
     /// Returns true when policy meaning changed since the previous hosted pump
     /// or cannot be sampled (fail closed: refresh on every such pass).
     fn refresh_hosted_authority(&mut self) -> bool {
-        let owner = match self.root_widget.callback_binding() {
-            Some(binding) => match binding.permissions.borrow().directory_witness() {
-                Ok(witness) => Some(witness),
-                Err(_) => {
-                    self.actions.hosted.authority = None;
-                    return true;
-                }
-            },
-            None => None,
+        let owner = if let Some(binding) = self.root_widget.callback_binding() {
+            let Ok(witness) = binding.permissions.borrow().directory_witness() else {
+                self.actions.hosted.authority = None;
+                return true;
+            };
+            Some(witness)
+        } else {
+            None
         };
         let Ok(app) = self.permission_ctx.directory_witness() else {
             self.actions.hosted.authority = None;

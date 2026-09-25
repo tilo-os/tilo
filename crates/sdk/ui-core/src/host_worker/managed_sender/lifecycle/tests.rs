@@ -1,5 +1,8 @@
 use super::*;
 use crate::host_worker::managed_sender::{NativeSenderOutboxV1, attempt::RequestView};
+use crate::host_worker::private_actions::{
+    PrivateReadOutcome, SenderScope, committed_test_fixture,
+};
 fn caller() -> CallerView<'static> {
     CallerView {
         root: [1; 32],
@@ -501,9 +504,8 @@ fn managed_sender_lifecycle_active_byte_backpressure_preserves_every_unresolved_
 fn managed_sender_lifecycle_invalid_codec_preserves_actual_committed_state() {
     let work = NativeAllowance::new(64 * 1024 * 1024).unwrap();
     let (_root, current, _cache) = committed_test_fixture(b"invalid native outbox", &work);
-    let refusal = match ManagedSender::open(current, &work) {
-        Ok(_) => panic!("malformed committed bytes became a sender"),
-        Err(refusal) => refusal,
+    let Err(refusal) = ManagedSender::open(current, &work) else {
+        panic!("malformed committed bytes became a sender")
     };
     assert_eq!(refusal.failure, Failure::Invalid);
     let original = refusal.into_state();

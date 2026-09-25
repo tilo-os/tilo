@@ -162,11 +162,10 @@ impl WorkspaceTreeReplica {
     /// calls this with the peer's own identity ([`PeerOrigin::peer`]).
     pub fn handle_from(&mut self, from: &PeerOrigin, msg: &NeighbourMsg) {
         let sender = from;
-        if let NeighbourMsg::SyncReq { room, .. } | NeighbourMsg::SyncResp { room, .. } = msg {
-            if RoomId::parse(room).is_some_and(|room| self.tree.read().requires_native_owner(room))
-            {
-                return;
-            }
+        if let NeighbourMsg::SyncReq { room, .. } | NeighbourMsg::SyncResp { room, .. } = msg
+            && RoomId::parse(room).is_some_and(|room| self.tree.read().requires_native_owner(room))
+        {
+            return;
         }
         match msg {
             NeighbourMsg::SyncReq { since, room, .. } => {

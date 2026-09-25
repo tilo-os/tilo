@@ -2034,7 +2034,8 @@ impl SearchProvider for ActionsProvider {
                 });
             }
         }
-        for descriptor in workspace_view_descriptors(&ctx.chrome.tree().desktop, true) {
+        let descriptors = workspace_view_descriptors(&ctx.chrome.tree().desktop, true);
+        for descriptor in descriptors {
             let Some(score) = match_score(
                 &needle_lower,
                 &descriptor.label.to_lowercase(),
@@ -3931,6 +3932,10 @@ mod tests {
 use crate::shell::state::WorkspaceExt as _;
 
 /// Called only after the existing identity registry accepted the selection.
+#[allow(
+    clippy::similar_names,
+    reason = "`room` and `root` are the protocol's own names for the room and its user root"
+)]
 fn fence_native_selection(
     st: &ChromeState,
     local: crate::shell::state::WorkspaceId,

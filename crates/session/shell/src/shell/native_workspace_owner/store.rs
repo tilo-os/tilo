@@ -34,7 +34,7 @@ impl Default for Runtime {
         Self {
             writer: Mutex::new(Writer::default()),
             healthy: AtomicBool::new(true),
-            uncertain_rooms: RwLock::new(Default::default()),
+            uncertain_rooms: RwLock::new(std::collections::BTreeSet::default()),
         }
     }
 }
@@ -69,7 +69,7 @@ impl<W: Write> Write for LimitedWriter<W> {
             ));
         }
         let n = self.inner.write(bytes)?;
-        self.remaining -= n;
+        self.remaining = self.remaining.saturating_sub(n);
         Ok(n)
     }
     fn flush(&mut self) -> io::Result<()> {
@@ -172,7 +172,7 @@ impl Writer {
         let parent = path
             .parent()
             .filter(|p| !p.as_os_str().is_empty())
-            .unwrap_or(Path::new("."));
+            .unwrap_or_else(|| Path::new("."));
         atomic_file::provision_directory(parent, atomic_file::Privacy::Inherit)
             .map_err(io::Error::other)?;
         let mut sentinel = path.as_os_str().to_os_string();
@@ -195,7 +195,7 @@ impl Writer {
             use std::io::Read;
             let file = std::fs::File::open(path)?;
             let mut bytes = Vec::new();
-            file.take(MAX_STATE_BYTES as u64 + 1)
+            file.take((MAX_STATE_BYTES as u64).saturating_add(1))
                 .read_to_end(&mut bytes)?;
             if bytes.len() > MAX_STATE_BYTES {
                 return Err(io::Error::other(

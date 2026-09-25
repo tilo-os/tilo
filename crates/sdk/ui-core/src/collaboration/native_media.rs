@@ -99,17 +99,16 @@ impl Sender {
         // Exhaustion permanently disables new effects on this retained route;
         // only the terminal Leave sentinel may cross the reserved stop lane.
         if effect {
-            request.intent = match floor
+            if let Some(next) = floor
                 .intent
                 .checked_add(1)
                 .filter(|value| *value < u64::MAX)
             {
-                Some(next) => next,
-                None => {
-                    request.command = Command::Leave;
-                    u64::MAX
-                }
-            };
+                request.intent = next;
+            } else {
+                request.command = Command::Leave;
+                request.intent = u64::MAX;
+            }
             floor.intent = request.intent;
         } else {
             request.intent = 0;
@@ -375,10 +374,8 @@ pub(super) fn start(receiver: Receiver, routes: Routes) -> Worker {
                     job.route.clone(),
                     if job.priority {
                         2
-                    } else if job.request.intent != 0 {
-                        1
                     } else {
-                        0
+                        u8::from(job.request.intent != 0)
                     },
                 );
                 if job.priority

@@ -1000,6 +1000,10 @@ impl LiveAppActionsProvider {
         });
     }
 
+    #[allow(
+        clippy::significant_drop_tightening,
+        reason = "the broker handle is cloned once per callback; each clone moves into its own closure"
+    )]
     fn job_result(&self, id: u64, state: &'static str, cancel: bool, actor: &str) -> SearchResult {
         if cancel {
             let broker = self.broker.clone();
@@ -1737,6 +1741,10 @@ impl SearchProvider for LiveAppActionsProvider {
     #[allow(
         clippy::too_many_lines,
         reason = "the query constructs paired palette/headless callbacks from one captured action contract; splitting them would duplicate or desynchronise confirmation, launch, and job lifecycle state"
+    )]
+    #[allow(
+        clippy::significant_drop_tightening,
+        reason = "the broker handle is cloned once per callback; each clone moves into its own closure"
     )]
     fn query(&self, ctx: SearchContext<'_>) -> Vec<SearchResult> {
         if self.projection.get() == QueryProjection::All {

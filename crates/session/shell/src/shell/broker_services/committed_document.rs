@@ -1,5 +1,7 @@
 //! Reads the same native owner; local app storage is never an authority fallback.
-use super::*;
+use super::{
+    NativeDocumentRead, NativeDocumentReadContext, NativeDocumentReads, NativeOwnerCommitService,
+};
 impl NativeDocumentReads for NativeOwnerCommitService {
     fn requires_room(&self, room: &str) -> bool {
         super::super::state::RoomId::parse(room)
@@ -14,11 +16,10 @@ impl NativeDocumentReads for NativeOwnerCommitService {
             .owner
             .as_ref()
             .ok_or("native document owner unavailable")?;
-        let network = self
-            .network
+        self.network
             .as_ref()
-            .ok_or("native selected custody unavailable")?;
-        network.check_native_custody(owner, room)?;
+            .ok_or("native selected custody unavailable")?
+            .check_native_custody(owner, room)?;
         owner.with_current(room, |view| {
             if !view.peer().certificates().contains(context.certificate()) {
                 return Err("committed document caller certificate changed".into());

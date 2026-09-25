@@ -424,10 +424,6 @@ impl PairDeviceScreen {
     ///
     /// Blocks for up to the poll window: call it from a worker, never from a
     /// frame.
-    #[allow(
-        clippy::disallowed_methods,
-        reason = "blocking pairing exchange for callers already on a worker; the broker round-trips are blocking I/O"
-    )]
     pub fn perform_pairing(
         &mut self,
         payload: &PairingPayload,
@@ -436,6 +432,10 @@ impl PairDeviceScreen {
         self.perform_pairing_on_platform(payload, hs, cfg!(not(target_arch = "wasm32")))
     }
 
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "blocking pairing exchange for callers already on a worker; the broker round-trips are blocking I/O"
+    )]
     fn perform_pairing_on_platform(
         &mut self,
         payload: &PairingPayload,

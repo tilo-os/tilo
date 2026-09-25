@@ -25,7 +25,7 @@ fn private_actions_storage_capture_exact_and_paid() {
     let (cache, key) = cache();
     let budget = allowance();
     let baseline = budget.retained_bytes();
-    let (_, stats) =
+    let ((), stats) =
         crate::semantic_document_read::retirement::measure_test_allocations(&budget, || {
             let saved = capture(&cache, &budget);
             assert_eq!(saved.bytes(), b"original");
@@ -103,7 +103,7 @@ fn private_actions_storage_envelope_exact_bounded_scope_and_corruption() {
     let scope = scope();
     let budget = allowance();
     let payload = b"opaque private outbox";
-    let (_, stats) =
+    let ((), stats) =
         crate::semantic_document_read::retirement::measure_test_allocations(&budget, || {
             let credit = budget
                 .reserve(codec::required_bytes(&scope, payload.len()).unwrap())
@@ -294,12 +294,11 @@ pub(in crate::host_worker::private_actions) mod consuming {
         assert_eq!(state.borrow_current().unwrap().payload(), b"initial");
         let credit = budget.reserve(10).unwrap();
         let payload = b"new intent".to_vec();
-        let file = match state
+        let PrivateQueueOutcome::Pending(file) = state
             .queue_owned(payload, credit)
             .unwrap_or_else(|e| panic!("queue {:?}", e.code()))
-        {
-            PrivateQueueOutcome::Pending(f) => f,
-            _ => panic!("changed bytes must be pending"),
+        else {
+            panic!("changed bytes must be pending")
         };
         let key = StorageKey::PrivateActions {
             workspace: ROOM.into(),
@@ -438,9 +437,8 @@ pub(in crate::host_worker::private_actions) mod consuming {
         );
         let before = fs::read(root.path().join(CHILD).join(FILE_NAME)).unwrap();
         cache.put(key(), b"newer".to_vec(), None).unwrap();
-        let refused = match write.publish() {
-            PrivateWriteOutcome::Refused(v) => v,
-            _ => panic!("stale publication"),
+        let PrivateWriteOutcome::Refused(refused) = write.publish() else {
+            panic!("stale publication")
         };
         assert_eq!(refused.code(), SenderStorageCode::StaleCapture);
         assert_eq!(
@@ -457,9 +455,8 @@ pub(in crate::host_worker::private_actions) mod consuming {
             .publish(),
         );
         cache2.put(key(), b"latest".to_vec(), None).unwrap();
-        let refusal = match done.finish_current() {
-            Err(v) => v,
-            Ok(_) => panic!("stale finish"),
+        let Err(refusal) = done.finish_current() else {
+            panic!("stale finish")
         };
         assert_eq!(refusal.code(), SenderStorageCode::StaleCapture);
         assert!(cache2.flush(&key()).is_err());
@@ -492,9 +489,9 @@ pub(in crate::host_worker::private_actions) mod consuming {
                 ),
                 &budget,
             );
-            let failed = match with_failure(point, || write.publish()) {
-                PrivateWriteOutcome::Failed(v) => v,
-                _ => panic!("actual failure must remain physical"),
+            let PrivateWriteOutcome::Failed(failed) = with_failure(point, || write.publish())
+            else {
+                panic!("actual failure must remain physical")
             };
             assert!(
                 failed
@@ -542,13 +539,12 @@ pub(in crate::host_worker::private_actions) mod consuming {
         let cache = PortableStorage::new("profile", "device").unwrap();
         let file = opened(root.path(), &cache, &budget);
         let credit = budget.reserve(file.read_required_bytes().unwrap()).unwrap();
-        let failed = match with_existing_hooks(
+        let PrivateReadOutcome::Failed(failed) = with_existing_hooks(
             Some(ExistingCheckpoint::BeforeNamespaceFlush),
             |_| {},
             || file.read_existing(credit),
-        ) {
-            PrivateReadOutcome::Failed(v) => v,
-            _ => panic!("expected real existing commit failure"),
+        ) else {
+            panic!("expected real existing commit failure")
         };
         assert!(failed.existing_commit_error().is_some());
         let changed = codec::encode(&scope(), [9; 16], 1, 0, b"foreign").unwrap();
@@ -560,9 +556,8 @@ pub(in crate::host_worker::private_actions) mod consuming {
                 Privacy::OwnerOnly,
             )
             .unwrap();
-        let failed = match failed.retry_commit() {
-            PrivateReadOutcome::Failed(v) => v,
-            _ => panic!("replacement disclosed"),
+        let PrivateReadOutcome::Failed(failed) = failed.retry_commit() else {
+            panic!("replacement disclosed")
         };
         assert!(failed.existing_commit_error().unwrap().source_changed());
     }
@@ -649,9 +644,8 @@ pub(in crate::host_worker::private_actions) mod consuming {
                         .unwrap();
                 }
             }
-            let refused = match write.publish() {
-                PrivateWriteOutcome::Refused(v) => v,
-                _ => panic!("changed binding published"),
+            let PrivateWriteOutcome::Refused(refused) = write.publish() else {
+                panic!("changed binding published")
             };
             assert!(refused.io_error().is_some());
             assert!(cache.flush(&key()).is_err());
@@ -722,7 +716,7 @@ pub(in crate::host_worker::private_actions) mod consuming {
                 .unwrap();
         }
         let original = directory(root.path());
-        let (_, stats) =
+        let ((), stats) =
             crate::semantic_document_read::retirement::measure_test_allocations(&budget, || {
                 let file = PrivateActionsFile::from_held(
                     original,
@@ -736,12 +730,11 @@ pub(in crate::host_worker::private_actions) mod consuming {
                 assert_eq!(current.borrow_current().unwrap().payload(), b"initial");
                 let input_credit = budget.reserve(128 * 1024).unwrap();
                 let input = vec![7; 128 * 1024];
-                let file = match current
+                let PrivateQueueOutcome::Pending(file) = current
                     .queue_owned(input, input_credit)
                     .unwrap_or_else(|e| panic!("queue {:?}", e.code()))
-                {
-                    PrivateQueueOutcome::Pending(v) => v,
-                    _ => panic!("pending"),
+                else {
+                    panic!("pending")
                 };
                 let capture_credit = budget
                     .reserve(file.capture_required_bytes().unwrap())
@@ -893,12 +886,11 @@ pub(in crate::host_worker::private_actions) mod consuming {
         assert_eq!(bytes, b"next");
         drop(bytes);
         drop(credit);
-        let current = match current
+        let PrivateQueueOutcome::Unchanged(current) = current
             .queue_owned(b"initial".to_vec(), budget.reserve(7).unwrap())
             .unwrap_or_else(|e| panic!("same bytes {:?}", e.code()))
-        {
-            PrivateQueueOutcome::Unchanged(v) => v,
-            _ => panic!("same bytes must not queue"),
+        else {
+            panic!("same bytes must not queue")
         };
         let file = queue(current, b"retained root", &budget);
         let container = fixture_container();

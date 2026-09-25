@@ -1,5 +1,9 @@
 //! Explicit content copy between independent records; never merges source history.
-use super::*;
+use super::{
+    AutoCommit, ChangeHash, HistoryRestoreSchema, PreparedContentRestore, ReadDoc, RestoreError,
+    committed_heads, schema, selection, sorted_heads, validated_content, write_and_check,
+};
+use tilo_automerge::ApplyIncoming;
 
 /// Prepare a content-only import from an independently owned document.
 /// Both exact frontiers must still match the reviewed values. Authorization,
@@ -23,7 +27,7 @@ pub fn prepare_external_content_import(
     if source.text_encoding() != destination.text_encoding() {
         let mut encoded = AutoCommit::new_with_encoding(destination.text_encoding());
         encoded
-            .apply_changes(target_doc.get_changes(&[]))
+            .apply_incoming(target_doc.get_changes(&[]))
             .map_err(|error| RestoreError::read("external source", &error))?;
         target_doc = encoded;
     }

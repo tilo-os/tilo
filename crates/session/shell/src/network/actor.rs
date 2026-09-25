@@ -473,7 +473,7 @@ enum InternalEvent {
     NativeHostConnected {
         ws: u64,
         serial: u64,
-        hint: qos_peer_state::join::TransportHint,
+        hint: Box<qos_peer_state::join::TransportHint>,
         certificate: DeviceCert,
         continuity: u64,
         result: Box<Result<RelayCoeditSession, String>>,
@@ -1880,6 +1880,10 @@ impl ActorState {
 
     /// Handle one [`InternalEvent`]. Returns `false` once the internal
     /// channel has closed, so [`run`]'s loop should stop.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one exhaustive dispatcher over every internal actor event"
+    )]
     async fn handle_internal(&mut self, internal: Option<InternalEvent>) -> bool {
         match internal {
             Some(InternalEvent::ActionClosed { ws, peer, session }) => {
@@ -1910,7 +1914,7 @@ impl ActorState {
                 certificate,
                 continuity,
                 result,
-            }) => self.native_host_connected(ws, serial, hint, certificate, continuity, result),
+            }) => self.native_host_connected(ws, serial, *hint, certificate, continuity, result),
             Some(InternalEvent::Host {
                 ws,
                 peer,
@@ -2711,6 +2715,10 @@ async fn stream_nearby_transfer(
     clippy::too_many_arguments,
     reason = "the arguments mirror one immutable transfer manifest and its exact transport route"
 )]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one bounded transfer: connect, manifest, chunk loop and cancellation share local state"
+)]
 async fn stream_personal_media(
     endpoint: Endpoint,
     addr: EndpointAddr,
@@ -2898,9 +2906,9 @@ async fn run(
         endpoint,
         lookup,
         host_identity,
-        native_media: Default::default(),
-        native_enrollment: Default::default(),
-        native_routes: Default::default(),
+        native_media: super::native_media::Registry::default(),
+        native_enrollment: super::invite::enrollment_driver::Registry::default(),
+        native_routes: native_ingress::Routes::default(),
         listen_addrs,
         gossip,
         internal_tx,
@@ -3401,12 +3409,10 @@ fn spawn_host_pump(
                     let Ok(msg) = postcard::from_bytes(&data) else {
                         continue;
                     };
-                    HostEvent::NativeInput(
-                        native_scope
-                            .as_ref()
-                            .expect("matched scope")
-                            .input(author, replay, msg),
-                    )
+                    let Some(scope) = native_scope.as_ref() else {
+                        continue;
+                    };
+                    HostEvent::NativeInput(scope.input(author, replay, msg))
                 }
                 HostInbound::Delta { author, data }
                 | HostInbound::Presence {

@@ -47,7 +47,7 @@ impl Attempt {
             .shared
             .result
             .lock()
-            .unwrap_or_else(|poison| poison.into_inner());
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         self.shared.cancelled.store(true, Ordering::SeqCst);
         self.shared.cancel.send_replace(true);
         // Also retire a completed actor attempt: there may no longer be a task
@@ -58,9 +58,8 @@ impl Attempt {
         &self,
         install: impl FnOnce(VerifiedNativeEnrollment) -> Result<T, String>,
     ) -> Option<Result<T, String>> {
-        let mut result = match self.shared.result.lock() {
-            Ok(value) => value,
-            Err(_) => return Some(Err("native enrollment attempt unavailable".into())),
+        let Ok(mut result) = self.shared.result.lock() else {
+            return Some(Err("native enrollment attempt unavailable".into()));
         };
         result.as_ref()?;
         if self.shared.cancelled.load(Ordering::SeqCst) {
@@ -68,12 +67,7 @@ impl Attempt {
             *result = None;
             return Some(cleanup.and(Err("native enrollment cancelled; proof retained".into())));
         }
-        Some(
-            result
-                .take()
-                .expect("checked ready result")
-                .and_then(install),
-        )
+        Some(result.take()?.and_then(install))
     }
 }
 fn cancel_pending(owner: &NativeWorkspaceOwner, local: WorkspaceId) -> Result<(), String> {
@@ -152,7 +146,10 @@ impl Registry {
             }
             return;
         }
-        let identity = identity.expect("checked actual custody").clone();
+        // `failure` above already answered a missing custody.
+        let Some(identity) = identity.cloned() else {
+            return;
+        };
         self.tasks.push(tokio::spawn(async move {
             let Command { attempt, invitation, mut receiver } = command;
             let result = if *receiver.borrow() { Err("native enrollment cancelled".into()) } else {
@@ -167,7 +164,7 @@ impl Registry {
             // The exchange future has been dropped before cancellation touches the
             // store, so it cannot persist a new proof after this cleanup barrier.
             let result = if attempt.shared.cancelled.load(Ordering::SeqCst) {
-                cancel_pending(&attempt.owner, attempt.local).and(Err("native enrollment cancelled; proof retained".into()))
+                cancel_pending(&attempt.owner, attempt.local).and_then(|()| Err("native enrollment cancelled; proof retained".into()))
             } else { result };
             if let Ok(mut stored) = attempt.shared.result.lock() { *stored = Some(result); }
         }));

@@ -90,6 +90,8 @@ impl Clone for ManagedAttemptResult {
         }
     }
 }
+// Taking the last Arc out before dropping its payload frees the shared
+// allocation while the payload's credit still pays for it.
 impl Drop for ManagedAttempt {
     fn drop(&mut self) {
         if let Some(inner) = self.inner.take() {
@@ -106,12 +108,7 @@ impl Drop for ManagedAttemptResult {
 }
 impl Drop for AttemptOwner {
     fn drop(&mut self) {
-        self.attempt
-            .inner
-            .as_ref()
-            .unwrap()
-            .retired
-            .store(true, Ordering::Release);
+        self.attempt.shared().retired.store(true, Ordering::Release);
     }
 }
 
@@ -151,10 +148,10 @@ fn copy(text: &str) -> Result<String, OutboxFailure> {
 }
 impl AttemptOwner {
     pub(super) fn ticket(&self) -> Ticket {
-        self.attempt.inner.as_ref().unwrap().ticket
+        self.attempt.shared().ticket
     }
     pub(super) fn required_bytes(
-        row: RowView<'_>,
+        row: &RowView<'_>,
         confirmation: &str,
     ) -> Result<usize, OutboxFailure> {
         row.encoded_len()?;
@@ -186,7 +183,7 @@ impl AttemptOwner {
             .ok_or(OutboxFailure::Capacity)
     }
     pub(super) fn new(
-        row: RowView<'_>,
+        row: &RowView<'_>,
         instance: [u8; 16],
         room: uuid::Uuid,
         operation: Operation,
@@ -248,38 +245,35 @@ impl AttemptOwner {
         ))
     }
     pub(super) fn quiescent(&self) -> bool {
-        Arc::strong_count(self.attempt.inner.as_ref().unwrap()) == 1
+        Arc::strong_count(self.attempt.shared()) == 1
     }
     pub(super) fn matches(&self, result: &ManagedAttemptResult) -> bool {
-        Arc::ptr_eq(
-            self.attempt.inner.as_ref().unwrap(),
-            result
-                .inner
-                .as_ref()
-                .unwrap()
-                .attempt
-                .inner
-                .as_ref()
-                .unwrap(),
-        )
+        Arc::ptr_eq(self.attempt.shared(), result.shared().attempt.shared())
     }
 }
 impl ManagedAttempt {
+    #[expect(
+        clippy::expect_used,
+        reason = "only Drop takes the shared attempt out of its slot"
+    )]
+    fn shared(&self) -> &Arc<Inner> {
+        self.inner.as_ref().expect("live managed attempt")
+    }
     #[cfg_attr(
         not(feature = "broker-transport"),
         allow(dead_code, reason = "only the broker transport meters attempts")
     )]
     pub(crate) fn meter_bytes(&self) -> usize {
-        self.inner.as_ref().unwrap().credit.bytes()
+        self.shared().credit.bytes()
     }
     pub(crate) fn deadline(&self) -> Instant {
-        self.inner.as_ref().unwrap().deadline
+        self.shared().deadline
     }
     pub(crate) fn claim(
         &self,
         route: &RouteSpec,
     ) -> Option<Result<RequestView<'_>, AttemptFailure>> {
-        let inner = self.inner.as_ref().unwrap();
+        let inner = self.shared();
         if inner
             .claimed
             .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
@@ -314,7 +308,7 @@ impl ManagedAttempt {
         self,
         result: Result<PublishedInvocationObservation, AttemptFailure>,
     ) -> Option<ManagedAttemptResult> {
-        let inner = self.inner.as_ref().unwrap();
+        let inner = self.shared();
         if !inner.claimed.load(Ordering::Acquire)
             || inner
                 .completed
@@ -423,15 +417,22 @@ impl ManagedAttempt {
     }
 }
 impl ManagedAttemptResult {
+    #[expect(
+        clippy::expect_used,
+        reason = "only Drop takes the shared result out of its slot"
+    )]
+    fn shared(&self) -> &Arc<ResultInner> {
+        self.inner.as_ref().expect("live managed attempt result")
+    }
     #[cfg_attr(
         not(feature = "broker-transport"),
         allow(dead_code, reason = "only the broker transport meters attempts")
     )]
     pub(crate) fn meter_bytes(&self) -> usize {
-        self.inner.as_ref().unwrap().attempt.meter_bytes()
+        self.shared().attempt.meter_bytes()
     }
     pub(super) fn result(&self) -> &Result<PublishedInvocationObservation, AttemptFailure> {
-        &self.inner.as_ref().unwrap().result
+        &self.shared().result
     }
 }
 #[cfg(test)]

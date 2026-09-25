@@ -1,4 +1,4 @@
-//! Shared production RPC broker. Native host adapters live in broker_services.
+//! Shared production RPC broker. Native host adapters live in `broker_services`.
 pub use qos_action_broker::collab_broker_capnp::*;
 
 mod local_consent;

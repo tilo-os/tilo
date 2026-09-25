@@ -409,11 +409,14 @@ impl FrameHarness {
             &mut self.node_map,
             f64::from(self.viewport.0),
         );
-        if let Some(node) = palette_node {
+        let palette_node = palette_node.filter(|&node| {
             self.taffy
                 .add_child(layout.root, node)
-                .expect("palette belongs to the standalone presentation tree");
-        }
+                .inspect_err(|error| {
+                    tracing::error!(%error, "headless: palette could not join the history frame");
+                })
+                .is_ok()
+        });
         self.history_layout = Some(layout);
         let context = HistoryReadContext {
             document: &self.state.doc,
@@ -437,13 +440,8 @@ impl FrameHarness {
                 .into_iter()
                 .zip(std::iter::once(layout.toolbar).chain(layout.pane)),
         );
-        if let Some(node) = palette_node {
-            roots.push((
-                self.action_palette
-                    .as_deref()
-                    .expect("presented palette was just built"),
-                node,
-            ));
+        if let (Some(node), Some(palette)) = (palette_node, self.action_palette.as_deref()) {
+            roots.push((palette, node));
         }
         // SAFETY: all retained roots use the same fresh arena, admitted independently
         // so app callback authority never propagates into host chrome.

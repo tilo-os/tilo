@@ -230,7 +230,7 @@ impl ControlDomain {
         if state.owner.is_some() || !state.producers.is_empty() {
             return Err(CustodyError::ForeignOwner);
         }
-        state.owner = parent.owner.clone();
+        state.owner.clone_from(&parent.owner);
         state.incarnation = parent.incarnation;
         Ok(())
     }
@@ -302,6 +302,13 @@ impl ControlDomain {
         }
         child
     }
+    /// # Panics
+    ///
+    /// Panics if this domain has issued `u64::MAX` producer identities.
+    #[expect(
+        clippy::expect_used,
+        reason = "a per-domain u64 producer counter cannot be exhausted; wrapping would reuse an identity"
+    )]
     pub fn producer(&self, discipline: ControlProducerDiscipline) -> ControlOutbox {
         let mut state = self.0.borrow_mut();
         let id = ControlProducerId(state.id, state.next_producer);
@@ -712,7 +719,7 @@ mod tests {
         );
         let resource =
             tilo_actions::Resource::new("fixture", "fixture", "Fixture").with_action(spec.clone());
-        tilo_actions::ActionBinding::new(&resource, &spec, |_| serde_json::Map::new()).unwrap()
+        tilo_actions::ActionBinding::new(&resource, &spec, |()| serde_json::Map::new()).unwrap()
     }
     fn raw_request(resource: &str, action: &str, marker: &str) -> ControlInvocation {
         let mut arguments = serde_json::Map::new();

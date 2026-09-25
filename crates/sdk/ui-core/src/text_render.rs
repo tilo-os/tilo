@@ -102,7 +102,9 @@ pub(crate) fn browser_emoji_runs<'text, 'attrs>(
             } else {
                 attrs.clone()
             };
-            runs.push((&text[start..offset], run_attrs));
+            if let Some(run) = text.get(start..offset) {
+                runs.push((run, run_attrs));
+            }
             start = offset;
         }
         emoji = Some(next);
@@ -112,7 +114,9 @@ pub(crate) fn browser_emoji_runs<'text, 'attrs>(
     } else {
         attrs.clone()
     };
-    runs.push((&text[start..], run_attrs));
+    if let Some(run) = text.get(start..) {
+        runs.push((run, run_attrs));
+    }
     runs
 }
 

@@ -234,10 +234,9 @@ impl PendingOperation {
 
     pub(crate) fn control_invocation(&self) -> Option<tilo_actions::ControlInvocation> {
         let arguments = match &self.input {
-            PendingInput::Immediate => serde_json::Map::new(),
             // Text is retained in continuation_arguments/wire_argument. This
             // address-only descriptor must never invent a JSON parameter schema.
-            PendingInput::Text(_) => serde_json::Map::new(),
+            PendingInput::Immediate | PendingInput::Text(_) => serde_json::Map::new(),
             PendingInput::Json(value) => serde_json::from_str(value).ok()?,
             PendingInput::Invalid => return None,
         };
@@ -618,14 +617,14 @@ impl ActionPalette {
         &mut self,
         event: &WindowEvent,
         scale: f64,
-        modifiers: &Modifiers,
+        modifiers: Modifiers,
         doc: &mut AutoCommit,
         path: &ObjId,
     ) -> bool {
         if !self.is_presented() {
             return false;
         }
-        if self.handle_key(event, modifiers, doc, path) {
+        if self.handle_key(event, &modifiers, doc, path) {
             return true;
         }
         let mut handled = false;
@@ -634,7 +633,7 @@ impl ActionPalette {
             self.controls.handle_event(
                 event,
                 scale,
-                modifiers,
+                &modifiers,
                 doc,
                 path,
                 &mut handled,
@@ -659,7 +658,7 @@ impl ActionPalette {
                 self.field.handle_event(
                     event,
                     scale,
-                    modifiers,
+                    &modifiers,
                     doc,
                     path,
                     &mut handled,
@@ -1992,20 +1991,21 @@ impl ActionPalette {
         let node = self
             .controls
             .build_layout(&mut self.field_taffy, theme, &mut nodes);
-        self.field_taffy
-            .compute_layout_with_measure(
-                node,
-                Size {
-                    width: AvailableSpace::Definite(self.rect.width() as f32),
-                    height: AvailableSpace::MaxContent,
-                },
-                |known, available, id, _, _| {
-                    nodes.get(&id).map_or(Size::ZERO, |&p| unsafe {
-                        (*p).measure(known, available, text)
-                    })
-                },
-            )
-            .expect("palette controls layout");
+        let Ok(()) = self.field_taffy.compute_layout_with_measure(
+            node,
+            Size {
+                width: AvailableSpace::Definite(self.rect.width() as f32),
+                height: AvailableSpace::MaxContent,
+            },
+            |known, available, id, _, _| {
+                nodes.get(&id).map_or(Size::ZERO, |&p| unsafe {
+                    (*p).measure(known, available, text)
+                })
+            },
+        ) else {
+            self.controls_node = None;
+            return;
+        };
         self.controls.apply_layout(
             &self.field_taffy,
             node,
@@ -2076,11 +2076,11 @@ impl ActionPalette {
         &mut self,
         event: &WindowEvent,
         scale: f64,
-        modifiers: &Modifiers,
+        modifiers: Modifiers,
         doc: &mut AutoCommit,
         root: &ObjId,
     ) -> bool {
-        if self.handle_key(event, modifiers, doc, root) {
+        if self.handle_key(event, &modifiers, doc, root) {
             return true;
         }
         let normalized;
@@ -2099,7 +2099,7 @@ impl ActionPalette {
         };
         match event {
             WindowEvent::Ime(_) => {
-                self.route_to_field(event, *modifiers, doc, root);
+                self.route_to_field(event, modifiers, doc, root);
                 if let Some(query) = self.field.take_dirty() {
                     if self.arg.is_none() && self.confirm.is_none() {
                         self.rebuild(&query);
@@ -2110,8 +2110,8 @@ impl ActionPalette {
             WindowEvent::CursorMoved { .. }
             | WindowEvent::MouseInput { .. }
             | WindowEvent::MouseWheel { .. } => {
-                self.route_to_field(event, *modifiers, doc, root);
-                self.route_to_results(event, *modifiers, doc, root);
+                self.route_to_field(event, modifiers, doc, root);
+                self.route_to_results(event, modifiers, doc, root);
                 self.poll_view_activation();
                 true
             }
@@ -2224,9 +2224,13 @@ impl ActionPalette {
         if self.arg.is_some() {
             if matches!(&key.logical_key, Key::Named(NamedKey::Enter)) {
                 let value = self.field.value().to_string();
-                let state = self.arg.as_ref().expect("argument stage checked above");
-                let fresh = self.action_kind_for_address(&state.address, state.bound.as_ref());
-                if fresh.is_none() || matches!(fresh, Some(ActionKind::NoArgument { .. })) {
+                let Some(state) = self.arg.as_ref() else {
+                    return true;
+                };
+                let Some(fresh) = self
+                    .action_kind_for_address(&state.address, state.bound.as_ref())
+                    .filter(|kind| !matches!(kind, ActionKind::NoArgument { .. }))
+                else {
                     if self.history_has_custody() {
                         self.search_announcement = Some(
                             "The retained action was removed, changed, or is currently unavailable"
@@ -2236,13 +2240,12 @@ impl ActionPalette {
                         self.exit_argument_mode();
                     }
                     return true;
-                }
+                };
                 if let Some(state) = self.arg.take() {
                     let address = state.address;
                     let bound = state.bound;
                     let history_target = state.history_target;
                     let history_draft_identity = state.history_draft_identity;
-                    let fresh = fresh.expect("current argument action checked above");
                     let (encoded, context, kind, confirmation, input) = match fresh {
                         ActionKind::Prompted {
                             build,
@@ -2588,7 +2591,7 @@ impl Widget for ActionPalette {
         _: NodeId,
         _: &TaffyTree<()>,
     ) {
-        *handled |= self.route_event(event, scale, modifiers, doc, path);
+        *handled |= self.route_event(event, scale, *modifiers, doc, path);
     }
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         if !self.is_presented() {
@@ -3143,7 +3146,7 @@ mod tests {
         palette.set_cursor(1);
         palette.refresh_visible_resources(&[c, a.clone(), b.clone()]);
         assert_eq!(palette.results.selected_action_id(), Some("b\u{1f}mark"));
-        palette.refresh_visible_resources(&[a.clone()]);
+        palette.refresh_visible_resources(std::slice::from_ref(&a));
         assert_eq!(palette.result_labels(), vec!["Alpha — Mark done"]);
         assert!(palette.results.selected().is_none());
         palette.activate_selected();

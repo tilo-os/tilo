@@ -48,6 +48,10 @@ pub fn run_with_options(enable_peer_sync: bool) {
     clippy::too_many_lines,
     reason = "hosted session startup deliberately keeps the ordered ownership, networking, portal, identity-broker, and event-loop lifetimes visible in one orchestration path"
 )]
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "`peer_sync` and `host` are keep-alives for the event loop that `app.run()` drives"
+)]
 pub fn run_with_full_options(opts: HostedOptions) {
     let wake_scope = ui::wake::WakeScope::new();
     let _wake_entry = wake_scope.enter();
@@ -450,6 +454,10 @@ fn set_active_room_presence_scope(app: &mut App, tree_snapshot: &WorkspaceTree) 
 /// Installs the cursor-presence pump: pipes every local `broadcast_presence` Pointer event into
 /// `NetCmd::Publish { msg: PresenceMoved }` and drains received updates into the chrome's
 /// remote-cursors overlay.
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "`recv_net` moves into the frame-tick closure after the inbound handle is taken"
+)]
 fn install_presence_pump(
     app: &mut App,
     net: &Arc<ShellNetwork>,

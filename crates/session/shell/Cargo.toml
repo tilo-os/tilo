@@ -81,6 +81,8 @@ qos-moq = { path = "../../hosting/qos-moq", features = ["relay"] }
 # Native media HTTP client. TLS comes from the workspace's rustls-no-provider
 # configuration (reqwest 0.13 has no `rustls-tls-native-roots`).
 reqwest.workspace = true
+# Its sanctioned builder installs the crypto provider reqwest needs.
+tilo-net = { path = "../../system/tilo-net", features = ["http"] }
 # Crash-safe file replacement (temp + fsync + rename + dir fsync).
 atomic-file = { path = "../../system/atomic-file", features = ["json"] }
 bounded-command = { path = "../../system/bounded-command" }

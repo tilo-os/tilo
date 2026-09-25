@@ -1,5 +1,8 @@
 //! Count the actual future native representation before an original gets a receipt.
-use super::*;
+use super::{
+    CommitBinding, Deserialize, MAX_BYTES, MAX_ENTRIES, NativeCommittedView, NeighbourMsg,
+    Serialize, StatePeer, SystemTime, decode_entries, history, record, state, store,
+};
 use serde::ser::{SerializeSeq, SerializeStruct};
 use std::io::{self, Write};
 
@@ -82,19 +85,23 @@ impl Serialize for VirtualProjection<'_> {
 }
 /// A pretty-printed subtree has exactly `2 * depth` more spaces per structural
 /// newline when embedded in the authority/file. Escaped string newlines are not
-/// literal newlines in serde_json output, so they cannot falsify this accounting.
+/// literal newlines in `serde_json` output, so they cannot falsify this accounting.
 struct Counter {
     bytes: usize,
     depth: usize,
     limit: usize,
 }
 impl Write for Counter {
+    #[allow(
+        clippy::naive_bytecount,
+        reason = "serializer chunks are small; not worth a bytecount dependency"
+    )]
     fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-        let indentation = bytes
-            .iter()
-            .filter(|byte| **byte == b'\n')
-            .count()
-            .checked_mul(self.depth * 2)
+        let newlines = bytes.iter().filter(|byte| **byte == b'\n').count();
+        let indentation = self
+            .depth
+            .checked_mul(2)
+            .and_then(|per_line| newlines.checked_mul(per_line))
             .ok_or_else(|| io::Error::other("native reserve overflow"))?;
         self.bytes = self
             .bytes
@@ -143,9 +150,10 @@ fn proof(
     // punctuation/indentation by (4 + 2*depth)*k, plus exact decimal digit growth.
     // qps counts only the persisted channel-map fields changed by closed signing.
     let peer_extra = |depth: usize| -> Result<usize, String> {
-        proof
-            .max_peer_growth_bytes()
-            .checked_mul(4 + 2 * depth)
+        depth
+            .checked_mul(2)
+            .and_then(|indent| indent.checked_add(4))
+            .and_then(|factor| proof.max_peer_growth_bytes().checked_mul(factor))
             .and_then(|size| size.checked_add(proof.max_peer_decimal_growth()))
             .ok_or_else(|| "native peer floor reserve overflow".into())
     };
@@ -222,11 +230,17 @@ fn extra(storage: &record::NativeAuthorityStorage, file: bool) -> Result<usize, 
             if file { 5 } else { 4 },
             store::MAX_STATE_BYTES,
         )?;
-        let numeric = (20 - digits(publication.next_ordinal))
-            + (20 - digits(publication.revision))
-            + (20 - digits(room.generation))
-            + (8 - digits(publication.reservation.authority_bytes as u64))
-            + (8 - digits(publication.reservation.state_bytes as u64));
+        // A u64 has at most 20 digits and `bounds` keeps both reserves within
+        // eight digits, so each slack term is exact and the sum is tiny.
+        let numeric = [
+            20_usize.saturating_sub(digits(publication.next_ordinal)),
+            20_usize.saturating_sub(digits(publication.revision)),
+            20_usize.saturating_sub(digits(room.generation)),
+            8_usize.saturating_sub(digits(publication.reservation.authority_bytes as u64)),
+            8_usize.saturating_sub(digits(publication.reservation.state_bytes as u64)),
+        ]
+        .into_iter()
+        .fold(0_usize, usize::saturating_add);
         total = total
             .checked_add(reserved.saturating_sub(actual))
             .and_then(|sum| sum.checked_add(numeric))
@@ -234,7 +248,7 @@ fn extra(storage: &record::NativeAuthorityStorage, file: bool) -> Result<usize, 
     }
     if active {
         total = total
-            .checked_add(20 - digits(storage.revision))
+            .checked_add(20_usize.saturating_sub(digits(storage.revision)))
             .ok_or("native storage revision reserve overflow")?;
     }
     Ok(total)

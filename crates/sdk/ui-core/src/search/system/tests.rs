@@ -156,7 +156,7 @@ impl Provider<(), Row> for ProviderFixture {
     }
     fn query_page(
         &self,
-        _: &(),
+        (): &(),
         query: &Query<'_>,
         _: Option<&SearchCursor>,
         budget: SearchBudget,
@@ -169,7 +169,7 @@ impl Provider<(), Row> for ProviderFixture {
             SearchPage::exhausted("v1", vec![Row(self.kind.clone(), 100, self.id)])
         }
     }
-    fn resolve(&self, _: &(), _: &str, _: &Query<'_>) -> Option<Row> {
+    fn resolve(&self, (): &(), _: &str, _: &Query<'_>) -> Option<Row> {
         None
     }
 }

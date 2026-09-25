@@ -428,7 +428,7 @@ impl RowView<'_> {
     }
 }
 impl NativeSenderOutboxV1<'_> {
-    pub(crate) fn insertion_bytes(&self, row: RowView<'_>) -> Result<usize, OutboxFailure> {
+    pub(crate) fn insertion_bytes(&self, row: &RowView<'_>) -> Result<usize, OutboxFailure> {
         if row.observation.is_some() {
             return Err(OutboxFailure::Invalid);
         }
@@ -455,7 +455,7 @@ impl NativeSenderOutboxV1<'_> {
     }
     pub(crate) fn insert(
         &self,
-        row: RowView<'_>,
+        row: &RowView<'_>,
         credit: automerge::resource_limits::NativeReservation,
     ) -> Result<EncodedOutbox, OutboxFailure> {
         let needed = self.insertion_bytes(row)?;
@@ -529,7 +529,7 @@ impl NativeSenderOutboxV1<'_> {
     fn mutation_bytes(
         &self,
         id: &[u8; 16],
-        replacement: Option<RowView<'_>>,
+        replacement: Option<&RowView<'_>>,
     ) -> Result<usize, OutboxFailure> {
         let old = self.find(id)?.ok_or(OutboxFailure::Invalid)?;
         self.bytes
@@ -547,7 +547,7 @@ impl NativeSenderOutboxV1<'_> {
         scratch: &NativeReservation,
     ) -> Result<usize, OutboxFailure> {
         let replacement = self.replacement(id, response, scratch)?;
-        self.mutation_bytes(id, Some(replacement))
+        self.mutation_bytes(id, Some(&replacement))
     }
     pub(crate) fn with_observation(
         &self,
@@ -557,7 +557,7 @@ impl NativeSenderOutboxV1<'_> {
         credit: NativeReservation,
     ) -> Result<EncodedOutbox, OutboxFailure> {
         let replacement = self.replacement(id, response, scratch)?;
-        self.mutate(id, Some(replacement), credit)
+        self.mutate(id, Some(&replacement), credit)
     }
     pub(crate) fn consumption_bytes(&self, id: &[u8; 16]) -> Result<usize, OutboxFailure> {
         let row = self.find(id)?.ok_or(OutboxFailure::Invalid)?;
@@ -577,7 +577,7 @@ impl NativeSenderOutboxV1<'_> {
     fn mutate(
         &self,
         id: &[u8; 16],
-        replacement: Option<RowView<'_>>,
+        replacement: Option<&RowView<'_>>,
         credit: NativeReservation,
     ) -> Result<EncodedOutbox, OutboxFailure> {
         let needed = self.mutation_bytes(id, replacement)?;

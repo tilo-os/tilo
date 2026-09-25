@@ -1,4 +1,8 @@
-use super::*;
+use super::{
+    NativeCommittedView, NativeWorkspaceOwner, NeighbourMsg, PendingEnrollmentId,
+    PendingEnrollmentStatus, RoomId, StatePeer, SystemTime, TransportOrigin, persist, publication,
+    record, store,
+};
 use crate::network::invite::{VerifiedNativeEnrollment, VerifiedNativeEnrollmentIntent};
 use record::{StoredPendingEnrollment, StoredRoom};
 use tilo_user_identity::RevocationList;
@@ -17,6 +21,10 @@ pub(super) fn validate_pending(
     }
     Ok(())
 }
+#[allow(
+    clippy::suspicious_operation_groupings,
+    reason = "a persisted floor stores the descriptor digest as `digest`"
+)]
 pub(super) fn restore(
     room: RoomId,
     record: &StoredRoom,
@@ -96,6 +104,10 @@ impl NativeWorkspaceOwner {
             .ok_or("enrollment requires an explicit existing local slot")?;
         self.prepare_enrollment_into(intent, local, now)
     }
+    #[allow(
+        clippy::significant_drop_tightening,
+        reason = "the write guard is handed to `publish_storage`, which replaces the tree in place"
+    )]
     pub(crate) fn prepare_enrollment_into(
         &self,
         intent: &VerifiedNativeEnrollmentIntent,
@@ -174,7 +186,7 @@ impl NativeWorkspaceOwner {
                 status: PendingEnrollmentStatus::Active,
             },
         );
-        self.publish_storage(&mut tree, next)?;
+        Self::publish_storage(&mut tree, next)?;
         self.0.current.write().required.insert(room);
         Ok(id)
     }
@@ -211,11 +223,17 @@ impl NativeWorkspaceOwner {
             .values()
             .filter(|pending| pending.target.workspace == local);
         let result = found.next().cloned();
-        if found.next().is_some() {
+        let ambiguous = found.next().is_some();
+        drop(tree);
+        if ambiguous {
             return Err("ambiguous native pending enrollment slot".into());
         }
         Ok(result)
     }
+    #[allow(
+        clippy::significant_drop_tightening,
+        reason = "the write guard is handed to `publish_storage`, which replaces the tree in place"
+    )]
     pub(crate) fn cancel_enrollment(
         &self,
         room: RoomId,
@@ -242,13 +260,12 @@ impl NativeWorkspaceOwner {
         next.native_authority
             .pending
             .get_mut(&room)
-            .expect("checked pending")
+            .ok_or("native pending enrollment disappeared")?
             .status = PendingEnrollmentStatus::Cancelled;
-        self.publish_storage(&mut tree, next)?;
+        Self::publish_storage(&mut tree, next)?;
         Ok(true)
     }
     fn publish_storage(
-        &self,
         tree: &mut super::super::state::WorkspaceTree,
         next: super::super::state::WorkspaceTree,
     ) -> Result<(), String> {

@@ -206,6 +206,10 @@ impl collab_service::Server for Broker {
         Promise::ok(())
     }
 }
+#[allow(
+    clippy::future_not_send,
+    reason = "the fixture drives a capnp-rpc server on a LocalSet with Rc state"
+)]
 async fn over_wire<F, Fut>(run: F)
 where
     F: FnOnce(SdkRoute, Rc<Cell<Mode>>, Rc<RefCell<Captured>>) -> Fut,
@@ -213,6 +217,10 @@ where
 {
     over_wire_identity(HOST, ID, run).await;
 }
+#[allow(
+    clippy::future_not_send,
+    reason = "the fixture drives a capnp-rpc server on a LocalSet with Rc state"
+)]
 async fn over_wire_identity<F, Fut>(host: [u8; 16], invocation: [u8; 16], run: F)
 where
     F: FnOnce(SdkRoute, Rc<Cell<Mode>>, Rc<RefCell<Captured>>) -> Fut,
@@ -486,7 +494,7 @@ async fn managed_sender_transport_real_physical_sender_dispatch_and_result_custo
     let mut fixture = TransportFixture::new();
     let original_invocation = fixture.invocation();
     let host = fixture.binding().host;
-    over_wire_identity(
+    Box::pin(over_wire_identity(
         host,
         original_invocation,
         |mut route, mode, captured| async move {
@@ -572,6 +580,6 @@ async fn managed_sender_transport_real_physical_sender_dispatch_and_result_custo
             assert!(state.is_healthy());
             fixture.consume_and_finish();
         },
-    )
+    ))
     .await;
 }

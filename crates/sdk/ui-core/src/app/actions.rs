@@ -66,11 +66,8 @@ impl App {
     /// Lets the hosted app register its action types, e.g.
     /// `app.action_registry_mut().register::<TubeAction>("tube.action")`.
     pub fn action_registry_mut(&mut self) -> &mut tilo_actions::ActionRegistry {
-        self.actions.action_registry_generation = self
-            .actions
-            .action_registry_generation
-            .checked_add(1)
-            .unwrap_or(u64::MAX);
+        self.actions.action_registry_generation =
+            self.actions.action_registry_generation.saturating_add(1);
         self.invalidate_widget_resource_cache();
         &mut self.actions.action_registry
     }
@@ -994,18 +991,15 @@ impl App {
         &mut self,
         query: runtime_collab::ActionDirectoryQuery,
     ) -> runtime_collab::ActionDirectoryPage {
-        let revision = match self.try_action_directory_revision() {
-            Ok(revision) => revision,
-            Err(_) => {
-                return runtime_collab::ActionDirectoryPage {
-                    revision: String::new(),
-                    rows: Vec::new(),
-                    next_cursor: Vec::new(),
-                    exhausted: false,
-                    stale_cursor: !query.revision.is_empty(),
-                    budget_exhausted: true,
-                };
-            }
+        let Ok(revision) = self.try_action_directory_revision() else {
+            return runtime_collab::ActionDirectoryPage {
+                revision: String::new(),
+                rows: Vec::new(),
+                next_cursor: Vec::new(),
+                exhausted: false,
+                stale_cursor: !query.revision.is_empty(),
+                budget_exhausted: true,
+            };
         };
         let requested_revision = query.revision;
         if !requested_revision.is_empty() && requested_revision != revision {
@@ -1579,9 +1573,8 @@ impl App {
         resource_id: &str,
         action_id: &str,
     ) -> runtime_collab::ActionDirectoryResolution {
-        let current = match self.try_action_directory_revision() {
-            Ok(current) => current,
-            Err(_) => return runtime_collab::ActionDirectoryResolution::Unavailable,
+        let Ok(current) = self.try_action_directory_revision() else {
+            return runtime_collab::ActionDirectoryResolution::Unavailable;
         };
         if revision != current {
             return runtime_collab::ActionDirectoryResolution::StaleRevision;
@@ -3594,10 +3587,10 @@ impl App {
             self.actions.action_palette.as_mut().is_some_and(|palette| {
                 palette.activate_address(&address.resource, &address.action)
             });
-        if !activated {
-            self.close_action_palette();
-        } else {
+        if activated {
             self.capture_ordinary_palette_request();
+        } else {
+            self.close_action_palette();
         }
         activated
     }
@@ -3733,7 +3726,7 @@ impl App {
             palette.route_event(
                 event,
                 scale,
-                &self.input.modifiers,
+                self.input.modifiers,
                 &mut self.state.doc,
                 &self.state.root,
             )

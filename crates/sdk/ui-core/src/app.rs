@@ -587,6 +587,10 @@ impl<T> ConstructionValue<T> {
         std::mem::replace(self, Self::Taken).resolve()
     }
 
+    #[expect(
+        clippy::unreachable,
+        reason = "each construction value is resolved exactly once during App assembly"
+    )]
     fn resolve(self) -> T {
         match self {
             Self::Lazy(produce) => produce(),
@@ -849,21 +853,18 @@ impl App {
             &crate::bound_dispatch::CallbackBinding,
         ) -> AppConstructionInputs,
     ) -> Result<Self, crate::launch::LaunchError> {
-        let scope = crate::collaboration::native_initial::take_component_scope()
-            .unwrap_or_else(crate::wake::WakeScope::new);
+        let scope =
+            crate::collaboration::native_initial::take_component_scope().unwrap_or_default();
         let retirement = component.take_root_retirement();
         let mut assembly = retirement_assembly::ComponentAssemblyCustody {
-            component: Some(component),
-            scope: Some(scope),
+            component: None,
+            scope: None,
             retirement,
         };
-        let scope = assembly.scope.as_ref().expect("assembly owns scope");
+        let scope = assembly.scope.insert(scope);
+        let component = assembly.component.insert(component);
         let _entry = scope.enter();
         let handle = scope.handle();
-        let component = assembly
-            .component
-            .as_mut()
-            .expect("assembly owns component");
         if let Err(error) = component.mount(move |_| handle.wake()) {
             return Err(component.setup_error(error));
         }
@@ -877,9 +878,12 @@ impl App {
             return Err(component.setup_error(crate::launch::LaunchError::BindingMismatch));
         }
         let history = component.history.take();
-        let mut root = Box::new(crate::widget::BoundAppWidget {
-            component: assembly.component.take().expect("assembly owns component"),
-        });
+        let Some(component) = assembly.component.take() else {
+            return Err(crate::launch::LaunchError::Operation(
+                "component assembly no longer owns its component".to_owned(),
+            ));
+        };
+        let mut root = Box::new(crate::widget::BoundAppWidget { component });
         let mut root_custody = retirement_assembly::AppAssemblyCustody {
             retirement: assembly.retirement.take(),
             root: None,
@@ -1289,8 +1293,7 @@ impl App {
         root: Box<dyn Widget>,
         domain: crate::ControlDomain,
     ) -> Self {
-        let manager = crate::collaboration::native_initial::take_manager()
-            .unwrap_or_else(CollaborationManager::new);
+        let manager = crate::collaboration::native_initial::take_manager().unwrap_or_default();
         let mut inputs = AppConstructionInputs::production(manager);
         inputs.control_domain = Some(domain);
         Self::with_parts(Some(scope), state, root, inputs)
@@ -4119,7 +4122,7 @@ pub(crate) mod ordinary_confirmation_tests {
                 let (widget, new_ledger, _) =
                     fixture_widget(tilo_actions::ConfirmationPolicy::Confirm, source());
                 let (new, new_guard) = owned(widget, component);
-                let mut values = vec![Some(old), Some(new)];
+                let mut values = [Some(old), Some(new)];
                 let changed = Rc::new(std::cell::Cell::new(false));
                 let projection = changed.clone();
                 let mut model = crate::widget::ModelView::from_document(
@@ -4286,7 +4289,7 @@ pub(crate) mod ordinary_confirmation_tests {
                 Host::Driver(driver) => driver
                     .action_registry_mut()
                     .register::<FixtureEdit>("fixture.edit"),
-            };
+            }
             fn state(host: &mut Host) -> &mut State {
                 match host {
                     Host::Native(app) => &mut app.state,

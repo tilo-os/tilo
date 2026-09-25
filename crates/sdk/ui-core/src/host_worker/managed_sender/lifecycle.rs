@@ -4,7 +4,11 @@ use super::{
     attempt::{AttemptOwner, Operation, Ticket},
     codec::{CallerView, RowView},
 };
-use crate::host_worker::private_actions::*;
+use crate::host_worker::private_actions::{
+    CommittedPrivateWrite, CurrentPrivateBorrow, CurrentPrivateState, FailedPrivateWrite,
+    FinishRefusal, PreparedPrivateWrite, PrivateActionsCapture, PrivateActionsFile,
+    PrivateQueueOutcome, PrivateWriteOutcome, PrivateWriteRefusal, SenderStorageCode,
+};
 use crate::time::Instant;
 use automerge::resource_limits::NativeAllowance;
 use runtime_collab::PublishedInvocationBinding;
@@ -75,6 +79,10 @@ pub(super) struct ObservationRead<'a> {
     range: std::ops::Range<usize>,
 }
 impl ObservationRead<'_> {
+    #[expect(
+        clippy::expect_used,
+        reason = "an ObservationRead is only built for a range that validated as UTF-8 JSON"
+    )]
     pub(super) fn json(&self) -> &str {
         std::str::from_utf8(&self.current.payload()[self.range.clone()])
             .expect("validated original JSON slice")
@@ -278,6 +286,13 @@ impl ManagedSender {
             Err(failure) => Err(OpenRefusal { state, failure }),
         }
     }
+    /// An occupied slot whose attempt still has copies in flight.
+    fn slot_busy(&self, index: usize) -> bool {
+        self.active
+            .get(index)
+            .and_then(Option::as_ref)
+            .is_some_and(|owner| !owner.quiescent())
+    }
     fn current(&self) -> Result<&CurrentPrivateState, Failure> {
         if self.pending.is_some() {
             return Err(Failure::Busy);
@@ -310,11 +325,12 @@ impl ManagedSender {
         encoded: super::codec::EncodedOutbox,
         completion: Completion,
     ) -> Result<(), Failure> {
-        if !matches!(self.phase.as_ref(), Some(Phase::Current(_))) {
-            return Err(Failure::Busy);
-        }
-        let Some(Phase::Current(current)) = self.phase.take() else {
-            unreachable!("checked current phase")
+        let current = match self.phase.take() {
+            Some(Phase::Current(current)) => current,
+            other => {
+                self.phase = other;
+                return Err(Failure::Busy);
+            }
         };
         let (bytes, credit) = encoded.into_parts();
         match current.queue_owned(bytes, credit) {
@@ -366,8 +382,8 @@ impl ManagedSender {
                 argument: intent.argument,
                 observation: None,
             };
-            let needed = view.insertion_bytes(row).map_err(invalid)?;
-            let encoded = view.insert(row, reserve(work, needed)?).map_err(invalid)?;
+            let needed = view.insertion_bytes(&row).map_err(invalid)?;
+            let encoded = view.insert(&row, reserve(work, needed)?).map_err(invalid)?;
             (
                 encoded,
                 Ticket {
@@ -480,7 +496,7 @@ impl ManagedSender {
             .active
             .iter()
             .position(|slot| slot.as_ref().is_some_and(|owner| owner.ticket() == ticket));
-        if existing.is_some_and(|index| !self.active[index].as_ref().unwrap().quiescent()) {
+        if existing.is_some_and(|index| self.slot_busy(index)) {
             return Err(Failure::Busy);
         }
         let index = existing
@@ -494,9 +510,9 @@ impl ManagedSender {
                 super::NativeSenderOutboxV1::decode_with_scratch(current.payload(), &scratch)
                     .map_err(invalid)?;
             let row = Self::row(&view, current.instance(), ticket, caller)?;
-            let needed = AttemptOwner::required_bytes(row, confirmation).map_err(invalid)?;
+            let needed = AttemptOwner::required_bytes(&row, confirmation).map_err(invalid)?;
             AttemptOwner::new(
-                row,
+                &row,
                 ticket.instance,
                 self.room,
                 operation,
@@ -530,7 +546,7 @@ impl ManagedSender {
             .active
             .iter()
             .flatten()
-            .find(|owner| owner.matches(&result))
+            .find(|owner| owner.matches(result))
             .ok_or(Failure::Scope)?;
         let ticket = owner.ticket();
         let encoded = {
@@ -597,7 +613,7 @@ impl ManagedSender {
             .active
             .iter()
             .position(|slot| slot.as_ref().is_some_and(|owner| owner.ticket() == ticket));
-        if index.is_some_and(|index| !self.active[index].as_ref().unwrap().quiescent()) {
+        if index.is_some_and(|index| self.slot_busy(index)) {
             return Err(Failure::Busy);
         }
         let encoded = {

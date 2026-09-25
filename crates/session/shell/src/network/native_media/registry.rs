@@ -1,4 +1,9 @@
-use super::*;
+use super::{
+    Action, Arc, AtomicBool, AtomicU64, CallTarget, Carrier, Command, Connection, ConnectionScope,
+    Duration, Instant, Mutex, NativeBootstrap, NativeWorkspaceOwner, Operation, Ordering, Phase,
+    Reply, RoomId, State, Stops, SystemTime, Ticket, TimedGrant, Weak, Work, deadline, media_wire,
+    namespace, now_ns, protocol,
+};
 use crate::network::actor::HostIdentity;
 use crate::shell::native_workspace_owner::NativeCommittedView;
 use protocol::{CurrentView, OwnerView, PreparedRequest, Step};
@@ -52,6 +57,10 @@ impl Registry {
         }
         Ok(())
     }
+    #[allow(
+        clippy::too_many_lines,
+        reason = "admission, ticket construction and fence registration are one owner-locked sequence"
+    )]
     fn open(
         &mut self,
         owner: NativeWorkspaceOwner,
@@ -149,10 +158,10 @@ impl Registry {
             }
             let weak = Arc::downgrade(&ticket);
             let observer = Arc::new(move |changed, continuity| {
-                if changed == room {
-                    if let Some(ticket) = weak.upgrade() {
-                        ticket.fence(continuity);
-                    }
+                if changed == room
+                    && let Some(ticket) = weak.upgrade()
+                {
+                    ticket.fence(continuity);
                 }
             });
             *ticket.subscription.lock() = Some(ticket.owner.observe_fences(observer));
@@ -193,7 +202,9 @@ fn check_identity(
     }
     view.peer().permissions(
         cert.device_public_key,
-        SystemTime::UNIX_EPOCH + Duration::from_nanos(now),
+        SystemTime::UNIX_EPOCH
+            .checked_add(Duration::from_nanos(now))
+            .ok_or("native clock out of range")?,
     )?;
     Ok(())
 }
@@ -251,6 +262,15 @@ fn tick_clock(state: &mut State, now: u64) -> Result<(), String> {
     state.wall_high_water = now;
     Ok(())
 }
+#[allow(
+    clippy::too_many_lines,
+    reason = "one completion dispatcher over the discover, bootstrap and control phases"
+)]
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "each phase hands the state guard to its final `prepare`/`apply_step` call; there is \
+              no earlier point to drop it"
+)]
 fn advance(
     ticket: &Arc<Ticket>,
     serial: u64,
@@ -276,7 +296,7 @@ fn advance(
             }
             let hint: qos_peer_state::join::TransportHint =
                 postcard::from_bytes(body).map_err(|error| error.to_string())?;
-            let mut canonical = [0; descriptor::MAX_HINT_BYTES];
+            let mut canonical = vec![0_u8; descriptor::MAX_HINT_BYTES];
             if postcard::to_slice(&hint, &mut canonical).map_err(|error| error.to_string())? != body
             {
                 return Err("noncanonical native descriptor".into());
@@ -302,7 +322,7 @@ fn advance(
             };
             let mut state = ticket.state.lock();
             ticket.live()?;
-            state.phase = Phase::Bootstrap(pending);
+            state.phase = Phase::Bootstrap(Box::new(pending));
             Ok(Reply::Work(prepare(&mut state, request)?))
         }
         Phase::Bootstrap(pending) => {
@@ -310,7 +330,7 @@ fn advance(
                 media_wire::BootstrapResponse::decode(body).map_err(|error| error.to_string())?;
             // Correlation exists only during this exact synchronous opaque
             // finish. A revoke during network await never enters this window.
-            finish_owner_bootstrap(ticket, pending, &response)?;
+            finish_owner_bootstrap(ticket, *pending, &response)?;
             ticket.owner.with_current(ticket.room, |view| {
                 let anchor = Instant::now();
                 let now = now_ns()?;
@@ -322,7 +342,7 @@ fn advance(
                 let request = control.start_http(&signing)?;
                 let mut state = ticket.state.lock();
                 tick_clock(&mut state, now)?;
-                state.phase = Phase::Control(control);
+                state.phase = Phase::Control(Box::new(control));
                 let metadata = descriptor::inspect_persisted_hint(
                     view.hint().ok_or("native descriptor missing")?,
                     view.host().ok_or("native host missing")?,
@@ -365,6 +385,10 @@ fn advance(
         Phase::Transition => Err("native control transition has no completion".into()),
     }
 }
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "the state guard is handed to the final `apply_step`; there is no earlier point to drop it"
+)]
 fn act(ticket: &Arc<Ticket>, action: Action, identity: &HostIdentity) -> Result<Reply, String> {
     ticket.owner.with_current(ticket.room, |view| {
         let anchor = Instant::now();
@@ -377,10 +401,10 @@ fn act(ticket: &Arc<Ticket>, action: Action, identity: &HostIdentity) -> Result<
         let mut state = ticket.state.lock();
         tick_clock(&mut state, now)?;
         if matches!(action, Action::Abandon) {
-            if let Some((_, id)) = state.pending.take() {
-                if let Phase::Control(control) = &mut state.phase {
-                    control.forget(id);
-                }
+            if let Some((_, id)) = state.pending.take()
+                && let Phase::Control(control) = &mut state.phase
+            {
+                control.forget(id);
             }
             return Ok(Reply::Closed);
         }
@@ -446,7 +470,9 @@ fn act(ticket: &Arc<Ticket>, action: Action, identity: &HostIdentity) -> Result<
                 state.carrier = None;
                 return Ok(Reply::Closed);
             }
-            Action::Abandon | Action::Bootstrap => unreachable!("handled before borrowing control"),
+            Action::Abandon | Action::Bootstrap => {
+                return Err("native action handled before borrowing control".into());
+            }
         };
         apply_step(&mut state, step, anchor)
     })
@@ -462,7 +488,7 @@ pub(super) fn finish_owner_bootstrap(
             descriptor::GenerationExpectation::Current {
                 descriptor_digest, ..
             } => descriptor_digest != pending.request().candidate_digest,
-            _ => true,
+            descriptor::GenerationExpectation::FirstAccepted { .. } => true,
         };
         if changes {
             Ok(Some(
@@ -498,6 +524,10 @@ pub(super) fn finish_owner_bootstrap(
 }
 /// Local teardown has already stopped capture and transport. The only operation
 /// allowed after that fence is the exact retained participation's Leave.
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "the state guard is handed to the final `apply_step`; there is no earlier point to drop it"
+)]
 fn end(ticket: &Arc<Ticket>, identity: &HostIdentity) -> Result<Reply, String> {
     ticket.stop();
     if ticket.leaving.swap(true, Ordering::SeqCst) {

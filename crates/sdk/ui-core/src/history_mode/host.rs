@@ -1215,12 +1215,12 @@ impl HistoryHost {
                     super::pending_controls::PendingControlStatus::NeedsConfirmation => {
                         Some("Confirm")
                     }
-                    super::pending_controls::PendingControlStatus::Suspended => None,
+                    super::pending_controls::PendingControlStatus::Suspended
+                    | super::pending_controls::PendingControlStatus::Consumed => None,
                     super::pending_controls::PendingControlStatus::Refused(ref reason) => {
                         row = row.push(Box::new(Text::new(reason)));
                         None
                     }
-                    super::pending_controls::PendingControlStatus::Consumed => None,
                 };
                 if let Some(label) = label
                     && let Some(token) = self.pending_controls.token(review.id)

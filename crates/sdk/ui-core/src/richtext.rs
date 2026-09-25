@@ -1175,8 +1175,7 @@ impl RichTextLayout {
                     break;
                 }
                 if global_end <= global_low
-                    || run.line_i < cursor_start.line
-                    || run.line_i > cursor_end.line
+                    || !(cursor_start.line..=cursor_end.line).contains(&run.line_i)
                 {
                     continue;
                 }
