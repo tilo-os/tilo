@@ -228,8 +228,11 @@ impl client::Handler for HostVerifier {
     }
 }
 
+/// One SSH connection bridged to libgit2's synchronous stream API. The
+/// caller's thread waits on each step with the app runtime's `block_on`,
+/// while the runtime thread drives the socket and russh's session task,
+/// including between calls.
 struct SshSession {
-    runtime: tokio::runtime::Runtime,
     handle: client::Handle<HostVerifier>,
     channel: russh::Channel<client::Msg>,
     pending: io::Cursor<Vec<u8>>,
@@ -238,10 +241,7 @@ struct SshSession {
 
 impl SshSession {
     fn connect(endpoint: Endpoint, command: String) -> anyhow::Result<Self> {
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()?;
-        let (handle, channel) = runtime.block_on(async {
+        let (handle, channel) = ui::rt::app().block_on(async {
             tokio::time::timeout(CONNECT_TIMEOUT, async {
                 let home = std::env::home_dir().context("no home directory for SSH host trust")?;
                 let mut handle = client::connect(
@@ -292,9 +292,8 @@ impl SshSession {
             })
             .await
             .context("SSH connection or authentication timed out")?
-        })?;
+        })??;
         Ok(Self {
-            runtime,
             handle,
             channel,
             pending: io::Cursor::new(Vec::new()),
@@ -307,7 +306,7 @@ impl SshSession {
             return;
         }
         self.closed = true;
-        let _ = self.runtime.block_on(async {
+        let _ = ui::rt::app().block_on(async {
             tokio::time::timeout(CLOSE_TIMEOUT, async {
                 let _ = self.channel.close().await;
                 self.handle
@@ -348,42 +347,41 @@ impl Read for SshStream {
             return Ok(0);
         }
         let SshSession {
-            runtime,
-            channel,
-            pending,
-            ..
+            channel, pending, ..
         } = &mut *session;
-        runtime.block_on(async {
-            tokio::time::timeout(IO_TIMEOUT, async {
-                loop {
-                    match channel.wait().await {
-                        Some(ChannelMsg::Data { data }) => {
-                            *pending = io::Cursor::new(data.to_vec());
-                            let count = pending.read(output)?;
-                            if count != 0 {
-                                return Ok(count);
+        ui::rt::app()
+            .block_on(async {
+                tokio::time::timeout(IO_TIMEOUT, async {
+                    loop {
+                        match channel.wait().await {
+                            Some(ChannelMsg::Data { data }) => {
+                                *pending = io::Cursor::new(data.to_vec());
+                                let count = pending.read(output)?;
+                                if count != 0 {
+                                    return Ok(count);
+                                }
                             }
+                            Some(ChannelMsg::ExitStatus { exit_status }) if exit_status != 0 => {
+                                return Err(io::Error::other(format!(
+                                    "remote Git command exited with status {exit_status}"
+                                )));
+                            }
+                            Some(ChannelMsg::Failure | ChannelMsg::ExitSignal { .. }) => {
+                                return Err(io::Error::other(
+                                    "remote rejected or terminated the Git command",
+                                ));
+                            }
+                            Some(ChannelMsg::Close) | None => return Ok(0),
+                            // stderr is not Git protocol data. Do not buffer an
+                            // unbounded diagnostic stream or expose it as pack data.
+                            _ => {}
                         }
-                        Some(ChannelMsg::ExitStatus { exit_status }) if exit_status != 0 => {
-                            return Err(io::Error::other(format!(
-                                "remote Git command exited with status {exit_status}"
-                            )));
-                        }
-                        Some(ChannelMsg::Failure | ChannelMsg::ExitSignal { .. }) => {
-                            return Err(io::Error::other(
-                                "remote rejected or terminated the Git command",
-                            ));
-                        }
-                        Some(ChannelMsg::Close) | None => return Ok(0),
-                        // stderr is not Git protocol data. Do not buffer an
-                        // unbounded diagnostic stream or expose it as pack data.
-                        _ => {}
                     }
-                }
+                })
+                .await
+                .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "SSH read timed out"))?
             })
-            .await
-            .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "SSH read timed out"))?
-        })
+            .map_err(io::Error::other)?
     }
 }
 
@@ -402,12 +400,14 @@ impl Write for SshStream {
                 "SSH session is closed",
             ));
         }
-        session.runtime.block_on(async {
-            tokio::time::timeout(IO_TIMEOUT, session.channel.data(input))
-                .await
-                .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "SSH write timed out"))?
-                .map_err(io::Error::other)
-        })?;
+        ui::rt::app()
+            .block_on(async {
+                tokio::time::timeout(IO_TIMEOUT, session.channel.data(input))
+                    .await
+                    .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "SSH write timed out"))?
+                    .map_err(io::Error::other)
+            })
+            .map_err(io::Error::other)??;
         Ok(input.len())
     }
 
@@ -464,21 +464,38 @@ mod tests {
             port: 2222,
             known_hosts: known_hosts.clone(),
         };
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .unwrap();
-        assert!(runtime.block_on(verifier.check_server_key(&key)).is_err());
+        let runtime = ui::rt::app();
+        assert!(
+            runtime
+                .block_on(verifier.check_server_key(&key))
+                .unwrap()
+                .is_err()
+        );
         std::fs::write(&known_hosts, "").unwrap();
-        assert!(runtime.block_on(verifier.check_server_key(&key)).is_err());
+        assert!(
+            runtime
+                .block_on(verifier.check_server_key(&key))
+                .unwrap()
+                .is_err()
+        );
         let trusted = format!("[localhost]:2222 ssh-ed25519 {ENCODED}\n");
         std::fs::write(&known_hosts, &trusted).unwrap();
-        assert!(runtime.block_on(verifier.check_server_key(&key)).unwrap());
+        assert!(
+            runtime
+                .block_on(verifier.check_server_key(&key))
+                .unwrap()
+                .unwrap()
+        );
         std::fs::write(
             &known_hosts,
             format!("{trusted}@revoked [localhost]:2222 ssh-ed25519 {ENCODED}\n"),
         )
         .unwrap();
-        assert!(runtime.block_on(verifier.check_server_key(&key)).is_err());
+        assert!(
+            runtime
+                .block_on(verifier.check_server_key(&key))
+                .unwrap()
+                .is_err()
+        );
     }
 }

@@ -4118,6 +4118,8 @@ fn install_wifi_secret_bridge(
     }));
 }
 
+/// Start peer sync before the compositor loop runs, while nothing can launch
+/// yet. A failure leaves the session without sync.
 fn spawn_session_peer_sync(
     frame_builder: &mut FrameBuilder,
     state: &mut State,
@@ -4127,95 +4129,131 @@ fn spawn_session_peer_sync(
         tree_handle.clone(),
         &crate::shell::network::peer_key_path(),
     ) {
-        Ok(handle) => {
-            let _ = handle.join_default_workspace();
-            tracing::info!("peer-sync: actor spawned, default workspace joined");
-            let net = Arc::new(handle);
-            install_wifi_secret_bridge(frame_builder.host_mut(), Arc::clone(&net));
-            install_device_fabric_bridge(
-                frame_builder.host_mut(),
-                Arc::clone(&net),
-                tree_handle.clone(),
-            );
-            let stream_net = Arc::clone(&net);
-            state.set_legacy_stream_publisher(Arc::new(move |message| {
-                stream_net.publish_legacy_active(message)
-            }));
-            let bridge_net = Arc::clone(&net);
-            frame_builder
-                .host_mut()
-                .set_peer_sync_bridge(std::rc::Rc::new(move |req| {
-                    let active = tree_handle.read().desktop.active;
-                    match req {
-                        PeerSyncRequest::IssueInvite => bridge_net
-                            .issue_invite(active, INVITE_EXPIRY_SECONDS)
-                            .map(crate::shell::overlay_host::PeerSyncResponse::Message),
-                        PeerSyncRequest::ExportIdentity => bridge_net
-                            .person_identity_card(active)
-                            .map(crate::shell::overlay_host::PeerSyncResponse::Message),
-                        PeerSyncRequest::IssueInviteFor {
-                            name,
-                            role,
-                            recipient_user_public_key,
-                        } => bridge_net
-                            .issue_invite_bound_with_role(
-                                active,
-                                INVITE_EXPIRY_SECONDS,
-                                &name,
-                                recipient_user_public_key,
-                                role,
-                            )
-                            .map(crate::shell::overlay_host::PeerSyncResponse::Message),
-                        PeerSyncRequest::AcceptInvite(token) => {
-                            bridge_net.accept_peer_invitation(active, &token)
-                        }
-                        PeerSyncRequest::PollEnrollment(id) => bridge_net.poll_enrollment(id),
-                        PeerSyncRequest::CancelEnrollment(id) => bridge_net.cancel_enrollment(id),
-                        PeerSyncRequest::ListPendingInvitations => {
-                            let room = tree_handle
-                                .read()
-                                .desktop
-                                .active_workspace()
-                                .map(|workspace| workspace.room)
-                                .ok_or_else(|| "no active workspace".to_string())?;
-                            Ok(
-                                crate::shell::overlay_host::PeerSyncResponse::PendingInvitations(
-                                    bridge_net
-                                        .pending_invitations(room)
-                                        .into_iter()
-                                        .map(|invite| {
-                                            crate::shell::overlay_host::PendingInvitationSummary {
-                                                id: invite.id,
-                                                name: invite.name,
-                                                role: invite.role,
-                                                expiry_unix_seconds: invite.expiry_unix_seconds,
-                                            }
-                                        })
-                                        .collect(),
-                                ),
-                            )
-                        }
-                        PeerSyncRequest::ResendInvitation(id) => bridge_net
-                            .resend_invitation(&id)
-                            .map(crate::shell::overlay_host::PeerSyncResponse::Message),
-                        PeerSyncRequest::CancelInvitation(id) => {
-                            if bridge_net.cancel_invitation(&id) {
-                                Ok(crate::shell::overlay_host::PeerSyncResponse::Message(
-                                    "canceled".into(),
-                                ))
-                            } else {
-                                Err("invitation is no longer pending".into())
-                            }
-                        }
-                    }
-                }));
-            Some(net)
-        }
+        Ok(handle) => Some(install_session_peer_sync(
+            frame_builder,
+            state,
+            tree_handle,
+            handle,
+        )),
         Err(error) => {
             tracing::warn!(%error, "peer-sync: spawn failed; continuing without sync");
             None
         }
     }
+}
+
+/// Start peer sync from inside the running compositor loop. Building its
+/// runtime, reading the device key and binding the endpoint block, so they
+/// run on the session runtime; the finished network is delivered back
+/// through `wake` and installed with [`install_session_peer_sync`].
+fn start_session_peer_sync(
+    tree_handle: crate::shell::state::WorkspaceTreeHandle,
+    wake: crate::session_runtime::Wake,
+) -> crate::session_runtime::PendingStart<crate::shell::network::ShellNetwork> {
+    match crate::session_runtime::runtime() {
+        Ok(runtime) => crate::session_runtime::start_blocking(runtime.handle(), wake, move || {
+            crate::shell::network::ShellNetwork::spawn(
+                tree_handle,
+                &crate::shell::network::peer_key_path(),
+            )
+            .map_err(|error| error.to_string())
+        }),
+        Err(error) => crate::session_runtime::PendingStart::finished(Err(format!(
+            "the session runtime is unavailable: {error}"
+        ))),
+    }
+}
+
+/// Join the default workspace with a freshly started network and install
+/// the chrome commands that use it.
+fn install_session_peer_sync(
+    frame_builder: &mut FrameBuilder,
+    state: &mut State,
+    tree_handle: crate::shell::state::WorkspaceTreeHandle,
+    handle: crate::shell::network::ShellNetwork,
+) -> Arc<crate::shell::network::ShellNetwork> {
+    let _ = handle.join_default_workspace();
+    tracing::info!("peer-sync: actor spawned, default workspace joined");
+    let net = Arc::new(handle);
+    install_wifi_secret_bridge(frame_builder.host_mut(), Arc::clone(&net));
+    install_device_fabric_bridge(
+        frame_builder.host_mut(),
+        Arc::clone(&net),
+        tree_handle.clone(),
+    );
+    let stream_net = Arc::clone(&net);
+    state.set_legacy_stream_publisher(Arc::new(move |message| {
+        stream_net.publish_legacy_active(message)
+    }));
+    let bridge_net = Arc::clone(&net);
+    frame_builder
+        .host_mut()
+        .set_peer_sync_bridge(std::rc::Rc::new(move |req| {
+            let active = tree_handle.read().desktop.active;
+            match req {
+                PeerSyncRequest::IssueInvite => bridge_net
+                    .issue_invite(active, INVITE_EXPIRY_SECONDS)
+                    .map(crate::shell::overlay_host::PeerSyncResponse::Message),
+                PeerSyncRequest::ExportIdentity => bridge_net
+                    .person_identity_card(active)
+                    .map(crate::shell::overlay_host::PeerSyncResponse::Message),
+                PeerSyncRequest::IssueInviteFor {
+                    name,
+                    role,
+                    recipient_user_public_key,
+                } => bridge_net
+                    .issue_invite_bound_with_role(
+                        active,
+                        INVITE_EXPIRY_SECONDS,
+                        &name,
+                        recipient_user_public_key,
+                        role,
+                    )
+                    .map(crate::shell::overlay_host::PeerSyncResponse::Message),
+                PeerSyncRequest::AcceptInvite(token) => {
+                    bridge_net.accept_peer_invitation(active, &token)
+                }
+                PeerSyncRequest::PollEnrollment(id) => bridge_net.poll_enrollment(id),
+                PeerSyncRequest::CancelEnrollment(id) => bridge_net.cancel_enrollment(id),
+                PeerSyncRequest::ListPendingInvitations => {
+                    let room = tree_handle
+                        .read()
+                        .desktop
+                        .active_workspace()
+                        .map(|workspace| workspace.room)
+                        .ok_or_else(|| "no active workspace".to_string())?;
+                    Ok(
+                        crate::shell::overlay_host::PeerSyncResponse::PendingInvitations(
+                            bridge_net
+                                .pending_invitations(room)
+                                .into_iter()
+                                .map(|invite| {
+                                    crate::shell::overlay_host::PendingInvitationSummary {
+                                        id: invite.id,
+                                        name: invite.name,
+                                        role: invite.role,
+                                        expiry_unix_seconds: invite.expiry_unix_seconds,
+                                    }
+                                })
+                                .collect(),
+                        ),
+                    )
+                }
+                PeerSyncRequest::ResendInvitation(id) => bridge_net
+                    .resend_invitation(&id)
+                    .map(crate::shell::overlay_host::PeerSyncResponse::Message),
+                PeerSyncRequest::CancelInvitation(id) => {
+                    if bridge_net.cancel_invitation(&id) {
+                        Ok(crate::shell::overlay_host::PeerSyncResponse::Message(
+                            "canceled".into(),
+                        ))
+                    } else {
+                        Err("invitation is no longer pending".into())
+                    }
+                }
+            }
+        }));
+    net
 }
 
 fn attach_collab_broker_bridges(
@@ -4460,14 +4498,9 @@ struct PortalBackend {
     media_prompts: crate::portal::PromptQueueHandle,
     #[allow(
         dead_code,
-        reason = "Retaining the runtime keeps portal worker tasks alive for the lifetime of the compositor backend."
+        reason = "Retaining the registration keeps its D-Bus connection, bus name, and object server alive once registered."
     )]
-    runtime: tokio::runtime::Runtime,
-    #[allow(
-        dead_code,
-        reason = "Retaining the server handle keeps its D-Bus connection, bus name, and object server alive."
-    )]
-    server: crate::portal::ServerHandle,
+    server: crate::session_runtime::Registration<crate::portal::ServerHandle>,
     remote_input: std::sync::mpsc::Receiver<crate::network::streaming::RemoteAction>,
     input_capture: crate::portal::InputCaptureCompositorHandle,
     screencast: crate::portal::ScreenCastStreamProvisionerHandle,
@@ -4663,8 +4696,10 @@ impl PortalBackend {
 /// which is that process. `shell-portal.service` and its D-Bus activation
 /// are removed with this change.
 ///
-/// `None` with no session bus (headless rig, no user bus) — the compositor
-/// still runs, just logging that file open/save won't work.
+/// Registration on the session bus completes in the background. With no
+/// session bus (headless rig, no user bus) it fails there, and the compositor
+/// still runs, just logging that the portal is unavailable. `None` only when
+/// the session runtime itself cannot start.
 #[allow(
     clippy::too_many_lines,
     reason = "portal startup wires the complete backend atomically so no partially registered capability can be advertised"
@@ -4677,12 +4712,7 @@ fn start_portal_backend(
     inhibit_registry: tilo_power_mgmt::InhibitRegistry,
     selection: crate::compositor::selection::SharedSelection,
 ) -> Option<PortalBackend> {
-    let runtime = match tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .worker_threads(2)
-        .thread_name("tilo-portal")
-        .build()
-    {
+    let runtime = match crate::session_runtime::runtime() {
         Ok(rt) => rt,
         Err(e) => {
             tracing::warn!("portal: no runtime ({e}); file open/save will not work");
@@ -4738,40 +4768,45 @@ fn start_portal_backend(
         authenticator: None,
     };
 
-    let serve_result = runtime.block_on(async {
-        let conn = zbus::connection::Builder::session()?.build().await?;
-        crate::portal::serve_with_inhibit_and_clipboard(
-            conn,
-            ctx,
-            inhibit_registry,
-            crate::portal::clipboard::ClipboardBrokerHandle::new(Arc::new(
-                crate::portal::clipboard::CompositorClipboardBroker::new(selection),
-            )),
-        )
-        .await
-    });
-    let server = match serve_result {
-        Ok(s) => s,
-        Err(e) => {
-            tracing::warn!(
-                "portal: could not serve {} ({e}); file open/save will not work",
-                crate::portal::BUS_NAME
-            );
-            return None;
-        }
-    };
-
-    // Losing the name isn't warning-shaped: xdg-desktop-portal would route
-    // FileChooser elsewhere, so every Open would hit a backend with no session state — logged at journal level.
-    if !server.owns_name() {
-        tracing::error!(
-            "portal: another process already owns {} — this session's file \
-             dialog will never be reached. The standalone \
-             `shell --portal-server-only` daemon is the usual culprit; it is \
-             no longer part of the image and its unit should be disabled.",
-            crate::portal::BUS_NAME
-        );
-    }
+    // Registering on the bus is a round trip to the bus daemon; it happens on
+    // the session runtime while the compositor starts. Until it completes,
+    // nothing can reach the portal, so nothing is queued.
+    let described_documents = documents.describe();
+    let server = crate::session_runtime::Registration::start(
+        runtime.handle(),
+        "portal",
+        async move {
+            let conn = zbus::connection::Builder::session()?.build().await?;
+            crate::portal::serve_with_inhibit_and_clipboard(
+                conn,
+                ctx,
+                inhibit_registry,
+                crate::portal::clipboard::ClipboardBrokerHandle::new(Arc::new(
+                    crate::portal::clipboard::CompositorClipboardBroker::new(selection),
+                )),
+            )
+            .await
+        },
+        move |server: &crate::portal::ServerHandle| {
+            // Losing the name isn't warning-shaped: xdg-desktop-portal would
+            // route FileChooser elsewhere, so every Open would hit a backend
+            // with no session state — logged at journal level.
+            if server.owns_name() {
+                tracing::info!(
+                    "portal: serving FileChooser+ScreenCast+RemoteDesktop+Access on {}; documents via {described_documents}",
+                    crate::portal::BUS_NAME,
+                );
+            } else {
+                tracing::error!(
+                    "portal: another process already owns {} — this session's file \
+                     dialog will never be reached. The standalone \
+                     `shell --portal-server-only` daemon is the usual culprit; it is \
+                     no longer part of the image and its unit should be disabled.",
+                    crate::portal::BUS_NAME
+                );
+            }
+        },
+    );
 
     // The queues are useless until drained; attaching them to the overlay host
     // here (not at construction) keeps "portal up" and "prompts reach a screen" one fact.
@@ -4779,11 +4814,6 @@ fn start_portal_backend(
         .host_mut()
         .set_portal_queues(prompts.clone(), pickers);
 
-    tracing::info!(
-        "portal: serving FileChooser+ScreenCast+RemoteDesktop+Access on {}; documents via {}",
-        crate::portal::BUS_NAME,
-        documents.describe()
-    );
     if !documents.reaches_confined_apps() {
         // Say it out loud: a sandboxed app getting ENOENT after picking a file
         // looks like an app bug, and the journal is the only place to connect the dots.
@@ -4796,7 +4826,6 @@ fn start_portal_backend(
     Some(PortalBackend {
         media_grants: grants,
         media_prompts: prompts,
-        runtime,
         server,
         remote_input: remote_input_rx,
         input_capture,
@@ -5376,7 +5405,7 @@ pub fn run() {
         let runtime = crate::shell::launcher::runtime_dir();
         // SAFETY: getuid has no arguments or memory contract.
         let uid = unsafe { libc::getuid() };
-        let pending = dirs::data_local_dir().is_some_and(|data| {
+        let pending = xdg_paths::data_local_dir().is_some_and(|data| {
             crate::shell::desktop_continuation::pending_review(
                 &data.join("qos-imager/migrations/desktop-continuation.json"),
                 uid,
@@ -5673,6 +5702,28 @@ pub fn run() {
         std::process::exit(1);
     }
     let mut native_accessibility = NativeAccessibility::new(initial_size, a11y_ping);
+    // Work handed to the session runtime from this loop (the network start
+    // after first-login setup, media-player replies) reports back through
+    // mailboxes; this ping wakes an idle loop when one is filled.
+    let session_wake: crate::session_runtime::Wake = match calloop::ping::make_ping() {
+        Ok((ping, source)) => {
+            if let Err(error) = event_loop.handle().insert_source(source, |(), (), _| {}) {
+                eprintln!("tilo compositor: insert session wake source failed: {error}");
+                std::process::exit(1);
+            }
+            Arc::new(move || ping.ping())
+        }
+        Err(error) => {
+            eprintln!("tilo compositor: create session wake source failed: {error}");
+            std::process::exit(1);
+        }
+    };
+    let mut network_start: Option<
+        crate::session_runtime::PendingStart<crate::shell::network::ShellNetwork>,
+    > = None;
+    // A media player's answer to a transport key, as the OSD to raise.
+    let (transport_osd, transport_osds) =
+        crate::session_runtime::mailbox::<crate::shell::osd::Osd>(Arc::clone(&session_wake));
 
     // Idle / DPMS-blank / session-lock state machine (pure logic, see
     // `compositor::idle`); transitions become `backend.set_dpms` calls and
@@ -5746,21 +5797,24 @@ pub fn run() {
     frame_builder.with_chrome(|st| {
         st.set_notification_runtime(notification_sound.clone(), priority_contacts.clone());
     });
-    // Held for the lifetime of `run` so the runtime's worker threads keep driving zbus dispatch in the background.
-    let mut notif_runtime: Option<tokio::runtime::Runtime> = None;
+    // The session runtime keeps driving zbus dispatch in the background for
+    // the life of the process.
+    let mut notif_runtime: Option<&'static tokio::runtime::Runtime> = None;
     // RAII: dropping this releases the D-Bus bus name and tears down the
     // object server. It is explicitly dropped in the ordered shutdown block.
-    let mut notif_handle: Option<crate::notifications::ServerHandle> = None;
-    match tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .worker_threads(1)
-        .thread_name("tilo-notify")
-        .build()
-    {
+    // Registered in the background: the loop starts without waiting on the
+    // bus daemon. Until then (or if it fails) shell-internal notifications
+    // keep working.
+    let mut notif_handle: Option<
+        crate::session_runtime::Registration<crate::notifications::ServerHandle>,
+    > = None;
+    match crate::session_runtime::runtime() {
         Ok(rt) => {
             let bridge = notif_bridge.clone();
-            let res: Result<crate::notifications::ServerHandle, zbus::Error> =
-                rt.block_on(async move {
+            notif_handle = Some(crate::session_runtime::Registration::start(
+                rt.handle(),
+                "notifications",
+                async move {
                     let conn = zbus::connection::Builder::session()?.build().await?;
                     let service = crate::notifications::NotificationService::with_connection(
                         bridge.clone(),
@@ -5773,37 +5827,30 @@ pub fn run() {
                     let handle =
                         crate::notifications::serve_notifications(conn.clone(), service).await?;
                     crate::notifications::spawn_signal_emitter(conn, bridge);
-                    Ok(handle)
-                });
-            match res {
-                Ok(h) => {
+                    Ok::<_, zbus::Error>(handle)
+                },
+                |_| {
                     tracing::info!(
                         "notifications: serving {} on session bus",
                         crate::notifications::BUS_NAME
                     );
-                    notif_handle = Some(h);
-                }
-                Err(e) => {
-                    tracing::warn!(
-                        "notifications: serve failed ({e}); continuing with \
-                         shell-internal notifications only"
-                    );
-                }
-            }
-            // Keep the runtime alive regardless of notification outcome: the power
-            // service lives on the *system* bus (logind/UPower), independent of the session-bus daemon, sharing these threads.
+                },
+            ));
+            // The power service runs regardless of notification outcome: it
+            // lives on the *system* bus (logind/UPower), independent of the
+            // session-bus daemon, sharing these threads.
             notif_runtime = Some(rt);
         }
         Err(e) => {
-            tracing::warn!("notifications: tokio runtime build failed ({e}); D-Bus service off");
+            tracing::warn!("notifications: session runtime unavailable ({e}); D-Bus service off");
         }
     }
 
     // Power service: async orchestrator suspending via logind, mirroring the
     // inhibitor registry into a logind lock, watching the battery and lid.
-    // Spawned on the notify runtime; if the system bus/logind/UPower are
+    // Spawned on the session runtime; if the system bus/logind/UPower are
     // unreachable it logs and falls back to the pure idle policy (still blanks/locks/honours env timeouts, just can't actuate real suspend).
-    if let Some(rt) = notif_runtime.as_ref() {
+    if let Some(rt) = notif_runtime {
         let bridge = power_bridge.clone();
         let registry = inhibit_registry.clone();
         let policy = power_policy;
@@ -6292,6 +6339,7 @@ pub fn run() {
                             mk,
                             frame_builder.host().qs_actions(),
                             frame_builder.host().status_bridge(),
+                            &transport_osd,
                         ) {
                             frame_builder.with_chrome(|st| publish_media_osd(st, osd));
                             session_changed = true;
@@ -7418,6 +7466,10 @@ pub fn run() {
         pump_checkpoint!("peer-presence");
         let pump_presence_done = Instant::now();
         let pump_apps_started = pump_presence_done;
+        for osd in transport_osds.drain() {
+            frame_builder.with_chrome(|st| publish_media_osd(st, osd));
+            session_changed = true;
+        }
         let mut apps_changed = foreign_capture_changed
             | frame_builder.pump_apps(&mut test_control_ctx.doc, &test_control_ctx.root_obj);
         crate::shell::launcher::record_presented_launches(|surface| {
@@ -7434,11 +7486,36 @@ pub fn run() {
         pump_checkpoint!("widget-pump");
         if take_deferred_peer_sync_activation(&mut deferred_peer_sync, onboarding_active) {
             // `pump_apps` just observed the trusted onboarding completion.
-            // Apps were withheld until this edge, so their first service
-            // descriptor always sees the live transport-backed broker.
+            // Apps were withheld until this edge. The network starts off the
+            // loop; launches wait until it and the broker over it exist, so
+            // an app's first service descriptor sees the live broker.
             frame_builder.host_mut().set_peer_sync_enabled(true);
-            peer_sync =
-                spawn_session_peer_sync(&mut frame_builder, &mut state, tree_handle.clone());
+            crate::shell::launcher::hold_launches();
+            network_start = Some(start_session_peer_sync(
+                tree_handle.clone(),
+                Arc::clone(&session_wake),
+            ));
+        }
+        if let Some(outcome) = network_start
+            .as_ref()
+            .and_then(crate::session_runtime::PendingStart::poll)
+        {
+            network_start = None;
+            let start_failure = match outcome {
+                Ok(network) => {
+                    peer_sync = Some(install_session_peer_sync(
+                        &mut frame_builder,
+                        &mut state,
+                        tree_handle.clone(),
+                        network,
+                    ));
+                    None
+                }
+                Err(error) => {
+                    tracing::warn!(%error, "peer-sync: spawn failed; continuing without sync");
+                    Some(error)
+                }
+            };
             collab_broker =
                 spawn_session_collab_broker(&frame_builder.chrome_handle(), peer_sync.as_ref());
             if let Some(broker) = collab_broker.as_ref() {
@@ -7481,6 +7558,16 @@ pub fn run() {
                 if let Some(net) = peer_sync.as_ref() {
                     attach_peer_presence(&mut frame_builder, broker, net);
                 }
+            }
+            // The broker now exists (local-only if the network failed).
+            // Launches that waited for a network that never came are
+            // reported, not silently started without it; later launches
+            // run normally.
+            match start_failure {
+                None => crate::shell::launcher::release_held_launches(),
+                Some(error) => crate::shell::launcher::fail_held_launches(&format!(
+                    "the desktop's network could not start ({error})"
+                )),
             }
             apps_changed = true;
         }

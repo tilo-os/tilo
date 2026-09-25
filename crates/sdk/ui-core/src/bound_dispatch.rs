@@ -2648,7 +2648,11 @@ impl CallbackBinding {
         &self,
         witness: Option<&crate::collaboration::PrimaryRouteWitness>,
     ) -> bool {
-        witness.is_some_and(|witness| self.broker_route().as_ref() == Some(&witness.route))
+        witness.is_some_and(|witness| self.matches_route(&witness.route))
+    }
+    /// Whether `route` is the broker route this binding names.
+    pub(crate) fn matches_route(&self, route: &crate::collaboration::RouteSpec) -> bool {
+        self.broker_route().as_ref() == Some(route)
     }
     pub(crate) fn drain_owned_tree(
         &self,

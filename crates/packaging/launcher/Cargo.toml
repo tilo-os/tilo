@@ -75,6 +75,10 @@ runtime-identity = { path = "../../runtime/runtime-identity" }
 # Landlock ruleset construction and the baseline seccomp filter. A leaf
 # crate, so the launcher still depends on nothing in the compositor.
 sandbox-core = { path = "../../system/sandbox-core" }
+# The egress gate and the in-sandbox relay serve their connections as tasks on
+# a bounded runtime rather than an OS thread (or two) per connection.
+tilo-rt.workspace = true
+tokio = { workspace = true, features = ["io-util", "macros", "net", "rt", "sync", "time"] }
 
 [dev-dependencies]
 # Tests whose subject is the environment itself (session variables, service

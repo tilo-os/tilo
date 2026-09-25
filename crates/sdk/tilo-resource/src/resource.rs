@@ -198,6 +198,15 @@ pub fn encode<R: Resource>(action: &R::Action) -> Result<EncodedAction, ActionEr
     EncodedAction::encode(R::ACTION_TYPE, action)
 }
 
+/// The encoded form of a builder's result: the action, or a refusal that
+/// carries the builder's reason.
+pub(crate) fn encode_built<R: Resource>(built: Result<R::Action, String>) -> EncodedAction {
+    match built {
+        Ok(action) => encode::<R>(&action).unwrap_or_else(|error| refused::<R>(&error.to_string())),
+        Err(reason) => refused::<R>(&reason),
+    }
+}
+
 /// An action whose payload cannot be decoded, so the host refuses it with
 /// the builder's reason instead of applying anything.
 fn refused<R: Resource>(reason: &str) -> EncodedAction {
@@ -273,16 +282,67 @@ fn apply_spec<R: Resource>() -> ActionSpec {
     })
 }
 
+fn group_spec<R: Resource>() -> ActionSpec {
+    ActionSpec::typed(
+        crate::GROUP,
+        format!("Apply several {} edits as one", R::LABEL),
+        "Invocations as JSON",
+        ExecutionLocus::ClientLocal,
+        vec![ActionParam::required_owned(
+            crate::GROUP_PARAM,
+            ParamType::Array,
+            format!(
+                "{} actions to apply in order as one step, each {{\"action\": id, \"args\": {{..}}}}",
+                R::LABEL
+            ),
+        )],
+        |args| match crate::group::build_group::<R>(&args.to_json(), origin_now_ms()) {
+            Ok(group) => EncodedAction::encode(crate::group::group_type::<R>(), &group)
+                .unwrap_or_else(|error| refused::<R>(&error.to_string())),
+            Err(reason) => refused::<R>(&reason),
+        },
+    )
+    // One group is one undo step, like any other document action.
+    .reversible()
+    // A gesture's edits, from a surface, a script or an agent; a person picks
+    // the named actions it is made of.
+    .programmatic()
+    // As consequential as its most consequential member.
+    .with_risk(|args| {
+        crate::group::build_group::<R>(&args.to_json(), 0).map_or(
+            tilo_actions::RiskLevel::Low,
+            |group| tilo_actions::Action::risk(&group),
+        )
+    })
+}
+
 /// The resource tree published for one open resource: every declared action,
-/// the generic [`APPLY`] action, and the nested resources.
+/// the generic [`APPLY`] and [`GROUP`](crate::GROUP) actions, and the nested
+/// resources.
+///
+/// An action offered on the items of a collection (see [`crate::items`])
+/// stays published on the record, with its id parameter, for scripts and
+/// agents; a person picks it on the item, so it is not a palette row here.
 pub fn publish<R: Resource>(id: &str, label: &str, state: &R::State) -> tilo_actions::Resource {
+    let children = R::children(state);
+    let on_items: std::collections::HashSet<&str> = children
+        .iter()
+        .filter(|child| crate::items::item_of_resource::<R>(child.id.as_str()).is_some())
+        .flat_map(|child| child.actions.iter().map(|spec| spec.id.as_str()))
+        .collect();
     let mut resource = tilo_actions::Resource::new(id, R::KIND, label);
     for decl in R::declarations() {
-        resource = resource.with_action(spec_from(&decl));
+        let spec = spec_from(&decl);
+        resource = resource.with_action(if on_items.contains(decl.id) {
+            spec.programmatic()
+        } else {
+            spec
+        });
     }
     resource
         .with_action(apply_spec::<R>())
-        .with_children(R::children(state))
+        .with_action(group_spec::<R>())
+        .with_children(children)
 }
 
 /// Build the action a declaration produces for JSON arguments, validating them
@@ -295,6 +355,9 @@ pub fn build_action<R: Resource>(
     arguments: &serde_json::Map<String, serde_json::Value>,
     now_ms: i64,
 ) -> Result<R::Action, String> {
+    if id == crate::GROUP {
+        return Err("a group is several actions; build it with `group::build_group`".into());
+    }
     if id == APPLY {
         let value = arguments
             .get(APPLY_PARAM)

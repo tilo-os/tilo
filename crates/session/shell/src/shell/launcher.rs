@@ -2184,6 +2184,141 @@ fn apply_launch_env_with(
     }
 }
 
+/// A launch waiting for the session's services to come up.
+#[cfg(any(test, target_os = "linux"))]
+#[derive(Debug)]
+struct HeldLaunch {
+    package_id: String,
+    display_name: String,
+    command: LaunchCommand,
+}
+
+/// Identifies a held launch for deduplication: the same app asked to open
+/// the same thing. The environment is left out: it carries per-attempt
+/// values (continuity instance, activation token) that differ every click.
+#[cfg(any(test, target_os = "linux"))]
+type HeldLaunchKey = (String, PathBuf, Vec<String>);
+
+#[cfg(any(test, target_os = "linux"))]
+type Gate = crate::shell::launch_gate::LaunchGate<HeldLaunchKey, HeldLaunch>;
+
+#[cfg(any(test, target_os = "linux"))]
+static LAUNCH_GATE: Mutex<Gate> = Mutex::new(Gate::open_with_capacity(
+    crate::shell::launch_gate::MAX_HELD_LAUNCHES,
+));
+
+/// Hold every app launch until [`release_held_launches`] or
+/// [`fail_held_launches`]. The compositor calls this when it starts the
+/// session network in the background, so that no app starts before the
+/// collaboration broker it resolves at startup exists.
+#[cfg(any(test, target_os = "linux"))]
+pub fn hold_launches() {
+    lock(&LAUNCH_GATE).hold();
+}
+
+/// Run the held launches in the order they were requested, and let later
+/// launches run at once.
+#[cfg(any(test, target_os = "linux"))]
+pub fn release_held_launches() {
+    release_from(&LAUNCH_GATE, |held| {
+        // A failure to start is reported through `EVENTS` by `start_launch`.
+        let _ = start_launch(held.package_id, held.display_name, held.command);
+    });
+}
+
+/// Report every held launch as failed with `reason`, and let later launches
+/// run at once.
+#[cfg(any(test, target_os = "linux"))]
+pub fn fail_held_launches(reason: &str) {
+    fail_from(&LAUNCH_GATE, reason, push_event);
+}
+
+#[cfg(any(test, target_os = "linux"))]
+fn release_from(gate: &Mutex<Gate>, mut start: impl FnMut(HeldLaunch)) {
+    // Taken under the lock, started outside it: starting may launch again.
+    let held = lock(gate).open();
+    for launch in held {
+        start(launch);
+    }
+}
+
+#[cfg(any(test, target_os = "linux"))]
+fn fail_from(gate: &Mutex<Gate>, reason: &str, mut report: impl FnMut(LaunchEvent)) {
+    let held = lock(gate).open();
+    for launch in held {
+        report(held_launch_failure(launch, reason));
+    }
+}
+
+#[cfg(any(test, target_os = "linux"))]
+fn held_launch_failure(launch: HeldLaunch, detail: &str) -> LaunchEvent {
+    LaunchEvent {
+        package_id: launch.package_id,
+        display_name: launch.display_name,
+        managed_agent_id: launch.command.managed_agent_id,
+        managed_workspace_id: launch
+            .command
+            .service_identity
+            .map(|identity| identity.workspace_id),
+        kind: LaunchEventKind::SpawnFailed {
+            detail: detail.to_string(),
+        },
+    }
+}
+
+/// Admit one launch through `gate`: start it now, hold it, or report it.
+#[cfg(any(test, target_os = "linux"))]
+fn admit_launch(
+    gate: &Mutex<Gate>,
+    launch: HeldLaunch,
+    start: impl FnOnce(HeldLaunch) -> Result<(), String>,
+    report: impl FnOnce(LaunchEvent),
+) -> Result<(), String> {
+    use crate::shell::launch_gate::Admission;
+
+    let key = (
+        launch.package_id.clone(),
+        launch.command.program.clone(),
+        launch.command.args.clone(),
+    );
+    let admission = lock(gate).admit(key, launch);
+    match admission {
+        Admission::Run(launch) => start(launch),
+        Admission::Held | Admission::AlreadyHeld => Ok(()),
+        Admission::Full(launch) => {
+            let detail = "too many apps are waiting for the desktop's network to start";
+            report(held_launch_failure(launch, detail));
+            Err(detail.to_string())
+        }
+    }
+}
+
+/// Launch `command` under `(package_id, display_name)`, or hold it while
+/// the session's services start (see [`hold_launches`]). A held launch
+/// reports through [`EVENTS`] like any other once it runs or fails.
+///
+/// # Errors
+///
+/// As [`start_launch`] for a launch that starts now; also when a launch
+/// cannot be held because too many are already waiting.
+#[cfg(any(test, target_os = "linux"))]
+pub fn spawn_launch(
+    package_id: String,
+    display_name: String,
+    command: LaunchCommand,
+) -> Result<(), String> {
+    admit_launch(
+        &LAUNCH_GATE,
+        HeldLaunch {
+            package_id,
+            display_name,
+            command,
+        },
+        |held| start_launch(held.package_id, held.display_name, held.command),
+        push_event,
+    )
+}
+
 /// Run `command` on a worker thread under `(package_id, display_name)`,
 /// reporting through [`EVENTS`]. Shared by both launch kinds — a `.tapp`
 /// via `tilo-launcher run` and a host app via `run-host` — since they
@@ -2197,7 +2332,7 @@ fn apply_launch_env_with(
 /// Returns the operating system's thread-spawn error when the launcher
 /// cannot create the worker responsible for supervising `command`.
 #[cfg(any(test, target_os = "linux"))]
-pub fn spawn_launch(
+fn start_launch(
     package_id: String,
     display_name: String,
     command: LaunchCommand,
@@ -2835,6 +2970,134 @@ mod tests {
             managed_workspace_id: None,
             kind,
         }
+    }
+
+    fn held(package_id: &str, args: &[&str]) -> HeldLaunch {
+        HeldLaunch {
+            package_id: package_id.into(),
+            display_name: package_id.into(),
+            command: LaunchCommand {
+                program: PathBuf::from("/usr/libexec/tilo-launcher"),
+                args: args.iter().map(ToString::to_string).collect(),
+                env: Vec::new(),
+                service_identity: None,
+                portal_workspace_id: None,
+                managed_agent_id: None,
+            },
+        }
+    }
+
+    fn test_gate() -> Mutex<Gate> {
+        Mutex::new(Gate::open_with_capacity(2))
+    }
+
+    fn admit_recording(
+        gate: &Mutex<Gate>,
+        launch: HeldLaunch,
+        started: &mut Vec<String>,
+        reported: &mut Vec<LaunchEvent>,
+    ) -> Result<(), String> {
+        admit_launch(
+            gate,
+            launch,
+            |launch| {
+                started.push(launch.package_id);
+                Ok(())
+            },
+            |event| reported.push(event),
+        )
+    }
+
+    #[test]
+    fn launches_requested_while_the_network_starts_wait_then_run_in_order() {
+        let gate = test_gate();
+        let mut started = Vec::new();
+        let mut reported = Vec::new();
+        lock(&gate).hold();
+
+        for app in ["so.tilo.files", "so.tilo.notes"] {
+            admit_recording(&gate, held(app, &["run", app]), &mut started, &mut reported)
+                .expect("held, not refused");
+        }
+        assert!(started.is_empty(), "nothing runs before the broker exists");
+        assert!(reported.is_empty(), "nothing is dropped or failed either");
+
+        release_from(&gate, |launch| started.push(launch.package_id));
+        assert_eq!(started, ["so.tilo.files", "so.tilo.notes"]);
+
+        // Once released, the next launch runs at once.
+        admit_recording(
+            &gate,
+            held("so.tilo.music", &["run", "so.tilo.music"]),
+            &mut started,
+            &mut reported,
+        )
+        .unwrap();
+        assert_eq!(started.last().map(String::as_str), Some("so.tilo.music"));
+    }
+
+    #[test]
+    fn a_failed_network_start_fails_the_waiting_launches() {
+        let gate = test_gate();
+        let mut started = Vec::new();
+        let mut reported = Vec::new();
+        lock(&gate).hold();
+        admit_recording(
+            &gate,
+            held("so.tilo.files", &["run", "so.tilo.files"]),
+            &mut started,
+            &mut reported,
+        )
+        .unwrap();
+
+        fail_from(&gate, "peer sync could not start", |event| {
+            reported.push(event);
+        });
+        assert!(started.is_empty());
+        assert_eq!(reported.len(), 1);
+        assert_eq!(reported[0].package_id, "so.tilo.files");
+        assert_eq!(
+            reported[0].kind,
+            LaunchEventKind::SpawnFailed {
+                detail: "peer sync could not start".into()
+            }
+        );
+        assert!(!lock(&gate).is_holding(), "later launches are not held");
+    }
+
+    #[test]
+    fn a_repeated_request_waits_once_and_an_overfull_wait_is_reported() {
+        let gate = test_gate();
+        let mut started = Vec::new();
+        let mut reported = Vec::new();
+        lock(&gate).hold();
+        let files = || held("so.tilo.files", &["run", "so.tilo.files"]);
+        admit_recording(&gate, files(), &mut started, &mut reported).unwrap();
+        admit_recording(&gate, files(), &mut started, &mut reported).unwrap();
+        // Same app, another document: a different request.
+        admit_recording(
+            &gate,
+            held("so.tilo.files", &["run", "so.tilo.files", "--open", "/a"]),
+            &mut started,
+            &mut reported,
+        )
+        .unwrap();
+        assert!(
+            admit_recording(
+                &gate,
+                held("so.tilo.notes", &["run", "so.tilo.notes"]),
+                &mut started,
+                &mut reported,
+            )
+            .is_err()
+        );
+        assert_eq!(reported.len(), 1);
+        assert_eq!(reported[0].package_id, "so.tilo.notes");
+
+        let mut released = Vec::new();
+        release_from(&gate, |launch| released.push(launch.command.args));
+        assert_eq!(released.len(), 2);
+        assert_eq!(released[1].last().map(String::as_str), Some("/a"));
     }
 
     #[test]

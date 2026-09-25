@@ -117,7 +117,8 @@ fn child_plan(case: &str) {
         }
     };
     let mut events = Vec::new();
-    let response = handle_streaming(
+    let http = provider_client().unwrap();
+    let response = tilo_rt::block_on(handle_streaming(
         if case == "unauthorized" {
             PHOTOS_APP
         } else {
@@ -141,11 +142,13 @@ fn child_plan(case: &str) {
             deltas: case == "stream-deltas",
             trace: Some(PlanTrace { id: 7, turn: 1 }),
         },
+        &http,
         &mut |event| {
             events.push(serde_json::to_value(event).unwrap());
             true
         },
-    );
+    ))
+    .unwrap();
     let root = std::env::var("XDG_CONFIG_HOME").unwrap();
     fs::write(
         Path::new(&root).join("response.json"),
@@ -369,7 +372,12 @@ fn plan_dispatch_validation_failures_send_nothing() {
 #[test]
 fn unsupported_gateway_host_refuses_peer_authentication() {
     let (stream, _peer) = UnixStream::pair().unwrap();
-    assert!(!same_user(&stream));
+    stream.set_nonblocking(true).unwrap();
+    tilo_rt::block_on(async {
+        let stream = tokio::net::UnixStream::from_std(stream).unwrap();
+        assert!(!same_user(&stream));
+    })
+    .unwrap();
 }
 
 fn request_body(request: &str) -> serde_json::Value {

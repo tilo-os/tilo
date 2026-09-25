@@ -3330,6 +3330,9 @@ impl App {
         );
         self.prepare_native_presentation();
         crate::host::native::install_default_if_unset(self.window.app_id.as_deref());
+        // The event loop never waits on async work: anything that must is
+        // spawned onto the app runtime and handed back through the wake scope.
+        tilo_rt::mark_ui_thread();
         let mut event_loop_builder = EventLoop::<UserEvent>::with_user_event();
         #[cfg(target_os = "macos")]
         if crate::host::environment().diagnostics.window_no_activate {

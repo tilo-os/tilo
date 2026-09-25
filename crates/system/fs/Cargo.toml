@@ -31,7 +31,6 @@ filesystem = [
     "dep:thiserror",
     "dep:hex",
     "dep:blake3",
-    "dep:futures-util",
     "dep:rand",
     "dep:getrandom",
     "dep:fuser",
@@ -110,11 +109,11 @@ uuid = { workspace = true, optional = true }
 tempfile.workspace = true
 thiserror = { workspace = true, optional = true }
 tokio = { workspace = true, features = ["full"] }
+tilo-rt.workspace = true
 hex = { workspace = true, optional = true }
 blake3 = { workspace = true, optional = true }
 postcard = { workspace = true, features = ["use-std"] }
-futures-lite.workspace = true
-futures-util = { workspace = true, optional = true }
+futures-util.workspace = true
 rand = { workspace = true, optional = true }
 
 [dev-dependencies]

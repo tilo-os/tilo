@@ -45,7 +45,7 @@ const SECRET_SERVICE_STARTUP_RETRY_DELAY: std::time::Duration =
 /// stderr copy is made: a shared fallback such as `/tmp` would let another user
 /// plant the path.
 fn install_crash_log_hook() {
-    let dir = dirs::cache_dir()
+    let dir = xdg_paths::cache_dir()
         .map(|cache| cache.join("tilo").join("crashes"))
         .filter(|dir| private_fs::directory(dir).is_ok());
     let default_hook = std::panic::take_hook();
@@ -603,19 +603,7 @@ pub fn run() -> std::process::ExitCode {
 fn run_portal_server_only() -> std::process::ExitCode {
     tracing::info!("tilo portal server starting (--portal-server-only)");
 
-    let runtime = match tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .thread_name("tilo-portal-only")
-        .build()
-    {
-        Ok(rt) => rt,
-        Err(e) => {
-            eprintln!("error: failed to build tokio runtime for portal-only mode: {e}");
-            return std::process::ExitCode::FAILURE;
-        }
-    };
-
-    runtime.block_on(async move {
+    let served = tilo_rt::daemon("tilo-portal").workers(2).run(async move {
         // Fresh GrantStoreHandle on an empty WorkspaceTree + a Channel-mode
         // PromptQueueHandle — every prompt buffers (no compositor to drain it);
         // until per-workspace state is wired for this mode, the unit's job is just to own the bus name.
@@ -657,5 +645,9 @@ fn run_portal_server_only() -> std::process::ExitCode {
 
         // Block forever — systemd sends SIGTERM to tear us down; the ServerHandle keeps the connection alive in the meantime.
         std::future::pending::<std::process::ExitCode>().await
+    });
+    served.unwrap_or_else(|e| {
+        eprintln!("error: failed to start the runtime for portal-only mode: {e}");
+        std::process::ExitCode::FAILURE
     })
 }

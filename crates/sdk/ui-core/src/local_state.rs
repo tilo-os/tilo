@@ -4,9 +4,12 @@
 //! handle is for presentation state that should survive between widget events
 //! without becoming part of persistence, collaboration, or undo history.
 
+use std::future::Future;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex, RwLock};
+
+use tokio::task::AbortHandle;
 
 pub use crate::wake::WakeHandle;
 
@@ -205,6 +208,7 @@ pub struct LocalStateWriter<T> {
 pub struct LatestTask<T> {
     state: LocalState<T>,
     generation: Arc<Mutex<u64>>,
+    task: Arc<Mutex<Option<AbortHandle>>>,
 }
 
 /// UI-thread inbox for worker results where only the newest request may win.
@@ -219,6 +223,13 @@ pub struct LatestRequest<T> {
     generation: Arc<AtomicU64>,
     pending: Option<u64>,
     wake: WakeHandle,
+    task: Option<AbortHandle>,
+}
+
+impl<T> Drop for LatestRequest<T> {
+    fn drop(&mut self) {
+        self.abort_task();
+    }
 }
 
 impl<T> Default for LatestRequest<T> {
@@ -237,6 +248,13 @@ impl<T> LatestRequest<T> {
             generation: Arc::new(AtomicU64::new(0)),
             pending: None,
             wake: WakeHandle::new(),
+            task: None,
+        }
+    }
+
+    fn abort_task(&mut self) {
+        if let Some(task) = self.task.take() {
+            task.abort();
         }
     }
 
@@ -265,6 +283,7 @@ impl<T> LatestRequest<T> {
         if !self.wake.authorize_publication() {
             return None;
         }
+        self.abort_task();
         // Reserve `u64::MAX` as a terminal invalidation marker. It is never
         // handed to a completion capability, so an exhausted counter cannot
         // make an old completion current again.
@@ -296,6 +315,7 @@ impl<T> LatestRequest<T> {
     /// Fallible form of [`Self::cancel`]. Returns `false` only after the
     /// terminal invalidation marker has already been reached.
     pub fn try_cancel(&mut self) -> bool {
+        self.abort_task();
         if self
             .generation
             .fetch_update(Ordering::AcqRel, Ordering::Acquire, |generation| {
@@ -331,6 +351,32 @@ impl<T> LatestRequest<T> {
             }
         }
         None
+    }
+}
+
+impl<T: Send + 'static> LatestRequest<T> {
+    /// Start a request whose result is `future`'s output.
+    ///
+    /// The future runs on the app runtime ([`tilo_rt::app`]), never on the
+    /// calling UI thread. Its output wakes the event loop and is drained with
+    /// [`Self::try_take`]. A newer request, a cancellation or dropping this
+    /// inbox aborts the future at its next await point.
+    ///
+    /// Returns `false` without spawning when the owner is closed or the
+    /// generation namespace is exhausted (see [`Self::try_begin`]).
+    pub fn spawn<F>(&mut self, future: F) -> bool
+    where
+        F: Future<Output = T> + Send + 'static,
+    {
+        let Some(completion) = self.try_begin() else {
+            return false;
+        };
+        let task = tilo_rt::app().spawn(async move {
+            let value = future.await;
+            completion.complete(value);
+        });
+        self.task = Some(task.abort_handle());
+        true
     }
 }
 
@@ -380,6 +426,7 @@ impl<T> Clone for LatestTask<T> {
         Self {
             state: self.state.clone(),
             generation: Arc::clone(&self.generation),
+            task: Arc::clone(&self.task),
         }
     }
 }
@@ -390,7 +437,47 @@ impl<T> LatestTask<T> {
         Self {
             state: LocalState::new(initial),
             generation: Arc::new(Mutex::new(0)),
+            task: Arc::new(Mutex::new(None)),
         }
+    }
+
+    /// Abort the future started by [`Self::spawn`], if one is running, and
+    /// remember `next` as the one to abort later.
+    fn replace_task(&self, next: Option<AbortHandle>) {
+        let previous = std::mem::replace(
+            &mut *self
+                .task
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+            next,
+        );
+        if let Some(previous) = previous {
+            previous.abort();
+        }
+    }
+
+    /// Publish `running`, then run `future` on the app runtime
+    /// ([`tilo_rt::app`]) and publish its output, waking the event loop.
+    ///
+    /// The future never runs on the calling UI thread. Starting another run
+    /// or cancelling aborts it at its next await point, and its output is
+    /// discarded if it finishes anyway.
+    ///
+    /// Returns `false` without spawning when [`Self::try_begin`] refuses.
+    pub fn spawn<F>(&self, running: T, future: F) -> bool
+    where
+        T: Send + Sync + 'static,
+        F: Future<Output = T> + Send + 'static,
+    {
+        let Some(completion) = self.try_begin(running) else {
+            return false;
+        };
+        let task = tilo_rt::app().spawn(async move {
+            let value = future.await;
+            completion.complete(value);
+        });
+        self.replace_task(Some(task.abort_handle()));
+        true
     }
 
     /// Clone the observable state for `ModelView`, `Text`, or UI callbacks.
@@ -434,6 +521,7 @@ impl<T> LatestTask<T> {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let run = generation.checked_add(1).filter(|next| *next != u64::MAX)?;
+        self.replace_task(None);
         // Keep generation and state publication in one critical section so a
         // prior worker cannot pass its check between these operations.
         if !self.state.try_set(running) {
@@ -463,6 +551,7 @@ impl<T> LatestTask<T> {
         let Some(next) = generation.checked_add(1) else {
             return false;
         };
+        self.replace_task(None);
         // Invalidating the run and publishing cancellation are one atomic
         // ordering boundary with respect to `TaskCompletion::complete`.
         if !self.state.try_set(cancelled) {
@@ -1037,5 +1126,107 @@ mod tests {
             .unwrap();
         assert!(task.begin(1).complete(2));
         assert_eq!(task.state().get(), 3);
+    }
+
+    /// Stands in for the event loop: a thread marked as the UI thread whose
+    /// wake scope is bound to a channel, as the native runner binds it to
+    /// its event-loop proxy.
+    fn on_ui_thread(body: impl FnOnce(&WakeScope, &Receiver<WakeEvent>) + Send + 'static) {
+        std::thread::Builder::new()
+            .name("ui-event-loop".into())
+            .spawn(move || {
+                tilo_rt::mark_ui_thread();
+                let (scope, wakes) = bound_scope();
+                let _entry = scope.enter();
+                body(&scope, &wakes);
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+    }
+
+    const WAKE_DEADLINE: std::time::Duration = std::time::Duration::from_secs(10);
+
+    #[test]
+    fn spawned_work_never_runs_on_the_ui_thread() {
+        on_ui_thread(|scope, wakes| {
+            let ui_thread = std::thread::current().id();
+            let mut request = LatestRequest::new();
+            assert!(request.spawn(async {
+                // Cross an await point, so a runtime driven from the caller
+                // would have to be polled again here.
+                tokio::task::yield_now().await;
+                let current = std::thread::current();
+                (
+                    current.id(),
+                    current.name().map(str::to_owned),
+                    tilo_rt::is_ui_thread(),
+                )
+            }));
+            // Spawning neither entered a runtime on the UI thread nor ran the
+            // future inline.
+            assert!(!tilo_rt::in_runtime());
+            assert!(request.try_take().is_none());
+
+            let event = wakes.recv_timeout(WAKE_DEADLINE).unwrap();
+            assert!(scope.accepts(&event));
+            let (ran_on, name, ran_on_ui) = request.try_take().unwrap();
+            assert_ne!(ran_on, ui_thread);
+            assert_eq!(ran_on, tilo_rt::app().thread_id());
+            assert_eq!(name.as_deref(), Some("tilo-rt"));
+            assert!(!ran_on_ui);
+            // The UI thread can never block on the runtime either.
+            assert!(matches!(
+                tilo_rt::app().block_on(async {}),
+                Err(tilo_rt::Error::UiThread)
+            ));
+        });
+    }
+
+    #[test]
+    fn spawned_results_wake_the_event_loop_and_stale_runs_are_aborted() {
+        on_ui_thread(|scope, wakes| {
+            let mut request = LatestRequest::new();
+            let (started, started_rx) = mpsc::channel();
+            let (_never, hold) = tokio::sync::oneshot::channel::<()>();
+            let (dropped, dropped_rx) = mpsc::channel();
+            let guard = DropSignal(dropped);
+            assert!(request.spawn(async move {
+                let _guard = guard;
+                started.send(()).unwrap();
+                let _ = hold.await;
+                "stale"
+            }));
+            started_rx.recv_timeout(WAKE_DEADLINE).unwrap();
+            // A newer request supersedes the parked one: it is aborted, and
+            // only the newer result reaches the UI.
+            assert!(request.spawn(async { "fresh" }));
+            dropped_rx.recv_timeout(WAKE_DEADLINE).unwrap();
+            let event = wakes.recv_timeout(WAKE_DEADLINE).unwrap();
+            assert!(scope.accepts(&event));
+            assert_eq!(request.try_take(), Some("fresh"));
+
+            let task = LatestTask::new("idle");
+            let state = task.state();
+            let (release, gate) = tokio::sync::oneshot::channel::<()>();
+            assert!(task.spawn("loading", async move {
+                let _ = gate.await;
+                "loaded"
+            }));
+            // The running state is published before the future runs.
+            assert_eq!(state.get(), "loading");
+            release.send(()).unwrap();
+            let event = wakes.recv_timeout(WAKE_DEADLINE).unwrap();
+            assert!(scope.accepts(&event));
+            assert_eq!(state.get(), "loaded");
+        });
+    }
+
+    struct DropSignal(Sender<()>);
+
+    impl Drop for DropSignal {
+        fn drop(&mut self) {
+            let _ = self.0.send(());
+        }
     }
 }

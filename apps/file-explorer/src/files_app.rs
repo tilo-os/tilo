@@ -559,10 +559,13 @@ pub struct FileExplorerWidget {
     /// projections. `None` means no sheet is open.
     collab_panel: Option<CollabPanel>,
     collab_panel_focused: bool,
-    /// Single background share request. The worker never touches widget state;
-    /// paint/event polling adopts its bounded result on the UI thread.
-    share_result: Arc<std::sync::Mutex<Option<Result<crate::sharing::ShareActionResult, String>>>>,
+    /// Single background share request, run on the app runtime. It never
+    /// touches widget state; update/paint/event polling adopts its bounded
+    /// result on the UI thread.
+    share_result: ui::LatestRequest<Result<crate::sharing::ShareActionResult, String>>,
     share_pending_path: Option<PathBuf>,
+    /// Admission of a received bearer link, run on the app runtime.
+    received_share: ui::LatestRequest<Result<collab_types::RecipientSubscriptionStatusV1, String>>,
     /// Host-projected names keyed by certified human roots. Labels affect
     /// presentation only; every command and request continues to carry the
     /// root key.
@@ -622,7 +625,7 @@ impl FileExplorerWidget {
         // Under a sandbox this process's `HOME` is its own per-package
         // directory — `/run/tilo/app` — while the directory actually
         // opened is the user's real home, bound by a grant and named by
-        // `TILO_USER_HOME`. Reading `dirs::home_dir()` here made the two
+        // `TILO_USER_HOME`. Reading `xdg_paths::home()` here made the two
         // disagree, and the breadcrumb is where a disagreement shows:
         // `format_path` abbreviates a path to `~` only when it lies
         // under the home it was handed, so a home it does not recognise
@@ -883,8 +886,9 @@ impl FileExplorerWidget {
             nearby_send_path: None,
             collab_panel: None,
             collab_panel_focused: false,
-            share_result: Arc::new(std::sync::Mutex::new(None)),
+            share_result: ui::LatestRequest::new(),
             share_pending_path: None,
+            received_share: ui::LatestRequest::new(),
             trusted_humans,
             framework_history: ui::history_mode::checked_files::FileHistorySource::default(),
             framework_history_binding: None,
@@ -2384,16 +2388,13 @@ impl FileExplorerWidget {
                 };
                 self.share_pending_path = Some(entry.path);
                 self.status = Some(t("files-creating-one-use-link"));
-                let result = Arc::clone(&self.share_result);
-                std::thread::spawn(move || {
-                    let outcome = crate::sharing::create_one_use_view_link(
+                self.spawn_share(async move {
+                    crate::sharing::create_one_use_view_link(
                         &socket,
                         collab_types::FileRecordId(uuid::Uuid::from_bytes(record_id)),
                     )
-                    .map(crate::sharing::ShareActionResult::LinkCreated);
-                    if let Ok(mut slot) = result.lock() {
-                        *slot = Some(outcome);
-                    }
+                    .await
+                    .map(crate::sharing::ShareActionResult::LinkCreated)
                 });
                 true
             }
@@ -2432,9 +2433,8 @@ impl FileExplorerWidget {
                     "files-share-with-progress",
                     &[arg("person", display)],
                 ));
-                let result = Arc::clone(&self.share_result);
-                std::thread::spawn(move || {
-                    let outcome = crate::sharing::create_named_share(
+                self.spawn_share(async move {
+                    crate::sharing::create_named_share(
                         &socket,
                         collab_types::FileRecordId(uuid::Uuid::from_bytes(record_id)),
                         person,
@@ -2442,10 +2442,8 @@ impl FileExplorerWidget {
                         collab_types::FilePermission::View,
                         None,
                     )
-                    .map(crate::sharing::ShareActionResult::NamedCreated);
-                    if let Ok(mut slot) = result.lock() {
-                        *slot = Some(outcome);
-                    }
+                    .await
+                    .map(crate::sharing::ShareActionResult::NamedCreated)
                 });
                 true
             }
@@ -2471,16 +2469,13 @@ impl FileExplorerWidget {
                 };
                 self.share_pending_path = Some(entry.path);
                 self.status = Some(t("files-share-creating"));
-                let result = Arc::clone(&self.share_result);
-                std::thread::spawn(move || {
-                    let outcome = crate::sharing::create_share(
+                self.spawn_share(async move {
+                    crate::sharing::create_share(
                         &socket,
                         collab_types::FileRecordId(uuid::Uuid::from_bytes(record_id)),
                         request,
-                    );
-                    if let Ok(mut slot) = result.lock() {
-                        *slot = Some(outcome);
-                    }
+                    )
+                    .await
                 });
                 true
             }
@@ -2505,13 +2500,9 @@ impl FileExplorerWidget {
                 };
                 self.share_pending_path = Some(entry.path);
                 self.status = Some(t("files-revoking-access"));
-                let result = Arc::clone(&self.share_result);
-                std::thread::spawn(move || {
-                    let outcome = crate::sharing::revoke_grant(&socket, grant_id);
-                    if let Ok(mut slot) = result.lock() {
-                        *slot = Some(outcome);
-                    }
-                });
+                self.spawn_share(
+                    async move { crate::sharing::revoke_grant(&socket, grant_id).await },
+                );
                 true
             }
             FileCommand::ShowSharing => {
@@ -5745,13 +5736,57 @@ impl FileExplorerWidget {
         dirty
     }
 
+    /// Admit a received bearer link through the recipient service. The call
+    /// runs on the app runtime; when it finishes, Files opens the received
+    /// mount or reports why it could not.
+    pub fn admit_received_share(&mut self, uri: String) {
+        if !self
+            .received_share
+            .spawn(crate::received_shares::admit_link(uri))
+        {
+            self.set_external_status(t("files-received-unavailable"));
+        }
+    }
+
+    fn poll_received_share(&mut self) -> bool {
+        let Some(result) = self.received_share.try_take() else {
+            return false;
+        };
+        match result {
+            Ok(status) => {
+                if let Some(mount) = status.mount {
+                    self.navigate(PathBuf::from(mount.path));
+                    self.set_external_status(if mount.running {
+                        t("files-received-file")
+                    } else {
+                        t("files-received-mount-starting")
+                    });
+                } else {
+                    self.set_external_status(t("files-received-admitted"));
+                }
+            }
+            Err(error) => self.set_external_status(error),
+        }
+        true
+    }
+
+    /// Run a share-service call on the app runtime; its outcome wakes the
+    /// event loop and is applied by [`Self::poll_share_result`].
+    fn spawn_share(
+        &mut self,
+        call: impl std::future::Future<Output = Result<crate::sharing::ShareActionResult, String>>
+        + Send
+        + 'static,
+    ) {
+        if !self.share_result.spawn(call) {
+            // The window is closing; no outcome could be delivered.
+            self.share_pending_path = None;
+            self.status = Some(t("files-sharing-unavailable"));
+        }
+    }
+
     fn poll_share_result(&mut self) -> bool {
-        let result = self
-            .share_result
-            .lock()
-            .ok()
-            .and_then(|mut result| result.take());
-        let Some(result) = result else {
+        let Some(result) = self.share_result.try_take() else {
             return false;
         };
         let lifecycle = self
@@ -8454,6 +8489,12 @@ impl Widget for FileExplorerWidget {
         } else {
             None
         }
+    }
+
+    fn update(&mut self, _state: &mut automerge::AutoCommit, _path: &automerge::ObjId) -> bool {
+        // Service calls finishing on the app runtime wake the event loop.
+        let received = self.poll_received_share();
+        self.poll_share_result() | received
     }
 
     fn sync(&mut self, state: &mut automerge::AutoCommit, path: &automerge::ObjId) {

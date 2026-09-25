@@ -132,6 +132,8 @@ anyhow.workspace = true
 libc.workspace = true
 sd-notify.workspace = true
 tokio = { workspace = true, features = ["full"] }
+# The daemon's bounded runtime.
+tilo-rt.workspace = true
 # Crash-safe file replacement (temp + fsync + rename + dir fsync).
 atomic-file = { path = "../../system/atomic-file" }
 # Home-peer configuration is one signed filesystem bundle; the relay imports

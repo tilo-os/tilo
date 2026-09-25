@@ -3,25 +3,9 @@
 //! The PIN is sent as a D-Bus message body. It never appears in argv, an
 //! environment variable, `NetworkManager` profile storage, or Tilo settings.
 
-use std::sync::OnceLock;
-
-use tokio::runtime::Runtime;
-
 #[zbus::proxy(interface = "org.freedesktop.ModemManager1.Sim")]
 trait ModemManagerSim {
     fn send_pin(&self, pin: &str) -> zbus::Result<()>;
-}
-
-fn runtime() -> Result<&'static Runtime, String> {
-    static RT: OnceLock<Option<Runtime>> = OnceLock::new();
-    RT.get_or_init(|| {
-        tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .ok()
-    })
-    .as_ref()
-    .ok_or_else(|| "could not start the mobile-broadband runtime".to_string())
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -93,7 +77,7 @@ pub fn unlock_mobile_sim_on(sim: &str, pin: &str) -> Result<(), String> {
     }
     let sim = sim.to_string();
 
-    runtime()?.block_on(async move {
+    crate::block_on(async move {
         let connection = zbus::Connection::system()
             .await
             .map_err(|e| format!("cannot reach ModemManager: {e}"))?;

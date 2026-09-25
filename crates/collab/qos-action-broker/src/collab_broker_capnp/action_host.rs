@@ -96,6 +96,29 @@ fn app_open_descriptor(package_id: &str, display_name: &str) -> ActionDescriptor
     }
 }
 
+/// A workspace application launch that opens published content.
+struct ContentLaunch {
+    room: String,
+    app_id: String,
+    content_hash: String,
+}
+
+/// `request` as a launch with content, when it is one.
+fn content_launch_target(request: &InvokeRequest) -> Option<ContentLaunch> {
+    let room = workspace_provider_room(&request.target.provider)?;
+    let address = &request.target.address;
+    let app_id = address.resource.strip_prefix(APPLICATION_RESOURCE_PREFIX)?;
+    if address.action != APPLICATION_OPEN_ACTION {
+        return None;
+    }
+    let content_hash = request.argument.to_slot().filter(|hash| !hash.is_empty())?;
+    Some(ContentLaunch {
+        room: room.to_string(),
+        app_id: app_id.to_string(),
+        content_hash,
+    })
+}
+
 /// Map a broker refusal onto the remote vocabulary. The broker words its
 /// refusals for people; only the distinctions a caller can act on are
 /// recovered, everything else stays a plain refusal.
@@ -429,7 +452,129 @@ impl CapnpBrokerState {
         if let Some(root) = self.directory_target(caller, request) {
             return self.invoke_directory(caller, root, request);
         }
+        if let Some(launch) = content_launch_target(request) {
+            return self.invoke_content_launch(caller, launch, request);
+        }
         Pending::ready(self.invoke_eager(caller, own_peer, request))
+    }
+
+    /// Launch an application with published content. Staging the content
+    /// reads the blob and writes a file, so it runs on the I/O pool and the
+    /// admission arrives once the launch has happened, never blocking the
+    /// caller's thread. Authority is checked before storage is touched and
+    /// again after staging, so the launch acts on current authority.
+    fn invoke_content_launch(
+        self: &Arc<Self>,
+        caller: &Caller,
+        launch: ContentLaunch,
+        request: &InvokeRequest,
+    ) -> Pending<Result<InvocationReceipt, ActionHostError>> {
+        let reservation = match self.remote_invocations.lock() {
+            Ok(mut ledger) => ledger.reserve(caller, request),
+            Err(_) => Err(ActionHostError::Unavailable {
+                reason: "the invocation ledger is unavailable".into(),
+            }),
+        };
+        match reservation {
+            Err(error) => return Pending::ready(Err(error)),
+            Ok(Reservation::Admitted) => {
+                return Pending::ready(
+                    self.remote_job(caller, &request.invocation)
+                        .map(|job| self.receipt_for(request.invocation, job))
+                        .ok_or(ActionHostError::UnknownInvocation),
+                );
+            }
+            Ok(Reservation::Reserved) => {}
+        }
+        let admitted = self
+            .authorized_launch(caller, &launch.room, &launch.app_id)
+            .and_then(|_| {
+                super::validate_launch_content_hash(&launch.content_hash).map_err(refusal)
+            })
+            .and_then(|()| {
+                crate::session_runtime::runtime()
+                    .map_err(|reason| ActionHostError::Unavailable { reason })
+            });
+        let runtime = match admitted {
+            Ok(runtime) => runtime,
+            Err(error) => {
+                if let Ok(mut ledger) = self.remote_invocations.lock() {
+                    ledger.abandon(&request.invocation);
+                }
+                return Pending::ready(Err(error));
+            }
+        };
+        let (completer, answer) = pending();
+        let state = Arc::clone(self);
+        let caller = caller.clone();
+        let invocation = request.invocation;
+        runtime.spawn(async move {
+            let staged = super::stage_launch_content(&launch.content_hash).await;
+            // A caller that stopped waiting has been told the launch did not
+            // start; keep it so.
+            let started = if completer.is_abandoned() {
+                Err(ActionHostError::Unavailable {
+                    reason: "the caller stopped waiting for admission".into(),
+                })
+            } else {
+                staged.map_err(refusal).and_then(|staged| {
+                    let (mut workspace, _) =
+                        state.authorized_launch(&caller, &launch.room, &launch.app_id)?;
+                    let document =
+                        staged.map(|staged| staged.grant_to(&mut workspace, &launch.app_id));
+                    Ok(state.launch_into(
+                        &workspace,
+                        &BrokerActor::for_caller(&caller),
+                        &launch.app_id,
+                        document.as_deref(),
+                    ))
+                })
+            };
+            let result = match state.remote_invocations.lock() {
+                Ok(mut ledger) => match started {
+                    Ok(job) => {
+                        ledger.complete(&invocation, job);
+                        drop(ledger);
+                        Ok(state.receipt_for(invocation, job))
+                    }
+                    Err(error) => {
+                        ledger.abandon(&invocation);
+                        Err(error)
+                    }
+                },
+                Err(_) => Err(ActionHostError::Unavailable {
+                    reason: "the invocation ledger is unavailable".into(),
+                }),
+            };
+            completer.complete(result);
+        });
+        answer
+    }
+
+    /// The hosted workspace `room` and the caller's policy actor in it, when
+    /// `caller` may launch `app_id` there.
+    fn authorized_launch(
+        &self,
+        caller: &Caller,
+        room: &str,
+        app_id: &str,
+    ) -> Result<(crate::shell::state::Workspace, crate::shell::state::Actor), ActionHostError> {
+        if caller.room().is_none() {
+            return Err(ActionHostError::UnknownAction);
+        }
+        let (workspace, policy) = self
+            .workspaces_for(caller)
+            .into_iter()
+            .find(|(workspace, _)| workspace.room.to_string() == room)
+            .ok_or(ActionHostError::UnknownAction)?;
+        if workspace.decide(&policy, &ResourceRef::App(app_id.to_string()), Verb::Write)
+            != CapDecision::Allow
+        {
+            return Err(refusal(
+                "the caller is not allowed to launch that application".into(),
+            ));
+        }
+        Ok((workspace, policy))
     }
 
     fn invoke_eager(
@@ -731,12 +876,16 @@ impl CapnpBrokerState {
             .find(|(workspace, _, _)| workspace.room.to_string() == room)
         else {
             return Err(ActionHostError::UnknownAction);
-        };
+        }
         if let Some(app_id) = address.resource.strip_prefix(APPLICATION_RESOURCE_PREFIX)
             && address.action == APPLICATION_OPEN_ACTION
         {
-            if caller.room().is_none() {
-                return Err(ActionHostError::UnknownAction);
+            // A launch with content is staged first; see
+            // `invoke_content_launch`.
+            if argument.is_some_and(|content| !content.is_empty()) {
+                return Err(ActionHostError::InvalidRequest {
+                    reason: "a launch with content is staged before it is admitted".into(),
+                });
             }
             return self
                 .launch_application(

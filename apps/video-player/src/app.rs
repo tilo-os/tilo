@@ -2135,7 +2135,11 @@ impl PlayerApp {
         let now = media::now_ms();
         match collab.role() {
             Role::Host => {
-                if let Some(engine) = self.player.engine()
+                // The manager connects in the background; the host's state
+                // is stepped once it can reach followers, so the first delta
+                // after connecting carries everything since.
+                if mgr.is_connected()
+                    && let Some(engine) = self.player.engine()
                     && let Some(delta) = collab.host_step(engine, now)
                 {
                     mgr.send(CollabRequest::document_incremental(delta));

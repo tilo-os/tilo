@@ -167,6 +167,9 @@ pub(super) struct BrokerTransport {
     pending_primary: Option<mpsc::Receiver<Result<RouteSpec, String>>>,
     /// The shovel dropped a primary-route reply unanswered: it has exited.
     worker_stopped: bool,
+    /// Whether [`wifi_continuity_command`] has been pointed at this
+    /// transport; done once it has connected.
+    wifi_bridge_registered: bool,
     _thread: Option<thread::JoinHandle<()>>,
 }
 
@@ -174,16 +177,31 @@ impl BrokerTransport {
     fn enqueue(&self, command: SdkCommand) -> Result<(), TransportError> {
         try_enqueue_sdk_command(&self.outbound_tx, command, &self.state)
     }
+
+    /// Route [`wifi_continuity_command`] through this transport.
+    fn register_wifi_bridge(&mut self) {
+        if let Ok(mut bridge) = WIFI_CONTINUITY_BRIDGE
+            .get_or_init(|| std::sync::Mutex::new(None))
+            .lock()
+        {
+            *bridge = Some(self.outbound_tx.downgrade());
+            self.wifi_bridge_registered = true;
+        }
+    }
 }
 
 impl CollabTransport for BrokerTransport {
     fn status(&self) -> TransportStatus {
         if self.worker_stopped {
-            TransportStatus::Closed("collaboration worker stopped".into())
-        } else if self.state.is_healthy() {
-            TransportStatus::Ready
-        } else {
-            TransportStatus::Closed("bounded bridge overloaded or disconnected".into())
+            return TransportStatus::Closed("collaboration worker stopped".into());
+        }
+        match self.state.connect_phase() {
+            ConnectPhase::Failed(reason) => TransportStatus::Closed(reason),
+            _ if !self.state.is_healthy() => {
+                TransportStatus::Closed("bounded bridge overloaded or disconnected".into())
+            }
+            ConnectPhase::Connecting => TransportStatus::Connecting,
+            ConnectPhase::Connected => TransportStatus::Ready,
         }
     }
 
@@ -219,6 +237,11 @@ impl CollabTransport for BrokerTransport {
 
     fn drain(&mut self, out: &mut Vec<CollabEvent>) {
         self.state.begin_poll();
+        if !self.wifi_bridge_registered
+            && matches!(self.state.connect_phase(), ConnectPhase::Connected)
+        {
+            self.register_wifi_bridge();
+        }
         while let Ok(evt) = self.inbound_rx.try_recv() {
             out.push(evt.event);
         }
@@ -1027,6 +1050,20 @@ struct BridgeState {
     document_event_bytes: ByteBudget,
     owner_wake: crate::wake::WakeHandle,
     wake_pending: Arc<AtomicBool>,
+    /// How far the shovel has got establishing the session. Written by the
+    /// shovel, read by the owner through [`CollabTransport::status`].
+    connect: Arc<std::sync::Mutex<ConnectPhase>>,
+}
+
+/// Progress of the shovel's connection setup.
+#[derive(Clone, Debug)]
+enum ConnectPhase {
+    /// Loading the join identity and reaching the broker.
+    Connecting,
+    /// The broker client is up; commands are being served.
+    Connected,
+    /// Setup failed; the shovel has exited.
+    Failed(String),
 }
 
 /// Lock-free aggregate reservation for heap payload retained by one queue.
@@ -1115,11 +1152,28 @@ impl BridgeState {
             document_event_bytes: ByteBudget::new(),
             owner_wake: crate::wake::WakeHandle::new(),
             wake_pending: Arc::new(AtomicBool::new(false)),
+            connect: Arc::new(std::sync::Mutex::new(ConnectPhase::Connecting)),
         }
     }
 
     fn is_healthy(&self) -> bool {
         self.healthy.load(Ordering::Acquire)
+    }
+
+    fn connect_phase(&self) -> ConnectPhase {
+        self.connect
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+
+    /// Record setup progress and wake the owner to observe it.
+    fn set_connect_phase(&self, phase: ConnectPhase) {
+        *self
+            .connect
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = phase;
+        self.notify_events();
     }
 
     fn notify_events(&self) {
@@ -2182,7 +2236,7 @@ impl CollaborationManager {
     /// construction, before the broker knows where to deliver it.
     fn await_primary_route(&mut self) -> Result<(), runtime_portal::NotAvailable> {
         self.primary_route.accepted = None;
-        let Backend::Transport(transport) = &mut self.backend else {
+        let super::Backend::Transport(transport) = &mut self.backend else {
             return Err(runtime_portal::NotAvailable::ServiceFdMissing);
         };
         await_primary_route_on(transport.as_mut(), &mut self.primary_route)
@@ -2270,38 +2324,53 @@ impl CollaborationManager {
     }
 
     pub(super) fn new_scoped(record: Option<String>) -> Self {
-        let (app_id, cluster_id) = auto_hello_env();
-        let identity = match sdk_join_identity(cluster_id) {
-            Ok(identity) => identity,
-            Err(error) => {
-                tracing::warn!(
-                    ?error,
-                    "collab: workspace join identity unavailable; disabling SDK collaboration"
-                );
-                return Self::disabled();
-            }
-        };
-
-        match Self::spawn_sdk(SdkConnectSource::Env, Some(identity)) {
-            Ok(sdk) => {
-                let mut manager = Self::with_transport(Box::new(sdk));
-                manager.send(CollabRequest::Hello {
-                    app_id,
-                    cluster_id,
-                    record,
-                    handle: presence_handle_env(),
-                });
-                if let Err(error) = manager.await_primary_route() {
-                    tracing::warn!(
-                        ?error,
-                        "collab: primary route unavailable; disabling SDK collaboration"
-                    );
-                    return Self::disabled();
-                }
-                manager
-            }
-            Err(_) => Self::disabled(),
+        // Without an inherited service there is nothing to reach; say so
+        // without starting a worker.
+        if runtime_portal::service_fd("collab").is_none() {
+            return Self::disabled();
         }
+        let (app_id, cluster_id) = auto_hello_env();
+        Self::connect_in_background(
+            SdkConnectSource::Env,
+            SdkIdentitySource::Inherited(cluster_id),
+            RouteSpec {
+                app_id,
+                cluster_id,
+                record,
+            },
+            presence_handle_env(),
+        )
+    }
+
+    /// Start the broker transport and announce `route` without waiting for
+    /// either. The worker loads the join identity, connects and joins; the
+    /// manager reports [`super::CollaborationState::Connecting`] until
+    /// [`Self::poll`] sees the primary route acknowledged, and the owner is
+    /// woken at each step.
+    fn connect_in_background(
+        source: SdkConnectSource,
+        identity: SdkIdentitySource,
+        route: RouteSpec,
+        handle: Option<String>,
+    ) -> Self {
+        let sdk = match Self::start_sdk(source, identity) {
+            Ok((sdk, _init)) => sdk,
+            Err(error) => return Self::offline(error.to_string()),
+        };
+        let mut manager = Self::with_transport(Box::new(sdk));
+        let RouteSpec {
+            app_id,
+            cluster_id,
+            record,
+        } = route;
+        manager.send(CollabRequest::Hello {
+            app_id,
+            cluster_id,
+            record,
+            handle,
+        });
+        manager.confirm_primary_route_in_background();
+        manager
     }
 
     /// Real socket-backed SDK transport for App lifecycle integration tests.
@@ -2315,6 +2384,15 @@ impl CollaborationManager {
     #[cfg(all(test, unix))]
     pub(crate) fn capturing_for_test() -> (Self, Box<dyn Fn() -> Vec<SignedOp>>) {
         tests::capturing_manager()
+    }
+
+    /// Like [`Self::connected_for_lifecycle_test`], but still connecting:
+    /// returns the manager with the wake scope it reports to and a channel
+    /// that receives each of its wakes.
+    #[cfg(all(test, unix))]
+    pub(crate) fn connecting_for_lifecycle_test()
+    -> (Self, crate::wake::WakeScope, mpsc::Receiver<()>) {
+        tests::connecting_manager()
     }
 
     /// Test-only: build a manager talking to an SDK broker on the given
@@ -2356,16 +2434,20 @@ impl CollaborationManager {
         manager
     }
 
-    /// Stand up the shovel thread + its tokio `current_thread` runtime.
-    /// Runs `try_connect` **inside** the thread's `LocalSet` because
-    /// capnp-rpc futures are `!Send` and can't cross a thread boundary.
-    /// The result surfaces via [`InitStatus`] on a one-shot mpsc so the
-    /// caller picks Disabled vs Sdk before returning, instead of an app
-    /// that only ever `poll`s silently running against a dead broker.
-    fn spawn_sdk(
+    /// Stand up the shovel thread + its tokio `current_thread` runtime and
+    /// return at once. The shovel loads the join identity and runs
+    /// `try_connect` **inside** its `LocalSet` because capnp-rpc futures are
+    /// `!Send` and can't cross a thread boundary.
+    ///
+    /// The transport reports [`TransportStatus::Connecting`] until the
+    /// shovel is serving commands (or [`TransportStatus::Closed`] if setup
+    /// failed); commands submitted meanwhile queue for it. The returned
+    /// receiver carries the same outcome once, for callers that choose to
+    /// wait for it.
+    fn start_sdk(
         source: SdkConnectSource,
-        identity: Option<SdkJoinIdentity>,
-    ) -> Result<BrokerTransport, runtime_portal::NotAvailable> {
+        identity: SdkIdentitySource,
+    ) -> Result<(BrokerTransport, mpsc::Receiver<InitStatus>), runtime_portal::NotAvailable> {
         let (outbound_tx, outbound_rx) = tokio_mpsc::channel::<QueuedSdkCommand>(SDK_COMMAND_QUEUE);
         let (inbound_tx, inbound_rx) = tokio_mpsc::channel::<QueuedCollabEvent>(SDK_EVENT_QUEUE);
         let state = BridgeState::new();
@@ -2385,15 +2467,36 @@ impl CollaborationManager {
             Err(e) => return Err(runtime_portal::NotAvailable::ConnectionFailed(e)),
         };
 
-        // Must not wait forever or panic — this runs before the app's first
-        // frame. A wedged connect costs a timeout and no collaboration, never
-        // an app that won't open.
+        let transport = BrokerTransport {
+            outbound_tx,
+            media: Some(media_tx),
+            inbound_rx,
+            state,
+            action_directory_rx,
+            action_directory_tx,
+            pending_primary: None,
+            worker_stopped: false,
+            wifi_bridge_registered: false,
+            _thread: Some(handle),
+        };
+        Ok((transport, init_rx))
+    }
+
+    /// [`Self::start_sdk`], then wait (bounded) for the shovel to connect.
+    /// Only for the explicit, fallible headless constructors, whose callers
+    /// asked for a connected manager or an error.
+    fn spawn_sdk(
+        source: SdkConnectSource,
+        identity: Option<SdkJoinIdentity>,
+    ) -> Result<BrokerTransport, runtime_portal::NotAvailable> {
+        let (mut transport, init_rx) = Self::start_sdk(source, SdkIdentitySource::Ready(identity))?;
+
+        // A wedged connect costs a timeout, never a caller that waits forever.
         let status = match init_rx.recv_timeout(SHOVEL_INIT_TIMEOUT) {
             Ok(status) => status,
             Err(mpsc::RecvTimeoutError::Timeout) => {
                 tracing::warn!(
-                    "collab: the connect path did not report within {SHOVEL_INIT_TIMEOUT:?}; \
-                     continuing without collaboration"
+                    "collab: the connect path did not report within {SHOVEL_INIT_TIMEOUT:?}"
                 );
                 return Err(runtime_portal::NotAvailable::ConnectionFailed(
                     std::io::Error::new(
@@ -2403,10 +2506,7 @@ impl CollaborationManager {
                 ));
             }
             Err(mpsc::RecvTimeoutError::Disconnected) => {
-                tracing::warn!(
-                    "collab: the connect path ended without reporting; \
-                     continuing without collaboration"
-                );
+                tracing::warn!("collab: the connect path ended without reporting");
                 return Err(runtime_portal::NotAvailable::ConnectionFailed(
                     std::io::Error::new(
                         std::io::ErrorKind::BrokenPipe,
@@ -2418,38 +2518,55 @@ impl CollaborationManager {
 
         match status {
             InitStatus::Ready => {
-                if let Ok(mut bridge) = WIFI_CONTINUITY_BRIDGE
-                    .get_or_init(|| std::sync::Mutex::new(None))
-                    .lock()
-                {
-                    *bridge = Some(outbound_tx.downgrade());
-                }
-                Ok(BrokerTransport {
-                    outbound_tx,
-                    media: Some(media_tx),
-                    inbound_rx,
-                    state,
-                    action_directory_rx,
-                    action_directory_tx,
-                    pending_primary: None,
-                    worker_stopped: false,
-                    _thread: Some(handle),
-                })
+                transport.register_wifi_bridge();
+                Ok(transport)
             }
             InitStatus::Failed(e) => {
                 // Let the (empty-body) thread exit cleanly.
-                let _ = handle.join();
+                if let Some(handle) = transport._thread.take() {
+                    let _ = handle.join();
+                }
                 Err(e)
             }
         }
     }
 }
 
-/// One-shot init result from the shovel thread's startup, letting
-/// `spawn_sdk` decide immediately between a transport and `Disabled`.
+/// Where the shovel gets the identity it joins with.
+enum SdkIdentitySource {
+    /// Supplied by the caller; `None` for host sessions, which obtain it
+    /// from the host during setup.
+    Ready(Option<SdkJoinIdentity>),
+    /// The launcher-inherited workspace identity for this cluster. Loading
+    /// it and signing the join are IPC round trips, so the shovel does it,
+    /// never the constructing thread.
+    Inherited(Uuid),
+}
+
+impl SdkIdentitySource {
+    fn resolve(self) -> Result<Option<SdkJoinIdentity>, runtime_portal::NotAvailable> {
+        match self {
+            Self::Ready(identity) => Ok(identity),
+            Self::Inherited(cluster_id) => sdk_join_identity(cluster_id).map(Some),
+        }
+    }
+}
+
+/// One-shot init result from the shovel thread's startup, for callers of
+/// `spawn_sdk` that wait for a connected transport or an error.
 enum InitStatus {
     Ready,
     Failed(runtime_portal::NotAvailable),
+}
+
+/// Publish the shovel's setup outcome: to the owner through the bridge's
+/// connect phase (waking it), and to a waiting constructor, if any.
+fn report_init(state: &BridgeState, init_tx: &mpsc::SyncSender<InitStatus>, status: InitStatus) {
+    state.set_connect_phase(match &status {
+        InitStatus::Ready => ConnectPhase::Connected,
+        InitStatus::Failed(error) => ConnectPhase::Failed(error.to_string()),
+    });
+    let _ = init_tx.send(status);
 }
 
 /// The shovel thread's body: owns a `current_thread` runtime + `LocalSet`
@@ -2458,12 +2575,23 @@ enum InitStatus {
 /// `outbound_rx.recv()` returns `None` (manager dropped).
 fn run_shovel(
     source: SdkConnectSource,
-    identity: Option<SdkJoinIdentity>,
+    identity: SdkIdentitySource,
     outbound_rx: tokio_mpsc::Receiver<QueuedSdkCommand>,
     media_rx: native_media::Receiver,
     inbound_tx: InboundBridge,
     init_tx: mpsc::SyncSender<InitStatus>,
 ) {
+    let state = inbound_tx.state.clone();
+    // Loading an inherited identity is blocking IPC; this thread exists so
+    // that the owner never waits for it.
+    let identity = match identity.resolve() {
+        Ok(identity) => identity,
+        Err(error) => {
+            tracing::warn!(?error, "collab: workspace join identity unavailable");
+            report_init(&state, &init_tx, InitStatus::Failed(error));
+            return;
+        }
+    };
     // Building `current_thread` is fallible (can OOM); surface as
     // Disabled — no service means the app runs local-only.
     let rt = match tokio::runtime::Builder::new_current_thread()
@@ -2472,15 +2600,19 @@ fn run_shovel(
     {
         Ok(rt) => rt,
         Err(e) => {
-            let _ = init_tx.send(InitStatus::Failed(
-                runtime_portal::NotAvailable::ConnectionFailed(e),
-            ));
+            report_init(
+                &state,
+                &init_tx,
+                InitStatus::Failed(runtime_portal::NotAvailable::ConnectionFailed(e)),
+            );
             return;
         }
     };
 
     let local = LocalSet::new();
+    let init_state = state.clone();
     local.block_on(&rt, async move {
+        let state = init_state;
         let session = match source {
             SdkConnectSource::Host(connector, route) => {
                 let cluster_id = route.cluster_id;
@@ -2534,16 +2666,19 @@ fn run_shovel(
         let (client, identity) = match session {
             Ok(session) => session,
             Err(e) => {
-                let _ = init_tx.send(InitStatus::Failed(e));
+                report_init(&state, &init_tx, InitStatus::Failed(e));
                 return;
             }
         };
-        // The transport is ready. The manager queues its primary Hello next
-        // and waits for `PrimaryReady` before returning it to the caller.
-        let _ = init_tx.send(InitStatus::Ready);
+        // The transport is ready. The manager's primary Hello and its
+        // `PrimaryReady` barrier are the first commands the shovel serves.
+        report_init(&state, &init_tx, InitStatus::Ready);
 
         drive_shovel(client, identity, outbound_rx, media_rx, inbound_tx).await;
     });
+    // However the shovel ended, the owner must look again: an unanswered
+    // primary-route barrier now reads as a stopped worker.
+    state.notify_events();
 }
 
 /// SDK-side event loop: dispatches outbound requests to SDK calls, and
@@ -2683,6 +2818,8 @@ async fn drive_shovel(
             }
             SdkCommand::PrimaryReady(reply) => {
                 let _ = reply.send(primary_result.clone());
+                // A manager still connecting settles on this answer.
+                inbound_tx.state.notify_events();
             }
             SdkCommand::PublicationBarrier(reply) => {
                 // A superseded receipt may have no receiver. Its prefix still ran.
@@ -4639,7 +4776,7 @@ mod tests {
                 .expect("a broker transport")
                 .state
                 .clone(),
-            Backend::Disabled => panic!("a broker transport"),
+            Backend::Disabled(_) => panic!("a broker transport"),
         }
     }
 
@@ -4648,7 +4785,9 @@ mod tests {
 
     #[cfg(unix)]
     include!("directory_client_tests.rs");
-    use crate::collaboration::{HostDocumentCommit, SignedSendError, SigningIdentity};
+    use crate::collaboration::{
+        CollaborationState, HostDocumentCommit, SignedSendError, SigningIdentity,
+    };
 
     use crate::time::{Duration, Instant};
     use std::cell::RefCell;
@@ -6331,6 +6470,7 @@ mod tests {
             action_directory_tx,
             pending_primary: None,
             worker_stopped: false,
+            wifi_bridge_registered: false,
             _thread: None,
         }));
         let earlier = manager.begin_document_publication_barrier().unwrap();
@@ -6878,6 +7018,35 @@ mod tests {
         CollaborationManager::from_sdk_fd_for_test(fd, "lifecycle-test", Uuid::new_v4())
     }
 
+    #[cfg(unix)]
+    pub(super) fn connecting_manager() -> (
+        CollaborationManager,
+        crate::wake::WakeScope,
+        mpsc::Receiver<()>,
+    ) {
+        let broker = FakeBroker {
+            captures: Arc::new(std::sync::Mutex::new(Captures::default())),
+            op_backlog: vec![],
+            presence_backlog: vec![],
+            context_backlog: vec![],
+            scrollback_response: None,
+        };
+        let (fd, _, _thread) = stand_up_fake_broker(broker);
+        let (scope, wakes) = wake_channel();
+        let manager = {
+            let _entry = scope.enter();
+            background_manager(
+                fd,
+                RouteSpec {
+                    app_id: "lifecycle-test".into(),
+                    cluster_id: Uuid::new_v4(),
+                    record: None,
+                },
+            )
+        };
+        (manager, scope, wakes)
+    }
+
     /// Upper bound for waits on the fake broker. Every wait returns as soon
     /// as its condition holds; the guard only turns a lost message into a
     /// failure instead of a hang, so it can be generous without slowing a
@@ -7307,8 +7476,166 @@ mod tests {
         env.remove("TILO_SVC_COLLAB_FD");
         let mut mgr = CollaborationManager::new();
         assert!(!mgr.is_connected(), "no service = not connected");
+        assert!(matches!(mgr.state(), CollaborationState::Offline(_)));
+        assert_eq!(mgr.take_state_change(), None, "offline from the start");
         mgr.send(CollabRequest::document_snapshot(b"nope".to_vec()));
         assert!(mgr.poll().is_empty(), "no events on Disabled backend");
+    }
+
+    /// A wake scope whose wakes arrive on a channel, so a test can wait for
+    /// the manager to have news instead of polling on a timer.
+    fn wake_channel() -> (crate::wake::WakeScope, mpsc::Receiver<()>) {
+        let mut scope = crate::wake::WakeScope::new();
+        let (tx, rx) = mpsc::channel();
+        let tx = std::sync::Mutex::new(tx);
+        scope
+            .bind(move |_| {
+                let _ = tx
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .send(());
+            })
+            .unwrap();
+        (scope, rx)
+    }
+
+    /// Poll on every wake until the manager leaves `Connecting`.
+    fn settle(mgr: &mut CollaborationManager, wakes: &mpsc::Receiver<()>) -> CollaborationState {
+        let deadline = crate::time::now() + SHOVEL_INIT_TIMEOUT * 3;
+        loop {
+            let _ = mgr.poll();
+            let state = mgr.state();
+            if state != CollaborationState::Connecting {
+                return state;
+            }
+            let left = deadline.saturating_duration_since(crate::time::now());
+            wakes
+                .recv_timeout(left)
+                .expect("a connecting manager wakes its owner when it settles");
+        }
+    }
+
+    fn background_manager(fd: RawFd, route: RouteSpec) -> CollaborationManager {
+        CollaborationManager::connect_in_background(
+            SdkConnectSource::Fd(fd),
+            SdkIdentitySource::Ready(Some(SdkJoinIdentity {
+                presentation: Vec::new(),
+                participant_kind: "person",
+                signer: harness_document_signer(),
+            })),
+            route,
+            None,
+        )
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn construction_returns_at_once_while_the_broker_is_silent() {
+        // A broker that accepted the connection but never answers: the
+        // primary join cannot complete until the peer goes away. The old
+        // constructor waited here before the app's first frame.
+        let (ours, theirs) = std::os::unix::net::UnixStream::pair().expect("socketpair");
+        let (scope, wakes) = wake_channel();
+        let entry = scope.enter();
+        let route = RouteSpec {
+            app_id: "silent-broker-test".into(),
+            cluster_id: Uuid::new_v4(),
+            record: None,
+        };
+
+        let started = crate::time::now();
+        let mut mgr = background_manager(ours.into_raw_fd(), route.clone());
+        let took = started.elapsed();
+        drop(entry);
+
+        assert!(
+            took < SDK_PRIMARY_ROUTE_TIMEOUT,
+            "construction must not wait for the broker (took {took:?})"
+        );
+        assert_eq!(mgr.state(), CollaborationState::Connecting);
+        assert!(!mgr.is_connected());
+        assert!(mgr.primary_route().is_none());
+        assert_eq!(mgr.requested_primary_route(), Some(&route));
+        let channel =
+            collab_types::document_channel_id(&route.app_id, &route.cluster_id.to_string(), "");
+        let group = channel_crypto::ChannelGroup::create(
+            channel,
+            channel_crypto::MemberKey::generate("owner").unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            mgr.install_document_encryption(route.clone(), group),
+            Err("collaboration is still connecting".into()),
+            "no call may wait on a worker that is still connecting"
+        );
+        // The frame loop keeps calling these while connecting. With no
+        // acknowledged route nothing is queued behind the connection.
+        assert!(!mgr.send(CollabRequest::Presence {
+            key: PresenceKey::local_surface_pointer(),
+            payload: PresencePayload::Arrived,
+        }));
+        assert!(mgr.poll().is_empty());
+        assert_eq!(mgr.take_state_change(), None, "still connecting");
+
+        // The broker goes away: the join fails and the manager goes offline,
+        // telling its owner through a wake rather than a timer.
+        drop(theirs);
+        let settled = settle(&mut mgr, &wakes);
+        assert!(
+            matches!(settled, CollaborationState::Offline(_)),
+            "{settled:?}"
+        );
+        assert!(!mgr.is_connected());
+        assert_eq!(mgr.take_state_change(), Some(settled));
+        assert_eq!(mgr.take_state_change(), None);
+        // Offline managers stay usable no-ops.
+        mgr.send(CollabRequest::document_snapshot(b"after".to_vec()));
+        assert!(mgr.poll().is_empty());
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn a_background_connection_becomes_ready_and_wakes_the_owner() {
+        let broker = FakeBroker {
+            captures: Arc::new(std::sync::Mutex::new(Captures::default())),
+            op_backlog: vec![],
+            presence_backlog: vec![],
+            context_backlog: vec![],
+            scrollback_response: None,
+        };
+        let (fd, captures, _thread) = stand_up_fake_broker(broker);
+        let (scope, wakes) = wake_channel();
+        let entry = scope.enter();
+        let route = RouteSpec {
+            app_id: "background-connect-test".into(),
+            cluster_id: Uuid::new_v4(),
+            record: None,
+        };
+        let mut mgr = background_manager(fd, route.clone());
+        drop(entry);
+        assert_eq!(mgr.state(), CollaborationState::Connecting);
+
+        let settled = settle(&mut mgr, &wakes);
+
+        assert_eq!(settled, CollaborationState::Ready);
+        assert!(mgr.is_connected());
+        assert_eq!(
+            mgr.primary_route().map(|witness| &witness.route),
+            Some(&route)
+        );
+        assert_eq!(mgr.take_state_change(), Some(CollaborationState::Ready));
+        let joined: Vec<String> = captures
+            .lock()
+            .unwrap()
+            .joined
+            .iter()
+            .map(|(channel, _)| channel.clone())
+            .collect();
+        assert_eq!(
+            joined,
+            vec![route.channel_id()],
+            "the queued Hello joined the primary route once connected"
+        );
     }
 
     #[test]

@@ -6,9 +6,8 @@ files to an automation branch named after the files' SHA-256 and call this
 script, which checks that branch, digest and references agree before opening
 (or re-finding) the pull request.
 
-A kernel promotion that follows a new frozen RPM index carries both pins, in
-the order os/rpms-snapshot.env then os/kernel-snapshot.env: kernel provenance
-binds RPMS_REF, so neither pin is usable on main without the other.
+Every pin lands on its own: the kernel builds on its own signed buildroot, so
+the frozen RPM index and the kernels never have to move together.
 
 FORGEJO_TOKEN must be able to read and create pull requests on the repository;
 the workflows pass secrets.RELEASE_TOKEN. The token that pushes the branch
@@ -96,28 +95,29 @@ def kernel_snapshot(args, parser) -> tuple[str, dict]:
         parser.error("kernel refs must be immutable tilo-kernel sha256 references")
     if x86.group(1) == arm.group(1):
         parser.error("native kernel refs must have distinct digests")
-    kernels = kernel_contents(args.x86_ref, args.arm_ref)
-    if args.rpms_ref is None:
-        return kernels, {
-            "label": "Kernel",
-            "branch_prefix": "automation/kernel-snapshot-",
-            "title": "build(os): refresh native kernel snapshots",
-            "summary": ("Automated atomic promotion of signed, provenance-verified "
-                        "native x86-64 and ARM64 kernel snapshots."),
-        }
+    return kernel_contents(args.x86_ref, args.arm_ref), {
+        "label": "Kernel",
+        "branch_prefix": "automation/kernel-snapshot-",
+        "title": "build(os): refresh native kernel snapshots",
+        "summary": ("Automated atomic promotion of signed, provenance-verified "
+                    "native x86-64 and ARM64 kernel snapshots, each bound to its "
+                    "signed native kernel buildroot."),
+    }
+
+
+def rpms_snapshot(args, parser) -> tuple[str, dict]:
     if RPMS_REF.fullmatch(args.rpms_ref) is None:
         parser.error("--rpms-ref must be an immutable qos/rpms sha256 reference")
-    if REVISION.fullmatch(args.rpms_source_revision or "") is None:
-        parser.error("--rpms-source-revision must be the full commit the index was built from")
-    return rpms_contents(args.rpms_ref, args.rpms_source_revision) + kernels, {
-        "label": "RPM and kernel",
-        "branch_prefix": "automation/rpm-kernel-snapshot-",
-        "title": "build(os): refresh the RPM snapshot and its native kernels",
-        "summary": ("Automated atomic promotion of the signed, provenance-verified "
-                    "two-architecture frozen RPM index together with the native "
-                    "x86-64 and ARM64 kernels built and verified against it.\n\n"
-                    "Kernel provenance binds RPMS_REF, so both pins land in one "
-                    "pull request and OS image builds verify at every commit."),
+    if REVISION.fullmatch(args.source_revision or "") is None:
+        parser.error("--source-revision must be the full commit the index was built from")
+    return rpms_contents(args.rpms_ref, args.source_revision), {
+        "label": "RPM",
+        "branch_prefix": "automation/rpm-snapshot-",
+        "title": "build(os): refresh native RPM snapshot index",
+        "summary": ("Automated promotion of the signed, provenance-verified "
+                    "two-architecture frozen RPM index. The kernel builds on "
+                    "its own signed buildroot, so this pin does not invalidate "
+                    "the pinned kernels."),
     }
 
 
@@ -208,9 +208,12 @@ def promote() -> int:
     kernel = kinds.add_parser("kernel", help="both native kernel RPM repositories")
     kernel.add_argument("--x86-ref", required=True)
     kernel.add_argument("--arm-ref", required=True)
-    kernel.add_argument("--rpms-ref", help="the frozen RPM index the kernels were built against")
-    kernel.add_argument("--rpms-source-revision", help="the commit that index was built from")
     kernel.set_defaults(snapshot=kernel_snapshot)
+    rpms = kinds.add_parser("rpms", help="the two-architecture frozen RPM index")
+    rpms.add_argument("--rpms-ref", required=True)
+    rpms.add_argument("--source-revision", required=True,
+                      help="the commit the index was built from")
+    rpms.set_defaults(snapshot=rpms_snapshot)
     wpe = kinds.add_parser("wpe", help="both native WPE buildroots")
     wpe.add_argument("--x86-ref", required=True)
     wpe.add_argument("--arm-ref", required=True)

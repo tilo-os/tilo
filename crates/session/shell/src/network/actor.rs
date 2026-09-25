@@ -12,8 +12,8 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use bytes::Bytes;
-use futures::stream::FuturesUnordered;
-use futures_lite::StreamExt;
+use futures_util::StreamExt;
+use futures_util::stream::FuturesUnordered;
 use iroh::address_lookup::memory::MemoryLookup;
 use iroh::protocol::{AcceptError, ProtocolHandler, Router};
 use iroh::{Endpoint, EndpointAddr, EndpointId};
@@ -2586,37 +2586,45 @@ async fn stream_nearby_transfer(
     resume_offset: u64,
     prefix_hash: [u8; 32],
     content_hash: [u8; 32],
-    mut file: std::fs::File,
+    file: std::fs::File,
     progress: Option<mpsc::Sender<NetEvent>>,
     sent_bytes: std::sync::Arc<std::sync::atomic::AtomicU64>,
 ) -> Result<(), ()> {
-    use std::io::{Read as _, Seek as _};
-    use tokio::io::AsyncReadExt as _;
-
-    let mut hasher = blake3::Hasher::new();
-    let mut verify = vec![0_u8; PERSONAL_MEDIA_CHUNK_BYTES];
-    let mut verified = 0_u64;
-    while verified < resume_offset {
-        let want = usize::try_from(
-            resume_offset
-                .saturating_sub(verified)
-                .min(PERSONAL_MEDIA_CHUNK_BYTES as u64),
-        )
-        .map_err(|_| ())?;
-        let read = file
-            .read(verify.get_mut(..want).ok_or(())?)
-            .map_err(|_| ())?;
-        if read == 0 {
-            return Err(());
+    // File reads go through the I/O pool, never a network worker: the
+    // resumed prefix can be most of a large file.
+    let file = Arc::new(file);
+    let prefix = Arc::clone(&file);
+    let mut hasher = tilo_rt::io::run(move || {
+        use std::io::Read as _;
+        let mut reader = &*prefix;
+        let mut hasher = blake3::Hasher::new();
+        let mut verify = vec![0_u8; PERSONAL_MEDIA_CHUNK_BYTES];
+        let mut verified = 0_u64;
+        while verified < resume_offset {
+            let want = usize::try_from(
+                resume_offset
+                    .saturating_sub(verified)
+                    .min(PERSONAL_MEDIA_CHUNK_BYTES as u64),
+            )
+            .map_err(std::io::Error::other)?;
+            let window = verify
+                .get_mut(..want)
+                .ok_or(std::io::ErrorKind::InvalidInput)?;
+            let read = reader.read(window)?;
+            let chunk = window
+                .get(..read)
+                .filter(|chunk| !chunk.is_empty())
+                .ok_or(std::io::ErrorKind::UnexpectedEof)?;
+            hasher.update(chunk);
+            verified = verified.saturating_add(u64::try_from(read).map_err(std::io::Error::other)?);
         }
-        hasher.update(verify.get(..read).ok_or(())?);
-        verified = verified.saturating_add(u64::try_from(read).map_err(|_| ())?);
-    }
+        Ok(hasher)
+    })
+    .await
+    .map_err(|_| ())?;
     if hasher.finalize().as_bytes() != &prefix_hash {
         return Err(());
     }
-    file.seek(std::io::SeekFrom::Start(resume_offset))
-        .map_err(|_| ())?;
     let connection = tokio::time::timeout(
         Duration::from_secs(10),
         endpoint.connect(addr, PERSONAL_FABRIC_ALPN),
@@ -2624,9 +2632,7 @@ async fn stream_nearby_transfer(
     .await
     .map_err(|_| ())?
     .map_err(|_| ())?;
-    let mut file = tokio::fs::File::from_std(file);
     let mut offset = resume_offset;
-    let mut buffer = vec![0_u8; PERSONAL_MEDIA_CHUNK_BYTES];
     while offset < total_bytes {
         let want = usize::try_from(
             total_bytes
@@ -2634,14 +2640,14 @@ async fn stream_nearby_transfer(
                 .min(PERSONAL_MEDIA_CHUNK_BYTES as u64),
         )
         .map_err(|_| ())?;
-        let read = file
-            .read(buffer.get_mut(..want).ok_or(())?)
+        let bytes = tilo_rt::io::read_at(Arc::clone(&file), offset, want)
             .await
             .map_err(|_| ())?;
-        if read == 0 {
+        if bytes.is_empty() {
             return Err(());
         }
-        hasher.update(buffer.get(..read).ok_or(())?);
+        let read = bytes.len();
+        hasher.update(&bytes);
         send_nearby_transfer_frame(
             &connection,
             workspace,
@@ -2650,7 +2656,7 @@ async fn stream_nearby_transfer(
                 transfer_id,
                 request_id,
                 offset,
-                bytes: buffer.get(..read).ok_or(())?.to_vec(),
+                bytes,
             },
         )
         .await?;
@@ -2666,8 +2672,10 @@ async fn stream_nearby_transfer(
             });
         }
     }
-    let mut tail = [0_u8; 1];
-    if file.read(&mut tail).await.map_err(|_| ())? != 0 {
+    let tail = tilo_rt::io::read_at(Arc::clone(&file), offset, 1)
+        .await
+        .map_err(|_| ())?;
+    if !tail.is_empty() {
         return Err(());
     }
     if hasher.finalize().as_bytes() != &content_hash {
@@ -2718,8 +2726,6 @@ async fn stream_personal_media(
     generation: u64,
     mut cancel: tokio::sync::watch::Receiver<bool>,
 ) -> PersonalMediaStreamOutcome {
-    use tokio::io::AsyncReadExt as _;
-
     let connect = tokio::time::timeout(
         Duration::from_secs(10),
         endpoint.connect(addr, PERSONAL_FABRIC_ALPN),
@@ -2762,30 +2768,24 @@ async fn stream_personal_media(
         return PersonalMediaStreamOutcome::Failed;
     }
 
-    let mut file = tokio::fs::File::from_std(file);
+    // Reads go through the I/O pool, never a network worker.
+    let file = Arc::new(file);
     let mut offset = 0_u64;
     let mut last_reported = 0_u64;
     let mut hasher = blake3::Hasher::new();
-    let mut buffer = vec![0_u8; PERSONAL_MEDIA_CHUNK_BYTES];
     let transfer: Result<(), PersonalMediaStreamOutcome> = async {
         while offset < total_bytes {
             let remaining = total_bytes.saturating_sub(offset);
             let want = usize::try_from(remaining.min(PERSONAL_MEDIA_CHUNK_BYTES as u64))
                 .map_err(|_| PersonalMediaStreamOutcome::Failed)?;
-            let window = buffer
-                .get_mut(..want)
-                .ok_or(PersonalMediaStreamOutcome::Failed)?;
-            let read = tokio::select! {
-                result = file.read(window) => result.map_err(|_| PersonalMediaStreamOutcome::Failed)?,
+            let bytes = tokio::select! {
+                result = tilo_rt::io::read_at(Arc::clone(&file), offset, want) => result.map_err(|_| PersonalMediaStreamOutcome::Failed)?,
                 _ = personal_media_cancelled(&mut cancel) => return Err(PersonalMediaStreamOutcome::Cancelled),
             };
-            if read == 0 {
+            if bytes.is_empty() {
                 return Err(PersonalMediaStreamOutcome::Failed);
             }
-            let bytes = buffer
-                .get(..read)
-                .ok_or(PersonalMediaStreamOutcome::Failed)?
-                .to_vec();
+            let read = bytes.len();
             hasher.update(&bytes);
             let send = send_personal_media_frame(
                 &connection,
@@ -2815,12 +2815,11 @@ async fn stream_personal_media(
                 last_reported = offset;
             }
         }
-        let mut trailing = [0_u8; 1];
-        let trailing_read = tokio::select! {
-            result = file.read(&mut trailing) => result.map_err(|_| PersonalMediaStreamOutcome::Failed)?,
+        let trailing = tokio::select! {
+            result = tilo_rt::io::read_at(Arc::clone(&file), offset, 1) => result.map_err(|_| PersonalMediaStreamOutcome::Failed)?,
             _ = personal_media_cancelled(&mut cancel) => return Err(PersonalMediaStreamOutcome::Cancelled),
         };
-        if trailing_read != 0 {
+        if !trailing.is_empty() {
             return Err(PersonalMediaStreamOutcome::Failed);
         }
         let finish = send_personal_media_frame(

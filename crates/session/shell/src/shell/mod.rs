@@ -58,6 +58,7 @@ pub mod host_apps;
 pub mod hosted_inputs;
 pub mod identity_provisioning;
 pub mod input_policy;
+pub mod launch_gate;
 pub mod launcher;
 pub mod media_keys;
 pub mod mpris;

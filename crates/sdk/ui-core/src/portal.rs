@@ -323,7 +323,9 @@ impl PickRequest {
     }
 
     /// Name the worker thread, so a stuck picker is identifiable in a
-    /// backtrace or `top -H`.
+    /// backtrace or `top -H`. Pickers that run on a dedicated thread (the
+    /// Windows dialogs) use it; the Unix portal's D-Bus requests run on the
+    /// shared app runtime instead.
     #[must_use]
     pub fn thread_name(mut self, name: &str) -> Self {
         self.thread_name = name.to_string();
@@ -381,7 +383,8 @@ impl PickRequest {
         matches!(self.kind, PickKind::Directory)
     }
 
-    /// The name of the worker thread a native picker runs on.
+    /// The name of the worker thread a native picker runs on, when it runs
+    /// on one (see [`Self::thread_name`]).
     pub fn worker_name(&self) -> &str {
         &self.thread_name
     }
@@ -456,7 +459,7 @@ fn scoped_pick_worker(
 /// over) is simply dropped: the caller's receiver observes a closed
 /// channel, the same outward signal it must already handle for a worker
 /// that spawned but whose send lost the race with a dropped receiver.
-#[cfg(feature = "native")]
+#[cfg(all(feature = "native", not(all(feature = "portal", unix))))]
 pub(crate) fn spawn_worker(name: &str, work: impl FnOnce() + Send + 'static) {
     let _ = std::thread::Builder::new()
         .name(name.to_string())

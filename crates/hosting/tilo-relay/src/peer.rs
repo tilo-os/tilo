@@ -1529,7 +1529,7 @@ async fn handle_subscribe(
         } else {
             return Ok(Some(Envelope::NotAuthorised {
                 workspace_id,
-                reason: "device not in workspace membership".into(),
+                reason: reason.into(),
             }));
         }
     }

@@ -113,7 +113,8 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 zeroize.workspace = true
 rustls.workspace = true
-chacha20poly1305.workspace = true
+# Invite-redemption secrets are sealed at rest through the shared construction.
+tilo-seal = { path = "../../system/tilo-seal" }
 cosmic-text = { workspace = true, features = ["fontconfig", "peniko", "swash", "std"] }
 # Keep this aligned with cosmic-text: text painting needs the font's complete
 # variation-axis order to translate CSS-like axis values for Vello.
@@ -126,6 +127,7 @@ rustc-hash.workspace = true
 ash = { version = "0.38", optional = true }
 taffy = { workspace = true, features = ["content_size"] }
 tokio = { workspace = true, features = ["full"] }
+tilo-rt.workspace = true
 vello.workspace = true
 libc.workspace = true
 wgpu.workspace = true
@@ -133,7 +135,6 @@ winit.workspace = true
 # `ui::time` clock types. On targets with a native clock it re-exports
 # `std::time` unchanged; it keeps the toolkit buildable where `std` has none.
 web-time = "1"
-dirs.workspace = true
 fluent.workspace = true
 tilo-headless-schema = { path = "../../dev/headless-schema" }
 unic-langid.workspace = true
@@ -211,7 +212,7 @@ qrcode.workspace = true
 # The `tilo://invite/<base32>` URL packs a
 # postcard-encoded payload as base32 (RFC 4648 alphabet, no padding)
 # so it stays URL-safe and case-insensitive when read aloud.
-base32.workspace = true
+data-encoding.workspace = true
 # The pairing one-time MAC is derived from the 6-digit code so the
 # host can authenticate the pairer's DKG round-2 reply without a
 # pre-shared long-term key. SHA-512 is already a transitive via

@@ -1,0 +1,72 @@
+diff --git a/ThunkLibs/Generator/CMakeLists.txt b/ThunkLibs/Generator/CMakeLists.txt
+index 3be4a68..1104138 100644
+--- a/ThunkLibs/Generator/CMakeLists.txt
++++ b/ThunkLibs/Generator/CMakeLists.txt
+@@ -1,6 +1,5 @@
+ find_package(Clang REQUIRED CONFIG)
+ find_package(LLVM REQUIRED CONFIG)
+-find_package(OpenSSL REQUIRED COMPONENTS Crypto)
+ 
+ # Query clang's global resource directory for system include directories
+ if (NOT CLANG_RESOURCE_DIR)
+@@ -15,7 +14,6 @@ add_library(thunkgenlib STATIC analysis.cpp data_layout.cpp gen.cpp)
+ target_include_directories(thunkgenlib INTERFACE ${CMAKE_CURRENT_SOURCE_DIR})
+ target_include_directories(thunkgenlib SYSTEM PUBLIC ${CLANG_INCLUDE_DIRS} ${LLVM_INCLUDE_DIRS})
+ target_link_libraries(thunkgenlib PUBLIC clang-cpp LLVM)
+-target_link_libraries(thunkgenlib PRIVATE OpenSSL::Crypto)
+ target_link_libraries(thunkgenlib PRIVATE fmt::fmt)
+ target_compile_definitions(thunkgenlib INTERFACE -DCLANG_RESOURCE_DIR="${CLANG_RESOURCE_DIR}")
+ 
+diff --git a/ThunkLibs/Generator/data_layout.cpp b/ThunkLibs/Generator/data_layout.cpp
+index 5540803..8433606 100644
+--- a/ThunkLibs/Generator/data_layout.cpp
++++ b/ThunkLibs/Generator/data_layout.cpp
+@@ -4,7 +4,8 @@
+ 
+ #include <fmt/format.h>
+ 
+-#include <openssl/sha.h>
++#include <llvm/ADT/ArrayRef.h>
++#include <llvm/Support/SHA256.h>
+ 
+ constexpr bool enable_debug_output = false;
+ 
+@@ -190,9 +191,8 @@ ABI GetStableLayout(const clang::ASTContext& context, const std::unordered_map<c
+ }
+ 
+ static std::array<uint8_t, 32> GetSha256(const std::string& function_name) {
+-  std::array<uint8_t, 32> sha256;
+-  SHA256(reinterpret_cast<const unsigned char*>(function_name.data()), function_name.size(), sha256.data());
+-  return sha256;
++  auto bytes = llvm::ArrayRef<uint8_t>(reinterpret_cast<const uint8_t*>(function_name.data()), function_name.size());
++  return llvm::SHA256::hash(bytes);
+ };
+ 
+ std::string GetTypeNameWithFixedSizeIntegers(clang::ASTContext& context, clang::QualType type) {
+diff --git a/ThunkLibs/Generator/gen.cpp b/ThunkLibs/Generator/gen.cpp
+index ccc7cbc..e9af823 100644
+--- a/ThunkLibs/Generator/gen.cpp
++++ b/ThunkLibs/Generator/gen.cpp
+@@ -16,7 +16,8 @@
+ #include <fmt/ostream.h>
+ #include <fmt/ranges.h>
+ 
+-#include <openssl/sha.h>
++#include <llvm/ADT/ArrayRef.h>
++#include <llvm/Support/SHA256.h>
+ 
+ class GenerateThunkLibsAction : public DataLayoutCompareAction {
+ public:
+@@ -398,9 +399,9 @@ void GenerateThunkLibsAction::OnAnalysisComplete(clang::ASTContext& context) {
+ 
+   auto get_sha256 = [this](const std::string& function_name, bool include_libname) {
+     std::string sha256_message = (include_libname ? libname + ":" : "") + function_name;
+-    std::vector<unsigned char> sha256(SHA256_DIGEST_LENGTH);
+-    SHA256(reinterpret_cast<const unsigned char*>(sha256_message.data()), sha256_message.size(), sha256.data());
+-    return sha256;
++    auto bytes = llvm::ArrayRef<uint8_t>(reinterpret_cast<const uint8_t*>(sha256_message.data()), sha256_message.size());
++    auto sha256 = llvm::SHA256::hash(bytes);
++    return std::vector<unsigned char>(sha256.begin(), sha256.end());
+   };
+ 
+   auto get_callback_name = [](std::string_view function_name, unsigned param_index) -> std::string {

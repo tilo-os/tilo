@@ -1005,13 +1005,15 @@ impl ViewportContent {
     }
 }
 
-impl Widget for ViewportContent {
-    fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
-        self.inner.sync(state, path);
+impl crate::widget::Decorator for ViewportContent {
+    type Inner = crate::widget::Container;
+
+    fn inner(&self) -> &crate::widget::Container {
+        &self.inner
     }
 
-    fn update(&mut self, state: &mut AutoCommit, path: &ObjId) -> bool {
-        self.inner.update(state, path)
+    fn inner_mut(&mut self) -> &mut crate::widget::Container {
+        &mut self.inner
     }
 
     fn build_layout(
@@ -1042,7 +1044,7 @@ impl Widget for ViewportContent {
                 ..Default::default()
             },
         );
-        nodes.insert(node, std::ptr::from_mut::<dyn Widget>(self));
+        crate::widget::decorator::register_node(nodes, node, self);
         node
     }
 
@@ -1059,83 +1061,19 @@ impl Widget for ViewportContent {
         taffy.set_style(node, style).is_ok()
     }
 
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.inner.apply_layout(taffy, node, origin);
-    }
-
-    fn draw(
+    // The host adjusts styles through this entry point; route it to the
+    // hook above rather than to the inner container's.
+    fn adjust_layout_with_measure(
         &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
-        self.inner.draw(scene, transform, text, theme, presence);
-    }
-
-    fn draw_with_presence(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-        permissions: &crate::permissions::PermissionContext,
-    ) {
-        self.inner
-            .draw_with_presence(scene, transform, text, theme, presence, permissions);
-    }
-
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale: f64,
-        mods: &winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus: &mut Option<NodeId>,
+        taffy: &mut TaffyTree<()>,
         node: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
-        self.inner
-            .handle_event(event, scale, mods, state, path, handled, focus, node, taffy);
+        _text: &mut TextRenderer,
+    ) -> bool {
+        crate::widget::Decorator::adjust_layout_style(self, taffy, node)
     }
 
-    fn children(&self) -> Vec<&dyn Widget> {
-        self.inner.children()
-    }
-    fn for_each_child(&self, visitor: &mut dyn FnMut(&dyn Widget)) {
-        self.inner.for_each_child(visitor);
-    }
-    fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
-        self.inner.children_mut()
-    }
-    fn take_structure_dirty(&mut self) -> bool {
-        self.inner.take_structure_dirty()
-    }
-    fn wants_pointer_capture(&self) -> bool {
-        self.inner.wants_pointer_capture()
-    }
-    fn get_rect(&self) -> Rect {
-        self.inner.get_rect()
-    }
     fn name(&self) -> &'static str {
         "ScrollableContent"
-    }
-
-    fn start_resource_operation_with_document(
-        &mut self,
-        invocation: tilo_actions::InvocationId,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        doc: &mut AutoCommit,
-        path: &ObjId,
-    ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
-        self.inner
-            .start_resource_operation_with_document(invocation, kind, type_id, payload, doc, path)
     }
 
     fn collect_damage(&self, regions: &mut Vec<Rect>) {

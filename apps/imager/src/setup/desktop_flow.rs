@@ -512,7 +512,7 @@ fn launch_live_download(
     release: DesktopRelease,
     cancel: Arc<AtomicBool>,
 ) -> Result<DownloadReceiver, String> {
-    let cache = dirs::cache_dir()
+    let cache = xdg_paths::cache_dir()
         .ok_or("No private cache directory is available for the Desktop package.")?
         .join("qos-imager-desktop");
     let (sender, receiver) = mpsc::channel();

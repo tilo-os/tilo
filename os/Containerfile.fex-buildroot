@@ -8,7 +8,7 @@ RUN dnf install -y git cmake ninja-build pkgconf-pkg-config ccache clang lld \
       alsa-lib-devel libdrm-devel libglvnd-devel libX11-devel libXrandr-devel \
       libXrender-devel libxcb-devel wayland-devel libxshmfence-devel \
       squashfs-tools squashfuse erofs-fuse erofs-utils \
-      qt6-qtdeclarative-devel gcc-c++ glibc-devel make perl xz \
+    qt6-qtdeclarative-devel gcc-c++ glibc-devel make perl xz \
  && dnf clean all
 
 # NASM 3.02 changes SMSW operand-size encodings and breaks six upstream FEX

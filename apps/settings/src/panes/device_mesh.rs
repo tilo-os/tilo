@@ -251,7 +251,7 @@ fn workspace_key(id: u64) -> String {
 }
 
 fn discover_workspaces(config: &RelayConfig) -> Vec<DiscoveredWorkspace> {
-    let path = dirs::config_dir().map_or_else(
+    let path = xdg_paths::config_dir().map_or_else(
         || PathBuf::from("state.json"),
         |dir| dir.join("tilo/state.json"),
     );
@@ -477,7 +477,7 @@ pub(crate) fn identity_root() -> PathBuf {
             if PathBuf::from("/var/lib/tilo/device").is_dir() {
                 PathBuf::from("/var/lib/tilo")
             } else {
-                dirs::data_dir()
+                xdg_paths::data_dir()
                     .unwrap_or_else(|| PathBuf::from(".local/share"))
                     .join("tilo")
             }

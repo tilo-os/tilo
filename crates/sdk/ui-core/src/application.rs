@@ -305,8 +305,15 @@ impl HostContext {
     pub fn author(&self) -> &UserId {
         &self.author
     }
+    /// A snapshot of the participant's permissions at this moment.
     pub fn permissions(&self) -> PermissionContext {
         self.permissions.borrow().clone()
+    }
+    /// The participant's permissions as they change while the component runs
+    /// (a role change, a revoked share). Components that present themselves
+    /// read-only hold this instead of deciding once at launch.
+    pub fn live_permissions(&self) -> crate::permissions::LivePermissions {
+        crate::permissions::LivePermissions::shared(self.permissions.clone())
     }
     pub fn action_context(&self) -> &tilo_actions::ActionContext {
         &self.action_context
@@ -437,7 +444,7 @@ impl ApplicationDefinition {
             if records.is_ready(&record.id) {
                 LaunchError::ComponentSetup {
                     source: Box::new(source),
-                    record,
+                    record: Box::new(record),
                     recovery: crate::launch::LaunchRecovery::records(records),
                 }
             } else {
@@ -595,7 +602,7 @@ impl AppComponent {
         self.close();
         LaunchError::ComponentSetup {
             source: Box::new(source),
-            record: binding.checkout,
+            record: Box::new(binding.checkout),
             recovery: crate::launch::LaunchRecovery::new(
                 Some(binding.records),
                 self.take_close_reports(),

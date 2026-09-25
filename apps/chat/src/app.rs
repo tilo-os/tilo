@@ -3340,6 +3340,10 @@ impl Widget for ChatApp {
     fn floating_surface_provider_mut(&mut self) -> Option<&mut dyn FloatingSurfaceProvider> {
         Some(self)
     }
+    fn update(&mut self, _doc: &mut AutoCommit, _path: &ObjId) -> bool {
+        // A bound media endpoint wakes the event loop; sync adopts it.
+        self.media.poll_binding()
+    }
     fn sync(&mut self, doc: &mut AutoCommit, _path: &ObjId) {
         self.apply_realtime_stop(doc);
         self.establish_realtime_target();

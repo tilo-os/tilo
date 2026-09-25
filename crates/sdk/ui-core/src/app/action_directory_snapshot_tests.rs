@@ -703,6 +703,39 @@ fn connected_declared_directory() -> (App, std::rc::Rc<Cell<usize>>) {
 
 #[cfg(all(unix, feature = "broker-transport"))]
 #[test]
+fn a_manager_that_connects_after_launch_publishes_the_action_surface_once_ready() {
+    use crate::collaboration::CollaborationState;
+    let (mut app, _) = declared_directory(1);
+    let (manager, _scope, wakes) = CollaborationManager::connecting_for_lifecycle_test();
+    app.collaboration.manager = manager;
+    app.init_layout();
+    assert_eq!(app.collaboration_state(), CollaborationState::Connecting);
+    app.publish_action_surface();
+    assert!(
+        app.actions.last_published_actions.is_none(),
+        "nothing rides the primary route before the broker acknowledges it"
+    );
+
+    let deadline = crate::time::now() + crate::time::Duration::from_secs(15);
+    while app.collaboration_state() == CollaborationState::Connecting {
+        app.pump_collab_presence();
+        if app.collaboration_state() != CollaborationState::Connecting {
+            break;
+        }
+        wakes
+            .recv_timeout(deadline.saturating_duration_since(crate::time::now()))
+            .expect("the connecting manager wakes the app when it settles");
+    }
+
+    assert_eq!(app.collaboration_state(), CollaborationState::Ready);
+    assert!(
+        app.actions.last_published_actions.is_some(),
+        "becoming ready publishes the current action surface without another trigger"
+    );
+}
+
+#[cfg(all(unix, feature = "broker-transport"))]
+#[test]
 fn directory_lifecycle_idle_refreshes_after_normal_sync_without_remote_query() {
     let (mut app, calls) = connected_declared_directory();
     let revision = app.action_directory_revision();

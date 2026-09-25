@@ -4,15 +4,15 @@
 //! planning call. It does not include a general `LiteLLM` control plane.
 
 use std::fs;
+#[cfg(test)]
 use std::io::{BufRead, Read};
-#[cfg(target_os = "linux")]
-use std::os::fd::AsRawFd;
 use std::os::fd::FromRawFd;
 use std::os::unix::fs::{FileTypeExt, PermissionsExt};
-use std::os::unix::net::{UnixListener, UnixStream};
+use std::os::unix::net::UnixListener;
+#[cfg(test)]
+use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use accounts::{AccountId, Secret, SecretVault};
@@ -21,13 +21,15 @@ use agent_provider_config::{
 };
 use base64::Engine as _;
 use clap::{Parser, Subcommand};
-#[cfg(test)]
-use tilo_model_gateway::read_frame;
+use std::future::Future;
 use tilo_model_gateway::{
     EVENT_TOOL_CALL, EVENT_TOOL_CALL_DELTA, FRAMING, FaceImage, Frame, MAX_DELTA_EVENTS,
     MAX_STREAM_EVENTS, PlanTrace, RPC_VERSION, Request, Response, TraceEvent, VisionImage,
-    write_frame,
 };
+#[cfg(test)]
+use tilo_model_gateway::{read_frame, write_frame};
+use tokio::io::AsyncReadExt as _;
+use tokio::sync::Semaphore;
 use zeroize::{Zeroize, Zeroizing};
 
 #[derive(Parser)]
@@ -74,12 +76,18 @@ const HANDOFF_TIMEOUT: Duration = Duration::from_secs(2);
 /// There is deliberately no idle limit *between* frames: the agent's channel
 /// is one launcher-connected socket for the life of the process, with no way
 /// to reconnect, so closing an idle one would silently disable its model.
-/// Each connection has its own thread, so an idle one blocks nobody.
+/// Each connection is its own task, so an idle one blocks nobody.
 const FRAME_TIMEOUT: Duration = Duration::from_secs(10);
-/// A client that stops reading its responses cannot hold a thread forever.
+/// A client that stops reading its responses cannot hold its slot forever.
 const WRITE_TIMEOUT: Duration = Duration::from_secs(10);
-/// Same-user connections served at once; more are closed on accept.
-const MAX_CONNECTIONS: usize = 64;
+/// How many clients the gateway serves at once. Its callers are a few
+/// same-user apps; past this, new connections wait in the listen backlog.
+const MAX_CLIENTS: usize = 64;
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(8);
+
+/// Writes one intermediate streaming frame and reports whether the client is
+/// still there.
+type Emit<'a> = &'a mut (dyn FnMut(&Response) -> bool + Send);
 
 #[derive(serde::Deserialize)]
 struct Handoff {
@@ -115,54 +123,74 @@ fn control(request: Request) -> Result<(), String> {
 }
 
 fn serve(socket: &PathBuf) -> Result<(), String> {
+    // Activation is taken over before the runtime starts any thread.
     let listener = if let Some(listener) = systemd_listener(socket)? {
         listener
     } else {
         bind_listener(socket)?
     };
-    accept_loop(&listener, same_user)
+    listener
+        .set_nonblocking(true)
+        .map_err(|error| error.to_string())?;
+    let http = Arc::new(provider_client()?);
+    tilo_rt::daemon("model-gateway")
+        .run(async move {
+            let listener =
+                tokio::net::UnixListener::from_std(listener).map_err(|error| error.to_string())?;
+            serve_on(listener, http, MAX_CLIENTS, same_user).await
+        })
+        .map_err(|error| error.to_string())?
 }
 
-/// Serve every accepted connection on its own thread, so one idle, slow or
-/// long-running client (a Plan in flight, a stalled handoff) never delays
-/// another. `authenticate` is the same-user peer check in production.
-fn accept_loop(
-    listener: &UnixListener,
-    authenticate: fn(&UnixStream) -> bool,
+/// The one keep-alive HTTP client every provider request shares, so
+/// connections and TLS sessions to a provider are reused across requests and
+/// clients, and consecutive model turns skip the handshake.
+fn provider_client() -> Result<reqwest::Client, String> {
+    tilo_net::http::client()
+        .connect_timeout(CONNECT_TIMEOUT)
+        // Below common provider keep-alive limits, so a pooled connection is
+        // rarely one the provider already closed.
+        .pool_idle_timeout(Duration::from_secs(45))
+        .tcp_keepalive(Duration::from_secs(30))
+        // Neither redirects nor protocol-nack retries establish provider
+        // idempotency. One Plan authorizes at most one provider POST; the
+        // Photos operations retry explicitly in `while_busy`.
+        .redirect(reqwest::redirect::Policy::none())
+        .retry(reqwest::retry::never())
+        .build()
+        .map_err(|_| "gateway HTTP client is unavailable".to_string())
+}
+
+/// Serve clients concurrently, each as its own task, at most `limit` at
+/// once, so one idle, slow or long-running client (a Plan in flight, a
+/// stalled handoff) never delays another. `authenticate` is the same-user
+/// peer check in production. Returns only when accepting fails.
+async fn serve_on(
+    listener: tokio::net::UnixListener,
+    http: Arc<reqwest::Client>,
+    limit: usize,
+    authenticate: fn(&tokio::net::UnixStream) -> bool,
 ) -> Result<(), String> {
-    static ACTIVE: AtomicUsize = AtomicUsize::new(0);
-    struct Slot;
-    impl Drop for Slot {
-        fn drop(&mut self) {
-            ACTIVE.fetch_sub(1, Ordering::AcqRel);
-        }
-    }
-    for stream in listener.incoming() {
-        let stream = match stream {
-            Ok(stream) => stream,
+    let slots = Arc::new(Semaphore::new(limit.max(1)));
+    loop {
+        let slot = Arc::clone(&slots)
+            .acquire_owned()
+            .await
+            .map_err(|error| error.to_string())?;
+        let stream = match listener.accept().await {
+            Ok((stream, _)) => stream,
             Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
             Err(error) => return Err(error.to_string()),
         };
         if !authenticate(&stream) {
             continue;
         }
-        if ACTIVE.fetch_add(1, Ordering::AcqRel) >= MAX_CONNECTIONS {
-            ACTIVE.fetch_sub(1, Ordering::AcqRel);
-            continue;
-        }
-        let slot = Slot;
-        let spawned = std::thread::Builder::new()
-            .name("gateway-client".into())
-            .spawn(move || {
-                let _slot = slot;
-                serve_connection(stream);
-            });
-        if spawned.is_err() {
-            // The closure (and its slot) was dropped with the failed spawn.
-            continue;
-        }
+        let http = Arc::clone(&http);
+        tokio::spawn(async move {
+            serve_connection(stream, &http).await;
+            drop(slot);
+        });
     }
-    Ok(())
 }
 
 fn bind_listener(socket: &PathBuf) -> Result<UnixListener, String> {
@@ -228,68 +256,105 @@ fn systemd_listener(expected: &Path) -> Result<Option<UnixListener>, String> {
 /// One authenticated connection: the launcher handoff, then framed requests
 /// in order. Framing, caller authorization and response shapes are unchanged
 /// from the single-threaded server.
-fn serve_connection(mut stream: UnixStream) {
-    if stream.set_write_timeout(Some(WRITE_TIMEOUT)).is_err()
-        || stream.set_read_timeout(Some(HANDOFF_TIMEOUT)).is_err()
-    {
-        return;
-    }
-    let Ok(handoff) = read_handoff(&mut stream) else {
+async fn serve_connection(mut stream: tokio::net::UnixStream, http: &reqwest::Client) {
+    let Ok(Ok(handoff)) = tokio::time::timeout(HANDOFF_TIMEOUT, read_handoff(&mut stream)).await
+    else {
         return;
     };
     loop {
-        let frame = match read_request_frame(&mut stream) {
-            Ok(frame) => frame,
-            Err(()) => return,
+        let Ok(frame) = read_request_frame(&mut stream).await else {
+            return;
         };
         let response = match serde_json::from_slice::<Frame<Request>>(&frame) {
             Ok(frame) if frame.version == RPC_VERSION => {
-                let mut broken = false;
-                let response = handle_streaming(&handoff.app_id, frame.value, &mut |event| {
-                    broken = broken || write_frame(&mut stream, event).is_err();
-                    !broken
-                });
-                if broken {
-                    return;
+                match respond(&mut stream, &handoff.app_id, frame.value, http).await {
+                    Some(response) => response,
+                    None => return,
                 }
-                response
             }
             Ok(_) => rejected("unsupported gateway RPC version"),
             // The single-threaded server closed on an undecodable frame too.
             Err(_) => return,
         };
-        if write_frame(&mut stream, &response).is_err() {
+        if send_frame(&mut stream, &response).await.is_err() {
             return;
         }
+    }
+}
+
+/// Serve one request, writing its intermediate streaming frames to the
+/// client while the provider is still answering. `None` when the client
+/// stopped reading them.
+async fn respond(
+    stream: &mut tokio::net::UnixStream,
+    app_id: &str,
+    request: Request,
+    http: &reqwest::Client,
+) -> Option<Response> {
+    // Events are bounded by MAX_STREAM_EVENTS + MAX_DELTA_EVENTS per Plan.
+    let (events, mut queued) = tokio::sync::mpsc::unbounded_channel::<Zeroizing<Vec<u8>>>();
+    let handling = async move {
+        let mut emit = |event: &Response| {
+            serde_json::to_vec(event).is_ok_and(|body| events.send(Zeroizing::new(body)).is_ok())
+        };
+        handle_streaming(app_id, request, http, &mut emit).await
+        // `events` drops here, which ends the writer below.
+    };
+    let writing = async move {
+        while let Some(body) = queued.recv().await {
+            if send_body(stream, &body).await.is_err() {
+                // Dropping `queued` makes every later emit report the loss.
+                return false;
+            }
+        }
+        true
+    };
+    let (response, written) = tokio::join!(handling, writing);
+    written.then_some(response)
+}
+
+async fn send_frame<T: serde::Serialize + Sync>(
+    stream: &mut tokio::net::UnixStream,
+    value: &T,
+) -> Result<(), ()> {
+    let body = Zeroizing::new(serde_json::to_vec(value).map_err(|_| ())?);
+    send_body(stream, &body).await
+}
+
+async fn send_body(stream: &mut tokio::net::UnixStream, body: &[u8]) -> Result<(), ()> {
+    match tokio::time::timeout(WRITE_TIMEOUT, FRAMING.write_async(stream, body)).await {
+        Ok(Ok(())) => Ok(()),
+        _ => Err(()),
     }
 }
 
 /// Read one length-prefixed request frame. Waiting for its first byte has no
 /// limit (see [`FRAME_TIMEOUT`]); the rest must follow promptly. The buffer
 /// is zeroized on drop because a Settings frame can carry an API key.
-fn read_request_frame(stream: &mut UnixStream) -> Result<Zeroizing<Vec<u8>>, ()> {
+async fn read_request_frame(stream: &mut tokio::net::UnixStream) -> Result<Zeroizing<Vec<u8>>, ()> {
     let mut length = [0_u8; 4];
-    stream.set_read_timeout(None).map_err(|_| ())?;
     loop {
-        match stream.read(&mut length[..1]) {
+        match stream.read(&mut length[..1]).await {
             Ok(0) => return Err(()),
             Ok(_) => break,
             Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
             Err(_) => return Err(()),
         }
     }
-    stream
-        .set_read_timeout(Some(FRAME_TIMEOUT))
-        .map_err(|_| ())?;
-    stream.read_exact(&mut length[1..]).map_err(|_| ())?;
-    let length = FRAMING.decode_prefix(length).map_err(|_| ())?;
-    let mut body = Zeroizing::new(vec![0_u8; length]);
-    stream.read_exact(&mut body).map_err(|_| ())?;
-    Ok(body)
+    let rest = async {
+        stream.read_exact(&mut length[1..]).await.map_err(|_| ())?;
+        let length = FRAMING.decode_prefix(length).map_err(|_| ())?;
+        let mut body = Zeroizing::new(vec![0_u8; length]);
+        stream.read_exact(&mut body).await.map_err(|_| ())?;
+        Ok(body)
+    };
+    tokio::time::timeout(FRAME_TIMEOUT, rest)
+        .await
+        .map_err(|_| ())?
 }
 
-fn read_handoff(stream: &mut UnixStream) -> Result<Handoff, String> {
-    let body = match HANDOFF_FRAMING.read(stream) {
+async fn read_handoff(stream: &mut tokio::net::UnixStream) -> Result<Handoff, String> {
+    let body = match HANDOFF_FRAMING.read_async(stream).await {
         Ok(Some(body)) => body,
         Ok(None) => return Err("missing launcher authentication".into()),
         Err(wire_frame::FrameError::TooLarge(_)) => {
@@ -310,31 +375,50 @@ fn read_handoff(stream: &mut UnixStream) -> Result<Handoff, String> {
 }
 
 #[cfg(test)]
-fn handle(app_id: &str, request: Request) -> Response {
-    handle_streaming(app_id, request, &mut |_| true)
+async fn handle(app_id: &str, request: Request, http: &reqwest::Client) -> Response {
+    handle_streaming(app_id, request, http, &mut |_| true).await
 }
 
 /// Authorize and serve one request. `emit` writes an intermediate streaming
 /// frame and reports whether the client is still there; only a streaming
-/// Plan calls it.
-fn handle_streaming(
+/// Plan calls it. Configuration and vault work, which reads and writes
+/// files, runs on the runtime's bounded blocking pool.
+async fn handle_streaming(
     app_id: &str,
     request: Request,
-    emit: &mut dyn FnMut(&Response) -> bool,
+    http: &reqwest::Client,
+    emit: Emit<'_>,
 ) -> Response {
+    let output = |output| Response {
+        ok: true,
+        output: Some(output),
+        configured: None,
+        error: None,
+        event: None,
+    };
+    let done = |()| Response {
+        ok: true,
+        output: None,
+        configured: None,
+        error: None,
+        event: None,
+    };
+    let configured = |configured| Response {
+        ok: true,
+        output: None,
+        configured: Some(configured),
+        error: None,
+        event: None,
+    };
     let result = match request {
         Request::SelectionConfigured {
             profile_id,
             model_id,
             protocol,
         } if app_id == AGENT_APP => {
-            selection_configured(&profile_id, &model_id, protocol).map(|()| Response {
-                ok: true,
-                output: None,
-                configured: Some(true),
-                error: None,
-                event: None,
-            })
+            blocking(move || selection_configured(&profile_id, &model_id, protocol))
+                .await
+                .map(|()| configured(true))
         }
         Request::Plan {
             profile_id,
@@ -345,6 +429,7 @@ fn handle_streaming(
             deltas,
             trace,
         } if app_id == AGENT_APP => plan(
+            http,
             &PlanCall {
                 profile_id: &profile_id,
                 model_id: &model_id,
@@ -356,13 +441,8 @@ fn handle_streaming(
             body,
             emit,
         )
-        .map(|output| Response {
-            ok: true,
-            output: Some(output),
-            configured: None,
-            error: None,
-            event: None,
-        }),
+        .await
+        .map(output),
         Request::Plan { .. } => Err("only tilo-agent may plan through the model gateway".into()),
         Request::Trace {
             trace,
@@ -370,27 +450,15 @@ fn handle_streaming(
             at_unix_ms,
         } if app_id == AGENT_APP => {
             log_mark(trace, event, at_unix_ms);
-            Ok(Response {
-                ok: true,
-                output: None,
-                configured: None,
-                error: None,
-                event: None,
-            })
+            Ok(done(()))
         }
         Request::AnalyzeImage {
             profile_id,
             model_id,
             image,
-        } if app_id == PHOTOS_APP => {
-            analyze_image(&profile_id, &model_id, &image).map(|output| Response {
-                ok: true,
-                output: Some(output),
-                configured: None,
-                error: None,
-                event: None,
-            })
-        }
+        } if app_id == PHOTOS_APP => analyze_image(http, profile_id, model_id, image)
+            .await
+            .map(output),
         Request::AnalyzeImage { .. } => {
             Err("only Photos may request fixed local image analysis".into())
         }
@@ -398,48 +466,42 @@ fn handle_streaming(
             profile_id,
             model_id,
             images,
-        } if app_id == PHOTOS_APP => {
-            cluster_faces(&profile_id, &model_id, &images).map(|output| Response {
-                ok: true,
-                output: Some(output),
-                configured: None,
-                error: None,
-                event: None,
-            })
-        }
+        } if app_id == PHOTOS_APP => cluster_faces(http, profile_id, model_id, images)
+            .await
+            .map(output),
         Request::ClusterFaces { .. } => {
             Err("only Photos may request fixed local face clustering".into())
         }
         Request::SecretStatus { profile_id } if app_id == SETTINGS_APP => {
-            secret_status(&profile_id).map(|configured| Response {
-                ok: true,
-                output: None,
-                configured: Some(configured),
-                error: None,
-                event: None,
-            })
+            blocking(move || secret_status(&profile_id))
+                .await
+                .map(configured)
         }
         Request::SetApiKey {
             profile_id,
             api_key,
-        } if app_id == SETTINGS_APP => set_key(&profile_id, api_key).map(|()| Response {
-            ok: true,
-            output: None,
-            configured: None,
-            error: None,
-            event: None,
-        }),
-        Request::RemoveApiKey { profile_id } if app_id == SETTINGS_APP => remove_key(&profile_id)
-            .map(|()| Response {
-                ok: true,
-                output: None,
-                configured: None,
-                error: None,
-                event: None,
-            }),
+        } if app_id == SETTINGS_APP => blocking(move || set_key(&profile_id, api_key))
+            .await
+            .map(done),
+        Request::RemoveApiKey { profile_id } if app_id == SETTINGS_APP => {
+            blocking(move || remove_key(&profile_id)).await.map(done)
+        }
         _ => Err("caller is not authorized for this gateway operation".into()),
     };
     result.unwrap_or_else(|error| rejected(&error))
+}
+
+/// Run synchronous configuration and vault work — file reads, key
+/// decryption, saves — on the runtime's bounded blocking pool rather than
+/// on a worker that is serving other clients.
+async fn blocking<T, F>(work: F) -> Result<T, String>
+where
+    T: Send + 'static,
+    F: FnOnce() -> Result<T, String> + Send + 'static,
+{
+    tokio::task::spawn_blocking(work)
+        .await
+        .map_err(|_| "gateway worker failed".to_string())?
 }
 
 fn rejected(error: &str) -> Response {
@@ -523,8 +585,8 @@ fn selection_configured(
     Ok(())
 }
 
-/// Vault writes are read-modify-write of one file; connections now run on
-/// separate threads, so they are serialized.
+/// Vault writes are read-modify-write of one file; requests run on separate
+/// blocking-pool threads, so they are serialized.
 static VAULT_WRITES: Mutex<()> = Mutex::new(());
 
 fn set_key(profile_id: &str, api_key: String) -> Result<(), String> {
@@ -588,32 +650,44 @@ struct PlanCall<'a> {
     trace: Option<PlanTrace>,
 }
 
-fn plan(
+async fn plan(
+    http: &reqwest::Client,
     call: &PlanCall<'_>,
     body: serde_json::Value,
-    emit: &mut dyn FnMut(&Response) -> bool,
+    emit: Emit<'_>,
 ) -> Result<String, String> {
     let mut timing = PlanTiming::start();
-    let result = plan_dispatch(call, body, emit, &mut timing);
+    let result = plan_dispatch(http, call, body, emit, &mut timing).await;
     timing.log(call, result.as_ref().map(|_| ()));
     result
 }
 
-fn plan_dispatch(
-    call: &PlanCall<'_>,
-    body: serde_json::Value,
-    emit: &mut dyn FnMut(&Response) -> bool,
-    timing: &mut PlanTiming,
-) -> Result<String, String> {
-    let profile = configured_profile(call.profile_id)?;
-    if !profile.models.iter().any(|model| model.id == call.model_id) {
+/// The configured profile for a planning call and its API key.
+fn plan_profile(
+    profile_id: &str,
+    model_id: &str,
+) -> Result<(ProviderProfile, Zeroizing<String>), String> {
+    let profile = configured_profile(profile_id)?;
+    if !profile.models.iter().any(|model| model.id == model_id) {
         return Err("model is not configured for this provider".into());
     }
-    let mut secret = SecretVault::open()
-        .get(&vault_id(call.profile_id)?)
+    let secret = SecretVault::open()
+        .get(&vault_id(profile_id)?)
         .map(|secret| Zeroizing::new(secret.password))
         .filter(|secret| !secret.is_empty())
         .ok_or_else(|| "API key is not configured".to_string())?;
+    Ok((profile, secret))
+}
+
+async fn plan_dispatch(
+    http: &reqwest::Client,
+    call: &PlanCall<'_>,
+    body: serde_json::Value,
+    emit: Emit<'_>,
+    timing: &mut PlanTiming,
+) -> Result<String, String> {
+    let (profile_id, model_id) = (call.profile_id.to_owned(), call.model_id.to_owned());
+    let (profile, mut secret) = blocking(move || plan_profile(&profile_id, &model_id)).await?;
     // Only the OpenAI-compatible stream is parsed here; an Anthropic Plan is
     // always answered with one final frame, which streaming clients accept.
     let streaming = call.stream && profile.protocol == ProviderProtocol::OpenAiCompatible;
@@ -621,27 +695,27 @@ fn plan_dispatch(
     let body = outbound_body(&profile, call.model_id, body, streaming)?;
     let endpoint = provider_url(&profile);
     let timeout = call.timeout.min(MAX_PROVIDER_TIMEOUT);
-    let client = plan_client()?;
     let budget = timeout
         .checked_sub(timing.started.elapsed())
         .filter(|budget| !budget.is_zero())
         .ok_or_else(|| "provider request timed out".to_string())?;
-    let result = (|| {
+    let result = async {
         let response = send_provider(
-            client,
+            http,
             &profile,
             &endpoint,
             Some(secret.as_str()),
             &body,
             budget,
         )
+        .await
         .inspect_err(|failure| timing.status = failure.status)?;
         timing.status = Some(response.status().as_u16());
         timing.first_byte = Some(timing.started.elapsed());
         if streaming {
-            read_stream(response, emit, timing, call.deltas)
+            read_stream(response, emit, timing, call.deltas).await
         } else {
-            let text = response.text().map_err(|_| ProviderFailure {
+            let text = response.text().await.map_err(|_| ProviderFailure {
                 why: "provider response was unreadable".into(),
                 again: Again::Never,
                 outcome_unknown: true,
@@ -650,7 +724,8 @@ fn plan_dispatch(
             timing.observe_body(&text);
             Ok(text)
         }
-    })()
+    }
+    .await
     .map_err(|failure| {
         if failure.outcome_unknown {
             // There is no provider acceptance/status or idempotency authority.
@@ -733,42 +808,49 @@ fn outbound_body(
     Ok(serde_json::Value::Object(object))
 }
 
-/// One keep-alive HTTP client for every Plan, so consecutive model turns
-/// reuse the provider's TLS connection instead of handshaking each time.
-fn plan_client() -> Result<&'static reqwest::blocking::Client, String> {
-    static CLIENT: OnceLock<Option<reqwest::blocking::Client>> = OnceLock::new();
-    CLIENT
-        .get_or_init(|| {
-            tilo_net::http::blocking_client()
-                .connect_timeout(Duration::from_secs(8))
-                // Below common provider keep-alive limits, so a pooled
-                // connection is rarely one the provider already closed.
-                .pool_idle_timeout(Duration::from_secs(45))
-                .tcp_keepalive(Duration::from_secs(30))
-                // Neither redirects nor protocol-nack retries establish provider
-                // idempotency. One Plan authorizes at most one provider POST.
-                .redirect(reqwest::redirect::Policy::none())
-                .retry(reqwest::retry::never())
-                .build()
-                .ok()
-        })
-        .as_ref()
-        .ok_or_else(|| "gateway HTTP client is unavailable".to_string())
-}
-
 /// The largest provider stream read for one Plan.
-const MAX_STREAM_BYTES: u64 = 1024 * 1024;
+const MAX_STREAM_BYTES: usize = 1024 * 1024;
 
 /// Consume an OpenAI-compatible SSE stream, emitting each tool call as soon
 /// as it is complete, and return the assembled non-streaming body.
-fn read_stream(
-    response: reqwest::blocking::Response,
-    emit: &mut dyn FnMut(&Response) -> bool,
+async fn read_stream(
+    mut response: reqwest::Response,
+    emit: Emit<'_>,
     timing: &mut PlanTiming,
     deltas: bool,
 ) -> Result<String, ProviderFailure> {
-    let mut reader = std::io::BufReader::new(response.take(MAX_STREAM_BYTES));
-    read_sse(&mut reader, emit, timing, deltas, &mut Instant::now)
+    let mut sse = SseReader::new(deltas);
+    let mut pending = Vec::new();
+    let mut read = 0_usize;
+    while read < MAX_STREAM_BYTES {
+        let chunk = response.chunk().await.map_err(|error| {
+            if error.is_timeout() {
+                stream_failure("provider request timed out")
+            } else {
+                stream_failure("provider response was unreadable")
+            }
+        })?;
+        let Some(chunk) = chunk else {
+            break;
+        };
+        let take = chunk.len().min(MAX_STREAM_BYTES - read);
+        read += take;
+        pending.extend_from_slice(&chunk[..take]);
+        let mut start = 0;
+        while let Some(end) = pending[start..].iter().position(|byte| *byte == b'\n') {
+            let line = &pending[start..start + end + 1];
+            start += end + 1;
+            if sse.line(line, emit, timing, &mut Instant::now)? == Flow::Done {
+                return sse.finish(emit, timing);
+            }
+        }
+        pending.drain(..start);
+    }
+    // A last line without its newline, as a buffered line reader returns it.
+    if !pending.is_empty() {
+        sse.line(&pending, emit, timing, &mut Instant::now)?;
+    }
+    sse.finish(emit, timing)
 }
 
 fn stream_failure(why: &str) -> ProviderFailure {
@@ -782,37 +864,63 @@ fn stream_failure(why: &str) -> ProviderFailure {
 
 /// The SSE loop of [`read_stream`] over any reader, with an injectable clock
 /// for the delta coalescing window.
+#[cfg(test)]
 fn read_sse(
     reader: &mut dyn BufRead,
-    emit: &mut dyn FnMut(&Response) -> bool,
+    emit: Emit<'_>,
     timing: &mut PlanTiming,
     deltas: bool,
     clock: &mut dyn FnMut() -> Instant,
 ) -> Result<String, ProviderFailure> {
-    let mut assembly = StreamAssembly::default();
+    let mut sse = SseReader::new(deltas);
     let mut line = Vec::new();
-    let mut emitted = 0_usize;
-    let mut coalescer = deltas.then(DeltaCoalescer::default);
     loop {
         line.clear();
-        let read = reader.read_until(b'\n', &mut line).map_err(|error| {
-            if error.kind() == std::io::ErrorKind::TimedOut
-                || error.to_string().contains("timed out")
-            {
-                stream_failure("provider request timed out")
-            } else {
-                stream_failure("provider response was unreadable")
-            }
-        })?;
-        if read == 0 {
+        let read = reader
+            .read_until(b'\n', &mut line)
+            .map_err(|_| stream_failure("provider response was unreadable"))?;
+        if read == 0 || sse.line(&line, emit, timing, clock)? == Flow::Done {
             break;
         }
+    }
+    sse.finish(emit, timing)
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum Flow {
+    More,
+    Done,
+}
+
+/// The state of one SSE stream, fed a line at a time.
+struct SseReader {
+    assembly: StreamAssembly,
+    emitted: usize,
+    coalescer: Option<DeltaCoalescer>,
+}
+
+impl SseReader {
+    fn new(deltas: bool) -> Self {
+        Self {
+            assembly: StreamAssembly::default(),
+            emitted: 0,
+            coalescer: deltas.then(DeltaCoalescer::default),
+        }
+    }
+
+    fn line(
+        &mut self,
+        line: &[u8],
+        emit: Emit<'_>,
+        timing: &mut PlanTiming,
+        clock: &mut dyn FnMut() -> Instant,
+    ) -> Result<Flow, ProviderFailure> {
         let Some(data) = line.trim_ascii().strip_prefix(b"data:") else {
-            continue;
+            return Ok(Flow::More);
         };
         let data = data.trim_ascii();
         if data == b"[DONE]" {
-            break;
+            return Ok(Flow::Done);
         }
         let chunk: serde_json::Value = serde_json::from_slice(data)
             .map_err(|_| stream_failure("provider stream was unreadable"))?;
@@ -824,6 +932,7 @@ fn read_sse(
                 provider_error_detail(data)
             )));
         }
+        let assembly = &mut self.assembly;
         if assembly.push(&chunk) && timing.first_token.is_none() {
             timing.first_token = Some(timing.started.elapsed());
         }
@@ -831,32 +940,40 @@ fn read_sse(
             timing.first_reasoning = Some(timing.started.elapsed());
         }
         let complete = assembly.complete();
-        emitted = emit_complete(
-            &assembly,
-            emitted,
+        self.emitted = emit_complete(
+            assembly,
+            self.emitted,
             complete,
             emit,
             timing,
-            coalescer.as_mut(),
+            self.coalescer.as_mut(),
         )?;
-        if let Some(coalescer) = coalescer.as_mut() {
-            coalescer.pending(&assembly, emitted, clock(), false, emit)?;
+        if let Some(coalescer) = self.coalescer.as_mut() {
+            coalescer.pending(assembly, self.emitted, clock(), false, emit)?;
         }
+        Ok(Flow::More)
     }
-    if assembly.finish.is_none() {
-        return Err(stream_failure("provider stream ended early"));
+
+    fn finish(
+        mut self,
+        emit: Emit<'_>,
+        timing: &mut PlanTiming,
+    ) -> Result<String, ProviderFailure> {
+        if self.assembly.finish.is_none() {
+            return Err(stream_failure("provider stream ended early"));
+        }
+        emit_complete(
+            &self.assembly,
+            self.emitted,
+            self.assembly.calls.len(),
+            emit,
+            timing,
+            self.coalescer.as_mut(),
+        )?;
+        timing.observe_usage(self.assembly.usage.as_ref());
+        timing.tool_calls = self.assembly.calls.len();
+        Ok(self.assembly.into_completion().to_string())
     }
-    emit_complete(
-        &assembly,
-        emitted,
-        assembly.calls.len(),
-        emit,
-        timing,
-        coalescer.as_mut(),
-    )?;
-    timing.observe_usage(assembly.usage.as_ref());
-    timing.tool_calls = assembly.calls.len();
-    Ok(assembly.into_completion().to_string())
 }
 
 /// The smallest gap between two delta frames of one tool call.
@@ -881,7 +998,7 @@ impl DeltaCoalescer {
         from: usize,
         now: Instant,
         force: bool,
-        emit: &mut dyn FnMut(&Response) -> bool,
+        emit: Emit<'_>,
     ) -> Result<(), ProviderFailure> {
         for index in from..assembly.calls.len() {
             self.flush(assembly, index, now, force, emit)?;
@@ -895,7 +1012,7 @@ impl DeltaCoalescer {
         index: usize,
         now: Instant,
         force: bool,
-        emit: &mut dyn FnMut(&Response) -> bool,
+        emit: Emit<'_>,
     ) -> Result<(), ProviderFailure> {
         let call = &assembly.calls[index];
         while self.sent.len() <= index {
@@ -945,7 +1062,7 @@ fn emit_complete(
     assembly: &StreamAssembly,
     emitted: usize,
     complete: usize,
-    emit: &mut dyn FnMut(&Response) -> bool,
+    emit: Emit<'_>,
     timing: &mut PlanTiming,
     mut coalescer: Option<&mut DeltaCoalescer>,
 ) -> Result<usize, ProviderFailure> {
@@ -1305,11 +1422,15 @@ fn log_token(value: &str) -> String {
     }
 }
 
-/// Run Photos' one fixed local-only visual-analysis operation. No arbitrary
-/// prompt crosses the app boundary: the schema, token budget, and image URL
-/// shape are all constructed here after validating the launcher-authenticated
-/// caller and model capability.
-fn analyze_image(profile_id: &str, model_id: &str, image: &VisionImage) -> Result<String, String> {
+/// Validate Photos' one fixed local-only visual-analysis operation and
+/// build its request. No arbitrary prompt crosses the app boundary: the
+/// schema, token budget, and image URL shape are all constructed here after
+/// validating the launcher-authenticated caller and model capability.
+fn vision_request(
+    profile_id: &str,
+    model_id: &str,
+    image: &VisionImage,
+) -> Result<(ProviderProfile, serde_json::Value), String> {
     validate_vision_image(image)?;
     let profile = configured_profile(profile_id)?;
     if profile.location != EndpointLocation::ThisDevice
@@ -1329,28 +1450,40 @@ fn analyze_image(profile_id: &str, model_id: &str, image: &VisionImage) -> Resul
     if !model.revision.as_deref().is_some_and(is_pinned_revision) {
         return Err("the selected local vision model has no pinned revision".into());
     }
-
-    let endpoint = provider_url(&profile);
     let body = local_vision_body(model_id, image);
-    let client = tilo_net::http::blocking_client()
-        .connect_timeout(Duration::from_secs(8))
-        .build()
-        .map_err(|_| "gateway HTTP client is unavailable".to_string())?;
+    Ok((profile, body))
+}
+
+/// Run Photos' fixed visual-analysis operation (see [`vision_request`]).
+async fn analyze_image(
+    http: &reqwest::Client,
+    profile_id: String,
+    model_id: String,
+    image: VisionImage,
+) -> Result<String, String> {
+    let (profile, body) = blocking(move || vision_request(&profile_id, &model_id, &image)).await?;
+    let endpoint = provider_url(&profile);
     let began = Instant::now();
     // A local vLLM endpoint is normally unauthenticated. Do not invent a
     // bearer token, and never look up a hosted-provider secret for it.
     while_busy(
         || VISION_TIMEOUT.checked_sub(began.elapsed()),
-        std::thread::sleep,
-        |budget| provider_attempt(&client, &profile, &endpoint, None, &body, budget),
+        tokio::time::sleep,
+        |budget| provider_attempt(http, &profile, &endpoint, None, &body, budget),
     )
+    .await
 }
 
-/// Run one fixed face-clustering request against the separate signed local
-/// capability.  An OpenAI-compatible local runner can expose its face model
-/// behind the normal chat endpoint, but it must explicitly advertise
-/// `face_recognition`; generic image description models cannot use this path.
-fn cluster_faces(profile_id: &str, model_id: &str, images: &[FaceImage]) -> Result<String, String> {
+/// Validate one fixed face-clustering request against the separate signed
+/// local capability and build it.  An OpenAI-compatible local runner can
+/// expose its face model behind the normal chat endpoint, but it must
+/// explicitly advertise `face_recognition`; generic image description models
+/// cannot use this path.
+fn face_request(
+    profile_id: &str,
+    model_id: &str,
+    images: &[FaceImage],
+) -> Result<(ProviderProfile, serde_json::Value), String> {
     validate_face_images(images)?;
     let profile = configured_profile(profile_id)?;
     if profile.location != EndpointLocation::ThisDevice
@@ -1370,18 +1503,26 @@ fn cluster_faces(profile_id: &str, model_id: &str, images: &[FaceImage]) -> Resu
     if !model.revision.as_deref().is_some_and(is_pinned_revision) {
         return Err("the selected local face model has no pinned revision".into());
     }
-    let endpoint = provider_url(&profile);
     let body = local_face_body(model_id, images);
-    let client = tilo_net::http::blocking_client()
-        .connect_timeout(Duration::from_secs(8))
-        .build()
-        .map_err(|_| "gateway HTTP client is unavailable".to_string())?;
+    Ok((profile, body))
+}
+
+/// Run one fixed face-clustering request (see [`face_request`]).
+async fn cluster_faces(
+    http: &reqwest::Client,
+    profile_id: String,
+    model_id: String,
+    images: Vec<FaceImage>,
+) -> Result<String, String> {
+    let (profile, body) = blocking(move || face_request(&profile_id, &model_id, &images)).await?;
+    let endpoint = provider_url(&profile);
     let began = Instant::now();
     while_busy(
         || VISION_TIMEOUT.checked_sub(began.elapsed()),
-        std::thread::sleep,
-        |budget| provider_attempt(&client, &profile, &endpoint, None, &body, budget),
+        tokio::time::sleep,
+        |budget| provider_attempt(http, &profile, &endpoint, None, &body, budget),
     )
+    .await
 }
 
 fn validate_vision_image(image: &VisionImage) -> Result<(), String> {
@@ -1484,7 +1625,7 @@ fn local_vision_body(model_id: &str, image: &VisionImage) -> serde_json::Value {
 
 fn local_face_body(model_id: &str, images: &[FaceImage]) -> serde_json::Value {
     const INSTRUCTIONS: &str = "You are a device-local face detection and clustering component. Return JSON only with exactly one key, clusters: an array of objects with id and photo_ids. Detect visible faces and group only faces that you can determine are the same person among the supplied photographs. Never output a person's name, age, gender, race, emotion, face rectangle, crop, confidence, embedding, or any biometric value. A cluster id must be a short opaque token and photo_ids must contain only supplied ids. Omit uncertain matches and omit single-photo clusters.";
-    let mut content = Vec::with_capacity(images.len() + 1);
+    let mut content = Vec::with_capacity(images.len().saturating_add(1));
     content.push(serde_json::json!({
         "type": "text",
         "text": "Detect and cluster faces in this bounded local batch using the fixed JSON schema."
@@ -1511,16 +1652,18 @@ fn local_face_body(model_id: &str, images: &[FaceImage]) -> serde_json::Value {
     })
 }
 
-fn provider_attempt(
-    client: &reqwest::blocking::Client,
+async fn provider_attempt(
+    client: &reqwest::Client,
     profile: &ProviderProfile,
     endpoint: &str,
     secret: Option<&str>,
     body: &serde_json::Value,
     budget: Duration,
 ) -> Result<String, ProviderFailure> {
-    send_provider(client, profile, endpoint, secret, body, budget)?
+    send_provider(client, profile, endpoint, secret, body, budget)
+        .await?
         .text()
+        .await
         .map_err(|_| ProviderFailure {
             why: "provider response was unreadable".into(),
             again: Again::Never,
@@ -1530,14 +1673,14 @@ fn provider_attempt(
 }
 
 /// Send one provider POST and return the successful response unread.
-fn send_provider(
-    client: &reqwest::blocking::Client,
+async fn send_provider(
+    client: &reqwest::Client,
     profile: &ProviderProfile,
     endpoint: &str,
     secret: Option<&str>,
     body: &serde_json::Value,
     budget: Duration,
-) -> Result<reqwest::blocking::Response, ProviderFailure> {
+) -> Result<reqwest::Response, ProviderFailure> {
     let mut request = client
         .post(endpoint)
         .timeout(budget)
@@ -1562,22 +1705,26 @@ fn send_provider(
             }
         }
     }
-    let response = request.json(body).send().map_err(|error| ProviderFailure {
-        // A builder error occurs before any network send. Once dispatch starts,
-        // even connect/timeout errors cannot grant permission to replay Plan.
-        outcome_unknown: !error.is_builder(),
-        why: if error.is_timeout() {
-            "provider request timed out".into()
-        } else {
-            "provider transport failed".into()
-        },
-        again: if error.is_timeout() || error.is_connect() {
-            Again::Soon(None)
-        } else {
-            Again::Never
-        },
-        status: None,
-    })?;
+    let response = request
+        .json(body)
+        .send()
+        .await
+        .map_err(|error| ProviderFailure {
+            // A builder error occurs before any network send. Once dispatch starts,
+            // even connect/timeout errors cannot grant permission to replay Plan.
+            outcome_unknown: !error.is_builder(),
+            why: if error.is_timeout() {
+                "provider request timed out".into()
+            } else {
+                "provider transport failed".into()
+            },
+            again: if error.is_timeout() || error.is_connect() {
+                Again::Soon(None)
+            } else {
+                Again::Never
+            },
+            status: None,
+        })?;
     let status = response.status();
     if !status.is_success() {
         let again = again_after(
@@ -1596,8 +1743,7 @@ fn send_provider(
             }
             _ => String::new(),
         };
-        let mut detail = Vec::new();
-        let _ = response.take(MAX_ERROR_BODY).read_to_end(&mut detail);
+        let detail = error_body(response).await;
         return Err(ProviderFailure {
             why: format!(
                 "provider returned HTTP {}{}{retry_after}",
@@ -1613,7 +1759,20 @@ fn send_provider(
 }
 
 /// The most of a provider error body read to classify it.
-const MAX_ERROR_BODY: u64 = 16 * 1024;
+const MAX_ERROR_BODY: usize = 16 * 1024;
+
+/// Up to [`MAX_ERROR_BODY`] bytes of an unsuccessful response's body.
+async fn error_body(mut response: reqwest::Response) -> Vec<u8> {
+    let mut detail = Vec::new();
+    while detail.len() < MAX_ERROR_BODY {
+        let Ok(Some(chunk)) = response.chunk().await else {
+            break;
+        };
+        let take = chunk.len().min(MAX_ERROR_BODY - detail.len());
+        detail.extend_from_slice(&chunk[..take]);
+    }
+    detail
+}
 
 /// The provider's machine-readable error classification, and nothing else:
 /// `error.type`, `error.code` and `error.param` (OpenAI) or `error.type`
@@ -1686,11 +1845,13 @@ fn retry_wait(retry: u32, asked_for: Option<Duration>) -> Duration {
         .min(LONGEST_RETRY_WAIT)
 }
 
-fn while_busy<L, W, A>(left: L, mut wait: W, mut attempt: A) -> Result<String, String>
+async fn while_busy<L, W, WF, A, AF>(left: L, mut wait: W, mut attempt: A) -> Result<String, String>
 where
     L: Fn() -> Option<Duration>,
-    W: FnMut(Duration),
-    A: FnMut(Duration) -> Result<String, ProviderFailure>,
+    W: FnMut(Duration) -> WF,
+    WF: Future<Output = ()>,
+    A: FnMut(Duration) -> AF,
+    AF: Future<Output = Result<String, ProviderFailure>>,
 {
     let began = left();
     let elapsed = |now: Option<Duration>| match (began, now) {
@@ -1704,7 +1865,7 @@ where
             return Err("provider request timed out".into());
         };
         made = made.saturating_add(1);
-        let ProviderFailure { why, again, .. } = match attempt(budget) {
+        let ProviderFailure { why, again, .. } = match attempt(budget).await {
             Ok(output) => return Ok(output),
             Err(failure) => failure,
         };
@@ -1728,7 +1889,7 @@ where
         if left().is_none_or(|remaining| remaining < waiting.saturating_add(ROOM_TO_ANSWER)) {
             return Err(give_up());
         }
-        wait(waiting);
+        wait(waiting).await;
     }
 }
 
@@ -1742,31 +1903,18 @@ fn provider_url(profile: &ProviderProfile) -> String {
     }
 }
 
+/// Whether the peer's `SO_PEERCRED` uid is this process's effective uid.
 #[cfg(target_os = "linux")]
-fn same_user(stream: &UnixStream) -> bool {
-    let mut credentials = std::mem::MaybeUninit::<libc::ucred>::uninit();
-    let Ok(mut length) = libc::socklen_t::try_from(std::mem::size_of::<libc::ucred>()) else {
-        return false;
-    };
-    // SAFETY: getsockopt writes into a correctly sized ucred buffer.
-    let result = unsafe {
-        libc::getsockopt(
-            stream.as_raw_fd(),
-            libc::SOL_SOCKET,
-            libc::SO_PEERCRED,
-            credentials.as_mut_ptr().cast(),
-            &raw mut length,
-        )
-    };
-    result == 0
-        && usize::try_from(length).ok() == Some(std::mem::size_of::<libc::ucred>())
-        && unsafe { credentials.assume_init().uid } == unsafe { libc::geteuid() }
+fn same_user(stream: &tokio::net::UnixStream) -> bool {
+    // SAFETY: geteuid has no preconditions and cannot fail.
+    let euid = unsafe { libc::geteuid() };
+    stream.peer_cred().is_ok_and(|peer| peer.uid() == euid)
 }
 
 // Peer authentication is implemented only for the native Linux gateway.
 // Other hosts may exercise provider logic but must not accept service clients.
 #[cfg(not(target_os = "linux"))]
-fn same_user(_stream: &UnixStream) -> bool {
+fn same_user(_stream: &tokio::net::UnixStream) -> bool {
     false
 }
 
@@ -1804,12 +1952,18 @@ mod tests {
     #[test]
     fn launcher_handoff_bytes_are_pinned() {
         use std::io::Write as _;
-        let (mut launcher, mut gateway) = UnixStream::pair().unwrap();
+        let (mut launcher, gateway) = UnixStream::pair().unwrap();
         launcher.write_all(&[39, 0, 0, 0]).unwrap();
         launcher
             .write_all(br#"{"protocol":1,"app_id":"so.tilo.agent"}"#)
             .unwrap();
-        assert_eq!(read_handoff(&mut gateway).unwrap().app_id, AGENT_APP);
+        gateway.set_nonblocking(true).unwrap();
+        let runtime = tilo_rt::daemon("gateway-test").workers(1).build().unwrap();
+        let handoff = runtime.block_on(async {
+            let mut gateway = tokio::net::UnixStream::from_std(gateway).unwrap();
+            read_handoff(&mut gateway).await
+        });
+        assert_eq!(handoff.unwrap().app_id, AGENT_APP);
     }
 
     #[test]
@@ -1863,7 +2017,7 @@ mod tests {
             data_base64: base64::engine::general_purpose::STANDARD.encode(b"preview"),
             source_content_hash: "a".repeat(64),
         };
-        assert!(validate_face_images(&[face.clone()]).is_ok());
+        assert!(validate_face_images(std::slice::from_ref(&face)).is_ok());
         let mut duplicate = face.clone();
         duplicate.photo_id = face.photo_id.clone();
         assert!(validate_face_images(&[face.clone(), duplicate]).is_err());
@@ -1889,7 +2043,7 @@ mod tests {
             waits: Vec::new(),
             calls: 0,
         });
-        let result = while_busy(
+        let result = tilo_rt::block_on(while_busy(
             || {
                 let fake = fake.borrow();
                 (!fake.left.is_zero()).then_some(fake.left)
@@ -1898,13 +2052,14 @@ mod tests {
                 let mut fake = fake.borrow_mut();
                 fake.waits.push(duration);
                 fake.left = fake.left.saturating_sub(duration);
+                std::future::ready(())
             },
             |_budget| {
                 let mut fake = fake.borrow_mut();
                 let index = fake.calls.min(outcomes.len().saturating_sub(1));
                 fake.calls = fake.calls.saturating_add(1);
                 fake.left = fake.left.saturating_sub(Duration::from_millis(200));
-                match outcomes[index] {
+                std::future::ready(match outcomes[index] {
                     Ok(output) => Ok(output.to_string()),
                     Err((status, retry_after)) => Err(ProviderFailure {
                         why: format!("provider returned HTTP {status}"),
@@ -1912,9 +2067,10 @@ mod tests {
                         outcome_unknown: true,
                         status: Some(status),
                     }),
-                }
+                })
             },
-        );
+        ))
+        .unwrap();
         (result, fake.into_inner())
     }
 
@@ -2129,16 +2285,32 @@ mod tests {
         );
     }
 
-    /// A client over the real accept loop (peer check stubbed: macOS has no
-    /// SO_PEERCRED, and the check itself is unchanged).
+    /// The real accept loop on its own runtime, serving `listener` (peer
+    /// check stubbed: other hosts refuse every peer, and the check itself is
+    /// unchanged). `workers` of one proves concurrency comes from serving
+    /// clients as tasks, not from a thread each.
+    fn serve_in_background(listener: UnixListener, workers: usize) {
+        listener.set_nonblocking(true).unwrap();
+        let http = Arc::new(provider_client().unwrap());
+        std::thread::spawn(move || {
+            let runtime = tilo_rt::daemon("gateway-test")
+                .workers(workers)
+                .build()
+                .unwrap();
+            runtime.block_on(async move {
+                let listener = tokio::net::UnixListener::from_std(listener).unwrap();
+                serve_on(listener, http, MAX_CLIENTS, |_| true).await
+            })
+        });
+    }
+
     fn serve_test_socket() -> PathBuf {
         let nonce = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
         let path = std::env::temp_dir().join(format!("gw-{}-{nonce}.sock", std::process::id()));
-        let listener = UnixListener::bind(&path).unwrap();
-        std::thread::spawn(move || accept_loop(&listener, |_| true));
+        serve_in_background(UnixListener::bind(&path).unwrap(), 2);
         path
     }
 
@@ -2163,7 +2335,7 @@ mod tests {
             &serde_json::json!({"version": RPC_VERSION, "verb": "secret_status", "profile_id": "p"}),
         )
         .unwrap();
-        let response: Response = tilo_model_gateway::read_frame(stream).unwrap();
+        let response: Response = read_frame(stream).unwrap();
         assert!(!response.ok);
         assert_eq!(
             response.error.as_deref(),
@@ -2196,6 +2368,47 @@ mod tests {
         std::thread::sleep(Duration::from_millis(200));
         assert!(unauthorized_round_trip(&mut idle) < Duration::from_secs(1));
         let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn a_stalled_client_does_not_hold_up_another() {
+        use std::io::Write as _;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("gateway.sock");
+        serve_in_background(UnixListener::bind(&path).unwrap(), 1);
+
+        // Connected first, then silent partway through its authentication.
+        let mut stalled = UnixStream::connect(&path).unwrap();
+        stalled.write_all(&[0x20]).unwrap();
+
+        let mut client = UnixStream::connect(&path).unwrap();
+        client
+            .set_read_timeout(Some(Duration::from_secs(10)))
+            .unwrap();
+        let handoff =
+            serde_json::to_vec(&serde_json::json!({ "protocol": 1, "app_id": AGENT_APP })).unwrap();
+        client
+            .write_all(&u32::try_from(handoff.len()).unwrap().to_le_bytes())
+            .unwrap();
+        client.write_all(&handoff).unwrap();
+        write_frame(
+            &mut client,
+            &Frame {
+                version: RPC_VERSION,
+                value: Request::SecretStatus {
+                    profile_id: "hosted".into(),
+                },
+            },
+        )
+        .unwrap();
+        let response: Response = read_frame(&mut client).unwrap();
+        assert!(!response.ok);
+        assert_eq!(
+            response.error.as_deref(),
+            Some("caller is not authorized for this gateway operation")
+        );
+        drop(stalled);
     }
 
     #[test]

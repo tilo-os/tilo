@@ -28,6 +28,9 @@
 #                            copy a verified, digest-pinned OCI target into the
 #                            live installer's writable /var for offline installs
 #     --raw                   leave the raw image, skip the qcow2 conversion
+#     --direct-boot-bundle DIR
+#                            export this dev disk's installed UKI sections
+#                            and ESP PARTUUID for WHPX direct kernel boot
 #
 # Why not bib: bib has no composefs, UKI or backend-selection surface anywhere
 # in its config, and the request for one (osbuild/bootc-image-builder#1164) has
@@ -82,6 +85,7 @@ KARGS=(); USERSPEC=""; TARGET_IMGREF=""; SEALED_SOURCE_IMGREF=""
 FIRSTBOOT_SEED=""
 BOOTC_HELPER=""
 OFFLINE_TARGET_DIR=""
+DIRECT_BOOT_DIR=""
 KEEP_RAW=0; DEFAULT_KARGS=yes
 
 while [ $# -gt 0 ]; do
@@ -104,6 +108,7 @@ while [ $# -gt 0 ]; do
     --firstboot-seed) FIRSTBOOT_SEED="$2"; shift ;;
     --bootc-helper) BOOTC_HELPER="$2"; shift ;;
     --offline-target-dir) OFFLINE_TARGET_DIR="$2"; shift ;;
+    --direct-boot-bundle) DIRECT_BOOT_DIR="$2"; shift ;;
     --raw) KEEP_RAW=1 ;;
     -h|--help) sed -n '2,20p' "$0"; exit 0 ;;
     -*) die "unknown option: $1" ;;
@@ -770,6 +775,23 @@ if [ "$ESP_STAGED" = 1 ]; then
     || die "could not remove the empty ESP staging directory"
   ESP_STAGE=""
   msg "verified ESP payload and removed its temporary staging mount"
+fi
+
+# Only the optional dev-disk lane requests this. Read the actual installed
+# ESP while the loop device is still attached, so the bundle cannot drift
+# from the disk that will be published. The native CI runner mounts vfat;
+# do not silently export from the temporary WSL ESP staging copy.
+if [ -n "$DIRECT_BOOT_DIR" ]; then
+  [ "$ESP_STAGED" = 0 ] || die "direct boot bundle needs the installed ESP mounted as vfat"
+  mapfile -t installed_ukis < <(sudo -n find "$ESP_AT/EFI/Linux" -type f -name '*.efi' -print)
+  [ "${#installed_ukis[@]}" -eq 1 ] \
+    || die "direct boot bundle requires exactly one installed UKI; found ${#installed_ukis[@]}"
+  esp_partuuid="$(sudo -n blkid -s PARTUUID -o value "${LOOP}p1")"
+  [ -n "$esp_partuuid" ] || die "installed ESP has no GPT partition UUID"
+  sudo -n bash "$(dirname "${BASH_SOURCE[0]}")/export-direct-boot-bundle.sh" \
+    "${installed_ukis[0]}" "$esp_partuuid" "$DIRECT_BOOT_DIR"
+  sudo -n chown -R "$(id -u):$(id -g)" "$DIRECT_BOOT_DIR"
+  msg "exported installed UKI direct boot bundle -> $DIRECT_BOOT_DIR"
 fi
 
 cleanup

@@ -28,8 +28,9 @@ thiserror.workspace = true
 tracing.workspace = true
 
 [target.'cfg(windows)'.dependencies]
-# Resolve the OS-owned profile root for ancestor durability boundaries.
-dirs.workspace = true
+xdg-paths = { path = "../xdg-paths" }
+# Compare volume/file identities through live Windows handles.
+same-file = "1.0.6"
 
 [dev-dependencies]
 durable-store = { path = "../durable-store", features = ["conformance"] }

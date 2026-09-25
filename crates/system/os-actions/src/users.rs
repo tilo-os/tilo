@@ -20,13 +20,6 @@ pub enum AccountRole {
     Administrator = 1,
 }
 
-fn runtime() -> Result<tokio::runtime::Runtime, String> {
-    tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .map_err(|e| format!("cannot start account-service client: {e}"))
-}
-
 fn validate_username(name: &str) -> Result<&str, String> {
     if name.is_empty()
         || name.len() > 32
@@ -82,7 +75,7 @@ fn account_error(e: &zbus::Error) -> String {
 }
 
 fn block<T>(f: impl std::future::Future<Output = Result<T, String>>) -> Result<T, String> {
-    runtime()?.block_on(f)
+    crate::block_on(f)
 }
 
 /// Create a local login account through `AccountsService`.
@@ -138,11 +131,11 @@ pub fn delete_user(username: &str, uid: u64, remove_files: bool) -> Result<(), S
 }
 
 // The returned future borrows `zbus::Proxy` internals that are not `Send`; that is fine here
-// because `call_user` is only ever driven to completion synchronously via `block()`'s
-// current-thread runtime, never spawned onto another thread.
+// because `call_user` is only ever driven to completion synchronously by its
+// caller via `block()`, never spawned onto another thread.
 #[allow(
     clippy::future_not_send,
-    reason = "only ever polled synchronously by block() on a current-thread runtime"
+    reason = "only ever polled synchronously by its caller through block()"
 )]
 async fn call_user(
     username: &str,

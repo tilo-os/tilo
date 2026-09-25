@@ -239,6 +239,13 @@ pub struct MediaEngine {
     // Binding iroh may perform address discovery. Keep that work out of the
     // application's first-frame path and do it only for an explicit call.
     live_start_pending: bool,
+    /// The live endpoint while it binds on the app runtime. It stands in for
+    /// `transport` until the bound endpoint replaces it.
+    #[cfg(feature = "live-media")]
+    binding: Option<live::PendingBind>,
+    /// Set when the bound live transport replaced the stand-in, until
+    /// [`Self::take_bound`] observes it.
+    bound: bool,
 }
 
 impl MediaEngine {
@@ -247,8 +254,8 @@ impl MediaEngine {
     /// it at the first explicit call action.
     pub fn new() -> Self {
         Self {
-            transport: Box::new(SimulatedTransport::default()),
             live_start_pending: environment_supports_media(),
+            ..Self::simulated()
         }
     }
 
@@ -258,34 +265,81 @@ impl MediaEngine {
         Self {
             transport: Box::new(SimulatedTransport::default()),
             live_start_pending: false,
+            #[cfg(feature = "live-media")]
+            binding: None,
+            bound: false,
         }
     }
 
-    /// Upgrade to the live transport at the call boundary. A failed probe is
-    /// final for this engine, avoiding retries on the frame/event thread.
+    /// Upgrade to the live transport at the call boundary. The endpoint binds
+    /// on the app runtime, never on the caller's thread: until it is ready the
+    /// engine is live but has no ticket, and dials/sends are refused;
+    /// publications and subscriptions made meanwhile carry over. If binding
+    /// fails the engine stays on the simulator; a failed probe is final for
+    /// this engine. Call it under the app's wake scope so the bound endpoint
+    /// wakes the event loop.
     pub fn activate_for_call(&mut self) {
         if !self.live_start_pending {
             return;
         }
         self.live_start_pending = false;
         #[cfg(feature = "live-media")]
-        if let Some(transport) = live::IrohTransport::try_new() {
-            self.transport = Box::new(transport);
+        {
+            self.binding = Some(live::PendingBind::start());
         }
     }
 
+    fn active(&self) -> &dyn MediaTransport {
+        #[cfg(feature = "live-media")]
+        if let Some(binding) = &self.binding {
+            return binding;
+        }
+        &*self.transport
+    }
+
     pub fn is_live(&self) -> bool {
-        self.transport.is_live()
+        self.active().is_live()
     }
 
     /// The local node's dialable media ticket, published into the shared voice
     /// membership on join so peers can connect. `Some("sim://local")` for the
-    /// simulator; the live engine returns its iroh endpoint ticket.
+    /// simulator; the live engine returns its iroh endpoint ticket, or `None`
+    /// while the endpoint is still binding.
     pub fn local_ticket(&self) -> Option<String> {
-        self.transport.local_ticket()
+        self.active().local_ticket()
+    }
+
+    /// Adopt the live endpoint if it finished binding. Returns whether a
+    /// newly bound transport is waiting for [`Self::take_bound`].
+    pub fn poll_binding(&mut self) -> bool {
+        #[cfg(feature = "live-media")]
+        if let Some(outcome) = self.binding.as_mut().and_then(live::PendingBind::try_take) {
+            self.binding = None;
+            match outcome {
+                live::BindOutcome::Bound(live) => {
+                    self.transport = Box::new(live);
+                    self.bound = true;
+                }
+                // The simulator stays in place.
+                live::BindOutcome::Failed => {}
+            }
+        }
+        self.bound
+    }
+
+    /// Whether the live transport became ready since the last call. A call
+    /// joined while it was binding announces its ticket then.
+    pub fn take_bound(&mut self) -> bool {
+        self.poll_binding();
+        std::mem::take(&mut self.bound)
     }
 
     pub fn transport_mut(&mut self) -> &mut (dyn MediaTransport + Send) {
+        self.poll_binding();
+        #[cfg(feature = "live-media")]
+        if let Some(binding) = self.binding.as_mut() {
+            return binding;
+        }
         &mut *self.transport
     }
 
@@ -327,7 +381,6 @@ mod live {
         MediaTransport, Subscription, TrackKind,
     };
     use std::collections::HashMap;
-    use std::sync::Arc;
     use tokio::sync::mpsc;
 
     /// ALPN for the chat call media stream. Versioned so a protocol change is a
@@ -422,17 +475,16 @@ mod live {
 
     /// Real transport: an iroh endpoint carrying MoQ-style objects over QUIC.
     ///
-    /// The synchronous [`MediaTransport`] surface (called from the app's render
-    /// thread) is bridged to iroh's async world by an owned multi-thread Tokio
-    /// runtime and channels: inbound objects arrive on a channel filled by the
-    /// accept loop; outbound objects are fanned to one writer task per connected
-    /// peer. Dropping the transport shuts the runtime down, aborting the tasks.
+    /// The synchronous [`MediaTransport`] surface (called from the app's UI
+    /// thread) is bridged to iroh's async world through the app runtime
+    /// (`ui::rt::app()`) and channels: inbound objects arrive on a channel
+    /// filled by the accept loop; outbound objects are fanned to one writer
+    /// task per connected peer. Dropping the transport shuts the router and
+    /// endpoint down; each writer task ends when its channel closes.
     pub struct IrohTransport {
-        // Runtime kept alive for the endpoint + tasks; dropped last.
-        rt: Arc<tokio::runtime::Runtime>,
         endpoint: iroh::Endpoint,
         // Router owns the accept loop; kept alive so peers can dial us.
-        _router: iroh::protocol::Router,
+        router: iroh::protocol::Router,
         ticket: String,
         inbound_rx: mpsc::Receiver<MediaObject>,
         /// One outbound writer per connected peer, keyed by its ticket.
@@ -444,44 +496,144 @@ mod live {
     impl IrohTransport {
         /// Bind a real iroh endpoint and start accepting media connections.
         /// Returns `None` if the endpoint can't bind (no usable network stack).
-        pub fn try_new() -> Option<Self> {
-            let rt = Arc::new(
-                tokio::runtime::Builder::new_multi_thread()
-                    .enable_all()
-                    .worker_threads(2)
-                    .build()
-                    .ok()?,
-            );
+        ///
+        /// Must run on the app runtime: the router's accept loop is spawned
+        /// onto the runtime it is polled in.
+        pub async fn bind() -> Option<Self> {
             let (inbound_tx, inbound_rx) = mpsc::channel(MAX_MEDIA_QUEUE);
-            let (endpoint, router, ticket) = rt.block_on(async move {
-                let endpoint = iroh::Endpoint::builder(iroh::endpoint::presets::N0)
-                    .bind()
-                    .await
-                    .ok()?;
-                let router = iroh::protocol::Router::builder(endpoint.clone())
-                    .accept(
-                        MEDIA_ALPN,
-                        MediaProtocol {
-                            inbound: inbound_tx,
-                        },
-                    )
-                    .spawn();
-                // Local (direct) addresses are available right after bind;
-                // relay contact is not required for LAN / loopback peers.
-                let addr = endpoint.addr();
-                let ticket = serde_json::to_string(&addr).ok()?;
-                Some((endpoint, router, ticket))
-            })?;
+            let endpoint = iroh::Endpoint::builder(iroh::endpoint::presets::N0)
+                .bind()
+                .await
+                .ok()?;
+            let router = iroh::protocol::Router::builder(endpoint.clone())
+                .accept(
+                    MEDIA_ALPN,
+                    MediaProtocol {
+                        inbound: inbound_tx,
+                    },
+                )
+                .spawn();
+            // Local (direct) addresses are available right after bind;
+            // relay contact is not required for LAN / loopback peers.
+            let addr = endpoint.addr();
+            let ticket = serde_json::to_string(&addr).ok()?;
             Some(Self {
-                rt,
                 endpoint,
-                _router: router,
+                router,
                 ticket,
                 inbound_rx,
                 peers: HashMap::new(),
                 published: Vec::new(),
                 subs: Vec::new(),
             })
+        }
+
+        /// [`Self::bind`], waiting for the result, for the loopback test; the
+        /// app binds through [`PendingBind`] and never waits.
+        #[cfg(test)]
+        pub fn try_new() -> Option<Self> {
+            ui::rt::app().block_on(Self::bind()).ok().flatten()
+        }
+    }
+
+    impl Drop for IrohTransport {
+        fn drop(&mut self) {
+            let router = self.router.clone();
+            drop(ui::rt::app().spawn(async move {
+                // Closes the accept loop, its handlers and the endpoint.
+                let _ = router.shutdown().await;
+            }));
+        }
+    }
+
+    /// The live endpoint while it binds on the app runtime.
+    ///
+    /// It stands in for the transport meanwhile: live, but with no ticket to
+    /// hand out, refusing dials and sends. Publications and subscriptions are
+    /// recorded and carried over to the bound endpoint. The bind's completion
+    /// wakes the event loop of the wake scope it was started under.
+    pub struct PendingBind {
+        request: ui::LatestRequest<Option<IrohTransport>>,
+        published: Vec<TrackKind>,
+        subs: Vec<Subscription>,
+    }
+
+    impl PendingBind {
+        pub fn start() -> Self {
+            Self::spawn(IrohTransport::bind())
+        }
+
+        pub(super) fn spawn(
+            bind: impl std::future::Future<Output = Option<IrohTransport>> + Send + 'static,
+        ) -> Self {
+            let mut request = ui::LatestRequest::new();
+            request.spawn(bind);
+            Self {
+                request,
+                published: Vec::new(),
+                subs: Vec::new(),
+            }
+        }
+
+        /// The bind's outcome once it finished; `None` while it is running.
+        /// A bound transport carries the recorded publications and
+        /// subscriptions over.
+        pub fn try_take(&mut self) -> Option<BindOutcome> {
+            let outcome = match self.request.try_take() {
+                Some(outcome) => outcome,
+                // No result and nothing running: the bind was refused or
+                // its task stopped without reporting.
+                None if !self.request.is_pending() => None,
+                None => return None,
+            };
+            let Some(mut live) = outcome else {
+                return Some(BindOutcome::Failed);
+            };
+            for kind in self.published.drain(..) {
+                live.publish(kind);
+            }
+            for sub in self.subs.drain(..) {
+                live.subscribe(sub);
+            }
+            Some(BindOutcome::Bound(live))
+        }
+    }
+
+    /// How a [`PendingBind`] ended.
+    pub enum BindOutcome {
+        Bound(IrohTransport),
+        /// The endpoint could not bind (no usable network stack).
+        Failed,
+    }
+
+    impl MediaTransport for PendingBind {
+        fn is_live(&self) -> bool {
+            true
+        }
+        fn local_ticket(&self) -> Option<String> {
+            None
+        }
+        fn connect(&mut self, _ticket: &str) -> bool {
+            false
+        }
+        fn publish(&mut self, kind: TrackKind) {
+            if !self.published.contains(&kind) {
+                self.published.push(kind);
+            }
+        }
+        fn unpublish(&mut self, kind: TrackKind) {
+            self.published.retain(|k| *k != kind);
+        }
+        fn subscribe(&mut self, sub: Subscription) {
+            if !self.subs.contains(&sub) {
+                self.subs.push(sub);
+            }
+        }
+        fn send(&mut self, _obj: MediaObject) -> bool {
+            false
+        }
+        fn poll(&mut self) -> Vec<MediaObject> {
+            Vec::new()
         }
     }
 
@@ -503,7 +655,7 @@ mod live {
             };
             let (out_tx, mut out_rx) = mpsc::channel::<Vec<u8>>(MAX_MEDIA_QUEUE);
             let endpoint = self.endpoint.clone();
-            self.rt.spawn(async move {
+            drop(ui::rt::app().spawn(async move {
                 let Ok(conn) = endpoint.connect(addr, MEDIA_ALPN).await else {
                     return;
                 };
@@ -516,7 +668,7 @@ mod live {
                     }
                 }
                 let _ = send.finish();
-            });
+            }));
             self.peers.insert(ticket.to_string(), out_tx);
             true
         }
@@ -671,6 +823,41 @@ mod tests {
         assert_eq!(t.poll().len(), MAX_MEDIA_QUEUE - MAX_MEDIA_POLL);
     }
 
+    /// Binding runs on the app runtime and wakes the event loop; until then
+    /// the engine is live without a ticket, and a failed bind falls back to
+    /// the simulator instead of leaving calls on a dead stand-in.
+    #[cfg(feature = "live-media")]
+    #[test]
+    fn live_engine_binds_in_the_background_and_falls_back_when_binding_fails() {
+        let mut scope = ui::WakeScope::new();
+        let (woke, wakes) = std::sync::mpsc::channel();
+        scope
+            .bind(move |_| {
+                let _ = woke.send(());
+            })
+            .unwrap();
+        let _entry = scope.enter();
+        let (release, gate) = tokio::sync::oneshot::channel::<()>();
+        let mut engine = MediaEngine {
+            binding: Some(live::PendingBind::spawn(async move {
+                let _ = gate.await;
+                None
+            })),
+            ..MediaEngine::simulated()
+        };
+        assert!(engine.is_live());
+        assert_eq!(engine.local_ticket(), None);
+        assert!(!engine.transport_mut().connect("peer-ticket"));
+        engine.transport_mut().publish(TrackKind::Audio);
+        assert!(!engine.poll_binding(), "still binding");
+
+        release.send(()).unwrap();
+        wakes.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert!(!engine.take_bound(), "a failed bind announces nothing");
+        assert!(!engine.is_live());
+        assert_eq!(engine.local_ticket().as_deref(), Some("sim://local"));
+    }
+
     #[test]
     fn engine_defaults_to_simulated_without_live_feature() {
         let e = MediaEngine::new();
@@ -720,7 +907,7 @@ mod tests {
 
         /// Spin the transport's poll (non-blocking) until `want` objects have
         /// arrived or the deadline passes. The endpoints do their real QUIC
-        /// handshake + stream I/O on the transport's own runtime threads, so a
+        /// handshake + stream I/O on the app runtime's thread, so a
         /// short sleep between polls lets them make progress.
         fn drain_until(t: &mut IrohTransport, want: usize, timeout: Duration) -> Vec<MediaObject> {
             let deadline = Instant::now() + timeout;

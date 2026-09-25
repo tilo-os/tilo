@@ -89,7 +89,7 @@ impl HostWorker {
             app.close_components();
             return Err(LaunchError::ComponentSetup {
                 source: Box::new(LaunchError::Operation(error)),
-                record: binding.checkout,
+                record: Box::new(binding.checkout),
                 recovery: crate::launch::LaunchRecovery::new(
                     Some(binding.records),
                     app.take_component_close_reports(),

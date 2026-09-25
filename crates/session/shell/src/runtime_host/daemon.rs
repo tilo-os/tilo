@@ -295,9 +295,9 @@ fn serve_connection(
 ) -> io::Result<()> {
     stream.set_nonblocking(false)?;
     stream.set_write_timeout(Some(Duration::from_secs(5)))?;
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()?;
+    // Every connection thread waits on the one app runtime rather than
+    // building a runtime per connection.
+    let runtime = tilo_rt::try_app().map_err(io::Error::other)?;
     let mut reader = BufReader::new(stream.try_clone()?);
     loop {
         let reply = match read_frame(&mut reader)? {
@@ -309,7 +309,9 @@ fn serve_connection(
                 Ok(value) if value == json!({"native":"status"}) => {
                     Some(serde_json::to_value(status).map_err(io::Error::other)?)
                 }
-                Ok(value) => runtime.block_on(server.handle(value)),
+                Ok(value) => runtime
+                    .block_on(server.handle(value))
+                    .map_err(io::Error::other)?,
                 Err(_) => Some(
                     json!({"jsonrpc":"2.0","id":null,"error":{"code":-32700,"message":"Parse error"}}),
                 ),

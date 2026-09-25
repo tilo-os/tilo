@@ -107,14 +107,22 @@ fn child_selection(case: &str) {
         "unknown-app" => "so.tilo.untrusted",
         _ => AGENT_APP,
     };
-    let (mut caller, mut gateway) = UnixStream::pair().unwrap();
+    let (mut caller, gateway) = UnixStream::pair().unwrap();
     write_frame(&mut caller, &serde_json::json!({"protocol":1,"app_id":app})).unwrap();
     write_frame(&mut caller, &payload).unwrap();
-    let response = match read_handoff(&mut gateway) {
-        Ok(handoff) => match read_frame::<Frame<Request>>(&mut gateway) {
+    gateway.set_nonblocking(true).unwrap();
+    let http = provider_client().unwrap();
+    let response = tilo_rt::block_on(async {
+        let mut gateway = tokio::net::UnixStream::from_std(gateway).unwrap();
+        let Ok(handoff) = read_handoff(&mut gateway).await else {
+            assert_eq!(case, "unknown-app");
+            return None;
+        };
+        let frame = read_request_frame(&mut gateway).await.unwrap();
+        match serde_json::from_slice::<Frame<Request>>(&frame) {
             Ok(frame) => {
                 assert_eq!(frame.version, RPC_VERSION);
-                Some(handle(&handoff.app_id, frame.value))
+                Some(handle(&handoff.app_id, frame.value, &http).await)
             }
             Err(error) => {
                 assert!(
@@ -123,12 +131,9 @@ fn child_selection(case: &str) {
                 );
                 None
             }
-        },
-        Err(_) => {
-            assert_eq!(case, "unknown-app");
-            None
         }
-    };
+    })
+    .unwrap();
     assert_eq!(
         files(&root),
         before,

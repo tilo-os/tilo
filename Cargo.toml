@@ -116,6 +116,7 @@ members = [
     "crates/agent/provider-config",
 
     # SDK
+    "crates/sdk/rt",
     "crates/sdk/tilo-app",
     "crates/sdk/tilo-resource",
     "crates/sdk/tilo-resource-macros",
@@ -150,6 +151,7 @@ members = [
     "crates/doc/bounded-zip",
     "crates/doc/format-host",
     "crates/doc/format-provider-abi",
+    "crates/doc/pdf",
     "crates/doc/qdoc",
     "crates/doc/qdoc-pdf",
     "crates/doc/tilo-automerge",
@@ -339,6 +341,7 @@ cosmic-text = { version = "0.19.0", default-features = false }
 # Async runtime and networking
 # ---------------------------------------------------------------------------
 tokio = "1.52.3"
+tilo-rt = { path = "crates/sdk/rt" }
 tokio-util = { version = "0.7.18", features = ["compat"] }
 tokio-rustls = { version = "0.26", default-features = false, features = ["ring"] }
 async-imap = { version = "0.10", default-features = false, features = ["runtime-tokio"] }
@@ -370,11 +373,12 @@ capnp-rpc = "0.26"
 capnpc = "0.26"
 base64 = "0.22.1"
 bs58 = "0.5.1"
-base32 = "0.5"
+data-encoding = "2.10"
+data-encoding-macro = "0.1.19"
 hex = "0.4.3"
 bytes = "1.11.1"
 flate2 = "1"
-zip = { version = "8.6", default-features = false, features = ["deflate"] }
+zip = { version = "8.6", default-features = false, features = ["deflate-flate2"] }
 tar = "0.4"
 
 # ---------------------------------------------------------------------------
@@ -465,7 +469,6 @@ clap_complete = "4.6.9"
 strsim = "0.11"
 uuid = { version = "1.23.1", features = ["serde", "v4"] }
 chrono = { version = "0.4", default-features = false }
-dirs = "6.0.0"
 qcms = "0.3.0"
 walkdir = "2.5.0"
 # The one in-memory cache: fs, thumbnail and the app mount share it.

@@ -299,10 +299,18 @@ jobs:
             GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $credential")
           connected=false
           for depth in 2 32 128 512 2048; do
-            "${auth[@]}" /usr/bin/git fetch --no-tags --no-write-fetch-head \
-              --depth="$depth" origin \
-              "+$base:refs/ci/app-release-base" \
-              "+$GITHUB_SHA:refs/ci/app-release-head"
+            # A concurrent shallow-file update can make a fetch fail even
+            # after transferring both tips. Both targets are immutable.
+            for attempt in 1 2; do
+              if "${auth[@]}" /usr/bin/git fetch --no-tags --no-write-fetch-head \
+                  --depth="$depth" origin \
+                  "+$base:refs/ci/app-release-base" \
+                  "+$GITHUB_SHA:refs/ci/app-release-head"; then
+                break
+              fi
+              [[ $attempt == 1 ]] || exit 1
+              sleep 1
+            done
             [[ $(/usr/bin/git rev-parse refs/ci/app-release-base) == "$base" ]]
             [[ $(/usr/bin/git rev-parse refs/ci/app-release-head) == "$GITHUB_SHA" ]]
             /usr/bin/git cat-file -e "$base^{commit}"

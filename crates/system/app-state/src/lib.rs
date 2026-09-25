@@ -65,6 +65,9 @@ pub const ROOMS_DIR: &str = "rooms";
 /// imported into every room that happens to open after an upgrade.
 const LEGACY_PACKAGE_ROOM_CLAIM: &str = ".tilo-legacy-room-index-claim";
 const LEGACY_RECORD_ROOM_CLAIM: &str = ".tilo-legacy-room-record-claim";
+/// Marker in a room record's directory naming the one record that adopted it
+/// under a new identity.
+const RECORD_SUCCESSOR_CLAIM: &str = "successor-claim";
 
 /// Root-map key for the document's layout version. A document from before
 /// this key existed reads as [`SCHEMA_VERSION`] rather than "unknown", so the
@@ -1108,7 +1111,7 @@ fn sync_directory_ancestors(
     // It does not include creating the OS-owned C:\Users or volume root.
     // Query the OS known folder, not USERPROFILE supplied by an environment.
     #[cfg(windows)]
-    let profile_root = dirs::home_dir().and_then(|path| fs::canonicalize(path).ok());
+    let profile_root = xdg_paths::home().and_then(|path| fs::canonicalize(path).ok());
     for path in physical.ancestors() {
         visit(path)?;
         open_directory(path, true)
