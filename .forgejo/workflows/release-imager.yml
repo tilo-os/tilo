@@ -24,6 +24,11 @@ on:
         type: string
         required: false
         default: ""
+      lenovo_target_image:
+        description: "CI-signed single ARM64 Lenovo child digest for an offline installer-only medium."
+        type: string
+        required: false
+        default: ""
 
 concurrency:
   # Tagged package promotion and the website manifest are mutable "latest"
@@ -52,7 +57,19 @@ jobs:
         id: lanes
         env:
           FULL_NATIVE: ${{ github.event.inputs.full_native }}
+          LENOVO_TARGET_IMAGE: ${{ github.event.inputs.lenovo_target_image }}
+          INSTALLER_ONLY: ${{ github.event.inputs.installer_only }}
         run: |
+          if [[ -n ${LENOVO_TARGET_IMAGE:-} ]]; then
+            [[ $GITHUB_EVENT_NAME == workflow_dispatch && $GITHUB_REF == refs/heads/main \
+               && ${INSTALLER_ONLY:-false} == true \
+               && $LENOVO_TARGET_IMAGE =~ ^code\.podesta\.ai/qos/tilo@sha256:[0-9a-f]{64}$ ]] || {
+              echo '::error::Lenovo medium requires main, installer_only, and immutable signed child'; exit 1;
+            }
+            echo 'linux-matrix={"include":[]}' >> "$GITHUB_OUTPUT"
+            echo 'medium-matrix={"include":[{"arch":"aarch64","runner":"imager-linux-aarch64"}]}' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           if [[ "$GITHUB_REF" == refs/tags/imager-v* || ${FULL_NATIVE:-false} == true ]]; then
             echo 'linux-matrix={"include":[{"arch":"x86_64","runner":"imager-linux-x86_64"},{"arch":"aarch64","runner":"imager-linux-aarch64"}]}' >> "$GITHUB_OUTPUT"
           else
@@ -81,6 +98,8 @@ jobs:
       REGISTRY_AUTH_FILE: /tmp/tilo-registry-auth-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.arch }}.json
       TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY: ${{ vars.TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY }}
       TILO_PUBLISHED_OS_IMAGE: ${{ github.event.inputs.published_os_image || vars.TILO_INSTALLER_OS_IMAGE }}
+      TILO_LENOVO_TARGET_IMAGE: ${{ github.event.inputs.lenovo_target_image }}
+      TILO_HARDWARE_PROFILE: ${{ github.event.inputs.lenovo_target_image != '' && 'lenovo-83ed' || 'generic' }}
       # A release tag must use an OS release from the identical source commit.
       # Manual rehearsals intentionally layer this checkout's installer/rootfs
       # overlay onto the most recent signed published generation, so they stay
@@ -98,6 +117,9 @@ jobs:
         run: ./os/dev/assert-native-arch.sh "${{ matrix.arch }}"
       - name: Verify documented installation targets
         run: python3 scripts/check-install-contract.py
+      - name: Verify offline Lenovo target transport invariants
+        if: github.event.inputs.lenovo_target_image != ''
+        run: python3 -m unittest discover -s os/tests -p installer_offline_target_test.py
       - name: Restore checksum-verified GitHub build inputs
         id: github-assets-cache
         uses: actions/cache/restore@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
@@ -162,7 +184,7 @@ jobs:
             command -v swtpm virt-fw-vars >/dev/null
           fi
           "$qemu_binary" -device help | grep -Fq "$software_display_device"
-          if [[ "$GITHUB_REF" == refs/tags/imager-v* ]]; then
+          if [[ "$GITHUB_REF" == refs/tags/imager-v* || -n ${TILO_LENOVO_TARGET_IMAGE:-} ]]; then
             "$qemu_binary" -display help | grep -Fq egl-headless
             "$qemu_binary" -device help | grep -Fq "$display_device"
             test -c /dev/kvm && test -r /dev/kvm && test -w /dev/kvm
@@ -183,17 +205,26 @@ jobs:
       - name: Build the tested Tilo live installer from a published OS
         run: |
           set -euo pipefail
-          test -n "$TILO_PUBLISHED_OS_IMAGE" || {
-            echo '::error::set TILO_INSTALLER_OS_IMAGE to a signed, digest-pinned multi-architecture Tilo release'
-            exit 1
-          }
-          generation="$(./os/dev/use-published-image.sh "$TILO_PUBLISHED_OS_IMAGE")"
-          if [[ "$GITHUB_REF" == refs/tags/imager-v* ]]; then
-            echo "::notice::installer source is exact-commit published generation $generation ($TILO_PUBLISHED_OS_IMAGE)"
+          if [[ -n ${TILO_LENOVO_TARGET_IMAGE:-} ]]; then
+            target_dir="${RUNNER_TEMP:?}/tilo-lenovo-offline-target-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+            ./os/dev/prepare-lenovo-installer-target.sh "$TILO_LENOVO_TARGET_IMAGE" "$target_dir"
+            export TILO_INSTALLER_OFFLINE_TARGET_DIR="$target_dir"
+            echo "::notice::CI Lenovo offline target: $TILO_LENOVO_TARGET_IMAGE"
           else
-            echo "::notice::rehearsal overlays $GITHUB_SHA onto verified published generation $generation ($TILO_PUBLISHED_OS_IMAGE)"
+            test -n "$TILO_PUBLISHED_OS_IMAGE" || {
+              echo '::error::set TILO_INSTALLER_OS_IMAGE to a signed, digest-pinned multi-architecture Tilo release'
+              exit 1
+            }
+            generation="$(./os/dev/use-published-image.sh "$TILO_PUBLISHED_OS_IMAGE")"
+            if [[ "$GITHUB_REF" == refs/tags/imager-v* ]]; then
+              echo "::notice::installer source is exact-commit published generation $generation ($TILO_PUBLISHED_OS_IMAGE)"
+            else
+              echo "::notice::rehearsal overlays $GITHUB_SHA onto verified published generation $generation ($TILO_PUBLISHED_OS_IMAGE)"
+            fi
           fi
-          ./os/dev/build-custom-installer.sh
+          # The signed OS already contains the native installer binary. Reuse it
+          # while applying this checkout's small installer-only runtime overlay.
+          ./os/dev/build-custom-installer.sh --reuse-image-installer
           package_args=(os/output/installer/qcow2/disk.qcow2 "${{ matrix.arch }}")
           if [[ "$GITHUB_REF" == refs/tags/imager-v* ]]; then
             apps/imager/packaging/package-install-medium.sh "${package_args[@]}"
@@ -246,7 +277,7 @@ jobs:
         run: |
           set -euo pipefail
           cycle_graphics=()
-          if [[ "$GITHUB_REF" == refs/tags/imager-v* ]]; then
+          if [[ "$GITHUB_REF" == refs/tags/imager-v* || -n ${TILO_LENOVO_TARGET_IMAGE:-} ]]; then
             export TILO_ACCEL=kvm
           else
             export TILO_ACCEL=tcg
@@ -286,13 +317,39 @@ jobs:
             dist/installer-guided-alongside-cycle
             dist/installer-software-tpm-pin-cycle
           if-no-files-found: error
+      # WHPX on Windows consumes qcow2 directly. Compress the exact disk that
+      # passed the native ARM64 cycle so the laptop downloads it once and never
+      # reconstructs an OS image or repeats a raw-to-qcow2 conversion.
+      - name: Package tested Lenovo WHPX qcow2
+        if: github.event.inputs.lenovo_target_image != ''
+        run: |
+          set -euo pipefail
+          output=dist/tilo-installer/tilo-installer-lenovo-83ed-aarch64.qcow2.zst
+          zstd --threads=0 -1 --sparse -f os/output/installer/qcow2/disk.qcow2 -o "$output"
+          (cd dist/tilo-installer && sha256sum "$(basename "$output")") > "$output.sha256"
+          zstd --decompress --stdout -- "$output" | sha256sum | awk '{print $1}' \
+            > dist/tilo-installer/tilo-installer-lenovo-83ed-aarch64.qcow2.sha256
+          test "$(cat dist/tilo-installer/tilo-installer-lenovo-83ed-aarch64.qcow2.sha256)" = \
+            "$(sha256sum os/output/installer/qcow2/disk.qcow2 | awk '{print $1}')"
+      - uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
+        if: github.event.inputs.lenovo_target_image != ''
+        with:
+          name: tilo-lenovo-83ed-whpx-installer-${{ github.sha }}
+          path: |
+            dist/tilo-installer/tilo-installer-lenovo-83ed-aarch64.qcow2.zst
+            dist/tilo-installer/tilo-installer-lenovo-83ed-aarch64.qcow2.zst.sha256
+            dist/tilo-installer/tilo-installer-lenovo-83ed-aarch64.qcow2.sha256
+            os/output/installer/qcow2/disk.qcow2.hardware.json
+          if-no-files-found: error
       - name: Verify the installer-medium release payload
         run: |
           set -euo pipefail
-          medium="tilo-installer-linux-${{ matrix.arch }}.img.zst"
+          suffix=''
+          [[ ${TILO_HARDWARE_PROFILE:-generic} == generic ]] || suffix="-${TILO_HARDWARE_PROFILE}"
+          medium="tilo-installer-linux-${{ matrix.arch }}${suffix}.img.zst"
           test -s "dist/tilo-installer/$medium"
           test -s "dist/tilo-installer/$medium.sha256"
-          test -s "dist/tilo-installer/catalog-${{ matrix.arch }}.json"
+          test -s "dist/tilo-installer/catalog-${{ matrix.arch }}${suffix}.json"
           (cd dist/tilo-installer && sha256sum --check "$medium.sha256")
       - uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
         with:
@@ -301,6 +358,9 @@ jobs:
             dist/tilo-installer/tilo-installer-linux-${{ matrix.arch }}.img.zst
             dist/tilo-installer/tilo-installer-linux-${{ matrix.arch }}.img.zst.sha256
             dist/tilo-installer/catalog-${{ matrix.arch }}.json
+            dist/tilo-installer/tilo-installer-linux-${{ matrix.arch }}-lenovo-83ed.img.zst
+            dist/tilo-installer/tilo-installer-linux-${{ matrix.arch }}-lenovo-83ed.img.zst.sha256
+            dist/tilo-installer/catalog-${{ matrix.arch }}-lenovo-83ed.json
           if-no-files-found: error
       # Internal (USB-free) installer bundle, exported from the same live disk
       # that just passed the installation cycles. Opt-in through the protected
