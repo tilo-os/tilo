@@ -23,7 +23,7 @@ iroh-blobs.workspace = true
 
 # The index document is fetched over HTTPS (static/self-hostable); the
 # blob is fetched over iroh. Both async.
-tokio = { workspace = true, features = ["rt-multi-thread", "macros", "fs", "io-util", "time", "sync"] }
+tokio = { workspace = true, features = ["macros", "fs", "io-util", "time", "sync"] }
 # rustls-tls only (no openssl / native-tls) to match the rest of the tree.
 tilo-net = { path = "../../system/tilo-net", features = ["http"] }
 
