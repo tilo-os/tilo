@@ -34,6 +34,7 @@ pub mod priority_contacts;
 #[path = "../tests/runtime_host.rs"]
 mod runtime_host_tests;
 pub mod security;
+pub mod session_runtime;
 pub mod shell;
 pub mod wayland;
 pub mod workspace;

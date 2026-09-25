@@ -203,6 +203,13 @@ pub trait Fields: Model {
     /// # Errors
     /// Returns the document's write error.
     fn write_fields(&self, doc: &mut Doc, obj: &ObjId) -> Result<(), ModelError>;
+
+    /// The items of each [`Collection`](crate::Collection) field, so actions
+    /// on an item can be offered on the item (see [`crate::items`]).
+    /// `#[derive(Model)]` lists them; the default has none.
+    fn item_collections(&self) -> Vec<crate::items::ItemCollection> {
+        Vec::new()
+    }
 }
 
 /// Read the value under `key` of the map `obj`, or [`Model::missing`].

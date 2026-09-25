@@ -27,43 +27,29 @@ use std::sync::OnceLock;
 use std::time::Duration;
 
 use tilo_bluez::{BluezClient, DeviceInfo};
-use tokio::runtime::Runtime;
-
-/// One shared current-thread-pool runtime for every blocking call.
-///
-/// Built once: a runtime per call would also mean a D-Bus connection per
-/// call, and `BlueZ` ties discovery to the connection.
-fn runtime() -> Result<&'static Runtime, String> {
-    static RT: OnceLock<Option<Runtime>> = OnceLock::new();
-    RT.get_or_init(|| {
-        tokio::runtime::Builder::new_multi_thread()
-            .worker_threads(1)
-            .enable_all()
-            .build()
-            .ok()
-    })
-    .as_ref()
-    .ok_or_else(|| "could not start the Bluetooth runtime".to_string())
-}
 
 /// The shared client, and with it the connection whose lifetime a scan is
-/// bound to.
+/// bound to. It is kept once opened: a connection per call would end
+/// discovery, which `BlueZ` ties to the connection. The connection's tasks
+/// live on the process's app runtime, which outlives every call.
 fn client() -> Result<&'static BluezClient, String> {
-    static CLIENT: OnceLock<Option<BluezClient>> = OnceLock::new();
-    let rt = runtime()?;
-    CLIENT
-        .get_or_init(|| rt.block_on(async { BluezClient::connect().await.ok() }))
-        .as_ref()
-        .ok_or_else(|| "Bluetooth is unavailable (cannot reach org.bluez)".to_string())
+    static CLIENT: OnceLock<BluezClient> = OnceLock::new();
+    if let Some(client) = CLIENT.get() {
+        return Ok(client);
+    }
+    let client = crate::block_on(async {
+        BluezClient::connect()
+            .await
+            .map_err(|_| "Bluetooth is unavailable (cannot reach org.bluez)".to_string())
+    })?;
+    Ok(CLIENT.get_or_init(|| client))
 }
 
 fn block<F, T>(f: F) -> Result<T, String>
 where
     F: std::future::Future<Output = Result<T, zbus::Error>>,
 {
-    runtime()?
-        .block_on(f)
-        .map_err(|e| tilo_bluez::error_text(&e))
+    crate::block_on(async { f.await.map_err(|e| tilo_bluez::error_text(&e)) })
 }
 
 /// The adapter every operation here targets.

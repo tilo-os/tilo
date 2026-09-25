@@ -734,7 +734,12 @@ impl ScreenCastBackend {
                 source_type: st,
                 cursor_mode: session.cursor_mode,
             };
-            match self.ctx.screencast_provisioner.provision(&req) {
+            match self
+                .ctx
+                .screencast_provisioner
+                .provision_blocking(req)
+                .await
+            {
                 Ok(info) => infos.push(info),
                 Err(e) => {
                     for info in &infos {

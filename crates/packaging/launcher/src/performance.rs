@@ -272,7 +272,10 @@ mod tests {
             // rather than trusting values handed to it by the parent.
             // SAFETY: PR_GET_TIMERSLACK has no pointer arguments.
             let timer_slack = unsafe { libc::prctl(libc::PR_GET_TIMERSLACK, 0, 0, 0, 0) };
-            assert_eq!(timer_slack, GAME_TIMER_SLACK_NS as libc::c_int);
+            assert_eq!(
+                i64::from(timer_slack),
+                i64::try_from(GAME_TIMER_SLACK_NS).unwrap()
+            );
 
             // SAFETY: ioprio_get consumes scalar arguments only.
             let io_priority = unsafe { libc::syscall(libc::SYS_ioprio_get, IOPRIO_WHO_PROCESS, 0) };

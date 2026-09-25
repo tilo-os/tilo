@@ -104,8 +104,8 @@ pub async fn handle_connection(
     let reader = reader.compat();
     let writer = tokio_util::compat::TokioAsyncWriteCompatExt::compat_write(writer);
     let network = Box::new(twoparty::VatNetwork::new(
-        futures::io::BufReader::new(reader),
-        futures::io::BufWriter::new(writer),
+        futures_util::io::BufReader::new(reader),
+        futures_util::io::BufWriter::new(writer),
         rpc_twoparty_capnp::Side::Server,
         capnp::message::ReaderOptions::default(),
     ));

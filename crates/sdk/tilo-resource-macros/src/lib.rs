@@ -83,6 +83,7 @@ fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
                 let mut writes = Vec::new();
                 let mut texts = Vec::new();
                 let mut shapes = Vec::new();
+                let mut collections = Vec::new();
                 for field in &fields.named {
                     let ident = field.ident.as_ref().ok_or_else(|| {
                         syn::Error::new(field.span(), "named field without a name")
@@ -105,7 +106,29 @@ fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
                         key: #key,
                         shape: <#ty as #krate::Model>::SHAPE,
                     }));
+                    if last_ident(ty).is_some_and(|(name, _)| name == "Collection") {
+                        let field_name = ident.to_string();
+                        collections.push(quote!(#krate::items::ItemCollection {
+                            field: #field_name,
+                            items: self
+                                .#ident
+                                .iter()
+                                .map(|(id, item)| {
+                                    (::core::clone::Clone::clone(id), #krate::__private::item_label(id, item))
+                                })
+                                .collect(),
+                        }));
+                    }
                 }
+                let item_collections = if collections.is_empty() {
+                    quote!()
+                } else {
+                    quote! {
+                        fn item_collections(&self) -> ::std::vec::Vec<#krate::items::ItemCollection> {
+                            ::std::vec![#(#collections),*]
+                        }
+                    }
+                };
                 Ok(quote! {
                     impl #impl_generics #krate::Model for #name #type_generics #where_clause {
                         const SHAPE: #krate::Shape = #krate::Shape::Record(&[#(#shapes),*]);
@@ -155,6 +178,8 @@ fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
                             #(#writes)*
                             ::core::result::Result::Ok(())
                         }
+
+                        #item_collections
                     }
                 })
             }
@@ -368,6 +393,7 @@ struct ActionOptions {
     label: Option<String>,
     permission: Option<String>,
     destructive: bool,
+    item: Option<String>,
 }
 
 fn action_options(attr: &Attribute) -> syn::Result<ActionOptions> {
@@ -375,6 +401,7 @@ fn action_options(attr: &Attribute) -> syn::Result<ActionOptions> {
         label: None,
         permission: None,
         destructive: false,
+        item: None,
     };
     if matches!(attr.meta, Meta::Path(_)) {
         return Ok(options);
@@ -386,8 +413,10 @@ fn action_options(attr: &Attribute) -> syn::Result<ActionOptions> {
             options.permission = Some(meta.value()?.parse::<syn::LitStr>()?.value());
         } else if meta.path.is_ident("destructive") {
             options.destructive = true;
+        } else if meta.path.is_ident("item") {
+            options.item = Some(meta.value()?.parse::<syn::LitStr>()?.value());
         } else {
-            return Err(meta.error("expected `label`, `permission` or `destructive`"));
+            return Err(meta.error("expected `label`, `permission`, `destructive` or `item`"));
         }
         Ok(())
     })?;
@@ -469,6 +498,10 @@ fn is_action_cx(ty: &Type) -> bool {
 /// `ActionRef` views bind controls to and tests apply) and `impl Resource`.
 /// An action method takes `&mut self`, optionally `cx: &mut ActionCx`, then
 /// its parameters, and returns `()` or `Result<(), impl Into<Refusal>>`.
+/// An action whose first parameter is an item `Id` is also published on each
+/// item of the collection it acts on, with the id bound (see
+/// `tilo_resource::items`); `#[action(item = "field")]` names the collection
+/// when its parameter name doesn't.
 /// Options: `#[action(label = "...", permission = "comment", destructive)]`
 /// (`destructive` applies both to the named declaration and to the same
 /// operation reached through the generic `apply` action, so either path asks
@@ -506,6 +539,7 @@ fn expand_resource(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Resul
     let mut risks = Vec::new();
     let mut consts = Vec::new();
     let mut decls = Vec::new();
+    let mut item_actions = Vec::new();
 
     for impl_item in &mut item.items {
         let ImplItem::Fn(method) = impl_item else {
@@ -588,6 +622,29 @@ fn expand_resource(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Resul
                 method.sig.span(),
                 "an action takes `&mut self`",
             ));
+        }
+        // An action whose first parameter is an item id acts on an element
+        // of a collection: it is also offered on each item, id bound.
+        match fields.first() {
+            Some((ident, ty, _, _)) if last_ident(ty).is_some_and(|(name, _)| name == "Id") => {
+                let param = ident.to_string();
+                let collection = action.item.as_ref().map_or_else(
+                    || quote!(::core::option::Option::None),
+                    |field| quote!(::core::option::Option::Some(#field)),
+                );
+                item_actions.push(quote!(#krate::items::ItemAction {
+                    action: #id,
+                    param: #param,
+                    collection: #collection,
+                }));
+            }
+            _ if action.item.is_some() => {
+                return Err(syn::Error::new(
+                    attr.span(),
+                    "`item = \"...\"` needs the action's first parameter to be an item `Id`",
+                ));
+            }
+            _ => {}
         }
 
         method.attrs.push(syn::parse_quote!(#[allow(
@@ -702,6 +759,18 @@ fn expand_resource(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Resul
         || quote!(::std::vec::Vec::new()),
         |path| quote!(#path(state)),
     );
+    let children = if item_actions.is_empty() {
+        children
+    } else {
+        quote! {{
+            let mut children: ::std::vec::Vec<#krate::__private::Resource> = #children;
+            children.extend(#krate::items::item_children::<Self>(
+                &<Self as #krate::Fields>::item_collections(state),
+                &[#(#item_actions),*],
+            ));
+            children
+        }}
+    };
     let serde_path = format!("{CRATE}::__private::serde");
     let enum_doc =
         format!("The replayable actions of [`{type_name}`], one per `#[action]` method.");

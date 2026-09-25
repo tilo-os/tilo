@@ -374,14 +374,50 @@ fn nearby_policy_enabled(
     policy.permits(crate::shell::continuity_policy::ContinuityCapability::FileTransfer)
 }
 
-fn stage_launch_content(
-    app_id: &str,
-    content_hash: &str,
-    workspace: &mut crate::shell::state::Workspace,
-) -> Result<Option<PathBuf>, String> {
+/// Published content staged as a file for a launch.
+#[derive(Debug, PartialEq, Eq)]
+struct StagedContent {
+    /// The private staging directory the launched app is granted.
+    dir: PathBuf,
+    /// The staged file the app is asked to open.
+    path: PathBuf,
+}
+
+impl StagedContent {
+    /// Grant `app_id` read access to the staging directory for this session
+    /// and return the file to open.
+    fn grant_to(self, workspace: &mut crate::shell::state::Workspace, app_id: &str) -> PathBuf {
+        workspace.grant_app(
+            app_id,
+            &Capability::Filesystem {
+                path: self.dir,
+                mode: FsMode::Read,
+                scope: GRANT_SESSION,
+            },
+        );
+        self.path
+    }
+}
+
+/// Stage the published content `content_hash` names as a file. `None` for a
+/// plain launch with no content. Reading the blob and writing the staged copy
+/// happen on the I/O pool, never on the broker's RPC thread; the result
+/// arrives once the file is in place, so the launch that awaits it finds it.
+async fn stage_launch_content(content_hash: &str) -> Result<Option<StagedContent>, String> {
     if content_hash.is_empty() {
         return Ok(None);
     }
+    validate_launch_content_hash(content_hash)?;
+    let hash = content_hash.to_owned();
+    tilo_rt::io::run(move || Ok(write_launch_content(&hash)))
+        .await
+        .map_err(|error| format!("stage launch content: {error}"))?
+        .map(Some)
+}
+
+/// Refuse anything but a lowercase 64-character blake3 hex digest, before
+/// any storage is touched.
+fn validate_launch_content_hash(content_hash: &str) -> Result<(), String> {
     if content_hash.len() != 64
         || !content_hash
             .bytes()
@@ -389,6 +425,12 @@ fn stage_launch_content(
     {
         return Err("launch content hash must be a lowercase 64-character blake3 value".into());
     }
+    Ok(())
+}
+
+/// The blocking half of [`stage_launch_content`]: verify the blob and write
+/// it beneath the private staging directory.
+fn write_launch_content(content_hash: &str) -> Result<StagedContent, String> {
     let bytes = qdoc::blobstore::get(content_hash)
         .ok_or_else(|| "launch content is unavailable on this device".to_owned())?;
     if bytes.is_empty()
@@ -445,15 +487,7 @@ fn stage_launch_content(
         }
         Err(error) => return Err(format!("stage launch content: {error}")),
     }
-    workspace.grant_app(
-        app_id,
-        &Capability::Filesystem {
-            path: dir,
-            mode: FsMode::Read,
-            scope: GRANT_SESSION,
-        },
-    );
-    Ok(Some(path))
+    Ok(StagedContent { dir, path })
 }
 
 #[derive(Debug, Deserialize)]
@@ -8468,8 +8502,8 @@ pub async fn dial_capnp_for_test(
     };
     let (r, w) = stream.into_split();
     let network = Box::new(twoparty::VatNetwork::new(
-        futures::io::BufReader::new(r.compat()),
-        futures::io::BufWriter::new(w.compat_write()),
+        futures_util::io::BufReader::new(r.compat()),
+        futures_util::io::BufWriter::new(w.compat_write()),
         rpc_twoparty_capnp::Side::Client,
         capnp::message::ReaderOptions::default(),
     ));
@@ -8646,8 +8680,8 @@ async fn drive_connection(
     let reader = reader.compat();
     let writer = writer.compat_write();
     let network = Box::new(twoparty::VatNetwork::new(
-        futures::io::BufReader::new(reader),
-        futures::io::BufWriter::new(writer),
+        futures_util::io::BufReader::new(reader),
+        futures_util::io::BufWriter::new(writer),
         rpc_twoparty_capnp::Side::Server,
         capnp::message::ReaderOptions::default(),
     ));
@@ -9366,16 +9400,49 @@ pub(crate) mod tests {
 
     #[test]
     fn launch_content_rejects_bad_or_missing_hash_and_keeps_plain_launch_empty() {
+        let stage = |hash: &str| tilo_rt::block_on(stage_launch_content(hash)).expect("runtime");
+        assert_eq!(stage("").expect("plain launch"), None);
+        assert!(stage("not-a-hash").is_err());
+        assert!(stage(&"a".repeat(64)).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn launch_content_is_in_place_when_staging_resolves_and_granted_after() {
+        let runtime = tempfile::tempdir().expect("runtime directory");
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("XDG_RUNTIME_DIR", runtime.path());
+        let content = b"staged launch fixture";
+        let hash = qdoc::blobstore::put(content).expect("store fixture");
+        let staged = tilo_rt::block_on(stage_launch_content(&hash))
+            .expect("runtime")
+            .expect("staged")
+            .expect("content present");
+        // The file is complete by the time the stage resolves, which is when
+        // the launch that awaits it runs.
+        assert_eq!(std::fs::read(&staged.path).expect("staged file"), content);
+        assert_eq!(staged.dir, runtime.path().join("tilo-opened"));
+
         let mut workspace = crate::shell::state::Workspace::new(
             crate::shell::state::WorkspaceId::new(),
             "launcher test",
         );
-        assert_eq!(
-            stage_launch_content("so.tilo.photos", "", &mut workspace).expect("plain launch"),
-            None
+        let expected_dir = staged.dir.clone();
+        assert!(workspace.app_capabilities("so.tilo.photos").is_empty());
+        let document = staged.grant_to(&mut workspace, "so.tilo.photos");
+        assert!(document.starts_with(&expected_dir));
+        assert!(
+            !workspace.app_capabilities("so.tilo.photos").is_empty(),
+            "the app is granted the staging directory"
         );
-        assert!(stage_launch_content("so.tilo.photos", "not-a-hash", &mut workspace).is_err());
-        assert!(stage_launch_content("so.tilo.photos", &"a".repeat(64), &mut workspace).is_err());
+
+        // Staging the same content again reuses the verified copy.
+        let again = tilo_rt::block_on(stage_launch_content(&hash))
+            .expect("runtime")
+            .expect("restaged")
+            .expect("content present");
+        assert_eq!(again.path, document);
     }
 
     #[cfg(unix)]
@@ -9392,16 +9459,20 @@ pub(crate) mod tests {
             .join(format!("{hash}.bin"));
         std::fs::create_dir_all(staged.parent().expect("staging parent")).expect("staging dir");
         std::fs::write(&staged, b"corrupt").expect("corrupt fixture");
-        let mut workspace = crate::shell::state::Workspace::new(
-            crate::shell::state::WorkspaceId::new(),
-            "launcher test",
+        assert!(
+            tilo_rt::block_on(stage_launch_content(&hash))
+                .expect("runtime")
+                .is_err()
         );
-        assert!(stage_launch_content("so.tilo.photos", &hash, &mut workspace).is_err());
         std::fs::remove_file(&staged).expect("remove corrupt fixture");
         let target = runtime.path().join("outside");
         std::fs::write(&target, b"outside").expect("outside fixture");
         std::os::unix::fs::symlink(&target, &staged).expect("symlink fixture");
-        assert!(stage_launch_content("so.tilo.photos", &hash, &mut workspace).is_err());
+        assert!(
+            tilo_rt::block_on(stage_launch_content(&hash))
+                .expect("runtime")
+                .is_err()
+        );
     }
 
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]

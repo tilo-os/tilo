@@ -26,6 +26,29 @@ use winit::event::{ElementState, MouseButton, WindowEvent};
 
 pub const VIEWPORT: (f32, f32) = (1200.0, 760.0);
 
+/// The locale every test runs under: the catalog's source locale.
+pub const TEST_LOCALE: &str = "en-US";
+
+/// Pin this test thread's UI locale. Files otherwise selects its catalog from
+/// the host's `LC_ALL` / `LC_MESSAGES` / `LANGUAGE` / `LANG` the first time a
+/// thread resolves a string, so assertions on copy would pass or fail by the
+/// machine they run on. Call it before the test resolves any string.
+pub fn pin_locale() {
+    file_explorer::i18n::set_locale(TEST_LOCALE);
+}
+
+/// The Files binary with a pinned locale environment, so a spawned run
+/// renders the same copy on every host.
+pub fn app_command() -> std::process::Command {
+    let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_file-explorer"));
+    command
+        .env("LC_ALL", "en_US.UTF-8")
+        .env("LANG", "en_US.UTF-8")
+        .env_remove("LANGUAGE")
+        .env_remove("LC_MESSAGES");
+    command
+}
+
 pub struct Harness {
     pub w: FileExplorerWidget,
     state: ui::State,
@@ -39,6 +62,7 @@ impl Harness {
     pub fn new(start_dir: &Path) -> Self {
         // No persistence dir / home so the test never touches the real user's
         // favourites or config.
+        pin_locale();
         let mut w = FileExplorerWidget::with_persistence(None, None);
         w.navigate(start_dir.to_path_buf());
         let mut taffy: TaffyTree<()> = TaffyTree::new();

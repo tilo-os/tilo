@@ -235,6 +235,9 @@ pub mod window_icon;
 pub use accesskit;
 pub use automerge;
 pub use taffy;
+/// The async runtime model: the app runtime off the UI thread, the CPU pool,
+/// the file-I/O pool and `block_on` for synchronous entry points.
+pub use tilo_rt as rt;
 pub use vello;
 pub use vello::{kurbo, peniko};
 pub use winit;

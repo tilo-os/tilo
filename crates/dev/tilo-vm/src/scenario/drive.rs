@@ -23,7 +23,8 @@ pub struct Choices {
     pub username: String,
     pub full_name: String,
     pub hostname: String,
-    pub secret: Secret,
+    pub account_secret: Secret,
+    pub disk_secret: Option<Secret>,
 }
 
 /// What the install reported, secret-free.
@@ -255,11 +256,19 @@ pub fn install(
                         detail: "--encrypt tpm-pin was asked for, but the installer did not pass verified-boot preflight and offers only a passphrase (attach a software TPM with an enrolled Secure Boot store: TILO_SECBOOT_KEYS)".into(),
                     });
                 }
+                if let Some(disk_secret) = &choices.disk_secret {
+                    invoke(
+                        console,
+                        "installer.account",
+                        "set-disk-passphrase",
+                        json!({ "passphrase": disk_secret.expose(), "confirmation": disk_secret.expose() }),
+                    )?;
+                }
                 invoke(
                     console,
                     "installer.account",
                     "set-passphrase",
-                    json!({ "passphrase": choices.secret.expose(), "confirmation": choices.secret.expose() }),
+                    json!({ "passphrase": choices.account_secret.expose(), "confirmation": choices.account_secret.expose() }),
                 )?;
                 invoke(console, INSTALLER, "next", json!({}))?;
             }
@@ -476,6 +485,7 @@ mod tests {
         selected: Option<String>,
         promise: bool,
         passphrase: Option<String>,
+        disk_passphrase: Option<String>,
         install_polls: VecDeque<&'static str>,
         calls: Vec<String>,
         policy: &'static str,
@@ -489,6 +499,7 @@ mod tests {
                 selected: None,
                 promise: false,
                 passphrase: None,
+                disk_passphrase: None,
                 install_polls: VecDeque::from(["running", "running", "done"]),
                 calls: Vec::new(),
                 policy: "passphrase",
@@ -542,6 +553,10 @@ mod tests {
                     assert_eq!(args["passphrase"], args["confirmation"]);
                     self.passphrase = args["passphrase"].as_str().map(str::to_owned);
                 }
+                ("account", "set-disk-passphrase@installer.account") => {
+                    assert_eq!(args["passphrase"], args["confirmation"]);
+                    self.disk_passphrase = args["passphrase"].as_str().map(str::to_owned);
+                }
                 ("account", "next@installer") if self.passphrase.is_some() => self.step = "options",
                 ("options", "next@installer") => self.step = "review",
                 ("review", "set-recovery-promise@installer.review") => self.promise = true,
@@ -594,7 +609,8 @@ mod tests {
             username: "scenario".into(),
             full_name: "Scenario User".into(),
             hostname: "scenario-tilo".into(),
-            secret: Secret::new("scenario-passphrase-2026"),
+            account_secret: Secret::new("scenario-passphrase-2026"),
+            disk_secret: None,
         }
     }
 
@@ -636,6 +652,40 @@ mod tests {
                 .any(|line| line.contains("scenario-passphrase")),
             "progress must never print the passphrase: {lines:?}"
         );
+    }
+
+    #[test]
+    fn distinct_credentials_reach_distinct_published_installer_actions() {
+        let mut fake = FakeInstaller::new();
+        let mut chosen = choices(Unlock::Passphrase);
+        chosen.username = "bob".into();
+        chosen.account_secret = Secret::new("account-password-for-testing");
+        chosen.disk_secret = Some(Secret::new("disk-passphrase-for-testing"));
+        let mut lines = Vec::new();
+        install(
+            &mut fake,
+            &chosen,
+            Duration::from_secs(60),
+            &mut NoWait(0),
+            &mut |line| lines.push(line.to_owned()),
+        )
+        .unwrap();
+        assert_eq!(
+            fake.passphrase.as_deref(),
+            Some("account-password-for-testing")
+        );
+        assert_eq!(
+            fake.disk_passphrase.as_deref(),
+            Some("disk-passphrase-for-testing")
+        );
+        assert!(
+            fake.calls
+                .contains(&"set-disk-passphrase@installer.account".into())
+        );
+        assert!(!lines.iter().any(|line| {
+            line.contains("account-password-for-testing")
+                || line.contains("disk-passphrase-for-testing")
+        }));
     }
 
     #[test]
