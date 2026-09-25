@@ -6,7 +6,9 @@
 //! exact submitted serial).
 //!
 //! Entirely env-var driven (`TILO_FRAME_TRACE`, `TILO_FRAME_SUMMARY`, `TILO_FRAME_WARMUP_MS`);
-//! disabled, every [`FrameRecorder`] method is a `bool` branch. [`summarize`] is pure — the same function the live binary and unit tests call, so they can't drift.
+//! disabled, every [`FrameRecorder`] method is a `bool` branch. Production host sessions set a
+//! private trace path so the final second before an abrupt reset remains measurable. [`summarize`]
+//! is pure — the same function the live binary and unit tests call, so they can't drift.
 
 use std::io::Write;
 use std::time::{Duration, Instant};
@@ -285,6 +287,12 @@ pub struct FrameRecorder {
     samples: Vec<FrameSample>,
     warmup_us: u64,
     trace: Option<std::io::BufWriter<std::fs::File>>,
+    /// Flush cadence for crash-durable production traces.  Flushing every row
+    /// perturbs the very loop being measured; flushing once per second bounds
+    /// hard-reset loss while keeping the hot path buffered.
+    next_trace_flush_us: u64,
+    trace_path: Option<std::path::PathBuf>,
+    trace_rows: usize,
     summary_path: Option<std::path::PathBuf>,
     target_period_us: u32,
     /// When an input was consumed and no painted frame has closed the loop on it yet.
@@ -298,6 +306,13 @@ pub struct FrameRecorder {
 
 /// Cap on retained samples: 200k ticks is ~55 minutes at 60 Hz and ~7 MB of `FrameSample`.
 const MAX_RETAINED: usize = 200_000;
+
+const TRACE_FLUSH_INTERVAL_US: u64 = 1_000_000;
+/// About 23 minutes at 144 ticks/s. Rewrites compactly at half this size, so
+/// the trace remains a small rolling pre-crash window instead of growing for
+/// the whole login. It must not exceed [`MAX_RETAINED`], whose in-memory tail
+/// supplies the compacted file.
+const MAX_TRACE_ROWS: usize = MAX_RETAINED;
 
 /// Env var naming the per-tick CSV trace path.
 pub const TRACE_ENV: &str = "TILO_FRAME_TRACE";
@@ -339,6 +354,9 @@ impl FrameRecorder {
             samples: Vec::new(),
             warmup_us: 0,
             trace: None,
+            next_trace_flush_us: TRACE_FLUSH_INTERVAL_US,
+            trace_path: None,
+            trace_rows: 0,
             summary_path: None,
             target_period_us: 0,
             pending_input: None,
@@ -358,6 +376,7 @@ impl FrameRecorder {
             .ok()
             .and_then(|v| v.trim().parse::<u64>().ok())
             .unwrap_or(DEFAULT_WARMUP_MS);
+        let mut opened_trace_path = None;
         let trace = trace_path.and_then(|p| match std::fs::File::create(&p) {
             Ok(mut f) => {
                 if let Err(e) = writeln!(f, "{CSV_HEADER}") {
@@ -367,6 +386,7 @@ impl FrameRecorder {
                     );
                     return None;
                 }
+                opened_trace_path = Some(std::path::PathBuf::from(p));
                 Some(std::io::BufWriter::new(f))
             }
             Err(e) => {
@@ -378,6 +398,7 @@ impl FrameRecorder {
         me.enabled = true;
         me.warmup_us = warmup_ms.saturating_mul(1_000);
         me.trace = trace;
+        me.trace_path = opened_trace_path;
         me.summary_path = summary_path.map(std::path::PathBuf::from);
         me.samples.reserve(4096);
         eprintln!(
@@ -530,8 +551,64 @@ impl FrameRecorder {
             eprintln!("frame-metrics: trace write failed ({e}); disabling trace");
             self.trace = None;
         }
+        if sample.start_us >= self.next_trace_flush_us {
+            if let Some(trace) = self.trace.as_mut()
+                && let Err(error) = trace.flush()
+            {
+                eprintln!("frame-metrics: trace flush failed ({error}); disabling trace");
+                self.trace = None;
+            }
+            self.next_trace_flush_us = sample.start_us.saturating_add(TRACE_FLUSH_INTERVAL_US);
+        }
         if sample.start_us >= self.warmup_us && self.samples.len() < MAX_RETAINED {
             self.samples.push(sample);
+        }
+        self.trace_rows = self
+            .trace_rows
+            .saturating_add(usize::from(self.trace.is_some()));
+        if self.trace_rows >= MAX_TRACE_ROWS {
+            self.compact_trace();
+        }
+    }
+
+    fn compact_trace(&mut self) {
+        let (Some(path), Some(mut trace)) = (self.trace_path.clone(), self.trace.take()) else {
+            return;
+        };
+        if let Err(error) = trace.flush() {
+            eprintln!("frame-metrics: trace flush failed ({error}); disabling trace");
+            return;
+        }
+        let keep = MAX_TRACE_ROWS / 2;
+        let retained = self
+            .samples
+            .iter()
+            .rev()
+            .take(keep)
+            .copied()
+            .collect::<Vec<_>>();
+        match std::fs::File::create(&path) {
+            Ok(mut file) => {
+                if writeln!(file, "{CSV_HEADER}").is_err()
+                    || retained
+                        .iter()
+                        .rev()
+                        .try_for_each(|sample| sample.write_csv_row(&mut file))
+                        .is_err()
+                {
+                    eprintln!(
+                        "frame-metrics: compacting {} failed; disabling trace",
+                        path.display()
+                    );
+                    return;
+                }
+                self.trace_rows = retained.len();
+                self.trace = Some(std::io::BufWriter::new(file));
+            }
+            Err(error) => eprintln!(
+                "frame-metrics: reopening compacted trace {} failed ({error}); disabling trace",
+                path.display()
+            ),
         }
     }
 
@@ -968,6 +1045,28 @@ mod tests {
             CSV_HEADER.split(',').count(),
             "trace rows must have exactly as many columns as the header:\n  header: {CSV_HEADER}\n  row:    {}",
             row.trim_end()
+        );
+    }
+
+    #[test]
+    fn production_trace_flushes_periodically_without_waiting_for_clean_exit() {
+        let dir = tempfile::tempdir().expect("trace tempdir");
+        let path = dir.path().join("frame.csv");
+        let file = std::fs::File::create(&path).expect("create trace");
+        let mut file = file;
+        writeln!(file, "{CSV_HEADER}").expect("write trace header");
+        let mut recorder = FrameRecorder::disabled();
+        recorder.enabled = true;
+        recorder.trace = Some(std::io::BufWriter::new(file));
+        recorder.trace_path = Some(path.clone());
+        let base = Instant::now();
+        recorder.begin_tick(base + Duration::from_secs(1));
+        recorder.end_tick();
+
+        let bytes = std::fs::read(&path).expect("read flushed trace");
+        assert!(
+            !bytes.is_empty(),
+            "one-second trace must reach disk before Drop"
         );
     }
 }
