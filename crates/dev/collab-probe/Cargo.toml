@@ -16,6 +16,7 @@ runtime-collab = { path = "../../runtime/runtime-collab" }
 runtime-identity = { path = "../../runtime/runtime-identity" }
 runtime-portal = { path = "../../runtime/runtime-portal" }
 automerge.workspace = true
+tilo-automerge.workspace = true
 postcard.workspace = true
 tokio = { workspace = true, features = ["rt", "macros", "time"] }
 

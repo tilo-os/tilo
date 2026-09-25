@@ -2,6 +2,7 @@ use super::*;
 use automerge::ROOT;
 use automerge::ReadDoc;
 use taffy::{AvailableSpace, Dimension, Size, Style};
+use tilo_automerge::ApplyIncoming;
 use vello::kurbo::Point;
 
 #[test]
@@ -2913,7 +2914,7 @@ fn a_saved_book_still_merges_with_a_replica_that_diverged_before_the_save() {
     let mut store2 = ui::persist::DocStore::open_for("so.tilo.contacts").unwrap();
     let mut restored = store2.load().unwrap().expect("the saved document");
     restored
-        .merge(&mut peer)
+        .merge_incoming(&mut peer)
         .expect("a stored book merges with a peer");
 
     let book = ContactsDoc::list_contacts(&restored);
@@ -3113,7 +3114,7 @@ fn disconnected_uidless_imports_converge_on_one_contact_and_stable_rows() {
     .unwrap();
     left.commit();
     right.commit();
-    left.merge(&mut right).unwrap();
+    left.merge_incoming(&mut right).unwrap();
 
     let merged = ContactsDoc::list_contacts(&left);
     assert_eq!(

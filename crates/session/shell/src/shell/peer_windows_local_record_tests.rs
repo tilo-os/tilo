@@ -4,6 +4,7 @@ use crate::shell::personal_continuity::{AppInstanceId, LaunchIntent};
 use crate::shell::personal_continuity_registry::{ContinuationRegistry, global_registry};
 use crate::shell::state::{RoomId, next_id};
 use automerge::ReadDoc as _;
+use tilo_automerge::ApplyIncoming as _;
 
 const APP: &str = "dev.tilo.record-restart-test";
 
@@ -84,7 +85,7 @@ fn local_record_restart_keeps_distinct_source_records_for_same_app_tabs() {
     );
     let mut peer_document = automerge::AutoCommit::new();
     peer_document
-        .apply_changes(
+        .apply_incoming(
             restored
                 .export_room_changes_since(room, &[])
                 .unwrap()

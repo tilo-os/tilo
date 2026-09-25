@@ -32,6 +32,7 @@
 )]
 
 use std::time::{Duration, Instant};
+use tilo_automerge::ApplyIncoming;
 
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ROOT, ReadDoc, ScalarValue, Value};
@@ -84,7 +85,7 @@ async fn drain_until_converged(
     while start.elapsed() < Duration::from_secs(15) {
         match tokio::time::timeout(Duration::from_millis(400), b_client.recv()).await {
             Ok(Some(Envelope::Delta { delta, .. })) => {
-                let _ = doc_b.load_incremental(&delta);
+                let _ = doc_b.load_incoming(&delta);
             }
             Ok(Some(Envelope::SyncResponse { delta_since, .. })) => {
                 let _ = apply_sync_response(&mut doc_b, &delta_since);

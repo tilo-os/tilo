@@ -26,6 +26,7 @@
 )]
 
 use std::process::ExitCode;
+use tilo_automerge::ApplyIncoming;
 
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ROOT, ReadDoc, ScalarValue};
@@ -212,13 +213,13 @@ fn apply_signed_document(
         .map_err(|error| format!("untyped document operation: {error}"))?;
     match mutation {
         DocumentMutation::Incremental(bytes) => doc
-            .load_incremental(&bytes)
+            .load_incoming(&bytes)
             .map(|_| ())
             .map_err(|error| format!("incremental document bytes did not load: {error}"))?,
         DocumentMutation::Snapshot(bytes) => {
             let mut incoming = AutoCommit::load(&bytes)
                 .map_err(|error| format!("document snapshot did not load: {error}"))?;
-            doc.merge(&mut incoming)
+            doc.merge_incoming(&mut incoming)
                 .map_err(|error| format!("document snapshot did not merge: {error}"))?;
         }
     }

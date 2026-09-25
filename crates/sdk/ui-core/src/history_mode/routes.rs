@@ -7,6 +7,7 @@ use crate::{
 use automerge::{AutoCommit, ChangeHash, transaction::Transactable};
 use collab_types::DocumentMutation;
 use std::collections::{HashSet, VecDeque};
+use tilo_automerge::ApplyIncoming;
 
 const MAX_PENDING_ITEMS: usize = 64;
 /// A single remote change can be as large as the transport carries, so a
@@ -53,13 +54,13 @@ pub(crate) fn merge_committed(
             }
             let mut incoming = doc.clone();
             incoming
-                .load_incremental(bytes)
+                .load_incoming(bytes)
                 .map_err(|error| RemoteApplyError::InvalidMutation(error.to_string()))?;
             incoming
         }
     };
     let before = super::sorted_heads(doc.base_heads());
-    doc.merge(&mut incoming)
+    doc.merge_incoming(&mut incoming)
         .map_err(|error| RemoteApplyError::InvalidMutation(error.to_string()))?;
     Ok(before != super::sorted_heads(doc.base_heads()))
 }

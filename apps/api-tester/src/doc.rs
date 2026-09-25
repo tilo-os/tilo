@@ -1267,6 +1267,7 @@ impl ApiDoc {
 mod tests {
     use super::*;
     use crate::model::{HttpMethod, KeyValue};
+    use tilo_automerge::ApplyIncoming;
 
     fn doc() -> (AutoCommit, ObjId) {
         (AutoCommit::new(), automerge::ROOT)
@@ -1376,7 +1377,8 @@ mod tests {
         let mut right = AutoCommit::load(&bytes).expect("right peer");
         left.put(&map, "name", "left").expect("left write");
         right.put(&map, "name", "right").expect("right write");
-        left.merge(&mut right).expect("merge concurrent writes");
+        left.merge_incoming(&mut right)
+            .expect("merge concurrent writes");
 
         let visible = left
             .get(&map, "name")
@@ -1428,7 +1430,8 @@ mod tests {
             "record",
             &serde_json::json!({"name": "right"}),
         );
-        left.merge(&mut right).expect("merge concurrent records");
+        left.merge_incoming(&mut right)
+            .expect("merge concurrent records");
 
         let visible = left
             .get(&map, "record")
@@ -1502,7 +1505,7 @@ mod tests {
         let mut b = AutoCommit::load(&a.save()).unwrap();
         ApiDoc::set_environments(&mut b, &root, &[Environment::new("Env-B")]);
         let mut b_loaded = AutoCommit::load(&b.save()).unwrap();
-        a.merge(&mut b_loaded).unwrap();
+        a.merge_incoming(&mut b_loaded).unwrap();
         assert_eq!(ApiDoc::collections(&a, &root)[0].name, "A");
         assert_eq!(ApiDoc::environments(&a, &root)[0].name, "Env-B");
     }
@@ -1578,7 +1581,7 @@ mod tests {
         ApiDoc::set_collections(&mut left, &root, std::slice::from_ref(&left_collection));
         ApiDoc::set_collections(&mut right, &root, std::slice::from_ref(&right_collection));
 
-        left.merge(&mut right).unwrap();
+        left.merge_incoming(&mut right).unwrap();
         let merged = ApiDoc::collections(&left, &root);
         assert!(merged.iter().any(|item| item.id == left_collection.id));
         assert!(merged.iter().any(|item| item.id == right_collection.id));
@@ -1614,7 +1617,7 @@ mod tests {
             serde_json::to_string(&[legacy_update.clone()]).unwrap(),
         );
 
-        modern.merge(&mut old_peer).unwrap();
+        modern.merge_incoming(&mut old_peer).unwrap();
         let projected = ApiDoc::collections(&modern, &root);
         assert!(projected.iter().any(|item| item.id == modern_extra.id));
         assert!(projected.iter().any(|item| item.id == legacy_update.id));
@@ -1649,7 +1652,7 @@ mod tests {
         ApiDoc::set_collections(&mut stale, &root, &[stale_collection]);
         ApiDoc::set_environments(&mut stale, &root, &[stale_environment]);
 
-        delete.merge(&mut stale).unwrap();
+        delete.merge_incoming(&mut stale).unwrap();
         assert!(ApiDoc::collections(&delete, &root).is_empty());
         assert!(ApiDoc::environments(&delete, &root).is_empty());
     }
@@ -1672,10 +1675,10 @@ mod tests {
 
         let mut forward = AutoCommit::load(&left.save()).unwrap();
         let mut forward_other = AutoCommit::load(&right.save()).unwrap();
-        forward.merge(&mut forward_other).unwrap();
+        forward.merge_incoming(&mut forward_other).unwrap();
         let mut reverse = AutoCommit::load(&right.save()).unwrap();
         let mut reverse_other = AutoCommit::load(&left.save()).unwrap();
-        reverse.merge(&mut reverse_other).unwrap();
+        reverse.merge_incoming(&mut reverse_other).unwrap();
         let forward_name = ApiDoc::collections(&forward, &root)[0].name.clone();
         let reverse_name = ApiDoc::collections(&reverse, &root)[0].name.clone();
         assert_eq!(forward_name, reverse_name);
@@ -1706,7 +1709,7 @@ mod tests {
         stale_entry.status = 503;
         ApiDoc::set_history(&mut stale, &root, &[stale_entry]);
 
-        delete.merge(&mut stale).unwrap();
+        delete.merge_incoming(&mut stale).unwrap();
         assert!(ApiDoc::history(&delete, &root).is_empty());
     }
 
@@ -1748,7 +1751,7 @@ mod tests {
         let right_request = Request::new("Right request");
         ApiDoc::set_request(&mut left, &root, &left_request);
         ApiDoc::set_request(&mut right, &root, &right_request);
-        left.merge(&mut right).unwrap();
+        left.merge_incoming(&mut right).unwrap();
 
         let projected = ApiDoc::request(&left, &root).expect("one stable conflict projection");
         assert!(matches!(
@@ -1778,7 +1781,7 @@ mod tests {
         right_collections[0].requests[1].name = "Second edited".into();
         ApiDoc::set_collections(&mut right, &root, &right_collections);
 
-        left.merge(&mut right).unwrap();
+        left.merge_incoming(&mut right).unwrap();
         let requests = &ApiDoc::collections(&left, &root)[0].requests;
         assert!(
             requests
@@ -1817,7 +1820,7 @@ mod tests {
             .push(KeyValue::new("Accept", "application/json"));
         ApiDoc::set_collections(&mut right, &root, &right_collections);
 
-        left.merge(&mut right).unwrap();
+        left.merge_incoming(&mut right).unwrap();
         let request = &ApiDoc::collections(&left, &root)[0].requests[0];
         assert_eq!(request.method, HttpMethod::Post);
         assert!(request.params.iter().any(|row| row.key == "page"));
@@ -1842,7 +1845,7 @@ mod tests {
         edited[0].requests[0].name = "Stale rename".into();
         ApiDoc::set_collections(&mut stale, &root, &edited);
 
-        delete.merge(&mut stale).unwrap();
+        delete.merge_incoming(&mut stale).unwrap();
         assert!(
             ApiDoc::collections(&delete, &root)[0].requests.is_empty(),
             "the request tombstone prevents a concurrent record write from reviving it"
@@ -1876,7 +1879,7 @@ mod tests {
             .value = "right".into();
         ApiDoc::set_environments(&mut right, &root, &right_environments);
 
-        left.merge(&mut right).unwrap();
+        left.merge_incoming(&mut right).unwrap();
         let variables = &ApiDoc::environments(&left, &root)[0].variables;
         assert!(
             variables
@@ -1919,7 +1922,7 @@ mod tests {
             "token",
             "abc",
         );
-        left.merge(&mut right).unwrap();
+        left.merge_incoming(&mut right).unwrap();
         let vars = &ApiDoc::environments(&left, &root)[0].variables;
         assert!(
             vars.iter()
@@ -1947,7 +1950,7 @@ mod tests {
             "region",
             "stale",
         );
-        left.merge(&mut stale).unwrap();
+        left.merge_incoming(&mut stale).unwrap();
         assert!(
             !ApiDoc::environments(&left, &root)[0]
                 .variables
@@ -1976,7 +1979,7 @@ mod tests {
             .push(KeyValue::new("Accept", "application/json"));
         ApiDoc::set_request(&mut right, &root, &right_request);
 
-        left.merge(&mut right).unwrap();
+        left.merge_incoming(&mut right).unwrap();
         let merged = ApiDoc::request(&left, &root).unwrap();
         assert_eq!(merged.method, HttpMethod::Post);
         assert_eq!(merged.params[0].key, "page");
@@ -2013,7 +2016,7 @@ mod tests {
             .value = "run-42".into();
         ApiDoc::set_request(&mut right, &root, &right_request);
 
-        left.merge(&mut right).unwrap();
+        left.merge_incoming(&mut right).unwrap();
         let merged = ApiDoc::request(&left, &root).unwrap();
         assert!(
             merged
@@ -2047,7 +2050,7 @@ mod tests {
         edited.headers[0].value = "application/json".into();
         ApiDoc::set_request(&mut stale, &root, &edited);
 
-        delete.merge(&mut stale).unwrap();
+        delete.merge_incoming(&mut stale).unwrap();
         assert!(
             ApiDoc::request(&delete, &root).unwrap().headers.is_empty(),
             "the keyed header tombstone prevents a stale row edit from reviving it"
