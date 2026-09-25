@@ -76,8 +76,10 @@ def build_proof(args):
     booted_composefs = booted["composefs"]["verity"]
     require(booted_composefs == composefs and COMPOSEFS.fullmatch(composefs),
             "installed composefs digest differs from booted image")
+    require(not args.target_uki.is_symlink(),
+            "installed target UKI is a symlink")
     uki = args.target_uki.resolve(strict=True)
-    require(uki.is_file() and not uki.is_symlink()
+    require(uki.is_file()
             and uki.is_relative_to(args.efi_root.resolve(strict=True)),
             "installed target UKI is outside the selected ESP")
     require(composefs_from_uki(uki) == composefs,
