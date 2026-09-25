@@ -15,10 +15,11 @@
 use automerge::{AutoCommit, ChangeHash};
 use tilo_actions::{ActionParam, EncodedAction, ParamType};
 use ui::framework::{Dispatcher, ResourceApp, ViewCx};
-use ui::tilo_resource::{ActionDecl, ActionRef, Doc, ModelError, Resource, SearchEntry};
+use ui::tilo_resource::{ActionDecl, ActionRef, Doc, Invoke, ModelError, Resource, SearchEntry};
 use ui::widget::Element;
 
 use crate::actions::{VIDEO_EDITOR_ACTION_TYPE, VideoEditorAction};
+use crate::app::{EMPTY_CAPTURE, IMPORT_CAPTURE, NARROW_CAPTURE, ShotScenario};
 use crate::doc::VideoDoc;
 use crate::model::{Marker, Project};
 
@@ -38,6 +39,12 @@ impl Resource for VideoProject {
 
     type State = Project;
     type Action = VideoEditorAction;
+
+    /// The editor's one vocabulary, registered where every other caller
+    /// (tests, tools) registers it.
+    fn register(registry: &mut tilo_actions::ActionRegistry) {
+        crate::actions::register(registry);
+    }
 
     fn read(doc: &Doc) -> Result<Project, ModelError> {
         Ok(VideoDoc::load_project(doc))
@@ -101,6 +108,29 @@ impl ResourceApp for VideoEditor {
         cx.surface(crate::VideoEditorApp::new())
     }
 
+    fn scenarios() -> &'static [&'static str] {
+        ShotScenario::ALL_NAMES
+    }
+
+    /// Every capture but the blank one opens the bundled demo project,
+    /// through the same typed action a script would use; the editor stages
+    /// the rest (see `VideoEditorApp::stage_capture`).
+    fn scenario(name: Option<&str>) -> Vec<Invoke<VideoProject>> {
+        if name.is_some_and(|name| name == EMPTY_CAPTURE || name.starts_with(IMPORT_CAPTURE)) {
+            return Vec::new();
+        }
+        Invoke::apply(&crate::actions::load_project_action(
+            &crate::doc::sample_project(),
+        ))
+        .map_or_else(
+            |error| {
+                tracing::warn!(%error, "the demo project does not encode");
+                Vec::new()
+            },
+            |invoke| vec![invoke],
+        )
+    }
+
     fn label(project: &Project) -> String {
         if project.name.is_empty() {
             "Project".to_owned()
@@ -110,9 +140,64 @@ impl ResourceApp for VideoEditor {
     }
 }
 
+const DEFAULT_SHOTS_VIEWPORT: (u32, u32) = (1280, 800);
+/// Narrow capture viewport: below the bin's collapse breakpoint, so `--shots
+/// --narrow` shows the overlay-flap layout.
+const NARROW_SHOTS_VIEWPORT: (u32, u32) = (720, 820);
+
+/// The editor's launch: the framework's, plus the capture flags. Every mode
+/// — the live window, `--shots`, `--responsive-matrix`, `--native-audit`,
+/// `--headless` — runs the framework-hosted editor:
+///
+/// * `--shots [--scenario NAME]` loads the demo project and stages the
+///   scenario's view state;
+/// * `--empty` captures the live app on a blank project;
+/// * `--narrow` captures the collapsed media bin at a narrow width;
+/// * `--import PATH` imports a real file, places it and waits for its frame.
+pub fn launch_spec() -> ui::launch::LaunchSpec {
+    ui::framework::launch_spec::<VideoEditor>()
+        .capture_scenario(capture)
+        .shot_viewport(shot_viewport)
+        .allowed_flags(&["--empty", "--narrow"])
+        .allowed_options(&["--data-dir", "--import"])
+}
+
+fn shot_viewport(args: &ui::launch::LaunchArgs) -> (u32, u32) {
+    if args.has("--narrow") {
+        NARROW_SHOTS_VIEWPORT
+    } else {
+        DEFAULT_SHOTS_VIEWPORT
+    }
+}
+
+fn capture(
+    harness: &mut ui::headless::FrameHarness,
+    args: &ui::launch::LaunchArgs,
+) -> Result<(), ui::launch::LaunchError> {
+    let import = args
+        .value("--import")
+        .map(|path| format!("{IMPORT_CAPTURE}{path}"));
+    let scenario = if let Some(import) = &import {
+        Some(import.as_str())
+    } else if args.has("--empty") {
+        Some(EMPTY_CAPTURE)
+    } else if args.has("--narrow") {
+        Some(NARROW_CAPTURE)
+    } else {
+        args.scenario.as_deref()
+    };
+    ui::framework::stage::<VideoEditor>(harness, scenario)?;
+    if import.is_some() {
+        // A clip that never decodes (no `decode` feature, an unreadable file)
+        // is still captured, showing what the editor shows for it.
+        let _ = harness.wait_for_visuals(std::time::Duration::from_secs(6));
+    }
+    Ok(())
+}
+
 /// Where the editor's edits go: the framework's dispatcher when the editor is
 /// a hosted surface, or the toolkit's local action host when it runs as a
-/// standalone widget (its unit tests and legacy captures).
+/// standalone widget (its unit tests and benchmarks).
 #[derive(Default)]
 pub(crate) struct ActionSink {
     local: ui::ActionHost,

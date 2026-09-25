@@ -72,7 +72,7 @@ use inspector_layout::InspectorLayout;
 use layout::Regions;
 use paint::*;
 use scenario::ShotLifecycle;
-pub use scenario::ShotScenario;
+pub use scenario::{EMPTY_CAPTURE, IMPORT_CAPTURE, NARROW_CAPTURE, ShotScenario};
 use selection::Selection;
 
 const TRANSPORT_CONTROL_CY: f64 = 20.0;
@@ -1684,18 +1684,6 @@ impl VideoEditorApp {
             let _ = (normalized_x, normalized_y);
             None
         }
-    }
-
-    /// Like [`Self::new`] but with the media bin flap snapped fully open, for
-    /// a deterministic narrow-window `--shots` capture that shows the overlay
-    /// sidebar revealed in a single frame.
-    pub fn new_with_bin_open() -> Self {
-        let mut app = Self::new_demo();
-        app.bin_flap.snap(true);
-        // Pre-settled: the explicit open snap is authoritative, so the first
-        // laid-out frame must not re-snap it to the width's default.
-        app.navigation.flap_settled = true;
-        app
     }
 
     /// Resolve the bin's docked-vs-overlay layout purely from the allocated
@@ -6193,6 +6181,20 @@ impl Widget for VideoEditorApp {
         self.pump_preview_decode();
     }
 
+    /// Work a still capture can wait for: an import still being read, and
+    /// (with real decoding) an auto-placed import whose decoded frame has
+    /// not reached the canvas yet.
+    fn has_pending_visual_work(&self) -> bool {
+        let importing = self.import_rx.is_some() || !self.pending_imports.is_empty();
+        #[cfg(feature = "decode")]
+        let prerolling = self.media_pipeline.auto_place_imports
+            && !self.project.clips.is_empty()
+            && !self.has_preview_frame();
+        #[cfg(not(feature = "decode"))]
+        let prerolling = false;
+        importing || prerolling
+    }
+
     fn needs_idle_sync(&self) -> bool {
         // Keep syncing until the demo/shared project is loaded so a
         // freshly-spawned, input-free instance still seeds + paints. The live
@@ -9241,5 +9243,11 @@ impl ui::framework::ResourceSurface<crate::resource::VideoProject> for VideoEdit
 
     fn attach(&mut self, cx: ui::framework::SurfaceCx<crate::resource::VideoProject>) {
         self.actions.attach(cx.dispatcher());
+    }
+
+    /// A `--shots` capture: the scenario's project is loaded; arrange the
+    /// editor around it. See [`Self::stage_capture`].
+    fn stage(&mut self, scenario: Option<&str>) {
+        self.stage_capture(scenario);
     }
 }
