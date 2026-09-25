@@ -229,14 +229,14 @@ struct Receipt {
 }
 
 fn main() -> std::process::ExitCode {
-    if let Err(error) = run(Cli::parse()) {
+    if let Err(error) = run(&Cli::parse()) {
         eprintln!("tilo-model-catalog: {error}");
         return std::process::ExitCode::FAILURE;
     }
     std::process::ExitCode::SUCCESS
 }
 
-fn run(cli: Cli) -> Result<(), String> {
+fn run(cli: &Cli) -> Result<(), String> {
     let source_bytes = fs::read(&cli.source)
         .map_err(|error| format!("could not read {}: {error}", cli.source.display()))?;
     let source: CatalogSource = serde_json::from_slice(&source_bytes)
@@ -431,7 +431,12 @@ fn compile(
 fn catalog_signing_bytes(payload: &CatalogPayload) -> Result<Vec<u8>, String> {
     let encoded = serde_json::to_vec(payload)
         .map_err(|error| format!("could not encode signing payload: {error}"))?;
-    let mut bytes = Vec::with_capacity(CATALOG_SIGNATURE_DOMAIN.len() + 1 + encoded.len());
+    let mut bytes = Vec::with_capacity(
+        CATALOG_SIGNATURE_DOMAIN
+            .len()
+            .saturating_add(1)
+            .saturating_add(encoded.len()),
+    );
     bytes.extend_from_slice(CATALOG_SIGNATURE_DOMAIN.as_bytes());
     bytes.push(0);
     bytes.extend_from_slice(&encoded);
