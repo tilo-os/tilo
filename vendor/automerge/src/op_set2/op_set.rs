@@ -33,6 +33,7 @@ mod index;
 mod insert;
 mod mark_index;
 mod marks;
+mod native_dims;
 mod op_iter;
 mod op_query;
 mod top_op;

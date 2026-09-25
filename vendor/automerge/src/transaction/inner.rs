@@ -1641,3 +1641,5 @@ mod tests {
         assert!(tx.get(&a, "b").unwrap().is_some());
     }
 }
+
+mod native_heap;

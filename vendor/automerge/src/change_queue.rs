@@ -175,3 +175,38 @@ impl ChangeQueue {
         topo
     }
 }
+
+/// qOS bounded admission (lane L1): read-only queue dimensions.
+/// Allocates nothing; O(queued changes).
+impl ChangeQueue {
+    pub(crate) fn native_dims(&self, d: &mut crate::resource_limits::dims::DocDims) {
+        use crate::resource_limits::dims::{
+            actor_heap_bytes, change_heap_bound, hash_table_bytes, vec_bytes,
+        };
+        use std::mem::size_of;
+        d.queue_changes = self.changes.len();
+        let mut exact = vec_bytes(self.changes.capacity(), size_of::<Change>());
+        exact = exact.saturating_add(hash_table_bytes(
+            self.hashes.capacity(),
+            size_of::<ChangeHash>(),
+        ));
+        exact = exact.saturating_add(hash_table_bytes(
+            self.incoming_actor_seqs.capacity(),
+            size_of::<(ActorId, u64)>(),
+        ));
+        let mut raw = 0usize;
+        for c in &self.changes {
+            raw = raw.saturating_add(c.raw_bytes().len());
+            exact = exact.saturating_add(change_heap_bound(c));
+            // The cloned ActorId key in `incoming_actor_seqs`.
+            let len = c.actor_id().to_bytes().len();
+            exact = exact.saturating_add(actor_heap_bytes(len));
+            d.max_actor_len = d.max_actor_len.max(len);
+        }
+        d.queue_bytes = raw;
+        d.exact_bytes = d.exact_bytes.saturating_add(exact);
+        d.cap.queue_changes = self.changes.capacity();
+        d.cap.queue_hashes = self.hashes.capacity();
+        d.cap.queue_actor_seqs = self.incoming_actor_seqs.capacity();
+    }
+}
