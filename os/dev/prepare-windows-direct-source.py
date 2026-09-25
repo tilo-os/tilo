@@ -234,8 +234,8 @@ def finalize_source(args):
     print(f"VM source final GPT identities match Windows plan: {raw}")
 
 
-def verified_ci_image(image, key, command_json=None, key_arg=None):
-    return provenance.verify_ci_image(image, key, command_json, key_arg)
+def verified_ci_image(image, key, children, kind, command_json=None, key_arg=None):
+    return provenance.verify_ci_image(image, key, children, kind, command_json, key_arg)
 
 
 def make_receipt(args):
@@ -246,12 +246,12 @@ def make_receipt(args):
     require(raw.is_file() and not raw.is_symlink()
             and raw.stat().st_size == plan["windows_disk"]["size_bytes"],
             "VM-installed source raw size differs from reviewed disk")
-    index_digest, child_digest = provenance.signed_ci_child(
+    index_digest, child_digest, children, kind = provenance.signed_ci_child(
         args.ci_image, args.ci_index_manifest, args.ci_child_manifest)
     checked = provenance.checked_guest_proof(args.vm_proof_checked, child_digest)
-    key_hash = verified_ci_image(args.ci_image, args.verify_key,
-                                 getattr(args, "cosign_command_json", None),
-                                 getattr(args, "cosign_key_arg", None))
+    ci_provenance = verified_ci_image(args.ci_image, args.verify_key, children, kind,
+                                      getattr(args, "cosign_command_json", None),
+                                      getattr(args, "cosign_key_arg", None))
     with raw.open("rb", buffering=0) as stream:
         disk_guid, actual = direct.read_gpt(stream, raw.stat().st_size)
         require(direct.same_gpt_content(actual, rows),
@@ -262,13 +262,22 @@ def make_receipt(args):
             stream, final[0], checked["guest_proof"]["composefs_digest"])
         require(uki_hash == checked["guest_proof"]["target_uki_sha256"],
                 "VM-installed source ESP UKI differs from guest proof")
+        loader_path, loader_hash = provenance.installed_loader(stream, final[0])
         hashes = {role: direct.hash_range(stream, row["offset_bytes"], row["size_bytes"])
                   for role, row in zip(direct.ROLES, final, strict=True)}
     receipt = {"schema": direct.SCHEMA, "raw_size_bytes": raw.stat().st_size,
                "partitions": rows, "final_sha256": hashes,
                "ci_image": args.ci_image, "ci_index_digest": index_digest,
                "ci_child_digest": child_digest,
-               "ci_verification_key_sha256": key_hash,
+               "ci_verification_key_sha256": ci_provenance["key_sha256"],
+               "ci_source_revision": ci_provenance["source_revision"],
+               "ci_generation": ci_provenance["generation"],
+               "ci_image_kind": ci_provenance["image_kind"],
+               "ci_firmware_candidate": ci_provenance["firmware_candidate"],
+               "ci_firmware_manifest_sha256": ci_provenance["firmware_manifest_sha256"],
+               "ci_slsa_statement_sha256": ci_provenance["statement_sha256"],
+               "final_esp_partuuid": final[0]["partuuid"],
+               "loader_path": loader_path, "loader_sha256": loader_hash,
                "vm_proof_checked_sha256": hashlib.sha256(
                    args.vm_proof_checked.read_bytes()).hexdigest(),
                "installed_uki_sha256": uki_hash}
