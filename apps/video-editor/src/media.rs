@@ -60,7 +60,7 @@ impl Hydration {
             Hydration::Local => "local",
         }
     }
-    pub fn from_str(s: &str) -> Self {
+    pub fn from_name(s: &str) -> Self {
         match s {
             "local" => Hydration::Local,
             _ => Hydration::Projected,
@@ -309,7 +309,7 @@ mod tests {
     #[test]
     fn hydration_round_trips_through_strings() {
         for h in [Hydration::Projected, Hydration::Local] {
-            assert_eq!(Hydration::from_str(h.as_str()), h);
+            assert_eq!(Hydration::from_name(h.as_str()), h);
         }
     }
 
