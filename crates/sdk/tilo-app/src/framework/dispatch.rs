@@ -8,6 +8,7 @@ use std::rc::Rc;
 
 use tilo_actions::{ActionAddress, ControlInvocation};
 use tilo_resource::{Invoke, Resource};
+use ui_core::LocalState;
 
 /// Queues action invocations for the host. Cloneable; clones share one queue.
 ///
@@ -20,7 +21,7 @@ pub struct Dispatcher<R: Resource> {
     queue: Rc<RefCell<VecDeque<ControlInvocation>>>,
     /// The invocations of the open group, and how many groups are open.
     group: Rc<RefCell<(usize, Vec<Invoke<R>>)>>,
-    read_only: bool,
+    read_only: LocalState<bool>,
     marker: std::marker::PhantomData<fn(R)>,
 }
 
@@ -30,7 +31,7 @@ impl<R: Resource> Clone for Dispatcher<R> {
             resource_id: Rc::clone(&self.resource_id),
             queue: Rc::clone(&self.queue),
             group: Rc::clone(&self.group),
-            read_only: self.read_only,
+            read_only: self.read_only.clone(),
             marker: std::marker::PhantomData,
         }
     }
@@ -42,20 +43,37 @@ impl<R: Resource> Dispatcher<R> {
             resource_id: Rc::from(resource_id),
             queue: Rc::default(),
             group: Rc::default(),
-            read_only,
+            read_only: LocalState::new(read_only),
             marker: std::marker::PhantomData,
         }
     }
 
-    /// Whether edits from this participant will be refused. Surfaces use it
-    /// to present themselves read-only instead of letting an edit bounce.
+    /// Whether edits from this participant will be refused, as of now: it
+    /// follows role changes while the app runs. Surfaces use it to present
+    /// themselves read-only instead of letting an edit bounce.
     pub fn read_only(&self) -> bool {
-        self.read_only
+        self.read_only.get()
+    }
+
+    /// [`Self::read_only`] as observable state, for a widget that shows or
+    /// disables something while the participant may only view.
+    pub fn read_only_state(&self) -> LocalState<bool> {
+        self.read_only.clone()
+    }
+
+    /// Record a change of the participant's permissions. Returns whether
+    /// anything changed.
+    pub(crate) fn set_read_only(&self, read_only: bool) -> bool {
+        if self.read_only.get() == read_only {
+            return false;
+        }
+        self.read_only.set(read_only);
+        true
     }
 
     /// Invoke a declared action (`dispatcher.invoke(Note::EDIT.with(text))`).
     pub fn invoke(&self, invoke: Invoke<R>) {
-        if self.read_only {
+        if self.read_only() {
             return;
         }
         {

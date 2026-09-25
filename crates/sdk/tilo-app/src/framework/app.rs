@@ -14,7 +14,9 @@ use ui_core::application::{
 use ui_core::bound_dispatch::BoundActionAddress;
 use ui_core::headless::FrameHarness;
 use ui_core::launch::{LaunchArgs, LaunchError, LaunchSpec};
-use ui_core::permissions::{Actor, PermissionContext, PermissionScope, Role, UserId, Verb};
+use ui_core::permissions::{
+    Actor, LivePermissions, PermissionContext, PermissionScope, Role, UserId, Verb,
+};
 use ui_core::record::{RecordCheckout, RecordId, RecordKind};
 use ui_core::widget::{Element, IconDescriptor};
 
@@ -125,12 +127,33 @@ pub(crate) fn default_record<A: ResourceApp>() -> RecordCheckout {
     )
 }
 
+/// Who may edit the resource a root shows.
+pub(crate) enum Editing {
+    /// The participant's permissions, followed while the app runs.
+    Live(LivePermissions),
+    /// Never: a past version in History mode.
+    ReadOnly,
+}
+
+/// The permission that makes an app's resource editable.
+fn write_scope<A: ResourceApp>() -> PermissionScope {
+    PermissionScope::app(A::ID, Verb::Write)
+}
+
 /// Build the framework root for a resource state: the live handle, the
 /// dispatcher, the published resource and the app's view.
 pub(crate) fn build_root<A: ResourceApp>(
     state: <A::Resource as Resource>::State,
-    read_only: bool,
+    editing: Editing,
 ) -> ResourceRoot<A::Resource> {
+    let scope = write_scope::<A>();
+    let (permissions, read_only) = match editing {
+        Editing::Live(permissions) => {
+            let read_only = !permissions.check(&scope);
+            (Some(permissions), read_only)
+        }
+        Editing::ReadOnly => (None, true),
+    };
     let label = A::label(&state);
     let resource_id = <A::Resource as Resource>::KIND;
     let published = tilo_resource::publish::<A::Resource>(resource_id, &label, &state);
@@ -159,6 +182,7 @@ pub(crate) fn build_root<A: ResourceApp>(
         saved,
         content,
     )
+    .following(permissions, scope)
 }
 
 #[allow(
@@ -177,14 +201,12 @@ fn create<A: ResourceApp>(
             })
             .map_err(LaunchError::Record)?;
     }
-    let read_only = !context
-        .permissions()
-        .check(&PermissionScope::app(A::ID, Verb::Write));
+    let permissions = context.live_permissions();
     let state = context
         .read_record(<A::Resource as Resource>::read)
         .map_err(LaunchError::Record)?
         .map_err(|error| LaunchError::Operation(error.to_string()))?;
-    let root = build_root::<A>(state, read_only);
+    let root = build_root::<A>(state, Editing::Live(permissions));
     let mut registry = tilo_actions::ActionRegistry::new();
     tilo_resource::group::register::<A::Resource>(&mut registry);
     let mut component = AppComponent::new(context, Box::new(root), registry);
@@ -203,7 +225,7 @@ pub(crate) const DATA_DIR_INSTANCE: u64 = 0;
 pub(crate) fn data_dir_host(
     directory: &std::path::Path,
     author: &UserId,
-    role: Role,
+    permissions: Rc<RefCell<PermissionContext>>,
 ) -> Result<ApplicationHost, LaunchError> {
     let root = std::path::absolute(directory).map_err(operation)?;
     ApplicationHost::new(
@@ -211,23 +233,22 @@ pub(crate) fn data_dir_host(
         "local-device".into(),
         "personal",
         author.clone(),
-        Rc::new(RefCell::new(PermissionContext::from_capabilities(
-            Actor::person(Some(role), &author.0),
-            vec![],
-        ))),
+        permissions,
         tilo_actions::ActionContext::default(),
     )
 }
 
-/// Keeps a capture's temporary profile alive for as long as the host needs it.
-struct CaptureProfile(#[allow(dead_code, reason = "held for its Drop")] tempfile::TempDir);
-
-fn owner(author: &str) -> Rc<RefCell<PermissionContext>> {
+/// The permissions of `author` holding `role`, shared with the host so a
+/// later role change reaches the running app.
+pub(crate) fn role_permissions(author: &str, role: Role) -> Rc<RefCell<PermissionContext>> {
     Rc::new(RefCell::new(PermissionContext::from_capabilities(
-        Actor::person(Some(Role::Owner), author),
+        Actor::person(Some(role), author),
         vec![],
     )))
 }
+
+/// Keeps a capture's temporary profile alive for as long as the host needs it.
+struct CaptureProfile(#[allow(dead_code, reason = "held for its Drop")] tempfile::TempDir);
 
 fn operation(error: impl std::fmt::Display) -> LaunchError {
     LaunchError::Operation(error.to_string())
@@ -256,7 +277,7 @@ fn prepare<A: ResourceApp>(
             "capture-device".into(),
             "capture-workspace",
             UserId("capture-author".into()),
-            owner("capture-author"),
+            role_permissions("capture-author", Role::Owner),
             tilo_actions::ActionContext::default(),
             Rc::new(CaptureProfile(profile)),
         )?;
@@ -270,7 +291,11 @@ fn prepare<A: ResourceApp>(
     }
     if let Some(directory) = args.value("--data-dir") {
         let author = ui_core::collaboration::local_user_id();
-        let mut host = data_dir_host(std::path::Path::new(directory), &author, Role::Owner)?;
+        let mut host = data_dir_host(
+            std::path::Path::new(directory),
+            &author,
+            role_permissions(&author.0, Role::Owner),
+        )?;
         return host.prepare_default(
             definition,
             DATA_DIR_INSTANCE,
