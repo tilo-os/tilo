@@ -249,6 +249,28 @@ impl<A: SlabAggregate> Default for SlabBTree<A> {
 }
 
 impl<A: SlabAggregate> SlabBTree<A> {
+    /// Requested heap bytes: the node table, each node's aggregate or child
+    /// buffer, and the free list, from capacities; allocates nothing.
+    /// qOS local modification (see `PROVENANCE.md`).
+    pub(crate) fn heap_bytes(&self) -> usize {
+        use std::mem::size_of;
+        let mut n = self
+            .nodes
+            .capacity()
+            .saturating_mul(size_of::<Option<Node<A>>>())
+            .saturating_add(self.free.capacity().saturating_mul(size_of::<NodeId>()));
+        for node in self.nodes.iter().flatten() {
+            n = n.saturating_add(match node {
+                Node::Leaf(leaf) => leaf.aggs.capacity().saturating_mul(size_of::<A>()),
+                Node::Internal(internal) => internal
+                    .children
+                    .capacity()
+                    .saturating_mul(size_of::<ChildSlot<A>>()),
+            });
+        }
+        n
+    }
+
     pub(crate) fn new() -> Self {
         let mut nodes = Vec::with_capacity(8);
         nodes.push(Some(Node::Leaf(Leaf::default())));

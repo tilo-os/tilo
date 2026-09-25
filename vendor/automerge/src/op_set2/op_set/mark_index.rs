@@ -228,6 +228,32 @@ impl MarkIndexColumn {
         self.data.len()
     }
 
+    /// qOS bounded admission (L1): `(cache len, cache capacity, cache table
+    /// bytes, owned name/value capacity, data slabs, data heap bytes)`.
+    /// Allocates nothing.
+    pub(crate) fn native_dims(&self) -> (usize, usize, usize, usize, usize, usize) {
+        use crate::resource_limits::dims::hash_table_bytes;
+        let table = hash_table_bytes(
+            self.cache.capacity(),
+            std::mem::size_of::<(OpId, MarkData<'static>)>(),
+        );
+        let mut owned = 0usize;
+        for m in self.cache.values() {
+            if let std::borrow::Cow::Owned(name) = &m.name {
+                owned = owned.saturating_add(name.capacity());
+            }
+            owned = owned.saturating_add(m.value.native_owned_bytes());
+        }
+        (
+            self.cache.len(),
+            self.cache.capacity(),
+            table,
+            owned,
+            self.data.slab_count(),
+            self.data.heap_bytes(),
+        )
+    }
+
     pub(crate) fn iter(&self) -> hexane::Iter<'_, Option<MarkIdx>> {
         self.data.values().iter()
     }

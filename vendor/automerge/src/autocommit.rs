@@ -1417,3 +1417,31 @@ mod tests {
         is_send::<super::AutoCommit>();
     }
 }
+
+/// qOS bounded admission (lane L1): requested heap bytes the wrapper holds
+/// beyond `doc` (open transaction and its patch log, the patch log, diff and
+/// save cursors, isolation heads), read from capacities without allocating.
+/// `None` when a component is not measured (a cached diff, or a patch log
+/// holding completed patches or marks); callers fail closed on `None`.
+impl AutoCommit {
+    pub(crate) fn native_aux_heap_bytes(&self) -> Option<usize> {
+        use std::mem::size_of;
+        if self.diff_cache.is_some() {
+            return None;
+        }
+        let hashes = |v: &Vec<ChangeHash>| v.capacity().saturating_mul(size_of::<ChangeHash>());
+        let mut n = self.patch_log.native_heap_bytes()?;
+        if let Some((log, tx)) = &self.transaction {
+            n = n
+                .saturating_add(log.native_heap_bytes()?)
+                .saturating_add(tx.native_heap_bytes());
+        }
+        n = n
+            .saturating_add(hashes(&self.diff_cursor))
+            .saturating_add(hashes(&self.save_cursor));
+        if let Some(iso) = &self.isolation {
+            n = n.saturating_add(hashes(iso));
+        }
+        Some(n)
+    }
+}
