@@ -144,7 +144,11 @@ mod tests {
         );
         assert!(SHARE_CONTROL_FRAMING.encode(&[]).is_err());
         assert!(SHARE_CONTROL_FRAMING.encode(&vec![0; 128 * 1024]).is_ok());
-        assert!(SHARE_CONTROL_FRAMING.encode(&vec![0; 128 * 1024 + 1]).is_err());
+        assert!(
+            SHARE_CONTROL_FRAMING
+                .encode(&vec![0; 128 * 1024 + 1])
+                .is_err()
+        );
         assert!(
             SHARE_CONTROL_FRAMING
                 .read(&mut &[0_u8, 0, 0, 0][..])
