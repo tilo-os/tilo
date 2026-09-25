@@ -1,10 +1,10 @@
 //! Source-independent private journal storage. Validation always precedes repair.
-use super::advisory_lock::ExclusiveLock;
 use super::migration::{OwnedTemporary, PinnedDirectory, changed};
 use super::{
     destination_security, migration_durability as durability,
     nofollow::{metadata_nofollow, same_directory_identity},
 };
+use advisory_lock::FileLock;
 use cap_fs_ext::{OpenOptionsFollowExt, OpenOptionsSyncExt};
 use cap_primitives::fs::{FollowSymlinks, Metadata, OpenOptions};
 use serde::Serialize;
@@ -111,7 +111,7 @@ pub(super) fn parent(path: &Path) -> io::Result<(Arc<PinnedDirectory>, OsString)
 pub(super) fn open_private(
     parent: &Arc<PinnedDirectory>,
     name: &std::ffi::OsStr,
-) -> io::Result<(ExclusiveLock, Metadata)> {
+) -> io::Result<(FileLock, Metadata)> {
     let expected = metadata_nofollow(&parent.file, Path::new(name))?;
     if !expected.is_file() || expected.is_symlink() {
         return Err(changed("journal is not a regular file"));
@@ -125,7 +125,7 @@ pub(super) fn open_private(
     let file = cap_primitives::fs::open(&parent.file, Path::new(name), &options)?;
     destination_security::check_private_file(&file)?;
     let file =
-        ExclusiveLock::try_new(file).map_err(|e| changed(&format!("journal is busy: {e}")))?;
+        FileLock::try_exclusive(file).map_err(|e| changed(&format!("journal is busy: {e}")))?;
     let identity = Metadata::from_file(&file)?;
     if !super::migration::same_snapshot(&expected, &identity) {
         return Err(changed("journal replaced while opening"));
@@ -175,7 +175,7 @@ pub(super) fn create_private<T: Serialize>(
     name: &std::ffi::OsStr,
     magic: [u8; 8],
     header: &T,
-) -> io::Result<(ExclusiveLock, Metadata, u64)> {
+) -> io::Result<(FileLock, Metadata, u64)> {
     durability::supported()?;
 
     let mut temporary = OwnedTemporary::create(parent, name)?;
@@ -192,14 +192,14 @@ pub(super) fn create_private<T: Serialize>(
         Path::new(&name),
     )?;
     durability::sync_directory(&parent.file)?;
-    let file = ExclusiveLock::try_new(temporary.file.try_clone()?)
+    let file = FileLock::try_exclusive(temporary.file.try_clone()?)
         .map_err(|e| changed(&format!("journal is busy: {e}")))?;
     let identity = Metadata::from_file(&file)?;
     Ok((file, identity, sequence))
 }
 #[cfg(any(target_os = "linux", test))]
 pub(super) struct Log {
-    pub file: ExclusiveLock,
+    pub file: FileLock,
     pub sequence: u64,
     parent: Arc<PinnedDirectory>,
     name: OsString,

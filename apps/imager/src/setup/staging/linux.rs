@@ -175,13 +175,9 @@ impl LinuxPlatform {
         })
     }
 
-    fn lock_disk(&self) -> IoResult<File> {
+    fn lock_disk(&self) -> IoResult<advisory_lock::FileLock> {
         let file = File::open(&self.disk).map_err(|e| e.to_string())?;
-        // SAFETY: valid descriptor owned by `file` for the call.
-        if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) } != 0 {
-            return Err(std::io::Error::last_os_error().to_string());
-        }
-        Ok(file)
+        advisory_lock::FileLock::exclusive(file).map_err(|e| e.to_string())
     }
 
     fn settle(&self) {
