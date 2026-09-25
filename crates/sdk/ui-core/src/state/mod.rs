@@ -1229,7 +1229,113 @@ pub fn write_revert_patches(
 ) {
     // Patches describing how to get from `from_heads` back to `to_heads`.
     let patches = doc.diff(from_heads, to_heads);
+    let restored = restore_untouched_plain_text(doc, &patches, from_heads, to_heads);
+    let patches = patches
+        .into_iter()
+        .filter(|patch| !restored.contains(&patch.obj))
+        .collect();
     write_patches(doc, patches, to_heads, from_heads);
+}
+
+/// Revert plain-text objects the reverted span edited and nobody has touched
+/// since, by splicing their live text back to its earlier value in one step.
+///
+/// Diff patches index each text edit against the sequence as the *previous*
+/// patches of the same diff left it, so replaying several of them through
+/// fixed-anchor position lookups lands later edits on the wrong characters,
+/// and a multi-character delete resolved from one anchor asks for an already
+/// deleted element. When the live text is still exactly what the reverted
+/// span produced, the earlier text is simply the target: restore it as one
+/// splice of the differing span. Text with formatting, or edited
+/// concurrently since, keeps the general patch replay.
+fn restore_untouched_plain_text(
+    doc: &mut AutoCommit,
+    patches: &[automerge::Patch],
+    from_heads: &[ChangeHash],
+    to_heads: &[ChangeHash],
+) -> std::collections::HashSet<ObjId> {
+    let mut candidates: Vec<ObjId> = Vec::new();
+    // Objects the revert recreates, or that carry formatting, stay on the
+    // general path.
+    let mut formatted = std::collections::HashSet::new();
+    for patch in patches {
+        match &patch.action {
+            PatchAction::PutMap { value, .. } | PatchAction::PutSeq { value, .. } => {
+                formatted.insert(value.1.clone());
+            }
+            PatchAction::Insert { values, .. } => {
+                formatted.extend(values.iter().map(|(_, id, _)| id.clone()));
+            }
+            _ => {}
+        }
+        match &patch.action {
+            PatchAction::SpliceText { marks: None, .. } | PatchAction::DeleteSeq { .. } => {
+                if !candidates.contains(&patch.obj) {
+                    candidates.push(patch.obj.clone());
+                }
+            }
+            _ => {
+                formatted.insert(patch.obj.clone());
+            }
+        }
+    }
+    let mut restored = std::collections::HashSet::new();
+    for obj in candidates {
+        if formatted.contains(&obj)
+            || !matches!(doc.object_type(&obj), Ok(automerge::ObjType::Text))
+            || doc.marks(&obj).is_ok_and(|marks| !marks.is_empty())
+        {
+            continue;
+        }
+        let (Ok(live), Ok(produced), Ok(target)) = (
+            doc.text(&obj),
+            doc.text_at(&obj, from_heads),
+            doc.text_at(&obj, to_heads),
+        ) else {
+            continue;
+        };
+        if live != produced {
+            continue;
+        }
+        let prefix = live
+            .char_indices()
+            .zip(target.chars())
+            .find(|((_, a), b)| a != b)
+            .map_or_else(|| live.len().min(target.len()), |((index, _), _)| index);
+        let live_rest = live.get(prefix..).unwrap_or("");
+        let target_rest = target.get(prefix..).unwrap_or("");
+        let suffix: usize = live_rest
+            .chars()
+            .rev()
+            .zip(target_rest.chars().rev())
+            .take_while(|(a, b)| a == b)
+            .map(|(a, _)| a.len_utf8())
+            .sum();
+        let removed = live_rest
+            .get(..live_rest.len().saturating_sub(suffix))
+            .unwrap_or("");
+        let inserted = target_rest
+            .get(..target_rest.len().saturating_sub(suffix))
+            .unwrap_or("");
+        let width = |part: &str| match doc.text_encoding() {
+            automerge::TextEncoding::UnicodeCodePoint => Some(part.chars().count()),
+            automerge::TextEncoding::Utf8CodeUnit => Some(part.len()),
+            automerge::TextEncoding::Utf16CodeUnit => Some(part.encode_utf16().count()),
+            automerge::TextEncoding::GraphemeCluster => None,
+        };
+        let (Some(position), Some(deleted)) =
+            (width(live.get(..prefix).unwrap_or("")), width(removed))
+        else {
+            continue;
+        };
+        let Ok(deleted) = isize::try_from(deleted) else {
+            continue;
+        };
+        if doc.splice_text(&obj, position, deleted, inserted).is_ok() {
+            restored.insert(obj);
+        }
+    }
+    restored
 }
 
 /// Write an already-derived patch set forward into `doc`'s open transaction.
@@ -1556,6 +1662,40 @@ fn live_insert_boundary(
 mod tests {
     use super::*;
     use automerge::{ReadDoc, ScalarValue, transaction::Transactable};
+
+    #[test]
+    fn undo_restores_multi_span_and_multi_character_text_edits_exactly() {
+        let mut state = State::new();
+        let text = state.doc.put_object(ROOT, "text", ObjType::Text).unwrap();
+        state.commit_action(None, None);
+        for next in [
+            "first thought",
+            "second thought",
+            "a second, longer thought",
+            "",
+        ] {
+            state.doc.update_text(&text, next).unwrap();
+            state.commit_action(None, None);
+        }
+        for expected in [
+            "a second, longer thought",
+            "second thought",
+            "first thought",
+            "",
+        ] {
+            state.undo(None, None).unwrap();
+            assert_eq!(state.doc.text(&text).unwrap(), expected);
+        }
+        for expected in [
+            "first thought",
+            "second thought",
+            "a second, longer thought",
+            "",
+        ] {
+            state.redo(None, None).unwrap();
+            assert_eq!(state.doc.text(&text).unwrap(), expected);
+        }
+    }
 
     #[test]
     fn undo_unformatted_text_between_formatted_neighbors_does_not_inherit_marks() {
