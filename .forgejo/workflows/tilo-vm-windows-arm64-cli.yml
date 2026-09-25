@@ -1,0 +1,40 @@
+name: CI / Windows ARM64 tilo-vm CLI
+
+# Produce the native development CLI once in CI so Windows ARM64 hosts can
+# download it and iterate with WHPX without setting up a Rust build tree.
+on:
+  workflow_dispatch:
+
+jobs:
+  cli:
+    runs-on: imager-windows-aarch64
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Require native Windows ARM64
+        shell: powershell
+        run: |
+          $Processors = @(Get-CimInstance Win32_Processor)
+          if ($Processors.Count -eq 0 -or @($Processors | Where-Object { $_.Architecture -ne 12 }).Count -ne 0) {
+            throw "This build requires a native Windows ARM64 runner"
+          }
+      - name: Build and test tilo-vm
+        shell: powershell
+        run: |
+          cargo test -p tilo-vm --lib --locked --target aarch64-pc-windows-msvc
+          if ($LASTEXITCODE -ne 0) { throw "tilo-vm tests failed" }
+          cargo build -p tilo-vm --locked --target aarch64-pc-windows-msvc
+          if ($LASTEXITCODE -ne 0) { throw "tilo-vm build failed" }
+      - name: Package exact-source CLI
+        shell: powershell
+        run: |
+          New-Item -ItemType Directory -Force -Path out | Out-Null
+          Copy-Item -LiteralPath target\aarch64-pc-windows-msvc\debug\tilo-vm.exe -Destination out\tilo-vm.exe
+          $Hash = (Get-FileHash -Algorithm SHA256 -LiteralPath out\tilo-vm.exe).Hash.ToLowerInvariant()
+          Set-Content -LiteralPath out\tilo-vm.exe.sha256 -Encoding ascii -Value "$Hash  tilo-vm.exe"
+          Set-Content -LiteralPath out\source-commit.txt -Encoding ascii -Value $env:GITHUB_SHA
+      - uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
+        with:
+          name: tilo-vm-windows-arm64-${{ github.sha }}
+          path: out/
+          if-no-files-found: error
