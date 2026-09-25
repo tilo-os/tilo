@@ -18,47 +18,103 @@ fn persisted_key(dir: &Path) -> Zeroizing<Vec<u8>> {
     read_key_bytes(&dir.join(KEY_FILE)).unwrap()
 }
 
+fn key(byte: u8) -> VaultKey {
+    VaultKey::from_bytes([byte; KEY_LEN])
+}
+
+/// `FORMAT.seal(&[7; KEY_LEN], b"legacy vault bytes")` in the layout written
+/// before `tilo-seal` envelopes, produced by that implementation's sealing
+/// code with the nonce fixed to `[0x5a; 24]`.
+const LEGACY_BLOB: &str = concat!(
+    "54535456015a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5ac48e22",
+    "5b2560c03ed2200c7b1aaad80f16f98f05b43a3c8d48100b282469fdd928d5",
+);
+
 #[test]
 fn seal_open_round_trips_and_rejects_tampering() {
-    let key = [7u8; KEY_LEN];
+    let key = key(7);
     let plaintext = b"secret vault bytes";
     let blob = FORMAT.seal(&key, plaintext).expect("seal");
     assert!(!blob.windows(plaintext.len()).any(|w| w == plaintext));
-    assert_eq!(&blob[..4], FORMAT.magic.as_slice());
-    assert_eq!(blob[4], SEAL_FORMAT);
-    assert_eq!(blob.len(), 4 + 1 + NONCE_LEN + plaintext.len() + 16);
+    assert!(tilo_seal::envelope::is_envelope(&blob));
     assert_eq!(FORMAT.open(&key, &blob).unwrap().as_slice(), plaintext);
-    assert!(FORMAT.open(&[9u8; KEY_LEN], &blob).is_none());
+    assert!(FORMAT.open(&self::key(9), &blob).is_none());
     let mut tampered = blob.clone();
     let last = tampered.len() - 1;
     tampered[last] ^= 0x01;
     assert!(FORMAT.open(&key, &tampered).is_none());
-    // Truncation and an unknown format byte never reach the AEAD.
-    assert!(FORMAT.open(&key, &blob[..4 + 1 + NONCE_LEN - 1]).is_none());
+    // Truncation and an unknown envelope version never yield bytes.
+    assert!(FORMAT.open(&key, &blob[..blob.len() - 17]).is_none());
     let mut bumped = blob;
-    bumped[4] = SEAL_FORMAT + 1;
+    bumped[5] = bumped[5].wrapping_add(1);
     assert!(FORMAT.open(&key, &bumped).is_none());
 }
 
 #[test]
 fn a_vault_never_opens_under_another_format() {
-    let key = [7u8; KEY_LEN];
+    let key = key(7);
     let blob = FORMAT.seal(&key, b"format-bound").unwrap();
     assert!(OTHER.open(&key, &blob).is_none());
+    // The name is part of the identity too, not only the magic.
+    let renamed = VaultFormat {
+        name: "renamed",
+        ..FORMAT
+    };
+    assert!(renamed.open(&key, &blob).is_none());
+    assert!(FORMAT.open(&key, &blob).is_some());
+}
+
+#[test]
+fn legacy_vaults_open_only_under_their_own_magic() {
+    let key = key(7);
+    let blob = hex::decode(LEGACY_BLOB).unwrap();
+    assert_eq!(&blob[..4], FORMAT.magic.as_slice());
+    assert_eq!(blob[4], LEGACY_SEAL_FORMAT);
+    assert_eq!(
+        FORMAT.open(&key, &blob).unwrap().as_slice(),
+        b"legacy vault bytes"
+    );
+    assert!(OTHER.open(&key, &blob).is_none());
+    assert!(FORMAT.open(&self::key(9), &blob).is_none());
+    // Truncation and an unknown format byte never reach the AEAD.
+    assert!(
+        FORMAT
+            .open(&key, &blob[..4 + 1 + LEGACY_NONCE_LEN - 1])
+            .is_none()
+    );
+    let mut bumped = blob.clone();
+    bumped[4] = LEGACY_SEAL_FORMAT + 1;
+    assert!(FORMAT.open(&key, &bumped).is_none());
+    // Re-sealing moves the vault to the current envelope.
+    let resealed = FORMAT
+        .seal(&key, &FORMAT.open(&key, &blob).unwrap())
+        .unwrap();
+    assert!(tilo_seal::envelope::is_envelope(&resealed));
+    assert_eq!(
+        FORMAT.open(&key, &resealed).unwrap().as_slice(),
+        b"legacy vault bytes"
+    );
+}
+
+#[test]
+fn vault_key_debug_never_shows_key_bytes() {
+    let rendered = format!("{:?}", key(0xab));
+    assert!(!rendered.contains("abab"), "{rendered}");
+    assert!(!rendered.contains("171, 171"), "{rendered}");
 }
 
 #[test]
 fn fresh_seals_use_distinct_nonces() {
-    let key = [7u8; KEY_LEN];
+    let key = key(7);
     let first = FORMAT.seal(&key, b"same").unwrap();
     let second = FORMAT.seal(&key, b"same").unwrap();
-    assert_ne!(first[5..5 + NONCE_LEN], second[5..5 + NONCE_LEN]);
+    assert_ne!(first, second);
 }
 
 #[test]
 fn secret_service_key_encoding_round_trips_and_rejects_bad_material() {
     let key = [0xa5; KEY_LEN];
-    assert_eq!(decode_key(&encode_key(&key)).unwrap().as_ref(), &key);
+    assert_eq!(decode_key(&encode_key(&key)).unwrap().expose_secret(), &key);
     assert!(decode_key("too-short").is_err());
     assert!(decode_key(&"z".repeat(KEY_LEN * 2)).is_err());
 }
@@ -75,7 +131,9 @@ fn secret_service_key_encoding_is_lowercase_and_decoding_accepts_either_case() {
         "e0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff"
     );
     assert_eq!(
-        decode_key(&encoded.to_ascii_uppercase()).unwrap().as_ref(),
+        decode_key(&encoded.to_ascii_uppercase())
+            .unwrap()
+            .expose_secret(),
         &key
     );
     let short = encoded.get(..KEY_LEN * 2 - 1).unwrap();
@@ -125,9 +183,9 @@ fn local_key_is_created_once_and_reloaded() {
     let root = tempfile::tempdir().unwrap();
     let dir = root.path().join("vault");
     let created = FORMAT.load_or_create_key(&dir, Custody::LocalFile).unwrap();
-    assert_eq!(persisted_key(&dir).as_slice(), created.as_slice());
+    assert_eq!(persisted_key(&dir).as_slice(), created.expose_secret());
     let reloaded = FORMAT.load_or_create_key(&dir, Custody::LocalFile).unwrap();
-    assert_eq!(reloaded.as_slice(), created.as_slice());
+    assert_eq!(reloaded, created);
 }
 
 #[test]
@@ -154,7 +212,7 @@ fn simultaneous_creators_converge_on_the_one_persisted_key() {
         let persisted = persisted_key(&dir);
         assert!(
             keys.iter()
-                .all(|key| key.as_slice() == persisted.as_slice())
+                .all(|key| key.expose_secret().as_slice() == persisted.as_slice())
         );
         // Losing creators leave no temporary files behind.
         assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1);
@@ -167,7 +225,7 @@ fn an_existing_key_is_never_replaced_by_a_creator() {
     let dir = root.path();
     private_fs::create_atomic(&dir.join(KEY_FILE), &[0x11; KEY_LEN]).unwrap();
     let key = FORMAT.load_or_create_key(dir, Custody::LocalFile).unwrap();
-    assert_eq!(key.as_slice(), &[0x11; KEY_LEN]);
+    assert_eq!(key.expose_secret(), &[0x11; KEY_LEN]);
     assert_eq!(std::fs::read(dir.join(KEY_FILE)).unwrap(), [0x11; KEY_LEN]);
 }
 
@@ -175,7 +233,7 @@ fn an_existing_key_is_never_replaced_by_a_creator() {
 fn missing_key_beside_an_existing_vault_is_never_minted() {
     let root = tempfile::tempdir().unwrap();
     let dir = root.path();
-    let sealed = FORMAT.seal(&[3; KEY_LEN], b"orphaned").unwrap();
+    let sealed = FORMAT.seal(&key(3), b"orphaned").unwrap();
     std::fs::write(dir.join(VAULT_FILE), &sealed).unwrap();
     assert!(FORMAT.load_or_create_key(dir, Custody::LocalFile).is_none());
     assert!(!dir.join(KEY_FILE).exists());
@@ -204,7 +262,7 @@ fn a_key_that_is_not_private_is_never_replaced() {
     let dir = root.path();
     let key_path = dir.join(KEY_FILE);
     private_fs::create_atomic(&key_path, &[0x22; KEY_LEN]).unwrap();
-    let sealed = FORMAT.seal(&[0x22; KEY_LEN], b"still mine").unwrap();
+    let sealed = FORMAT.seal(&key(0x22), b"still mine").unwrap();
     std::fs::write(dir.join(VAULT_FILE), &sealed).unwrap();
     std::fs::set_permissions(&key_path, std::fs::Permissions::from_mode(mode)).unwrap();
 

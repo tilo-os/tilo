@@ -2847,12 +2847,55 @@ fn spawn_command_runs_real_pty_and_grid_shows_output() {
     );
 }
 
+/// The user's default shell exactly as the best-effort route resolves it, but
+/// started in a controlled environment: a scratch `HOME`, a minimal env and no
+/// system or user startup files. Host startup scripts may read the terminal's
+/// stdin (distrobox's `profile.d` hook runs `host-spawn` when no display
+/// variables are set, swallowing typed input), so a test that types into the
+/// shell must not let them run.
+#[cfg(unix)]
+fn hermetic_default_shell_command(home: &std::path::Path) -> portable_pty::CommandBuilder {
+    let mut cmd = crate::inner::login_shell_command();
+    let shell = cmd
+        .get_argv()
+        .first()
+        .map(std::path::PathBuf::from)
+        .expect("login shell command has a program");
+    match shell.file_name().and_then(|n| n.to_str()) {
+        Some("bash") => cmd.args(["--noprofile", "--norc"]),
+        Some("zsh") => cmd.arg("-f"),
+        Some("fish") => cmd.arg("--no-config"),
+        _ => {}
+    }
+    let empty_rc = home.join("empty-rc");
+    std::fs::write(&empty_rc, b"").expect("write empty rc file");
+    cmd.env_clear();
+    if let Some(path) = std::env::var_os("PATH") {
+        cmd.env("PATH", path);
+    }
+    cmd.env("HOME", home);
+    cmd.env("XDG_CONFIG_HOME", home);
+    cmd.env("ZDOTDIR", home);
+    // POSIX `sh` (and bash as `sh`) reads `$ENV` when interactive; bash reads
+    // `$BASH_ENV` for scripts. Both point at an empty file.
+    cmd.env("ENV", &empty_rc);
+    cmd.env("BASH_ENV", &empty_rc);
+    cmd.cwd(home);
+    cmd
+}
+
 #[test]
-fn spawn_default_runs_real_shell_and_executes_typed_command() {
-    // Spawn the user's login shell, then type a command exactly the way a
-    // keystroke sends it (`write_input`), and prove the shell ran it and
-    // the output flowed back into the grid.
-    let mut w = TerminalWidget::spawn_default().expect("spawn login shell");
+fn default_shell_runs_typed_command_through_pty() {
+    // Spawn the user's default shell in a real PTY, then type a command
+    // exactly the way a keystroke sends it (`write_input`), and prove the
+    // shell ran it and the output flowed back into the grid.
+    #[cfg(unix)]
+    let home = tempfile::tempdir().expect("scratch HOME");
+    #[cfg(unix)]
+    let cmd = hermetic_default_shell_command(home.path());
+    #[cfg(windows)]
+    let cmd = crate::inner::login_shell_command();
+    let mut w = TerminalWidget::spawn_command(cmd).expect("spawn default shell");
     let mut doc = AutoCommit::new();
     // Let the shell reach a prompt before typing.
     w.sync(&mut doc, &ROOT);

@@ -3482,6 +3482,98 @@ mod tests {
         );
     }
 
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn restored_native_tab_gets_a_configure_rect_before_its_first_buffer() {
+        use crate::shell::state::{Tab, TileContent};
+        use crate::shell::tab_binding::{self, Placement};
+
+        const SURFACE: u64 = 0xfedc_0011;
+        const APP: &str = "dev.tilo.calculator";
+        crate::shell::launcher::clear_pending_placements();
+        let store = crate::shell::foreign::store();
+        store.forget(SURFACE);
+        let mut tree = WorkspaceTree::bootstrap_default();
+        let room = tree.desktop.workspaces[0].room;
+        let tab = tab_binding::place_tab(
+            &mut tree,
+            Tab {
+                id: crate::shell::state::next_id(),
+                title: "Calculator".into(),
+                tile: TileContent::LocalApp {
+                    app_id: APP.into(),
+                    label: "Calculator".into(),
+                    // Restore has already dispatched the app; do not start
+                    // a real process from this frame-builder regression.
+                    note: crate::shell::peer_windows::OPENING.into(),
+                },
+            },
+            Placement::NewGroup,
+        );
+        let mut fb = FrameBuilder::with_tree(tree, (1280, 800));
+        let mut doc = AutoCommit::new();
+        fb.pump_apps(&mut doc, &automerge::ROOT);
+        fb.relayout();
+        assert!(fb.foreign_surface_rect(SURFACE).is_none());
+        // A real restored LocalApp notice has already appeared on screen.
+        // Its host visibility latch must not hide the new app's readiness.
+        let _ = fb.paint();
+        crate::shell::launcher::set_pending_placement(APP, Placement::IntoTab(tab));
+        {
+            let chrome = fb.chrome();
+            let mut tree = chrome.tree_mut();
+            assert_eq!(
+                tab_binding::adopt_toplevel_in_room(&mut tree, SURFACE, Some(APP.into()), room),
+                Some(tab),
+            );
+        }
+        store.note_adopted(SURFACE);
+        fb.pump_apps(&mut doc, &automerge::ROOT);
+        fb.relayout();
+        assert_eq!(store.frame_seq(SURFACE), 0);
+        let rect = fb
+            .foreign_surface_rect(SURFACE)
+            .expect("restored tab must publish its configure rect before the client can draw");
+        assert!(rect.width() > 0.0 && rect.height() > 0.0);
+        let (width, height) = store
+            .take_pending_configure(SURFACE, 1.0)
+            .expect("layout must make the initial client configure available without input");
+        assert!(
+            fb.needs_animation_frame(),
+            "the opening window must keep progressing"
+        );
+        assert!(!store.is_presented(SURFACE));
+        assert!(
+            fb.any_tile_opening(),
+            "the visible notice must become an opening card, not an unresponsive-app error"
+        );
+        let _ = fb.paint();
+
+        let width = u32::try_from(width).expect("positive configured width");
+        let height = u32::try_from(height).expect("positive configured height");
+        let bytes = width
+            .checked_mul(height)
+            .and_then(|pixels| pixels.checked_mul(4))
+            .and_then(|bytes| usize::try_from(bytes).ok())
+            .expect("bounded test viewport");
+        store.publish_rgba(SURFACE, &vec![255; bytes], width, height);
+        let revision = fb.chrome_revision();
+        fb.pump_apps(&mut doc, &automerge::ROOT);
+        fb.relayout();
+        let _ = fb.paint();
+        assert!(
+            store.is_presented(SURFACE),
+            "the first sized buffer must replace the opening presentation"
+        );
+        assert_eq!(
+            fb.chrome_revision(),
+            revision,
+            "presentation must not need an unrelated tree mutation"
+        );
+        store.forget(SURFACE);
+        crate::shell::launcher::clear_pending_placements();
+    }
+
     /// …and a frame where nothing arrived must not bump, or the shell
     /// rebuilds its widget tree on every idle pass.
     #[test]
