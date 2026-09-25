@@ -253,7 +253,10 @@ fn hash_range(path: &Path, offset: u64, length: u64) -> std::io::Result<String> 
         let chunk = buffer.get_mut(..want).unwrap_or_default();
         let read = file.read(chunk)?;
         if read == 0 {
-            break;
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::UnexpectedEof,
+                "preserved extent ends before its declared length",
+            ));
         }
         hasher.update(chunk.get(..read).unwrap_or_default());
         remaining = remaining.saturating_sub(u64::try_from(read).unwrap_or(u64::MAX));
@@ -301,6 +304,9 @@ mod tests {
         assert_eq!(sfdisk_script(Layout::Erase), "label: gpt\n");
     }
 
+    // build() creates a 40 GiB sparse raw fixture with Linux disk tools.
+    // Windows does not make that file sparse with set_len, so never run it there.
+    #[cfg(unix)]
     #[test]
     fn preserved_extents_are_hashed_and_a_change_is_caught() {
         let dir = tempfile::tempdir().unwrap();
