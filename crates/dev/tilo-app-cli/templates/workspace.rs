@@ -1,9 +1,11 @@
 use serde::{Deserialize, Serialize};
+use ui::automerge::transaction::Transactable;
 use ui::prelude::{
-    ActionError, ActionRegistry, AppShell, Button, Doc, ExecutionLocus, LocalState, ModelView,
-    NarrowScreen, Text, TextInput, TextRole, Transactable, TreeNode, TreeView, Widget,
-    labeled_field, tilo_actions,
+    ActionError, ActionRegistry, AppShell, Button, ExecutionLocus, LocalState, ModelView,
+    NarrowScreen, Text, TextInput, TextRole, TreeNode, TreeView, Widget, labeled_field,
+    tilo_actions,
 };
+use ui::tilo_actions::Doc;
 
 const WORKSPACE_ACTION_TYPE: &str = "generated.workspace.action";
 

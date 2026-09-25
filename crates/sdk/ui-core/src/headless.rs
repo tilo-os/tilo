@@ -3458,6 +3458,13 @@ impl FrameHarness {
         self.profiler = Some(crate::profiling::FrameProfiler::for_capture());
     }
 
+    /// The root's native input diagnostic, as the native runner samples it
+    /// (see [`crate::widget::Widget::native_input_snapshot`]).
+    pub fn native_input_snapshot(&self) -> Option<serde_json::Value> {
+        self.root
+            .native_input_snapshot(&self.state.doc, &self.state.root)
+    }
+
     /// Render one frame with no input and record it. A frame here is one
     /// `relayout`, which runs the sync → build → apply → draw passes.
     pub fn profile_frame(&mut self) {
