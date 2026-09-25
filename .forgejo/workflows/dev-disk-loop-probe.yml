@@ -1,0 +1,38 @@
+name: Probe / Dev disk loop nodes
+on:
+  workflow_dispatch:
+jobs:
+  probe:
+    runs-on: runner-disk-100g-arm64
+    steps:
+      - uses: actions/checkout@v4
+      - name: Probe partition nodes in Kata
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./os/dev/ci-prepare-disk-devices.sh --kata-job
+          scratch=$(mktemp -d)
+          loop=''
+          holder_pid=''
+          cleanup() {
+            if [[ -n $holder_pid ]]; then
+              printf 'release\n' >&"${HOLDER[1]}" || true
+              wait "$holder_pid" || true
+            fi
+            if [[ -n $loop ]]; then sudo -n losetup -d "$loop"; fi
+            rm -rf -- "$scratch"
+          }
+          trap cleanup EXIT
+          truncate -s 128M "$scratch/probe.raw"
+          printf ',32M\n,\n' | sudo -n sfdisk "$scratch/probe.raw"
+          loop=$(sudo -n losetup -fP --show "$scratch/probe.raw")
+          coproc HOLDER { sudo -n python3 -u os/dev/hold-loop-partition-nodes.py "$loop"; }
+          holder_pid=$!
+          IFS= read -r ready <&"${HOLDER[0]}"
+          [[ $ready == READY ]]
+          sudo -n mkfs.ext4 -q "${loop}p2"
+          mkdir "$scratch/mnt"
+          sudo -n mount "${loop}p2" "$scratch/mnt"
+          mountpoint -q "$scratch/mnt"
+          sudo -n umount "$scratch/mnt"
+          echo '::notice::Kata file-backed two-partition mount passed'
