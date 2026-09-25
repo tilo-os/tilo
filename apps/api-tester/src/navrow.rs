@@ -451,6 +451,11 @@ impl Widget for NavRow {
 impl NavRow {
     /// Navigation stays one line: measure the exact elided label, then paint
     /// without a wrapping width. The retained accessibility name is untouched.
+    #[expect(
+        clippy::indexing_slicing,
+        clippy::string_slice,
+        reason = "the binary search stays within `boundaries`, whose entries are char boundaries of `label`"
+    )]
     fn single_line_label(
         tr: &mut TextRenderer,
         label: &str,

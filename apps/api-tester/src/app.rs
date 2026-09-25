@@ -553,6 +553,10 @@ impl ApiTesterApp {
         }
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "constructs every widget of the app in one declarative initializer"
+    )]
     fn build(demo: bool) -> Self {
         let (tx, rx) = std::sync::mpsc::channel();
         let model = Self::build_model(demo);
@@ -593,25 +597,16 @@ impl ApiTesterApp {
             text_sm: 13.0,
             text_scale: 1.0,
             disclosures: [
-                "Collection actions",
-                "Request actions",
-                "Environment actions",
+                ("api.collection-actions", "Collection actions"),
+                ("api.request-actions", "Request actions"),
+                ("api.environment-actions", "Environment actions"),
             ]
             .iter()
             .enumerate()
-            .map(|(i, label)| {
+            .map(|(i, (id, label))| {
                 let sink = widgets.sink.clone();
-                NavRow::new(
-                    [
-                        "api.collection-actions",
-                        "api.request-actions",
-                        "api.environment-actions",
-                    ][i],
-                    NavKind::Disclosure { expanded: false },
-                    *label,
-                    *label,
-                )
-                .on_activate(move || sink.borrow_mut().push(Cmd::ToggleManagement(i)))
+                NavRow::new(*id, NavKind::Disclosure { expanded: false }, *label, *label)
+                    .on_activate(move || sink.borrow_mut().push(Cmd::ToggleManagement(i)))
             })
             .collect(),
             divider: {
@@ -1385,6 +1380,10 @@ impl ApiTesterApp {
                 v.push(&self.form_cancel);
                 v.push(&self.form_submit);
             }
+            #[expect(
+                clippy::indexing_slicing,
+                reason = "every SidebarItem index is produced by layout from these widget vectors, so it is in bounds"
+            )]
             for (item, _) in &self.layout.sidebar_items {
                 v.push(match *item {
                     SidebarItem::Environment => &self.env_dropdown,
@@ -1483,6 +1482,10 @@ impl ApiTesterApp {
         for row in self.nav_rows.iter_mut().chain(self.disclosures.iter_mut()) {
             row.apply_layout_external(Rect::ZERO);
         }
+        #[expect(
+            clippy::indexing_slicing,
+            reason = "every SidebarItem index is produced by layout from these widget vectors, so it is in bounds"
+        )]
         for (item, rect) in &l.sidebar_items {
             match *item {
                 SidebarItem::Environment => self.env_dropdown.apply_layout_external(*rect),
@@ -1516,20 +1519,20 @@ impl ApiTesterApp {
         } else {
             self.response_empty.apply_layout_external(l.resp_body);
         }
-        if self.sidebar_visible() {
-            if let Some(form) = self.form {
-                if form.needs_name() {
-                    self.form_name_input.apply_layout_external(l.form_name);
-                }
-                if form.needs_variable_fields() {
-                    self.form_key_input.apply_layout_external(l.form_key);
-                    if form.needs_value() {
-                        self.form_value_input.apply_layout_external(l.form_value);
-                    }
-                }
-                self.form_cancel.apply_layout_external(l.form_actions[0]);
-                self.form_submit.apply_layout_external(l.form_actions[1]);
+        if self.sidebar_visible()
+            && let Some(form) = self.form
+        {
+            if form.needs_name() {
+                self.form_name_input.apply_layout_external(l.form_name);
             }
+            if form.needs_variable_fields() {
+                self.form_key_input.apply_layout_external(l.form_key);
+                if form.needs_value() {
+                    self.form_value_input.apply_layout_external(l.form_value);
+                }
+            }
+            self.form_cancel.apply_layout_external(l.form_actions[0]);
+            self.form_submit.apply_layout_external(l.form_actions[1]);
         }
     }
 
@@ -1555,8 +1558,7 @@ impl ApiTesterApp {
         // Settled layout and paint both consume the retained shaped rows.
         let table_height = self.kv_height.unwrap_or(self.row_height + 42.0);
         match self.active_tab {
-            RequestTab::Params => table_height,
-            RequestTab::Headers => table_height,
+            RequestTab::Params | RequestTab::Headers => table_height,
             RequestTab::Body => match self.request.body_mode {
                 BodyMode::Form => self.row_height + 16.0 + table_height,
                 BodyMode::None => 24.0 + self.row_height * 2.0,
@@ -1753,7 +1755,7 @@ impl ApiTesterApp {
             // caption plus its `s1` gap to the picker needs more.
             let mut y = s.y0 + self.rail_inset.max(self.env_caption_h + 2.0 * group_gap);
             let control_x = s.x0 + PAD;
-            let scale = f64::from(self.text_scale.max(1.0));
+            let scale = self.text_scale.max(1.0);
             let close_w = 88.0 * scale;
             let close_h = 36.0 * scale;
             l.rail_close = Rect::new(
@@ -2021,14 +2023,18 @@ impl ApiTesterApp {
             self.form_cancel.draw(scene, t, tr, theme, presence);
             self.form_submit.draw(scene, t, tr, theme, presence);
         }
+        #[expect(
+            clippy::indexing_slicing,
+            reason = "every SidebarItem index is produced by layout from these widget vectors, so it is in bounds"
+        )]
         for (item, _) in &l.sidebar_items {
             match *item {
                 SidebarItem::Environment => self.env_dropdown.draw(scene, t, tr, theme, presence),
                 SidebarItem::Manage(i) => {
-                    self.manage_buttons[i].draw(scene, t, tr, theme, presence)
+                    self.manage_buttons[i].draw(scene, t, tr, theme, presence);
                 }
                 SidebarItem::Disclosure(i) => {
-                    self.disclosures[i].draw(scene, t, tr, theme, presence)
+                    self.disclosures[i].draw(scene, t, tr, theme, presence);
                 }
                 SidebarItem::Nav(i) => self.nav_rows[i].draw(scene, t, tr, theme, presence),
             }
@@ -2202,10 +2208,7 @@ impl ApiTesterApp {
             &area,
         );
         match self.active_tab {
-            RequestTab::Params => {
-                self.draw_kv_table(scene, t, tr, theme, area);
-            }
-            RequestTab::Headers => {
+            RequestTab::Params | RequestTab::Headers => {
                 self.draw_kv_table(scene, t, tr, theme, area);
             }
             RequestTab::Auth => self.draw_auth(scene, t, tr, theme, area),
@@ -2319,18 +2322,17 @@ impl ApiTesterApp {
     fn value_spans(value: &str, accent: [u8; 3]) -> Vec<RichSpan> {
         let mut spans = Vec::new();
         let mut rest = value;
-        while let Some(open) = rest.find("{{") {
-            let Some(close) = rest[open + 2..].find("}}") else {
+        while let Some((before, after_open)) = rest.split_once("{{") {
+            let Some((name, after)) = after_open.split_once("}}") else {
                 break;
             };
-            spans.push(RichSpan::new(&rest[..open]));
-            let end = open + 2 + close + 2;
+            spans.push(RichSpan::new(before));
             spans.push(
-                RichSpan::new(&rest[open..end])
+                RichSpan::new(format!("{{{{{name}}}}}"))
                     .bold(true)
                     .color(Some(accent)),
             );
-            rest = &rest[end..];
+            rest = after;
         }
         spans.push(RichSpan::new(rest));
         spans
@@ -2361,12 +2363,11 @@ impl ApiTesterApp {
             if row.rect.y1 > area.height() {
                 break;
             }
-            self.draw_kv_row(scene, t, tr, theme, row);
+            Self::draw_kv_row(scene, t, tr, theme, row);
         }
     }
 
     fn draw_kv_row(
-        &self,
         scene: &mut Scene,
         t: Affine,
         tr: &mut TextRenderer,
@@ -2435,6 +2436,10 @@ impl ApiTesterApp {
         scene.pop_layer();
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "declarative drawing of the auth editor that reads top-to-bottom"
+    )]
     fn draw_auth(
         &self,
         scene: &mut Scene,
@@ -2680,6 +2685,10 @@ impl ApiTesterApp {
         }
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "declarative drawing of the response pane that reads top-to-bottom"
+    )]
     fn draw_response(
         &mut self,
         scene: &mut Scene,
@@ -2703,7 +2712,7 @@ impl ApiTesterApp {
 
         let row = l.resp_status;
         let x0 = area.x0 + PAD;
-        let cy = row.y0 + (self.control_height + 10.0) / 2.0;
+        let cy = row.y0 + f64::midpoint(self.control_height, 10.0);
 
         if let Some(resp) = self.response.clone() {
             let scol = status_color(theme, resp.status_class());
@@ -3425,9 +3434,25 @@ impl Widget for ApiTesterApp {
             .iter()
             .find(|e| Some(e.id) == self.active_env)
             .map_or(NO_ENV, |e| e.name.as_str());
+        #[expect(
+            clippy::indexing_slicing,
+            reason = "disclosures always holds the three management groups built in build()"
+        )]
         self.disclosures[0].set_accessible_name(format!("Collection actions: {collection_name}"));
+        #[expect(
+            clippy::indexing_slicing,
+            reason = "disclosures always holds the three management groups built in build()"
+        )]
         self.disclosures[1].set_accessible_name(format!("Request actions: {request_name}"));
+        #[expect(
+            clippy::indexing_slicing,
+            reason = "disclosures always holds the three management groups built in build()"
+        )]
         self.disclosures[2].set_accessible_name(format!("Environment actions: {environment_name}"));
+        #[expect(
+            clippy::indexing_slicing,
+            reason = "the listed indices are fixed entries of the management button table built in build_widgets()"
+        )]
         for (index, label, target) in [
             (2, "Rename collection", collection_name),
             (3, "Rename request", request_name),
@@ -3523,7 +3548,8 @@ impl Widget for ApiTesterApp {
         let (_, caption) = tr.measure_weighted("COLLECTIONS", 10.0, None, TextWeight::Bold);
         self.env_caption_h = f64::from(env_caption).ceil();
         self.caption_h = f64::from(caption).ceil();
-        let changed = self.row_height != row.max(ROW_H) || self.control_height != control.max(34.0);
+        let changed = self.row_height.to_bits() != row.max(ROW_H).to_bits()
+            || self.control_height.to_bits() != control.max(34.0).to_bits();
         self.row_height = row.max(ROW_H);
         self.control_height = control.max(34.0);
         self.text_scale = f64::from(tr.text_scale());
@@ -3595,6 +3621,10 @@ impl Widget for ApiTesterApp {
         self.draw(scene, transform, text_renderer, theme, presence);
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "event routing is ordered by precedence (escape, overlays, sidebar, editors); splitting it would hide that order"
+    )]
     fn handle_event(
         &mut self,
         event: &WindowEvent,
@@ -3623,6 +3653,10 @@ impl Widget for ApiTesterApp {
                 ..
             }
         ) {
+            #[expect(
+                clippy::indexing_slicing,
+                reason = "management only ever holds a group index from ToggleManagement, which is emitted by one of the three disclosures"
+            )]
             let target = if let Some(group) = self.management.take() {
                 self.disclosures[group].set_expanded(false);
                 Some(
@@ -4010,13 +4044,13 @@ impl Widget for ApiTesterApp {
     fn poll_resource_operation(
         &mut self,
         invocation: tilo_actions::InvocationId,
-        _cancellation_requested: bool,
-        _doc: &AutoCommit,
-        _path: &ObjId,
+        cancellation_requested: bool,
+        doc: &AutoCommit,
+        path: &ObjId,
     ) -> Option<tilo_actions::InvocationUpdate> {
         for child in self.children_mut_ref() {
             if let Some(update) =
-                child.poll_resource_operation(invocation, _cancellation_requested, _doc, _path)
+                child.poll_resource_operation(invocation, cancellation_requested, doc, path)
             {
                 return Some(update);
             }
@@ -4103,6 +4137,35 @@ impl ApiTesterApp {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn value_spans_highlight_each_closed_placeholder() {
+        let texts = |value: &str| -> Vec<(String, bool)> {
+            ApiTesterApp::value_spans(value, [1, 2, 3])
+                .into_iter()
+                .map(|span| (span.text, span.bold))
+                .collect()
+        };
+        assert_eq!(texts(""), [(String::new(), false)]);
+        assert_eq!(
+            texts("a {{host}}/é{{}}b {{open"),
+            [
+                ("a ".into(), false),
+                ("{{host}}".into(), true),
+                ("/é".into(), false),
+                ("{{}}".into(), true),
+                ("b {{open".into(), false),
+            ]
+        );
+        assert_eq!(
+            texts("{{x}}"),
+            [
+                (String::new(), false),
+                ("{{x}}".into(), true),
+                (String::new(), false)
+            ]
+        );
+    }
 
     /// The rail's stacked controls share one rhythm step (HIG §7b): the
     /// named gap is the `s2` token, and every stacked pair in the computed
@@ -4552,6 +4615,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "end-to-end scenario that reads top-to-bottom"
+    )]
     fn resource_send_performs_a_real_http_round_trip() {
         use std::io::{Read, Write};
         use std::net::TcpListener;
@@ -4706,6 +4773,10 @@ mod tests {
         );
     }
     #[test]
+    #[expect(
+        clippy::float_cmp,
+        reason = "layout values are compared for exact reproduction, not approximate equality"
+    )]
     fn composition_auto_height_tracks_rows_and_auth_fields_without_changing_manual_preference() {
         let mut a = app();
         a.rect = Rect::new(0.0, 0.0, 1200.0, 800.0);
@@ -4775,6 +4846,10 @@ mod tests {
         assert_eq!(doc.get_heads(), heads);
     }
     #[test]
+    #[expect(
+        clippy::float_cmp,
+        reason = "layout values are compared for exact reproduction, not approximate equality"
+    )]
     fn composition_long_kv_glyphs_fit_allocated_rows() {
         for (width, scale) in [(480.0, 1.0), (800.0, 2.0)] {
             let theme = Theme::dark().with_text_scale(scale);
@@ -4790,7 +4865,7 @@ mod tests {
             app.measure_kv_table(&mut tr, width);
             let row = &app.kv_rows[0];
             let mut scene = Scene::new();
-            app.draw_kv_row(&mut scene, Affine::IDENTITY, &mut tr, &theme, row);
+            ApiTesterApp::draw_kv_row(&mut scene, Affine::IDENTITY, &mut tr, &theme, row);
             let end = row.rect.y1;
             assert_eq!(row.checkbox().center().y, row.rect.center().y);
             assert_eq!(row.key_rect.center().y, row.rect.center().y);
@@ -4935,6 +5010,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::float_cmp,
+        reason = "layout values are compared for exact reproduction, not approximate equality"
+    )]
     fn composition_long_tables_share_wrapped_height_and_centered_indicators() {
         for (width, scale) in [(480.0, 1.0), (800.0, 2.0)] {
             let theme = Theme::dark().with_text_scale(scale);
@@ -4966,7 +5045,7 @@ mod tests {
                     assert!(row.key_rect.x1 < row.value_rect.x0);
                     assert!((row.key_rect.height() - f64::from(row.key.height())).abs() < 0.01);
                     let mut scene = Scene::new();
-                    app.draw_kv_row(&mut scene, Affine::IDENTITY, &mut tr, &theme, row);
+                    ApiTesterApp::draw_kv_row(&mut scene, Affine::IDENTITY, &mut tr, &theme, row);
                     for run in &scene.encoding().resources.glyph_runs {
                         for glyph in &scene.encoding().resources.glyphs[run.glyphs.clone()] {
                             let x = f64::from(run.transform.translation[0] + glyph.x);
