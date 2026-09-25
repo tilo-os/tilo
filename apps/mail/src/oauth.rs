@@ -2,22 +2,17 @@
 //! Gmail and Outlook **require** OAuth, so the setup flow signs the user in
 //! through the browser instead of asking for a password.
 //!
-//! The flow itself (PKCE, the loopback redirect, `state` validation, token
-//! exchange and refresh) is the shared `tilo-oauth` client that Settings
-//! also uses for cloud storage; this module only describes the two mail
-//! providers as data and adapts tokens to the vault and to `XOAUTH2`.
-//!
-//! ## Client registration
-//! A working flow needs a registered OAuth client id. Tilo ships without one
-//! baked in unless the build provides it, so the id is read from
-//! `TILO_MAIL_GOOGLE_CLIENT_ID` / `TILO_MAIL_MICROSOFT_CLIENT_ID`, falling
-//! back to the shared `TILO_OAUTH_GOOGLE_CLIENT_ID` /
-//! `TILO_OAUTH_MICROSOFT_CLIENT_ID`, each at runtime first and then at build
-//! time. Without one the setup UI explains that sign-in is unavailable.
+//! Mail owns none of the `OAuth` machinery. The client registration (Google's
+//! Desktop client id and secret, Microsoft's public client) and the mail
+//! scopes come from Tilo's one client table,
+//! [`account_custody::ClientTable`] (`oauth-clients.toml`), the same
+//! registration Settings signs in to Google Drive and `OneDrive` with. The
+//! grant is sealed in the account vault and refreshed by
+//! [`account_custody::Custodian`]; Mail only ever holds a current access
+//! token, long enough to present it as `XOAUTH2`.
 
+use account_custody::{ClientTable, OAuthIssuer, OAuthUse};
 use base64::Engine as _;
-
-pub use tilo_oauth::TokenSet as OAuthTokens;
 
 /// The OAuth providers we preset for. Both are IMAP/SMTP mail providers that
 /// require OAuth rather than a password.
@@ -39,103 +34,41 @@ impl OAuthProvider {
         }
     }
 
-    /// The provider descriptor: endpoints, IMAP + SMTP scopes and the
-    /// parameters that make the provider issue a refresh token.
-    pub fn descriptor(self) -> tilo_oauth::Provider {
+    /// The provider of an OAuth account: from its address, else from its
+    /// IMAP server (a Google Workspace or Microsoft 365 address on its own
+    /// domain).
+    pub fn for_account(email: &str, imap_host: &str) -> Option<Self> {
+        let domain = email.rsplit_once('@').map_or("", |(_, domain)| domain);
+        Self::from_domain(domain).or_else(|| match imap_host.trim().to_ascii_lowercase().as_str() {
+            "imap.gmail.com" | "imap.googlemail.com" => Some(OAuthProvider::Google),
+            "outlook.office365.com" | "imap-mail.outlook.com" => Some(OAuthProvider::Microsoft),
+            _ => None,
+        })
+    }
+
+    /// The issuer whose client this provider signs in through.
+    pub fn issuer(self) -> OAuthIssuer {
         match self {
-            OAuthProvider::Google => tilo_oauth::Provider {
-                id: "google".into(),
-                label: "Google".into(),
-                authorization_endpoint: "https://accounts.google.com/o/oauth2/v2/auth".into(),
-                token_endpoint: "https://oauth2.googleapis.com/token".into(),
-                revocation: tilo_oauth::Revocation::Rfc7009 {
-                    endpoint: "https://oauth2.googleapis.com/revoke".into(),
-                },
-                scopes: vec!["https://mail.google.com/".into()],
-                authorization_params: vec![
-                    ("access_type".into(), "offline".into()),
-                    ("prompt".into(), "consent".into()),
-                ],
-            },
-            OAuthProvider::Microsoft => tilo_oauth::Provider {
-                id: "microsoft".into(),
-                label: "Microsoft".into(),
-                authorization_endpoint:
-                    "https://login.microsoftonline.com/common/oauth2/v2.0/authorize".into(),
-                token_endpoint: "https://login.microsoftonline.com/common/oauth2/v2.0/token".into(),
-                revocation: tilo_oauth::Revocation::Unsupported,
-                scopes: vec![
-                    "offline_access".into(),
-                    "https://outlook.office.com/IMAP.AccessAsUser.All".into(),
-                    "https://outlook.office.com/SMTP.Send".into(),
-                ],
-                authorization_params: Vec::new(),
-            },
+            OAuthProvider::Google => OAuthIssuer::Google,
+            OAuthProvider::Microsoft => OAuthIssuer::Microsoft,
         }
+    }
+
+    /// Mail from this provider, as a use of its client.
+    pub fn oauth_use(self) -> OAuthUse {
+        OAuthUse::mail(self.issuer())
     }
 
     pub fn label(self) -> &'static str {
-        match self {
-            OAuthProvider::Google => "Google",
-            OAuthProvider::Microsoft => "Microsoft",
-        }
+        self.issuer().label()
     }
 
-    /// Where the registered client id comes from: Mail's own key, then the
-    /// client shared with Settings.
-    fn client_ids(self) -> [tilo_oauth::ClientId; 2] {
-        match self {
-            OAuthProvider::Google => [
-                tilo_oauth::ClientId::new(
-                    "TILO_MAIL_GOOGLE_CLIENT_ID",
-                    option_env!("TILO_MAIL_GOOGLE_CLIENT_ID"),
-                ),
-                tilo_oauth::ClientId::new(
-                    "TILO_OAUTH_GOOGLE_CLIENT_ID",
-                    option_env!("TILO_OAUTH_GOOGLE_CLIENT_ID"),
-                ),
-            ],
-            OAuthProvider::Microsoft => [
-                tilo_oauth::ClientId::new(
-                    "TILO_MAIL_MICROSOFT_CLIENT_ID",
-                    option_env!("TILO_MAIL_MICROSOFT_CLIENT_ID"),
-                ),
-                tilo_oauth::ClientId::new(
-                    "TILO_OAUTH_MICROSOFT_CLIENT_ID",
-                    option_env!("TILO_OAUTH_MICROSOFT_CLIENT_ID"),
-                ),
-            ],
-        }
+    /// Whether this build can sign in to this provider's mail. `false` means
+    /// no client id is configured: the flow can be explained but not
+    /// completed.
+    pub fn is_configured(self) -> bool {
+        ClientTable::defaults().is_configured(self.oauth_use())
     }
-
-    /// The configuration key named in "not configured" messages.
-    pub fn client_id_env(self) -> &'static str {
-        let [own, _shared] = self.client_ids();
-        own.key
-    }
-
-    /// The registered client id, if provisioned. `None` means "no client id
-    /// configured" — the flow can be explained but not completed.
-    pub fn client_id(self) -> Option<String> {
-        self.client_ids()
-            .iter()
-            .find_map(tilo_oauth::ClientId::resolve)
-    }
-}
-
-/// Serialise a token bundle into a vault [`accounts::Secret`] (the credential
-/// store keeps it sealed at rest, never in the plaintext account JSON).
-pub fn tokens_to_secret(tokens: &OAuthTokens) -> accounts::Secret {
-    accounts::Secret {
-        password: String::new(),
-        token: serde_json::to_string(tokens).ok(),
-    }
-}
-
-/// Recover a token bundle from a vault [`accounts::Secret`], if it holds one.
-pub fn tokens_from_secret(secret: &accounts::Secret) -> Option<OAuthTokens> {
-    let raw = secret.token.as_ref()?;
-    serde_json::from_str(raw).ok()
 }
 
 /// The `XOAUTH2` SASL initial-response string IMAP `AUTHENTICATE` and SMTP
@@ -153,57 +86,73 @@ pub fn base64_standard(input: &[u8]) -> String {
     base64::engine::general_purpose::STANDARD.encode(input)
 }
 
-/// Refresh an expired access token using its refresh token, carrying the
-/// refresh token forward when the provider does not rotate it.
-///
-/// # Errors
-/// Returns `Err` if the token endpoint cannot be reached or rejects the
-/// refresh token.
+/// What Mail shows for a custody failure. Messages that need a new sign-in
+/// name OAuth so the account is marked "sign in again".
 #[cfg(feature = "live")]
-pub fn refresh_tokens(
-    provider: OAuthProvider,
-    client_id: &str,
-    refresh_token: &str,
-) -> Result<OAuthTokens, String> {
-    tilo_oauth::client::OAuthClient::new()
-        .and_then(|client| {
-            client.refresh(
-                &provider.descriptor(),
-                &tilo_oauth::Registration::public(client_id),
-                refresh_token,
-            )
-        })
-        .map_err(|error| error.to_string())
+fn custody_message(error: &account_custody::CustodyError) -> String {
+    use account_custody::CustodyError;
+    match error {
+        CustodyError::NeedsAuthentication => {
+            "the OAuth sign-in is no longer valid; sign in again".into()
+        }
+        CustodyError::NotConfigured { provider, .. } => {
+            format!("{provider} sign-in isn’t available in this build")
+        }
+        other => other.to_string(),
+    }
 }
 
-/// Run the browser sign-in: bind the loopback redirect, open the consent
-/// page, capture the code and redeem it. Blocks until the user consents or
-/// `timeout` elapses.
+/// A current access token for an OAuth mail account, refreshed and resealed
+/// by custody when due. `force` refreshes even when the token looks valid
+/// (the server just rejected it).
 ///
 /// # Errors
-/// Returns `Err` if the browser cannot open, the redirect never arrives or
-/// fails validation, or the code exchange fails.
+/// A message naming why no token is available (not signed in, revoked,
+/// offline, provider not configured).
 #[cfg(feature = "live")]
-pub fn run_loopback_authorization(
+pub fn access_token(
+    custodian: &account_custody::Custodian,
+    account_id: &str,
     provider: OAuthProvider,
-    client_id: &str,
+    force: bool,
+) -> Result<String, String> {
+    custodian
+        .oauth_access_token(
+            &accounts::AccountId::from(account_id.to_string()),
+            provider.oauth_use(),
+            force,
+        )
+        .map(|token| token.to_string())
+        .map_err(|error| custody_message(&error))
+}
+
+/// Run the browser sign-in for `provider`'s mail and seal the grant under
+/// `account_id`: bind the loopback redirect, open the consent page, capture
+/// the code and redeem it with the shared client registration. Blocks until
+/// the user consents or the sign-in times out.
+///
+/// # Errors
+/// Returns `Err` if sign-in is not configured, the browser cannot open, the
+/// redirect never arrives or fails validation, the code exchange fails, or
+/// the vault cannot be written.
+#[cfg(feature = "live")]
+pub fn sign_in(
+    custodian: &account_custody::Custodian,
+    account_id: &str,
+    provider: OAuthProvider,
     login_hint: &str,
     open_browser: impl FnOnce(&str) -> Result<(), String>,
-    timeout: std::time::Duration,
-) -> Result<OAuthTokens, String> {
-    let descriptor = provider.descriptor();
-    let authorization = tilo_oauth::client::Authorization::begin(
-        &descriptor,
-        &tilo_oauth::Registration::public(client_id),
-        Some(login_hint),
-    )
-    .map_err(|error| error.to_string())?;
+) -> Result<(), String> {
+    let authorization = custodian
+        .begin_sign_in_for(provider.oauth_use(), Some(login_hint))
+        .map_err(|error| custody_message(&error))?;
     open_browser(authorization.url())
         .map_err(|error| format!("could not open sign-in browser: {error}"))?;
-    let client = tilo_oauth::client::OAuthClient::new().map_err(|error| error.to_string())?;
-    authorization
-        .complete(&client, timeout)
-        .map_err(|error| error.to_string())
+    let tokens = account_custody::Custodian::finish_sign_in(authorization)
+        .map_err(|error| custody_message(&error))?;
+    custodian
+        .seal_oauth(&accounts::AccountId::from(account_id.to_string()), &tokens)
+        .map_err(|error| format!("could not save sign-in credentials: {error}"))
 }
 
 #[cfg(test)]
@@ -213,15 +162,23 @@ mod tests {
     #[cfg(feature = "live")]
     #[test]
     fn authorization_reports_browser_failure_before_waiting_for_callback() {
-        let result = run_loopback_authorization(
+        let root = tempfile::tempdir().unwrap();
+        let custodian = account_custody::Custodian::for_root(Some(root.path().to_path_buf()))
+            .with_client_table(
+                ClientTable::parse(
+                    "[google]\nclient_id = \"test-client\"\n[google.scopes]\nmail = [\"https://mail.google.com/\"]\n",
+                )
+                .unwrap(),
+            );
+        let result = sign_in(
+            &custodian,
+            "fixture@example.invalid",
             OAuthProvider::Google,
-            "test-client",
             "fixture@example.invalid",
             |url| {
                 assert!(url.starts_with("https://accounts.google.com/o/oauth2/v2/auth?"));
                 Err("fixture browser unavailable".into())
             },
-            std::time::Duration::ZERO,
         );
         assert_eq!(
             result.unwrap_err(),
@@ -230,7 +187,7 @@ mod tests {
     }
 
     fn url_for(provider: OAuthProvider, hint: Option<&str>) -> String {
-        let descriptor = provider.descriptor();
+        let descriptor = ClientTable::defaults().descriptor(provider.oauth_use());
         tilo_oauth::AuthorizationRequest {
             provider: &descriptor,
             client_id: "cid",
@@ -246,7 +203,7 @@ mod tests {
     fn google_url_requests_mail_scope_and_a_refresh_token() {
         let url = url_for(OAuthProvider::Google, Some("person@gmail.com"));
         assert!(url.starts_with("https://accounts.google.com/o/oauth2/v2/auth?"));
-        assert!(url.contains("scope=https%3A%2F%2Fmail.google.com%2F"));
+        assert!(url.contains("scope=https%3A%2F%2Fmail.google.com%2F&"));
         assert!(url.contains("access_type=offline"));
         assert!(url.contains("prompt=consent"));
         assert!(url.contains("login_hint=person%40gmail.com"));
@@ -258,7 +215,17 @@ mod tests {
         assert!(url.starts_with("https://login.microsoftonline.com/common/oauth2/v2.0/authorize?"));
         assert!(!url.contains("access_type=offline"));
         assert!(url.contains("IMAP.AccessAsUser.All"));
+        assert!(url.contains("SMTP.Send"));
         assert!(url.contains("offline_access"));
+        assert!(!url.contains("Files.ReadWrite"));
+    }
+
+    #[test]
+    fn the_shared_client_table_configures_gmail_and_outlook() {
+        // The committed registrations cover both; an environment override
+        // can only replace them, never remove them.
+        assert!(OAuthProvider::Google.is_configured());
+        assert!(OAuthProvider::Microsoft.is_configured());
     }
 
     #[test]
@@ -272,6 +239,26 @@ mod tests {
             Some(OAuthProvider::Microsoft)
         );
         assert_eq!(OAuthProvider::from_domain("fastmail.com"), None);
+    }
+
+    #[test]
+    fn provider_recognised_from_the_imap_server_of_a_custom_domain() {
+        assert_eq!(
+            OAuthProvider::for_account("ada@example.org", "imap.gmail.com"),
+            Some(OAuthProvider::Google)
+        );
+        assert_eq!(
+            OAuthProvider::for_account("ada@example.org", "outlook.office365.com"),
+            Some(OAuthProvider::Microsoft)
+        );
+        assert_eq!(
+            OAuthProvider::for_account("ada@gmail.com", ""),
+            Some(OAuthProvider::Google)
+        );
+        assert_eq!(
+            OAuthProvider::for_account("ada@example.org", "mail.example.org"),
+            None
+        );
     }
 
     #[test]
@@ -292,18 +279,5 @@ mod tests {
             ),
             "dXNlcj1zb21ldXNlckBleGFtcGxlLmNvbQFhdXRoPUJlYXJlciB5YTI5LnZGOWRmdDRxbVRjMk52YjNSbGNrQmhkSFJoZG1semRHRXVZMjl0Q2cBAQ=="
         );
-    }
-
-    #[test]
-    fn tokens_round_trip_through_a_vault_secret() {
-        let tokens = OAuthTokens {
-            access_token: "at".into(),
-            refresh_token: "rt".into(),
-            expires_in: 3600,
-            obtained_at: 1000,
-        };
-        let secret = tokens_to_secret(&tokens);
-        assert!(secret.password.is_empty());
-        assert_eq!(tokens_from_secret(&secret), Some(tokens));
     }
 }

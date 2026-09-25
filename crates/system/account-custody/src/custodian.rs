@@ -1,5 +1,6 @@
 //! The custodian: the one place that turns a sealed long-lived grant into a
-//! short-lived credential for the storage daemon.
+//! short-lived credential, for the storage daemon (through the handoff
+//! store) and for Mail (an access token for `XOAUTH2`).
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -14,7 +15,9 @@ use zeroize::Zeroizing;
 
 use crate::clients::ClientTable;
 use crate::icloud::{ICloudAuth, ICloudAuthError, ICloudSessionState, UnavailableICloud};
-use crate::providers::{ICLOUD_DRIVE_TYPE, NEXTCLOUD_TYPE, OAuthCloud, WEBDAV_TYPE};
+use crate::providers::{
+    ICLOUD_DRIVE_TYPE, NEXTCLOUD_TYPE, OAuthCloud, OAuthIssuer, OAuthUse, WEBDAV_TYPE,
+};
 
 /// How long a browser sign-in may take.
 pub const SIGN_IN_TIMEOUT: Duration = Duration::from_secs(10 * 60);
@@ -100,8 +103,22 @@ pub fn icloud_secret(apple_id: &str, session: &ICloudSessionState) -> Secret {
     }
 }
 
+/// A sealed grant, and whether it is in the format Mail sealed before its
+/// grants moved into custody: the bare [`TokenSet`] JSON, without the
+/// `kind` tag. Such a grant reads as [`Grant::Oauth2`] and is resealed in
+/// the current format on first use.
+fn decode_grant(secret: &Secret) -> Option<(Grant, bool)> {
+    let raw = secret.token.as_deref()?;
+    if let Ok(grant) = serde_json::from_str(raw) {
+        return Some((grant, false));
+    }
+    serde_json::from_str::<TokenSet>(raw)
+        .ok()
+        .map(|tokens| (Grant::Oauth2 { tokens }, true))
+}
+
 fn grant_of(secret: &Secret) -> Option<Grant> {
-    serde_json::from_str(secret.token.as_deref()?).ok()
+    decode_grant(secret).map(|(grant, _)| grant)
 }
 
 /// The Apple ID of a stored `iCloud` account, for the re-authentication form.
@@ -125,7 +142,8 @@ pub struct Custodian {
     config_root: Option<PathBuf>,
     icloud: Arc<dyn ICloudAuth>,
     clients: Arc<ClientTable>,
-    overrides: BTreeMap<&'static str, (Provider, Registration)>,
+    overrides: BTreeMap<OAuthUse, (Provider, Registration)>,
+    endpoints: BTreeMap<OAuthIssuer, Provider>,
     storage: BTreeMap<&'static str, serde_json::Value>,
 }
 
@@ -142,6 +160,7 @@ impl Custodian {
             icloud: Arc::new(UnavailableICloud),
             clients: Arc::new(ClientTable::defaults().clone()),
             overrides: BTreeMap::new(),
+            endpoints: BTreeMap::new(),
             storage: BTreeMap::new(),
         }
     }
@@ -163,7 +182,16 @@ impl Custodian {
         registration: impl Into<Registration>,
     ) -> Self {
         self.overrides
-            .insert(cloud.type_id(), (provider, registration.into()));
+            .insert(cloud.oauth_use(), (provider, registration.into()));
+        self
+    }
+
+    /// Send every request for `issuer` to the endpoints of `provider` (a
+    /// fake authorization server) while the scopes and the registration
+    /// still come from the client table, as they do in production.
+    #[must_use]
+    pub fn with_issuer_endpoints(mut self, issuer: OAuthIssuer, provider: Provider) -> Self {
+        self.endpoints.insert(issuer, provider);
         self
     }
 
@@ -255,7 +283,7 @@ impl Custodian {
         }
     }
 
-    /// The descriptor and registration for a provider, or the "not
+    /// The descriptor and registration for a storage provider, or the "not
     /// configured" state.
     ///
     /// # Errors
@@ -264,16 +292,42 @@ impl Custodian {
         &self,
         cloud: OAuthCloud,
     ) -> Result<(Provider, Registration), CustodyError> {
-        if let Some(configured) = self.overrides.get(cloud.type_id()) {
+        self.use_config(cloud.oauth_use())
+    }
+
+    /// The descriptor (the issuer's endpoints with the scopes of this use)
+    /// and the issuer's registration, or the "not configured" state.
+    ///
+    /// # Errors
+    /// [`CustodyError::NotConfigured`] when the issuer has no client id or
+    /// the table gives this use no scopes.
+    pub fn use_config(
+        &self,
+        oauth_use: OAuthUse,
+    ) -> Result<(Provider, Registration), CustodyError> {
+        if let Some(configured) = self.overrides.get(&oauth_use) {
             return Ok(configured.clone());
         }
-        self.clients
-            .registration(cloud)
-            .map(|registration| (cloud.descriptor(), registration))
-            .ok_or_else(|| CustodyError::NotConfigured {
-                provider: cloud.label(),
-                key: cloud.client_id().key,
-            })
+        let (descriptor, registration) =
+            self.clients
+                .config(oauth_use)
+                .ok_or_else(|| CustodyError::NotConfigured {
+                    provider: oauth_use.label(),
+                    key: oauth_use.issuer.client_id().key,
+                })?;
+        let descriptor = match self.endpoints.get(&oauth_use.issuer) {
+            Some(endpoints) => Provider {
+                scopes: descriptor.scopes,
+                ..endpoints.clone()
+            },
+            None => descriptor,
+        };
+        Ok((descriptor, registration))
+    }
+
+    /// Whether `oauth_use` can sign in in this build.
+    pub fn is_configured(&self, oauth_use: OAuthUse) -> bool {
+        self.use_config(oauth_use).is_ok()
     }
 
     /// Start a browser sign-in. Non-blocking: open
@@ -287,8 +341,103 @@ impl Custodian {
         cloud: OAuthCloud,
         login_hint: Option<&str>,
     ) -> Result<Authorization, CustodyError> {
-        let (provider, registration) = self.oauth_config(cloud)?;
+        self.begin_sign_in_for(cloud.oauth_use(), login_hint)
+    }
+
+    /// Start a browser sign-in for any use (Gmail, Outlook, a storage
+    /// provider); see [`Self::begin_sign_in`].
+    ///
+    /// # Errors
+    /// [`CustodyError::NotConfigured`] or a loopback failure.
+    pub fn begin_sign_in_for(
+        &self,
+        oauth_use: OAuthUse,
+        login_hint: Option<&str>,
+    ) -> Result<Authorization, CustodyError> {
+        let (provider, registration) = self.use_config(oauth_use)?;
         Authorization::begin(&provider, &registration, login_hint).map_err(CustodyError::from)
+    }
+
+    /// Seal a sign-in result as `id`'s grant, replacing any earlier one.
+    ///
+    /// # Errors
+    /// [`CustodyError::Storage`] when the vault cannot be written.
+    pub fn seal_oauth(&self, id: &AccountId, tokens: &TokenSet) -> Result<(), CustodyError> {
+        let mut vault = self.vault();
+        if let Some(error) = vault.recovery_error() {
+            return Err(CustodyError::Storage(error.to_string()));
+        }
+        vault.put(id, &oauth_secret(tokens));
+        vault.try_save().map_err(CustodyError::Storage)
+    }
+
+    /// A current access token for `id`'s `OAuth` grant, for an app that
+    /// presents it itself (Mail's `XOAUTH2`). The grant is refreshed through
+    /// `oauth_use`'s client when it is due (or `force`) and the result
+    /// resealed; a grant in an earlier format is migrated on the way. The
+    /// refresh token never leaves custody.
+    ///
+    /// # Errors
+    /// [`CustodyError::NeedsAuthentication`] when there is no usable grant
+    /// or the provider revoked it, [`CustodyError::Offline`], or
+    /// [`CustodyError::NotConfigured`] when a due refresh has no client.
+    pub fn oauth_access_token(
+        &self,
+        id: &AccountId,
+        oauth_use: OAuthUse,
+        force: bool,
+    ) -> Result<Zeroizing<String>, CustodyError> {
+        let mut vault = self.vault();
+        if let Some(error) = vault.recovery_error() {
+            return Err(CustodyError::Storage(error.to_string()));
+        }
+        let tokens = self.fresh_oauth_tokens(&mut vault, id, oauth_use, force)?;
+        Ok(Zeroizing::new(tokens.access_token))
+    }
+
+    /// `id`'s sealed `OAuth` tokens, refreshed when due (or `force`), with
+    /// any change sealed back into `vault`.
+    fn fresh_oauth_tokens(
+        &self,
+        vault: &mut SecretVault,
+        id: &AccountId,
+        oauth_use: OAuthUse,
+        force: bool,
+    ) -> Result<TokenSet, CustodyError> {
+        let secret = vault.get(id).ok_or(CustodyError::NeedsAuthentication)?;
+        let Some((Grant::Oauth2 { mut tokens }, legacy)) = decode_grant(&secret) else {
+            return Err(CustodyError::NeedsAuthentication);
+        };
+        if legacy {
+            vault.put(id, &oauth_secret(&tokens));
+            vault.try_save().map_err(CustodyError::Storage)?;
+        }
+        if tokens.refresh_token.is_empty() {
+            return Err(CustodyError::NeedsAuthentication);
+        }
+        if force || tokens.needs_refresh() {
+            let (provider, registration) = self.use_config(oauth_use)?;
+            let renewed = match OAuthClient::new()?.refresh(
+                &provider,
+                &registration,
+                &tokens.refresh_token,
+            ) {
+                Ok(renewed) => renewed.stamp_now(),
+                Err(OAuthError::InvalidGrant) => {
+                    // The provider revoked the grant: its access token
+                    // must not be handed out again either. Keep the
+                    // account, drop the dead grant until the next sign-in.
+                    vault.put(id, &oauth_secret(&TokenSet::default()));
+                    vault.try_save().map_err(CustodyError::Storage)?;
+                    return Err(CustodyError::NeedsAuthentication);
+                }
+                Err(error) => return Err(error.into()),
+            };
+            tokens = renewed;
+            vault.put(id, &oauth_secret(&tokens));
+            vault.try_save().map_err(CustodyError::Storage)?;
+        }
+        Ok(tokens)
     }
 
     /// Wait for the browser and redeem the code. Blocking.
@@ -370,34 +519,7 @@ impl Custodian {
         }
         let secret = vault.get(id).ok_or(CustodyError::NeedsAuthentication)?;
         let credential = if let Some(cloud) = OAuthCloud::from_type_id(account.type_id.as_str()) {
-            let Some(Grant::Oauth2 { mut tokens }) = grant_of(&secret) else {
-                return Err(CustodyError::NeedsAuthentication);
-            };
-            if tokens.refresh_token.is_empty() {
-                return Err(CustodyError::NeedsAuthentication);
-            }
-            if force || tokens.needs_refresh() {
-                let (provider, registration) = self.oauth_config(cloud)?;
-                let renewed = match OAuthClient::new()?.refresh(
-                    &provider,
-                    &registration,
-                    &tokens.refresh_token,
-                ) {
-                    Ok(renewed) => renewed.stamp_now(),
-                    Err(OAuthError::InvalidGrant) => {
-                        // The provider revoked the grant: its access token
-                        // must not be handed out again either. Keep the
-                        // account, drop the dead grant until the next sign-in.
-                        vault.put(id, &oauth_secret(&TokenSet::default()));
-                        vault.try_save().map_err(CustodyError::Storage)?;
-                        return Err(CustodyError::NeedsAuthentication);
-                    }
-                    Err(error) => return Err(error.into()),
-                };
-                tokens = renewed;
-                vault.put(id, &oauth_secret(&tokens));
-                vault.try_save().map_err(CustodyError::Storage)?;
-            }
+            let tokens = self.fresh_oauth_tokens(&mut vault, id, cloud.oauth_use(), force)?;
             HandoffCredential::Bearer {
                 token: Zeroizing::new(tokens.access_token.clone()),
                 expires_unix: tokens.expires_at(),
