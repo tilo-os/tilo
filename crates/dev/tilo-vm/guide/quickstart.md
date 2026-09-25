@@ -85,7 +85,9 @@ tilo-vm's state unless you pass `--raw`.
 
 Changed a Containerfile, a unit, `/etc` or the package list instead of a
 component? `tilo-vm vm upgrade --from local` rebuilds the image and moves the
-running VM onto it (`tilo-vm guide images`).
+running VM onto it; once CI has built the commit, `tilo-vm vm upgrade --from
+sha:<commit>` moves it onto CI's build without building the OS here
+(`tilo-vm guide images`).
 
 Next: `tilo-vm guide concepts`, `tilo-vm guide swapping`,
 `tilo-vm guide driving`, `tilo-vm guide images`, `tilo-vm guide fedora-loop`
