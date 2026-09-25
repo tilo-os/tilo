@@ -25,7 +25,13 @@ class OfflineTargetTests(unittest.TestCase):
         layout = root / "oci"
         blobs = layout / "blobs/sha256"
         blobs.mkdir(parents=True)
-        manifest = b'{"schemaVersion":2,"config":{},"layers":[]}'
+        config = b'{"architecture":"arm64","os":"linux","rootfs":{"type":"layers","diff_ids":[]}}'
+        config_digest = hashlib.sha256(config).hexdigest()
+        (blobs / config_digest).write_bytes(config)
+        manifest = json.dumps({"schemaVersion": 2, "config": {
+            "mediaType": "application/vnd.oci.image.config.v1+json",
+            "digest": "sha256:" + config_digest, "size": len(config)},
+            "layers": []}, separators=(",", ":")).encode()
         digest = "sha256:" + hashlib.sha256(manifest).hexdigest()
         (blobs / digest[7:]).write_bytes(manifest)
         (layout / "oci-layout").write_text('{"imageLayoutVersion":"1.0.0"}')
@@ -134,6 +140,18 @@ class OfflineTargetTests(unittest.TestCase):
                     patch.object(target, "run", return_value=wrong_signature):
                 with self.assertRaisesRegex(ValueError, "signature does not bind"):
                     target.verify(root)
+
+    def test_tampered_config_fails_before_disk_work(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root, metadata, _, _ = self.fixture(directory)
+            manifest = json.loads((root / "oci/blobs/sha256" /
+                                   metadata["target_digest"][7:]).read_text())
+            config_path = root / "oci/blobs/sha256" / manifest["config"]["digest"][7:]
+            config = json.loads(config_path.read_text())
+            config["architecture"] = "amd64"
+            config_path.write_text(json.dumps(config))
+            with self.assertRaisesRegex(ValueError, "config differs"):
+                target.read_target(root)
 
 
 if __name__ == "__main__":
