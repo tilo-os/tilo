@@ -64,7 +64,18 @@ async fn native_owner_service_offline_receipt_follows_actual_state_file_barrier(
             // The adapter's future has no await; poll it inside the real storage failure scope.
             atomic_file::test_support::with_failure(
                 atomic_file::test_support::Checkpoint::BeforePublish,
-                || futures_lite::future::block_on(service.commit(request.clone())),
+                || {
+                    let mut future = std::pin::pin!(service.commit(request.clone()));
+                    match future
+                        .as_mut()
+                        .poll(&mut std::task::Context::from_waker(std::task::Waker::noop()))
+                    {
+                        std::task::Poll::Ready(result) => result,
+                        std::task::Poll::Pending => {
+                            panic!("the adapter's commit future completes without awaiting")
+                        }
+                    }
+                },
             )
         } else {
             service.commit(request.clone()).await

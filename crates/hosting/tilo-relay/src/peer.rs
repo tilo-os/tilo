@@ -39,11 +39,20 @@ const CHECKPOINT_PREFIX_FAULT_FIRED: &str = ".checkpoint-prefix-post-first-promo
 #[cfg(feature = "test-support")]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CheckpointPrefixPromotionFaultState {
+    /// No marker: the fault is not armed.
     Absent,
+    /// Armed: the next first promotion trips the fault.
     Armed,
+    /// The fault fired after the first promotion.
     Fired,
 }
 
+/// Arm the post-first-promotion fault marker under `root`, clearing any
+/// earlier fired marker.
+///
+/// # Errors
+///
+/// Returns the I/O error when a marker cannot be removed or created.
 #[cfg(feature = "test-support")]
 pub fn arm_checkpoint_prefix_post_first_promotion(root: &std::path::Path) -> std::io::Result<()> {
     let armed = root.join(CHECKPOINT_PREFIX_FAULT_ARMED);
@@ -60,6 +69,7 @@ pub fn arm_checkpoint_prefix_post_first_promotion(root: &std::path::Path) -> std
         .sync_all()
 }
 
+/// Which post-first-promotion fault marker exists under `root`.
 #[cfg(feature = "test-support")]
 pub fn checkpoint_prefix_post_first_promotion_state(
     root: &std::path::Path,
