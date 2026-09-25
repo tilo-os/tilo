@@ -105,7 +105,7 @@ pub fn rsync_modules(
         .map(|p| format!("{}/", p.display()))
         .unwrap_or_default();
     CommandLine::new(
-        "rsync",
+        &crate::host::rsync_program().unwrap_or_else(|| "rsync".into()),
         &["--archive", "--delete", "--checksum", "--compress"],
     )
     .arg("--rsh")
