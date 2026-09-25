@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Pull one CI-signed normal Lenovo OS image and export it with its Cosign
-# attachments for the offline graphical installer. No OS build occurs here.
+# Verify one CI-signed normal Lenovo OS image and export it with its Cosign
+# attachments for a generic live graphical installer. No OS build occurs here.
 set -euo pipefail
 
 source "$(dirname "${BASH_SOURCE[0]}")/_common.sh"
@@ -11,7 +11,7 @@ output="${2:?missing output directory}"
   || die "Lenovo installer target must be the immutable CI child manifest"
 [ ! -e "$output" ] && [ ! -L "$output" ] \
   || die "offline target output must not already exist"
-for tool in cosign podman skopeo python3; do
+for tool in cosign skopeo python3; do
   command -v "$tool" >/dev/null || die "$tool is required for the offline Lenovo target"
 done
 [ -s "$TILO_REPO/keys/cosign.pub" ] || die "official Cosign verification key is missing"
@@ -78,8 +78,4 @@ Path(target).write_text(json.dumps({
 }, sort_keys=True, separators=(",", ":")) + "\n")
 PY
 python3 "$TILO_OS_DIR/dev/installer-offline-target.py" verify "$output"
-podman pull "${auth_args[@]}" "$image" >/dev/null
-podman tag "$image" "$TILO_IMAGE"
-embedded="$(podman run --rm --entrypoint cat "$TILO_IMAGE" /usr/lib/tilo/generation | tr -d '[:space:]')"
-[ "$embedded" = 1 ] || die "CI Lenovo image does not embed generation 1"
 echo "prepared offline CI target $image in $output"

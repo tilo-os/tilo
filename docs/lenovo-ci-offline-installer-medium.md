@@ -10,10 +10,13 @@ Dispatch `release-imager.yml` on `main` with:
 ```text
 installer_only=true
 lenovo_target_image=code.podesta.ai/qos/tilo@sha256:<CI ARM64 child digest>
+published_os_image=code.podesta.ai/qos/tilo@sha256:<signed generic multiarch index>
 ```
 
-The job verifies the Cosign signature and SLSA statement against
-`keys/cosign.pub`, checks the board profile and source, and uses `cosign save`
+The signed generic image boots QEMU `virt` on ARM64 and supplies the live
+installer. The separate Lenovo image carries a physical Lenovo DTB, so the
+test medium must not boot from it. The job verifies both image sources against
+`keys/cosign.pub`, checks the target board profile and source, and uses `cosign save`
 to place the target OCI manifest, blobs, signatures, and attestation in one
 offline layout. The live installer overlay is a separate CI-built image. While
 constructing its disk, `disk-image.sh` stages that layout and a pinned
@@ -21,6 +24,9 @@ constructing its disk, `disk-image.sh` stages that layout and a pinned
 This does not alter the signed target OCI or its immutable manifest digest.
 
 The release job boots and installs the medium on a native ARM64 KVM runner.
+The VM verifies the installed target OCI digest and disk/UKI contents; the
+Lenovo target's first boot requires the physical Lenovo firmware and DTB and
+cannot be represented by QEMU `virt`.
 Only after those cycles pass does it upload
 `tilo-lenovo-83ed-whpx-installer-<source commit>` with a compressed qcow2 and
 SHA-256 files. On Windows, verify the archive SHA-256, decompress once, verify
