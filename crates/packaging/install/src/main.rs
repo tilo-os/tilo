@@ -375,7 +375,7 @@ enum Error {
     #[error("fetching {app_id} from the configured registries: {detail}")]
     Fetch { app_id: String, detail: String },
     #[error("starting the async runtime for a registry fetch: {0}")]
-    Runtime(#[source] std::io::Error),
+    Runtime(#[source] tilo_rt::Error),
     #[error("payload swap for {package}: {detail}")]
     Swap { package: String, detail: String },
     #[error(
@@ -1661,25 +1661,21 @@ fn fetch_from_registries(
     app_id: &str,
     version_req: Option<&str>,
 ) -> Result<(Vec<u8>, String), Error> {
-    let runtime = tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()
-        .map_err(Error::Runtime)?;
     let host = app_registry::HostProfile::detect();
-    let outcome = runtime
-        .block_on(app_registry::resolve::resolve_and_fetch(
-            None,
-            &host,
-            app_id,
-            version_req,
-        ))
-        .map_err(|e| Error::Fetch {
-            app_id: app_id.to_string(),
-            // `{e:#}` renders anyhow's full context chain — where the useful part
-            // of a fetch failure lives (e.g. "no registry offers X" vs "index
-            // signature not trusted").
-            detail: format!("{e:#}"),
-        })?;
+    let outcome = tilo_rt::block_on(app_registry::resolve::resolve_and_fetch(
+        None,
+        &host,
+        app_id,
+        version_req,
+    ))
+    .map_err(Error::Runtime)?
+    .map_err(|e| Error::Fetch {
+        app_id: app_id.to_string(),
+        // `{e:#}` renders anyhow's full context chain — where the useful part
+        // of a fetch failure lives (e.g. "no registry offers X" vs "index
+        // signature not trusted").
+        detail: format!("{e:#}"),
+    })?;
     let source = format!("{} (registry {})", outcome.version, outcome.registry);
     Ok((outcome.bytes, source))
 }

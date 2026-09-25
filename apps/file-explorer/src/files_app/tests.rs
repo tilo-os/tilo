@@ -2679,6 +2679,16 @@ mod command_path_tests {
             stream.write_all(&response).unwrap();
         });
 
+        // Built under a bound wake scope, as the app factory builds it, so
+        // the share outcome reaches the event loop.
+        let mut scope = ui::WakeScope::new();
+        let (woke, wakes) = std::sync::mpsc::channel();
+        scope
+            .bind(move |_| {
+                let _ = woke.send(());
+            })
+            .unwrap();
+        let _entry = scope.enter();
         let mut widget = FileExplorerWidget::new();
         widget.workspace_roots = vec![dir.path().to_path_buf()];
         let mut entry = ent("report.txt", false, "text/plain");
@@ -2703,6 +2713,16 @@ mod command_path_tests {
         assert!(widget.share_pending_path.is_some());
         release_tx.send(()).unwrap();
         server.join().unwrap();
+        wakes
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .unwrap();
+        let mut doc = automerge::AutoCommit::new();
+        assert!(widget.update(&mut doc, &automerge::ROOT));
+        assert!(widget.share_pending_path.is_none());
+        assert_eq!(
+            widget.status.as_deref(),
+            Some(t("files-link-copied").as_str())
+        );
     }
 
     #[test]

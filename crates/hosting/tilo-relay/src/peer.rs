@@ -570,7 +570,7 @@ async fn handle_delta(
             reason: "workspace not bound on this relay".into(),
         }));
     };
-    let mut wr = ws.lock().await;
+    let mut wr = ws.lock_owned().await;
     // Author check — the peer that sent the delta is the author; we
     // don't allow one peer to forge a delta as if it came from
     // another device. A plain device can only publish deltas signed
@@ -604,13 +604,21 @@ async fn handle_delta(
     } else {
         0
     };
-    let delivered = wr.fanout_delta(author_device_public_key, peer.role, &env, &raw_bytes, seq)?;
-    drop(wr);
+    let author = *author_device_public_key;
+    let role = peer.role;
+    let delta_len = raw_bytes.len();
+    // The fan-out persists pending queues, the retained tail and the pinned
+    // snapshot (each fsynced) and merges the delta into the pinned document:
+    // blocking I/O and CPU work, so it runs on the blocking pool. The
+    // workspace lock moves with it, keeping deltas in arrival order.
+    let delivered =
+        tokio::task::spawn_blocking(move || wr.fanout_delta(&author, role, &env, &raw_bytes, seq))
+            .await
+            .map_err(|_| PeerError::Io(std::io::Error::other("delta fan-out panicked")))??;
     session.metrics.inc_deltas_received();
     session.metrics.add_deltas_fanned_out(delivered as u64);
     session.metrics.add_bytes_queued(
-        (raw_bytes.len() as u64)
-            .saturating_mul(offline_devices.saturating_add(offline_relays) as u64),
+        (delta_len as u64).saturating_mul(offline_devices.saturating_add(offline_relays) as u64),
     );
     Ok(None)
 }

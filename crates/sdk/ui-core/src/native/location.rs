@@ -9,13 +9,9 @@
 //! in time, it returns an honest [`LocationOutcome::Unavailable`].
 //!
 //! The portal call is asynchronous and mediated by a host permission prompt, so
-//! it must **never** run on the UI thread. [`DesktopLocation`] spawns a worker
-//! thread with its own small Tokio runtime, runs the D-Bus round-trip there,
-//! and hands the outcome back over an [`std::sync::mpsc`] channel.
-#![allow(
-    clippy::disallowed_methods,
-    reason = "native host runner: the portal location request runs on its own thread"
-)]
+//! it must **never** run on the UI thread. [`DesktopLocation`] runs the D-Bus
+//! round-trip on the app runtime ([`tilo_rt::app`]), hands the outcome back
+//! over an [`std::sync::mpsc`] channel and wakes the event loop.
 
 #[cfg(all(feature = "portal", unix))]
 use std::time::Duration;
@@ -37,42 +33,30 @@ impl crate::host::LocationProvider for DesktopLocation {
 #[cfg(all(feature = "portal", unix))]
 const FIX_TIMEOUT: Duration = Duration::from_secs(20);
 
-/// Spawn the location request on a worker thread and return the receiver the
-/// caller drains each frame. The UI thread is never blocked: the D-Bus
-/// round-trip and the host permission prompt live entirely on the worker.
+/// Start the location request on the app runtime and return the receiver the
+/// caller drains. The UI thread is never blocked: the D-Bus round-trip and the
+/// host permission prompt run on the runtime, and the outcome wakes the event
+/// loop of the wake scope the request was made under.
 fn request_location() -> LocationChannel {
     let (tx, rx) = std::sync::mpsc::channel();
-    // A clone survives a failed spawn (the closure below, and the original
-    // `tx` it owns, never runs in that case) so the honest Unavailable below
-    // still has a sender to use.
-    let fallback_tx = tx.clone();
-    let spawned = std::thread::Builder::new()
-        .name("maps-location".into())
-        .spawn(move || {
-            let outcome = run_location_blocking();
-            // The UI may have moved on (window closed); ignore a dead channel.
-            let _ = tx.send(outcome);
-        })
-        .is_ok();
-    if !spawned {
-        // Consistent with this module's contract: never hang the UI's
-        // "Locating…" state — report the failure honestly instead.
-        let _ = fallback_tx.send(LocationOutcome::Unavailable(
-            "failed to spawn location worker thread".to_string(),
-        ));
+    #[cfg(all(feature = "portal", unix))]
+    {
+        let wake = crate::wake::WakeHandle::new();
+        drop(
+            tilo_rt::app().spawn_then(location_future(), move |outcome| {
+                // The UI may have moved on (window closed); ignore a dead channel.
+                if tx.send(outcome).is_ok() {
+                    wake.wake();
+                }
+            }),
+        );
     }
+    // Without the portal there is no location service to ask; answer at once.
+    #[cfg(not(all(feature = "portal", unix)))]
+    let _ = tx.send(LocationOutcome::Unavailable(
+        "device location needs the real-desktop build (`--features portal`)".to_string(),
+    ));
     rx
-}
-
-/// Run the location session to completion on a private Tokio runtime. Blocking —
-/// only ever called on the worker thread from [`request_location`].
-#[cfg(all(feature = "portal", unix))]
-fn run_location_blocking() -> LocationOutcome {
-    let rt = match tokio::runtime::Runtime::new() {
-        Ok(rt) => rt,
-        Err(e) => return LocationOutcome::Unavailable(format!("location runtime: {e}")),
-    };
-    rt.block_on(location_future())
 }
 
 /// The async portal interaction: open the Location proxy, create a session,
@@ -135,13 +119,4 @@ fn portal_reason(e: ashpd::Error) -> String {
         ashpd::Error::Response(_) => "permission denied".to_string(),
         other => other.to_string(),
     }
-}
-
-/// Without the portal (the `portal` feature, on Unix) there is no location
-/// service to ask.
-#[cfg(not(all(feature = "portal", unix)))]
-fn run_location_blocking() -> LocationOutcome {
-    LocationOutcome::Unavailable(
-        "device location needs the real-desktop build (`--features portal`)".to_string(),
-    )
 }

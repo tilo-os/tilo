@@ -29,6 +29,7 @@ app-registry = { path = "../app-registry" }
 tilo-app-package = { path = "../tilo-app-package" }
 
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "signal", "sync", "fs", "time", "io-util"] }
+tilo-rt.workspace = true
 hyper        = { version = "1", features = ["server", "http1"] }
 hyper-util   = { version = "0.1", features = ["tokio", "server-auto"] }
 http-body-util = "0.1"

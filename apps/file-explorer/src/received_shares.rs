@@ -3,6 +3,9 @@
 //! Files remains networkless. The launcher connects to `tilo-fs.sock` outside
 //! the sandbox and gives this process only that connected descriptor. Bearer
 //! URIs are written inside a bounded frame and never placed in child argv.
+//!
+//! Every call is async: the UI spawns it on the app runtime
+//! (`ui::rt::app()`) and receives the outcome through its wake mechanism.
 
 #[cfg(unix)]
 use std::os::fd::{BorrowedFd, RawFd};
@@ -28,17 +31,17 @@ use crate::i18n::{arg, t, t_args};
 ///
 /// Returns a localized error when the service is unavailable, refuses the
 /// link, or returns an invalid response.
-pub fn admit_link(uri: String) -> Result<RecipientSubscriptionStatusV1, String> {
-    transact(RecipientControlOperationV1::AdmitV2 { uri }).and_then(|response| {
-        match response.result {
+pub async fn admit_link(uri: String) -> Result<RecipientSubscriptionStatusV1, String> {
+    transact(RecipientControlOperationV1::AdmitV2 { uri })
+        .await
+        .and_then(|response| match response.result {
             RecipientControlResultV1::Admitted { status, .. } => Ok(status),
             RecipientControlResultV1::Error { code } => Err(t_args(
                 "files-received-refused",
                 &[arg("code", format!("{code:?}"))],
             )),
             RecipientControlResultV1::Status(_) => Err(t("files-received-wrong-response")),
-        }
-    })
+        })
 }
 
 /// Retry one previously admitted received-file subscription.
@@ -47,36 +50,29 @@ pub fn admit_link(uri: String) -> Result<RecipientSubscriptionStatusV1, String> 
 ///
 /// Returns a localized error when the service is unavailable, refuses the
 /// retry, or returns an invalid response.
-pub fn retry(
+pub async fn retry(
     key: collab_types::RecipientSubscriptionKeyV1,
 ) -> Result<RecipientSubscriptionStatusV1, String> {
-    transact(RecipientControlOperationV1::Retry { key }).and_then(|response| {
-        match response.result {
+    transact(RecipientControlOperationV1::Retry { key })
+        .await
+        .and_then(|response| match response.result {
             RecipientControlResultV1::Status(status) => Ok(status),
             RecipientControlResultV1::Error { code } => Err(t_args(
                 "files-received-retry-refused",
                 &[arg("code", format!("{code:?}"))],
             )),
             RecipientControlResultV1::Admitted { .. } => Err(t("files-received-wrong-response")),
-        }
-    })
+        })
 }
 
+/// One request/response exchange with the recipient service. Must be polled
+/// in a tokio runtime context (the app runtime), which drives the socket.
 #[cfg(unix)]
-fn transact(operation: RecipientControlOperationV1) -> Result<RecipientControlResponseV1, String> {
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_io()
-        .build()
-        .map_err(|error| {
-            t_args(
-                "files-received-runtime-failed",
-                &[arg("error", error.to_string())],
-            )
-        })?;
-    runtime.block_on(async move {
-        let mut stream = connected_service_stream()?;
-        exchange(&mut stream, operation).await
-    })
+async fn transact(
+    operation: RecipientControlOperationV1,
+) -> Result<RecipientControlResponseV1, String> {
+    let mut stream = connected_service_stream()?;
+    exchange(&mut stream, operation).await
 }
 
 /// One request and its response on the recipient-control socket.
@@ -138,7 +134,13 @@ fn service_fd() -> Option<RawFd> {
 }
 
 #[cfg(not(unix))]
-fn transact(_operation: RecipientControlOperationV1) -> Result<RecipientControlResponseV1, String> {
+#[allow(
+    clippy::unused_async,
+    reason = "matches the unix transport's signature"
+)]
+async fn transact(
+    _operation: RecipientControlOperationV1,
+) -> Result<RecipientControlResponseV1, String> {
     Err(t("files-received-not-available"))
 }
 

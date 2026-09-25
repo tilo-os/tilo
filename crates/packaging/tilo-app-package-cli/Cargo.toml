@@ -45,6 +45,7 @@ toml.workspace = true
 # Async runtime for the `publish` path (iroh-blobs upload + HTTP emit).
 # The other subcommands stay synchronous; publish drives a runtime inline.
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "signal"] }
+tilo-rt.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
