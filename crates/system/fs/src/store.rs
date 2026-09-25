@@ -1,9 +1,21 @@
-//! The content plane: a content-addressed blob store with an in-memory cache.
+//! The content plane: one content store with one hash space and two
+//! backings (`docs/architecture/storage.md`, §7.4).
 //!
-//! File bytes are iroh-blobs blobs addressed by blake3 hash; the namespace
-//! CRDT only ever holds those hashes. Backing store is an iroh-blobs
-//! `FsStore` rooted at `--cache-dir` (survives restarts, keeps the bootc root
-//! read-only), with a `moka` cache in front for hot range reads. Tests use `MemStore`.
+//! - **Loose** blobs live in an iroh-blobs store (`FsStore` rooted at
+//!   `--cache-dir`, `MemStore` in tests): manifests, the chunks of small
+//!   files, legacy content, thumbnails, package payloads.
+//! - **File-backed** content ([`FileArea`]) is everything larger than
+//!   [`crate::content::FILE_BACKED_MIN`]: one sparse file per content id at
+//!   the file's own offsets, filled range by range, with a chunk index so a
+//!   chunk is served and deduplicated from where it lives. On a Tier 1
+//!   store volume the area sits next to the rooms, so publishing a file
+//!   clones its extents instead of copying bytes.
+//!
+//! The same area is the daemon's bounded cache: resident bytes of cached
+//! entries are kept under a byte budget, least recently used first, and
+//! pinned or local-only content is never evicted. A `moka` cache sits in
+//! front of loose blobs for hot reads. The provider serves both backings
+//! ([`ContentStore::blobs_protocol`]).
 
 use std::collections::HashSet;
 use std::io::ErrorKind;
@@ -37,7 +49,13 @@ use crate::eviction::{
 #[cfg(feature = "filesystem")]
 use crate::namespace::{LiveRecordBlobRoots, LiveRecordBlobScanError, Namespace};
 
+pub mod area;
+mod content;
 mod files;
+mod serve;
+
+pub use area::{FileArea, Retention};
+pub(crate) use content::copy_part;
 
 #[cfg(feature = "filesystem")]
 pub const MAX_BLOB_LOOKUP_MANIFEST_BYTES: usize = 4 * 1024 * 1024;
@@ -151,6 +169,10 @@ pub struct ContentStore {
     /// Open deferred-durability groups, and whether a write inside one
     /// still waits for its database sync; see [`ContentStore::defer_sync`].
     deferred: std::sync::Mutex<(usize, bool)>,
+    /// File-backed content and the daemon's bounded cache.
+    files: Arc<FileArea>,
+    /// The directory of an ephemeral store's area, removed with it.
+    _scratch: Option<tempfile::TempDir>,
     /// The runtime the persistent store's actors run on (declared last, so
     /// it outlives the store handle).
     runtime: Option<StoreRuntime>,
@@ -187,6 +209,40 @@ impl Drop for StoreRuntime {
     }
 }
 
+/// Budget for cached file-backed content when the caller sets none: a
+/// quarter of the filesystem that holds it.
+fn default_budget(dir: &Path) -> u64 {
+    const FALLBACK: u64 = 8 * 1024 * 1024 * 1024;
+    #[cfg(all(target_os = "linux", feature = "filesystem"))]
+    {
+        use std::os::unix::ffi::OsStrExt as _;
+        let Ok(path) = std::ffi::CString::new(dir.as_os_str().as_bytes()) else {
+            return FALLBACK;
+        };
+        // SAFETY: an all-zero statvfs is valid for the kernel to fill.
+        let mut st: libc::statvfs = unsafe { std::mem::zeroed() };
+        // SAFETY: `path` is NUL-terminated and `st` is writable.
+        if unsafe { libc::statvfs(path.as_ptr(), &raw mut st) } != 0 {
+            return FALLBACK;
+        }
+        #[allow(
+            clippy::useless_conversion,
+            reason = "the statvfs field types differ between targets"
+        )]
+        let (blocks, fragment) = (u64::from(st.f_blocks), u64::from(st.f_frsize));
+        blocks
+            .saturating_mul(fragment)
+            .checked_div(4)
+            .filter(|b| *b > 0)
+            .unwrap_or(FALLBACK)
+    }
+    #[cfg(not(all(target_os = "linux", feature = "filesystem")))]
+    {
+        let _ = dir;
+        FALLBACK
+    }
+}
+
 impl ContentStore {
     /// Open the persistent store rooted at `cache_dir` (created if missing).
     ///
@@ -195,6 +251,16 @@ impl ContentStore {
     /// Returns an error if `cache_dir` cannot be created or the on-disk blob store fails to load.
     pub async fn open(cache_dir: impl AsRef<Path>) -> Result<Self> {
         Self::open_with_gc_interval(cache_dir, DEFAULT_BLOB_GC_INTERVAL).await
+    }
+
+    /// [`Self::open`] with the file-backed content under `files_dir`, for
+    /// example on the store volume next to the rooms.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if either directory or the stores cannot be opened.
+    pub async fn open_with_files(cache_dir: impl AsRef<Path>, files_dir: &Path) -> Result<Self> {
+        Self::open_inner(cache_dir.as_ref(), DEFAULT_BLOB_GC_INTERVAL, files_dir).await
     }
 
     /// Open a persistent store with background garbage collection enabled.
@@ -210,9 +276,15 @@ impl ContentStore {
         cache_dir: impl AsRef<Path>,
         gc_interval: Duration,
     ) -> Result<Self> {
-        anyhow::ensure!(!gc_interval.is_zero(), "blob GC interval must be non-zero");
         let dir = cache_dir.as_ref();
+        Self::open_inner(dir, gc_interval, &dir.join("files")).await
+    }
+
+    async fn open_inner(dir: &Path, gc_interval: Duration, files_dir: &Path) -> Result<Self> {
+        anyhow::ensure!(!gc_interval.is_zero(), "blob GC interval must be non-zero");
         std::fs::create_dir_all(dir)?;
+        std::fs::create_dir_all(files_dir)?;
+        let files = Arc::new(FileArea::open(files_dir, default_budget(files_dir))?);
         let gc_ready = Arc::new(AtomicBool::new(false));
         let ready = Arc::clone(&gc_ready);
         let gc_live = Arc::new(RwLock::new(None));
@@ -261,12 +333,31 @@ impl ContentStore {
             mutation: tokio::sync::Mutex::new(()),
             gc_live,
             deferred: std::sync::Mutex::new((0, false)),
+            files,
+            _scratch: None,
             runtime: Some(runtime),
         })
     }
 
-    /// An ephemeral in-memory store (tests, and as a fallback).
+    /// An ephemeral store (tests, and as a fallback): loose blobs in memory,
+    /// file-backed content in a temporary directory removed with the store.
+    ///
+    /// # Panics
+    ///
+    /// Panics when no temporary directory can be created.
+    #[allow(
+        clippy::expect_used,
+        reason = "an ephemeral store without a temporary directory cannot hold content at all"
+    )]
     pub fn memory() -> Self {
+        let scratch = tempfile::tempdir().expect("a temporary directory for the content store");
+        let files = Arc::new(
+            FileArea::open(scratch.path(), u64::MAX).expect("a content area in a fresh directory"),
+        );
+        Self::memory_with_files(files, Some(scratch))
+    }
+
+    fn memory_with_files(files: Arc<FileArea>, scratch: Option<tempfile::TempDir>) -> Self {
         let gc_live = Arc::new(RwLock::new(None));
         let options = iroh_blobs::store::mem::Options {
             gc_config: Some(eviction_gc(gc_live.clone())),
@@ -278,12 +369,22 @@ impl ContentStore {
             mutation: tokio::sync::Mutex::new(()),
             gc_live,
             deferred: std::sync::Mutex::new((0, false)),
+            files,
+            _scratch: scratch,
             runtime: None,
         }
     }
 
+    /// The file-backed content and cache.
+    pub const fn files(&self) -> &Arc<FileArea> {
+        &self.files
+    }
+
     #[cfg(all(test, feature = "filesystem"))]
+    #[allow(clippy::unwrap_used, reason = "test fixture")]
     fn memory_with_gc_interval(gc_interval: Duration) -> Self {
+        let scratch = tempfile::tempdir().unwrap();
+        let files = Arc::new(FileArea::open(scratch.path(), u64::MAX).unwrap());
         Self {
             backend: Backend::Mem(MemStore::new_with_opts(iroh_blobs::store::mem::Options {
                 gc_config: Some(GcConfig {
@@ -296,6 +397,8 @@ impl ContentStore {
             mutation: tokio::sync::Mutex::new(()),
             gc_live: Arc::new(RwLock::new(None)),
             deferred: std::sync::Mutex::new((0, false)),
+            files,
+            _scratch: Some(scratch),
             runtime: None,
         }
     }
@@ -361,9 +464,11 @@ impl ContentStore {
         Ok(())
     }
 
-    /// Build a `BlobsProtocol` handler backed by this store (for the router).
+    /// Build a `BlobsProtocol` handler backed by this store (for the
+    /// router). It serves loose blobs and file-backed chunks alike.
     pub fn blobs_protocol(&self, events: Option<EventSender>) -> BlobsProtocol {
-        BlobsProtocol::new(self.store(), events)
+        let store = serve::serving_store(self.store().clone(), &self.files);
+        BlobsProtocol::new(&store, events)
     }
 
     /// Ingest bytes and return their blake3 content hash. Warms the cache.
@@ -377,35 +482,8 @@ impl ContentStore {
         self.persist_owned(data).await
     }
 
-    /// Content-defined-chunk `data`, ingest each chunk (deduped) + a manifest
-    /// describing them. Returns the manifest hash (`None` if empty); editing part of a large file only stores the changed chunks.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if a chunk or the manifest fails to ingest, or the manifest fails to serialize.
-    pub async fn write_content(&self, data: &[u8]) -> Result<Option<Hash>> {
-        if data.is_empty() {
-            return Ok(None);
-        }
-        let chunk_bytes = crate::content::split(data)
-            .into_iter()
-            .map(Bytes::copy_from_slice)
-            .collect::<Vec<_>>();
-        let chunk_hashes = self.persist_owned_batch(chunk_bytes.clone()).await?;
-        let chunks = chunk_hashes
-            .into_iter()
-            .zip(chunk_bytes)
-            .map(|(hash, bytes)| crate::content::ChunkRef {
-                hash: *hash.as_bytes(),
-                len: u32::try_from(bytes.len()).unwrap_or(u32::MAX),
-            })
-            .collect();
-        let manifest = crate::content::Manifest { chunks };
-        let mh = self.ingest(Bytes::from(manifest.encode()?)).await?;
-        Ok(Some(mh))
-    }
-
-    /// Locally-available bytes for `hash` (cache → store), or `None` if absent.
+    /// Locally available bytes of blob `hash` (cache, loose store, or a
+    /// file-backed chunk, which is checked against its hash), or `None`.
     pub async fn local(&self, hash: Hash) -> Option<Bytes> {
         if let Some(b) = self.cache.get(&hash) {
             return Some(b);
@@ -415,7 +493,7 @@ impl ContentStore {
                 self.cache.insert(hash, b.clone());
                 Some(b)
             }
-            Err(_) => None,
+            Err(_) => self.local_chunk(hash).await,
         }
     }
 
@@ -477,6 +555,18 @@ impl ContentStore {
             return Ok(0);
         }
         let _mutation = self.mutation.lock().await;
+        // File-backed content goes with any of its hashes: its content id
+        // or one of its chunks.
+        for hash in selected {
+            let key = if self.files.entry(hash.as_bytes()).is_some() {
+                Some(*hash.as_bytes())
+            } else {
+                self.files.find_chunk(hash.as_bytes()).map(|c| c.key)
+            };
+            if let Some(key) = key {
+                self.files.remove(&key)?;
+            }
+        }
         let before = self.store().blobs().list().hashes().await?;
         let before_count = before.len();
         let live: HashSet<Hash> = before
@@ -619,6 +709,7 @@ impl ContentStore {
             return true;
         }
         self.store().blobs().has(hash).await.unwrap_or(false)
+            || self.files.find_chunk(hash.as_bytes()).is_some()
     }
 
     /// Resolve a blob to every exact live stable record that currently
@@ -692,14 +783,14 @@ impl ContentStore {
                     record_id: roots.record_id,
                 }
             })?;
-            if manifest.chunks.len() > limits.max_chunks_per_record {
+            if manifest.chunks().len() > limits.max_chunks_per_record {
                 return Err(BlobRecordLookupError::TooManyChunks {
                     record_id: roots.record_id,
                     limit: limits.max_chunks_per_record,
                 });
             }
             if manifest
-                .chunks
+                .chunks()
                 .iter()
                 .any(|chunk| Hash::from(chunk.hash) == requested)
             {
@@ -730,10 +821,10 @@ impl ContentStore {
             .await
             .ok_or_else(|| anyhow::anyhow!("version manifest {manifest_hash} is not resident"))?;
         let manifest = crate::content::Manifest::decode(&manifest_bytes)?;
-        let mut chunks = Vec::with_capacity(manifest.chunks.len());
-        for chunk in manifest.chunks {
+        let mut chunks = Vec::with_capacity(manifest.chunks().len());
+        for chunk in manifest.chunks() {
             let hash = Hash::from(chunk.hash);
-            let (locally_present, resident_bytes) = match self.store().blobs().status(hash).await? {
+            let (locally_present, resident_bytes) = match self.blob_status(hash).await? {
                 BlobStatus::Complete { size } => (true, Some(size)),
                 BlobStatus::Partial { size } => (true, size),
                 BlobStatus::NotFound => (false, None),
@@ -799,7 +890,14 @@ impl ContentStore {
             manifest.total_len() == revision.byte_len,
             "manifest length does not match signed revision"
         );
-        for chunk in manifest.chunks {
+        if crate::content::is_file_backed(&manifest) {
+            anyhow::ensure!(
+                self.is_complete(manifest_hash, &manifest).await,
+                "version content is not durably complete"
+            );
+            return Ok(());
+        }
+        for chunk in manifest.chunks() {
             let hash = Hash::from(chunk.hash);
             match self.store().blobs().status(hash).await? {
                 BlobStatus::Complete { size } if size == u64::from(chunk.len) => {}
@@ -947,7 +1045,7 @@ impl ContentStore {
             .clone();
         let mut states = Vec::with_capacity(hashes.len());
         for hash in hashes {
-            let state = match self.store().blobs().status(hash).await? {
+            let state = match self.blob_status(hash).await? {
                 BlobStatus::NotFound => ObservedBlobState::Absent,
                 BlobStatus::Complete { size } => ObservedBlobState::Present {
                     resident_bytes: Some(size),
@@ -1279,16 +1377,11 @@ mod tests {
     async fn durable_revision_rejects_a_complete_manifest_with_any_missing_chunk() {
         let store = ContentStore::memory();
         let missing = iroh_blobs::Hash::new(b"not persisted");
-        let manifest = crate::content::Manifest {
-            chunks: vec![crate::content::ChunkRef {
-                hash: *missing.as_bytes(),
-                len: 13,
-            }],
-        };
-        let manifest_hash = store
-            .ingest(Bytes::from(manifest.encode().unwrap()))
-            .await
-            .unwrap();
+        let manifest = crate::content::Manifest::legacy(vec![crate::content::ChunkRef {
+            hash: *missing.as_bytes(),
+            len: 13,
+        }]);
+        let manifest_hash = store.ingest(Bytes::from(manifest.encode())).await.unwrap();
         let revision = collab_types::ContentRevisionV1 {
             schema_version: collab_types::CONTENT_REVISION_VERSION,
             record_id: collab_types::FileRecordId::new(),
@@ -1745,8 +1838,8 @@ mod tests {
         let shared_chunk = store.ingest(Bytes::from_static(b"shared")).await.unwrap();
         let first_only_chunk = store.ingest(Bytes::from_static(b"first")).await.unwrap();
         let second_only_chunk = store.ingest(Bytes::from_static(b"second")).await.unwrap();
-        let manifest = |unique: Hash| crate::content::Manifest {
-            chunks: vec![
+        let manifest = |unique: Hash| {
+            crate::content::Manifest::legacy(vec![
                 crate::content::ChunkRef {
                     hash: *shared_chunk.as_bytes(),
                     len: 6,
@@ -1755,14 +1848,14 @@ mod tests {
                     hash: *unique.as_bytes(),
                     len: 6,
                 },
-            ],
+            ])
         };
         let first_manifest = store
-            .ingest(Bytes::from(manifest(first_only_chunk).encode().unwrap()))
+            .ingest(Bytes::from(manifest(first_only_chunk).encode()))
             .await
             .unwrap();
         let second_manifest = store
-            .ingest(Bytes::from(manifest(second_only_chunk).encode().unwrap()))
+            .ingest(Bytes::from(manifest(second_only_chunk).encode()))
             .await
             .unwrap();
         let thumbnail = store

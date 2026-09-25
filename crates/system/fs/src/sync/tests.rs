@@ -1785,7 +1785,7 @@ async fn blob_authority_is_scoped_to_live_readable_paths() {
         &store.local(allowed).await.expect("allowed manifest stored"),
     )
     .unwrap();
-    let allowed_chunk = iroh_blobs::Hash::from(allowed_manifest.chunks[0].hash);
+    let allowed_chunk = iroh_blobs::Hash::from(allowed_manifest.chunks()[0].hash);
     let denied = store
         .write_content(b"private bytes")
         .await
@@ -1795,7 +1795,7 @@ async fn blob_authority_is_scoped_to_live_readable_paths() {
         &store.local(denied).await.expect("private manifest stored"),
     )
     .unwrap();
-    let denied_chunk = iroh_blobs::Hash::from(denied_manifest.chunks[0].hash);
+    let denied_chunk = iroh_blobs::Hash::from(denied_manifest.chunks()[0].hash);
     let thumbnail = iroh_blobs::Hash::from([2; 32]);
     let ino = ns
         .create_file(shared, "allowed.png", Some(&allowed), 1, 1)
@@ -1831,7 +1831,12 @@ async fn a_long_lived_blob_index_follows_every_namespace_change() {
     let policy = Some(handle.clone());
     let store = ContentStore::memory();
     let chunk_of = |manifest: bytes::Bytes| {
-        iroh_blobs::Hash::from(crate::content::Manifest::decode(&manifest).unwrap().chunks[0].hash)
+        iroh_blobs::Hash::from(
+            crate::content::Manifest::decode(&manifest)
+                .unwrap()
+                .chunks()[0]
+                .hash,
+        )
     };
     let first = store.write_content(b"first").await.unwrap().unwrap();
     let first_chunk = chunk_of(store.local(first).await.unwrap());
@@ -1947,7 +1952,7 @@ async fn record_session_guards_manifest_chunks_thumbnails_and_get_many_live() {
     let allowed_chunk = iroh_blobs::Hash::from(
         crate::content::Manifest::decode(&store.local(allowed_manifest).await.unwrap())
             .unwrap()
-            .chunks[0]
+            .chunks()[0]
             .hash,
     );
     let thumbnail = store
