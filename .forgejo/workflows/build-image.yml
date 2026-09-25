@@ -717,6 +717,17 @@ jobs:
           fi
           echo "::notice::OS integration validation: $validate; publication: $publish"
 
+      # A publication signs only after hours of building. Prove the runner's
+      # release signer first: its certificate must match both the protected
+      # pin and keys/efi-signing.crt, and a real KMS signature must verify with
+      # the tracked PCR authority. sign-target-prediction.sh repeats every
+      # check, including the root-owned signer path, on the final image.
+      - name: Prove the release signer before building
+        if: steps.release-mode.outputs.publish == 'true'
+        run: |
+          set -euo pipefail
+          ./os/dev/probe-release-signer.py "$TILO_PCR_PREDICTION_SIGNER" "$TILO_EFI_SIGNING_CERT_SHA256"
+
       - name: Load the pinned marketplace owner trust input
         shell: bash
         run: |
