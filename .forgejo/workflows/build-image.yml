@@ -868,6 +868,13 @@ jobs:
           fi
           echo "::notice::OS integration validation: $validate; publication: $publish"
 
+      # runner-large jobs are Kata-confined but start with a static /dev. The
+      # guest kernel has FUSE and loop devices; expose its devtmpfs and prove a
+      # real loop mount before spending hours building the sealed image.
+      - name: Prepare and prove Kata disk devices
+        if: steps.release-mode.outputs.validate == 'true' && startsWith(matrix.runner, 'runner-large')
+        run: bash os/dev/ci-prepare-disk-devices.sh --kata-job
+
       # A publication signs only after hours of building. Prove the runner's
       # release signer first: its certificate must match both the protected
       # pin and keys/efi-signing.crt, and a real KMS signature must verify with
