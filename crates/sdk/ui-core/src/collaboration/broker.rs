@@ -2823,10 +2823,14 @@ async fn drive_shovel(
             }
             SdkCommand::PublicationBarrier(reply) => {
                 // A superseded receipt may have no receiver. Its prefix still ran.
-                let _ = reply.send(match unpublished.take() {
-                    None => inbound_tx.state.publication_result(),
-                    Some(reason) => Err(DocumentPublicationError::Failed(reason)),
-                });
+                // A latched, specific publication failure (a refused signature
+                // or commit) outranks the generic "did not reach" marker.
+                let unpublished = unpublished.take();
+                let _ = reply.send(inbound_tx.state.publication_result().and_then(|()| {
+                    unpublished.map_or(Ok(()), |reason| {
+                        Err(DocumentPublicationError::Failed(reason))
+                    })
+                }));
             }
             SdkCommand::InstallEncryption { spec, group, reply } => {
                 let result = install_sdk_encryption(
@@ -4805,8 +4809,9 @@ mod tests {
 
     use runtime_collab::PresencePayload as SdkPayload;
     use runtime_collab::raw::{
-        channel_context, channel_handle, collab_service, context_stream, presence_event,
-        presence_handle, presence_payload, presence_stream, scrollback_batch, stream,
+        action_catalogue_stream, channel_context, channel_handle, collab_service, context_stream,
+        presence_event, presence_handle, presence_payload, presence_stream, scrollback_batch,
+        stream,
     };
 
     #[derive(Default)]
@@ -5098,6 +5103,24 @@ mod tests {
             let mut r = results.get();
             r.set_op(&op);
             r.set_from_user_id(&from);
+            Promise::ok(())
+        }
+    }
+
+    struct FakeActionCatalogueStream {
+        initial: RefCell<Option<String>>,
+    }
+
+    impl action_catalogue_stream::Server for FakeActionCatalogueStream {
+        fn read(
+            self: Rc<Self>,
+            _params: action_catalogue_stream::ReadParams,
+            mut results: action_catalogue_stream::ReadResults,
+        ) -> Promise<(), capnp::Error> {
+            let Some(initial) = self.initial.borrow_mut().take() else {
+                return Promise::from_future(std::future::pending::<Result<(), capnp::Error>>());
+            };
+            results.get().set_catalogue_json(&initial);
             Promise::ok(())
         }
     }
@@ -5400,6 +5423,21 @@ mod tests {
             let client: context_stream::Client = capnp_rpc::new_client(FakeContextStream {
                 backlog: self.context_backlog.clone(),
             });
+            results.get().set_stream(client);
+            Promise::ok(())
+        }
+
+        fn subscribe_action_catalogue(
+            self: Rc<Self>,
+            _params: channel_handle::SubscribeActionCatalogueParams,
+            mut results: channel_handle::SubscribeActionCatalogueResults,
+        ) -> Promise<(), capnp::Error> {
+            let client: action_catalogue_stream::Client =
+                capnp_rpc::new_client(FakeActionCatalogueStream {
+                    initial: RefCell::new(Some(
+                        serde_json::json!({"version": 1, "surfaces": []}).to_string(),
+                    )),
+                });
             results.get().set_stream(client);
             Promise::ok(())
         }
@@ -7864,14 +7902,28 @@ mod tests {
         document.put(automerge::ROOT, "body", "after").unwrap();
         document.commit();
         let delta = document.save_after(&heads);
-        manager.send_to_route(
-            route.clone(),
-            CollabRequest::document_snapshot(snapshot.clone()),
+        // The route refuses documents until it is joined and its document
+        // mode is resolved; the first refused attempt starts that join.
+        assert!(
+            wait_until(
+                || {
+                    manager
+                        .try_send_to_route(
+                            route.clone(),
+                            CollabRequest::document_snapshot(snapshot.clone()),
+                        )
+                        .is_ok()
+                },
+                HANG_GUARD
+            ),
+            "the owned route becomes publishable"
         );
-        manager.send_to_route(
-            route.clone(),
-            CollabRequest::document_incremental(delta.clone()),
-        );
+        manager
+            .try_send_to_route(
+                route.clone(),
+                CollabRequest::document_incremental(delta.clone()),
+            )
+            .unwrap();
         assert!(
             wait_until(
                 || captures.lock().unwrap().signed_ops.len() == 2,

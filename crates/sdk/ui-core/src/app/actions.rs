@@ -3496,8 +3496,21 @@ impl App {
         // before the next redraw. Retire the old tree through the normal
         // rebuild lifecycle; never append another host tree with init_layout.
         let pending_sync = self.needs_sync;
+        let generation = self.actions.resource_generation.get();
+        let open_index = self.actions.open_resource_search_cache.get_mut().take();
         self.layout.structure_dirty = true;
         self.rebuild_structure();
+        // Admitting a modal declares no resource of the tree the open-resource
+        // index was just built from. Keep that index across the rebuild's own
+        // invalidation so reopening reuses it until state actually mutates.
+        if let Some(mut index) = open_index
+            && index.key.mutation_generation == generation
+            && self.actions.resource_generation.get() == generation.saturating_add(1)
+            && index.permission_generation == self.actions.permission_generation.get()
+        {
+            index.key = self.resource_cache_key();
+            *self.actions.open_resource_search_cache.get_mut() = Some(index);
+        }
         // Synchronous admission must not consume the dispatch's obligation to
         // sync during normal redraw, even if rebuilding also syncs new widgets.
         self.needs_sync |= pending_sync;

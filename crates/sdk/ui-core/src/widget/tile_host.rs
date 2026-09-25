@@ -1107,13 +1107,15 @@ impl TileHost {
         if let Some(pending) = self.pending_binding.take() {
             if let Err(error) = admit_record(&pending.store, &pending.tab, pending.create) {
                 self.pending_binding = Some(pending);
-                let error = format!("Document storage unavailable: {error}");
+                // The tile shows the storage context; the caller gets the
+                // exact admission refusal.
+                let shown = format!("Document storage unavailable: {error}");
                 if self.binding.is_some() {
-                    self.record_transition_error = Some(error.clone());
+                    self.record_transition_error = Some(shown);
                 } else {
-                    self.record_error = Some(error.clone());
+                    self.record_error = Some(shown);
                 }
-                return Err(error);
+                return Err(error.to_string());
             }
             if self.binding.is_some() {
                 if let Err(error) = self.prepare_owner_transition() {
@@ -1152,17 +1154,21 @@ impl TileHost {
         let changing_owner = match (&self.binding, &want) {
             (Some(binding), Some(want)) if want.id != binding.live => {
                 if let Err(error) = binding.store.open_existing_record_checked(want) {
-                    let error = format!("Document storage unavailable: {error}");
+                    let shown = format!("Document storage unavailable: {error}");
                     if self.owner_bound_work {
-                        self.record_transition_error = Some(error.clone());
+                        self.record_transition_error = Some(shown);
                         self.record_intent_transition_blocked = true;
                     } else {
+                        // The outgoing owner's lifetime ends here even though
+                        // the new intent is refused: settle its record first so
+                        // a failed flush is reported and retried, not dropped.
+                        self.settle_outgoing_record();
                         if !was_unavailable {
                             self.renew_history_lifetime();
                         }
-                        self.record_error = Some(error.clone());
+                        self.record_error = Some(shown);
                     }
-                    return Err(error);
+                    return Err(error.to_string());
                 }
                 true
             }

@@ -77,7 +77,15 @@ fn deferred_server_preferred_client_routes_address_without_minting() {
         0,
         "the client cannot mint the remote owner's operation"
     );
-    assert!(sent.borrow().iter().any(|request| matches!(request, CollabRequest::InvokePublishedAction { resource, action, arguments, .. } if resource == "test.counter" && action == "create" && arguments.is_empty())));
+    // The broker is asked through the remote action protocol.
+    assert!(sent.borrow().iter().any(|request| matches!(
+        request,
+        CollabRequest::RemoteAction {
+            message: tilo_actions::remote::RemoteActionMessage::Invoke(invoke),
+        } if invoke.target.address.resource == "test.counter"
+            && invoke.target.address.action == "create"
+            && matches!(&invoke.argument, tilo_actions::remote::InvokeArgument::Json(arguments) if arguments.is_empty())
+    )));
     assert_eq!(counter(&app), 0);
 }
 #[test]

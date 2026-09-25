@@ -1932,6 +1932,15 @@ impl RecordSet {
             .backend
             .as_ref()
             .ok_or(RecordOpenError::IdentityMismatch)?;
+        if want.id.is_package_primary() {
+            // The package-primary document is the room's own document
+            // (`<package>/rooms/<room>`), never a minted record beneath it.
+            app_state::validate_record_identity(&self.package_id, &self.home, "index")?;
+            return Ok((
+                Rc::clone(backend),
+                StorageKey::room_index(&self.package_id, &self.home),
+            ));
+        }
         let record = want.id.storage_key();
         app_state::validate_record_identity(&self.package_id, &self.home, &record)?;
         Ok((

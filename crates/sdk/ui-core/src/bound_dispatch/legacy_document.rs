@@ -44,6 +44,9 @@ pub(crate) struct ResourceReadRequest<'a> {
     target: Option<&'a HistoryOwner>,
     owners: Vec<OwnerResources>,
     hidden: bool,
+    /// Whether component owners' declarations are read too. A legacy-only
+    /// inventory leaves them to the cached component discovery.
+    components: bool,
 }
 /// Collect just this document domain. Nested owners are never ambient children.
 fn owned_resources<W: Widget + ?Sized>(
@@ -106,7 +109,7 @@ impl ResourceReadRequest<'_> {
             binding
                 .enter()
                 .map_err(|e| refused("record_unavailable", format!("{e:?}")))?;
-            if !self.owners.iter().any(|snapshot| matches!(&snapshot.owner, ResourceOwner::Component(other) if other.same_component(&binding))) {
+            if self.components && !self.owners.iter().any(|snapshot| matches!(&snapshot.owner, ResourceOwner::Component(other) if other.same_component(&binding))) {
                 let resources = binding.read_document(&AutoCommit::new(), |doc, _| {
                     let mut resources = Vec::new();
                     // The boundary adapter forwards its root resources and also
@@ -189,12 +192,14 @@ impl ResourceReadRequest<'_> {
 fn inventory(
     root: &dyn Widget,
     address: Option<&ActionAddress>,
+    components: bool,
 ) -> Result<Vec<OwnerResources>, DoorError> {
     let mut request = ResourceReadRequest {
         address,
         target: None,
         owners: vec![],
         hidden: false,
+        components,
     };
     root.visit_resource_owners(&mut request)?;
     Ok(request.owners)
@@ -228,7 +233,7 @@ pub(crate) fn select_local_target(
     let mut count = claims(&resources, address);
     let mut target = LocalResourceTarget::Outer;
     let mut interactive = true;
-    for snapshot in inventory(root, Some(address))? {
+    for snapshot in inventory(root, Some(address), true)? {
         let n = claims(&snapshot.resources, address);
         count = count.saturating_add(n);
         if n != 0 {
@@ -270,7 +275,8 @@ pub(crate) fn legacy_resources(
     broker: bool,
 ) -> Result<Vec<Resource>, DoorError> {
     let mut output = vec![];
-    for snapshot in inventory(root, None)? {
+    // Component declarations come from the cached component discovery.
+    for snapshot in inventory(root, None, false)? {
         if let ResourceOwner::Legacy(owner) = snapshot.owner
             && snapshot.interactive
         {
@@ -649,6 +655,7 @@ pub(crate) fn resolve_legacy_invocation(
         target: Some(&target.owner),
         owners: vec![],
         hidden: false,
+        components: true,
     };
     root.visit_resource_owners(&mut request)?;
     let snapshot = request.owners.into_iter().find(|snapshot| matches!(&snapshot.owner, ResourceOwner::Legacy(owner) if owner.same_owner(&target.owner))).ok_or_else(|| refused("closed_lifetime", "Captured owner is no longer mounted"))?;

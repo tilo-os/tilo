@@ -1475,6 +1475,18 @@ impl CollaborationManager {
         let _ = self.try_send_to_route(route, req);
     }
 
+    /// Test-only: whether `route` has resolved its document mode, so a
+    /// document mutation on it would be admitted rather than refused.
+    #[cfg(test)]
+    pub(crate) fn document_route_publishable_for_test(&self, route: &RouteSpec) -> bool {
+        match &self.backend {
+            Backend::Transport(transport) => {
+                transport.document_publishable(Some(&route.channel_id()))
+            }
+            Backend::Disabled(_) => false,
+        }
+    }
+
     /// [`Self::send_to_route`] with the reason a request was not handed off.
     /// This is the exact local enqueue outcome: the transport's later
     /// publication barrier still owns durable acknowledgement.

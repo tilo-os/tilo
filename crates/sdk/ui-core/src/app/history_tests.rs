@@ -373,6 +373,20 @@ impl RoutedOwners {
             epoch: uuid::Uuid::new_v4(),
         });
         app.refresh_document_routes();
+        // The fake broker admits each route join asynchronously, and a route
+        // refuses documents until its document mode is resolved.
+        let deadline = crate::time::now() + crate::time::Duration::from_secs(5);
+        while !app.document_routes.owners.iter().all(|entry| {
+            app.collaboration
+                .manager
+                .document_route_publishable_for_test(&entry.route)
+        }) {
+            assert!(
+                crate::time::now() < deadline,
+                "owned routes never became publishable"
+            );
+            std::thread::sleep(crate::time::Duration::from_millis(5));
+        }
         Self {
             app,
             records,

@@ -3109,7 +3109,9 @@ impl BoundNodeMap {
         let owner = self.legacy_for(node)?;
         owner.validate().ok()?;
         let (store, checkout) = owner.store_checkout();
-        store.with_history(&checkout.id, |doc, history| {
+        // A status read is not a mutable loan: it must not advance the
+        // record's action generation.
+        store.read_history(&checkout.id, |doc, history| {
             crate::undo::status_snapshot(doc, history, Some(author))
         })
     }

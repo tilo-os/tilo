@@ -7,6 +7,8 @@ use ui::theme::Theme;
 use vello::Scene;
 use vello::kurbo::{Point, Rect};
 
+/// Off the spacing scale by design: one create-form row (label plus input)
+/// is a fixed step shared by the live and History geometry.
 pub(crate) const ROW_STEP: f64 = 56.0;
 
 #[derive(Clone, Copy, Debug)]

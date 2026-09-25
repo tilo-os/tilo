@@ -4263,7 +4263,7 @@ impl FrameHarness {
         let t_event = self.profiler.as_ref().map(|_| crate::time::now());
         let history_handled = self.history_event(event, &mut handled, &mut focus_target);
         history_input |= history_handled;
-        let _standalone_frame = FrameworkInputFrame::new(&self.framework_input, history_handled);
+        let standalone_frame = FrameworkInputFrame::new(&self.framework_input, history_handled);
         if !history_handled && let Some(history) = &mut self.history {
             history.route_event(
                 self.root.as_mut(),
@@ -4371,6 +4371,9 @@ impl FrameHarness {
         if !inert {
             self.relayout();
         }
+        // Frames restore the thread-wide flag they captured, so they must
+        // close in reverse order of opening.
+        drop(standalone_frame);
         drop(framework_frame);
         if self.service_pending_history_commands() {
             let _framework_frame = FrameworkInputFrame::new(&self.framework_input, true);

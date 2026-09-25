@@ -53,6 +53,42 @@ pub(super) fn validated_route_payload(
     .ok()
 }
 
+/// [`validated_route_payload`] for an envelope as it reaches the endpoint:
+/// a reassembled cleartext transfer arrives on its last segment's envelope
+/// with the complete mutation beside it. The segment envelope must belong to
+/// `route`, and the complete payload must be a current-format mutation (the
+/// only format that is ever segmented).
+pub(super) fn validated_route_payload_with(
+    route: &RouteSpec,
+    envelope: &collab_types::SignedOp,
+    decrypted_payload: Option<&[u8]>,
+) -> Option<collab_types::VersionedRoutedDocumentPayload> {
+    let (None, Some(complete)) = (envelope.encryption.as_ref(), decrypted_payload) else {
+        return validated_route_payload(route, envelope);
+    };
+    let segment = collab_types::validate_document_payload_route(
+        &route.app_id,
+        &route.cluster_id.to_string(),
+        route.record.as_deref().unwrap_or(""),
+        envelope,
+    )
+    .ok()?;
+    if !matches!(
+        segment,
+        collab_types::RoutedDocumentPayload::CleartextSegment(_)
+    ) {
+        return None;
+    }
+    let decoded = collab_types::DocumentMutation::decode_versioned(complete).ok()?;
+    matches!(
+        decoded.version,
+        collab_types::DocumentWireVersion::TiloV1 | collab_types::DocumentWireVersion::TiloV2
+    )
+    .then_some(collab_types::VersionedRoutedDocumentPayload::Cleartext(
+        decoded,
+    ))
+}
+
 pub(super) fn decode_routed_mutation(
     route: &RouteSpec,
     payload: collab_types::VersionedRoutedDocumentPayload,
@@ -488,26 +524,27 @@ impl App {
             .iter()
             .enumerate()
             .find_map(|(index, entry)| {
-                validated_route_payload(&entry.route, envelope)
+                validated_route_payload_with(&entry.route, envelope, decrypted_payload)
                     .map(|payload| (index, entry.route.clone(), payload))
             });
-        let primary = validated_route_payload(&witness.route, envelope).and_then(|payload| {
-            let active = !self.document_routes.retired_route(&witness.route)
-                && match witness.route.record.as_deref() {
-                    Some(record) => self
-                        .persistence
-                        .records
-                        .as_ref()
-                        .and_then(|set| set.active())
-                        .is_some_and(|id| id.as_str() == record),
-                    None => self
-                        .persistence
-                        .records
-                        .as_ref()
-                        .is_none_or(|set| set.active().is_none()),
-                };
-            active.then(|| (witness.route.clone(), payload))
-        });
+        let primary = validated_route_payload_with(&witness.route, envelope, decrypted_payload)
+            .and_then(|payload| {
+                let active = !self.document_routes.retired_route(&witness.route)
+                    && match witness.route.record.as_deref() {
+                        Some(record) => self
+                            .persistence
+                            .records
+                            .as_ref()
+                            .and_then(|set| set.active())
+                            .is_some_and(|id| id.as_str() == record),
+                        None => self
+                            .persistence
+                            .records
+                            .as_ref()
+                            .is_none_or(|set| set.active().is_none()),
+                    };
+                active.then(|| (witness.route.clone(), payload))
+            });
         let (owned, route, payload) = if let Some((index, route, payload)) = owned {
             (Some(index), route, payload)
         } else if let Some((route, payload)) = primary {

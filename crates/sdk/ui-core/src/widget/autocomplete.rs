@@ -1070,8 +1070,14 @@ mod tests {
 
         assert_eq!(Widget::test_id(&autocomplete), Some("route-search"));
         let semantics = Widget::accessibility(&autocomplete).expect("text field semantics");
-        assert_eq!(semantics.semantic_key.as_deref(), Some("route-search"));
-        assert_eq!(semantics.action_target.as_deref(), Some("route-search"));
+        // The autocomplete publishes one keyed route under its id for the
+        // embedded input and its rows, never the inner input's own target.
+        let keyed = semantics.action_target.as_deref().unwrap_or_default();
+        assert!(
+            keyed.starts_with("tilo.key-action:route-search:"),
+            "{keyed}"
+        );
+        assert_eq!(semantics.semantic_key.as_deref(), Some(keyed));
         assert_eq!(autocomplete.text(), "sentinel route");
         assert_eq!(autocomplete.input.spell_language(), "en_US");
         assert!(!autocomplete.input.spellcheck_enabled());

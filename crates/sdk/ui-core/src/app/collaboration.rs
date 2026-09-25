@@ -381,8 +381,11 @@ impl App {
         envelope: &collab_types::SignedOp,
         decrypted_payload: Option<&[u8]>,
     ) -> bool {
-        let Some(payload) = crate::app::document_routes::validated_route_payload(route, envelope)
-        else {
+        let Some(payload) = crate::app::document_routes::validated_route_payload_with(
+            route,
+            envelope,
+            decrypted_payload,
+        ) else {
             tracing::warn!("collab: broker delivered a room-index op outside its joined route");
             return false;
         };
