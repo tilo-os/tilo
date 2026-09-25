@@ -22,7 +22,7 @@ REBUILD_PATHS = {
     "tools/ci/native-mold-linker.sh",
     "tools/ci/verify-native-mold.sh",
 }
-REBUILD_PREFIXES = (".forgejo/actions/install-cosign/",)
+REBUILD_PREFIXES = (".forgejo/actions/install-cosign/", ".forgejo/actions/cache-github-assets/")
 WORKFLOW = ".forgejo/workflows/build-builder-image.yml"
 
 
