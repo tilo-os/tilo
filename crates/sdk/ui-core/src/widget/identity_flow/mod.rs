@@ -1453,25 +1453,11 @@ impl InviteRedemptionAuthority {
         self.root.join(hex::encode(Sha512::digest(capability)))
     }
 
-    #[allow(
-        clippy::disallowed_methods,
-        reason = "a bounded retry on an advisory file lock held by another process; nothing to schedule"
-    )]
-    fn issue_lock(&self) -> Result<std::fs::File, IdentityFlowError> {
+    /// Serializes invite issuance across processes. Holders only read and
+    /// write small private files, so waiting for one is bounded by that I/O.
+    fn issue_lock(&self) -> Result<advisory_lock::FileLock, IdentityFlowError> {
         let file = private_fs::lock_file(&(self.root.join("issue.lock")))?;
-        for _ in 0..250 {
-            match file.try_lock() {
-                Ok(()) => return Ok(file),
-                Err(std::fs::TryLockError::WouldBlock) => {
-                    std::thread::sleep(Duration::from_millis(2));
-                }
-                Err(std::fs::TryLockError::Error(error)) => return Err(error.into()),
-            }
-        }
-        Err(IdentityFlowError::Io(std::io::Error::new(
-            std::io::ErrorKind::WouldBlock,
-            "invite authority is busy",
-        )))
+        Ok(advisory_lock::FileLock::exclusive(file)?)
     }
 
     fn master_key(&self) -> Result<zeroize::Zeroizing<[u8; 32]>, IdentityFlowError> {

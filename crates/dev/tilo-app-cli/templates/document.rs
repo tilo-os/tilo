@@ -1,8 +1,10 @@
 use serde::{Deserialize, Serialize};
+use ui::automerge::transaction::Transactable;
 use ui::prelude::{
-    ActionError, ActionRegistry, Doc, ExecutionLocus, Resource, Text, TextInput, TextRole,
-    Transactable, Widget, labeled_field, tilo_actions,
+    ActionError, ActionRegistry, ExecutionLocus, Text, TextInput, TextRole, Widget, labeled_field,
+    tilo_actions,
 };
+use ui::tilo_actions::{Doc, Resource};
 
 const DOCUMENT_ACTION_TYPE: &str = "generated.document.action";
 

@@ -445,7 +445,7 @@ pub struct NotesApp {
     legacy_read_blocked: Option<PageId>,
     /// Last framework-owned durability projection; querying it never touches the record.
     record_save_status: ui::record::RecordSaveStatus,
-    pub(crate) workspace_lock: Option<std::fs::File>,
+    pub(crate) workspace_lock: Option<advisory_lock::FileLock>,
     /// A host-portal file choice in flight. File access never escapes the
     /// workspace sandbox without an explicit portal grant.
     markdown_transfer: Option<(MarkdownTransfer, ui::portal::PortalChannel)>,
@@ -580,7 +580,7 @@ struct LegacyFixtureStorage {
     saver: Saver,
     page_saver: PageSaver,
     // Declared last: both saver Drop implementations join before unlocking.
-    _lock: std::fs::File,
+    _lock: advisory_lock::FileLock,
 }
 
 impl NotesApp {

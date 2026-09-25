@@ -7,6 +7,7 @@ license.workspace = true
 description = "Default-deny single Windows appliance and RemoteApp integration for Tilo"
 
 [dependencies]
+advisory-lock = { path = "../../system/advisory-lock" }
 base64.workspace = true
 bounded-command = { path = "../../system/bounded-command" }
 atomic-file = { path = "../../system/atomic-file" }

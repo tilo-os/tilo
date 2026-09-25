@@ -129,8 +129,9 @@ fn write_private_root_file(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
 /// Opening without `create` ensures a writer arriving after cleanup cannot
 /// recreate any part of the path.
 #[cfg(unix)]
-pub(crate) fn private_root_write_guard(directory: &Path) -> Result<Option<std::fs::File>, String> {
-    use std::os::fd::AsRawFd;
+pub(crate) fn private_root_write_guard(
+    directory: &Path,
+) -> Result<Option<advisory_lock::FileLock>, String> {
     let Some(root) = ROOT.get() else {
         return Ok(None);
     };
@@ -145,14 +146,12 @@ pub(crate) fn private_root_write_guard(directory: &Path) -> Result<Option<std::f
         .write(true)
         .open(root.join(PRIVATE_ROOT_LOCK))
         .map_err(|_| "Private browser cache is closing".to_string())?;
-    // SAFETY: flock only observes the valid descriptor owned by `file`.
-    if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_SH) } != 0 {
-        return Err("Private browser cache lock is unavailable".into());
-    }
+    let lock = advisory_lock::FileLock::shared(file)
+        .map_err(|_| "Private browser cache lock is unavailable".to_string())?;
     if !is_owned_private_root(root) {
         return Err("Private browser cache is closing".into());
     }
-    Ok(Some(file))
+    Ok(Some(lock))
 }
 
 #[cfg(not(unix))]
@@ -160,7 +159,9 @@ pub(crate) fn private_root_write_guard(directory: &Path) -> Result<Option<std::f
     clippy::unnecessary_wraps,
     reason = "platform implementations share a fallible guard signature"
 )]
-pub(crate) fn private_root_write_guard(_directory: &Path) -> Result<Option<std::fs::File>, String> {
+pub(crate) fn private_root_write_guard(
+    _directory: &Path,
+) -> Result<Option<advisory_lock::FileLock>, String> {
     Ok(None)
 }
 

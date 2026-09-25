@@ -10,6 +10,7 @@ name = "accounts"
 path = "src/lib.rs"
 
 [dependencies]
+advisory-lock = { path = "../advisory-lock" }
 # Credentials are long-lived bearer secrets, so the vault is sealed on disk
 # with XChaCha20-Poly1305 under a 256-bit key held by Secret Service, DPAPI
 # or an owner-only local file; the shared crate owns both the format and

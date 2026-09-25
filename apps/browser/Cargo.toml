@@ -26,6 +26,8 @@ wpe = ["ui/webview-wpe"]
 thin = ["dep:runtime-dylib"]
 
 [dependencies]
+# Session-store ownership and the private cache root's cleanup barrier.
+advisory-lock = { path = "../../crates/system/advisory-lock" }
 # ui — UI toolkit. The browser is chrome around the toolkit's WebView
 # widget: the engine lives behind `ui::webview::WebViewEngine`, and the
 # `webview-adblock` feature provides filter-list compilation. The default

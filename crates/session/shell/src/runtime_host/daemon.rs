@@ -9,7 +9,6 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{
     ffi::OsString,
-    fs::File,
     io::{self, BufRead, BufReader, Read, Write},
     os::unix::{
         fs::PermissionsExt,
@@ -163,36 +162,21 @@ fn probe(profile: &Path) -> io::Result<Status> {
     Ok(status)
 }
 
-fn lock_until(file: &File, deadline: Instant) -> io::Result<()> {
-    loop {
-        match file.try_lock() {
-            Ok(()) => return Ok(()),
-            Err(std::fs::TryLockError::Error(error)) => return Err(error),
-            Err(std::fs::TryLockError::WouldBlock) => {}
-        }
-        if Instant::now() >= deadline {
-            return Err(io::Error::new(
-                io::ErrorKind::TimedOut,
-                "native runtime startup lock timed out",
-            ));
-        }
-        std::thread::sleep(Duration::from_millis(25));
-    }
-}
-
 fn ensure_running(profile: &Path) -> io::Result<Status> {
     validate_profile(profile)?;
+    if let Ok(status) = probe(profile) {
+        return Ok(status);
+    }
+    // A holder is another launcher starting the daemon, which gives up
+    // after START_TIMEOUT, so waiting for it is bounded by that deadline.
+    let _start =
+        advisory_lock::FileLock::exclusive(unix::private_file(&profile.join("start.lock"))?)?;
     if let Ok(status) = probe(profile) {
         return Ok(status);
     }
     let deadline = Instant::now()
         .checked_add(START_TIMEOUT)
         .ok_or_else(|| io::Error::other("startup deadline overflow"))?;
-    let lock = unix::private_file(&profile.join("start.lock"))?;
-    lock_until(&lock, deadline)?;
-    if let Ok(status) = probe(profile) {
-        return Ok(status);
-    }
     let log = unix::private_file(&profile.join("daemon.log"))?;
     let mut command = Command::new(std::env::current_exe()?);
     command
