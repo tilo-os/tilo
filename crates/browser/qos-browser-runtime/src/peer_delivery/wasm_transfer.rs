@@ -313,6 +313,64 @@ fn manifest_inner(peer: &Peer, bytes: &[u8], original: Option<&Staged>) -> Resul
     });
     Ok(value)
 }
+/// Re-queue a snapshot request whose HTTP attempt failed transiently, at the
+/// exact step it was issued from. Nothing it would have advanced has changed.
+pub(super) fn requeue(delivery: &mut DeliveryState, pending: &Pending) -> bool {
+    match pending {
+        // `begin` re-issues the baseline while `needs_snapshot` stays set.
+        Pending::Snapshot => delivery.needs_snapshot && delivery.recovery.selected.is_none(),
+        // Return the selected staged candidate for another renewal attempt.
+        Pending::SnapshotResume => {
+            if delivery.recovery.discarding {
+                return false;
+            }
+            let Some(slot) = delivery
+                .recovery
+                .candidates
+                .iter()
+                .position(Option::is_none)
+            else {
+                return false;
+            };
+            match delivery.recovery.selected.take() {
+                Some(value) => {
+                    delivery.recovery.candidates[slot] = Some(value);
+                    true
+                }
+                None => false,
+            }
+        }
+        Pending::SnapshotChunk(index) => match &delivery.transfer {
+            Some(transfer) if matches!(transfer.phase, Phase::Downloading) => {
+                delivery.retry_chunk = Some(*index);
+                true
+            }
+            _ => false,
+        },
+        Pending::SnapshotRenew(index) => match delivery.transfer.as_mut() {
+            Some(transfer)
+                if matches!(transfer.phase, Phase::Downloading)
+                    && transfer.renewal_index == Some(*index) =>
+            {
+                // `fetch_chunk` renews again when the pin is still near expiry.
+                transfer.renewal_index = None;
+                delivery.retry_chunk = Some(*index);
+                true
+            }
+            _ => false,
+        },
+        _ => false,
+    }
+}
+/// Scheduler turn for a re-queued chunk: fresh proof, pin checked again.
+pub(super) fn retry_chunk(peer: &Peer, index: u32) -> Result<String, JsValue> {
+    check(peer)?;
+    match peer.delivery.borrow().transfer.as_ref() {
+        Some(transfer) if matches!(transfer.phase, Phase::Downloading) => {}
+        _ => return Ok("{\"kind\":\"idle\"}".into()),
+    }
+    fetch_chunk(peer, index)
+}
 fn fetch_chunk(peer: &Peer, index: u32) -> Result<String, JsValue> {
     let mut state = peer.delivery.borrow_mut();
     let transfer = state

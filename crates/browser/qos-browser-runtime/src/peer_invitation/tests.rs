@@ -41,6 +41,9 @@ impl Fixture {
         }
     }
     fn invitation(&self, recipient: Option<[u8; 32]>) -> String {
+        self.invitation_until(recipient, NOW + 600_000_000_000)
+    }
+    fn invitation_until(&self, recipient: Option<[u8; 32]>, expires_at_ns: u64) -> String {
         let grant = InviteGrant {
             workspace_id: tilo_relay::room_workspace_id(ROOM).unwrap(),
             room: ROOM.into(),
@@ -51,7 +54,7 @@ impl Fixture {
             nonce: [4; 16],
             recipient_user_public_key: recipient,
             invitee_name: None,
-            expires_at_ns: NOW + 600_000_000_000,
+            expires_at_ns,
             transport: vec![],
         };
         join::encode_invitation_text(&join::issue_invitation(grant, &self.governor_key).unwrap())
@@ -574,4 +577,80 @@ fn literal_v2_enrollment_material_remains_accepted_only_by_the_existing_owner_so
         "0909090909090909090909090909090909090909090909090909090909090909"
     );
     assert!(super::InvitedIdentity::read(legacy, 1_000_000_000_000).is_err());
+}
+
+/// The host-side checks a guest's fresh certificate meets on join: the
+/// onboarding transport's current-device check, the Store's join challenge,
+/// and the join proof, all at the host's own (strict) clock.
+fn host_admits_guest_created_at(guest_now: u64, host_now: u64) -> Result<(), String> {
+    let f = Fixture::new();
+    let invitation = f.invitation_until(None, NOW + 3_600_000_000_000);
+    let bytes = InvitedIdentity::create(&invitation, "guest", guest_now)?;
+    let mut identity = InvitedIdentity::read(&bytes, guest_now)?;
+    tilo_user_identity::verify_device_cert_at(identity.certificate(), host_now)
+        .map_err(|e| e.to_string())?;
+    let verified = join::decode_and_verify_invitation_text(
+        &invitation,
+        None,
+        &tilo_user_identity::RevocationList::new(),
+        host_now,
+    )?;
+    let challenge = join::JoinChallenge::new(
+        &verified,
+        identity.certificate(),
+        identity.request_id(),
+        [9; 32],
+        // The Cloud Store's join challenge lifetime.
+        host_now + 300_000_000_000,
+        host_now,
+    )?;
+    identity.checkpoint_challenge(challenge.clone(), guest_now)?;
+    let complete: join::JoinCompleteRequest =
+        postcard::from_bytes(identity.completion().unwrap()).unwrap();
+    join::verify_join_proof(
+        &complete.proof,
+        &challenge,
+        identity.certificate(),
+        &tilo_user_identity::RevocationList::new(),
+        host_now,
+    )
+    .map(|_| ())
+}
+
+#[test]
+fn guest_clock_slightly_ahead_of_the_host_is_still_admitted() {
+    for ahead in [0, 1_000_000_000, 60_000_000_000, 119_000_000_000] {
+        host_admits_guest_created_at(NOW + ahead, NOW)
+            .unwrap_or_else(|error| panic!("guest {ahead}ns ahead refused: {error}"));
+    }
+}
+
+#[test]
+fn guest_clock_far_ahead_of_the_host_is_still_refused() {
+    let error = host_admits_guest_created_at(NOW + 600_000_000_000, NOW).unwrap_err();
+    assert!(error.contains("not yet valid"), "{error}");
+}
+
+#[test]
+fn guest_certificate_is_backdated_by_exactly_the_bound_and_custody_rejects_other_issuance() {
+    let f = Fixture::new();
+    let bytes = InvitedIdentity::create(&f.invitation(None), "guest", NOW).unwrap();
+    let identity = InvitedIdentity::read(&bytes, NOW).unwrap();
+    assert_eq!(identity.certificate().issued_at_ns, NOW - ISSUE_BACKDATE_NS);
+    let reissue = |issued_at_ns: u64| {
+        let mut material: MaterialV3 = serde_json::from_slice(&bytes).unwrap();
+        material.certificate.issued_at_ns = issued_at_ns;
+        tilo_user_identity::sign_device_cert(
+            &mut material.certificate,
+            &SigningKey::from_bytes(&material.root_secret),
+        )
+        .unwrap();
+        InvitedIdentity::encode_material(&material).unwrap()
+    };
+    // Custody written before backdating (issued_at == created_at) still restores.
+    InvitedIdentity::read(&reissue(NOW), NOW).unwrap();
+    // Any other issuance is a custody mismatch, including a deeper backdate.
+    for issued in [NOW - ISSUE_BACKDATE_NS - 1, NOW - 1, NOW + 1] {
+        assert!(InvitedIdentity::read(&reissue(issued), NOW + 1).is_err());
+    }
 }

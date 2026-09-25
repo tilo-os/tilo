@@ -42,6 +42,59 @@ const DEFERRED_RETRY_ATTEMPTS = 40;
 const MAX_DEFERRED = 64;
 const RESUBSCRIBE_MAX_MS = 5000;
 
+/**
+ * Agent activity (lane H): the host publishes one `OpsFrame::Preview` per
+ * change (heartbeat 1 s while active) on this record in the agent's own live
+ * namespace, `agent_publisher(room, authority, agent_id)`. Receivers recompute
+ * that namespace locally and accept nothing else. Mirrors
+ * `live_wire::AGENT_ACTIVITY_APP`/`AGENT_ACTIVITY_RECORD`.
+ */
+export const AGENT_ACTIVITY_RECORD = Object.freeze({app: 'so.tilo.agent', record: '@qos:agent-activity'});
+/** An agent with no activity frame for this long is gone. */
+export const AGENT_ACTIVITY_EXPIRE_MS = 15000;
+export const AGENT_STATES = Object.freeze(['thinking', 'tool', 'writing', 'replying', 'applying', 'done', 'failed', 'idle']);
+/** States in which an agent is working right now. */
+export const AGENT_ACTIVE_STATES = Object.freeze(['thinking', 'tool', 'writing', 'replying', 'applying']);
+const MAX_ACTIVITY_BYTES = 1024;
+/** Fixed preview anchor of an activity insert (`live_wire::AGENT_ACTIVITY_ANCHOR`). */
+const ACTIVITY_ANCHOR = 'a1';
+const ACTIVITY_FIELDS = new Set(['v', 'agent', 'name', 'state', 'label', 'tool', 'at_ms', 'status']);
+/** Member-visible agent status (`live_wire::AGENT_STATUSES`, the agent-reads statuses). */
+export const AGENT_STATUSES = Object.freeze(['starting', 'running', 'waiting', 'paused', 'completed', 'failed']);
+const MAX_AGENTS = 64;
+const ROSTER_REFRESH_MS = 2000;
+// eslint-disable-next-line no-control-regex
+const CONTROL = /[\u0000-\u001f\u007f]/;
+const utf8 = new TextEncoder();
+/** `live_wire` field bounds: UTF-8 bytes, no control characters. */
+const boundedText = (value, min, max) => {
+  if (typeof value !== 'string' || CONTROL.test(value)) return null;
+  const bytes = utf8.encode(value).byteLength;
+  return bytes >= min && bytes <= max ? value : null;
+};
+
+/**
+ * Parse one activity insert (`AgentActivityJson`), strictly and bounded.
+ * Returns `{agentId, name, state, label, tool, atMs}` or null.
+ */
+export function decodeAgentActivity(text) {
+  if (typeof text !== 'string' || !text || utf8.encode(text).byteLength > MAX_ACTIVITY_BYTES) return null;
+  let value;
+  try { value = JSON.parse(text); } catch { return null; }
+  if (!value || typeof value !== 'object' || Array.isArray(value) || value.v !== 1) return null;
+  if (Object.keys(value).some(key => !ACTIVITY_FIELDS.has(key))) return null;
+  const agentId = boundedText(value.agent, 1, 128);
+  const name = boundedText(value.name, 1, 64);
+  const label = boundedText(value.label, 0, 120);
+  const tool = value.tool == null ? null : boundedText(value.tool, 1, 64);
+  if (!agentId || !name || label === null || !AGENT_STATES.includes(value.state)) return null;
+  if (value.tool != null && !tool) return null;
+  if (!Number.isSafeInteger(value.at_ms) || value.at_ms < 0) return null;
+  if (value.status != null && !AGENT_STATUSES.includes(value.status)) return null;
+  return {agentId, name: name.trim() || 'Agent', state: value.state, label: label.trim(), tool, atMs: value.at_ms, status: value.status ?? null};
+}
+
+
 const failure = (message, code = 'unavailable') => Object.assign(Error(message), {code});
 
 /** Canonical codec from the WASM runtime (Rust owns every encoding). */
@@ -70,6 +123,7 @@ function listeners() {
   };
 }
 const recordKey = record => `${record.app}\u0000${record.record}`;
+const ACTIVITY_KEY = recordKey(AGENT_ACTIVITY_RECORD);
 function validRecord(record) {
   if (!record || typeof record.app !== 'string' || typeof record.record !== 'string'
     || !record.app || !record.record || record.app.length > 128 || record.record.length > 128) {
@@ -98,7 +152,7 @@ export function createLiveClient({
 
   const events = {
     state: listeners(), publish: listeners(), presence: listeners(), preview: listeners(),
-    signedChange: listeners(), member: listeners(), durable: listeners(),
+    signedChange: listeners(), member: listeners(), durable: listeners(), agentActivity: listeners(),
   };
   let state = 'idle';
   let closed = false;
@@ -112,7 +166,14 @@ export function createLiveClient({
   let lastImmediate = -Infinity;
   let connecting;
   const remotes = new Map();
-  const watched = new Map(); // key -> {record, count}
+  // key -> {record, count}. Agent activity is received from every member for
+  // as long as the client lives.
+  const watched = new Map([[recordKey(AGENT_ACTIVITY_RECORD), {record: AGENT_ACTIVITY_RECORD, count: 1}]]);
+  const agents = new Map(); // publisher -> {agentId, name, state, label, tool, atMs, receivedAtMs}
+  const agentPublishers = new Map(); // agent id -> expected publisher hex
+  let agentTimer;
+  let roster = null;
+  let rosterAt = -Infinity;
   const trackNames = new Map(); // key -> ops track
   const previewSeqs = new Map(); // key -> seq
   // key -> {record, items}: preview ops, and `{signed}` frames of this peer's
@@ -123,7 +184,7 @@ export function createLiveClient({
   let tokens = OPS_RATE;
   let tokensAt = now();
   let flushTimer;
-  const stats = {connects: 0, reconnects: 0, renewals: 0, revocations: 0, fallbacks: 0, previewsSent: 0, previewsDropped: 0, signedPublished: 0, signedPublishDropped: 0, signedAdmitted: 0, signedDuplicate: 0, signedDeferred: 0, signedRetryAdmitted: 0, signedRetryAbandoned: 0, signedWithdrawn: 0};
+  const stats = {connects: 0, reconnects: 0, renewals: 0, revocations: 0, fallbacks: 0, previewsSent: 0, previewsDropped: 0, signedPublished: 0, signedPublishDropped: 0, signedAdmitted: 0, signedDuplicate: 0, signedDeferred: 0, signedRetryAdmitted: 0, signedRetryAbandoned: 0, signedWithdrawn: 0, agentActivityAccepted: 0, agentActivityRejected: 0, agentSignedAdmitted: 0, agentSignedDuplicate: 0, agentSignedDeferred: 0};
   let deferredTimer;
   let reconcileTimer;
   let reconcileAtMs = Infinity;
@@ -439,6 +500,8 @@ export function createLiveClient({
       const key = recordKey(frame.record);
       if (frame.seq <= (remote.previewSeq.get(key) ?? -1)) return;
       remote.previewSeq.set(key, frame.seq);
+      // Activity is state, not typing: it never reaches preview listeners.
+      if (key === ACTIVITY_KEY) { onAgentActivity(remote, frame); return; }
       events.preview.emit({publisher: remote.id, record: frame.record, seq: frame.seq, ops: frame.ops, receivedAtMs, receivedWallMs});
       return;
     }
@@ -448,6 +511,69 @@ export function createLiveClient({
     if (remote.deferred.length) { deferChange(remote, entry); return; }
     if (admitChange(remote, entry) === 'deferred') deferChange(remote, entry);
   }
+  // ---- Agent activity ---------------------------------------------------------
+  /** The agent's namespace recomputed from this Peer's room and authority. */
+  function expectedAgentPublisher(agentId) {
+    let expected = agentPublishers.get(agentId);
+    if (expected === undefined) {
+      try {
+        const value = typeof runtime.peer_live_agent_publisher === 'function' ? runtime.peer_live_agent_publisher(peerId, agentId) : null;
+        expected = typeof value === 'string' && /^[0-9a-f]{64}$/.test(value) ? value : null;
+      } catch (error) { report(error); expected = null; }
+      if (agentPublishers.size >= MAX_AGENTS * 4) agentPublishers.clear();
+      if (expected) agentPublishers.set(agentId, expected);
+    }
+    return expected;
+  }
+  /** A roster device can never be an agent, whatever it claims. */
+  function isRosterDevice(publisherId) {
+    const t = now();
+    if (!roster || t - rosterAt >= ROSTER_REFRESH_MS) {
+      rosterAt = t;
+      try {
+        const rows = typeof runtime.peer_live_members === 'function' ? JSON.parse(runtime.peer_live_members(peerId)) : [];
+        roster = new Set((Array.isArray(rows) ? rows : []).map(row => row?.device).filter(device => typeof device === 'string'));
+      } catch (error) { report(error); roster ??= new Set(); }
+    }
+    return roster.has(publisherId);
+  }
+  function onAgentActivity(remote, frame) {
+    // Exactly one insert at the fixed anchor (`AgentActivity::from_frame`).
+    const [insert, extra] = Array.isArray(frame.ops) ? frame.ops : [];
+    const value = insert?.kind === 'insert' && insert.at === ACTIVITY_ANCHOR && extra === undefined ? decodeAgentActivity(insert.text) : null;
+    if (!value || expectedAgentPublisher(value.agentId) !== remote.id || isRosterDevice(remote.id)
+      || (!agents.has(remote.id) && agents.size >= MAX_AGENTS)) {
+      stats.agentActivityRejected++;
+      return;
+    }
+    stats.agentActivityAccepted++;
+    const entry = {publisher: remote.id, ...value, receivedAtMs: now()};
+    agents.set(remote.id, entry);
+    scheduleAgentExpiry();
+    events.agentActivity.emit({...entry, expired: false});
+  }
+  function scheduleAgentExpiry() {
+    if (agentTimer !== undefined || closed || !agents.size) return;
+    let first = Infinity;
+    for (const entry of agents.values()) first = Math.min(first, entry.receivedAtMs);
+    agentTimer = setTimer(expireAgents, Math.max(0, first + AGENT_ACTIVITY_EXPIRE_MS - now()) + 1);
+  }
+  function expireAgents() {
+    agentTimer = undefined;
+    if (closed) return;
+    const t = now();
+    for (const [publisherId, entry] of agents) {
+      if (t - entry.receivedAtMs < AGENT_ACTIVITY_EXPIRE_MS) continue;
+      agents.delete(publisherId);
+      events.agentActivity.emit({...entry, expired: true});
+    }
+    scheduleAgentExpiry();
+  }
+  function agentList() {
+    const t = now();
+    return [...agents.values()].filter(entry => t - entry.receivedAtMs < AGENT_ACTIVITY_EXPIRE_MS).map(entry => ({...entry}));
+  }
+
   /** One admission attempt; emits the outcome. Returns the result kind. */
   function admitChange(remote, entry) {
     const {frame} = entry;
@@ -457,6 +583,12 @@ export function createLiveClient({
     const retried = entry.attempts > 0;
     entry.attempts++;
     if (result.kind === 'admitted') { stats.signedAdmitted++; if (retried) stats.signedRetryAdmitted++; }
+    // Forwarded changes from a verified agent namespace (agent live streaming).
+    if (agents.has(remote.id)) {
+      if (result.kind === 'admitted') stats.agentSignedAdmitted++;
+      else if (result.kind === 'duplicate') stats.agentSignedDuplicate++;
+      else if (!retried) stats.agentSignedDeferred++;
+    }
     else if (result.kind === 'duplicate') stats.signedDuplicate++;
     else if (!retried) stats.signedDeferred++;
     if (!retried || result.kind !== 'deferred') {
@@ -651,9 +783,15 @@ export function createLiveClient({
     onSignedChange: callback => events.signedChange.add(callback),
     onMember: callback => events.member.add(callback),
     onDurable: callback => events.durable.add(callback),
-    stats: () => ({...stats, state, presence: publisher.stats(), transport: session?.stats?.(), remotes: remotes.size}),
+    /** Agents with activity in the last AGENT_ACTIVITY_EXPIRE_MS, verified by namespace. */
+    agents: agentList,
+    /** Each accepted activity frame, and `{expired: true}` when an agent goes quiet. */
+    onAgentActivity: callback => events.agentActivity.add(callback),
+    stats: () => ({...stats, state, presence: publisher.stats(), transport: session?.stats?.(), remotes: remotes.size, agents: agents.size}),
   });
 
+  // Read-only diagnostic counters for proofs (no content, no capability).
+  try { globalThis.__qosLiveStats = () => api.stats(); } catch {}
   return {
     api,
     start() { if (!closed && state === 'idle') void connect(); },
@@ -671,6 +809,8 @@ export function createLiveClient({
       if (flushTimer !== undefined) clearTimer(flushTimer);
       if (reconcileTimer !== undefined) clearTimer(reconcileTimer);
       if (deferredTimer !== undefined) clearTimer(deferredTimer);
+      if (agentTimer !== undefined) clearTimer(agentTimer);
+      agents.clear();
       try { runtime.peer_live_author_listen?.(peerId, null); } catch {}
       previewQueues.clear();
       publisher.stop();

@@ -131,22 +131,26 @@ function bindTicketDesktopCommands({actions,peek,ack,report,onPending,onUpdate,c
       try{
         let row=retained(pending.invocation),ticket=row?.ticket;
         if(row&&row.intent.argument?.command!==pending.command)throw Error('Original desktop parent intent changed');
+        if(!ticket&&value.admissionStarted){row=retained(pending.invocation);if(!row)throw Error('Original admission is unconfirmed; no replacement was created');ticket=row.ticket;}
         if(!ticket){
-          const capability=await actions.catalogue(options);
-          if(value.binding&&JSON.stringify(value.binding)!==JSON.stringify(capability.binding))throw Error('Action identity changed during discovery');
-          if(value.admissionStarted){row=retained(pending.invocation);if(!row)throw Error('Original admission is unconfirmed; no replacement was created');ticket=row.ticket;}
-          if(!ticket){
           if(closed||value.controller.signal.aborted||peek()?.invocation!==pending.invocation)throw Error('Desktop command attempt cancelled');
-          const matches=capability.catalogue.surfaces.filter(s=>s.live!==false&&s.cluster_id===capability.binding.room&&s.app_id==='dev.qos.desktop'&&s.record_id==='').flatMap(surface=>(surface.actions??[]).filter(a=>a.resource==='desktop:session'&&a.action==='command').map(action=>({surface,action})));
-          if(matches.length!==1)throw Error('Native desktop command service is unavailable');
-          const {surface,action}=matches[0];
-          value.admissionStarted=true;ticket=await actions.beginNew({app_peer:String(surface.peer_id),app_id:surface.app_id,record_id:surface.record_id,resource:action.resource,action:action.action,revision:action.revision??null,argument:{command:pending.command,...(action.params?.some(p=>p.name==='committed_desktop_v2'&&p.ty==='boolean')?{committed_desktop_v2:true}:{})},expected:{host:capability.host,binding:capability.binding,descriptor:action}},{...options,consumer:consumer(pending.invocation)});
-          }
+          // One scoped discovery selects the desktop command action and admits the ticket.
+          const select=capability=>{
+            if(value.binding&&JSON.stringify(value.binding)!==JSON.stringify(capability.binding))throw Error('Action identity changed during discovery');
+            if(closed||value.controller.signal.aborted||peek()?.invocation!==pending.invocation)throw Error('Desktop command attempt cancelled');
+            const matches=capability.catalogue.surfaces.filter(s=>s.live!==false&&s.cluster_id===capability.binding.room&&s.app_id==='dev.qos.desktop'&&s.record_id==='').flatMap(surface=>(surface.actions??[]).filter(a=>a.resource==='desktop:session'&&a.action==='command').map(action=>({surface,action})));
+            if(matches.length!==1)throw Error('Native desktop command service is unavailable');
+            const {surface,action}=matches[0];
+            value.admissionStarted=true;
+            return {app_peer:String(surface.peer_id),app_id:surface.app_id,record_id:surface.record_id,resource:action.resource,action:action.action,revision:action.revision??null,argument:{command:pending.command,...(action.params?.some(p=>p.name==='committed_desktop_v2'&&p.ty==='boolean')?{committed_desktop_v2:true}:{})},expected:{host:capability.host,binding:capability.binding,descriptor:action}};
+          };
+          if(typeof actions.beginSelected==='function')ticket=await actions.beginSelected(select,{...options,consumer:consumer(pending.invocation),discoveryScope:DESKTOP_SCOPE});
+          else {const capability=await actions.catalogue(options);ticket=await actions.beginNew(select(capability),{...options,consumer:consumer(pending.invocation)});}
         }
         if(closed||value.controller.signal.aborted||peek()?.invocation!==pending.invocation||peek()?.command!==pending.command)return;
         // The persisted mapping owns recovery before presentation leaves Rust.
         value.acknowledged=true;if(peek()?.invocation===pending.invocation)ack(pending.invocation);
-        row=await actions.drive(ticket,{signal:value.controller.signal,deadlineAtMs:value.deadline});present(row);
+        row=await actions.drive(ticket,{signal:value.controller.signal,deadlineAtMs:value.deadline,dispatchFresh:true});present(row);
       }catch(error){
         if(!closed){const row=retained(pending.invocation);if(row){if(peek()?.invocation===pending.invocation)ack(pending.invocation);present(row);}else {value.retryAfter=now()+[250,1000,30000][Math.min(value.retries++,2)];report({desktopCommand:{invocation:pending.invocation,state:'unknown',terminal:false,error:String(error.message??error)}});}}
       }finally{if(attempt===value)attempt=undefined;}

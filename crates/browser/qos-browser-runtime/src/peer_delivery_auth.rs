@@ -14,6 +14,11 @@ use web_time::{Duration, SystemTime};
 
 /// Browser wall-clock resolution (Date.now is milliseconds, possibly coarsened).
 const CLOCK_RESOLUTION_NS: u64 = 2_000_000;
+/// A bootstrap response is issued by the host's clock, which is a different
+/// machine than this browser. Accept host clocks up to this far ahead (the
+/// response expiry is still enforced against the local clock). Matches the
+/// Cloud owner onboarding tolerance.
+const HOST_CLOCK_TOLERANCE_NS: u64 = 120_000_000_000;
 /// Borrowed only from the live Peer and its acknowledged descriptor floor.
 /// No field is supplied by a JS proof/identity object.
 pub(crate) struct OwnerView<'a> {
@@ -114,6 +119,16 @@ impl auth::Authority for OwnerView<'_> {
         Ok(())
     }
 }
+/// Error prefix for a host descriptor renewed during a handshake.
+pub(crate) const DESCRIPTOR_RENEWED: &str =
+    "descriptor-renewed: the host renewed its delivery descriptor during this handshake";
+/// The (unverified) challenge answer names a newer descriptor than the one
+/// this handshake pinned at bootstrap. Only selects the refusal's wording.
+fn descriptor_renewed(proof: &auth::ServerProof, pinned: &VerifiedDescriptor) -> bool {
+    let binding = &proof.transcript.binding;
+    binding.descriptor_generation > pinned.generation()
+        && binding.descriptor_digest != pinned.descriptor_digest()
+}
 pub(crate) fn time(ns: u64) -> SystemTime {
     SystemTime::UNIX_EPOCH + Duration::from_nanos(ns)
 }
@@ -206,7 +221,7 @@ impl Bootstrap {
             || response.host_certificate != postcard::to_stdvec(view.host).map_err(fail)?
             || response.generation != self.descriptor.generation()
             || response.descriptor_digest != self.descriptor.descriptor_digest()
-            || response.issued_at_ns > view.now_ns.saturating_add(CLOCK_RESOLUTION_NS)
+            || response.issued_at_ns > view.now_ns.saturating_add(HOST_CLOCK_TOLERANCE_NS)
             || response.expires_at_ns <= view.now_ns
             || self.request.workspace != view.workspace
             || self.request.root != view.governor.user_public_key
@@ -526,7 +541,19 @@ impl DeliveryAuthority {
                 // The host stamps nanoseconds; the browser clock has millisecond
                 // resolution. Verify at the end of the current browser tick so
                 // a reply issued within the same millisecond is not "future".
-                now_ns: view.now_ns.saturating_add(CLOCK_RESOLUTION_NS),
+                // The host is also a different machine: a transcript issued by
+                // a host clock at most HOST_CLOCK_TOLERANCE_NS ahead is verified
+                // at its own issue instant (expiry is then checked against that
+                // later instant, which is only stricter).
+                now_ns: {
+                    let local = view.now_ns.saturating_add(CLOCK_RESOLUTION_NS);
+                    let issued = proof.transcript.issued_at_ns;
+                    if issued > local && issued - local <= HOST_CLOCK_TOLERANCE_NS {
+                        issued
+                    } else {
+                        local
+                    }
+                },
             },
             nonce,
             proof,
@@ -550,6 +577,14 @@ impl DeliveryAuthority {
         match pending {
             Pending::Server { nonce } => {
                 let proof = auth::ServerProof::decode(bytes).map_err(fail)?;
+                // The host renewed its descriptor between this bootstrap and
+                // the challenge (its pin moved on): the proof can never match
+                // our pinned scope. Report that distinctly (still refusing the
+                // unverified proof) so the session re-enrolls with the fresh
+                // descriptor at once instead of surfacing a scope mismatch.
+                if descriptor_renewed(&proof, &self.descriptor) {
+                    return Err(DESCRIPTOR_RENEWED.into());
+                }
                 let verified = self.verify_host(view, &proof, nonce)?;
                 let transcript = &proof.transcript;
                 let digest = http_proof::session_binding_digest(

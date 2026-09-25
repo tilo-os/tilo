@@ -19,7 +19,7 @@ const cloud={accountId:'acct',machineId:'m-1',label:'Owner browser',enrollment:{
 test('owner identity persists before use, is exclusive, and restores the same custody on reload',async()=>{
  const f=fixture();const lease=await f.open(cloud,f.session);
  assert.equal(f.counts().saves,1);assert.deepEqual(f.seen.find(v=>v[0]==='create'),['create','acct','m-1','Owner browser']);
- await assert.rejects(f.open(cloud,f.session),/occupied/);assert.equal(f.counts().creates,1);
+ await assert.rejects(f.open(cloud,f.session),error=>error.code==='open-in-other-tab');assert.equal(f.counts().creates,1);
  await lease.save(JSON.stringify({device:device(1),scope:SCOPE,binding:BINDING,step:'enrolled'}));await lease.release();
  const restored=await f.open(cloud,f.session);assert.equal(JSON.parse(restored.material).step,'enrolled');assert.equal(f.counts().creates,1);await restored.release();assert.equal(f.held.size,0);
 });

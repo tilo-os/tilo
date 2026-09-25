@@ -9,6 +9,6 @@ mod owner;
     not(target_arch = "wasm32"),
     allow(unused_imports, reason = "re-exports used only by the wasm32 build")
 )]
-pub(crate) use owner::{CloudOwner, CloudStep, EnrolledOwner, create, scope};
+pub(crate) use owner::{CLOCK_SKEW, CloudOwner, CloudStep, EnrolledOwner, create, scope};
 #[cfg(test)]
 mod tests;

@@ -74,6 +74,25 @@ export function memberLabel(publisher, member) {
   return member?.owner === true ? 'Owner' : `Guest ${String(publisher).slice(0, 4)}`;
 }
 
+/** Label for an agent publisher: always marked as an agent, never as a person. */
+export function agentLabel(name) {
+  const clean = typeof name === 'string' ? name.trim().slice(0, 40) : '';
+  return `${clean || 'Agent'} \u00b7 agent`;
+}
+
+/**
+ * Display identity of a live publisher. A roster device is always the member,
+ * even if an agent row claims it; a verified agent publisher (live client
+ * `agents()`: its namespace is `agent_publisher(room, authority, agent)`) is
+ * labelled as that agent; anything else keeps the guest tag.
+ */
+export function publisherIdentity(publisher, member, agent) {
+  if (!member && agent && typeof agent.agentId === 'string') {
+    return {label: agentLabel(agent.name), color: memberColor(`agent:${agent.agentId}`), agent: true};
+  }
+  return {label: memberLabel(publisher, member), color: memberColor(member?.user ?? publisher)};
+}
+
 /**
  * x offset marking a content-space pointer (2^19: far beyond any window
  * coordinate, and still 1/16 px precise in the wire's f32).
@@ -272,6 +291,14 @@ export const TYPING_MAX_CHARS = 64;
  */
 export const TYPING_EXPIRE_MS = 600;
 /**
+ * Agent typing previews (host-published, verified agent namespaces) are a
+ * sustained stream the host re-sends every 400 ms until the agent's forwarded
+ * signed change lands. They expire only after this long without any update,
+ * as a whole, so the caret label shows the agent's running tail instead of a
+ * per-chunk moving window.
+ */
+export const AGENT_TYPING_EXPIRE_MS = 4000;
+/**
  * While other members are live, this peer's edits publish within this many
  * milliseconds (one frame) instead of the runtime's configured publication
  * window: each publication reaches them at once as a signed change on this
@@ -314,11 +341,19 @@ export function createTypingTracker() {
       if (result === 'deferred') return;
       pending.delete(key(publisher, record));
     },
-    /** Text typed by `publisher` into `record` that has not landed, or null. */
-    text(publisher, record, at) {
+    /**
+     * Text typed by `publisher` into `record` that has not landed, or null.
+     * `sustained` (agent publishers): the entry expires as a whole after
+     * AGENT_TYPING_EXPIRE_MS without an update instead of chunk by chunk.
+     */
+    text(publisher, record, at, sustained = false) {
       const id = key(publisher, record);
       const chunks = pending.get(id);
       if (!chunks) return null;
+      if (sustained) {
+        if (at - chunks.at(-1).at >= AGENT_TYPING_EXPIRE_MS) { pending.delete(id); return null; }
+        return [...chunks.map(chunk => chunk.text).join('')].slice(-TYPING_MAX_CHARS).join('');
+      }
       const live = chunks.filter(chunk => at - chunk.at < TYPING_EXPIRE_MS);
       if (!live.length) { pending.delete(id); return null; }
       if (live.length !== chunks.length) pending.set(id, live);
@@ -527,6 +562,7 @@ export function createLiveOverlay({
   let lastPresented;
   let current = null; // parsed snapshot
   let memberRows = new Map();
+  let agentRows = new Map(); // publisher -> verified agent activity entry
   let membersAt = -Infinity;
   let membersDirty = true;
   let lastRemoteCount = 0;
@@ -535,8 +571,17 @@ export function createLiveOverlay({
   const report = error => { try { onError(error); } catch {} };
 
   function identity(publisher) {
-    const member = memberRows.get(publisher);
-    return {label: memberLabel(publisher, member), color: memberColor(member?.user ?? publisher)};
+    return publisherIdentity(publisher, memberRows.get(publisher), agentRows.get(publisher));
+  }
+  function refreshAgents() {
+    const next = new Map();
+    try {
+      const rows = typeof api?.agents === 'function' ? api.agents() : [];
+      for (const row of Array.isArray(rows) ? rows : []) if (row && typeof row.publisher === 'string') next.set(row.publisher, row);
+    } catch (error) { report(error); }
+    const changed = next.size !== agentRows.size || [...next].some(([key, row]) => agentRows.get(key)?.name !== row.name || agentRows.get(key)?.agentId !== row.agentId);
+    agentRows = next;
+    if (changed) selections.reset();
   }
   function refreshMembers(force) {
     const t = now();
@@ -569,6 +614,7 @@ export function createLiveOverlay({
     for (const off of unsubscribe) { try { off(); } catch {} }
     unsubscribe = [];
     api = next;
+    agentRows = new Map();
     if (!api) return;
     const wake = () => schedule();
     unsubscribe.push(api.onRemotePresence(wake));
@@ -580,6 +626,10 @@ export function createLiveOverlay({
     // it are then applied by the same runtime frame.
     if (typeof api.onPreview === 'function') unsubscribe.push(api.onPreview(value => { typing.preview(value, now()); projectSelections(); schedule(); }));
     if (typeof api.onSignedChange === 'function') unsubscribe.push(api.onSignedChange(value => { typing.landed(value, now()); projectSelections(); schedule(); }));
+    // Agent carets and preview labels carry the agent's name once its
+    // activity is verified (and lose it when the agent goes quiet).
+    if (typeof api.onAgentActivity === 'function') unsubscribe.push(api.onAgentActivity(() => { refreshAgents(); projectSelections(); schedule(); }));
+    refreshAgents();
     inputDirty = true;
     stateDirty = true;
     schedule();
@@ -587,7 +637,7 @@ export function createLiveOverlay({
   /** Remote carets/selections (+ in-flight typing) to the runtime, if changed. */
   function projectSelections(at = now()) {
     if (!api?.available) return;
-    const rows = selections.rows(api.remoteState(at), identity, remote => typing.text(remote.publisher, remote.focus, at));
+    const rows = selections.rows(api.remoteState(at), identity, remote => typing.text(remote.publisher, remote.focus, at, identity(remote.publisher).agent === true));
     if (rows) {
       try { applyRemote(rows); stats.selectionApplies++; } catch (error) { report(error); }
     }
@@ -625,7 +675,7 @@ export function createLiveOverlay({
     }
     if (inputDirty || drags.active) publish();
     inputDirty = false;
-    if (remotes.some(remote => !memberRows.has(remote.publisher))) membersDirty = true;
+    if (remotes.some(remote => !memberRows.has(remote.publisher) && !agentRows.has(remote.publisher))) membersDirty = true;
     refreshMembers(false);
     const cursors = [];
     for (const remote of remotes) {
@@ -640,7 +690,7 @@ export function createLiveOverlay({
       return {...ghost, color: who.color, label: who.label};
     });
     view.render({cursors, ghosts: ghostRows, members: new Set(remotes.map(remote => remote.publisher))});
-    const rows = selections.rows(remotes, identity, remote => typing.text(remote.publisher, remote.focus, started));
+    const rows = selections.rows(remotes, identity, remote => typing.text(remote.publisher, remote.focus, started, identity(remote.publisher).agent === true));
     if (rows) {
       try { applyRemote(rows); stats.selectionApplies++; } catch (error) { report(error); }
     }

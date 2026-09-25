@@ -1167,3 +1167,86 @@ fn join_accepts_bounded_host_clock_lead_without_extending_signed_lifetimes() {
         assert_eq!(view.presence_in_ns, 15_000_000_000);
     }
 }
+
+/// A host that renewed its descriptor between this client's bootstrap and its
+/// challenge answers with a transcript bound to the new descriptor. The
+/// handshake still refuses it, but as a distinct "descriptor-renewed" error
+/// (re-enroll with the fresh descriptor), never "scope mismatch".
+#[test]
+fn challenge_bound_to_a_renewed_descriptor_is_reported_as_renewed_not_scope_mismatch() {
+    let f = Fixture::new();
+    let view = f.view();
+    let renewed_hint = descriptor::issue_transport_hint(
+        &descriptor::DescriptorSettings {
+            origin: "https://media.test".into(),
+            delivery_capabilities: 3,
+            issued_at_ns: NOW,
+            expires_at_ns: NOW + 100_000_000_000,
+            generation: 2,
+        },
+        &view.descriptor_authority(),
+        &f.host_key,
+    )
+    .unwrap();
+    let renewed =
+        descriptor::verify_transport_hint(&renewed_hint, &view.descriptor_authority()).unwrap();
+    let revoked = RevocationList::new();
+    let issue = |descriptor: &descriptor::VerifiedDescriptor, nonce: [u8; 32]| {
+        let binding = descriptor
+            .server_binding(
+                &view.descriptor_authority(),
+                &f.device,
+                auth::Carrier::Https,
+                0,
+                0,
+                [9; 16],
+            )
+            .unwrap();
+        let context = auth::VerificationContext {
+            binding: &binding,
+            capabilities: auth::CapabilityPolicy {
+                supported: 3,
+                allowed: 3,
+            },
+            credentials: auth::Credentials {
+                device: &f.device,
+                host: &f.host,
+                device_revocations: &revoked,
+                host_revocations: &revoked,
+            },
+            authority: &view,
+            now_ns: NOW,
+        };
+        auth::Challenge::issue(&context, nonce, &f.host_key)
+            .unwrap()
+            .1
+            .encode()
+            .unwrap()
+    };
+    // Renewed descriptor: distinct error.
+    let mut client = f.client();
+    let prepared = client.start_http(&view).unwrap();
+    let (_, _, nonce, _, _): (u16, [u8; 32], [u8; 32], u64, u64) =
+        postcard::from_bytes(&prepared.body).unwrap();
+    let error = client
+        .advance(&view, prepared.id, &issue(&renewed, nonce))
+        .err()
+        .expect("a renewed descriptor never verifies");
+    assert!(
+        error.starts_with("descriptor-renewed:"),
+        "unexpected error: {error}"
+    );
+    // A wrong nonce under the same descriptor is still the closed scope refusal.
+    let mut client = f.client();
+    let prepared = client.start_http(&view).unwrap();
+    let pinned =
+        descriptor::verify_transport_hint(&f.hint(), &view.descriptor_authority()).unwrap();
+    let error = client
+        .advance(&view, prepared.id, &issue(&pinned, [5; 32]))
+        .err()
+        .expect("a foreign nonce never verifies");
+    assert!(
+        error.contains("scope mismatch"),
+        "unexpected error: {error}"
+    );
+}

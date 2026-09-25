@@ -8,6 +8,12 @@ use qos_desktop::{
     resolver::{ApplicationCatalogTileResolver, ComponentContextSource, TileRequest},
     *,
 };
+/// The window a desktop command receipt or committed notice names.
+#[cfg_attr(
+    not(target_arch = "wasm32"),
+    allow(unused_imports, reason = "re-export used only by the wasm32 build")
+)]
+pub(crate) use speculation::opened as opened_window;
 use std::{
     cell::RefCell,
     collections::{BTreeMap, HashMap},
@@ -348,6 +354,37 @@ impl ComponentContextSource for Contexts {
         Ok((context, restore))
     }
 }
+/// An optimistic open's window before its committed record exists: drawn at
+/// once with the application's title, mounting nothing (no local record is
+/// created). The committed tile differs (`AppPlaceholder`), so the surface
+/// mounts the real application there when the echo lands.
+struct PlaceholderTiles<'a, R> {
+    inner: &'a mut R,
+    placeholders: &'a std::collections::BTreeSet<u64>,
+}
+impl<R: qos_desktop::resolver::TileResolver> qos_desktop::resolver::TileResolver
+    for PlaceholderTiles<'_, R>
+{
+    fn resolve(&mut self, request: TileRequest<'_>) -> qos_desktop::resolver::TileResolution {
+        if matches!(request.tab.tile, TileContent::Stub { .. })
+            && self.placeholders.contains(&request.tab.id)
+        {
+            return qos_desktop::resolver::TileResolution::Content(
+                ui::widget::TileContent::Notice {
+                    title: request.tab.title.clone(),
+                    detail: "Opening…".into(),
+                },
+            );
+        }
+        self.inner.resolve(request)
+    }
+    fn ready_to_replace(&self, tab: &Tab) -> bool {
+        self.inner.ready_to_replace(tab)
+    }
+    fn creation_refusal(&self, tab: &Tab) -> Option<String> {
+        self.inner.creation_refusal(tab)
+    }
+}
 struct ChromeSource {
     tree: Rc<RefCell<WorkspaceTree>>,
     intents: Rc<RefCell<Vec<qos_desktop::chrome::ChromeIntent>>>,
@@ -489,6 +526,9 @@ pub(crate) struct DesktopRoot {
     /// Exactly the admitted topology (no local view, no speculation): the
     /// basis the rendered tree is rebuilt from when a speculation retires.
     admitted_tree: WorkspaceTree,
+    /// Placeholder tabs whose local scratch record (in the desktop's own
+    /// fallback store, never published) exists, so the "Opening…" tile binds.
+    placeholder_records: std::collections::BTreeSet<u64>,
 }
 impl DesktopRoot {
     /// LIVE_V1: record the laid-out window groups, the focused group and any
@@ -607,6 +647,7 @@ impl DesktopRoot {
         }
         let mut tree = admission.tree;
         let admitted_tree = tree.clone();
+        let namespace = speculation::namespace(&admission.admitted_room, &admitted_tree);
         let view_key = StorageKey::View {
             workspace: format!("desktop:{room}"),
             instance,
@@ -702,7 +743,9 @@ impl DesktopRoot {
             dirty: true,
             view_changed: false,
             admitted_tree,
+            placeholder_records: Default::default(),
         };
+        handle.speculation.borrow_mut().set_namespace(namespace);
         root.collect_failures();
         root.refresh_navigation(true);
         Ok((root, handle))
@@ -998,18 +1041,31 @@ impl DesktopRoot {
     fn refresh_navigation(&self, topology: bool) {
         use serde_json::json;
         let active = self.active_route();
-        self.handle.search.borrow_mut().refresh(
-            &self.handle.generation,
-            &self.source_heads,
-            &self.handle.tree.borrow(),
-            &self.resolver.host.routes,
-            active.as_ref(),
-        );
+        // Optimistic open first: paint the window this frame and leave the
+        // global search index as it is. Its bookkeeping runs on the frame that
+        // admits the committed window (a placeholder is never a search target).
+        let opening = self
+            .handle
+            .speculation
+            .try_borrow()
+            .map(|speculation| speculation.placeholders())
+            .unwrap_or_default();
+        if opening.is_empty() {
+            self.handle.search.borrow_mut().refresh(
+                &self.handle.generation,
+                &self.source_heads,
+                &self.handle.tree.borrow(),
+                &self.resolver.host.routes,
+                active.as_ref(),
+            );
+        }
         let mut snapshot = self.handle.navigation.borrow_mut();
         let mut changed = false;
         if topology || snapshot.is_null() {
             let tree = self.handle.tree.borrow();
-            let entries: Vec<_> = tree.workspaces.iter().flat_map(|w| w.strips.iter().flat_map(move |s| s.window_groups.iter().flat_map(move |g| g.tabs.iter().map(move |t| json!({"route":{"workspace":w.id.0.to_string(),"strip":s.id.0.to_string(),"group":g.id.to_string(),"tab":t.id.to_string()},"label":t.title,"stripLabel":s.name,"workspaceLabel":w.name}))))).collect();
+            // Optimistic opens not yet committed are marked `opening`.
+            let opening = &opening;
+            let entries: Vec<_> = tree.workspaces.iter().flat_map(|w| w.strips.iter().flat_map(move |s| s.window_groups.iter().flat_map(move |g| g.tabs.iter().map(move |t| { let mut entry = json!({"route":{"workspace":w.id.0.to_string(),"strip":s.id.0.to_string(),"group":g.id.to_string(),"tab":t.id.to_string()},"label":t.title,"stripLabel":s.name,"workspaceLabel":w.name}); if opening.contains(&t.id) { entry["opening"] = json!(true); } entry })))).collect();
             let workspaces: Vec<_> = tree.workspaces.iter().map(|w| json!({"id":w.id.0.to_string(),"label":w.name,"room":w.room.to_string(),"owner":w.owner,"strips":w.strips.iter().map(|s| json!({"id":s.id.0.to_string(),"label":s.name})).collect::<Vec<_>>()})).collect();
             let group = active
                 .as_ref()
@@ -1355,9 +1411,9 @@ impl DesktopRoot {
         }
         Ok((true, None))
     }
-    /// Record a queued pure reorder for optimistic rendering (applied by the
-    /// next reconcile). The overlay ghost for remote members is derived from
-    /// the layout drawn before the reorder.
+    /// Record a queued reorder, open or close for optimistic rendering
+    /// (applied by the next reconcile). The overlay ghost for remote members
+    /// is derived from the layout drawn before the reorder.
     fn speculate(
         handle: &DesktopHandle,
         tree: &WorkspaceTree,
@@ -1370,17 +1426,28 @@ impl DesktopRoot {
         if !speculation.enabled || !speculation::eligible(&command.command) {
             return false;
         }
+        // A member who cannot write the room (a viewer) would only see the
+        // window flash and snap back: its command stays durable-only.
+        if !handle.permissions.try_borrow().is_ok_and(|permissions| {
+            permissions.check(&ui::permissions::PermissionScope::workspace(
+                ui::permissions::Verb::Write,
+            ))
+        }) {
+            return false;
+        }
         let preview = handle
             .live
             .try_borrow()
             .ok()
             .and_then(|layout| speculation::preview(tree, &layout, &command.command));
-        speculation.push(invocation, command, preview, web_time::Instant::now())
+        speculation.push(invocation, command, preview, tree, web_time::Instant::now())
     }
     /// Retire settled speculation and (re)apply the outstanding entries: all
     /// of them on a new admission or after a retirement (from the durable
-    /// basis), else only newly queued ones. Returns whether the tree changed.
-    fn rebase_speculation(&self, tree: &mut WorkspaceTree, admitted: bool) -> bool {
+    /// basis), else only newly queued ones. `admitted` is the local view
+    /// captured before an admission replaced the tree. Returns whether the
+    /// tree changed.
+    fn rebase_speculation(&self, tree: &mut WorkspaceTree, admitted: Option<&LocalView>) -> bool {
         let Ok(mut speculation) = self.handle.speculation.try_borrow_mut() else {
             return false;
         };
@@ -1388,18 +1455,56 @@ impl DesktopRoot {
             return false;
         }
         let retired = speculation.retire(&self.admitted_tree, web_time::Instant::now());
-        if retired && !admitted {
-            let local = LocalView::from_tree(tree);
-            *tree = self.admitted_tree.clone();
+        let rebuilt;
+        let local = match admitted {
+            Some(local) => Some(local),
+            None if retired => {
+                rebuilt = LocalView::from_tree(tree);
+                *tree = self.admitted_tree.clone();
+                rebuilt.apply(tree);
+                Some(&rebuilt)
+            }
+            None => None,
+        };
+        let changed = speculation.apply(tree, local.is_some()) || retired;
+        if let Some(local) = local {
+            // Re-select placeholder groups the durable basis lacked, then move
+            // focus from retired placeholders to their committed windows.
             local.apply(tree);
+            for moved in speculation.take_focus_moves() {
+                let from = StripId(moved.from.strip);
+                if local.groups.get(&from) != Some(&moved.from.group) {
+                    continue;
+                }
+                let to = StripId(moved.to.strip);
+                let Some(workspace) = tree
+                    .workspaces
+                    .iter()
+                    .find(|workspace| {
+                        workspace.strips.iter().any(|strip| {
+                            strip.id == to
+                                && strip.window_groups.iter().any(|g| g.id == moved.to.group)
+                        })
+                    })
+                    .map(|workspace| workspace.id)
+                else {
+                    continue;
+                };
+                if local.strips.get(&workspace) == Some(&from) {
+                    tree.active_strip.insert(workspace, to);
+                }
+                tree.active_group.insert(to, moved.to.group);
+            }
+            speculation.refocus_fresh(tree);
         }
-        speculation.apply(tree, retired || admitted) || retired
+        changed
     }
     fn reconcile(&mut self) -> bool {
         let intents = self.surface.take_intents();
         let chrome = std::mem::take(&mut *self.chrome_intents.borrow_mut());
         let inbox = self.handle.inbox.borrow_mut().take();
         let admission_changed = inbox.is_some();
+        let mut admitted_local = None;
         let mut tree = self.handle.tree.borrow_mut();
         let mut changed = std::mem::take(&mut self.view_changed)
             || !intents.is_empty()
@@ -1459,8 +1564,15 @@ impl DesktopRoot {
             local.apply(&mut tree);
             self.resolver.host.routes = admission.routes;
             *self.resolver.host.permissions.borrow_mut() = permissions;
+            if let Ok(mut speculation) = self.handle.speculation.try_borrow_mut() {
+                speculation.set_namespace(speculation::namespace(
+                    &self.admitted_room,
+                    &self.admitted_tree,
+                ));
+            }
+            admitted_local = Some(local);
         }
-        changed |= self.rebase_speculation(&mut tree, admission_changed);
+        changed |= self.rebase_speculation(&mut tree, admitted_local.as_ref());
         drop(tree);
         // Pane resource navigation must select its destination before mounting
         // and restoring focus, so the outgoing editor is no longer eligible.
@@ -1469,17 +1581,33 @@ impl DesktopRoot {
         let tree = self.handle.tree.borrow();
         if changed {
             let factory = Self::image_factory(&self.handle);
+            let placeholders = self
+                .handle
+                .speculation
+                .try_borrow()
+                .map(|speculation| speculation.placeholders())
+                .unwrap_or_default();
+            // An unchecked tile binds the tab's scratch record; create it for a
+            // placeholder before its first build (as the minting action does).
+            for tab in &placeholders {
+                if self.placeholder_records.insert(*tab) {
+                    let _ = qos_desktop::records::create_scratch_tab_record(&self.fallback, *tab);
+                }
+            }
+            let mut resolver = PlaceholderTiles {
+                inner: &mut self.resolver,
+                placeholders: &placeholders,
+            };
             let result =
                 ui::ImageStore::with_host_factory_with_max_dimension(factory.clone(), || {
-                    self.surface
-                        .reconcile(&tree, &self.fallback, &mut self.resolver)
+                    self.surface.reconcile(&tree, &self.fallback, &mut resolver)
                 });
             if result == ReconcileOutcome::RebuildRequired {
                 ui::ImageStore::with_host_factory_with_max_dimension(factory, || {
                     self.surface.rebuild_retaining(
                         &tree,
                         &self.fallback,
-                        &mut self.resolver,
+                        &mut resolver,
                         Self::chrome(&tree, self.chrome.clone(), self.notify.clone()),
                     )
                 });
@@ -1547,6 +1675,16 @@ impl DesktopRoot {
                 DesktopCommand::CloseTab { location },
             );
         }
+        // The one open for people and agents (`desktop:app:<id>#open` is the
+        // same command): placement-independent, placed by the owner's turn.
+        for (app, definition) in desktop::installed_applications() {
+            let label = definition.title;
+            add(
+                format!("open-{app}"),
+                format!("Open {label}"),
+                DesktopCommand::OpenApp { app: app.into() },
+            );
+        }
         let strip = tree
             .active_strip
             .get(&workspace.id)
@@ -1558,20 +1696,6 @@ impl DesktopRoot {
                 .get(&strip.id)
                 .and_then(|id| strip.window_groups.iter().find(|g| g.id == *id))
                 .or_else(|| strip.window_groups.first());
-            for (app, definition) in desktop::installed_applications() {
-                let label = definition.title;
-                add(
-                    format!("open-{app}"),
-                    format!("Open {label}"),
-                    DesktopCommand::OpenTab {
-                        app: app.into(),
-                        placement: TabPlacement::NewGroup {
-                            strip: strip.id.0,
-                            after: active_group.map(|g| g.id),
-                        },
-                    },
-                );
-            }
             if let Some(group) = active_group {
                 if let Some(tab) = group.tabs.iter().find(|t| t.id == group.active_tab) {
                     let location = TabLocation {
@@ -1696,18 +1820,6 @@ impl DesktopRoot {
                         }
                     }
                 }
-            }
-        } else {
-            for (app, definition) in desktop::installed_applications() {
-                let label = definition.title;
-                add(
-                    format!("open-{app}"),
-                    format!("Open {label}"),
-                    DesktopCommand::OpenTab {
-                        app: app.into(),
-                        placement: TabPlacement::EmptyWorkspace,
-                    },
-                );
             }
         }
         for strip in &workspace.strips {
@@ -4465,7 +4577,7 @@ mod tests {
         assert!(!requests[0].0.is_nil());
         assert_eq!(requests[0].1.source.heads, vec![[7; 32]]);
         assert!(
-            matches!(&requests[0].1.command, qos_desktop::session_commands::DesktopCommand::OpenTab { app, .. } if app == "so.tilo.notes")
+            matches!(&requests[0].1.command, qos_desktop::session_commands::DesktopCommand::OpenApp { app } if app == "so.tilo.notes")
         );
         assert!(
             frame.take_caller_operation().is_none(),
@@ -4500,12 +4612,10 @@ mod tests {
         frame.key("Enter");
         let requests = handle.session_requests.borrow();
         assert_eq!(requests.len(), 1);
+        // The owner places the parity open: an empty workspace gets a strip.
         assert!(matches!(
             &requests[0].1.command,
-            qos_desktop::session_commands::DesktopCommand::OpenTab {
-                app,
-                placement: qos_desktop::session_commands::TabPlacement::EmptyWorkspace,
-            } if app == "so.tilo.notes"
+            qos_desktop::session_commands::DesktopCommand::OpenApp { app } if app == "so.tilo.notes"
         ));
     }
     fn browser_semantic_route(frame: &ui::headless::FrameHarness, label: &str) -> (String, String) {
@@ -6392,7 +6502,7 @@ mod tests {
         assert_eq!(requests.len(), 1);
         assert_eq!(requests[0].1.source.heads, vec![[7; 32]]);
         assert!(
-            matches!(&requests[0].1.command,qos_desktop::session_commands::DesktopCommand::OpenTab{app,..} if app=="so.tilo.notes")
+            matches!(&requests[0].1.command,qos_desktop::session_commands::DesktopCommand::OpenApp{app} if app=="so.tilo.notes")
         );
         assert_eq!(
             serde_json::to_value(&handle.tree.borrow().workspaces).unwrap(),
@@ -8122,7 +8232,8 @@ mod tests {
         // The owner refuses: snap back to the durable order.
         assert!(handle.speculation.borrow_mut().settle(
             invocation,
-            false,
+            Some(false),
+            None,
             web_time::Instant::now()
         ));
         assert!(root.reconcile());
@@ -8206,10 +8317,12 @@ mod tests {
         readmit(&root, &handle, echoed);
         root.reconcile();
         assert_eq!(group_order(&handle.tree.borrow()), moved);
-        handle
-            .speculation
-            .borrow_mut()
-            .settle(invocation, true, web_time::Instant::now());
+        handle.speculation.borrow_mut().settle(
+            invocation,
+            Some(true),
+            None,
+            web_time::Instant::now(),
+        );
         root.reconcile();
         assert!(handle.speculation.borrow().is_empty());
         assert_eq!(group_order(&handle.tree.borrow()), moved);
@@ -8217,6 +8330,262 @@ mod tests {
             navigation_groups(&handle),
             moved.iter().map(u64::to_string).collect::<Vec<_>>()
         );
+    }
+
+    /// The owner's room registers salt 5 as its topology namespace.
+    fn readmit_owned(
+        root: &DesktopRoot,
+        handle: &DesktopHandle,
+        tree: WorkspaceTree,
+        counter: u64,
+    ) {
+        use automerge::transaction::Transactable;
+        let mut doc = history_document(&tree);
+        let owners = doc
+            .put_object(
+                automerge::ROOT,
+                "contents_owners_v1",
+                automerge::ObjType::Map,
+            )
+            .unwrap();
+        doc.put(&owners, "0005", "ab".repeat(32)).unwrap();
+        doc.put(automerge::ROOT, "desktop_counter_v1", counter)
+            .unwrap();
+        doc.commit();
+        let admission = Admission {
+            admitted_room: doc,
+            source_heads: vec![[8; 32]],
+            tree,
+            routes: root.resolver.host.routes.clone(),
+            required: vec![],
+            missing: vec![],
+            unsupported: vec![],
+            pending: 0,
+        };
+        *handle.inbox.borrow_mut() = Some((admission, handle.permissions.borrow().clone()));
+    }
+    fn open_fixture() -> (DesktopRoot, DesktopHandle, WorkspaceTree) {
+        let (mut root, handle, _) = fixture_with_topology(|tree| {
+            let strip = &mut tree.workspaces[0].strips[0];
+            strip.id = StripId((5 << 48) | 2);
+            strip.window_groups[0].id = (5 << 48) | 3;
+        });
+        let admitted = handle.tree.borrow().clone();
+        readmit_owned(&root, &handle, admitted.clone(), 60);
+        root.reconcile();
+        handle.speculation.borrow_mut().enabled = true;
+        (root, handle, admitted)
+    }
+    fn invoke_open(root: &mut DesktopRoot, room: &str, app: &str) -> uuid::Uuid {
+        let payload = serde_json::to_vec(&qos_desktop::session_commands::BoundCommand {
+            source: qos_desktop::session_commands::CommandSource {
+                room: room.into(),
+                heads: vec![[8; 32]],
+            },
+            command: qos_desktop::session_commands::DesktopCommand::OpenApp { app: app.into() },
+        })
+        .unwrap();
+        let output = root
+            .invoke_resource_operation_v2(
+                tilo_actions::OperationKind::View,
+                "qos.desktop.request",
+                &payload,
+                &AutoCommit::new(),
+                &automerge::ROOT,
+            )
+            .unwrap()
+            .unwrap();
+        output.value.unwrap().as_str().unwrap().parse().unwrap()
+    }
+    fn entries_at(handle: &DesktopHandle, tab: u64) -> Vec<serde_json::Value> {
+        handle.navigation.borrow()["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|entry| entry["route"]["tab"] == tab.to_string())
+            .cloned()
+            .collect()
+    }
+
+    #[test]
+    fn an_optimistic_open_draws_its_window_next_frame_and_the_echo_keeps_one_window() {
+        let (mut root, handle, admitted) = open_fixture();
+        let room = admitted.workspaces[0].room.to_string();
+        let before = handle.navigation.borrow()["entries"]
+            .as_array()
+            .unwrap()
+            .len();
+        let invocation = invoke_open(&mut root, &room, "so.tilo.notes");
+        root.reconcile();
+        let predicted = (5 << 48) | 60;
+        let drawn = entries_at(&handle, predicted);
+        assert_eq!(drawn.len(), 1, "the window is drawn without the host");
+        assert_eq!(drawn[0]["label"], "Notes");
+        assert_eq!(drawn[0]["opening"], true, "marked until committed");
+        assert_eq!(
+            handle.navigation.borrow()["active"]["tab"],
+            predicted.to_string(),
+            "the new window has local focus"
+        );
+        assert!(
+            !handle.tab_records.borrow().contains_key(&predicted),
+            "no record is mounted for the placeholder"
+        );
+        // The owner's echo commits the same window.
+        let mut echoed = admitted.clone();
+        let mut counter = 60;
+        qos_desktop::session_commands::apply_command(
+            &mut echoed.workspaces[0],
+            &qos_desktop::session_commands::DesktopCommand::OpenTab {
+                app: "so.tilo.notes".into(),
+                placement: qos_desktop::session_commands::TabPlacement::NewGroup {
+                    strip: (5 << 48) | 2,
+                    after: None,
+                },
+            },
+            &mut || qos_desktop::identity::mint_in_namespace(5, &mut counter),
+            &mut |app, _| {
+                Ok((
+                    "Notes".into(),
+                    TileContent::AppPlaceholder {
+                        kind: AppKind::Other(app.into()),
+                        label: "Notes".into(),
+                    },
+                ))
+            },
+        )
+        .unwrap();
+        readmit_owned(&root, &handle, echoed, counter);
+        root.reconcile();
+        assert_eq!(
+            entries_at(&handle, predicted).len(),
+            1,
+            "adopted, not duplicated"
+        );
+        assert!(entries_at(&handle, predicted)[0].get("opening").is_none());
+        assert_eq!(
+            entries_at(&handle, predicted)[0]["route"],
+            drawn[0]["route"],
+            "the committed window fills the placeholder in place (same strip, group, tab)"
+        );
+        assert_eq!(
+            handle.navigation.borrow()["entries"]
+                .as_array()
+                .unwrap()
+                .len(),
+            before + 1
+        );
+        assert_eq!(
+            handle.navigation.borrow()["active"]["tab"],
+            predicted.to_string(),
+            "focus stays on the committed window"
+        );
+        assert!(handle.speculation.borrow().placeholders().is_empty());
+        handle.speculation.borrow_mut().settle(
+            invocation,
+            Some(true),
+            None,
+            web_time::Instant::now(),
+        );
+        root.reconcile();
+        assert!(handle.speculation.borrow().is_empty());
+        assert_eq!(entries_at(&handle, predicted).len(), 1);
+    }
+
+    #[test]
+    fn the_placeholder_window_is_drawn_on_the_canvas_as_opening() {
+        let (root, handle, admitted) = open_fixture();
+        let room = admitted.workspaces[0].room.to_string();
+        let mut root = Box::new(root);
+        let root_ptr = std::ptr::from_mut(root.as_mut());
+        let mut frame = ui::headless::FrameHarness::new_with_controlled_inputs(
+            ui::state::State::new(),
+            root,
+            (1400, 768),
+            ui::Theme::dark(),
+            ui::TextRenderer::new(),
+            ui::permissions::UserId("author".into()),
+        );
+        frame.relayout();
+        // SAFETY: the harness owns the root; no frame is driven during this call.
+        invoke_open(unsafe { &mut *root_ptr }, &room, "so.tilo.notes");
+        frame.relayout();
+        fn names(node: &ui::a11y::AccessNode, out: &mut Vec<String>) {
+            out.extend(node.name.clone());
+            out.extend(node.value.clone());
+            out.extend(node.description.clone());
+            for child in &node.children {
+                names(child, out);
+            }
+        }
+        fn walk(node: &ui::headless::InspectionNode, out: &mut Vec<String>) {
+            if let Some(semantics) = &node.semantics {
+                names(semantics, out);
+            }
+            for child in &node.children {
+                walk(child, out);
+            }
+        }
+        let mut text = vec![];
+        walk(&frame.inspection().root, &mut text);
+        assert!(
+            !text
+                .iter()
+                .any(|name| name.contains("Document unavailable")),
+            "the placeholder binds its scratch record: {text:?}"
+        );
+        assert!(
+            text.iter().any(|name| name.contains("Opening")),
+            "the window body says Opening…: {text:?}"
+        );
+        assert_eq!(entries_at(&handle, (5 << 48) | 60).len(), 1);
+    }
+
+    #[test]
+    fn a_member_who_cannot_write_the_room_does_not_speculate() {
+        let (mut root, handle, admitted) = open_fixture();
+        *handle.permissions.borrow_mut() = ui::permissions::PermissionContext::from_capabilities(
+            ui::permissions::Actor::person(Some(ui::permissions::Role::Viewer), "author"),
+            vec![],
+        );
+        let room = admitted.workspaces[0].room.to_string();
+        invoke_open(&mut root, &room, "so.tilo.notes");
+        root.reconcile();
+        assert!(handle.speculation.borrow().is_empty(), "no viewer flash");
+        assert!(entries_at(&handle, (5 << 48) | 60).is_empty());
+        assert_eq!(
+            handle.session_requests.borrow().len(),
+            1,
+            "still sent durably"
+        );
+    }
+
+    #[test]
+    fn a_refused_optimistic_open_snaps_back_and_focus_returns() {
+        let (mut root, handle, admitted) = open_fixture();
+        let room = admitted.workspaces[0].room.to_string();
+        let active = handle.navigation.borrow()["active"].clone();
+        let invocation = invoke_open(&mut root, &room, "so.tilo.calculator");
+        root.reconcile();
+        let predicted = (5 << 48) | 60;
+        assert_eq!(entries_at(&handle, predicted).len(), 1);
+        assert!(handle.speculation.borrow_mut().settle(
+            invocation,
+            Some(false),
+            None,
+            web_time::Instant::now()
+        ));
+        assert!(root.reconcile());
+        assert!(
+            entries_at(&handle, predicted).is_empty(),
+            "refusal snaps back"
+        );
+        assert_eq!(handle.navigation.borrow()["active"], active);
+        // The durable request is still the one the bridge sends.
+        assert!(matches!(
+            &handle.session_requests.borrow()[0].1.command,
+            qos_desktop::session_commands::DesktopCommand::OpenApp { app } if app == "so.tilo.calculator"
+        ));
     }
 }
 

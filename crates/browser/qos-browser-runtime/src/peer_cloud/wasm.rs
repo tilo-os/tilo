@@ -7,6 +7,9 @@ use qos_peer_state::join::{
 };
 
 const MAX_ENROLLMENT_JSON: usize = 20 * 1024;
+/// A Store that is busy or (re)establishing its native subscription answers
+/// 503; a lossy link resets. ~8 jittered attempts span roughly 10 s.
+const MEMBERSHIP_RETRIES: u32 = 8;
 
 struct Attempt {
     incoming: crate::peer_delivery::incoming::IncomingBudget,
@@ -145,6 +148,48 @@ async fn request(
         return Err(error(format!("Cloud owner membership rejected ({code})")));
     }
     Ok(response)
+}
+
+fn text(value: &JsValue) -> String {
+    value.as_string().unwrap_or_default()
+}
+/// Transient membership exchange failures: HTTP 429/502/503/504 (outer or the
+/// signed in-band reply) and a browser network failure. Signed refusals,
+/// verification failures and cancellation are never retried.
+fn transient(value: &JsValue) -> bool {
+    let message = text(value);
+    ["429", "502", "503", "504"].iter().any(|status| {
+        message == format!("onboarding HTTP reply rejected ({status})")
+            || message == format!("Cloud owner membership rejected ({status})")
+    }) || message == "onboarding browser operation failed"
+        || message == "onboarding fetch failed"
+}
+async fn pause(milliseconds: f64) -> Result<(), JsValue> {
+    use wasm_bindgen::JsCast;
+    let promise = js_sys::Promise::new(&mut |resolve, reject| {
+        let global = js_sys::global();
+        let scheduled = js_sys::Reflect::get(&global, &JsValue::from_str("setTimeout"))
+            .ok()
+            .and_then(|value| value.dyn_into::<js_sys::Function>().ok())
+            .map(|timer| timer.call2(&global, &resolve, &JsValue::from_f64(milliseconds)));
+        if !matches!(scheduled, Some(Ok(_))) {
+            let _ = reject.call1(
+                &JsValue::NULL,
+                &error("Cloud owner retry timer unavailable"),
+            );
+        }
+    });
+    wasm_bindgen_futures::JsFuture::from(promise)
+        .await
+        .map(|_| ())
+}
+/// Jittered exponential backoff before retry `attempt` (1-based); the
+/// attempt must still be live (not cancelled or replaced) afterwards.
+async fn backoff(value: &Attempt, attempt: u32) -> Result<(), JsValue> {
+    let base = (200.0 * 2f64.powi(attempt.saturating_sub(1).min(8) as i32)).min(2000.0);
+    pause((base * (0.5 + js_sys::Math::random() * 0.5)).round()).await?;
+    // `cloud_cancel` clears liveness together with the onboarding cancel.
+    live(value)
 }
 
 #[wasm_bindgen]
@@ -327,23 +372,54 @@ pub async fn cloud_complete(id: u32, material: Vec<u8>) -> Result<String, JsValu
     }
     let (nonce, _) = tilo_user_identity::DeviceIdentity::generate("Membership request", now());
     let request_id = nonce.to_bytes();
-    let challenge_request = value
-        .owner
-        .borrow()
-        .refresh_challenge(request_id)
-        .map_err(error)?;
-    let response = request(&value, challenge_request).await?;
-    let challenge = match response.response() {
-        Response::MembershipChallenge(response) => response.challenge.clone(),
-        _ => return Err(error("Cloud owner membership challenge response mismatch")),
+    // A transient failure retries in place with jittered backoff: the same
+    // request ID for the challenge, and a freshly signed proof (and wrapper)
+    // while that challenge is unexpired; an expired one is challenged again.
+    let mut failures = 0u32;
+    let response = 'membership: loop {
+        let challenge_request = value
+            .owner
+            .borrow()
+            .refresh_challenge(request_id)
+            .map_err(error)?;
+        let response = match request(&value, challenge_request).await {
+            Ok(response) => response,
+            Err(failure) if transient(&failure) && failures < MEMBERSHIP_RETRIES => {
+                failures += 1;
+                backoff(&value, failures).await?;
+                continue 'membership;
+            }
+            Err(failure) => return Err(failure),
+        };
+        let challenge = match response.response() {
+            Response::MembershipChallenge(response) => response.challenge.clone(),
+            _ => return Err(error("Cloud owner membership challenge response mismatch")),
+        };
+        drop(response);
+        loop {
+            let proof = match value
+                .owner
+                .borrow()
+                .refresh_proof(&challenge, request_id, now())
+            {
+                Ok(proof) => proof,
+                Err(refusal)
+                    if failures > 0 && refusal.starts_with(crate::peer_cloud::CLOCK_SKEW) =>
+                {
+                    continue 'membership;
+                }
+                Err(refusal) => return Err(error(refusal)),
+            };
+            match request(&value, proof).await {
+                Ok(response) => break 'membership response,
+                Err(failure) if transient(&failure) && failures < MEMBERSHIP_RETRIES => {
+                    failures += 1;
+                    backoff(&value, failures).await?;
+                }
+                Err(failure) => return Err(failure),
+            }
+        }
     };
-    drop(response);
-    let proof = value
-        .owner
-        .borrow()
-        .refresh_proof(&challenge, request_id, now())
-        .map_err(error)?;
-    let response = request(&value, proof).await?;
     let state = {
         let Response::OwnerMembershipComplete(bootstrap) = response.response() else {
             return Err(error("Cloud owner membership completion response mismatch"));
@@ -362,6 +438,16 @@ pub async fn cloud_complete(id: u32, material: Vec<u8>) -> Result<String, JsValu
     *value.bootstrap.borrow_mut() = Some(Rc::new(response));
     let material = value.owner.borrow().material().to_vec();
     checkpoint(&value, "admitted", &material)
+}
+/// Store.apply refused the retained signed request (the adapter reported
+/// `apply-refused`): stage a return to Inspect with the same keys. The JS
+/// source saves and acknowledges this checkpoint like any other.
+#[wasm_bindgen]
+pub fn cloud_reset_apply(id: u32) -> Result<String, JsValue> {
+    let value = attempt(id)?;
+    let _operation = operation(&value)?;
+    let material = value.owner.borrow_mut().reset_apply(now()).map_err(error)?;
+    checkpoint(&value, "checkpoint", &material)
 }
 #[wasm_bindgen]
 pub fn cloud_descriptor(id: u32, bytes: Vec<u8>) -> Result<(), JsValue> {
@@ -465,6 +551,82 @@ pub async fn cloud_reconnect(id: u32, material: Vec<u8>, peer: u32) -> Result<()
     value.consumed.set(true);
     connect_validated(Some(peer), config(&value)?, JsValue::NULL, None).await?;
     live(&value)?;
+    Ok(())
+}
+/// Transport-only reconnect of an existing, still valid Cloud owner: no
+/// membership refresh (no host commits). The retained Peer keeps its admitted
+/// state; the same device key and pinned host bootstrap a fresh delivery
+/// session. Any doubt about the binding (enrollment, owner, appointment,
+/// certificate validity, delivery hint) refuses with `refresh required`, and
+/// the caller then runs the full owner membership refresh instead.
+#[wasm_bindgen]
+pub async fn cloud_resume_transport(
+    peer: u32,
+    material: Vec<u8>,
+    account_id: String,
+    machine_id: String,
+) -> Result<(), JsValue> {
+    let required = |reason: &str| error(format!("Cloud owner refresh required: {reason}"));
+    let incoming = incoming_for_owner(Some(peer))?;
+    let owner = CloudOwner::restore(&material, &account_id, &machine_id, &incoming, now())
+        .map_err(|_| required("custody"))?;
+    if !matches!(owner.step().map_err(error)?, CloudStep::Enrolled) {
+        return Err(required("enrollment incomplete"));
+    }
+    let scope = owner.enrolled().map_err(error)?;
+    let current = PEERS
+        .with(|all| all.borrow().get(&peer).cloned())
+        .ok_or_else(|| error("closed Peer"))?;
+    if current.closed.get()
+        || current.media_enrollment.device != *scope.certificate()
+        || current.media_enrollment.governor != *scope.host()
+        || current.data_host != *scope.host()
+        || current.media_enrollment.host != *scope.host()
+        || current.state.borrow().room() != scope.room()
+        || current.media_enrollment.workspace != scope.workspace()
+    {
+        return Err(required("owner changed"));
+    }
+    let time = SystemTime::now();
+    let state = current.state.borrow().clone();
+    state
+        .verify_current_owner(scope.certificate(), time)
+        .map_err(|_| required("not the current owner"))?;
+    if !state.certificates().contains(scope.host())
+        || state
+            .permissions(scope.host().device_public_key, time)
+            .is_err()
+    {
+        return Err(required("host appointment"));
+    }
+    let hint = current
+        .media_enrollment
+        .hint
+        .borrow()
+        .clone()
+        .ok_or_else(|| required("delivery hint"))?;
+    if hint.host != *scope.host() {
+        return Err(required("delivery hint"));
+    }
+    let mut revoked = RevocationList::new();
+    for entry in state.revocations() {
+        revoked.insert(entry).map_err(error)?;
+    }
+    let config = ValidatedOwner {
+        incoming,
+        key: owner.device_key().map_err(error)?,
+        initial: state,
+        revoked,
+        certificate: scope.certificate().clone(),
+        host_certificate: scope.host().clone(),
+        delivery_host: scope.host().clone(),
+        workspace: scope.workspace(),
+        room: scope.room().into(),
+        delivery_hint: Some(hint),
+        alive: None,
+        governance: GovernanceSource::Empty,
+    };
+    connect_validated(Some(peer), config, JsValue::NULL, None).await?;
     Ok(())
 }
 #[wasm_bindgen]

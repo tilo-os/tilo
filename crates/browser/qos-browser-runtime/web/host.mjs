@@ -6,7 +6,7 @@ import {bindDesktopCommands} from './desktop-command-bridge.mjs';
 import {createDesktopSpeculation} from './desktop-speculation.mjs';
 import {commitPeerBatches,readPeerBatch} from './peer-persistence.mjs';
 import {createAssetRecovery,retryableMemo} from './asset-recovery.mjs';
-import {createFontDemandPump,createFontLoader} from './font-loader.mjs';
+import {createFontDemandPump,createFontLoader,createIdleFontInstaller,createIdlePrewarm} from './font-loader.mjs';
 import init,* as runtime from './pkg/qos_browser_runtime.js';
 import {MountRegistry,createInputScope,createFocusHandoff,createCompositionSession,beforeInputRoute,MAX_TEXT_INSERT,oversizedInsert,createKeyboardForwarder,keyboardRoute,modifierSnapshot,overlayKeyboardRoute,retainStatus,retainedWidget,routeGlobalSearchShortcut,wheelPixels} from './host-core.mjs';
 
@@ -19,6 +19,14 @@ const closures=new Set();
 const recoveryJobs=new Set();
 const fontLoader=createFontLoader({baseURL:import.meta.url});
 const fonts=retryableMemo(()=>fontLoader.startup());
+// After the first presented frame, idle time fetches and verifies optional
+// fonts an app open may demand (emoji and symbol glyphs first), so opening an
+// app installs them from memory instead of the network. Bounded to 8 MiB.
+// The preferred ones (what Chat and Writer chrome demand) are then installed
+// into each live mount in idle slices, so an open does not install on its
+// first frames either.
+const APP_FONTS=['Noto-COLRv1.ttf','NotoSansSymbols[wght].ttf','NotoSansSymbols2-Regular.ttf','NotoSansMath-Regular.ttf'];
+const prewarmFonts=createIdlePrewarm(()=>fontLoader.prewarm({prefer:APP_FONTS}));
 const ready=retryableMemo(()=>init());
 export async function mountDesktop(target,options={}) {
   const token=registry.begin(target);
@@ -86,6 +94,7 @@ export async function mountDesktop(target,options={}) {
   function active(){return !closed&&!surface.inert&&registry.current(token)&&id!==undefined&&runtimeReady;}
   const fontMountValid=()=>!closed&&registry.current(token)&&id!==undefined&&runtimeReady;
   fontDemands=createFontDemandPump({loader:fontLoader,valid:fontMountValid,report,install:(name,bytes)=>runtime.install_font(id,name,bytes),failed:()=>runtime.font_failed(id)});
+  const fontInstaller=createIdleFontInstaller({loader:fontLoader,names:APP_FONTS,valid:fontMountValid,install:(name,bytes)=>runtime.install_font(id,name,bytes)});
   function update(raw){
     if(closed||!registry.current(token))return;
     const state=JSON.parse(raw);if(state.clipboard){report(state);return;}
@@ -122,7 +131,7 @@ export async function mountDesktop(target,options={}) {
       if(document.activeElement===canvas)editor.focus({preventScroll:true});
     }else if(document.activeElement===editor){canvas.focus({preventScroll:true});}
     observeLocalActivation();
-    if(state.phase==='presented'){readyResolve();void persist().catch(()=>{});void loadAssets();}
+    if(state.phase==='presented'){readyResolve();void persist().catch(()=>{});void loadAssets();void prewarmFonts().then(()=>{if(fontMountValid())fontInstaller.start();});}
   }
   const assets=createAssetRecovery({active,report,
     retry:request=>runtime.retry_asset(id,request.loader,request.url),
@@ -317,14 +326,14 @@ export async function mountDesktop(target,options={}) {
         onError:error=>options.onLiveError?.(error)});
     }
     if(options.actionsV2||options.actionsV1)actionPalette=bindActionPalette({actions:options.actionsV2??options.actionsV1,publish:rows=>{if(active())runtime.caller_actions(id,JSON.stringify(rows));},report});
-    if(options.actionsV2||options.actionsV1){desktopSpeculation=createDesktopSpeculation({runtime,id,active});desktopCommands=bindDesktopCommands({actions:options.actionsV2??options.actionsV1,onPending:pending=>{desktopSpeculation.pending(pending);navigation?.commandPending(pending);liveOverlay?.commandPending(pending);},onUpdate:row=>navigation?.commandUpdated(row),peek:()=>{if(!active())return null;const raw=runtime.pending_desktop_command(id);return raw?JSON.parse(raw):null;},ack:invocation=>{if(active())runtime.acknowledge_desktop_command(id,invocation);},report:data=>{desktopSpeculation.report(data);report(data);}});}
+    if(options.actionsV2||options.actionsV1){desktopSpeculation=createDesktopSpeculation({runtime,id,active});desktopCommands=bindDesktopCommands({actions:options.actionsV2??options.actionsV1,onPending:pending=>{desktopSpeculation.pending(pending);navigation?.commandPending(pending);liveOverlay?.commandPending(pending);},onUpdate:row=>{navigation?.commandUpdated(row);desktopSpeculation.update(row);},peek:()=>{if(!active())return null;const raw=runtime.pending_desktop_command(id);return raw?JSON.parse(raw):null;},ack:invocation=>{if(active())runtime.acknowledge_desktop_command(id,invocation);},report:data=>{desktopSpeculation.report(data);report(data);}});}
     if(runtime.desktop_navigation_snapshot && runtime.desktop_navigation_snapshot(id)) {
       navigation=createDesktopNavigation({active,captureLaunchFocus:()=>({activation:inputScope.capture()?.activation,epoch:externalFocusEpoch}),snapshot:()=>runtime.desktop_navigation_snapshot(id),revision:()=>runtime.desktop_navigation_revision(id),dispatch:command=>{
         const request=navigationFocus.begin(JSON.parse(command),navigation.controller.getSnapshot());
         try{const result=runtime.desktop_navigate(id,command);navigationFocus.accepted(request);return result;}
         catch(error){navigationFocus.failed(request);throw error;}
       },search:(generation,query)=>runtime.desktop_command_search(id,generation,query),globalSearch:runtime.desktop_global_search?(generation,query)=>runtime.desktop_global_search(id,generation,query):undefined,focusSearch:()=>{inputScope.capture();canvas.focus({preventScroll:true});},captureSelect:()=>({scope:inputScope.capture(),epoch:externalFocusEpoch}),completeSelect:before=>handoff.complete(before.scope,before.epoch),awaitTerminal:desktopCommands?invocation=>desktopCommands.waitForTerminal(invocation):undefined});
-      unsubscribeDesktopCommits=options.subscribeDesktopCommits?.(event=>{if(active())navigation.commandCommitted(event);});
+      unsubscribeDesktopCommits=options.subscribeDesktopCommits?.(event=>{if(active()){navigation.commandCommitted(event);desktopSpeculation?.committed(event);}});
 
       // Cloud's toolbar is a sibling of the renderer in its Desktop section.
       // Scope the listener to that mounted desktop; other page editors stay native.

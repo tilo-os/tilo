@@ -43,3 +43,9 @@ test('a late Peer teardown failure keeps the same rejected custody promise',asyn
  const closing=f.source.close(),failedClose=assert.rejects(closing,/cleanup failed/);connected.resolve(8);
  await failedConnect;await failedClose;assert.equal(f.source.close(),closing);
 });
+test('transport-only resume of an admitted guest needs no attempt and no membership refresh',async()=>{
+ const calls=[];const runtime={invited_resume_transport:async(peer,material)=>calls.push(['resume',peer,[...material]])};
+ const source=createInvitedPeerSource({runtime,lease:{material:Uint8Array.of(5)}});
+ await source.resume(3);assert.deepEqual(calls,[['resume',3,[5]]]);source.close();await assert.rejects(source.resume(3),/closed/);
+ assert.equal(createInvitedPeerSource({runtime:{},lease:{material:Uint8Array.of(5)}}).resume,undefined);
+});

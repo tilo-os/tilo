@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {
   CONTENT_SPACE_X, PEER_PALETTE, commandDrag, createDragTracker, createGhostTracker, createLiveOverlay, createOverlayView,
   createSelectionProjector, createTypingTracker, LIVE_PUBLICATION_WINDOW_MS, TYPING_EXPIRE_MS, labelInk, localPointerPresence, memberColor, memberLabel, rectForRecord, remotePointerPosition,
+  agentLabel, publisherIdentity,
 } from './live-overlay.mjs';
 import {createRemotePresence} from './live-presence.mjs';
 
@@ -409,4 +410,67 @@ test('overlay stays inert without a live client and attaches when it appears', (
   assert.equal(overlay.stats().attached, true);
   assert.deepEqual(live.published.at(-1), {focus: null, pointer: [-9, -19], selection: null});
   overlay.close();
+});
+
+test('agent publishers are labelled as agents; members and unknown publishers keep their identity', () => {
+  const agent = {publisher: 'a9', agentId: 'scribe', name: 'Scribe'};
+  assert.deepEqual(publisherIdentity('a9', undefined, agent), {label: 'Scribe \u00b7 agent', color: memberColor('agent:scribe'), agent: true});
+  assert.equal(agentLabel('  '), 'Agent \u00b7 agent');
+  assert.equal(publisherIdentity('p1', {device: 'p1', user: 'alice', name: 'Ada'}, agent).label, 'Ada', 'a roster device is never an agent');
+  assert.deepEqual(publisherIdentity('ffee00', undefined, undefined), {label: 'Guest ffee', color: memberColor('ffee00')});
+});
+
+test('overlay draws an agent caret and its typing with the agent label', () => {
+  const doc = fakeDocument();
+  const live = fakeLive();
+  const agentListeners = new Set();
+  let agents = [];
+  live.agents = () => agents;
+  live.onAgentActivity = callback => { agentListeners.add(callback); return () => agentListeners.delete(callback); };
+  const applied = [];
+  const frames = [];
+  const overlay = createLiveOverlay({
+    surface: doc.createElement('div'), canvas: doc.createElement('canvas'), document: doc, live: () => live,
+    snapshot: () => JSON.stringify(snapshotA), applyRemote: rows => { applied.push(rows); return true; },
+    members: () => [{device: 'p1', user: 'alice', name: 'Ada'}], now: () => 1000,
+    requestFrame: callback => { frames.push(callback); return {}; }, cancelFrame: () => {},
+    setInterval: () => 1, clearInterval: () => {},
+  });
+  const run = () => { for (const callback of frames.splice(0)) callback(1000); };
+  run();
+  const caret = {focus: WRITER, pointer: null, drag: null, endedDrags: [], stale: false, receivedAtMs: 990};
+  live.remotes = [{publisher: 'a9', ...caret, selection: {anchor: '0101', head: '0101'}}, {publisher: 'ffee00', ...caret, selection: {anchor: '0102', head: '0102'}}];
+  live.emit('presence', {});
+  run();
+  assert.deepEqual(applied.at(-1).map(row => row.name), ['Guest a9', 'Guest ffee'], 'unverified: guest tags');
+  agents = [{publisher: 'a9', agentId: 'scribe', name: 'Scribe', state: 'writing', label: 'Writing in Writer'}];
+  for (const callback of agentListeners) callback({...agents[0], expired: false});
+  assert.deepEqual(applied.at(-1)[0], {publisher: 'a9', name: 'Scribe \u00b7 agent', color: memberColor('agent:scribe'), selection: {anchor: '0101', head: '0101'}});
+  assert.equal(applied.at(-1)[1].name, 'Guest ffee', 'an unknown non-member keeps the existing label');
+  live.emit('preview', {publisher: 'a9', record: WRITER, seq: 1, ops: [{kind: 'insert', at: '0101', text: 'The ocean'}]});
+  assert.equal(applied.at(-1)[0].typing, 'The ocean');
+  assert.equal(applied.at(-1)[0].name, 'Scribe \u00b7 agent');
+  agents = [];
+  for (const callback of agentListeners) callback({publisher: 'a9', agentId: 'scribe', name: 'Scribe', expired: true});
+  assert.equal(applied.at(-1)[0].name, 'Guest a9', 'a quiet agent loses its label');
+  overlay.close();
+  assert.equal(agentListeners.size, 0);
+});
+
+test('agent typing previews expire as a whole after a quiet period, showing the running tail', async () => {
+  const {AGENT_TYPING_EXPIRE_MS} = await import('./live-overlay.mjs');
+  const feed = () => {
+    const typing = createTypingTracker();
+    const insert = (text, at) => typing.preview({publisher: 'agent', record: WRITER, ops: [{kind: 'insert', at: '01', text}]}, at);
+    insert('Coral reefs ', 0);
+    insert('are vibrant ', 700);
+    insert('underwater cities', 1400);
+    return typing;
+  };
+  // The per-chunk human window keeps only the last 600 ms.
+  assert.equal(feed().text('agent', WRITER, 1500), 'underwater cities');
+  const typing = feed();
+  assert.equal(typing.text('agent', WRITER, 1500, true), 'Coral reefs are vibrant underwater cities');
+  assert.equal(typing.text('agent', WRITER, 1400 + AGENT_TYPING_EXPIRE_MS - 1, true), 'Coral reefs are vibrant underwater cities');
+  assert.equal(typing.text('agent', WRITER, 1400 + AGENT_TYPING_EXPIRE_MS, true), null, 'quiet for the whole period: gone');
 });

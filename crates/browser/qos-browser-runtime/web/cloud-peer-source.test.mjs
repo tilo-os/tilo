@@ -81,3 +81,53 @@ test('late connected owner is closed and never returned after source disposal',a
  const f=fixture({phase:'enrolled'}),gate=deferred(),prepared=await f.source.prepare();f.runtime.cloud_connect=()=>gate.promise;f.runtime.close_peer=async id=>f.calls.push(['close-peer',id]);
  const pending=f.source.connect(prepared,[],()=>{});f.source.close();gate.resolve(8);await assert.rejects(pending,/closed/);assert.deepEqual(f.calls.at(-1),['close-peer',8]);
 });
+function resettable(f){f.runtime.cloud_reset_apply=()=>{f.calls.push('reset');f.staged={bytes:[9],phase:'inspect'};return JSON.stringify({kind:'checkpoint',material:[9],namespace:null});};
+ const ack=f.runtime.cloud_acknowledge;f.runtime.cloud_acknowledge=(id,material)=>{if(f.staged&&[...material].join()===f.staged.bytes.join()){f.calls.push(['ack',[...material]]);f.state.phase=f.staged.phase;f.staged=null;return;}return ack(id,material);};return f;}
+const immediate=()=>Promise.resolve();
+test('an apply refused by the Store returns to Inspect with the same keys through a durable checkpoint',async()=>{
+ const f=resettable(fixture());let applies=0;f.enrollment.apply=async(payload,{operationKey})=>{f.calls.push(['apply',payload,operationKey]);if(++applies===1)throw Object.assign(Error('refused'),{code:'apply-refused',reason:'expired'});return '{"reply":1}';};
+ await f.source.prepare();
+ assert.deepEqual(names(f.calls),['begin','step','inspect','enroll','save','ack','step','apply','reset','save','ack','step','inspect','enroll','save','ack','step','apply','accept','save','ack','step','complete','save']);
+});
+test('a lost first claim surfaces claimed-elsewhere after returning custody to Inspect',async()=>{
+ const f=resettable(fixture({phase:'apply'}));f.enrollment.apply=async()=>{throw Object.assign(Error('bound'),{code:'claimed-elsewhere'});};
+ await assert.rejects(f.source.prepare(),error=>error.code==='claimed-elsewhere'&&/another owner/.test(error.message));
+ assert.equal(f.state.phase,'inspect');assert.equal(f.calls.at(-1)[0],'cancel');
+ const g=resettable(fixture({phase:'apply'}));g.enrollment.apply=async()=>{throw Object.assign(Error('future cert'),{code:'apply-refused',reason:'clock-skew'});};
+ await assert.rejects(g.source.prepare(),error=>error.code==='clock-skew');assert.equal(g.state.phase,'inspect');
+ const h=resettable(fixture({phase:'apply'}));h.enrollment.apply=async()=>{throw Object.assign(Error('no'),{code:'apply-refused'});};h.enrollment.inspect=async()=>'{"c":1}';
+ await assert.rejects(h.source.prepare(),error=>error.code==='apply-refused');assert.equal(h.calls.filter(v=>v==='reset').length,2);
+});
+test('transient adapter failures retry in place with the same operation key',async()=>{
+ const f=fixture();let inspects=0,applies=0;
+ f.enrollment.inspect=async()=>{if(++inspects<3)throw Object.assign(Error('HTTP 503'),{status:503});return '{"c":1}';};
+ f.enrollment.apply=async(_p,{operationKey})=>{f.calls.push(['apply-key',operationKey]);if(++applies<2)throw Object.assign(Error('down'),{code:'unavailable'});return '{"reply":1}';};
+ const source=createCloudPeerSource({runtime:f.runtime,lease:f.lease,cloud:{accountId:'acct',machineId:'m-1',enrollment:f.enrollment},delay:immediate});
+ await source.prepare();assert.equal(inspects,3);assert.deepEqual(f.calls.filter(v=>v[0]==='apply-key').map(v=>v[1]),['op-1','op-1']);
+ const g=fixture();g.enrollment.inspect=async()=>{throw Object.assign(Error('HTTP 503'),{status:503});};
+ const busy=createCloudPeerSource({runtime:g.runtime,lease:g.lease,cloud:{accountId:'acct',machineId:'m-1',enrollment:g.enrollment},delay:immediate});
+ await assert.rejects(busy.prepare(),error=>error.code==='busy'&&error.cause.status===503);assert.equal(g.calls.at(-1)[0],'cancel');
+});
+test('runtime refusals reach the caller as typed reason codes with product copy',async()=>{
+ for(const [message,code] of [['Cloud owner clock skew: the Cloud challenge expired','clock-skew'],['Cloud owner claimed elsewhere: bound','claimed-elsewhere'],['onboarding HTTP reply rejected (503)','busy'],['onboarding browser operation failed','unavailable'],['Cloud owner membership rejected (403)','membership-refused']]){
+  const f=fixture();f.runtime.cloud_enroll=()=>{throw message;};
+  await assert.rejects(f.source.prepare(),error=>error.code===code&&error.detail===message&&error.message!==message,message);
+ }
+ const f=fixture();f.runtime.cloud_enroll=()=>{throw 'something unrelated';};await assert.rejects(f.source.prepare(),error=>error==='something unrelated');
+});
+test('every failure between prepare and connect releases the prepared Rust attempt',async()=>{
+ const f=fixture({phase:'enrolled'});const stale=await f.source.prepare();
+ // The caller failed before connect: the next prepare releases the stale slot.
+ const fresh=await f.source.prepare();assert.deepEqual(f.calls.filter(v=>Array.isArray(v)&&v[0]==='cancel'),[['cancel',1]]);
+ await assert.rejects(f.source.connect(stale,[],()=>{}),/replaced/);
+ await f.source.discard(fresh);assert.deepEqual(f.calls.filter(v=>Array.isArray(v)&&v[0]==='cancel').map(v=>v[1]),[1,2]);
+ const g=fixture({phase:'enrolled'}),prepared=await g.source.prepare();g.runtime.cloud_reconnect=async()=>{throw Error('reconnect failed');};
+ await assert.rejects(g.source.reconnect(prepared,4),/reconnect failed/);assert.equal(g.calls.at(-1)[0],'cancel');
+});
+test('transport-only resume needs no attempt and no membership refresh',async()=>{
+ const f=fixture({phase:'enrolled'});assert.equal(f.source.resume,undefined);
+ f.runtime.cloud_resume_transport=async(peer,material,account,machine)=>f.calls.push(['resume',peer,[...material],account,machine]);
+ const source=createCloudPeerSource({runtime:f.runtime,lease:f.lease,cloud:{accountId:'acct',machineId:'m-1',enrollment:f.enrollment}});
+ await source.resume(4);assert.deepEqual(f.calls,[['resume',4,[1],'acct','m-1']]);
+ source.close();await assert.rejects(source.resume(4),/closed/);
+});
