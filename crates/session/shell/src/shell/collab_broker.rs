@@ -503,12 +503,30 @@ impl AppActionBroker {
     }
 
     #[cfg(test)]
+    pub(crate) fn record_completion_for_test(
+        &self,
+        id: u64,
+        actor: &str,
+        update: tilo_actions::InvocationUpdate,
+    ) {
+        self.state.record_completion_for_test(id, actor, update);
+    }
+
+    #[cfg(test)]
     pub(crate) fn capture_invocations_for_test(
         &self,
         peer_id: u64,
     ) -> tokio::sync::mpsc::UnboundedReceiver<crate::shell::collab_broker_capnp::InvocationEnvelope>
     {
         self.state.capture_invocations_for_test(peer_id)
+    }
+
+    pub fn statuses_generation(&self) -> u64 {
+        self.state.invocations_generation()
+    }
+
+    pub fn status_for_actor(&self, id: u64, actor: &str) -> Option<tilo_actions::InvocationUpdate> {
+        self.state.invocation_status_for_actor(id, actor)
     }
 
     pub fn status(&self, id: u64) -> Option<tilo_actions::InvocationUpdate> {
