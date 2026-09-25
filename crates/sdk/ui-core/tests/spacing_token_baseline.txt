@@ -265,7 +265,7 @@ crates/session/shell/src/compositor/backend/drm/runtime.rs pixel_const 1
 crates/session/shell/src/compositor/backend/drm/scale.rs pixel_const 4
 crates/session/shell/src/compositor/capture.rs pixel_const 2
 crates/session/shell/src/compositor/drag_feedback.rs pixel_const 9
-crates/session/shell/src/compositor/lock_screen.rs pixel_const 2
+crates/session/shell/src/compositor/lock_screen.rs pixel_const 3
 crates/session/shell/src/onboarding_view.rs pixel_const 11
 crates/session/shell/src/shell/capture_surface.rs pixel_const 4
 crates/session/shell/src/shell/collaboration_launchpad.rs pixel_const 4

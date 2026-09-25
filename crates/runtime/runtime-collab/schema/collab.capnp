@@ -426,6 +426,25 @@ struct ExportedAction {
   # Versioned JSON encoding of tilo_actions::ActionContract. Empty from an
   # older client selects conservative compatibility defaults.
   contractJson @9 :Text;
+  # Optional explicit resource-view metadata. Absence means this action is
+  # invokable but is not advertised as a view for its resource.
+  view @10 :ResourceViewDescriptor;
+}
+
+struct ResourceViewDescriptor {
+  id          @0 :Text;
+  label       @1 :Text;
+  # Empty when the app supplied no description.
+  description @2 :Text;
+  openAction  @3 :Text;
+  primary     @4 :Bool;
+  mount       @5 :ResourceViewMountSpec;
+}
+
+struct ResourceViewMountSpec {
+  action          @0 :Text;
+  capabilityParam @1 :Text;
+  viewParam       @2 :Text;
 }
 
 # What one exported action's invocation must supply.

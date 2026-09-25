@@ -668,6 +668,7 @@ mod tests {
                     ActionParam::required("count", ParamType::Integer, "Number of values"),
                     ActionParam::required("normalise", ParamType::Boolean, "Normalise output"),
                 ],
+                view: None,
             },
         };
         let catalogue = Catalogue {
