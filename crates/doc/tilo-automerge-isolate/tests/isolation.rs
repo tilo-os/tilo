@@ -128,7 +128,6 @@ const SEQUENCE_GAP_CASES: &[(&str, &str)] = &[
     ),
 ];
 
-
 fn reject_or_admit_every(cases: &[(&str, &str)]) {
     let isolate = isolate();
     for (what, input) in cases {
@@ -137,7 +136,11 @@ fn reject_or_admit_every(cases: &[(&str, &str)]) {
         let before = doc.save();
         let outcome = isolate.apply(&mut doc, &input, Dependencies::RetainOrphans);
         if outcome.is_err() {
-            assert_eq!(doc.save(), before, "{what}: a rejection changed the document");
+            assert_eq!(
+                doc.save(),
+                before,
+                "{what}: a rejection changed the document"
+            );
         }
         let _ = isolate.load(&input);
         eprintln!("{what}: {outcome:?}");
@@ -289,14 +292,21 @@ fn admission_latency() {
     let list = doc.put_object(ROOT, "messages", ObjType::List).unwrap();
     for i in 0..10_000 {
         let m = doc.insert_object(&list, i, ObjType::Map).unwrap();
-        doc.put(&m, "text", format!("message {i} with a realistic amount of text")).unwrap();
+        doc.put(
+            &m,
+            "text",
+            format!("message {i} with a realistic amount of text"),
+        )
+        .unwrap();
         doc.commit();
     }
     let mut samples = Vec::new();
     for round in 0..200 {
         let change = remote_change(&mut doc, &format!("k{round}"));
         let started = Instant::now();
-        isolate.apply(&mut doc, &change, Dependencies::RequireComplete).unwrap();
+        isolate
+            .apply(&mut doc, &change, Dependencies::RequireComplete)
+            .unwrap();
         samples.push(started.elapsed());
     }
     let first = samples[0];
