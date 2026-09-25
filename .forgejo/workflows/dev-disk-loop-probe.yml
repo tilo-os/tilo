@@ -10,7 +10,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          ./os/dev/ci-prepare-disk-devices.sh --kata-job
+          bash os/dev/ci-prepare-disk-devices.sh --kata-job
           scratch=$(mktemp -d)
           loop=''
           holder_pid=''
