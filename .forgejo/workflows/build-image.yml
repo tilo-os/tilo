@@ -890,8 +890,8 @@ jobs:
             KERNEL_RPMS_REF=${{ env.KERNEL_RPMS_REF }}
             WPE_BUILDROOT_REF=${{ env.WPE_BUILDROOT_REF }}
             TILO_WINDOWS_ARCH=${{ matrix.arch }}
-            FEX_PAYLOAD_REF=${{ vars.TILO_FEX_PAYLOAD_REF || 'scratch' }}
-            WINDOWS_GUEST_REF=${{ vars.TILO_WINDOWS_GUEST_REF || 'scratch' }}
+            FEX_PAYLOAD_REF=${{ env.FEX_PAYLOAD_REF || 'scratch' }}
+            WINDOWS_GUEST_REF=${{ env.WINDOWS_GUEST_REF || 'scratch' }}
             TILO_WITH_BROWSER=${{ env.TILO_WITH_BROWSER }}
             TILO_PREBUILT_APPS=${{ env.TILO_PREBUILT_APPS }}
             TILO_PREBUILT_DESKTOP=${{ env.TILO_PREBUILT_DESKTOP }}
@@ -953,8 +953,8 @@ jobs:
             KERNEL_RPMS_REF=${{ env.KERNEL_RPMS_REF }}
             WPE_BUILDROOT_REF=${{ env.WPE_BUILDROOT_REF }}
             TILO_WINDOWS_ARCH=${{ matrix.arch }}
-            FEX_PAYLOAD_REF=${{ vars.TILO_FEX_PAYLOAD_REF || 'scratch' }}
-            WINDOWS_GUEST_REF=${{ vars.TILO_WINDOWS_GUEST_REF || 'scratch' }}
+            FEX_PAYLOAD_REF=${{ env.FEX_PAYLOAD_REF || 'scratch' }}
+            WINDOWS_GUEST_REF=${{ env.WINDOWS_GUEST_REF || 'scratch' }}
             TILO_WITH_BROWSER=${{ env.TILO_WITH_BROWSER }}
             TILO_PREBUILT_APPS=${{ env.TILO_PREBUILT_APPS }}
             TILO_PREBUILT_DESKTOP=${{ env.TILO_PREBUILT_DESKTOP }}
@@ -1042,8 +1042,8 @@ jobs:
             KERNEL_RPMS_REF=${{ env.KERNEL_RPMS_REF }}
             WPE_BUILDROOT_REF=${{ env.WPE_BUILDROOT_REF }}
             TILO_WINDOWS_ARCH=${{ matrix.arch }}
-            FEX_PAYLOAD_REF=${{ vars.TILO_FEX_PAYLOAD_REF || 'scratch' }}
-            WINDOWS_GUEST_REF=${{ vars.TILO_WINDOWS_GUEST_REF || 'scratch' }}
+            FEX_PAYLOAD_REF=${{ env.FEX_PAYLOAD_REF || 'scratch' }}
+            WINDOWS_GUEST_REF=${{ env.WINDOWS_GUEST_REF || 'scratch' }}
             TILO_WITH_BROWSER=${{ env.TILO_WITH_BROWSER }}
             TILO_PREBUILT_APPS=${{ env.TILO_PREBUILT_APPS }}
             TILO_PREBUILT_DESKTOP=${{ env.TILO_PREBUILT_DESKTOP }}
