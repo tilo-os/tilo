@@ -401,8 +401,10 @@ grep -Fq 'tilo-installer-medium-${{ matrix.arch }}' "$workflow" \
   && ok 'native live media is catalogued and verified before writing' \
   || bad 'end-user install medium publication or verification is missing'
 
-grep -Fq 'key: github-assets-all-v1-' "$workflow" \
-  && grep -Fq './os/dev/cache-github-assets.sh' "$workflow" \
+grep -Fq 'uses: ./.forgejo/actions/cache-github-assets' "$workflow" \
+  && grep -Fqx '          key: github-assets-all-v1' "$workflow" \
+  && grep -Fq 'run: ./os/dev/cache-github-assets.sh $ASSETS' \
+    "$repo/.forgejo/actions/cache-github-assets/action.yml" \
   && grep -Fq 'podman login \' "$workflow" \
   && grep -Fq -- '--authfile "$REGISTRY_AUTH_FILE" code.podesta.ai' "$workflow" \
   && grep -Fq './os/dev/install-cached-cosign.sh' "$workflow" \
@@ -426,13 +428,27 @@ if grep -Fq 'TILO_INSTALLER_OS_IMAGE' "$workflow" \
    && grep -Fq 'generation_image="code.podesta.ai/qos/tilo:gen$generation"' "$published_image" \
    && grep -Fq 'generation_digest' "$published_image" \
    && grep -Fq 'published generation tag gen$generation binds' "$published_image" \
-   && grep -Fq "TILO_EXPECTED_OS_SOURCE_REVISION: \${{ startsWith(github.ref, 'refs/tags/imager-v') && github.sha || '' }}" "$workflow" \
+   && grep -Fq "TILO_EXPECTED_OS_SOURCE_REVISION: \${{ github.event.inputs.published_os_source_revision || (startsWith(github.ref, 'refs/tags/imager-v') && github.sha) || '' }}" "$workflow" \
    && grep -Fq 'rehearsal overlays $GITHUB_SHA onto verified published generation' "$workflow" \
    && grep -Fq 'resolvedDependencies[]?; .uri == $source' "$published_image" \
    && grep -Fq 'podman tag "$image" "$TILO_IMAGE"' "$published_image"; then
   ok 'installer media consume one verified, digest-pinned published OS generation'
 else
   bad 'installer media can allocate an unpublished generation or consume an unverified OS source'
+fi
+
+if grep -Fq 'published_os_source_revision:' "$workflow" \
+   && grep -Fq 'PUBLISHED_OS_SOURCE_REVISION:-} =~ ^[0-9a-f]{40}$' "$workflow" \
+   && grep -Fq 'git merge-base --is-ancestor "$PUBLISHED_OS_SOURCE_REVISION" "$GITHUB_SHA"' "$workflow" \
+   && grep -Fq 'ref: ${{ github.event.inputs.published_os_source_revision || github.sha }}' "$workflow" \
+   && grep -Fq 'test "$(git rev-parse HEAD)" = "$TILO_EXPECTED_OS_SOURCE_REVISION"' "$workflow" \
+   && grep -Fq 'verified CI $target_profile target $target_image from source $TILO_EXPECTED_OS_SOURCE_REVISION generation ' "$workflow" \
+   && grep -Fq -- '--arg build_revision "$(git rev-parse HEAD)"' "$workflow" \
+   && grep -Fq 'signed $profile target source differs from pinned installer source' \
+      "$repo/os/dev/prepare-ci-installer-target.sh"; then
+  ok 'offline media pin main ancestry, checkout, signed target source, and medium identity to one revision'
+else
+  bad 'offline medium source can drift from the signed CI target revision'
 fi
 
 if grep -Fq "TILO_PCR_PREDICTION_SIGNER: \${{ startsWith(github.ref, 'refs/tags/imager-v')" "$workflow" \
@@ -579,10 +595,11 @@ grep -Fq 'BOOT_SIGNAL="serial-getty"' "$boot_verify" \
   && ok 'installer media runs only on explicit, architecture-matched native release or rehearsal hosts' \
   || bad 'installer-medium event, architecture, or registry-auth boundary is incomplete'
 
-grep -Fq 'key: imager-linux-tools-${{ matrix.arch }}-' "$workflow" \
-  && grep -Fq 'linuxdeploy-1-alpha-20251107-1-${arch}.AppImage' "$workflow" \
-  && grep -Fq 'appimagetool-1.9.1-${arch}.AppImage' "$workflow" \
-  && grep -Fq 'type2-runtime-20251108-${arch}' "$workflow" \
+grep -Fq 'key: imager-linux-tools-${{ matrix.arch }}' "$workflow" \
+  && grep -Fq 'linuxdeploy-1-alpha-20251107-1-${{ matrix.arch }}.AppImage' "$workflow" \
+  && grep -Fq 'appimagetool-1.9.1-${{ matrix.arch }}.AppImage' "$workflow" \
+  && grep -Fq 'type2-runtime-20251108-${{ matrix.arch }}' "$workflow" \
+  && grep -Fq '"os/external-assets/cache/linuxdeploy-1-alpha-20251107-1-${arch}.AppImage"' "$workflow" \
   && grep -Fq -- '--runtime-file "$TILO_APPIMAGE_RUNTIME"' \
     "$repo/apps/imager/packaging/package-host.sh" \
   && grep -Fq 'implicit runtime downloads are forbidden' \
