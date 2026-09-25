@@ -254,7 +254,7 @@ pub struct InstallScenarioArgs {
     /// Account username for a retained install. Requires --credentials-stdin.
     #[arg(long, requires = "credentials_stdin")]
     pub username: Option<String>,
-    /// Read distinct account_password and disk_passphrase from one JSON object on stdin. Requires --username; unavailable for dry runs.
+    /// Read distinct `account_password` and `disk_passphrase` from one JSON object on stdin. Requires --username; unavailable for dry runs.
     #[arg(long, requires = "username", conflicts_with = "dry_run")]
     pub credentials_stdin: bool,
     /// The target disk before the install: erase (blank disk, used whole), prepared-alongside or guided-alongside (existing systems kept byte-for-byte).
