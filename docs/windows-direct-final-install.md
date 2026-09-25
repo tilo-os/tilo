@@ -72,7 +72,7 @@ python os/dev/allocate-windows-direct-final-install.py prepare --root-gib 45 --o
 python os/dev/allocate-windows-direct-final-install.py execute --request request.json --confirm-request-sha256 <sha256> --confirm-disk-id <disk-id> --confirm-recovery-protector-id <id> --confirm-recovery-key-backed-up --output realized-plan.json
 python os/dev/prepare-windows-direct-source.py template --plan realized-plan.json --output source.raw
 python os/dev/prepare-windows-direct-source.py verify-template --manifest source.raw.manifest.json --source-raw source.raw
-tilo-vm scenario install --medium C:\path\to\ci-installer.qcow2 --layout guided-alongside --target-disk source.raw --encrypt passphrase --graphics software --skip-target-boot
+tilo-vm scenario install --medium C:\path\to\ci-installer.qcow2 --layout guided-alongside --target-disk source.raw --encrypt passphrase --graphics software --skip-target-boot --username <account-name> --credentials-stdin
 python os/dev/prepare-windows-direct-source.py verify-template --manifest source.raw.manifest.json --source-raw source.raw
 python os/dev/prepare-windows-direct-source.py finalize --plan realized-plan.json --source-raw source.raw
 python os/dev/prepare-windows-direct-source.py receipt --plan realized-plan.json --source-raw source.raw --ci-image code.sandbox.example/qos/tilo@sha256:<digest> --ci-index-manifest ci-arm64-manifest.json --ci-child-manifest ci-arm64-manifest.json --vm-proof-checked vm-install-proof-checked.json --verify-key keys/cosign.pub --cosign-command-json cosign-runner.json --cosign-key-arg /mnt/c/path/to/keys/cosign.pub --output source-receipt.json
@@ -90,6 +90,11 @@ native guest proofs are the raw CI cycle `guest-install-proof.json` files;
 the generic checked VM proof must report a completed first boot. Both
 commands verify the signatures again and bind all results into the source
 receipt before a physical copy can open the disk for writing.
+
+For a retained account, pass one JSON object on standard input with distinct
+`account_password` and `disk_passphrase` fields. Keep the values out of the
+command line and logs. The VM scenario rejects an account name without
+`--credentials-stdin` and refuses to include either secret in its receipt.
 
 For a guest image built with the VM install-proof helper, the WHPX scenario
 attaches a dedicated named virtio serial port, visible in the guest at
@@ -153,14 +158,24 @@ The allocator command above is an authorized physical mutation and must run
 only after the matching BitLocker recovery key has actually been backed up.
 The source raw commands act only on a new disposable VM file.
 
-## Remaining integration before physical completion
+## Firmware handoff
 
-The physical copier deliberately does not mutate firmware. The final ESP
-needs a verified `EFI_LOAD_OPTION` for its Windows-assigned GPT partition and
-signed ARM64 loader, followed by `BootNext` while leaving `BootOrder` intact.
-The Imager already has a tested EFI load-option encoder and Windows firmware
-adapter in `apps/imager/src/setup/staging/efi.rs` and
-`apps/imager/src/setup/staging/windows/adapter.rs`; the direct path should
-reuse those, bind the new entry to the final copy readback receipt, and reject
-an occupied `BootNext`. Until that is integrated and tested, these scripts do
-not claim a complete first-boot-ready physical installation.
+The physical copier deliberately does not mutate firmware. After it writes
+and verifies `final-readback.json`, run the guarded Windows-native Imager
+helper described in [Windows-direct BootNext](windows-direct-bootnext.md):
+
+```text
+imager.exe --tilo-final-bootnext --readback C:\path\to\final-readback.json
+```
+
+The helper verifies the final ESP, loader, and firmware readback, creates a
+Tilo boot option for that ESP, and arms it for one boot. It refuses an occupied
+`BootNext` and leaves the persistent Windows-first `BootOrder` unchanged.
+Do not restart until the host install receipt and initial account and disk
+unlock secrets have been saved. The development-signed Lenovo image requires
+Secure Boot to be disabled in firmware for the first Tilo boot; keep the
+Windows BitLocker recovery key available while changing that setting.
+
+After the first successful physical Tilo boot, follow
+[Windows-first firmware boot order](windows-first-tilo-boot-order.md) to add
+the verified Tilo entry after Windows in the persistent picker order.
