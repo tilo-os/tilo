@@ -16,6 +16,8 @@ exclude = [
     "vendor/wgpu-hal",
     "vendor/openh264-sys2",
     "vendor/wayland-backend",
+    "vendor/automerge",
+    "vendor/hexane",
 ]
 # Build `runtime-dylib` with `cargo build -p runtime-dylib --profile thin-app`;
 # it requires unwind support, unlike the default release profile.
@@ -555,3 +557,7 @@ wayland-backend = { path = "vendor/wayland-backend" }
 vello_encoding = { path = "vendor/vello_encoding" }
 vello_shaders = { path = "vendor/vello_shaders" }
 vello = { path = "vendor/vello" }
+# automerge 0.12 plus bounded, checked admission of untrusted storage
+# (`automerge::resource_limits`). See vendor/automerge/README.qos.md.
+automerge = { path = "vendor/automerge" }
+hexane = { path = "vendor/hexane" }
