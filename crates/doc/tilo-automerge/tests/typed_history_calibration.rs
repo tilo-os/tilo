@@ -177,17 +177,47 @@ fn measure(case: &Case) -> (usize, usize, usize) {
 #[test]
 fn typed_history_allowance_tracks_measured_peak() {
     let cases = [
-        Case { name: "1k splices x12, commit/3", splices: 1_000, word: "typed words ", per_commit: 3 },
-        Case { name: "4k splices x12, commit/3", splices: 4_000, word: "typed words ", per_commit: 3 },
-        Case { name: "10k keystrokes, commit/1", splices: 10_000, word: "a", per_commit: 1 },
-        Case { name: "4k splices x12, 2 changes", splices: 4_000, word: "typed words ", per_commit: 2_000 },
+        Case {
+            name: "1k splices x12, commit/3",
+            splices: 1_000,
+            word: "typed words ",
+            per_commit: 3,
+        },
+        Case {
+            name: "4k splices x12, commit/3",
+            splices: 4_000,
+            word: "typed words ",
+            per_commit: 3,
+        },
+        Case {
+            name: "10k keystrokes, commit/1",
+            splices: 10_000,
+            word: "a",
+            per_commit: 1,
+        },
+        Case {
+            name: "4k splices x12, 2 changes",
+            splices: 4_000,
+            word: "typed words ",
+            per_commit: 2_000,
+        },
     ];
-    eprintln!("{:<28} {:>9} {:>12} {:>12} {:>6}", "shape", "snapshot", "peak", "allowance", "ratio");
+    eprintln!(
+        "{:<28} {:>9} {:>12} {:>12} {:>6}",
+        "shape", "snapshot", "peak", "allowance", "ratio"
+    );
     for case in &cases {
         let (len, peak, needed) = measure(case);
         let ratio = needed as f64 / peak.max(1) as f64;
-        eprintln!("{:<28} {:>9} {:>12} {:>12} {:>6.2}", case.name, len, peak, needed, ratio);
-        assert!(ratio <= 5.0, "{}: allowance {needed} vs peak {peak}", case.name);
+        eprintln!(
+            "{:<28} {:>9} {:>12} {:>12} {:>6.2}",
+            case.name, len, peak, needed, ratio
+        );
+        assert!(
+            ratio <= 5.0,
+            "{}: allowance {needed} vs peak {peak}",
+            case.name
+        );
     }
 }
 
@@ -199,18 +229,29 @@ fn large_typed_history_fits_one_64_mib_turn_with_margin() {
     let (mut doc, text) = typed(8_400, "typed words ", 3);
     let snapshot = doc.save();
     let needed = minimal_allowance(&snapshot);
-    eprintln!("100k typed chars: snapshot {} B, minimal allowance {needed} B", snapshot.len());
+    eprintln!(
+        "100k typed chars: snapshot {} B, minimal allowance {needed} B",
+        snapshot.len()
+    );
     assert!(needed <= 56 * 1024 * 1024, "needs {needed} bytes");
     let mut fresh = AutoCommit::new();
     let allowance = NativeAllowance::new(64 * 1024 * 1024).unwrap();
     fresh
-        .apply_incoming_checked(&snapshot, &limits(), &allowance, NativeDependencyPolicy::RequireComplete)
+        .apply_incoming_checked(
+            &snapshot,
+            &limits(),
+            &allowance,
+            NativeDependencyPolicy::RequireComplete,
+        )
         .unwrap();
     assert_eq!(fresh.text(&text).unwrap(), doc.text(&text).unwrap());
-    assert_eq!(allowance.retained_bytes(), NativeAllowance::new(64 * 1024 * 1024).unwrap().retained_bytes());
+    assert_eq!(
+        allowance.retained_bytes(),
+        NativeAllowance::new(64 * 1024 * 1024)
+            .unwrap()
+            .retained_bytes()
+    );
 }
-
-
 
 /// A snapshot merged into an existing replica that already holds the first
 /// half of the history (the `merge_committed` shape): not blank, so the
@@ -230,22 +271,142 @@ fn snapshot_into_existing_replica_tracks_measured_peak() {
         let allowance = NativeAllowance::new(bytes).unwrap();
         let mut target = base.clone();
         target
-            .apply_incoming_checked(&snapshot, &limits(), &allowance, NativeDependencyPolicy::RequireComplete)
+            .apply_incoming_checked(
+                &snapshot,
+                &limits(),
+                &allowance,
+                NativeDependencyPolicy::RequireComplete,
+            )
             .map(|outcome| (outcome, target))
     };
     let mut target = base.clone();
     let allowance = NativeAllowance::new(64 * 1024 * 1024).unwrap();
     let (outcome, peak) = peak_of(|| {
-        target.apply_incoming_checked(&snapshot, &limits(), &allowance, NativeDependencyPolicy::RequireComplete)
+        target.apply_incoming_checked(
+            &snapshot,
+            &limits(),
+            &allowance,
+            NativeDependencyPolicy::RequireComplete,
+        )
     });
-    assert_eq!(outcome.unwrap(), NativeIncomingOutcome::Applied { changed: true });
+    assert_eq!(
+        outcome.unwrap(),
+        NativeIncomingOutcome::Applied { changed: true }
+    );
     assert_eq!(target.text(&text).unwrap(), doc.text(&text).unwrap());
     let (mut low, mut high) = (64usize, 64 * 1024 * 1024);
     while high - low > high / 100 {
         let mid = low + (high - low) / 2;
-        if apply(mid).is_ok() { high = mid } else { low = mid }
+        if apply(mid).is_ok() {
+            high = mid
+        } else {
+            low = mid
+        }
     }
-    eprintln!("merge 4k splices into half replica: peak {peak} allowance {high} ratio {:.2}", high as f64 / peak as f64);
-    assert!(high as f64 <= 4.0 * peak as f64, "needs {high} for a peak of {peak}");
+    eprintln!(
+        "merge 4k splices into half replica: peak {peak} allowance {high} ratio {:.2}",
+        high as f64 / peak as f64
+    );
+    assert!(
+        high as f64 <= 4.0 * peak as f64,
+        "needs {high} for a peak of {peak}"
+    );
     assert!(high <= 48 * 1024 * 1024, "needs {high}");
+}
+
+/// About 300k characters of ordinary typing admits into a blank document
+/// within one 64 MiB turn (upstream's own verified load peaks at about
+/// 168 B/op, ~51 MB here, so the bound must be within ~1.3x of it).
+#[test]
+#[ignore = "slow in debug builds (about 3 minutes); run with --ignored"]
+fn typed_history_of_300k_chars_fits_one_64_mib_turn() {
+    let (mut doc, text) = typed(25_000, "typed words ", 3);
+    let snapshot = doc.save();
+    let mut fresh = AutoCommit::new();
+    let allowance = NativeAllowance::new(64 * 1024 * 1024).unwrap();
+    let (outcome, peak) = peak_of(|| {
+        fresh.apply_incoming_checked(
+            &snapshot,
+            &limits(),
+            &allowance,
+            NativeDependencyPolicy::RequireComplete,
+        )
+    });
+    eprintln!(
+        "300k typed chars: snapshot {} B, checked apply peak {peak} B",
+        snapshot.len()
+    );
+    assert_eq!(
+        outcome.unwrap(),
+        NativeIncomingOutcome::Applied { changed: true }
+    );
+    assert_eq!(fresh.text(&text).unwrap(), doc.text(&text).unwrap());
+}
+
+/// Incompressible bytes (xorshift), so DEFLATE cannot shrink the snapshot.
+fn noise(n: usize, seed: u64) -> Vec<u8> {
+    let mut x = seed | 1;
+    (0..n)
+        .map(|_| {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            x as u8
+        })
+        .collect()
+}
+
+/// One op whose value is `n` incompressible bytes, one commit.
+fn value_snapshot(n: usize) -> Vec<u8> {
+    let mut doc = AutoCommit::new();
+    doc.put(ROOT, "blob", automerge::ScalarValue::Bytes(noise(n, 7)))
+        .unwrap();
+    doc.commit();
+    doc.save()
+}
+
+/// A single large value admits into a blank document up to the size a
+/// 64 MiB turn can soundly hold. Upstream's verified load of such a
+/// snapshot peaks at 6x the value (the raw value column, the collector's
+/// doubled `data` buffer, and `ChangeBuilder::build` regrowing its buffer by
+/// the header while the old one lives), on top of the normalized input
+/// (1x) the turn also holds: about 7x in all, so ~9 MiB is the ceiling.
+#[test]
+fn large_value_snapshot_admits_within_one_64_mib_turn() {
+    for mib in [4usize, 8] {
+        let snapshot = value_snapshot(mib << 20);
+        let (outcome, peak) = peak_of(|| apply(&snapshot, 64 * 1024 * 1024));
+        assert_eq!(
+            outcome.unwrap(),
+            NativeIncomingOutcome::Applied { changed: true },
+            "{mib} MiB"
+        );
+        let needed = minimal_allowance(&snapshot);
+        eprintln!(
+            "{mib} MiB value: snapshot {} B, peak {peak} B, minimal allowance {needed} B ({:.2}x peak)",
+            snapshot.len(),
+            needed as f64 / peak as f64
+        );
+        assert!(
+            needed as f64 <= 1.25 * peak as f64,
+            "{mib} MiB: {needed} vs {peak}"
+        );
+    }
+}
+
+/// The 10 MiB single-value snapshot needs ~74 MB in one turn (see above):
+/// sound admission is refused at the 64 MiB cap unless the cap for snapshot
+/// admission is raised or upstream's rebuild stops doubling the value.
+#[test]
+fn ten_mib_value_snapshot_needs_more_than_one_64_mib_turn() {
+    let snapshot = value_snapshot(10 << 20);
+    let result = apply(&snapshot, 64 * 1024 * 1024);
+    assert!(result.is_err(), "{result:?}");
+    // The unbounded load itself, for the record.
+    let (loaded, peak) = peak_of(|| AutoCommit::load(&snapshot).unwrap());
+    drop(loaded);
+    eprintln!(
+        "10 MiB value: snapshot {} B, unbounded load peak {peak} B",
+        snapshot.len()
+    );
 }

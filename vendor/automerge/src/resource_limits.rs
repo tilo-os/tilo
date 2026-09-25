@@ -326,6 +326,27 @@ pub struct NativeShape {
     make_operations: usize,
     /// Mark operations (begins and ends) across all chunks.
     mark_operations: usize,
+    /// Largest declared op count of any single change (document change
+    /// metadata or change/bundle chunks).
+    max_change_ops: usize,
+    /// For the most recent / the leading document chunk: an upper bound on
+    /// the ops the load collector can hold in a `ProgressiveEncoder` queue
+    /// (see `structure::document`), and the stored length of its raw value
+    /// column.
+    last_document_queued_ops: usize,
+    last_document_raw_values: usize,
+    leading_document_queued_ops: usize,
+    leading_document_raw_values: usize,
+    /// For the most recent / the leading document chunk: ops the collector
+    /// may encode out of row order (literal width), and a bound on the
+    /// encoded op-column bytes of all other ops (see `inspect::Scan::columns`
+    /// and `structure::collector_order`).
+    last_document_literal_ops: usize,
+    last_document_switches: usize,
+    last_document_ordered_bytes: usize,
+    last_document_ordered_per_switch: usize,
+    leading_document_literal_ops: usize,
+    leading_document_ordered_encoding: usize,
 }
 impl NativeShape {
     fn empty() -> Self {
@@ -333,7 +354,12 @@ impl NativeShape {
             actors: 0, heads: 0, value_bytes: 0, dense_operations: 0,
             maximum_operation_counter: 0, max_actor_bytes: 0, max_chunk_actors: 0,
             leading_document_bytes: 0, leading_document_operations: 0,
-            leading_document_changes: 0, make_operations: 0, mark_operations: 0 }
+            leading_document_changes: 0, make_operations: 0, mark_operations: 0,
+            max_change_ops: 0, last_document_queued_ops: 0, last_document_raw_values: 0,
+            leading_document_queued_ops: 0, leading_document_raw_values: 0,
+            last_document_literal_ops: 0, last_document_switches: 0,
+            last_document_ordered_bytes: 0, last_document_ordered_per_switch: 0,
+            leading_document_literal_ops: 0, leading_document_ordered_encoding: 0 }
     }
     /// Total logical operations represented by the inspected chunks.
     pub fn operations(&self) -> usize {
