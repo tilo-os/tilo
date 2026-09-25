@@ -968,6 +968,9 @@ mod admit_share_tests {
         let mut stream = response("/home/alice/Shared/record");
         let mount = request_received_mount(uri.clone(), &mut stream).unwrap();
         assert_eq!(mount, PathBuf::from("/home/alice/Shared/record"));
+        // One frame: a big-endian `u32` length, then the canonical request.
+        let body_len = u32::try_from(stream.written.len() - 4).unwrap();
+        assert_eq!(stream.written[..4], body_len.to_be_bytes());
         let length = u32::from_be_bytes(stream.written[..4].try_into().unwrap()) as usize;
         let request: collab_types::RecipientControlRequestV1 =
             collab_types::canonical::from_canonical_bytes(&stream.written[4..4 + length]).unwrap();

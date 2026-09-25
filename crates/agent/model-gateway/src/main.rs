@@ -788,6 +788,18 @@ mod tests {
         }
     }
 
+    /// The launcher's handoff: a little-endian `u32` length, then JSON.
+    #[test]
+    fn launcher_handoff_bytes_are_pinned() {
+        use std::io::Write as _;
+        let (mut launcher, mut gateway) = UnixStream::pair().unwrap();
+        launcher.write_all(&[39, 0, 0, 0]).unwrap();
+        launcher
+            .write_all(br#"{"protocol":1,"app_id":"so.tilo.agent"}"#)
+            .unwrap();
+        assert_eq!(read_handoff(&mut gateway).unwrap().app_id, AGENT_APP);
+    }
+
     #[test]
     fn local_vision_input_is_closed_and_bounded() {
         assert!(validate_vision_image(&vision_image()).is_ok());

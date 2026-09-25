@@ -636,20 +636,72 @@ mod tests {
         let listener = std::os::unix::net::UnixListener::bind(&path).expect("listen");
         let reader = std::thread::spawn(move || {
             let (mut stream, _) = listener.accept().expect("accept");
-            let mut len = [0_u8; 4];
-            stream.read_exact(&mut len).expect("length");
-            let mut bytes = vec![0_u8; u32::from_le_bytes(len) as usize];
-            stream.read_exact(&mut bytes).expect("payload");
-            serde_json::from_slice::<serde_json::Value>(&bytes).expect("json")
+            let mut bytes = Vec::new();
+            stream.read_to_end(&mut bytes).expect("handshake");
+            // Little-endian length of the 50-byte JSON handshake.
+            assert_eq!(bytes[..4], [50, 0, 0, 0]);
+            serde_json::from_slice::<serde_json::Value>(&bytes[4..]).expect("json")
         });
         let bind = resolve_identity_bind("so.tilo.notes", Some("room-7"), false)
             .expect("resolve")
             .expect("identity bind");
         assert_eq!(bind.name, IDENTITY_SERVICE);
         assert_eq!(bind.child_fd, 31);
+        drop(bind);
         let handshake = reader.join().expect("reader");
         assert_eq!(handshake["app_id"], "so.tilo.notes");
         assert_eq!(handshake["workspace_id"], "room-7");
+    }
+
+    fn written(write: impl FnOnce(&mut UnixStream) -> std::io::Result<()>) -> Vec<u8> {
+        use std::io::Read;
+        let (mut launcher, mut service) = UnixStream::pair().expect("pair");
+        write(&mut launcher).expect("handoff");
+        drop(launcher);
+        let mut bytes = Vec::new();
+        service.read_to_end(&mut bytes).expect("read");
+        bytes
+    }
+
+    /// Each service's handoff bytes. The services on the other end parse
+    /// them independently, so the magic, prefix byte order and length must not
+    /// drift. JSON key order is not pinned (serde_json's `preserve_order` is
+    /// feature-unified), only the value.
+    #[test]
+    fn handoff_wire_bytes_are_pinned() {
+        let fields = serde_json::json!({
+            "protocol": 1,
+            "app_id": "so.tilo.notes",
+            "workspace_id": "room-7",
+        });
+        let bytes = written(|stream| write_collab_handoff(stream, "so.tilo.notes", "room-7"));
+        assert_eq!(bytes[..8], *b"QCL1\x3f\0\0\0");
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&bytes[8..]).unwrap(),
+            fields
+        );
+
+        let bytes = written(|stream| write_compat_handoff(stream, "so.tilo.notes", "room-7"));
+        assert_eq!(bytes[..4], [63, 0, 0, 0]);
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&bytes[4..]).unwrap(),
+            fields
+        );
+
+        let app_only = serde_json::json!({"protocol": 1, "app_id": "so.tilo.notes"});
+        let bytes = written(|stream| write_model_gateway_handoff(stream, "so.tilo.notes"));
+        assert_eq!(bytes[..4], [39, 0, 0, 0]);
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&bytes[4..]).unwrap(),
+            app_only
+        );
+
+        let bytes = written(|stream| write_app_host_handoff(stream, "so.tilo.notes"));
+        assert_eq!(bytes[..8], *b"QAH1\0\0\0\x27");
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&bytes[8..]).unwrap(),
+            app_only
+        );
     }
 
     #[test]

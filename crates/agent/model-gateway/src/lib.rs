@@ -346,6 +346,36 @@ pub fn read_frame<T: for<'a> Deserialize<'a>>(stream: &mut UnixStream) -> Result
         .map_err(|_| ClientError::Protocol("invalid gateway response".into()))
 }
 
+#[cfg(all(test, unix))]
+mod wire_tests {
+    use super::*;
+
+    /// The gateway socket's bytes: a little-endian `u32` length, then JSON.
+    #[test]
+    fn gateway_wire_bytes_are_pinned() {
+        let (mut client, mut gateway) = UnixStream::pair().unwrap();
+        write_frame(
+            &mut client,
+            &Response {
+                ok: true,
+                output: Some("x".into()),
+                configured: None,
+                error: None,
+            },
+        )
+        .unwrap();
+        let mut sent = [0_u8; 28];
+        gateway.read_exact(&mut sent).unwrap();
+        assert_eq!(sent[..4], [24, 0, 0, 0]);
+        assert_eq!(&sent[4..], br#"{"ok":true,"output":"x"}"#);
+
+        gateway.write_all(&[12, 0, 0, 0]).unwrap();
+        gateway.write_all(br#"{"ok":false}"#).unwrap();
+        let response: Response = read_frame(&mut client).unwrap();
+        assert!(!response.ok);
+    }
+}
+
 #[cfg(all(test, not(unix)))]
 mod unsupported_platform_tests {
     use super::*;

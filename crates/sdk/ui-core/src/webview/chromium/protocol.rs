@@ -128,6 +128,19 @@ mod tests {
         assert!(read_packet(&mut reader).unwrap().is_none());
     }
 
+    /// The helper's packets: a little-endian `u32` length that counts the
+    /// kind byte, the kind, then the body.
+    #[test]
+    fn packet_wire_bytes_are_pinned() {
+        let mut bytes = Vec::new();
+        write_json(&mut bytes, &serde_json::json!({"a": 1})).unwrap();
+        assert_eq!(bytes, b"\x08\0\0\0\x01{\"a\":1}");
+        let Some(Packet::Json(value)) = read_packet(&mut Cursor::new(&bytes)).unwrap() else {
+            panic!("expected JSON")
+        };
+        assert_eq!(value["a"], 1);
+    }
+
     #[test]
     fn malformed_packets_are_rejected_before_allocation() {
         for bytes in [
